@@ -1,0 +1,101 @@
+{
+  "name": "conntrack routed NAT fallback with degraded confidence factors",
+  "interval_ms": 1000,
+  "config": {
+    "enable_conntrack_fallback": true,
+    "bpf_full_available": false
+  },
+  "probe": {
+    "nf_conntrack_acct": true,
+    "flowtable_counter": false,
+    "openclash_fake_ip_or_tun": true,
+    "dae_or_daed": false,
+    "sqm_qosify_or_ifb": true,
+    "hardware_flow_offload": false,
+    "software_flow_offload": false,
+    "nlbwmon": true,
+    "probe_error": false
+  },
+  "clients": [
+    {
+      "mac": "02:aa:bb:cc:dd:08",
+      "zone": "lan",
+      "identity_key": "02:aa:bb:cc:dd:08@lan",
+      "interface": "br-lan",
+      "ips": [
+        "192.168.1.88"
+      ],
+      "hostname": "nat-client",
+      "last_seen": 2000
+    }
+  ],
+  "conntrack_samples": [
+    {
+      "client_ip": "192.168.1.88",
+      "remote_ip": "198.18.0.10",
+      "remote_is_fake_ip": true,
+      "t_ms": 1000,
+      "orig_bytes": 1000000,
+      "reply_bytes": 2000000
+    },
+    {
+      "client_ip": "192.168.1.88",
+      "remote_ip": "198.18.0.10",
+      "remote_is_fake_ip": true,
+      "t_ms": 2000,
+      "orig_bytes": 2250000,
+      "reply_bytes": 4500000
+    }
+  ],
+  "expected": {
+    "active": true,
+    "collector_mode": "conntrack",
+    "mode": "Degraded",
+    "confidence": "low",
+    "tx_bps": 10000000,
+    "rx_bps": 20000000,
+    "warnings": [
+      "conntrack_routed_nat_only",
+      "flowtable_counter_missing",
+      "nlbwmon_counter_conflict",
+      "proxy_path_confidence_low",
+      "qos_ifb_confidence_low"
+    ],
+    "snapshot_pending_warning": "conntrack_snapshot_pending",
+    "skipped_no_arp": 2,
+    "malformed_lines_first_snapshot": 1
+  },
+  "arp_entries": [
+    {
+      "ip": "192.168.1.88",
+      "mac": "02:aa:bb:cc:dd:08",
+      "interface": "br-lan",
+      "zone": "lan"
+    },
+    {
+      "ip": "192.168.1.250",
+      "mac": "02:da:ed:00:00:01",
+      "interface": "dae0",
+      "zone": "dae"
+    }
+  ],
+  "procfs_snapshots": [
+    {
+      "t_ms": 1000,
+      "lines": [
+        "ipv4 2 tcp 6 431999 ESTABLISHED src=192.168.1.88 dst=198.18.0.10 sport=41000 dport=443 packets=10 bytes=1000000 src=198.18.0.10 dst=203.0.113.2 sport=443 dport=41000 packets=20 bytes=2000000 [ASSURED] mark=0 use=1",
+        "ipv4 2 udp 17 20 src=192.168.1.250 dst=8.8.8.8 sport=53000 dport=53 packets=2 bytes=1000 src=8.8.8.8 dst=192.168.1.250 sport=53 dport=53000 packets=2 bytes=2000 mark=0x8000000 use=1",
+        "ipv4 2 tcp 6 431999 ESTABLISHED src=192.168.1.99 dst=203.0.113.20 sport=41001 dport=443 packets=1 bytes=111 src=203.0.113.20 dst=203.0.113.2 sport=443 dport=41001 packets=1 bytes=222 [ASSURED] mark=0 use=1",
+        "malformed line without accounting bytes"
+      ]
+    },
+    {
+      "t_ms": 2000,
+      "lines": [
+        "ipv4 2 tcp 6 431998 ESTABLISHED src=192.168.1.88 dst=198.18.0.10 sport=41000 dport=443 packets=15 bytes=2250000 src=198.18.0.10 dst=203.0.113.2 sport=443 dport=41000 packets=35 bytes=4500000 [ASSURED] mark=0 use=1",
+        "ipv4 2 udp 17 19 src=192.168.1.250 dst=8.8.8.8 sport=53000 dport=53 packets=3 bytes=2000 src=8.8.8.8 dst=192.168.1.250 sport=53 dport=53000 packets=3 bytes=4000 mark=0x8000000 use=1",
+        "ipv4 2 tcp 6 431998 ESTABLISHED src=192.168.1.99 dst=203.0.113.20 sport=41001 dport=443 packets=2 bytes=333 src=203.0.113.20 dst=203.0.113.2 sport=443 dport=41001 packets=2 bytes=444 [ASSURED] mark=0 use=1"
+      ]
+    }
+  ]
+}

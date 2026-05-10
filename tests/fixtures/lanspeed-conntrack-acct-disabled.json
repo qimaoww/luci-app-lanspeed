@@ -1,0 +1,81 @@
+{
+  "name": "conntrack accounting disabled disables rate fallback",
+  "interval_ms": 1000,
+  "config": {
+    "enable_conntrack_fallback": true,
+    "bpf_full_available": false
+  },
+  "probe": {
+    "nf_conntrack_acct": false,
+    "flowtable_counter": true,
+    "openclash_fake_ip_or_tun": false,
+    "dae_or_daed": false,
+    "sqm_qosify_or_ifb": false,
+    "hardware_flow_offload": false,
+    "software_flow_offload": false,
+    "nlbwmon": false,
+    "probe_error": false
+  },
+  "clients": [
+    {
+      "mac": "02:aa:bb:cc:dd:09",
+      "zone": "lan",
+      "identity_key": "02:aa:bb:cc:dd:09@lan",
+      "interface": "br-lan",
+      "ips": [
+        "192.168.1.89"
+      ],
+      "hostname": "acct-disabled-client",
+      "last_seen": 2000
+    }
+  ],
+  "conntrack_samples": [
+    {
+      "client_ip": "192.168.1.89",
+      "remote_ip": "203.0.113.10",
+      "remote_is_fake_ip": false,
+      "t_ms": 1000,
+      "orig_bytes": 1000000,
+      "reply_bytes": 2000000
+    },
+    {
+      "client_ip": "192.168.1.89",
+      "remote_ip": "203.0.113.10",
+      "remote_is_fake_ip": false,
+      "t_ms": 2000,
+      "orig_bytes": 3000000,
+      "reply_bytes": 5000000
+    }
+  ],
+  "expected": {
+    "active": false,
+    "collector_mode": "conntrack",
+    "mode": "Degraded",
+    "confidence": "unsupported",
+    "warnings": [
+      "conntrack_acct_disabled"
+    ]
+  },
+  "arp_entries": [
+    {
+      "ip": "192.168.1.89",
+      "mac": "02:aa:bb:cc:dd:09",
+      "interface": "br-lan",
+      "zone": "lan"
+    }
+  ],
+  "procfs_snapshots": [
+    {
+      "t_ms": 1000,
+      "lines": [
+        "ipv4 2 tcp 6 431999 ESTABLISHED src=192.168.1.89 dst=203.0.113.10 sport=41000 dport=443 packets=10 bytes=1000000 src=203.0.113.10 dst=203.0.113.2 sport=443 dport=41000 packets=20 bytes=2000000 [ASSURED] mark=0 use=1"
+      ]
+    },
+    {
+      "t_ms": 2000,
+      "lines": [
+        "ipv4 2 tcp 6 431998 ESTABLISHED src=192.168.1.89 dst=203.0.113.10 sport=41000 dport=443 packets=15 bytes=3000000 src=203.0.113.10 dst=203.0.113.2 sport=443 dport=41000 packets=35 bytes=5000000 [ASSURED] mark=0 use=1"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+# local agent / plan scratch
+.sisyphus/
+
+# build artifacts
+*.o
+*.a
+*.so
+*.apk
+*.ipk
+
+# editor
+*.swp
+*.swo
+.DS_Store

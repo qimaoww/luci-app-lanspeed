@@ -1,0 +1,81 @@
+{
+  "name": "router mac excluded",
+  "router": {
+    "macs": [
+      "aa:bb:cc:00:00:01"
+    ]
+  },
+  "sources": {
+    "dhcp_leases": [],
+    "neighbors": [
+      {
+        "mac": "02:aa:bb:cc:dd:ee",
+        "ip": "192.168.1.50",
+        "interface": "br-lan",
+        "zone": "lan",
+        "last_seen": 1710000100,
+        "source": "arp_static_ip"
+      },
+      {
+        "mac": "aa:bb:cc:00:00:01",
+        "ip": "192.168.1.1",
+        "interface": "br-lan",
+        "zone": "lan",
+        "last_seen": 1710000110,
+        "role": "router"
+      },
+      {
+        "mac": "02:aa:bb:cc:dd:ee",
+        "ip": "fe80::2aa:bbff:fecc:ddee",
+        "interface": "br-lan",
+        "zone": "lan",
+        "last_seen": 1710000112
+      }
+    ],
+    "wireless": [],
+    "netifd": [
+      {
+        "interface": "br-lan",
+        "zone": "lan",
+        "mac": "aa:bb:cc:00:00:01",
+        "role": "router"
+      }
+    ],
+    "traffic": [
+      {
+        "mac": "aa:bb:cc:00:00:01",
+        "zone": "lan",
+        "client_originated_bps": 9999,
+        "to_client_bps": 9999,
+        "frame_type": "router_mac"
+      },
+      {
+        "mac": "02:aa:bb:cc:dd:ee",
+        "zone": "lan",
+        "client_originated_bps": 6400,
+        "to_client_bps": 12800
+      }
+    ]
+  },
+  "expected": {
+    "clients": [
+      {
+        "mac": "02:aa:bb:cc:dd:ee",
+        "identity_key": "02:aa:bb:cc:dd:ee@lan",
+        "zone": "lan",
+        "interface": "br-lan",
+        "ips": [
+          "192.168.1.50",
+          "fe80::2aa:bbff:fecc:ddee"
+        ],
+        "hostname": null,
+        "rx_bps": 12800,
+        "tx_bps": 6400,
+        "last_seen": 1710000112,
+        "collector_mode": "identity_fixture",
+        "confidence": "medium",
+        "warnings": []
+      }
+    ]
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "name": "router-local service and router-self separation",
+  "interval_ms": 1000,
+  "client": {
+    "mac": "02:12:34:56:78:9a",
+    "zone": "lan",
+    "identity_key": "02:12:34:56:78:9a@lan",
+    "interface": "br-lan",
+    "ip": "192.168.1.50"
+  },
+  "router": {
+    "mac": "aa:bb:cc:00:00:01",
+    "zone": "local_router",
+    "identity_key": "router_self@local_router",
+    "service": "router-local-luci-rpcd"
+  },
+  "flows": [
+    {
+      "flow_id": "client-upload-to-router-service",
+      "endpoint": "router_local",
+      "direction": "client_to_router",
+      "src": "02:12:34:56:78:9a@lan",
+      "dst": "router_self@local_router",
+      "bytes_delta": 125000
+    },
+    {
+      "flow_id": "router-service-download-to-client",
+      "endpoint": "router_local",
+      "direction": "router_to_client",
+      "src": "router_self@local_router",
+      "dst": "02:12:34:56:78:9a@lan",
+      "bytes_delta": 250000
+    },
+    {
+      "flow_id": "router-originated-active-curl",
+      "endpoint": "router_originated",
+      "direction": "router_self_to_wan",
+      "src": "router_self@local_router",
+      "dst": "wan_remote",
+      "bytes_delta": 500000
+    }
+  ],
+  "expected": {
+    "client_tx_bps": 1000000,
+    "client_rx_bps": 2000000,
+    "router_self_tx_bps": 4000000,
+    "router_self_bucket": "router_self",
+    "router_self_alias": "local_router",
+    "router_self_identity_key": "router_self@local_router",
+    "warnings": []
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "bpf runtime attached and map readable",
+  "device": "br-lan",
+  "qdisc": {
+    "kind": "clsact",
+    "exists": true
+  },
+  "before_filters": [],
+  "lanspeed_filter": {
+    "directions": [
+      "ingress",
+      "egress"
+    ],
+    "pref": 49152,
+    "handle": "0x1eed",
+    "owner": "lanspeed",
+    "append_only": true
+  },
+  "expected": {
+    "existing_filters_preserved": true,
+    "lanspeed_filter_added": true,
+    "delete_commands": [],
+    "mode": "Full",
+    "bpf_runtime_metrics": true,
+    "runtime_attach_map_read_success": true,
+    "live_metrics": true,
+    "warnings": []
+  }
+}

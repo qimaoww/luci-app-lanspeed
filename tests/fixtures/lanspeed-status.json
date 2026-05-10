@@ -1,0 +1,44 @@
+{
+  "mode": "Unsupported",
+  "confidence": "unsupported",
+  "warnings": [
+    "stub_no_live_metrics"
+  ],
+  "evidence": {
+    "source": "lanspeedd_stub",
+    "method": "status",
+    "fixture_safe": true,
+    "live_metrics": false
+  },
+  "refresh_interval_ms": 1000,
+  "version": "0.1.0",
+  "capabilities": {
+    "bpf": false,
+    "bpf_package": false,
+    "bpf_object": false,
+    "conntrack_fallback": true,
+    "live_metrics": false,
+    "fw4": false,
+    "nft": false,
+    "software_flow_offload": false,
+    "hardware_flow_offload": false,
+    "fullcone": false,
+    "nf_conntrack_acct": false,
+    "flowtable_counter": false,
+    "tc": false,
+    "tc_clsact": false,
+    "existing_tc_filters": false,
+    "ifb": false,
+    "sqm": false,
+    "qosify": false,
+    "openclash": false,
+    "dae": false,
+    "homeproxy": false,
+    "lan_bridge": false,
+    "vlan": false,
+    "wlan": false,
+    "lan_edge": false,
+    "safe_attach": false,
+    "map_full": false
+  }
+}

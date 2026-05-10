@@ -1,0 +1,115 @@
+{
+  "name": "VLAN, guest, Wi-Fi, WDS, AP isolation, and uplink encapsulation semantics",
+  "interval_ms": 1000,
+  "topology": {
+    "guest_vlan": {
+      "bridge": "br-guest",
+      "vlan": 10,
+      "zone": "guest",
+      "isolation": "routed_guest_zone"
+    },
+    "multi_bridge": [
+      {
+        "bridge": "br-lan",
+        "zone": "vlan10"
+      },
+      {
+        "bridge": "br-iot",
+        "zone": "vlan20"
+      }
+    ],
+    "wifi": [
+      {
+        "interface": "wlan0",
+        "zone": "vlan10",
+        "wds": true,
+        "ap_isolation": false
+      },
+      {
+        "interface": "wlan1",
+        "zone": "vlan20",
+        "wds": false,
+        "ap_isolation": true
+      }
+    ],
+    "uplinks": [
+      {
+        "interface": "pppoe-wan",
+        "type": "pppoe",
+        "side": "wan"
+      },
+      {
+        "interface": "wg0",
+        "type": "wg",
+        "side": "wan"
+      },
+      {
+        "interface": "tun0",
+        "type": "tun",
+        "side": "wan"
+      }
+    ]
+  },
+  "observations": [
+    {
+      "mac": "02:de:ad:be:ef:01",
+      "zone": "vlan10",
+      "vlan": 10,
+      "interface": "wlan0",
+      "bridge": "br-lan",
+      "client_originated_bps": 3000000,
+      "to_client_bps": 4000000,
+      "wds": true,
+      "ap_isolation": false
+    },
+    {
+      "mac": "02:de:ad:be:ef:01",
+      "zone": "vlan20",
+      "vlan": 20,
+      "interface": "wlan1",
+      "bridge": "br-iot",
+      "client_originated_bps": 5000000,
+      "to_client_bps": 6000000,
+      "wds": false,
+      "ap_isolation": true
+    },
+    {
+      "mac": "02:ca:fe:00:00:10",
+      "zone": "guest",
+      "vlan": 10,
+      "interface": "br-guest",
+      "bridge": "br-guest",
+      "client_originated_bps": 700000,
+      "to_client_bps": 900000,
+      "guest": true
+    }
+  ],
+  "uplink_observations": [
+    {
+      "interface": "pppoe-wan",
+      "type": "pppoe",
+      "encapsulated_client_identity": "02:de:ad:be:ef:01@vlan10"
+    },
+    {
+      "interface": "wg0",
+      "type": "wg",
+      "encapsulated_client_identity": "02:de:ad:be:ef:01@vlan20"
+    },
+    {
+      "interface": "tun0",
+      "type": "tun",
+      "encapsulated_client_identity": "02:ca:fe:00:00:10@guest"
+    }
+  ],
+  "expected": {
+    "identity_keys": [
+      "02:ca:fe:00:00:10@guest",
+      "02:de:ad:be:ef:01@vlan10",
+      "02:de:ad:be:ef:01@vlan20"
+    ],
+    "warnings": [
+      "duplicate_mac_across_vlans"
+    ],
+    "uplink_identity_policy": "wan_encapsulation_evidence_only"
+  }
+}

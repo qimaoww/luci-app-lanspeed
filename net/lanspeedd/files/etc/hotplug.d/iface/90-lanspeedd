@@ -1,0 +1,12 @@
+#!/bin/sh
+
+[ -x /etc/init.d/lanspeedd ] || exit 0
+
+case "$ACTION" in
+	ifup|ifupdate)
+		logger -t lanspeedd "network hotplug action=$ACTION interface=${INTERFACE:-unknown}; scheduling reload"
+		/etc/init.d/lanspeedd reload >/dev/null 2>&1 || true
+		;;
+esac
+
+exit 0

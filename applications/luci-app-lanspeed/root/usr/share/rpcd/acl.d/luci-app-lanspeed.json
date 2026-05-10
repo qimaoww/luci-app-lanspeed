@@ -1,0 +1,18 @@
+{
+  "luci-app-lanspeed": {
+    "description": "Grant read-only access to lanspeed ubus data",
+    "read": {
+      "ubus": {
+        "lanspeed": [
+          "status",
+          "clients",
+          "health",
+          "interfaces"
+        ]
+      },
+      "uci": [
+        "lanspeed"
+      ]
+    }
+  }
+}

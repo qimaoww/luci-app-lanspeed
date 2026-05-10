@@ -1,0 +1,31 @@
+{
+  "name": "same-subnet side-router direct topology",
+  "topology": {
+    "lan_subnet": "192.168.1.0/24",
+    "main_router_ip": "192.168.1.1",
+    "side_router_ip": "192.168.1.2",
+    "client_ip": "192.168.1.88",
+    "client_gateway": "192.168.1.2",
+    "same_subnet_direct": true
+  },
+  "observations": [
+    {
+      "location": "main_router_lan_edge",
+      "visible": true,
+      "direction": "client_to_side_router",
+      "bytes_delta": 500000
+    },
+    {
+      "location": "main_router_wan_edge",
+      "visible": false,
+      "direction": "side_router_to_wan",
+      "bytes_delta": 0
+    }
+  ],
+  "expected": {
+    "mode": "Degraded",
+    "warning": "asymmetric_path_possible",
+    "coverage_complete": false,
+    "complete_coverage_claimed": false
+  }
+}

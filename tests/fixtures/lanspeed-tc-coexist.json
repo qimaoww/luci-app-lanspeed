@@ -1,0 +1,51 @@
+{
+  "name": "dae-like clsact coexistence",
+  "device": "lan1",
+  "qdisc": {
+    "kind": "clsact",
+    "exists": true
+  },
+  "before_filters": [
+    {
+      "interface": "lan1",
+      "direction": "ingress",
+      "pref": 100,
+      "handle": "0xdae",
+      "owner": "dae",
+      "source": "tc_filter_show",
+      "description": "dae-like existing BPF filter"
+    },
+    {
+      "interface": "lan1",
+      "direction": "egress",
+      "pref": 110,
+      "handle": "0xdae2",
+      "owner": "dae",
+      "source": "tc_filter_show",
+      "description": "dae-like existing egress filter"
+    }
+  ],
+  "lanspeed_filter": {
+    "directions": [
+      "ingress",
+      "egress"
+    ],
+    "pref": 49152,
+    "handle": "0x1eed",
+    "owner": "lanspeed",
+    "append_only": true
+  },
+  "expected": {
+    "existing_filters_preserved": true,
+    "lanspeed_filter_added": true,
+    "delete_commands": [],
+    "mode": "Degraded",
+    "bpf_runtime_metrics": false,
+    "runtime_attach_map_read_success": false,
+    "live_metrics": false,
+    "warnings": [
+      "bpf_runtime_loader_unavailable",
+      "live_metrics_unavailable"
+    ]
+  }
+}

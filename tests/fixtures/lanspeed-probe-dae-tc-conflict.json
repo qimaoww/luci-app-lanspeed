@@ -1,0 +1,74 @@
+{
+  "commands": {
+    "fw4": true,
+    "nft": true,
+    "tc": true,
+    "ubus": true,
+    "qosify": false,
+    "nft_ruleset_has_flowtable_counter": true
+  },
+  "tc": {
+    "clsact": true,
+    "bpf": true,
+    "existing_filters": true,
+    "filters": [
+      {
+        "interface": "br-lan",
+        "direction": "ingress",
+        "pref": 49152,
+        "handle": "0x1eed",
+        "owner": "dae",
+        "source": "tc_filter_show"
+      }
+    ]
+  },
+  "uci": {
+    "firewall": {
+      "loaded": true,
+      "software_flow_offload": false,
+      "hardware_flow_offload": false,
+      "fullcone": false
+    },
+    "sqm": false,
+    "qosify": false,
+    "openclash": false,
+    "dae": true,
+    "daed": false,
+    "homeproxy": false,
+    "nlbwmon": false
+  },
+  "dae": {
+    "dae_service": true,
+    "daed_service": false,
+    "dae0": true,
+    "dae0peer": false,
+    "fwmark_detected": true,
+    "route_table_detected": true,
+    "dns_udp53_detected": false
+  },
+  "files": {
+    "nf_conntrack_acct": {
+      "present": true,
+      "value": "1"
+    },
+    "flowtable_proc": true,
+    "flowtable_debug": false,
+    "ifb": false,
+    "lan_bridge": true,
+    "vlan": true,
+    "wlan": true,
+    "bpf_package": true,
+    "bpf_object": true
+  },
+  "ubus": {
+    "network_lan": {
+      "attempted": true,
+      "exit_code": 0
+    }
+  },
+  "config": {
+    "enable_bpf": true,
+    "enable_conntrack_fallback": true,
+    "max_clients": 512
+  }
+}

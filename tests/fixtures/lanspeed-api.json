@@ -1,0 +1,137 @@
+{
+  "status": {
+    "mode": "Unsupported",
+    "confidence": "unsupported",
+    "warnings": [
+      "stub_no_live_metrics"
+    ],
+    "evidence": {
+      "source": "lanspeedd_stub",
+      "method": "status",
+      "fixture_safe": true,
+      "live_metrics": false
+    },
+    "refresh_interval_ms": 1000,
+    "version": "0.1.0",
+    "capabilities": {
+      "bpf": false,
+      "bpf_package": false,
+      "bpf_object": false,
+      "conntrack_fallback": true,
+      "live_metrics": false,
+      "fw4": false,
+      "nft": false,
+      "software_flow_offload": false,
+      "hardware_flow_offload": false,
+      "fullcone": false,
+      "nf_conntrack_acct": false,
+      "flowtable_counter": false,
+      "tc": false,
+      "tc_clsact": false,
+      "existing_tc_filters": false,
+      "ifb": false,
+      "sqm": false,
+      "qosify": false,
+      "openclash": false,
+      "dae": false,
+      "homeproxy": false,
+      "lan_bridge": false,
+      "vlan": false,
+      "wlan": false,
+      "lan_edge": false,
+      "safe_attach": false,
+      "map_full": false
+    }
+  },
+  "clients": {
+    "clients": [
+      {
+        "mac": "02:00:00:00:00:01",
+        "identity_key": "02:00:00:00:00:01@lan",
+        "zone": "lan",
+        "interface": "br-lan",
+        "ips": [
+          "192.0.2.10"
+        ],
+        "hostname": "fixture-client",
+        "rx_bps": 0,
+        "tx_bps": 0,
+        "last_seen": 0,
+        "collector_mode": "stub",
+        "confidence": "unsupported",
+        "warnings": [
+          "stub_no_live_metrics"
+        ]
+      }
+    ],
+    "evidence": {
+      "source": "lanspeedd_stub",
+      "method": "clients",
+      "fixture_safe": true,
+      "live_metrics": false
+    }
+  },
+  "health": {
+    "mode": "Unsupported",
+    "confidence": "unsupported",
+    "capabilities": {
+      "bpf": false,
+      "bpf_package": false,
+      "bpf_object": false,
+      "conntrack_fallback": true,
+      "live_metrics": false,
+      "fw4": false,
+      "nft": false,
+      "software_flow_offload": false,
+      "hardware_flow_offload": false,
+      "fullcone": false,
+      "nf_conntrack_acct": false,
+      "flowtable_counter": false,
+      "tc": false,
+      "tc_clsact": false,
+      "existing_tc_filters": false,
+      "ifb": false,
+      "sqm": false,
+      "qosify": false,
+      "openclash": false,
+      "dae": false,
+      "homeproxy": false,
+      "lan_bridge": false,
+      "vlan": false,
+      "wlan": false,
+      "lan_edge": false,
+      "safe_attach": false,
+      "map_full": false
+    },
+    "conflicts": [],
+    "warnings": [
+      "stub_no_live_metrics"
+    ],
+    "evidence": {
+      "source": "lanspeedd_stub",
+      "method": "health",
+      "fixture_safe": true,
+      "live_metrics": false
+    }
+  },
+  "interfaces": {
+    "interfaces": [
+      {
+        "name": "br-lan",
+        "role": "lan",
+        "status": "pending",
+        "evidence": {
+          "configured": true,
+          "source": "uci_default",
+          "live_probe": false
+        }
+      }
+    ],
+    "evidence": {
+      "source": "lanspeedd_stub",
+      "method": "interfaces",
+      "fixture_safe": true,
+      "live_metrics": false
+    }
+  }
+}

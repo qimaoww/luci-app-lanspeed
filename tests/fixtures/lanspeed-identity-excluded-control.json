@@ -1,0 +1,86 @@
+{
+  "name": "control frames excluded from clients",
+  "router": {
+    "macs": [
+      "aa:bb:cc:00:00:01"
+    ]
+  },
+  "sources": {
+    "dhcp_leases": [
+      {
+        "mac": "02:66:77:88:99:aa",
+        "ip": "192.168.1.66",
+        "hostname": "phone",
+        "interface": "br-lan",
+        "zone": "lan",
+        "last_seen": 1710000200
+      }
+    ],
+    "neighbors": [],
+    "wireless": [],
+    "netifd": [],
+    "traffic": [
+      {
+        "mac": "ff:ff:ff:ff:ff:ff",
+        "zone": "lan",
+        "client_originated_bps": 500,
+        "to_client_bps": 0,
+        "frame_type": "broadcast"
+      },
+      {
+        "mac": "33:33:00:00:00:01",
+        "zone": "lan",
+        "client_originated_bps": 300,
+        "to_client_bps": 0,
+        "frame_type": "multicast"
+      },
+      {
+        "mac": "02:66:77:88:99:aa",
+        "zone": "lan",
+        "client_originated_bps": 200,
+        "to_client_bps": 0,
+        "frame_type": "arp"
+      },
+      {
+        "mac": "02:66:77:88:99:aa",
+        "zone": "lan",
+        "client_originated_bps": 100,
+        "to_client_bps": 0,
+        "frame_type": "nd"
+      },
+      {
+        "mac": "02:66:77:88:99:aa",
+        "zone": "lan",
+        "client_originated_bps": 7000,
+        "to_client_bps": 9000,
+        "frame_type": "unicast"
+      }
+    ]
+  },
+  "expected": {
+    "debug_counters": {
+      "broadcast_bps": 500,
+      "multicast_bps": 300,
+      "arp_bps": 200,
+      "nd_bps": 100
+    },
+    "clients": [
+      {
+        "mac": "02:66:77:88:99:aa",
+        "identity_key": "02:66:77:88:99:aa@lan",
+        "zone": "lan",
+        "interface": "br-lan",
+        "ips": [
+          "192.168.1.66"
+        ],
+        "hostname": "phone",
+        "rx_bps": 9000,
+        "tx_bps": 7000,
+        "last_seen": 1710000200,
+        "collector_mode": "identity_fixture",
+        "confidence": "medium",
+        "warnings": []
+      }
+    ]
+  }
+}

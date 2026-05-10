@@ -1,0 +1,54 @@
+{
+  "commands": {
+    "fw4": true,
+    "nft": true,
+    "tc": true,
+    "ubus": true,
+    "qosify": false,
+    "nft_ruleset_has_flowtable_counter": true
+  },
+  "tc": {
+    "clsact": true,
+    "bpf": true,
+    "existing_filters": false
+  },
+  "uci": {
+    "firewall": {
+      "loaded": true,
+      "software_flow_offload": true,
+      "hardware_flow_offload": true,
+      "fullcone": false
+    },
+    "sqm": false,
+    "qosify": false,
+    "openclash": false,
+    "dae": false,
+    "daed": false,
+    "homeproxy": false
+  },
+  "files": {
+    "nf_conntrack_acct": {
+      "present": true,
+      "value": "1"
+    },
+    "flowtable_proc": true,
+    "flowtable_debug": false,
+    "ifb": false,
+    "lan_bridge": true,
+    "vlan": true,
+    "wlan": true,
+    "bpf_package": true,
+    "bpf_object": true
+  },
+  "ubus": {
+    "network_lan": {
+      "attempted": true,
+      "exit_code": 0
+    }
+  },
+  "config": {
+    "enable_bpf": true,
+    "enable_conntrack_fallback": true,
+    "max_clients": 512
+  }
+}

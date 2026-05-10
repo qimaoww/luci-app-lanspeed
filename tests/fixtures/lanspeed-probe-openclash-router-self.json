@@ -1,0 +1,66 @@
+{
+  "commands": {
+    "fw4": true,
+    "nft": true,
+    "tc": true,
+    "ubus": true,
+    "qosify": false,
+    "nft_ruleset_has_flowtable_counter": true
+  },
+  "tc": {
+    "clsact": true,
+    "bpf": true,
+    "existing_filters": false
+  },
+  "uci": {
+    "firewall": {
+      "loaded": true,
+      "software_flow_offload": false,
+      "hardware_flow_offload": false,
+      "fullcone": false
+    },
+    "sqm": false,
+    "qosify": false,
+    "openclash": true,
+    "dae": false,
+    "daed": false,
+    "homeproxy": false,
+    "nlbwmon": false
+  },
+  "openclash": {
+    "section": "config",
+    "en_mode": "tun-mix",
+    "enable_redirect_dns": true,
+    "dnsmasq_to_openclash_dns": false,
+    "router_self_proxy": true,
+    "enable_udp_proxy": true,
+    "stack_type": "tun",
+    "ipv6_enable": true,
+    "dhcp_loaded": true
+  },
+  "files": {
+    "nf_conntrack_acct": {
+      "present": true,
+      "value": "1"
+    },
+    "flowtable_proc": true,
+    "flowtable_debug": false,
+    "ifb": false,
+    "lan_bridge": true,
+    "vlan": true,
+    "wlan": true,
+    "bpf_package": true,
+    "bpf_object": false
+  },
+  "ubus": {
+    "network_lan": {
+      "attempted": true,
+      "exit_code": 0
+    }
+  },
+  "config": {
+    "enable_bpf": true,
+    "enable_conntrack_fallback": true,
+    "max_clients": 512
+  }
+}

@@ -1,0 +1,217 @@
+{
+  "source": "lanspeedd_tc_bpf_collector",
+  "version": 1,
+  "bpf_source": "lanspeed_tc.bpf.c",
+  "runtime_object": "/usr/lib/bpf/lanspeed_tc.o",
+  "device_requires_llvm": false,
+  "attach_model": {
+    "cpu_visible_lan_edges_only": true,
+    "allowed": [
+      "lan_bridge_members",
+      "vlan_subinterfaces",
+      "wlan_interfaces"
+    ],
+    "excluded": [
+      "wan",
+      "tun",
+      "ppp",
+      "wg",
+      "dae0",
+      "dae0peer"
+    ],
+    "tc_coexistence": "create_or_reuse_clsact_and_append_owned_filter_only",
+    "delete_existing": false,
+    "reorder_existing": false,
+    "owner": "lanspeed",
+    "pref": 49152,
+    "handle": "0x1eed"
+  },
+  "map_model": {
+    "key": [
+      "ifindex",
+      "vlan_or_zone",
+      "mac",
+      "direction"
+    ],
+    "default_max_clients": 512,
+    "full_warning": "map_full",
+    "client_limit_warning": "client_limit_exceeded",
+    "map_read_failure_warning": "map_read_failed",
+    "counters": [
+      "bytes",
+      "packets",
+      "last_seen"
+    ],
+    "direction": {
+      "tx_bps": "client-originated traffic from the client point of view",
+      "rx_bps": "traffic to client from the client point of view"
+    }
+  },
+  "rate_model": {
+    "default_refresh_interval_ms": 1000,
+    "minimum_refresh_interval_ms": 500,
+    "window_count": 3,
+    "stale_client_ms": 5000,
+    "delta_formula": "max(0, current_bytes - previous_bytes) * 8 * 1000 / delta_ms",
+    "negative_rate_policy": "clamp_to_zero_per_client",
+    "counter_wrap_policy": "counter_anomaly_and_zero_delta",
+    "time_rollback_policy": "time_rollback_and_zero_delta",
+    "anomaly_warnings": [
+      "counter_anomaly",
+      "time_rollback"
+    ],
+    "refresh_interval_warning": "refresh_interval_below_minimum"
+  },
+  "lifecycle_model": {
+    "procd": {
+      "respawn": {
+        "threshold_seconds": 3600,
+        "timeout_seconds": 5,
+        "retry": 5
+      },
+      "stdout": true,
+      "stderr": true,
+      "reload_triggers": [
+        "lanspeed",
+        "network"
+      ]
+    },
+    "hotplug": {
+      "path": "/etc/hotplug.d/iface/90-lanspeedd",
+      "actions": [
+        "ifup",
+        "ifupdate"
+      ],
+      "operation": "/etc/init.d/lanspeedd reload"
+    },
+    "cleanup_model": {
+      "delete_clsact": false,
+      "delete_foreign_filters": false,
+      "owned_filter_identity": {
+        "owner": "lanspeed",
+        "pref": 49152,
+        "handle": "0x1eed",
+        "object": "/usr/lib/bpf/lanspeed_tc.o"
+      }
+    }
+  },
+  "performance_guardrails": {
+    "default_max_clients": 512,
+    "minimum_refresh_interval_ms": 500,
+    "stale_client_ms": 5000,
+    "warning_high_client_count": 384,
+    "map_full_warning": "map_full",
+    "map_read_failure_warning": "map_read_failed",
+    "attach_failure_warning": "unsafe_attach",
+    "attach_failure_behavior": "degrade_or_unsupported_without_deleting_foreign_tc_filters",
+    "low_end_device": {
+      "mode": "auto",
+      "recommended_refresh_interval_ms": 2000,
+      "avoid_high_frequency_sampling": true
+    }
+  },
+  "dedupe_model": {
+    "lan_to_lan": "merge matching frame observations before aggregate totals",
+    "visibility_unknown_mode": "Degraded",
+    "visibility_unknown_warning": "lan_to_lan_visibility_unknown",
+    "visibility_limited_mode": "Degraded",
+    "visibility_limited_warning": "lan_to_lan_visibility_limited",
+    "cpu_visible_only": true,
+    "complete_coverage_claimed_for_hardware_switch_paths": false,
+    "duplicate_policy": "do_not_count_one_lan_to_lan_frame_twice"
+  },
+  "router_local_model": {
+    "client_perspective": true,
+    "client_to_router": "tx_bps",
+    "router_to_client": "rx_bps",
+    "router_originated_bucket": "router_self",
+    "router_originated_alias": "local_router",
+    "client_attribution": "never_attribute_router_originated_traffic_to_lan_client"
+  },
+  "topology_identity_model": {
+    "primary_key": "mac+zone",
+    "preserve_mac_zone_identity": true,
+    "guest_vlan": "separate zone identity",
+    "multi_bridge": "bridge zone participates in identity key",
+    "wifi_wds_ap_isolation": "wireless attachment metadata must not collapse MAC+zone identity",
+    "duplicate_mac_warning": "duplicate_mac_across_vlans"
+  },
+  "uplink_encapsulation_model": {
+    "wan_side_only": [
+      "pppoe",
+      "wg",
+      "tun"
+    ],
+    "identity_policy": "PPPoE/WG/TUN evidence never changes LAN-edge client MAC ownership"
+  },
+  "side_router_model": {
+    "same_subnet_direct_mode": "Degraded",
+    "same_subnet_direct_warning": "asymmetric_path_possible",
+    "coverage_complete": false,
+    "complete_coverage_claimed": false
+  },
+  "conntrack_fallback_model": {
+    "source": "lanspeedd_procfs_conntrack_acct",
+    "collector_mode": "conntrack",
+    "mode": "Degraded",
+    "active_only_when": [
+      "bpf_full_unavailable",
+      "enable_conntrack_fallback=1",
+      "nf_conntrack_acct=1"
+    ],
+    "inactive_when": [
+      "bpf_full_available",
+      "enable_conntrack_fallback=0",
+      "conntrack_acct_disabled"
+    ],
+    "coverage": "routed_nat_only",
+    "coverage_warning": "conntrack_routed_nat_only",
+    "confidence": {
+      "maximum": "medium",
+      "degrade_to_low_when": [
+        "openclash_fake_ip_or_tun_detected",
+        "dae_or_daed_detected",
+        "sqm_qosify_or_ifb_detected",
+        "hardware_flow_offload_enabled",
+        "software_flow_offload_enabled",
+        "flowtable_counter_missing",
+        "nlbwmon_counter_conflict",
+        "probe_error"
+      ]
+    },
+    "counter_sources": [
+      "procfs_conntrack_acct_orig_reply_bytes"
+    ],
+    "forbidden_sources": [
+      "firewall_forward_chain_counters",
+      "iptables_forward_chain_counters",
+      "nft_forward_chain_counters",
+      "nlbwmon_counters"
+    ],
+    "warnings": [
+      "conntrack_routed_nat_only",
+      "conntrack_acct_disabled",
+      "flowtable_counter_missing",
+      "nlbwmon_counter_conflict"
+    ],
+    "identity_model": {
+      "primary_key": "mac+zone",
+      "ip_role": "LAN client IP maps to an existing MAC/zone identity and is never the primary identity"
+    },
+    "direction": {
+      "tx_bps": "LAN client original-direction bytes from conntrack accounting",
+      "rx_bps": "LAN client reply-direction bytes from conntrack accounting"
+    },
+    "nlbwmon_policy": "detect_conflict_without_reading_or_resetting_nlbwmon_counters",
+    "procfs_paths": [
+      "/proc/net/nf_conntrack",
+      "/proc/net/ip_conntrack",
+      "/proc/net/arp"
+    ],
+    "snapshot_policy": {
+      "first_sample_warning": "conntrack_snapshot_pending",
+      "previous_snapshot": "in_daemon_memory",
+      "delta_formula": "max(0, current_bytes - previous_bytes) * 8 * 1000 / delta_ms"
+    }
+  }
+}

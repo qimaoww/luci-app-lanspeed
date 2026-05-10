@@ -1,0 +1,28 @@
+{
+  "clients": [
+      {
+        "mac": "02:00:00:00:00:01",
+        "identity_key": "02:00:00:00:00:01@lan",
+        "zone": "lan",
+        "interface": "br-lan",
+        "ips": [
+          "192.0.2.10"
+      ],
+      "hostname": "fixture-client",
+      "rx_bps": 0,
+      "tx_bps": 0,
+      "last_seen": 0,
+      "collector_mode": "stub",
+      "confidence": "unsupported",
+      "warnings": [
+        "stub_no_live_metrics"
+      ]
+    }
+  ],
+  "evidence": {
+    "source": "lanspeedd_stub",
+    "method": "clients",
+    "fixture_safe": true,
+    "live_metrics": false
+  }
+}

@@ -1,0 +1,1349 @@
+#!/usr/bin/env node
+
+const fs = require('fs');
+const path = require('path');
+
+const root = path.resolve(__dirname, '..');
+const evidenceDir = path.join(root, '.sisyphus', 'evidence');
+
+function readJson(relativePath) {
+  return JSON.parse(fs.readFileSync(path.join(root, relativePath), 'utf8'));
+}
+
+function assert(condition, message) {
+  if (!condition) {
+    throw new Error(message);
+  }
+}
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function filterKey(filter) {
+  return `${filter.direction}:${filter.pref}:${filter.handle}:${filter.owner}`;
+}
+
+function attachLanspeedFilters(fixture) {
+  const before = clone(fixture.before_filters);
+  const after = clone(before);
+  const evidence = {
+    source: 'lanspeedd_tc_bpf_collector_fixture',
+    device: fixture.device,
+    qdisc: fixture.qdisc.kind,
+    qdisc_action: fixture.qdisc.exists ? 'reuse_clsact' : 'create_clsact',
+    commands: [],
+    destructive_commands: [],
+    before_filters: before,
+    after_filters: after,
+    owner: fixture.lanspeed_filter.owner,
+    pref: fixture.lanspeed_filter.pref,
+    handle: fixture.lanspeed_filter.handle,
+    mode: fixture.expected.mode,
+    bpf_runtime_metrics: Boolean(fixture.expected.bpf_runtime_metrics),
+    runtime_attach_map_read_success: Boolean(fixture.expected.runtime_attach_map_read_success),
+    live_metrics: Boolean(fixture.expected.live_metrics),
+    warnings: []
+  };
+
+  if (!fixture.qdisc.exists) {
+    evidence.commands.push(`tc qdisc add dev ${fixture.device} clsact`);
+  }
+
+  for (const direction of fixture.lanspeed_filter.directions) {
+    const filter = {
+      interface: fixture.device,
+      direction,
+      pref: fixture.lanspeed_filter.pref,
+      handle: fixture.lanspeed_filter.handle,
+      owner: fixture.lanspeed_filter.owner,
+      source: 'lanspeed_attach_plan',
+      description: 'lanspeed owned BPF accounting filter'
+    };
+
+    evidence.commands.push(
+      `tc filter add dev ${fixture.device} ${direction} pref ${filter.pref} handle ${filter.handle} bpf obj /usr/lib/bpf/lanspeed_tc.o sec tc/${direction} direct-action verbose owner ${filter.owner}`
+    );
+    after.push(filter);
+  }
+
+  evidence.after_filters = after;
+  evidence.existing_filters_preserved = before.every((filter) => after.some((entry) => filterKey(entry) === filterKey(filter)));
+  evidence.lanspeed_filter_added = fixture.lanspeed_filter.directions.every((direction) => after.some((filter) => (
+    filter.direction === direction &&
+    filter.pref === fixture.lanspeed_filter.pref &&
+    filter.handle === fixture.lanspeed_filter.handle &&
+    filter.owner === fixture.lanspeed_filter.owner
+  )));
+  evidence.append_only = evidence.existing_filters_preserved && evidence.lanspeed_filter_added;
+  evidence.warnings = (fixture.expected.warnings || []).slice();
+  evidence.bpf_assets_are_evidence_only = true;
+  evidence.tc_filter = {
+    coexistence: 'create_or_reuse_clsact_and_append_owned_filter_only',
+    delete_existing: false,
+    reorder_existing: false,
+    owner: fixture.lanspeed_filter.owner,
+    pref: fixture.lanspeed_filter.pref,
+    handle: fixture.lanspeed_filter.handle
+  };
+
+  evidence.existing_filter_evidence = before.map((filter) => ({
+    interface: filter.interface || fixture.device,
+    pref: filter.pref,
+    handle: filter.handle,
+    owner: filter.owner,
+    source: filter.source || 'tc_filter_show'
+  }));
+
+  return evidence;
+}
+
+function simulateSideRouterDirect(fixture) {
+  const warnings = [];
+  if (fixture.topology.same_subnet_direct) {
+    addUnique(warnings, 'asymmetric_path_possible');
+  }
+
+  return {
+    source: 'lanspeedd_side_router_fixture',
+    topology: fixture.topology,
+    observations: fixture.observations,
+    mode: fixture.topology.same_subnet_direct ? 'Degraded' : 'Full',
+    confidence: fixture.topology.same_subnet_direct ? 'low' : 'high',
+    warnings,
+    coverage: {
+      lan_edge_visible: fixture.observations.some((entry) => entry.location === 'main_router_lan_edge' && entry.visible),
+      wan_edge_visible: fixture.observations.some((entry) => entry.location === 'main_router_wan_edge' && entry.visible),
+      coverage_complete: !fixture.topology.same_subnet_direct,
+      complete_coverage_claimed: false,
+      limitation: 'same-subnet side-router direct traffic may bypass the main router WAN/NAT path'
+    }
+  };
+}
+
+function computeRateTimeline(fixture) {
+  const rates = [];
+  const expected = fixture.expected;
+
+  for (let index = 1; index < fixture.samples.length; index += 1) {
+    const previous = fixture.samples[index - 1];
+    const current = fixture.samples[index];
+    const deltaBytes = Math.max(0, current.bytes - previous.bytes);
+    const deltaMs = current.t_ms - previous.t_ms;
+    const bps = deltaMs > 0 ? Math.round((deltaBytes * 8 * 1000) / deltaMs) : 0;
+
+    rates.push({
+      t_ms: current.t_ms,
+      tx_bps: bps,
+      rx_bps: 0,
+      within_target: bps >= expected.min_bps && bps <= expected.max_bps,
+      stopped: current.t_ms > expected.within_seconds * 1000,
+      below_stop_threshold: bps < expected.drop_below_bps
+    });
+  }
+
+  const reachedWithinWindow = rates.some((entry) => (
+    entry.t_ms <= expected.within_seconds * 1000 && entry.within_target
+  ));
+  const droppedAfterStop = rates.some((entry) => (
+    entry.t_ms >= expected.within_seconds * 1000 + expected.stop_after_ms && entry.below_stop_threshold
+  ));
+
+  return {
+    source: 'lanspeedd_rate_fixture',
+    client: {
+      mac: fixture.client.mac,
+      identity_key: `${fixture.client.mac}@${fixture.client.zone}`,
+      zone: fixture.client.zone,
+      ifindex: fixture.client.ifindex,
+      interface: fixture.client.interface
+    },
+    map_key: {
+      ifindex: fixture.client.ifindex,
+      vlan_or_zone: fixture.client.zone,
+      mac: fixture.client.mac,
+      direction: fixture.client.direction
+    },
+    direction: {
+      tx_bps: 'client-originated traffic from the client point of view',
+      rx_bps: 'traffic to client from the client point of view'
+    },
+    expected,
+    rates,
+    reached_within_3s: reachedWithinWindow,
+    dropped_after_stop: droppedAfterStop,
+    collector_mode: 'tc_bpf_fixture',
+    confidence: 'high',
+    warnings: []
+  };
+}
+
+function rateFromDelta(deltaBytes, deltaMs) {
+  if (deltaMs <= 0 || deltaBytes <= 0) {
+    return 0;
+  }
+
+  return Math.round((deltaBytes * 8 * 1000) / deltaMs);
+}
+
+function addUnique(array, value) {
+  if (!array.includes(value)) {
+    array.push(value);
+  }
+}
+
+function computeDirectionalRates(fixture) {
+  const warnings = [];
+  const result = {
+    source: 'lanspeedd_counter_fixture',
+    client: fixture.client,
+    directions: {},
+    merged_client: {
+      identity_key: fixture.client.identity_key,
+      tx_bps: 0,
+      rx_bps: 0
+    },
+    unaffected_clients: [],
+    warnings,
+    negative_rates_emitted: false,
+    per_client_anomaly_isolated: true
+  };
+
+  for (const [direction, samples] of Object.entries(fixture.directions)) {
+    const rates = [];
+
+    for (let index = 1; index < samples.length; index += 1) {
+      const previous = samples[index - 1];
+      const current = samples[index];
+      const deltaBytes = current.bytes - previous.bytes;
+      const deltaMs = current.t_ms - previous.t_ms;
+      const entryWarnings = [];
+
+      if (deltaBytes < 0) {
+        addUnique(warnings, 'counter_anomaly');
+        entryWarnings.push('counter_anomaly');
+      }
+
+      if (deltaMs <= 0) {
+        addUnique(warnings, 'time_rollback');
+        entryWarnings.push('time_rollback');
+      }
+
+      const bps = rateFromDelta(deltaBytes, deltaMs);
+      if (bps < 0) {
+        result.negative_rates_emitted = true;
+      }
+
+      rates.push({
+        t_ms: current.t_ms,
+        delta_bytes: Math.max(0, deltaBytes),
+        delta_ms: deltaMs > 0 ? deltaMs : 0,
+        bps,
+        warnings: entryWarnings
+      });
+    }
+
+    result.directions[direction] = rates;
+    result.merged_client[`${direction}_bps`] = rates.length > 0 ? rates[rates.length - 1].bps : 0;
+  }
+
+  for (const client of fixture.unaffected_clients || []) {
+    const merged = {
+      identity_key: client.identity_key,
+      tx_bps: 0,
+      rx_bps: 0,
+      warnings: []
+    };
+
+    for (const [direction, samples] of Object.entries(client.directions)) {
+      const previous = samples[0];
+      const current = samples[1];
+      merged[`${direction}_bps`] = rateFromDelta(current.bytes - previous.bytes, current.t_ms - previous.t_ms);
+    }
+
+    result.unaffected_clients.push(merged);
+  }
+
+  return result;
+}
+
+function simulateLanToLanDedupe(fixture) {
+  const warnings = [];
+  const seenFrames = new Set();
+  const clients = new Map();
+  const aggregateFrames = new Map();
+  let duplicate_observations = 0;
+  const visibilityLimited = Boolean(fixture.hardware_switch_path || fixture.visibility === 'limited');
+  const coverageComplete = Boolean(fixture.topology_known && !visibilityLimited);
+
+  for (const client of Object.values(fixture.clients)) {
+    clients.set(client.identity_key, {
+      identity_key: client.identity_key,
+      mac: client.mac,
+      zone: client.zone,
+      interface: client.interface,
+      tx_bps: 0,
+      rx_bps: 0,
+      collector_mode: 'tc_bpf_fixture',
+      confidence: 'high',
+      warnings: []
+    });
+  }
+
+  for (const observation of fixture.observations) {
+    if (observation.visible === false) {
+      continue;
+    }
+
+    const roleKey = `${observation.frame_id}:${observation.direction}`;
+    const frame = aggregateFrames.get(observation.frame_id) || {
+      frame_id: observation.frame_id,
+      bytes_delta: observation.bytes_delta,
+      roles: new Set()
+    };
+
+    if (seenFrames.has(roleKey)) {
+      duplicate_observations += 1;
+      continue;
+    }
+
+    seenFrames.add(roleKey);
+    frame.roles.add(observation.direction);
+    frame.bytes_delta = Math.max(frame.bytes_delta, observation.bytes_delta);
+    aggregateFrames.set(observation.frame_id, frame);
+
+    if (observation.direction === 'tx' && clients.has(observation.src)) {
+      clients.get(observation.src).tx_bps += rateFromDelta(observation.bytes_delta, fixture.interval_ms);
+    }
+    if (observation.direction === 'rx' && clients.has(observation.dst)) {
+      clients.get(observation.dst).rx_bps += rateFromDelta(observation.bytes_delta, fixture.interval_ms);
+    }
+  }
+
+  const aggregate_bps = Array.from(aggregateFrames.values()).reduce(
+    (sum, frame) => sum + rateFromDelta(frame.bytes_delta, fixture.interval_ms),
+    0
+  );
+
+  if (!fixture.topology_known) {
+    addUnique(warnings, 'lan_to_lan_visibility_unknown');
+  }
+  if (visibilityLimited) {
+    addUnique(warnings, 'lan_to_lan_visibility_limited');
+  }
+
+  return {
+    source: 'lanspeedd_lan_to_lan_fixture',
+    mode: coverageComplete ? 'Full' : 'Degraded',
+    confidence: coverageComplete ? 'high' : 'low',
+    warnings,
+    target_bps: fixture.target_bps,
+    clients: Array.from(clients.values()),
+    aggregate_bps,
+    duplicate_observations,
+    one_direction_double_counted: aggregate_bps > fixture.max_bps,
+    dedupe_policy: 'do_not_count_one_lan_to_lan_frame_twice',
+    coverage: {
+      cpu_visible_only: true,
+      hardware_switch_path: visibilityLimited,
+      coverage_complete: coverageComplete,
+      complete_coverage_claimed: coverageComplete
+    }
+  };
+}
+
+function simulateRouterLocal(fixture) {
+  const warnings = [];
+  const client = {
+    mac: fixture.client.mac.toLowerCase(),
+    identity_key: fixture.client.identity_key,
+    zone: fixture.client.zone,
+    interface: fixture.client.interface,
+    ips: [fixture.client.ip],
+    hostname: null,
+    tx_bps: 0,
+    rx_bps: 0,
+    collector_mode: 'tc_bpf_fixture',
+    confidence: 'high',
+    warnings: []
+  };
+  const routerSelf = {
+    bucket: 'router_self',
+    alias: 'local_router',
+    identity_key: fixture.router.identity_key,
+    tx_bps: 0,
+    rx_bps: 0,
+    client_attribution: 'never_attribute_to_lan_client'
+  };
+
+  for (const flow of fixture.flows) {
+    const bps = rateFromDelta(flow.bytes_delta, fixture.interval_ms);
+
+    if (flow.endpoint === 'router_originated') {
+      routerSelf.tx_bps += bps;
+      continue;
+    }
+    if (flow.direction === 'client_to_router' && flow.src === client.identity_key) {
+      client.tx_bps += bps;
+    } else if (flow.direction === 'router_to_client' && flow.dst === client.identity_key) {
+      client.rx_bps += bps;
+    }
+  }
+
+  return {
+    source: 'lanspeedd_router_local_fixture',
+    client,
+    router_self: routerSelf,
+    direction: {
+      client_to_router: 'tx_bps',
+      router_to_client: 'rx_bps',
+      perspective: 'client'
+    },
+    warnings,
+    router_originated_assigned_to_lan_client: false
+  };
+}
+
+function simulateTopologyVlan(fixture) {
+  const warnings = [];
+  const clients = new Map();
+  const zonesByMac = new Map();
+
+  for (const observation of fixture.observations) {
+    const mac = observation.mac.toLowerCase();
+    const identityKey = `${mac}@${observation.zone}`;
+    const zones = zonesByMac.get(mac) || new Set();
+
+    zones.add(observation.zone);
+    zonesByMac.set(mac, zones);
+    if (!clients.has(identityKey)) {
+      clients.set(identityKey, {
+        mac,
+        identity_key: identityKey,
+        zone: observation.zone,
+        vlan: observation.vlan,
+        interface: observation.interface,
+        bridge: observation.bridge,
+        tx_bps: 0,
+        rx_bps: 0,
+        topology: {
+          guest: Boolean(observation.guest),
+          wds: Boolean(observation.wds),
+          ap_isolation: Boolean(observation.ap_isolation)
+        },
+        collector_mode: 'tc_bpf_fixture',
+        confidence: 'high',
+        warnings: []
+      });
+    }
+
+    const client = clients.get(identityKey);
+    client.tx_bps += observation.client_originated_bps || 0;
+    client.rx_bps += observation.to_client_bps || 0;
+  }
+
+  for (const zones of zonesByMac.values()) {
+    if (zones.size > 1) {
+      addUnique(warnings, 'duplicate_mac_across_vlans');
+    }
+  }
+
+  const clientKeys = new Set(clients.keys());
+  const uplinks = fixture.uplink_observations.map((entry) => ({
+    interface: entry.interface,
+    type: entry.type,
+    side: 'wan',
+    encapsulation_evidence_only: true,
+    lan_identity_exists: clientKeys.has(entry.encapsulated_client_identity),
+    ownership_changed: false
+  }));
+
+  return {
+    source: 'lanspeedd_topology_vlan_fixture',
+    identity_model: {
+      primary_key: 'mac+zone',
+      duplicate_mac_warning: 'duplicate_mac_across_vlans',
+      preserve_mac_zone_identity: true
+    },
+    topology: fixture.topology,
+    clients: Array.from(clients.values()).sort((left, right) => left.identity_key.localeCompare(right.identity_key)),
+    uplinks,
+    warnings,
+    uplink_identity_policy: 'wan_encapsulation_evidence_only'
+  };
+}
+
+function simulateResourceLimits(fixture) {
+  const warnings = [];
+  const activeClients = fixture.clients.filter((client) => fixture.now_ms - client.last_seen <= fixture.stale_client_ms);
+  const staleClients = fixture.clients.filter((client) => fixture.now_ms - client.last_seen > fixture.stale_client_ms);
+  const acceptedClients = activeClients.slice(0, fixture.max_clients);
+  const rejectedClients = activeClients.slice(fixture.max_clients);
+
+  if (activeClients.length > fixture.max_clients) {
+    addUnique(warnings, 'client_limit_exceeded');
+  }
+
+  if (!fixture.map_read.ok) {
+    addUnique(warnings, fixture.map_read.expected_warning);
+  }
+
+  return {
+    source: 'lanspeedd_resource_limit_fixture',
+    max_clients: fixture.max_clients,
+    stale_client_ms: fixture.stale_client_ms,
+    active_clients: acceptedClients,
+    stale_clients: staleClients,
+    rejected_clients: rejectedClients,
+    warnings,
+    crashed: false,
+    existing_clients_preserved_on_map_read_failure: true
+  };
+}
+
+function parseConntrackProcfsLine(line) {
+  const flow = {
+    orig_src: null,
+    orig_bytes: null,
+    reply_bytes: 0
+  };
+  let srcIndex = 0;
+  let bytesIndex = 0;
+
+  for (const token of line.trim().split(/\s+/)) {
+    if (token.startsWith('src=')) {
+      if (srcIndex === 0) {
+        flow.orig_src = token.slice(4);
+      }
+      srcIndex += 1;
+    } else if (token.startsWith('bytes=')) {
+      const value = Number.parseInt(token.slice(6), 10);
+      if (!Number.isFinite(value)) {
+        continue;
+      }
+      if (bytesIndex === 0) {
+        flow.orig_bytes = value;
+      } else if (bytesIndex === 1) {
+        flow.reply_bytes = value;
+      }
+      bytesIndex += 1;
+    }
+  }
+
+  return flow.orig_src && flow.orig_bytes !== null ? flow : null;
+}
+
+function buildArpMap(fixture) {
+  const entries = new Map();
+
+  for (const entry of fixture.arp_entries || []) {
+    if (isExcludedIdentityInterface(entry.interface || '')) {
+      continue;
+    }
+    entries.set(entry.ip, {
+      ip: entry.ip,
+      mac: entry.mac.toLowerCase(),
+      zone: entry.zone || 'lan',
+      interface: entry.interface || 'br-lan'
+    });
+  }
+
+  return entries;
+}
+
+function isExcludedIdentityInterface(ifname) {
+  return ifname === 'dae0' || ifname === 'dae0peer' || ifname.startsWith('tun') || ifname.startsWith('ppp') || ifname.startsWith('wg');
+}
+
+function buildConntrackSnapshot(fixture, snapshot) {
+  const arpByIp = buildArpMap(fixture);
+  const clients = new Map();
+  let skippedNoArp = 0;
+  let malformedLines = 0;
+
+  for (const line of snapshot.lines) {
+    const flow = parseConntrackProcfsLine(line);
+    if (!flow) {
+      malformedLines += 1;
+      continue;
+    }
+
+    const arp = arpByIp.get(flow.orig_src);
+    if (!arp) {
+      skippedNoArp += 1;
+      continue;
+    }
+
+    const identityKey = `${arp.mac}@${arp.zone}`;
+    const client = clients.get(identityKey) || {
+      mac: arp.mac,
+      identity_key: identityKey,
+      zone: arp.zone,
+      interface: arp.interface,
+      ips: [],
+      tx_bytes: 0,
+      rx_bytes: 0,
+      last_seen: snapshot.t_ms
+    };
+
+    if (!client.ips.includes(arp.ip)) {
+      client.ips.push(arp.ip);
+    }
+    client.tx_bytes += flow.orig_bytes;
+    client.rx_bytes += flow.reply_bytes;
+    client.last_seen = snapshot.t_ms;
+    clients.set(identityKey, client);
+  }
+
+  return {
+    t_ms: snapshot.t_ms,
+    clients: Array.from(clients.values()),
+    skipped_no_arp: skippedNoArp,
+    malformed_lines: malformedLines
+  };
+}
+
+function simulateConntrackFallback(fixture) {
+  const warnings = [];
+  const probe = fixture.probe;
+  const active = Boolean(
+    fixture.config.enable_conntrack_fallback &&
+    !fixture.config.bpf_full_available &&
+    probe.nf_conntrack_acct
+  );
+  const lowConfidence = Boolean(active && (
+    !probe.flowtable_counter ||
+    probe.openclash_fake_ip_or_tun ||
+    probe.dae_or_daed ||
+    probe.sqm_qosify_or_ifb ||
+    probe.hardware_flow_offload ||
+    probe.software_flow_offload ||
+    probe.nlbwmon ||
+    probe.probe_error
+  ));
+
+  if (!probe.nf_conntrack_acct) {
+    addUnique(warnings, 'conntrack_acct_disabled');
+  }
+
+  const firstSnapshot = fixture.procfs_snapshots ? buildConntrackSnapshot(fixture, fixture.procfs_snapshots[0]) : null;
+  const secondSnapshot = fixture.procfs_snapshots ? buildConntrackSnapshot(fixture, fixture.procfs_snapshots[1]) : null;
+  const clients = [];
+
+  if (active) {
+    addUnique(warnings, 'conntrack_routed_nat_only');
+    addUnique(warnings, 'conntrack_snapshot_pending');
+    if (!probe.flowtable_counter) {
+      addUnique(warnings, 'flowtable_counter_missing');
+    }
+    if (probe.nlbwmon) {
+      addUnique(warnings, 'nlbwmon_counter_conflict');
+    }
+    if (probe.openclash_fake_ip_or_tun || probe.dae_or_daed) {
+      addUnique(warnings, 'proxy_path_confidence_low');
+    }
+    if (probe.sqm_qosify_or_ifb) {
+      addUnique(warnings, 'qos_ifb_confidence_low');
+    }
+    if (probe.hardware_flow_offload || probe.software_flow_offload) {
+      addUnique(warnings, 'flow_offload_confidence_low');
+    }
+
+    if (firstSnapshot && secondSnapshot) {
+      const previousByIdentity = new Map(firstSnapshot.clients.map((client) => [client.identity_key, client]));
+      const deltaMs = secondSnapshot.t_ms - firstSnapshot.t_ms;
+
+      for (const current of secondSnapshot.clients) {
+        const previous = previousByIdentity.get(current.identity_key);
+        clients.push({
+          mac: current.mac,
+          identity_key: current.identity_key,
+          zone: current.zone,
+          interface: current.interface,
+          ips: current.ips,
+          hostname: null,
+          rx_bps: previous ? rateFromDelta(current.rx_bytes - previous.rx_bytes, deltaMs) : 0,
+          tx_bps: previous ? rateFromDelta(current.tx_bytes - previous.tx_bytes, deltaMs) : 0,
+          last_seen: current.last_seen,
+          collector_mode: 'conntrack',
+          confidence: lowConfidence ? 'low' : 'medium',
+          warnings: warnings.slice()
+        });
+      }
+    }
+  }
+
+  return {
+    source: 'lanspeedd_conntrack_fixture',
+    runtime_source: 'lanspeedd_procfs_conntrack_acct',
+    mode: 'Degraded',
+    active,
+    collector_mode: 'conntrack',
+    confidence: active ? (lowConfidence ? 'low' : 'medium') : 'unsupported',
+    coverage: 'routed_nat_only',
+    coverage_warning: 'conntrack_routed_nat_only',
+    counter_source: 'procfs_conntrack_acct_orig_reply_bytes',
+    nf_conntrack_acct: Boolean(probe.nf_conntrack_acct),
+    flowtable_counter: Boolean(probe.flowtable_counter),
+    nlbwmon_read_counters: false,
+    forbidden_sources: [
+      'firewall_forward_chain_counters',
+      'iptables_forward_chain_counters',
+      'nft_forward_chain_counters',
+      'nlbwmon_counters'
+    ],
+    identity_model: {
+      primary_key: 'mac+zone',
+      ip_role: 'LAN client IP maps to an existing MAC/zone identity and is never the primary identity'
+    },
+    first_snapshot: firstSnapshot,
+    second_snapshot: secondSnapshot,
+    warnings,
+    clients
+  };
+}
+
+function validateRefreshInterval(fixture) {
+  const effective_ms = fixture.configured_ms < fixture.minimum_ms ? fixture.minimum_ms : fixture.configured_ms;
+
+  return {
+    source: 'lanspeedd_refresh_interval_fixture',
+    default_ms: fixture.default_ms,
+    minimum_ms: fixture.minimum_ms,
+    configured_ms: fixture.configured_ms,
+    effective_ms,
+    warnings: effective_ms !== fixture.configured_ms ? [fixture.expected_warning] : []
+  };
+}
+
+function simulateMapFull(fixture) {
+  const full = fixture.existing_clients >= fixture.max_clients;
+
+  return {
+    source: 'lanspeedd_map_fixture',
+    max_clients: fixture.max_clients,
+    existing_clients: fixture.existing_clients,
+    attempted_key: fixture.new_entry,
+    accepted: !full,
+    warnings: full ? [fixture.expected_warning] : [],
+    crashed: false
+  };
+}
+
+function isOwnedLanspeedFilter(filter, identity) {
+  return filter.owner === identity.owner &&
+    filter.pref === identity.pref &&
+    filter.handle === identity.handle &&
+    filter.object === identity.object;
+}
+
+function simulateLifecycleRestart(fixture) {
+  const identity = fixture.owned_filter_identity;
+  const before = clone(fixture.before_filters);
+  const removed = before.filter((filter) => isOwnedLanspeedFilter(filter, identity));
+  const afterCleanup = before.filter((filter) => !isOwnedLanspeedFilter(filter, identity));
+  const afterRestart = clone(afterCleanup);
+
+  for (const direction of ['ingress', 'egress']) {
+    const ownedFilter = {
+      interface: fixture.device,
+      direction,
+      pref: identity.pref,
+      handle: identity.handle,
+      owner: identity.owner,
+      object: identity.object,
+      source: 'lanspeed_attach_plan'
+    };
+
+    if (!afterRestart.some((filter) => isOwnedLanspeedFilter(filter, identity) && filter.direction === direction)) {
+      afterRestart.push(ownedFilter);
+    }
+  }
+
+  const foreignBefore = before.filter((filter) => !isOwnedLanspeedFilter(filter, identity));
+  const foreignFiltersPreserved = foreignBefore.every((filter) => afterRestart.some((entry) => filterKey(entry) === filterKey(filter)));
+  const ownedAfter = afterRestart.filter((filter) => isOwnedLanspeedFilter(filter, identity));
+  const ownedDirections = ownedAfter.map((filter) => filter.direction).sort();
+
+  return {
+    source: 'lanspeedd_lifecycle_fixture',
+    device: fixture.device,
+    qdisc: fixture.qdisc.kind,
+    before_filters: before,
+    cleanup_removed_filters: removed,
+    after_restart_filters: afterRestart,
+    delete_clsact: false,
+    delete_foreign_filters: false,
+    foreign_filters_preserved: foreignFiltersPreserved,
+    lanspeed_filter_count_after_restart: ownedAfter.length,
+    duplicate_lanspeed_filters: ownedAfter.length !== new Set(ownedDirections).size,
+    owned_filter_identity: identity,
+    preserved_foreign_owners: foreignBefore.map((filter) => filter.owner),
+    cleanup_commands: removed.map((filter) => `tc filter del dev ${filter.interface} ${filter.direction} pref ${filter.pref} handle ${filter.handle}`)
+  };
+}
+
+function simulateNetworkReload(fixture) {
+  const finalState = fixture.network_reload.states[fixture.network_reload.states.length - 1];
+
+  return {
+    source: 'lanspeedd_network_reload_fixture',
+    interface: fixture.network_reload.interface,
+    action: fixture.network_reload.action,
+    hotplug_operation: '/etc/init.d/lanspeedd reload',
+    changes_user_network_config: false,
+    changes_proxy_config: false,
+    states: fixture.network_reload.states,
+    temporary_warning_seen: fixture.network_reload.states.some((state) => state.warnings.includes('network_reload_reprobe_pending')),
+    recovered_mode: finalState.mode,
+    bpf_runtime_metrics: Boolean(finalState.bpf_runtime_metrics),
+    runtime_attach_map_read_success: Boolean(finalState.runtime_attach_map_read_success),
+    live_metrics: Boolean(finalState.live_metrics),
+    warnings_after_recovery: finalState.warnings.slice(),
+    daemon_alive_after_recovery: finalState.daemon_alive
+  };
+}
+
+function assertLifecycleInit(initScript, hotplugScript, packageMakefile, defaultConfig, collectorModel) {
+  assert(initScript.includes('USE_PROCD=1'), 'init script must use procd');
+  assert(initScript.includes('procd_set_param respawn 3600 5 5'), 'init script must use finite respawn parameters');
+  assert(initScript.includes('procd_set_param stdout 1'), 'init script must enable stdout logging');
+  assert(initScript.includes('procd_set_param stderr 1'), 'init script must enable stderr logging');
+  assert(initScript.includes('procd_add_reload_trigger "lanspeed" "network"'), 'init script must reload on lanspeed and network config changes');
+  assert(initScript.includes('procd_add_interface_trigger'), 'init script must register interface reload awareness');
+  assert(!/tc\s+qdisc\s+del/i.test(initScript), 'init cleanup must never delete clsact qdisc');
+  assert(/\$TC\s+filter\s+del dev "\$dev" "\$direction" pref "\$LANSPEED_TC_PREF" handle "\$LANSPEED_TC_HANDLE"/.test(initScript), 'tc cleanup must be scoped to owned pref and handle');
+  assert(initScript.includes('LANSPEED_TC_OWNER="lanspeed"'), 'init cleanup must encode lanspeed owner');
+  assert(initScript.includes('LANSPEED_TC_PREF="49152"'), 'init cleanup must encode lanspeed pref');
+  assert(initScript.includes('LANSPEED_TC_HANDLE="0x1eed"'), 'init cleanup must encode lanspeed handle');
+  assert(initScript.includes('LANSPEED_TC_OBJECT="/usr/lib/bpf/lanspeed_tc.o"'), 'init cleanup must encode BPF object path');
+  assert(initScript.includes('grep -F -q "$LANSPEED_TC_OWNER"'), 'init cleanup must require exact owner marker');
+  assert(initScript.includes('grep -F -q "$LANSPEED_TC_OBJECT"'), 'init cleanup must require exact object marker');
+  assert(!initScript.includes('$LANSPEED_TC_OWNER\\|$LANSPEED_TC_OBJECT'), 'init cleanup must not treat owner/object as alternatives');
+  assert(!/service\s+network\s+reload/i.test(initScript), 'init script must not reload user network config');
+  assert(!/uci\s+commit/i.test(initScript), 'init script must not commit user config');
+  assert(hotplugScript.includes('/etc/init.d/lanspeedd reload'), 'hotplug hook must call lanspeedd reload');
+  assert(!/restart/i.test(hotplugScript), 'hotplug hook must not directly restart the service');
+  assert(!/service\s+network\s+reload/i.test(hotplugScript), 'hotplug hook must not reload network service');
+  assert(!/uci\s+commit/i.test(hotplugScript), 'hotplug hook must not mutate UCI config');
+  assert(packageMakefile.includes('$(INSTALL_BIN) ./files/etc/hotplug.d/iface/90-lanspeedd $(1)/etc/hotplug.d/iface/90-lanspeedd'), 'package Makefile must install hotplug hook');
+  assert(defaultConfig.includes("option max_clients '512'"), 'default config must keep max_clients=512');
+  assert(defaultConfig.includes("option refresh_interval_ms '1000'"), 'default config must keep refresh_interval_ms=1000');
+  assert(defaultConfig.includes("option warning_stale_client_ms '5000'"), 'default config must keep stale warning at 5000ms');
+  assert(defaultConfig.includes("option warning_map_full '1'"), 'default config must represent map_full warning guardrail');
+  assert(defaultConfig.includes("option warning_attach_failure 'unsafe_attach'"), 'default config must represent attach failure guardrail');
+  assert(defaultConfig.includes("option low_end_refresh_interval_ms '2000'"), 'default config must represent low-end device guardrail');
+  assert(collectorModel.lifecycle_model.cleanup_model.delete_clsact === false, 'lifecycle model must forbid clsact deletion');
+  assert(collectorModel.lifecycle_model.cleanup_model.delete_foreign_filters === false, 'lifecycle model must forbid foreign filter deletion');
+  assert(collectorModel.performance_guardrails.default_max_clients === 512, 'performance model must default to 512 clients');
+  assert(collectorModel.performance_guardrails.minimum_refresh_interval_ms === 500, 'performance model must enforce 500ms refresh minimum');
+  assert(collectorModel.performance_guardrails.stale_client_ms === 5000, 'performance model must keep 5000ms stale client guardrail');
+  assert(collectorModel.performance_guardrails.map_full_warning === 'map_full', 'performance model must expose map_full warning');
+  assert(collectorModel.performance_guardrails.attach_failure_warning === 'unsafe_attach', 'performance model must expose attach failure warning');
+}
+
+function assertBpfSource(source) {
+  for (const required of [
+    'struct lanspeed_key',
+    '__u32 ifindex',
+    '__u16 vlan_or_zone',
+    '__u8 direction',
+    '__u8 mac[ETH_ALEN]',
+    'struct lanspeed_counters',
+    '__u64 bytes',
+    '__u64 packets',
+    '__u64 last_seen',
+    'BPF_MAP_TYPE_HASH',
+    'LANSPEED_MAX_CLIENTS 512',
+    'SEC("tc/ingress")',
+    'SEC("tc/egress")',
+    'bpf_map_update_elem'
+  ]) {
+    assert(source.includes(required), `BPF source missing ${required}`);
+  }
+  assert(source.includes('if (direction == LANSPEED_DIR_TX)') && source.includes('__builtin_memcpy(key.mac, eth->h_source, ETH_ALEN)'), 'BPF TX direction must use client source MAC');
+  assert(source.includes('__builtin_memcpy(key.mac, eth->h_dest, ETH_ALEN)'), 'BPF RX direction must use client destination MAC');
+  assert(/SEC\("tc\/ingress"\)\s+int\s+lanspeed_ingress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_TX\);\s*}/m.test(source), 'BPF ingress must account client TX');
+  assert(/SEC\("tc\/egress"\)\s+int\s+lanspeed_egress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_RX\);\s*}/m.test(source), 'BPF egress must account client RX');
+}
+
+function assertBpfBuildRules(packageMakefile, srcMakefile, sdkHelper) {
+  assert(packageMakefile.includes('PKG_BUILD_DEPENDS:=bpf-headers'), 'package Makefile must build-depend on bpf-headers');
+  assert(packageMakefile.includes('include $(INCLUDE_DIR)/bpf.mk'), 'package Makefile must include bpf.mk for SDK BPF builds');
+  assert(packageMakefile.includes('$(CONFIG_PACKAGE_lanspeedd-bpf)'), 'BPF compile must be gated by the optional lanspeedd-bpf package');
+  assert(packageMakefile.includes('$(call CompileBPF,$(PKG_BUILD_DIR)/lanspeed_tc.bpf.c)'), 'package Makefile must compile lanspeed_tc.bpf.c with the SDK CompileBPF helper');
+  assert(packageMakefile.includes('$(CP) $(PKG_BUILD_DIR)/lanspeed_tc.bpf.o $(PKG_BUILD_DIR)/lanspeed_tc.o'), 'package Makefile must normalize the SDK BPF output to lanspeed_tc.o');
+  assert(packageMakefile.includes('$(INSTALL_DATA) $(PKG_BUILD_DIR)/lanspeed_tc.o $(1)/usr/lib/bpf/lanspeed_tc.o'), 'lanspeedd-bpf must install /usr/lib/bpf/lanspeed_tc.o');
+  assert(packageMakefile.includes('DEPENDS:=+lanspeedd +libbpf $(BPF_DEPENDS)'), 'libbpf/BPF dependencies must stay in optional lanspeedd-bpf package');
+  assert(!packageMakefile.includes('if [ -f $(PKG_BUILD_DIR)/lanspeed_tc.o ]'), 'BPF object install must not be a silent optional no-op');
+  assert(srcMakefile.includes('bpf: lanspeed_tc.o'), 'src Makefile must expose an explicit bpf target');
+  assert(srcMakefile.includes('lanspeed_tc.o: lanspeed_tc.bpf.c'), 'src Makefile must have a local BPF object rule');
+  assert(srcMakefile.includes('-target bpf'), 'local BPF rule must target bpf');
+  assert(sdkHelper.includes('./scripts/config --module PACKAGE_lanspeedd-bpf'), 'SDK helper must select optional lanspeedd-bpf package before source package compile');
+  assert(sdkHelper.includes('make defconfig'), 'SDK helper must refresh config after selecting lanspeedd-bpf');
+  assert(!sdkHelper.includes('package/lanspeedd-bpf/compile'), 'SDK helper must not compile lanspeedd-bpf as an independent source package');
+}
+
+function assertNoDestructiveTcCommands(text) {
+  const forbidden = [
+    /tc\s+qdisc\s+del/i,
+    /tc\s+filter\s+del/i,
+    /fw4\s+reload/i,
+    /service\s+network\s+reload/i,
+    /uci\s+commit/i
+  ];
+
+  for (const pattern of forbidden) {
+    assert(!pattern.test(text), `forbidden destructive command matched ${pattern}`);
+  }
+}
+
+function assertRuntimeConntrackFallbackSource(source) {
+  for (const required of [
+    'CONNTRACK_PROCFS_PATH "/proc/net/nf_conntrack"',
+    'CONNTRACK_LEGACY_PROCFS_PATH "/proc/net/ip_conntrack"',
+    'ARP_PROCFS_PATH "/proc/net/arp"',
+    'static bool parse_conntrack_procfs_line',
+    'static bool read_conntrack_procfs_snapshot',
+    'static bool collect_conntrack_procfs_clients',
+    'static void emit_conntrack_clients',
+    'previous_conntrack_samples',
+    'conntrack_snapshot_pending',
+    'conntrack_unavailable',
+    'skip_conntrack_entry_without_fabricating_client',
+    'json_object_new_string("lanspeedd_procfs_conntrack_acct")',
+    'json_object_new_string("procfs_conntrack_acct_orig_reply_bytes")',
+    'json_object_new_string(ARP_PROCFS_PATH)',
+    'collect_conntrack_procfs_clients(root, clients, &probe)'
+  ]) {
+    assert(source.includes(required), `C runtime conntrack fallback missing ${required}`);
+  }
+  assert(!source.includes('json_object_new_string("fixture-client")'), 'runtime must not fabricate fixture clients');
+  assert(source.includes('json_object_object_add(client, "mac", json_object_new_string(current[i].mac))'), 'runtime client MAC must come from ARP-mapped sample');
+  assert(source.includes('json_object_object_add(client, "collector_mode", json_object_new_string("conntrack"))'), 'runtime clients must expose collector_mode=conntrack');
+  assert(source.includes('delta_bps(current[i].tx_bytes, previous->tx_bytes'), 'runtime must compute tx_bps from previous snapshot deltas');
+  assert(source.includes('delta_bps(current[i].rx_bytes, previous->rx_bytes'), 'runtime must compute rx_bps from previous snapshot deltas');
+}
+
+function assertRuntimeBpfGateSource(source) {
+  assert(source.includes('static bool bpf_runtime_metrics_available'), 'C runtime must expose an explicit BPF runtime metrics gate');
+  assert(source.includes('probe->bpf_runtime_metrics = bpf_runtime_metrics_available(probe)'), 'safe_attach must be separated from runtime metrics availability');
+  assert(source.includes('return bpf_runtime_metrics_available(probe);'), 'Full availability must depend on the runtime metrics gate');
+  assert(!/return\s+enable_bpf\s*&&\s*probe->safe_attach/.test(source), 'Full must not be derived from safe_attach or BPF asset presence alone');
+  assert(source.includes('json_object_new_string("bpf_runtime_loader_unavailable")'), 'runtime must warn when BPF assets exist but attach/map-read is unavailable');
+  assert(source.includes('json_object_object_add(collector, "bpf_assets_are_evidence_only", json_object_new_boolean(true))'), 'collector evidence must state BPF assets are evidence only');
+  assert(source.includes('json_object_object_add(collector, "runtime_attach_map_read_success", json_object_new_boolean(probe->bpf_runtime_metrics))'), 'collector evidence must expose runtime attach/map-read gate result');
+  assert(source.includes('json_object_object_add(capabilities, "bpf_runtime_metrics", json_object_new_boolean(probe ? probe->bpf_runtime_metrics : false))'), 'capabilities must expose runtime BPF metrics separately');
+  assert(source.includes('add_capabilities_from_values(root, enable_bpf && probe.bpf_runtime_metrics'), 'capabilities.bpf must not be true from package/object evidence alone');
+  assert(source.includes('probe.bpf_runtime_metrics, &probe);'), 'live_metrics must be tied to the runtime BPF metrics gate');
+}
+
+function assertBpfLoaderModule(header, loader, daemonSource, packageMakefile, srcMakefile) {
+  // Header advertises the public API the daemon consumes.
+  for (const sym of [
+    'lanspeed_bpf_init',
+    'lanspeed_bpf_shutdown',
+    'lanspeed_bpf_attach_iface',
+    'lanspeed_bpf_detach_all',
+    'lanspeed_bpf_read_samples',
+    'lanspeed_bpf_runtime_ok',
+    'lanspeed_bpf_get_status',
+    'LANSPEED_BPF_DIR_TX',
+    'LANSPEED_BPF_DIR_RX',
+    'LANSPEED_BPF_TC_PREF',
+    'LANSPEED_BPF_TC_HANDLE'
+  ]) {
+    assert(header.includes(sym), `lanspeed_bpf.h must expose ${sym}`);
+  }
+
+  // Loader uses the real libbpf + tc API surface, not stubs.
+  for (const sym of [
+    '#include <bpf/libbpf.h>',
+    '#include <bpf/bpf.h>',
+    'bpf_object__open_file',
+    'bpf_object__load',
+    'bpf_tc_hook_create',
+    'bpf_tc_attach',
+    'bpf_tc_detach',
+    'bpf_map_get_next_key',
+    'bpf_map_lookup_elem'
+  ]) {
+    assert(loader.includes(sym), `lanspeed_bpf.c must call real libbpf API ${sym}`);
+  }
+
+  // Loader must NOT destroy the clsact hook from the steady-state detach
+  // path. dae, SQM and qosify may share the hook; removing it on normal
+  // shutdown would break them. A rollback-only destroy inside the attach
+  // helper is allowed, guarded by `created_hook`.
+  const detachAll = loader.match(/void\s+lanspeed_bpf_detach_all\s*\([^)]*\)\s*{[\s\S]*?^}/m);
+  assert(detachAll, 'lanspeed_bpf.c must define lanspeed_bpf_detach_all');
+  assert(!/bpf_tc_hook_destroy/.test(detachAll[0]),
+         'lanspeed_bpf_detach_all must not destroy clsact hooks');
+  const attachHelper = loader.match(/static\s+int\s+attach_point\s*\([^)]*\)\s*{[\s\S]*?^}/m);
+  if (attachHelper && /bpf_tc_hook_destroy/.test(attachHelper[0])) {
+    assert(/created_hook[\s\S]*bpf_tc_hook_destroy|bpf_tc_hook_destroy[\s\S]*created_hook/.test(attachHelper[0]),
+           'attach_point rollback hook_destroy must be guarded by created_hook');
+  }
+
+  // Daemon pulls the module in and drives it through runtime lifecycle.
+  assert(daemonSource.includes('#include "lanspeed_bpf.h"'), 'lanspeedd.c must include the BPF loader header');
+  assert(daemonSource.includes('lanspeed_bpf_init('), 'lanspeedd.c must call lanspeed_bpf_init');
+  assert(daemonSource.includes('lanspeed_bpf_attach_iface('), 'lanspeedd.c must attach via lanspeed_bpf_attach_iface');
+  assert(daemonSource.includes('lanspeed_bpf_shutdown('), 'lanspeedd.c must shut the loader down on exit');
+  assert(daemonSource.includes('lanspeed_bpf_runtime_ok('), 'lanspeedd.c must consult lanspeed_bpf_runtime_ok for Full gating');
+  assert(daemonSource.includes('lanspeed_bpf_read_samples('), 'lanspeedd.c must read BPF samples for Full mode');
+  assert(daemonSource.includes('collect_bpf_clients('), 'lanspeedd.c must expose a BPF client collector path');
+  assert(/collector_mode[^\n]+"bpf"/.test(daemonSource), 'lanspeedd.c must emit collector_mode=bpf in the Full path');
+  assert(/if \(!collect_bpf_clients\(root, clients, &probe\)\)\s*\n\s*collect_conntrack_procfs_clients\(root, clients, &probe\);/.test(daemonSource),
+         'clients_method must try BPF first and fall back to conntrack');
+
+  // Package links libbpf; src Makefile builds the loader object and links -lbpf.
+  assert(/DEPENDS:=[^\n]*\+libbpf/.test(packageMakefile), 'package Makefile must depend on +libbpf for the base daemon');
+  assert(/LIBS[^\n]*-lbpf/.test(packageMakefile), 'package Makefile must link -lbpf in the build rule');
+  assert(/lanspeed_bpf\.o/.test(srcMakefile) || /lanspeed_bpf\.c/.test(srcMakefile), 'src Makefile must compile lanspeed_bpf.{c,o}');
+  assert(/-lbpf/.test(srcMakefile), 'src Makefile must link against -lbpf');
+}
+
+function writeEvidence(fileName, payload) {
+  fs.writeFileSync(path.join(evidenceDir, fileName), `${payload}\n`);
+}
+
+fs.mkdirSync(evidenceDir, { recursive: true });
+
+const tcCoexistFixture = readJson('tests/fixtures/lanspeed-tc-coexist.json');
+const uploadRateFixture = readJson('tests/fixtures/lanspeed-upload-rate.json');
+const mapFullFixture = readJson('tests/fixtures/lanspeed-map-full.json');
+const lanToLanFixture = readJson('tests/fixtures/lanspeed-lan-to-lan-dedupe.json');
+const counterAnomalyFixture = readJson('tests/fixtures/lanspeed-counter-anomaly.json');
+const resourceLimitFixture = readJson('tests/fixtures/lanspeed-resource-limits.json');
+const refreshIntervalFixture = readJson('tests/fixtures/lanspeed-refresh-interval.json');
+const conntrackNatFixture = readJson('tests/fixtures/lanspeed-conntrack-nat.json');
+const conntrackAcctDisabledFixture = readJson('tests/fixtures/lanspeed-conntrack-acct-disabled.json');
+const sideRouterDirectFixture = readJson('tests/fixtures/lanspeed-side-router-direct.json');
+const routerLocalFixture = readJson('tests/fixtures/lanspeed-router-local.json');
+const topologyVlanFixture = readJson('tests/fixtures/lanspeed-topology-vlan.json');
+const lifecycleFixture = readJson('tests/fixtures/lanspeed-lifecycle.json');
+const source = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeedd.c'), 'utf8');
+const packageMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
+const srcMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/src/Makefile'), 'utf8');
+const sdkHelper = fs.readFileSync(path.join(root, 'scripts/build-sdk.sh'), 'utf8');
+const bpfSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_tc.bpf.c'), 'utf8');
+const bpfLoaderHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_bpf.h'), 'utf8');
+const bpfLoaderSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_bpf.c'), 'utf8');
+const initScript = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/init.d/lanspeedd'), 'utf8');
+const hotplugScript = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/hotplug.d/iface/90-lanspeedd'), 'utf8');
+const defaultConfig = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/config/lanspeed'), 'utf8');
+const collectorModel = readJson('net/lanspeedd/src/collector-model.json');
+const bpfAttachedFixture = readJson('tests/fixtures/lanspeed-bpf-attached.json');
+
+assertNoDestructiveTcCommands(source);
+assertNoDestructiveTcCommands(packageMakefile);
+assertNoDestructiveTcCommands(srcMakefile);
+assertNoDestructiveTcCommands(sdkHelper);
+assertNoDestructiveTcCommands(bpfSource);
+assertNoDestructiveTcCommands(bpfLoaderSource);
+assertBpfSource(bpfSource);
+assertBpfBuildRules(packageMakefile, srcMakefile, sdkHelper);
+assertRuntimeConntrackFallbackSource(source);
+assertRuntimeBpfGateSource(source);
+assertBpfLoaderModule(bpfLoaderHeader, bpfLoaderSource, source, packageMakefile, srcMakefile);
+assertLifecycleInit(initScript, hotplugScript, packageMakefile, defaultConfig, collectorModel);
+
+const tcCoexist = attachLanspeedFilters(tcCoexistFixture);
+assert(tcCoexist.existing_filters_preserved === true, 'existing dae-like filters must be preserved');
+assert(tcCoexist.lanspeed_filter_added === true, 'lanspeed filter must be appended');
+assert(tcCoexist.append_only === true, 'tc model must be append-only');
+assert(tcCoexist.destructive_commands.length === 0, 'fixture must not generate destructive tc commands');
+assert(tcCoexist.tc_filter.delete_existing === false, 'tc filter model must not delete existing filters');
+assert(tcCoexist.tc_filter.reorder_existing === false, 'tc filter model must not reorder existing filters');
+assert(tcCoexist.mode === 'Degraded', 'tc coexistence fixture must not claim Full without runtime attach/map-read');
+assert(tcCoexist.bpf_runtime_metrics === false, 'tc coexistence fixture must keep bpf_runtime_metrics=false');
+assert(tcCoexist.runtime_attach_map_read_success === false, 'tc coexistence fixture must keep runtime attach/map-read success false');
+assert(tcCoexist.live_metrics === false, 'tc coexistence fixture must keep live_metrics=false');
+assert(tcCoexist.bpf_assets_are_evidence_only === true, 'tc coexistence fixture must mark BPF assets as evidence only');
+assert(tcCoexist.warnings.includes('bpf_runtime_loader_unavailable'), 'tc coexistence fixture must warn that runtime BPF loader is unavailable');
+assert(tcCoexist.warnings.includes('live_metrics_unavailable'), 'tc coexistence fixture must warn that live metrics are unavailable');
+assert(tcCoexist.after_filters[0].owner === 'dae', 'dae-like filter must remain first in fixture order');
+assert(tcCoexist.existing_filter_evidence.every((filter) => filter.interface && filter.pref && filter.handle && filter.owner), 'existing dae filters must record interface/pref/handle/owner');
+
+const bpfAttached = attachLanspeedFilters(bpfAttachedFixture);
+assert(bpfAttached.lanspeed_filter_added === true, 'attached-success fixture must add the lanspeed filter');
+assert(bpfAttached.append_only === true, 'attached-success fixture must stay append-only');
+assert(bpfAttached.mode === 'Full', 'attached-success fixture must declare Full when runtime attach+map-read succeed');
+assert(bpfAttached.bpf_runtime_metrics === true, 'attached-success fixture must set bpf_runtime_metrics=true');
+assert(bpfAttached.runtime_attach_map_read_success === true, 'attached-success fixture must set runtime_attach_map_read_success=true');
+assert(bpfAttached.live_metrics === true, 'attached-success fixture must set live_metrics=true');
+assert(bpfAttached.warnings.length === 0 || !bpfAttached.warnings.includes('bpf_runtime_loader_unavailable'),
+       'attached-success fixture must not warn about the runtime loader being unavailable');
+assert(bpfAttached.tc_filter.pref === 49152 && bpfAttached.tc_filter.handle === '0x1eed',
+       'attached-success filter must use the documented pref/handle that init.d cleans up');
+
+const uploadRate = computeRateTimeline(uploadRateFixture);
+assert(uploadRate.reached_within_3s === true, '10Mbps upload must reach 8M-12M within 3 seconds');
+assert(uploadRate.dropped_after_stop === true, 'upload rate must drop below threshold after stop');
+assert(uploadRate.rates.some((entry) => entry.tx_bps === 10000000), 'fixture must contain an exact 10Mbps tx sample');
+assert(uploadRate.map_key.direction === 'tx', 'upload fixture must map to tx direction from client perspective');
+
+const mapFull = simulateMapFull(mapFullFixture);
+assert(mapFull.warnings.includes('map_full'), 'map full fixture must report map_full');
+assert(mapFull.crashed === false, 'map full fixture must not crash');
+assert(collectorModel.bpf_source === 'lanspeed_tc.bpf.c', 'collector model must reference the BPF source file');
+assert(collectorModel.runtime_object === '/usr/lib/bpf/lanspeed_tc.o', 'collector model must reference installed BPF object path');
+assert(collectorModel.map_model.default_max_clients === 512, 'collector model must default to 512 clients');
+assert(JSON.stringify(collectorModel.map_model.key) === JSON.stringify(['ifindex', 'vlan_or_zone', 'mac', 'direction']), 'collector model map key shape is required');
+assert(JSON.stringify(collectorModel.map_model.counters) === JSON.stringify(['bytes', 'packets', 'last_seen']), 'collector model counters must be bytes/packets/last_seen');
+assert(collectorModel.attach_model.excluded.includes('wan') && collectorModel.attach_model.excluded.includes('tun'), 'collector model must exclude WAN/TUN');
+assert(collectorModel.attach_model.excluded.includes('dae0') && collectorModel.attach_model.excluded.includes('dae0peer'), 'collector model must exclude dae tunnel interfaces');
+assert(collectorModel.rate_model.default_refresh_interval_ms === 1000, 'sampling interval must default to 1000ms');
+assert(collectorModel.rate_model.minimum_refresh_interval_ms === 500, 'sampling interval minimum must be 500ms');
+assert(collectorModel.rate_model.window_count === 3, 'rate model must keep three deterministic windows');
+assert(collectorModel.rate_model.anomaly_warnings.includes('counter_anomaly'), 'rate model must expose counter_anomaly warning');
+assert(collectorModel.rate_model.refresh_interval_warning === 'refresh_interval_below_minimum', 'rate model must expose refresh interval warning');
+assert(collectorModel.dedupe_model.visibility_unknown_mode === 'Degraded', 'uncertain LAN-to-LAN visibility must degrade mode');
+assert(collectorModel.dedupe_model.visibility_unknown_warning === 'lan_to_lan_visibility_unknown', 'uncertain topology warning is required');
+assert(collectorModel.dedupe_model.visibility_limited_warning === 'lan_to_lan_visibility_limited', 'hardware-switch LAN-to-LAN visibility warning is required');
+assert(collectorModel.dedupe_model.complete_coverage_claimed_for_hardware_switch_paths === false, 'hardware-switch LAN-to-LAN paths must not claim complete coverage');
+assert(collectorModel.router_local_model.client_to_router === 'tx_bps', 'router-local client upload must map to tx_bps');
+assert(collectorModel.router_local_model.router_to_client === 'rx_bps', 'router-local router-to-client traffic must map to rx_bps');
+assert(collectorModel.router_local_model.router_originated_bucket === 'router_self', 'router-originated traffic must stay in router_self bucket');
+assert(collectorModel.topology_identity_model.primary_key === 'mac+zone', 'topology identity must preserve MAC+zone primary key');
+assert(collectorModel.topology_identity_model.duplicate_mac_warning === 'duplicate_mac_across_vlans', 'duplicate MAC across VLANs warning is required');
+assert(collectorModel.uplink_encapsulation_model.wan_side_only.includes('pppoe'), 'PPPoE uplinks must be WAN-side evidence only');
+assert(collectorModel.uplink_encapsulation_model.wan_side_only.includes('wg'), 'WG uplinks must be WAN-side evidence only');
+assert(collectorModel.uplink_encapsulation_model.wan_side_only.includes('tun'), 'TUN uplinks must be WAN-side evidence only');
+assert(collectorModel.side_router_model.same_subnet_direct_warning === 'asymmetric_path_possible', 'same-subnet side-router warning is required');
+assert(collectorModel.side_router_model.complete_coverage_claimed === false, 'side-router model must not claim complete coverage');
+assert(collectorModel.map_model.client_limit_warning === 'client_limit_exceeded', 'client limit warning is required');
+assert(collectorModel.map_model.map_read_failure_warning === 'map_read_failed', 'map read failure warning is required');
+assert(collectorModel.conntrack_fallback_model.collector_mode === 'conntrack', 'conntrack fallback model must expose collector_mode=conntrack');
+assert(collectorModel.conntrack_fallback_model.mode === 'Degraded', 'conntrack fallback must stay Degraded');
+assert(collectorModel.conntrack_fallback_model.coverage === 'routed_nat_only', 'conntrack fallback must be routed/NAT-only');
+assert(collectorModel.conntrack_fallback_model.coverage_warning === 'conntrack_routed_nat_only', 'conntrack fallback must expose routed/NAT-only warning');
+assert(collectorModel.conntrack_fallback_model.active_only_when.includes('nf_conntrack_acct=1'), 'conntrack fallback must require nf_conntrack_acct=1');
+assert(collectorModel.conntrack_fallback_model.inactive_when.includes('conntrack_acct_disabled'), 'conntrack fallback must disable when accounting is off');
+assert(collectorModel.conntrack_fallback_model.source === 'lanspeedd_procfs_conntrack_acct', 'conntrack fallback model must honestly name procfs source');
+assert(collectorModel.conntrack_fallback_model.counter_sources.includes('procfs_conntrack_acct_orig_reply_bytes'), 'conntrack fallback model must name procfs accounting source');
+assert(collectorModel.conntrack_fallback_model.procfs_paths.includes('/proc/net/arp'), 'conntrack fallback model must include ARP identity source');
+assert(collectorModel.conntrack_fallback_model.snapshot_policy.first_sample_warning === 'conntrack_snapshot_pending', 'first conntrack sample must be explicit snapshot pending');
+assert(collectorModel.conntrack_fallback_model.confidence.maximum === 'medium', 'conntrack fallback confidence must not exceed medium');
+assert(collectorModel.conntrack_fallback_model.confidence.degrade_to_low_when.includes('flowtable_counter_missing'), 'missing flowtable counter must lower confidence');
+assert(collectorModel.conntrack_fallback_model.warnings.includes('nlbwmon_counter_conflict'), 'nlbwmon conflict warning is required');
+assert(collectorModel.conntrack_fallback_model.forbidden_sources.includes('nft_forward_chain_counters'), 'firewall forward-chain counters must not be a fallback source');
+assert(collectorModel.conntrack_fallback_model.forbidden_sources.includes('nlbwmon_counters'), 'nlbwmon counters must not be read as fallback source');
+
+const lanToLan = simulateLanToLanDedupe(lanToLanFixture);
+const clientA = lanToLan.clients.find((client) => client.identity_key === lanToLanFixture.clients.a.identity_key);
+const clientB = lanToLan.clients.find((client) => client.identity_key === lanToLanFixture.clients.b.identity_key);
+assert(clientA.tx_bps >= lanToLanFixture.min_bps && clientA.tx_bps <= lanToLanFixture.max_bps, 'LAN-to-LAN client A tx must be near target');
+assert(clientB.rx_bps >= lanToLanFixture.min_bps && clientB.rx_bps <= lanToLanFixture.max_bps, 'LAN-to-LAN client B rx must be near target');
+assert(lanToLan.aggregate_bps >= lanToLanFixture.min_bps && lanToLan.aggregate_bps <= lanToLanFixture.max_bps, 'LAN-to-LAN aggregate must not double-count one direction');
+assert(lanToLan.one_direction_double_counted === false, 'LAN-to-LAN frame must not be double-counted');
+assert(lanToLan.duplicate_observations === 1, 'fixture must include and drop one duplicate observation');
+
+const uncertainLanToLan = simulateLanToLanDedupe({
+  ...lanToLanFixture,
+  topology_known: lanToLanFixture.uncertain_topology.topology_known
+});
+assert(uncertainLanToLan.mode === lanToLanFixture.uncertain_topology.expected_mode, 'uncertain topology must return Degraded');
+assert(uncertainLanToLan.warnings.includes(lanToLanFixture.uncertain_topology.expected_warning), 'uncertain topology warning is required');
+assert(uncertainLanToLan.coverage.coverage_complete === false, 'uncertain topology must not claim complete coverage');
+assert(uncertainLanToLan.coverage.complete_coverage_claimed === false, 'uncertain topology must explicitly avoid complete coverage claim');
+
+const limitedLanToLan = simulateLanToLanDedupe({
+  ...lanToLanFixture,
+  hardware_switch_path: true,
+  observations: lanToLanFixture.observations.map((observation) => ({ ...observation, visible: false }))
+});
+assert(limitedLanToLan.mode === 'Degraded', 'hardware-switch LAN-to-LAN path must degrade coverage');
+assert(limitedLanToLan.warnings.includes('lan_to_lan_visibility_limited'), 'hardware-switch LAN-to-LAN path must warn limited visibility');
+assert(limitedLanToLan.coverage.cpu_visible_only === true, 'LAN-to-LAN coverage must be CPU-visible only');
+assert(limitedLanToLan.coverage.coverage_complete === false, 'invisible hardware-switch path must not claim complete coverage');
+assert(limitedLanToLan.coverage.complete_coverage_claimed === false, 'limited visibility fixture must explicitly avoid complete coverage claim');
+
+const sideRouterDirect = simulateSideRouterDirect(sideRouterDirectFixture);
+assert(sideRouterDirect.mode === sideRouterDirectFixture.expected.mode, 'same-subnet side-router direct topology must degrade coverage');
+assert(sideRouterDirect.warnings.includes(sideRouterDirectFixture.expected.warning), 'side-router direct fixture must warn asymmetric_path_possible');
+assert(sideRouterDirect.coverage.coverage_complete === sideRouterDirectFixture.expected.coverage_complete, 'side-router direct fixture must not claim complete coverage');
+assert(sideRouterDirect.coverage.complete_coverage_claimed === false, 'side-router direct fixture must explicitly avoid complete coverage claim');
+
+const routerLocal = simulateRouterLocal(routerLocalFixture);
+assert(routerLocal.client.tx_bps === routerLocalFixture.expected.client_tx_bps, 'router-local client-to-router traffic must be client tx_bps');
+assert(routerLocal.client.rx_bps === routerLocalFixture.expected.client_rx_bps, 'router-local router-to-client traffic must be client rx_bps');
+assert(routerLocal.router_self.bucket === routerLocalFixture.expected.router_self_bucket, 'router-originated flow must use router_self bucket');
+assert(routerLocal.router_self.alias === routerLocalFixture.expected.router_self_alias, 'router self alias must be local_router');
+assert(routerLocal.router_self.tx_bps === routerLocalFixture.expected.router_self_tx_bps, 'router-originated active curl must stay separate from LAN client');
+assert(routerLocal.router_originated_assigned_to_lan_client === false, 'router-originated traffic must not be assigned to the LAN client');
+assert(routerLocal.client.identity_key === `${routerLocal.client.mac}@${routerLocal.client.zone}`, 'router-local client identity must remain MAC+zone');
+
+const topologyVlan = simulateTopologyVlan(topologyVlanFixture);
+assert(JSON.stringify(topologyVlan.clients.map((client) => client.identity_key)) === JSON.stringify(topologyVlanFixture.expected.identity_keys), 'VLAN topology must keep same MAC separated by zone/VLAN');
+assert(topologyVlan.warnings.includes('duplicate_mac_across_vlans'), 'same MAC across VLANs must warn duplicate_mac_across_vlans');
+assert(topologyVlan.clients.some((client) => client.zone === 'guest' && client.topology.guest === true), 'guest VLAN client must remain separate');
+assert(topologyVlan.clients.some((client) => client.topology.wds === true), 'WDS metadata must be represented without collapsing identity');
+assert(topologyVlan.clients.some((client) => client.topology.ap_isolation === true), 'AP isolation metadata must be represented without collapsing identity');
+assert(topologyVlan.clients.find((client) => client.identity_key === '02:de:ad:be:ef:01@vlan10').tx_bps === 3000000, 'vlan10 client tx must stay with vlan10 identity');
+assert(topologyVlan.clients.find((client) => client.identity_key === '02:de:ad:be:ef:01@vlan20').rx_bps === 6000000, 'vlan20 client rx must stay with vlan20 identity');
+assert(topologyVlan.uplinks.every((uplink) => uplink.encapsulation_evidence_only && uplink.ownership_changed === false), 'PPPoE/WG/TUN uplinks must not change LAN MAC ownership');
+assert(topologyVlan.uplinks.every((uplink) => ['pppoe', 'wg', 'tun'].includes(uplink.type)), 'uplink topology fixture must cover PPPoE/WG/TUN');
+assert(topologyVlan.uplinks.every((uplink) => uplink.lan_identity_exists === true), 'uplink evidence must reference existing LAN-edge identities without owning them');
+
+const counterAnomaly = computeDirectionalRates(counterAnomalyFixture);
+for (const warning of counterAnomalyFixture.expected_warnings) {
+  assert(counterAnomaly.warnings.includes(warning), `counter anomaly fixture must include ${warning}`);
+}
+assert(counterAnomaly.negative_rates_emitted === false, 'negative rates must never be emitted');
+assert(counterAnomaly.directions.tx.some((entry) => entry.warnings.includes('counter_anomaly') && entry.bps === 0), 'counter decrease must clamp tx to zero');
+assert(counterAnomaly.directions.tx.some((entry) => entry.warnings.includes('time_rollback') && entry.bps === 0), 'time rollback must clamp tx to zero');
+assert(counterAnomaly.directions.rx.some((entry) => entry.bps > 0), 'per-client anomaly must not disable all directions');
+assert(counterAnomaly.merged_client.tx_bps > 0 && counterAnomaly.merged_client.rx_bps === 0, 'direction merge must preserve separate tx_bps and rx_bps fields');
+assert(counterAnomaly.unaffected_clients.some((client) => client.tx_bps > 0 && client.rx_bps > 0), 'per-client anomaly must not disable healthy clients');
+
+const resourceLimits = simulateResourceLimits(resourceLimitFixture);
+for (const warning of resourceLimitFixture.expected_warnings) {
+  assert(resourceLimits.warnings.includes(warning), `resource limit fixture must include ${warning}`);
+}
+assert(resourceLimits.stale_clients.length === 1, 'stale client expiry must remove one fixture client');
+assert(resourceLimits.active_clients.length === resourceLimitFixture.max_clients, 'active clients must be capped at max_clients');
+assert(resourceLimits.rejected_clients.length === 1, 'client limit must reject one active fixture client');
+assert(resourceLimits.crashed === false, 'resource limit path must not crash');
+assert(resourceLimits.existing_clients_preserved_on_map_read_failure === true, 'map read failure must not empty all clients');
+
+const conntrackNat = simulateConntrackFallback(conntrackNatFixture);
+assert(conntrackNat.active === true, 'conntrack NAT fixture must activate fallback');
+assert(conntrackNat.mode === 'Degraded', 'conntrack fallback must stay Degraded');
+assert(conntrackNat.collector_mode === 'conntrack', 'conntrack NAT fixture must use collector_mode=conntrack');
+assert(['low', 'medium'].includes(conntrackNat.confidence), 'conntrack confidence must be low or medium only');
+assert(conntrackNat.confidence === conntrackNatFixture.expected.confidence, 'confidence degradation must match fixture expectation');
+assert(conntrackNat.runtime_source === 'lanspeedd_procfs_conntrack_acct', 'conntrack NAT fixture must use procfs runtime source');
+assert(conntrackNat.counter_source === 'procfs_conntrack_acct_orig_reply_bytes', 'conntrack NAT fixture must use procfs byte counters');
+assert(conntrackNat.first_snapshot.clients.length === 1, 'first procfs snapshot must map one ARP-backed client');
+assert(conntrackNat.first_snapshot.skipped_no_arp === conntrackNatFixture.expected.skipped_no_arp, 'conntrack entries without ARP MAC must be skipped');
+assert(conntrackNat.first_snapshot.malformed_lines === conntrackNatFixture.expected.malformed_lines_first_snapshot, 'malformed conntrack lines must be isolated');
+assert(!conntrackNat.clients.some((client) => client.interface === 'dae0' || client.ips.includes('192.168.1.250')), 'dae0 ARP/conntrack observations must not become LAN clients');
+assert(conntrackNat.warnings.includes(conntrackNatFixture.expected.snapshot_pending_warning), 'first sample pending warning is required');
+assert(conntrackNat.clients.length === 1, 'conntrack NAT fixture must produce one client');
+assert(conntrackNat.clients[0].tx_bps === conntrackNatFixture.expected.tx_bps, 'conntrack NAT tx_bps must be computed from original-direction bytes');
+assert(conntrackNat.clients[0].rx_bps === conntrackNatFixture.expected.rx_bps, 'conntrack NAT rx_bps must be computed from reply-direction bytes');
+assert(conntrackNat.clients[0].collector_mode === 'conntrack', 'client collector_mode must be conntrack');
+assert(conntrackNat.clients[0].identity_key === `${conntrackNat.clients[0].mac}@${conntrackNat.clients[0].zone}`, 'conntrack must preserve MAC+zone identity semantics');
+assert(conntrackNat.clients[0].ips.includes(conntrackNatFixture.conntrack_samples[1].client_ip), 'LAN client IP must remain an attribute on the MAC identity');
+assert(!conntrackNat.clients[0].ips.includes(conntrackNatFixture.conntrack_samples[1].remote_ip), 'fake-ip or remote destination must not become a client identity IP');
+assert(conntrackNat.warnings.includes('conntrack_routed_nat_only'), 'conntrack fallback must warn routed/NAT-only coverage');
+assert(conntrackNat.warnings.includes('flowtable_counter_missing'), 'missing flowtable counter warning is required');
+assert(conntrackNat.warnings.includes('nlbwmon_counter_conflict'), 'nlbwmon zero-on-read conflict warning is required');
+assert(conntrackNat.nlbwmon_read_counters === false, 'conntrack fallback must not disturb nlbwmon counters');
+assert(conntrackNat.forbidden_sources.includes('nft_forward_chain_counters'), 'conntrack fallback must not use nft forward-chain counters');
+
+const conntrackAcctDisabled = simulateConntrackFallback(conntrackAcctDisabledFixture);
+assert(conntrackAcctDisabled.active === false, 'nf_conntrack_acct=0 must disable conntrack fallback');
+assert(conntrackAcctDisabled.clients.length === 0, 'acct disabled fixture must not emit conntrack client rates');
+assert(conntrackAcctDisabled.confidence === 'unsupported', 'acct disabled fallback confidence must be unsupported');
+assert(conntrackAcctDisabled.warnings.includes('conntrack_acct_disabled'), 'acct disabled warning is required');
+
+const refreshInterval = validateRefreshInterval(refreshIntervalFixture);
+assert(refreshInterval.default_ms === 1000, 'refresh interval default must be 1000ms');
+assert(refreshInterval.minimum_ms === 500, 'refresh interval minimum must be 500ms');
+assert(refreshInterval.effective_ms === 500, 'refresh interval below 500ms must be clamped');
+assert(refreshInterval.warnings.includes('refresh_interval_below_minimum'), 'refresh interval clamp warning is required');
+assert(source.includes('#define MIN_REFRESH_INTERVAL_MS 500'), 'C daemon must define 500ms minimum refresh interval');
+assert(source.includes('refresh_interval_below_minimum'), 'C daemon must expose machine-readable refresh interval warning');
+
+const lifecycleRestart = simulateLifecycleRestart(lifecycleFixture);
+assert(lifecycleRestart.delete_clsact === lifecycleFixture.expected.delete_clsact, 'restart cleanup must not delete clsact qdisc');
+assert(lifecycleRestart.foreign_filters_preserved === lifecycleFixture.expected.foreign_filters_preserved, 'restart cleanup must preserve dae/SQM/OpenClash filters');
+assert(lifecycleRestart.lanspeed_filter_count_after_restart === lifecycleFixture.expected.lanspeed_filter_count_after_restart, 'restart must leave exactly one lanspeed filter per direction');
+assert(lifecycleRestart.duplicate_lanspeed_filters === lifecycleFixture.expected.duplicate_lanspeed_filters, 'restart must not duplicate lanspeed filters');
+assert(lifecycleRestart.cleanup_removed_filters.every((filter) => filter.owner === 'lanspeed'), 'cleanup may only remove lanspeed-owned filters');
+assert(lifecycleRestart.preserved_foreign_owners.includes('dae'), 'fixture must preserve dae filter');
+assert(lifecycleRestart.preserved_foreign_owners.includes('sqm'), 'fixture must preserve SQM filter');
+assert(lifecycleRestart.preserved_foreign_owners.includes('openclash'), 'fixture must preserve OpenClash filter');
+assert(lifecycleRestart.preserved_foreign_owners.includes('foreign-lanspeed-label'), 'fixture must preserve same pref/handle filter without full lanspeed identity');
+
+const networkReload = simulateNetworkReload(lifecycleFixture);
+assert(networkReload.temporary_warning_seen === true, 'network reload fixture must show temporary warning');
+assert(networkReload.states.some((state) => state.mode === 'Degraded'), 'network reload fixture must show temporary Degraded state');
+assert(networkReload.states.every((state) => state.mode !== 'Full'), 'network reload fixture must not claim Full without runtime attach/map-read');
+assert(networkReload.recovered_mode === 'Degraded', 'network reload fixture must recover to the best honest current mode');
+assert(networkReload.bpf_runtime_metrics === false, 'network reload recovery must keep bpf_runtime_metrics=false');
+assert(networkReload.runtime_attach_map_read_success === false, 'network reload recovery must keep runtime attach/map-read success false');
+assert(networkReload.live_metrics === false, 'network reload recovery must keep live_metrics=false');
+assert(networkReload.warnings_after_recovery.includes('bpf_runtime_loader_unavailable'), 'network reload recovery must warn runtime BPF loader unavailable');
+assert(networkReload.warnings_after_recovery.includes('live_metrics_unavailable'), 'network reload recovery must warn live metrics unavailable');
+assert(networkReload.daemon_alive_after_recovery === true, 'network reload fixture must keep daemon alive after recovery');
+assert(networkReload.changes_user_network_config === false, 'network reload fixture must not change user network config');
+assert(networkReload.changes_proxy_config === false, 'network reload fixture must not change proxy config');
+
+const coexistText = [
+  'Task 6 tc coexistence fixture',
+  `device=${tcCoexist.device}`,
+  `qdisc_action=${tcCoexist.qdisc_action}`,
+  `mode=${tcCoexist.mode}`,
+  `existing_filters_preserved=${tcCoexist.existing_filters_preserved}`,
+  `lanspeed_filter_added=${tcCoexist.lanspeed_filter_added}`,
+  `append_only=${tcCoexist.append_only}`,
+  `bpf_runtime_metrics=${tcCoexist.bpf_runtime_metrics}`,
+  `runtime_attach_map_read_success=${tcCoexist.runtime_attach_map_read_success}`,
+  `live_metrics=${tcCoexist.live_metrics}`,
+  `warnings=${tcCoexist.warnings.join(',')}`,
+  `owner=${tcCoexist.owner}`,
+  `pref=${tcCoexist.pref}`,
+  `handle=${tcCoexist.handle}`,
+  'before_filters=',
+  JSON.stringify(tcCoexist.before_filters, null, 2),
+  'after_filters=',
+  JSON.stringify(tcCoexist.after_filters, null, 2),
+  'commands=',
+  JSON.stringify(tcCoexist.commands, null, 2)
+].join('\n');
+
+writeEvidence('task-6-tc-coexist.txt', coexistText);
+writeEvidence('task-6-upload-rate.json', JSON.stringify({
+  upload_rate: uploadRate,
+  map_full: mapFull
+}, null, 2));
+
+writeEvidence('task-7-lan-to-lan.json', JSON.stringify({
+  lan_to_lan: lanToLan,
+  uncertain_topology: uncertainLanToLan,
+  limited_visibility: limitedLanToLan
+}, null, 2));
+
+writeEvidence('task-8-conntrack-nat.json', JSON.stringify(conntrackNat, null, 2));
+writeEvidence('task-8-acct-disabled.json', JSON.stringify(conntrackAcctDisabled, null, 2));
+writeEvidence('task-11-side-router.json', JSON.stringify(sideRouterDirect, null, 2));
+writeEvidence('task-12-router-local.json', JSON.stringify(routerLocal, null, 2));
+writeEvidence('task-12-vlan.json', JSON.stringify(topologyVlan, null, 2));
+
+writeEvidence('task-7-counter-anomaly.txt', [
+  'Task 7 counter anomaly fixture',
+  `negative_rates_emitted=${counterAnomaly.negative_rates_emitted}`,
+  `warnings=${counterAnomaly.warnings.join(',')}`,
+  `per_client_anomaly_isolated=${counterAnomaly.per_client_anomaly_isolated}`,
+  'directional_rates=',
+  JSON.stringify(counterAnomaly.directions, null, 2),
+  'resource_limits=',
+  JSON.stringify(resourceLimits, null, 2),
+  'refresh_interval=',
+  JSON.stringify(refreshInterval, null, 2)
+].join('\n'));
+
+writeEvidence('task-17-restart-filters.txt', [
+  'Task 17 restart filter lifecycle fixture',
+  `delete_clsact=${lifecycleRestart.delete_clsact}`,
+  `delete_foreign_filters=${lifecycleRestart.delete_foreign_filters}`,
+  `foreign_filters_preserved=${lifecycleRestart.foreign_filters_preserved}`,
+  `lanspeed_filter_count_after_restart=${lifecycleRestart.lanspeed_filter_count_after_restart}`,
+  `duplicate_lanspeed_filters=${lifecycleRestart.duplicate_lanspeed_filters}`,
+  `owned_filter_identity=${JSON.stringify(lifecycleRestart.owned_filter_identity)}`,
+  `preserved_foreign_owners=${lifecycleRestart.preserved_foreign_owners.join(',')}`,
+  'cleanup_removed_filters=',
+  JSON.stringify(lifecycleRestart.cleanup_removed_filters, null, 2),
+  'after_restart_filters=',
+  JSON.stringify(lifecycleRestart.after_restart_filters, null, 2),
+  'cleanup_commands=',
+  JSON.stringify(lifecycleRestart.cleanup_commands, null, 2)
+].join('\n'));
+
+writeEvidence('task-17-network-reload.json', JSON.stringify(networkReload, null, 2));
+
+console.log('lanspeed collector validation passed');

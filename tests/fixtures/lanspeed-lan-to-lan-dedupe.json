@@ -1,0 +1,56 @@
+{
+  "name": "LAN-to-LAN dedupe at 10Mbps",
+  "topology_known": true,
+  "target_bps": 10000000,
+  "min_bps": 8000000,
+  "max_bps": 12000000,
+  "interval_ms": 1000,
+  "clients": {
+    "a": {
+      "mac": "02:aa:aa:aa:aa:01",
+      "zone": "lan",
+      "identity_key": "02:aa:aa:aa:aa:01@lan",
+      "interface": "lan1"
+    },
+    "b": {
+      "mac": "02:bb:bb:bb:bb:02",
+      "zone": "lan",
+      "identity_key": "02:bb:bb:bb:bb:02@lan",
+      "interface": "lan2"
+    }
+  },
+  "observations": [
+    {
+      "frame_id": "f-1",
+      "t_ms": 1000,
+      "src": "02:aa:aa:aa:aa:01@lan",
+      "dst": "02:bb:bb:bb:bb:02@lan",
+      "direction": "tx",
+      "bytes_delta": 1250000,
+      "edge": "lan1"
+    },
+    {
+      "frame_id": "f-1",
+      "t_ms": 1000,
+      "src": "02:aa:aa:aa:aa:01@lan",
+      "dst": "02:bb:bb:bb:bb:02@lan",
+      "direction": "rx",
+      "bytes_delta": 1250000,
+      "edge": "lan2"
+    },
+    {
+      "frame_id": "f-1",
+      "t_ms": 1000,
+      "src": "02:aa:aa:aa:aa:01@lan",
+      "dst": "02:bb:bb:bb:bb:02@lan",
+      "direction": "tx",
+      "bytes_delta": 1250000,
+      "edge": "bridge-duplicate"
+    }
+  ],
+  "uncertain_topology": {
+    "topology_known": false,
+    "expected_mode": "Degraded",
+    "expected_warning": "lan_to_lan_visibility_unknown"
+  }
+}

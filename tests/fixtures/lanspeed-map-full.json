@@ -1,0 +1,12 @@
+{
+  "name": "map full guard",
+  "max_clients": 512,
+  "existing_clients": 512,
+  "new_entry": {
+    "ifindex": 7,
+    "vlan_or_zone": "lan",
+    "mac": "02:ff:ee:dd:cc:bb",
+    "direction": "tx"
+  },
+  "expected_warning": "map_full"
+}

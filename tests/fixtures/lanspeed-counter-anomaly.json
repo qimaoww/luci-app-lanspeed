@@ -1,0 +1,75 @@
+{
+  "name": "counter anomaly and time rollback clamp",
+  "client": {
+    "mac": "02:cc:cc:cc:cc:03",
+    "zone": "lan",
+    "identity_key": "02:cc:cc:cc:cc:03@lan",
+    "ifindex": 9,
+    "interface": "lan3"
+  },
+  "directions": {
+    "tx": [
+      {
+        "t_ms": 0,
+        "bytes": 4000000
+      },
+      {
+        "t_ms": 1000,
+        "bytes": 3000000
+      },
+      {
+        "t_ms": 900,
+        "bytes": 3500000
+      },
+      {
+        "t_ms": 2000,
+        "bytes": 4750000
+      }
+    ],
+    "rx": [
+      {
+        "t_ms": 0,
+        "bytes": 0
+      },
+      {
+        "t_ms": 1000,
+        "bytes": 250000
+      },
+      {
+        "t_ms": 2000,
+        "bytes": 250000
+      }
+    ]
+  },
+  "expected_warnings": [
+    "counter_anomaly",
+    "time_rollback"
+  ],
+  "unaffected_clients": [
+    {
+      "identity_key": "02:dd:dd:dd:dd:04@lan",
+      "directions": {
+        "tx": [
+          {
+            "t_ms": 0,
+            "bytes": 0
+          },
+          {
+            "t_ms": 1000,
+            "bytes": 125000
+          }
+        ],
+        "rx": [
+          {
+            "t_ms": 0,
+            "bytes": 0
+          },
+          {
+            "t_ms": 1000,
+            "bytes": 250000
+          }
+        ]
+      }
+    }
+  ]
+}

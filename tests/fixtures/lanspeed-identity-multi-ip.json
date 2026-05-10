@@ -1,0 +1,78 @@
+{
+  "name": "multi-ip client merge",
+  "router": {
+    "macs": [
+      "aa:bb:cc:00:00:01"
+    ]
+  },
+  "sources": {
+    "dhcp_leases": [
+      {
+        "mac": "02:11:22:33:44:55",
+        "ip": "192.168.1.42",
+        "hostname": "workstation",
+        "interface": "br-lan",
+        "zone": "lan",
+        "last_seen": 1710000000
+      }
+    ],
+    "neighbors": [
+      {
+        "mac": "02:11:22:33:44:55",
+        "ip": "fd00::42",
+        "interface": "br-lan",
+        "zone": "lan",
+        "last_seen": 1710000005,
+        "family": "ipv6"
+      }
+    ],
+    "wireless": [
+      {
+        "mac": "02:11:22:33:44:55",
+        "interface": "wlan0",
+        "zone": "lan",
+        "last_seen": 1710000006,
+        "source": "hostapd_nl80211"
+      }
+    ],
+    "netifd": [
+      {
+        "interface": "br-lan",
+        "zone": "lan",
+        "mac": "aa:bb:cc:00:00:01",
+        "role": "router"
+      }
+    ],
+    "traffic": [
+      {
+        "mac": "02:11:22:33:44:55",
+        "zone": "lan",
+        "client_originated_bps": 1200,
+        "to_client_bps": 3400,
+        "remote_ip": "198.18.0.1",
+        "note": "fake-ip destination remains remote metadata, not client identity"
+      }
+    ]
+  },
+  "expected": {
+    "clients": [
+      {
+        "mac": "02:11:22:33:44:55",
+        "identity_key": "02:11:22:33:44:55@lan",
+        "zone": "lan",
+        "interface": "wlan0",
+        "ips": [
+          "192.168.1.42",
+          "fd00::42"
+        ],
+        "hostname": "workstation",
+        "rx_bps": 3400,
+        "tx_bps": 1200,
+        "last_seen": 1710000006,
+        "collector_mode": "identity_fixture",
+        "confidence": "medium",
+        "warnings": []
+      }
+    ]
+  }
+}

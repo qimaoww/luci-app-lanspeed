@@ -1,0 +1,119 @@
+{
+  "name": "procd reload and tc filter lifecycle",
+  "device": "lan1",
+  "qdisc": {
+    "kind": "clsact",
+    "exists": true
+  },
+  "owned_filter_identity": {
+    "owner": "lanspeed",
+    "pref": 49152,
+    "handle": "0x1eed",
+    "object": "/usr/lib/bpf/lanspeed_tc.o"
+  },
+  "before_filters": [
+    {
+      "interface": "lan1",
+      "direction": "ingress",
+      "pref": 100,
+      "handle": "0xdae",
+      "owner": "dae",
+      "object": "/usr/lib/bpf/dae.o",
+      "source": "tc_filter_show"
+    },
+    {
+      "interface": "lan1",
+      "direction": "egress",
+      "pref": 110,
+      "handle": "0xsqm",
+      "owner": "sqm",
+      "object": "/usr/lib/bpf/sqm.o",
+      "source": "tc_filter_show"
+    },
+    {
+      "interface": "lan1",
+      "direction": "ingress",
+      "pref": 120,
+      "handle": "0xoc",
+      "owner": "openclash",
+      "object": "/usr/lib/bpf/openclash.o",
+      "source": "tc_filter_show"
+    },
+    {
+      "interface": "lan1",
+      "direction": "egress",
+      "pref": 49152,
+      "handle": "0x1eed",
+      "owner": "foreign-lanspeed-label",
+      "object": "/usr/lib/bpf/foreign_tc.o",
+      "source": "tc_filter_show"
+    },
+    {
+      "interface": "lan1",
+      "direction": "ingress",
+      "pref": 49152,
+      "handle": "0x1eed",
+      "owner": "lanspeed",
+      "object": "/usr/lib/bpf/lanspeed_tc.o",
+      "source": "lanspeed_attach_plan"
+    },
+    {
+      "interface": "lan1",
+      "direction": "egress",
+      "pref": 49152,
+      "handle": "0x1eed",
+      "owner": "lanspeed",
+      "object": "/usr/lib/bpf/lanspeed_tc.o",
+      "source": "lanspeed_attach_plan"
+    }
+  ],
+  "expected": {
+    "foreign_filters_preserved": true,
+    "lanspeed_filter_count_after_restart": 2,
+    "delete_clsact": false,
+    "duplicate_lanspeed_filters": false
+  },
+  "network_reload": {
+    "interface": "lan",
+    "action": "ifupdate",
+    "states": [
+      {
+        "phase": "before_reload",
+        "mode": "Degraded",
+        "daemon_alive": true,
+        "bpf_runtime_metrics": false,
+        "runtime_attach_map_read_success": false,
+        "live_metrics": false,
+        "warnings": [
+          "bpf_runtime_loader_unavailable",
+          "live_metrics_unavailable"
+        ]
+      },
+      {
+        "phase": "during_reprobe",
+        "mode": "Degraded",
+        "daemon_alive": true,
+        "bpf_runtime_metrics": false,
+        "runtime_attach_map_read_success": false,
+        "live_metrics": false,
+        "warnings": [
+          "network_reload_reprobe_pending",
+          "bpf_runtime_loader_unavailable",
+          "live_metrics_unavailable"
+        ]
+      },
+      {
+        "phase": "after_recovery",
+        "mode": "Degraded",
+        "daemon_alive": true,
+        "bpf_runtime_metrics": false,
+        "runtime_attach_map_read_success": false,
+        "live_metrics": false,
+        "warnings": [
+          "bpf_runtime_loader_unavailable",
+          "live_metrics_unavailable"
+        ]
+      }
+    ]
+  }
+}

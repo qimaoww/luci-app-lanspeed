@@ -1,0 +1,415 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lanspeed.local/schema.json",
+  "title": "lanspeed ubus contract",
+  "description": "Stable JSON contract for deterministic lanspeedd ubus method responses. Task 2 fixtures are skeleton values only and do not represent live traffic metrics.",
+  "type": "object",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/status"
+    },
+    {
+      "$ref": "#/$defs/clients"
+    },
+    {
+      "$ref": "#/$defs/health"
+    },
+    {
+      "$ref": "#/$defs/interfaces"
+    }
+  ],
+  "$defs": {
+    "confidence": {
+      "type": "string",
+      "enum": [
+        "high",
+        "medium",
+        "low",
+        "unsupported"
+      ]
+    },
+    "warning": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Machine-readable facts used to explain mode, confidence, conflicts, and warnings. Values may be strings, numbers, booleans, arrays, objects, or null."
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bpf": {
+          "type": "boolean"
+        },
+        "bpf_package": {
+          "type": "boolean"
+        },
+        "bpf_object": {
+          "type": "boolean"
+        },
+        "conntrack_fallback": {
+          "type": "boolean"
+        },
+        "live_metrics": {
+          "type": "boolean"
+        },
+        "fw4": {
+          "type": "boolean"
+        },
+        "nft": {
+          "type": "boolean"
+        },
+        "software_flow_offload": {
+          "type": "boolean"
+        },
+        "hardware_flow_offload": {
+          "type": "boolean"
+        },
+        "fullcone": {
+          "type": "boolean"
+        },
+        "nf_conntrack_acct": {
+          "type": "boolean"
+        },
+        "flowtable_counter": {
+          "type": "boolean"
+        },
+        "tc": {
+          "type": "boolean"
+        },
+        "tc_clsact": {
+          "type": "boolean"
+        },
+        "existing_tc_filters": {
+          "type": "boolean"
+        },
+        "ifb": {
+          "type": "boolean"
+        },
+        "sqm": {
+          "type": "boolean"
+        },
+        "qosify": {
+          "type": "boolean"
+        },
+        "openclash": {
+          "type": "boolean"
+        },
+        "openclash_fake_ip": {
+          "type": "boolean"
+        },
+        "openclash_tun_mix": {
+          "type": "boolean"
+        },
+        "openclash_redirect_dns": {
+          "type": "boolean"
+        },
+        "openclash_dns_chain_complete": {
+          "type": "boolean"
+        },
+        "openclash_router_self_proxy": {
+          "type": "boolean"
+        },
+        "openclash_udp_proxy": {
+          "type": "boolean"
+        },
+        "openclash_ipv6": {
+          "type": "boolean"
+        },
+        "dae": {
+          "type": "boolean"
+        },
+        "homeproxy": {
+          "type": "boolean"
+        },
+        "lan_bridge": {
+          "type": "boolean"
+        },
+        "vlan": {
+          "type": "boolean"
+        },
+        "wlan": {
+          "type": "boolean"
+        },
+        "lan_edge": {
+          "type": "boolean"
+        },
+        "safe_attach": {
+          "type": "boolean"
+        },
+        "map_full": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "bpf",
+        "conntrack_fallback",
+        "live_metrics"
+      ]
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "Full",
+            "Degraded",
+            "Unsupported"
+          ]
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/warning"
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        },
+        "refresh_interval_ms": {
+          "type": "integer",
+          "minimum": 500
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capabilities": {
+          "$ref": "#/$defs/capabilities"
+        }
+      },
+      "required": [
+        "mode",
+        "confidence",
+        "warnings",
+        "evidence",
+        "refresh_interval_ms",
+        "version",
+        "capabilities"
+      ]
+    },
+    "client": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mac": {
+          "type": "string",
+          "pattern": "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"
+        },
+        "ips": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "identity_key": {
+          "type": "string",
+          "description": "Stable client identity key derived from normalized MAC plus VLAN/zone, never from an IP address."
+        },
+        "zone": {
+          "type": "string",
+          "minLength": 1
+        },
+        "interface": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hostname": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Best known hostname from DHCP or wireless identity sources; null when a static client has no hostname evidence."
+        },
+        "rx_bps": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tx_bps": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "last_seen": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "collector_mode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/warning"
+          }
+        }
+      },
+      "required": [
+        "mac",
+        "identity_key",
+        "zone",
+        "interface",
+        "ips",
+        "hostname",
+        "rx_bps",
+        "tx_bps",
+        "last_seen",
+        "collector_mode",
+        "confidence",
+        "warnings"
+      ]
+    },
+    "clients": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "clients": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/client"
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      },
+      "required": [
+        "clients"
+      ]
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "Full",
+            "Degraded",
+            "Unsupported"
+          ]
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/capabilities"
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "id",
+              "severity",
+              "message"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "info",
+                  "warning",
+                  "critical"
+                ]
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/warning"
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      },
+      "required": [
+        "mode",
+        "confidence",
+        "capabilities",
+        "conflicts",
+        "warnings",
+        "evidence"
+      ]
+    },
+    "interface": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "lan",
+            "wan",
+            "excluded",
+            "unknown"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "active",
+            "missing",
+            "excluded",
+            "unsupported"
+          ]
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      },
+      "required": [
+        "name",
+        "role",
+        "status",
+        "evidence"
+      ]
+    },
+    "interfaces": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "interfaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/interface"
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      },
+      "required": [
+        "interfaces"
+      ]
+    }
+  }
+}

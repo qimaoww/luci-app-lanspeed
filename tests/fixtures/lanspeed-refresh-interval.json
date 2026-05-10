@@ -1,0 +1,8 @@
+{
+  "name": "refresh interval minimum clamp",
+  "default_ms": 1000,
+  "minimum_ms": 500,
+  "configured_ms": 250,
+  "effective_ms": 500,
+  "expected_warning": "refresh_interval_below_minimum"
+}

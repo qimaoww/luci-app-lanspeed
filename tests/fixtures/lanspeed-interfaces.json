@@ -1,0 +1,20 @@
+{
+  "interfaces": [
+    {
+      "name": "br-lan",
+      "role": "lan",
+      "status": "pending",
+      "evidence": {
+        "configured": true,
+        "source": "uci_default",
+        "live_probe": false
+      }
+    }
+  ],
+  "evidence": {
+    "source": "lanspeedd_stub",
+    "method": "interfaces",
+    "fixture_safe": true,
+    "live_metrics": false
+  }
+}

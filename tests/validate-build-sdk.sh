@@ -1,0 +1,55 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
+EVIDENCE_DIR="$ROOT/.sisyphus/evidence"
+MISSING_EVIDENCE="$EVIDENCE_DIR/task-3-missing-sdk.txt"
+DRY_RUN_EVIDENCE="$EVIDENCE_DIR/task-3-sdk-dry-run.txt"
+
+mkdir -p "$EVIDENCE_DIR"
+
+if SDK_DIR=/nonexistent "$ROOT/scripts/build-sdk.sh" luci-app-lanspeed > "$MISSING_EVIDENCE" 2>&1; then
+	printf '%s\n' "expected missing SDK_DIR scenario to fail" >&2
+	exit 1
+fi
+
+grep -F "SDK_DIR" "$MISSING_EVIDENCE" >/dev/null
+grep -F "does not exist" "$MISSING_EVIDENCE" >/dev/null
+grep -F "ImmortalWrt 25.12 SDK" "$MISSING_EVIDENCE" >/dev/null
+
+if DRY_RUN=1 "$ROOT/scripts/build-sdk.sh" all >> "$MISSING_EVIDENCE" 2>&1; then
+	printf '%s\n' "expected omitted SDK_DIR scenario to fail" >&2
+	exit 1
+fi
+
+grep -F "SDK_DIR is required" "$MISSING_EVIDENCE" >/dev/null
+grep -F "ImmortalWrt 25.12 SDK" "$MISSING_EVIDENCE" >/dev/null
+
+if SDK_DIR="$ROOT" DRY_RUN=1 "$ROOT/scripts/build-sdk.sh" all >> "$MISSING_EVIDENCE" 2>&1; then
+	printf '%s\n' "expected local feed as SDK_DIR scenario to fail" >&2
+	exit 1
+fi
+
+grep -F "local feed repository" "$MISSING_EVIDENCE" >/dev/null
+grep -F "ImmortalWrt 25.12 SDK" "$MISSING_EVIDENCE" >/dev/null
+
+SDK_DIR=/tmp/fake-sdk DRY_RUN=1 "$ROOT/scripts/build-sdk.sh" all > "$DRY_RUN_EVIDENCE" 2>&1
+SDK_DIR=/tmp/fake-sdk DRY_RUN=1 ENABLE_BPF=1 "$ROOT/scripts/build-sdk.sh" all >> "$DRY_RUN_EVIDENCE" 2>&1
+
+grep -F "ImmortalWrt/OpenWrt 25.12" "$DRY_RUN_EVIDENCE" >/dev/null
+grep -F "src-link lanspeed $ROOT" "$DRY_RUN_EVIDENCE" >/dev/null
+grep -F "./scripts/feeds update -a" "$DRY_RUN_EVIDENCE" >/dev/null
+grep -F "./scripts/feeds install -p lanspeed lanspeedd" "$DRY_RUN_EVIDENCE" >/dev/null
+grep -F "./scripts/feeds install -p lanspeed luci-app-lanspeed" "$DRY_RUN_EVIDENCE" >/dev/null
+grep -F "make package/lanspeedd/compile V=s" "$DRY_RUN_EVIDENCE" >/dev/null
+grep -F "make package/luci-app-lanspeed/compile V=s" "$DRY_RUN_EVIDENCE" >/dev/null
+grep -F "./scripts/feeds install -p lanspeed lanspeedd-bpf" "$DRY_RUN_EVIDENCE" >/dev/null
+grep -F "select CONFIG_PACKAGE_lanspeedd-bpf=m before compiling package/lanspeedd/compile" "$DRY_RUN_EVIDENCE" >/dev/null
+grep -F "make package/lanspeedd/compile V=s" "$DRY_RUN_EVIDENCE" >/dev/null
+if grep -F "make package/lanspeedd-bpf/compile V=s" "$DRY_RUN_EVIDENCE" >/dev/null; then
+	printf '%s\n' "lanspeedd-bpf must be selected, not compiled as an independent source package" >&2
+	exit 1
+fi
+
+printf '%s\n' "build-sdk validation passed"

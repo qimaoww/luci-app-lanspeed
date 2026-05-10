@@ -1,0 +1,48 @@
+{
+  "name": "10Mbps upload fixture",
+  "client": {
+    "mac": "02:11:22:33:44:55",
+    "zone": "lan",
+    "ifindex": 7,
+    "interface": "lan1",
+    "direction": "tx"
+  },
+  "samples": [
+    {
+      "t_ms": 0,
+      "bytes": 0
+    },
+    {
+      "t_ms": 1000,
+      "bytes": 1250000
+    },
+    {
+      "t_ms": 2000,
+      "bytes": 2500000
+    },
+    {
+      "t_ms": 3000,
+      "bytes": 3750000
+    },
+    {
+      "t_ms": 4000,
+      "bytes": 3750000
+    },
+    {
+      "t_ms": 5000,
+      "bytes": 3760000
+    },
+    {
+      "t_ms": 6000,
+      "bytes": 3760000
+    }
+  ],
+  "expected": {
+    "target_bps": 10000000,
+    "min_bps": 8000000,
+    "max_bps": 12000000,
+    "within_seconds": 3,
+    "stop_after_ms": 3000,
+    "drop_below_bps": 128000
+  }
+}

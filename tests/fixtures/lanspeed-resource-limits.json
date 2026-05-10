@@ -1,0 +1,33 @@
+{
+  "name": "collector resource limits and stale expiry",
+  "max_clients": 2,
+  "now_ms": 7000,
+  "stale_client_ms": 5000,
+  "clients": [
+    {
+      "identity_key": "02:00:00:00:00:01@lan",
+      "last_seen": 6500
+    },
+    {
+      "identity_key": "02:00:00:00:00:02@lan",
+      "last_seen": 1000
+    },
+    {
+      "identity_key": "02:00:00:00:00:03@lan",
+      "last_seen": 6800
+    },
+    {
+      "identity_key": "02:00:00:00:00:04@lan",
+      "last_seen": 6900
+    }
+  ],
+  "map_read": {
+    "ok": false,
+    "error": "EIO",
+    "expected_warning": "map_read_failed"
+  },
+  "expected_warnings": [
+    "client_limit_exceeded",
+    "map_read_failed"
+  ]
+}
