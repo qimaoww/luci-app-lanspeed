@@ -86,7 +86,12 @@ var CAPABILITY_LABELS = {
 	hardware_flow_offload: _('硬件流量卸载'),
 	nss: _('Qualcomm NSS'),
 	nss_ecm_offload: _('NSS ECM 硬件加速'),
+	nss_ppe_offload: _('NSS PPE 硬件加速'),
 	nss_bridge_mgr: _('NSS 网桥管理'),
+	nss_ifb: _('NSS IFB 镜像'),
+	nss_nsm: _('NSS 统计管理'),
+	nss_dp: _('NSS 数据面'),
+	nss_mcs: _('NSS 组播 snooping'),
 	fullcone: 'Fullcone NAT',
 	nf_conntrack_acct: _('conntrack 计数'),
 	flowtable_counter: _('flowtable 计数'),
@@ -119,7 +124,8 @@ var CAPABILITY_ORDER = [
 	'tc', 'tc_clsact', 'safe_attach', 'lan_edge', 'lan_bridge', 'vlan', 'wlan',
 	'conntrack_fallback', 'nf_conntrack_acct', 'flowtable_counter',
 	'software_flow_offload', 'hardware_flow_offload',
-	'nss', 'nss_ecm_offload', 'nss_bridge_mgr', 'fullcone',
+	'nss', 'nss_dp', 'nss_ecm_offload', 'nss_ppe_offload', 'nss_nsm',
+	'nss_bridge_mgr', 'nss_ifb', 'nss_mcs', 'fullcone',
 	'existing_tc_filters', 'ifb', 'sqm', 'qosify',
 	'openclash', 'openclash_fake_ip', 'openclash_tun_mix', 'openclash_redirect_dns',
 	'openclash_dns_chain_complete', 'openclash_router_self_proxy',
@@ -145,7 +151,9 @@ var WARNING_LABELS = {
 	hardware_flow_offload_unsupported: _('硬件流量卸载已启用，硬件转发流量可能绕过 CPU 可见指标。'),
 	nss_detected: _('检测到 Qualcomm NSS 网络协处理器。流量被加速的部分不经过 CPU，BPF 仅能看到慢路径。'),
 	nss_ecm_offload_active: _('NSS ECM 正在硬件加速连接，客户端数据经 ECM→conntrack 同步得到，置信度受限。'),
-	nss_ecm_sync_cadence: _('NSS 硬件卸载中：客户端计数经 ECM 同步回 conntrack，精度为秒级节拍，不是逐包实时。'),
+	nss_ecm_sync_cadence: _('NSS 硬件卸载中：客户端计数经 ECM/PPE 同步回 conntrack，精度为秒级节拍，不是逐包实时。'),
+	nss_ifb_detected: _('检测到 NSS IFB（nssifb）：NSS 硬件 QoS 的镜像接口，其计数是物理口 ingress 的镜像，不应 attach BPF，只能作为观察对象。'),
+	nss_ppe_offload_active: _('NSS PPE 正在硬件加速连接（IPQ95xx/53xx 新一代硬件加速），BPF 只能看到慢路径。'),
 	fullcone_detected: _('检测到 Fullcone NAT，NAT 辅助路径会作为置信度告警展示。'),
 	fullcone_nat_enabled: _('Fullcone NAT 已启用，NAT 辅助路径会作为置信度告警展示。'),
 	conntrack_routed_nat_only: _('conntrack 降级采集仅覆盖路由 / NAT 流量。'),
@@ -182,6 +190,7 @@ var WARNING_LABELS = {
 var CRITICAL_WARNINGS = {
 	hardware_flow_offload_unsupported: true,
 	nss_ecm_offload_active: true,
+	nss_ppe_offload_active: true,
 	tc_filter_conflict: true,
 	unsafe_attach: true,
 	tc_missing: true,
@@ -380,10 +389,18 @@ function renderIfaceConfig(viewState) {
 
 	function makeSeg(name) {
 		var wrap = E('div', { 'class': 'lanspeed-ifcfg-seg', 'data-name': name });
+		var isNssIfb = false;
+		var devs = asArray((viewState.sysdevices || {}).devices);
+		for (var i = 0; i < devs.length; i++) {
+			if (devs[i].name === name && devs[i].is_nss_ifb) { isNssIfb = true; break; }
+		}
 		var modes = [
 			{ k: 'off',     t: _('关闭'), title: _('不挂载、不显示') },
-			{ k: 'observe', t: _('观察'), title: _('只读接口计数，不 attach BPF；适合 WAN / tun') },
-			{ k: 'collect', t: _('采集'), title: _('挂 BPF filter，按客户端拆速率；置信度 high') }
+			{ k: 'observe', t: _('观察'), title: _('只读接口计数，不 attach BPF；适合 WAN / tun / nssifb') },
+			{ k: 'collect', t: _('采集'),
+			  title: isNssIfb
+			    ? _('nssifb 是 NSS 镜像接口，对它 attach BPF 会看到镜像流量而不是真实客户端流量，不推荐。')
+			    : _('挂 BPF filter，按客户端拆速率；置信度 high') }
 		];
 		modes.forEach(function(m) {
 			var btn = E('button', {
@@ -405,9 +422,10 @@ function renderIfaceConfig(viewState) {
 
 	replaceChildren(refs.ifcfgGrid, devs.map(function(d) {
 		var tags = [];
+		if (d.is_nss_ifb)       tags.push(_('NSS 镜像'));
 		if (d.is_bridge)        tags.push(_('网桥'));
 		if (d.is_bridge_port)   tags.push(_('桥成员'));
-		if (!d.recommended_lan) tags.push(_('非 LAN'));
+		if (!d.recommended_lan && !d.is_nss_ifb) tags.push(_('非 LAN'));
 		if (d.speed_mbps)       tags.push(d.speed_mbps + 'M');
 
 		return E('div', { 'class': 'lanspeed-ifcfg-card' }, [
@@ -993,7 +1011,18 @@ function refreshLive(viewState) {
 	refs.mTx.textContent = formatRate(totals.tx, prefs.unit);
 	refs.mRx.textContent = formatRate(totals.rx, prefs.unit);
 	refs.mClients.textContent = String(clientsAll.length);
-	refs.mClientsSub.textContent = _('%d 个活跃').format(totals.active);
+
+	/* cross-check with ECM host_count if available: if ECM knows more
+	 * clients than we are reporting, the gap is usually clients whose
+	 * traffic is fully hardware-accelerated and whose flows haven't
+	 * synced to conntrack yet. Surface this so users aren't confused. */
+	var nssEv = status.evidence && status.evidence.nss;
+	var subParts = [ _('%d 个活跃').format(totals.active) ];
+	if (nssEv && typeof nssEv.host_count === 'number' &&
+	    nssEv.host_count > clientsAll.length) {
+		subParts.push(_('ECM 知 %d').format(nssEv.host_count));
+	}
+	refs.mClientsSub.textContent = subParts.join(' · ');
 
 	/* critical strip */
 	var critical = asArray(status.warnings).filter(function(w) { return CRITICAL_WARNINGS[w]; });
@@ -1214,12 +1243,32 @@ function refreshLive(viewState) {
 		_('后端刷新 %s ms').format(textOrDash(status.refresh_interval_ms))
 	];
 	var nssEvidence = status.evidence && status.evidence.nss;
-	if (nssEvidence && nssEvidence.ecm_offload_active) {
+	if (nssEvidence && (nssEvidence.ecm_offload_active || nssEvidence.ppe_offload_active)) {
+		var engine = nssEvidence.ppe_offload_active ? 'PPE' : 'ECM';
+		var connBits = [];
 		if (typeof nssEvidence.accelerated_connections === 'number')
-			versionParts.push(_('NSS 加速连接 %d').format(nssEvidence.accelerated_connections));
+			connBits.push(_('总 %d').format(nssEvidence.accelerated_connections));
+		if (typeof nssEvidence.accelerated_tcp === 'number')
+			connBits.push('TCP ' + nssEvidence.accelerated_tcp);
+		if (typeof nssEvidence.accelerated_udp === 'number')
+			connBits.push('UDP ' + nssEvidence.accelerated_udp);
+		if (typeof nssEvidence.accelerated_other === 'number' && nssEvidence.accelerated_other > 0)
+			connBits.push(_('其它 %d').format(nssEvidence.accelerated_other));
+		if (connBits.length)
+			versionParts.push(_('NSS %s 加速连接').format(engine) + ' (' + connBits.join(' / ') + ')');
 		else
-			versionParts.push(_('NSS ECM 活跃'));
+			versionParts.push(_('NSS %s 活跃').format(engine));
+
+		var objectBits = [];
+		if (typeof nssEvidence.host_count === 'number')
+			objectBits.push(_('host %d').format(nssEvidence.host_count));
+		if (typeof nssEvidence.mapping_count === 'number')
+			objectBits.push(_('NAT 映射 %d').format(nssEvidence.mapping_count));
+		if (objectBits.length)
+			versionParts.push(_('ECM 数据库: ') + objectBits.join(' · '));
 	}
+	if (nssEvidence && Array.isArray(nssEvidence.subsystems) && nssEvidence.subsystems.length)
+		versionParts.push(_('NSS 子系统: ') + nssEvidence.subsystems.join(', '));
 	refs.versionLine.textContent = versionParts.join(' · ');
 
 	refs.diagnosticsSummary.textContent = warnings.length

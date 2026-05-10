@@ -154,7 +154,17 @@ struct runtime_probe {
 	bool nss_present;
 	bool nss_ecm_active;
 	bool nss_bridge_mgr;
+	bool nss_ifb_active;
+	bool nss_ppe_active;
+	bool nss_nsm_active;
+	bool nss_dp_active;
+	bool nss_mcs_active;
 	int  nss_ecm_accelerated_connections;
+	int  nss_ecm_tcp_connections;
+	int  nss_ecm_udp_connections;
+	int  nss_ecm_other_connections;
+	int  nss_ecm_host_count;
+	int  nss_ecm_mapping_count;
 	bool fullcone;
 	bool nf_conntrack_acct;
 	bool nf_conntrack_acct_present;
@@ -1110,18 +1120,66 @@ static void inspect_nss(struct runtime_probe *probe)
 	probe->nss_present =
 		file_exists("/sys/module/qca_nss_drv") ||
 		file_exists("/sys/bus/platform/drivers/qca-nss") ||
-		file_exists("/proc/sys/dev/nss") ||
-		file_exists("/sys/kernel/debug/qca-nss-drv");
+		file_exists("/sys/kernel/debug/qca-nss-drv") ||
+		file_exists("/proc/sys/dev/nss");
 
 	probe->nss_bridge_mgr =
 		file_exists("/sys/module/qca_nss_bridge_mgr");
 
+	/* NSS-IFB (nss-ifb.ko) mirrors NSS physical-interface ingress into a
+	 * virtual "nssifb" netdev so NSS-aware qdiscs (nsstbl / nssfq_codel)
+	 * can shape ingress traffic in NSS core. Its presence means this
+	 * router is using NSS for hardware QoS/SQM; nssifb's counters are
+	 * mirrored ingress, not real client traffic — don't attach BPF to it,
+	 * only observe it if the user wants. */
+	probe->nss_ifb_active =
+		file_exists("/sys/class/net/nssifb") ||
+		file_exists("/sys/module/nss_ifb") ||
+		file_exists("/sys/module/nss-ifb");
+
+	/* NSS-PPE (Packet Processing Engine) is the newer hw accelerator on
+	 * IPQ95xx / IPQ53xx platforms. Semantics match ECM: once PPE
+	 * accelerates a flow, packets bypass the Linux stack. */
+	probe->nss_ppe_active =
+		file_exists("/sys/module/qca_nss_ppe") ||
+		file_exists("/sys/module/ppe_drv") ||
+		file_exists("/sys/kernel/debug/qca-nss-ppe") ||
+		file_exists("/sys/kernel/debug/ppe_drv");
+
+	/* NSS-NSM (Network Stats Manager): in-kernel per-flow stats
+	 * aggregator. When present, it provides richer stats than bare
+	 * conntrack sync. We only note its presence here — reading the
+	 * aggregated stats needs genl/debugfs work that is out of scope. */
+	probe->nss_nsm_active =
+		file_exists("/sys/module/qca_nss_nsm") ||
+		file_exists("/sys/module/nss_nsm") ||
+		file_exists("/sys/kernel/debug/qca-nss-nsm");
+
+	/* NSS data plane driver: owns the physical ports on NSS platforms.
+	 * Used as a secondary signal for nss_present. */
+	probe->nss_dp_active =
+		file_exists("/sys/module/qca_nss_dp") ||
+		file_exists("/sys/module/nss_dp");
+	if (probe->nss_dp_active)
+		probe->nss_present = true;
+
+	/* qca-mcs: multicast snooping integration. Indicates multicast
+	 * traffic is handled specially; does not change per-client
+	 * accounting by itself. */
+	probe->nss_mcs_active =
+		file_exists("/sys/module/qca_mcs") ||
+		file_exists("/sys/module/mc_snooping");
+
 	probe->nss_ecm_active =
 		file_exists("/sys/module/ecm") ||
-		file_exists("/sys/kernel/debug/ecm") ||
-		file_exists("/proc/sys/net/ecm");
+		file_exists("/sys/kernel/debug/ecm");
 
 	probe->nss_ecm_accelerated_connections = -1;
+	probe->nss_ecm_tcp_connections = -1;
+	probe->nss_ecm_udp_connections = -1;
+	probe->nss_ecm_other_connections = -1;
+	probe->nss_ecm_host_count = -1;
+	probe->nss_ecm_mapping_count = -1;
 	{
 		FILE *fp = fopen("/sys/kernel/debug/ecm/ecm_db/connection_count", "r");
 		if (fp) {
@@ -1131,11 +1189,54 @@ static void inspect_nss(struct runtime_probe *probe)
 			fclose(fp);
 		}
 	}
+	/* connection_count_simple is a text line:
+	 *   "tcp 12 udp 34 other 5 total 51\n"
+	 * Primarily for use by the luci-bwc service, per ECM source comment.
+	 * Cheap to read, gives us protocol distribution of accelerated flows. */
+	{
+		FILE *fp = fopen("/sys/kernel/debug/ecm/ecm_db/connection_count_simple", "r");
+		if (fp) {
+			int tcp = -1, udp = -1, other = -1, total = -1;
+			if (fscanf(fp, "tcp %d udp %d other %d total %d",
+			           &tcp, &udp, &other, &total) == 4) {
+				if (tcp   >= 0) probe->nss_ecm_tcp_connections   = tcp;
+				if (udp   >= 0) probe->nss_ecm_udp_connections   = udp;
+				if (other >= 0) probe->nss_ecm_other_connections = other;
+				/* Prefer connection_count file above; use simple's
+				 * total only if that failed. */
+				if (probe->nss_ecm_accelerated_connections < 0 && total >= 0)
+					probe->nss_ecm_accelerated_connections = total;
+			}
+			fclose(fp);
+		}
+	}
+	/* ECM tracks L3 hosts and NAT mappings separately from flows.
+	 * host_count ~= number of distinct LAN endpoints ECM has seen.
+	 * mapping_count ~= NAT mappings (useful to cross-reference with
+	 * our per-client row count). */
+	{
+		FILE *fp = fopen("/sys/kernel/debug/ecm/ecm_db/host_count", "r");
+		if (fp) {
+			int n = -1;
+			if (fscanf(fp, "%d", &n) == 1 && n >= 0)
+				probe->nss_ecm_host_count = n;
+			fclose(fp);
+		}
+	}
+	{
+		FILE *fp = fopen("/sys/kernel/debug/ecm/ecm_db/mapping_count", "r");
+		if (fp) {
+			int n = -1;
+			if (fscanf(fp, "%d", &n) == 1 && n >= 0)
+				probe->nss_ecm_mapping_count = n;
+			fclose(fp);
+		}
+	}
 
-	/* Treat NSS+ECM as hardware flow offload: once ECM accelerates a
-	 * connection, the Linux-side BPF / nft flowtable sees nothing until
-	 * a timeout or the flow is manually decelerated. */
-	if (probe->nss_present && probe->nss_ecm_active)
+	/* Treat NSS+ECM (or PPE) as hardware flow offload: once acceleration
+	 * is active the Linux-side BPF / nft flowtable sees nothing until a
+	 * timeout or manual deceleration. */
+	if (probe->nss_present && (probe->nss_ecm_active || probe->nss_ppe_active))
 		probe->hardware_flow_offload = true;
 }
 
@@ -1222,11 +1323,12 @@ static bool conntrack_fallback_active(const struct runtime_probe *probe)
 
 static bool conntrack_fallback_low_confidence(const struct runtime_probe *probe)
 {
-	/* NSS ECM syncs per-flow byte counters (incl. hw-offloaded routed and
-	 * bridged flows) back into conntrack at ~1-2 s cadence. In that
-	 * scenario hardware_flow_offload=true is not a confidence killer
-	 * because conntrack_acct data is still accurate, just secondly. */
-	bool nss_ecm_sync = probe->nss_present && probe->nss_ecm_active;
+	/* NSS ECM / PPE syncs per-flow byte counters (incl. hw-offloaded
+	 * routed and bridged flows) back into conntrack at ~1-2 s cadence.
+	 * In that scenario hardware_flow_offload=true is not a confidence
+	 * killer because conntrack_acct data is still accurate, just
+	 * secondly. */
+	bool nss_ecm_sync = probe->nss_present && (probe->nss_ecm_active || probe->nss_ppe_active);
 	bool hw_off_non_nss = probe->hardware_flow_offload && !nss_ecm_sync;
 
 	return conntrack_fallback_active(probe) &&
@@ -1252,9 +1354,9 @@ static void add_conntrack_fallback_runtime_warnings(struct runtime_probe *probe)
 	if (!conntrack_fallback_active(probe))
 		return;
 
-	/* With NSS ECM active, ECM's conntrack sync covers bridged flows too,
-	 * so the "routed / NAT only" disclaimer does not apply. */
-	if (!(probe->nss_present && probe->nss_ecm_active))
+	/* With NSS ECM / PPE active, the counter sync covers bridged flows
+	 * too, so the "routed / NAT only" disclaimer does not apply. */
+	if (!(probe->nss_present && (probe->nss_ecm_active || probe->nss_ppe_active)))
 		add_warning(probe, "conntrack_routed_nat_only");
 
 	if (!probe->flowtable_counter)
@@ -1514,6 +1616,10 @@ static void inspect_runtime(struct runtime_probe *probe)
 		add_warning(probe, "nss_detected");
 	if (probe->nss_ecm_active)
 		add_warning(probe, "nss_ecm_offload_active");
+	if (probe->nss_ppe_active)
+		add_warning(probe, "nss_ppe_offload_active");
+	if (probe->nss_ifb_active)
+		add_warning(probe, "nss_ifb_detected");
 	if (probe->fullcone) {
 		add_warning(probe, "fullcone_detected");
 		add_warning(probe, "fullcone_nat_enabled");
@@ -1592,20 +1698,61 @@ static void finish_probe_evidence(struct runtime_probe *probe, const char *metho
 			       json_object_new_string(enabled_state(probe->hardware_flow_offload)));
 	{
 		struct json_object *nss = json_object_new_object();
+		struct json_object *subs = json_object_new_array();
+
 		json_object_object_add(nss, "present", json_object_new_boolean(probe->nss_present));
 		json_object_object_add(nss, "ecm_offload_active", json_object_new_boolean(probe->nss_ecm_active));
+		json_object_object_add(nss, "ppe_offload_active", json_object_new_boolean(probe->nss_ppe_active));
 		json_object_object_add(nss, "bridge_mgr", json_object_new_boolean(probe->nss_bridge_mgr));
+		json_object_object_add(nss, "ifb_active", json_object_new_boolean(probe->nss_ifb_active));
+		json_object_object_add(nss, "nsm_active", json_object_new_boolean(probe->nss_nsm_active));
+		json_object_object_add(nss, "dp_active", json_object_new_boolean(probe->nss_dp_active));
+		json_object_object_add(nss, "mcs_active", json_object_new_boolean(probe->nss_mcs_active));
 		if (probe->nss_ecm_accelerated_connections >= 0)
 			json_object_object_add(nss, "accelerated_connections",
 			                       json_object_new_int(probe->nss_ecm_accelerated_connections));
+		if (probe->nss_ecm_tcp_connections >= 0)
+			json_object_object_add(nss, "accelerated_tcp",
+			                       json_object_new_int(probe->nss_ecm_tcp_connections));
+		if (probe->nss_ecm_udp_connections >= 0)
+			json_object_object_add(nss, "accelerated_udp",
+			                       json_object_new_int(probe->nss_ecm_udp_connections));
+		if (probe->nss_ecm_other_connections >= 0)
+			json_object_object_add(nss, "accelerated_other",
+			                       json_object_new_int(probe->nss_ecm_other_connections));
+		if (probe->nss_ecm_host_count >= 0)
+			json_object_object_add(nss, "host_count",
+			                       json_object_new_int(probe->nss_ecm_host_count));
+		if (probe->nss_ecm_mapping_count >= 0)
+			json_object_object_add(nss, "mapping_count",
+			                       json_object_new_int(probe->nss_ecm_mapping_count));
+
+		if (probe->nss_present)     json_object_array_add(subs, json_object_new_string("drv"));
+		if (probe->nss_dp_active)   json_object_array_add(subs, json_object_new_string("dp"));
+		if (probe->nss_ecm_active)  json_object_array_add(subs, json_object_new_string("ecm"));
+		if (probe->nss_ppe_active)  json_object_array_add(subs, json_object_new_string("ppe"));
+		if (probe->nss_nsm_active)  json_object_array_add(subs, json_object_new_string("nsm"));
+		if (probe->nss_bridge_mgr)  json_object_array_add(subs, json_object_new_string("bridge_mgr"));
+		if (probe->nss_ifb_active)  json_object_array_add(subs, json_object_new_string("ifb"));
+		if (probe->nss_mcs_active)  json_object_array_add(subs, json_object_new_string("mcs"));
+		json_object_object_add(nss, "subsystems", subs);
+
 		json_object_object_add(nss, "counter_source", json_object_new_string(
-			probe->nss_ecm_active ? "ecm_conntrack_sync_and_netdev_counters" : "none"));
+			probe->nss_ppe_active ? "ppe_conntrack_sync"
+			: probe->nss_ecm_active ? "ecm_conntrack_sync"
+			: "netdev_counters_only"));
+		json_object_object_add(nss, "counter_cadence_seconds", json_object_new_int(
+			(probe->nss_ecm_active || probe->nss_ppe_active) ? 2 : 0));
 		json_object_object_add(nss, "bpf_visibility", json_object_new_string(
-			probe->nss_ecm_active
-				? "slow_path_only_until_ecm_decelerates"
+			(probe->nss_ecm_active || probe->nss_ppe_active)
+				? "slow_path_only_until_deceleration"
 				: "full_when_nss_not_offloading"));
 		json_object_object_add(nss, "interface_counters_accurate",
 		                       json_object_new_boolean(true));
+		json_object_object_add(nss, "nssifb_policy", json_object_new_string(
+			probe->nss_ifb_active
+				? "mirror_of_physical_ingress_not_a_real_client_source"
+				: "not_present"));
 		json_object_object_add(probe->evidence, "nss", nss);
 	}
 	json_object_object_add(probe->evidence, "fullcone",
@@ -1683,7 +1830,12 @@ static void add_capabilities_from_values(struct json_object *parent, bool bpf,
 	json_object_object_add(capabilities, "hardware_flow_offload", json_object_new_boolean(probe ? probe->hardware_flow_offload : false));
 	json_object_object_add(capabilities, "nss", json_object_new_boolean(probe ? probe->nss_present : false));
 	json_object_object_add(capabilities, "nss_ecm_offload", json_object_new_boolean(probe ? probe->nss_ecm_active : false));
+	json_object_object_add(capabilities, "nss_ppe_offload", json_object_new_boolean(probe ? probe->nss_ppe_active : false));
 	json_object_object_add(capabilities, "nss_bridge_mgr", json_object_new_boolean(probe ? probe->nss_bridge_mgr : false));
+	json_object_object_add(capabilities, "nss_ifb", json_object_new_boolean(probe ? probe->nss_ifb_active : false));
+	json_object_object_add(capabilities, "nss_nsm", json_object_new_boolean(probe ? probe->nss_nsm_active : false));
+	json_object_object_add(capabilities, "nss_dp", json_object_new_boolean(probe ? probe->nss_dp_active : false));
+	json_object_object_add(capabilities, "nss_mcs", json_object_new_boolean(probe ? probe->nss_mcs_active : false));
 	json_object_object_add(capabilities, "fullcone", json_object_new_boolean(probe ? probe->fullcone : false));
 	json_object_object_add(capabilities, "nf_conntrack_acct", json_object_new_boolean(probe ? probe->nf_conntrack_acct : false));
 	json_object_object_add(capabilities, "flowtable_counter", json_object_new_boolean(probe ? probe->flowtable_counter : false));
@@ -2411,10 +2563,10 @@ static void add_conntrack_common_warnings(const struct runtime_probe *probe,
 	if (probe->sqm || probe->qosify || probe->ifb)
 		add_string_unique(warnings, "qos_ifb_confidence_low");
 	if (probe->hardware_flow_offload || probe->software_flow_offload) {
-		/* NSS+ECM syncs counters back to conntrack; downgrade the
-		 * blanket "flow_offload_confidence_low" to a softer warning
-		 * that reflects the actual sync cadence. */
-		if (probe->nss_present && probe->nss_ecm_active)
+		/* NSS ECM / PPE syncs counters back to conntrack; downgrade
+		 * the blanket "flow_offload_confidence_low" to a softer
+		 * warning that reflects the actual sync cadence. */
+		if (probe->nss_present && (probe->nss_ecm_active || probe->nss_ppe_active))
 			add_string_unique(warnings, "nss_ecm_sync_cadence");
 		else
 			add_string_unique(warnings, "flow_offload_confidence_low");
@@ -2557,7 +2709,7 @@ static void emit_conntrack_clients(struct json_object *clients,
 		json_object_object_add(client, "last_seen", json_object_new_int64((int64_t)current[i].last_seen_ms));
 		json_object_object_add(client, "collector_mode",
 			json_object_new_string(
-				(probe->nss_present && probe->nss_ecm_active)
+				(probe->nss_present && (probe->nss_ecm_active || probe->nss_ppe_active))
 					? "conntrack_ecm_sync"
 					: "conntrack"));
 		json_object_object_add(client, "confidence", json_object_new_string(conntrack_fallback_confidence(probe)));
@@ -2987,6 +3139,10 @@ static bool sysdevice_is_recommended_lan(const char *name)
 		return false;
 	if (!strncmp(name, "utun", 4))
 		return false;
+	/* nssifb mirrors NSS physical ingress; BPF-attaching it would
+	 * double-count mirrored bytes from eth0. Observe-only at most. */
+	if (!strcmp(name, "nssifb"))
+		return false;
 	return true;
 }
 
@@ -3069,6 +3225,10 @@ static int sysdevices_method(struct ubus_context *ubus, struct ubus_object *obj,
 			                       json_object_new_boolean(sysdevice_is_recommended_lan(name)));
 			json_object_object_add(d, "is_bridge", json_object_new_boolean(is_bridge));
 			json_object_object_add(d, "is_bridge_port", json_object_new_boolean(has_upper));
+			/* explicitly flag NSS mirror ifaces so the UI can tell the
+			 * user "this is a mirror, don't attach BPF here". */
+			json_object_object_add(d, "is_nss_ifb",
+			                       json_object_new_boolean(!strcmp(name, "nssifb")));
 			if (speed_raw > 0 && speed_raw < (1ULL << 31))
 				json_object_object_add(d, "speed_mbps",
 				                       json_object_new_int64((int64_t)speed_raw));
