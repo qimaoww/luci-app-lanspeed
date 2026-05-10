@@ -151,6 +151,9 @@ struct runtime_probe {
 	bool bpf_object;
 	bool software_flow_offload;
 	bool hardware_flow_offload;
+	bool nss_present;
+	bool nss_ecm_active;
+	bool nss_bridge_mgr;
 	bool fullcone;
 	bool nf_conntrack_acct;
 	bool nf_conntrack_acct_present;
@@ -1085,6 +1088,45 @@ static void inspect_ubus(struct runtime_probe *probe)
 	}
 }
 
+static void inspect_nss(struct runtime_probe *probe)
+{
+	/* Qualcomm NSS cores sit between the PHY and the Linux kernel on
+	 * IPQ807x / IPQ60xx / IPQ50xx platforms. Once ECM (Enhanced
+	 * Connection Manager) pushes a flow into NSS hardware, subsequent
+	 * packets bypass the CPU entirely: our tc clsact / BPF filter
+	 * attaches at the Linux edge, so it only sees slow-path traffic
+	 * (control plane, first packets, broadcast, exceptions).
+	 *
+	 * /proc/net/nf_conntrack stays usable because ECM periodically syncs
+	 * per-flow byte counters back into conntrack, at ECM sync cadence
+	 * rather than true per-packet precision.
+	 *
+	 * /sys/class/net/<if>/statistics/{rx,tx}_bytes stays accurate
+	 * because NSS drivers push those counters through the kernel netdev
+	 * structure even for hardware-offloaded paths, so interface
+	 * throughput totals are unaffected.
+	 */
+	probe->nss_present =
+		file_exists("/sys/module/qca_nss_drv") ||
+		file_exists("/sys/bus/platform/drivers/qca-nss") ||
+		file_exists("/proc/sys/dev/nss") ||
+		file_exists("/sys/kernel/debug/qca-nss-drv");
+
+	probe->nss_bridge_mgr =
+		file_exists("/sys/module/qca_nss_bridge_mgr");
+
+	probe->nss_ecm_active =
+		file_exists("/sys/module/ecm") ||
+		file_exists("/sys/kernel/debug/ecm") ||
+		file_exists("/proc/sys/net/ecm");
+
+	/* Treat NSS+ECM as hardware flow offload: once ECM accelerates a
+	 * connection, the Linux-side BPF / nft flowtable sees nothing until
+	 * a timeout or the flow is manually decelerated. */
+	if (probe->nss_present && probe->nss_ecm_active)
+		probe->hardware_flow_offload = true;
+}
+
 static void inspect_service_presence(struct runtime_probe *probe)
 {
 	bool qosify_command = probe->qosify;
@@ -1437,6 +1479,7 @@ static void inspect_runtime(struct runtime_probe *probe)
 	inspect_bpf_assets(probe);
 	inspect_ubus(probe);
 	inspect_dae_runtime(probe);
+	inspect_nss(probe);
 	inspect_collector_attach_model(probe);
 	inspect_service_presence(probe);
 
@@ -1444,6 +1487,10 @@ static void inspect_runtime(struct runtime_probe *probe)
 		add_warning(probe, "software_flow_offload_enabled");
 	if (probe->hardware_flow_offload)
 		add_warning(probe, "hardware_flow_offload_unsupported");
+	if (probe->nss_present)
+		add_warning(probe, "nss_detected");
+	if (probe->nss_ecm_active)
+		add_warning(probe, "nss_ecm_offload_active");
 	if (probe->fullcone) {
 		add_warning(probe, "fullcone_detected");
 		add_warning(probe, "fullcone_nat_enabled");
@@ -1520,6 +1567,21 @@ static void finish_probe_evidence(struct runtime_probe *probe, const char *metho
 			       json_object_new_string(enabled_state(probe->software_flow_offload)));
 	json_object_object_add(probe->evidence, "hardware_flow_offload",
 			       json_object_new_string(enabled_state(probe->hardware_flow_offload)));
+	{
+		struct json_object *nss = json_object_new_object();
+		json_object_object_add(nss, "present", json_object_new_boolean(probe->nss_present));
+		json_object_object_add(nss, "ecm_offload_active", json_object_new_boolean(probe->nss_ecm_active));
+		json_object_object_add(nss, "bridge_mgr", json_object_new_boolean(probe->nss_bridge_mgr));
+		json_object_object_add(nss, "counter_source", json_object_new_string(
+			probe->nss_ecm_active ? "ecm_conntrack_sync_and_netdev_counters" : "none"));
+		json_object_object_add(nss, "bpf_visibility", json_object_new_string(
+			probe->nss_ecm_active
+				? "slow_path_only_until_ecm_decelerates"
+				: "full_when_nss_not_offloading"));
+		json_object_object_add(nss, "interface_counters_accurate",
+		                       json_object_new_boolean(true));
+		json_object_object_add(probe->evidence, "nss", nss);
+	}
 	json_object_object_add(probe->evidence, "fullcone",
 			       json_object_new_string(enabled_state(probe->fullcone)));
 	json_object_object_add(probe->evidence, "fullcone_nat_enabled",
@@ -1593,6 +1655,9 @@ static void add_capabilities_from_values(struct json_object *parent, bool bpf,
 	json_object_object_add(capabilities, "nft", json_object_new_boolean(probe ? probe->nft : false));
 	json_object_object_add(capabilities, "software_flow_offload", json_object_new_boolean(probe ? probe->software_flow_offload : false));
 	json_object_object_add(capabilities, "hardware_flow_offload", json_object_new_boolean(probe ? probe->hardware_flow_offload : false));
+	json_object_object_add(capabilities, "nss", json_object_new_boolean(probe ? probe->nss_present : false));
+	json_object_object_add(capabilities, "nss_ecm_offload", json_object_new_boolean(probe ? probe->nss_ecm_active : false));
+	json_object_object_add(capabilities, "nss_bridge_mgr", json_object_new_boolean(probe ? probe->nss_bridge_mgr : false));
 	json_object_object_add(capabilities, "fullcone", json_object_new_boolean(probe ? probe->fullcone : false));
 	json_object_object_add(capabilities, "nf_conntrack_acct", json_object_new_boolean(probe ? probe->nf_conntrack_acct : false));
 	json_object_object_add(capabilities, "flowtable_counter", json_object_new_boolean(probe ? probe->flowtable_counter : false));
