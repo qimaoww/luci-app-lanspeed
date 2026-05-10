@@ -6,7 +6,13 @@
 
 #include <bpf/bpf_helpers.h>
 
-#define LANSPEED_MAX_CLIENTS 512
+/* LAN client cardinality: each client takes two entries (tx and rx).
+ * 2048 keys ≈ 1024 distinct MAC+zone clients, which covers large homes
+ * with VLANs, guest SSIDs and many IoT devices.  Override with
+ * -DLANSPEED_MAX_CLIENTS=N at build time if needed. */
+#ifndef LANSPEED_MAX_CLIENTS
+#define LANSPEED_MAX_CLIENTS 2048
+#endif
 #define LANSPEED_DIR_TX 1
 #define LANSPEED_DIR_RX 2
 
@@ -25,7 +31,7 @@ struct lanspeed_counters {
 };
 
 struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__uint(max_entries, LANSPEED_MAX_CLIENTS);
 	__type(key, struct lanspeed_key);
 	__type(value, struct lanspeed_counters);

@@ -153,6 +153,7 @@ var WARNING_LABELS = {
 	nss_ecm_offload_active: _('NSS ECM 正在硬件加速连接，客户端数据经 ECM→conntrack 同步得到，置信度受限。'),
 	nss_ecm_sync_cadence: _('NSS 硬件卸载中：客户端计数经 ECM/PPE 同步回 conntrack，精度为秒级节拍，不是逐包实时。'),
 	nss_ifb_detected: _('检测到 NSS IFB（nssifb）：NSS 硬件 QoS 的镜像接口，其计数是物理口 ingress 的镜像，不应 attach BPF，只能作为观察对象。'),
+	nssifb_collect_rejected: _('配置中请求 attach BPF 到 nssifb，daemon 已忽略——nssifb 是 NSS 镜像接口，attach 会重复计数物理口 ingress。请改用"观察"模式。'),
 	nss_ppe_offload_active: _('NSS PPE 正在硬件加速连接（IPQ95xx/53xx 新一代硬件加速），BPF 只能看到慢路径。'),
 	fullcone_detected: _('检测到 Fullcone NAT，NAT 辅助路径会作为置信度告警展示。'),
 	fullcone_nat_enabled: _('Fullcone NAT 已启用，NAT 辅助路径会作为置信度告警展示。'),
@@ -192,6 +193,7 @@ var CRITICAL_WARNINGS = {
 	nss_ecm_offload_active: true,
 	nss_ppe_offload_active: true,
 	tc_filter_conflict: true,
+	nssifb_collect_rejected: true,
 	unsafe_attach: true,
 	tc_missing: true,
 	lan_edge_missing: true,
@@ -471,6 +473,17 @@ function saveIfaceConfig(viewState) {
 	refs.ifcfgReloadBtn.disabled = true;
 	refs.ifcfgStatus.textContent = _('保存中…');
 
+	/* Client-side guard: reject nssifb in collect list even if the user
+	 * toggled it somehow. daemon also rejects on load, but failing fast
+	 * here is friendlier. */
+	if (sel.attach.indexOf('nssifb') !== -1) {
+		viewState.ifcfgSaving = false;
+		refs.ifcfgSaveBtn.disabled = false;
+		refs.ifcfgReloadBtn.disabled = false;
+		refs.ifcfgStatus.textContent = _('nssifb 不能用作采集接口；请改"观察"');
+		return;
+	}
+
 	/* delete old lists (tolerate missing options), then set new ones, commit, reload daemon */
 	Promise.resolve()
 		.then(function() {
@@ -715,6 +728,8 @@ function buildShell(viewState) {
 	refs.mRx         = E('div', { 'class': 'big' }, '0');
 	refs.mClients    = E('div', { 'class': 'big' }, '0');
 	refs.mClientsSub = E('div', { 'class': 'hint' }, '-');
+	refs.mCoverage     = E('div', { 'class': 'big' }, '-');
+	refs.mCoverageSub  = E('div', { 'class': 'hint' }, '-');
 	var metrics = E('div', { 'class': 'lanspeed-metrics' }, [
 		E('div', { 'class': 'lanspeed-metric' }, [
 			E('div', { 'class': 'caption' }, _('上行 · tx')),
@@ -730,6 +745,14 @@ function buildShell(viewState) {
 			E('div', { 'class': 'caption' }, _('客户端')),
 			refs.mClients,
 			refs.mClientsSub
+		]),
+		E('div', {
+			'class': 'lanspeed-metric',
+			'title': _('客户端合计 ÷ LAN 接口合计。100% 表示所有流量都能按客户端归因；明显低于 100% 说明有硬件卸载 / 桥接 LAN-to-LAN / 广播 / 未归属 MAC。')
+		}, [
+			E('div', { 'class': 'caption' }, _('覆盖率')),
+			refs.mCoverage,
+			refs.mCoverageSub
 		])
 	]);
 
@@ -1023,6 +1046,32 @@ function refreshLive(viewState) {
 		subParts.push(_('ECM 知 %d').format(nssEv.host_count));
 	}
 	refs.mClientsSub.textContent = subParts.join(' · ');
+
+	/* coverage: client sum / LAN interface total.
+	 * Computed here (not inside the ifaces details block) so the overview
+	 * card metric stays live regardless of details state. */
+	var ifacesAll = asArray(viewState.interfaces && viewState.interfaces.interfaces);
+	var lanIfUp = 0, lanIfDn = 0;
+	ifacesAll.forEach(function(i) {
+		if ((i.role || 'lan') !== 'lan') return;
+		lanIfUp += Number(i.rx_bps) || 0;
+		lanIfDn += Number(i.tx_bps) || 0;
+	});
+	var lanTotal  = lanIfUp + lanIfDn;
+	var liveTotal = totals.tx + totals.rx;
+	if (lanTotal < INACTIVE_BPS_THRESHOLD) {
+		refs.mCoverage.textContent = '-';
+		refs.mCoverageSub.textContent = _('LAN 无活动流量');
+	} else {
+		var pct = Math.min(100, Math.round((liveTotal / lanTotal) * 100));
+		refs.mCoverage.textContent = pct + '%';
+		var missingBps = Math.max(0, lanTotal - liveTotal);
+		if (pct < 85) {
+			refs.mCoverageSub.textContent = _('缺口 ') + formatRate(missingBps, prefs.unit);
+		} else {
+			refs.mCoverageSub.textContent = _('客户端合计 / 接口合计');
+		}
+	}
 
 	/* critical strip */
 	var critical = asArray(status.warnings).filter(function(w) { return CRITICAL_WARNINGS[w]; });

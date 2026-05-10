@@ -26,7 +26,7 @@
 #define LANSPEED_VERSION "0.1.0"
 #define DEFAULT_REFRESH_INTERVAL_MS 1000
 #define MIN_REFRESH_INTERVAL_MS 500
-#define DEFAULT_MAX_CLIENTS 512
+#define DEFAULT_MAX_CLIENTS 2048
 #define RATE_WINDOW_COUNT 3
 #define STALE_CLIENT_MS 5000
 #define COMMAND_OUTPUT_LIMIT 4096
@@ -63,6 +63,7 @@ static int max_clients = DEFAULT_MAX_CLIENTS;
 static bool enable_bpf;
 static bool enable_conntrack_fallback = true;
 static bool refresh_interval_clamped;
+static bool rejected_nssifb_collect;
 
 struct arp_entry {
 	char ip[IP_STR_LEN];
@@ -845,19 +846,65 @@ static void inspect_tc(struct runtime_probe *probe)
 		add_warning(probe, "probe_error");
 	}
 
-	exit_code = run_command_capture("tc filter show dev br-lan ingress 2>&1", output, sizeof(output));
-	if (exit_code == 0 && output[0]) {
-		probe->existing_tc_filters = strstr(output, "filter") != NULL || strstr(output, "bpf") != NULL;
-		inspect_tc_filter_lines(probe, "br-lan", "ingress", output);
+	/* Scan tc filters on every configured LAN-edge interface instead of
+	 * assuming br-lan. This matters on DSA / single-NIC / VLAN / AP-only
+	 * deployments where br-lan may not exist. If no interface is
+	 * configured yet, fall back to br-lan / eth0 so the probe still
+	 * surfaces something useful during first install. */
+	{
+		const char *scan_list[LANSPEED_BPF_IFACE_MAX + 4];
+		size_t scan_count = 0;
+		size_t idx;
+
+		for (idx = 0; idx < bpf_attach_ifname_count &&
+			      scan_count < sizeof(scan_list) / sizeof(scan_list[0]); idx++)
+			scan_list[scan_count++] = bpf_attach_ifnames[idx];
+		for (idx = 0; idx < observe_ifname_count &&
+			      scan_count < sizeof(scan_list) / sizeof(scan_list[0]); idx++)
+			scan_list[scan_count++] = observe_ifnames[idx];
+		if (!scan_count) {
+			/* discovery fallback for a fresh install */
+			if (file_exists("/sys/class/net/br-lan"))
+				scan_list[scan_count++] = "br-lan";
+			if (file_exists("/sys/class/net/eth0") &&
+			    scan_count < sizeof(scan_list) / sizeof(scan_list[0]))
+				scan_list[scan_count++] = "eth0";
+		}
+
+		probe->existing_tc_filters = false;
+		for (idx = 0; idx < scan_count; idx++) {
+			const char *dev = scan_list[idx];
+			char cmd[128];
+			char evidence_key[64];
+			const char *direction[2] = { "ingress", "egress" };
+			size_t dir_idx;
+
+			for (dir_idx = 0; dir_idx < 2; dir_idx++) {
+				snprintf(cmd, sizeof(cmd),
+				         "tc filter show dev %s %s 2>&1",
+				         dev, direction[dir_idx]);
+				exit_code = run_command_capture(cmd, output, sizeof(output));
+				if (exit_code == 0 && output[0]) {
+					if (strstr(output, "filter") != NULL || strstr(output, "bpf") != NULL)
+						probe->existing_tc_filters = true;
+					inspect_tc_filter_lines(probe, dev, direction[dir_idx], output);
+				} else if (exit_code != 0 &&
+				           strstr(output, "Cannot") == NULL &&
+				           strstr(output, "No such") == NULL) {
+					probe->probe_error = true;
+					probe->lan_probe_error = true;
+					add_warning(probe, "probe_error");
+				}
+				snprintf(evidence_key, sizeof(evidence_key),
+				         "tc_filter_show_%s_%s", dev, direction[dir_idx]);
+				add_command_probe_evidence(probe, evidence_key, cmd, exit_code,
+					probe->existing_tc_filters
+						? "existing filters detected on at least one configured device"
+						: "no existing filters on this device",
+					probe->existing_tc_filters);
+			}
+		}
 	}
-	else if (exit_code != 0 && strstr(output, "Cannot") == NULL && strstr(output, "No such") == NULL) {
-		probe->probe_error = true;
-		probe->lan_probe_error = true;
-		add_warning(probe, "probe_error");
-	}
-	add_command_probe_evidence(probe, "tc_filter_show_br_lan", "tc filter show dev br-lan ingress",
-				   exit_code, probe->existing_tc_filters ? "existing ingress filters detected" : "no existing ingress filters detected",
-				   probe->existing_tc_filters);
 
 	if (!probe->bpf)
 		add_warning(probe, "bpf_unsupported");
@@ -1062,8 +1109,30 @@ static void inspect_files(struct runtime_probe *probe)
 	probe->ifb = file_exists("/sys/class/net/ifb0") || dir_has_entries("/sys/class/net/ifb");
 	add_file_evidence(probe, "ifb0", "/sys/class/net/ifb0", file_exists("/sys/class/net/ifb0"), NULL);
 
-	probe->lan_bridge = file_exists("/sys/class/net/br-lan/bridge");
-	add_file_evidence(probe, "lan_bridge", "/sys/class/net/br-lan/bridge", probe->lan_bridge, NULL);
+	/* lan_bridge: true if any configured collect/observe interface is
+	 * a bridge, or (first-install fallback) br-lan exists. */
+	{
+		size_t idx;
+		probe->lan_bridge = false;
+		for (idx = 0; idx < bpf_attach_ifname_count && !probe->lan_bridge; idx++) {
+			char path[PATH_MAX];
+			snprintf(path, sizeof(path), "/sys/class/net/%s/bridge",
+			         bpf_attach_ifnames[idx]);
+			if (file_exists(path))
+				probe->lan_bridge = true;
+		}
+		for (idx = 0; idx < observe_ifname_count && !probe->lan_bridge; idx++) {
+			char path[PATH_MAX];
+			snprintf(path, sizeof(path), "/sys/class/net/%s/bridge",
+			         observe_ifnames[idx]);
+			if (file_exists(path))
+				probe->lan_bridge = true;
+		}
+		if (!probe->lan_bridge)
+			probe->lan_bridge = file_exists("/sys/class/net/br-lan/bridge");
+	}
+	add_file_evidence(probe, "lan_bridge", "any_configured_device/bridge",
+	                  probe->lan_bridge, NULL);
 
 	probe->vlan = file_exists("/proc/net/vlan/config");
 	add_file_evidence(probe, "vlan", "/proc/net/vlan/config", probe->vlan, NULL);
@@ -1620,6 +1689,8 @@ static void inspect_runtime(struct runtime_probe *probe)
 		add_warning(probe, "nss_ppe_offload_active");
 	if (probe->nss_ifb_active)
 		add_warning(probe, "nss_ifb_detected");
+	if (rejected_nssifb_collect)
+		add_warning(probe, "nssifb_collect_rejected");
 	if (probe->fullcone) {
 		add_warning(probe, "fullcone_detected");
 		add_warning(probe, "fullcone_nat_enabled");
@@ -3394,6 +3465,12 @@ static void add_bpf_attach_ifname(const char *name)
 
 	if (!name || !*name)
 		return;
+	/* nssifb is the NSS ingress-shaping mirror interface. Attaching a
+	 * BPF filter to it would count mirrored ingress bytes, double-billing
+	 * the real physical interface. Explicitly reject and let the caller
+	 * surface a warning via the caller path. */
+	if (!strcmp(name, "nssifb"))
+		return;
 	if (bpf_attach_ifname_count >= LANSPEED_BPF_IFACE_MAX)
 		return;
 
@@ -3447,21 +3524,31 @@ static void load_bpf_attach_list(struct uci_context *uci)
 	char ifname_path[] = "lanspeed.main.ifname";
 	char include_path[] = "lanspeed.main.interface_include";
 
+	rejected_nssifb_collect = false;
+
 	if (!uci_lookup_ptr(uci, &ptr, ifname_path, true) && ptr.o) {
 		if (ptr.o->type == UCI_TYPE_LIST) {
 			uci_foreach_element(&ptr.o->v.list, e) {
+				if (!strcmp(e->name, "nssifb"))
+					rejected_nssifb_collect = true;
 				add_bpf_attach_ifname(e->name);
 			}
 		} else if (ptr.o->type == UCI_TYPE_STRING && ptr.o->v.string) {
+			if (!strcmp(ptr.o->v.string, "nssifb"))
+				rejected_nssifb_collect = true;
 			add_bpf_attach_ifname(ptr.o->v.string);
 		}
 	}
 	if (!uci_lookup_ptr(uci, &ptr, include_path, true) && ptr.o) {
 		if (ptr.o->type == UCI_TYPE_LIST) {
 			uci_foreach_element(&ptr.o->v.list, e) {
+				if (!strcmp(e->name, "nssifb"))
+					rejected_nssifb_collect = true;
 				add_bpf_attach_ifname(e->name);
 			}
 		} else if (ptr.o->type == UCI_TYPE_STRING && ptr.o->v.string) {
+			if (!strcmp(ptr.o->v.string, "nssifb"))
+				rejected_nssifb_collect = true;
 			add_bpf_attach_ifname(ptr.o->v.string);
 		}
 	}

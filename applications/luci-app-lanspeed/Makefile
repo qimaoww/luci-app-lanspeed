@@ -21,9 +21,11 @@ define Package/luci-app-lanspeed
 endef
 
 define Package/luci-app-lanspeed/description
- LuCI status page that reads the read-only lanspeed ubus API and shows
- per-client LAN speeds. The UI makes no configuration changes and honours
- the Full/Degraded/Unsupported mode reported by lanspeedd.
+ LuCI status and interface configuration page for lanspeedd. Reads per-client
+ LAN speeds from the lanspeed ubus API and can update /etc/config/lanspeed
+ interface assignments (collect / observe / off) and trigger a daemon reload.
+ Respects the Full / Degraded / Unsupported data-source semantics reported by
+ lanspeedd and surfaces coverage, confidence and NSS / offload state.
 endef
 
 define Build/Prepare
