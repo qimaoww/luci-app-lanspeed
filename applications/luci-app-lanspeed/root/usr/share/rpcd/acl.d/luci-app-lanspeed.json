@@ -1,13 +1,31 @@
 {
   "luci-app-lanspeed": {
-    "description": "Grant read-only access to lanspeed ubus data",
+    "description": "Grant read access to lanspeed ubus data and write access to reload / configure interfaces",
     "read": {
       "ubus": {
         "lanspeed": [
           "status",
           "clients",
           "health",
-          "interfaces"
+          "interfaces",
+          "sysdevices"
+        ]
+      },
+      "uci": [
+        "lanspeed"
+      ]
+    },
+    "write": {
+      "ubus": {
+        "rc": [
+          "init"
+        ],
+        "uci": [
+          "set",
+          "delete",
+          "add",
+          "commit",
+          "apply"
         ]
       },
       "uci": [

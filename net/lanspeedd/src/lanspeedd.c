@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -48,6 +49,12 @@
 #define IDENTITY_KEY_STR_LEN 80
 #define MAX_CLIENT_IPS 4
 #define OPENCLASH_VALUE_STR_LEN 64
+#define HOSTNAME_STR_LEN 64
+#define HOSTNAME_CACHE_MAX 1024
+#define HOSTNAME_REFRESH_MS 10000
+#define DHCP_LEASES_PATH "/tmp/dhcp.leases"
+#define HOSTS_DIR "/tmp/hosts"
+#define ETC_HOSTS_PATH "/etc/hosts"
 
 static struct ubus_context *ctx;
 static struct blob_buf reply;
@@ -117,6 +124,10 @@ struct bpf_client_sample {
 static char bpf_attach_ifnames[LANSPEED_BPF_IFACE_MAX][LANSPEED_BPF_IFNAME_LEN];
 static size_t bpf_attach_ifname_count;
 static char bpf_object_runtime_path[PATH_MAX];
+
+/* observe-only ifnames: shown in interfaces throughput card but not BPF-attached */
+static char observe_ifnames[LANSPEED_BPF_IFACE_MAX][LANSPEED_BPF_IFNAME_LEN];
+static size_t observe_ifname_count;
 
 static struct bpf_client_sample bpf_current_samples[DEFAULT_MAX_CLIENTS];
 static size_t bpf_current_sample_count;
@@ -1744,6 +1755,289 @@ static void derive_zone_from_ifname(const char *ifname, char *zone, size_t zone_
 		snprintf(zone, zone_size, "lan");
 }
 
+/* ------------------------------------------------------------------
+ * Hostname cache
+ *
+ * Resolves client hostnames from (in priority order):
+ *   1. /tmp/dhcp.leases     dnsmasq DHCPv4 leases, MAC-keyed  (4th column)
+ *   2. /tmp/hosts directory dnsmasq auto-generated host files (IP host ...)
+ *   3. /etc/hosts           admin overrides                   (IP host ...)
+ *
+ * The cache keeps two flat arrays: one MAC-keyed and one IP-keyed, each
+ * capped at HOSTNAME_CACHE_MAX.  It is refreshed at most every
+ * HOSTNAME_REFRESH_MS and whenever any of the source files' mtimes move.
+ * All entries are lower-cased; leases with hostname "*" are ignored.
+ * ------------------------------------------------------------------ */
+
+struct hostname_by_mac {
+	char mac[MAC_STR_LEN];
+	char name[HOSTNAME_STR_LEN];
+};
+
+struct hostname_by_ip {
+	char ip[IP_STR_LEN];
+	char name[HOSTNAME_STR_LEN];
+};
+
+static struct hostname_by_mac hostname_mac_cache[HOSTNAME_CACHE_MAX];
+static size_t hostname_mac_cache_count;
+static struct hostname_by_ip hostname_ip_cache[HOSTNAME_CACHE_MAX];
+static size_t hostname_ip_cache_count;
+static uint64_t hostname_cache_refresh_ms;
+static time_t hostname_cache_leases_mtime;
+static time_t hostname_cache_etchosts_mtime;
+static time_t hostname_cache_hostsdir_mtime;
+
+static bool hostname_valid(const char *name)
+{
+	size_t i;
+
+	if (!name || !name[0])
+		return false;
+	if (!strcmp(name, "*") || !strcmp(name, "-"))
+		return false;
+
+	for (i = 0; name[i]; i++) {
+		unsigned char c = (unsigned char)name[i];
+		if (isspace(c))
+			return false;
+	}
+	return true;
+}
+
+static void hostname_cache_add_mac(const char *mac, const char *name)
+{
+	size_t i;
+
+	if (!valid_mac_address(mac) || !hostname_valid(name))
+		return;
+	if (hostname_mac_cache_count >= HOSTNAME_CACHE_MAX)
+		return;
+
+	for (i = 0; i < hostname_mac_cache_count; i++) {
+		if (!strcmp(hostname_mac_cache[i].mac, mac)) {
+			snprintf(hostname_mac_cache[i].name,
+			         sizeof(hostname_mac_cache[i].name), "%s", name);
+			return;
+		}
+	}
+
+	snprintf(hostname_mac_cache[hostname_mac_cache_count].mac,
+	         sizeof(hostname_mac_cache[hostname_mac_cache_count].mac), "%s", mac);
+	snprintf(hostname_mac_cache[hostname_mac_cache_count].name,
+	         sizeof(hostname_mac_cache[hostname_mac_cache_count].name), "%s", name);
+	hostname_mac_cache_count++;
+}
+
+static void hostname_cache_add_ip(const char *ip, const char *name)
+{
+	size_t i;
+
+	if (!ip || !ip[0] || !hostname_valid(name))
+		return;
+	if (hostname_ip_cache_count >= HOSTNAME_CACHE_MAX)
+		return;
+
+	for (i = 0; i < hostname_ip_cache_count; i++) {
+		if (!strcmp(hostname_ip_cache[i].ip, ip)) {
+			/* do not override earlier higher-priority entry */
+			return;
+		}
+	}
+
+	snprintf(hostname_ip_cache[hostname_ip_cache_count].ip,
+	         sizeof(hostname_ip_cache[hostname_ip_cache_count].ip), "%s", ip);
+	snprintf(hostname_ip_cache[hostname_ip_cache_count].name,
+	         sizeof(hostname_ip_cache[hostname_ip_cache_count].name), "%s", name);
+	hostname_ip_cache_count++;
+}
+
+static void hostname_cache_parse_leases(void)
+{
+	FILE *file;
+	char line[512];
+
+	file = fopen(DHCP_LEASES_PATH, "r");
+	if (!file)
+		return;
+
+	while (fgets(line, sizeof(line), file)) {
+		unsigned long ts;
+		char mac[MAC_STR_LEN];
+		char ip[IP_STR_LEN];
+		char name[HOSTNAME_STR_LEN];
+
+		if (sscanf(line, "%lu %17s %45s %63s", &ts, mac, ip, name) != 4)
+			continue;
+
+		normalize_mac_address(mac);
+		hostname_cache_add_mac(mac, name);
+		hostname_cache_add_ip(ip, name);
+	}
+
+	fclose(file);
+}
+
+static void hostname_cache_parse_hosts_file(const char *path)
+{
+	FILE *file;
+	char line[512];
+
+	file = fopen(path, "r");
+	if (!file)
+		return;
+
+	while (fgets(line, sizeof(line), file)) {
+		char ip[IP_STR_LEN];
+		char name[HOSTNAME_STR_LEN];
+		char *hash;
+
+		hash = strchr(line, '#');
+		if (hash)
+			*hash = '\0';
+
+		if (sscanf(line, "%45s %63s", ip, name) != 2)
+			continue;
+		if (ip[0] == '\0' || !strcmp(ip, "127.0.0.1") || !strcmp(ip, "::1"))
+			continue;
+
+		hostname_cache_add_ip(ip, name);
+	}
+
+	fclose(file);
+}
+
+static void hostname_cache_parse_hosts_dir(void)
+{
+	DIR *dir;
+	struct dirent *entry;
+	char path[PATH_MAX];
+
+	dir = opendir(HOSTS_DIR);
+	if (!dir)
+		return;
+
+	while ((entry = readdir(dir))) {
+		if (entry->d_name[0] == '.')
+			continue;
+
+		snprintf(path, sizeof(path), HOSTS_DIR "/%s", entry->d_name);
+		hostname_cache_parse_hosts_file(path);
+	}
+
+	closedir(dir);
+}
+
+static time_t stat_mtime(const char *path)
+{
+	struct stat st;
+
+	if (stat(path, &st) != 0)
+		return 0;
+	return st.st_mtime;
+}
+
+static time_t dir_latest_mtime(const char *path)
+{
+	DIR *dir;
+	struct dirent *entry;
+	time_t latest = 0;
+	char child[PATH_MAX];
+	struct stat st;
+
+	if (stat(path, &st) == 0)
+		latest = st.st_mtime;
+
+	dir = opendir(path);
+	if (!dir)
+		return latest;
+
+	while ((entry = readdir(dir))) {
+		if (entry->d_name[0] == '.')
+			continue;
+		snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
+		if (stat(child, &st) == 0 && st.st_mtime > latest)
+			latest = st.st_mtime;
+	}
+
+	closedir(dir);
+	return latest;
+}
+
+static void hostname_cache_refresh(bool force)
+{
+	uint64_t now_ms = monotonic_time_ms();
+	time_t leases_mtime = stat_mtime(DHCP_LEASES_PATH);
+	time_t etchosts_mtime = stat_mtime(ETC_HOSTS_PATH);
+	time_t hostsdir_mtime = dir_latest_mtime(HOSTS_DIR);
+	bool changed;
+
+	changed = force ||
+	          leases_mtime != hostname_cache_leases_mtime ||
+	          etchosts_mtime != hostname_cache_etchosts_mtime ||
+	          hostsdir_mtime != hostname_cache_hostsdir_mtime;
+
+	if (!changed && hostname_cache_refresh_ms &&
+	    now_ms - hostname_cache_refresh_ms < HOSTNAME_REFRESH_MS)
+		return;
+
+	hostname_mac_cache_count = 0;
+	hostname_ip_cache_count = 0;
+
+	/* order matters: leases first (most authoritative for clients) */
+	hostname_cache_parse_leases();
+	hostname_cache_parse_hosts_dir();
+	hostname_cache_parse_hosts_file(ETC_HOSTS_PATH);
+
+	hostname_cache_refresh_ms = now_ms;
+	hostname_cache_leases_mtime = leases_mtime;
+	hostname_cache_etchosts_mtime = etchosts_mtime;
+	hostname_cache_hostsdir_mtime = hostsdir_mtime;
+}
+
+static const char *hostname_lookup_mac(const char *mac)
+{
+	size_t i;
+
+	if (!valid_mac_address(mac))
+		return NULL;
+	for (i = 0; i < hostname_mac_cache_count; i++) {
+		if (!strcmp(hostname_mac_cache[i].mac, mac))
+			return hostname_mac_cache[i].name;
+	}
+	return NULL;
+}
+
+static const char *hostname_lookup_ip(const char *ip)
+{
+	size_t i;
+
+	if (!ip || !ip[0])
+		return NULL;
+	for (i = 0; i < hostname_ip_cache_count; i++) {
+		if (!strcmp(hostname_ip_cache[i].ip, ip))
+			return hostname_ip_cache[i].name;
+	}
+	return NULL;
+}
+
+static const char *hostname_lookup(const char *mac, const char *const *ips, size_t ip_count)
+{
+	const char *name;
+	size_t i;
+
+	name = hostname_lookup_mac(mac);
+	if (name)
+		return name;
+
+	for (i = 0; i < ip_count; i++) {
+		name = hostname_lookup_ip(ips[i]);
+		if (name)
+			return name;
+	}
+	return NULL;
+}
+
 static size_t load_arp_table(struct arp_entry *entries, size_t max_entries,
 			     struct json_object *warnings)
 {
@@ -2150,7 +2444,16 @@ static void emit_conntrack_clients(struct json_object *clients,
 		json_object_object_add(client, "zone", json_object_new_string(current[i].zone));
 		json_object_object_add(client, "interface", json_object_new_string(current[i].ifname));
 		json_object_object_add(client, "ips", ips);
-		json_object_object_add(client, "hostname", NULL);
+		{
+			const char *ip_ptrs[MAX_CLIENT_IPS];
+			const char *name;
+			size_t k;
+			for (k = 0; k < current[i].ip_count; k++)
+				ip_ptrs[k] = current[i].ips[k];
+			name = hostname_lookup(current[i].mac, ip_ptrs, current[i].ip_count);
+			json_object_object_add(client, "hostname",
+			                       name ? json_object_new_string(name) : NULL);
+		}
 		json_object_object_add(client, "rx_bps", json_object_new_int64((int64_t)rx_bps));
 		json_object_object_add(client, "tx_bps", json_object_new_int64((int64_t)tx_bps));
 		json_object_object_add(client, "last_seen", json_object_new_int64((int64_t)current[i].last_seen_ms));
@@ -2384,7 +2687,16 @@ static bool collect_bpf_clients(struct json_object *root,
 		json_object_object_add(client, "interface",
 				       json_object_new_string(cur->ifname));
 		json_object_object_add(client, "ips", ips);
-		json_object_object_add(client, "hostname", NULL);
+		{
+			const char *ip_ptrs[MAX_CLIENT_IPS];
+			const char *name;
+			size_t k;
+			for (k = 0; k < cur->ip_count; k++)
+				ip_ptrs[k] = cur->ips[k];
+			name = hostname_lookup(cur->mac, ip_ptrs, cur->ip_count);
+			json_object_object_add(client, "hostname",
+			                       name ? json_object_new_string(name) : NULL);
+		}
 		json_object_object_add(client, "rx_bps",
 				       json_object_new_int64((int64_t)rx_bps));
 		json_object_object_add(client, "tx_bps",
@@ -2503,6 +2815,8 @@ static int clients_method(struct ubus_context *ubus, struct ubus_object *obj,
 
 	json_object_object_add(root, "clients", clients);
 
+	hostname_cache_refresh(false);
+
 	{
 		struct runtime_probe probe;
 		init_runtime_probe(&probe);
@@ -2546,6 +2860,138 @@ static int health_method(struct ubus_context *ubus, struct ubus_object *obj,
 	return send_json_reply(ubus, req, root);
 }
 
+static bool sysdevice_is_candidate(const char *name)
+{
+	if (!name || !name[0])
+		return false;
+	if (!strcmp(name, "lo"))
+		return false;
+	if (!strncmp(name, "teql", 4))
+		return false;
+	return true;
+}
+
+static bool sysdevice_is_recommended_lan(const char *name)
+{
+	if (!name || !name[0])
+		return false;
+	if (!strncmp(name, "wan", 3))
+		return false;
+	if (!strncmp(name, "pppoe-", 6) || !strncmp(name, "ppp", 3))
+		return false;
+	if (!strncmp(name, "wg", 2))
+		return false;
+	if (!strncmp(name, "tun", 3) || !strncmp(name, "tap", 3))
+		return false;
+	if (!strncmp(name, "utun", 4))
+		return false;
+	return true;
+}
+
+static bool sysdevice_read_u64(const char *ifname, const char *field, uint64_t *out)
+{
+	char path[PATH_MAX];
+	char buf[64];
+	FILE *fp;
+
+	snprintf(path, sizeof(path), "/sys/class/net/%s/%s", ifname, field);
+	fp = fopen(path, "r");
+	if (!fp)
+		return false;
+	if (!fgets(buf, sizeof(buf), fp)) {
+		fclose(fp);
+		return false;
+	}
+	fclose(fp);
+	*out = strtoull(buf, NULL, 10);
+	return true;
+}
+
+static int sysdevices_method(struct ubus_context *ubus, struct ubus_object *obj,
+			     struct ubus_request_data *req, const char *method,
+			     struct blob_attr *msg)
+{
+	struct json_object *root = json_object_new_object();
+	struct json_object *devs = json_object_new_array();
+	DIR *dir;
+	struct dirent *entry;
+	size_t i;
+
+	(void)obj;
+	(void)method;
+	(void)msg;
+
+	dir = opendir("/sys/class/net");
+	if (dir) {
+		while ((entry = readdir(dir))) {
+			const char *name = entry->d_name;
+			struct json_object *d;
+			char path[PATH_MAX];
+			struct stat st;
+			bool is_bridge, has_upper;
+			uint64_t speed_raw = 0;
+			bool selected = false;
+			bool observed = false;
+
+			if (name[0] == '.')
+				continue;
+			if (!sysdevice_is_candidate(name))
+				continue;
+
+			for (i = 0; i < bpf_attach_ifname_count; i++) {
+				if (!strcmp(bpf_attach_ifnames[i], name)) {
+					selected = true;
+					break;
+				}
+			}
+			for (i = 0; i < observe_ifname_count; i++) {
+				if (!strcmp(observe_ifnames[i], name)) {
+					observed = true;
+					break;
+				}
+			}
+
+			snprintf(path, sizeof(path), "/sys/class/net/%s/bridge", name);
+			is_bridge = (stat(path, &st) == 0 && S_ISDIR(st.st_mode));
+
+			snprintf(path, sizeof(path), "/sys/class/net/%s/brport", name);
+			has_upper = (stat(path, &st) == 0 && S_ISDIR(st.st_mode));
+
+			(void)sysdevice_read_u64(name, "speed", &speed_raw);
+
+			d = json_object_new_object();
+			json_object_object_add(d, "name", json_object_new_string(name));
+			json_object_object_add(d, "selected", json_object_new_boolean(selected));
+			json_object_object_add(d, "observed", json_object_new_boolean(observed));
+			json_object_object_add(d, "recommended_lan",
+			                       json_object_new_boolean(sysdevice_is_recommended_lan(name)));
+			json_object_object_add(d, "is_bridge", json_object_new_boolean(is_bridge));
+			json_object_object_add(d, "is_bridge_port", json_object_new_boolean(has_upper));
+			if (speed_raw > 0 && speed_raw < (1ULL << 31))
+				json_object_object_add(d, "speed_mbps",
+				                       json_object_new_int64((int64_t)speed_raw));
+			json_object_array_add(devs, d);
+		}
+		closedir(dir);
+	}
+
+	json_object_object_add(root, "devices", devs);
+	{
+		struct json_object *cur = json_object_new_array();
+		for (i = 0; i < bpf_attach_ifname_count; i++)
+			json_object_array_add(cur, json_object_new_string(bpf_attach_ifnames[i]));
+		json_object_object_add(root, "current_ifnames", cur);
+	}
+	{
+		struct json_object *cur = json_object_new_array();
+		for (i = 0; i < observe_ifname_count; i++)
+			json_object_array_add(cur, json_object_new_string(observe_ifnames[i]));
+		json_object_object_add(root, "current_observed", cur);
+	}
+
+	return send_json_reply(ubus, req, root);
+}
+
 static int interfaces_method(struct ubus_context *ubus, struct ubus_object *obj,
 			     struct ubus_request_data *req, const char *method,
 			     struct blob_attr *msg)
@@ -2554,13 +3000,23 @@ static int interfaces_method(struct ubus_context *ubus, struct ubus_object *obj,
 	struct json_object *interfaces = json_object_new_array();
 	size_t i;
 	uint64_t now_ms = monotonic_time_ms();
+	struct interface_stat_sample {
+		char name[IFNAME_STR_LEN];
+		uint64_t rx_bytes;
+		uint64_t tx_bytes;
+		uint64_t snapshot_ms;
+		bool valid;
+	};
+	/* capacity = attach + observe */
+	static struct interface_stat_sample previous[2 * LANSPEED_BPF_IFACE_MAX];
 
 	(void)obj;
 	(void)method;
 	(void)msg;
 
-	for (i = 0; i < bpf_attach_ifname_count; i++) {
-		const char *name = bpf_attach_ifnames[i];
+	for (i = 0; i < bpf_attach_ifname_count + observe_ifname_count; i++) {
+		const char *name;
+		const char *role;
 		char path[PATH_MAX];
 		char buf[64];
 		FILE *fp;
@@ -2569,16 +3025,16 @@ static int interfaces_method(struct ubus_context *ubus, struct ubus_object *obj,
 		uint64_t delta_ms = 0;
 		bool stats_ok = false;
 		struct json_object *iface = json_object_new_object();
-		struct interface_stat_sample {
-			char name[IFNAME_STR_LEN];
-			uint64_t rx_bytes;
-			uint64_t tx_bytes;
-			uint64_t snapshot_ms;
-			bool valid;
-		};
-		static struct interface_stat_sample previous[LANSPEED_BPF_IFACE_MAX];
 		struct interface_stat_sample *prev = NULL;
 		size_t j;
+
+		if (i < bpf_attach_ifname_count) {
+			name = bpf_attach_ifnames[i];
+			role = "lan";
+		} else {
+			name = observe_ifnames[i - bpf_attach_ifname_count];
+			role = "observe";
+		}
 
 		snprintf(path, sizeof(path), "/sys/class/net/%s/statistics/rx_bytes", name);
 		fp = fopen(path, "r");
@@ -2598,7 +3054,7 @@ static int interfaces_method(struct ubus_context *ubus, struct ubus_object *obj,
 			stats_ok = false;
 		}
 
-		for (j = 0; j < LANSPEED_BPF_IFACE_MAX; j++) {
+		for (j = 0; j < ARRAY_SIZE(previous); j++) {
 			if (previous[j].valid && !strcmp(previous[j].name, name)) {
 				prev = &previous[j];
 				break;
@@ -2614,7 +3070,7 @@ static int interfaces_method(struct ubus_context *ubus, struct ubus_object *obj,
 		if (stats_ok) {
 			struct interface_stat_sample *slot = prev;
 			if (!slot) {
-				for (j = 0; j < LANSPEED_BPF_IFACE_MAX; j++) {
+				for (j = 0; j < ARRAY_SIZE(previous); j++) {
 					if (!previous[j].valid) { slot = &previous[j]; break; }
 				}
 			}
@@ -2628,7 +3084,7 @@ static int interfaces_method(struct ubus_context *ubus, struct ubus_object *obj,
 		}
 
 		json_object_object_add(iface, "name", json_object_new_string(name));
-		json_object_object_add(iface, "role", json_object_new_string("lan"));
+		json_object_object_add(iface, "role", json_object_new_string(role));
 		json_object_object_add(iface, "status",
 			json_object_new_string(stats_ok ? "available" : "missing"));
 		json_object_object_add(iface, "rx_bytes", json_object_new_int64((int64_t)rx_bytes));
@@ -2656,6 +3112,7 @@ static const struct ubus_method lanspeed_methods[] = {
 	UBUS_METHOD_NOARG("clients", clients_method),
 	UBUS_METHOD_NOARG("health", health_method),
 	UBUS_METHOD_NOARG("interfaces", interfaces_method),
+	UBUS_METHOD_NOARG("sysdevices", sysdevices_method),
 };
 
 static struct ubus_object_type lanspeed_object_type =
@@ -2692,6 +3149,35 @@ static void add_bpf_attach_ifname(const char *name)
 	bpf_attach_ifname_count++;
 }
 
+static void add_observe_ifname(const char *name)
+{
+	size_t i;
+	size_t len;
+
+	if (!name || !*name)
+		return;
+	if (observe_ifname_count >= LANSPEED_BPF_IFACE_MAX)
+		return;
+
+	len = strlen(name);
+	if (len >= LANSPEED_BPF_IFNAME_LEN)
+		return;
+
+	/* skip if already scheduled for BPF attach */
+	for (i = 0; i < bpf_attach_ifname_count; i++) {
+		if (!strcmp(bpf_attach_ifnames[i], name))
+			return;
+	}
+	for (i = 0; i < observe_ifname_count; i++) {
+		if (!strcmp(observe_ifnames[i], name))
+			return;
+	}
+
+	snprintf(observe_ifnames[observe_ifname_count],
+		 sizeof(observe_ifnames[0]), "%s", name);
+	observe_ifname_count++;
+}
+
 static void load_bpf_attach_list(struct uci_context *uci)
 {
 	struct uci_ptr ptr;
@@ -2715,6 +3201,23 @@ static void load_bpf_attach_list(struct uci_context *uci)
 			}
 		} else if (ptr.o->type == UCI_TYPE_STRING && ptr.o->v.string) {
 			add_bpf_attach_ifname(ptr.o->v.string);
+		}
+	}
+}
+
+static void load_observe_list(struct uci_context *uci)
+{
+	struct uci_ptr ptr;
+	struct uci_element *e;
+	char observe_path[] = "lanspeed.main.observe";
+
+	if (!uci_lookup_ptr(uci, &ptr, observe_path, true) && ptr.o) {
+		if (ptr.o->type == UCI_TYPE_LIST) {
+			uci_foreach_element(&ptr.o->v.list, e) {
+				add_observe_ifname(e->name);
+			}
+		} else if (ptr.o->type == UCI_TYPE_STRING && ptr.o->v.string) {
+			add_observe_ifname(ptr.o->v.string);
 		}
 	}
 }
@@ -2763,6 +3266,7 @@ static void load_config(void)
 	}
 
 	load_bpf_attach_list(uci);
+	load_observe_list(uci);
 
 	uci_free_context(uci);
 }

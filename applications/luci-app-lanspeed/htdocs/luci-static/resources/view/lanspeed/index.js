@@ -30,6 +30,32 @@ var callInterfaces = rpc.declare({
 	method: 'interfaces',
 	expect: { '': {} }
 });
+var callInit = rpc.declare({
+	object: 'rc',
+	method: 'init',
+	params: [ 'name', 'action' ],
+	expect: { '': {} }
+});
+var callSysdevices = rpc.declare({
+	object: 'lanspeed',
+	method: 'sysdevices',
+	expect: { '': {} }
+});
+var callUciSet = rpc.declare({
+	object: 'uci',
+	method: 'set',
+	params: [ 'config', 'section', 'values' ]
+});
+var callUciDelete = rpc.declare({
+	object: 'uci',
+	method: 'delete',
+	params: [ 'config', 'section', 'options' ]
+});
+var callUciCommit = rpc.declare({
+	object: 'uci',
+	method: 'commit',
+	params: [ 'config' ]
+});
 
 var MIN_REFRESH_MS = 1000;
 var INACTIVE_BPS_THRESHOLD = 1024;
@@ -168,7 +194,8 @@ var DEFAULT_PREFS = {
 	unit: 'bit',
 	activeOnly: false,
 	sortKey: 'speed',
-	paused: false
+	paused: false,
+	ifaceExcluded: []
 };
 function loadPrefs() {
 	try {
@@ -302,6 +329,161 @@ function opt(value, label, isSelected) {
 	return E('option', attrs, label);
 }
 
+/* ---------- interface configuration ---------- */
+
+function loadIfaceConfig(viewState) {
+	var refs = viewState.refs;
+	if (!refs || !refs.ifcfgGrid) return;
+	refs.ifcfgStatus.textContent = _('读取中…');
+	callSysdevices().then(function(data) {
+		viewState.sysdevices = data || { devices: [], current_ifnames: [], current_observed: [] };
+		renderIfaceConfig(viewState);
+		refs.ifcfgStatus.textContent = '';
+	}).catch(function(err) {
+		refs.ifcfgStatus.textContent = _('读取失败: ') + (err && err.message || err);
+	});
+}
+
+function renderIfaceConfig(viewState) {
+	var refs = viewState.refs;
+	var data = viewState.sysdevices || { devices: [] };
+	var devs = asArray(data.devices);
+	var attachNow = asArray(data.current_ifnames);
+	var observeNow = asArray(data.current_observed);
+
+	devs.sort(function(a, b) {
+		/* recommended LAN devices first, then alphabetical */
+		var ra = a.recommended_lan ? 0 : 1;
+		var rb = b.recommended_lan ? 0 : 1;
+		if (ra !== rb) return ra - rb;
+		return compareText(a.name, b.name);
+	});
+
+	refs.ifcfgSummary.textContent = _('采集 %d · 观察 %d · 候选 %d').format(
+		attachNow.length, observeNow.length, devs.length);
+
+	/* store per-device state in a lookup so segmented toggle can mutate it */
+	viewState.ifcfgState = {};
+	devs.forEach(function(d) {
+		viewState.ifcfgState[d.name] = d.selected ? 'collect'
+		                             : d.observed ? 'observe'
+		                             : 'off';
+	});
+
+	function makeSeg(name) {
+		var wrap = E('div', { 'class': 'lanspeed-ifcfg-seg', 'data-name': name });
+		var modes = [
+			{ k: 'off',     t: _('关闭'), title: _('不挂载、不显示') },
+			{ k: 'observe', t: _('观察'), title: _('只读接口计数，不 attach BPF；适合 WAN / tun') },
+			{ k: 'collect', t: _('采集'), title: _('挂 BPF filter，按客户端拆速率；置信度 high') }
+		];
+		modes.forEach(function(m) {
+			var btn = E('button', {
+				'type': 'button',
+				'data-mode': m.k,
+				'title': m.title,
+				'class': viewState.ifcfgState[name] === m.k ? 'active' : ''
+			}, m.t);
+			btn.addEventListener('click', function() {
+				viewState.ifcfgState[name] = m.k;
+				wrap.querySelectorAll('button').forEach(function(b) {
+					b.className = (b.getAttribute('data-mode') === m.k) ? 'active' : '';
+				});
+			});
+			wrap.appendChild(btn);
+		});
+		return wrap;
+	}
+
+	replaceChildren(refs.ifcfgGrid, devs.map(function(d) {
+		var tags = [];
+		if (d.is_bridge)        tags.push(_('网桥'));
+		if (d.is_bridge_port)   tags.push(_('桥成员'));
+		if (!d.recommended_lan) tags.push(_('非 LAN'));
+		if (d.speed_mbps)       tags.push(d.speed_mbps + 'M');
+
+		return E('div', { 'class': 'lanspeed-ifcfg-card' }, [
+			E('div', { 'class': 'lanspeed-ifcfg-card-head' }, [
+				E('span', { 'class': 'devname', 'title': d.name }, d.name),
+				tags.length
+					? E('span', { 'class': 'devtags' },
+					    tags.map(function(t) { return E('span', { 'class': 'devtag' }, t); }))
+					: ''
+			]),
+			makeSeg(d.name)
+		]);
+	}));
+
+	if (!devs.length) {
+		refs.ifcfgHint.textContent = _('没有可选设备，请检查 /sys/class/net。');
+	} else {
+		refs.ifcfgHint.textContent = _('采集 = 挂 BPF 按客户端拆速率。观察 = 只读接口吞吐数字，用于 WAN 展示或对账。');
+	}
+}
+
+function collectIfaceSelections(viewState) {
+	var attach = [], observe = [];
+	var state = viewState.ifcfgState || {};
+	Object.keys(state).forEach(function(name) {
+		if (state[name] === 'collect') attach.push(name);
+		else if (state[name] === 'observe') observe.push(name);
+	});
+	return { attach: attach, observe: observe };
+}
+
+function saveIfaceConfig(viewState) {
+	var refs = viewState.refs;
+	if (!refs || viewState.ifcfgSaving) return;
+	var sel = collectIfaceSelections(viewState);
+	if (!sel.attach.length && !sel.observe.length) {
+		refs.ifcfgStatus.textContent = _('请至少选择一个设备');
+		return;
+	}
+
+	viewState.ifcfgSaving = true;
+	refs.ifcfgSaveBtn.disabled = true;
+	refs.ifcfgReloadBtn.disabled = true;
+	refs.ifcfgStatus.textContent = _('保存中…');
+
+	/* delete old lists (tolerate missing options), then set new ones, commit, reload daemon */
+	Promise.resolve()
+		.then(function() {
+			return callUciDelete('lanspeed', 'main',
+				['ifname','interface_include','observe']).catch(function(){});
+		})
+		.then(function() {
+			return callUciSet('lanspeed', 'main', {
+				ifname:            sel.attach,
+				interface_include: sel.attach,
+				observe:           sel.observe
+			});
+		})
+		.then(function() { return callUciCommit('lanspeed'); })
+		.then(function() {
+			refs.ifcfgStatus.textContent = _('重载 daemon…');
+			return callInit('lanspeedd', 'reload').catch(function() {});
+		})
+		.then(function() {
+			return new Promise(function(resolve) { window.setTimeout(resolve, 4000); });
+		})
+		.then(function() {
+			refs.ifcfgStatus.textContent = _('已应用');
+			return Promise.all([viewState.reload(true), loadIfaceConfig(viewState)]);
+		})
+		.catch(function(err) {
+			refs.ifcfgStatus.textContent = _('保存失败: ') + (err && err.message || err);
+		})
+		.then(function() {
+			refs.ifcfgSaveBtn.disabled = false;
+			refs.ifcfgReloadBtn.disabled = false;
+			viewState.ifcfgSaving = false;
+			window.setTimeout(function() {
+				if (refs.ifcfgStatus.textContent === _('已应用'))
+					refs.ifcfgStatus.textContent = '';
+			}, 3000);
+		});
+}
+
 /* ---------- minimal layout-only CSS ----------
  *
  * NO colours, backgrounds, borders, button styles or card frames are set
@@ -371,6 +553,41 @@ var LAYOUT_CSS = [
 	'.lanspeed-caps .cap{display:flex;justify-content:space-between;align-items:center;',
 	'  gap:.5em;padding:.15em 0}',
 
+	/* interface configuration card:
+	   each device gets its own small card. Top row: name + tags.
+	   Bottom row: segmented 3-way toggle (off / observe / collect). */
+	'.lanspeed-ifcfg{display:flex;flex-direction:column;gap:1em;margin:0}',
+	'.lanspeed-ifcfg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(20em,1fr));',
+	'  gap:1em;margin:0}',
+	'.lanspeed-ifcfg-card{display:flex;flex-direction:column;gap:.9em;',
+	'  padding:1em 1.1em;border:1px solid var(--border,rgba(128,128,128,.25));',
+	'  border-radius:.5em}',
+	'.lanspeed-ifcfg-card-head{display:flex;align-items:baseline;gap:.6em;min-width:0}',
+	'.lanspeed-ifcfg-card-head .devname{flex:1 1 auto;min-width:0;font-weight:600;',
+	'  font-family:var(--font-monospace,ui-monospace,monospace);',
+	'  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+	'.lanspeed-ifcfg-card-head .devtags{flex:0 0 auto;font-size:.75em;opacity:.65;',
+	'  display:inline-flex;gap:.4em;flex-wrap:wrap}',
+	'.lanspeed-ifcfg-card-head .devtags .devtag{padding:.05em .45em;border-radius:.25em;',
+	'  background:var(--label-surface,rgba(128,128,128,.12))}',
+	/* segmented toggle: 3 buttons side by side with visible gap between them */
+	'.lanspeed-ifcfg-seg{display:flex;gap:.45em;align-items:stretch}',
+	'.lanspeed-ifcfg-seg>button{flex:1 1 0;min-width:0;padding:.5em .7em;',
+	'  font-size:.9em;border:1px solid var(--border,rgba(128,128,128,.3));',
+	'  border-radius:.4em;background:transparent;cursor:pointer;color:inherit;',
+	'  transition:background-color .1s ease,border-color .1s ease}',
+	'.lanspeed-ifcfg-seg>button:hover{background:var(--label-surface,rgba(128,128,128,.1))}',
+	'.lanspeed-ifcfg-seg>button.active{',
+	'  background:var(--primary,var(--label-surface,rgba(80,120,200,.15)));',
+	'  color:var(--primary-foreground,inherit);',
+	'  border-color:var(--primary,var(--border,rgba(128,128,128,.3)));',
+	'  font-weight:600}',
+	'.lanspeed-ifcfg-actions{display:flex;flex-wrap:wrap;gap:.5em;align-items:center;',
+	'  margin:.4em 0 0 0}',
+	'.lanspeed-ifcfg-actions>.spacer{flex:1 1 auto}',
+	'.lanspeed-ifcfg-actions .status{font-size:.85em;opacity:.75;',
+	'  font-family:var(--font-monospace,ui-monospace,monospace)}',
+
 	/* warnings list */
 	'.lanspeed-warnings{margin:.2em 0 1em 0;padding-left:1.2em}',
 	'.lanspeed-warnings li{margin:.2em 0;font-size:.9em}',
@@ -381,18 +598,20 @@ var LAYOUT_CSS = [
 	'.lanspeed-subhead:first-child{margin-top:0}',
 
 	/* details used as a collapsible card header.  We replace the native
-	   list-item marker with our own rotating triangle so the summary
-	   text and the triangle align with the section\'s left edge. */
+	   list-item marker with our own text triangle (right when closed,
+	   down when open) so the summary text and the marker align with the
+	   section\'s left edge.  Uses a content swap instead of CSS rotate
+	   to avoid being clobbered by aurora\'s transform custom-properties. */
 	'.lanspeed-details{margin:0}',
 	'.lanspeed-details>summary{cursor:pointer;list-style:none;padding:0;margin:0;',
 	'  display:flex;flex-wrap:wrap;gap:.4em 1em;align-items:baseline;',
 	'  padding-bottom:.65em;margin-bottom:1em;',
 	'  border-bottom:1px solid var(--border,rgba(128,128,128,.25))}',
 	'.lanspeed-details>summary::-webkit-details-marker{display:none}',
+	'.lanspeed-details>summary::marker{content:""}',
 	'.lanspeed-details>summary::before{content:"\u25B8";display:inline-block;',
-	'  width:1em;flex:0 0 auto;opacity:.6;font-size:.85em;',
-	'  transform-origin:center;transition:transform .15s ease}',
-	'.lanspeed-details[open]>summary::before{transform:rotate(90deg)}',
+	'  width:1em;flex:0 0 auto;opacity:.6;font-size:.85em}',
+	'.lanspeed-details[open]>summary::before{content:"\u25BE"}',
 	'.lanspeed-details>summary>h3{margin:0;padding:0;border:0;flex:0 0 auto;',
 	'  line-height:1.25;display:inline}',
 	'.lanspeed-details>summary>.spacer{flex:1 1 auto}',
@@ -501,6 +720,27 @@ function buildShell(viewState) {
 	refs.btnRefresh = E('button', { 'class': 'cbi-button cbi-button-apply' }, _('立即刷新'));
 	refs.btnRefresh.addEventListener('click', function() { viewState.reload(true); });
 
+	refs.btnReload = E('button', { 'class': 'cbi-button cbi-button-reload' }, _('重载 daemon'));
+	refs.btnReload.title = _('清理旧 tc filter，重新尝试挂载 BPF 运行时。仅清理 lanspeedd 自己拥有的 filter，不影响 dae / SQM 等共存项。');
+	refs.btnReload.addEventListener('click', function() {
+		if (viewState.reloading) return;
+		viewState.reloading = true;
+		var original = refs.btnReload.textContent;
+		refs.btnReload.disabled = true;
+		refs.btnReload.textContent = _('正在重载…');
+		callInit('lanspeedd', 'reload').catch(function() {
+			/* rpcd returns ubus error on non-zero exit; init scripts exit 0 normally */
+		}).then(function() {
+			/* give procd time to respawn and daemon time to re-probe + attach */
+			window.setTimeout(function() {
+				refs.btnReload.disabled = false;
+				refs.btnReload.textContent = original;
+				viewState.reloading = false;
+				viewState.reload(true);
+			}, 4000);
+		});
+	});
+
 	refs.btnPause = E('button', { 'class': 'cbi-button' }, prefs.paused ? _('恢复') : _('暂停'));
 	refs.btnPause.addEventListener('click', function() {
 		viewState.prefs.paused = !viewState.prefs.paused;
@@ -570,7 +810,7 @@ function buildShell(viewState) {
 	});
 
 	var toolbar = E('div', { 'class': 'lanspeed-toolbar' }, [
-		refs.btnRefresh, refs.btnPause,
+		refs.btnRefresh, refs.btnReload, refs.btnPause,
 		refs.filterInput,
 		E('label', { 'for': 'lanspeed-active' }, [ refs.activeChk, _('仅活跃') ]),
 		E('span', { 'class': 'spacer' }),
@@ -611,6 +851,7 @@ function buildShell(viewState) {
 	refs.ifacesSummary = E('span', { 'class': 'sum' }, '');
 	refs.ifacesBody    = E('tbody', {});
 	refs.ifacesHint    = E('p', { 'class': 'lanspeed-hint' }, '');
+	refs.ifacesPicker  = E('div', { 'class': 'lanspeed-iface-picker' });
 	var ifacesTable = E('table', { 'class': 'lanspeed-table' }, [
 		E('thead', {}, E('tr', {}, [
 			E('th', {}, _('接口')),
@@ -618,23 +859,61 @@ function buildShell(viewState) {
 			E('th', { 'class': 'num' }, _('接口 ↓')),
 			E('th', { 'class': 'num' }, _('客户端 ↑')),
 			E('th', { 'class': 'num' }, _('客户端 ↓')),
-			E('th', { 'class': 'num' }, _('Δ ↑')),
-			E('th', { 'class': 'num' }, _('Δ ↓'))
+			E('th', { 'class': 'num', 'title': _('客户端合计占接口合计的百分比；100% 表示完全覆盖') }, _('覆盖率 ↑')),
+			E('th', { 'class': 'num', 'title': _('客户端合计占接口合计的百分比；100% 表示完全覆盖') }, _('覆盖率 ↓'))
 		])),
 		refs.ifacesBody
 	]);
-	refs.ifacesDetails = E('details', { 'class': 'lanspeed-details' }, [
+	refs.ifacesDetails = E('details', { 'class': 'lanspeed-details', 'open': 'open' }, [
 		E('summary', {}, [
 			E('h3', {}, _('接口吞吐')),
 			E('span', { 'class': 'spacer' }),
 			refs.ifacesSummary
 		]),
 		E('div', { 'class': 'lanspeed-details-body' }, [
+			refs.ifacesPicker,
 			ifacesTable,
 			refs.ifacesHint
 		])
 	]);
 	var ifacesCard = E('div', { 'class': 'cbi-section' }, [ refs.ifacesDetails ]);
+
+	/* ---- interface configuration card (collapsible) ---- */
+	refs.ifcfgGrid      = E('div', { 'class': 'lanspeed-ifcfg-grid' });
+	refs.ifcfgStatus    = E('span', { 'class': 'status' }, '');
+	refs.ifcfgSaveBtn   = E('button', { 'class': 'cbi-button cbi-button-apply' }, _('保存并重载'));
+	refs.ifcfgReloadBtn = E('button', { 'class': 'cbi-button' }, _('扫描设备'));
+	refs.ifcfgHint      = E('p', { 'class': 'lanspeed-hint' }, '');
+	refs.ifcfgSummary   = E('span', { 'class': 'sum' }, '');
+
+	refs.ifcfgSaveBtn.addEventListener('click', function() {
+		if (viewState.ifcfgSaving) return;
+		saveIfaceConfig(viewState);
+	});
+	refs.ifcfgReloadBtn.addEventListener('click', function() {
+		loadIfaceConfig(viewState);
+	});
+
+	refs.ifcfgDetails = E('details', { 'class': 'lanspeed-details' }, [
+		E('summary', {}, [
+			E('h3', {}, _('接口配置')),
+			E('span', { 'class': 'spacer' }),
+			refs.ifcfgSummary
+		]),
+		E('div', { 'class': 'lanspeed-details-body' }, [
+			E('div', { 'class': 'lanspeed-ifcfg' }, [
+				refs.ifcfgGrid,
+				E('div', { 'class': 'lanspeed-ifcfg-actions' }, [
+					refs.ifcfgSaveBtn,
+					refs.ifcfgReloadBtn,
+					E('span', { 'class': 'spacer' }),
+					refs.ifcfgStatus
+				]),
+				refs.ifcfgHint
+			])
+		])
+	]);
+	var ifcfgCard = E('div', { 'class': 'cbi-section' }, [ refs.ifcfgDetails ]);
 
 	/* ---- diagnostics card (collapsible) ---- */
 	refs.capsGrid           = E('div', { 'class': 'lanspeed-caps' });
@@ -665,6 +944,7 @@ function buildShell(viewState) {
 		overviewCard,
 		clientsCard,
 		ifacesCard,
+		ifcfgCard,
 		diagnosticsCard
 	]);
 
@@ -743,27 +1023,67 @@ function refreshLive(viewState) {
 		refs.clientsTable.style.display = '';
 		refs.empty.style.display = 'none';
 
+		/* global warnings are already shown at the top of the page; don\'t
+		   repeat them on every client row. Only show what\'s actually
+		   specific to this client. */
+		var globalWarnings = {};
+		asArray(status.warnings).forEach(function(w) { globalWarnings[w] = true; });
+
 		replaceChildren(refs.tbody, sorted.map(function(c) {
 			var tx = Number(c.tx_bps) || 0, rx = Number(c.rx_bps) || 0;
 			var idle = (tx + rx) < INACTIVE_BPS_THRESHOLD;
 			var ips = asArray(c.ips);
-			var warnings = asArray(c.warnings);
-			var critClient = warnings.some(function(w) { return CRITICAL_WARNINGS[w]; });
+			var rawWarnings = asArray(c.warnings);
+			var specificWarnings = rawWarnings.filter(function(w) { return !globalWarnings[w]; });
+			var critClient = specificWarnings.some(function(w) { return CRITICAL_WARNINGS[w]; });
+
+			/* collector mode: abbreviate + explain via tooltip */
+			var mode = String(c.collector_mode || '-');
+			var modeLabel, modeTitle;
+			if (mode === 'bpf') {
+				modeLabel = 'BPF';
+				modeTitle = _('采集方式 BPF：tc clsact 挂载的 eBPF 程序按 MAC 直接计数，置信度高。');
+			} else if (mode === 'conntrack') {
+				modeLabel = 'CT';
+				modeTitle = _('采集方式 Conntrack：从 /proc/net/nf_conntrack 按流聚合，仅覆盖路由/NAT 流量，置信度较低。');
+			} else {
+				modeLabel = mode;
+				modeTitle = _('未知采集方式');
+			}
 
 			var stateCells = [
-				E('span', { 'class': 'label', 'title': _('采集方式') }, textOrDash(c.collector_mode)),
-				E('span', { 'class': confidenceClass(c.confidence), 'title': _('置信度') }, confidenceText(c.confidence))
+				E('span', { 'class': 'label', 'title': modeTitle }, modeLabel),
+				E('span', { 'class': confidenceClass(c.confidence),
+				            'title': _('置信度：') + confidenceText(c.confidence) +
+				                     '。' + _('低 = 路径可能绕过 CPU 可见计数；高 = 直接从内核 filter 采得。') },
+				  confidenceText(c.confidence))
 			];
-			if (warnings.length)
+			if (specificWarnings.length)
 				stateCells.push(E('span', {
 					'class': critClient ? 'label label-danger' : 'label label-warning',
-					'title': warnings.map(warningText).join('\n')
-				}, _('%d 告警').format(warnings.length)));
+					'title': specificWarnings.map(warningText).join('\n')
+				}, _('%d 告警').format(specificWarnings.length)));
+
+			/* display name: prefer hostname; otherwise first IP (MAC is already
+			   shown in its own column, no need to repeat). */
+			var displayName;
+			if (c.hostname) {
+				displayName = c.hostname;
+			} else if (ips.length) {
+				displayName = ips[0];
+			} else {
+				displayName = c.mac || '-';
+			}
 
 			return E('tr', idle ? { 'class': 'idle' } : {}, [
 				E('td', {}, [
-					textOrDash(clientDisplayName(c)),
-					ips.length ? E('span', { 'class': 'ipline', 'title': ips.join(', ') }, ips.join(', ')) : ''
+					displayName,
+					(c.hostname && ips.length)
+						? E('span', { 'class': 'ipline', 'title': ips.join(', ') }, ips.join(', '))
+						: (ips.length > 1
+							? E('span', { 'class': 'ipline', 'title': ips.join(', ') },
+							    ips.slice(1).join(', '))
+							: '')
 				]),
 				E('td', { 'class': 'mono' }, textOrDash(c.mac)),
 				E('td', { 'class': 'num' }, formatRate(tx, prefs.unit)),
@@ -788,33 +1108,33 @@ function refreshLive(viewState) {
 			clientSumByIf[k].rx += Number(c.rx_bps) || 0;
 		});
 
-		var totalIfTx = 0, totalIfRx = 0, totalDeltaTx = 0, totalDeltaRx = 0, anyHigh = false;
+		var totalIfTx = 0, totalIfRx = 0, totalClientTx = 0, totalClientRx = 0;
 		replaceChildren(refs.ifacesBody, ifaces.map(function(i) {
 			var n = i.name || '-';
-			var ifTx = Number(i.rx_bps) || 0;
-			var ifRx = Number(i.tx_bps) || 0;
+			/* direction semantics depend on role (LAN ↔ WAN flip counters).
+			 * Display is always user-perspective: ↑ = upload, ↓ = download. */
+			var isLan = (i.role || 'lan') === 'lan';
+			var ifUp = Number(isLan ? i.rx_bps : i.tx_bps) || 0;
+			var ifDn = Number(isLan ? i.tx_bps : i.rx_bps) || 0;
 			var cs = clientSumByIf[n] || { tx: 0, rx: 0 };
-			var dTx = Math.max(0, ifTx - cs.tx);
-			var dRx = Math.max(0, ifRx - cs.rx);
-			var tTh = Math.max(DELTA_SIGNIFICANT_MIN_BPS, ifTx * DELTA_SIGNIFICANT_RATIO);
-			var rTh = Math.max(DELTA_SIGNIFICANT_MIN_BPS, ifRx * DELTA_SIGNIFICANT_RATIO);
-			var hi = (dTx > tTh) || (dRx > rTh);
-			if (hi) anyHigh = true;
-			totalIfTx += ifTx; totalIfRx += ifRx;
-			totalDeltaTx += dTx; totalDeltaRx += dRx;
+
+			totalIfTx += ifUp; totalIfRx += ifDn;
+			if (isLan) { totalClientTx += cs.tx; totalClientRx += cs.rx; }
+
+			function coverage(part, whole) {
+				if (whole < INACTIVE_BPS_THRESHOLD) return '-';
+				var pct = Math.min(100, Math.round((part / whole) * 100));
+				return pct + '%';
+			}
 
 			return E('tr', {}, [
 				E('td', {}, n),
-				E('td', { 'class': 'num' }, formatRate(ifTx, prefs.unit)),
-				E('td', { 'class': 'num' }, formatRate(ifRx, prefs.unit)),
-				E('td', { 'class': 'num' }, formatRate(cs.tx, prefs.unit)),
-				E('td', { 'class': 'num' }, formatRate(cs.rx, prefs.unit)),
-				E('td', { 'class': 'num' }, dTx > tTh
-					? E('span', { 'class': 'label label-warning' }, formatRate(dTx, prefs.unit))
-					: formatRate(dTx, prefs.unit)),
-				E('td', { 'class': 'num' }, dRx > rTh
-					? E('span', { 'class': 'label label-warning' }, formatRate(dRx, prefs.unit))
-					: formatRate(dRx, prefs.unit))
+				E('td', { 'class': 'num' }, formatRate(ifUp, prefs.unit)),
+				E('td', { 'class': 'num' }, formatRate(ifDn, prefs.unit)),
+				E('td', { 'class': 'num' }, isLan ? formatRate(cs.tx, prefs.unit) : '-'),
+				E('td', { 'class': 'num' }, isLan ? formatRate(cs.rx, prefs.unit) : '-'),
+				E('td', { 'class': 'num' }, isLan ? coverage(cs.tx, ifUp) : '-'),
+				E('td', { 'class': 'num' }, isLan ? coverage(cs.rx, ifDn) : '-')
 			]);
 		}));
 
@@ -822,14 +1142,29 @@ function refreshLive(viewState) {
 			'↑ ' + formatRate(totalIfTx, prefs.unit),
 			'↓ ' + formatRate(totalIfRx, prefs.unit)
 		];
-		if (anyHigh)
-			sumBits.push(_('Δ ↑ ') + formatRate(totalDeltaTx, prefs.unit) +
-			             _(' · Δ ↓ ') + formatRate(totalDeltaRx, prefs.unit));
 		refs.ifacesSummary.textContent = sumBits.join(' · ');
 
-		refs.ifacesHint.textContent = anyHigh
-			? _('Δ 较大：可能有硬件流量卸载、硬件桥接 LAN-to-LAN、广播/多播或未归属 MAC。')
-			: _('接口总量与客户端汇总一致，CPU 可见流量覆盖完整。');
+		/* overall coverage across LAN interfaces */
+		function pctOrDash(part, whole) {
+			if (whole < INACTIVE_BPS_THRESHOLD) return null;
+			return Math.min(100, Math.round((part / whole) * 100));
+		}
+		var totalLanUp = 0, totalLanDn = 0;
+		ifaces.forEach(function(i) {
+			if ((i.role || 'lan') !== 'lan') return;
+			totalLanUp += Number(i.rx_bps) || 0;
+			totalLanDn += Number(i.tx_bps) || 0;
+		});
+		var covUp = pctOrDash(totalClientTx, totalLanUp);
+		var covDn = pctOrDash(totalClientRx, totalLanDn);
+
+		if (covUp === null && covDn === null) {
+			refs.ifacesHint.textContent = _('LAN 当前无活动流量。');
+		} else if ((covUp !== null && covUp < 85) || (covDn !== null && covDn < 85)) {
+			refs.ifacesHint.textContent = _('覆盖率偏低：可能有硬件流量卸载、硬件桥接 LAN-to-LAN、广播/多播或未归属 MAC。');
+		} else {
+			refs.ifacesHint.textContent = _('覆盖率接近 100%，CPU 可见流量归因完整。');
+		}
 	}
 
 	/* diagnostics: capability grid */
@@ -928,6 +1263,7 @@ return view.extend({
 		var built = buildShell(viewState);
 		viewState.refs = built.refs;
 		refreshLive(viewState);
+		loadIfaceConfig(viewState);
 		viewState.schedule();
 		return built.root;
 	},
