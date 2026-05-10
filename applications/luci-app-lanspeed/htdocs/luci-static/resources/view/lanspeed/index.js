@@ -145,6 +145,7 @@ var WARNING_LABELS = {
 	hardware_flow_offload_unsupported: _('硬件流量卸载已启用，硬件转发流量可能绕过 CPU 可见指标。'),
 	nss_detected: _('检测到 Qualcomm NSS 网络协处理器。流量被加速的部分不经过 CPU，BPF 仅能看到慢路径。'),
 	nss_ecm_offload_active: _('NSS ECM 正在硬件加速连接，客户端数据经 ECM→conntrack 同步得到，置信度受限。'),
+	nss_ecm_sync_cadence: _('NSS 硬件卸载中：客户端计数经 ECM 同步回 conntrack，精度为秒级节拍，不是逐包实时。'),
 	fullcone_detected: _('检测到 Fullcone NAT，NAT 辅助路径会作为置信度告警展示。'),
 	fullcone_nat_enabled: _('Fullcone NAT 已启用，NAT 辅助路径会作为置信度告警展示。'),
 	conntrack_routed_nat_only: _('conntrack 降级采集仅覆盖路由 / NAT 流量。'),
@@ -1050,6 +1051,9 @@ function refreshLive(viewState) {
 			if (mode === 'bpf') {
 				modeLabel = 'BPF';
 				modeTitle = _('采集方式 BPF：tc clsact 挂载的 eBPF 程序按 MAC 直接计数，置信度高。');
+			} else if (mode === 'conntrack_ecm_sync') {
+				modeLabel = 'ECM';
+				modeTitle = _('采集方式 ECM 同步：NSS 硬件加速流的字节计数由 qca-nss-ecm 以秒级节拍同步回 conntrack，再由 lanspeedd 读取。桥接流也覆盖，精度等于 ECM sync 间隔 (≈1-2 秒)。');
 			} else if (mode === 'conntrack') {
 				modeLabel = 'CT';
 				modeTitle = _('采集方式 Conntrack：从 /proc/net/nf_conntrack 按流聚合，仅覆盖路由/NAT 流量，置信度较低。');
@@ -1205,8 +1209,18 @@ function refreshLive(viewState) {
 		replaceChildren(refs.allWarnings, [E('li', {}, _('当前没有上报告警。'))]);
 	}
 
-	refs.versionLine.textContent = _('lanspeedd %s · 后端刷新 %s ms').format(
-		textOrDash(status.version), textOrDash(status.refresh_interval_ms));
+	var versionParts = [
+		_('lanspeedd %s').format(textOrDash(status.version)),
+		_('后端刷新 %s ms').format(textOrDash(status.refresh_interval_ms))
+	];
+	var nssEvidence = status.evidence && status.evidence.nss;
+	if (nssEvidence && nssEvidence.ecm_offload_active) {
+		if (typeof nssEvidence.accelerated_connections === 'number')
+			versionParts.push(_('NSS 加速连接 %d').format(nssEvidence.accelerated_connections));
+		else
+			versionParts.push(_('NSS ECM 活跃'));
+	}
+	refs.versionLine.textContent = versionParts.join(' · ');
 
 	refs.diagnosticsSummary.textContent = warnings.length
 		? _('%d 项告警 · %d 项能力').format(warnings.length, capKeys.length)

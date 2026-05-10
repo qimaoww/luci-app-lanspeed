@@ -154,6 +154,7 @@ struct runtime_probe {
 	bool nss_present;
 	bool nss_ecm_active;
 	bool nss_bridge_mgr;
+	int  nss_ecm_accelerated_connections;
 	bool fullcone;
 	bool nf_conntrack_acct;
 	bool nf_conntrack_acct_present;
@@ -1120,6 +1121,17 @@ static void inspect_nss(struct runtime_probe *probe)
 		file_exists("/sys/kernel/debug/ecm") ||
 		file_exists("/proc/sys/net/ecm");
 
+	probe->nss_ecm_accelerated_connections = -1;
+	{
+		FILE *fp = fopen("/sys/kernel/debug/ecm/ecm_db/connection_count", "r");
+		if (fp) {
+			int n = -1;
+			if (fscanf(fp, "%d", &n) == 1 && n >= 0)
+				probe->nss_ecm_accelerated_connections = n;
+			fclose(fp);
+		}
+	}
+
 	/* Treat NSS+ECM as hardware flow offload: once ECM accelerates a
 	 * connection, the Linux-side BPF / nft flowtable sees nothing until
 	 * a timeout or the flow is manually decelerated. */
@@ -1210,9 +1222,16 @@ static bool conntrack_fallback_active(const struct runtime_probe *probe)
 
 static bool conntrack_fallback_low_confidence(const struct runtime_probe *probe)
 {
+	/* NSS ECM syncs per-flow byte counters (incl. hw-offloaded routed and
+	 * bridged flows) back into conntrack at ~1-2 s cadence. In that
+	 * scenario hardware_flow_offload=true is not a confidence killer
+	 * because conntrack_acct data is still accurate, just secondly. */
+	bool nss_ecm_sync = probe->nss_present && probe->nss_ecm_active;
+	bool hw_off_non_nss = probe->hardware_flow_offload && !nss_ecm_sync;
+
 	return conntrack_fallback_active(probe) &&
 	       (!probe->flowtable_counter || probe->software_flow_offload ||
-		probe->hardware_flow_offload || probe->openclash_fake_ip ||
+		hw_off_non_nss || probe->openclash_fake_ip ||
 		probe->openclash_tun_mix || probe->openclash_router_self_proxy ||
 		probe->openclash_udp_proxy || probe->dae || probe->homeproxy ||
 		probe->sqm || probe->qosify || probe->ifb ||
@@ -1233,7 +1252,11 @@ static void add_conntrack_fallback_runtime_warnings(struct runtime_probe *probe)
 	if (!conntrack_fallback_active(probe))
 		return;
 
-	add_warning(probe, "conntrack_routed_nat_only");
+	/* With NSS ECM active, ECM's conntrack sync covers bridged flows too,
+	 * so the "routed / NAT only" disclaimer does not apply. */
+	if (!(probe->nss_present && probe->nss_ecm_active))
+		add_warning(probe, "conntrack_routed_nat_only");
+
 	if (!probe->flowtable_counter)
 		add_warning(probe, "flowtable_counter_missing");
 	if (probe->nlbwmon)
@@ -1572,6 +1595,9 @@ static void finish_probe_evidence(struct runtime_probe *probe, const char *metho
 		json_object_object_add(nss, "present", json_object_new_boolean(probe->nss_present));
 		json_object_object_add(nss, "ecm_offload_active", json_object_new_boolean(probe->nss_ecm_active));
 		json_object_object_add(nss, "bridge_mgr", json_object_new_boolean(probe->nss_bridge_mgr));
+		if (probe->nss_ecm_accelerated_connections >= 0)
+			json_object_object_add(nss, "accelerated_connections",
+			                       json_object_new_int(probe->nss_ecm_accelerated_connections));
 		json_object_object_add(nss, "counter_source", json_object_new_string(
 			probe->nss_ecm_active ? "ecm_conntrack_sync_and_netdev_counters" : "none"));
 		json_object_object_add(nss, "bpf_visibility", json_object_new_string(
@@ -2384,8 +2410,15 @@ static void add_conntrack_common_warnings(const struct runtime_probe *probe,
 		add_string_unique(warnings, "openclash_router_self_proxy_detected");
 	if (probe->sqm || probe->qosify || probe->ifb)
 		add_string_unique(warnings, "qos_ifb_confidence_low");
-	if (probe->hardware_flow_offload || probe->software_flow_offload)
-		add_string_unique(warnings, "flow_offload_confidence_low");
+	if (probe->hardware_flow_offload || probe->software_flow_offload) {
+		/* NSS+ECM syncs counters back to conntrack; downgrade the
+		 * blanket "flow_offload_confidence_low" to a softer warning
+		 * that reflects the actual sync cadence. */
+		if (probe->nss_present && probe->nss_ecm_active)
+			add_string_unique(warnings, "nss_ecm_sync_cadence");
+		else
+			add_string_unique(warnings, "flow_offload_confidence_low");
+	}
 }
 
 static void add_conntrack_identity_model(struct json_object *evidence)
@@ -2522,7 +2555,11 @@ static void emit_conntrack_clients(struct json_object *clients,
 		json_object_object_add(client, "rx_bps", json_object_new_int64((int64_t)rx_bps));
 		json_object_object_add(client, "tx_bps", json_object_new_int64((int64_t)tx_bps));
 		json_object_object_add(client, "last_seen", json_object_new_int64((int64_t)current[i].last_seen_ms));
-		json_object_object_add(client, "collector_mode", json_object_new_string("conntrack"));
+		json_object_object_add(client, "collector_mode",
+			json_object_new_string(
+				(probe->nss_present && probe->nss_ecm_active)
+					? "conntrack_ecm_sync"
+					: "conntrack"));
 		json_object_object_add(client, "confidence", json_object_new_string(conntrack_fallback_confidence(probe)));
 		json_object_object_add(client, "warnings", warnings);
 		json_object_array_add(clients, client);
