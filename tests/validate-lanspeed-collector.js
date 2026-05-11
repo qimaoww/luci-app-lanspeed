@@ -1009,7 +1009,7 @@ function assertBpfLoaderModule(header, loader, daemonSource, packageMakefile, sr
   assert(daemonSource.includes('lanspeed_bpf_read_samples('), 'lanspeedd.c must read BPF samples for Full mode');
   assert(daemonSource.includes('collect_bpf_clients('), 'lanspeedd.c must expose a BPF client collector path');
   assert(/collector_mode[^\n]+"bpf"/.test(daemonSource), 'lanspeedd.c must emit collector_mode=bpf in the Full path');
-  assert(/if \(!collect_bpf_clients\(root, clients, &probe\)\)\s*\n\s*collect_conntrack_procfs_clients\(root, clients, &probe\);/.test(daemonSource),
+  assert(/if \(!collect_bpf_clients\(root, clients, &probe\)\)\s*\{?\s*\n\s*collect_conntrack_procfs_clients\(root, clients, &probe\);/.test(daemonSource),
          'clients_method must try BPF first and fall back to conntrack');
 
   // Package links libbpf; src Makefile builds the loader object and links -lbpf.

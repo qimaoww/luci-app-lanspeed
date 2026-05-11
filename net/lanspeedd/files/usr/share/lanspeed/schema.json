@@ -268,6 +268,14 @@
           "items": {
             "$ref": "#/$defs/warning"
           }
+        },
+        "tcp_conns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "udp_conns": {
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [
@@ -297,6 +305,34 @@
         },
         "evidence": {
           "$ref": "#/$defs/evidence"
+        },
+        "tcp_conns_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "udp_conns_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "conntrack_entries_seen": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "conntrack_entries_matched": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "conntrack_parse_errors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "conn_source": {
+          "type": "string",
+          "enum": ["conntrack"]
+        },
+        "conn_semantics": {
+          "type": "string",
+          "minLength": 1
         }
       },
       "required": [

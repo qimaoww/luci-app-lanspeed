@@ -79,6 +79,8 @@ function sortClients(clients, sortKey) {
 		else if (sortKey === 'mac')       r = compareText(a.mac, b.mac);
 		else if (sortKey === 'tx')        r = (Number(b.tx_bps) || 0) - (Number(a.tx_bps) || 0);
 		else if (sortKey === 'rx')        r = (Number(b.rx_bps) || 0) - (Number(a.rx_bps) || 0);
+		else if (sortKey === 'tcp_conns') r = (Number(b.tcp_conns) || -1) - (Number(a.tcp_conns) || -1);
+		else if (sortKey === 'udp_conns') r = (Number(b.udp_conns) || -1) - (Number(a.udp_conns) || -1);
 		else if (sortKey === 'last_seen') r = (Number(b.last_seen) || 0) - (Number(a.last_seen) || 0);
 		else                              r = ((Number(b.tx_bps) || 0) + (Number(b.rx_bps) || 0)) -
 		                                      ((Number(a.tx_bps) || 0) + (Number(a.rx_bps) || 0));

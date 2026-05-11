@@ -211,6 +211,13 @@ function buildShell(viewState) {
 	refs.mClientsSub  = E('div', { 'class': 'hint' }, '-');
 	refs.mCoverage    = E('div', { 'class': 'big' }, '-');
 	refs.mCoverageSub = E('div', { 'class': 'hint' }, '-');
+	refs.mTcpConns    = E('div', { 'class': 'big' }, '-');
+	refs.mUdpConns    = E('div', { 'class': 'big' }, '-');
+	refs.mConnsWrap   = E('div', { 'class': 'lanspeed-metric' }, [
+		E('div', { 'class': 'caption' }, _('连接数')),
+		refs.mTcpConns,
+		refs.mUdpConns
+	]);
 	var metrics = E('div', { 'class': 'lanspeed-metrics' }, [
 		E('div', { 'class': 'lanspeed-metric' }, [
 			E('div', { 'class': 'caption' }, _('上行 · tx')),
@@ -234,7 +241,8 @@ function buildShell(viewState) {
 			E('div', { 'class': 'caption' }, _('覆盖率')),
 			refs.mCoverage,
 			refs.mCoverageSub
-		])
+		]),
+		refs.mConnsWrap
 	]);
 
 	refs.strip = E('div', { 'class': 'lanspeed-strip' });
@@ -328,6 +336,8 @@ function buildShell(viewState) {
 			{ k: 'rx',        t: _('下行')     },
 			{ k: 'hostname',  t: _('主机名')   },
 			{ k: 'mac',       t: 'MAC'         },
+			{ k: 'tcp_conns', t: 'TCP'         },
+			{ k: 'udp_conns', t: 'UDP'         },
 			{ k: 'last_seen', t: _('最近可见') }
 		].map(function(o) {
 			return fmt.opt(o.k, o.t, prefs.sortKey === o.k);
@@ -363,6 +373,8 @@ function buildShell(viewState) {
 			E('th', {}, 'MAC'),
 			E('th', { 'class': 'num' }, _('上行')),
 			E('th', { 'class': 'num' }, _('下行')),
+			E('th', { 'class': 'num', 'title': _('TCP 仅统计 ESTABLISHED + ASSURED') }, 'TCP'),
+			E('th', { 'class': 'num', 'title': _('conntrack 表中尚未超时的 UDP 条目') }, 'UDP'),
 			E('th', {}, _('状态')),
 			E('th', {}, _('最近'))
 		])),
@@ -519,6 +531,16 @@ function refreshLive(viewState) {
 	refs.mTx.textContent = fmt.formatRate(totals.tx, prefs.unit);
 	refs.mRx.textContent = fmt.formatRate(totals.rx, prefs.unit);
 	refs.mClients.textContent = String(clientsAll.length);
+
+	/* TCP/UDP connection counts from clients response top-level */
+	var clientsData = viewState.clients || {};
+	if (typeof clientsData.tcp_conns_total === 'number' || typeof clientsData.udp_conns_total === 'number') {
+		refs.mConnsWrap.style.display = '';
+		refs.mTcpConns.textContent = 'TCP ' + (typeof clientsData.tcp_conns_total === 'number' ? clientsData.tcp_conns_total : '-');
+		refs.mUdpConns.textContent = 'UDP ' + (typeof clientsData.udp_conns_total === 'number' ? clientsData.udp_conns_total : '-');
+	} else {
+		refs.mConnsWrap.style.display = 'none';
+	}
 
 	/* cross-check with ECM host_count if available: if ECM knows more
 	 * clients than we are reporting, the gap is usually clients whose
@@ -709,6 +731,8 @@ function refreshLive(viewState) {
 				E('td', { 'class': 'mono' }, fmt.textOrDash(c.mac)),
 				E('td', { 'class': 'num' }, fmt.formatRate(tx, prefs.unit)),
 				E('td', { 'class': 'num' }, fmt.formatRate(rx, prefs.unit)),
+				E('td', { 'class': 'num' }, typeof c.tcp_conns === 'number' ? String(c.tcp_conns) : '-'),
+				E('td', { 'class': 'num' }, typeof c.udp_conns === 'number' ? String(c.udp_conns) : '-'),
 				E('td', {}, E('span', { 'class': 'state' }, stateCells)),
 				E('td', {}, fmt.formatLastSeen(c.last_seen))
 			]);
