@@ -245,13 +245,10 @@ function buildShell(viewState) {
 		refs.mConnsWrap
 	]);
 
-	refs.strip = E('div', { 'class': 'lanspeed-strip' });
-
 	var overviewCard = E('div', { 'class': 'cbi-section' }, [
 		overviewHeader,
 		refs.errorBox,
-		metrics,
-		refs.strip
+		metrics
 	]);
 
 	/* ---- clients card ---- */
@@ -627,11 +624,8 @@ function refreshLive(viewState) {
 		}
 	}
 
-	/* critical strip */
-	var critical = fmt.asArray(status.warnings).filter(function(w) { return vocab.CRITICAL_WARNINGS[w]; });
-	fmt.replaceChildren(refs.strip, critical.map(function(w) {
-		return E('span', { 'class': vocab.warningClass(w), 'title': w }, vocab.warningText(w));
-	}));
+	/* critical warnings are shown in the diagnostics details card only;
+	 * do not repeat them as a banner on the overview card. */
 
 	/* client table */
 	var filtered = clientsAll.filter(function(c) {
