@@ -129,6 +129,8 @@ struct bpf_client_sample {
 	uint64_t tx_bytes;
 	uint64_t rx_bytes;
 	uint64_t last_seen_ms;
+	uint32_t tcp_conns;
+	uint32_t udp_conns;
 };
 
 static char bpf_attach_ifnames[LANSPEED_BPF_IFACE_MAX][LANSPEED_BPF_IFNAME_LEN];
@@ -2961,9 +2963,11 @@ static void bpf_collect_samples(void)
 		if (!sample)
 			break;
 
-		if (raw[i].direction == LANSPEED_BPF_DIR_TX)
+		if (raw[i].direction == LANSPEED_BPF_DIR_TX) {
 			sample->tx_bytes += raw[i].bytes;
-		else if (raw[i].direction == LANSPEED_BPF_DIR_RX)
+			sample->tcp_conns = raw[i].tcp_conns;
+			sample->udp_conns = raw[i].udp_conns;
+		} else if (raw[i].direction == LANSPEED_BPF_DIR_RX)
 			sample->rx_bytes += raw[i].bytes;
 		sample->last_seen_ms = now_ms;
 	}
@@ -3087,6 +3091,10 @@ static bool collect_bpf_clients(struct json_object *root,
 				       json_object_new_int64((int64_t)cur->rx_bytes));
 		json_object_object_add(client, "tx_bytes",
 				       json_object_new_int64((int64_t)cur->tx_bytes));
+		json_object_object_add(client, "tcp_conns",
+				       json_object_new_int64((int64_t)cur->tcp_conns));
+		json_object_object_add(client, "udp_conns",
+				       json_object_new_int64((int64_t)cur->udp_conns));
 		json_object_object_add(client, "sample_ms",
 				       json_object_new_int64((int64_t)bpf_current_snapshot_ms));
 		json_object_object_add(client, "last_seen",
@@ -3231,17 +3239,39 @@ static void merge_conntrack_conn_counts(struct json_object *root,
 
 		cs = find_conntrack_client_sample(conn_samples, conn_count, key);
 		if (cs) {
-			json_object_object_add(client, "tcp_conns",
-					       json_object_new_int((int)cs->tcp_conns));
-			json_object_object_add(client, "udp_conns",
-					       json_object_new_int((int)cs->udp_conns));
-			tcp_total += cs->tcp_conns;
-			udp_total += cs->udp_conns;
+			/* Only override BPF connection counts if BPF didn't
+			 * provide them (tcp_conns == 0 means ct_lookup was
+			 * unavailable or no connections seen yet). */
+			struct json_object *existing_tcp = NULL;
+			int bpf_tcp = 0;
+			if (json_object_object_get_ex(client, "tcp_conns", &existing_tcp))
+				bpf_tcp = json_object_get_int(existing_tcp);
+			if (bpf_tcp == 0) {
+				json_object_object_add(client, "tcp_conns",
+						       json_object_new_int((int)cs->tcp_conns));
+				json_object_object_add(client, "udp_conns",
+						       json_object_new_int((int)cs->udp_conns));
+				tcp_total += cs->tcp_conns;
+				udp_total += cs->udp_conns;
+			} else {
+				tcp_total += (uint32_t)bpf_tcp;
+				struct json_object *existing_udp = NULL;
+				int bpf_udp = 0;
+				if (json_object_object_get_ex(client, "udp_conns", &existing_udp))
+					bpf_udp = json_object_get_int(existing_udp);
+				udp_total += (uint32_t)bpf_udp;
+			}
 		} else {
-			json_object_object_add(client, "tcp_conns",
-					       json_object_new_int(0));
-			json_object_object_add(client, "udp_conns",
-					       json_object_new_int(0));
+			/* No conntrack match; keep whatever BPF provided */
+			struct json_object *existing_tcp = NULL;
+			struct json_object *existing_udp = NULL;
+			int bpf_tcp = 0, bpf_udp = 0;
+			if (json_object_object_get_ex(client, "tcp_conns", &existing_tcp))
+				bpf_tcp = json_object_get_int(existing_tcp);
+			if (json_object_object_get_ex(client, "udp_conns", &existing_udp))
+				bpf_udp = json_object_get_int(existing_udp);
+			tcp_total += (uint32_t)bpf_tcp;
+			udp_total += (uint32_t)bpf_udp;
 		}
 	}
 

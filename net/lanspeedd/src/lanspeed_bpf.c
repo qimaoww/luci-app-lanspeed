@@ -51,6 +51,8 @@ struct lanspeed_bpf_value {
 	uint64_t bytes;
 	uint64_t packets;
 	uint64_t last_seen;
+	uint32_t tcp_conns;
+	uint32_t udp_conns;
 };
 
 struct attached_hook {
@@ -342,6 +344,8 @@ int lanspeed_bpf_read_samples(struct lanspeed_bpf_sample *out, size_t max,
 			out[written].bytes = value.bytes;
 			out[written].packets = value.packets;
 			out[written].last_seen_ns = value.last_seen;
+			out[written].tcp_conns = value.tcp_conns;
+			out[written].udp_conns = value.udp_conns;
 			written++;
 		}
 

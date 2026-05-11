@@ -44,6 +44,8 @@ struct lanspeed_bpf_sample {
 	uint64_t bytes;
 	uint64_t packets;
 	uint64_t last_seen_ns;
+	uint32_t tcp_conns;
+	uint32_t udp_conns;
 };
 
 struct lanspeed_bpf_status {
