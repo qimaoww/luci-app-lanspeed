@@ -81,7 +81,8 @@ run_node_check() {
 		"$SCRIPT_DIR/validate-lanspeed-contract.js" \
 		"$SCRIPT_DIR/validate-lanspeed-identity.js" \
 		"$SCRIPT_DIR/validate-lanspeed-collector.js" \
-		"$SCRIPT_DIR/validate-lanspeed-probes.js"; do
+		"$SCRIPT_DIR/validate-lanspeed-probes.js" \
+		"$SCRIPT_DIR/validate-lanspeed-modules.js"; do
 		name=$(basename "$validator" .js)
 		run_logged "node-check-$name" node --check "$validator" || return $?
 	done
@@ -91,14 +92,15 @@ run_unit() {
 	reset_unit_evidence
 	append_unit_evidence "BEGIN unit run_id=$RUN_ID"
 	append_unit_evidence "command=unit"
-	append_unit_evidence "scenarios=node syntax, contract, identity, collector lifecycle, probes, build-sdk"
+	append_unit_evidence "scenarios=node syntax, contract, identity, collector lifecycle, probes, lanspeed modules, build-sdk"
 	run_node_check || return $?
 	run_logged "contract" node "$SCRIPT_DIR/validate-lanspeed-contract.js" || return $?
 	run_logged "identity" node "$SCRIPT_DIR/validate-lanspeed-identity.js" || return $?
 	run_logged "collector" node "$SCRIPT_DIR/validate-lanspeed-collector.js" || return $?
 	run_logged "probes" node "$SCRIPT_DIR/validate-lanspeed-probes.js" || return $?
+	run_logged "lanspeed-modules" node "$SCRIPT_DIR/validate-lanspeed-modules.js" || return $?
 	run_logged "build-sdk" sh "$SCRIPT_DIR/validate-build-sdk.sh" || return $?
-	append_unit_evidence "coverage=contract identity collector lifecycle probes build-sdk"
+	append_unit_evidence "coverage=contract identity collector lifecycle probes lanspeed-modules build-sdk"
 	append_unit_evidence "completed=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 	append_unit_evidence "END unit run_id=$RUN_ID"
 	printf '%s\n' "unit validations passed; evidence: $UNIT_EVIDENCE"

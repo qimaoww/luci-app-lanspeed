@@ -2777,6 +2777,9 @@ static void emit_conntrack_clients(struct json_object *clients,
 		}
 		json_object_object_add(client, "rx_bps", json_object_new_int64((int64_t)rx_bps));
 		json_object_object_add(client, "tx_bps", json_object_new_int64((int64_t)tx_bps));
+		json_object_object_add(client, "rx_bytes", json_object_new_int64((int64_t)current[i].rx_bytes));
+		json_object_object_add(client, "tx_bytes", json_object_new_int64((int64_t)current[i].tx_bytes));
+		json_object_object_add(client, "sample_ms", json_object_new_int64((int64_t)now_ms));
 		json_object_object_add(client, "last_seen", json_object_new_int64((int64_t)current[i].last_seen_ms));
 		json_object_object_add(client, "collector_mode",
 			json_object_new_string(
@@ -3026,6 +3029,12 @@ static bool collect_bpf_clients(struct json_object *root,
 				       json_object_new_int64((int64_t)rx_bps));
 		json_object_object_add(client, "tx_bps",
 				       json_object_new_int64((int64_t)tx_bps));
+		json_object_object_add(client, "rx_bytes",
+				       json_object_new_int64((int64_t)cur->rx_bytes));
+		json_object_object_add(client, "tx_bytes",
+				       json_object_new_int64((int64_t)cur->tx_bytes));
+		json_object_object_add(client, "sample_ms",
+				       json_object_new_int64((int64_t)bpf_current_snapshot_ms));
 		json_object_object_add(client, "last_seen",
 				       json_object_new_int64((int64_t)cur->last_seen_ms));
 		json_object_object_add(client, "collector_mode",
@@ -3425,6 +3434,7 @@ static int interfaces_method(struct ubus_context *ubus, struct ubus_object *obj,
 		json_object_object_add(iface, "rx_bps", json_object_new_int64((int64_t)rx_bps));
 		json_object_object_add(iface, "tx_bps", json_object_new_int64((int64_t)tx_bps));
 		json_object_object_add(iface, "delta_ms", json_object_new_int64((int64_t)delta_ms));
+		json_object_object_add(iface, "sample_ms", json_object_new_int64((int64_t)now_ms));
 		json_object_object_add(iface, "source",
 			json_object_new_string("/sys/class/net/<if>/statistics"));
 		json_object_object_add(iface, "coverage",

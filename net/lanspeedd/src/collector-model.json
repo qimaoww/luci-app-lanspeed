@@ -33,7 +33,7 @@
       "mac",
       "direction"
     ],
-    "default_max_clients": 512,
+    "default_max_clients": 2048,
     "full_warning": "map_full",
     "client_limit_warning": "client_limit_exceeded",
     "map_read_failure_warning": "map_read_failed",
@@ -96,10 +96,10 @@
     }
   },
   "performance_guardrails": {
-    "default_max_clients": 512,
+    "default_max_clients": 2048,
     "minimum_refresh_interval_ms": 500,
     "stale_client_ms": 5000,
-    "warning_high_client_count": 384,
+    "warning_high_client_count": 1536,
     "map_full_warning": "map_full",
     "map_read_failure_warning": "map_read_failed",
     "attach_failure_warning": "unsafe_attach",

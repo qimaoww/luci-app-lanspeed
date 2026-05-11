@@ -202,17 +202,42 @@ function validateAcl(acl) {
   const app = acl['luci-app-lanspeed'];
   assertObject(app, 'luci-app-lanspeed ACL');
   assertObject(app.read, 'ACL read');
-  assert(!Object.prototype.hasOwnProperty.call(app, 'write'), 'ACL must not grant write permissions');
   assertObject(app.read.ubus, 'ACL read.ubus');
   assertArray(app.read.ubus.lanspeed, 'ACL read.ubus.lanspeed');
   assertArray(app.read.uci, 'ACL read.uci');
 
-  const expectedMethods = ['status', 'clients', 'health', 'interfaces'];
-  assert(app.read.ubus.lanspeed.length === expectedMethods.length, 'ACL must only grant lanspeed read methods');
-  for (const method of expectedMethods) {
+  /* The read side exposes every ubus method on the lanspeed object, including
+   * sysdevices (added for the interface-config UI).  Read UCI access is
+   * restricted to the lanspeed config. */
+  const expectedReadMethods = ['status', 'clients', 'health', 'interfaces', 'sysdevices'];
+  assert(app.read.ubus.lanspeed.length === expectedReadMethods.length,
+    `ACL must grant exactly ${expectedReadMethods.length} lanspeed read methods, got ${app.read.ubus.lanspeed.length}`);
+  for (const method of expectedReadMethods) {
     assert(app.read.ubus.lanspeed.includes(method), `ACL must grant read ubus method ${method}`);
   }
   assert(app.read.uci.length === 1 && app.read.uci[0] === 'lanspeed', 'ACL must only grant read UCI access to lanspeed');
+
+  /* The write side is intentionally narrow: the LuCI page writes the lanspeed
+   * UCI config (to persist interface assignments), commits it via uci.*, and
+   * triggers `rc init lanspeedd reload`.  Anything broader would be a bug. */
+  if (Object.prototype.hasOwnProperty.call(app, 'write')) {
+    assertObject(app.write, 'ACL write');
+    assertObject(app.write.ubus, 'ACL write.ubus');
+
+    assertArray(app.write.ubus.rc, 'ACL write.ubus.rc');
+    assert(app.write.ubus.rc.length === 1 && app.write.ubus.rc[0] === 'init',
+      'ACL write.ubus.rc must grant only the init method');
+
+    assertArray(app.write.ubus.uci, 'ACL write.ubus.uci');
+    const allowedUciMethods = ['set', 'delete', 'add', 'commit', 'apply'];
+    for (const method of app.write.ubus.uci) {
+      assert(allowedUciMethods.includes(method), `ACL write.ubus.uci must only include ${allowedUciMethods.join(', ')}, got ${method}`);
+    }
+
+    assertArray(app.write.uci, 'ACL write.uci');
+    assert(app.write.uci.length === 1 && app.write.uci[0] === 'lanspeed',
+      'ACL write.uci must only grant the lanspeed config');
+  }
 }
 
 function validateSource(source) {
@@ -326,13 +351,19 @@ function validateBpfSource(source) {
     '__u64 bytes',
     '__u64 packets',
     '__u64 last_seen',
-    'BPF_MAP_TYPE_HASH',
-    'LANSPEED_MAX_CLIENTS 512',
+    'BPF_MAP_TYPE_LRU_HASH',
+    'LANSPEED_MAX_CLIENTS',
     'SEC("tc/ingress")',
     'SEC("tc/egress")'
   ]) {
     assert(source.includes(required), `BPF source missing ${required}`);
   }
+  /* Default map size must stay at 2048 or larger; small ceilings recreated
+   * the original "map_full" symptom that prompted the LRU switch. */
+  const sizeMatch = source.match(/#define\s+LANSPEED_MAX_CLIENTS\s+(\d+)/);
+  assert(sizeMatch, 'BPF source must #define LANSPEED_MAX_CLIENTS');
+  assert(parseInt(sizeMatch[1], 10) >= 2048, `LANSPEED_MAX_CLIENTS must be >= 2048 (got ${sizeMatch && sizeMatch[1]})`);
+
   assert(/SEC\("tc\/ingress"\)\s+int\s+lanspeed_ingress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_TX\);\s*}/m.test(source), 'BPF ingress must account client TX');
   assert(/SEC\("tc\/egress"\)\s+int\s+lanspeed_egress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_RX\);\s*}/m.test(source), 'BPF egress must account client RX');
 }
@@ -352,7 +383,7 @@ function validateUci(config) {
   for (const required of [
     "option enabled '1'",
     "option refresh_interval_ms '1000'",
-    "option max_clients '512'",
+    "option max_clients '2048'",
     "list ifname 'br-lan'",
     "list interface_include 'br-lan'",
     "list interface_exclude 'wan'",
@@ -360,7 +391,7 @@ function validateUci(config) {
     "option enable_conntrack_fallback '1'",
     "option warning_confidence_below 'medium'",
     "option warning_stale_client_ms '5000'",
-    "option warning_high_client_count '384'",
+    "option warning_high_client_count '1536'",
     "option warning_collector_lag_ms '3000'"
   ]) {
     assert(config.includes(required), `UCI config missing ${required}`);
@@ -384,7 +415,7 @@ const uciConfig = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/confi
 assertSchemaRequired(schema, 'status', ['mode', 'confidence', 'warnings', 'evidence', 'refresh_interval_ms', 'version', 'capabilities']);
 assertSchemaRequired(schema, 'client', ['mac', 'identity_key', 'zone', 'interface', 'ips', 'hostname', 'rx_bps', 'tx_bps', 'last_seen', 'collector_mode', 'confidence', 'warnings']);
 assertSchemaRequired(schema, 'health', ['mode', 'confidence', 'capabilities', 'conflicts', 'warnings', 'evidence']);
-assertSchemaRequired(schema, 'interface', ['name', 'role', 'status', 'evidence']);
+assertSchemaRequired(schema, 'interface', ['name', 'role', 'status']);
 validateRootSchema(schema);
 assert(schema.$defs.status.properties.refresh_interval_ms.minimum === 500, 'schema must reject/clamp refresh_interval_ms below 500ms');
 validateFixture(fixture);

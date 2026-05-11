@@ -1,6 +1,10 @@
 'use strict';
 'require view';
-'require rpc';
+'require lanspeed.vocab as vocab';
+'require lanspeed.format as fmt';
+'require lanspeed.rpc as lsRpc';
+'require lanspeed.ifaceConfig as ifaceCfg';
+'require lanspeed.nssPanel as nssPanel';
 
 /*
  * LAN Speed LuCI status view.
@@ -10,518 +14,14 @@
  * button styles and form controls inherit from whichever LuCI theme is
  * active (bootstrap / argon / aurora / material / dark / light …).
  *
- * Architecture (kept from v2): buildShell() constructs the DOM once, stashes
- * mutation points in viewState.refs. refreshLive() mutates only the dynamic
- * cells; toolbar controls keep their focus / value across ticks.
+ * Architecture: buildShell() constructs the DOM once, stashes mutation
+ * points in viewState.refs. refreshLive() mutates only the dynamic cells;
+ * toolbar controls keep their focus / value across ticks.
+ *
+ * Vocabulary, formatting, RPC handles, the iface-config sub-panel and the
+ * NSS status card live in resources/lanspeed/*.js modules; this file is the
+ * shell + refresh loop + view export.
  */
-
-var callStatus = rpc.declare({
-	object: 'lanspeed',
-	method: 'status',
-	expect: { '': {} }
-});
-var callClients = rpc.declare({
-	object: 'lanspeed',
-	method: 'clients',
-	expect: { '': {} }
-});
-var callInterfaces = rpc.declare({
-	object: 'lanspeed',
-	method: 'interfaces',
-	expect: { '': {} }
-});
-var callInit = rpc.declare({
-	object: 'rc',
-	method: 'init',
-	params: [ 'name', 'action' ],
-	expect: { '': {} }
-});
-var callSysdevices = rpc.declare({
-	object: 'lanspeed',
-	method: 'sysdevices',
-	expect: { '': {} }
-});
-var callUciSet = rpc.declare({
-	object: 'uci',
-	method: 'set',
-	params: [ 'config', 'section', 'values' ]
-});
-var callUciDelete = rpc.declare({
-	object: 'uci',
-	method: 'delete',
-	params: [ 'config', 'section', 'options' ]
-});
-var callUciCommit = rpc.declare({
-	object: 'uci',
-	method: 'commit',
-	params: [ 'config' ]
-});
-
-var MIN_REFRESH_MS = 1000;
-var INACTIVE_BPS_THRESHOLD = 1024;
-var DELTA_SIGNIFICANT_RATIO = 0.10;
-var DELTA_SIGNIFICANT_MIN_BPS = 20000;
-var PREF_KEY = 'luci-app-lanspeed.prefs.v3';
-
-var REFRESH_CHOICES = [
-	{ value:  1000, label: '1s'  },
-	{ value:  2000, label: '2s'  },
-	{ value:  3000, label: '3s'  },
-	{ value:  5000, label: '5s'  },
-	{ value: 10000, label: '10s' }
-];
-
-/* ---------- vocabulary ---------- */
-
-var CAPABILITY_LABELS = {
-	bpf: 'BPF',
-	bpf_package: _('BPF 软件包'),
-	bpf_object: _('BPF 对象'),
-	bpf_runtime_metrics: _('BPF 实时指标'),
-	conntrack_fallback: _('conntrack 降级采集'),
-	live_metrics: _('实时指标'),
-	fw4: 'fw4',
-	nft: 'nftables',
-	software_flow_offload: _('软件流量卸载'),
-	hardware_flow_offload: _('硬件流量卸载'),
-	nss: _('Qualcomm NSS'),
-	nss_ecm_offload: _('NSS ECM 硬件加速'),
-	nss_ppe_offload: _('NSS PPE 硬件加速'),
-	nss_bridge_mgr: _('NSS 网桥管理'),
-	nss_ifb: _('NSS IFB 镜像'),
-	nss_nsm: _('NSS 统计管理'),
-	nss_dp: _('NSS 数据面'),
-	nss_mcs: _('NSS 组播 snooping'),
-	fullcone: 'Fullcone NAT',
-	nf_conntrack_acct: _('conntrack 计数'),
-	flowtable_counter: _('flowtable 计数'),
-	tc: 'tc',
-	tc_clsact: 'TC clsact',
-	existing_tc_filters: _('已有 TC filter'),
-	ifb: 'IFB',
-	sqm: 'SQM',
-	qosify: 'qosify',
-	openclash: 'OpenClash',
-	openclash_fake_ip: 'OpenClash fake-ip',
-	openclash_tun_mix: 'OpenClash TUN/mix',
-	openclash_redirect_dns: _('OpenClash DNS 劫持'),
-	openclash_dns_chain_complete: _('OpenClash DNS 链'),
-	openclash_router_self_proxy: 'OpenClash router-self',
-	openclash_udp_proxy: 'OpenClash UDP',
-	openclash_ipv6: 'OpenClash IPv6',
-	dae: 'dae/daed',
-	homeproxy: 'HomeProxy',
-	lan_bridge: _('LAN 网桥'),
-	vlan: 'VLAN',
-	wlan: 'Wi-Fi',
-	lan_edge: _('LAN 边缘'),
-	safe_attach: _('安全 TC 挂载'),
-	map_full: _('映射表已满')
-};
-
-var CAPABILITY_ORDER = [
-	'bpf_runtime_metrics', 'live_metrics', 'bpf', 'bpf_package', 'bpf_object',
-	'tc', 'tc_clsact', 'safe_attach', 'lan_edge', 'lan_bridge', 'vlan', 'wlan',
-	'conntrack_fallback', 'nf_conntrack_acct', 'flowtable_counter',
-	'software_flow_offload', 'hardware_flow_offload',
-	'nss', 'nss_dp', 'nss_ecm_offload', 'nss_ppe_offload', 'nss_nsm',
-	'nss_bridge_mgr', 'nss_ifb', 'nss_mcs', 'fullcone',
-	'existing_tc_filters', 'ifb', 'sqm', 'qosify',
-	'openclash', 'openclash_fake_ip', 'openclash_tun_mix', 'openclash_redirect_dns',
-	'openclash_dns_chain_complete', 'openclash_router_self_proxy',
-	'openclash_udp_proxy', 'openclash_ipv6', 'dae', 'homeproxy',
-	'fw4', 'nft', 'map_full'
-];
-
-var WARNING_LABELS = {
-	openclash_detected: _('检测到 OpenClash，代理路径可能改变 LAN/WAN 流量走向。'),
-	openclash_fake_ip_low_remote_confidence: _('OpenClash fake-ip 已启用，远端地址只能作为元数据。'),
-	openclash_tun_conntrack_low_confidence: _('OpenClash TUN/mix 经 conntrack 降级采集时置信度较低。'),
-	openclash_dns_chain_incomplete: _('OpenClash DNS 链路不完整，解析相关归因可能不可靠。'),
-	openclash_router_self_proxy_detected: _('OpenClash router-self 代理：路由器自身流量不会归入任一 LAN 客户端。'),
-	openclash_tun_mix_detected: _('OpenClash TUN/mix 可能让部分路径绕过 CPU 可见 LAN 边缘指标。'),
-	openclash_udp_proxy_detected: _('OpenClash UDP 代理会降低按客户端归因的置信度。'),
-	dae_detected: _('检测到 dae/daed，代理或 TUN 接口只作为上行证据，不作为 LAN 客户端身份。'),
-	tc_filter_conflict: _('已有 TC filter 与 lanspeed 挂载点冲突，lanspeedd 不会覆盖它。'),
-	existing_tc_filters_detected: _('已存在其它 TC filter，lanspeedd 只告警，不删除或重排。'),
-	sqm_detected: _('检测到 SQM，IFB 整形可能影响观察到的方向或覆盖范围。'),
-	qosify_detected: _('检测到 qosify，已有分类器会被保留，置信度可能受影响。'),
-	ifb_detected: _('检测到 IFB，入口整形可能改变 CPU 可见路径。'),
-	software_flow_offload_enabled: _('软件流量卸载已启用；tc/BPF 挂载在它之前，客户端粒度仍然可见。'),
-	hardware_flow_offload_unsupported: _('硬件流量卸载已启用，硬件转发流量可能绕过 CPU 可见指标。'),
-	nss_detected: _('检测到 Qualcomm NSS 网络协处理器。流量被加速的部分不经过 CPU，BPF 仅能看到慢路径。'),
-	nss_ecm_offload_active: _('NSS ECM 正在硬件加速连接，客户端数据经 ECM→conntrack 同步得到，置信度受限。'),
-	nss_ecm_sync_cadence: _('NSS 硬件卸载中：客户端计数经 ECM/PPE 同步回 conntrack，精度为秒级节拍，不是逐包实时。'),
-	nss_ifb_detected: _('检测到 NSS IFB（nssifb）：NSS 硬件 QoS 的镜像接口，其计数是物理口 ingress 的镜像，不应 attach BPF，只能作为观察对象。'),
-	nssifb_collect_rejected: _('配置中请求 attach BPF 到 nssifb，daemon 已忽略——nssifb 是 NSS 镜像接口，attach 会重复计数物理口 ingress。请改用"观察"模式。'),
-	nss_ppe_offload_active: _('NSS PPE 正在硬件加速连接（IPQ95xx/53xx 新一代硬件加速），BPF 只能看到慢路径。'),
-	fullcone_detected: _('检测到 Fullcone NAT，NAT 辅助路径会作为置信度告警展示。'),
-	fullcone_nat_enabled: _('Fullcone NAT 已启用，NAT 辅助路径会作为置信度告警展示。'),
-	conntrack_routed_nat_only: _('conntrack 降级采集仅覆盖路由 / NAT 流量。'),
-	conntrack_acct_disabled: _('conntrack 计数未启用，无法使用 conntrack 降级速率采集。'),
-	nf_conntrack_acct_disabled: _('nf_conntrack_acct 未启用，conntrack 降级采集不可用。'),
-	flowtable_counter_missing: _('未检测到 flowtable 计数，降级采集置信度会降低。'),
-	nlbwmon_counter_conflict: _('检测到 nlbwmon 计数冲突，lanspeed 不读取或清零 nlbwmon 计数。'),
-	bpf_optional_package_missing: _('缺少可选 BPF 软件包，无法使用实时 BPF 指标。'),
-	bpf_object_missing: _('缺少 BPF 对象文件，无法使用实时 BPF 指标。'),
-	bpf_runtime_loader_unavailable: _('BPF 资产齐备但本次启动没有成功完成 tc 挂载或 map 读取，已回落到 conntrack 模式。'),
-	unsafe_attach: _('TC 挂载点不安全，因此不会使用实时指标。'),
-	map_full: _('BPF 客户端映射表已满，部分客户端可能被省略。'),
-	map_read_failed: _('读取 BPF 映射表失败，本次客户端指标可能不完整。'),
-	client_limit_exceeded: _('客户端数量超过限制，部分客户端可能未显示。'),
-	live_metrics_unavailable: _('实时指标不可用，当前数据可能为空或处于降级状态。'),
-	lan_to_lan_visibility_limited: _('LAN-to-LAN 流量绕过路由器 CPU 时，可见性会受限。'),
-	lan_to_lan_visibility_unknown: _('当前拓扑下 LAN-to-LAN 可见性无法确认。'),
-	asymmetric_path_possible: _('可能存在非对称路径，页面可能只能看到其中一个方向。'),
-	duplicate_mac_across_vlans: _('同一 MAC 出现在多个 VLAN 或区域，会按不同身份分别显示。'),
-	probe_error: _('运行时探测发生错误，状态信息可能不完整。'),
-	tc_missing: _('TC 不可用，BPF LAN 边缘采集不受支持。'),
-	conntrack_snapshot_pending: _('conntrack 正在等待第二次采样，速率暂时可能为 0。'),
-	conntrack_unavailable: _('conntrack 数据不可用，无法生成降级采集结果。'),
-	flow_offload_confidence_low: _('流量卸载会降低降级采集置信度。'),
-	refresh_interval_below_minimum: _('后端刷新间隔低于 UI 下限，页面会使用至少 1000ms 的刷新间隔。'),
-	counter_anomaly: _('检测到计数异常，本窗口速率按 0 处理。'),
-	time_rollback: _('检测到时间回退，本窗口速率按 0 处理。'),
-	proxy_path_confidence_low: _('代理路径会降低按客户端归因的置信度。'),
-	qos_ifb_confidence_low: _('QoS / IFB 整形可能降低采集置信度。'),
-	lan_edge_missing: _('未检测到 LAN 边缘接口，实时采集无法工作。'),
-	bpf_disabled: _('enable_bpf 已关闭，不会尝试加载 BPF 运行时。')
-};
-
-var CRITICAL_WARNINGS = {
-	hardware_flow_offload_unsupported: true,
-	nss_ecm_offload_active: true,
-	nss_ppe_offload_active: true,
-	tc_filter_conflict: true,
-	nssifb_collect_rejected: true,
-	unsafe_attach: true,
-	tc_missing: true,
-	lan_edge_missing: true,
-	probe_error: true,
-	map_read_failed: true,
-	live_metrics_unavailable: true,
-	bpf_runtime_loader_unavailable: true,
-	conntrack_acct_disabled: true,
-	nf_conntrack_acct_disabled: true,
-	map_full: true
-};
-
-/* ---------- preferences ---------- */
-
-var DEFAULT_PREFS = {
-	refreshMs: 3000,
-	unit: 'bit',
-	activeOnly: false,
-	sortKey: 'speed',
-	paused: false,
-	ifaceExcluded: []
-};
-function loadPrefs() {
-	try {
-		var raw = window.localStorage.getItem(PREF_KEY);
-		if (!raw) return Object.assign({}, DEFAULT_PREFS);
-		return Object.assign({}, DEFAULT_PREFS, JSON.parse(raw));
-	} catch (e) { return Object.assign({}, DEFAULT_PREFS); }
-}
-function savePrefs(p) { try { window.localStorage.setItem(PREF_KEY, JSON.stringify(p)); } catch (e) {} }
-
-/* ---------- helpers ---------- */
-
-function asArray(v) { return Array.isArray(v) ? v : []; }
-function textOrDash(v) { return (v === null || v === undefined || v === '') ? '-' : String(v); }
-function identityOf(c) { return c.identity_key || [c.mac, c.zone].filter(Boolean).join('@') || '-'; }
-function clientDisplayName(c) { return c.hostname || c.mac || identityOf(c); }
-
-function normalizeConfidence(v) { return String(v || 'unsupported').toLowerCase(); }
-
-function confidenceClass(v) {
-	v = normalizeConfidence(v);
-	if (v === 'high')   return 'label label-success';
-	if (v === 'medium') return 'label label-warning';
-	return 'label label-danger';
-}
-function confidenceText(v) {
-	v = normalizeConfidence(v);
-	if (v === 'high')        return _('高');
-	if (v === 'medium')      return _('中');
-	if (v === 'low')         return _('低');
-	if (v === 'unsupported') return _('不支持');
-	return textOrDash(v);
-}
-
-function modeClass(m) {
-	if (m === 'Full')        return 'label label-success';
-	if (m === 'Degraded')    return 'label label-warning';
-	return 'label label-danger';
-}
-function modeText(m) {
-	if (m === 'Full')        return 'Full';
-	if (m === 'Degraded')    return 'Degraded';
-	if (m === 'Unsupported') return 'Unsupported';
-	return textOrDash(m);
-}
-
-function warningText(w) { return WARNING_LABELS[w] || String(w).replace(/_/g, ' '); }
-function warningClass(w) {
-	if (CRITICAL_WARNINGS[w] || /hardware|unsafe|conflict|missing|error|failed|full/.test(w))
-		return 'label label-danger';
-	return 'label label-warning';
-}
-function capabilityClass(key, enabled) {
-	if (!enabled) return 'label';
-	if (key === 'hardware_flow_offload' || key === 'map_full') return 'label label-danger';
-	if (['software_flow_offload','fullcone','openclash_fake_ip','openclash_tun_mix',
-	     'openclash_router_self_proxy','dae','sqm','qosify','ifb','existing_tc_filters']
-	    .indexOf(key) !== -1) return 'label label-warning';
-	return 'label label-success';
-}
-
-function formatRate(valueBps, unit) {
-	var n = Number(valueBps) || 0, units, div;
-	if (unit === 'byte') { n /= 8; units = ['B/s','KB/s','MB/s','GB/s','TB/s']; div = 1024; }
-	else                 { units = ['bps','Kbps','Mbps','Gbps','Tbps']; div = 1000; }
-	if (n < 1) return '0';
-	var i = 0;
-	while (n >= div && i < units.length - 1) { n /= div; i++; }
-	return (i === 0 ? '%d %s' : '%.2f %s').format(n, units[i]);
-}
-
-function formatLastSeen(v) {
-	var n = Number(v) || 0;
-	if (n <= 0) return '-';
-	if (n > 1e12) return new Date(n).toLocaleTimeString();
-	if (n > 1e9)  return new Date(n * 1000).toLocaleTimeString();
-	return _('%d 秒前').format(n);
-}
-
-function compareText(a, b) {
-	return String(a || '').localeCompare(String(b || ''), undefined, { numeric: true, sensitivity: 'base' });
-}
-function sumTotals(clients) {
-	var tx = 0, rx = 0, active = 0;
-	clients.forEach(function(c) {
-		var t = Number(c.tx_bps) || 0, r = Number(c.rx_bps) || 0;
-		tx += t; rx += r;
-		if (t + r >= INACTIVE_BPS_THRESHOLD) active++;
-	});
-	return { tx: tx, rx: rx, active: active };
-}
-function sortClients(clients, sortKey) {
-	var sorted = clients.slice();
-	sorted.sort(function(a, b) {
-		var r;
-		if (sortKey === 'hostname')       r = compareText(clientDisplayName(a), clientDisplayName(b));
-		else if (sortKey === 'mac')       r = compareText(a.mac, b.mac);
-		else if (sortKey === 'tx')        r = (Number(b.tx_bps) || 0) - (Number(a.tx_bps) || 0);
-		else if (sortKey === 'rx')        r = (Number(b.rx_bps) || 0) - (Number(a.rx_bps) || 0);
-		else if (sortKey === 'last_seen') r = (Number(b.last_seen) || 0) - (Number(a.last_seen) || 0);
-		else                              r = ((Number(b.tx_bps) || 0) + (Number(b.rx_bps) || 0)) -
-		                                      ((Number(a.tx_bps) || 0) + (Number(a.rx_bps) || 0));
-		return r || compareText(identityOf(a), identityOf(b));
-	});
-	return sorted;
-}
-function matchesFilter(c, term) {
-	if (!term) return true;
-	var hay = [clientDisplayName(c), c.mac, c.zone, c.interface, asArray(c.ips).join(' ')]
-		.filter(Boolean).join(' ').toLowerCase();
-	return hay.indexOf(term.toLowerCase()) !== -1;
-}
-
-function replaceChildren(node, children) {
-	while (node.firstChild) node.removeChild(node.firstChild);
-	asArray(children).forEach(function(c) {
-		if (c === null || c === undefined || c === '') return;
-		node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
-	});
-}
-
-/*
- * HTML `<option selected="false">` is still selected because the spec treats
- * the attribute as a boolean presence, not a truthy value. LuCI's E() helper
- * setAttribute's whatever you pass, so we must only emit `selected` when it
- * should actually be selected.
- */
-function opt(value, label, isSelected) {
-	var attrs = { 'value': String(value) };
-	if (isSelected) attrs.selected = 'selected';
-	return E('option', attrs, label);
-}
-
-/* ---------- interface configuration ---------- */
-
-function loadIfaceConfig(viewState) {
-	var refs = viewState.refs;
-	if (!refs || !refs.ifcfgGrid) return;
-	refs.ifcfgStatus.textContent = _('读取中…');
-	callSysdevices().then(function(data) {
-		viewState.sysdevices = data || { devices: [], current_ifnames: [], current_observed: [] };
-		renderIfaceConfig(viewState);
-		refs.ifcfgStatus.textContent = '';
-	}).catch(function(err) {
-		refs.ifcfgStatus.textContent = _('读取失败: ') + (err && err.message || err);
-	});
-}
-
-function renderIfaceConfig(viewState) {
-	var refs = viewState.refs;
-	var data = viewState.sysdevices || { devices: [] };
-	var devs = asArray(data.devices);
-	var attachNow = asArray(data.current_ifnames);
-	var observeNow = asArray(data.current_observed);
-
-	devs.sort(function(a, b) {
-		/* recommended LAN devices first, then alphabetical */
-		var ra = a.recommended_lan ? 0 : 1;
-		var rb = b.recommended_lan ? 0 : 1;
-		if (ra !== rb) return ra - rb;
-		return compareText(a.name, b.name);
-	});
-
-	refs.ifcfgSummary.textContent = _('采集 %d · 观察 %d · 候选 %d').format(
-		attachNow.length, observeNow.length, devs.length);
-
-	/* store per-device state in a lookup so segmented toggle can mutate it */
-	viewState.ifcfgState = {};
-	devs.forEach(function(d) {
-		viewState.ifcfgState[d.name] = d.selected ? 'collect'
-		                             : d.observed ? 'observe'
-		                             : 'off';
-	});
-
-	function makeSeg(name) {
-		var wrap = E('div', { 'class': 'lanspeed-ifcfg-seg', 'data-name': name });
-		var isNssIfb = false;
-		var devs = asArray((viewState.sysdevices || {}).devices);
-		for (var i = 0; i < devs.length; i++) {
-			if (devs[i].name === name && devs[i].is_nss_ifb) { isNssIfb = true; break; }
-		}
-		var modes = [
-			{ k: 'off',     t: _('关闭'), title: _('不挂载、不显示') },
-			{ k: 'observe', t: _('观察'), title: _('只读接口计数，不 attach BPF；适合 WAN / tun / nssifb') },
-			{ k: 'collect', t: _('采集'),
-			  title: isNssIfb
-			    ? _('nssifb 是 NSS 镜像接口，对它 attach BPF 会看到镜像流量而不是真实客户端流量，不推荐。')
-			    : _('挂 BPF filter，按客户端拆速率；置信度 high') }
-		];
-		modes.forEach(function(m) {
-			var btn = E('button', {
-				'type': 'button',
-				'data-mode': m.k,
-				'title': m.title,
-				'class': viewState.ifcfgState[name] === m.k ? 'active' : ''
-			}, m.t);
-			btn.addEventListener('click', function() {
-				viewState.ifcfgState[name] = m.k;
-				wrap.querySelectorAll('button').forEach(function(b) {
-					b.className = (b.getAttribute('data-mode') === m.k) ? 'active' : '';
-				});
-			});
-			wrap.appendChild(btn);
-		});
-		return wrap;
-	}
-
-	replaceChildren(refs.ifcfgGrid, devs.map(function(d) {
-		var tags = [];
-		if (d.is_nss_ifb)       tags.push(_('NSS 镜像'));
-		if (d.is_bridge)        tags.push(_('网桥'));
-		if (d.is_bridge_port)   tags.push(_('桥成员'));
-		if (!d.recommended_lan && !d.is_nss_ifb) tags.push(_('非 LAN'));
-		if (d.speed_mbps)       tags.push(d.speed_mbps + 'M');
-
-		return E('div', { 'class': 'lanspeed-ifcfg-card' }, [
-			E('div', { 'class': 'lanspeed-ifcfg-card-head' }, [
-				E('span', { 'class': 'devname', 'title': d.name }, d.name),
-				tags.length
-					? E('span', { 'class': 'devtags' },
-					    tags.map(function(t) { return E('span', { 'class': 'devtag' }, t); }))
-					: ''
-			]),
-			makeSeg(d.name)
-		]);
-	}));
-
-	if (!devs.length) {
-		refs.ifcfgHint.textContent = _('没有可选设备，请检查 /sys/class/net。');
-	} else {
-		refs.ifcfgHint.textContent = _('采集 = 挂 BPF 按客户端拆速率。观察 = 只读接口吞吐数字，用于 WAN 展示或对账。');
-	}
-}
-
-function collectIfaceSelections(viewState) {
-	var attach = [], observe = [];
-	var state = viewState.ifcfgState || {};
-	Object.keys(state).forEach(function(name) {
-		if (state[name] === 'collect') attach.push(name);
-		else if (state[name] === 'observe') observe.push(name);
-	});
-	return { attach: attach, observe: observe };
-}
-
-function saveIfaceConfig(viewState) {
-	var refs = viewState.refs;
-	if (!refs || viewState.ifcfgSaving) return;
-	var sel = collectIfaceSelections(viewState);
-	if (!sel.attach.length && !sel.observe.length) {
-		refs.ifcfgStatus.textContent = _('请至少选择一个设备');
-		return;
-	}
-
-	viewState.ifcfgSaving = true;
-	refs.ifcfgSaveBtn.disabled = true;
-	refs.ifcfgReloadBtn.disabled = true;
-	refs.ifcfgStatus.textContent = _('保存中…');
-
-	/* Client-side guard: reject nssifb in collect list even if the user
-	 * toggled it somehow. daemon also rejects on load, but failing fast
-	 * here is friendlier. */
-	if (sel.attach.indexOf('nssifb') !== -1) {
-		viewState.ifcfgSaving = false;
-		refs.ifcfgSaveBtn.disabled = false;
-		refs.ifcfgReloadBtn.disabled = false;
-		refs.ifcfgStatus.textContent = _('nssifb 不能用作采集接口；请改"观察"');
-		return;
-	}
-
-	/* delete old lists (tolerate missing options), then set new ones, commit, reload daemon */
-	Promise.resolve()
-		.then(function() {
-			return callUciDelete('lanspeed', 'main',
-				['ifname','interface_include','observe']).catch(function(){});
-		})
-		.then(function() {
-			return callUciSet('lanspeed', 'main', {
-				ifname:            sel.attach,
-				interface_include: sel.attach,
-				observe:           sel.observe
-			});
-		})
-		.then(function() { return callUciCommit('lanspeed'); })
-		.then(function() {
-			refs.ifcfgStatus.textContent = _('重载 daemon…');
-			return callInit('lanspeedd', 'reload').catch(function() {});
-		})
-		.then(function() {
-			return new Promise(function(resolve) { window.setTimeout(resolve, 4000); });
-		})
-		.then(function() {
-			refs.ifcfgStatus.textContent = _('已应用');
-			return Promise.all([viewState.reload(true), loadIfaceConfig(viewState)]);
-		})
-		.catch(function(err) {
-			refs.ifcfgStatus.textContent = _('保存失败: ') + (err && err.message || err);
-		})
-		.then(function() {
-			refs.ifcfgSaveBtn.disabled = false;
-			refs.ifcfgReloadBtn.disabled = false;
-			viewState.ifcfgSaving = false;
-			window.setTimeout(function() {
-				if (refs.ifcfgStatus.textContent === _('已应用'))
-					refs.ifcfgStatus.textContent = '';
-			}, 3000);
-		});
-}
 
 /* ---------- minimal layout-only CSS ----------
  *
@@ -670,31 +170,12 @@ var LAYOUT_CSS = [
  *   <div class="cbi-map">
  *     <style>...</style>
  *     <div class="cbi-section">        overview card
- *       <div class="lanspeed-header"><h3/>…pills…meta</div>
- *       <div class="alert-message error">…</div>    (hidden by default)
- *       <div class="lanspeed-metrics">…</div>
- *       <div class="lanspeed-strip">…critical…</div>
- *     </div>
  *     <div class="cbi-section">        clients card
- *       <div class="lanspeed-header"><h3/>…</div>
- *       <div class="lanspeed-toolbar">…</div>
- *       <table class="lanspeed-table">…</table>
- *       <div class="lanspeed-empty">…</div>
- *     </div>
  *     <div class="cbi-section">        interfaces card (details)
- *       <details class="lanspeed-details">
- *         <summary><h3/>…</summary>
- *         <div class="lanspeed-details-body">…</div>
- *       </details>
- *     </div>
+ *     <div class="cbi-section">        NSS card (details, hidden unless NSS present)
+ *     <div class="cbi-section">        interface configuration card (details)
  *     <div class="cbi-section">        diagnostics card (details)
- *       <details class="lanspeed-details">…</details>
- *     </div>
  *   </div>
- *
- * Every visible child inside a .cbi-section starts at the section\'s
- * left inner-padding edge — h3, metrics, toolbar and table cells are all
- * flush to the same vertical line.
  */
 
 function buildShell(viewState) {
@@ -724,12 +205,12 @@ function buildShell(viewState) {
 		refs.errorPre
 	]);
 
-	refs.mTx         = E('div', { 'class': 'big' }, '0');
-	refs.mRx         = E('div', { 'class': 'big' }, '0');
-	refs.mClients    = E('div', { 'class': 'big' }, '0');
-	refs.mClientsSub = E('div', { 'class': 'hint' }, '-');
-	refs.mCoverage     = E('div', { 'class': 'big' }, '-');
-	refs.mCoverageSub  = E('div', { 'class': 'hint' }, '-');
+	refs.mTx          = E('div', { 'class': 'big' }, '0');
+	refs.mRx          = E('div', { 'class': 'big' }, '0');
+	refs.mClients     = E('div', { 'class': 'big' }, '0');
+	refs.mClientsSub  = E('div', { 'class': 'hint' }, '-');
+	refs.mCoverage    = E('div', { 'class': 'big' }, '-');
+	refs.mCoverageSub = E('div', { 'class': 'hint' }, '-');
 	var metrics = E('div', { 'class': 'lanspeed-metrics' }, [
 		E('div', { 'class': 'lanspeed-metric' }, [
 			E('div', { 'class': 'caption' }, _('上行 · tx')),
@@ -777,7 +258,7 @@ function buildShell(viewState) {
 		var original = refs.btnReload.textContent;
 		refs.btnReload.disabled = true;
 		refs.btnReload.textContent = _('正在重载…');
-		callInit('lanspeedd', 'reload').catch(function() {
+		lsRpc.init('lanspeedd', 'reload').catch(function() {
 			/* rpcd returns ubus error on non-zero exit; init scripts exit 0 normally */
 		}).then(function() {
 			/* give procd time to respawn and daemon time to re-probe + attach */
@@ -794,7 +275,7 @@ function buildShell(viewState) {
 	refs.btnPause.addEventListener('click', function() {
 		viewState.prefs.paused = !viewState.prefs.paused;
 		refs.btnPause.textContent = viewState.prefs.paused ? _('恢复') : _('暂停');
-		savePrefs(viewState.prefs);
+		fmt.savePrefs(viewState.prefs);
 		if (viewState.prefs.paused) viewState.stopTimer(); else viewState.schedule();
 	});
 
@@ -814,29 +295,29 @@ function buildShell(viewState) {
 	refs.activeChk = E('input', activeAttrs);
 	refs.activeChk.addEventListener('change', function(ev) {
 		viewState.prefs.activeOnly = ev.target.checked;
-		savePrefs(viewState.prefs);
+		fmt.savePrefs(viewState.prefs);
 		viewState.refreshLive();
 	});
 
-	refs.intervalSel = E('select', { 'class': 'cbi-input-select' }, REFRESH_CHOICES.map(function(c) {
-		return opt(c.value, c.label, prefs.refreshMs === c.value);
+	refs.intervalSel = E('select', { 'class': 'cbi-input-select' }, fmt.REFRESH_CHOICES.map(function(c) {
+		return fmt.opt(c.value, c.label, prefs.refreshMs === c.value);
 	}));
 	refs.intervalSel.addEventListener('change', function(ev) {
 		var v = parseInt(ev.target.value, 10);
-		if (!isNaN(v) && v >= MIN_REFRESH_MS) {
+		if (!isNaN(v) && v >= fmt.MIN_REFRESH_MS) {
 			viewState.prefs.refreshMs = v;
-			savePrefs(viewState.prefs);
+			fmt.savePrefs(viewState.prefs);
 			viewState.schedule();
 		}
 	});
 
 	refs.unitSel = E('select', { 'class': 'cbi-input-select' }, [
-		opt('bit',  'bit/s',  prefs.unit === 'bit'),
-		opt('byte', 'Byte/s', prefs.unit === 'byte')
+		fmt.opt('bit',  'bit/s',  prefs.unit === 'bit'),
+		fmt.opt('byte', 'Byte/s', prefs.unit === 'byte')
 	]);
 	refs.unitSel.addEventListener('change', function(ev) {
 		viewState.prefs.unit = ev.target.value;
-		savePrefs(viewState.prefs);
+		fmt.savePrefs(viewState.prefs);
 		viewState.refreshLive();
 	});
 
@@ -849,12 +330,12 @@ function buildShell(viewState) {
 			{ k: 'mac',       t: 'MAC'         },
 			{ k: 'last_seen', t: _('最近可见') }
 		].map(function(o) {
-			return opt(o.k, o.t, prefs.sortKey === o.k);
+			return fmt.opt(o.k, o.t, prefs.sortKey === o.k);
 		})
 	);
 	refs.sortSel.addEventListener('change', function(ev) {
 		viewState.prefs.sortKey = ev.target.value;
-		savePrefs(viewState.prefs);
+		fmt.savePrefs(viewState.prefs);
 		viewState.refreshLive();
 	});
 
@@ -927,6 +408,9 @@ function buildShell(viewState) {
 	]);
 	var ifacesCard = E('div', { 'class': 'cbi-section' }, [ refs.ifacesDetails ]);
 
+	/* ---- NSS card (collapsible; hidden when no NSS signal) ---- */
+	var nssCard = nssPanel.build(refs);
+
 	/* ---- interface configuration card (collapsible) ---- */
 	refs.ifcfgGrid      = E('div', { 'class': 'lanspeed-ifcfg-grid' });
 	refs.ifcfgStatus    = E('span', { 'class': 'status' }, '');
@@ -937,10 +421,10 @@ function buildShell(viewState) {
 
 	refs.ifcfgSaveBtn.addEventListener('click', function() {
 		if (viewState.ifcfgSaving) return;
-		saveIfaceConfig(viewState);
+		ifaceCfg.save(viewState);
 	});
 	refs.ifcfgReloadBtn.addEventListener('click', function() {
-		loadIfaceConfig(viewState);
+		ifaceCfg.load(viewState);
 	});
 
 	refs.ifcfgDetails = E('details', { 'class': 'lanspeed-details' }, [
@@ -993,6 +477,7 @@ function buildShell(viewState) {
 		overviewCard,
 		clientsCard,
 		ifacesCard,
+		nssCard,
 		ifcfgCard,
 		diagnosticsCard
 	]);
@@ -1006,7 +491,7 @@ function refreshLive(viewState) {
 	var refs = viewState.refs;
 	if (!refs) return;
 	var status = viewState.status || {};
-	var clientsAll = asArray(viewState.clients && viewState.clients.clients);
+	var clientsAll = fmt.asArray(viewState.clients && viewState.clients.clients);
 	var prefs = viewState.prefs;
 
 	/* error */
@@ -1019,10 +504,10 @@ function refreshLive(viewState) {
 
 	/* header pills */
 	var mode = status.mode || 'Unsupported';
-	refs.modePill.className = modeClass(mode);
-	refs.modePill.textContent = modeText(mode);
-	refs.confPill.className = confidenceClass(status.confidence);
-	refs.confPill.textContent = _('置信 ') + confidenceText(status.confidence);
+	refs.modePill.className = vocab.modeClass(mode);
+	refs.modePill.textContent = vocab.modeText(mode);
+	refs.confPill.className = vocab.confidenceClass(status.confidence);
+	refs.confPill.textContent = _('置信 ') + vocab.confidenceText(status.confidence);
 	var metaParts = [];
 	if (status.version) metaParts.push('v' + status.version);
 	if (status.refresh_interval_ms) metaParts.push(status.refresh_interval_ms + ' ms');
@@ -1030,9 +515,9 @@ function refreshLive(viewState) {
 	refs.meta.textContent = metaParts.join(' · ');
 
 	/* metrics */
-	var totals = sumTotals(clientsAll);
-	refs.mTx.textContent = formatRate(totals.tx, prefs.unit);
-	refs.mRx.textContent = formatRate(totals.rx, prefs.unit);
+	var totals = fmt.sumTotals(clientsAll);
+	refs.mTx.textContent = fmt.formatRate(totals.tx, prefs.unit);
+	refs.mRx.textContent = fmt.formatRate(totals.rx, prefs.unit);
 	refs.mClients.textContent = String(clientsAll.length);
 
 	/* cross-check with ECM host_count if available: if ECM knows more
@@ -1047,48 +532,95 @@ function refreshLive(viewState) {
 	}
 	refs.mClientsSub.textContent = subParts.join(' · ');
 
-	/* coverage: client sum / LAN interface total.
-	 * Computed here (not inside the ifaces details block) so the overview
-	 * card metric stays live regardless of details state. */
-	var ifacesAll = asArray(viewState.interfaces && viewState.interfaces.interfaces);
-	var lanIfUp = 0, lanIfDn = 0;
+	/* coverage: byte-counter delta over a common time window.
+	 *
+	 * Both clients and interfaces now expose rx_bytes/tx_bytes/sample_ms.
+	 * We keep the previous snapshot in viewState.coveragePrev and compute
+	 * delta_client_bytes / delta_iface_bytes over the same wall-clock span.
+	 * This eliminates the bps-window-mismatch that caused wild fluctuations
+	 * when the two RPC methods used different averaging windows. */
+	var ifacesAll = fmt.asArray(viewState.interfaces && viewState.interfaces.interfaces);
+	var curIfaceBytes = 0;
+	var curIfaceSampleMs = 0;
 	ifacesAll.forEach(function(i) {
 		if ((i.role || 'lan') !== 'lan') return;
-		lanIfUp += Number(i.rx_bps) || 0;
-		lanIfDn += Number(i.tx_bps) || 0;
+		curIfaceBytes += (Number(i.rx_bytes) || 0) + (Number(i.tx_bytes) || 0);
+		if (Number(i.sample_ms) > curIfaceSampleMs)
+			curIfaceSampleMs = Number(i.sample_ms);
 	});
-	var lanTotal  = lanIfUp + lanIfDn;
-	var liveTotal = totals.tx + totals.rx;
-	if (lanTotal < INACTIVE_BPS_THRESHOLD) {
-		refs.mCoverage.textContent = '-';
-		refs.mCoverageSub.textContent = _('LAN 无活动流量');
+	var curClientBytes = 0;
+	var curClientSampleMs = 0;
+	clientsAll.forEach(function(c) {
+		curClientBytes += (Number(c.rx_bytes) || 0) + (Number(c.tx_bytes) || 0);
+		if (Number(c.sample_ms) > curClientSampleMs)
+			curClientSampleMs = Number(c.sample_ms);
+	});
+
+	var prev = viewState.coveragePrev;
+	var coveragePct = null;
+	if (prev && curIfaceSampleMs > prev.ifaceSampleMs && curClientSampleMs > prev.clientSampleMs) {
+		var deltaIfaceBytes = curIfaceBytes - prev.ifaceBytes;
+		var deltaClientBytes = curClientBytes - prev.clientBytes;
+		/* Guard against counter resets (LRU eviction, daemon restart) */
+		if (deltaIfaceBytes > 0 && deltaClientBytes >= 0) {
+			coveragePct = Math.min(100, Math.round((deltaClientBytes / deltaIfaceBytes) * 100));
+		}
+	}
+	/* Save current snapshot for next tick */
+	viewState.coveragePrev = {
+		ifaceBytes: curIfaceBytes,
+		ifaceSampleMs: curIfaceSampleMs,
+		clientBytes: curClientBytes,
+		clientSampleMs: curClientSampleMs
+	};
+
+	if (coveragePct === null) {
+		/* First tick or counter reset — fall back to instantaneous bps ratio */
+		var lanTotal = 0, liveTotal = totals.tx + totals.rx;
+		ifacesAll.forEach(function(i) {
+			if ((i.role || 'lan') !== 'lan') return;
+			lanTotal += (Number(i.rx_bps) || 0) + (Number(i.tx_bps) || 0);
+		});
+		if (lanTotal < fmt.INACTIVE_BPS_THRESHOLD) {
+			refs.mCoverage.textContent = '-';
+			refs.mCoverageSub.textContent = _('LAN 无活动流量');
+		} else {
+			var pct = Math.min(100, Math.round((liveTotal / lanTotal) * 100));
+			refs.mCoverage.textContent = pct + '%';
+			refs.mCoverageSub.textContent = _('首次采样（下次更准）');
+		}
 	} else {
-		var pct = Math.min(100, Math.round((liveTotal / lanTotal) * 100));
-		refs.mCoverage.textContent = pct + '%';
-		var missingBps = Math.max(0, lanTotal - liveTotal);
-		if (pct < 85) {
-			refs.mCoverageSub.textContent = _('缺口 ') + formatRate(missingBps, prefs.unit);
+		refs.mCoverage.textContent = coveragePct + '%';
+		var deltaMs = Math.max(curIfaceSampleMs - prev.ifaceSampleMs,
+		                       curClientSampleMs - prev.clientSampleMs);
+		if (coveragePct < 85) {
+			var deltaIfaceBytes = curIfaceBytes - prev.ifaceBytes;
+			var deltaClientBytes = curClientBytes - prev.clientBytes;
+			var missingBps = deltaMs > 0
+				? Math.round(((deltaIfaceBytes - deltaClientBytes) * 8000) / deltaMs)
+				: 0;
+			refs.mCoverageSub.textContent = _('缺口 ') + fmt.formatRate(missingBps, prefs.unit);
 		} else {
 			refs.mCoverageSub.textContent = _('客户端合计 / 接口合计');
 		}
 	}
 
 	/* critical strip */
-	var critical = asArray(status.warnings).filter(function(w) { return CRITICAL_WARNINGS[w]; });
-	replaceChildren(refs.strip, critical.map(function(w) {
-		return E('span', { 'class': warningClass(w), 'title': w }, warningText(w));
+	var critical = fmt.asArray(status.warnings).filter(function(w) { return vocab.CRITICAL_WARNINGS[w]; });
+	fmt.replaceChildren(refs.strip, critical.map(function(w) {
+		return E('span', { 'class': vocab.warningClass(w), 'title': w }, vocab.warningText(w));
 	}));
 
 	/* client table */
 	var filtered = clientsAll.filter(function(c) {
-		if (!matchesFilter(c, viewState.filter)) return false;
+		if (!fmt.matchesFilter(c, viewState.filter)) return false;
 		if (prefs.activeOnly) {
 			var t = Number(c.tx_bps) || 0, r = Number(c.rx_bps) || 0;
-			if (t + r < INACTIVE_BPS_THRESHOLD) return false;
+			if (t + r < fmt.INACTIVE_BPS_THRESHOLD) return false;
 		}
 		return true;
 	});
-	var sorted = sortClients(filtered, prefs.sortKey);
+	var sorted = fmt.sortClients(filtered, prefs.sortKey);
 
 	/* clients card header summary (shown to the right of the h3) */
 	var summaryParts = [
@@ -1113,15 +645,15 @@ function refreshLive(viewState) {
 		   repeat them on every client row. Only show what\'s actually
 		   specific to this client. */
 		var globalWarnings = {};
-		asArray(status.warnings).forEach(function(w) { globalWarnings[w] = true; });
+		fmt.asArray(status.warnings).forEach(function(w) { globalWarnings[w] = true; });
 
-		replaceChildren(refs.tbody, sorted.map(function(c) {
+		fmt.replaceChildren(refs.tbody, sorted.map(function(c) {
 			var tx = Number(c.tx_bps) || 0, rx = Number(c.rx_bps) || 0;
-			var idle = (tx + rx) < INACTIVE_BPS_THRESHOLD;
-			var ips = asArray(c.ips);
-			var rawWarnings = asArray(c.warnings);
+			var idle = (tx + rx) < fmt.INACTIVE_BPS_THRESHOLD;
+			var ips = fmt.asArray(c.ips);
+			var rawWarnings = fmt.asArray(c.warnings);
 			var specificWarnings = rawWarnings.filter(function(w) { return !globalWarnings[w]; });
-			var critClient = specificWarnings.some(function(w) { return CRITICAL_WARNINGS[w]; });
+			var critClient = specificWarnings.some(function(w) { return vocab.CRITICAL_WARNINGS[w]; });
 
 			/* collector mode: abbreviate + explain via tooltip */
 			var mode = String(c.collector_mode || '-');
@@ -1142,15 +674,15 @@ function refreshLive(viewState) {
 
 			var stateCells = [
 				E('span', { 'class': 'label', 'title': modeTitle }, modeLabel),
-				E('span', { 'class': confidenceClass(c.confidence),
-				            'title': _('置信度：') + confidenceText(c.confidence) +
+				E('span', { 'class': vocab.confidenceClass(c.confidence),
+				            'title': _('置信度：') + vocab.confidenceText(c.confidence) +
 				                     '。' + _('低 = 路径可能绕过 CPU 可见计数；高 = 直接从内核 filter 采得。') },
-				  confidenceText(c.confidence))
+				  vocab.confidenceText(c.confidence))
 			];
 			if (specificWarnings.length)
 				stateCells.push(E('span', {
 					'class': critClient ? 'label label-danger' : 'label label-warning',
-					'title': specificWarnings.map(warningText).join('\n')
+					'title': specificWarnings.map(vocab.warningText.bind(vocab)).join('\n')
 				}, _('%d 告警').format(specificWarnings.length)));
 
 			/* display name: prefer hostname; otherwise first IP (MAC is already
@@ -1174,17 +706,17 @@ function refreshLive(viewState) {
 							    ips.slice(1).join(', '))
 							: '')
 				]),
-				E('td', { 'class': 'mono' }, textOrDash(c.mac)),
-				E('td', { 'class': 'num' }, formatRate(tx, prefs.unit)),
-				E('td', { 'class': 'num' }, formatRate(rx, prefs.unit)),
+				E('td', { 'class': 'mono' }, fmt.textOrDash(c.mac)),
+				E('td', { 'class': 'num' }, fmt.formatRate(tx, prefs.unit)),
+				E('td', { 'class': 'num' }, fmt.formatRate(rx, prefs.unit)),
 				E('td', {}, E('span', { 'class': 'state' }, stateCells)),
-				E('td', {}, formatLastSeen(c.last_seen))
+				E('td', {}, fmt.formatLastSeen(c.last_seen))
 			]);
 		}));
 	}
 
 	/* interfaces details */
-	var ifaces = asArray(viewState.interfaces && viewState.interfaces.interfaces);
+	var ifaces = fmt.asArray(viewState.interfaces && viewState.interfaces.interfaces);
 	if (!ifaces.length) {
 		refs.ifacesDetails.parentNode.style.display = 'none';
 	} else {
@@ -1198,7 +730,7 @@ function refreshLive(viewState) {
 		});
 
 		var totalIfTx = 0, totalIfRx = 0, totalClientTx = 0, totalClientRx = 0;
-		replaceChildren(refs.ifacesBody, ifaces.map(function(i) {
+		fmt.replaceChildren(refs.ifacesBody, ifaces.map(function(i) {
 			var n = i.name || '-';
 			/* direction semantics depend on role (LAN ↔ WAN flip counters).
 			 * Display is always user-perspective: ↑ = upload, ↓ = download. */
@@ -1211,31 +743,31 @@ function refreshLive(viewState) {
 			if (isLan) { totalClientTx += cs.tx; totalClientRx += cs.rx; }
 
 			function coverage(part, whole) {
-				if (whole < INACTIVE_BPS_THRESHOLD) return '-';
+				if (whole < fmt.INACTIVE_BPS_THRESHOLD) return '-';
 				var pct = Math.min(100, Math.round((part / whole) * 100));
 				return pct + '%';
 			}
 
 			return E('tr', {}, [
 				E('td', {}, n),
-				E('td', { 'class': 'num' }, formatRate(ifUp, prefs.unit)),
-				E('td', { 'class': 'num' }, formatRate(ifDn, prefs.unit)),
-				E('td', { 'class': 'num' }, isLan ? formatRate(cs.tx, prefs.unit) : '-'),
-				E('td', { 'class': 'num' }, isLan ? formatRate(cs.rx, prefs.unit) : '-'),
+				E('td', { 'class': 'num' }, fmt.formatRate(ifUp, prefs.unit)),
+				E('td', { 'class': 'num' }, fmt.formatRate(ifDn, prefs.unit)),
+				E('td', { 'class': 'num' }, isLan ? fmt.formatRate(cs.tx, prefs.unit) : '-'),
+				E('td', { 'class': 'num' }, isLan ? fmt.formatRate(cs.rx, prefs.unit) : '-'),
 				E('td', { 'class': 'num' }, isLan ? coverage(cs.tx, ifUp) : '-'),
 				E('td', { 'class': 'num' }, isLan ? coverage(cs.rx, ifDn) : '-')
 			]);
 		}));
 
 		var sumBits = [
-			'↑ ' + formatRate(totalIfTx, prefs.unit),
-			'↓ ' + formatRate(totalIfRx, prefs.unit)
+			'↑ ' + fmt.formatRate(totalIfTx, prefs.unit),
+			'↓ ' + fmt.formatRate(totalIfRx, prefs.unit)
 		];
 		refs.ifacesSummary.textContent = sumBits.join(' · ');
 
 		/* overall coverage across LAN interfaces */
 		function pctOrDash(part, whole) {
-			if (whole < INACTIVE_BPS_THRESHOLD) return null;
+			if (whole < fmt.INACTIVE_BPS_THRESHOLD) return null;
 			return Math.min(100, Math.round((part / whole) * 100));
 		}
 		var totalLanUp = 0, totalLanDn = 0;
@@ -1256,40 +788,43 @@ function refreshLive(viewState) {
 		}
 	}
 
+	/* NSS details card (hidden when no NSS signal; only call once status loaded) */
+	nssPanel.render(refs, status);
+
 	/* diagnostics: capability grid */
 	var capabilities = status.capabilities || {};
-	var capKeys = CAPABILITY_ORDER.filter(function(k) {
+	var capKeys = vocab.CAPABILITY_ORDER.filter(function(k) {
 		return Object.prototype.hasOwnProperty.call(capabilities, k);
 	});
 	if (capKeys.length) {
-		replaceChildren(refs.capsGrid, capKeys.map(function(k) {
+		fmt.replaceChildren(refs.capsGrid, capKeys.map(function(k) {
 			var enabled = Boolean(capabilities[k]);
 			return E('div', { 'class': 'cap' }, [
-				E('span', {}, CAPABILITY_LABELS[k] || k),
-				E('span', { 'class': capabilityClass(k, enabled), 'title': k },
+				E('span', {}, vocab.CAPABILITY_LABELS[k] || k),
+				E('span', { 'class': vocab.capabilityClass(k, enabled), 'title': k },
 					enabled ? _('是') : _('否'))
 			]);
 		}));
 	} else {
-		replaceChildren(refs.capsGrid, [E('p', {}, _('后端未上报任何能力。'))]);
+		fmt.replaceChildren(refs.capsGrid, [E('p', {}, _('后端未上报任何能力。'))]);
 	}
 
 	/* diagnostics: warnings */
-	var warnings = asArray(status.warnings);
+	var warnings = fmt.asArray(status.warnings);
 	if (warnings.length) {
-		replaceChildren(refs.allWarnings, warnings.map(function(w) {
+		fmt.replaceChildren(refs.allWarnings, warnings.map(function(w) {
 			return E('li', {}, [
-				E('span', { 'class': warningClass(w) + ' key' }, w),
-				warningText(w)
+				E('span', { 'class': vocab.warningClass(w) + ' key' }, w),
+				vocab.warningText(w)
 			]);
 		}));
 	} else {
-		replaceChildren(refs.allWarnings, [E('li', {}, _('当前没有上报告警。'))]);
+		fmt.replaceChildren(refs.allWarnings, [E('li', {}, _('当前没有上报告警。'))]);
 	}
 
 	var versionParts = [
-		_('lanspeedd %s').format(textOrDash(status.version)),
-		_('后端刷新 %s ms').format(textOrDash(status.refresh_interval_ms))
+		_('lanspeedd %s').format(fmt.textOrDash(status.version)),
+		_('后端刷新 %s ms').format(fmt.textOrDash(status.refresh_interval_ms))
 	];
 	var nssEvidence = status.evidence && status.evidence.nss;
 	if (nssEvidence && (nssEvidence.ecm_offload_active || nssEvidence.ppe_offload_active)) {
@@ -1329,7 +864,7 @@ function refreshLive(viewState) {
 
 return view.extend({
 	load: function() {
-		return Promise.all([callStatus(), callClients(), callInterfaces()]).then(function(d) {
+		return Promise.all([lsRpc.status(), lsRpc.clients(), lsRpc.interfaces()]).then(function(d) {
 			return { status: d[0] || {}, clients: d[1] || {}, interfaces: d[2] || { interfaces: [] }, error: null };
 		}).catch(function(error) {
 			return { status: {}, clients: { clients: [] }, interfaces: { interfaces: [] }, error: error };
@@ -1343,7 +878,7 @@ return view.extend({
 			interfaces: data.interfaces || { interfaces: [] },
 			error: data.error,
 			filter: '',
-			prefs: loadPrefs(),
+			prefs: fmt.loadPrefs(),
 			timer: null,
 			refs: null,
 
@@ -1355,7 +890,7 @@ return view.extend({
 				var self = this;
 				this.stopTimer();
 				if (this.prefs.paused) return;
-				var interval = Math.max(MIN_REFRESH_MS, this.prefs.refreshMs);
+				var interval = Math.max(fmt.MIN_REFRESH_MS, this.prefs.refreshMs);
 				this.timer = window.setTimeout(function() { self.reload(false); }, interval);
 			},
 
@@ -1364,7 +899,7 @@ return view.extend({
 			reload: function(force) {
 				var self = this;
 				if (force) this.stopTimer();
-				return Promise.all([callStatus(), callClients(), callInterfaces()]).then(function(r) {
+				return Promise.all([lsRpc.status(), lsRpc.clients(), lsRpc.interfaces()]).then(function(r) {
 					self.status = r[0] || {};
 					self.clients = r[1] || { clients: [] };
 					self.interfaces = r[2] || { interfaces: [] };
@@ -1382,7 +917,7 @@ return view.extend({
 		var built = buildShell(viewState);
 		viewState.refs = built.refs;
 		refreshLive(viewState);
-		loadIfaceConfig(viewState);
+		ifaceCfg.load(viewState);
 		viewState.schedule();
 		return built.root;
 	},

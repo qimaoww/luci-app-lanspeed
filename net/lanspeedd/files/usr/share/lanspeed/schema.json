@@ -241,6 +241,21 @@
           "type": "integer",
           "minimum": 0
         },
+        "sample_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Monotonic timestamp (ms) of the byte counter sample that produced rx_bytes/tx_bytes and the accompanying rx_bps/tx_bps. Consumers can align client samples with interface samples by this clock."
+        },
+        "rx_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Cumulative rx bytes observed for this client at sample_ms. Counter may reset when a MAC disappears from the BPF LRU map or when conntrack flows rotate; consumers must tolerate decreases."
+        },
+        "tx_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Cumulative tx bytes observed for this client at sample_ms."
+        },
         "collector_mode": {
           "type": "string",
           "minLength": 1
@@ -377,10 +392,42 @@
           "enum": [
             "pending",
             "active",
+            "available",
             "missing",
             "excluded",
             "unsupported"
           ]
+        },
+        "rx_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tx_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rx_bps": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tx_bps": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "delta_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sample_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Monotonic timestamp (ms) of the rx_bytes/tx_bytes sample. Pair with client.sample_ms to compute coverage over a common time window."
+        },
+        "source": {
+          "type": "string"
+        },
+        "coverage": {
+          "type": "string"
         },
         "evidence": {
           "$ref": "#/$defs/evidence"
@@ -389,8 +436,7 @@
       "required": [
         "name",
         "role",
-        "status",
-        "evidence"
+        "status"
       ]
     },
     "interfaces": {

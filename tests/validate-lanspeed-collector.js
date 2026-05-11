@@ -827,7 +827,7 @@ function assertLifecycleInit(initScript, hotplugScript, packageMakefile, default
   assert(!/service\s+network\s+reload/i.test(hotplugScript), 'hotplug hook must not reload network service');
   assert(!/uci\s+commit/i.test(hotplugScript), 'hotplug hook must not mutate UCI config');
   assert(packageMakefile.includes('$(INSTALL_BIN) ./files/etc/hotplug.d/iface/90-lanspeedd $(1)/etc/hotplug.d/iface/90-lanspeedd'), 'package Makefile must install hotplug hook');
-  assert(defaultConfig.includes("option max_clients '512'"), 'default config must keep max_clients=512');
+  assert(defaultConfig.includes("option max_clients '2048'"), 'default config must keep max_clients=2048');
   assert(defaultConfig.includes("option refresh_interval_ms '1000'"), 'default config must keep refresh_interval_ms=1000');
   assert(defaultConfig.includes("option warning_stale_client_ms '5000'"), 'default config must keep stale warning at 5000ms');
   assert(defaultConfig.includes("option warning_map_full '1'"), 'default config must represent map_full warning guardrail');
@@ -835,7 +835,7 @@ function assertLifecycleInit(initScript, hotplugScript, packageMakefile, default
   assert(defaultConfig.includes("option low_end_refresh_interval_ms '2000'"), 'default config must represent low-end device guardrail');
   assert(collectorModel.lifecycle_model.cleanup_model.delete_clsact === false, 'lifecycle model must forbid clsact deletion');
   assert(collectorModel.lifecycle_model.cleanup_model.delete_foreign_filters === false, 'lifecycle model must forbid foreign filter deletion');
-  assert(collectorModel.performance_guardrails.default_max_clients === 512, 'performance model must default to 512 clients');
+  assert(collectorModel.performance_guardrails.default_max_clients === 2048, 'performance model must default to 2048 clients');
   assert(collectorModel.performance_guardrails.minimum_refresh_interval_ms === 500, 'performance model must enforce 500ms refresh minimum');
   assert(collectorModel.performance_guardrails.stale_client_ms === 5000, 'performance model must keep 5000ms stale client guardrail');
   assert(collectorModel.performance_guardrails.map_full_warning === 'map_full', 'performance model must expose map_full warning');
@@ -853,14 +853,17 @@ function assertBpfSource(source) {
     '__u64 bytes',
     '__u64 packets',
     '__u64 last_seen',
-    'BPF_MAP_TYPE_HASH',
-    'LANSPEED_MAX_CLIENTS 512',
+    'BPF_MAP_TYPE_LRU_HASH',
+    'LANSPEED_MAX_CLIENTS',
     'SEC("tc/ingress")',
     'SEC("tc/egress")',
     'bpf_map_update_elem'
   ]) {
     assert(source.includes(required), `BPF source missing ${required}`);
   }
+  const sizeMatch = source.match(/#define\s+LANSPEED_MAX_CLIENTS\s+(\d+)/);
+  assert(sizeMatch, 'BPF source must #define LANSPEED_MAX_CLIENTS');
+  assert(parseInt(sizeMatch[1], 10) >= 2048, `LANSPEED_MAX_CLIENTS must be >= 2048 (got ${sizeMatch && sizeMatch[1]})`);
   assert(source.includes('if (direction == LANSPEED_DIR_TX)') && source.includes('__builtin_memcpy(key.mac, eth->h_source, ETH_ALEN)'), 'BPF TX direction must use client source MAC');
   assert(source.includes('__builtin_memcpy(key.mac, eth->h_dest, ETH_ALEN)'), 'BPF RX direction must use client destination MAC');
   assert(/SEC\("tc\/ingress"\)\s+int\s+lanspeed_ingress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_TX\);\s*}/m.test(source), 'BPF ingress must account client TX');
@@ -920,7 +923,19 @@ function assertRuntimeConntrackFallbackSource(source) {
   }
   assert(!source.includes('json_object_new_string("fixture-client")'), 'runtime must not fabricate fixture clients');
   assert(source.includes('json_object_object_add(client, "mac", json_object_new_string(current[i].mac))'), 'runtime client MAC must come from ARP-mapped sample');
-  assert(source.includes('json_object_object_add(client, "collector_mode", json_object_new_string("conntrack"))'), 'runtime clients must expose collector_mode=conntrack');
+  /* collector_mode for conntrack-fallback clients must be wired into the
+   * client JSON object.  It is "conntrack" by default, and switches to
+   * "conntrack_ecm_sync" under NSS ECM/PPE offload (where a ternary selects
+   * between the two literal strings). */
+  assert(
+    /json_object_object_add\(\s*client\s*,\s*"collector_mode"\s*,[\s\S]{0,400}?json_object_new_string/.test(source),
+    'runtime clients must expose collector_mode via json_object_new_string');
+  assert(
+    source.includes('"conntrack"'),
+    'runtime must emit the "conntrack" collector_mode literal');
+  assert(
+    source.includes('"conntrack_ecm_sync"') || !source.includes('nss_ecm_active'),
+    'runtime must emit the "conntrack_ecm_sync" literal when NSS offload detection is wired');
   assert(source.includes('delta_bps(current[i].tx_bytes, previous->tx_bytes'), 'runtime must compute tx_bps from previous snapshot deltas');
   assert(source.includes('delta_bps(current[i].rx_bytes, previous->rx_bytes'), 'runtime must compute rx_bps from previous snapshot deltas');
 }
@@ -1089,7 +1104,7 @@ assert(mapFull.warnings.includes('map_full'), 'map full fixture must report map_
 assert(mapFull.crashed === false, 'map full fixture must not crash');
 assert(collectorModel.bpf_source === 'lanspeed_tc.bpf.c', 'collector model must reference the BPF source file');
 assert(collectorModel.runtime_object === '/usr/lib/bpf/lanspeed_tc.o', 'collector model must reference installed BPF object path');
-assert(collectorModel.map_model.default_max_clients === 512, 'collector model must default to 512 clients');
+assert(collectorModel.map_model.default_max_clients === 2048, 'collector model must default to 2048 clients');
 assert(JSON.stringify(collectorModel.map_model.key) === JSON.stringify(['ifindex', 'vlan_or_zone', 'mac', 'direction']), 'collector model map key shape is required');
 assert(JSON.stringify(collectorModel.map_model.counters) === JSON.stringify(['bytes', 'packets', 'last_seen']), 'collector model counters must be bytes/packets/last_seen');
 assert(collectorModel.attach_model.excluded.includes('wan') && collectorModel.attach_model.excluded.includes('tun'), 'collector model must exclude WAN/TUN');

@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-lanspeed
 PKG_VERSION:=0.1.0
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=
@@ -42,6 +42,9 @@ define Package/luci-app-lanspeed/install
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/lanspeed
 	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/lanspeed/*.js \
 		$(1)/www/luci-static/resources/view/lanspeed/
+	$(INSTALL_DIR) $(1)/www/luci-static/resources/lanspeed
+	$(INSTALL_DATA) ./htdocs/luci-static/resources/lanspeed/*.js \
+		$(1)/www/luci-static/resources/lanspeed/
 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
 	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-lanspeed.json \
 		$(1)/usr/share/luci/menu.d/luci-app-lanspeed.json
