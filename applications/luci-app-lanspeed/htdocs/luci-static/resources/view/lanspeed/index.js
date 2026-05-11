@@ -334,8 +334,7 @@ function buildShell(viewState) {
 			{ k: 'hostname',  t: _('主机名')   },
 			{ k: 'mac',       t: 'MAC'         },
 			{ k: 'tcp_conns', t: 'TCP'         },
-			{ k: 'udp_conns', t: 'UDP'         },
-			{ k: 'last_seen', t: _('最近可见') }
+			{ k: 'udp_conns', t: 'UDP'         }
 		].map(function(o) {
 			return fmt.opt(o.k, o.t, prefs.sortKey === o.k);
 		})
@@ -372,8 +371,7 @@ function buildShell(viewState) {
 			E('th', { 'class': 'num' }, _('下行')),
 			E('th', { 'class': 'num', 'title': _('TCP 仅统计 ESTABLISHED + ASSURED') }, 'TCP'),
 			E('th', { 'class': 'num', 'title': _('conntrack 表中尚未超时的 UDP 条目') }, 'UDP'),
-			E('th', {}, _('状态')),
-			E('th', {}, _('最近'))
+			E('th', {}, _('状态'))
 		])),
 		refs.tbody
 	]);
@@ -727,8 +725,7 @@ function refreshLive(viewState) {
 				E('td', { 'class': 'num' }, fmt.formatRate(rx, prefs.unit)),
 				E('td', { 'class': 'num' }, typeof c.tcp_conns === 'number' ? String(c.tcp_conns) : '-'),
 				E('td', { 'class': 'num' }, typeof c.udp_conns === 'number' ? String(c.udp_conns) : '-'),
-				E('td', {}, E('span', { 'class': 'state' }, stateCells)),
-				E('td', {}, fmt.formatLastSeen(c.last_seen))
+				E('td', {}, E('span', { 'class': 'state' }, stateCells))
 			]);
 		}));
 	}

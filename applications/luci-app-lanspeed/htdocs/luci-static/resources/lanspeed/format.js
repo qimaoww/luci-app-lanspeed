@@ -11,7 +11,7 @@
  * "active" boundary (refreshLive, coverage calculation) don't duplicate it.
  */
 
-var PREF_KEY                  = 'luci-app-lanspeed.prefs.v3';
+var PREF_KEY                  = 'luci-app-lanspeed.prefs.v4';
 var MIN_REFRESH_MS            = 1000;
 var INACTIVE_BPS_THRESHOLD    = 1024;
 var DELTA_SIGNIFICANT_RATIO   = 0.10;
@@ -29,7 +29,7 @@ var DEFAULT_PREFS = {
 	refreshMs: 3000,
 	unit: 'bit',
 	activeOnly: false,
-	sortKey: 'speed',
+	sortKey: 'rx',
 	paused: false,
 	ifaceExcluded: []
 };
@@ -53,14 +53,6 @@ function formatRate(valueBps, unit) {
 	return (i === 0 ? '%d %s' : '%.2f %s').format(n, units[i]);
 }
 
-function formatLastSeen(v) {
-	var n = Number(v) || 0;
-	if (n <= 0) return '-';
-	if (n > 1e12) return new Date(n).toLocaleTimeString();
-	if (n > 1e9)  return new Date(n * 1000).toLocaleTimeString();
-	return _('%d 秒前').format(n);
-}
-
 function sumTotals(clients) {
 	var tx = 0, rx = 0, active = 0;
 	clients.forEach(function(c) {
@@ -81,7 +73,6 @@ function sortClients(clients, sortKey) {
 		else if (sortKey === 'rx')        r = (Number(b.rx_bps) || 0) - (Number(a.rx_bps) || 0);
 		else if (sortKey === 'tcp_conns') r = (Number(b.tcp_conns) || -1) - (Number(a.tcp_conns) || -1);
 		else if (sortKey === 'udp_conns') r = (Number(b.udp_conns) || -1) - (Number(a.udp_conns) || -1);
-		else if (sortKey === 'last_seen') r = (Number(b.last_seen) || 0) - (Number(a.last_seen) || 0);
 		else                              r = ((Number(b.tx_bps) || 0) + (Number(b.rx_bps) || 0)) -
 		                                      ((Number(a.tx_bps) || 0) + (Number(a.rx_bps) || 0));
 		return r || compareText(identityOf(a), identityOf(b));
@@ -143,7 +134,6 @@ return baseclass.extend({
 	clientDisplayName: clientDisplayName,
 	compareText:       compareText,
 	formatRate:        formatRate,
-	formatLastSeen:    formatLastSeen,
 	sumTotals:         sumTotals,
 	sortClients:       sortClients,
 	matchesFilter:     matchesFilter,
