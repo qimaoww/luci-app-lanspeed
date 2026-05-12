@@ -707,6 +707,7 @@ function simulateNssSourceSelection(fixture) {
   const probe = fixture.probe;
   const bpfFullAvailable = Boolean(fixture.config.bpf_full_available);
   const daePreemptsLanIngress = Boolean(probe.dae_preempts_lan_ingress);
+  const daeEarlyBpf = Boolean(fixture.config.dae_early_bpf);
   const preferred = Boolean(
     fixture.config.enable_conntrack_fallback &&
     probe.nf_conntrack_acct &&
@@ -716,7 +717,8 @@ function simulateNssSourceSelection(fixture) {
   const daePreferred = Boolean(
     fixture.config.enable_conntrack_fallback &&
     probe.nf_conntrack_acct &&
-    daePreemptsLanIngress
+    daePreemptsLanIngress &&
+    !daeEarlyBpf
   );
   const warnings = [];
 
@@ -732,10 +734,11 @@ function simulateNssSourceSelection(fixture) {
 
   return {
     preferred,
+    dae_early_bpf: Boolean(daePreemptsLanIngress && daeEarlyBpf),
     dae_preempted: daePreferred,
-    primary_source: preferred ? 'nss_conntrack_sync' : (daePreferred ? 'conntrack' : (bpfFullAvailable ? 'bpf' : 'conntrack')),
-    collector_mode: preferred ? 'conntrack_ecm_sync' : (daePreferred ? 'conntrack' : (bpfFullAvailable ? 'bpf' : 'conntrack')),
-    confidence: preferred ? 'medium' : (daePreferred ? 'low' : (bpfFullAvailable ? 'high' : 'medium')),
+    primary_source: preferred ? 'nss_conntrack_sync' : (bpfFullAvailable ? 'bpf' : (daePreferred ? 'conntrack' : 'conntrack')),
+    collector_mode: preferred ? 'conntrack_ecm_sync' : (bpfFullAvailable ? 'bpf' : (daePreferred ? 'conntrack' : 'conntrack')),
+    confidence: preferred ? 'medium' : (bpfFullAvailable ? 'high' : (daePreferred ? 'low' : 'medium')),
     coverage_client_source: (preferred || daePreferred) ? 'conntrack' : (bpfFullAvailable ? 'bpf' : 'conntrack'),
     warnings
   };
@@ -904,8 +907,10 @@ function assertBpfSource(source) {
   assert(parseInt(sizeMatch[1], 10) >= 2048, `LANSPEED_MAX_CLIENTS must be >= 2048 (got ${sizeMatch && sizeMatch[1]})`);
   assert(source.includes('if (direction == LANSPEED_DIR_TX)') && source.includes('__builtin_memcpy(key.mac, eth->h_source, ETH_ALEN)'), 'BPF TX direction must use client source MAC');
   assert(source.includes('__builtin_memcpy(key.mac, eth->h_dest, ETH_ALEN)'), 'BPF RX direction must use client destination MAC');
-  assert(/SEC\("tc\/ingress"\)\s+int\s+lanspeed_ingress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_TX\);\s*}/m.test(source), 'BPF ingress must account client TX');
-  assert(/SEC\("tc\/egress"\)\s+int\s+lanspeed_egress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_RX\);\s*}/m.test(source), 'BPF egress must account client RX');
+  assert(/SEC\("tc\/ingress"\)\s+int\s+lanspeed_ingress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_TX, TC_ACT_OK\);\s*}/m.test(source), 'BPF ingress must account client TX and terminate normally in the default position');
+  assert(/SEC\("tc\/egress"\)\s+int\s+lanspeed_egress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_RX, TC_ACT_OK\);\s*}/m.test(source), 'BPF egress must account client RX and terminate normally in the default position');
+  assert(/SEC\("tc"\)\s+int\s+lanspeed_ingress_early\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_TX, TC_ACT_UNSPEC\);\s*}/m.test(source), 'BPF early ingress must account client TX and continue to later filters');
+  assert(/SEC\("tc"\)\s+int\s+lanspeed_egress_early\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_RX, TC_ACT_UNSPEC\);\s*}/m.test(source), 'BPF early egress must account client RX and continue to later filters');
 }
 
 function assertBpfBuildRules(packageMakefile, srcMakefile, sdkHelper) {
@@ -966,8 +971,8 @@ function assertRuntimeConntrackFallbackSource(source) {
   assert(source.includes('nss_conntrack_sync_preferred(probe)'), 'runtime must route clients and coverage through NSS sync preference');
   assert(source.includes('json_object_new_string("nss_prefers_conntrack_sync")'), 'runtime must explain why NSS sync overrides available BPF metrics');
   assert(source.includes('static bool dae_tc_preempts_bpf_ingress'), 'runtime must detect DAE/daed tc filters that run before lanspeed ingress');
-  assert(source.includes('conntrack_primary_preferred(probe)'), 'runtime must use one source-selection helper for clients and coverage');
-  assert(source.includes('json_object_new_string("dae_tc_preempts_bpf_ingress")'), 'runtime must explain when DAE tc preemption overrides BPF rates');
+  assert(source.includes('json_object_new_string("dae_tc_preempts_bpf_ingress")'), 'runtime must explain when DAE tc preemption is detected');
+  assert(!/dae_tc_preempts_bpf_ingress\(probe\)[\s\S]{0,120}?conntrack_primary_preferred/.test(source), 'DAE tc preemption must not force conntrack as the primary rate source');
   assert(!source.includes('json_object_new_string("fixture-client")'), 'runtime must not fabricate fixture clients');
   assert(source.includes('json_object_object_add(client, "mac", json_object_new_string(current[i].mac))'), 'runtime client MAC must come from ARP-mapped sample');
   /* collector_mode for conntrack-fallback clients must be wired into the
@@ -1014,7 +1019,9 @@ function assertBpfLoaderModule(header, loader, daemonSource, packageMakefile, sr
     'LANSPEED_BPF_DIR_TX',
     'LANSPEED_BPF_DIR_RX',
     'LANSPEED_BPF_TC_PREF',
-    'LANSPEED_BPF_TC_HANDLE'
+    'LANSPEED_BPF_TC_HANDLE',
+    'LANSPEED_BPF_TC_EARLY_PREF',
+    'LANSPEED_BPF_TC_EARLY_HANDLE'
   ]) {
     assert(header.includes(sym), `lanspeed_bpf.h must expose ${sym}`);
   }
@@ -1051,16 +1058,23 @@ function assertBpfLoaderModule(header, loader, daemonSource, packageMakefile, sr
   // Daemon pulls the module in and drives it through runtime lifecycle.
   assert(daemonSource.includes('#include "lanspeed_bpf.h"'), 'lanspeedd.c must include the BPF loader header');
   assert(daemonSource.includes('lanspeed_bpf_init('), 'lanspeedd.c must call lanspeed_bpf_init');
-  assert(daemonSource.includes('lanspeed_bpf_attach_iface('), 'lanspeedd.c must attach via lanspeed_bpf_attach_iface');
+  assert(loader.includes('lanspeed_bpf_attach_iface('), 'lanspeed_bpf.c must keep the legacy attach wrapper');
+  assert(daemonSource.includes('lanspeed_bpf_attach_iface_mode('), 'lanspeedd.c must attach with a policy-aware BPF mode');
   assert(daemonSource.includes('lanspeed_bpf_shutdown('), 'lanspeedd.c must shut the loader down on exit');
   assert(daemonSource.includes('lanspeed_bpf_runtime_ok('), 'lanspeedd.c must consult lanspeed_bpf_runtime_ok for Full gating');
   assert(daemonSource.includes('lanspeed_bpf_read_samples('), 'lanspeedd.c must read BPF samples for Full mode');
   assert(daemonSource.includes('collect_bpf_clients('), 'lanspeedd.c must expose a BPF client collector path');
   assert(/collector_mode[^\n]+"bpf"/.test(daemonSource), 'lanspeedd.c must emit collector_mode=bpf in the Full path');
-  assert(/conntrack_primary_preferred\(&probe\)[\s\S]{0,240}?collect_conntrack_procfs_clients\(root, clients, &probe\)/.test(daemonSource),
-         'clients_method must try conntrack first when conntrack is the preferred primary source');
+  assert(/nss_conntrack_sync_preferred\(&probe\)[\s\S]{0,240}?collect_conntrack_procfs_clients\(root, clients, &probe\)/.test(daemonSource),
+         'clients_method must try conntrack first only when NSS ECM sync is preferred');
   assert(/else\s+if\s+\(!collect_bpf_clients\(root, clients, &probe\)\)[\s\S]{0,160}?collect_conntrack_procfs_clients\(root, clients, &probe\)/.test(daemonSource),
-         'clients_method must keep BPF-first fallback for non-preferred-conntrack paths');
+         'clients_method must keep BPF-first fallback for non-NSS-sync paths');
+
+  assert(bpfSource.includes('lanspeed_ingress_early'), 'BPF object must include an early ingress section for DAE coexistence');
+  assert(bpfSource.includes('lanspeed_egress_early'), 'BPF object must include an early egress section for DAE coexistence');
+  assert(/account_frame\(skb, LANSPEED_DIR_TX, TC_ACT_UNSPEC\)/.test(bpfSource) &&
+         /account_frame\(skb, LANSPEED_DIR_RX, TC_ACT_UNSPEC\)/.test(bpfSource),
+         'early BPF sections must return TC_ACT_UNSPEC so later DAE filters still run');
 
   // Package links libbpf; src Makefile builds the loader object and links -lbpf.
   assert(/DEPENDS:=[^\n]*\+libbpf/.test(packageMakefile), 'package Makefile must depend on +libbpf for the base daemon');
@@ -1334,16 +1348,16 @@ assert(nssPpeOnly.preferred === false, 'PPE-only NSS detection must not enable c
 assert(nssPpeOnly.primary_source === 'bpf', 'PPE-only NSS detection must preserve BPF primary source when BPF is available');
 
 const daeIngressPreempt = simulateNssSourceSelection({
-  config: { enable_conntrack_fallback: true, bpf_full_available: true },
+  config: { enable_conntrack_fallback: true, bpf_full_available: true, dae_early_bpf: true },
   probe: { nf_conntrack_acct: true, nss_present: false, nss_ecm_active: false, dae_preempts_lan_ingress: true }
 });
-assert(daeIngressPreempt.dae_preempted === true, 'DAE/daed LAN ingress preemption must prefer conntrack even when BPF runtime is available');
-assert(daeIngressPreempt.primary_source === 'conntrack', 'DAE/daed preemption must expose primary_source=conntrack');
-assert(daeIngressPreempt.collector_mode === 'conntrack', 'DAE/daed preemption clients must use collector_mode=conntrack');
-assert(daeIngressPreempt.coverage_client_source === 'conntrack', 'DAE/daed preemption coverage must use conntrack client bytes');
-assert(daeIngressPreempt.confidence === 'low', 'DAE/daed conntrack fallback confidence must remain low');
-assert(daeIngressPreempt.warnings.includes('dae_tc_preempts_bpf_ingress'), 'DAE/daed preemption warning is required');
-assert(daeIngressPreempt.warnings.includes('conntrack_routed_nat_only'), 'DAE/daed conntrack fallback must keep routed/NAT-only coverage warning');
+assert(daeIngressPreempt.dae_early_bpf === true, 'DAE/daed LAN ingress preemption must enable early pass-through BPF');
+assert(daeIngressPreempt.dae_preempted === false, 'DAE/daed LAN ingress preemption must not force conntrack when early BPF is available');
+assert(daeIngressPreempt.primary_source === 'bpf', 'DAE/daed preemption must keep primary_source=bpf with early pass-through BPF');
+assert(daeIngressPreempt.collector_mode === 'bpf', 'DAE/daed preemption clients must keep collector_mode=bpf with early pass-through BPF');
+assert(daeIngressPreempt.coverage_client_source === 'bpf', 'DAE/daed preemption coverage must use BPF client bytes');
+assert(daeIngressPreempt.confidence === 'high', 'DAE/daed early BPF confidence can remain high because LAN-edge MAC sampling is preserved');
+assert(!daeIngressPreempt.warnings.includes('conntrack_routed_nat_only'), 'DAE/daed early BPF path must not warn routed/NAT-only coverage');
 
 const daeWanOnly = simulateNssSourceSelection({
   config: { enable_conntrack_fallback: true, bpf_full_available: true },

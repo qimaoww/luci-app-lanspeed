@@ -32,6 +32,8 @@
 #define LANSPEED_BPF_MAP_NAME "lanspeed_clients"
 #define LANSPEED_BPF_PROG_INGRESS "lanspeed_ingress"
 #define LANSPEED_BPF_PROG_EGRESS "lanspeed_egress"
+#define LANSPEED_BPF_PROG_INGRESS_EARLY "lanspeed_ingress_early"
+#define LANSPEED_BPF_PROG_EGRESS_EARLY "lanspeed_egress_early"
 #define LANSPEED_BPF_MAX_ATTACHED 16
 
 /*
@@ -65,6 +67,8 @@ struct lanspeed_bpf_state {
 	struct bpf_object *obj;
 	int ingress_prog_fd;
 	int egress_prog_fd;
+	int ingress_early_prog_fd;
+	int egress_early_prog_fd;
 	int map_fd;
 	struct attached_hook attached[LANSPEED_BPF_MAX_ATTACHED];
 	size_t attached_count;
@@ -106,9 +110,13 @@ bool lanspeed_bpf_init(const char *object_path)
 	struct bpf_object *obj;
 	struct bpf_program *ingress_prog;
 	struct bpf_program *egress_prog;
+	struct bpf_program *ingress_early_prog;
+	struct bpf_program *egress_early_prog;
 	struct bpf_map *map;
 	int ingress_fd;
 	int egress_fd;
+	int ingress_early_fd;
+	int egress_early_fd;
 	int map_fd;
 
 	if (g_state.obj)
@@ -152,9 +160,14 @@ bool lanspeed_bpf_init(const char *object_path)
 							LANSPEED_BPF_PROG_INGRESS);
 	egress_prog = bpf_object__find_program_by_name(obj,
 						       LANSPEED_BPF_PROG_EGRESS);
+	ingress_early_prog = bpf_object__find_program_by_name(obj,
+							      LANSPEED_BPF_PROG_INGRESS_EARLY);
+	egress_early_prog = bpf_object__find_program_by_name(obj,
+							     LANSPEED_BPF_PROG_EGRESS_EARLY);
 	map = bpf_object__find_map_by_name(obj, LANSPEED_BPF_MAP_NAME);
 
-	if (!ingress_prog || !egress_prog || !map) {
+	if (!ingress_prog || !egress_prog || !ingress_early_prog ||
+	    !egress_early_prog || !map) {
 		set_status_error("bpf_object_symbols_missing");
 		bpf_object__close(obj);
 		return false;
@@ -162,9 +175,12 @@ bool lanspeed_bpf_init(const char *object_path)
 
 	ingress_fd = bpf_program__fd(ingress_prog);
 	egress_fd = bpf_program__fd(egress_prog);
+	ingress_early_fd = bpf_program__fd(ingress_early_prog);
+	egress_early_fd = bpf_program__fd(egress_early_prog);
 	map_fd = bpf_map__fd(map);
 
-	if (ingress_fd < 0 || egress_fd < 0 || map_fd < 0) {
+	if (ingress_fd < 0 || egress_fd < 0 || ingress_early_fd < 0 ||
+	    egress_early_fd < 0 || map_fd < 0) {
 		set_status_error("bpf_object_fd_invalid");
 		bpf_object__close(obj);
 		return false;
@@ -173,6 +189,8 @@ bool lanspeed_bpf_init(const char *object_path)
 	g_state.obj = obj;
 	g_state.ingress_prog_fd = ingress_fd;
 	g_state.egress_prog_fd = egress_fd;
+	g_state.ingress_early_prog_fd = ingress_early_fd;
+	g_state.egress_early_prog_fd = egress_early_fd;
 	g_state.map_fd = map_fd;
 	g_state.status.object_loaded = true;
 
@@ -180,15 +198,16 @@ bool lanspeed_bpf_init(const char *object_path)
 }
 
 static int attach_point(const char *ifname, int ifindex,
-			enum bpf_tc_attach_point point, int prog_fd)
+			enum bpf_tc_attach_point point, int prog_fd,
+			uint32_t priority, uint32_t handle)
 {
 	DECLARE_LIBBPF_OPTS(bpf_tc_hook, hook,
 			    .ifindex = ifindex,
 			    .attach_point = point);
 	DECLARE_LIBBPF_OPTS(bpf_tc_opts, opts,
 			    .prog_fd = prog_fd,
-			    .handle = LANSPEED_BPF_TC_HANDLE,
-			    .priority = LANSPEED_BPF_TC_PREF);
+			    .handle = handle,
+			    .priority = priority);
 	bool created_hook = false;
 	int err;
 
@@ -220,8 +239,16 @@ static int attach_point(const char *ifname, int ifindex,
 	return 0;
 }
 
-int lanspeed_bpf_attach_iface(const char *ifname)
+int lanspeed_bpf_attach_iface_mode(const char *ifname, bool early_passthrough)
 {
+	uint32_t priority = early_passthrough ? LANSPEED_BPF_TC_EARLY_PREF :
+						LANSPEED_BPF_TC_PREF;
+	uint32_t handle = early_passthrough ? LANSPEED_BPF_TC_EARLY_HANDLE :
+					      LANSPEED_BPF_TC_HANDLE;
+	int ingress_fd = early_passthrough ? g_state.ingress_early_prog_fd :
+					     g_state.ingress_prog_fd;
+	int egress_fd = early_passthrough ? g_state.egress_early_prog_fd :
+					    g_state.egress_prog_fd;
 	int ifindex;
 	int err;
 
@@ -240,13 +267,13 @@ int lanspeed_bpf_attach_iface(const char *ifname)
 		return -errno;
 	}
 
-	err = attach_point(ifname, ifindex, BPF_TC_INGRESS,
-			   g_state.ingress_prog_fd);
+	err = attach_point(ifname, ifindex, BPF_TC_INGRESS, ingress_fd,
+			   priority, handle);
 	if (err)
 		return err;
 
-	err = attach_point(ifname, ifindex, BPF_TC_EGRESS,
-			   g_state.egress_prog_fd);
+	err = attach_point(ifname, ifindex, BPF_TC_EGRESS, egress_fd,
+			   priority, handle);
 	if (err)
 		return err;
 
@@ -254,6 +281,11 @@ int lanspeed_bpf_attach_iface(const char *ifname)
 	g_state.status.attached_hook_count = g_state.attached_count;
 	g_state.status.last_attach_monotonic_ms = monotonic_ms();
 	return 0;
+}
+
+int lanspeed_bpf_attach_iface(const char *ifname)
+{
+	return lanspeed_bpf_attach_iface_mode(ifname, false);
 }
 
 void lanspeed_bpf_detach_all(void)
@@ -265,9 +297,12 @@ void lanspeed_bpf_detach_all(void)
 				    .ifindex = g_state.attached[i].ifindex,
 				    .attach_point = g_state.attached[i].point);
 		DECLARE_LIBBPF_OPTS(bpf_tc_opts, opts,
-				    .handle = LANSPEED_BPF_TC_HANDLE,
-				    .priority = LANSPEED_BPF_TC_PREF);
+				    .handle = LANSPEED_BPF_TC_EARLY_HANDLE,
+				    .priority = LANSPEED_BPF_TC_EARLY_PREF);
 
+		(void)bpf_tc_detach(&hook, &opts);
+		opts.handle = LANSPEED_BPF_TC_HANDLE;
+		opts.priority = LANSPEED_BPF_TC_PREF;
 		(void)bpf_tc_detach(&hook, &opts);
 		/*
 		 * Intentionally do NOT tear down the clsact qdisc itself
@@ -291,6 +326,8 @@ void lanspeed_bpf_shutdown(void)
 	}
 	g_state.ingress_prog_fd = -1;
 	g_state.egress_prog_fd = -1;
+	g_state.ingress_early_prog_fd = -1;
+	g_state.egress_early_prog_fd = -1;
 	g_state.map_fd = -1;
 	g_state.status.object_loaded = false;
 }

@@ -43,6 +43,8 @@
 #define LANSPEED_BPF_SOURCE "lanspeed_tc.bpf.c"
 #define LANSPEED_TC_FILTER_PREF 49152
 #define LANSPEED_TC_FILTER_HANDLE "0x1eed"
+#define LANSPEED_TC_FILTER_EARLY_PREF 1
+#define LANSPEED_TC_FILTER_EARLY_HANDLE "0x1eee"
 #define LANSPEED_TC_FILTER_OWNER "lanspeed"
 #define DAE_FWMARK "0x8000000"
 #define DAE_ROUTE_TABLE "2023"
@@ -524,9 +526,20 @@ static bool ifname_is_excluded_identity_source(const char *ifname)
 
 static bool line_contains_lanspeed_filter_conflict(const char *line)
 {
-	return line && strstr(line, "pref 49152") != NULL &&
-	       (strstr(line, "handle 0x1eed") != NULL || strstr(line, "handle 1eed") != NULL) &&
-	       strstr(line, LANSPEED_TC_FILTER_OWNER) == NULL;
+	bool default_conflict;
+	bool early_conflict;
+
+	if (!line || strstr(line, LANSPEED_TC_FILTER_OWNER) != NULL)
+		return false;
+
+	default_conflict = strstr(line, "pref 49152") != NULL &&
+			   (strstr(line, "handle 0x1eed") != NULL ||
+			    strstr(line, "handle 1eed") != NULL);
+	early_conflict = strstr(line, "pref 1") != NULL &&
+			 (strstr(line, "handle 0x1eee") != NULL ||
+			  strstr(line, "handle 1eee") != NULL);
+
+	return default_conflict || early_conflict;
 }
 
 static bool ifname_is_bpf_attach_ifname(const char *ifname)
@@ -1461,10 +1474,7 @@ static bool dae_tc_preempts_bpf_ingress(const struct runtime_probe *probe)
 
 static bool conntrack_primary_preferred(const struct runtime_probe *probe)
 {
-	return nss_conntrack_sync_preferred(probe) ||
-	       (enable_conntrack_fallback &&
-	        conntrack_fallback_accounting_safe(probe) &&
-	        dae_tc_preempts_bpf_ingress(probe));
+	return nss_conntrack_sync_preferred(probe);
 }
 
 static bool bpf_primary_active(const struct runtime_probe *probe)
@@ -1533,8 +1543,6 @@ static void add_conntrack_fallback_runtime_warnings(struct runtime_probe *probe)
 		if (bpf_full_available(probe))
 			add_warning(probe, "nss_prefers_conntrack_sync");
 	} else {
-		if (dae_tc_preempts_bpf_ingress(probe))
-			add_warning(probe, "dae_tc_preempts_bpf_ingress");
 		add_warning(probe, "conntrack_routed_nat_only");
 	}
 
@@ -1609,6 +1617,9 @@ static void add_collector_evidence(struct runtime_probe *probe)
 	json_object_object_add(tc_filter, "owner", json_object_new_string(LANSPEED_TC_FILTER_OWNER));
 	json_object_object_add(tc_filter, "pref", json_object_new_int(LANSPEED_TC_FILTER_PREF));
 	json_object_object_add(tc_filter, "handle", json_object_new_string(LANSPEED_TC_FILTER_HANDLE));
+	json_object_object_add(tc_filter, "early_pref", json_object_new_int(LANSPEED_TC_FILTER_EARLY_PREF));
+	json_object_object_add(tc_filter, "early_handle", json_object_new_string(LANSPEED_TC_FILTER_EARLY_HANDLE));
+	json_object_object_add(tc_filter, "early_passthrough_action", json_object_new_string("TC_ACT_UNSPEC"));
 	json_object_object_add(tc_filter, "existing_filters_detected", json_object_new_boolean(probe->existing_tc_filters));
 	json_object_object_add(tc_filter, "existing_filters", json_object_get(probe->tc_filters));
 	json_object_object_add(tc_filter, "conflict", json_object_new_boolean(probe->tc_filter_conflict));
@@ -1706,10 +1717,9 @@ static void add_collector_evidence(struct runtime_probe *probe)
 
 	json_object_array_add(conntrack_active_when, json_object_new_string("bpf_full_unavailable"));
 	json_object_array_add(conntrack_active_when, json_object_new_string("nss_ecm_sync_preferred"));
-	json_object_array_add(conntrack_active_when, json_object_new_string("dae_tc_preempts_bpf_ingress"));
 	json_object_array_add(conntrack_active_when, json_object_new_string("enable_conntrack_fallback=1"));
 	json_object_array_add(conntrack_active_when, json_object_new_string("nf_conntrack_acct=1"));
-	json_object_array_add(conntrack_inactive_when, json_object_new_string("bpf_full_available_without_nss_ecm_sync_or_dae_preemption"));
+	json_object_array_add(conntrack_inactive_when, json_object_new_string("bpf_full_available_without_nss_ecm_sync"));
 	json_object_array_add(conntrack_inactive_when, json_object_new_string("enable_conntrack_fallback=0"));
 	json_object_array_add(conntrack_inactive_when, json_object_new_string("conntrack_acct_disabled"));
 	json_object_array_add(conntrack_sources, json_object_new_string("procfs_conntrack_acct_orig_reply_bytes"));
@@ -1726,8 +1736,6 @@ static void add_collector_evidence(struct runtime_probe *probe)
 		json_object_array_add(conntrack_warnings, json_object_new_string("nlbwmon_counter_conflict"));
 	if (probe->openclash || probe->dae || probe->homeproxy)
 		json_object_array_add(conntrack_warnings, json_object_new_string("proxy_path_confidence_low"));
-	if (dae_tc_preempts_bpf_ingress(probe))
-		json_object_array_add(conntrack_warnings, json_object_new_string("dae_tc_preempts_bpf_ingress"));
 	if (probe->openclash_fake_ip)
 		json_object_array_add(conntrack_warnings, json_object_new_string("openclash_fake_ip_low_remote_confidence"));
 	if (probe->openclash_tun_mix)
@@ -2779,8 +2787,6 @@ static void add_conntrack_common_warnings(const struct runtime_probe *probe,
 		if (bpf_full_available(probe))
 			add_string_unique(warnings, "nss_prefers_conntrack_sync");
 	} else {
-		if (dae_tc_preempts_bpf_ingress(probe))
-			add_string_unique(warnings, "dae_tc_preempts_bpf_ingress");
 		add_string_unique(warnings, "conntrack_routed_nat_only");
 	}
 	if (!probe->flowtable_counter)
@@ -2852,11 +2858,6 @@ static void add_conntrack_clients_evidence(struct json_object *root,
 		json_object_object_add(evidence, "primary_source", json_object_new_string("nss_conntrack_sync"));
 		json_object_object_add(evidence, "coverage", json_object_new_string("nss_ecm_sync"));
 		json_object_object_add(evidence, "coverage_warning", json_object_new_string("nss_ecm_sync_cadence"));
-	} else if (dae_tc_preempts_bpf_ingress(probe)) {
-		json_object_object_add(evidence, "collector_mode", json_object_new_string("conntrack"));
-		json_object_object_add(evidence, "primary_source", json_object_new_string("conntrack"));
-		json_object_object_add(evidence, "coverage", json_object_new_string("dae_tc_preempted_conntrack"));
-		json_object_object_add(evidence, "coverage_warning", json_object_new_string("dae_tc_preempts_bpf_ingress"));
 	} else {
 		json_object_object_add(evidence, "collector_mode", json_object_new_string("conntrack"));
 		json_object_object_add(evidence, "primary_source", json_object_new_string("conntrack"));
@@ -3312,17 +3313,6 @@ static bool coverage_current_client_bytes(const struct runtime_probe *probe,
 		*tx_out = tx;
 		return true;
 	}
-	if (conntrack_primary_preferred(probe) &&
-	    previous_conntrack_snapshot_valid &&
-	    previous_conntrack_sample_count > 0) {
-		for (i = 0; i < previous_conntrack_sample_count; i++) {
-			rx += previous_conntrack_samples[i].rx_bytes;
-			tx += previous_conntrack_samples[i].tx_bytes;
-		}
-		*rx_out = rx;
-		*tx_out = tx;
-		return true;
-	}
 	if (bpf_runtime_enabled && bpf_current_sample_count > 0) {
 		for (i = 0; i < bpf_current_sample_count; i++) {
 			rx += bpf_current_samples[i].rx_bytes;
@@ -3680,11 +3670,10 @@ static int clients_method(struct ubus_context *ubus, struct ubus_object *obj,
 		struct runtime_probe probe;
 		init_runtime_probe(&probe);
 		inspect_runtime(&probe);
-		if (conntrack_primary_preferred(&probe)) {
+		if (nss_conntrack_sync_preferred(&probe)) {
 			if (!collect_conntrack_procfs_clients(root, clients, &probe) &&
 			    collect_bpf_clients(root, clients, &probe)) {
-				/* BPF is only a slow-path fallback when conntrack
-				 * is preferred (NSS sync or DAE ingress preemption),
+				/* BPF is only a slow-path fallback under NSS sync,
 				 * but its connection counts can still be topped up
 				 * from conntrack when available. */
 				merge_conntrack_conn_counts(root, clients);
@@ -4174,6 +4163,7 @@ static void start_bpf_runtime(void)
 {
 	const char *env_path;
 	const char *object_path;
+	bool early_passthrough = false;
 	size_t i;
 	int attached_ok = 0;
 
@@ -4188,8 +4178,19 @@ static void start_bpf_runtime(void)
 	if (!lanspeed_bpf_init(object_path))
 		return;
 
+	{
+		struct runtime_probe probe;
+
+		init_runtime_probe(&probe);
+		inspect_command_capabilities(&probe);
+		inspect_tc(&probe);
+		early_passthrough = dae_tc_preempts_bpf_ingress(&probe);
+		free_runtime_probe(&probe);
+	}
+
 	for (i = 0; i < bpf_attach_ifname_count; i++) {
-		if (lanspeed_bpf_attach_iface(bpf_attach_ifnames[i]) == 0)
+		if (lanspeed_bpf_attach_iface_mode(bpf_attach_ifnames[i],
+						   early_passthrough) == 0)
 			attached_ok++;
 	}
 

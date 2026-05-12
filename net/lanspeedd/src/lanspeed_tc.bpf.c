@@ -198,7 +198,8 @@ static __always_inline void try_count_connection(struct __sk_buff *skb,
 		__sync_fetch_and_add(&counters->udp_conns, 1);
 }
 
-static __always_inline int account_frame(struct __sk_buff *skb, __u8 direction)
+static __always_inline int account_frame(struct __sk_buff *skb, __u8 direction,
+					 int action)
 {
 	void *data = (void *)(long)skb->data;
 	void *data_end = (void *)(long)skb->data_end;
@@ -208,7 +209,7 @@ static __always_inline int account_frame(struct __sk_buff *skb, __u8 direction)
 	struct lanspeed_key key = {};
 
 	if ((void *)(eth + 1) > data_end)
-		return TC_ACT_OK;
+		return action;
 
 	key.ifindex = skb->ifindex;
 	key.vlan_or_zone = skb->vlan_tci & 0x0fff;
@@ -224,10 +225,10 @@ static __always_inline int account_frame(struct __sk_buff *skb, __u8 direction)
 		initial.packets = 1;
 		initial.last_seen = bpf_ktime_get_ns();
 		if (bpf_map_update_elem(&lanspeed_clients, &key, &initial, BPF_NOEXIST))
-			return TC_ACT_OK;
+			return action;
 		counters = bpf_map_lookup_elem(&lanspeed_clients, &key);
 		if (!counters)
-			return TC_ACT_OK;
+			return action;
 	} else {
 		__sync_fetch_and_add(&counters->bytes, skb->len);
 		__sync_fetch_and_add(&counters->packets, 1);
@@ -239,19 +240,31 @@ static __always_inline int account_frame(struct __sk_buff *skb, __u8 direction)
 	if (direction == LANSPEED_DIR_TX)
 		try_count_connection(skb, counters, key.mac, data, data_end, eth);
 
-	return TC_ACT_OK;
+	return action;
 }
 
 SEC("tc/ingress")
 int lanspeed_ingress(struct __sk_buff *skb)
 {
-	return account_frame(skb, LANSPEED_DIR_TX);
+	return account_frame(skb, LANSPEED_DIR_TX, TC_ACT_OK);
 }
 
 SEC("tc/egress")
 int lanspeed_egress(struct __sk_buff *skb)
 {
-	return account_frame(skb, LANSPEED_DIR_RX);
+	return account_frame(skb, LANSPEED_DIR_RX, TC_ACT_OK);
+}
+
+SEC("tc")
+int lanspeed_ingress_early(struct __sk_buff *skb)
+{
+	return account_frame(skb, LANSPEED_DIR_TX, TC_ACT_UNSPEC);
+}
+
+SEC("tc")
+int lanspeed_egress_early(struct __sk_buff *skb)
+{
+	return account_frame(skb, LANSPEED_DIR_RX, TC_ACT_UNSPEC);
 }
 
 char LICENSE[] SEC("license") = "Apache-2.0";

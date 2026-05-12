@@ -354,7 +354,8 @@ function validateBpfSource(source) {
     'BPF_MAP_TYPE_LRU_HASH',
     'LANSPEED_MAX_CLIENTS',
     'SEC("tc/ingress")',
-    'SEC("tc/egress")'
+    'SEC("tc/egress")',
+    'SEC("tc")'
   ]) {
     assert(source.includes(required), `BPF source missing ${required}`);
   }
@@ -364,8 +365,10 @@ function validateBpfSource(source) {
   assert(sizeMatch, 'BPF source must #define LANSPEED_MAX_CLIENTS');
   assert(parseInt(sizeMatch[1], 10) >= 2048, `LANSPEED_MAX_CLIENTS must be >= 2048 (got ${sizeMatch && sizeMatch[1]})`);
 
-  assert(/SEC\("tc\/ingress"\)\s+int\s+lanspeed_ingress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_TX\);\s*}/m.test(source), 'BPF ingress must account client TX');
-  assert(/SEC\("tc\/egress"\)\s+int\s+lanspeed_egress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_RX\);\s*}/m.test(source), 'BPF egress must account client RX');
+  assert(/SEC\("tc\/ingress"\)\s+int\s+lanspeed_ingress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_TX, TC_ACT_OK\);\s*}/m.test(source), 'BPF ingress must account client TX');
+  assert(/SEC\("tc\/egress"\)\s+int\s+lanspeed_egress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_RX, TC_ACT_OK\);\s*}/m.test(source), 'BPF egress must account client RX');
+  assert(/SEC\("tc"\)\s+int\s+lanspeed_ingress_early\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_TX, TC_ACT_UNSPEC\);\s*}/m.test(source), 'BPF early ingress must account client TX and continue to later filters');
+  assert(/SEC\("tc"\)\s+int\s+lanspeed_egress_early\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_RX, TC_ACT_UNSPEC\);\s*}/m.test(source), 'BPF early egress must account client RX and continue to later filters');
 }
 
 function validatePackageMakefile(makefile) {

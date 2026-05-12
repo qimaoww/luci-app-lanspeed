@@ -10,6 +10,8 @@ TC="/sbin/tc"
 LANSPEED_TC_OWNER="lanspeed"
 LANSPEED_TC_PREF="49152"
 LANSPEED_TC_HANDLE="0x1eed"
+LANSPEED_TC_EARLY_PREF="1"
+LANSPEED_TC_EARLY_HANDLE="0x1eee"
 LANSPEED_TC_OBJECT="/usr/lib/bpf/lanspeed_tc.o"
 
 config_ifaces() {
@@ -26,8 +28,13 @@ config_ifaces() {
 
 lanspeed_tc_filter_owned() {
 	section="$1"
-	printf '%s\n' "$section" | grep -q "pref $LANSPEED_TC_PREF" || return 1
-	printf '%s\n' "$section" | grep -q "handle $LANSPEED_TC_HANDLE" || return 1
+	if printf '%s\n' "$section" | grep -q "pref $LANSPEED_TC_PREF"; then
+		printf '%s\n' "$section" | grep -q "handle $LANSPEED_TC_HANDLE" || return 1
+	elif printf '%s\n' "$section" | grep -q "pref $LANSPEED_TC_EARLY_PREF"; then
+		printf '%s\n' "$section" | grep -q "handle $LANSPEED_TC_EARLY_HANDLE" || return 1
+	else
+		return 1
+	fi
 	printf '%s\n' "$section" | grep -F -q "$LANSPEED_TC_OWNER" || return 1
 	printf '%s\n' "$section" | grep -F -q "$LANSPEED_TC_OBJECT" || return 1
 	return 0
@@ -55,8 +62,13 @@ cleanup_lanspeed_tc_filters_on_dev() {
 
 		printf '%s\n' "$sections" | while IFS= read -r filter; do
 			if lanspeed_tc_filter_owned "$filter"; then
-				logger -t "$NAME" "removing owned tc filter dev=$dev direction=$direction pref=$LANSPEED_TC_PREF handle=$LANSPEED_TC_HANDLE"
-				$TC filter del dev "$dev" "$direction" pref "$LANSPEED_TC_PREF" handle "$LANSPEED_TC_HANDLE" 2>/dev/null || true
+				if printf '%s\n' "$filter" | grep -q "pref $LANSPEED_TC_EARLY_PREF"; then
+					logger -t "$NAME" "removing owned tc filter dev=$dev direction=$direction pref=$LANSPEED_TC_EARLY_PREF handle=$LANSPEED_TC_EARLY_HANDLE"
+					$TC filter del dev "$dev" "$direction" pref "$LANSPEED_TC_EARLY_PREF" handle "$LANSPEED_TC_EARLY_HANDLE" 2>/dev/null || true
+				else
+					logger -t "$NAME" "removing owned tc filter dev=$dev direction=$direction pref=$LANSPEED_TC_PREF handle=$LANSPEED_TC_HANDLE"
+					$TC filter del dev "$dev" "$direction" pref "$LANSPEED_TC_PREF" handle "$LANSPEED_TC_HANDLE" 2>/dev/null || true
+				fi
 			fi
 		done
 	done

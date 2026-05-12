@@ -78,7 +78,7 @@ var WARNING_LABELS = {
 	openclash_tun_mix_detected: _('OpenClash TUN/mix 可能让部分路径绕过 CPU 可见 LAN 边缘指标。'),
 	openclash_udp_proxy_detected: _('OpenClash UDP 代理会降低按客户端归因的置信度。'),
 	dae_detected: _('检测到 dae/daed，代理或 TUN 接口只作为上行证据，不作为 LAN 客户端身份。'),
-	dae_tc_preempts_bpf_ingress: _('dae/daed 的 TC ingress 过滤器先于 lanspeed 运行，客户端上行已改用 conntrack 归因。'),
+	dae_tc_preempts_bpf_ingress: _('dae/daed 的 TC ingress 过滤器先于 lanspeed 运行，lanspeed 已改用前置只读 BPF 采样并继续放行给 dae/daed。'),
 	tc_filter_conflict: _('已有 TC filter 与 lanspeed 挂载点冲突，lanspeedd 不会覆盖它。'),
 	existing_tc_filters_detected: _('已存在其它 TC filter，lanspeedd 只告警，不删除或重排。'),
 	sqm_detected: _('检测到 SQM，IFB 整形可能影响观察到的方向或覆盖范围。'),

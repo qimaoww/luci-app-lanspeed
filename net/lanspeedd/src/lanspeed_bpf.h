@@ -27,6 +27,8 @@ extern "C" {
 
 #define LANSPEED_BPF_TC_PREF 49152u
 #define LANSPEED_BPF_TC_HANDLE 0x1eedu
+#define LANSPEED_BPF_TC_EARLY_PREF 1u
+#define LANSPEED_BPF_TC_EARLY_HANDLE 0x1eeeu
 
 #define LANSPEED_BPF_ERROR_LEN 256
 
@@ -85,6 +87,14 @@ void lanspeed_bpf_shutdown(void);
  * negative errno-style value on failure. Partial attach is rolled back.
  */
 int lanspeed_bpf_attach_iface(const char *ifname);
+
+/*
+ * Attach using the normal post-coexistence position, or an early
+ * pass-through position for stacks such as daed that rewrite/redirect at TC
+ * before lanspeed's default priority. The early sections return
+ * TC_ACT_UNSPEC so later TC filters still run.
+ */
+int lanspeed_bpf_attach_iface_mode(const char *ifname, bool early_passthrough);
 
 /*
  * Detach every filter this process has attached. Clsact qdiscs are NOT
