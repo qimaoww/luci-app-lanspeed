@@ -549,77 +549,39 @@ function refreshLive(viewState) {
 	}
 	refs.mClientsSub.textContent = subParts.join(' · ');
 
-	/* coverage: byte-counter delta over a common time window.
-	 *
-	 * Both clients and interfaces now expose rx_bytes/tx_bytes/sample_ms.
-	 * We keep the previous snapshot in viewState.coveragePrev and compute
-	 * delta_client_bytes / delta_iface_bytes over the same wall-clock span.
-	 * This eliminates the bps-window-mismatch that caused wild fluctuations
-	 * when the two RPC methods used different averaging windows. */
-	var ifacesAll = fmt.asArray(viewState.interfaces && viewState.interfaces.interfaces);
-	var curIfaceBytes = 0;
-	var curIfaceSampleMs = 0;
-	ifacesAll.forEach(function(i) {
-		if ((i.role || 'lan') !== 'lan') return;
-		curIfaceBytes += (Number(i.rx_bytes) || 0) + (Number(i.tx_bytes) || 0);
-		if (Number(i.sample_ms) > curIfaceSampleMs)
-			curIfaceSampleMs = Number(i.sample_ms);
-	});
-	var curClientBytes = 0;
-	var curClientSampleMs = 0;
-	clientsAll.forEach(function(c) {
-		curClientBytes += (Number(c.rx_bytes) || 0) + (Number(c.tx_bytes) || 0);
-		if (Number(c.sample_ms) > curClientSampleMs)
-			curClientSampleMs = Number(c.sample_ms);
-	});
-
-	var prev = viewState.coveragePrev;
-	var coveragePct = null;
-	if (prev && curIfaceSampleMs > prev.ifaceSampleMs && curClientSampleMs > prev.clientSampleMs) {
-		var deltaIfaceBytes = curIfaceBytes - prev.ifaceBytes;
-		var deltaClientBytes = curClientBytes - prev.clientBytes;
-		/* Guard against counter resets (LRU eviction, daemon restart) */
-		if (deltaIfaceBytes > 0 && deltaClientBytes >= 0) {
-			coveragePct = Math.min(100, Math.round((deltaClientBytes / deltaIfaceBytes) * 100));
-		}
-	}
-	/* Save current snapshot for next tick */
-	viewState.coveragePrev = {
-		ifaceBytes: curIfaceBytes,
-		ifaceSampleMs: curIfaceSampleMs,
-		clientBytes: curClientBytes,
-		clientSampleMs: curClientSampleMs
-	};
-
-	if (coveragePct === null) {
-		/* First tick or counter reset — fall back to instantaneous bps ratio */
-		var lanTotal = 0, liveTotal = totals.tx + totals.rx;
-		ifacesAll.forEach(function(i) {
-			if ((i.role || 'lan') !== 'lan') return;
-			lanTotal += (Number(i.rx_bps) || 0) + (Number(i.tx_bps) || 0);
-		});
-		if (lanTotal < fmt.INACTIVE_BPS_THRESHOLD) {
-			refs.mCoverage.textContent = '-';
-			refs.mCoverageSub.textContent = _('LAN 无活动流量');
+	/* coverage: read daemon-computed sliding-window coverage from status.
+	 * Direction semantics: tx_pct = client upload / iface rx,
+	 * rx_pct = client download / iface tx. */
+	var cov = status.coverage || {};
+	var covQuality = cov.quality || 'warmup';
+	if (covQuality === 'ok') {
+		var txPct = typeof cov.tx_pct === 'number' ? cov.tx_pct : null;
+		var rxPct = typeof cov.rx_pct === 'number' ? cov.rx_pct : null;
+		var parts = [];
+		if (rxPct !== null) parts.push('↓ ' + rxPct + '%');
+		if (txPct !== null) parts.push('↑ ' + txPct + '%');
+		refs.mCoverage.textContent = parts.join(' · ') || '-';
+		var windowSec = Math.round((Number(cov.window_ms) || 0) / 1000);
+		if ((rxPct !== null && rxPct < 85) || (txPct !== null && txPct < 85)) {
+			var missingBps = 0;
+			var denomTotal = (Number(cov.denom_rx_bytes) || 0) + (Number(cov.denom_tx_bytes) || 0);
+			var numerTotal = (Number(cov.numer_rx_bytes) || 0) + (Number(cov.numer_tx_bytes) || 0);
+			if (denomTotal > numerTotal && cov.window_ms > 0)
+				missingBps = Math.round(((denomTotal - numerTotal) * 8000) / cov.window_ms);
+			refs.mCoverageSub.textContent = _('缺口 ') + fmt.formatRate(missingBps, prefs.unit) +
+				' · ' + windowSec + 's';
 		} else {
-			var pct = Math.min(100, Math.round((liveTotal / lanTotal) * 100));
-			refs.mCoverage.textContent = pct + '%';
-			refs.mCoverageSub.textContent = _('首次采样（下次更准）');
+			refs.mCoverageSub.textContent = windowSec + 's ' + _('窗口');
 		}
+	} else if (covQuality === 'idle') {
+		refs.mCoverage.textContent = '-';
+		refs.mCoverageSub.textContent = _('LAN 无活动流量');
+	} else if (covQuality === 'warmup' || covQuality === 'counter_reset') {
+		refs.mCoverage.textContent = '…';
+		refs.mCoverageSub.textContent = _('窗口采样中 (%d)').format(Number(cov.samples) || 0);
 	} else {
-		refs.mCoverage.textContent = coveragePct + '%';
-		var deltaMs = Math.max(curIfaceSampleMs - prev.ifaceSampleMs,
-		                       curClientSampleMs - prev.clientSampleMs);
-		if (coveragePct < 85) {
-			var deltaIfaceBytes = curIfaceBytes - prev.ifaceBytes;
-			var deltaClientBytes = curClientBytes - prev.clientBytes;
-			var missingBps = deltaMs > 0
-				? Math.round(((deltaIfaceBytes - deltaClientBytes) * 8000) / deltaMs)
-				: 0;
-			refs.mCoverageSub.textContent = _('缺口 ') + fmt.formatRate(missingBps, prefs.unit);
-		} else {
-			refs.mCoverageSub.textContent = _('客户端合计 / 接口合计');
-		}
+		refs.mCoverage.textContent = '-';
+		refs.mCoverageSub.textContent = _('不支持');
 	}
 
 	/* critical warnings are shown in the diagnostics details card only;

@@ -29,6 +29,14 @@
 #define DEFAULT_MAX_CLIENTS 2048
 #define RATE_WINDOW_COUNT 3
 #define STALE_CLIENT_MS 5000
+/* Coverage ring buffer: window_size samples, pushed on every status_method
+ * call. With LuCI's default 3 s refresh cadence this yields ~48 s of
+ * history, which averages out the per-tick noise caused by ARP/mDNS/LLDP
+ * bursts in the iface bytes denominator. No new timer is needed because
+ * the only consumer of coverage is status, which is called on demand. */
+#define LANSPEED_COVERAGE_WINDOW 16
+#define LANSPEED_COVERAGE_MIN_WINDOW_MS 3000
+#define LANSPEED_COVERAGE_MIN_DENOM_BYTES 524288ULL /* 512 KiB over the window */
 #define COMMAND_OUTPUT_LIMIT 4096
 #define LANSPEED_BPF_PACKAGE_MARKER "/usr/share/lanspeed/bpf/collector-model.json"
 #define LANSPEED_BPF_OBJECT_PATH "/usr/lib/bpf/lanspeed_tc.o"
@@ -149,6 +157,27 @@ static struct bpf_client_sample bpf_previous_samples[DEFAULT_MAX_CLIENTS];
 static size_t bpf_previous_sample_count;
 static uint64_t bpf_previous_snapshot_ms;
 static bool bpf_previous_snapshot_valid;
+
+/* Coverage sliding window: one entry per status_method call.
+ * iface_rx/iface_tx are accumulated netdev byte counters summed over LAN
+ * attach ifaces (role=lan). client_rx/client_tx are accumulated client
+ * byte counters summed over the most recent collector snapshot
+ * (BPF bpf_current_samples, or conntrack previous_conntrack_samples
+ * when BPF is unavailable). Monotonic within a single daemon lifetime;
+ * counter resets are detected by (cur < old) and invalidate the window. */
+struct coverage_sample {
+	uint64_t ts_ms;
+	uint64_t iface_rx_bytes;
+	uint64_t iface_tx_bytes;
+	uint64_t client_rx_bytes;
+	uint64_t client_tx_bytes;
+	bool iface_valid;
+	bool client_valid;
+};
+
+static struct coverage_sample coverage_ring[LANSPEED_COVERAGE_WINDOW];
+static size_t coverage_ring_head; /* next write slot */
+static size_t coverage_ring_count; /* 0..LANSPEED_COVERAGE_WINDOW */
 
 static struct uloop_timeout bpf_collect_timer;
 static bool bpf_runtime_enabled;
@@ -3151,6 +3180,210 @@ static bool collect_conntrack_procfs_clients(struct json_object *root,
 	return true;
 }
 
+/* ---------- coverage sliding window ---------- */
+
+/* Sum byte counters from the latest collector snapshot (BPF first,
+ * conntrack fallback second). Returns false when no usable snapshot
+ * exists yet, in which case the caller must mark the sample invalid. */
+static bool coverage_current_client_bytes(uint64_t *rx_out, uint64_t *tx_out)
+{
+	size_t i;
+	uint64_t rx = 0, tx = 0;
+
+	if (bpf_runtime_enabled && bpf_current_sample_count > 0) {
+		for (i = 0; i < bpf_current_sample_count; i++) {
+			rx += bpf_current_samples[i].rx_bytes;
+			tx += bpf_current_samples[i].tx_bytes;
+		}
+		*rx_out = rx;
+		*tx_out = tx;
+		return true;
+	}
+	if (previous_conntrack_snapshot_valid && previous_conntrack_sample_count > 0) {
+		for (i = 0; i < previous_conntrack_sample_count; i++) {
+			rx += previous_conntrack_samples[i].rx_bytes;
+			tx += previous_conntrack_samples[i].tx_bytes;
+		}
+		*rx_out = rx;
+		*tx_out = tx;
+		return true;
+	}
+	return false;
+}
+
+/* Sum LAN-role iface byte counters straight from /sys/class/net. Uses
+ * the same source as interfaces_method so the numerator and denominator
+ * live in the same observation domain. */
+static bool coverage_current_iface_bytes(uint64_t *rx_out, uint64_t *tx_out)
+{
+	size_t i;
+	uint64_t rx = 0, tx = 0;
+	bool any_ok = false;
+
+	for (i = 0; i < bpf_attach_ifname_count; i++) {
+		const char *name = bpf_attach_ifnames[i];
+		char path[PATH_MAX];
+		char buf[64];
+		FILE *fp;
+		uint64_t v;
+
+		snprintf(path, sizeof(path), "/sys/class/net/%s/statistics/rx_bytes", name);
+		fp = fopen(path, "r");
+		if (!fp)
+			continue;
+		if (fgets(buf, sizeof(buf), fp))
+			rx += strtoull(buf, NULL, 10);
+		fclose(fp);
+
+		snprintf(path, sizeof(path), "/sys/class/net/%s/statistics/tx_bytes", name);
+		fp = fopen(path, "r");
+		if (!fp)
+			continue;
+		if (fgets(buf, sizeof(buf), fp))
+			v = strtoull(buf, NULL, 10);
+		else
+			v = 0;
+		tx += v;
+		fclose(fp);
+		any_ok = true;
+	}
+
+	if (!any_ok)
+		return false;
+
+	*rx_out = rx;
+	*tx_out = tx;
+	return true;
+}
+
+static void coverage_push_sample(uint64_t now_ms)
+{
+	struct coverage_sample *slot = &coverage_ring[coverage_ring_head];
+	uint64_t irx = 0, itx = 0, crx = 0, ctx_bytes = 0;
+
+	slot->ts_ms = now_ms;
+	slot->iface_valid = coverage_current_iface_bytes(&irx, &itx);
+	slot->iface_rx_bytes = irx;
+	slot->iface_tx_bytes = itx;
+	slot->client_valid = coverage_current_client_bytes(&crx, &ctx_bytes);
+	slot->client_rx_bytes = crx;
+	slot->client_tx_bytes = ctx_bytes;
+
+	coverage_ring_head = (coverage_ring_head + 1) % LANSPEED_COVERAGE_WINDOW;
+	if (coverage_ring_count < LANSPEED_COVERAGE_WINDOW)
+		coverage_ring_count++;
+}
+
+static const struct coverage_sample *coverage_sample_at(size_t idx_back)
+{
+	size_t offset;
+
+	if (idx_back >= coverage_ring_count)
+		return NULL;
+	/* head points to the next write slot; idx_back=0 is the newest. */
+	offset = (coverage_ring_head + LANSPEED_COVERAGE_WINDOW - 1 - idx_back) %
+		 LANSPEED_COVERAGE_WINDOW;
+	return &coverage_ring[offset];
+}
+
+/* Attach a status-level "coverage" object to root. Direction semantics
+ * match the UI: cov_tx = client upload / iface rx (client -> router),
+ * cov_rx = client download / iface tx (router -> client).
+ *
+ * quality values:
+ *   "warmup"      - not enough samples yet (< 2 or < MIN_WINDOW_MS apart)
+ *   "idle"        - window's iface denominator below MIN_DENOM_BYTES
+ *   "counter_reset" - detected a decrease; window is being rebuilt
+ *   "ok"          - valid pct computed
+ *   "unsupported" - collector path cannot produce client bytes
+ */
+static void add_coverage_to_status(struct json_object *root,
+				   const struct runtime_probe *probe)
+{
+	struct json_object *cov = json_object_new_object();
+	const struct coverage_sample *newest = coverage_sample_at(0);
+	const struct coverage_sample *oldest = NULL;
+	size_t i;
+	uint64_t window_ms = 0;
+	uint64_t di_rx = 0, di_tx = 0, dc_rx = 0, dc_tx = 0;
+	int pct_tx = -1, pct_rx = -1;
+	const char *quality = "warmup";
+
+	if (!bpf_runtime_enabled && !conntrack_fallback_active(probe)) {
+		json_object_object_add(cov, "quality",
+				       json_object_new_string("unsupported"));
+		json_object_object_add(cov, "samples",
+				       json_object_new_int((int)coverage_ring_count));
+		json_object_object_add(root, "coverage", cov);
+		return;
+	}
+
+	/* Find the oldest sample that is valid on both sides. */
+	for (i = coverage_ring_count; i > 0; i--) {
+		const struct coverage_sample *s = coverage_sample_at(i - 1);
+		if (s && s->iface_valid && s->client_valid) {
+			oldest = s;
+			break;
+		}
+	}
+	if (newest && oldest && newest != oldest &&
+	    newest->iface_valid && newest->client_valid &&
+	    newest->ts_ms > oldest->ts_ms) {
+		window_ms = newest->ts_ms - oldest->ts_ms;
+		if (newest->iface_rx_bytes >= oldest->iface_rx_bytes &&
+		    newest->iface_tx_bytes >= oldest->iface_tx_bytes &&
+		    newest->client_rx_bytes >= oldest->client_rx_bytes &&
+		    newest->client_tx_bytes >= oldest->client_tx_bytes) {
+			di_rx = newest->iface_rx_bytes - oldest->iface_rx_bytes;
+			di_tx = newest->iface_tx_bytes - oldest->iface_tx_bytes;
+			dc_rx = newest->client_rx_bytes - oldest->client_rx_bytes;
+			dc_tx = newest->client_tx_bytes - oldest->client_tx_bytes;
+
+			if (window_ms < LANSPEED_COVERAGE_MIN_WINDOW_MS) {
+				quality = "warmup";
+			} else if (di_rx + di_tx < LANSPEED_COVERAGE_MIN_DENOM_BYTES) {
+				quality = "idle";
+			} else {
+				/* Clamp each direction to [0, 100]. */
+				if (di_rx > 0) {
+					uint64_t p = dc_tx * 100ULL / di_rx;
+					pct_tx = (int)(p > 100 ? 100 : p);
+				}
+				if (di_tx > 0) {
+					uint64_t p = dc_rx * 100ULL / di_tx;
+					pct_rx = (int)(p > 100 ? 100 : p);
+				}
+				quality = "ok";
+			}
+		} else {
+			quality = "counter_reset";
+			/* Invalidate the window so next tick starts fresh. */
+			coverage_ring_count = 0;
+			coverage_ring_head = 0;
+		}
+	}
+
+	json_object_object_add(cov, "quality", json_object_new_string(quality));
+	json_object_object_add(cov, "samples",
+			       json_object_new_int((int)coverage_ring_count));
+	json_object_object_add(cov, "window_ms",
+			       json_object_new_int64((int64_t)window_ms));
+	if (pct_tx >= 0)
+		json_object_object_add(cov, "tx_pct", json_object_new_int(pct_tx));
+	if (pct_rx >= 0)
+		json_object_object_add(cov, "rx_pct", json_object_new_int(pct_rx));
+	json_object_object_add(cov, "denom_rx_bytes",
+			       json_object_new_int64((int64_t)di_rx));
+	json_object_object_add(cov, "denom_tx_bytes",
+			       json_object_new_int64((int64_t)di_tx));
+	json_object_object_add(cov, "numer_rx_bytes",
+			       json_object_new_int64((int64_t)dc_rx));
+	json_object_object_add(cov, "numer_tx_bytes",
+			       json_object_new_int64((int64_t)dc_tx));
+
+	json_object_object_add(root, "coverage", cov);
+}
+
 static int send_json_reply(struct ubus_context *ubus, struct ubus_request_data *req,
 			   struct json_object *root)
 {
@@ -3193,6 +3426,8 @@ static int status_method(struct ubus_context *ubus, struct ubus_object *obj,
 	add_capabilities_from_values(root, enable_bpf && probe.bpf_runtime_metrics,
 				     enable_conntrack_fallback,
 				     probe.bpf_runtime_metrics, &probe);
+	coverage_push_sample(monotonic_time_ms());
+	add_coverage_to_status(root, &probe);
 	json_object_put(probe.conflicts);
 
 	return send_json_reply(ubus, req, root);

@@ -150,6 +150,52 @@
         "live_metrics"
       ]
     },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Sliding-window coverage computed by the daemon. Direction semantics: tx = client upload (client→router), rx = client download (router→client).",
+      "properties": {
+        "quality": {
+          "type": "string",
+          "enum": ["warmup", "idle", "counter_reset", "ok", "unsupported"]
+        },
+        "samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "window_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tx_pct": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "rx_pct": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "denom_rx_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "denom_tx_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "numer_rx_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "numer_tx_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": ["quality", "samples"]
+    },
     "status": {
       "type": "object",
       "additionalProperties": false,
@@ -184,6 +230,9 @@
         },
         "capabilities": {
           "$ref": "#/$defs/capabilities"
+        },
+        "coverage": {
+          "$ref": "#/$defs/coverage"
         }
       },
       "required": [
