@@ -209,6 +209,8 @@ function buildShell(viewState) {
 	refs.mRx          = E('div', { 'class': 'big' }, '0');
 	refs.mClients     = E('div', { 'class': 'big' }, '0');
 	refs.mClientsSub  = E('div', { 'class': 'hint' }, '-');
+	refs.mCovTx       = null;
+	refs.mCovRx       = null;
 	refs.mCoverage    = E('div', { 'class': 'big' }, '-');
 	refs.mCoverageSub = E('div', { 'class': 'hint' }, '-');
 	refs.mTcpConns    = E('div', { 'class': 'big' }, '-');
@@ -252,10 +254,10 @@ function buildShell(viewState) {
 	]);
 
 	/* ---- clients card ---- */
-	refs.btnRefresh = E('button', { 'class': 'cbi-button cbi-button-apply' }, _('立即刷新'));
+	refs.btnRefresh = E('button', { 'class': 'cbi-button' }, _('立即刷新'));
 	refs.btnRefresh.addEventListener('click', function() { viewState.reload(true); });
 
-	refs.btnReload = E('button', { 'class': 'cbi-button cbi-button-reload' }, _('重载 daemon'));
+	refs.btnReload = E('button', { 'class': 'cbi-button cbi-button-apply' }, _('重载 daemon'));
 	refs.btnReload.title = _('清理旧 tc filter，重新尝试挂载 BPF 运行时。仅清理 lanspeedd 自己拥有的 filter，不影响 dae / SQM 等共存项。');
 	refs.btnReload.addEventListener('click', function() {
 		if (viewState.reloading) return;
@@ -395,9 +397,7 @@ function buildShell(viewState) {
 			E('th', { 'class': 'num' }, _('接口 ↑')),
 			E('th', { 'class': 'num' }, _('接口 ↓')),
 			E('th', { 'class': 'num' }, _('客户端 ↑')),
-			E('th', { 'class': 'num' }, _('客户端 ↓')),
-			E('th', { 'class': 'num', 'title': _('客户端合计占接口合计的百分比；100% 表示完全覆盖') }, _('覆盖率 ↑')),
-			E('th', { 'class': 'num', 'title': _('客户端合计占接口合计的百分比；100% 表示完全覆盖') }, _('覆盖率 ↓'))
+			E('th', { 'class': 'num' }, _('客户端 ↓'))
 		])),
 		refs.ifacesBody
 	]);
@@ -550,6 +550,7 @@ function refreshLive(viewState) {
 	refs.mClientsSub.textContent = subParts.join(' · ');
 
 	/* coverage: read daemon-computed sliding-window coverage from status.
+	/* coverage: read daemon-computed sliding-window coverage from status.
 	 * Direction semantics: tx_pct = client upload / iface rx,
 	 * rx_pct = client download / iface tx. */
 	var cov = status.coverage || {};
@@ -557,10 +558,13 @@ function refreshLive(viewState) {
 	if (covQuality === 'ok') {
 		var txPct = typeof cov.tx_pct === 'number' ? cov.tx_pct : null;
 		var rxPct = typeof cov.rx_pct === 'number' ? cov.rx_pct : null;
-		var parts = [];
-		if (rxPct !== null) parts.push('↓ ' + rxPct + '%');
-		if (txPct !== null) parts.push('↑ ' + txPct + '%');
-		refs.mCoverage.textContent = parts.join(' · ') || '-';
+		/* Big number: show the lower of the two (conservative) */
+		var minPct = null;
+		if (txPct !== null && rxPct !== null) minPct = Math.min(txPct, rxPct);
+		else if (rxPct !== null) minPct = rxPct;
+		else if (txPct !== null) minPct = txPct;
+		refs.mCoverage.textContent = minPct !== null ? (minPct + '%') : '-';
+		/* Sub-label: direction breakdown (hide if both directions within 2pp) */
 		var windowSec = Math.round((Number(cov.window_ms) || 0) / 1000);
 		if ((rxPct !== null && rxPct < 85) || (txPct !== null && txPct < 85)) {
 			var missingBps = 0;
@@ -568,17 +572,21 @@ function refreshLive(viewState) {
 			var numerTotal = (Number(cov.numer_rx_bytes) || 0) + (Number(cov.numer_tx_bytes) || 0);
 			if (denomTotal > numerTotal && cov.window_ms > 0)
 				missingBps = Math.round(((denomTotal - numerTotal) * 8000) / cov.window_ms);
-			refs.mCoverageSub.textContent = _('缺口 ') + fmt.formatRate(missingBps, prefs.unit) +
-				' · ' + windowSec + 's';
+			refs.mCoverageSub.textContent = '↑' + (txPct !== null ? txPct : '-') +
+				' ↓' + (rxPct !== null ? rxPct : '-') +
+				' · ' + _('缺口 ') + fmt.formatRate(missingBps, prefs.unit);
+		} else if (txPct !== null && rxPct !== null && Math.abs(txPct - rxPct) <= 2) {
+			refs.mCoverageSub.textContent = _('上下行均衡');
 		} else {
-			refs.mCoverageSub.textContent = windowSec + 's ' + _('窗口');
+			refs.mCoverageSub.textContent = '↑' + (txPct !== null ? txPct : '-') +
+				' ↓' + (rxPct !== null ? rxPct : '-');
 		}
 	} else if (covQuality === 'idle') {
 		refs.mCoverage.textContent = '-';
 		refs.mCoverageSub.textContent = _('LAN 无活动流量');
 	} else if (covQuality === 'warmup' || covQuality === 'counter_reset') {
 		refs.mCoverage.textContent = '…';
-		refs.mCoverageSub.textContent = _('窗口采样中 (%d)').format(Number(cov.samples) || 0);
+		refs.mCoverageSub.textContent = _('采样中');
 	} else {
 		refs.mCoverage.textContent = '-';
 		refs.mCoverageSub.textContent = _('不支持');
@@ -649,11 +657,10 @@ function refreshLive(viewState) {
 			}
 
 			var stateCells = [
-				E('span', { 'class': 'label', 'title': modeTitle }, modeLabel),
 				E('span', { 'class': vocab.confidenceClass(c.confidence),
-				            'title': _('置信度：') + vocab.confidenceText(c.confidence) +
+				            'title': modeTitle + '\n' + _('置信度：') + vocab.confidenceText(c.confidence) +
 				                     '。' + _('低 = 路径可能绕过 CPU 可见计数；高 = 直接从内核 filter 采得。') },
-				  vocab.confidenceText(c.confidence))
+				  modeLabel + '·' + vocab.confidenceText(c.confidence))
 			];
 			if (specificWarnings.length)
 				stateCells.push(E('span', {
@@ -719,20 +726,12 @@ function refreshLive(viewState) {
 			totalIfTx += ifUp; totalIfRx += ifDn;
 			if (isLan) { totalClientTx += cs.tx; totalClientRx += cs.rx; }
 
-			function coverage(part, whole) {
-				if (whole < fmt.INACTIVE_BPS_THRESHOLD) return '-';
-				var pct = Math.min(100, Math.round((part / whole) * 100));
-				return pct + '%';
-			}
-
 			return E('tr', {}, [
 				E('td', {}, n),
 				E('td', { 'class': 'num' }, fmt.formatRate(ifUp, prefs.unit)),
 				E('td', { 'class': 'num' }, fmt.formatRate(ifDn, prefs.unit)),
 				E('td', { 'class': 'num' }, isLan ? fmt.formatRate(cs.tx, prefs.unit) : '-'),
-				E('td', { 'class': 'num' }, isLan ? fmt.formatRate(cs.rx, prefs.unit) : '-'),
-				E('td', { 'class': 'num' }, isLan ? coverage(cs.tx, ifUp) : '-'),
-				E('td', { 'class': 'num' }, isLan ? coverage(cs.rx, ifDn) : '-')
+				E('td', { 'class': 'num' }, isLan ? fmt.formatRate(cs.rx, prefs.unit) : '-')
 			]);
 		}));
 
@@ -742,26 +741,20 @@ function refreshLive(viewState) {
 		];
 		refs.ifacesSummary.textContent = sumBits.join(' · ');
 
-		/* overall coverage across LAN interfaces */
-		function pctOrDash(part, whole) {
-			if (whole < fmt.INACTIVE_BPS_THRESHOLD) return null;
-			return Math.min(100, Math.round((part / whole) * 100));
-		}
-		var totalLanUp = 0, totalLanDn = 0;
-		ifaces.forEach(function(i) {
-			if ((i.role || 'lan') !== 'lan') return;
-			totalLanUp += Number(i.rx_bps) || 0;
-			totalLanDn += Number(i.tx_bps) || 0;
-		});
-		var covUp = pctOrDash(totalClientTx, totalLanUp);
-		var covDn = pctOrDash(totalClientRx, totalLanDn);
-
-		if (covUp === null && covDn === null) {
-			refs.ifacesHint.textContent = _('LAN 当前无活动流量。');
-		} else if ((covUp !== null && covUp < 85) || (covDn !== null && covDn < 85)) {
-			refs.ifacesHint.textContent = _('覆盖率偏低：可能有硬件流量卸载、硬件桥接 LAN-to-LAN、广播/多播或未归属 MAC。');
+		/* overall coverage hint: use daemon sliding-window data */
+		var covHint = status.coverage || {};
+		if (covHint.quality === 'ok') {
+			var hintTx = typeof covHint.tx_pct === 'number' ? covHint.tx_pct : 100;
+			var hintRx = typeof covHint.rx_pct === 'number' ? covHint.rx_pct : 100;
+			if (hintTx < 85 || hintRx < 85) {
+				refs.ifacesHint.textContent = _('覆盖率偏低：可能有硬件流量卸载、硬件桥接 LAN-to-LAN、广播/多播或未归属 MAC。');
+			} else {
+				refs.ifacesHint.textContent = '';
+			}
+		} else if (covHint.quality === 'idle') {
+			refs.ifacesHint.textContent = '';
 		} else {
-			refs.ifacesHint.textContent = _('覆盖率接近 100%，CPU 可见流量归因完整。');
+			refs.ifacesHint.textContent = '';
 		}
 	}
 
