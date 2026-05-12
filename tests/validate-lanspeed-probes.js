@@ -158,6 +158,16 @@ function hasTcFilterConflict(filters) {
   ));
 }
 
+function daePreemptsLanIngress(filters) {
+  return filters.some((filter) => (
+    filter.interface === 'eth1' &&
+    filter.direction === 'ingress' &&
+    filter.owner === 'dae' &&
+    Number(filter.pref) > 0 &&
+    Number(filter.pref) < 49152
+  ));
+}
+
 function buildDaeEvidence(fixture, tcFilters) {
   const dae = getDaeConfig(fixture);
   const installed = Boolean(
@@ -212,6 +222,7 @@ function buildHealth(fixture) {
   const tcFilters = normalizeTcFilters(fixture);
   const daeEvidence = buildDaeEvidence(fixture, tcFilters);
   const tcFilterConflict = Boolean(fixture.tc.conflict || hasTcFilterConflict(tcFilters));
+  const daeIngressPreempted = daePreemptsLanIngress(tcFilters);
   const openclashEvidence = buildOpenClashEvidence(fixture);
 
   for (const name of ['fw4', 'nft', 'tc', 'ubus', 'qosify']) {
@@ -325,6 +336,9 @@ function buildHealth(fixture) {
       severity: 'warning',
       message: 'An existing tc filter already uses lanspeed pref/handle; lanspeedd will not overwrite it.'
     });
+  }
+  if (daeIngressPreempted) {
+    addUnique(warnings, 'dae_tc_preempts_bpf_ingress');
   }
   if (!fixture.config.enable_bpf) {
     addUnique(warnings, 'bpf_disabled');
@@ -450,12 +464,19 @@ function buildHealth(fixture) {
   }
 
   const bpfFullAvailable = Boolean(bpfRuntimeMetrics && !firewall.hardware_flow_offload);
+  const conntrackPrimaryPreferred = Boolean(
+    fixture.config.enable_conntrack_fallback &&
+    nfAcct.present &&
+    nfAcct.value === '1' &&
+    daeIngressPreempted
+  );
   const conntrackFallbackActive = Boolean(
     fixture.config.enable_conntrack_fallback &&
-    !bpfFullAvailable &&
+    (!bpfFullAvailable || conntrackPrimaryPreferred) &&
     nfAcct.present &&
     nfAcct.value === '1'
   );
+  const bpfPrimaryActive = Boolean(bpfFullAvailable && !conntrackPrimaryPreferred);
   if (conntrackFallbackActive) {
     addUnique(warnings, 'conntrack_routed_nat_only');
   }
@@ -492,12 +513,12 @@ function buildHealth(fixture) {
     mode,
     confidence,
     capabilities: {
-      bpf: Boolean(fixture.config.enable_bpf && bpfRuntimeMetrics),
+      bpf: Boolean(fixture.config.enable_bpf && bpfPrimaryActive),
       bpf_package: Boolean(fixture.files.bpf_package),
       bpf_object: Boolean(fixture.files.bpf_object),
       bpf_runtime_metrics: bpfRuntimeMetrics,
       conntrack_fallback: conntrackFallbackActive,
-      live_metrics: bpfRuntimeMetrics,
+      live_metrics: bpfPrimaryActive,
       fw4: Boolean(fixture.commands.fw4),
       nft: Boolean(fixture.commands.nft),
       software_flow_offload: Boolean(firewall.software_flow_offload),
@@ -558,7 +579,8 @@ function buildHealth(fixture) {
         safe_attach: safeAttach,
         bpf_assets_are_evidence_only: true,
         runtime_attach_map_read_success: bpfRuntimeMetrics,
-        live_metrics: bpfRuntimeMetrics,
+        live_metrics: bpfPrimaryActive,
+        primary_source: conntrackPrimaryPreferred ? 'conntrack' : (bpfPrimaryActive ? 'bpf' : (conntrackFallbackActive ? 'conntrack' : 'unsupported')),
         runtime_gate_warning: 'bpf_runtime_loader_unavailable',
         map_full: mapFull,
         attach_model: {
@@ -578,7 +600,9 @@ function buildHealth(fixture) {
           existing_filters_detected: Boolean(fixture.tc.existing_filters),
           existing_filters: tcFilters,
           conflict: tcFilterConflict,
-          conflict_warning: 'tc_filter_conflict'
+          conflict_warning: 'tc_filter_conflict',
+          dae_preempts_bpf_ingress: daeIngressPreempted,
+          preempt_warning: 'dae_tc_preempts_bpf_ingress'
         },
         map_model: {
           key: ['ifindex', 'vlan_or_zone', 'mac', 'direction'],
@@ -624,6 +648,7 @@ function buildHealth(fixture) {
           enabled: Boolean(fixture.config.enable_conntrack_fallback),
           active: conntrackFallbackActive,
           collector_mode: 'conntrack',
+          primary_source: conntrackPrimaryPreferred ? 'conntrack' : (bpfPrimaryActive ? 'bpf' : (conntrackFallbackActive ? 'conntrack' : 'unsupported')),
           mode: 'Degraded',
           confidence: conntrackFallbackActive ? (conntrackLowConfidence ? 'low' : 'medium') : 'unsupported',
           bpf_full_blocked_by_runtime_gate: !bpfRuntimeMetrics,
@@ -649,6 +674,7 @@ function buildHealth(fixture) {
           warnings: warnings.filter((warning) => [
             'conntrack_routed_nat_only',
             'conntrack_acct_disabled',
+            'dae_tc_preempts_bpf_ingress',
             'flowtable_counter_missing',
             'nlbwmon_counter_conflict',
             'proxy_path_confidence_low',
@@ -674,7 +700,8 @@ function buildHealth(fixture) {
           'unsafe_attach',
           'bpf_runtime_loader_unavailable',
           'live_metrics_unavailable',
-          'tc_filter_conflict'
+          'tc_filter_conflict',
+          'dae_tc_preempts_bpf_ingress'
         ].includes(warning))
       }
     }
@@ -917,12 +944,16 @@ assert(openclashRouterSelfHealth.evidence.collector.router_self_model.bucket ===
 assert(daeTcPreserveHealth.mode === 'Degraded', 'dae tc coexistence must still degrade without runtime BPF attach/map-read');
 assert(daeTcPreserveHealth.capabilities.dae === true, 'dae preserve fixture must detect dae/daed');
 assert(daeTcPreserveHealth.warnings.includes('dae_detected'), 'dae preserve fixture must include dae_detected warning');
+assert(daeTcPreserveHealth.warnings.includes('dae_tc_preempts_bpf_ingress'), 'dae preserve fixture must warn when daed runs before lanspeed ingress');
+assert(daeTcPreserveHealth.evidence.collector.tc_filter.dae_preempts_bpf_ingress === true, 'dae preserve fixture must expose tc preemption evidence');
+assert(daeTcPreserveHealth.evidence.collector.conntrack_fallback_model.active === true, 'dae tc preemption must activate conntrack fallback even if BPF can attach');
+assert(daeTcPreserveHealth.evidence.collector.conntrack_fallback_model.primary_source === 'conntrack', 'dae tc preemption must select conntrack as primary source');
 assert(!daeTcPreserveHealth.warnings.includes('tc_filter_conflict'), 'dae preserve fixture must not warn conflict without pref/handle collision');
 assert(daeTcPreserveHealth.evidence.dae.dae0 === true && daeTcPreserveHealth.evidence.dae.dae0peer === true, 'dae interfaces must be represented as evidence');
 assert(daeTcPreserveHealth.evidence.dae.fwmark_detected === true, 'dae fwmark 0x8000000 evidence is required');
 assert(daeTcPreserveHealth.evidence.dae.route_table_detected === true, 'dae route table 2023 evidence is required');
 assert(daeTcPreserveHealth.evidence.dae.dns_udp53_detected === true, 'dae deterministic DNS/UDP53 evidence is required when fixture provides it');
-assert(daeTcPreserveHealth.evidence.collector.tc_filter.existing_filters.length === 2, 'dae existing tc filters must be recorded');
+assert(daeTcPreserveHealth.evidence.collector.tc_filter.existing_filters.length === 3, 'dae existing tc filters must be recorded');
 assert(daeTcPreserveHealth.evidence.collector.tc_filter.existing_filters.every((filter) => filter.interface && filter.pref && filter.handle && filter.owner), 'dae tc filter evidence must include interface/pref/handle/owner');
 assert(daeTcPreserveHealth.evidence.collector.tc_filter.delete_existing === false, 'dae tc coexistence must not delete existing filters');
 assert(daeTcPreserveHealth.evidence.collector.tc_filter.reorder_existing === false, 'dae tc coexistence must not reorder existing filters');

@@ -706,11 +706,17 @@ function simulateConntrackFallback(fixture) {
 function simulateNssSourceSelection(fixture) {
   const probe = fixture.probe;
   const bpfFullAvailable = Boolean(fixture.config.bpf_full_available);
+  const daePreemptsLanIngress = Boolean(probe.dae_preempts_lan_ingress);
   const preferred = Boolean(
     fixture.config.enable_conntrack_fallback &&
     probe.nf_conntrack_acct &&
     probe.nss_present &&
     probe.nss_ecm_active
+  );
+  const daePreferred = Boolean(
+    fixture.config.enable_conntrack_fallback &&
+    probe.nf_conntrack_acct &&
+    daePreemptsLanIngress
   );
   const warnings = [];
 
@@ -719,14 +725,18 @@ function simulateNssSourceSelection(fixture) {
     if (bpfFullAvailable) {
       addUnique(warnings, 'nss_prefers_conntrack_sync');
     }
+  } else if (daePreferred) {
+    addUnique(warnings, 'dae_tc_preempts_bpf_ingress');
+    addUnique(warnings, 'conntrack_routed_nat_only');
   }
 
   return {
     preferred,
-    primary_source: preferred ? 'nss_conntrack_sync' : (bpfFullAvailable ? 'bpf' : 'conntrack'),
-    collector_mode: preferred ? 'conntrack_ecm_sync' : (bpfFullAvailable ? 'bpf' : 'conntrack'),
-    confidence: preferred ? 'medium' : (bpfFullAvailable ? 'high' : 'medium'),
-    coverage_client_source: preferred ? 'conntrack' : (bpfFullAvailable ? 'bpf' : 'conntrack'),
+    dae_preempted: daePreferred,
+    primary_source: preferred ? 'nss_conntrack_sync' : (daePreferred ? 'conntrack' : (bpfFullAvailable ? 'bpf' : 'conntrack')),
+    collector_mode: preferred ? 'conntrack_ecm_sync' : (daePreferred ? 'conntrack' : (bpfFullAvailable ? 'bpf' : 'conntrack')),
+    confidence: preferred ? 'medium' : (daePreferred ? 'low' : (bpfFullAvailable ? 'high' : 'medium')),
+    coverage_client_source: (preferred || daePreferred) ? 'conntrack' : (bpfFullAvailable ? 'bpf' : 'conntrack'),
     warnings
   };
 }
@@ -955,6 +965,9 @@ function assertRuntimeConntrackFallbackSource(source) {
   assert(source.includes('coverage_current_client_bytes(const struct runtime_probe *probe'), 'coverage client bytes must take probe/source policy');
   assert(source.includes('nss_conntrack_sync_preferred(probe)'), 'runtime must route clients and coverage through NSS sync preference');
   assert(source.includes('json_object_new_string("nss_prefers_conntrack_sync")'), 'runtime must explain why NSS sync overrides available BPF metrics');
+  assert(source.includes('static bool dae_tc_preempts_bpf_ingress'), 'runtime must detect DAE/daed tc filters that run before lanspeed ingress');
+  assert(source.includes('conntrack_primary_preferred(probe)'), 'runtime must use one source-selection helper for clients and coverage');
+  assert(source.includes('json_object_new_string("dae_tc_preempts_bpf_ingress")'), 'runtime must explain when DAE tc preemption overrides BPF rates');
   assert(!source.includes('json_object_new_string("fixture-client")'), 'runtime must not fabricate fixture clients');
   assert(source.includes('json_object_object_add(client, "mac", json_object_new_string(current[i].mac))'), 'runtime client MAC must come from ARP-mapped sample');
   /* collector_mode for conntrack-fallback clients must be wired into the
@@ -983,8 +996,9 @@ function assertRuntimeBpfGateSource(source) {
   assert(source.includes('json_object_object_add(collector, "bpf_assets_are_evidence_only", json_object_new_boolean(true))'), 'collector evidence must state BPF assets are evidence only');
   assert(source.includes('json_object_object_add(collector, "runtime_attach_map_read_success", json_object_new_boolean(probe->bpf_runtime_metrics))'), 'collector evidence must expose runtime attach/map-read gate result');
   assert(source.includes('json_object_object_add(capabilities, "bpf_runtime_metrics", json_object_new_boolean(probe ? probe->bpf_runtime_metrics : false))'), 'capabilities must expose runtime BPF metrics separately');
-  assert(source.includes('add_capabilities_from_values(root, enable_bpf && probe.bpf_runtime_metrics'), 'capabilities.bpf must not be true from package/object evidence alone');
-  assert(source.includes('probe.bpf_runtime_metrics, &probe);'), 'live_metrics must be tied to the runtime BPF metrics gate');
+  assert(source.includes('static bool bpf_primary_active'), 'runtime must distinguish readable BPF maps from the active primary BPF source');
+  assert(source.includes('add_capabilities_from_values(root, enable_bpf && bpf_primary_active(&probe)'), 'capabilities.bpf must describe the active primary BPF source');
+  assert(source.includes('bpf_primary_active(&probe), &probe);'), 'live_metrics must be tied to the active primary BPF source');
 }
 
 function assertBpfLoaderModule(header, loader, daemonSource, packageMakefile, srcMakefile) {
@@ -1043,10 +1057,10 @@ function assertBpfLoaderModule(header, loader, daemonSource, packageMakefile, sr
   assert(daemonSource.includes('lanspeed_bpf_read_samples('), 'lanspeedd.c must read BPF samples for Full mode');
   assert(daemonSource.includes('collect_bpf_clients('), 'lanspeedd.c must expose a BPF client collector path');
   assert(/collector_mode[^\n]+"bpf"/.test(daemonSource), 'lanspeedd.c must emit collector_mode=bpf in the Full path');
-  assert(/nss_conntrack_sync_preferred\(&probe\)[\s\S]{0,240}?collect_conntrack_procfs_clients\(root, clients, &probe\)/.test(daemonSource),
-         'clients_method must try conntrack first when NSS ECM sync is preferred');
+  assert(/conntrack_primary_preferred\(&probe\)[\s\S]{0,240}?collect_conntrack_procfs_clients\(root, clients, &probe\)/.test(daemonSource),
+         'clients_method must try conntrack first when conntrack is the preferred primary source');
   assert(/else\s+if\s+\(!collect_bpf_clients\(root, clients, &probe\)\)[\s\S]{0,160}?collect_conntrack_procfs_clients\(root, clients, &probe\)/.test(daemonSource),
-         'clients_method must keep BPF-first fallback for non-NSS-sync paths');
+         'clients_method must keep BPF-first fallback for non-preferred-conntrack paths');
 
   // Package links libbpf; src Makefile builds the loader object and links -lbpf.
   assert(/DEPENDS:=[^\n]*\+libbpf/.test(packageMakefile), 'package Makefile must depend on +libbpf for the base daemon');
@@ -1318,6 +1332,24 @@ const nssPpeOnly = simulateNssSourceSelection({
 });
 assert(nssPpeOnly.preferred === false, 'PPE-only NSS detection must not enable conntrack-sync primary source in the first implementation');
 assert(nssPpeOnly.primary_source === 'bpf', 'PPE-only NSS detection must preserve BPF primary source when BPF is available');
+
+const daeIngressPreempt = simulateNssSourceSelection({
+  config: { enable_conntrack_fallback: true, bpf_full_available: true },
+  probe: { nf_conntrack_acct: true, nss_present: false, nss_ecm_active: false, dae_preempts_lan_ingress: true }
+});
+assert(daeIngressPreempt.dae_preempted === true, 'DAE/daed LAN ingress preemption must prefer conntrack even when BPF runtime is available');
+assert(daeIngressPreempt.primary_source === 'conntrack', 'DAE/daed preemption must expose primary_source=conntrack');
+assert(daeIngressPreempt.collector_mode === 'conntrack', 'DAE/daed preemption clients must use collector_mode=conntrack');
+assert(daeIngressPreempt.coverage_client_source === 'conntrack', 'DAE/daed preemption coverage must use conntrack client bytes');
+assert(daeIngressPreempt.confidence === 'low', 'DAE/daed conntrack fallback confidence must remain low');
+assert(daeIngressPreempt.warnings.includes('dae_tc_preempts_bpf_ingress'), 'DAE/daed preemption warning is required');
+assert(daeIngressPreempt.warnings.includes('conntrack_routed_nat_only'), 'DAE/daed conntrack fallback must keep routed/NAT-only coverage warning');
+
+const daeWanOnly = simulateNssSourceSelection({
+  config: { enable_conntrack_fallback: true, bpf_full_available: true },
+  probe: { nf_conntrack_acct: true, nss_present: false, nss_ecm_active: false, dae_preempts_lan_ingress: false }
+});
+assert(daeWanOnly.primary_source === 'bpf', 'DAE filters outside the LAN ingress collect path must not override BPF rates');
 
 const refreshInterval = validateRefreshInterval(refreshIntervalFixture);
 assert(refreshInterval.default_ms === 1000, 'refresh interval default must be 1000ms');

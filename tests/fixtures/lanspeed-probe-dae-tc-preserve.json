@@ -13,11 +13,19 @@
     "existing_filters": true,
     "filters": [
       {
-        "interface": "br-lan",
+        "interface": "eth1",
         "direction": "ingress",
-        "pref": 100,
-        "handle": "0xdae",
+        "pref": 2,
+        "handle": "0x20230005",
         "owner": "dae",
+        "source": "tc_filter_show"
+      },
+      {
+        "interface": "eth1",
+        "direction": "ingress",
+        "pref": 49152,
+        "handle": "0x1eed",
+        "owner": "lanspeed",
         "source": "tc_filter_show"
       },
       {
