@@ -1,0 +1,12 @@
+{
+  "config": {
+    "enable_conntrack_fallback": true,
+    "bpf_full_available": true
+  },
+  "probe": {
+    "nf_conntrack_acct": false,
+    "nss_present": true,
+    "nss_ecm_active": true,
+    "nss_ppe_active": false
+  }
+}

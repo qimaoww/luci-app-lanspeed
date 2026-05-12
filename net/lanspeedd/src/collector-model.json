@@ -153,19 +153,27 @@
   "conntrack_fallback_model": {
     "source": "lanspeedd_procfs_conntrack_acct",
     "collector_mode": "conntrack",
+    "nss_sync_collector_mode": "conntrack_ecm_sync",
+    "primary_sources": [
+      "conntrack",
+      "nss_conntrack_sync"
+    ],
     "mode": "Degraded",
     "active_only_when": [
       "bpf_full_unavailable",
+      "nss_ecm_sync_preferred",
       "enable_conntrack_fallback=1",
       "nf_conntrack_acct=1"
     ],
     "inactive_when": [
-      "bpf_full_available",
+      "bpf_full_available_without_nss_ecm_sync",
       "enable_conntrack_fallback=0",
       "conntrack_acct_disabled"
     ],
     "coverage": "routed_nat_only",
     "coverage_warning": "conntrack_routed_nat_only",
+    "nss_sync_coverage": "nss_ecm_sync",
+    "nss_sync_coverage_warning": "nss_ecm_sync_cadence",
     "confidence": {
       "maximum": "medium",
       "degrade_to_low_when": [
@@ -190,6 +198,8 @@
     ],
     "warnings": [
       "conntrack_routed_nat_only",
+      "nss_ecm_sync_cadence",
+      "nss_prefers_conntrack_sync",
       "conntrack_acct_disabled",
       "flowtable_counter_missing",
       "nlbwmon_counter_conflict"
