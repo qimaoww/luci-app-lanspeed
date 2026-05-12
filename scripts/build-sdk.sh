@@ -213,8 +213,26 @@ select_optional_packages() {
 		return 0
 	fi
 
-	run_in_sdk ./scripts/config --module PACKAGE_lanspeedd-bpf
+	if [ -x "$SDK_PATH/scripts/config" ] && [ ! -d "$SDK_PATH/scripts/config" ]; then
+		run_in_sdk ./scripts/config --module PACKAGE_lanspeedd-bpf
+	else
+		set_config_module PACKAGE_lanspeedd-bpf
+	fi
 	run_in_sdk make defconfig
+}
+
+set_config_module() {
+	symbol=$1
+	config_file="$SDK_PATH/.config"
+	tmp="$config_file.tmp.$$"
+
+	if [ -f "$config_file" ]; then
+		grep -Ev "^(# )?CONFIG_${symbol}(=| is not set)" "$config_file" > "$tmp" || true
+	else
+		: > "$tmp"
+	fi
+	printf '%s\n' "CONFIG_${symbol}=m" >> "$tmp"
+	mv "$tmp" "$config_file"
 }
 
 run_in_sdk() {

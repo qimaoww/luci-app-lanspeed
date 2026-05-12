@@ -6,6 +6,7 @@ ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
 EVIDENCE_DIR="$ROOT/.sisyphus/evidence"
 MISSING_EVIDENCE="$EVIDENCE_DIR/task-3-missing-sdk.txt"
 DRY_RUN_EVIDENCE="$EVIDENCE_DIR/task-3-sdk-dry-run.txt"
+FAKE_SDK_EVIDENCE="$EVIDENCE_DIR/task-3-sdk-fake-config-dir.txt"
 
 mkdir -p "$EVIDENCE_DIR"
 
@@ -49,6 +50,34 @@ grep -F "select CONFIG_PACKAGE_lanspeedd-bpf=m before compiling package/lanspeed
 grep -F "make package/lanspeedd/compile V=s" "$DRY_RUN_EVIDENCE" >/dev/null
 if grep -F "make package/lanspeedd-bpf/compile V=s" "$DRY_RUN_EVIDENCE" >/dev/null; then
 	printf '%s\n' "lanspeedd-bpf must be selected, not compiled as an independent source package" >&2
+	exit 1
+fi
+
+TMP_SDK=$(mktemp -d "${TMPDIR:-/tmp}/lanspeed-sdk.XXXXXX")
+trap 'rm -rf "$TMP_SDK"' EXIT
+mkdir -p "$TMP_SDK/bin" "$TMP_SDK/scripts/config"
+printf '%s\n' '25.12 fake sdk' > "$TMP_SDK/version.buildinfo"
+printf '%s\n' 'all:' > "$TMP_SDK/Makefile"
+cat > "$TMP_SDK/scripts/feeds" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> feeds.log
+EOF
+chmod +x "$TMP_SDK/scripts/feeds"
+cat > "$TMP_SDK/bin/make" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> make.log
+EOF
+chmod +x "$TMP_SDK/bin/make"
+
+PATH="$TMP_SDK/bin:$PATH" SDK_DIR="$TMP_SDK" ENABLE_BPF=1 "$ROOT/scripts/build-sdk.sh" all > "$FAKE_SDK_EVIDENCE" 2>&1
+grep -F "CONFIG_PACKAGE_lanspeedd-bpf=m" "$TMP_SDK/.config" >/dev/null
+grep -F "update -a" "$TMP_SDK/feeds.log" >/dev/null
+grep -F "install -p lanspeed lanspeedd-bpf" "$TMP_SDK/feeds.log" >/dev/null
+grep -F "defconfig" "$TMP_SDK/make.log" >/dev/null
+grep -F "package/lanspeedd/compile V=s" "$TMP_SDK/make.log" >/dev/null
+grep -F "package/luci-app-lanspeed/compile V=s" "$TMP_SDK/make.log" >/dev/null
+if grep -F "package/lanspeedd-bpf/compile V=s" "$TMP_SDK/make.log" >/dev/null; then
+	printf '%s\n' "fake SDK run compiled lanspeedd-bpf independently" >&2
 	exit 1
 fi
 

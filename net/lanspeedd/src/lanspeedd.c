@@ -1424,20 +1424,41 @@ static bool conntrack_fallback_accounting_safe(const struct runtime_probe *probe
 	return probe->nf_conntrack_acct;
 }
 
+static bool nss_conntrack_sync_preferred(const struct runtime_probe *probe)
+{
+	return enable_conntrack_fallback &&
+	       conntrack_fallback_accounting_safe(probe) &&
+	       probe->nss_present &&
+	       probe->nss_ecm_active;
+}
+
 static bool conntrack_fallback_active(const struct runtime_probe *probe)
 {
-	return enable_conntrack_fallback && !bpf_full_available(probe) &&
+	return enable_conntrack_fallback &&
+	       (!bpf_full_available(probe) ||
+	        nss_conntrack_sync_preferred(probe)) &&
 	       conntrack_fallback_accounting_safe(probe);
+}
+
+static const char *collector_primary_source(const struct runtime_probe *probe)
+{
+	if (nss_conntrack_sync_preferred(probe))
+		return "nss_conntrack_sync";
+	if (bpf_full_available(probe))
+		return "bpf";
+	if (conntrack_fallback_active(probe))
+		return "conntrack";
+	return "unsupported";
 }
 
 static bool conntrack_fallback_low_confidence(const struct runtime_probe *probe)
 {
-	/* NSS ECM / PPE syncs per-flow byte counters (incl. hw-offloaded
+	/* NSS ECM syncs per-flow byte counters (incl. hw-offloaded
 	 * routed and bridged flows) back into conntrack at ~1-2 s cadence.
 	 * In that scenario hardware_flow_offload=true is not a confidence
 	 * killer because conntrack_acct data is still accurate, just
 	 * secondly. */
-	bool nss_ecm_sync = probe->nss_present && (probe->nss_ecm_active || probe->nss_ppe_active);
+	bool nss_ecm_sync = nss_conntrack_sync_preferred(probe);
 	bool hw_off_non_nss = probe->hardware_flow_offload && !nss_ecm_sync;
 
 	return conntrack_fallback_active(probe) &&
@@ -1463,10 +1484,15 @@ static void add_conntrack_fallback_runtime_warnings(struct runtime_probe *probe)
 	if (!conntrack_fallback_active(probe))
 		return;
 
-	/* With NSS ECM / PPE active, the counter sync covers bridged flows
+	/* With NSS ECM active, the counter sync covers bridged flows
 	 * too, so the "routed / NAT only" disclaimer does not apply. */
-	if (!(probe->nss_present && (probe->nss_ecm_active || probe->nss_ppe_active)))
+	if (nss_conntrack_sync_preferred(probe)) {
+		add_warning(probe, "nss_ecm_sync_cadence");
+		if (bpf_full_available(probe))
+			add_warning(probe, "nss_prefers_conntrack_sync");
+	} else {
 		add_warning(probe, "conntrack_routed_nat_only");
+	}
 
 	if (!probe->flowtable_counter)
 		add_warning(probe, "flowtable_counter_missing");
@@ -1514,6 +1540,7 @@ static void add_collector_evidence(struct runtime_probe *probe)
 	json_object_object_add(collector, "bpf_assets_are_evidence_only", json_object_new_boolean(true));
 	json_object_object_add(collector, "runtime_attach_map_read_success", json_object_new_boolean(probe->bpf_runtime_metrics));
 	json_object_object_add(collector, "live_metrics", json_object_new_boolean(probe->bpf_runtime_metrics));
+	json_object_object_add(collector, "primary_source", json_object_new_string(collector_primary_source(probe)));
 	json_object_object_add(collector, "runtime_gate_warning", json_object_new_string("bpf_runtime_loader_unavailable"));
 	json_object_object_add(collector, "map_full", json_object_new_boolean(probe->map_full));
 
@@ -1624,11 +1651,14 @@ static void add_collector_evidence(struct runtime_probe *probe)
 		json_object_array_add(warnings, json_object_new_string("bpf_runtime_loader_unavailable"));
 		json_object_array_add(warnings, json_object_new_string("live_metrics_unavailable"));
 	}
+	if (nss_conntrack_sync_preferred(probe) && bpf_full_available(probe))
+		json_object_array_add(warnings, json_object_new_string("nss_prefers_conntrack_sync"));
 
 	json_object_array_add(conntrack_active_when, json_object_new_string("bpf_full_unavailable"));
+	json_object_array_add(conntrack_active_when, json_object_new_string("nss_ecm_sync_preferred"));
 	json_object_array_add(conntrack_active_when, json_object_new_string("enable_conntrack_fallback=1"));
 	json_object_array_add(conntrack_active_when, json_object_new_string("nf_conntrack_acct=1"));
-	json_object_array_add(conntrack_inactive_when, json_object_new_string("bpf_full_available"));
+	json_object_array_add(conntrack_inactive_when, json_object_new_string("bpf_full_available_without_nss_ecm_sync"));
 	json_object_array_add(conntrack_inactive_when, json_object_new_string("enable_conntrack_fallback=0"));
 	json_object_array_add(conntrack_inactive_when, json_object_new_string("conntrack_acct_disabled"));
 	json_object_array_add(conntrack_sources, json_object_new_string("procfs_conntrack_acct_orig_reply_bytes"));
@@ -1653,6 +1683,8 @@ static void add_collector_evidence(struct runtime_probe *probe)
 		json_object_array_add(conntrack_warnings, json_object_new_string("openclash_dns_chain_incomplete"));
 	if (probe->sqm || probe->qosify || probe->ifb)
 		json_object_array_add(conntrack_warnings, json_object_new_string("qos_ifb_confidence_low"));
+	if (nss_conntrack_sync_preferred(probe))
+		json_object_array_add(conntrack_warnings, json_object_new_string("nss_ecm_sync_cadence"));
 	if (probe->hardware_flow_offload || probe->software_flow_offload)
 		json_object_array_add(conntrack_warnings, json_object_new_string("flow_offload_confidence_low"));
 
@@ -1667,6 +1699,7 @@ static void add_collector_evidence(struct runtime_probe *probe)
 	json_object_object_add(conntrack, "enabled", json_object_new_boolean(enable_conntrack_fallback));
 	json_object_object_add(conntrack, "active", json_object_new_boolean(conntrack_fallback_active(probe)));
 	json_object_object_add(conntrack, "collector_mode", json_object_new_string("conntrack"));
+	json_object_object_add(conntrack, "primary_source", json_object_new_string(collector_primary_source(probe)));
 	json_object_object_add(conntrack, "mode", json_object_new_string("Degraded"));
 	json_object_object_add(conntrack, "confidence", json_object_new_string(conntrack_fallback_confidence(probe)));
 	json_object_object_add(conntrack, "bpf_full_blocked_by_runtime_gate", json_object_new_boolean(!probe->bpf_runtime_metrics));
@@ -1778,6 +1811,8 @@ static const char *probe_mode(const struct runtime_probe *probe)
 {
 	if (!probe->tc && !conntrack_fallback_active(probe))
 		return "Unsupported";
+	if (nss_conntrack_sync_preferred(probe))
+		return "Degraded";
 	if (!bpf_full_available(probe))
 		return "Degraded";
 	return "Full";
@@ -2686,7 +2721,13 @@ static uint64_t delta_bps(uint64_t current, uint64_t previous, uint64_t delta_ms
 static void add_conntrack_common_warnings(const struct runtime_probe *probe,
 					  struct json_object *warnings)
 {
-	add_string_unique(warnings, "conntrack_routed_nat_only");
+	if (nss_conntrack_sync_preferred(probe)) {
+		add_string_unique(warnings, "nss_ecm_sync_cadence");
+		if (bpf_full_available(probe))
+			add_string_unique(warnings, "nss_prefers_conntrack_sync");
+	} else {
+		add_string_unique(warnings, "conntrack_routed_nat_only");
+	}
 	if (!probe->flowtable_counter)
 		add_string_unique(warnings, "flowtable_counter_missing");
 	if (probe->nlbwmon)
@@ -2704,10 +2745,10 @@ static void add_conntrack_common_warnings(const struct runtime_probe *probe,
 	if (probe->sqm || probe->qosify || probe->ifb)
 		add_string_unique(warnings, "qos_ifb_confidence_low");
 	if (probe->hardware_flow_offload || probe->software_flow_offload) {
-		/* NSS ECM / PPE syncs counters back to conntrack; downgrade
+		/* NSS ECM syncs counters back to conntrack; downgrade
 		 * the blanket "flow_offload_confidence_low" to a softer
 		 * warning that reflects the actual sync cadence. */
-		if (probe->nss_present && (probe->nss_ecm_active || probe->nss_ppe_active))
+		if (nss_conntrack_sync_preferred(probe))
 			add_string_unique(warnings, "nss_ecm_sync_cadence");
 		else
 			add_string_unique(warnings, "flow_offload_confidence_low");
@@ -2751,14 +2792,22 @@ static void add_conntrack_clients_evidence(struct json_object *root,
 	json_object_object_add(evidence, "source", json_object_new_string("lanspeedd_procfs_conntrack_acct"));
 	json_object_object_add(evidence, "method", json_object_new_string("clients"));
 	json_object_object_add(evidence, "read_only", json_object_new_boolean(true));
-	json_object_object_add(evidence, "collector_mode", json_object_new_string("conntrack"));
+	if (nss_conntrack_sync_preferred(probe)) {
+		json_object_object_add(evidence, "collector_mode", json_object_new_string("conntrack_ecm_sync"));
+		json_object_object_add(evidence, "primary_source", json_object_new_string("nss_conntrack_sync"));
+		json_object_object_add(evidence, "coverage", json_object_new_string("nss_ecm_sync"));
+		json_object_object_add(evidence, "coverage_warning", json_object_new_string("nss_ecm_sync_cadence"));
+	} else {
+		json_object_object_add(evidence, "collector_mode", json_object_new_string("conntrack"));
+		json_object_object_add(evidence, "primary_source", json_object_new_string("conntrack"));
+		json_object_object_add(evidence, "coverage", json_object_new_string("routed_nat_only"));
+		json_object_object_add(evidence, "coverage_warning", json_object_new_string("conntrack_routed_nat_only"));
+	}
 	json_object_object_add(evidence, "mode", json_object_new_string("Degraded"));
 	json_object_object_add(evidence, "active", json_object_new_boolean(active));
 	json_object_object_add(evidence, "live_metrics", json_object_new_boolean(false));
 	json_object_object_add(evidence, "bpf_runtime_metrics", json_object_new_boolean(probe->bpf_runtime_metrics));
 	json_object_object_add(evidence, "confidence", json_object_new_string(conntrack_fallback_confidence(probe)));
-	json_object_object_add(evidence, "coverage", json_object_new_string("routed_nat_only"));
-	json_object_object_add(evidence, "coverage_warning", json_object_new_string("conntrack_routed_nat_only"));
 	json_object_object_add(evidence, "counter_source", json_object_new_string("procfs_conntrack_acct_orig_reply_bytes"));
 	json_object_object_add(evidence, "sources", sources);
 	json_object_object_add(evidence, "forbidden_sources", forbidden);
@@ -2858,7 +2907,7 @@ static void emit_conntrack_clients(struct json_object *root,
 		json_object_object_add(client, "last_seen", json_object_new_int64((int64_t)current[i].last_seen_ms));
 		json_object_object_add(client, "collector_mode",
 			json_object_new_string(
-				(probe->nss_present && (probe->nss_ecm_active || probe->nss_ppe_active))
+				nss_conntrack_sync_preferred(probe)
 					? "conntrack_ecm_sync"
 					: "conntrack"));
 		json_object_object_add(client, "confidence", json_object_new_string(conntrack_fallback_confidence(probe)));
@@ -3026,6 +3075,7 @@ static void add_bpf_clients_evidence(struct json_object *root,
 	json_object_array_add(sources, json_object_new_string("procfs:/proc/net/arp"));
 
 	json_object_object_add(evidence, "collector_mode", json_object_new_string("bpf"));
+	json_object_object_add(evidence, "primary_source", json_object_new_string("bpf"));
 	json_object_object_add(evidence, "mode", json_object_new_string("Full"));
 	json_object_object_add(evidence, "live_metrics", json_object_new_boolean(true));
 	json_object_object_add(evidence, "runtime_attach_map_read_success",
@@ -3182,14 +3232,26 @@ static bool collect_conntrack_procfs_clients(struct json_object *root,
 
 /* ---------- coverage sliding window ---------- */
 
-/* Sum byte counters from the latest collector snapshot (BPF first,
- * conntrack fallback second). Returns false when no usable snapshot
+/* Sum byte counters from the latest collector snapshot selected by the
+ * active source policy. Returns false when no usable snapshot
  * exists yet, in which case the caller must mark the sample invalid. */
-static bool coverage_current_client_bytes(uint64_t *rx_out, uint64_t *tx_out)
+static bool coverage_current_client_bytes(const struct runtime_probe *probe,
+					  uint64_t *rx_out, uint64_t *tx_out)
 {
 	size_t i;
 	uint64_t rx = 0, tx = 0;
 
+	if (nss_conntrack_sync_preferred(probe) &&
+	    previous_conntrack_snapshot_valid &&
+	    previous_conntrack_sample_count > 0) {
+		for (i = 0; i < previous_conntrack_sample_count; i++) {
+			rx += previous_conntrack_samples[i].rx_bytes;
+			tx += previous_conntrack_samples[i].tx_bytes;
+		}
+		*rx_out = rx;
+		*tx_out = tx;
+		return true;
+	}
 	if (bpf_runtime_enabled && bpf_current_sample_count > 0) {
 		for (i = 0; i < bpf_current_sample_count; i++) {
 			rx += bpf_current_samples[i].rx_bytes;
@@ -3256,7 +3318,8 @@ static bool coverage_current_iface_bytes(uint64_t *rx_out, uint64_t *tx_out)
 	return true;
 }
 
-static void coverage_push_sample(uint64_t now_ms)
+static void coverage_push_sample(uint64_t now_ms,
+				 const struct runtime_probe *probe)
 {
 	struct coverage_sample *slot = &coverage_ring[coverage_ring_head];
 	uint64_t irx = 0, itx = 0, crx = 0, ctx_bytes = 0;
@@ -3265,7 +3328,7 @@ static void coverage_push_sample(uint64_t now_ms)
 	slot->iface_valid = coverage_current_iface_bytes(&irx, &itx);
 	slot->iface_rx_bytes = irx;
 	slot->iface_tx_bytes = itx;
-	slot->client_valid = coverage_current_client_bytes(&crx, &ctx_bytes);
+	slot->client_valid = coverage_current_client_bytes(probe, &crx, &ctx_bytes);
 	slot->client_rx_bytes = crx;
 	slot->client_tx_bytes = ctx_bytes;
 
@@ -3426,7 +3489,7 @@ static int status_method(struct ubus_context *ubus, struct ubus_object *obj,
 	add_capabilities_from_values(root, enable_bpf && probe.bpf_runtime_metrics,
 				     enable_conntrack_fallback,
 				     probe.bpf_runtime_metrics, &probe);
-	coverage_push_sample(monotonic_time_ms());
+	coverage_push_sample(monotonic_time_ms(), &probe);
 	add_coverage_to_status(root, &probe);
 	json_object_put(probe.conflicts);
 
@@ -3546,7 +3609,15 @@ static int clients_method(struct ubus_context *ubus, struct ubus_object *obj,
 		struct runtime_probe probe;
 		init_runtime_probe(&probe);
 		inspect_runtime(&probe);
-		if (!collect_bpf_clients(root, clients, &probe)) {
+		if (nss_conntrack_sync_preferred(&probe)) {
+			if (!collect_conntrack_procfs_clients(root, clients, &probe) &&
+			    collect_bpf_clients(root, clients, &probe)) {
+				/* BPF is only a slow-path fallback under NSS,
+				 * but its connection counts can still be topped
+				 * up from conntrack when available. */
+				merge_conntrack_conn_counts(root, clients);
+			}
+		} else if (!collect_bpf_clients(root, clients, &probe)) {
 			collect_conntrack_procfs_clients(root, clients, &probe);
 		} else {
 			/* BPF provides rate data; additionally scan conntrack
