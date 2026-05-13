@@ -277,6 +277,26 @@ static void detach_point(int ifindex, enum bpf_tc_attach_point point,
 	(void)bpf_tc_detach(&hook, &opts);
 }
 
+static void untrack_hook(int ifindex, enum bpf_tc_attach_point point,
+			 uint32_t priority, uint32_t handle)
+{
+	size_t i;
+
+	for (i = 0; i < g_state.attached_count; i++) {
+		if (g_state.attached[i].ifindex == ifindex &&
+		    g_state.attached[i].point == point &&
+		    g_state.attached[i].priority == priority &&
+		    g_state.attached[i].handle == handle) {
+			if (i + 1 < g_state.attached_count)
+				memmove(&g_state.attached[i], &g_state.attached[i + 1],
+					(g_state.attached_count - i - 1) *
+					sizeof(g_state.attached[0]));
+			g_state.attached_count--;
+			return;
+		}
+	}
+}
+
 static bool hook_present(int ifindex, enum bpf_tc_attach_point point,
 			 uint32_t priority, uint32_t handle)
 {
@@ -337,6 +357,39 @@ int lanspeed_bpf_attach_iface_mode(const char *ifname, bool early_passthrough)
 int lanspeed_bpf_attach_iface(const char *ifname)
 {
 	return lanspeed_bpf_attach_iface_mode(ifname, false);
+}
+
+int lanspeed_bpf_detach_iface_mode(const char *ifname, bool early_passthrough)
+{
+	uint32_t priority = early_passthrough ? LANSPEED_BPF_TC_EARLY_PREF :
+						LANSPEED_BPF_TC_PREF;
+	uint32_t handle = early_passthrough ? LANSPEED_BPF_TC_EARLY_HANDLE :
+					      LANSPEED_BPF_TC_HANDLE;
+	int ifindex;
+
+	if (!g_state.obj) {
+		set_status_error("bpf_object_not_loaded");
+		return -ENOENT;
+	}
+	if (!ifname || !*ifname) {
+		set_status_error("ifname_empty");
+		return -EINVAL;
+	}
+
+	ifindex = (int)if_nametoindex(ifname);
+	if (ifindex <= 0) {
+		set_status_error("if_nametoindex_failed:%s", ifname);
+		return -errno;
+	}
+
+	detach_point(ifindex, BPF_TC_INGRESS, priority, handle);
+	untrack_hook(ifindex, BPF_TC_INGRESS, priority, handle);
+	detach_point(ifindex, BPF_TC_EGRESS, priority, handle);
+	untrack_hook(ifindex, BPF_TC_EGRESS, priority, handle);
+
+	g_state.status.any_attached = g_state.attached_count > 0;
+	g_state.status.attached_hook_count = g_state.attached_count;
+	return 0;
 }
 
 int lanspeed_bpf_ensure_attached(const char *ifname, bool early_passthrough,

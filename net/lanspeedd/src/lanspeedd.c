@@ -1154,6 +1154,19 @@ static bool bpf_runtime_metrics_available(const struct runtime_probe *probe)
 	return lanspeed_bpf_runtime_ok(freshness);
 }
 
+static bool dae_tc_preempts_bpf_ingress(const struct runtime_probe *probe);
+
+static void bpf_runtime_reset_rate_state(void)
+{
+	bpf_current_sample_count = 0;
+	bpf_current_snapshot_ms = 0;
+	bpf_previous_sample_count = 0;
+	bpf_previous_snapshot_ms = 0;
+	bpf_previous_snapshot_valid = false;
+	coverage_ring_count = 0;
+	coverage_ring_head = 0;
+}
+
 static bool bpf_runtime_recover_if_needed(const char *reason)
 {
 	size_t i;
@@ -1201,9 +1214,61 @@ static bool bpf_runtime_recover_if_needed(const char *reason)
 	}
 
 	if (attempted)
-		coverage_ring_count = 0;
+		bpf_runtime_reset_rate_state();
 
 	return true;
+}
+
+static bool bpf_runtime_refresh_attach_policy(struct runtime_probe *probe)
+{
+	size_t i;
+	bool want_early;
+	bool changed = false;
+	bool ok = true;
+
+	if (!enable_bpf || !bpf_runtime_enabled || !probe)
+		return false;
+
+	want_early = dae_tc_preempts_bpf_ingress(probe);
+	if (want_early == bpf_runtime_early_passthrough)
+		return false;
+
+	for (i = 0; i < bpf_attach_ifname_count; i++) {
+		if (lanspeed_bpf_attach_iface_mode(bpf_attach_ifnames[i], want_early) != 0) {
+			ok = false;
+			break;
+		}
+	}
+
+	if (ok) {
+		for (i = 0; i < bpf_attach_ifname_count; i++)
+			(void)lanspeed_bpf_detach_iface_mode(
+				bpf_attach_ifnames[i], bpf_runtime_early_passthrough);
+		bpf_runtime_early_passthrough = want_early;
+		changed = true;
+		bpf_runtime_reset_rate_state();
+	} else {
+		const struct lanspeed_bpf_status *status = lanspeed_bpf_get_status();
+		const char *failure = status && status->error[0] ?
+			status->error : "bpf_tc_policy_switch_failed";
+
+		for (i = 0; i < bpf_attach_ifname_count; i++)
+			(void)lanspeed_bpf_detach_iface_mode(bpf_attach_ifnames[i],
+							     want_early);
+		bpf_runtime_self_heal_failures++;
+		snprintf(bpf_runtime_last_self_heal_failure,
+			 sizeof(bpf_runtime_last_self_heal_failure),
+			 "%.*s",
+			 (int)(sizeof(bpf_runtime_last_self_heal_failure) - 1),
+			 failure);
+	}
+
+	if (changed)
+		(void)bpf_runtime_recover_if_needed(
+			want_early ? "dae_tc_preempt_policy_switch" :
+				     "dae_tc_preempt_policy_restore");
+
+	return changed;
 }
 
 static void inspect_collector_attach_model(struct runtime_probe *probe)
@@ -3250,6 +3315,14 @@ static void bpf_collect_samples(void)
 static void bpf_collect_tick(struct uloop_timeout *t)
 {
 	if (bpf_runtime_enabled) {
+		struct runtime_probe probe;
+
+		init_runtime_probe(&probe);
+		inspect_command_capabilities(&probe);
+		inspect_tc(&probe);
+		(void)bpf_runtime_refresh_attach_policy(&probe);
+		free_runtime_probe(&probe);
+
 		bpf_runtime_recover_if_needed("periodic_tc_filter_check");
 		bpf_collect_samples();
 	}
@@ -3676,6 +3749,11 @@ static int status_method(struct ubus_context *ubus, struct ubus_object *obj,
 
 	init_runtime_probe(&probe);
 	inspect_runtime(&probe);
+	if (bpf_runtime_refresh_attach_policy(&probe)) {
+		free_runtime_probe(&probe);
+		init_runtime_probe(&probe);
+		inspect_runtime(&probe);
+	}
 	mode = probe_mode(&probe);
 	if (strcmp(mode, "Full"))
 		add_warning(&probe, "live_metrics_unavailable");
@@ -3810,6 +3888,12 @@ static int clients_method(struct ubus_context *ubus, struct ubus_object *obj,
 		struct runtime_probe probe;
 		init_runtime_probe(&probe);
 		inspect_runtime(&probe);
+		if (bpf_runtime_refresh_attach_policy(&probe)) {
+			bpf_collect_samples();
+			free_runtime_probe(&probe);
+			init_runtime_probe(&probe);
+			inspect_runtime(&probe);
+		}
 		if (nss_conntrack_sync_preferred(&probe)) {
 			if (!collect_conntrack_procfs_clients(root, clients, &probe) &&
 			    collect_bpf_clients(root, clients, &probe)) {
@@ -3846,6 +3930,11 @@ static int health_method(struct ubus_context *ubus, struct ubus_object *obj,
 
 	init_runtime_probe(&probe);
 	inspect_runtime(&probe);
+	if (bpf_runtime_refresh_attach_policy(&probe)) {
+		free_runtime_probe(&probe);
+		init_runtime_probe(&probe);
+		inspect_runtime(&probe);
+	}
 	mode = probe_mode(&probe);
 	if (strcmp(mode, "Full"))
 		add_warning(&probe, "live_metrics_unavailable");

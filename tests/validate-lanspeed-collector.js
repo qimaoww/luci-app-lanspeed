@@ -975,6 +975,13 @@ function assertRuntimeConntrackFallbackSource(source) {
   assert(source.includes('json_object_new_string("nss_prefers_conntrack_sync")'), 'runtime must explain why NSS sync overrides available BPF metrics');
   assert(source.includes('static bool dae_tc_preempts_bpf_ingress'), 'runtime must detect DAE/daed tc filters that run before lanspeed ingress');
   assert(source.includes('json_object_new_string("dae_tc_preempts_bpf_ingress")'), 'runtime must explain when DAE tc preemption is detected');
+  assert(source.includes('static void bpf_runtime_reset_rate_state'), 'runtime must reset BPF rate baselines after TC policy changes');
+  assert(source.includes('static bool bpf_runtime_refresh_attach_policy'), 'runtime must refresh BPF attach policy when daed is started after lanspeedd');
+  assert(/if\s*\(\s*bpf_runtime_refresh_attach_policy\(&probe\)\s*\)\s*\{[\s\S]{0,420}?bpf_collect_samples\(\);[\s\S]{0,220}?\}/.test(source), 'clients_method must recollect BPF samples after switching to early pass-through');
+  assert(/bpf_runtime_refresh_attach_policy\(&probe\)[\s\S]{0,420}?finish_probe_evidence\(&probe,\s*"status"\)/.test(source), 'status_method must refresh TC policy before publishing self-heal evidence');
+  assert(/bpf_runtime_refresh_attach_policy\(&probe\)[\s\S]{0,420}?finish_probe_evidence\(&probe,\s*"health"\)/.test(source), 'health_method must refresh TC policy before publishing self-heal evidence');
+  assert(/static void bpf_collect_tick[\s\S]{0,520}?bpf_runtime_refresh_attach_policy\(&probe\)[\s\S]{0,220}?bpf_runtime_recover_if_needed\("periodic_tc_filter_check"\)/.test(source), 'periodic BPF tick must refresh TC policy before sampling');
+  assert(/bpf_runtime_early_passthrough\s*=\s*want_early/.test(source), 'runtime policy refresh must switch the daemon to early pass-through when daed preempts LAN hooks');
   assert(!/dae_tc_preempts_bpf_ingress\(probe\)[\s\S]{0,120}?conntrack_primary_preferred/.test(source), 'DAE tc preemption must not force conntrack as the primary rate source');
   assert(!source.includes('json_object_new_string("fixture-client")'), 'runtime must not fabricate fixture clients');
   assert(source.includes('json_object_object_add(client, "mac", json_object_new_string(current[i].mac))'), 'runtime client MAC must come from ARP-mapped sample');

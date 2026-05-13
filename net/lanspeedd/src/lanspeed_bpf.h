@@ -100,6 +100,13 @@ int lanspeed_bpf_attach_iface(const char *ifname);
 int lanspeed_bpf_attach_iface_mode(const char *ifname, bool early_passthrough);
 
 /*
+ * Detach only the normal or early pass-through hooks owned by this process
+ * from one interface. Foreign filters and the shared clsact qdisc are left
+ * untouched.
+ */
+int lanspeed_bpf_detach_iface_mode(const char *ifname, bool early_passthrough);
+
+/*
  * Verify that both owned hooks still exist on ifname. If a hook was removed
  * by another component reload, replace only lanspeed's own pref/handle with
  * the currently loaded program. Returns 1 when a hook was restored, 0 when
