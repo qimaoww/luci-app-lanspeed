@@ -907,6 +907,9 @@ function assertBpfSource(source) {
   assert(parseInt(sizeMatch[1], 10) >= 2048, `LANSPEED_MAX_CLIENTS must be >= 2048 (got ${sizeMatch && sizeMatch[1]})`);
   assert(source.includes('if (direction == LANSPEED_DIR_TX)') && source.includes('__builtin_memcpy(key.mac, eth->h_source, ETH_ALEN)'), 'BPF TX direction must use client source MAC');
   assert(source.includes('__builtin_memcpy(key.mac, eth->h_dest, ETH_ALEN)'), 'BPF RX direction must use client destination MAC');
+  assert(source.includes('static __always_inline bool valid_client_mac'), 'BPF source must validate client MACs before accounting');
+  assert(source.includes('return false;') && source.includes('mac[0] & 0x01'), 'BPF source must reject multicast destination/source MACs');
+  assert(source.includes('if (!valid_client_mac(key.mac))'), 'BPF source must skip broadcast/multicast/zero MAC map entries');
   assert(/SEC\("tc\/ingress"\)\s+int\s+lanspeed_ingress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_TX, TC_ACT_OK\);\s*}/m.test(source), 'BPF ingress must account client TX and terminate normally in the default position');
   assert(/SEC\("tc\/egress"\)\s+int\s+lanspeed_egress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_RX, TC_ACT_OK\);\s*}/m.test(source), 'BPF egress must account client RX and terminate normally in the default position');
   assert(/SEC\("tc"\)\s+int\s+lanspeed_ingress_early\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_TX, TC_ACT_UNSPEC\);\s*}/m.test(source), 'BPF early ingress must account client TX and continue to later filters');
@@ -1015,6 +1018,7 @@ function assertBpfLoaderModule(header, loader, daemonSource, packageMakefile, sr
     'lanspeed_bpf_detach_all',
     'lanspeed_bpf_read_samples',
     'lanspeed_bpf_runtime_ok',
+    'lanspeed_bpf_ensure_attached',
     'lanspeed_bpf_get_status',
     'LANSPEED_BPF_DIR_TX',
     'LANSPEED_BPF_DIR_RX',
@@ -1060,6 +1064,12 @@ function assertBpfLoaderModule(header, loader, daemonSource, packageMakefile, sr
   assert(daemonSource.includes('lanspeed_bpf_init('), 'lanspeedd.c must call lanspeed_bpf_init');
   assert(loader.includes('lanspeed_bpf_attach_iface('), 'lanspeed_bpf.c must keep the legacy attach wrapper');
   assert(daemonSource.includes('lanspeed_bpf_attach_iface_mode('), 'lanspeedd.c must attach with a policy-aware BPF mode');
+  assert(daemonSource.includes('lanspeed_bpf_ensure_attached('), 'lanspeedd.c must periodically verify and restore owned TC BPF hooks');
+  assert(daemonSource.includes('bpf_runtime_recover_if_needed'), 'lanspeedd.c must keep a BPF self-heal path for hook loss/order drift');
+  assert(!daemonSource.includes('initial_tc_filter_order_check'), 'initial BPF hook verification must not force an order self-heal on every startup');
+  assert(!loader.includes('strstr(reason, "order")'), 'BPF self-heal must only force TC reorder for an explicit order-drift reason');
+  assert(loader.includes('strcmp(reason, "tc_filter_order_drift")'), 'BPF self-heal must name the exact order-drift reason it accepts');
+  assert(daemonSource.includes('bpf_tc_self_heal'), 'lanspeedd.c must expose BPF self-heal evidence');
   assert(daemonSource.includes('lanspeed_bpf_shutdown('), 'lanspeedd.c must shut the loader down on exit');
   assert(daemonSource.includes('lanspeed_bpf_runtime_ok('), 'lanspeedd.c must consult lanspeed_bpf_runtime_ok for Full gating');
   assert(daemonSource.includes('lanspeed_bpf_read_samples('), 'lanspeedd.c must read BPF samples for Full mode');
@@ -1075,6 +1085,8 @@ function assertBpfLoaderModule(header, loader, daemonSource, packageMakefile, sr
   assert(/account_frame\(skb, LANSPEED_DIR_TX, TC_ACT_UNSPEC\)/.test(bpfSource) &&
          /account_frame\(skb, LANSPEED_DIR_RX, TC_ACT_UNSPEC\)/.test(bpfSource),
          'early BPF sections must return TC_ACT_UNSPEC so later DAE filters still run');
+  assert(/BPF_TC_F_REPLACE/.test(loader), 'BPF self-heal must be able to replace owned filters without duplicating them');
+  assert(/bpf_tc_query/.test(loader), 'BPF self-heal must query owned filters before claiming they are attached');
 
   // Package links libbpf; src Makefile builds the loader object and links -lbpf.
   assert(/DEPENDS:=[^\n]*\+libbpf/.test(packageMakefile), 'package Makefile must depend on +libbpf for the base daemon');

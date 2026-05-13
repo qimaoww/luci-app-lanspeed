@@ -323,8 +323,12 @@ function validateSource(source) {
   assert(source.includes('DAE_FWMARK "0x8000000"'), 'C daemon must detect dae fwmark 0x8000000 evidence');
   assert(source.includes('DAE_ROUTE_TABLE "2023"'), 'C daemon must detect dae route table 2023 evidence');
   assert(source.includes('"dae0"') && source.includes('"dae0peer"'), 'C daemon must explicitly exclude dae0/dae0peer identity sources');
+  assert(source.includes('mac_first_octet') && source.includes('(mac_first_octet & 0x01) != 0'), 'C daemon must reject multicast MACs from clients');
   assert(source.includes('"tc_filter_conflict"'), 'C daemon must expose stable tc_filter_conflict warning');
   assert(source.includes('create_or_reuse_clsact_and_append_owned_filter_only'), 'C daemon must preserve append-only tc attach model');
+  assert(source.includes('bpf_runtime_recover_if_needed'), 'C daemon must self-heal missing or displaced owned TC BPF hooks');
+  assert(source.includes('"bpf_tc_self_heal"'), 'C daemon must expose BPF TC self-heal evidence');
+  assert(source.includes('"bpf_tc_self_heal_failed"'), 'C daemon must warn when owned TC BPF hooks cannot be restored');
   assert(source.includes('"nft_forward_chain_counters"'), 'C conntrack fallback must forbid firewall forward-chain counters');
   assert(source.includes('"nlbwmon_read_counters", json_object_new_boolean(false)'), 'C conntrack fallback must not read nlbwmon counters');
   assert(source.includes('CONNTRACK_PROCFS_PATH "/proc/net/nf_conntrack"'), 'C runtime fallback must read procfs conntrack table');

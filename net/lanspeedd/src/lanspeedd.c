@@ -183,6 +183,9 @@ static size_t coverage_ring_count; /* 0..LANSPEED_COVERAGE_WINDOW */
 
 static struct uloop_timeout bpf_collect_timer;
 static bool bpf_runtime_enabled;
+static bool bpf_runtime_early_passthrough;
+static uint64_t bpf_runtime_self_heal_failures;
+static char bpf_runtime_last_self_heal_failure[128];
 
 struct runtime_probe {
 	bool fw4;
@@ -635,6 +638,51 @@ static void inspect_tc_filter_lines(struct runtime_probe *probe, const char *ifn
 
 		add_detected_tc_filter(probe, ifname, direction, pref, handle, owner, "tc_filter_show");
 	}
+}
+
+static bool tc_lanspeed_after_dae_same_pref(const char *ifname,
+					    const char *direction,
+					    int pref)
+{
+	char cmd[128];
+	char output[COMMAND_OUTPUT_LIMIT];
+	char buffer[COMMAND_OUTPUT_LIMIT];
+	char *saveptr = NULL;
+	char *line;
+	bool seen_dae = false;
+
+	if (!ifname || !direction || pref <= 0)
+		return false;
+
+	snprintf(cmd, sizeof(cmd), "tc filter show dev %s %s 2>&1",
+		 ifname, direction);
+	if (run_command_capture(cmd, output, sizeof(output)) != 0 || !output[0])
+		return false;
+
+	snprintf(buffer, sizeof(buffer), "%s", output);
+	for (line = strtok_r(buffer, "\n", &saveptr); line;
+	     line = strtok_r(NULL, "\n", &saveptr)) {
+		char *pref_pos = strstr(line, "pref ");
+		char pref_buf[32] = "unknown";
+		const char *owner;
+
+		if (strstr(line, "filter") == NULL && strstr(line, "bpf") == NULL)
+			continue;
+		if (pref_pos)
+			sscanf(pref_pos, "pref %31s", pref_buf);
+		if (atoi(pref_buf) != pref)
+			continue;
+
+		owner = tc_filter_owner_from_line(line);
+		if (!strcmp(owner, "dae")) {
+			seen_dae = true;
+			continue;
+		}
+		if (!strcmp(owner, LANSPEED_TC_FILTER_OWNER))
+			return seen_dae;
+	}
+
+	return false;
 }
 
 static bool openclash_mode_is_fake_ip(const char *mode)
@@ -1106,6 +1154,58 @@ static bool bpf_runtime_metrics_available(const struct runtime_probe *probe)
 	return lanspeed_bpf_runtime_ok(freshness);
 }
 
+static bool bpf_runtime_recover_if_needed(const char *reason)
+{
+	size_t i;
+	bool attempted = false;
+	bool ok = true;
+
+	if (!enable_bpf || !bpf_runtime_enabled)
+		return true;
+
+	for (i = 0; i < bpf_attach_ifname_count; i++) {
+		bool order_drift = false;
+		int ret;
+
+		if (bpf_runtime_early_passthrough) {
+			order_drift =
+				tc_lanspeed_after_dae_same_pref(bpf_attach_ifnames[i],
+								"ingress",
+								LANSPEED_TC_FILTER_EARLY_PREF) ||
+				tc_lanspeed_after_dae_same_pref(bpf_attach_ifnames[i],
+								"egress",
+								LANSPEED_TC_FILTER_EARLY_PREF);
+		}
+
+		ret = lanspeed_bpf_ensure_attached(
+			bpf_attach_ifnames[i], bpf_runtime_early_passthrough,
+			order_drift ? "tc_filter_order_drift" : reason);
+		if (ret != 0)
+			attempted = true;
+		if (ret < 0)
+			ok = false;
+	}
+
+	if (!ok) {
+		const struct lanspeed_bpf_status *status = lanspeed_bpf_get_status();
+		const char *failure = status && status->error[0] ?
+			status->error : "bpf_tc_self_heal_failed";
+
+		bpf_runtime_self_heal_failures++;
+		snprintf(bpf_runtime_last_self_heal_failure,
+			 sizeof(bpf_runtime_last_self_heal_failure),
+			 "%.*s",
+			 (int)(sizeof(bpf_runtime_last_self_heal_failure) - 1),
+			 failure);
+		return false;
+	}
+
+	if (attempted)
+		coverage_ring_count = 0;
+
+	return true;
+}
+
 static void inspect_collector_attach_model(struct runtime_probe *probe)
 {
 	probe->lan_edge = probe->lan_bridge || probe->vlan || probe->wlan;
@@ -1125,6 +1225,8 @@ static void inspect_collector_attach_model(struct runtime_probe *probe)
 		add_warning(probe, "bpf_runtime_loader_unavailable");
 		add_warning(probe, "live_metrics_unavailable");
 	}
+	if (bpf_runtime_self_heal_failures > 0)
+		add_warning(probe, "bpf_tc_self_heal_failed");
 }
 
 static void inspect_flowtable_counter(struct runtime_probe *probe)
@@ -1628,6 +1730,25 @@ static void add_collector_evidence(struct runtime_probe *probe)
 			       json_object_new_boolean(dae_tc_preempts_bpf_ingress(probe)));
 	json_object_object_add(tc_filter, "preempt_warning",
 			       json_object_new_string("dae_tc_preempts_bpf_ingress"));
+	{
+		struct json_object *self_heal = json_object_new_object();
+		const struct lanspeed_bpf_status *status = lanspeed_bpf_get_status();
+
+		json_object_object_add(self_heal, "enabled", json_object_new_boolean(enable_bpf));
+		json_object_object_add(self_heal, "early_passthrough",
+				       json_object_new_boolean(bpf_runtime_early_passthrough));
+		json_object_object_add(self_heal, "recoveries",
+				       json_object_new_int64(status ? (int64_t)status->self_heal_count : 0));
+		json_object_object_add(self_heal, "failures",
+				       json_object_new_int64((int64_t)bpf_runtime_self_heal_failures));
+		if (status && status->last_self_heal_reason[0])
+			json_object_object_add(self_heal, "last_reason",
+					       json_object_new_string(status->last_self_heal_reason));
+		if (bpf_runtime_last_self_heal_failure[0])
+			json_object_object_add(self_heal, "last_failure",
+					       json_object_new_string(bpf_runtime_last_self_heal_failure));
+		json_object_object_add(tc_filter, "bpf_tc_self_heal", self_heal);
+	}
 
 	json_object_array_add(map_key, json_object_new_string("ifindex"));
 	json_object_array_add(map_key, json_object_new_string("vlan_or_zone"));
@@ -2160,9 +2281,21 @@ static bool valid_mac_address(const char *mac)
 {
 	bool any_non_zero = false;
 	bool any_not_ff = false;
+	char first_octet[3];
+	unsigned long mac_first_octet;
 	size_t i;
 
 	if (!mac || strlen(mac) != 17)
+		return false;
+	if (!isxdigit((unsigned char)mac[0]) ||
+	    !isxdigit((unsigned char)mac[1]))
+		return false;
+
+	first_octet[0] = mac[0];
+	first_octet[1] = mac[1];
+	first_octet[2] = '\0';
+	mac_first_octet = strtoul(first_octet, NULL, 16);
+	if ((mac_first_octet & 0x01) != 0)
 		return false;
 
 	for (i = 0; i < 17; i++) {
@@ -3116,8 +3249,10 @@ static void bpf_collect_samples(void)
 
 static void bpf_collect_tick(struct uloop_timeout *t)
 {
-	if (bpf_runtime_enabled)
+	if (bpf_runtime_enabled) {
+		bpf_runtime_recover_if_needed("periodic_tc_filter_check");
 		bpf_collect_samples();
+	}
 	uloop_timeout_set(t, refresh_interval_ms > 0 ? refresh_interval_ms :
 						       DEFAULT_REFRESH_INTERVAL_MS);
 }
@@ -3154,6 +3289,11 @@ static void add_bpf_clients_evidence(struct json_object *root,
 				       json_object_new_int((int)status->attached_hook_count));
 		json_object_object_add(evidence, "last_sample_count",
 				       json_object_new_int((int)status->last_sample_count));
+		json_object_object_add(evidence, "bpf_tc_self_heal_count",
+				       json_object_new_int64((int64_t)status->self_heal_count));
+		if (status->last_self_heal_reason[0])
+			json_object_object_add(evidence, "bpf_tc_self_heal_reason",
+					       json_object_new_string(status->last_self_heal_reason));
 	}
 	json_object_object_add(root, "evidence", evidence);
 }
@@ -4163,7 +4303,6 @@ static void start_bpf_runtime(void)
 {
 	const char *env_path;
 	const char *object_path;
-	bool early_passthrough = false;
 	size_t i;
 	int attached_ok = 0;
 
@@ -4184,13 +4323,13 @@ static void start_bpf_runtime(void)
 		init_runtime_probe(&probe);
 		inspect_command_capabilities(&probe);
 		inspect_tc(&probe);
-		early_passthrough = dae_tc_preempts_bpf_ingress(&probe);
+		bpf_runtime_early_passthrough = dae_tc_preempts_bpf_ingress(&probe);
 		free_runtime_probe(&probe);
 	}
 
 	for (i = 0; i < bpf_attach_ifname_count; i++) {
 		if (lanspeed_bpf_attach_iface_mode(bpf_attach_ifnames[i],
-						   early_passthrough) == 0)
+						   bpf_runtime_early_passthrough) == 0)
 			attached_ok++;
 	}
 
@@ -4200,6 +4339,7 @@ static void start_bpf_runtime(void)
 	}
 
 	bpf_runtime_enabled = true;
+	bpf_runtime_recover_if_needed("initial_tc_filter_check");
 	bpf_collect_timer.cb = bpf_collect_tick;
 	uloop_timeout_set(&bpf_collect_timer,
 			  refresh_interval_ms > 0 ? refresh_interval_ms :
@@ -4212,6 +4352,7 @@ static void stop_bpf_runtime(void)
 		uloop_timeout_cancel(&bpf_collect_timer);
 	lanspeed_bpf_shutdown();
 	bpf_runtime_enabled = false;
+	bpf_runtime_early_passthrough = false;
 }
 
 static void handle_signal(int signo)

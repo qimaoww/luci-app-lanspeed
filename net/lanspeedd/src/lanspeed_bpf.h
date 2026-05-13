@@ -60,6 +60,9 @@ struct lanspeed_bpf_status {
 	uint64_t last_attach_monotonic_ms;
 	size_t last_sample_count;
 	bool map_full_observed;
+	uint64_t self_heal_count;
+	uint64_t last_self_heal_monotonic_ms;
+	char last_self_heal_reason[64];
 	char error[LANSPEED_BPF_ERROR_LEN];
 	char object_path[256];
 };
@@ -95,6 +98,15 @@ int lanspeed_bpf_attach_iface(const char *ifname);
  * TC_ACT_UNSPEC so later TC filters still run.
  */
 int lanspeed_bpf_attach_iface_mode(const char *ifname, bool early_passthrough);
+
+/*
+ * Verify that both owned hooks still exist on ifname. If a hook was removed
+ * by another component reload, replace only lanspeed's own pref/handle with
+ * the currently loaded program. Returns 1 when a hook was restored, 0 when
+ * everything was already present, or a negative errno-style value on failure.
+ */
+int lanspeed_bpf_ensure_attached(const char *ifname, bool early_passthrough,
+				 const char *reason);
 
 /*
  * Detach every filter this process has attached. Clsact qdiscs are NOT

@@ -82,6 +82,25 @@ extern struct nf_conn *bpf_skb_ct_lookup(struct __sk_buff *,
 					 struct bpf_ct_opts___local *, __u32) __ksym __weak;
 extern void bpf_ct_release(struct nf_conn *) __ksym __weak;
 
+static __always_inline bool valid_client_mac(const __u8 *mac)
+{
+	bool any_non_zero = false;
+	bool any_not_ff = false;
+	int i;
+
+	if (mac[0] & 0x01)
+		return false;
+
+	for (i = 0; i < ETH_ALEN; i++) {
+		if (mac[i] != 0)
+			any_non_zero = true;
+		if (mac[i] != 0xff)
+			any_not_ff = true;
+	}
+
+	return any_non_zero && any_not_ff;
+}
+
 static __always_inline void try_count_connection(struct __sk_buff *skb,
 						 struct lanspeed_counters *counters,
 						 __u8 *src_mac, void *data,
@@ -218,6 +237,8 @@ static __always_inline int account_frame(struct __sk_buff *skb, __u8 direction,
 		__builtin_memcpy(key.mac, eth->h_source, ETH_ALEN);
 	else
 		__builtin_memcpy(key.mac, eth->h_dest, ETH_ALEN);
+	if (!valid_client_mac(key.mac))
+		return action;
 
 	counters = bpf_map_lookup_elem(&lanspeed_clients, &key);
 	if (!counters) {
