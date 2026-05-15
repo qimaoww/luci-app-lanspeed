@@ -3,7 +3,7 @@
 'require lanspeed.vocab as vocab';
 'require lanspeed.format as fmt';
 'require lanspeed.rpc as lsRpc';
-'require lanspeed.ifaceConfig as ifaceCfg';
+'require lanspeed.version as lsVersion';
 'require lanspeed.nssPanel as nssPanel';
 
 /*
@@ -18,9 +18,9 @@
  * points in viewState.refs. refreshLive() mutates only the dynamic cells;
  * toolbar controls keep their focus / value across ticks.
  *
- * Vocabulary, formatting, RPC handles, the iface-config sub-panel and the
- * NSS status card live in resources/lanspeed/*.js modules; this file is the
- * shell + refresh loop + view export.
+ * Vocabulary, formatting, RPC handles and the NSS status card live in
+ * resources/lanspeed/*.js modules; this file is the shell + refresh loop +
+ * view export.
  */
 
 /* ---------- minimal layout-only CSS ----------
@@ -91,41 +91,6 @@ var LAYOUT_CSS = [
 	'  gap:.3em .8em;margin:.2em 0 1em 0}',
 	'.lanspeed-caps .cap{display:flex;justify-content:space-between;align-items:center;',
 	'  gap:.5em;padding:.15em 0}',
-
-	/* interface configuration card:
-	   each device gets its own small card. Top row: name + tags.
-	   Bottom row: segmented 3-way toggle (off / observe / collect). */
-	'.lanspeed-ifcfg{display:flex;flex-direction:column;gap:1em;margin:0}',
-	'.lanspeed-ifcfg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(20em,1fr));',
-	'  gap:1em;margin:0}',
-	'.lanspeed-ifcfg-card{display:flex;flex-direction:column;gap:.9em;',
-	'  padding:1em 1.1em;border:1px solid var(--border,rgba(128,128,128,.25));',
-	'  border-radius:.5em}',
-	'.lanspeed-ifcfg-card-head{display:flex;align-items:baseline;gap:.6em;min-width:0}',
-	'.lanspeed-ifcfg-card-head .devname{flex:1 1 auto;min-width:0;font-weight:600;',
-	'  font-family:var(--font-monospace,ui-monospace,monospace);',
-	'  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-	'.lanspeed-ifcfg-card-head .devtags{flex:0 0 auto;font-size:.75em;opacity:.65;',
-	'  display:inline-flex;gap:.4em;flex-wrap:wrap}',
-	'.lanspeed-ifcfg-card-head .devtags .devtag{padding:.05em .45em;border-radius:.25em;',
-	'  background:var(--label-surface,rgba(128,128,128,.12))}',
-	/* segmented toggle: 3 buttons side by side with visible gap between them */
-	'.lanspeed-ifcfg-seg{display:flex;gap:.45em;align-items:stretch}',
-	'.lanspeed-ifcfg-seg>button{flex:1 1 0;min-width:0;padding:.5em .7em;',
-	'  font-size:.9em;border:1px solid var(--border,rgba(128,128,128,.3));',
-	'  border-radius:.4em;background:transparent;cursor:pointer;color:inherit;',
-	'  transition:background-color .1s ease,border-color .1s ease}',
-	'.lanspeed-ifcfg-seg>button:hover{background:var(--label-surface,rgba(128,128,128,.1))}',
-	'.lanspeed-ifcfg-seg>button.active{',
-	'  background:var(--primary,var(--label-surface,rgba(80,120,200,.15)));',
-	'  color:var(--primary-foreground,inherit);',
-	'  border-color:var(--primary,var(--border,rgba(128,128,128,.3)));',
-	'  font-weight:600}',
-	'.lanspeed-ifcfg-actions{display:flex;flex-wrap:wrap;gap:.5em;align-items:center;',
-	'  margin:.4em 0 0 0}',
-	'.lanspeed-ifcfg-actions>.spacer{flex:1 1 auto}',
-	'.lanspeed-ifcfg-actions .status{font-size:.85em;opacity:.75;',
-	'  font-family:var(--font-monospace,ui-monospace,monospace)}',
 
 	/* warnings list */
 	'.lanspeed-warnings{margin:.2em 0 1em 0;padding-left:1.2em}',
@@ -215,10 +180,12 @@ function buildShell(viewState) {
 	refs.mCoverageSub = E('div', { 'class': 'hint' }, '-');
 	refs.mTcpConns    = E('div', { 'class': 'big' }, '-');
 	refs.mUdpConns    = E('div', { 'class': 'big' }, '-');
+	refs.mUdpConnsSub = E('div', { 'class': 'hint' }, '-');
 	refs.mConnsWrap   = E('div', { 'class': 'lanspeed-metric' }, [
 		E('div', { 'class': 'caption' }, _('连接数')),
 		refs.mTcpConns,
-		refs.mUdpConns
+		refs.mUdpConns,
+		refs.mUdpConnsSub
 	]);
 	var metrics = E('div', { 'class': 'lanspeed-metrics' }, [
 		E('div', { 'class': 'lanspeed-metric' }, [
@@ -418,43 +385,6 @@ function buildShell(viewState) {
 	/* ---- NSS card (collapsible; hidden when no NSS signal) ---- */
 	var nssCard = nssPanel.build(refs);
 
-	/* ---- interface configuration card (collapsible) ---- */
-	refs.ifcfgGrid      = E('div', { 'class': 'lanspeed-ifcfg-grid' });
-	refs.ifcfgStatus    = E('span', { 'class': 'status' }, '');
-	refs.ifcfgSaveBtn   = E('button', { 'class': 'cbi-button cbi-button-apply' }, _('保存并重载'));
-	refs.ifcfgReloadBtn = E('button', { 'class': 'cbi-button' }, _('扫描设备'));
-	refs.ifcfgHint      = E('p', { 'class': 'lanspeed-hint' }, '');
-	refs.ifcfgSummary   = E('span', { 'class': 'sum' }, '');
-
-	refs.ifcfgSaveBtn.addEventListener('click', function() {
-		if (viewState.ifcfgSaving) return;
-		ifaceCfg.save(viewState);
-	});
-	refs.ifcfgReloadBtn.addEventListener('click', function() {
-		ifaceCfg.load(viewState);
-	});
-
-	refs.ifcfgDetails = E('details', { 'class': 'lanspeed-details' }, [
-		E('summary', {}, [
-			E('h3', {}, _('接口配置')),
-			E('span', { 'class': 'spacer' }),
-			refs.ifcfgSummary
-		]),
-		E('div', { 'class': 'lanspeed-details-body' }, [
-			E('div', { 'class': 'lanspeed-ifcfg' }, [
-				refs.ifcfgGrid,
-				E('div', { 'class': 'lanspeed-ifcfg-actions' }, [
-					refs.ifcfgSaveBtn,
-					refs.ifcfgReloadBtn,
-					E('span', { 'class': 'spacer' }),
-					refs.ifcfgStatus
-				]),
-				refs.ifcfgHint
-			])
-		])
-	]);
-	var ifcfgCard = E('div', { 'class': 'cbi-section' }, [ refs.ifcfgDetails ]);
-
 	/* ---- diagnostics card (collapsible) ---- */
 	refs.capsGrid           = E('div', { 'class': 'lanspeed-caps' });
 	refs.allWarnings        = E('ul', { 'class': 'lanspeed-warnings' });
@@ -485,7 +415,6 @@ function buildShell(viewState) {
 		clientsCard,
 		ifacesCard,
 		nssCard,
-		ifcfgCard,
 		diagnosticsCard
 	]);
 
@@ -500,6 +429,7 @@ function refreshLive(viewState) {
 	var status = viewState.status || {};
 	var clientsAll = fmt.asArray(viewState.clients && viewState.clients.clients);
 	var prefs = viewState.prefs;
+	var activeCfg = fmt.activeConfig(status);
 
 	/* error */
 	if (viewState.error) {
@@ -522,17 +452,27 @@ function refreshLive(viewState) {
 	refs.meta.textContent = metaParts.join(' · ');
 
 	/* metrics */
-	var totals = fmt.sumTotals(clientsAll);
+	var totals = fmt.sumTotals(clientsAll, activeCfg);
 	refs.mTx.textContent = fmt.formatRate(totals.tx, prefs.unit);
 	refs.mRx.textContent = fmt.formatRate(totals.rx, prefs.unit);
 	refs.mClients.textContent = String(clientsAll.length);
 
 	/* TCP/UDP connection counts from clients response top-level */
 	var clientsData = viewState.clients || {};
+	var udpSub;
 	if (typeof clientsData.tcp_conns_total === 'number' || typeof clientsData.udp_conns_total === 'number') {
 		refs.mConnsWrap.style.display = '';
 		refs.mTcpConns.textContent = 'TCP ' + (typeof clientsData.tcp_conns_total === 'number' ? clientsData.tcp_conns_total : '-');
 		refs.mUdpConns.textContent = 'UDP ' + (typeof clientsData.udp_conns_total === 'number' ? clientsData.udp_conns_total : '-');
+		if (typeof clientsData.udp_dns_conns_total === 'number' || typeof clientsData.udp_other_conns_total === 'number') {
+			udpSub = [
+				'DNS ' + (typeof clientsData.udp_dns_conns_total === 'number' ? clientsData.udp_dns_conns_total : '-'),
+				_('其它 ') + (typeof clientsData.udp_other_conns_total === 'number' ? clientsData.udp_other_conns_total : '-')
+			];
+			refs.mUdpConnsSub.textContent = udpSub.join(' · ');
+		} else {
+			refs.mUdpConnsSub.textContent = '-';
+		}
 	} else {
 		refs.mConnsWrap.style.display = 'none';
 	}
@@ -547,6 +487,9 @@ function refreshLive(viewState) {
 	    nssEv.host_count > clientsAll.length) {
 		subParts.push(_('ECM 知 %d').format(nssEv.host_count));
 	}
+	subParts.push(_('活跃窗 %d 秒').format(Math.round(activeCfg.activeWindowMs / 1000)));
+	if (activeCfg.activeMinBps > 1)
+		subParts.push(_('≥ ') + fmt.formatRate(activeCfg.activeMinBps, prefs.unit));
 	refs.mClientsSub.textContent = subParts.join(' · ');
 
 	/* coverage: read daemon-computed sliding-window coverage from status.
@@ -596,12 +539,10 @@ function refreshLive(viewState) {
 	 * do not repeat them as a banner on the overview card. */
 
 	/* client table */
+	var latestSample = fmt.latestClientSampleMs(clientsAll);
 	var filtered = clientsAll.filter(function(c) {
 		if (!fmt.matchesFilter(c, viewState.filter)) return false;
-		if (prefs.activeOnly) {
-			var t = Number(c.tx_bps) || 0, r = Number(c.rx_bps) || 0;
-			if (t + r < fmt.INACTIVE_BPS_THRESHOLD) return false;
-		}
+		if (prefs.activeOnly && !fmt.isActiveClient(c, latestSample, activeCfg)) return false;
 		return true;
 	});
 	var sorted = fmt.sortClients(filtered, prefs.sortKey);
@@ -633,7 +574,7 @@ function refreshLive(viewState) {
 
 		fmt.replaceChildren(refs.tbody, sorted.map(function(c) {
 			var tx = Number(c.tx_bps) || 0, rx = Number(c.rx_bps) || 0;
-			var idle = (tx + rx) < fmt.INACTIVE_BPS_THRESHOLD;
+			var idle = !fmt.isActiveClient(c, latestSample, activeCfg);
 			var ips = fmt.asArray(c.ips);
 			var rawWarnings = fmt.asArray(c.warnings);
 			var specificWarnings = rawWarnings.filter(function(w) { return !globalWarnings[w]; });
@@ -648,9 +589,12 @@ function refreshLive(viewState) {
 			} else if (mode === 'conntrack_ecm_sync') {
 				modeLabel = 'ECM';
 				modeTitle = _('采集方式 ECM 同步：NSS 硬件加速流的字节计数由 qca-nss-ecm 以秒级节拍同步回 conntrack，再由 lanspeedd 读取。桥接流也覆盖，精度等于 ECM sync 间隔 (≈1-2 秒)。');
+			} else if (mode === 'conntrack_netlink') {
+				modeLabel = 'CT-NL';
+				modeTitle = _('采集方式 Netlink Conntrack：非 NSS 仅用于连接数与诊断，不作为客户端实时测速来源。');
 			} else if (mode === 'conntrack') {
 				modeLabel = 'CT';
-				modeTitle = _('采集方式 Conntrack：从 /proc/net/nf_conntrack 按流聚合，仅覆盖路由/NAT 流量，置信度较低。');
+				modeTitle = _('采集方式 Conntrack：非 NSS 仅用于连接数与诊断，不作为客户端实时测速来源。');
 			} else {
 				modeLabel = mode;
 				modeTitle = _('未知采集方式');
@@ -693,7 +637,15 @@ function refreshLive(viewState) {
 				E('td', { 'class': 'num' }, fmt.formatRate(tx, prefs.unit)),
 				E('td', { 'class': 'num' }, fmt.formatRate(rx, prefs.unit)),
 				E('td', { 'class': 'num' }, typeof c.tcp_conns === 'number' ? String(c.tcp_conns) : '-'),
-				E('td', { 'class': 'num' }, typeof c.udp_conns === 'number' ? String(c.udp_conns) : '-'),
+				E('td', {
+					'class': 'num',
+					'title': (typeof c.udp_dns_conns === 'number' || typeof c.udp_other_conns === 'number')
+						? [
+							'DNS ' + (typeof c.udp_dns_conns === 'number' ? c.udp_dns_conns : '-'),
+							_('其它 ') + (typeof c.udp_other_conns === 'number' ? c.udp_other_conns : '-')
+						  ].join(' · ')
+						: ''
+				}, typeof c.udp_conns === 'number' ? String(c.udp_conns) : '-'),
 				E('td', {}, E('span', { 'class': 'state' }, stateCells))
 			]);
 		}));
@@ -794,6 +746,7 @@ function refreshLive(viewState) {
 
 	var versionParts = [
 		_('lanspeedd %s').format(fmt.textOrDash(status.version)),
+		_('luci-app-lanspeed %s').format(lsVersion.FULL_VERSION),
 		_('后端刷新 %s ms').format(fmt.textOrDash(status.refresh_interval_ms))
 	];
 	var nssEvidence = status.evidence && status.evidence.nss;
@@ -835,7 +788,12 @@ function refreshLive(viewState) {
 return view.extend({
 	load: function() {
 		return Promise.all([lsRpc.status(), lsRpc.clients(), lsRpc.interfaces()]).then(function(d) {
-			return { status: d[0] || {}, clients: d[1] || {}, interfaces: d[2] || { interfaces: [] }, error: null };
+			return {
+				status: d[0] || {},
+				clients: d[1] || {},
+				interfaces: d[2] || { interfaces: [] },
+				error: null
+			};
 		}).catch(function(error) {
 			return { status: {}, clients: { clients: [] }, interfaces: { interfaces: [] }, error: error };
 		});
@@ -887,7 +845,6 @@ return view.extend({
 		var built = buildShell(viewState);
 		viewState.refs = built.refs;
 		refreshLive(viewState);
-		ifaceCfg.load(viewState);
 		viewState.schedule();
 		return built.root;
 	},

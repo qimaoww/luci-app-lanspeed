@@ -603,13 +603,27 @@ function buildConntrackSnapshot(fixture, snapshot) {
   };
 }
 
+function carryConntrackLastSeen(previous, current) {
+  if (!previous) {
+    return current.last_seen;
+  }
+  if (current.tx_bytes !== previous.tx_bytes || current.rx_bytes !== previous.rx_bytes) {
+    return current.last_seen;
+  }
+  return previous.last_seen;
+}
+
 function simulateConntrackFallback(fixture) {
   const warnings = [];
   const probe = fixture.probe;
-  const active = Boolean(
+  const nssSyncPreferred = Boolean(
     fixture.config.enable_conntrack_fallback &&
-    !fixture.config.bpf_full_available &&
-    probe.nf_conntrack_acct
+    probe.nf_conntrack_acct &&
+    probe.nss_present &&
+    probe.nss_ecm_active
+  );
+  const active = Boolean(
+    nssSyncPreferred
   );
   const lowConfidence = Boolean(active && (
     !probe.flowtable_counter ||
@@ -631,7 +645,14 @@ function simulateConntrackFallback(fixture) {
   const clients = [];
 
   if (active) {
-    addUnique(warnings, 'conntrack_routed_nat_only');
+    if (nssSyncPreferred) {
+      addUnique(warnings, 'nss_ecm_sync_cadence');
+      if (fixture.config.bpf_full_available) {
+        addUnique(warnings, 'nss_prefers_conntrack_sync');
+      }
+    } else {
+      addUnique(warnings, 'conntrack_routed_nat_only');
+    }
     addUnique(warnings, 'conntrack_snapshot_pending');
     if (!probe.flowtable_counter) {
       addUnique(warnings, 'flowtable_counter_missing');
@@ -664,8 +685,8 @@ function simulateConntrackFallback(fixture) {
           hostname: null,
           rx_bps: previous ? rateFromDelta(current.rx_bytes - previous.rx_bytes, deltaMs) : 0,
           tx_bps: previous ? rateFromDelta(current.tx_bytes - previous.tx_bytes, deltaMs) : 0,
-          last_seen: current.last_seen,
-          collector_mode: 'conntrack',
+          last_seen: carryConntrackLastSeen(previous, current),
+          collector_mode: nssSyncPreferred ? 'conntrack_ecm_sync' : 'conntrack',
           confidence: lowConfidence ? 'low' : 'medium',
           warnings: warnings.slice()
         });
@@ -678,10 +699,10 @@ function simulateConntrackFallback(fixture) {
     runtime_source: 'lanspeedd_procfs_conntrack_acct',
     mode: 'Degraded',
     active,
-    collector_mode: 'conntrack',
+    collector_mode: nssSyncPreferred ? 'conntrack_ecm_sync' : 'conntrack',
     confidence: active ? (lowConfidence ? 'low' : 'medium') : 'unsupported',
-    coverage: 'routed_nat_only',
-    coverage_warning: 'conntrack_routed_nat_only',
+    coverage: nssSyncPreferred ? 'nss_ecm_sync' : 'routed_nat_only',
+    coverage_warning: nssSyncPreferred ? 'nss_ecm_sync_cadence' : 'conntrack_routed_nat_only',
     counter_source: 'procfs_conntrack_acct_orig_reply_bytes',
     nf_conntrack_acct: Boolean(probe.nf_conntrack_acct),
     flowtable_counter: Boolean(probe.flowtable_counter),
@@ -706,19 +727,12 @@ function simulateConntrackFallback(fixture) {
 function simulateNssSourceSelection(fixture) {
   const probe = fixture.probe;
   const bpfFullAvailable = Boolean(fixture.config.bpf_full_available);
-  const daePreemptsLanIngress = Boolean(probe.dae_preempts_lan_ingress);
   const daeEarlyBpf = Boolean(fixture.config.dae_early_bpf);
   const preferred = Boolean(
     fixture.config.enable_conntrack_fallback &&
     probe.nf_conntrack_acct &&
     probe.nss_present &&
     probe.nss_ecm_active
-  );
-  const daePreferred = Boolean(
-    fixture.config.enable_conntrack_fallback &&
-    probe.nf_conntrack_acct &&
-    daePreemptsLanIngress &&
-    !daeEarlyBpf
   );
   const warnings = [];
 
@@ -727,19 +741,16 @@ function simulateNssSourceSelection(fixture) {
     if (bpfFullAvailable) {
       addUnique(warnings, 'nss_prefers_conntrack_sync');
     }
-  } else if (daePreferred) {
-    addUnique(warnings, 'dae_tc_preempts_bpf_ingress');
-    addUnique(warnings, 'conntrack_routed_nat_only');
   }
 
   return {
     preferred,
-    dae_early_bpf: Boolean(daePreemptsLanIngress && daeEarlyBpf),
-    dae_preempted: daePreferred,
-    primary_source: preferred ? 'nss_conntrack_sync' : (bpfFullAvailable ? 'bpf' : (daePreferred ? 'conntrack' : 'conntrack')),
-    collector_mode: preferred ? 'conntrack_ecm_sync' : (bpfFullAvailable ? 'bpf' : (daePreferred ? 'conntrack' : 'conntrack')),
-    confidence: preferred ? 'medium' : (bpfFullAvailable ? 'high' : (daePreferred ? 'low' : 'medium')),
-    coverage_client_source: (preferred || daePreferred) ? 'conntrack' : (bpfFullAvailable ? 'bpf' : 'conntrack'),
+    dae_early_bpf: Boolean(probe.dae_preempts_lan_ingress && daeEarlyBpf),
+    dae_preempted: false,
+    primary_source: preferred ? 'nss_conntrack_sync' : (bpfFullAvailable ? 'bpf' : 'unsupported'),
+    collector_mode: preferred ? 'conntrack_ecm_sync' : (bpfFullAvailable ? 'bpf' : 'unsupported'),
+    confidence: preferred ? 'medium' : (bpfFullAvailable ? 'high' : 'unsupported'),
+    coverage_client_source: preferred ? 'conntrack' : (bpfFullAvailable ? 'bpf' : 'unsupported'),
     warnings
   };
 }
@@ -870,6 +881,9 @@ function assertLifecycleInit(initScript, hotplugScript, packageMakefile, default
   assert(packageMakefile.includes('$(INSTALL_BIN) ./files/etc/hotplug.d/iface/90-lanspeedd $(1)/etc/hotplug.d/iface/90-lanspeedd'), 'package Makefile must install hotplug hook');
   assert(defaultConfig.includes("option max_clients '2048'"), 'default config must keep max_clients=2048');
   assert(defaultConfig.includes("option refresh_interval_ms '1000'"), 'default config must keep refresh_interval_ms=1000');
+  assert(defaultConfig.includes("option active_client_window_ms '10000'"), 'default config must keep active window at 10s');
+  assert(defaultConfig.includes("option active_client_min_bps '1'"), 'default config must keep active speed threshold at nonzero');
+  assert(defaultConfig.includes("option overview_window_samples '240'"), 'default config must keep trend history at 240 samples');
   assert(defaultConfig.includes("option warning_stale_client_ms '5000'"), 'default config must keep stale warning at 5000ms');
   assert(defaultConfig.includes("option warning_map_full '1'"), 'default config must represent map_full warning guardrail');
   assert(defaultConfig.includes("option warning_attach_failure 'unsafe_attach'"), 'default config must represent attach failure guardrail');
@@ -925,6 +939,11 @@ function assertBpfBuildRules(packageMakefile, srcMakefile, sdkHelper) {
   assert(packageMakefile.includes('$(INSTALL_DATA) $(PKG_BUILD_DIR)/lanspeed_tc.o $(1)/usr/lib/bpf/lanspeed_tc.o'), 'lanspeedd-bpf must install /usr/lib/bpf/lanspeed_tc.o');
   assert(packageMakefile.includes('DEPENDS:=+lanspeedd +libbpf $(BPF_DEPENDS)'), 'libbpf/BPF dependencies must stay in optional lanspeedd-bpf package');
   assert(!packageMakefile.includes('if [ -f $(PKG_BUILD_DIR)/lanspeed_tc.o ]'), 'BPF object install must not be a silent optional no-op');
+  assert(/DEPENDS:=[^\n]*\+libmnl/.test(packageMakefile), 'base daemon must depend on libmnl for raw ctnetlink conntrack dumps');
+  assert(/LIBS[^\n]*-lmnl/.test(packageMakefile), 'package Makefile must link lanspeedd with libmnl');
+  assert(/LIBS[^\n]*-lmnl/.test(srcMakefile), 'src Makefile must link local lanspeedd builds with libmnl');
+  assert(!/libnetfilter-conntrack/.test(packageMakefile), 'base daemon must not depend on libnetfilter-conntrack');
+  assert(!/libnetfilter_conntrack/.test(srcMakefile), 'src Makefile must not link libnetfilter-conntrack');
   assert(srcMakefile.includes('bpf: lanspeed_tc.o'), 'src Makefile must expose an explicit bpf target');
   assert(srcMakefile.includes('lanspeed_tc.o: lanspeed_tc.bpf.c'), 'src Makefile must have a local BPF object rule');
   assert(srcMakefile.includes('-target bpf'), 'local BPF rule must target bpf');
@@ -950,24 +969,44 @@ function assertNoDestructiveTcCommands(text) {
 
 function assertRuntimeConntrackFallbackSource(source) {
   for (const required of [
+    '#include <libmnl/libmnl.h>',
+    '#include <linux/netfilter/nfnetlink_conntrack.h>',
     'CONNTRACK_PROCFS_PATH "/proc/net/nf_conntrack"',
     'CONNTRACK_LEGACY_PROCFS_PATH "/proc/net/ip_conntrack"',
     'ARP_PROCFS_PATH "/proc/net/arp"',
+    'static bool read_conntrack_netlink_snapshot',
+    'static int conntrack_netlink_data_cb',
+    'IPCTNL_MSG_CT_GET',
+    'NETLINK_NETFILTER',
+    'CTA_COUNTERS_ORIG',
+    'CTA_COUNTERS_REPLY',
+    'lanspeedd_ctnetlink_conntrack_acct',
+    'ctnetlink_conntrack_acct_orig_reply_bytes',
+    'conntrack_netlink',
     'static bool parse_conntrack_procfs_line',
     'static bool read_conntrack_procfs_snapshot',
+    'static bool read_conntrack_snapshot',
     'static bool collect_conntrack_procfs_clients',
     'static void emit_conntrack_clients',
     'previous_conntrack_samples',
     'conntrack_snapshot_pending',
     'conntrack_unavailable',
     'skip_conntrack_entry_without_fabricating_client',
-    'json_object_new_string("lanspeedd_procfs_conntrack_acct")',
-    'json_object_new_string("procfs_conntrack_acct_orig_reply_bytes")',
+    'lanspeedd_procfs_conntrack_acct',
+    'procfs_conntrack_acct_orig_reply_bytes',
     'json_object_new_string(ARP_PROCFS_PATH)',
     'collect_conntrack_procfs_clients(root, clients, &probe)'
   ]) {
     assert(source.includes(required), `C runtime conntrack fallback missing ${required}`);
   }
+  assert(!source.includes('#include <libnetfilter_conntrack/libnetfilter_conntrack.h>'), 'runtime must not include libnetfilter-conntrack');
+  assert(!/\bnfct_/.test(source), 'runtime must not use libnetfilter-conntrack nfct_* APIs');
+  assert(/read_conntrack_snapshot[\s\S]{0,900}?read_conntrack_netlink_snapshot[\s\S]{0,900}?read_conntrack_procfs_snapshot/.test(source),
+         'conntrack snapshot wrapper must try netlink before procfs fallback');
+  assert(/merge_conntrack_conn_counts[\s\S]{0,1400}?read_conntrack_snapshot/.test(source),
+         'BPF connection-count merge must use the netlink-first conntrack wrapper');
+  assert(/collect_conntrack_procfs_clients[\s\S]{0,1400}?read_conntrack_snapshot/.test(source),
+         'NSS conntrack-sync collection must use the netlink-first conntrack wrapper');
   assert(source.includes('static bool nss_conntrack_sync_preferred'), 'runtime must define explicit NSS conntrack-sync preference');
   assert(source.includes('primary_source", json_object_new_string("nss_conntrack_sync")'), 'runtime evidence must expose NSS conntrack sync as primary source');
   assert(source.includes('coverage_current_client_bytes(const struct runtime_probe *probe'), 'coverage client bytes must take probe/source policy');
@@ -998,8 +1037,43 @@ function assertRuntimeConntrackFallbackSource(source) {
   assert(
     source.includes('"conntrack_ecm_sync"') || !source.includes('nss_ecm_active'),
     'runtime must emit the "conntrack_ecm_sync" literal when NSS offload detection is wired');
-  assert(source.includes('delta_bps(current[i].tx_bytes, previous->tx_bytes'), 'runtime must compute tx_bps from previous snapshot deltas');
-  assert(source.includes('delta_bps(current[i].rx_bytes, previous->rx_bytes'), 'runtime must compute rx_bps from previous snapshot deltas');
+  assert(source.includes('delta_bps(current[i].tx_bytes, previous->tx_bytes'), 'NSS conntrack-sync path must compute tx_bps from previous snapshot deltas');
+  assert(source.includes('delta_bps(current[i].rx_bytes, previous->rx_bytes'), 'NSS conntrack-sync path must compute rx_bps from previous snapshot deltas');
+  assert(source.includes('conntrack_refresh_last_seen'), 'runtime must keep conntrack last_seen tied to byte counter changes');
+  assert(source.includes('udp_dns_conns'), 'runtime must split UDP DNS connection counts from other UDP flows');
+  assert(source.includes('udp_other_conns'), 'runtime must expose non-DNS UDP connection counts');
+  assert(/sport_index|orig_sport/.test(source) && /dport_index|orig_dport/.test(source), 'conntrack parser must read ports so DNS UDP can be identified');
+  assert(/json_object_object_add\(\s*client\s*,\s*"tcp_conns"\s*,\s*json_object_new_int64?\(\s*\(int64?_t?\)?\s*cs->tcp_conns/.test(source) ||
+         /json_object_object_add\(\s*client\s*,\s*"tcp_conns"\s*,\s*json_object_new_int\(\s*\(int\)cs->tcp_conns/.test(source),
+         'BPF client connection counts must be overwritten from conntrack current table when conntrack is readable');
+  assert(!/bpf_tcp\s*==\s*0/.test(source), 'conntrack connection merge must not keep stale/nonzero BPF conn counts');
+  assert(source.includes('static int overview_method'), 'runtime must expose a daemon-side overview history method');
+  assert(source.includes('UBUS_METHOD_NOARG("overview", overview_method)'), 'runtime must register the overview ubus method');
+  assert(source.includes('overview_push_from_clients'), 'clients_method must feed daemon-side overview history from current samples');
+  assert(source.includes('#define DEFAULT_ACTIVE_CLIENT_WINDOW_MS 10000ULL'), 'daemon must default active clients to a 10s window');
+  assert(source.includes('#define DEFAULT_ACTIVE_CLIENT_MIN_BPS 1ULL'), 'daemon must default active clients to a nonzero speed threshold');
+  assert(source.includes('char active_window_path[] = "lanspeed.main.active_client_window_ms"'), 'daemon must read active_client_window_ms from UCI');
+  assert(source.includes('char active_min_bps_path[] = "lanspeed.main.active_client_min_bps"'), 'daemon must read active_client_min_bps from UCI');
+  assert(source.includes('char overview_window_path[] = "lanspeed.main.overview_window_samples"'), 'daemon must read overview_window_samples from UCI');
+  assert(source.includes('char rate_collector_mode_path[] = "lanspeed.main.rate_collector_mode"'), 'daemon must read rate_collector_mode from UCI');
+  assert(source.includes('char conn_collector_mode_path[] = "lanspeed.main.conn_collector_mode"'), 'daemon must read conn_collector_mode from UCI');
+  assert(source.includes('char collector_mode_path[] = "lanspeed.main.collector_mode"'), 'daemon must still read legacy collector_mode from UCI');
+  assert(source.includes('conn_collector_mode_is_forced()'), 'daemon must allow UCI to force conntrack collectors for connection counts');
+  assert(source.includes('rate_collector_mode_allows_bpf()'), 'daemon must expose rate BPF mode policy for evidence');
+  assert(source.includes('return rate_collector_mode == COLLECTOR_MODE_AUTO ||\n\t       rate_collector_mode == COLLECTOR_MODE_BPF;'),
+         'rate_collector_mode must not treat CT modes as live speed collectors');
+  assert(/static bool conntrack_fallback_active[\s\S]{0,260}?conntrack_primary_preferred\(probe\)/.test(source),
+         'non-NSS conntrack must not become a live rate fallback when BPF is unavailable');
+  assert(source.includes('read_conntrack_snapshot_mode(current, &current_count'), 'conntrack client collection must honor forced netlink/procfs mode');
+  assert(/collect_conntrack_procfs_clients[\s\S]{0,1800}?read_conntrack_snapshot_mode\(current,[\s\S]{0,360}?conn_collector_mode\)/.test(source),
+         'NSS conntrack-sync speed reads must honor conn_collector_mode source selection');
+  assert(/merge_conntrack_conn_counts[\s\S]{0,1800}?read_conntrack_snapshot_mode\(conn_samples,[\s\S]{0,360}?conn_collector_mode\)/.test(source),
+         'BPF connection-count merge must honor conn_collector_mode source selection');
+  assert(source.includes('client_is_active_recent'), 'overview active_clients must use last_seen/sample_ms freshness');
+  assert(source.includes('client_has_active_rate'), 'overview active_clients must require configured current speed');
+  assert(source.includes('active_client_window_ms'), 'runtime must publish active_client_window_ms');
+  assert(source.includes('active_client_min_bps'), 'runtime must publish active_client_min_bps');
+  assert(!source.includes('LANSPEED_OVERVIEW_ACTIVE_BPS'), 'overview active_clients must not be based on a bitrate threshold');
 }
 
 function assertRuntimeBpfGateSource(source) {
@@ -1072,20 +1146,36 @@ function assertBpfLoaderModule(header, loader, daemonSource, packageMakefile, sr
   assert(loader.includes('lanspeed_bpf_attach_iface('), 'lanspeed_bpf.c must keep the legacy attach wrapper');
   assert(daemonSource.includes('lanspeed_bpf_attach_iface_mode('), 'lanspeedd.c must attach with a policy-aware BPF mode');
   assert(daemonSource.includes('lanspeed_bpf_ensure_attached('), 'lanspeedd.c must periodically verify and restore owned TC BPF hooks');
-  assert(daemonSource.includes('bpf_runtime_recover_if_needed'), 'lanspeedd.c must keep a BPF self-heal path for hook loss/order drift');
+  assert(daemonSource.includes('bpf_runtime_recover_if_needed'), 'lanspeedd.c must keep a BPF self-heal path for hook loss');
   assert(!daemonSource.includes('initial_tc_filter_order_check'), 'initial BPF hook verification must not force an order self-heal on every startup');
-  assert(!loader.includes('strstr(reason, "order")'), 'BPF self-heal must only force TC reorder for an explicit order-drift reason');
-  assert(loader.includes('strcmp(reason, "tc_filter_order_drift")'), 'BPF self-heal must name the exact order-drift reason it accepts');
+  assert(!loader.includes('strstr(reason, "order")'), 'BPF self-heal must not force TC reorder');
+  assert(!loader.includes('tc_filter_order_drift'), 'BPF self-heal must not detach/re-attach just to reorder around daed filters');
+  assert(!loader.includes('force_reorder'), 'BPF self-heal must only restore missing owned hooks, never force order changes');
+  assert(!daemonSource.includes('tc_lanspeed_after_dae_same_pref'), 'lanspeedd must not poll TC order to chase daed filter ordering');
+  assert(loader.includes('ingress_priority = early_passthrough ? LANSPEED_BPF_TC_EARLY_PREF : LANSPEED_BPF_TC_PREF'),
+         'daed-compatible early mode must move ingress before daed');
+  assert(loader.includes('egress_priority = early_passthrough ? LANSPEED_BPF_TC_EARLY_PREF : LANSPEED_BPF_TC_PREF'),
+         'daed-compatible early mode must also move egress before daed so download bytes are sampled before TC redirect/drop actions');
+  assert(/egress_fd\s*=\s*early_passthrough\s*\?\s*g_state\.egress_early_prog_fd/.test(loader),
+         'daed-compatible early mode must attach egress_early at the early pref');
+  assert(/hook_present\(ifindex,\s*BPF_TC_EGRESS,\s*egress_priority,\s*egress_handle\)/.test(loader),
+         'policy-aware attach must treat the shared egress hook as idempotent during daed policy switches');
+  const modeDetach = loader.match(/int\s+lanspeed_bpf_detach_iface_mode\s*\([^)]*\)\s*{[\s\S]*?^}/m);
+  assert(modeDetach, 'lanspeed_bpf.c must define lanspeed_bpf_detach_iface_mode');
+  assert(/BPF_TC_EGRESS/.test(modeDetach[0]),
+         'policy-mode detach must remove mode-specific egress too when switching daed early mode');
   assert(daemonSource.includes('bpf_tc_self_heal'), 'lanspeedd.c must expose BPF self-heal evidence');
   assert(daemonSource.includes('lanspeed_bpf_shutdown('), 'lanspeedd.c must shut the loader down on exit');
   assert(daemonSource.includes('lanspeed_bpf_runtime_ok('), 'lanspeedd.c must consult lanspeed_bpf_runtime_ok for Full gating');
   assert(daemonSource.includes('lanspeed_bpf_read_samples('), 'lanspeedd.c must read BPF samples for Full mode');
   assert(daemonSource.includes('collect_bpf_clients('), 'lanspeedd.c must expose a BPF client collector path');
   assert(/collector_mode[^\n]+"bpf"/.test(daemonSource), 'lanspeedd.c must emit collector_mode=bpf in the Full path');
-  assert(/nss_conntrack_sync_preferred\(&probe\)[\s\S]{0,240}?collect_conntrack_procfs_clients\(root, clients, &probe\)/.test(daemonSource),
-         'clients_method must try conntrack first only when NSS ECM sync is preferred');
-  assert(/else\s+if\s+\(!collect_bpf_clients\(root, clients, &probe\)\)[\s\S]{0,160}?collect_conntrack_procfs_clients\(root, clients, &probe\)/.test(daemonSource),
-         'clients_method must keep BPF-first fallback for non-NSS-sync paths');
+  assert(/if\s*\(\s*collect_bpf_clients\(root,\s*clients,\s*&probe\)\s*\)[\s\S]{0,260}?merge_conntrack_conn_counts\(root,\s*clients\)/.test(daemonSource),
+         'clients_method must use BPF as the only live rate source on non-NSS devices');
+  assert(!/collector_mode_is_conntrack_forced\(\)[\s\S]{0,200}?collect_conntrack_procfs_clients\(root,\s*clients,\s*&probe\)/.test(daemonSource),
+         'forced CT modes must not replace BPF live rates on non-NSS devices');
+  assert(!/else\s*\{\s*collect_conntrack_procfs_clients\(root,\s*clients,\s*&probe\);\s*\}/.test(daemonSource),
+         'non-NSS BPF failure must leave client rates empty instead of emitting CT byte rates');
 
   assert(bpfSource.includes('lanspeed_ingress_early'), 'BPF object must include an early ingress section for DAE coexistence');
   assert(bpfSource.includes('lanspeed_egress_early'), 'BPF object must include an early egress section for DAE coexistence');
@@ -1196,6 +1286,9 @@ assert(collectorModel.attach_model.excluded.includes('wan') && collectorModel.at
 assert(collectorModel.attach_model.excluded.includes('dae0') && collectorModel.attach_model.excluded.includes('dae0peer'), 'collector model must exclude dae tunnel interfaces');
 assert(collectorModel.rate_model.default_refresh_interval_ms === 1000, 'sampling interval must default to 1000ms');
 assert(collectorModel.rate_model.minimum_refresh_interval_ms === 500, 'sampling interval minimum must be 500ms');
+assert(collectorModel.rate_model.default_active_client_window_ms === 10000, 'active client window must default to 10000ms');
+assert(collectorModel.rate_model.default_active_client_min_bps === 1, 'active client minimum must default to 1bps');
+assert(collectorModel.rate_model.default_overview_window_samples === 240, 'overview trend history must default to 240 samples');
 assert(collectorModel.rate_model.window_count === 3, 'rate model must keep three deterministic windows');
 assert(collectorModel.rate_model.anomaly_warnings.includes('counter_anomaly'), 'rate model must expose counter_anomaly warning');
 assert(collectorModel.rate_model.refresh_interval_warning === 'refresh_interval_below_minimum', 'rate model must expose refresh interval warning');
@@ -1218,16 +1311,25 @@ assert(collectorModel.map_model.map_read_failure_warning === 'map_read_failed', 
 assert(collectorModel.conntrack_fallback_model.collector_mode === 'conntrack', 'conntrack fallback model must expose collector_mode=conntrack');
 assert(collectorModel.conntrack_fallback_model.nss_sync_collector_mode === 'conntrack_ecm_sync', 'NSS sync model must expose collector_mode=conntrack_ecm_sync');
 assert(collectorModel.conntrack_fallback_model.primary_sources.includes('nss_conntrack_sync'), 'NSS sync model must expose nss_conntrack_sync primary source');
+assert(!collectorModel.conntrack_fallback_model.primary_sources.includes('conntrack'), 'plain non-NSS conntrack must not be documented as a live speed primary source');
+assert(collectorModel.conntrack_fallback_model.non_nss_live_rate_policy === 'bpf_only', 'non-NSS live rate policy must be BPF-only');
+assert(collectorModel.conntrack_fallback_model.non_nss_conntrack_policy === 'connection_counts_and_diagnostics_only', 'non-NSS conntrack policy must be counts/diagnostics only');
 assert(collectorModel.conntrack_fallback_model.mode === 'Degraded', 'conntrack fallback must stay Degraded');
 assert(collectorModel.conntrack_fallback_model.coverage === 'routed_nat_only', 'conntrack fallback must be routed/NAT-only');
 assert(collectorModel.conntrack_fallback_model.coverage_warning === 'conntrack_routed_nat_only', 'conntrack fallback must expose routed/NAT-only warning');
 assert(collectorModel.conntrack_fallback_model.active_only_when.includes('nf_conntrack_acct=1'), 'conntrack fallback must require nf_conntrack_acct=1');
 assert(collectorModel.conntrack_fallback_model.active_only_when.includes('nss_ecm_sync_preferred'), 'conntrack fallback model must document NSS ECM sync preference');
+assert(!collectorModel.conntrack_fallback_model.active_only_when.includes('bpf_full_unavailable'), 'BPF failure alone must not activate non-NSS conntrack speed fallback');
+assert(collectorModel.conntrack_fallback_model.inactive_when.includes('non_nss_device'), 'conntrack speed fallback must be inactive on non-NSS devices');
+assert(collectorModel.conntrack_fallback_model.inactive_when.includes('bpf_full_unavailable_without_nss_ecm_sync'), 'non-NSS BPF failure must not become CT byte-rate fallback');
 assert(collectorModel.conntrack_fallback_model.inactive_when.includes('conntrack_acct_disabled'), 'conntrack fallback must disable when accounting is off');
 assert(collectorModel.conntrack_fallback_model.inactive_when.includes('bpf_full_available_without_nss_ecm_sync'), 'conntrack fallback model must keep non-NSS BPF-first behavior');
-assert(collectorModel.conntrack_fallback_model.source === 'lanspeedd_procfs_conntrack_acct', 'conntrack fallback model must honestly name procfs source');
+assert(collectorModel.conntrack_fallback_model.source === 'lanspeedd_ctnetlink_conntrack_acct', 'conntrack fallback model must name ctnetlink as the preferred source');
+assert(collectorModel.conntrack_fallback_model.fallback_source === 'lanspeedd_procfs_conntrack_acct', 'conntrack fallback model must honestly keep procfs as the last fallback source');
 assert(collectorModel.conntrack_fallback_model.nss_sync_coverage_warning === 'nss_ecm_sync_cadence', 'NSS sync coverage warning must document ECM cadence');
+assert(collectorModel.conntrack_fallback_model.counter_sources.includes('ctnetlink_conntrack_acct_orig_reply_bytes'), 'conntrack fallback model must name ctnetlink accounting source');
 assert(collectorModel.conntrack_fallback_model.counter_sources.includes('procfs_conntrack_acct_orig_reply_bytes'), 'conntrack fallback model must name procfs accounting source');
+assert(collectorModel.conntrack_fallback_model.netlink_path === 'netlink:ctnetlink', 'conntrack fallback model must document raw ctnetlink as the preferred reader');
 assert(collectorModel.conntrack_fallback_model.procfs_paths.includes('/proc/net/arp'), 'conntrack fallback model must include ARP identity source');
 assert(collectorModel.conntrack_fallback_model.snapshot_policy.first_sample_warning === 'conntrack_snapshot_pending', 'first conntrack sample must be explicit snapshot pending');
 assert(collectorModel.conntrack_fallback_model.confidence.maximum === 'medium', 'conntrack fallback confidence must not exceed medium');
@@ -1314,28 +1416,28 @@ assert(resourceLimits.crashed === false, 'resource limit path must not crash');
 assert(resourceLimits.existing_clients_preserved_on_map_read_failure === true, 'map read failure must not empty all clients');
 
 const conntrackNat = simulateConntrackFallback(conntrackNatFixture);
-assert(conntrackNat.active === true, 'conntrack NAT fixture must activate fallback');
+assert(conntrackNat.active === false, 'non-NSS conntrack NAT fixture must not activate as a speed fallback');
 assert(conntrackNat.mode === 'Degraded', 'conntrack fallback must stay Degraded');
 assert(conntrackNat.collector_mode === 'conntrack', 'conntrack NAT fixture must use collector_mode=conntrack');
-assert(['low', 'medium'].includes(conntrackNat.confidence), 'conntrack confidence must be low or medium only');
-assert(conntrackNat.confidence === conntrackNatFixture.expected.confidence, 'confidence degradation must match fixture expectation');
+assert(conntrackNat.confidence === 'unsupported', 'inactive non-NSS conntrack speed fallback confidence must be unsupported');
 assert(conntrackNat.runtime_source === 'lanspeedd_procfs_conntrack_acct', 'conntrack NAT fixture must use procfs runtime source');
 assert(conntrackNat.counter_source === 'procfs_conntrack_acct_orig_reply_bytes', 'conntrack NAT fixture must use procfs byte counters');
 assert(conntrackNat.first_snapshot.clients.length === 1, 'first procfs snapshot must map one ARP-backed client');
 assert(conntrackNat.first_snapshot.skipped_no_arp === conntrackNatFixture.expected.skipped_no_arp, 'conntrack entries without ARP MAC must be skipped');
 assert(conntrackNat.first_snapshot.malformed_lines === conntrackNatFixture.expected.malformed_lines_first_snapshot, 'malformed conntrack lines must be isolated');
 assert(!conntrackNat.clients.some((client) => client.interface === 'dae0' || client.ips.includes('192.168.1.250')), 'dae0 ARP/conntrack observations must not become LAN clients');
-assert(conntrackNat.warnings.includes(conntrackNatFixture.expected.snapshot_pending_warning), 'first sample pending warning is required');
-assert(conntrackNat.clients.length === 1, 'conntrack NAT fixture must produce one client');
-assert(conntrackNat.clients[0].tx_bps === conntrackNatFixture.expected.tx_bps, 'conntrack NAT tx_bps must be computed from original-direction bytes');
-assert(conntrackNat.clients[0].rx_bps === conntrackNatFixture.expected.rx_bps, 'conntrack NAT rx_bps must be computed from reply-direction bytes');
-assert(conntrackNat.clients[0].collector_mode === 'conntrack', 'client collector_mode must be conntrack');
-assert(conntrackNat.clients[0].identity_key === `${conntrackNat.clients[0].mac}@${conntrackNat.clients[0].zone}`, 'conntrack must preserve MAC+zone identity semantics');
-assert(conntrackNat.clients[0].ips.includes(conntrackNatFixture.conntrack_samples[1].client_ip), 'LAN client IP must remain an attribute on the MAC identity');
-assert(!conntrackNat.clients[0].ips.includes(conntrackNatFixture.conntrack_samples[1].remote_ip), 'fake-ip or remote destination must not become a client identity IP');
-assert(conntrackNat.warnings.includes('conntrack_routed_nat_only'), 'conntrack fallback must warn routed/NAT-only coverage');
-assert(conntrackNat.warnings.includes('flowtable_counter_missing'), 'missing flowtable counter warning is required');
-assert(conntrackNat.warnings.includes('nlbwmon_counter_conflict'), 'nlbwmon zero-on-read conflict warning is required');
+assert(!conntrackNat.warnings.includes(conntrackNatFixture.expected.snapshot_pending_warning), 'inactive non-NSS conntrack speed fallback must not claim a pending speed snapshot');
+assert(conntrackNat.clients.length === 0, 'non-NSS conntrack NAT fixture must not produce client speed rows');
+{
+  const stillFixture = clone(conntrackNatFixture);
+  stillFixture.procfs_snapshots[1].lines = stillFixture.procfs_snapshots[0].lines.slice();
+  stillFixture.procfs_snapshots[1].t_ms = stillFixture.procfs_snapshots[0].t_ms + 15000;
+  const stillConntrack = simulateConntrackFallback(stillFixture);
+  assert(stillConntrack.clients.length === 0, 'unchanged non-NSS conntrack counters must still not produce speed rows');
+}
+assert(!conntrackNat.warnings.includes('conntrack_routed_nat_only'), 'inactive non-NSS conntrack speed fallback must not warn as active routed/NAT-only speed source');
+assert(!conntrackNat.warnings.includes('flowtable_counter_missing'), 'inactive non-NSS conntrack speed fallback must not emit speed confidence warnings');
+assert(!conntrackNat.warnings.includes('nlbwmon_counter_conflict'), 'inactive non-NSS conntrack speed fallback must not emit nlbwmon speed warnings');
 assert(conntrackNat.nlbwmon_read_counters === false, 'conntrack fallback must not disturb nlbwmon counters');
 assert(conntrackNat.forbidden_sources.includes('nft_forward_chain_counters'), 'conntrack fallback must not use nft forward-chain counters');
 
@@ -1353,6 +1455,22 @@ assert(nssEcmSync.coverage_client_source === 'conntrack', 'NSS ECM sync coverage
 assert(nssEcmSync.confidence === 'medium', 'NSS ECM sync confidence must not exceed medium');
 assert(nssEcmSync.warnings.includes('nss_ecm_sync_cadence'), 'NSS ECM sync must warn about sync cadence');
 assert(nssEcmSync.warnings.includes('nss_prefers_conntrack_sync'), 'NSS ECM sync must explain why BPF is not primary');
+
+{
+  const nssConntrackFixture = clone(conntrackNatFixture);
+  nssConntrackFixture.probe.nss_present = true;
+  nssConntrackFixture.probe.nss_ecm_active = true;
+  nssConntrackFixture.config.bpf_full_available = true;
+  const nssConntrack = simulateConntrackFallback(nssConntrackFixture);
+  assert(nssConntrack.active === true, 'NSS ECM sync may use conntrack byte counters as the speed source');
+  assert(nssConntrack.collector_mode === 'conntrack_ecm_sync', 'NSS ECM sync conntrack clients must expose collector_mode=conntrack_ecm_sync');
+  assert(nssConntrack.coverage === 'nss_ecm_sync', 'NSS ECM sync conntrack coverage must not claim routed/NAT-only fallback');
+  assert(nssConntrack.clients.length === 1, 'NSS ECM sync fixture must still produce client speed rows');
+  assert(nssConntrack.clients[0].tx_bps === nssConntrackFixture.expected.tx_bps, 'NSS ECM sync tx_bps must be computed from original-direction bytes');
+  assert(nssConntrack.clients[0].rx_bps === nssConntrackFixture.expected.rx_bps, 'NSS ECM sync rx_bps must be computed from reply-direction bytes');
+  assert(nssConntrack.warnings.includes('nss_ecm_sync_cadence'), 'NSS ECM sync speed path must warn about sync cadence');
+  assert(nssConntrack.warnings.includes('nss_prefers_conntrack_sync'), 'NSS ECM sync speed path must explain BPF override');
+}
 
 const nssEcmSyncBpfFallback = simulateNssSourceSelection(nssEcmSyncBpfFallbackFixture);
 assert(nssEcmSyncBpfFallback.preferred === false, 'NSS sync must not be preferred when conntrack accounting is disabled');

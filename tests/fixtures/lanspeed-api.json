@@ -12,7 +12,10 @@
       "live_metrics": false
     },
     "refresh_interval_ms": 1000,
-    "version": "0.1.0",
+    "collector_mode": "auto",
+    "rate_collector_mode": "auto",
+    "conn_collector_mode": "auto",
+    "version": "0.1.1-r5",
     "capabilities": {
       "bpf": false,
       "bpf_package": false,
@@ -41,7 +44,10 @@
       "lan_edge": false,
       "safe_attach": false,
       "map_full": false
-    }
+    },
+    "active_client_window_ms": 10000,
+    "active_client_min_bps": 1,
+    "overview_window_samples": 240
   },
   "clients": {
     "clients": [
@@ -70,6 +76,27 @@
       "fixture_safe": true,
       "live_metrics": false
     }
+  },
+  "overview": {
+    "samples": [
+      {
+        "sample_ms": 0,
+        "tx_bps": 0,
+        "rx_bps": 0,
+        "client_count": 1,
+        "active_clients": 0,
+        "tcp_conns": 0,
+        "udp_conns": 0,
+        "udp_dns_conns": 0,
+        "udp_other_conns": 0
+      }
+    ],
+    "max_samples": 240,
+    "sample_source": "clients_refresh_daemon_ring",
+    "conn_semantics": "conntrack_current_tcp_established_assured_udp_tracked_dns_split",
+    "overview_window_samples": 240,
+    "active_client_window_ms": 10000,
+    "active_client_min_bps": 1
   },
   "health": {
     "mode": "Unsupported",

@@ -12,6 +12,9 @@
       "$ref": "#/$defs/clients"
     },
     {
+      "$ref": "#/$defs/overview"
+    },
+    {
       "$ref": "#/$defs/health"
     },
     {
@@ -36,6 +39,18 @@
       "type": "object",
       "additionalProperties": true,
       "description": "Machine-readable facts used to explain mode, confidence, conflicts, and warnings. Values may be strings, numbers, booleans, arrays, objects, or null."
+    },
+    "collectorMode": {
+      "type": "string",
+      "enum": ["auto", "bpf", "conntrack_netlink", "conntrack_procfs"]
+    },
+    "rateCollectorMode": {
+      "type": "string",
+      "enum": ["auto", "bpf"]
+    },
+    "connCollectorMode": {
+      "type": "string",
+      "enum": ["auto", "conntrack_netlink", "conntrack_procfs"]
     },
     "capabilities": {
       "type": "object",
@@ -224,6 +239,27 @@
           "type": "integer",
           "minimum": 500
         },
+        "active_client_window_ms": {
+          "type": "integer",
+          "minimum": 1000
+        },
+        "active_client_min_bps": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "overview_window_samples": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "collector_mode": {
+          "$ref": "#/$defs/collectorMode"
+        },
+        "rate_collector_mode": {
+          "$ref": "#/$defs/rateCollectorMode"
+        },
+        "conn_collector_mode": {
+          "$ref": "#/$defs/connCollectorMode"
+        },
         "version": {
           "type": "string",
           "minLength": 1
@@ -241,8 +277,98 @@
         "warnings",
         "evidence",
         "refresh_interval_ms",
+        "rate_collector_mode",
+        "conn_collector_mode",
         "version",
         "capabilities"
+      ]
+    },
+    "overviewSample": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sample_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tx_bps": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rx_bps": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "client_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "active_clients": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tcp_conns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "udp_conns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "udp_dns_conns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "udp_other_conns": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "sample_ms",
+        "tx_bps",
+        "rx_bps",
+        "client_count",
+        "active_clients"
+      ]
+    },
+    "overview": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "samples": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/overviewSample"
+          }
+        },
+        "max_samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "overview_window_samples": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "active_client_window_ms": {
+          "type": "integer",
+          "minimum": 1000
+        },
+        "active_client_min_bps": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sample_source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "conn_semantics": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "samples"
       ]
     },
     "client": {
@@ -325,6 +451,14 @@
         "udp_conns": {
           "type": "integer",
           "minimum": 0
+        },
+        "udp_dns_conns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "udp_other_conns": {
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [
@@ -363,6 +497,14 @@
           "type": "integer",
           "minimum": 0
         },
+        "udp_dns_conns_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "udp_other_conns_total": {
+          "type": "integer",
+          "minimum": 0
+        },
         "conntrack_entries_seen": {
           "type": "integer",
           "minimum": 0
@@ -377,7 +519,10 @@
         },
         "conn_source": {
           "type": "string",
-          "enum": ["conntrack"]
+          "enum": ["conntrack", "conntrack_netlink", "conntrack_procfs"]
+        },
+        "conn_collector_mode": {
+          "$ref": "#/$defs/connCollectorMode"
         },
         "conn_semantics": {
           "type": "string",

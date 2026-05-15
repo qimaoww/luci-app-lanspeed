@@ -1,7 +1,7 @@
 CC ?= cc
 CFLAGS ?= -Os -Wall -Wextra
 LDFLAGS ?=
-LIBS ?= -lubox -lubus -luci -lblobmsg_json -ljson-c -lbpf
+LIBS ?= -lubox -lubus -luci -lblobmsg_json -ljson-c -lbpf -lmnl
 CLANG ?= clang
 BPF_CFLAGS ?= -O2 -g -Wall -Wextra -target bpf
 

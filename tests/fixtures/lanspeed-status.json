@@ -11,7 +11,10 @@
     "live_metrics": false
   },
   "refresh_interval_ms": 1000,
-  "version": "0.1.0",
+  "collector_mode": "auto",
+  "rate_collector_mode": "auto",
+  "conn_collector_mode": "auto",
+  "version": "0.1.1-r5",
   "capabilities": {
     "bpf": false,
     "bpf_package": false,
@@ -40,5 +43,8 @@
     "lan_edge": false,
     "safe_attach": false,
     "map_full": false
-  }
+  },
+  "active_client_window_ms": 10000,
+  "active_client_min_bps": 1,
+  "overview_window_samples": 240
 }

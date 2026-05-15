@@ -3,8 +3,29 @@
     "title": "客户端网速",
     "order": 90,
     "action": {
+      "type": "firstchild"
+    },
+    "depends": {
+      "acl": [ "luci-app-lanspeed" ]
+    }
+  },
+  "admin/status/lanspeed/overview": {
+    "title": "实时状态",
+    "order": 1,
+    "action": {
       "type": "view",
       "path": "lanspeed/index"
+    },
+    "depends": {
+      "acl": [ "luci-app-lanspeed" ]
+    }
+  },
+  "admin/status/lanspeed/config": {
+    "title": "LAN Speed 配置",
+    "order": 2,
+    "action": {
+      "type": "view",
+      "path": "lanspeed/config"
     },
     "depends": {
       "acl": [ "luci-app-lanspeed" ]

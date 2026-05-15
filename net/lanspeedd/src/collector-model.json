@@ -22,6 +22,7 @@
     "tc_coexistence": "create_or_reuse_clsact_and_append_owned_filter_only",
     "delete_existing": false,
     "reorder_existing": false,
+    "self_heal_reorders_existing": false,
     "owner": "lanspeed",
     "pref": 49152,
     "handle": "0x1eed"
@@ -60,7 +61,11 @@
       "counter_anomaly",
       "time_rollback"
     ],
-    "refresh_interval_warning": "refresh_interval_below_minimum"
+    "refresh_interval_warning": "refresh_interval_below_minimum",
+    "default_active_client_window_ms": 10000,
+    "minimum_active_client_window_ms": 1000,
+    "default_active_client_min_bps": 1,
+    "default_overview_window_samples": 240
   },
   "lifecycle_model": {
     "procd": {
@@ -108,7 +113,10 @@
       "mode": "auto",
       "recommended_refresh_interval_ms": 2000,
       "avoid_high_frequency_sampling": true
-    }
+    },
+    "active_client_window_ms": 10000,
+    "active_client_min_bps": 1,
+    "overview_window_samples": 240
   },
   "dedupe_model": {
     "lan_to_lan": "merge matching frame observations before aggregate totals",
@@ -151,21 +159,24 @@
     "complete_coverage_claimed": false
   },
   "conntrack_fallback_model": {
-    "source": "lanspeedd_procfs_conntrack_acct",
+    "source": "lanspeedd_ctnetlink_conntrack_acct",
+    "fallback_source": "lanspeedd_procfs_conntrack_acct",
     "collector_mode": "conntrack",
     "nss_sync_collector_mode": "conntrack_ecm_sync",
     "primary_sources": [
-      "conntrack",
       "nss_conntrack_sync"
     ],
+    "non_nss_live_rate_policy": "bpf_only",
+    "non_nss_conntrack_policy": "connection_counts_and_diagnostics_only",
     "mode": "Degraded",
     "active_only_when": [
-      "bpf_full_unavailable",
       "nss_ecm_sync_preferred",
       "enable_conntrack_fallback=1",
       "nf_conntrack_acct=1"
     ],
     "inactive_when": [
+      "non_nss_device",
+      "bpf_full_unavailable_without_nss_ecm_sync",
       "bpf_full_available_without_nss_ecm_sync",
       "enable_conntrack_fallback=0",
       "conntrack_acct_disabled"
@@ -188,6 +199,7 @@
       ]
     },
     "counter_sources": [
+      "ctnetlink_conntrack_acct_orig_reply_bytes",
       "procfs_conntrack_acct_orig_reply_bytes"
     ],
     "forbidden_sources": [
@@ -209,8 +221,8 @@
       "ip_role": "LAN client IP maps to an existing MAC/zone identity and is never the primary identity"
     },
     "direction": {
-      "tx_bps": "LAN client original-direction bytes from conntrack accounting",
-      "rx_bps": "LAN client reply-direction bytes from conntrack accounting"
+      "tx_bps": "NSS ECM sync only: LAN client original-direction bytes from conntrack accounting",
+      "rx_bps": "NSS ECM sync only: LAN client reply-direction bytes from conntrack accounting"
     },
     "nlbwmon_policy": "detect_conflict_without_reading_or_resetting_nlbwmon_counters",
     "procfs_paths": [
@@ -218,6 +230,7 @@
       "/proc/net/ip_conntrack",
       "/proc/net/arp"
     ],
+    "netlink_path": "netlink:ctnetlink",
     "snapshot_policy": {
       "first_sample_warning": "conntrack_snapshot_pending",
       "previous_snapshot": "in_daemon_memory",

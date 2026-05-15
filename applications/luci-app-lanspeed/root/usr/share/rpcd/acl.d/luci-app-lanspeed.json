@@ -6,6 +6,7 @@
         "lanspeed": [
           "status",
           "clients",
+          "overview",
           "health",
           "interfaces",
           "sysdevices"

@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=lanspeedd
-PKG_VERSION:=0.1.0
-PKG_RELEASE:=9
+PKG_VERSION:=0.1.1
+PKG_RELEASE:=5
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=
@@ -15,7 +15,7 @@ define Package/lanspeedd
   SECTION:=net
   CATEGORY:=Network
   TITLE:=LAN speed monitor daemon
-  DEPENDS:=+libubox +libubus +libuci +libblobmsg-json +libjson-c +libbpf +tc-tiny
+  DEPENDS:=+libubox +libubus +libuci +libblobmsg-json +libjson-c +libbpf +libmnl +kmod-nf-conntrack-netlink +tc-tiny
 endef
 
 define Package/lanspeedd/description
@@ -36,15 +36,15 @@ endef
 
 define Build/Prepare
 	mkdir -p $(PKG_BUILD_DIR)
-	$(CP) ./src/* $(PKG_BUILD_DIR)/
+	$(CP) ./src/Makefile ./src/*.c ./src/*.h ./src/*.json $(PKG_BUILD_DIR)/
 endef
 
 define Build/Compile
 	$(MAKE) -C $(PKG_BUILD_DIR) \
 		CC="$(TARGET_CC)" \
-		CFLAGS="$(TARGET_CFLAGS) -Wall -Wextra" \
+		CFLAGS="$(TARGET_CFLAGS) -Wall -Wextra -DLANSPEED_RELEASE=\\\"$(PKG_RELEASE)\\\"" \
 		LDFLAGS="$(TARGET_LDFLAGS)" \
-		LIBS="-lubox -lubus -luci -lblobmsg_json -ljson-c -lbpf"
+		LIBS="-lubox -lubus -luci -lblobmsg_json -ljson-c -lbpf -lmnl"
 	$(if $(CONFIG_PACKAGE_lanspeedd-bpf),$(call CompileBPF,$(PKG_BUILD_DIR)/lanspeed_tc.bpf.c),:)
 	$(if $(CONFIG_PACKAGE_lanspeedd-bpf),$(CP) $(PKG_BUILD_DIR)/lanspeed_tc.bpf.o $(PKG_BUILD_DIR)/lanspeed_tc.o,:)
 endef

@@ -54,7 +54,6 @@
   },
   "expected_warnings": [
     "flowtable_counter_missing",
-    "nlbwmon_counter_conflict",
-    "conntrack_routed_nat_only"
+    "nlbwmon_counter_conflict"
   ]
 }

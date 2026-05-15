@@ -436,6 +436,15 @@ function buildHealth(fixture) {
 
   const lanEdge = Boolean(fixture.files.lan_bridge || fixture.files.vlan || fixture.files.wlan);
   const mapFull = fixture.config.max_clients === 0;
+  const nssPresent = Boolean(fixture.nss && fixture.nss.present);
+  const nssEcmActive = Boolean(fixture.nss && fixture.nss.ecm_active);
+  const nssConntrackSyncPreferred = Boolean(
+    fixture.config.enable_conntrack_fallback &&
+    nfAcct.present &&
+    nfAcct.value === '1' &&
+    nssPresent &&
+    nssEcmActive
+  );
   const safeAttach = Boolean(
     fixture.config.enable_bpf &&
     fixture.commands.tc &&
@@ -464,15 +473,10 @@ function buildHealth(fixture) {
   }
 
   const bpfFullAvailable = Boolean(bpfRuntimeMetrics && !firewall.hardware_flow_offload);
-  const conntrackPrimaryPreferred = Boolean(
-    fixture.config.enable_conntrack_fallback &&
-    nfAcct.present &&
-    nfAcct.value === '1' &&
-    daeIngressPreempted
-  );
+  const conntrackPrimaryPreferred = nssConntrackSyncPreferred;
   const conntrackFallbackActive = Boolean(
     fixture.config.enable_conntrack_fallback &&
-    (!bpfFullAvailable || conntrackPrimaryPreferred) &&
+    conntrackPrimaryPreferred &&
     nfAcct.present &&
     nfAcct.value === '1'
   );
@@ -580,7 +584,7 @@ function buildHealth(fixture) {
         bpf_assets_are_evidence_only: true,
         runtime_attach_map_read_success: bpfRuntimeMetrics,
         live_metrics: bpfPrimaryActive,
-        primary_source: conntrackPrimaryPreferred ? 'conntrack' : (bpfPrimaryActive ? 'bpf' : (conntrackFallbackActive ? 'conntrack' : 'unsupported')),
+        primary_source: conntrackPrimaryPreferred ? 'nss_conntrack_sync' : (bpfPrimaryActive ? 'bpf' : 'unsupported'),
         runtime_gate_warning: 'bpf_runtime_loader_unavailable',
         map_full: mapFull,
         attach_model: {
@@ -648,10 +652,12 @@ function buildHealth(fixture) {
           enabled: Boolean(fixture.config.enable_conntrack_fallback),
           active: conntrackFallbackActive,
           collector_mode: 'conntrack',
-          primary_source: conntrackPrimaryPreferred ? 'conntrack' : (bpfPrimaryActive ? 'bpf' : (conntrackFallbackActive ? 'conntrack' : 'unsupported')),
+          primary_source: conntrackPrimaryPreferred ? 'nss_conntrack_sync' : (bpfPrimaryActive ? 'bpf' : 'unsupported'),
           mode: 'Degraded',
           confidence: conntrackFallbackActive ? (conntrackLowConfidence ? 'low' : 'medium') : 'unsupported',
           bpf_full_blocked_by_runtime_gate: !bpfRuntimeMetrics,
+          non_nss_live_rate_policy: 'bpf_only',
+          non_nss_conntrack_policy: 'connection_counts_and_diagnostics_only',
           coverage: 'routed_nat_only',
           coverage_warning: 'conntrack_routed_nat_only',
           nf_conntrack_acct: Boolean(nfAcct.present && nfAcct.value === '1'),
@@ -906,12 +912,13 @@ assert(probeErrorHealth.warnings.includes('probe_error'), 'probe error warning i
 assert(probeErrorHealth.evidence.probe_error === true, 'probe error evidence must be true');
 assert(probeErrorHealth.capabilities.flowtable_counter === false, 'failed nft probe must not claim flowtable counter support');
 
-assert(flowtableMissingNlbwmonHealth.mode === 'Degraded', 'flowtable missing fixture should remain Degraded through conntrack fallback');
-assert(flowtableMissingNlbwmonHealth.confidence === 'low', 'missing flowtable counter and nlbwmon conflict must lower confidence');
+assert(flowtableMissingNlbwmonHealth.mode === 'Degraded', 'flowtable missing fixture should remain Degraded while BPF runtime metrics are unavailable');
+assert(flowtableMissingNlbwmonHealth.confidence === 'medium', 'non-NSS missing flowtable/nlbwmon must not lower live-rate confidence through CT speed fallback');
 assert(flowtableMissingNlbwmonHealth.warnings.includes('flowtable_counter_missing'), 'missing flowtable counter warning is required');
 assert(flowtableMissingNlbwmonHealth.evidence.flowtable_counter === 'missing', 'missing flowtable counter evidence is required');
 assert(flowtableMissingNlbwmonHealth.warnings.includes('nlbwmon_counter_conflict'), 'nlbwmon conflict warning is required');
-assert(flowtableMissingNlbwmonHealth.evidence.collector.conntrack_fallback_model.active === true, 'conntrack fallback should be active when BPF Full is unavailable and accounting is enabled');
+assert(flowtableMissingNlbwmonHealth.evidence.collector.conntrack_fallback_model.active === false, 'non-NSS conntrack fallback must stay inactive for speed when BPF Full is unavailable');
+assert(flowtableMissingNlbwmonHealth.evidence.collector.conntrack_fallback_model.non_nss_live_rate_policy === 'bpf_only', 'non-NSS live-rate policy must be BPF-only in probe evidence');
 assert(flowtableMissingNlbwmonHealth.evidence.collector.conntrack_fallback_model.nlbwmon_read_counters === false, 'health model must not read nlbwmon counters');
 
 assert(conntrackAcctDisabledHealth.capabilities.conntrack_fallback === false, 'acct disabled health must disable conntrack fallback capability');
@@ -919,7 +926,7 @@ assert(conntrackAcctDisabledHealth.warnings.includes('conntrack_acct_disabled'),
 assert(conntrackAcctDisabledHealth.evidence.collector.conntrack_fallback_model.active === false, 'acct disabled health must keep fallback inactive');
 
 assert(openclashFakeIpHealth.mode === 'Degraded', 'OpenClash fake-ip fixture must not claim Full without runtime BPF attach/map-read');
-assert(openclashFakeIpHealth.confidence === 'low', 'OpenClash fake-ip with conntrack fallback should lower confidence');
+assert(openclashFakeIpHealth.confidence === 'medium', 'OpenClash fake-ip must not lower live-rate confidence through non-NSS CT speed fallback');
 assert(openclashFakeIpHealth.capabilities.openclash === true, 'OpenClash fake-ip fixture must detect OpenClash');
 assert(openclashFakeIpHealth.capabilities.openclash_fake_ip === true, 'OpenClash fake-ip capability is required');
 assert(openclashFakeIpHealth.capabilities.safe_attach === true, 'OpenClash fake-ip fixture must preserve safe_attach');
@@ -928,10 +935,10 @@ assert(openclashFakeIpHealth.warnings.includes('openclash_fake_ip_low_remote_con
 assert(!openclashFakeIpHealth.warnings.includes('unsafe_attach'), 'OpenClash fake-ip must not mark LAN-edge BPF unsafe by itself');
 assert(openclashFakeIpHealth.evidence.openclash.primary_bpf_policy === 'do_not_disable_lan_edge_bpf_when_openclash_is_present', 'OpenClash evidence must preserve primary BPF policy');
 assert(openclashFakeIpHealth.evidence.openclash.remote_identity_policy.includes('metadata only'), 'fake-ip remote identity policy must be explicit');
-assert(openclashFakeIpHealth.evidence.collector.conntrack_fallback_model.confidence === 'low', 'conntrack fallback becomes active and low confidence when BPF runtime gate is unavailable');
+assert(openclashFakeIpHealth.evidence.collector.conntrack_fallback_model.confidence === 'unsupported', 'non-NSS CT speed fallback remains unsupported when BPF runtime gate is unavailable');
 
-assert(openclashRouterSelfHealth.mode === 'Degraded', 'OpenClash router-self fixture should use degraded conntrack fallback when BPF object is unavailable');
-assert(openclashRouterSelfHealth.confidence === 'low', 'OpenClash router-self/TUN/DNS mismatch must lower fallback confidence');
+assert(openclashRouterSelfHealth.mode === 'Degraded', 'OpenClash router-self fixture should degrade when BPF object is unavailable');
+assert(openclashRouterSelfHealth.confidence === 'medium', 'OpenClash router-self/TUN/DNS mismatch must not lower live-rate confidence through non-NSS CT speed fallback');
 assert(openclashRouterSelfHealth.capabilities.openclash_tun_mix === true, 'OpenClash TUN/mix capability is required');
 assert(openclashRouterSelfHealth.capabilities.openclash_router_self_proxy === true, 'router_self_proxy capability is required');
 assert(openclashRouterSelfHealth.capabilities.openclash_dns_chain_complete === false, 'DNS mismatch must be represented as incomplete chain');
@@ -946,8 +953,8 @@ assert(daeTcPreserveHealth.capabilities.dae === true, 'dae preserve fixture must
 assert(daeTcPreserveHealth.warnings.includes('dae_detected'), 'dae preserve fixture must include dae_detected warning');
 assert(daeTcPreserveHealth.warnings.includes('dae_tc_preempts_bpf_ingress'), 'dae preserve fixture must warn when daed runs before lanspeed ingress');
 assert(daeTcPreserveHealth.evidence.collector.tc_filter.dae_preempts_bpf_ingress === true, 'dae preserve fixture must expose tc preemption evidence');
-assert(daeTcPreserveHealth.evidence.collector.conntrack_fallback_model.active === true, 'dae tc preemption must activate conntrack fallback even if BPF can attach');
-assert(daeTcPreserveHealth.evidence.collector.conntrack_fallback_model.primary_source === 'conntrack', 'dae tc preemption must select conntrack as primary source');
+assert(daeTcPreserveHealth.evidence.collector.conntrack_fallback_model.active === false, 'dae tc preemption must not activate non-NSS CT speed fallback');
+assert(daeTcPreserveHealth.evidence.collector.conntrack_fallback_model.primary_source === 'unsupported', 'dae tc preemption must not select CT as non-NSS speed primary source');
 assert(!daeTcPreserveHealth.warnings.includes('tc_filter_conflict'), 'dae preserve fixture must not warn conflict without pref/handle collision');
 assert(daeTcPreserveHealth.evidence.dae.dae0 === true && daeTcPreserveHealth.evidence.dae.dae0peer === true, 'dae interfaces must be represented as evidence');
 assert(daeTcPreserveHealth.evidence.dae.fwmark_detected === true, 'dae fwmark 0x8000000 evidence is required');
