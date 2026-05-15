@@ -613,6 +613,142 @@ function carryConntrackLastSeen(previous, current) {
   return previous.last_seen;
 }
 
+function parseNssEcmDirectState(lines) {
+  const flows = new Map();
+  let malformed_lines = 0;
+
+  for (const line of lines) {
+    const match = /^conns\.conn\.([0-9]+)\.([^=]+)=(.*)$/.exec(line);
+    if (!match) {
+      malformed_lines += 1;
+      continue;
+    }
+
+    const serial = match[1];
+    const field = match[2];
+    const value = match[3];
+    const flow = flows.get(serial) || {
+      serial,
+      sip_address: null,
+      dip_address: null,
+      snode_address: null,
+      dnode_address: null,
+      protocol: 0,
+      from_data_total: null,
+      to_data_total: 0
+    };
+
+    if (field === 'sip_address') {
+      flow.sip_address = value;
+    } else if (field === 'dip_address') {
+      flow.dip_address = value;
+    } else if (field === 'snode_address') {
+      flow.snode_address = value.toLowerCase();
+    } else if (field === 'dnode_address') {
+      flow.dnode_address = value.toLowerCase();
+    } else if (field === 'protocol') {
+      flow.protocol = Number.parseInt(value, 10) || 0;
+    } else if (field === 'adv_stats.from_data_total') {
+      flow.from_data_total = Number.parseInt(value, 10);
+    } else if (field === 'adv_stats.to_data_total') {
+      flow.to_data_total = Number.parseInt(value, 10) || 0;
+    }
+
+    flows.set(serial, flow);
+  }
+
+  return { flows: Array.from(flows.values()), malformed_lines };
+}
+
+function buildNssEcmDirectSnapshot(fixture, snapshot) {
+  const arpByIp = buildArpMap(fixture);
+  const parsed = parseNssEcmDirectState(snapshot.lines);
+  const clients = new Map();
+  let skippedNoArp = 0;
+  let entriesMatched = 0;
+
+  for (const flow of parsed.flows) {
+    if (!flow.sip_address || flow.from_data_total === null) {
+      continue;
+    }
+
+    const arp = arpByIp.get(flow.sip_address);
+    if (!arp) {
+      skippedNoArp += 1;
+      continue;
+    }
+
+    const mac = flow.snode_address && flow.snode_address !== '00:00:00:00:00:00'
+      ? flow.snode_address
+      : arp.mac;
+    const identityKey = `${mac}@${arp.zone}`;
+    const client = clients.get(identityKey) || {
+      mac,
+      identity_key: identityKey,
+      zone: arp.zone,
+      interface: arp.interface,
+      ips: [],
+      tx_bytes: 0,
+      rx_bytes: 0,
+      last_seen: snapshot.t_ms
+    };
+
+    if (!client.ips.includes(arp.ip)) {
+      client.ips.push(arp.ip);
+    }
+    client.tx_bytes += flow.from_data_total;
+    client.rx_bytes += flow.to_data_total;
+    client.last_seen = snapshot.t_ms;
+    clients.set(identityKey, client);
+    entriesMatched += 1;
+  }
+
+  return {
+    t_ms: snapshot.t_ms,
+    clients: Array.from(clients.values()).sort((left, right) => left.identity_key.localeCompare(right.identity_key)),
+    entries_seen: parsed.flows.length,
+    entries_matched: entriesMatched,
+    skipped_no_arp: skippedNoArp,
+    malformed_lines: parsed.malformed_lines
+  };
+}
+
+function simulateNssEcmDirect(fixture) {
+  const firstSnapshot = buildNssEcmDirectSnapshot(fixture, fixture.state_snapshots[0]);
+  const secondSnapshot = buildNssEcmDirectSnapshot(fixture, fixture.state_snapshots[1]);
+  const previousByIdentity = new Map(firstSnapshot.clients.map((client) => [client.identity_key, client]));
+  const deltaMs = secondSnapshot.t_ms - firstSnapshot.t_ms;
+  const clients = secondSnapshot.clients.map((current) => {
+    const previous = previousByIdentity.get(current.identity_key);
+    return {
+      mac: current.mac,
+      identity_key: current.identity_key,
+      zone: current.zone,
+      interface: current.interface,
+      ips: current.ips,
+      rx_bps: previous ? rateFromDelta(current.rx_bytes - previous.rx_bytes, deltaMs) : 0,
+      tx_bps: previous ? rateFromDelta(current.tx_bytes - previous.tx_bytes, deltaMs) : 0,
+      collector_mode: 'nss_ecm_direct',
+      confidence: 'high',
+      warnings: []
+    };
+  });
+
+  return {
+    source: 'lanspeedd_nss_ecm_direct_fixture',
+    primary_source: 'nss_ecm_direct',
+    collector_mode: 'nss_ecm_direct',
+    confidence: 'high',
+    coverage_client_source: 'nss_ecm_direct',
+    read_only: true,
+    forbidden_writes: ['defunct_all', 'flush', 'decelerate'],
+    source_path: '/dev/ecm_state',
+    first_snapshot: firstSnapshot,
+    second_snapshot: secondSnapshot,
+    clients
+  };
+}
+
 function simulateConntrackFallback(fixture) {
   const warnings = [];
   const probe = fixture.probe;
@@ -728,18 +864,25 @@ function simulateNssSourceSelection(fixture) {
   const probe = fixture.probe;
   const bpfFullAvailable = Boolean(fixture.config.bpf_full_available);
   const daeEarlyBpf = Boolean(fixture.config.dae_early_bpf);
-  const preferred = Boolean(
+  const directPreferred = Boolean(
+    fixture.config.enable_conntrack_fallback &&
+    probe.nss_present &&
+    probe.nss_ecm_active &&
+    probe.nss_ecm_direct_state
+  );
+  const syncPreferred = Boolean(
     fixture.config.enable_conntrack_fallback &&
     probe.nf_conntrack_acct &&
     probe.nss_present &&
     probe.nss_ecm_active
   );
+  const preferred = directPreferred || syncPreferred;
   const warnings = [];
 
   if (preferred) {
-    addUnique(warnings, 'nss_ecm_sync_cadence');
+    addUnique(warnings, directPreferred ? 'nss_ecm_direct_active' : 'nss_ecm_sync_cadence');
     if (bpfFullAvailable) {
-      addUnique(warnings, 'nss_prefers_conntrack_sync');
+      addUnique(warnings, directPreferred ? 'nss_prefers_direct' : 'nss_prefers_conntrack_sync');
     }
   }
 
@@ -747,10 +890,10 @@ function simulateNssSourceSelection(fixture) {
     preferred,
     dae_early_bpf: Boolean(probe.dae_preempts_lan_ingress && daeEarlyBpf),
     dae_preempted: false,
-    primary_source: preferred ? 'nss_conntrack_sync' : (bpfFullAvailable ? 'bpf' : 'unsupported'),
-    collector_mode: preferred ? 'conntrack_ecm_sync' : (bpfFullAvailable ? 'bpf' : 'unsupported'),
-    confidence: preferred ? 'medium' : (bpfFullAvailable ? 'high' : 'unsupported'),
-    coverage_client_source: preferred ? 'conntrack' : (bpfFullAvailable ? 'bpf' : 'unsupported'),
+    primary_source: directPreferred ? 'nss_ecm_direct' : (syncPreferred ? 'nss_conntrack_sync' : (bpfFullAvailable ? 'bpf' : 'unsupported')),
+    collector_mode: directPreferred ? 'nss_ecm_direct' : (syncPreferred ? 'conntrack_ecm_sync' : (bpfFullAvailable ? 'bpf' : 'unsupported')),
+    confidence: directPreferred ? 'high' : (syncPreferred ? 'medium' : (bpfFullAvailable ? 'high' : 'unsupported')),
+    coverage_client_source: directPreferred ? 'nss_ecm_direct' : (syncPreferred ? 'conntrack' : (bpfFullAvailable ? 'bpf' : 'unsupported')),
     warnings
   };
 }
@@ -1076,6 +1219,71 @@ function assertRuntimeConntrackFallbackSource(source) {
   assert(!source.includes('LANSPEED_OVERVIEW_ACTIVE_BPS'), 'overview active_clients must not be based on a bitrate threshold');
 }
 
+function assertRuntimeNssDirectSource(source, collectorModel, indexSource, nssPanelSource) {
+  for (const required of [
+    'NSS_ECM_STATE_DEBUGFS_DIR "/sys/kernel/debug/ecm/ecm_state"',
+    'NSS_ECM_STATE_DEV_MAJOR_PATH',
+    'NSS_ECM_DIRECT_SOURCE "nss_ecm_direct"',
+    'struct nss_ecm_direct_flow',
+    'struct nss_ecm_direct_stats',
+    'static bool nss_ecm_direct_supported',
+    'static bool read_nss_ecm_direct_snapshot',
+    'static bool parse_nss_ecm_state_line',
+    'static bool nss_ecm_state_open',
+    'makedev(major, 0)',
+    'open(path, O_RDONLY | O_CLOEXEC)',
+    'fdopen(fd, "r")',
+    'adv_stats.from_data_total',
+    'adv_stats.to_data_total',
+    'snode_address',
+    'dnode_address',
+    'nss_ecm_direct_preferred(probe)',
+    'collect_nss_ecm_direct_clients(root, clients, &probe)',
+    'nss_ecm_direct_snapshot_pending',
+    'nss_ecm_direct_unavailable',
+    'nss_ecm_direct_parse_errors',
+    'skip_nss_ecm_direct_flow_without_lan_identity',
+    'json_object_new_string("nss_ecm_direct")'
+  ]) {
+    assert(source.includes(required), `C runtime NSS direct missing ${required}`);
+  }
+
+  for (const forbidden of [
+    'defunct_all',
+    'decelerate',
+    'flush'
+  ]) {
+    assert(!/open\([^)]*O_WR/.test(source) && !new RegExp(`fopen\\([^\\n]*${forbidden}`).test(source),
+           `NSS direct must not write ${forbidden}`);
+  }
+
+  assert(/static bool nss_ecm_direct_preferred[\s\S]{0,220}?nss_ecm_direct_supported\(probe\)/.test(source),
+         'NSS direct preference must be explicit and capability-gated');
+  assert(/static bool conntrack_primary_preferred[\s\S]{0,220}?nss_ecm_direct_preferred\(probe\)[\s\S]{0,220}?nss_conntrack_sync_preferred\(probe\)/.test(source),
+         'NSS direct must outrank ECM sync in primary source selection');
+  assert(source.includes('static bool conntrack_clients_read_active'),
+         'NSS direct failure must still allow ECM sync/conntrack as a secondary read path');
+  assert(/static bool conntrack_clients_read_active[\s\S]{0,420}?nss_ecm_direct_preferred\(probe\)[\s\S]{0,420}?nss_conntrack_sync_reader_available\(probe\)/.test(source),
+         'NSS direct secondary read path must be limited to NSS ECM sync availability');
+  assert(/collect_conntrack_procfs_clients[\s\S]{0,760}?!conntrack_clients_read_active\(probe\)/.test(source),
+         'NSS direct failure must not be blocked by primary conntrack_fallback_active');
+  assert(/add_conntrack_common_warnings[\s\S]{0,360}?nss_ecm_direct_preferred\(probe\)[\s\S]{0,360}?nss_ecm_direct_unavailable/.test(source),
+         'ECM sync fallback after NSS direct failure must explain that direct was unavailable');
+  assert(/coverage_current_client_bytes[\s\S]{0,700}?nss_ecm_direct_preferred\(probe\)/.test(source),
+         'coverage must use NSS direct client bytes when direct is primary');
+  assert(/add_capabilities_from_values\(root,[\s\S]{0,140}?nss_ecm_direct_preferred\(&probe\)[\s\S]{0,180}?nss_ecm_direct_preferred\(&probe\)/.test(source),
+         'status capabilities/live_metrics must account for NSS direct primary source');
+  assert(indexSource.includes("mode === 'nss_ecm_direct'"), 'LuCI client status must label NSS direct rows');
+  assert(indexSource.includes('NSS-direct'), 'LuCI must show NSS-direct label');
+  assert(nssPanelSource.includes('direct_enabled') && nssPanelSource.includes('fallback_reason'),
+         'NSS panel must expose direct state and fallback reason');
+  assert(collectorModel.nss_direct_model.collector_mode === 'nss_ecm_direct', 'collector model must document nss_ecm_direct collector_mode');
+  assert(collectorModel.nss_direct_model.primary_source === 'nss_ecm_direct', 'collector model must document nss_ecm_direct primary source');
+  assert(collectorModel.nss_direct_model.read_only === true, 'collector model must declare NSS direct read-only');
+  assert(collectorModel.nss_direct_model.fallback_to === 'conntrack_ecm_sync', 'collector model must document ECM sync fallback');
+  assert(collectorModel.nss_direct_model.forbidden_writes.includes('defunct_all'), 'collector model must forbid defunct_all writes');
+}
+
 function assertRuntimeBpfGateSource(source) {
   assert(source.includes('static bool bpf_runtime_metrics_available'), 'C runtime must expose an explicit BPF runtime metrics gate');
   assert(source.includes('probe->bpf_runtime_metrics = bpf_runtime_metrics_available(probe)'), 'safe_attach must be separated from runtime metrics availability');
@@ -1207,6 +1415,7 @@ const resourceLimitFixture = readJson('tests/fixtures/lanspeed-resource-limits.j
 const refreshIntervalFixture = readJson('tests/fixtures/lanspeed-refresh-interval.json');
 const conntrackNatFixture = readJson('tests/fixtures/lanspeed-conntrack-nat.json');
 const conntrackAcctDisabledFixture = readJson('tests/fixtures/lanspeed-conntrack-acct-disabled.json');
+const nssEcmDirectFixture = readJson('tests/fixtures/lanspeed-nss-ecm-direct.json');
 const nssEcmSyncFixture = readJson('tests/fixtures/lanspeed-nss-ecm-sync.json');
 const nssEcmSyncBpfFallbackFixture = readJson('tests/fixtures/lanspeed-nss-ecm-sync-bpf-fallback.json');
 const sideRouterDirectFixture = readJson('tests/fixtures/lanspeed-side-router-direct.json');
@@ -1223,6 +1432,8 @@ const bpfLoaderSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lansp
 const initScript = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/init.d/lanspeedd'), 'utf8');
 const hotplugScript = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/hotplug.d/iface/90-lanspeedd'), 'utf8');
 const defaultConfig = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/config/lanspeed'), 'utf8');
+const indexSource = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/htdocs/luci-static/resources/view/lanspeed/index.js'), 'utf8');
+const nssPanelSource = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/nssPanel.js'), 'utf8');
 const collectorModel = readJson('net/lanspeedd/src/collector-model.json');
 const bpfAttachedFixture = readJson('tests/fixtures/lanspeed-bpf-attached.json');
 
@@ -1235,6 +1446,7 @@ assertNoDestructiveTcCommands(bpfLoaderSource);
 assertBpfSource(bpfSource);
 assertBpfBuildRules(packageMakefile, srcMakefile, sdkHelper);
 assertRuntimeConntrackFallbackSource(source);
+assertRuntimeNssDirectSource(source, collectorModel, indexSource, nssPanelSource);
 assertRuntimeBpfGateSource(source);
 assertBpfLoaderModule(bpfLoaderHeader, bpfLoaderSource, source, packageMakefile, srcMakefile);
 assertLifecycleInit(initScript, hotplugScript, packageMakefile, defaultConfig, collectorModel);
@@ -1447,14 +1659,33 @@ assert(conntrackAcctDisabled.clients.length === 0, 'acct disabled fixture must n
 assert(conntrackAcctDisabled.confidence === 'unsupported', 'acct disabled fallback confidence must be unsupported');
 assert(conntrackAcctDisabled.warnings.includes('conntrack_acct_disabled'), 'acct disabled warning is required');
 
+const nssEcmDirect = simulateNssEcmDirect(nssEcmDirectFixture);
+assert(nssEcmDirect.primary_source === nssEcmDirectFixture.expected.primary_source, 'NSS direct must become the primary source when ECM state is readable');
+assert(nssEcmDirect.collector_mode === nssEcmDirectFixture.expected.collector_mode, 'NSS direct clients must expose collector_mode=nss_ecm_direct');
+assert(nssEcmDirect.confidence === nssEcmDirectFixture.expected.confidence, 'NSS direct confidence must be high when state parsing succeeds');
+assert(nssEcmDirect.coverage_client_source === nssEcmDirectFixture.expected.coverage_client_source, 'NSS direct coverage must use direct client bytes');
+assert(nssEcmDirect.read_only === true, 'NSS direct must be read-only');
+assert(nssEcmDirect.forbidden_writes.includes('defunct_all') && nssEcmDirect.forbidden_writes.includes('decelerate'), 'NSS direct must forbid mutating ECM state');
+assert(nssEcmDirect.source_path === nssEcmDirectFixture.expected.source_path, 'NSS direct fixture must model /dev/ecm_state as the state source');
+assert(nssEcmDirect.first_snapshot.entries_seen === nssEcmDirectFixture.expected.flows_seen, 'NSS direct parser must see all ECM state flows');
+assert(nssEcmDirect.first_snapshot.entries_matched === nssEcmDirectFixture.expected.flows_matched, 'NSS direct parser must match ARP-backed LAN clients');
+assert(nssEcmDirect.first_snapshot.skipped_no_arp === nssEcmDirectFixture.expected.skipped_no_arp, 'NSS direct must skip flows without LAN identity');
+assert(nssEcmDirect.first_snapshot.malformed_lines === nssEcmDirectFixture.expected.parse_errors, 'NSS direct must isolate malformed state lines');
+assert(nssEcmDirect.clients.length === nssEcmDirectFixture.expected.client_count, 'NSS direct must emit ARP-backed client rows');
+assert(nssEcmDirect.clients[0].identity_key === nssEcmDirectFixture.expected.first_identity, 'NSS direct must key clients by MAC+zone');
+assert(nssEcmDirect.clients[0].tx_bps === nssEcmDirectFixture.expected.first_tx_bps, 'NSS direct tx_bps must use from_data_total deltas');
+assert(nssEcmDirect.clients[0].rx_bps === nssEcmDirectFixture.expected.first_rx_bps, 'NSS direct rx_bps must use to_data_total deltas');
+assert(nssEcmDirect.clients[1].tx_bps === nssEcmDirectFixture.expected.second_tx_bps, 'NSS direct must aggregate second client tx correctly');
+assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx_bps, 'NSS direct must aggregate second client rx correctly');
+
 const nssEcmSync = simulateNssSourceSelection(nssEcmSyncFixture);
-assert(nssEcmSync.preferred === true, 'NSS ECM sync fixture must prefer conntrack accounting even when BPF runtime is available');
-assert(nssEcmSync.primary_source === 'nss_conntrack_sync', 'NSS ECM sync must expose primary_source=nss_conntrack_sync');
-assert(nssEcmSync.collector_mode === 'conntrack_ecm_sync', 'NSS ECM sync clients must use collector_mode=conntrack_ecm_sync');
-assert(nssEcmSync.coverage_client_source === 'conntrack', 'NSS ECM sync coverage must use conntrack client bytes');
-assert(nssEcmSync.confidence === 'medium', 'NSS ECM sync confidence must not exceed medium');
-assert(nssEcmSync.warnings.includes('nss_ecm_sync_cadence'), 'NSS ECM sync must warn about sync cadence');
-assert(nssEcmSync.warnings.includes('nss_prefers_conntrack_sync'), 'NSS ECM sync must explain why BPF is not primary');
+assert(nssEcmSync.preferred === true, 'NSS ECM direct fixture must prefer direct collection before conntrack sync');
+assert(nssEcmSync.primary_source === 'nss_ecm_direct', 'NSS direct must expose primary_source=nss_ecm_direct');
+assert(nssEcmSync.collector_mode === 'nss_ecm_direct', 'NSS direct clients must use collector_mode=nss_ecm_direct');
+assert(nssEcmSync.coverage_client_source === 'nss_ecm_direct', 'NSS direct coverage must use direct client bytes');
+assert(nssEcmSync.confidence === 'high', 'NSS direct confidence should be high when direct state is readable');
+assert(nssEcmSync.warnings.includes('nss_ecm_direct_active'), 'NSS direct must explain that direct ECM state is active');
+assert(nssEcmSync.warnings.includes('nss_prefers_direct'), 'NSS direct must explain why BPF is not primary');
 
 {
   const nssConntrackFixture = clone(conntrackNatFixture);

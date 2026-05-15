@@ -236,5 +236,36 @@
       "previous_snapshot": "in_daemon_memory",
       "delta_formula": "max(0, current_bytes - previous_bytes) * 8 * 1000 / delta_ms"
     }
+  },
+  "nss_direct_model": {
+    "source": "lanspeedd_nss_ecm_direct_state",
+    "collector_mode": "nss_ecm_direct",
+    "primary_source": "nss_ecm_direct",
+    "read_only": true,
+    "fallback_to": "conntrack_ecm_sync",
+    "state_sources": [
+      "/dev/ecm_state",
+      "/sys/kernel/debug/ecm/ecm_state/state_dev_major"
+    ],
+    "counter_source": "ecm_state_adv_stats_from_to_data_total",
+    "forbidden_writes": [
+      "defunct_all",
+      "flush",
+      "decelerate"
+    ],
+    "identity_model": {
+      "primary_key": "mac+zone",
+      "ip_role": "sip_address maps through ARP/neighbor",
+      "mac_role": "snode_address preferred when valid"
+    },
+    "direction": {
+      "tx_bps": "ECM adv_stats.from_data_total delta from LAN client perspective",
+      "rx_bps": "ECM adv_stats.to_data_total delta from LAN client perspective"
+    },
+    "snapshot_policy": {
+      "first_sample_warning": "nss_ecm_direct_snapshot_pending",
+      "previous_snapshot": "in_daemon_memory",
+      "delta_formula": "max(0, current_bytes - previous_bytes) * 8 * 1000 / delta_ms"
+    }
   }
 }

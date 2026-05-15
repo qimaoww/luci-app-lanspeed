@@ -516,6 +516,7 @@ assert(schema.$defs.connCollectorMode.enum.includes('conntrack_procfs'), 'schema
 assert(schema.$defs.overview.properties.overview_window_samples.minimum === 2, 'schema must expose overview_window_samples for trend rendering');
 assert(schema.$defs.clients.properties.conn_source.enum.includes('conntrack_netlink'), 'schema must allow conn_source=conntrack_netlink');
 assert(schema.$defs.clients.properties.conn_source.enum.includes('conntrack_procfs'), 'schema must allow conn_source=conntrack_procfs');
+assert(schema.$defs.clients.properties.conn_source.enum.includes('nss_ecm_direct'), 'schema must allow conn_source=nss_ecm_direct');
 assert(schema.$defs.clients.properties.conn_collector_mode.$ref === '#/$defs/connCollectorMode', 'schema clients.conn_collector_mode must reuse connCollectorMode enum');
 validateFixture(fixture);
 validateMethodFixtures(schema, methodFixtures);

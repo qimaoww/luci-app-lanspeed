@@ -1,0 +1,87 @@
+{
+  "name": "nss ecm direct state parser",
+  "config": {
+    "enable_conntrack_fallback": true,
+    "bpf_full_available": true
+  },
+  "probe": {
+    "nf_conntrack_acct": true,
+    "nss_present": true,
+    "nss_ecm_active": true,
+    "nss_ecm_direct_state": true
+  },
+  "arp_entries": [
+    { "ip": "192.168.31.100", "mac": "aa:bb:cc:00:00:01", "interface": "br-lan", "zone": "lan" },
+    { "ip": "192.168.31.101", "mac": "aa:bb:cc:00:00:02", "interface": "br-lan", "zone": "lan" }
+  ],
+  "state_snapshots": [
+    {
+      "t_ms": 100000,
+      "lines": [
+        "conns.conn.10.serial=10",
+        "conns.conn.10.sip_address=192.168.31.100",
+        "conns.conn.10.dip_address=1.1.1.1",
+        "conns.conn.10.snode_address=aa:bb:cc:00:00:01",
+        "conns.conn.10.dnode_address=00:11:22:33:44:55",
+        "conns.conn.10.protocol=6",
+        "conns.conn.10.is_routed=1",
+        "conns.conn.10.adv_stats.from_data_total=1000000",
+        "conns.conn.10.adv_stats.to_data_total=2000000",
+        "conns.conn.11.serial=11",
+        "conns.conn.11.sip_address=192.168.31.101",
+        "conns.conn.11.dip_address=8.8.8.8",
+        "conns.conn.11.snode_address=aa:bb:cc:00:00:02",
+        "conns.conn.11.protocol=17",
+        "conns.conn.11.adv_stats.from_data_total=500000",
+        "conns.conn.11.adv_stats.to_data_total=100000",
+        "conns.conn.12.serial=12",
+        "conns.conn.12.sip_address=10.0.0.9",
+        "conns.conn.12.dip_address=9.9.9.9",
+        "conns.conn.12.adv_stats.from_data_total=1234",
+        "malformed direct line"
+      ]
+    },
+    {
+      "t_ms": 101000,
+      "lines": [
+        "conns.conn.10.serial=10",
+        "conns.conn.10.sip_address=192.168.31.100",
+        "conns.conn.10.dip_address=1.1.1.1",
+        "conns.conn.10.snode_address=aa:bb:cc:00:00:01",
+        "conns.conn.10.dnode_address=00:11:22:33:44:55",
+        "conns.conn.10.protocol=6",
+        "conns.conn.10.is_routed=1",
+        "conns.conn.10.adv_stats.from_data_total=1250000",
+        "conns.conn.10.adv_stats.to_data_total=2500000",
+        "conns.conn.11.serial=11",
+        "conns.conn.11.sip_address=192.168.31.101",
+        "conns.conn.11.dip_address=8.8.8.8",
+        "conns.conn.11.snode_address=aa:bb:cc:00:00:02",
+        "conns.conn.11.protocol=17",
+        "conns.conn.11.adv_stats.from_data_total=700000",
+        "conns.conn.11.adv_stats.to_data_total=150000",
+        "conns.conn.12.serial=12",
+        "conns.conn.12.sip_address=10.0.0.9",
+        "conns.conn.12.dip_address=9.9.9.9",
+        "conns.conn.12.adv_stats.from_data_total=2234"
+      ]
+    }
+  ],
+  "expected": {
+    "primary_source": "nss_ecm_direct",
+    "collector_mode": "nss_ecm_direct",
+    "confidence": "high",
+    "source_path": "/dev/ecm_state",
+    "flows_seen": 3,
+    "flows_matched": 2,
+    "skipped_no_arp": 1,
+    "parse_errors": 1,
+    "client_count": 2,
+    "first_identity": "aa:bb:cc:00:00:01@lan",
+    "first_tx_bps": 2000000,
+    "first_rx_bps": 4000000,
+    "second_tx_bps": 1600000,
+    "second_rx_bps": 400000,
+    "coverage_client_source": "nss_ecm_direct"
+  }
+}

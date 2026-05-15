@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <sys/sysmacros.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -73,6 +75,13 @@
 #define CONNTRACK_PROCFS_PATH "/proc/net/nf_conntrack"
 #define CONNTRACK_LEGACY_PROCFS_PATH "/proc/net/ip_conntrack"
 #define ARP_PROCFS_PATH "/proc/net/arp"
+#define NSS_ECM_DIRECT_SOURCE "nss_ecm_direct"
+#define NSS_ECM_STATE_DEBUGFS_DIR "/sys/kernel/debug/ecm/ecm_state"
+#define NSS_ECM_STATE_DEV_MAJOR_PATH NSS_ECM_STATE_DEBUGFS_DIR "/state_dev_major"
+#define NSS_ECM_STATE_OUTPUT_MASK_PATH NSS_ECM_STATE_DEBUGFS_DIR "/state_file_output_mask"
+#define NSS_ECM_STATE_DEV_PATH "/dev/ecm_state"
+#define NSS_ECM_STATE_TMP_DEV_PATH "/tmp/lanspeed-ecm-state"
+#define NSS_ECM_STATE_LINE_MAX 1024
 #define CONNTRACK_LINE_MAX 1024
 #define IP_STR_LEN 46
 #define MAC_STR_LEN 18
@@ -169,8 +178,41 @@ struct conntrack_collect_stats {
 	size_t entries_matched;
 };
 
+struct nss_ecm_direct_flow {
+	char serial[32];
+	char sip_address[IP_STR_LEN];
+	char dip_address[IP_STR_LEN];
+	char snode_address[MAC_STR_LEN];
+	char dnode_address[MAC_STR_LEN];
+	uint64_t from_data_total;
+	uint64_t to_data_total;
+	int protocol;
+	bool has_sip_address;
+	bool has_from_data_total;
+};
+
+struct nss_ecm_direct_stats {
+	char source_path[PATH_MAX];
+	bool state_attempted;
+	bool state_read;
+	bool snapshot_pending;
+	int state_errno;
+	size_t entries_seen;
+	size_t entries_matched;
+	size_t skipped_no_arp;
+	size_t malformed_lines;
+	size_t current_clients;
+	size_t emitted_clients;
+};
+
 struct runtime_probe;
+static bool nss_ecm_direct_preferred(const struct runtime_probe *probe);
 static bool nss_conntrack_sync_preferred(const struct runtime_probe *probe);
+static bool nss_conntrack_sync_reader_available(const struct runtime_probe *probe);
+static bool read_nss_ecm_direct_snapshot(struct conntrack_client_sample *samples,
+					 size_t *sample_count, size_t max_samples,
+					 uint64_t now_ms, struct json_object *warnings,
+					 struct nss_ecm_direct_stats *stats);
 static bool read_conntrack_snapshot_mode(struct conntrack_client_sample *samples,
 					 size_t *sample_count, size_t max_samples,
 					 uint64_t now_ms, struct json_object *warnings,
@@ -315,6 +357,11 @@ static size_t previous_conntrack_sample_count;
 static uint64_t previous_conntrack_snapshot_ms;
 static bool previous_conntrack_snapshot_valid;
 
+static struct conntrack_client_sample previous_nss_ecm_direct_samples[DEFAULT_MAX_CLIENTS];
+static size_t previous_nss_ecm_direct_sample_count;
+static uint64_t previous_nss_ecm_direct_snapshot_ms;
+static bool previous_nss_ecm_direct_snapshot_valid;
+
 #define LANSPEED_BPF_IFACE_MAX 16
 #define LANSPEED_BPF_IFNAME_LEN IFNAME_STR_LEN
 
@@ -410,6 +457,8 @@ struct runtime_probe {
 	bool nss_nsm_active;
 	bool nss_dp_active;
 	bool nss_mcs_active;
+	bool nss_ecm_direct_state;
+	bool nss_ecm_direct_supported;
 	int  nss_ecm_accelerated_connections;
 	int  nss_ecm_tcp_connections;
 	int  nss_ecm_udp_connections;
@@ -1633,6 +1682,11 @@ static void inspect_nss(struct runtime_probe *probe)
 	probe->nss_ecm_active =
 		file_exists("/sys/module/ecm") ||
 		file_exists("/sys/kernel/debug/ecm");
+	probe->nss_ecm_direct_state =
+		file_exists(NSS_ECM_STATE_DEV_MAJOR_PATH) ||
+		file_exists(NSS_ECM_STATE_DEV_PATH);
+	probe->nss_ecm_direct_supported =
+		probe->nss_ecm_active && probe->nss_ecm_direct_state;
 
 	probe->nss_ecm_accelerated_connections = -1;
 	probe->nss_ecm_tcp_connections = -1;
@@ -1783,6 +1837,25 @@ static bool nss_conntrack_sync_preferred(const struct runtime_probe *probe)
 	       probe->nss_ecm_active;
 }
 
+static bool nss_conntrack_sync_reader_available(const struct runtime_probe *probe)
+{
+	return nss_conntrack_sync_preferred(probe);
+}
+
+static bool nss_ecm_direct_supported(const struct runtime_probe *probe)
+{
+	return probe &&
+	       rate_collector_mode_allows_conntrack_sync() &&
+	       probe->nss_present &&
+	       probe->nss_ecm_active &&
+	       probe->nss_ecm_direct_supported;
+}
+
+static bool nss_ecm_direct_preferred(const struct runtime_probe *probe)
+{
+	return nss_ecm_direct_supported(probe);
+}
+
 static bool dae_tc_preempts_bpf_ingress(const struct runtime_probe *probe)
 {
 	return probe && probe->dae_preempts_bpf_ingress;
@@ -1790,7 +1863,8 @@ static bool dae_tc_preempts_bpf_ingress(const struct runtime_probe *probe)
 
 static bool conntrack_primary_preferred(const struct runtime_probe *probe)
 {
-	return nss_conntrack_sync_preferred(probe);
+	return nss_ecm_direct_preferred(probe) ||
+	       nss_conntrack_sync_preferred(probe);
 }
 
 static bool bpf_primary_active(const struct runtime_probe *probe)
@@ -1804,11 +1878,24 @@ static bool conntrack_fallback_active(const struct runtime_probe *probe)
 {
 	return (enable_conntrack_fallback || conn_collector_mode_is_forced()) &&
 	       conntrack_primary_preferred(probe) &&
+	       !nss_ecm_direct_preferred(probe) &&
 	       conntrack_fallback_accounting_safe(probe);
+}
+
+static bool conntrack_clients_read_active(const struct runtime_probe *probe)
+{
+	if (conntrack_fallback_active(probe))
+		return true;
+	if (nss_ecm_direct_preferred(probe))
+		return (enable_conntrack_fallback || conn_collector_mode_is_forced()) &&
+		       nss_conntrack_sync_reader_available(probe);
+	return false;
 }
 
 static const char *collector_primary_source(const struct runtime_probe *probe)
 {
+	if (nss_ecm_direct_preferred(probe))
+		return NSS_ECM_DIRECT_SOURCE;
 	if (nss_conntrack_sync_preferred(probe))
 		return "nss_conntrack_sync";
 	if (bpf_primary_active(probe))
@@ -1846,6 +1933,29 @@ static const char *conntrack_fallback_confidence(const struct runtime_probe *pro
 	return "medium";
 }
 
+static bool conntrack_clients_read_low_confidence(const struct runtime_probe *probe)
+{
+	bool nss_ecm_sync = nss_conntrack_sync_preferred(probe);
+	bool hw_off_non_nss = probe->hardware_flow_offload && !nss_ecm_sync;
+
+	return conntrack_clients_read_active(probe) &&
+	       (!probe->flowtable_counter || probe->software_flow_offload ||
+		hw_off_non_nss || probe->openclash_fake_ip ||
+		probe->openclash_tun_mix || probe->openclash_router_self_proxy ||
+		probe->openclash_udp_proxy || probe->dae || probe->homeproxy ||
+		probe->sqm || probe->qosify || probe->ifb ||
+		probe->nlbwmon || probe->probe_error || probe->lan_probe_error);
+}
+
+static const char *conntrack_clients_read_confidence(const struct runtime_probe *probe)
+{
+	if (!conntrack_clients_read_active(probe))
+		return "unsupported";
+	if (conntrack_clients_read_low_confidence(probe))
+		return "low";
+	return "medium";
+}
+
 static void add_conntrack_fallback_runtime_warnings(struct runtime_probe *probe)
 {
 	if (!conntrack_fallback_active(probe))
@@ -1865,6 +1975,16 @@ static void add_conntrack_fallback_runtime_warnings(struct runtime_probe *probe)
 		add_warning(probe, "flowtable_counter_missing");
 	if (probe->nlbwmon)
 		add_warning(probe, "nlbwmon_counter_conflict");
+}
+
+static void add_nss_ecm_direct_runtime_warnings(struct runtime_probe *probe)
+{
+	if (!nss_ecm_direct_preferred(probe))
+		return;
+
+	add_warning(probe, "nss_ecm_direct_active");
+	if (bpf_full_available(probe))
+		add_warning(probe, "nss_prefers_direct");
 }
 
 static void add_collector_evidence(struct runtime_probe *probe)
@@ -2082,6 +2202,36 @@ static void add_collector_evidence(struct runtime_probe *probe)
 	}
 	if (nss_conntrack_sync_preferred(probe) && bpf_full_available(probe))
 		json_object_array_add(warnings, json_object_new_string("nss_prefers_conntrack_sync"));
+	if (nss_ecm_direct_preferred(probe) && bpf_full_available(probe))
+		json_object_array_add(warnings, json_object_new_string("nss_prefers_direct"));
+
+	{
+		struct json_object *nss_direct = json_object_new_object();
+		struct json_object *direct_sources = json_object_new_array();
+		struct json_object *direct_forbidden = json_object_new_array();
+		json_object_array_add(direct_sources, json_object_new_string(NSS_ECM_STATE_DEV_PATH));
+		json_object_array_add(direct_sources, json_object_new_string(NSS_ECM_STATE_DEV_MAJOR_PATH));
+		json_object_array_add(direct_sources, json_object_new_string("procfs:/proc/net/arp"));
+		json_object_array_add(direct_forbidden, json_object_new_string("defunct_all"));
+		json_object_array_add(direct_forbidden, json_object_new_string("flush"));
+		json_object_array_add(direct_forbidden, json_object_new_string("decelerate"));
+		json_object_object_add(nss_direct, "source", json_object_new_string("lanspeedd_nss_ecm_direct_state"));
+		json_object_object_add(nss_direct, "collector_mode", json_object_new_string(NSS_ECM_DIRECT_SOURCE));
+		json_object_object_add(nss_direct, "primary_source", json_object_new_string(NSS_ECM_DIRECT_SOURCE));
+		json_object_object_add(nss_direct, "supported", json_object_new_boolean(nss_ecm_direct_supported(probe)));
+		json_object_object_add(nss_direct, "active", json_object_new_boolean(nss_ecm_direct_preferred(probe)));
+		json_object_object_add(nss_direct, "read_only", json_object_new_boolean(true));
+		json_object_object_add(nss_direct, "mode", json_object_new_string("Full"));
+		json_object_object_add(nss_direct, "confidence", json_object_new_string(nss_ecm_direct_preferred(probe) ? "high" : "unsupported"));
+		json_object_object_add(nss_direct, "coverage", json_object_new_string(NSS_ECM_DIRECT_SOURCE));
+		json_object_object_add(nss_direct, "fallback_to", json_object_new_string("conntrack_ecm_sync"));
+		json_object_object_add(nss_direct, "fallback_reason", json_object_new_string(nss_ecm_direct_preferred(probe) ? "" : "state_unavailable_or_unreadable"));
+		json_object_object_add(nss_direct, "counter_source", json_object_new_string("ecm_state_adv_stats_from_to_data_total"));
+		json_object_object_add(nss_direct, "sources", direct_sources);
+		json_object_object_add(nss_direct, "forbidden_writes", direct_forbidden);
+		json_object_object_add(nss_direct, "identity_model", json_object_new_string("state sip_address/snode_address -> ARP/neighbor -> mac+zone"));
+		json_object_object_add(collector, "nss_direct_model", nss_direct);
+	}
 
 	json_object_array_add(conntrack_active_when, json_object_new_string("nss_ecm_sync_preferred"));
 	json_object_array_add(conntrack_active_when, json_object_new_string("enable_conntrack_fallback=1"));
@@ -2213,6 +2363,7 @@ static void inspect_runtime(struct runtime_probe *probe)
 		add_warning(probe, "active_client_min_bps_below_minimum");
 	if (overview_window_samples_clamped)
 		add_warning(probe, "overview_window_samples_out_of_range");
+	add_nss_ecm_direct_runtime_warnings(probe);
 	add_conntrack_fallback_runtime_warnings(probe);
 	add_conflicts_from_probe(probe);
 }
@@ -2252,6 +2403,8 @@ static void free_runtime_probe(struct runtime_probe *probe)
 
 static const char *probe_mode(const struct runtime_probe *probe)
 {
+	if (nss_ecm_direct_preferred(probe))
+		return "Full";
 	if (!probe->tc && !conntrack_fallback_active(probe))
 		return "Unsupported";
 	if (conntrack_primary_preferred(probe))
@@ -2292,6 +2445,10 @@ static void finish_probe_evidence(struct runtime_probe *probe, const char *metho
 		json_object_object_add(nss, "present", json_object_new_boolean(probe->nss_present));
 		json_object_object_add(nss, "ecm_offload_active", json_object_new_boolean(probe->nss_ecm_active));
 		json_object_object_add(nss, "ppe_offload_active", json_object_new_boolean(probe->nss_ppe_active));
+		json_object_object_add(nss, "direct_supported", json_object_new_boolean(nss_ecm_direct_supported(probe)));
+		json_object_object_add(nss, "direct_enabled", json_object_new_boolean(nss_ecm_direct_preferred(probe)));
+		json_object_object_add(nss, "direct_source", json_object_new_string(NSS_ECM_DIRECT_SOURCE));
+		json_object_object_add(nss, "fallback_reason", json_object_new_string(nss_ecm_direct_preferred(probe) ? "" : "state_unavailable_or_unreadable"));
 		json_object_object_add(nss, "bridge_mgr", json_object_new_boolean(probe->nss_bridge_mgr));
 		json_object_object_add(nss, "ifb_active", json_object_new_boolean(probe->nss_ifb_active));
 		json_object_object_add(nss, "nsm_active", json_object_new_boolean(probe->nss_nsm_active));
@@ -2327,7 +2484,8 @@ static void finish_probe_evidence(struct runtime_probe *probe, const char *metho
 		json_object_object_add(nss, "subsystems", subs);
 
 		json_object_object_add(nss, "counter_source", json_object_new_string(
-			probe->nss_ppe_active ? "ppe_conntrack_sync"
+			nss_ecm_direct_preferred(probe) ? "ecm_state_direct"
+			: probe->nss_ppe_active ? "ppe_conntrack_sync"
 			: probe->nss_ecm_active ? "ecm_conntrack_sync"
 			: "netdev_counters_only"));
 		json_object_object_add(nss, "counter_cadence_seconds", json_object_new_int(
@@ -2420,6 +2578,7 @@ static void add_capabilities_from_values(struct json_object *parent, bool bpf,
 	json_object_object_add(capabilities, "nss", json_object_new_boolean(probe ? probe->nss_present : false));
 	json_object_object_add(capabilities, "nss_ecm_offload", json_object_new_boolean(probe ? probe->nss_ecm_active : false));
 	json_object_object_add(capabilities, "nss_ppe_offload", json_object_new_boolean(probe ? probe->nss_ppe_active : false));
+	json_object_object_add(capabilities, "nss_ecm_direct", json_object_new_boolean(probe ? nss_ecm_direct_preferred(probe) : false));
 	json_object_object_add(capabilities, "nss_bridge_mgr", json_object_new_boolean(probe ? probe->nss_bridge_mgr : false));
 	json_object_object_add(capabilities, "nss_ifb", json_object_new_boolean(probe ? probe->nss_ifb_active : false));
 	json_object_object_add(capabilities, "nss_nsm", json_object_new_boolean(probe ? probe->nss_nsm_active : false));
@@ -3121,6 +3280,318 @@ static void add_client_ip_unique(struct conntrack_client_sample *sample, const c
 	sample->ip_count++;
 }
 
+static void add_client_ip_unique_raw(struct conntrack_client_sample *sample, const char *ip)
+{
+	add_client_ip_unique(sample, ip);
+}
+
+static const struct conntrack_client_sample *find_previous_nss_ecm_direct_sample(
+	const char *identity_key)
+{
+	size_t i;
+
+	for (i = 0; i < previous_nss_ecm_direct_sample_count; i++) {
+		if (!strcmp(previous_nss_ecm_direct_samples[i].identity_key, identity_key))
+			return &previous_nss_ecm_direct_samples[i];
+	}
+
+	return NULL;
+}
+
+static void nss_ecm_direct_flow_reset(struct nss_ecm_direct_flow *flow,
+				      const char *serial)
+{
+	memset(flow, 0, sizeof(*flow));
+	if (serial)
+		snprintf(flow->serial, sizeof(flow->serial), "%s", serial);
+}
+
+static bool parse_nss_ecm_state_key(const char *key, char *serial,
+				    size_t serial_size, char *field,
+				    size_t field_size)
+{
+	const char *prefix = "conns.conn.";
+	const char *p;
+	const char *dot;
+	size_t serial_len;
+
+	if (!key || strncmp(key, prefix, strlen(prefix)))
+		return false;
+
+	p = key + strlen(prefix);
+	dot = strchr(p, '.');
+	if (!dot || dot == p)
+		return false;
+
+	serial_len = (size_t)(dot - p);
+	if (serial_len >= serial_size)
+		return false;
+
+	memcpy(serial, p, serial_len);
+	serial[serial_len] = '\0';
+	snprintf(field, field_size, "%s", dot + 1);
+	return field[0] != '\0';
+}
+
+static void nss_ecm_direct_flow_apply_field(struct nss_ecm_direct_flow *flow,
+					    const char *field, const char *value)
+{
+	if (!strcmp(field, "sip_address")) {
+		snprintf(flow->sip_address, sizeof(flow->sip_address), "%s", value);
+		flow->has_sip_address = true;
+	} else if (!strcmp(field, "dip_address")) {
+		snprintf(flow->dip_address, sizeof(flow->dip_address), "%s", value);
+	} else if (!strcmp(field, "snode_address")) {
+		snprintf(flow->snode_address, sizeof(flow->snode_address), "%s", value);
+		normalize_mac_address(flow->snode_address);
+	} else if (!strcmp(field, "dnode_address")) {
+		snprintf(flow->dnode_address, sizeof(flow->dnode_address), "%s", value);
+		normalize_mac_address(flow->dnode_address);
+	} else if (!strcmp(field, "protocol")) {
+		flow->protocol = atoi(value);
+	} else if (!strcmp(field, "adv_stats.from_data_total")) {
+		char *end = NULL;
+		flow->from_data_total = strtoull(value, &end, 10);
+		flow->has_from_data_total = end && end != value;
+	} else if (!strcmp(field, "adv_stats.to_data_total")) {
+		char *end = NULL;
+		flow->to_data_total = strtoull(value, &end, 10);
+		(void)end;
+	}
+}
+
+static bool parse_nss_ecm_state_line(const char *line, char *serial,
+				     size_t serial_size, char *field,
+				     size_t field_size, char *value,
+				     size_t value_size)
+{
+	char buffer[NSS_ECM_STATE_LINE_MAX];
+	char *eq;
+	char *raw_value;
+
+	if (!line || !serial || !field || !value)
+		return false;
+
+	snprintf(buffer, sizeof(buffer), "%s", line);
+	eq = strchr(buffer, '=');
+	if (!eq)
+		return false;
+	*eq = '\0';
+	raw_value = eq + 1;
+	raw_value[strcspn(raw_value, "\r\n")] = '\0';
+
+	if (!parse_nss_ecm_state_key(buffer, serial, serial_size,
+				     field, field_size))
+		return false;
+	snprintf(value, value_size, "%s", raw_value);
+	return true;
+}
+
+static bool add_nss_ecm_direct_flow_to_samples(struct conntrack_client_sample *samples,
+					       size_t *sample_count,
+					       size_t max_samples,
+					       const struct arp_entry *arp_entries,
+					       size_t arp_count,
+					       const struct nss_ecm_direct_flow *flow,
+					       uint64_t now_ms,
+					       struct nss_ecm_direct_stats *stats)
+{
+	const struct arp_entry *arp;
+	struct conntrack_client_sample *sample;
+	char mac[MAC_STR_LEN];
+	char identity_key[IDENTITY_KEY_STR_LEN];
+
+	if (!flow || !flow->has_sip_address || !flow->has_from_data_total)
+		return false;
+
+	arp = find_arp_entry(arp_entries, arp_count, flow->sip_address);
+	if (!arp) {
+		if (stats)
+			stats->skipped_no_arp++;
+		return true;
+	}
+
+	if (valid_mac_address(flow->snode_address))
+		snprintf(mac, sizeof(mac), "%s", flow->snode_address);
+	else
+		snprintf(mac, sizeof(mac), "%s", arp->mac);
+	normalize_mac_address(mac);
+
+	snprintf(identity_key, sizeof(identity_key), "%s@%s", mac, arp->zone);
+	sample = find_conntrack_client_sample(samples, *sample_count, identity_key);
+	if (!sample) {
+		if (*sample_count >= max_samples)
+			return true;
+		sample = &samples[*sample_count];
+		memset(sample, 0, sizeof(*sample));
+		snprintf(sample->mac, sizeof(sample->mac), "%s", mac);
+		snprintf(sample->identity_key, sizeof(sample->identity_key), "%s", identity_key);
+		snprintf(sample->zone, sizeof(sample->zone), "%s", arp->zone);
+		snprintf(sample->ifname, sizeof(sample->ifname), "%s", arp->ifname);
+		(*sample_count)++;
+	}
+
+	add_client_ip_unique_raw(sample, arp->ip);
+	sample->tx_bytes += flow->from_data_total;
+	sample->rx_bytes += flow->to_data_total;
+	sample->last_seen_ms = now_ms;
+	if (flow->protocol == 6)
+		sample->tcp_conns++;
+	else if (flow->protocol == 17)
+		sample->udp_conns++;
+
+	if (stats)
+		stats->entries_matched++;
+	return true;
+}
+
+static bool nss_ecm_state_open_path(const char *path, FILE **file, int *err_out)
+{
+	FILE *fp;
+	int fd;
+
+	*file = NULL;
+	if (err_out)
+		*err_out = 0;
+
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0) {
+		if (err_out)
+			*err_out = errno;
+		return false;
+	}
+
+	fp = fdopen(fd, "r");
+	if (!fp) {
+		if (err_out)
+			*err_out = errno;
+		close(fd);
+		return false;
+	}
+
+	*file = fp;
+	return true;
+}
+
+static bool nss_ecm_state_open(FILE **file, char *source_path,
+			       size_t source_path_size, int *err_out)
+{
+	FILE *major_file;
+	unsigned int major = 0;
+
+	if (nss_ecm_state_open_path(NSS_ECM_STATE_DEV_PATH, file, err_out)) {
+		snprintf(source_path, source_path_size, "%s", NSS_ECM_STATE_DEV_PATH);
+		return true;
+	}
+
+	major_file = fopen(NSS_ECM_STATE_DEV_MAJOR_PATH, "r");
+	if (!major_file)
+		return false;
+	if (fscanf(major_file, "%u", &major) != 1 || major == 0) {
+		fclose(major_file);
+		if (err_out)
+			*err_out = EINVAL;
+		return false;
+	}
+	fclose(major_file);
+
+	unlink(NSS_ECM_STATE_TMP_DEV_PATH);
+	if (mknod(NSS_ECM_STATE_TMP_DEV_PATH, S_IFCHR | 0600, makedev(major, 0)) != 0) {
+		if (err_out)
+			*err_out = errno;
+		return false;
+	}
+
+	if (!nss_ecm_state_open_path(NSS_ECM_STATE_TMP_DEV_PATH, file, err_out)) {
+		unlink(NSS_ECM_STATE_TMP_DEV_PATH);
+		return false;
+	}
+	unlink(NSS_ECM_STATE_TMP_DEV_PATH);
+
+	snprintf(source_path, source_path_size, "%s", NSS_ECM_STATE_DEV_PATH);
+	return true;
+}
+
+static bool read_nss_ecm_direct_snapshot(struct conntrack_client_sample *samples,
+					 size_t *sample_count, size_t max_samples,
+					 uint64_t now_ms, struct json_object *warnings,
+					 struct nss_ecm_direct_stats *stats)
+{
+	struct arp_entry arp_entries[DEFAULT_MAX_CLIENTS];
+	size_t arp_count;
+	FILE *file = NULL;
+	char line[NSS_ECM_STATE_LINE_MAX];
+	struct nss_ecm_direct_flow active_flow;
+	char active_serial[32] = "";
+	bool have_active = false;
+
+	*sample_count = 0;
+	memset(stats, 0, sizeof(*stats));
+	stats->state_attempted = true;
+
+	arp_count = load_arp_table(arp_entries, ARRAY_SIZE(arp_entries), warnings);
+	if (arp_count == 0) {
+		add_string_unique(warnings, "skip_nss_ecm_direct_flow_without_lan_identity");
+		return false;
+	}
+
+	if (!nss_ecm_state_open(&file, stats->source_path,
+				sizeof(stats->source_path), &stats->state_errno)) {
+		add_string_unique(warnings, "nss_ecm_direct_unavailable");
+		return false;
+	}
+
+	stats->state_read = true;
+	nss_ecm_direct_flow_reset(&active_flow, NULL);
+	while (fgets(line, sizeof(line), file)) {
+		char serial[32];
+		char field[96];
+		char value[NSS_ECM_STATE_LINE_MAX];
+
+		if (!parse_nss_ecm_state_line(line, serial, sizeof(serial),
+					      field, sizeof(field),
+					      value, sizeof(value))) {
+			stats->malformed_lines++;
+			continue;
+		}
+
+		if (active_serial[0] && strcmp(active_serial, serial)) {
+			stats->entries_seen++;
+			add_nss_ecm_direct_flow_to_samples(samples, sample_count,
+							   max_samples,
+							   arp_entries, arp_count,
+							   &active_flow, now_ms,
+							   stats);
+			nss_ecm_direct_flow_reset(&active_flow, serial);
+			snprintf(active_serial, sizeof(active_serial), "%s", serial);
+		} else if (!active_serial[0]) {
+			nss_ecm_direct_flow_reset(&active_flow, serial);
+			snprintf(active_serial, sizeof(active_serial), "%s", serial);
+		}
+
+		nss_ecm_direct_flow_apply_field(&active_flow, field, value);
+		have_active = true;
+	}
+
+	if (have_active) {
+		stats->entries_seen++;
+		add_nss_ecm_direct_flow_to_samples(samples, sample_count,
+						   max_samples, arp_entries,
+						   arp_count, &active_flow,
+						   now_ms, stats);
+	}
+
+	fclose(file);
+	stats->current_clients = *sample_count;
+	if (stats->malformed_lines)
+		add_string_unique(warnings, "nss_ecm_direct_parse_errors");
+	if (stats->skipped_no_arp)
+		add_string_unique(warnings, "skip_nss_ecm_direct_flow_without_lan_identity");
+	if (*sample_count == 0)
+		return false;
+	return true;
+}
+
 static bool add_conntrack_flow_to_samples(struct conntrack_client_sample *samples,
 					  size_t *sample_count, size_t max_samples,
 					  const struct arp_entry *arp_entries, size_t arp_count,
@@ -3648,7 +4119,12 @@ static uint64_t conntrack_refresh_last_seen(
 static void add_conntrack_common_warnings(const struct runtime_probe *probe,
 					  struct json_object *warnings)
 {
-	if (nss_conntrack_sync_preferred(probe)) {
+	if (nss_ecm_direct_preferred(probe)) {
+		add_string_unique(warnings, "nss_ecm_direct_unavailable");
+		add_string_unique(warnings, "nss_ecm_sync_cadence");
+		if (bpf_full_available(probe))
+			add_string_unique(warnings, "nss_prefers_conntrack_sync");
+	} else if (nss_conntrack_sync_preferred(probe)) {
 		add_string_unique(warnings, "nss_ecm_sync_cadence");
 		if (bpf_full_available(probe))
 			add_string_unique(warnings, "nss_prefers_conntrack_sync");
@@ -3735,7 +4211,7 @@ static void add_conntrack_clients_evidence(struct json_object *root,
 	json_object_object_add(evidence, "active", json_object_new_boolean(active));
 	json_object_object_add(evidence, "live_metrics", json_object_new_boolean(false));
 	json_object_object_add(evidence, "bpf_runtime_metrics", json_object_new_boolean(probe->bpf_runtime_metrics));
-	json_object_object_add(evidence, "confidence", json_object_new_string(conntrack_fallback_confidence(probe)));
+	json_object_object_add(evidence, "confidence", json_object_new_string(conntrack_clients_read_confidence(probe)));
 	json_object_object_add(evidence, "counter_source", json_object_new_string(conntrack_stats_counter_source(stats)));
 	json_object_object_add(evidence, "sources", sources);
 	json_object_object_add(evidence, "forbidden_sources", forbidden);
@@ -4164,7 +4640,7 @@ static bool collect_conntrack_procfs_clients(struct json_object *root,
 		(size_t)max_clients : DEFAULT_MAX_CLIENTS;
 	bool read_ok;
 
-	if (!conntrack_fallback_active(probe)) {
+	if (!conntrack_clients_read_active(probe)) {
 		add_string_unique(warnings, "live_metrics_unavailable");
 		if (!probe->nf_conntrack_acct)
 			add_string_unique(warnings, "conntrack_acct_disabled");
@@ -4191,6 +4667,180 @@ static bool collect_conntrack_procfs_clients(struct json_object *root,
 	return true;
 }
 
+static void add_nss_ecm_direct_clients_evidence(struct json_object *root,
+						const struct runtime_probe *probe,
+						struct json_object *warnings,
+						const struct nss_ecm_direct_stats *stats,
+						bool active)
+{
+	struct json_object *evidence = json_object_new_object();
+	struct json_object *sources = json_object_new_array();
+	struct json_object *forbidden = json_object_new_array();
+
+	(void)probe;
+
+	json_object_array_add(sources, json_object_new_string(NSS_ECM_STATE_DEV_PATH));
+	json_object_array_add(sources, json_object_new_string(NSS_ECM_STATE_DEV_MAJOR_PATH));
+	json_object_array_add(sources, json_object_new_string("procfs:/proc/net/arp"));
+	json_object_array_add(forbidden, json_object_new_string("defunct_all"));
+	json_object_array_add(forbidden, json_object_new_string("flush"));
+	json_object_array_add(forbidden, json_object_new_string("decelerate"));
+
+	json_object_object_add(evidence, "source", json_object_new_string("lanspeedd_nss_ecm_direct_state"));
+	json_object_object_add(evidence, "method", json_object_new_string("clients"));
+	json_object_object_add(evidence, "collector_mode", json_object_new_string("nss_ecm_direct"));
+	json_object_object_add(evidence, "primary_source", json_object_new_string(NSS_ECM_DIRECT_SOURCE));
+	json_object_object_add(evidence, "mode", json_object_new_string("Full"));
+	json_object_object_add(evidence, "active", json_object_new_boolean(active));
+	json_object_object_add(evidence, "live_metrics", json_object_new_boolean(active));
+	json_object_object_add(evidence, "read_only", json_object_new_boolean(true));
+	json_object_object_add(evidence, "confidence", json_object_new_string(active ? "high" : "unsupported"));
+	json_object_object_add(evidence, "coverage", json_object_new_string(NSS_ECM_DIRECT_SOURCE));
+	json_object_object_add(evidence, "counter_source", json_object_new_string("ecm_state_adv_stats_from_to_data_total"));
+	json_object_object_add(evidence, "sources", sources);
+	json_object_object_add(evidence, "forbidden_writes", forbidden);
+	if (stats) {
+		json_object_object_add(evidence, "state_attempted", json_object_new_boolean(stats->state_attempted));
+		json_object_object_add(evidence, "state_read", json_object_new_boolean(stats->state_read));
+		json_object_object_add(evidence, "state_errno", json_object_new_int(stats->state_errno));
+		json_object_object_add(evidence, "source_path", json_object_new_string(stats->source_path[0] ? stats->source_path : ""));
+		json_object_object_add(evidence, "snapshot_pending", json_object_new_boolean(stats->snapshot_pending));
+		json_object_object_add(evidence, "current_clients", json_object_new_int64((int64_t)stats->current_clients));
+		json_object_object_add(evidence, "emitted_clients", json_object_new_int64((int64_t)stats->emitted_clients));
+		json_object_object_add(evidence, "flows_seen", json_object_new_int64((int64_t)stats->entries_seen));
+		json_object_object_add(evidence, "flows_matched", json_object_new_int64((int64_t)stats->entries_matched));
+		json_object_object_add(evidence, "skipped_no_arp", json_object_new_int64((int64_t)stats->skipped_no_arp));
+		json_object_object_add(evidence, "malformed_lines", json_object_new_int64((int64_t)stats->malformed_lines));
+	}
+	json_object_object_add(evidence, "warnings", warnings);
+	add_conntrack_identity_model(evidence);
+	json_object_object_add(root, "evidence", evidence);
+}
+
+static bool collect_nss_ecm_direct_clients(struct json_object *root,
+					   struct json_object *clients,
+					   const struct runtime_probe *probe)
+{
+	struct conntrack_client_sample current[DEFAULT_MAX_CLIENTS];
+	struct nss_ecm_direct_stats stats;
+	struct json_object *warnings = json_object_new_array();
+	uint64_t now_ms = monotonic_time_ms();
+	uint64_t delta_ms = previous_nss_ecm_direct_snapshot_valid ?
+		(now_ms - previous_nss_ecm_direct_snapshot_ms) : 0;
+	size_t current_count = 0;
+	size_t max_samples = max_clients > 0 && max_clients < DEFAULT_MAX_CLIENTS ?
+		(size_t)max_clients : DEFAULT_MAX_CLIENTS;
+	uint64_t tcp_conns_total = 0;
+	uint64_t udp_conns_total = 0;
+	size_t i;
+	bool read_ok;
+
+	if (!nss_ecm_direct_preferred(probe)) {
+		add_string_unique(warnings, "nss_ecm_direct_unavailable");
+		add_nss_ecm_direct_clients_evidence(root, probe, warnings, NULL, false);
+		return false;
+	}
+
+	add_string_unique(warnings, "nss_ecm_direct_active");
+	if (bpf_full_available(probe))
+		add_string_unique(warnings, "nss_prefers_direct");
+
+	read_ok = read_nss_ecm_direct_snapshot(current, &current_count, max_samples,
+					       now_ms, warnings, &stats);
+	if (!read_ok) {
+		add_nss_ecm_direct_clients_evidence(root, probe, warnings, &stats, false);
+		return false;
+	}
+
+	if (!previous_nss_ecm_direct_snapshot_valid) {
+		stats.snapshot_pending = true;
+		add_string_unique(warnings, "nss_ecm_direct_snapshot_pending");
+	} else if (now_ms < previous_nss_ecm_direct_snapshot_ms) {
+		stats.snapshot_pending = true;
+		add_string_unique(warnings, "time_rollback");
+		delta_ms = 0;
+	}
+
+	for (i = 0; i < current_count; i++) {
+		const struct conntrack_client_sample *previous;
+		struct json_object *client;
+		struct json_object *ips;
+		struct json_object *client_warnings;
+		bool counter_anomaly = false;
+		uint64_t tx_bps = 0;
+		uint64_t rx_bps = 0;
+		size_t ip_index;
+
+		previous = find_previous_nss_ecm_direct_sample(current[i].identity_key);
+		if (previous_nss_ecm_direct_snapshot_valid && previous) {
+			tx_bps = delta_bps(current[i].tx_bytes, previous->tx_bytes,
+					   delta_ms, &counter_anomaly);
+			rx_bps = delta_bps(current[i].rx_bytes, previous->rx_bytes,
+					   delta_ms, &counter_anomaly);
+		}
+		if (counter_anomaly)
+			add_string_unique(warnings, "counter_anomaly");
+
+		client = json_object_new_object();
+		ips = json_object_new_array();
+		client_warnings = json_object_get(warnings);
+		for (ip_index = 0; ip_index < current[i].ip_count; ip_index++)
+			json_object_array_add(ips, json_object_new_string(current[i].ips[ip_index]));
+
+		json_object_object_add(client, "mac", json_object_new_string(current[i].mac));
+		json_object_object_add(client, "identity_key", json_object_new_string(current[i].identity_key));
+		json_object_object_add(client, "zone", json_object_new_string(current[i].zone));
+		json_object_object_add(client, "interface", json_object_new_string(current[i].ifname));
+		json_object_object_add(client, "ips", ips);
+		{
+			const char *ip_ptrs[MAX_CLIENT_IPS];
+			const char *name;
+			size_t k;
+			for (k = 0; k < current[i].ip_count; k++)
+				ip_ptrs[k] = current[i].ips[k];
+			name = hostname_lookup(current[i].mac, ip_ptrs, current[i].ip_count);
+			json_object_object_add(client, "hostname",
+			                       name ? json_object_new_string(name) : NULL);
+		}
+		json_object_object_add(client, "rx_bps", json_object_new_int64((int64_t)rx_bps));
+		json_object_object_add(client, "tx_bps", json_object_new_int64((int64_t)tx_bps));
+		json_object_object_add(client, "rx_bytes", json_object_new_int64((int64_t)current[i].rx_bytes));
+		json_object_object_add(client, "tx_bytes", json_object_new_int64((int64_t)current[i].tx_bytes));
+		json_object_object_add(client, "tcp_conns", json_object_new_int64((int64_t)current[i].tcp_conns));
+		json_object_object_add(client, "udp_conns", json_object_new_int64((int64_t)current[i].udp_conns));
+		json_object_object_add(client, "udp_dns_conns", json_object_new_int(0));
+		json_object_object_add(client, "udp_other_conns", json_object_new_int64((int64_t)current[i].udp_conns));
+		json_object_object_add(client, "sample_ms", json_object_new_int64((int64_t)now_ms));
+		json_object_object_add(client, "last_seen", json_object_new_int64((int64_t)current[i].last_seen_ms));
+		json_object_object_add(client, "collector_mode", json_object_new_string(NSS_ECM_DIRECT_SOURCE));
+		json_object_object_add(client, "confidence", json_object_new_string("high"));
+		json_object_object_add(client, "warnings", client_warnings);
+		json_object_array_add(clients, client);
+		stats.emitted_clients++;
+		tcp_conns_total += current[i].tcp_conns;
+		udp_conns_total += current[i].udp_conns;
+	}
+
+	json_object_object_add(root, "tcp_conns_total", json_object_new_int64((int64_t)tcp_conns_total));
+	json_object_object_add(root, "udp_conns_total", json_object_new_int64((int64_t)udp_conns_total));
+	json_object_object_add(root, "udp_dns_conns_total", json_object_new_int(0));
+	json_object_object_add(root, "udp_other_conns_total", json_object_new_int64((int64_t)udp_conns_total));
+	json_object_object_add(root, "nss_ecm_direct_flows_seen", json_object_new_int64((int64_t)stats.entries_seen));
+	json_object_object_add(root, "nss_ecm_direct_flows_matched", json_object_new_int64((int64_t)stats.entries_matched));
+	json_object_object_add(root, "nss_ecm_direct_parse_errors", json_object_new_int64((int64_t)stats.malformed_lines));
+	json_object_object_add(root, "conn_source", json_object_new_string(NSS_ECM_DIRECT_SOURCE));
+	json_object_object_add(root, "conn_semantics", json_object_new_string("nss_ecm_direct_state_current_tcp_udp_protocol_counts"));
+
+	memcpy(previous_nss_ecm_direct_samples, current,
+	       current_count * sizeof(struct conntrack_client_sample));
+	previous_nss_ecm_direct_sample_count = current_count;
+	previous_nss_ecm_direct_snapshot_ms = now_ms;
+	previous_nss_ecm_direct_snapshot_valid = true;
+
+	add_nss_ecm_direct_clients_evidence(root, probe, warnings, &stats, true);
+	return true;
+}
+
 /* ---------- coverage sliding window ---------- */
 
 /* Sum byte counters from the latest collector snapshot selected by the
@@ -4202,6 +4852,17 @@ static bool coverage_current_client_bytes(const struct runtime_probe *probe,
 	size_t i;
 	uint64_t rx = 0, tx = 0;
 
+	if (previous_nss_ecm_direct_snapshot_valid &&
+	    previous_nss_ecm_direct_sample_count > 0 &&
+	    nss_ecm_direct_preferred(probe)) {
+		for (i = 0; i < previous_nss_ecm_direct_sample_count; i++) {
+			rx += previous_nss_ecm_direct_samples[i].rx_bytes;
+			tx += previous_nss_ecm_direct_samples[i].tx_bytes;
+		}
+		*rx_out = rx;
+		*tx_out = tx;
+		return true;
+	}
 	if (previous_conntrack_snapshot_valid &&
 	    previous_conntrack_sample_count > 0 &&
 	    nss_conntrack_sync_preferred(probe)) {
@@ -4324,7 +4985,8 @@ static void add_coverage_to_status(struct json_object *root,
 	int pct_tx = -1, pct_rx = -1;
 	const char *quality = "warmup";
 
-	if (!bpf_runtime_enabled && !nss_conntrack_sync_preferred(probe)) {
+	if (!bpf_runtime_enabled && !nss_ecm_direct_preferred(probe) &&
+	    !nss_conntrack_sync_preferred(probe)) {
 		json_object_object_add(cov, "quality",
 				       json_object_new_string("unsupported"));
 		json_object_object_add(cov, "samples",
@@ -4595,9 +5257,10 @@ static int status_method(struct ubus_context *ubus, struct ubus_object *obj,
 	json_object_object_add(root, "conn_collector_mode",
 			       json_object_new_string(conn_collector_mode_config_name()));
 	json_object_object_add(root, "version", json_object_new_string(LANSPEED_FULL_VERSION));
-	add_capabilities_from_values(root, enable_bpf && bpf_primary_active(&probe),
+	add_capabilities_from_values(root, enable_bpf && bpf_primary_active(&probe) &&
+				     !nss_ecm_direct_preferred(&probe),
 				     enable_conntrack_fallback,
-				     bpf_primary_active(&probe), &probe);
+				     nss_ecm_direct_preferred(&probe) || bpf_primary_active(&probe), &probe);
 	coverage_push_sample(monotonic_time_ms(), &probe);
 	add_coverage_to_status(root, &probe);
 	json_object_put(probe.conflicts);
@@ -4721,7 +5384,14 @@ static int clients_method(struct ubus_context *ubus, struct ubus_object *obj,
 			init_runtime_probe(&probe);
 			inspect_runtime(&probe);
 		}
-		if (nss_conntrack_sync_preferred(&probe)) {
+		if (nss_ecm_direct_preferred(&probe)) {
+			if (collect_nss_ecm_direct_clients(root, clients, &probe)) {
+				merge_conntrack_conn_counts(root, clients);
+			} else if (!collect_conntrack_procfs_clients(root, clients, &probe) &&
+			    collect_bpf_clients(root, clients, &probe)) {
+				merge_conntrack_conn_counts(root, clients);
+			}
+		} else if (nss_conntrack_sync_preferred(&probe)) {
 			if (!collect_conntrack_procfs_clients(root, clients, &probe) &&
 			    collect_bpf_clients(root, clients, &probe)) {
 				/* BPF is only a slow-path fallback under NSS sync,
@@ -4768,9 +5438,10 @@ static int health_method(struct ubus_context *ubus, struct ubus_object *obj,
 
 	json_object_object_add(root, "mode", json_object_new_string(mode));
 	json_object_object_add(root, "confidence", json_object_new_string(probe_confidence(&probe, mode)));
-	add_capabilities_from_values(root, enable_bpf && bpf_primary_active(&probe),
+	add_capabilities_from_values(root, enable_bpf && bpf_primary_active(&probe) &&
+				     !nss_ecm_direct_preferred(&probe),
 				     enable_conntrack_fallback,
-				     bpf_primary_active(&probe), &probe);
+				     nss_ecm_direct_preferred(&probe) || bpf_primary_active(&probe), &probe);
 	json_object_object_add(root, "conflicts", probe.conflicts);
 	json_object_object_add(root, "warnings", probe.warnings);
 	json_object_object_add(root, "evidence", probe.evidence);

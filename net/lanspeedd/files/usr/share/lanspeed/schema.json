@@ -83,6 +83,9 @@
         "hardware_flow_offload": {
           "type": "boolean"
         },
+        "nss_ecm_direct": {
+          "type": "boolean"
+        },
         "fullcone": {
           "type": "boolean"
         },
@@ -519,7 +522,19 @@
         },
         "conn_source": {
           "type": "string",
-          "enum": ["conntrack", "conntrack_netlink", "conntrack_procfs"]
+          "enum": ["conntrack", "conntrack_netlink", "conntrack_procfs", "nss_ecm_direct"]
+        },
+        "nss_ecm_direct_flows_seen": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nss_ecm_direct_flows_matched": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nss_ecm_direct_parse_errors": {
+          "type": "integer",
+          "minimum": 0
         },
         "conn_collector_mode": {
           "$ref": "#/$defs/connCollectorMode"

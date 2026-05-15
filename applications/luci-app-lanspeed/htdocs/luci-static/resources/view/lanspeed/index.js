@@ -586,6 +586,9 @@ function refreshLive(viewState) {
 			if (mode === 'bpf') {
 				modeLabel = 'BPF';
 				modeTitle = _('采集方式 BPF：tc clsact 挂载的 eBPF 程序按 MAC 直接计数，置信度高。');
+			} else if (mode === 'nss_ecm_direct') {
+				modeLabel = 'NSS-direct';
+				modeTitle = _('采集方式 NSS-direct：只读 qca-nss-ecm state 设备，直接按 ECM flow 字节计数聚合到 LAN 客户端，不等待 ECM 同步回 conntrack。');
 			} else if (mode === 'conntrack_ecm_sync') {
 				modeLabel = 'ECM';
 				modeTitle = _('采集方式 ECM 同步：NSS 硬件加速流的字节计数由 qca-nss-ecm 以秒级节拍同步回 conntrack，再由 lanspeedd 读取。桥接流也覆盖，精度等于 ECM sync 间隔 (≈1-2 秒)。');

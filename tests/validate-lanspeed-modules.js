@@ -309,10 +309,10 @@ function assertVersionModule(src) {
 	if (!src.includes("PACKAGE_VERSION: '0.1.1'")) {
 		fail('version.js must expose luci-app-lanspeed PACKAGE_VERSION');
 	}
-	if (!src.includes("PACKAGE_RELEASE: '5'")) {
+	if (!src.includes("PACKAGE_RELEASE: '6'")) {
 		fail('version.js must expose luci-app-lanspeed PACKAGE_RELEASE');
 	}
-	if (!src.includes("FULL_VERSION: '0.1.1-r5'")) {
+	if (!src.includes("FULL_VERSION: '0.1.1-r6'")) {
 		fail('version.js must expose full luci-app-lanspeed version with r suffix');
 	}
 }

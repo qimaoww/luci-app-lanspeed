@@ -10,13 +10,13 @@ LAN 侧按客户端实时吞吐监控 + TCP/UDP 连接数统计，适用于 Immo
 
 - **实时速率**：BPF tc 按 MAC + zone/VLAN 直接计数，字段为 `tx_bps` / `rx_bps`；非 NSS / x86 / daed 场景测速只使用 BPF。
 - **连接数统计**：优先 CT-Netlink 读取 conntrack accounting，失败自动回退 CT-Procfs；TCP、UDP、DNS UDP 分开统计。
-- **NSS 兼容**：Qualcomm NSS 设备自动展示 ECM/PPE 状态；自动模式下可使用 NSS ECM sync 回 conntrack 的字节计数作为 NSS 场景兜底。
+- **NSS 兼容**：Qualcomm NSS 设备自动展示 ECM/PPE 状态；NSS ECM 可用时优先 NSS-direct 只读 ECM state flow 字节计数，失败再回退 ECM sync。
 - **活跃客户端**：默认只把 10 秒内仍有有效速率的客户端计为 active，可通过 UCI 调整。
 - **覆盖率**：daemon 侧滑动窗口计算上下行覆盖率，避免前端采样窗口错位。
 - **配置页面**：LuCI 内置“实时状态”和“LAN Speed 配置”两个页签，速率采集、连接数采集、活跃客户端阈值和接口配置可分开调整。
 - **接口配置**：采集 / 观察 / 关闭 三态切换，自动拒绝 nssifb 采集并可观察 WAN / tun / ifb 计数。
 - **告警体系**：OpenClash / dae/daed / SQM/qosify/ifb / flow offload / fullcone NAT 等场景自动识别并提示。
-- **版本显示**：LuCI 状态页显示完整版本，例如 `0.1.1-r5`。
+- **版本显示**：LuCI 状态页显示完整版本，例如 `0.1.1-r6`。
 
 ## 采集策略
 
@@ -26,10 +26,12 @@ LAN 侧按客户端实时吞吐监控 + TCP/UDP 连接数统计，适用于 Immo
 
 | 值 | 行为 |
 |---|---|
-| `auto` | 默认模式。普通设备优先 BPF；NSS 设备在 BPF 不适合时允许 ECM sync 兜底。 |
+| `auto` | 默认模式。普通设备优先 BPF；NSS ECM 设备优先 NSS-direct，失败再允许 ECM sync 兜底。 |
 | `bpf` | 只使用 BPF 测速；非 NSS / x86 / daed 推荐保持此模式或 auto。 |
 
 非 NSS 设备不会把 CT 当作实时测速来源。CT 只能用于连接数、诊断和 NSS ECM sync 这类明确标注的 fallback。
+
+NSS-direct 指 daemon 只读 qca-nss-ecm 的 state 设备（`/dev/ecm_state` 或 debugfs major 创建的临时只读节点），解析每条 ECM flow 的 `adv_stats.from_data_total` / `adv_stats.to_data_total`，再按 `sip_address` + ARP/neighbor 与 `snode_address` 聚合到 `mac@zone` 客户端。它不写 `defunct_all`、`flush`、`decelerate`，也不修改 NSS 状态；第一轮采样会出现 `nss_ecm_direct_snapshot_pending`，第二轮开始计算速率。
 
 ### 连接数采集
 
@@ -96,6 +98,8 @@ CONFIG_PACKAGE_kmod-nf-conntrack-netlink=y
 | `kmod-nf-conntrack-netlink` | yes | CT-Netlink 连接数读取 |
 | `libbpf` | BPF 模式 | BPF 对象加载 |
 | `luci-base` | LuCI 页面 | LuCI 框架 |
+
+NSS-direct 不额外依赖用户态库，但需要内核侧 qca-nss-ecm 暴露 ECM state 设备；不可用时会自动显示 `nss_ecm_direct_unavailable` 并回退。
 
 ### 编译命令
 
@@ -199,7 +203,7 @@ ubus call lanspeed sysdevices   # 系统网络设备列表
 | `collector_mode` | 兼容旧字段，当前等价于速率配置视角。 |
 | `rate_collector_mode` | 实时速率配置。 |
 | `conn_collector_mode` | 连接数配置。 |
-| `conn_source` | 实际连接数来源：`conntrack_netlink` / `conntrack_procfs` / `conntrack`。 |
+| `conn_source` | 实际连接数来源：`nss_ecm_direct` / `conntrack_netlink` / `conntrack_procfs` / `conntrack`。 |
 | `conn_semantics` | 连接数统计语义。 |
 | `coverage` | daemon 侧滑动窗口覆盖率。 |
 | `active_client_window_ms` | 活跃客户端窗口。 |
@@ -218,7 +222,7 @@ ubus call lanspeed sysdevices   # 系统网络设备列表
 | hardware flow offload | 硬件转发绕过 CPU，BPF 不可见，提示 `hardware_flow_offload_unsupported`。 |
 | software flow offload | 告警但不阻止采集，提示 `software_flow_offload_enabled`。 |
 | fullcone NAT | 连接语义可能受影响，提示 `fullcone_nat_enabled`。 |
-| NSS ECM / PPE | ECM sync 可为 NSS 自动模式兜底；PPE direct 第一版只探测状态，不写 NSS 状态。 |
+| NSS ECM / PPE | ECM direct 可优先读取 ECM state；失败后 ECM sync 可为 NSS 自动模式兜底；PPE direct 第一版只探测状态，不写 NSS 状态。 |
 | nssifb | 只能观察，不允许作为 BPF 采集接口，避免镜像接口重复计数。 |
 | same-subnet side-router direct | 同网段旁路由直连可能绕过主路由，提示 `same-subnet side-router direct` 相关风险。 |
 | router-local | 路由器本机进程流量不会自然映射成 LAN 客户端。 |
@@ -240,7 +244,7 @@ ubus call lanspeed sysdevices   # 系统网络设备列表
 | 缺少 `tc` | 安装 `tc-tiny` 或完整 iproute2。 |
 | 连接数全 0 | 检查 `nf_conntrack_acct`、`kmod-nf-conntrack-netlink`、`conn_collector_mode`。 |
 | 没有客户端 | 检查 LAN 接口配置、桥设备、BPF 是否 attach 成功。 |
-| 速率长时间为 0 | 检查 `rate_collector_mode`、BPF 包、tc filter、硬件 flow offload。 |
+| 速率长时间为 0 | 检查 `rate_collector_mode`、BPF 包、tc filter、硬件 flow offload；NSS 设备还要看 `nss_ecm_direct_unavailable` / `nss_ecm_direct_snapshot_pending`。 |
 | OpenClash 或 dae/daed 共存 | 优先确认 BPF attach 在 LAN 边缘，观察 health 里的 warning。 |
 | 覆盖率低 | 检查硬件 offload、旁路网关、LAN-to-LAN、IFB/TUN 等 CPU 不可见路径。 |
 

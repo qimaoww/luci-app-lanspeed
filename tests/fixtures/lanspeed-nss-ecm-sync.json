@@ -7,6 +7,7 @@
     "nf_conntrack_acct": true,
     "nss_present": true,
     "nss_ecm_active": true,
+    "nss_ecm_direct_state": true,
     "nss_ppe_active": false
   }
 }

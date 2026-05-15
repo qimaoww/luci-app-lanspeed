@@ -131,6 +131,8 @@ function render(refs, status) {
 	var summaryBits = [];
 	if (typeof ev.accelerated_connections === 'number')
 		summaryBits.push(_('%d 加速连接').format(ev.accelerated_connections));
+	if (ev.direct_enabled)
+		summaryBits.push('Direct');
 	if (typeof ev.host_count === 'number')
 		summaryBits.push(_('host %d').format(ev.host_count));
 	refs.nssSummary.textContent = summaryBits.join(' · ');
@@ -139,7 +141,17 @@ function render(refs, status) {
 	var engine = ev.ppe_offload_active ? 'PPE'
 	           : ev.ecm_offload_active ? 'ECM'
 	           : '-';
-	refs.nssEngineLine.textContent = _('引擎: %s').format(engine);
+	var directParts = [];
+	if (ev.direct_enabled) {
+		directParts.push(_('NSS-direct 已启用'));
+	} else if (ev.direct_supported) {
+		directParts.push(_('NSS-direct 可用'));
+	} else {
+		directParts.push(_('NSS-direct 未启用'));
+	}
+	if (ev.fallback_reason && !ev.direct_enabled)
+		directParts.push(_('回退原因: %s').format(ev.fallback_reason));
+	refs.nssEngineLine.textContent = _('引擎: %s').format(engine) + ' · ' + directParts.join(' · ');
 
 	/* connections line */
 	if (typeof ev.accelerated_connections === 'number' ||
@@ -195,7 +207,7 @@ function render(refs, status) {
 
 	/* capabilities subset */
 	var NSS_CAP_KEYS = [
-		'nss', 'nss_dp', 'nss_ecm_offload', 'nss_ppe_offload',
+		'nss', 'nss_dp', 'nss_ecm_direct', 'nss_ecm_offload', 'nss_ppe_offload',
 		'nss_nsm', 'nss_bridge_mgr', 'nss_ifb', 'nss_mcs'
 	];
 	var nssCapKeys = NSS_CAP_KEYS.filter(function(k) {
