@@ -9,6 +9,8 @@ TARGET=${1:-all}
 DRY_RUN=${DRY_RUN:-0}
 ENABLE_BPF=${ENABLE_BPF:-0}
 TARGET_ARCH=${TARGET_ARCH:-}
+SDK_RELEASE=${SDK_RELEASE:-25.12}
+SDK_BASE_FEED_REF=${SDK_BASE_FEED_REF:-}
 
 die() {
 	printf '%s\n' "error: $*" >&2
@@ -25,14 +27,14 @@ info() {
 
 usage() {
 	cat >&2 <<'EOF'
-Usage: SDK_DIR=/path/to/immortalwrt-sdk [DRY_RUN=1] [TARGET_ARCH=x86_64] [ENABLE_BPF=0|1] ./scripts/build-sdk.sh <target>
+Usage: SDK_DIR=/path/to/immortalwrt-sdk [DRY_RUN=1] [TARGET_ARCH=x86_64] [ENABLE_BPF=0|1] [SDK_RELEASE=25.12] ./scripts/build-sdk.sh <target>
 
 Targets:
   luci-app-lanspeed  build only the LuCI package target
   lanspeedd          build only the daemon package target
   all                build both package targets
 
-This helper requires an existing ImmortalWrt 25.12 SDK for real builds.
+This helper requires an existing ImmortalWrt/OpenWrt SDK matching SDK_RELEASE for real builds.
 It never downloads SDKs or toolchains.
 EOF
 }
@@ -64,6 +66,29 @@ validate_target() {
 	esac
 }
 
+validate_sdk_release() {
+	case "$SDK_RELEASE" in
+		''|*[!0-9.]*)
+			die "SDK_RELEASE must contain only digits and dots, got '$SDK_RELEASE'"
+			;;
+	esac
+}
+
+validate_optional_sha() {
+	name=$1
+	value=$2
+	[ -n "$value" ] || return 0
+	case "$value" in
+		*[!0-9a-fA-F]*)
+			die "$name must be a git commit hash, got '$value'"
+			;;
+	esac
+	len=${#value}
+	if [ "$len" -lt 7 ] || [ "$len" -gt 64 ]; then
+		die "$name must be between 7 and 64 hex characters, got '$value'"
+	fi
+}
+
 metadata_has() {
 	pattern=$1
 	shift
@@ -86,23 +111,24 @@ metadata_any_file_exists() {
 
 check_release_guardrails() {
 	metadata_files="$SDK_PATH/version.buildinfo $SDK_PATH/.vermagic $SDK_PATH/feeds.conf.default $SDK_PATH/include/version.mk $SDK_PATH/package/base-files/files/etc/openwrt_release"
+	sdk_release_re=$(printf '%s' "$SDK_RELEASE" | sed 's/\./\\./g')
 
 	if [ "$DRY_RUN" = 1 ]; then
-		info "# dry-run: would check SDK release metadata for ImmortalWrt/OpenWrt 25.12 before compiling"
+		info "# dry-run: would check SDK release metadata for ImmortalWrt/OpenWrt $SDK_RELEASE before compiling"
 		return 0
 	fi
 
 	# shellcheck disable=SC2086
 	if ! metadata_any_file_exists $metadata_files; then
-		warn "SDK_DIR has no common release metadata files; cannot prove it is ImmortalWrt 25.12"
+		warn "SDK_DIR has no common release metadata files; cannot prove it is ImmortalWrt/OpenWrt $SDK_RELEASE"
 		return 0
 	fi
 
 	# shellcheck disable=SC2086
-	if metadata_has '(^|[^0-9])25\.12([^0-9]|$)|packages-25\.12|openwrt-25\.12|immortalwrt-25\.12|releases/25\.12' $metadata_files; then
+	if metadata_has "(^|[^0-9])$sdk_release_re([^0-9]|$)|packages-$sdk_release_re|openwrt-$sdk_release_re|immortalwrt-$sdk_release_re|releases/$sdk_release_re" $metadata_files; then
 		:
 	else
-		die "SDK_DIR release metadata exists but does not mention ImmortalWrt/OpenWrt 25.12; refusing to risk master/25.12 ABI mixing"
+		die "SDK_DIR release metadata exists but does not mention ImmortalWrt/OpenWrt $SDK_RELEASE; refusing to risk SDK ABI mixing"
 	fi
 
 	# shellcheck disable=SC2086
@@ -153,7 +179,7 @@ select_packages() {
 }
 
 resolve_sdk_path() {
-	[ -n "${SDK_DIR:-}" ] || die "SDK_DIR is required and must point to an existing ImmortalWrt 25.12 SDK"
+	[ -n "${SDK_DIR:-}" ] || die "SDK_DIR is required and must point to an existing ImmortalWrt/OpenWrt $SDK_RELEASE SDK"
 
 	if [ "$DRY_RUN" = 1 ]; then
 		if [ -d "$SDK_DIR" ]; then
@@ -165,7 +191,7 @@ resolve_sdk_path() {
 		return 0
 	fi
 
-	[ -d "$SDK_DIR" ] || die "SDK_DIR '$SDK_DIR' does not exist or is not an ImmortalWrt 25.12 SDK directory"
+	[ -d "$SDK_DIR" ] || die "SDK_DIR '$SDK_DIR' does not exist or is not an ImmortalWrt/OpenWrt $SDK_RELEASE SDK directory"
 
 	SDK_PATH=$(CDPATH= cd -- "$SDK_DIR" && pwd -P) || die "cannot resolve SDK_DIR '$SDK_DIR'"
 	[ "$SDK_PATH" != "$REPO_ROOT" ] || die "SDK_DIR points to this local feed repository; provide an ImmortalWrt 25.12 SDK instead"
@@ -178,6 +204,8 @@ print_summary() {
 	info "repo feed: src-link $FEED_NAME $REPO_ROOT"
 	info "target: $TARGET"
 	info "TARGET_ARCH: ${TARGET_ARCH:-not set}"
+	info "SDK_RELEASE: $SDK_RELEASE"
+	info "SDK_BASE_FEED_REF: ${SDK_BASE_FEED_REF:-not set}"
 	info "ENABLE_BPF: $ENABLE_BPF"
 	info "DRY_RUN: $DRY_RUN"
 	info "feed packages: $FEED_PACKAGES"
@@ -190,14 +218,39 @@ inject_feed() {
 
 	if [ "$DRY_RUN" = 1 ]; then
 		printf '+ ensure %s contains: %s\n' "$(quote "$feeds_conf")" "$line"
+		if [ -n "$SDK_BASE_FEED_REF" ]; then
+			printf '+ pin base feed to commit %s\n' "$SDK_BASE_FEED_REF"
+		fi
 		return 0
 	fi
 
 	tmp="$feeds_conf.tmp.$$"
 	if [ -f "$feeds_conf" ]; then
-		grep -Ev "^[[:space:]]*src-link[[:space:]]+$FEED_NAME[[:space:]]" "$feeds_conf" > "$tmp" || true
+		source_conf=$feeds_conf
 	elif [ -f "$SDK_PATH/feeds.conf.default" ]; then
-		grep -Ev "^[[:space:]]*src-link[[:space:]]+$FEED_NAME[[:space:]]" "$SDK_PATH/feeds.conf.default" > "$tmp" || true
+		source_conf=$SDK_PATH/feeds.conf.default
+	else
+		source_conf=
+	fi
+
+	if [ -n "$source_conf" ] && [ -n "$SDK_BASE_FEED_REF" ]; then
+		awk -v feed="$FEED_NAME" -v base_ref="$SDK_BASE_FEED_REF" '
+			$1 == "src-link" && $2 == feed { next }
+			$1 ~ /^src-git/ && $2 == "base" {
+				print "src-git base https://github.com/immortalwrt/immortalwrt.git^" base_ref
+				pinned = 1
+				next
+			}
+			{ print }
+			END {
+				if (!pinned) {
+					print "error: SDK_BASE_FEED_REF set but no base feed was found" > "/dev/stderr"
+					exit 2
+				}
+			}
+		' "$source_conf" > "$tmp"
+	elif [ -n "$source_conf" ]; then
+		grep -Ev "^[[:space:]]*src-link[[:space:]]+$FEED_NAME[[:space:]]" "$source_conf" > "$tmp" || true
 	else
 		: > "$tmp"
 	fi
@@ -205,20 +258,52 @@ inject_feed() {
 	mv "$tmp" "$feeds_conf"
 }
 
-select_optional_packages() {
-	[ "$ENABLE_BPF" = 1 ] || return 0
-
+configure_packages() {
 	if [ "$DRY_RUN" = 1 ]; then
-		printf '+ select CONFIG_PACKAGE_lanspeedd-bpf=m before compiling package/lanspeedd/compile\n'
+		printf '+ select CONFIG_PACKAGE_lanspeedd=m before compiling package/lanspeedd/compile\n'
+		if [ "$ENABLE_BPF" = 1 ]; then
+			printf '+ select CONFIG_PACKAGE_lanspeedd-bpf=m before compiling package/lanspeedd/compile\n'
+		else
+			printf '+ disable CONFIG_PACKAGE_lanspeedd-bpf before compiling package/lanspeedd/compile\n'
+		fi
 		return 0
 	fi
 
 	if [ -x "$SDK_PATH/scripts/config" ] && [ ! -d "$SDK_PATH/scripts/config" ]; then
-		run_in_sdk ./scripts/config --module PACKAGE_lanspeedd-bpf
+		run_in_sdk ./scripts/config --module PACKAGE_lanspeedd
+		if [ "$ENABLE_BPF" = 1 ]; then
+			run_in_sdk ./scripts/config --module PACKAGE_lanspeedd-bpf
+		else
+			run_in_sdk ./scripts/config --disable PACKAGE_lanspeedd-bpf
+		fi
 	else
-		set_config_module PACKAGE_lanspeedd-bpf
+		set_config_module PACKAGE_lanspeedd
+		if [ "$ENABLE_BPF" = 1 ]; then
+			set_config_module PACKAGE_lanspeedd-bpf
+		else
+			set_config_disabled PACKAGE_lanspeedd-bpf
+		fi
 	fi
+}
+
+refresh_sdk_config() {
 	run_in_sdk make defconfig
+}
+
+compile_package() {
+	package=$1
+	if [ "$package" = "lanspeedd" ]; then
+		if [ "$ENABLE_BPF" = 1 ]; then
+			bpf_package_config=m
+			base_package_config=
+		else
+			bpf_package_config=
+			base_package_config=m
+		fi
+		run_in_sdk make "package/$package/compile" V=s "LANSPEED_BUILD_BPF=$ENABLE_BPF" "CONFIG_PACKAGE_lanspeedd=$base_package_config" "CONFIG_PACKAGE_lanspeedd-bpf=$bpf_package_config"
+	else
+		run_in_sdk make "package/$package/compile" V=s
+	fi
 }
 
 set_config_module() {
@@ -232,6 +317,20 @@ set_config_module() {
 		: > "$tmp"
 	fi
 	printf '%s\n' "CONFIG_${symbol}=m" >> "$tmp"
+	mv "$tmp" "$config_file"
+}
+
+set_config_disabled() {
+	symbol=$1
+	config_file="$SDK_PATH/.config"
+	tmp="$config_file.tmp.$$"
+
+	if [ -f "$config_file" ]; then
+		grep -Ev "^(# )?CONFIG_${symbol}(=| is not set)" "$config_file" > "$tmp" || true
+	else
+		: > "$tmp"
+	fi
+	printf '%s\n' "# CONFIG_${symbol} is not set" >> "$tmp"
 	mv "$tmp" "$config_file"
 }
 
@@ -255,6 +354,8 @@ main() {
 	[ "$#" -le 1 ] || die "expected one package target, got $# arguments"
 	validate_flag DRY_RUN "$DRY_RUN"
 	validate_flag ENABLE_BPF "$ENABLE_BPF"
+	validate_sdk_release
+	validate_optional_sha SDK_BASE_FEED_REF "$SDK_BASE_FEED_REF"
 	validate_target
 	select_packages
 	resolve_sdk_path
@@ -263,13 +364,15 @@ main() {
 
 	info "# local feed injection preview"
 	inject_feed
+	configure_packages
 	run_in_sdk ./scripts/feeds update -a
 	for package in $FEED_PACKAGES; do
 		run_in_sdk ./scripts/feeds install -p "$FEED_NAME" "$package"
 	done
-	select_optional_packages
+	configure_packages
+	refresh_sdk_config
 	for package in $COMPILE_PACKAGES; do
-		run_in_sdk make "package/$package/compile" V=s
+		compile_package "$package"
 	done
 }
 

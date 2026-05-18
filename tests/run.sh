@@ -83,6 +83,7 @@ run_node_check() {
 		"$SCRIPT_DIR/validate-lanspeed-collector.js" \
 		"$SCRIPT_DIR/validate-lanspeed-probes.js" \
 		"$SCRIPT_DIR/validate-lanspeed-packaging.js" \
+		"$SCRIPT_DIR/validate-release-version.js" \
 		"$SCRIPT_DIR/validate-lanspeed-modules.js"; do
 		name=$(basename "$validator" .js)
 		run_logged "node-check-$name" node --check "$validator" || return $?
@@ -100,6 +101,7 @@ run_unit() {
 	run_logged "collector" node "$SCRIPT_DIR/validate-lanspeed-collector.js" || return $?
 	run_logged "probes" node "$SCRIPT_DIR/validate-lanspeed-probes.js" || return $?
 	run_logged "packaging" node "$SCRIPT_DIR/validate-lanspeed-packaging.js" || return $?
+	run_logged "release-version" node "$SCRIPT_DIR/validate-release-version.js" || return $?
 	run_logged "lanspeed-modules" node "$SCRIPT_DIR/validate-lanspeed-modules.js" || return $?
 	run_logged "build-sdk" sh "$SCRIPT_DIR/validate-build-sdk.sh" || return $?
 	append_unit_evidence "coverage=contract identity collector lifecycle probes lanspeed-modules build-sdk"

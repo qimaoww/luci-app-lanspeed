@@ -110,6 +110,11 @@ const struct lanspeed_bpf_status *lanspeed_bpf_get_status(void)
 	return &g_state.status;
 }
 
+const struct lanspeed_bpf_status *lanspeed_bpf_plugin_get_status(void)
+{
+	return lanspeed_bpf_get_status();
+}
+
 bool lanspeed_bpf_init(const char *object_path)
 {
 	struct bpf_object *obj;
@@ -200,6 +205,11 @@ bool lanspeed_bpf_init(const char *object_path)
 	g_state.status.object_loaded = true;
 
 	return true;
+}
+
+bool lanspeed_bpf_plugin_init(const char *object_path)
+{
+	return lanspeed_bpf_init(object_path);
 }
 
 static int attach_point(const char *ifname, int ifindex,
@@ -369,6 +379,17 @@ int lanspeed_bpf_attach_iface(const char *ifname)
 	return lanspeed_bpf_attach_iface_mode(ifname, false);
 }
 
+int lanspeed_bpf_plugin_attach_iface(const char *ifname)
+{
+	return lanspeed_bpf_attach_iface(ifname);
+}
+
+int lanspeed_bpf_plugin_attach_iface_mode(const char *ifname,
+					  bool early_passthrough)
+{
+	return lanspeed_bpf_attach_iface_mode(ifname, early_passthrough);
+}
+
 int lanspeed_bpf_detach_iface_mode(const char *ifname, bool early_passthrough)
 {
 	uint32_t ingress_priority = early_passthrough ? LANSPEED_BPF_TC_EARLY_PREF : LANSPEED_BPF_TC_PREF;
@@ -400,6 +421,12 @@ int lanspeed_bpf_detach_iface_mode(const char *ifname, bool early_passthrough)
 	g_state.status.any_attached = g_state.attached_count > 0;
 	g_state.status.attached_hook_count = g_state.attached_count;
 	return 0;
+}
+
+int lanspeed_bpf_plugin_detach_iface_mode(const char *ifname,
+					  bool early_passthrough)
+{
+	return lanspeed_bpf_detach_iface_mode(ifname, early_passthrough);
 }
 
 int lanspeed_bpf_ensure_attached(const char *ifname, bool early_passthrough,
@@ -477,6 +504,13 @@ int lanspeed_bpf_ensure_attached(const char *ifname, bool early_passthrough,
 	return restored > 0 ? 1 : 0;
 }
 
+int lanspeed_bpf_plugin_ensure_attached(const char *ifname,
+					bool early_passthrough,
+					const char *reason)
+{
+	return lanspeed_bpf_ensure_attached(ifname, early_passthrough, reason);
+}
+
 void lanspeed_bpf_detach_all(void)
 {
 	size_t i;
@@ -506,6 +540,11 @@ void lanspeed_bpf_detach_all(void)
 	g_state.status.attached_hook_count = 0;
 }
 
+void lanspeed_bpf_plugin_detach_all(void)
+{
+	lanspeed_bpf_detach_all();
+}
+
 void lanspeed_bpf_shutdown(void)
 {
 	lanspeed_bpf_detach_all();
@@ -519,6 +558,11 @@ void lanspeed_bpf_shutdown(void)
 	g_state.egress_early_prog_fd = -1;
 	g_state.map_fd = -1;
 	g_state.status.object_loaded = false;
+}
+
+void lanspeed_bpf_plugin_shutdown(void)
+{
+	lanspeed_bpf_shutdown();
 }
 
 int lanspeed_bpf_read_samples(struct lanspeed_bpf_sample *out, size_t max,
@@ -592,6 +636,12 @@ int lanspeed_bpf_read_samples(struct lanspeed_bpf_sample *out, size_t max,
 	return 0;
 }
 
+int lanspeed_bpf_plugin_read_samples(struct lanspeed_bpf_sample *out,
+				     size_t max, size_t *count)
+{
+	return lanspeed_bpf_read_samples(out, max, count);
+}
+
 bool lanspeed_bpf_runtime_ok(uint64_t freshness_ms)
 {
 	uint64_t now;
@@ -609,4 +659,9 @@ bool lanspeed_bpf_runtime_ok(uint64_t freshness_ms)
 	if (now < g_state.status.last_read_monotonic_ms)
 		return false;
 	return (now - g_state.status.last_read_monotonic_ms) <= freshness_ms;
+}
+
+bool lanspeed_bpf_plugin_runtime_ok(uint64_t freshness_ms)
+{
+	return lanspeed_bpf_runtime_ok(freshness_ms);
 }

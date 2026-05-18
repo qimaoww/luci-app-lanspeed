@@ -2,29 +2,18 @@ name: Build SDK Packages
 
 on:
   push:
-    branches:
-      - master
     tags:
       - 'v*'
-  pull_request:
-  workflow_dispatch:
-    inputs:
-      enable_bpf:
-        description: Build optional lanspeedd-bpf too
-        required: false
-        type: boolean
-        default: false
-      package_target:
-        description: build-sdk.sh target
-        required: false
-        default: all
 
 permissions:
   contents: read
 
 env:
-  DEFAULT_SDK_URL: https://downloads.immortalwrt.org/releases/25.12.0-rc2/targets/x86/64/immortalwrt-sdk-25.12.0-rc2-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
-  DEFAULT_SDK_SHA256: fb665aabb627d3b3a7d98cd426ee90febdb84ceffa6ce4c18fbda934c46053d5
+  APK_SDK_URL: https://downloads.immortalwrt.org/releases/25.12.0-rc2/targets/x86/64/immortalwrt-sdk-25.12.0-rc2-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+  APK_SDK_SHA256: fb665aabb627d3b3a7d98cd426ee90febdb84ceffa6ce4c18fbda934c46053d5
+  IPK_SDK_URL: https://downloads.immortalwrt.org/releases/23.05.6/targets/x86/64/immortalwrt-sdk-23.05.6-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+  IPK_SDK_SHA256: 4dc46a6a612031f14d7d64ca9717895cd8907da7fd01b85f0edee18cb895dc77
+  IPK_BASE_FEED_REF: 5804844cf812c07b2d66d513bec2e36e7a8270ee
 
 jobs:
   unit:
@@ -41,125 +30,146 @@ jobs:
       - name: Run unit validations
         run: ./tests/run.sh unit
 
-  build-base:
-    needs: unit
-    runs-on: ubuntu-24.04
-    env:
-      ENABLE_BPF: "0"
-      PACKAGE_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.package_target || 'all' }}
-      SDK_URL: ${{ env.DEFAULT_SDK_URL }}
-      SDK_SHA256: ${{ env.DEFAULT_SDK_SHA256 }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install build prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential clang flex g++ gawk gcc-multilib gettext git libncurses5-dev libssl-dev python3 rsync unzip wget zlib1g-dev zstd
-
-      - name: Download public SDK
-        run: |
-          mkdir -p "$RUNNER_TEMP/sdk"
-          curl -L "$SDK_URL" -o "$RUNNER_TEMP/sdk/sdk.tar.zst"
-          if [ -n "$SDK_SHA256" ]; then
-            printf '%s  %s\n' "$SDK_SHA256" "$RUNNER_TEMP/sdk/sdk.tar.zst" | sha256sum -c -
-          fi
-          tar --zstd -xf "$RUNNER_TEMP/sdk/sdk.tar.zst" -C "$RUNNER_TEMP/sdk" --strip-components=1
-
-      - name: Build base packages
-        env:
-          SDK_DIR: ${{ runner.temp }}/sdk
-        run: ./scripts/build-sdk.sh "$PACKAGE_TARGET"
-
-      - name: Collect artifacts
-        run: |
-          mkdir -p "$RUNNER_TEMP/artifacts/base"
-          find "$RUNNER_TEMP/sdk/bin" -type f \( -name '*.apk' -o -name '*.ipk' -o -name '*.buildinfo' -o -name '*.manifest' \) -exec cp --parents {} "$RUNNER_TEMP/artifacts/base" \;
-
-      - name: Upload base artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: lanspeed-base-${{ github.sha }}
-          path: ${{ runner.temp }}/artifacts/base
-          if-no-files-found: error
-
-  build-bpf:
-    needs: unit
-    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.enable_bpf)
-    runs-on: ubuntu-24.04
-    env:
-      ENABLE_BPF: "1"
-      PACKAGE_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.package_target || 'all' }}
-      SDK_URL: ${{ env.DEFAULT_SDK_URL }}
-      SDK_SHA256: ${{ env.DEFAULT_SDK_SHA256 }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install build prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential clang flex g++ gawk gcc-multilib gettext git libncurses5-dev libssl-dev python3 rsync unzip wget zlib1g-dev zstd
-
-      - name: Download public SDK
-        run: |
-          mkdir -p "$RUNNER_TEMP/sdk"
-          curl -L "$SDK_URL" -o "$RUNNER_TEMP/sdk/sdk.tar.zst"
-          if [ -n "$SDK_SHA256" ]; then
-            printf '%s  %s\n' "$SDK_SHA256" "$RUNNER_TEMP/sdk/sdk.tar.zst" | sha256sum -c -
-          fi
-          tar --zstd -xf "$RUNNER_TEMP/sdk/sdk.tar.zst" -C "$RUNNER_TEMP/sdk" --strip-components=1
-
-      - name: Build packages with optional BPF
-        env:
-          SDK_DIR: ${{ runner.temp }}/sdk
-        run: ./scripts/build-sdk.sh "$PACKAGE_TARGET"
-
-      - name: Collect artifacts
-        run: |
-          mkdir -p "$RUNNER_TEMP/artifacts/bpf"
-          find "$RUNNER_TEMP/sdk/bin" -type f \( -name '*.apk' -o -name '*.ipk' -o -name '*.buildinfo' -o -name '*.manifest' \) -exec cp --parents {} "$RUNNER_TEMP/artifacts/bpf" \;
-
-      - name: Upload BPF artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: lanspeed-bpf-${{ github.sha }}
-          path: ${{ runner.temp }}/artifacts/bpf
-          if-no-files-found: error
-
   release:
-    needs:
-      - build-base
-      - build-bpf
+    needs: unit
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - name: Download base artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: lanspeed-base-${{ github.sha }}
-          path: ${{ runner.temp }}/release/base
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Download BPF artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: lanspeed-bpf-${{ github.sha }}
-          path: ${{ runner.temp }}/release/bpf
+      - name: Verify tag matches code version
+        id: meta
+        run: |
+          code_version="$(sh ./scripts/release-version.sh)"
+          expected_tag="v${code_version}"
+          if [ "${GITHUB_REF_NAME}" != "$expected_tag" ]; then
+            printf '%s\n' "error: release tag ${GITHUB_REF_NAME} does not match code version ${code_version}" >&2
+            exit 1
+          fi
+          printf 'code_version=%s\n' "$code_version" >> "$GITHUB_OUTPUT"
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex g++ gawk gcc-multilib gettext git libncurses5-dev libssl-dev python3 rsync unzip wget xz-utils zlib1g-dev zstd
+
+      - name: Download public SDKs
+        run: |
+          mkdir -p "$RUNNER_TEMP/sdk-apk-base"
+          curl -L "$APK_SDK_URL" -o "$RUNNER_TEMP/sdk-apk-base/sdk.tar.zst"
+          printf '%s  %s\n' "$APK_SDK_SHA256" "$RUNNER_TEMP/sdk-apk-base/sdk.tar.zst" | sha256sum -c -
+          tar --zstd -xf "$RUNNER_TEMP/sdk-apk-base/sdk.tar.zst" -C "$RUNNER_TEMP/sdk-apk-base" --strip-components=1
+
+          mkdir -p "$RUNNER_TEMP/sdk-apk-bpf"
+          cp -a "$RUNNER_TEMP/sdk-apk-base/." "$RUNNER_TEMP/sdk-apk-bpf/"
+
+          mkdir -p "$RUNNER_TEMP/sdk-ipk-base"
+          curl -L "$IPK_SDK_URL" -o "$RUNNER_TEMP/sdk-ipk-base/sdk.tar.xz"
+          printf '%s  %s\n' "$IPK_SDK_SHA256" "$RUNNER_TEMP/sdk-ipk-base/sdk.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/sdk-ipk-base/sdk.tar.xz" -C "$RUNNER_TEMP/sdk-ipk-base" --strip-components=1
+
+          mkdir -p "$RUNNER_TEMP/sdk-ipk-bpf"
+          cp -a "$RUNNER_TEMP/sdk-ipk-base/." "$RUNNER_TEMP/sdk-ipk-bpf/"
+
+      - name: Build SDK packages
+        run: |
+          umask 022
+
+          run_build() {
+            name=$1
+            sdk_dir=$2
+            enable_bpf=$3
+            sdk_release=$4
+            base_feed_ref=${5:-}
+            log_file="$RUNNER_TEMP/${name}.log"
+            (
+              ENABLE_BPF="$enable_bpf" SDK_RELEASE="$sdk_release" SDK_BASE_FEED_REF="$base_feed_ref" SDK_DIR="$sdk_dir" ./scripts/build-sdk.sh all
+            ) > "$log_file" 2>&1 &
+            printf '%s %s %s\n' "$!" "$name" "$log_file" >> "$RUNNER_TEMP/build-pids.txt"
+          }
+
+          : > "$RUNNER_TEMP/build-pids.txt"
+          run_build apk-base "$RUNNER_TEMP/sdk-apk-base" 0 25.12
+          run_build apk-bpf "$RUNNER_TEMP/sdk-apk-bpf" 1 25.12
+          run_build ipk-base "$RUNNER_TEMP/sdk-ipk-base" 0 23.05 "$IPK_BASE_FEED_REF"
+          run_build ipk-bpf "$RUNNER_TEMP/sdk-ipk-bpf" 1 23.05 "$IPK_BASE_FEED_REF"
+
+          status=0
+          while read -r pid name log_file; do
+            if wait "$pid"; then
+              printf '%s\n' "build ok: $name"
+            else
+              rc=$?
+              printf '%s\n' "build failed: $name exit=$rc" >&2
+              sed 's/^/  /' "$log_file" >&2
+              status=1
+            fi
+          done < "$RUNNER_TEMP/build-pids.txt"
+          exit "$status"
+
+      - name: Collect release files
+        id: release_files
+        run: |
+          code_version="${{ steps.meta.outputs.code_version }}"
+          ipk_version="${code_version%-r*}-${code_version##*-r}"
+          release_dir="$RUNNER_TEMP/release/files"
+          file_list="$RUNNER_TEMP/release/files.txt"
+          mkdir -p "$release_dir"
+          : > "$file_list"
+
+          collect_one() {
+            sdk_dir=$1
+            pattern=$2
+            found=0
+            for file in "$sdk_dir"/bin/packages/*/lanspeed/$pattern "$sdk_dir"/bin/packages/*/base/$pattern; do
+              [ -f "$file" ] || continue
+              cp "$file" "$release_dir/"
+              printf '%s/%s\n' "$release_dir" "$(basename "$file")" >> "$file_list"
+              found=1
+            done
+            if [ "$found" = 0 ]; then
+              printf '%s\n' "error: missing release package $pattern in $sdk_dir/bin" >&2
+              exit 1
+            fi
+          }
+
+          collect_one "$RUNNER_TEMP/sdk-apk-base" "lanspeedd-${code_version}.apk"
+          collect_one "$RUNNER_TEMP/sdk-apk-bpf" "lanspeedd-bpf-${code_version}.apk"
+          collect_one "$RUNNER_TEMP/sdk-apk-base" "luci-app-lanspeed-${code_version}.apk"
+          collect_one "$RUNNER_TEMP/sdk-ipk-base" "lanspeedd_${ipk_version}_*.ipk"
+          collect_one "$RUNNER_TEMP/sdk-ipk-bpf" "lanspeedd-bpf_${ipk_version}_*.ipk"
+          collect_one "$RUNNER_TEMP/sdk-ipk-base" "luci-app-lanspeed_${ipk_version}_*.ipk"
+
+          if [ ! -s "$file_list" ]; then
+            printf '%s\n' "error: no release files were collected" >&2
+            exit 1
+          fi
+          {
+            printf 'files<<EOF\n'
+            cat "$file_list"
+            printf 'EOF\n'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Remove previous release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | while IFS= read -r asset; do
+              [ -n "$asset" ] || continue
+              gh release delete-asset "$GITHUB_REF_NAME" "$asset" --yes
+            done
+          fi
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2.6.2
         with:
+          name: ${{ steps.meta.outputs.code_version }}
+          tag_name: ${{ github.ref_name }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: |
-            ${{ runner.temp }}/release/base/**/*.apk
-            ${{ runner.temp }}/release/base/**/*.ipk
-            ${{ runner.temp }}/release/base/**/*.buildinfo
-            ${{ runner.temp }}/release/base/**/*.manifest
-            ${{ runner.temp }}/release/bpf/**/*.apk
-            ${{ runner.temp }}/release/bpf/**/*.ipk
-            ${{ runner.temp }}/release/bpf/**/*.buildinfo
-            ${{ runner.temp }}/release/bpf/**/*.manifest
+          overwrite_files: true
+          files: ${{ steps.release_files.outputs.files }}

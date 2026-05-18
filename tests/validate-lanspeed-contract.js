@@ -437,16 +437,28 @@ function validateBpfSource(source) {
 }
 
 function validatePackageMakefile(makefile) {
-  assert(makefile.includes('PKG_BUILD_DEPENDS:=PACKAGE_lanspeedd-bpf:bpf-headers'), 'package Makefile must build-depend on bpf-headers only when lanspeedd-bpf is selected');
-  assert(/ifneq \(\$\(CONFIG_PACKAGE_lanspeedd-bpf\),\)[\s\S]*include \$\(INCLUDE_DIR\)\/bpf\.mk[\s\S]*endif/.test(makefile), 'package Makefile must include bpf.mk only for lanspeedd-bpf builds');
-  assert(makefile.includes('$(CONFIG_PACKAGE_lanspeedd-bpf)'), 'BPF build must be gated by optional lanspeedd-bpf selection');
-  assert(makefile.includes('$(call CompileBPF,$(PKG_BUILD_DIR)/lanspeed_tc.bpf.c)'), 'package Makefile must build BPF object from BPF source with CompileBPF');
+  assert(makefile.includes('PKG_BUILD_DEPENDS:=PACKAGE_lanspeedd-bpf:bpf-headers'), 'package Makefile must expose conditional bpf-headers build dependency to OpenWrt metadata');
+  assert(makefile.includes('LANSPEED_BUILD_BPF ?= $(if $(CONFIG_PACKAGE_lanspeedd-bpf),1,0)'), 'package Makefile must default explicit BPF builds from lanspeedd-bpf selection');
+  assert(makefile.includes('LANSPEED_BPF_ENABLED:=$(filter 1,$(LANSPEED_BUILD_BPF))'), 'package Makefile must normalize the explicit BPF build switch');
+  assert(makefile.includes('PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)$(if $(LANSPEED_BPF_ENABLED),-bpf,)'), 'package Makefile must keep BPF and non-BPF build directories separate');
+  assert(!makefile.includes('PKG_BUILD_DEPENDS:=$(if $(LANSPEED_BPF_ENABLED),bpf-headers)'), 'package Makefile must not hide bpf-headers from OpenWrt package metadata');
+  assert(/ifneq \(\$\(LANSPEED_BPF_ENABLED\),\)[\s\S]*include \$\(INCLUDE_DIR\)\/bpf\.mk[\s\S]*endif/.test(makefile), 'package Makefile must include bpf.mk only for explicit BPF builds');
+  assert(makefile.includes('$(LANSPEED_BPF_ENABLED)'), 'BPF build must be gated by the explicit BPF build switch');
+  assert(makefile.includes('$(call CompileBPF,$(PKG_BUILD_DIR)/lanspeed_tc.bpf.c,-I$(STAGING_DIR)/usr/include -DKBUILD_MODNAME=\\"lanspeed\\")'), 'package Makefile must build BPF object from BPF source with staged libbpf headers and KBUILD_MODNAME');
+  assert(makefile.includes('LANSPEED_WITH_BPF="0"'), 'package Makefile must keep the base daemon free of direct libbpf linkage');
+  assert(makefile.includes('plugin') && makefile.includes('lanspeed_bpf_plugin.so'), 'package Makefile must build the optional libbpf runtime plugin only for lanspeedd-bpf');
+  assert(makefile.includes('$(INSTALL_DATA) $(PKG_BUILD_DIR)/lanspeed_bpf_plugin.so $(1)/usr/lib/lanspeed/lanspeed_bpf_plugin.so'), 'lanspeedd-bpf must install the optional runtime plugin');
+  assert(!/\$\(error\s+[^)]*lanspeedd-bpf/s.test(makefile), 'package Makefile must not raise make-time errors from optional BPF install rules');
+  assert(makefile.includes('$(PKG_BUILD_DIR)/linux/kconfig.h'), 'package Makefile must provide linux/kconfig.h fallback for older SDK bpf-headers');
+  assert(makefile.includes('$(PKG_BUILD_DIR)/asm_goto_workaround.h'), 'package Makefile must provide asm_goto_workaround.h fallback for older SDK bpf-headers');
   assert(makefile.includes('$(CP) $(PKG_BUILD_DIR)/lanspeed_tc.bpf.o $(PKG_BUILD_DIR)/lanspeed_tc.o'), 'package Makefile must normalize SDK BPF output name');
   assert(makefile.includes('$(INSTALL_DATA) $(PKG_BUILD_DIR)/lanspeed_tc.o $(1)/usr/lib/bpf/lanspeed_tc.o'), 'package Makefile must install BPF object');
-  assert(makefile.includes('DEPENDS:=+lanspeedd +libbpf +tc-tiny $(BPF_DEPENDS)'), 'optional BPF package must carry libbpf, tc-tiny and BPF dependencies');
+  assert(makefile.includes('LANSPEED_BPF_ENABLED'), 'package Makefile must keep BPF build and packaging controlled by an explicit switch');
+  assert(!/Package\/lanspeedd[\s\S]{0,260}PACKAGE_lanspeedd-bpf:libbpf/.test(makefile), 'base package must not expose libbpf through its own dependency metadata');
+  assert(makefile.includes('DEPENDS:=+lanspeedd +libbpf +tc-tiny @HAS_BPF_TOOLCHAIN +@NEED_BPF_TOOLCHAIN'), 'optional BPF package must carry libbpf, tc-tiny and BPF dependencies');
   assert(/DEPENDS:=[^\n]*\+libmnl/.test(makefile), 'base daemon must depend on libmnl for raw ctnetlink');
   assert(/-DLANSPEED_RELEASE=.*\$\(PKG_RELEASE\)/.test(makefile), 'package Makefile must pass PKG_RELEASE into lanspeedd status.version');
-  assert(/LIBS[^\n]*-lmnl/.test(makefile), 'package Makefile must link libmnl');
+  assert(/LIBS[^\n]*-lmnl[^\n]*-ldl/.test(makefile), 'package Makefile must link libmnl and dlopen support without libbpf');
   assert(!/libnetfilter-conntrack/.test(makefile), 'base daemon must not depend on libnetfilter-conntrack');
   assert(!makefile.includes('if [ -f $(PKG_BUILD_DIR)/lanspeed_tc.o ]'), 'package Makefile must not silently skip missing BPF object');
 }
