@@ -29,7 +29,7 @@ try {
   );
   assertMatch(
     pkgMakefile,
-    /^PKG_BUILD_DEPENDS:=PACKAGE_lanspeedd-bpf:bpf-headers$/m,
+    /^PKG_BUILD_DEPENDS:=\$\(if \$\(CONFIG_PACKAGE_lanspeedd-bpf\),bpf-headers\)$/m,
     'net/lanspeedd/Makefile must tie bpf-headers to lanspeedd-bpf selection'
   );
   assertMatch(
@@ -42,15 +42,30 @@ try {
     /DEPENDS:=\+libubox \+libubus \+libuci \+libblobmsg-json \+libjson-c \+libbpf \+libmnl \+kmod-nf-conntrack-netlink \+tc-tiny/,
     'base lanspeedd package must not hard-depend on libbpf'
   );
-  assertMatch(
+  assertNoMatch(
     pkgMakefile,
     /DEPENDS:=\+libubox \+libubus \+libuci \+libblobmsg-json \+libjson-c \+libmnl \+kmod-nf-conntrack-netlink \+PACKAGE_lanspeedd-bpf:libbpf \+PACKAGE_lanspeedd-bpf:tc-tiny/,
-    'base lanspeedd package must only depend on libbpf and tc-tiny when lanspeedd-bpf is selected'
+    'base lanspeedd package must not expose optional BPF dependencies through its own metadata'
+  );
+  assertMatch(
+    pkgMakefile,
+    /DEPENDS:=\+libubox \+libubus \+libuci \+libblobmsg-json \+libjson-c \+libmnl \+kmod-nf-conntrack-netlink/,
+    'base lanspeedd package must keep only non-BPF runtime dependencies'
   );
   assertMatch(
     pkgMakefile,
     /LANSPEED_WITH_BPF="\$\(if \$\(CONFIG_PACKAGE_lanspeedd-bpf\),1,0\)"/,
     'Build/Compile must pass a conditional LANSPEED_WITH_BPF switch'
+  );
+  assertMatch(
+    pkgMakefile,
+    /\$\(PKG_BUILD_DIR\)\/linux\/kconfig\.h/,
+    'BPF builds must provide a linux/kconfig.h fallback for older SDK bpf-headers'
+  );
+  assertMatch(
+    pkgMakefile,
+    /\$\(PKG_BUILD_DIR\)\/asm_goto_workaround\.h/,
+    'BPF builds must provide an asm_goto_workaround.h fallback for older SDK bpf-headers'
   );
   assertMatch(
     pkgMakefile,

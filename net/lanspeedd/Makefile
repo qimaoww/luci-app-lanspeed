@@ -6,7 +6,7 @@ PKG_RELEASE:=6
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=
-PKG_BUILD_DEPENDS:=PACKAGE_lanspeedd-bpf:bpf-headers
+PKG_BUILD_DEPENDS:=$(if $(CONFIG_PACKAGE_lanspeedd-bpf),bpf-headers)
 
 include $(INCLUDE_DIR)/package.mk
 ifneq ($(CONFIG_PACKAGE_lanspeedd-bpf),)
@@ -17,7 +17,7 @@ define Package/lanspeedd
   SECTION:=net
   CATEGORY:=Network
   TITLE:=LAN speed monitor daemon
-  DEPENDS:=+libubox +libubus +libuci +libblobmsg-json +libjson-c +libmnl +kmod-nf-conntrack-netlink +PACKAGE_lanspeedd-bpf:libbpf +PACKAGE_lanspeedd-bpf:tc-tiny
+  DEPENDS:=+libubox +libubus +libuci +libblobmsg-json +libjson-c +libmnl +kmod-nf-conntrack-netlink
 endef
 
 define Package/lanspeedd/description
@@ -48,6 +48,9 @@ define Build/Compile
 		LDFLAGS="$(TARGET_LDFLAGS)" \
 		LIBS="-lubox -lubus -luci -lblobmsg_json -ljson-c -lmnl $(if $(CONFIG_PACKAGE_lanspeedd-bpf),-lbpf,)" \
 		LANSPEED_WITH_BPF="$(if $(CONFIG_PACKAGE_lanspeedd-bpf),1,0)"
+	$(if $(CONFIG_PACKAGE_lanspeedd-bpf),mkdir -p $(PKG_BUILD_DIR)/linux,:)
+	$(if $(CONFIG_PACKAGE_lanspeedd-bpf),touch $(PKG_BUILD_DIR)/linux/kconfig.h,:)
+	$(if $(CONFIG_PACKAGE_lanspeedd-bpf),touch $(PKG_BUILD_DIR)/asm_goto_workaround.h,:)
 	$(if $(CONFIG_PACKAGE_lanspeedd-bpf),$(call CompileBPF,$(PKG_BUILD_DIR)/lanspeed_tc.bpf.c),:)
 	$(if $(CONFIG_PACKAGE_lanspeedd-bpf),$(CP) $(PKG_BUILD_DIR)/lanspeed_tc.bpf.o $(PKG_BUILD_DIR)/lanspeed_tc.o,:)
 endef

@@ -437,12 +437,16 @@ function validateBpfSource(source) {
 }
 
 function validatePackageMakefile(makefile) {
-  assert(makefile.includes('PKG_BUILD_DEPENDS:=PACKAGE_lanspeedd-bpf:bpf-headers'), 'package Makefile must build-depend on bpf-headers only when lanspeedd-bpf is selected');
+  assert(!makefile.includes('PKG_BUILD_DEPENDS:=PACKAGE_lanspeedd-bpf:bpf-headers'), 'base package must not pull bpf-headers through package metadata');
+  assert(makefile.includes('PKG_BUILD_DEPENDS:=$(if $(CONFIG_PACKAGE_lanspeedd-bpf),bpf-headers)'), 'package Makefile must build-depend on bpf-headers only when lanspeedd-bpf is selected');
   assert(/ifneq \(\$\(CONFIG_PACKAGE_lanspeedd-bpf\),\)[\s\S]*include \$\(INCLUDE_DIR\)\/bpf\.mk[\s\S]*endif/.test(makefile), 'package Makefile must include bpf.mk only for lanspeedd-bpf builds');
   assert(makefile.includes('$(CONFIG_PACKAGE_lanspeedd-bpf)'), 'BPF build must be gated by optional lanspeedd-bpf selection');
   assert(makefile.includes('$(call CompileBPF,$(PKG_BUILD_DIR)/lanspeed_tc.bpf.c)'), 'package Makefile must build BPF object from BPF source with CompileBPF');
+  assert(makefile.includes('$(PKG_BUILD_DIR)/linux/kconfig.h'), 'package Makefile must provide linux/kconfig.h fallback for older SDK bpf-headers');
+  assert(makefile.includes('$(PKG_BUILD_DIR)/asm_goto_workaround.h'), 'package Makefile must provide asm_goto_workaround.h fallback for older SDK bpf-headers');
   assert(makefile.includes('$(CP) $(PKG_BUILD_DIR)/lanspeed_tc.bpf.o $(PKG_BUILD_DIR)/lanspeed_tc.o'), 'package Makefile must normalize SDK BPF output name');
   assert(makefile.includes('$(INSTALL_DATA) $(PKG_BUILD_DIR)/lanspeed_tc.o $(1)/usr/lib/bpf/lanspeed_tc.o'), 'package Makefile must install BPF object');
+  assert(!/Package\/lanspeedd[\s\S]{0,260}PACKAGE_lanspeedd-bpf:libbpf/.test(makefile), 'base package must not expose libbpf through its own dependency metadata');
   assert(makefile.includes('DEPENDS:=+lanspeedd +libbpf +tc-tiny $(BPF_DEPENDS)'), 'optional BPF package must carry libbpf, tc-tiny and BPF dependencies');
   assert(/DEPENDS:=[^\n]*\+libmnl/.test(makefile), 'base daemon must depend on libmnl for raw ctnetlink');
   assert(/-DLANSPEED_RELEASE=.*\$\(PKG_RELEASE\)/.test(makefile), 'package Makefile must pass PKG_RELEASE into lanspeedd status.version');
