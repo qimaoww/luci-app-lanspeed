@@ -6,16 +6,18 @@ PKG_RELEASE:=6
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=
-PKG_BUILD_DEPENDS:=bpf-headers
+PKG_BUILD_DEPENDS:=PACKAGE_lanspeedd-bpf:bpf-headers
 
 include $(INCLUDE_DIR)/package.mk
+ifneq ($(CONFIG_PACKAGE_lanspeedd-bpf),)
 include $(INCLUDE_DIR)/bpf.mk
+endif
 
 define Package/lanspeedd
   SECTION:=net
   CATEGORY:=Network
   TITLE:=LAN speed monitor daemon
-  DEPENDS:=+libubox +libubus +libuci +libblobmsg-json +libjson-c +libbpf +libmnl +kmod-nf-conntrack-netlink +tc-tiny
+  DEPENDS:=+libubox +libubus +libuci +libblobmsg-json +libjson-c +libmnl +kmod-nf-conntrack-netlink +PACKAGE_lanspeedd-bpf:libbpf +PACKAGE_lanspeedd-bpf:tc-tiny
 endef
 
 define Package/lanspeedd/description
@@ -26,7 +28,7 @@ define Package/lanspeedd-bpf
   SECTION:=net
   CATEGORY:=Network
   TITLE:=Optional BPF assets for lanspeedd
-  DEPENDS:=+lanspeedd +libbpf $(BPF_DEPENDS)
+  DEPENDS:=+lanspeedd +libbpf +tc-tiny $(BPF_DEPENDS)
 endef
 
 define Package/lanspeedd-bpf/description
@@ -44,7 +46,8 @@ define Build/Compile
 		CC="$(TARGET_CC)" \
 		CFLAGS="$(TARGET_CFLAGS) -Wall -Wextra -DLANSPEED_RELEASE=\\\"$(PKG_RELEASE)\\\"" \
 		LDFLAGS="$(TARGET_LDFLAGS)" \
-		LIBS="-lubox -lubus -luci -lblobmsg_json -ljson-c -lbpf -lmnl"
+		LIBS="-lubox -lubus -luci -lblobmsg_json -ljson-c -lmnl $(if $(CONFIG_PACKAGE_lanspeedd-bpf),-lbpf,)" \
+		LANSPEED_WITH_BPF="$(if $(CONFIG_PACKAGE_lanspeedd-bpf),1,0)"
 	$(if $(CONFIG_PACKAGE_lanspeedd-bpf),$(call CompileBPF,$(PKG_BUILD_DIR)/lanspeed_tc.bpf.c),:)
 	$(if $(CONFIG_PACKAGE_lanspeedd-bpf),$(CP) $(PKG_BUILD_DIR)/lanspeed_tc.bpf.o $(PKG_BUILD_DIR)/lanspeed_tc.o,:)
 endef

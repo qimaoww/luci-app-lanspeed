@@ -1,0 +1,165 @@
+name: Build SDK Packages
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      enable_bpf:
+        description: Build optional lanspeedd-bpf too
+        required: false
+        type: boolean
+        default: false
+      package_target:
+        description: build-sdk.sh target
+        required: false
+        default: all
+
+permissions:
+  contents: read
+
+env:
+  DEFAULT_SDK_URL: https://downloads.immortalwrt.org/releases/25.12.0-rc2/targets/x86/64/immortalwrt-sdk-25.12.0-rc2-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+  DEFAULT_SDK_SHA256: fb665aabb627d3b3a7d98cd426ee90febdb84ceffa6ce4c18fbda934c46053d5
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run unit validations
+        run: ./tests/run.sh unit
+
+  build-base:
+    needs: unit
+    runs-on: ubuntu-24.04
+    env:
+      ENABLE_BPF: "0"
+      PACKAGE_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.package_target || 'all' }}
+      SDK_URL: ${{ env.DEFAULT_SDK_URL }}
+      SDK_SHA256: ${{ env.DEFAULT_SDK_SHA256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex g++ gawk gcc-multilib gettext git libncurses5-dev libssl-dev python3 rsync unzip wget zlib1g-dev zstd
+
+      - name: Download public SDK
+        run: |
+          mkdir -p "$RUNNER_TEMP/sdk"
+          curl -L "$SDK_URL" -o "$RUNNER_TEMP/sdk/sdk.tar.zst"
+          if [ -n "$SDK_SHA256" ]; then
+            printf '%s  %s\n' "$SDK_SHA256" "$RUNNER_TEMP/sdk/sdk.tar.zst" | sha256sum -c -
+          fi
+          tar --zstd -xf "$RUNNER_TEMP/sdk/sdk.tar.zst" -C "$RUNNER_TEMP/sdk" --strip-components=1
+
+      - name: Build base packages
+        env:
+          SDK_DIR: ${{ runner.temp }}/sdk
+        run: ./scripts/build-sdk.sh "$PACKAGE_TARGET"
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p "$RUNNER_TEMP/artifacts/base"
+          find "$RUNNER_TEMP/sdk/bin" -type f \( -name '*.apk' -o -name '*.ipk' -o -name '*.buildinfo' -o -name '*.manifest' \) -exec cp --parents {} "$RUNNER_TEMP/artifacts/base" \;
+
+      - name: Upload base artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lanspeed-base-${{ github.sha }}
+          path: ${{ runner.temp }}/artifacts/base
+          if-no-files-found: error
+
+  build-bpf:
+    needs: unit
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.enable_bpf)
+    runs-on: ubuntu-24.04
+    env:
+      ENABLE_BPF: "1"
+      PACKAGE_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.package_target || 'all' }}
+      SDK_URL: ${{ env.DEFAULT_SDK_URL }}
+      SDK_SHA256: ${{ env.DEFAULT_SDK_SHA256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex g++ gawk gcc-multilib gettext git libncurses5-dev libssl-dev python3 rsync unzip wget zlib1g-dev zstd
+
+      - name: Download public SDK
+        run: |
+          mkdir -p "$RUNNER_TEMP/sdk"
+          curl -L "$SDK_URL" -o "$RUNNER_TEMP/sdk/sdk.tar.zst"
+          if [ -n "$SDK_SHA256" ]; then
+            printf '%s  %s\n' "$SDK_SHA256" "$RUNNER_TEMP/sdk/sdk.tar.zst" | sha256sum -c -
+          fi
+          tar --zstd -xf "$RUNNER_TEMP/sdk/sdk.tar.zst" -C "$RUNNER_TEMP/sdk" --strip-components=1
+
+      - name: Build packages with optional BPF
+        env:
+          SDK_DIR: ${{ runner.temp }}/sdk
+        run: ./scripts/build-sdk.sh "$PACKAGE_TARGET"
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p "$RUNNER_TEMP/artifacts/bpf"
+          find "$RUNNER_TEMP/sdk/bin" -type f \( -name '*.apk' -o -name '*.ipk' -o -name '*.buildinfo' -o -name '*.manifest' \) -exec cp --parents {} "$RUNNER_TEMP/artifacts/bpf" \;
+
+      - name: Upload BPF artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lanspeed-bpf-${{ github.sha }}
+          path: ${{ runner.temp }}/artifacts/bpf
+          if-no-files-found: error
+
+  release:
+    needs:
+      - build-base
+      - build-bpf
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download base artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: lanspeed-base-${{ github.sha }}
+          path: ${{ runner.temp }}/release/base
+
+      - name: Download BPF artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: lanspeed-bpf-${{ github.sha }}
+          path: ${{ runner.temp }}/release/bpf
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2.6.2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            ${{ runner.temp }}/release/base/**/*.apk
+            ${{ runner.temp }}/release/base/**/*.ipk
+            ${{ runner.temp }}/release/base/**/*.buildinfo
+            ${{ runner.temp }}/release/base/**/*.manifest
+            ${{ runner.temp }}/release/bpf/**/*.apk
+            ${{ runner.temp }}/release/bpf/**/*.ipk
+            ${{ runner.temp }}/release/bpf/**/*.buildinfo
+            ${{ runner.temp }}/release/bpf/**/*.manifest

@@ -49,8 +49,8 @@ NSS-direct 指 daemon 只读 qca-nss-ecm 的 state 设备（`/dev/ecm_state` 或
 
 | 包 | 说明 |
 |---|---|
-| `lanspeedd` | C daemon，暴露 ubus 只读方法（status / clients / overview / health / interfaces / sysdevices） |
-| `lanspeedd-bpf` | 可选，SDK 编译的 tc/eBPF 对象（含 ct_lookup + seen_tuples 去重 map） |
+| `lanspeedd` | C daemon，暴露 ubus 只读方法（status / clients / overview / health / interfaces / sysdevices）；不选 BPF 包时也可以单独编译 |
+| `lanspeedd-bpf` | 可选，SDK 编译的 tc/eBPF 对象和 BPF 运行时依赖（含 ct_lookup + seen_tuples 去重 map） |
 | `luci-app-lanspeed` | LuCI 状态页和配置页，模块化前端（vocab / format / rpc / ifaceConfig / nssPanel / version） |
 
 ## 编译
@@ -69,7 +69,13 @@ git clone https://github.com/qimaoww/luci-app-lanspeed.git package/lanspeed
 | OpenWrt 23.05 | 基础 daemon / LuCI 可用；BPF 取决于 SDK、内核 BTF 和工具链。 |
 | OpenWrt 21.02 及更早版本 | 不推荐，BPF、libbpf、ctnetlink 和 LuCI 运行时差异较大。 |
 
-### 内核配置要求（BPF 模式）
+### 基础包与 BPF 可选包
+
+- `lanspeedd` 基础包不再强制要求 `libbpf`、`bpf.mk` 或 BPF toolchain，适合 NSS-direct / 只看 conntrack 的路由器直接编译。
+- 只有选中 `lanspeedd-bpf` 时，才需要 `bpf-headers`、`libbpf`、`tc-tiny` 和对应 SDK 的 BPF 编译环境。
+- 非 NSS / x86 / daed 场景如果要实时测速，仍然需要 `lanspeedd-bpf`；否则只保留连接数、环境检查和 NSS/conntrack 诊断能力。
+
+### 内核配置要求（仅 `lanspeedd-bpf`）
 
 ```
 CONFIG_DEVEL=y
@@ -81,7 +87,7 @@ CONFIG_PACKAGE_kmod-nf-conntrack=y
 CONFIG_PACKAGE_kmod-nf-conntrack-netlink=y
 ```
 
-不启用 `lanspeedd-bpf` 时，daemon 仍可显示连接数与环境诊断；但普通非 NSS 设备不会用 conntrack 伪装成实时客户端测速。
+不启用 `lanspeedd-bpf` 时，daemon 仍可显示连接数与环境诊断；NSS 设备仍可走 NSS-direct / ECM sync 相关路径，但普通非 NSS 设备不会把 conntrack 当成实时客户端测速。
 
 ### 运行时依赖
 
@@ -93,10 +99,10 @@ CONFIG_PACKAGE_kmod-nf-conntrack-netlink=y
 | `libblobmsg-json` | yes | JSON 序列化 |
 | `libjson-c` | yes | JSON 处理 |
 | `libmnl` | yes | raw ctnetlink / CT-Netlink dump |
-| `tc-tiny` (iproute2) | yes | tc clsact 挂载 |
 | `kmod-nf-conntrack` | yes | conntrack 表访问 |
 | `kmod-nf-conntrack-netlink` | yes | CT-Netlink 连接数读取 |
-| `libbpf` | BPF 模式 | BPF 对象加载 |
+| `tc-tiny` (iproute2) | `lanspeedd-bpf` | tc clsact 挂载 |
+| `libbpf` | `lanspeedd-bpf` | BPF 对象加载 |
 | `luci-base` | LuCI 页面 | LuCI 框架 |
 
 NSS-direct 不额外依赖用户态库，但需要内核侧 qca-nss-ecm 暴露 ECM state 设备；不可用时会自动显示 `nss_ecm_direct_unavailable` 并回退。
@@ -106,18 +112,18 @@ NSS-direct 不额外依赖用户态库，但需要内核侧 qca-nss-ecm 暴露 E
 ```sh
 make menuconfig
 # Network -> lanspeedd
-# Network -> lanspeedd-bpf
+# Network -> lanspeedd-bpf   # 只有需要 BPF 实时测速时才选
 # LuCI -> Applications -> luci-app-lanspeed
 
-make package/lanspeed/lanspeedd/compile V=s
-make package/lanspeed/lanspeedd-bpf/compile V=s
+make package/lanspeed/lanspeedd/compile V=s   # 选中 lanspeedd-bpf 时会一并产出 BPF 对象
 make package/lanspeed/luci-app-lanspeed/compile V=s
 ```
 
 也可以使用仓库脚本：
 
 ```sh
-SDK_DIR=/openwrt/25.12 ENABLE_BPF=1 DRY_RUN=1 scripts/build-sdk.sh
+SDK_DIR=/openwrt/25.12 ENABLE_BPF=0 DRY_RUN=1 scripts/build-sdk.sh
+SDK_DIR=/openwrt/25.12 ENABLE_BPF=0 scripts/build-sdk.sh
 SDK_DIR=/openwrt/25.12 ENABLE_BPF=1 scripts/build-sdk.sh
 ```
 
@@ -263,6 +269,7 @@ net/lanspeedd/
   src/collector-model.json         采集模型说明
   files/                           设备端文件 (init.d / UCI config / schema)
 scripts/build-sdk.sh               SDK 编译辅助脚本
+.github/workflows/build-sdk.yml    GitHub Actions 自动编译
 tests/                             本地回归测试
 ```
 
