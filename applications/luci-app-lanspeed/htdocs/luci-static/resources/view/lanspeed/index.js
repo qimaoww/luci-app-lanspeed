@@ -32,25 +32,30 @@
  * custom-property for thin divider lines.
  *
  * Alignment strategy: every logical block is wrapped in its own
- * .cbi-section card, so every child (h3, metrics, toolbar, table) shares
- * the same left edge inside the card's 20px inner padding.  The client
- * table deliberately drops `.table` class to avoid card-in-card framing
- * and uses .lanspeed-table with :first-child/:last-child padding overrides
- * so row content stays flush with the section's h3.
+ * .cbi-section card and LAN Speed owns only the spacing inside these
+ * cards.  The client table deliberately drops `.table` class to avoid
+ * card-in-card framing and uses .lanspeed-table with local padding rules,
+ * so broad theme table rules cannot push the content out of alignment.
  */
 var LAYOUT_CSS = [
-	/* section header row: h3 + pills on one baseline, meta pushed right */
+	'.lanspeed-root .cbi-section{font-weight:400}',
+
+	/* section header row: h3 left, compact meta pushed right */
 	'.lanspeed-header{display:flex;flex-wrap:wrap;gap:.4em 1em;align-items:baseline;',
-	'  padding-bottom:.65em;margin:0 0 1em 0;',
+	'  padding:1em 1.25em .75em 1.25em;margin:0;',
 	'  border-bottom:1px solid var(--border,rgba(128,128,128,.25))}',
-	'.lanspeed-header>h3{margin:0;padding:0;border:0;flex:0 0 auto;line-height:1.25}',
+	'.lanspeed-header>h3{margin:0;padding:0;border:0;width:auto;display:inline;flex:0 0 auto;',
+	'  background:transparent;box-shadow:none;line-height:1.25;font-weight:600}',
 	'.lanspeed-header>.spacer{flex:1 1 auto}',
-	'.lanspeed-header>.meta{font-size:.85em;opacity:.75;',
+	'.lanspeed-header>.meta{font-size:.85em;opacity:.75;white-space:nowrap;',
 	'  font-family:var(--font-monospace,ui-monospace,monospace)}',
+	'.lanspeed-header .label{margin-left:0}',
+	'.lanspeed-body{padding:1.15em 1.25em}',
 
 	/* metrics row */
-	'.lanspeed-metrics{display:flex;flex-wrap:wrap;gap:1em 2.5em;align-items:flex-end;margin:0}',
-	'.lanspeed-metric{min-width:9em}',
+	'.lanspeed-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(10em,12em));',
+	'  gap:1.1em 2em;align-items:center;justify-content:start;margin:0}',
+	'.lanspeed-metric{min-width:0}',
 	'.lanspeed-metric .caption{font-size:.75em;text-transform:uppercase;letter-spacing:.04em;opacity:.7;margin:0}',
 	'.lanspeed-metric .big{font-size:1.6em;font-weight:600;font-variant-numeric:tabular-nums;',
 	'  line-height:1.2;margin:.1em 0}',
@@ -61,10 +66,22 @@ var LAYOUT_CSS = [
 	'.lanspeed-strip:empty{display:none;margin:0}',
 
 	/* toolbar lives inside the clients card */
-	'.lanspeed-toolbar{display:flex;flex-wrap:wrap;gap:.5em;align-items:center;margin:0 0 1em 0}',
-	'.lanspeed-toolbar>.spacer{flex:1 1 auto}',
+	'.lanspeed-toolbar{display:grid;grid-template-columns:auto minmax(18em,1fr) auto;',
+	'  gap:.7em 1em;align-items:center;margin:0 0 1em 0}',
+	'.lanspeed-toolbar-left,.lanspeed-toolbar-filter,.lanspeed-toolbar-options{',
+	'  display:flex;flex-wrap:wrap;gap:.5em;align-items:center}',
+	'.lanspeed-toolbar-filter{justify-content:flex-start}',
+	'.lanspeed-toolbar-options{justify-content:flex-end}',
 	'.lanspeed-toolbar label{display:inline-flex;gap:.3em;align-items:center;font-size:.9em}',
-	'.lanspeed-toolbar input[type=search]{min-width:12em}',
+	'.lanspeed-toolbar .lanspeed-active-only{display:inline-flex;gap:.45em;',
+	'  align-items:center;line-height:1.25}',
+	'.lanspeed-toolbar .lanspeed-active-only>input[type=checkbox],',
+	'.lanspeed-toolbar .lanspeed-active-only input[type=checkbox]{',
+	'  position:static;top:auto;right:auto;margin:0;flex:0 0 auto}',
+	'.lanspeed-toolbar .lanspeed-active-label{margin:0;line-height:1.25}',
+	'.lanspeed-toolbar input[type=search]{min-width:16em;max-width:24em}',
+	'@media (max-width:900px){.lanspeed-toolbar{grid-template-columns:1fr}',
+	'.lanspeed-toolbar-options{justify-content:flex-start}}',
 
 	/* compact, borderless table designed to live INSIDE a .cbi-section.
 	   :first-child/:last-child padding overrides keep cells flush with
@@ -85,6 +102,7 @@ var LAYOUT_CSS = [
 	'  font-family:var(--font-monospace,ui-monospace,monospace);max-width:22em;',
 	'  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
 	'.lanspeed-table td .state{display:inline-flex;gap:.25em;flex-wrap:wrap;align-items:center}',
+	'.lanspeed-clients-card .lanspeed-table{font-weight:500}',
 
 	/* capability grid inside diagnostics card */
 	'.lanspeed-caps{display:grid;grid-template-columns:repeat(auto-fill,minmax(15em,1fr));',
@@ -109,7 +127,7 @@ var LAYOUT_CSS = [
 	'.lanspeed-details{margin:0}',
 	'.lanspeed-details>summary{cursor:pointer;list-style:none;padding:0;margin:0;',
 	'  display:flex;flex-wrap:wrap;gap:.4em 1em;align-items:baseline;',
-	'  padding-bottom:.65em;margin-bottom:1em;',
+	'  padding:1em 1.25em .75em 1.25em;',
 	'  border-bottom:1px solid var(--border,rgba(128,128,128,.25))}',
 	'.lanspeed-details>summary::-webkit-details-marker{display:none}',
 	'.lanspeed-details>summary::marker{content:""}',
@@ -117,11 +135,13 @@ var LAYOUT_CSS = [
 	'  width:1em;flex:0 0 auto;opacity:.6;font-size:.85em}',
 	'.lanspeed-details[open]>summary::before{content:"\u25BE"}',
 	'.lanspeed-details>summary>h3{margin:0;padding:0;border:0;flex:0 0 auto;',
-	'  line-height:1.25;display:inline}',
+	'  width:auto;background:transparent;box-shadow:none;line-height:1.25;display:inline;',
+	'  font-weight:600}',
 	'.lanspeed-details>summary>.spacer{flex:1 1 auto}',
 	'.lanspeed-details>summary .sum{font-size:.85em;opacity:.75;',
 	'  font-family:var(--font-monospace,ui-monospace,monospace)}',
-	'.lanspeed-details-body{margin:0}',
+	'.lanspeed-details>summary .label{margin-left:0}',
+	'.lanspeed-details-body{margin:0;padding:1em 1.25em}',
 
 	/* empty and hint text */
 	'.lanspeed-empty{padding:1.2em 0;text-align:center;opacity:.7}',
@@ -143,18 +163,61 @@ var LAYOUT_CSS = [
  *   </div>
  */
 
+function collectorLabel(mode) {
+	mode = String(mode || '-');
+	if (mode === 'bpf')
+		return 'BPF';
+	if (mode === 'nss_ecm_direct')
+		return 'NSS-direct';
+	if (mode === 'conntrack_ecm_sync' || mode === 'nss_conntrack_sync')
+		return 'ECM sync';
+	if (mode === 'conntrack_netlink')
+		return 'CT-Netlink';
+	if (mode === 'conntrack_procfs')
+		return 'CT-Procfs';
+	if (mode === 'conntrack')
+		return 'CT';
+	if (mode === 'unsupported')
+		return _('不可用');
+	return mode === '-' ? '-' : mode;
+}
+
+function collectorClass(mode) {
+	mode = String(mode || '-');
+	if (mode === 'bpf' || mode === 'nss_ecm_direct')
+		return 'label label-success';
+	if (mode === 'conntrack_ecm_sync' || mode === 'nss_conntrack_sync')
+		return 'label label-warning';
+	return 'label label-danger';
+}
+
+function effectiveCollector(status, clients) {
+	var evidence = (status && status.evidence) || {};
+	var collector = evidence.effective_collector ||
+	                (evidence.collector && evidence.collector.primary_source);
+	if (collector && collector !== 'auto')
+		return collector;
+
+	clients = fmt.asArray(clients);
+	for (var i = 0; i < clients.length; i++) {
+		collector = clients[i] && clients[i].collector_mode;
+		if (collector && collector !== 'auto' && collector !== 'unsupported')
+			return collector;
+	}
+
+	return collector || 'unsupported';
+}
+
 function buildShell(viewState) {
 	var refs = {};
 	var prefs = viewState.prefs;
 
 	/* ---- overview card ---- */
-	refs.modePill = E('span', { 'class': 'label' }, '-');
-	refs.confPill = E('span', { 'class': 'label' }, '-');
+	refs.collectorPill = E('span', { 'class': 'label' }, '-');
 	refs.meta     = E('span', { 'class': 'meta' }, '');
 	var overviewHeader = E('div', { 'class': 'lanspeed-header' }, [
 		E('h3', {}, _('LAN Speed')),
-		refs.modePill,
-		refs.confPill,
+		refs.collectorPill,
 		E('span', { 'class': 'spacer' }),
 		refs.meta
 	]);
@@ -216,8 +279,10 @@ function buildShell(viewState) {
 
 	var overviewCard = E('div', { 'class': 'cbi-section' }, [
 		overviewHeader,
-		refs.errorBox,
-		metrics
+		E('div', { 'class': 'lanspeed-body' }, [
+			refs.errorBox,
+			metrics
+		])
 	]);
 
 	/* ---- clients card ---- */
@@ -264,7 +329,7 @@ function buildShell(viewState) {
 		viewState.refreshLive();
 	});
 
-	var activeAttrs = { 'type': 'checkbox', 'id': 'lanspeed-active' };
+	var activeAttrs = { 'type': 'checkbox', 'id': 'lanspeed-active', 'class': 'cbi-input-checkbox' };
 	if (prefs.activeOnly) activeAttrs.checked = 'checked';
 	refs.activeChk = E('input', activeAttrs);
 	refs.activeChk.addEventListener('change', function(ev) {
@@ -315,13 +380,21 @@ function buildShell(viewState) {
 	});
 
 	var toolbar = E('div', { 'class': 'lanspeed-toolbar' }, [
-		refs.btnRefresh, refs.btnReload, refs.btnPause,
-		refs.filterInput,
-		E('label', { 'for': 'lanspeed-active' }, [ refs.activeChk, _('仅活跃') ]),
-		E('span', { 'class': 'spacer' }),
-		E('label', {}, [ _('刷新'), refs.intervalSel ]),
-		E('label', {}, [ _('单位'), refs.unitSel ]),
-		E('label', {}, [ _('排序'), refs.sortSel ])
+		E('div', { 'class': 'lanspeed-toolbar-left' }, [
+			refs.btnRefresh, refs.btnReload, refs.btnPause
+		]),
+		E('div', { 'class': 'lanspeed-toolbar-filter' }, [
+			refs.filterInput,
+			E('span', { 'class': 'lanspeed-active-only' }, [
+				refs.activeChk,
+				E('label', { 'class': 'lanspeed-active-label', 'for': 'lanspeed-active' }, _('仅活跃'))
+			])
+		]),
+		E('div', { 'class': 'lanspeed-toolbar-options' }, [
+			E('label', {}, [ _('刷新'), refs.intervalSel ]),
+			E('label', {}, [ _('单位'), refs.unitSel ]),
+			E('label', {}, [ _('排序'), refs.sortSel ])
+		])
 	]);
 
 	refs.clientsHeaderSummary = E('span', { 'class': 'meta' }, '');
@@ -346,11 +419,13 @@ function buildShell(viewState) {
 	]);
 	refs.empty = E('div', { 'class': 'lanspeed-empty', 'style': 'display:none' }, '-');
 
-	var clientsCard = E('div', { 'class': 'cbi-section' }, [
+	var clientsCard = E('div', { 'class': 'cbi-section lanspeed-clients-card' }, [
 		clientsHeader,
-		toolbar,
-		refs.clientsTable,
-		refs.empty
+		E('div', { 'class': 'lanspeed-body' }, [
+			toolbar,
+			refs.clientsTable,
+			refs.empty
+		])
 	]);
 
 	/* ---- interfaces card (collapsible) ---- */
@@ -409,7 +484,7 @@ function buildShell(viewState) {
 	]);
 	var diagnosticsCard = E('div', { 'class': 'cbi-section' }, [ refs.diagnostics ]);
 
-	var root = E('div', { 'class': 'cbi-map' }, [
+	var root = E('div', { 'class': 'cbi-map lanspeed-root' }, [
 		E('style', {}, LAYOUT_CSS),
 		overviewCard,
 		clientsCard,
@@ -440,14 +515,14 @@ function refreshLive(viewState) {
 	}
 
 	/* header pills */
-	var mode = status.mode || 'Unsupported';
-	refs.modePill.className = vocab.modeClass(mode);
-	refs.modePill.textContent = vocab.modeText(mode);
-	refs.confPill.className = vocab.confidenceClass(status.confidence);
-	refs.confPill.textContent = _('置信 ') + vocab.confidenceText(status.confidence);
+	var collector = effectiveCollector(status, clientsAll);
+	refs.collectorPill.className = collectorClass(collector);
+	refs.collectorPill.textContent = collectorLabel(collector);
+	refs.collectorPill.title = _('当前采集方式');
+
 	var metaParts = [];
-	if (status.version) metaParts.push('v' + status.version);
-	if (status.refresh_interval_ms) metaParts.push(status.refresh_interval_ms + ' ms');
+	if (status.version) metaParts.push('daemon ' + status.version);
+	metaParts.push('luci ' + lsVersion.FULL_VERSION);
 	if (prefs.paused) metaParts.push(_('已暂停'));
 	refs.meta.textContent = metaParts.join(' · ');
 
@@ -492,7 +567,6 @@ function refreshLive(viewState) {
 		subParts.push(_('≥ ') + fmt.formatRate(activeCfg.activeMinBps, prefs.unit));
 	refs.mClientsSub.textContent = subParts.join(' · ');
 
-	/* coverage: read daemon-computed sliding-window coverage from status.
 	/* coverage: read daemon-computed sliding-window coverage from status.
 	 * Direction semantics: tx_pct = client upload / iface rx,
 	 * rx_pct = client download / iface tx. */
@@ -582,36 +656,27 @@ function refreshLive(viewState) {
 
 			/* collector mode: abbreviate + explain via tooltip */
 			var mode = String(c.collector_mode || '-');
-			var modeLabel, modeTitle;
+			var modeLabel = collectorLabel(mode), modeTitle;
 			if (mode === 'bpf') {
-				modeLabel = 'BPF';
-				modeTitle = _('采集方式 BPF：tc clsact 挂载的 eBPF 程序按 MAC 直接计数，置信度高。');
+				modeTitle = _('采集方式 BPF：tc clsact 挂载的 eBPF 程序按 MAC 直接计数。');
 			} else if (mode === 'nss_ecm_direct') {
-				modeLabel = 'NSS-direct';
 				modeTitle = _('采集方式 NSS-direct：只读 qca-nss-ecm state 设备，直接按 ECM flow 字节计数聚合到 LAN 客户端，不等待 ECM 同步回 conntrack。');
-			} else if (mode === 'conntrack_ecm_sync') {
-				modeLabel = 'ECM';
+			} else if (mode === 'conntrack_ecm_sync' || mode === 'nss_conntrack_sync') {
 				modeTitle = _('采集方式 ECM 同步：NSS 硬件加速流的字节计数由 qca-nss-ecm 以秒级节拍同步回 conntrack，再由 lanspeedd 读取。桥接流也覆盖，精度等于 ECM sync 间隔 (≈1-2 秒)。');
 			} else if (mode === 'conntrack_netlink') {
-				modeLabel = 'CT-NL';
 				modeTitle = _('采集方式 Netlink Conntrack：非 NSS 仅用于连接数与诊断，不作为客户端实时测速来源。');
 			} else if (mode === 'conntrack') {
-				modeLabel = 'CT';
 				modeTitle = _('采集方式 Conntrack：非 NSS 仅用于连接数与诊断，不作为客户端实时测速来源。');
 			} else {
-				modeLabel = mode;
 				modeTitle = _('未知采集方式');
 			}
 
 			var stateCells = [
-				E('span', { 'class': vocab.confidenceClass(c.confidence),
-				            'title': modeTitle + '\n' + _('置信度：') + vocab.confidenceText(c.confidence) +
-				                     '。' + _('低 = 路径可能绕过 CPU 可见计数；高 = 直接从内核 filter 采得。') },
-				  modeLabel + '·' + vocab.confidenceText(c.confidence))
+				E('span', { 'class': 'label', 'title': modeTitle }, modeLabel)
 			];
 			if (specificWarnings.length)
 				stateCells.push(E('span', {
-					'class': critClient ? 'label label-danger' : 'label label-warning',
+					'class': critClient ? 'label danger' : 'label warning',
 					'title': specificWarnings.map(vocab.warningText.bind(vocab)).join('\n')
 				}, _('%d 告警').format(specificWarnings.length)));
 

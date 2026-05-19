@@ -237,6 +237,15 @@ function assertConfigView(src) {
 	if (!src.includes('lanspeed-config-table')) {
 		fail('view/lanspeed/config.js must render daemon settings as a compact table');
 	}
+	if (!src.includes('lanspeed-config-root')) {
+		fail('view/lanspeed/config.js must scope local typography to the LAN Speed config root');
+	}
+	if (!src.includes('lanspeed-config-body')) {
+		fail('view/lanspeed/config.js must wrap daemon settings in a padded body for theme compatibility');
+	}
+	if (!src.includes('font-weight:400')) {
+		fail('view/lanspeed/config.js must pin normal LAN Speed text weight for Argon compatibility');
+	}
 	if (!src.includes('active_client_window_ms')) {
 		fail('view/lanspeed/config.js must expose active_client_window_ms');
 	}
@@ -266,6 +275,15 @@ function assertConfigView(src) {
 	}
 	if (src.includes('overview_window_samples') || src.includes('趋势采样点')) {
 		fail('view/lanspeed/config.js must not expose trend sampling after the trend chart is removed');
+	}
+}
+
+function assertIfaceConfigThemeLayout(src) {
+	if (!src.includes('lanspeed-ifcfg-body')) {
+		fail('resources/lanspeed/ifaceConfig.js must wrap the interface table in a padded body for theme compatibility');
+	}
+	if (src.includes('置信度 high')) {
+		fail('resources/lanspeed/ifaceConfig.js must not show confidence wording in interface config tooltips');
 	}
 }
 
@@ -305,14 +323,97 @@ function assertStatusViewNoTrend(src) {
 	}
 }
 
+function assertStatusViewSourceOnlyState(src) {
+	if (!src.includes('lanspeed-root')) {
+		fail('view/lanspeed/index.js must scope local typography to the LAN Speed status root');
+	}
+	if (src.includes('.lanspeed-root{font-size:') ||
+	    src.includes('.lanspeed-root button,.lanspeed-root input,.lanspeed-root select{font-size:')) {
+		fail('view/lanspeed/index.js must not force LAN Speed root or form control text larger than the theme');
+	}
+	if (!src.includes('grid-template-columns:repeat(auto-fit,minmax(10em,12em))') ||
+	    !src.includes('gap:1.1em 2em;align-items:center;justify-content:start;margin:0')) {
+		fail('view/lanspeed/index.js must center-align overview metrics instead of bottom-aligning them');
+	}
+	if (src.includes('.lanspeed-metric .caption{font-size:.86em') ||
+	    src.includes('.lanspeed-metric .big{font-size:1.7em') ||
+	    src.includes('.lanspeed-metric .hint{font-size:.86em') ||
+	    src.includes('.lanspeed-table .mono{font-family:var(--font-monospace,ui-monospace,monospace);') &&
+	    src.includes('font-size:.95em;white-space:nowrap') ||
+	    src.includes('.lanspeed-table td .ipline{display:block;font-size:.86em') ||
+	    src.includes('.lanspeed-table td .state .label{display:inline-flex') ||
+	    src.includes('padding:.18em .5em;font-size:.95em;line-height:1.35') ||
+	    src.includes('.lanspeed-warnings li{margin:.2em 0;font-size:1em}')) {
+		fail('view/lanspeed/index.js must keep previous compact text sizes');
+	}
+	if (!src.includes('align-items:baseline') || !src.includes('white-space:nowrap')) {
+		fail('view/lanspeed/index.js header metadata must stay aligned with the section title on Argon');
+	}
+	if (!src.includes('lanspeed-toolbar-left') || !src.includes('lanspeed-toolbar-filter') || !src.includes('lanspeed-toolbar-options')) {
+		fail('view/lanspeed/index.js must group toolbar controls for Argon compatibility');
+	}
+	if (!src.includes('lanspeed-active-only') ||
+	    !src.includes('position:static;top:auto;right:auto;margin:0') ||
+	    !src.includes("'class': 'cbi-input-checkbox'") ||
+	    !src.includes("'class': 'lanspeed-active-label', 'for': 'lanspeed-active'")) {
+		fail('view/lanspeed/index.js must align the active-only checkbox in the toolbar on Argon');
+	}
+	if (!src.includes('.lanspeed-clients-card .lanspeed-table{font-weight:500}')) {
+		fail('view/lanspeed/index.js must make the LAN client table weight stronger without enlarging it');
+	}
+	if (src.includes('.lanspeed-clients-card .lanspeed-table{font-size:') ||
+	    src.includes('.lanspeed-clients-card .lanspeed-table>thead>tr>th,.lanspeed-clients-card .lanspeed-table>tbody>tr>td') ||
+	    src.includes('.lanspeed-table>thead>tr>th,.lanspeed-table>tbody>tr>td{padding-top:.55em')) {
+		fail('view/lanspeed/index.js must not enlarge the LAN client table text or row spacing');
+	}
+	if (!src.includes('collectorLabel') || src.includes("metaParts.push(_('模式 ')")) {
+		fail('view/lanspeed/index.js header must show collector source instead of runtime mode');
+	}
+	if (!src.includes('function collectorClass(mode)')) {
+		fail('view/lanspeed/index.js must style the collector source pill without using confidence text');
+	}
+	if (!src.includes('function effectiveCollector(status, clients)')) {
+		fail('view/lanspeed/index.js must derive the current collector source before rendering the header');
+	}
+	if (!src.includes('refs.collectorPill') ||
+	    !src.includes('refs.collectorPill.className = collectorClass(collector)') ||
+	    !src.includes('refs.collectorPill.textContent = collectorLabel(collector)')) {
+		fail('view/lanspeed/index.js header must show the current collector source in the status pill');
+	}
+	if (src.includes("metaParts.push(_('采集方式 ')")) {
+		fail('view/lanspeed/index.js header metadata must not repeat the collector source');
+	}
+	if (src.includes("status.collector_mode;")) {
+		fail('view/lanspeed/index.js header must not show configured collector_mode as the current collector source');
+	}
+	if (!src.includes("return 'ECM sync'")) {
+		fail('view/lanspeed/index.js must keep ECM sync as a clear collector label');
+	}
+	if (!src.includes("return 'CT-Netlink'")) {
+		fail('view/lanspeed/index.js must keep conntrack netlink as a clear collector label');
+	}
+	if (/confPill|_\(['"]置信/.test(src)) {
+		fail('view/lanspeed/index.js must not render confidence in overview header');
+	}
+	if (/modeLabel\s*\+\s*['"]·['"]\s*\+\s*vocab\.confidenceText/.test(src)) {
+		fail('view/lanspeed/index.js client state must show collector source without confidence suffix');
+	}
+	if (src.includes('置信度：')) {
+		fail('view/lanspeed/index.js client state tooltip must not expose confidence text');
+	}
+	if (!src.includes("return 'NSS-direct'")) {
+		fail('view/lanspeed/index.js must keep existing nss_ecm_direct label');
+	}
+}
+
 function assertVersionModule(src) {
-	if (!src.includes("PACKAGE_VERSION: '0.1.1'")) {
+	if (!src.includes("PACKAGE_VERSION: '0.1.2'")) {
 		fail('version.js must expose luci-app-lanspeed PACKAGE_VERSION');
 	}
-	if (!src.includes("PACKAGE_RELEASE: '6'")) {
+	if (!src.includes("PACKAGE_RELEASE: '1'")) {
 		fail('version.js must expose luci-app-lanspeed PACKAGE_RELEASE');
 	}
-	if (!src.includes("FULL_VERSION: '0.1.1-r6'")) {
+	if (!src.includes("FULL_VERSION: '0.1.2-r1'")) {
 		fail('version.js must expose full luci-app-lanspeed version with r suffix');
 	}
 }
@@ -339,6 +440,9 @@ EXPECTED_MODULES.forEach(function(name) {
 	if (name === 'format.js') {
 		assertFormatActiveWindow(src);
 	}
+	if (name === 'ifaceConfig.js') {
+		assertIfaceConfigThemeLayout(src);
+	}
 	if (name === 'version.js') {
 		assertVersionModule(src);
 	}
@@ -362,6 +466,7 @@ if (fs.existsSync(viewFile)) {
 	assertStatusViewNoInterfaceConfig(vsrc);
 	assertNoInlineNavigation(vsrc, 'view/lanspeed/index.js');
 	assertStatusViewNoTrend(vsrc);
+	assertStatusViewSourceOnlyState(vsrc);
 	assertSyntax(vsrc, 'view/lanspeed/index.js');
 	/* View should no longer declare rpc; it goes through lsRpc */
 	assertNoRpcDeclare(vcleaned, 'view/lanspeed/index.js');

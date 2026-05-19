@@ -60,7 +60,7 @@ function renderIfaceConfig(viewState) {
 			{ k: 'collect', t: _('采集'),
 			  title: !isCollectable
 			    ? _('该接口不是推荐的 LAN 采集点；请改为“观察”。')
-			    : _('挂 BPF filter，按客户端拆速率；置信度 high') }
+			    : _('挂 BPF filter，按客户端拆速率') }
 		];
 		modes.forEach(function(m) {
 			var btn = E('button', {
@@ -248,21 +248,23 @@ function buildSection(viewState, title) {
 			E('span', { 'class': 'spacer' }),
 			refs.ifcfgSummary
 		]),
-		E('table', { 'class': 'lanspeed-ifcfg-table' }, [
-			E('thead', {}, E('tr', {}, [
-				E('th', {}, _('接口')),
-				E('th', {}, _('标记')),
-				E('th', { 'class': 'action' }, _('模式'))
-			])),
-			refs.ifcfgBody
-		]),
-		E('div', { 'class': 'lanspeed-ifcfg-actions' }, [
-			refs.ifcfgSaveBtn,
-			refs.ifcfgReloadBtn,
-			E('span', { 'class': 'spacer' }),
-			refs.ifcfgStatus
-		]),
-		refs.ifcfgHint
+		E('div', { 'class': 'lanspeed-ifcfg-body' }, [
+			E('table', { 'class': 'lanspeed-ifcfg-table' }, [
+				E('thead', {}, E('tr', {}, [
+					E('th', {}, _('接口')),
+					E('th', {}, _('标记')),
+					E('th', { 'class': 'action' }, _('模式'))
+				])),
+				refs.ifcfgBody
+			]),
+			E('div', { 'class': 'lanspeed-ifcfg-actions' }, [
+				refs.ifcfgSaveBtn,
+				refs.ifcfgReloadBtn,
+				E('span', { 'class': 'spacer' }),
+				refs.ifcfgStatus
+			]),
+			refs.ifcfgHint
+		])
 	]);
 }
 

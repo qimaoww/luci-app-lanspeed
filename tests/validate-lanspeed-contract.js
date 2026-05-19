@@ -149,7 +149,7 @@ function validateFixture(fixture) {
   assertObject(fixture.status.evidence, 'status.evidence');
   assertObject(fixture.status.capabilities, 'status.capabilities');
   assert(fixture.status.mode === 'Unsupported', 'status fixture must use planned Unsupported mode for stub stage');
-  assert(/^0\.1\.1-r\d+$/.test(fixture.status.version), 'status fixture version must include package release suffix, e.g. 0.1.1-r2');
+  assert(/^0\.1\.2-r\d+$/.test(fixture.status.version), 'status fixture version must include package release suffix, e.g. 0.1.2-r1');
   assert(fixture.status.capabilities.bpf === false, 'status fixture must not claim BPF is available in stub stage');
   assert(fixture.status.capabilities.live_metrics === false, 'status fixture must not pretend live metrics exist');
 

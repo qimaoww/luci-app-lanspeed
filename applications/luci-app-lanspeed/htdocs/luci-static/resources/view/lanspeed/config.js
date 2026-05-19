@@ -13,13 +13,17 @@
  */
 
 var CONFIG_CSS = [
+	'.lanspeed-config-root{font-weight:400}',
+	'.lanspeed-config-root .cbi-section{font-weight:400}',
 	'.lanspeed-header{display:flex;flex-wrap:wrap;gap:.4em 1em;align-items:baseline;',
-	'  padding-bottom:.65em;margin:0 0 1em 0;',
+	'  padding:1em 1.25em .75em 1.25em;margin:0;',
 	'  border-bottom:1px solid var(--border,rgba(128,128,128,.25))}',
-	'.lanspeed-header>h3{margin:0;padding:0;border:0;flex:0 0 auto;line-height:1.25}',
+	'.lanspeed-header>h3{margin:0;padding:0;border:0;width:auto;display:inline;',
+	'  flex:0 0 auto;background:transparent;box-shadow:none;line-height:1.25;font-weight:600}',
 	'.lanspeed-header>.spacer{flex:1 1 auto}',
 	'.lanspeed-header>.sum{font-size:.85em;opacity:.75;',
 	'  font-family:var(--font-monospace,ui-monospace,monospace)}',
+	'.lanspeed-config-body,.lanspeed-ifcfg-body{padding:1em 1.25em}',
 	'.lanspeed-config-table,.lanspeed-ifcfg-table{width:100%;border-collapse:collapse;margin:0}',
 	'.lanspeed-config-table th,.lanspeed-config-table td,',
 	'.lanspeed-ifcfg-table th,.lanspeed-ifcfg-table td{padding:.6em .6em;text-align:left;',
@@ -44,7 +48,7 @@ var CONFIG_CSS = [
 	'.lanspeed-config-actions>.spacer{flex:1 1 auto}',
 	'.lanspeed-config-actions .status{font-size:.85em;opacity:.75;',
 	'  font-family:var(--font-monospace,ui-monospace,monospace)}',
-	'.lanspeed-ifcfg{display:flex;flex-direction:column;gap:1em;margin:0}',
+	'.lanspeed-ifcfg{display:flex;flex-direction:column;margin:0}',
 	'.lanspeed-ifcfg-seg{display:inline-flex;gap:.35em;align-items:stretch;min-width:16em}',
 	'.lanspeed-ifcfg-seg>button{flex:1 1 0;min-width:0;padding:.5em .7em;',
 	'  font-size:.9em;border:1px solid var(--border,rgba(128,128,128,.3));',
@@ -242,45 +246,47 @@ function buildDaemonSection(values) {
 			E('span', { 'class': 'spacer' }),
 			E('span', { 'class': 'sum' }, _('UCI'))
 		]),
-		E('table', { 'class': 'lanspeed-config-table' }, [
-			E('thead', {}, E('tr', {}, [
-				E('th', {}, _('项目')),
-				E('th', {}, _('UCI')),
-				E('th', { 'class': 'value' }, _('值')),
-				E('th', {}, _('范围'))
-			])),
+		E('div', { 'class': 'lanspeed-config-body' }, [
+			E('table', { 'class': 'lanspeed-config-table' }, [
+				E('thead', {}, E('tr', {}, [
+					E('th', {}, _('项目')),
+					E('th', {}, _('UCI')),
+					E('th', { 'class': 'value' }, _('值')),
+					E('th', {}, _('范围'))
+				])),
 				E('tbody', {}, [
-				E('tr', {}, [
-					E('td', {}, _('速率采集')),
-					E('td', { 'class': 'key' }, 'rate_collector_mode'),
-					E('td', { 'class': 'value' }, refs.rateCollectorMode),
-					E('td', { 'class': 'hint' }, _('非 NSS 实时测速只使用 BPF；自动模式下 NSS ECM 同步可作为 NSS 设备的测速来源。'))
-				]),
-				E('tr', {}, [
-					E('td', {}, _('连接数采集')),
-					E('td', { 'class': 'key' }, 'conn_collector_mode'),
-					E('td', { 'class': 'value' }, refs.connCollectorMode),
-					E('td', { 'class': 'hint' }, _('CT 只影响连接数和诊断，不作为非 NSS 客户端实时测速来源。'))
-				]),
-				E('tr', {}, [
-					E('td', {}, _('活跃客户端窗口')),
-					E('td', { 'class': 'key' }, 'active_client_window_ms'),
-					E('td', { 'class': 'value' }, refs.activeWindow),
-					E('td', { 'class': 'hint' }, _('1000 ms 以上'))
-				]),
-				E('tr', {}, [
-					E('td', {}, _('活跃最小速率')),
-					E('td', { 'class': 'key' }, 'active_client_min_bps'),
-					E('td', { 'class': 'value' }, refs.activeMin),
-					E('td', { 'class': 'hint' }, _('1 bps 以上'))
+					E('tr', {}, [
+						E('td', {}, _('速率采集')),
+						E('td', { 'class': 'key' }, 'rate_collector_mode'),
+						E('td', { 'class': 'value' }, refs.rateCollectorMode),
+						E('td', { 'class': 'hint' }, _('非 NSS 实时测速只使用 BPF；自动模式下 NSS ECM 同步可作为 NSS 设备的测速来源。'))
+					]),
+					E('tr', {}, [
+						E('td', {}, _('连接数采集')),
+						E('td', { 'class': 'key' }, 'conn_collector_mode'),
+						E('td', { 'class': 'value' }, refs.connCollectorMode),
+						E('td', { 'class': 'hint' }, _('CT 只影响连接数和诊断，不作为非 NSS 客户端实时测速来源。'))
+					]),
+					E('tr', {}, [
+						E('td', {}, _('活跃客户端窗口')),
+						E('td', { 'class': 'key' }, 'active_client_window_ms'),
+						E('td', { 'class': 'value' }, refs.activeWindow),
+						E('td', { 'class': 'hint' }, _('1000 ms 以上'))
+					]),
+					E('tr', {}, [
+						E('td', {}, _('活跃最小速率')),
+						E('td', { 'class': 'key' }, 'active_client_min_bps'),
+						E('td', { 'class': 'value' }, refs.activeMin),
+						E('td', { 'class': 'hint' }, _('1 bps 以上'))
+					])
 				])
 			]),
-		]),
-		E('div', { 'class': 'lanspeed-config-actions' }, [
-			refs.saveBtn,
-			refs.resetBtn,
-			E('span', { 'class': 'spacer' }),
-			refs.status
+			E('div', { 'class': 'lanspeed-config-actions' }, [
+				refs.saveBtn,
+				refs.resetBtn,
+				E('span', { 'class': 'spacer' }),
+				refs.status
+			])
 		])
 	]);
 }
@@ -307,7 +313,7 @@ return view.extend({
 			reload: function() { return Promise.resolve(); }
 		};
 
-		var root = E('div', { 'class': 'cbi-map' }, [
+		var root = E('div', { 'class': 'cbi-map lanspeed-config-root' }, [
 			E('style', {}, CONFIG_CSS),
 			buildDaemonSection(values || DEFAULTS),
 			E('div', { 'class': 'cbi-section' }, [

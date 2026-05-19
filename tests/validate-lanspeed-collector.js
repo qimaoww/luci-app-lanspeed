@@ -1311,6 +1311,7 @@ function assertRuntimeBpfGateSource(source) {
   assert(source.includes('json_object_new_string("bpf_runtime_loader_unavailable")'), 'runtime must warn when BPF assets exist but attach/map-read is unavailable');
   assert(source.includes('json_object_object_add(collector, "bpf_assets_are_evidence_only", json_object_new_boolean(true))'), 'collector evidence must state BPF assets are evidence only');
   assert(source.includes('json_object_object_add(collector, "runtime_attach_map_read_success", json_object_new_boolean(probe->bpf_runtime_metrics))'), 'collector evidence must expose runtime attach/map-read gate result');
+  assert(/runtime_gate_warning[\s\S]{0,180}probe->bpf_runtime_metrics\s*\?\s*""\s*:\s*"bpf_runtime_loader_unavailable"/.test(source), 'collector evidence must clear runtime_gate_warning when BPF attach/map-read succeeds');
   assert(source.includes('json_object_object_add(capabilities, "bpf_runtime_metrics", json_object_new_boolean(probe ? probe->bpf_runtime_metrics : false))'), 'capabilities must expose runtime BPF metrics separately');
   assert(source.includes('static bool bpf_primary_active'), 'runtime must distinguish readable BPF maps from the active primary BPF source');
   assert(source.includes('add_capabilities_from_values(root, enable_bpf && bpf_primary_active(&probe)'), 'capabilities.bpf must describe the active primary BPF source');

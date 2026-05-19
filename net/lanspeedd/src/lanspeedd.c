@@ -33,7 +33,7 @@
 
 #include "lanspeed_bpf.h"
 
-#define LANSPEED_VERSION "0.1.1"
+#define LANSPEED_VERSION "0.1.2"
 #ifndef LANSPEED_RELEASE
 #define LANSPEED_RELEASE "2"
 #endif
@@ -2039,7 +2039,9 @@ static void add_collector_evidence(struct runtime_probe *probe)
 	json_object_object_add(collector, "runtime_attach_map_read_success", json_object_new_boolean(probe->bpf_runtime_metrics));
 	json_object_object_add(collector, "live_metrics", json_object_new_boolean(bpf_primary_active(probe)));
 	json_object_object_add(collector, "primary_source", json_object_new_string(collector_primary_source(probe)));
-	json_object_object_add(collector, "runtime_gate_warning", json_object_new_string("bpf_runtime_loader_unavailable"));
+	json_object_object_add(collector, "runtime_gate_warning",
+			       json_object_new_string(probe->bpf_runtime_metrics ? "" :
+						      "bpf_runtime_loader_unavailable"));
 	json_object_object_add(collector, "map_full", json_object_new_boolean(probe->map_full));
 
 	json_object_array_add(attach_edges, json_object_new_string("lan_bridge_members"));
