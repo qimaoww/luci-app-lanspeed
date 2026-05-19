@@ -149,7 +149,7 @@ function validateFixture(fixture) {
   assertObject(fixture.status.evidence, 'status.evidence');
   assertObject(fixture.status.capabilities, 'status.capabilities');
   assert(fixture.status.mode === 'Unsupported', 'status fixture must use planned Unsupported mode for stub stage');
-  assert(/^0\.1\.2-r\d+$/.test(fixture.status.version), 'status fixture version must include package release suffix, e.g. 0.1.2-r1');
+  assert(/^0\.1\.3-r\d+$/.test(fixture.status.version), 'status fixture version must include package release suffix, e.g. 0.1.3-r1');
   assert(fixture.status.capabilities.bpf === false, 'status fixture must not claim BPF is available in stub stage');
   assert(fixture.status.capabilities.live_metrics === false, 'status fixture must not pretend live metrics exist');
 
@@ -520,10 +520,14 @@ assert(schema.$defs.status.properties.rate_collector_mode.$ref === '#/$defs/rate
 assert(schema.$defs.status.properties.conn_collector_mode.$ref === '#/$defs/connCollectorMode', 'schema status.conn_collector_mode must reuse connCollectorMode enum');
 assert(schema.$defs.collectorMode.enum.includes('auto'), 'schema must allow status.collector_mode=auto');
 assert(schema.$defs.collectorMode.enum.includes('bpf'), 'schema must allow status.collector_mode=bpf');
+assert(schema.$defs.collectorMode.enum.includes('nss_ecm_direct'), 'schema must allow status.collector_mode=nss_ecm_direct');
+assert(schema.$defs.collectorMode.enum.includes('nss_conntrack_sync'), 'schema must allow status.collector_mode=nss_conntrack_sync');
 assert(schema.$defs.collectorMode.enum.includes('conntrack_netlink'), 'schema must allow status.collector_mode=conntrack_netlink');
 assert(schema.$defs.collectorMode.enum.includes('conntrack_procfs'), 'schema must allow status.collector_mode=conntrack_procfs');
 assert(schema.$defs.rateCollectorMode.enum.includes('auto'), 'schema must allow rate_collector_mode=auto');
 assert(schema.$defs.rateCollectorMode.enum.includes('bpf'), 'schema must allow rate_collector_mode=bpf');
+assert(schema.$defs.rateCollectorMode.enum.includes('nss_ecm_direct'), 'schema must allow rate_collector_mode=nss_ecm_direct');
+assert(schema.$defs.rateCollectorMode.enum.includes('nss_conntrack_sync'), 'schema must allow rate_collector_mode=nss_conntrack_sync');
 assert(!schema.$defs.rateCollectorMode.enum.includes('conntrack_netlink'), 'schema must not offer CT-Netlink as a non-NSS live speed mode');
 assert(schema.$defs.connCollectorMode.enum.includes('auto'), 'schema must allow conn_collector_mode=auto');
 assert(schema.$defs.connCollectorMode.enum.includes('conntrack_netlink'), 'schema must allow conn_collector_mode=conntrack_netlink');

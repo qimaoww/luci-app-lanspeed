@@ -53,8 +53,8 @@ var LAYOUT_CSS = [
 	'.lanspeed-body{padding:1.15em 1.25em}',
 
 	/* metrics row */
-	'.lanspeed-metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));',
-	'  gap:1.1em 2em;align-items:center;justify-content:stretch;margin:0}',
+	'.lanspeed-metrics{display:grid;grid-template-columns:repeat(5,12.5em);',
+	'  row-gap:1.1em;column-gap:1.2em;align-items:center;justify-content:start;margin:0}',
 	'@media (max-width:1100px){.lanspeed-metrics{grid-template-columns:repeat(auto-fit,minmax(10em,1fr))}}',
 	'.lanspeed-metric{min-width:0}',
 	'.lanspeed-metric .caption{font-size:.75em;text-transform:uppercase;letter-spacing:.04em;opacity:.7;margin:0}',
@@ -78,7 +78,7 @@ var LAYOUT_CSS = [
 	'  align-items:center;line-height:1.25}',
 	'.lanspeed-toolbar .lanspeed-active-only>input[type=checkbox],',
 	'.lanspeed-toolbar .lanspeed-active-only input[type=checkbox]{',
-	'  position:static;top:auto;right:auto;margin:0;flex:0 0 auto}',
+	'  position:relative;top:auto;right:auto;margin:0;flex:0 0 auto}',
 	'.lanspeed-toolbar .lanspeed-active-label{margin:0;line-height:1.25}',
 	'.lanspeed-toolbar input[type=search]{min-width:16em;max-width:24em}',
 	'@media (max-width:900px){.lanspeed-toolbar{grid-template-columns:1fr}',
@@ -172,6 +172,8 @@ function collectorLabel(mode) {
 		return 'BPF';
 	if (mode === 'nss_ecm_direct')
 		return 'NSS-direct';
+	if (mode === 'nss_ecm_direct+conntrack_ecm_sync')
+		return 'NSS-direct / NSS sync';
 	if (mode === 'conntrack_ecm_sync' || mode === 'nss_conntrack_sync')
 		return 'NSS sync';
 	if (mode === 'conntrack_netlink')
@@ -189,15 +191,25 @@ function collectorClass(mode) {
 	mode = String(mode || '-');
 	if (mode === 'bpf' || mode === 'nss_ecm_direct')
 		return 'label label-success';
+	if (mode === 'nss_ecm_direct+conntrack_ecm_sync')
+		return 'label label-warning';
 	if (mode === 'conntrack_ecm_sync' || mode === 'nss_conntrack_sync')
 		return 'label label-warning';
 	return 'label label-danger';
 }
 
-function effectiveCollector(status, clients) {
+function effectiveCollector(status, clientsData) {
 	var evidence = (status && status.evidence) || {};
-	var collector = evidence.effective_collector ||
-	                (evidence.collector && evidence.collector.primary_source);
+	var clientEvidence = (clientsData && clientsData.evidence) || {};
+	var clients = fmt.asArray(clientsData && clientsData.clients);
+	var collector = (clientEvidence.collector_mode &&
+	                 clientEvidence.collector_mode !== 'auto' &&
+	                 clientEvidence.collector_mode !== 'conntrack') ? clientEvidence.collector_mode :
+	                ((evidence.collector_mode &&
+	                  evidence.collector_mode !== 'auto' &&
+	                  evidence.collector_mode !== 'conntrack') ? evidence.collector_mode :
+	                 (evidence.effective_collector ||
+	                  (evidence.collector && evidence.collector.primary_source)));
 	if (collector && collector !== 'auto')
 		return collector;
 
@@ -508,9 +520,9 @@ function buildShell(viewState) {
 		]),
 		E('div', { 'class': 'lanspeed-toolbar-filter' }, [
 			refs.filterInput,
-			E('span', { 'class': 'lanspeed-active-only' }, [
+			E('label', { 'class': 'lanspeed-active-only cbi-checkbox', 'for': 'lanspeed-active' }, [
 				refs.activeChk,
-				E('label', { 'class': 'lanspeed-active-label', 'for': 'lanspeed-active' }, _('仅活跃'))
+				E('span', { 'class': 'lanspeed-active-label' }, _('仅活跃'))
 			])
 		]),
 		E('div', { 'class': 'lanspeed-toolbar-options' }, [
@@ -641,7 +653,7 @@ function refreshLive(viewState) {
 	}
 
 	/* header pills */
-	var collector = effectiveCollector(status, clientsAll);
+	var collector = effectiveCollector(status, viewState.clients);
 	refs.collectorPill.className = collectorClass(collector);
 	refs.collectorPill.textContent = collectorLabel(collector);
 	refs.collectorPill.title = _('当前采集方式');
@@ -787,6 +799,8 @@ function refreshLive(viewState) {
 				modeTitle = _('采集方式 BPF：tc clsact 挂载的 eBPF 程序按 MAC 直接计数。');
 			} else if (mode === 'nss_ecm_direct') {
 				modeTitle = _('采集方式 NSS-direct：只读 qca-nss-ecm state 设备，直接按 ECM flow 字节计数聚合到 LAN 客户端，不等待 ECM 同步回 conntrack。');
+			} else if (mode === 'nss_ecm_direct+conntrack_ecm_sync') {
+				modeTitle = _('采集方式 NSS-direct / NSS sync：NSS sync 提供稳定来源，NSS-direct 覆盖有有效速率的 ECM flow。');
 			} else if (mode === 'conntrack_ecm_sync' || mode === 'nss_conntrack_sync') {
 				modeTitle = _('采集方式 NSS 同步：NSS 硬件加速流的字节计数以秒级节拍同步回 conntrack，再由 lanspeedd 读取。桥接流也覆盖，精度等于同步间隔 (≈1-2 秒)。');
 			} else if (mode === 'conntrack_netlink') {

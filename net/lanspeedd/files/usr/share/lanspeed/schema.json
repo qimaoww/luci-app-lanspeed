@@ -42,11 +42,11 @@
     },
     "collectorMode": {
       "type": "string",
-      "enum": ["auto", "bpf", "conntrack_netlink", "conntrack_procfs"]
+      "enum": ["auto", "bpf", "nss_ecm_direct", "nss_conntrack_sync", "conntrack_netlink", "conntrack_procfs"]
     },
     "rateCollectorMode": {
       "type": "string",
-      "enum": ["auto", "bpf"]
+      "enum": ["auto", "bpf", "nss_ecm_direct", "nss_conntrack_sync"]
     },
     "connCollectorMode": {
       "type": "string",

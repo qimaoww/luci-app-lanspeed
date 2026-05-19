@@ -38,10 +38,17 @@ var CONFIG_CSS = [
 	'.lanspeed-config-table .key,.lanspeed-ifcfg-table .mono{font-family:var(--font-monospace,ui-monospace,monospace);',
 	'  font-size:.9em;white-space:nowrap}',
 	'.lanspeed-config-table .value{width:12em}',
+	'.lanspeed-config-table .value.rate{width:16em}',
 	'.lanspeed-config-table .value input{width:100%;max-width:12em}',
 	'.lanspeed-config-table .value.range{width:18em}',
 	'.lanspeed-config-table .value.range input{max-width:none}',
 	'.lanspeed-config-table .hint,.lanspeed-ifcfg-table .muted{font-size:.85em;opacity:.72}',
+	'.lanspeed-config-table tr.lanspeed-nss-config-only{display:table-row}',
+	'.lanspeed-rate-control{display:flex;flex-wrap:wrap;align-items:center;gap:.45em}',
+	'.lanspeed-rate-badge{display:none;padding:.08em .45em;border-radius:.35em;',
+	'  border:1px solid var(--border,rgba(128,128,128,.22));',
+	'  background:var(--label-surface,rgba(128,128,128,.12));',
+	'  font-size:.8em;line-height:1.55;white-space:nowrap}',
 	'.lanspeed-range-stack{display:flex;flex-direction:column;gap:.6em;align-items:stretch;max-width:22em}',
 	'.lanspeed-range-list{display:flex;flex-direction:column;gap:.6em}',
 	'.lanspeed-range-pill{display:flex;align-items:center;justify-content:space-between;',
@@ -104,8 +111,8 @@ var RATE_COLLECTOR_MODES = [
 
 var CONN_COLLECTOR_MODES = [
 	[ 'auto', _('自动') ],
-	[ 'conntrack_netlink', _('CT-Netlink（连接数）') ],
-	[ 'conntrack_procfs', _('CT-Procfs（连接数）') ]
+	[ 'conntrack_netlink', 'CT-Netlink' ],
+	[ 'conntrack_procfs', 'CT-Procfs' ]
 ];
 
 function intValue(value, fallback, min, max) {
@@ -141,7 +148,8 @@ function inputNumber(value, min, max, step) {
 }
 
 function rateCollectorModeValue(value) {
-	if (value === 'bpf')
+	if (value === 'bpf' || value === 'nss_ecm_direct' ||
+	    value === 'nss_conntrack_sync')
 		return value;
 	return DEFAULTS.rate_collector_mode;
 }
@@ -246,12 +254,119 @@ function selectMode(value, modes, normalizer) {
 	}));
 }
 
-function selectRateCollectorMode(value) {
-	return selectMode(value, RATE_COLLECTOR_MODES, rateCollectorModeValue);
+function rateCollectorModesForStatus(status, currentValue) {
+	var currentIsNss = currentValue === 'nss_ecm_direct' ||
+		currentValue === 'nss_conntrack_sync';
+
+	if (!isNssDevice(status) && !currentIsNss)
+		return RATE_COLLECTOR_MODES;
+	return [
+		[ 'auto', _('自动') ],
+		[ 'bpf', 'BPF' ],
+		[ 'nss_ecm_direct', 'NSS-direct' ],
+		[ 'nss_conntrack_sync', 'NSS sync' ]
+	];
+}
+
+function selectRateCollectorMode(value, status) {
+	return selectMode(value, rateCollectorModesForStatus(status, value), rateCollectorModeValue);
 }
 
 function selectConnCollectorMode(value) {
 	return selectMode(value, CONN_COLLECTOR_MODES, connCollectorModeValue);
+}
+
+function statusNssEvidence(status) {
+	return status && status.evidence && status.evidence.nss ? status.evidence.nss : {};
+}
+
+function statusDaedEvidence(status) {
+	return status && status.evidence && status.evidence.dae ? status.evidence.dae : {};
+}
+
+function isNssDevice(status) {
+	var caps = status && status.capabilities || {};
+	var nss = statusNssEvidence(status);
+	var key;
+
+	if (caps.nss === true || nss.present === true)
+		return true;
+	if (nss.ecm_offload_active || nss.ppe_offload_active ||
+	    nss.direct_supported || nss.direct_enabled ||
+	    nss.dp_active || nss.bridge_mgr || nss.ifb_active ||
+	    nss.nsm_active || nss.mcs_active)
+		return true;
+	for (key in caps) {
+		if (Object.prototype.hasOwnProperty.call(caps, key) &&
+		    key.indexOf('nss') === 0 && caps[key])
+			return true;
+	}
+	return false;
+}
+
+function daedRuntimeActive(status) {
+	var dae = statusDaedEvidence(status);
+	return !!(dae.dae_running || dae.daed_running ||
+		dae.dae_process || dae.daed_process);
+}
+
+function currentRateSourceText(status) {
+	var nss = statusNssEvidence(status);
+	var collector = status && status.evidence && status.evidence.collector;
+	var source = collector && collector.primary_source;
+
+	if (source === 'bpf')
+		return 'BPF';
+	if (source === 'nss_ecm_direct')
+		return 'NSS-direct';
+	if (source === 'nss_conntrack_sync' || nss.counter_source === 'ecm_conntrack_sync' ||
+	    nss.counter_source === 'ppe_conntrack_sync')
+		return 'NSS sync';
+	if (source === 'unsupported')
+		return _('不可用');
+	return source || _('自动');
+}
+
+function nssRateHint(status) {
+	if (!isNssDevice(status))
+		return _('非 NSS 实时测速只使用 BPF。');
+	if (daedRuntimeActive(status))
+		return _('自动：BPF 优先，NSS 备用。');
+	return _('自动：NSS sync 稳定来源，NSS-direct 有速率时补充。');
+}
+
+function applyRuntimeInfo(refs, status) {
+	var nss = isNssDevice(status);
+	var sourceText = currentRateSourceText(status);
+	var rateModeLabel = rateCollectorModesForStatus(status, refs.rateCollectorMode ? refs.rateCollectorMode.value : null);
+	var i;
+
+	refs.rateHint.textContent = nssRateHint(status);
+	refs.currentRateSource.textContent = sourceText;
+	refs.currentRateHint.textContent = daedRuntimeActive(status)
+		? _('daed 运行中，BPF 优先。')
+		: _('daemon 当前选择。');
+	if (refs.nssRows) {
+		for (i = 0; i < refs.nssRows.length; i++)
+			refs.nssRows[i].style.display = nss ? '' : 'none';
+	}
+
+	if (refs.rateCollectorMode) {
+		for (i = 0; i < rateModeLabel.length; i++) {
+			if (i >= refs.rateCollectorMode.options.length) {
+				refs.rateCollectorMode.appendChild(E('option', {
+					'value': rateModeLabel[i][0]
+				}, rateModeLabel[i][1]));
+			}
+			refs.rateCollectorMode.options[i].text = rateModeLabel[i][1];
+		}
+		refs.rateCollectorMode.value = rateCollectorModeValue(refs.rateCollectorMode.value);
+	}
+
+	if (refs.rateBadge) {
+		refs.rateBadge.style.display = nss ? 'inline-flex' : 'none';
+		refs.rateBadge.textContent = daedRuntimeActive(status) ? _('NSS + daed') : 'NSS';
+	}
 }
 
 function setBusy(refs, busy) {
@@ -325,7 +440,8 @@ function saveDaemonSettings(refs) {
 function buildDaemonSection(values) {
 	var refs = {};
 
-	refs.rateCollectorMode = selectRateCollectorMode(values.rate_collector_mode);
+	refs.rateCollectorMode = selectRateCollectorMode(values.rate_collector_mode, values.status || {});
+	refs.rateBadge = E('span', { 'class': 'lanspeed-rate-badge' }, 'NSS');
 	refs.connCollectorMode = selectConnCollectorMode(values.conn_collector_mode);
 	refs.activeWindow = inputNumber(values.active_client_window_ms, 1000, 0, 1000);
 	refs.activeMin = inputNumber(values.active_client_min_bps, 1, 0, 1);
@@ -362,6 +478,9 @@ function buildDaemonSection(values) {
 	]);
 	buildRangeList(refs, stringValue(values.hide_ipv6_ranges, DEFAULTS.hide_ipv6_ranges));
 	refs.status = E('span', { 'class': 'status' }, '');
+	refs.rateHint = E('td', { 'class': 'hint' }, '');
+	refs.currentRateSource = E('span', { 'class': 'key' }, '-');
+	refs.currentRateHint = E('td', { 'class': 'hint' }, '');
 	refs.saveBtn = E('button', {
 		'class': 'cbi-button cbi-button-apply',
 		'type': 'button'
@@ -387,6 +506,16 @@ function buildDaemonSection(values) {
 		}
 	});
 
+	refs.nssRows = [
+		E('tr', { 'class': 'lanspeed-nss-config-only' }, [
+			E('td', {}, _('当前采集方式')),
+			E('td', { 'class': 'key' }, _('运行时')),
+			E('td', { 'class': 'value' }, refs.currentRateSource),
+			refs.currentRateHint
+		])
+	];
+	applyRuntimeInfo(refs, values.status || {});
+
 	return E('div', { 'class': 'cbi-section' }, [
 		E('div', { 'class': 'lanspeed-header' }, [
 			E('h3', {}, _('运行参数')),
@@ -405,14 +534,18 @@ function buildDaemonSection(values) {
 					E('tr', {}, [
 						E('td', {}, _('速率采集')),
 						E('td', { 'class': 'key' }, 'rate_collector_mode'),
-						E('td', { 'class': 'value' }, refs.rateCollectorMode),
-						E('td', { 'class': 'hint' }, _('非 NSS 实时测速只使用 BPF；自动模式下 NSS ECM 同步可作为 NSS 设备的测速来源。'))
+						E('td', { 'class': 'value rate' }, E('div', { 'class': 'lanspeed-rate-control' }, [
+							refs.rateCollectorMode,
+							refs.rateBadge
+						])),
+						refs.rateHint
 					]),
+					refs.nssRows[0],
 					E('tr', {}, [
 						E('td', {}, _('连接数采集')),
 						E('td', { 'class': 'key' }, 'conn_collector_mode'),
 						E('td', { 'class': 'value' }, refs.connCollectorMode),
-						E('td', { 'class': 'hint' }, _('CT 只影响连接数和诊断，不作为非 NSS 客户端实时测速来源。'))
+						E('td', { 'class': 'hint' }, _('CT 只用于连接数和诊断。'))
 					]),
 					E('tr', {}, [
 						E('td', {}, _('活跃客户端窗口')),
@@ -470,8 +603,16 @@ return view.extend({
 				active_client_min_bps: uciInt('active_client_min_bps'),
 				show_ipv6: boolValue(uci.get('lanspeed', 'main', 'show_ipv6'), DEFAULTS.show_ipv6),
 				hide_private_ipv6: boolValue(uci.get('lanspeed', 'main', 'hide_private_ipv6'), DEFAULTS.hide_private_ipv6),
-				hide_ipv6_ranges: stringValue(uci.get('lanspeed', 'main', 'hide_ipv6_ranges'), DEFAULTS.hide_ipv6_ranges)
+				hide_ipv6_ranges: stringValue(uci.get('lanspeed', 'main', 'hide_ipv6_ranges'), DEFAULTS.hide_ipv6_ranges),
+				status: {}
 			};
+		}).then(function(values) {
+			return lsRpc.status().then(function(status) {
+				values.status = status || {};
+				return values;
+			}).catch(function() {
+				return values;
+			});
 		});
 	},
 

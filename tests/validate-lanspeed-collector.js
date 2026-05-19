@@ -504,18 +504,31 @@ function simulateResourceLimits(fixture) {
 function parseConntrackProcfsLine(line) {
   const flow = {
     orig_src: null,
+    orig_dst: null,
+    reply_src: null,
+    reply_dst: null,
     orig_bytes: null,
     reply_bytes: 0
   };
   let srcIndex = 0;
+  let dstIndex = 0;
   let bytesIndex = 0;
 
   for (const token of line.trim().split(/\s+/)) {
     if (token.startsWith('src=')) {
       if (srcIndex === 0) {
         flow.orig_src = token.slice(4);
+      } else if (srcIndex === 1) {
+        flow.reply_src = token.slice(4);
       }
       srcIndex += 1;
+    } else if (token.startsWith('dst=')) {
+      if (dstIndex === 0) {
+        flow.orig_dst = token.slice(4);
+      } else if (dstIndex === 1) {
+        flow.reply_dst = token.slice(4);
+      }
+      dstIndex += 1;
     } else if (token.startsWith('bytes=')) {
       const value = Number.parseInt(token.slice(6), 10);
       if (!Number.isFinite(value)) {
@@ -575,6 +588,7 @@ function buildConntrackSnapshot(fixture, snapshot) {
   const arpByIp = buildArpMap(fixture);
   const clients = new Map();
   let skippedNoArp = 0;
+  let skippedBothLan = 0;
   let malformedLines = 0;
 
   for (const line of snapshot.lines) {
@@ -584,8 +598,37 @@ function buildConntrackSnapshot(fixture, snapshot) {
       continue;
     }
 
-    const arp = arpByIp.get(normalizeIp(flow.orig_src));
-    if (!arp) {
+    const origSrc = arpByIp.get(normalizeIp(flow.orig_src));
+    const origDst = arpByIp.get(normalizeIp(flow.orig_dst));
+    const replySrc = arpByIp.get(normalizeIp(flow.reply_src));
+    const replyDst = arpByIp.get(normalizeIp(flow.reply_dst));
+    let arp = null;
+    let txBytes = 0;
+    let rxBytes = 0;
+
+    if (origSrc && origDst) {
+      skippedBothLan += 1;
+      continue;
+    } else if (origSrc) {
+      arp = origSrc;
+      txBytes = flow.orig_bytes;
+      rxBytes = flow.reply_bytes;
+    } else if (origDst) {
+      arp = origDst;
+      txBytes = flow.reply_bytes;
+      rxBytes = flow.orig_bytes;
+    } else if (replySrc && replyDst) {
+      skippedBothLan += 1;
+      continue;
+    } else if (replySrc) {
+      arp = replySrc;
+      txBytes = flow.reply_bytes;
+      rxBytes = flow.orig_bytes;
+    } else if (replyDst) {
+      arp = replyDst;
+      txBytes = flow.orig_bytes;
+      rxBytes = flow.reply_bytes;
+    } else {
       skippedNoArp += 1;
       continue;
     }
@@ -605,8 +648,8 @@ function buildConntrackSnapshot(fixture, snapshot) {
     if (!client.ips.includes(arp.ip)) {
       client.ips.push(arp.ip);
     }
-    client.tx_bytes += flow.orig_bytes;
-    client.rx_bytes += flow.reply_bytes;
+    client.tx_bytes += txBytes;
+    client.rx_bytes += rxBytes;
     client.last_seen = snapshot.t_ms;
     clients.set(identityKey, client);
   }
@@ -615,6 +658,7 @@ function buildConntrackSnapshot(fixture, snapshot) {
     t_ms: snapshot.t_ms,
     clients: Array.from(clients.values()),
     skipped_no_arp: skippedNoArp,
+    skipped_both_lan: skippedBothLan,
     malformed_lines: malformedLines
   };
 }
@@ -647,8 +691,12 @@ function parseNssEcmDirectState(lines) {
       serial,
       sip_address: null,
       dip_address: null,
+      sip_address_nat: null,
+      dip_address_nat: null,
       snode_address: null,
       dnode_address: null,
+      snode_address_nat: null,
+      dnode_address_nat: null,
       protocol: 0,
       from_data_total: null,
       to_data_total: 0
@@ -658,10 +706,18 @@ function parseNssEcmDirectState(lines) {
       flow.sip_address = value;
     } else if (field === 'dip_address') {
       flow.dip_address = value;
+    } else if (field === 'sip_address_nat') {
+      flow.sip_address_nat = value;
+    } else if (field === 'dip_address_nat') {
+      flow.dip_address_nat = value;
     } else if (field === 'snode_address') {
       flow.snode_address = value.toLowerCase();
     } else if (field === 'dnode_address') {
       flow.dnode_address = value.toLowerCase();
+    } else if (field === 'snode_address_nat') {
+      flow.snode_address_nat = value.toLowerCase();
+    } else if (field === 'dnode_address_nat') {
+      flow.dnode_address_nat = value.toLowerCase();
     } else if (field === 'protocol') {
       flow.protocol = Number.parseInt(value, 10) || 0;
     } else if (field === 'adv_stats.from_data_total') {
@@ -678,9 +734,18 @@ function parseNssEcmDirectState(lines) {
 
 function buildNssEcmDirectSnapshot(fixture, snapshot) {
   const arpByIp = buildArpMap(fixture);
+  const arpByMac = new Map();
+  const addArpByMac = (entry) => {
+    if (entry && entry.mac && !arpByMac.has(entry.mac.toLowerCase())) {
+      arpByMac.set(entry.mac.toLowerCase(), entry);
+    }
+  };
+  (fixture.arp_entries || []).forEach(addArpByMac);
+  (fixture.neighbor_entries || []).forEach(addArpByMac);
   const parsed = parseNssEcmDirectState(snapshot.lines);
   const clients = new Map();
   let skippedNoArp = 0;
+  let skippedBothLan = 0;
   let entriesMatched = 0;
 
   for (const flow of parsed.flows) {
@@ -688,15 +753,45 @@ function buildNssEcmDirectSnapshot(fixture, snapshot) {
       continue;
     }
 
-    const arp = arpByIp.get(normalizeIp(flow.sip_address));
-    if (!arp) {
+    const sourceMac = (flow.snode_address && flow.snode_address !== '00:00:00:00:00:00')
+      ? flow.snode_address
+      : flow.snode_address_nat;
+    const destMac = (flow.dnode_address && flow.dnode_address !== '00:00:00:00:00:00')
+      ? flow.dnode_address
+      : flow.dnode_address_nat;
+    const srcArp = arpByIp.get(normalizeIp(flow.sip_address)) ||
+      arpByIp.get(normalizeIp(flow.sip_address_nat)) ||
+      (sourceMac ? arpByMac.get(sourceMac) : null);
+    const dstArp = arpByIp.get(normalizeIp(flow.dip_address)) ||
+      arpByIp.get(normalizeIp(flow.dip_address_nat)) ||
+      (destMac ? arpByMac.get(destMac) : null);
+    let arp = null;
+    let mac = null;
+    let txBytes = 0;
+    let rxBytes = 0;
+
+    if (srcArp && dstArp) {
+      skippedBothLan += 1;
+      continue;
+    } else if (srcArp) {
+      arp = srcArp;
+      mac = sourceMac && sourceMac !== '00:00:00:00:00:00'
+        ? sourceMac
+        : arp.mac;
+      txBytes = flow.from_data_total;
+      rxBytes = flow.to_data_total;
+    } else if (dstArp) {
+      arp = dstArp;
+      mac = destMac && destMac !== '00:00:00:00:00:00'
+        ? destMac
+        : arp.mac;
+      txBytes = flow.to_data_total;
+      rxBytes = flow.from_data_total;
+    } else {
       skippedNoArp += 1;
       continue;
     }
 
-    const mac = flow.snode_address && flow.snode_address !== '00:00:00:00:00:00'
-      ? flow.snode_address
-      : arp.mac;
     const identityKey = `${mac}@${arp.zone}`;
     const client = clients.get(identityKey) || {
       mac,
@@ -712,8 +807,8 @@ function buildNssEcmDirectSnapshot(fixture, snapshot) {
     if (!client.ips.includes(arp.ip)) {
       client.ips.push(arp.ip);
     }
-    client.tx_bytes += flow.from_data_total;
-    client.rx_bytes += flow.to_data_total;
+    client.tx_bytes += txBytes;
+    client.rx_bytes += rxBytes;
     client.last_seen = snapshot.t_ms;
     clients.set(identityKey, client);
     entriesMatched += 1;
@@ -725,6 +820,7 @@ function buildNssEcmDirectSnapshot(fixture, snapshot) {
     entries_seen: parsed.flows.length,
     entries_matched: entriesMatched,
     skipped_no_arp: skippedNoArp,
+    skipped_both_lan: skippedBothLan,
     malformed_lines: parsed.malformed_lines
   };
 }
@@ -762,6 +858,65 @@ function simulateNssEcmDirect(fixture) {
     first_snapshot: firstSnapshot,
     second_snapshot: secondSnapshot,
     clients
+  };
+}
+
+function simulateNssStableCollector(fixture) {
+  const sync = simulateConntrackFallback(fixture);
+  const direct = simulateNssEcmDirect(fixture);
+  const clientsByIdentity = new Map();
+  const warnings = sync.warnings.slice();
+  let directOverlayClients = 0;
+  let syncFallbackClients = 0;
+
+  for (const client of sync.clients) {
+    clientsByIdentity.set(client.identity_key, Object.assign({}, client));
+  }
+
+  for (const client of direct.clients) {
+    if (!client.tx_bps && !client.rx_bps)
+      continue;
+    const existing = clientsByIdentity.get(client.identity_key);
+    if (existing) {
+      directOverlayClients += 1;
+    }
+    clientsByIdentity.set(client.identity_key, Object.assign({}, existing || {}, client, {
+      collector_mode: 'nss_ecm_direct',
+      confidence: 'high'
+    }));
+  }
+
+  for (const client of clientsByIdentity.values()) {
+    if (client.collector_mode === 'conntrack_ecm_sync') {
+      syncFallbackClients += 1;
+    }
+  }
+
+  if (direct.first_snapshot.entries_matched === 0 || directOverlayClients === 0) {
+    addUnique(warnings, 'nss_direct_no_data');
+  } else if (syncFallbackClients > 0) {
+    addUnique(warnings, 'nss_direct_partial');
+  }
+  if (syncFallbackClients > 0) {
+    addUnique(warnings, 'nss_sync_fallback');
+  }
+
+  return {
+    source: 'lanspeedd_nss_stable_fixture',
+    primary_source: sync.active ? 'nss_conntrack_sync' : 'nss_ecm_direct',
+    collector_mode: directOverlayClients > 0 && syncFallbackClients > 0
+      ? 'nss_ecm_direct+conntrack_ecm_sync'
+      : (directOverlayClients > 0 ? 'nss_ecm_direct' : 'conntrack_ecm_sync'),
+    confidence: sync.confidence,
+    coverage_client_source: directOverlayClients > 0 && syncFallbackClients > 0
+      ? 'nss_ecm_direct+conntrack_ecm_sync'
+      : (directOverlayClients > 0 ? 'nss_ecm_direct' : 'conntrack'),
+    direct_flows_seen: direct.first_snapshot.entries_seen,
+    direct_flows_matched: direct.first_snapshot.entries_matched,
+    direct_overlay_clients: directOverlayClients,
+    sync_fallback_clients: syncFallbackClients,
+    warnings,
+    clients: Array.from(clientsByIdentity.values()).sort((left, right) => left.identity_key.localeCompare(right.identity_key))
   };
 }
 
@@ -880,17 +1035,47 @@ function simulateNssSourceSelection(fixture) {
   const probe = fixture.probe;
   const bpfFullAvailable = Boolean(fixture.config.bpf_full_available);
   const daeEarlyBpf = Boolean(fixture.config.dae_early_bpf);
-  const directPreferred = Boolean(
-    fixture.config.enable_conntrack_fallback &&
-    probe.nss_present &&
-    probe.nss_ecm_active &&
-    probe.nss_ecm_direct_state
+  const rateMode = fixture.config.rate_collector_mode || 'auto';
+  const daedActive = Boolean(
+    probe.dae_running ||
+    probe.daed_running ||
+    probe.dae_process ||
+    probe.daed_process
   );
-  const syncPreferred = Boolean(
+  const forceBpf = rateMode === 'bpf';
+  const forceNssDirect = rateMode === 'nss_ecm_direct';
+  const forceNssSync = rateMode === 'nss_conntrack_sync';
+  const nssDaedPreferBpf = Boolean(rateMode === 'auto' && probe.nss_present && daedActive && bpfFullAvailable);
+  const directReadable = probe.nss_ecm_direct_readable !== false;
+  const autoNssSyncAvailable = Boolean(
+    !forceBpf &&
+    !forceNssSync &&
+    !forceNssDirect &&
+    !nssDaedPreferBpf &&
     fixture.config.enable_conntrack_fallback &&
     probe.nf_conntrack_acct &&
     probe.nss_present &&
     (probe.nss_ecm_active || probe.nss_ppe_active)
+  );
+  const directPreferred = Boolean(
+    !forceBpf &&
+    !forceNssSync &&
+    !autoNssSyncAvailable &&
+    !nssDaedPreferBpf &&
+    fixture.config.enable_conntrack_fallback &&
+    probe.nss_present &&
+    probe.nss_ecm_active &&
+    probe.nss_ecm_direct_state &&
+    directReadable
+  );
+  const syncPreferred = Boolean(
+    !forceBpf &&
+    !nssDaedPreferBpf &&
+    fixture.config.enable_conntrack_fallback &&
+    probe.nf_conntrack_acct &&
+    probe.nss_present &&
+    (probe.nss_ecm_active || probe.nss_ppe_active) &&
+    (forceNssSync || autoNssSyncAvailable || forceNssDirect || !directReadable)
   );
   const preferred = directPreferred || syncPreferred;
   const warnings = [];
@@ -901,15 +1086,19 @@ function simulateNssSourceSelection(fixture) {
       addUnique(warnings, directPreferred ? 'nss_prefers_direct' : 'nss_prefers_conntrack_sync');
     }
   }
+  if (nssDaedPreferBpf)
+    addUnique(warnings, 'nss_daed_prefers_bpf');
+  if (probe.nss_present && daedActive && !bpfFullAvailable && preferred)
+    addUnique(warnings, 'nss_daed_nss_fallback_may_be_inaccurate');
 
   return {
-    preferred,
+    preferred: preferred || nssDaedPreferBpf,
     dae_early_bpf: Boolean(probe.dae_preempts_lan_ingress && daeEarlyBpf),
     dae_preempted: false,
-    primary_source: directPreferred ? 'nss_ecm_direct' : (syncPreferred ? 'nss_conntrack_sync' : (bpfFullAvailable ? 'bpf' : 'unsupported')),
-    collector_mode: directPreferred ? 'nss_ecm_direct' : (syncPreferred ? 'conntrack_ecm_sync' : (bpfFullAvailable ? 'bpf' : 'unsupported')),
-    confidence: directPreferred ? 'high' : (syncPreferred ? 'medium' : (bpfFullAvailable ? 'high' : 'unsupported')),
-    coverage_client_source: directPreferred ? 'nss_ecm_direct' : (syncPreferred ? 'conntrack' : (bpfFullAvailable ? 'bpf' : 'unsupported')),
+    primary_source: nssDaedPreferBpf ? 'bpf' : (directPreferred ? 'nss_ecm_direct' : (syncPreferred ? 'nss_conntrack_sync' : (bpfFullAvailable ? 'bpf' : 'unsupported'))),
+    collector_mode: nssDaedPreferBpf ? 'bpf' : (directPreferred ? 'nss_ecm_direct' : (syncPreferred ? 'conntrack_ecm_sync' : (bpfFullAvailable ? 'bpf' : 'unsupported'))),
+    confidence: nssDaedPreferBpf ? 'high' : (directPreferred ? 'high' : (syncPreferred ? 'medium' : (bpfFullAvailable ? 'high' : 'unsupported'))),
+    coverage_client_source: nssDaedPreferBpf ? 'bpf' : (directPreferred ? 'nss_ecm_direct' : (syncPreferred ? 'conntrack' : (bpfFullAvailable ? 'bpf' : 'unsupported'))),
     warnings
   };
 }
@@ -1202,10 +1391,28 @@ function assertRuntimeConntrackFallbackSource(source) {
   assert(source.includes('primary_source", json_object_new_string("nss_conntrack_sync")'), 'runtime evidence must expose NSS conntrack sync as primary source');
   assert(source.includes('coverage_current_client_bytes(const struct runtime_probe *probe'), 'coverage client bytes must take probe/source policy');
   assert(source.includes('nss_conntrack_sync_preferred(probe)'), 'runtime must route clients and coverage through NSS sync preference');
-  assert(/nss_conntrack_sync_preferred[\s\S]{0,220}?probe->nss_ecm_active[\s\S]{0,120}?probe->nss_ppe_active/.test(source),
+  assert(/nss_conntrack_sync_fallback_available[\s\S]{0,420}?probe->nss_ecm_active[\s\S]{0,120}?probe->nss_ppe_active/.test(source),
          'NSS sync preference must cover both ECM and PPE offload paths');
   assert(source.includes('normalize_ip_address'), 'runtime must normalize IPv4/IPv6 addresses before LAN identity matching');
+  assert(source.includes('orig_dst') && source.includes('reply_src') && source.includes('reply_dst'),
+         'NSS sync must parse original and reply source/destination endpoints');
+  assert(source.includes('conntrack_flow_add_endpoint') &&
+         source.includes('FLOW_ENDPOINT_ORIG_SRC') &&
+         source.includes('FLOW_ENDPOINT_ORIG_DST') &&
+         source.includes('FLOW_ENDPOINT_REPLY_SRC') &&
+         source.includes('FLOW_ENDPOINT_REPLY_DST'),
+         'NSS sync must map all conntrack endpoints to client-view tx/rx directions');
+  assert(source.includes('"src_lan_flows"') &&
+         source.includes('"dst_lan_flows"') &&
+         source.includes('"both_lan_flows"'),
+         'NSS sync evidence must expose endpoint match diagnostics');
   assert(source.includes('json_object_new_string("nss_prefers_conntrack_sync")'), 'runtime must explain why NSS sync overrides available BPF metrics');
+  assert(source.includes('static bool daed_runtime_active'), 'runtime must distinguish running daed from installed daed config');
+  assert(source.includes('dae_running') && source.includes('daed_running'), 'runtime must expose daed running state separately from service/config presence');
+  assert(source.includes('process_running') || source.includes('pidof dae daed'), 'runtime must verify a real dae/daed process before treating daed as running');
+  assert(source.includes('static bool nss_daed_should_prefer_bpf'), 'runtime must prefer BPF on NSS devices when daed is running');
+  assert(source.includes('json_object_new_string("nss_daed_prefers_bpf")'), 'runtime must explain when NSS+daed uses BPF');
+  assert(source.includes('json_object_new_string("nss_daed_nss_fallback_may_be_inaccurate")'), 'runtime must warn when NSS+daed falls back to NSS rates');
   assert(source.includes('static bool dae_tc_preempts_bpf_ingress'), 'runtime must detect DAE/daed tc filters that run before lanspeed ingress');
   assert(source.includes('json_object_new_string("dae_tc_preempts_bpf_ingress")'), 'runtime must explain when DAE tc preemption is detected');
   assert(source.includes('static void bpf_runtime_reset_rate_state'), 'runtime must reset BPF rate baselines after TC policy changes');
@@ -1256,6 +1463,15 @@ function assertRuntimeConntrackFallbackSource(source) {
   assert(source.includes('rate_collector_mode_allows_bpf()'), 'daemon must expose rate BPF mode policy for evidence');
   assert(source.includes('return rate_collector_mode == COLLECTOR_MODE_AUTO ||\n\t       rate_collector_mode == COLLECTOR_MODE_BPF;'),
          'rate_collector_mode must not treat CT modes as live speed collectors');
+  assert(source.includes('COLLECTOR_MODE_NSS_ECM_DIRECT') &&
+         source.includes('COLLECTOR_MODE_NSS_CONNTRACK_SYNC'),
+         'daemon must allow explicit NSS direct and NSS sync rate collector modes');
+  assert(source.includes('rate_collector_mode_forces_nss_ecm_direct') &&
+         source.includes('rate_collector_mode_forces_nss_conntrack_sync'),
+         'daemon must distinguish forced NSS direct and forced NSS sync modes');
+  assert(source.includes('!strcmp(value, "nss_conntrack_sync")') &&
+         source.includes('!strcmp(value, "conntrack_ecm_sync")'),
+         'daemon must parse the new NSS sync config value while keeping the old collector name as input compatibility');
   assert(/static bool conntrack_fallback_active[\s\S]{0,260}?conntrack_primary_preferred\(probe\)/.test(source),
          'non-NSS conntrack must not become a live rate fallback when BPF is unavailable');
   assert(source.includes('read_conntrack_snapshot_mode(current, &current_count'), 'conntrack client collection must honor forced netlink/procfs mode');
@@ -1288,8 +1504,19 @@ function assertRuntimeNssDirectSource(source, collectorModel, indexSource, nssPa
     'adv_stats.to_data_total',
     'snode_address',
     'dnode_address',
+    'sip_address_nat',
+    'dip_address_nat',
+    'snode_address_nat',
+    'dnode_address_nat',
     'nss_ecm_direct_preferred(probe)',
-    'collect_nss_ecm_direct_clients(root, clients, &probe)',
+    'static bool collect_nss_ecm_direct_clients',
+    'collect_nss_stable_clients(root, clients, &probe)',
+    'nss_ecm_direct_overlay_enabled(probe)',
+    'direct_overlay_clients',
+    'sync_fallback_clients',
+    'nss_direct_no_data',
+    'nss_direct_partial',
+    'nss_sync_fallback',
     'nss_ecm_direct_snapshot_pending',
     'nss_ecm_direct_unavailable',
     'nss_ecm_direct_parse_errors',
@@ -1310,20 +1537,46 @@ function assertRuntimeNssDirectSource(source, collectorModel, indexSource, nssPa
 
   assert(/static bool nss_ecm_direct_preferred[\s\S]{0,220}?nss_ecm_direct_supported\(probe\)/.test(source),
          'NSS direct preference must be explicit and capability-gated');
-  assert(/static bool conntrack_primary_preferred[\s\S]{0,220}?nss_ecm_direct_preferred\(probe\)[\s\S]{0,220}?nss_conntrack_sync_preferred\(probe\)/.test(source),
-         'NSS direct must outrank NSS sync in primary source selection');
+  assert(source.includes('nss_ecm_direct_flow_add_endpoint') &&
+         source.includes('FLOW_ENDPOINT_ORIG_SRC') &&
+         source.includes('FLOW_ENDPOINT_ORIG_DST'),
+         'NSS direct must map ECM source/destination endpoints to client-view tx/rx directions');
+  assert(source.includes('find_lan_identity_by_mac') &&
+         source.includes('nss_ecm_direct_endpoint_lookup') &&
+         source.includes('flow->sip_address_nat') &&
+         source.includes('flow->dip_address_nat'),
+         'NSS direct must match NAT endpoints and fall back to ECM node MAC identities');
+  assert(source.includes('stats->state_major') &&
+         source.includes('NSS_ECM_STATE_TMP_DEV_PATH') &&
+         source.includes('source_path, source_path_size, "%s", NSS_ECM_STATE_TMP_DEV_PATH'),
+         'NSS direct evidence must expose debugfs major and real temporary state path');
+  assert(source.includes('NSS_ECM_STATE_TMP_DEV_PATH "/dev/lanspeed-ecm-state"'),
+         'NSS direct temporary character device must live under /dev, not a nodev /tmp mount');
+  assert(source.includes('nss_ecm_state_open(&state_file') &&
+         source.includes('nss_ecm_direct_state_errno') &&
+         source.includes('nss_ecm_direct_state_major'),
+         'NSS direct support must require a readable ECM state device and expose open diagnostics');
+  assert(source.includes('"src_lan_flows"') &&
+         source.includes('"dst_lan_flows"') &&
+         source.includes('"both_lan_flows"'),
+         'NSS direct evidence must expose endpoint match diagnostics');
+  assert(/static bool conntrack_primary_preferred[\s\S]{0,220}?nss_conntrack_sync_stable_active\(probe\)[\s\S]{0,220}?nss_ecm_direct_preferred\(probe\)/.test(source),
+         'NSS stable source selection must use NSS sync before direct-only fallback');
   assert(source.includes('static bool conntrack_clients_read_active'),
          'NSS direct failure must still allow NSS sync/conntrack as a secondary read path');
-  assert(/static bool conntrack_clients_read_active[\s\S]{0,420}?nss_ecm_direct_preferred\(probe\)[\s\S]{0,420}?nss_conntrack_sync_reader_available\(probe\)/.test(source),
+  assert(source.includes('static bool nss_conntrack_sync_fallback_available') &&
+         /static bool nss_conntrack_sync_reader_available[\s\S]{0,520}?nss_conntrack_sync_fallback_available\(probe\)[\s\S]{0,520}?rate_collector_mode_forces_nss_ecm_direct/.test(source),
+         'forced NSS direct must allow NSS sync as a secondary reader when direct has no matching flow');
+  assert(/static bool conntrack_clients_read_active[\s\S]{0,420}?nss_ecm_direct_overlay_enabled\(probe\)[\s\S]{0,420}?nss_conntrack_sync_reader_available\(probe\)/.test(source),
          'NSS direct secondary read path must be limited to NSS sync availability');
   assert(/collect_conntrack_procfs_clients[\s\S]{0,760}?!conntrack_clients_read_active\(probe\)/.test(source),
          'NSS direct failure must not be blocked by primary conntrack_fallback_active');
-  assert(/add_conntrack_common_warnings[\s\S]{0,360}?nss_ecm_direct_preferred\(probe\)[\s\S]{0,360}?nss_ecm_direct_unavailable/.test(source),
-         'NSS sync fallback after NSS direct failure must explain that direct was unavailable');
-  assert(/coverage_current_client_bytes[\s\S]{0,700}?nss_ecm_direct_preferred\(probe\)/.test(source),
-         'coverage must use NSS direct client bytes when direct is primary');
-  assert(/add_capabilities_from_values\(root,[\s\S]{0,140}?nss_ecm_direct_preferred\(&probe\)[\s\S]{0,180}?nss_ecm_direct_preferred\(&probe\)/.test(source),
-         'status capabilities/live_metrics must account for NSS direct primary source');
+  assert(/add_conntrack_common_warnings[\s\S]{0,360}?nss_conntrack_sync_stable_active\(probe\)[\s\S]{0,360}?nss_ecm_sync_cadence/.test(source),
+         'NSS stable fallback warnings must explain NSS sync cadence');
+  assert(/coverage_current_client_bytes[\s\S]{0,900}?nss_conntrack_sync_stable_active\(probe\)/.test(source),
+         'coverage must use NSS sync client bytes when sync is the stable source');
+  assert(/add_capabilities_from_values\(root,[\s\S]{0,260}?nss_conntrack_sync_stable_active\(&probe\)[\s\S]{0,260}?nss_ecm_direct_preferred\(&probe\)/.test(source),
+         'status capabilities/live_metrics must account for NSS stable source');
   assert(indexSource.includes("mode === 'nss_ecm_direct'"), 'LuCI client status must label NSS direct rows');
   assert(indexSource.includes('NSS-direct'), 'LuCI must show NSS-direct label');
   assert(nssPanelSource.includes('direct_enabled') && nssPanelSource.includes('fallback_reason'),
@@ -1768,6 +2021,153 @@ assert(nssEcmDirect.clients[0].rx_bps === nssEcmDirectFixture.expected.first_rx_
 assert(nssEcmDirect.clients[1].tx_bps === nssEcmDirectFixture.expected.second_tx_bps, 'NSS direct must aggregate second client tx correctly');
 assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx_bps, 'NSS direct must aggregate second client rx correctly');
 {
+  const noDataFixture = clone(nssEcmDirectFixture);
+  noDataFixture.arp_entries = [
+    { ip: '192.168.31.100', mac: 'aa:bb:cc:00:00:01', interface: 'br-lan', zone: 'lan' }
+  ];
+  noDataFixture.state_snapshots = [
+    { t_ms: 100000, lines: [] },
+    { t_ms: 101000, lines: [] }
+  ];
+  noDataFixture.procfs_snapshots = [
+    {
+      t_ms: 100000,
+      lines: [
+        'ipv4 2 tcp 6 431999 ESTABLISHED src=192.168.31.100 dst=1.1.1.1 sport=41000 dport=443 packets=10 bytes=1000000 src=1.1.1.1 dst=192.168.31.100 sport=443 dport=41000 packets=20 bytes=2000000 [ASSURED] mark=0 use=1'
+      ]
+    },
+    {
+      t_ms: 101000,
+      lines: [
+        'ipv4 2 tcp 6 431998 ESTABLISHED src=192.168.31.100 dst=1.1.1.1 sport=41000 dport=443 packets=15 bytes=1500000 src=1.1.1.1 dst=192.168.31.100 sport=443 dport=41000 packets=35 bytes=3250000 [ASSURED] mark=0 use=1'
+      ]
+    }
+  ];
+  const noData = simulateNssStableCollector(noDataFixture);
+  assert(noData.direct_flows_matched === 0, 'stable NSS collector must expose direct matched flow count when direct has no data');
+  assert(noData.sync_fallback_clients === 1, 'stable NSS collector must use sync when direct has no data');
+  assert(noData.clients.length === 1, 'stable NSS collector must still emit sync client rows when direct has no data');
+  assert(noData.clients[0].collector_mode === 'conntrack_ecm_sync', 'direct no-data rows must keep NSS sync collector mode');
+  assert(noData.clients[0].rx_bps === 10000000, 'direct no-data fallback must preserve NSS sync rx rate');
+  assert(noData.warnings.includes('nss_direct_no_data'), 'direct no-data fallback must warn with nss_direct_no_data');
+  assert(noData.warnings.includes('nss_sync_fallback'), 'direct no-data fallback must warn with nss_sync_fallback');
+}
+{
+  const zeroDirectFixture = clone(nssEcmDirectFixture);
+  zeroDirectFixture.arp_entries = [
+    { ip: '192.168.31.100', mac: 'aa:bb:cc:00:00:01', interface: 'br-lan', zone: 'lan' }
+  ];
+  zeroDirectFixture.state_snapshots = [
+    {
+      t_ms: 100000,
+      lines: [
+        'conns.conn.11.serial=11',
+        'conns.conn.11.sip_address=192.168.31.100',
+        'conns.conn.11.dip_address=1.1.1.1',
+        'conns.conn.11.snode_address=aa:bb:cc:00:00:01',
+        'conns.conn.11.protocol=6',
+        'conns.conn.11.adv_stats.from_data_total=1000000',
+        'conns.conn.11.adv_stats.to_data_total=2000000'
+      ]
+    },
+    {
+      t_ms: 101000,
+      lines: [
+        'conns.conn.11.serial=11',
+        'conns.conn.11.sip_address=192.168.31.100',
+        'conns.conn.11.dip_address=1.1.1.1',
+        'conns.conn.11.snode_address=aa:bb:cc:00:00:01',
+        'conns.conn.11.protocol=6',
+        'conns.conn.11.adv_stats.from_data_total=1000000',
+        'conns.conn.11.adv_stats.to_data_total=2000000'
+      ]
+    }
+  ];
+  zeroDirectFixture.procfs_snapshots = [
+    {
+      t_ms: 100000,
+      lines: [
+        'ipv4 2 tcp 6 431999 ESTABLISHED src=192.168.31.100 dst=1.1.1.1 sport=41000 dport=443 packets=10 bytes=1000000 src=1.1.1.1 dst=192.168.31.100 sport=443 dport=41000 packets=20 bytes=2000000 [ASSURED] mark=0 use=1'
+      ]
+    },
+    {
+      t_ms: 101000,
+      lines: [
+        'ipv4 2 tcp 6 431998 ESTABLISHED src=192.168.31.100 dst=1.1.1.1 sport=41000 dport=443 packets=15 bytes=1500000 src=1.1.1.1 dst=192.168.31.100 sport=443 dport=41000 packets=35 bytes=3000000 [ASSURED] mark=0 use=1'
+      ]
+    }
+  ];
+  const zeroDirect = simulateNssStableCollector(zeroDirectFixture);
+  assert(zeroDirect.direct_flows_matched === 1, 'stable NSS collector must record matched direct flows even when their rate is zero');
+  assert(zeroDirect.direct_overlay_clients === 0, 'zero-rate direct rows must not replace NSS sync rows');
+  assert(zeroDirect.sync_fallback_clients === 1, 'zero-rate direct rows must leave NSS sync as the emitted source');
+  assert(zeroDirect.clients.length === 1, 'zero-rate direct fallback must still emit the sync client row');
+  assert(zeroDirect.clients[0].collector_mode === 'conntrack_ecm_sync', 'zero-rate direct fallback must keep NSS sync collector mode');
+  assert(zeroDirect.clients[0].rx_bps === 8000000, 'zero-rate direct fallback must preserve NSS sync rx rate');
+  assert(zeroDirect.warnings.includes('nss_direct_no_data'), 'zero-rate direct fallback must warn with nss_direct_no_data');
+  assert(zeroDirect.warnings.includes('nss_sync_fallback'), 'zero-rate direct fallback must warn with nss_sync_fallback');
+}
+{
+  const partialFixture = clone(nssEcmDirectFixture);
+  partialFixture.arp_entries = [
+    { ip: '192.168.31.100', mac: 'aa:bb:cc:00:00:01', interface: 'br-lan', zone: 'lan' },
+    { ip: '192.168.31.101', mac: 'aa:bb:cc:00:00:02', interface: 'br-lan', zone: 'lan' }
+  ];
+  partialFixture.state_snapshots = [
+    {
+      t_ms: 100000,
+      lines: [
+        'conns.conn.10.serial=10',
+        'conns.conn.10.sip_address=192.168.31.100',
+        'conns.conn.10.dip_address=1.1.1.1',
+        'conns.conn.10.snode_address=aa:bb:cc:00:00:01',
+        'conns.conn.10.protocol=6',
+        'conns.conn.10.adv_stats.from_data_total=1000000',
+        'conns.conn.10.adv_stats.to_data_total=2000000'
+      ]
+    },
+    {
+      t_ms: 101000,
+      lines: [
+        'conns.conn.10.serial=10',
+        'conns.conn.10.sip_address=192.168.31.100',
+        'conns.conn.10.dip_address=1.1.1.1',
+        'conns.conn.10.snode_address=aa:bb:cc:00:00:01',
+        'conns.conn.10.protocol=6',
+        'conns.conn.10.adv_stats.from_data_total=1250000',
+        'conns.conn.10.adv_stats.to_data_total=2500000'
+      ]
+    }
+  ];
+  partialFixture.procfs_snapshots = [
+    {
+      t_ms: 100000,
+      lines: [
+        'ipv4 2 tcp 6 431999 ESTABLISHED src=192.168.31.100 dst=1.1.1.1 sport=41000 dport=443 packets=10 bytes=900000 src=1.1.1.1 dst=192.168.31.100 sport=443 dport=41000 packets=20 bytes=1900000 [ASSURED] mark=0 use=1',
+        'ipv4 2 tcp 6 431999 ESTABLISHED src=192.168.31.101 dst=8.8.8.8 sport=41001 dport=443 packets=10 bytes=100000 src=8.8.8.8 dst=192.168.31.101 sport=443 dport=41001 packets=20 bytes=500000 [ASSURED] mark=0 use=1'
+      ]
+    },
+    {
+      t_ms: 101000,
+      lines: [
+        'ipv4 2 tcp 6 431998 ESTABLISHED src=192.168.31.100 dst=1.1.1.1 sport=41000 dport=443 packets=15 bytes=1000000 src=1.1.1.1 dst=192.168.31.100 sport=443 dport=41000 packets=35 bytes=2000000 [ASSURED] mark=0 use=1',
+        'ipv4 2 tcp 6 431998 ESTABLISHED src=192.168.31.101 dst=8.8.8.8 sport=41001 dport=443 packets=15 bytes=350000 src=8.8.8.8 dst=192.168.31.101 sport=443 dport=41001 packets=35 bytes=1750000 [ASSURED] mark=0 use=1'
+      ]
+    }
+  ];
+  const partial = simulateNssStableCollector(partialFixture);
+  const directClient = partial.clients.find((client) => client.identity_key === 'aa:bb:cc:00:00:01@lan');
+  const syncClient = partial.clients.find((client) => client.identity_key === 'aa:bb:cc:00:00:02@lan');
+  assert(partial.direct_overlay_clients === 1, 'stable NSS collector must count direct overlay clients');
+  assert(partial.sync_fallback_clients === 1, 'stable NSS collector must count sync fallback clients');
+  assert(directClient && directClient.collector_mode === 'nss_ecm_direct', 'direct-overlaid duplicate client must keep direct collector mode');
+  assert(directClient.tx_bps === 2000000 && directClient.rx_bps === 4000000, 'direct-overlaid duplicate client must prefer direct rates over sync rates');
+  assert(syncClient && syncClient.collector_mode === 'conntrack_ecm_sync', 'client missing from direct must be filled from NSS sync');
+  assert(syncClient.tx_bps === 2000000 && syncClient.rx_bps === 10000000, 'sync fallback client must keep NSS sync rates');
+  assert(partial.warnings.includes('nss_direct_partial'), 'partial direct overlay must warn with nss_direct_partial');
+  assert(partial.warnings.includes('nss_sync_fallback'), 'partial direct overlay must warn with nss_sync_fallback');
+}
+{
   const ipv6Fixture = clone(nssEcmDirectFixture);
   ipv6Fixture.arp_entries = [];
   ipv6Fixture.neighbor_entries = [
@@ -1808,15 +2208,179 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
   assert(ipv6Direct.clients[0].tx_bps === 4000000, 'NSS direct IPv6 tx_bps must use from_data_total deltas');
   assert(ipv6Direct.clients[0].rx_bps === 10000000, 'NSS direct IPv6 rx_bps must use to_data_total deltas');
 }
+{
+  const ipv6DestFixture = clone(nssEcmDirectFixture);
+  ipv6DestFixture.arp_entries = [];
+  ipv6DestFixture.neighbor_entries = [
+    { ip: '240e:abc:1234::100', mac: 'aa:bb:cc:00:00:01', interface: 'br-lan', zone: 'lan', family: 'ipv6' }
+  ];
+  ipv6DestFixture.state_snapshots = [
+    {
+      t_ms: 100000,
+      lines: [
+        'conns.conn.30.serial=30',
+        'conns.conn.30.sip_address=2606:4700:4700::1111',
+        'conns.conn.30.dip_address=240E:0ABC:1234:0000:0000:0000:0000:0100',
+        'conns.conn.30.snode_address=00:11:22:33:44:55',
+        'conns.conn.30.dnode_address=00:00:00:00:00:00',
+        'conns.conn.30.protocol=6',
+        'conns.conn.30.adv_stats.from_data_total=1000000',
+        'conns.conn.30.adv_stats.to_data_total=100000'
+      ]
+    },
+    {
+      t_ms: 101000,
+      lines: [
+        'conns.conn.30.serial=30',
+        'conns.conn.30.sip_address=2606:4700:4700::1111',
+        'conns.conn.30.dip_address=240E:0ABC:1234:0000:0000:0000:0000:0100',
+        'conns.conn.30.snode_address=00:11:22:33:44:55',
+        'conns.conn.30.dnode_address=00:00:00:00:00:00',
+        'conns.conn.30.protocol=6',
+        'conns.conn.30.adv_stats.from_data_total=2000000',
+        'conns.conn.30.adv_stats.to_data_total=350000'
+      ]
+    }
+  ];
+  const ipv6DestDirect = simulateNssEcmDirect(ipv6DestFixture);
+  assert(ipv6DestDirect.clients.length === 1, 'NSS direct must emit client rows when LAN IPv6 is dip_address');
+  assert(ipv6DestDirect.clients[0].identity_key === 'aa:bb:cc:00:00:01@lan', 'NSS direct destination-side LAN must fall back to neighbor MAC when dnode is invalid');
+  assert(ipv6DestDirect.clients[0].tx_bps === 2000000, 'NSS direct destination-side LAN tx_bps must use to_data_total deltas');
+  assert(ipv6DestDirect.clients[0].rx_bps === 8000000, 'NSS direct destination-side LAN rx_bps must use from_data_total deltas');
+}
+{
+  const bothLanFixture = clone(nssEcmDirectFixture);
+  bothLanFixture.arp_entries = [
+    { ip: '192.168.31.100', mac: 'aa:bb:cc:00:00:01', interface: 'br-lan', zone: 'lan' },
+    { ip: '192.168.31.101', mac: 'aa:bb:cc:00:00:02', interface: 'br-lan', zone: 'lan' }
+  ];
+  bothLanFixture.state_snapshots = [
+    {
+      t_ms: 100000,
+      lines: [
+        'conns.conn.40.serial=40',
+        'conns.conn.40.sip_address=192.168.31.100',
+        'conns.conn.40.dip_address=192.168.31.101',
+        'conns.conn.40.snode_address=aa:bb:cc:00:00:01',
+        'conns.conn.40.dnode_address=aa:bb:cc:00:00:02',
+        'conns.conn.40.protocol=6',
+        'conns.conn.40.adv_stats.from_data_total=1000000',
+        'conns.conn.40.adv_stats.to_data_total=1000000'
+      ]
+    },
+    {
+      t_ms: 101000,
+      lines: [
+        'conns.conn.40.serial=40',
+        'conns.conn.40.sip_address=192.168.31.100',
+        'conns.conn.40.dip_address=192.168.31.101',
+        'conns.conn.40.snode_address=aa:bb:cc:00:00:01',
+        'conns.conn.40.dnode_address=aa:bb:cc:00:00:02',
+        'conns.conn.40.protocol=6',
+        'conns.conn.40.adv_stats.from_data_total=2000000',
+        'conns.conn.40.adv_stats.to_data_total=2000000'
+      ]
+    }
+  ];
+  const bothLanDirect = simulateNssEcmDirect(bothLanFixture);
+  assert(bothLanDirect.first_snapshot.entries_matched === 0, 'NSS direct must not attribute both-LAN flows to internet speed');
+  assert(bothLanDirect.first_snapshot.skipped_both_lan === 1, 'NSS direct must count skipped both-LAN flows');
+}
+{
+  const natEndpointFixture = clone(nssEcmDirectFixture);
+  natEndpointFixture.arp_entries = [
+    { ip: '192.168.31.102', mac: 'aa:bb:cc:00:00:03', interface: 'br-lan', zone: 'lan' }
+  ];
+  natEndpointFixture.neighbor_entries = [];
+  natEndpointFixture.state_snapshots = [
+    {
+      t_ms: 100000,
+      lines: [
+        'conns.conn.50.serial=50',
+        'conns.conn.50.sip_address=198.51.100.20',
+        'conns.conn.50.dip_address=203.0.113.10',
+        'conns.conn.50.sip_address_nat=192.168.31.102',
+        'conns.conn.50.dip_address_nat=203.0.113.10',
+        'conns.conn.50.snode_address=00:00:00:00:00:00',
+        'conns.conn.50.snode_address_nat=aa:bb:cc:00:00:03',
+        'conns.conn.50.dnode_address=00:11:22:33:44:55',
+        'conns.conn.50.protocol=6',
+        'conns.conn.50.adv_stats.from_data_total=1000000',
+        'conns.conn.50.adv_stats.to_data_total=2000000'
+      ]
+    },
+    {
+      t_ms: 101000,
+      lines: [
+        'conns.conn.50.serial=50',
+        'conns.conn.50.sip_address=198.51.100.20',
+        'conns.conn.50.dip_address=203.0.113.10',
+        'conns.conn.50.sip_address_nat=192.168.31.102',
+        'conns.conn.50.dip_address_nat=203.0.113.10',
+        'conns.conn.50.snode_address=00:00:00:00:00:00',
+        'conns.conn.50.snode_address_nat=aa:bb:cc:00:00:03',
+        'conns.conn.50.dnode_address=00:11:22:33:44:55',
+        'conns.conn.50.protocol=6',
+        'conns.conn.50.adv_stats.from_data_total=1500000',
+        'conns.conn.50.adv_stats.to_data_total=3000000'
+      ]
+    }
+  ];
+  const natEndpointDirect = simulateNssEcmDirect(natEndpointFixture);
+  assert(natEndpointDirect.first_snapshot.entries_matched === 1, 'NSS direct must match LAN clients through ECM NAT endpoint addresses');
+  assert(natEndpointDirect.clients[0].identity_key === 'aa:bb:cc:00:00:03@lan', 'NSS direct must prefer NAT node MAC when the regular node MAC is invalid');
+  assert(natEndpointDirect.clients[0].tx_bps === 4000000, 'NSS direct NAT endpoint tx_bps must follow the LAN source direction');
+  assert(natEndpointDirect.clients[0].rx_bps === 8000000, 'NSS direct NAT endpoint rx_bps must follow the LAN source direction');
+}
+{
+  const macOnlyFixture = clone(nssEcmDirectFixture);
+  macOnlyFixture.arp_entries = [
+    { ip: '192.168.31.103', mac: 'aa:bb:cc:00:00:04', interface: 'br-lan', zone: 'lan' }
+  ];
+  macOnlyFixture.neighbor_entries = [];
+  macOnlyFixture.state_snapshots = [
+    {
+      t_ms: 100000,
+      lines: [
+        'conns.conn.60.serial=60',
+        'conns.conn.60.sip_address=198.51.100.21',
+        'conns.conn.60.dip_address=203.0.113.11',
+        'conns.conn.60.snode_address=aa:bb:cc:00:00:04',
+        'conns.conn.60.dnode_address=00:11:22:33:44:55',
+        'conns.conn.60.protocol=17',
+        'conns.conn.60.adv_stats.from_data_total=500000',
+        'conns.conn.60.adv_stats.to_data_total=1000000'
+      ]
+    },
+    {
+      t_ms: 101000,
+      lines: [
+        'conns.conn.60.serial=60',
+        'conns.conn.60.sip_address=198.51.100.21',
+        'conns.conn.60.dip_address=203.0.113.11',
+        'conns.conn.60.snode_address=aa:bb:cc:00:00:04',
+        'conns.conn.60.dnode_address=00:11:22:33:44:55',
+        'conns.conn.60.protocol=17',
+        'conns.conn.60.adv_stats.from_data_total=700000',
+        'conns.conn.60.adv_stats.to_data_total=1500000'
+      ]
+    }
+  ];
+  const macOnlyDirect = simulateNssEcmDirect(macOnlyFixture);
+  assert(macOnlyDirect.first_snapshot.entries_matched === 1, 'NSS direct must fall back to ECM node MAC when ECM IP endpoints are post-NAT addresses');
+  assert(macOnlyDirect.clients[0].ips.includes('192.168.31.103'), 'NSS direct MAC fallback must keep the LAN identity IP from ARP or neighbor');
+  assert(macOnlyDirect.clients[0].tx_bps === 1600000, 'NSS direct MAC fallback tx_bps must follow the LAN source direction');
+  assert(macOnlyDirect.clients[0].rx_bps === 4000000, 'NSS direct MAC fallback rx_bps must follow the LAN source direction');
+}
 
 const nssEcmSync = simulateNssSourceSelection(nssEcmSyncFixture);
-assert(nssEcmSync.preferred === true, 'NSS ECM direct fixture must prefer direct collection before conntrack sync');
-assert(nssEcmSync.primary_source === 'nss_ecm_direct', 'NSS direct must expose primary_source=nss_ecm_direct');
-assert(nssEcmSync.collector_mode === 'nss_ecm_direct', 'NSS direct clients must use collector_mode=nss_ecm_direct');
-assert(nssEcmSync.coverage_client_source === 'nss_ecm_direct', 'NSS direct coverage must use direct client bytes');
-assert(nssEcmSync.confidence === 'high', 'NSS direct confidence should be high when direct state is readable');
-assert(nssEcmSync.warnings.includes('nss_ecm_direct_active'), 'NSS direct must explain that direct ECM state is active');
-assert(nssEcmSync.warnings.includes('nss_prefers_direct'), 'NSS direct must explain why BPF is not primary');
+assert(nssEcmSync.preferred === true, 'NSS ECM fixture must prefer a stable NSS source');
+assert(nssEcmSync.primary_source === 'nss_conntrack_sync', 'NSS auto must expose NSS sync as the stable primary source');
+assert(nssEcmSync.collector_mode === 'conntrack_ecm_sync', 'NSS auto clients must use conntrack_ecm_sync as the base collector mode');
+assert(nssEcmSync.coverage_client_source === 'conntrack', 'NSS auto coverage must use NSS sync client bytes as the stable base');
+assert(nssEcmSync.confidence === 'medium', 'NSS sync confidence should reflect sync cadence');
+assert(nssEcmSync.warnings.includes('nss_ecm_sync_cadence'), 'NSS auto must explain NSS sync cadence');
+assert(nssEcmSync.warnings.includes('nss_prefers_conntrack_sync'), 'NSS auto must explain why NSS sync overrides available BPF metrics');
 
 {
   const nssConntrackFixture = clone(conntrackNatFixture);
@@ -1828,10 +2392,34 @@ assert(nssEcmSync.warnings.includes('nss_prefers_direct'), 'NSS direct must expl
   assert(nssConntrack.collector_mode === 'conntrack_ecm_sync', 'NSS sync conntrack clients must expose collector_mode=conntrack_ecm_sync');
   assert(nssConntrack.coverage === 'nss_ecm_sync', 'NSS sync conntrack coverage must not claim routed/NAT-only fallback');
   assert(nssConntrack.clients.length === 1, 'NSS sync fixture must still produce client speed rows');
-  assert(nssConntrack.clients[0].tx_bps === nssConntrackFixture.expected.tx_bps, 'NSS sync tx_bps must be computed from original-direction bytes');
-  assert(nssConntrack.clients[0].rx_bps === nssConntrackFixture.expected.rx_bps, 'NSS sync rx_bps must be computed from reply-direction bytes');
+  assert(nssConntrack.clients[0].tx_bps === nssConntrackFixture.expected.tx_bps, 'NSS sync tx_bps must be computed from the LAN endpoint perspective');
+  assert(nssConntrack.clients[0].rx_bps === nssConntrackFixture.expected.rx_bps, 'NSS sync rx_bps must be computed from the LAN endpoint perspective');
   assert(nssConntrack.warnings.includes('nss_ecm_sync_cadence'), 'NSS sync speed path must warn about sync cadence');
   assert(nssConntrack.warnings.includes('nss_prefers_conntrack_sync'), 'NSS sync speed path must explain BPF override');
+}
+{
+  const nssDnatFixture = clone(conntrackNatFixture);
+  nssDnatFixture.probe.nss_present = true;
+  nssDnatFixture.probe.nss_ecm_active = true;
+  nssDnatFixture.config.bpf_full_available = true;
+  nssDnatFixture.procfs_snapshots = [
+    {
+      t_ms: 1000,
+      lines: [
+        'ipv4 2 tcp 6 431999 ESTABLISHED src=198.51.100.10 dst=192.168.1.88 sport=443 dport=41000 packets=10 bytes=1000000 src=192.168.1.88 dst=198.51.100.10 sport=41000 dport=443 packets=5 bytes=100000 [ASSURED] mark=0 use=1'
+      ]
+    },
+    {
+      t_ms: 2000,
+      lines: [
+        'ipv4 2 tcp 6 431998 ESTABLISHED src=198.51.100.10 dst=192.168.1.88 sport=443 dport=41000 packets=20 bytes=2500000 src=192.168.1.88 dst=198.51.100.10 sport=41000 dport=443 packets=10 bytes=350000 [ASSURED] mark=0 use=1'
+      ]
+    }
+  ];
+  const nssDnat = simulateConntrackFallback(nssDnatFixture);
+  assert(nssDnat.clients.length === 1, 'NSS sync must emit rows when LAN client is original destination');
+  assert(nssDnat.clients[0].tx_bps === 2000000, 'NSS sync original-destination LAN tx_bps must use reply byte deltas');
+  assert(nssDnat.clients[0].rx_bps === 12000000, 'NSS sync original-destination LAN rx_bps must use original byte deltas');
 }
 
 const nssEcmSyncBpfFallback = simulateNssSourceSelection(nssEcmSyncBpfFallbackFixture);
@@ -1846,6 +2434,102 @@ const nssPpeOnly = simulateNssSourceSelection({
 assert(nssPpeOnly.preferred === true, 'PPE-only NSS detection must enable conntrack-sync primary source');
 assert(nssPpeOnly.primary_source === 'nss_conntrack_sync', 'PPE-only NSS detection must prefer conntrack sync over BPF when accounting is available');
 assert(nssPpeOnly.collector_mode === 'conntrack_ecm_sync', 'PPE-only NSS sync currently shares the conntrack_ecm_sync collector mode');
+
+const nssDaedBpf = simulateNssSourceSelection({
+  config: { enable_conntrack_fallback: true, bpf_full_available: true },
+  probe: {
+    nf_conntrack_acct: true,
+    nss_present: true,
+    nss_ecm_active: true,
+    nss_ecm_direct_state: true,
+    daed_running: true
+  }
+});
+assert(nssDaedBpf.preferred === true, 'NSS+daed should still have a usable preferred live source when BPF is available');
+assert(nssDaedBpf.primary_source === 'bpf', 'NSS+daed must prefer BPF over NSS direct when BPF is available');
+assert(nssDaedBpf.collector_mode === 'bpf', 'NSS+daed+BPF clients must use collector_mode=bpf');
+assert(nssDaedBpf.coverage_client_source === 'bpf', 'NSS+daed+BPF coverage must use BPF client bytes');
+assert(nssDaedBpf.warnings.includes('nss_daed_prefers_bpf'), 'NSS+daed+BPF must explain that BPF is preferred');
+assert(!nssDaedBpf.warnings.includes('nss_prefers_direct'), 'NSS+daed+BPF must not claim NSS direct is preferred');
+
+const nssDaedNssFallback = simulateNssSourceSelection({
+  config: { enable_conntrack_fallback: true, bpf_full_available: false },
+  probe: {
+    nf_conntrack_acct: true,
+    nss_present: true,
+    nss_ecm_active: true,
+    nss_ecm_direct_state: true,
+    daed_running: true
+  }
+});
+assert(nssDaedNssFallback.primary_source === 'nss_conntrack_sync', 'NSS+daed must fall back to NSS sync when BPF is unavailable');
+assert(nssDaedNssFallback.collector_mode === 'conntrack_ecm_sync', 'NSS+daed NSS fallback must keep sync collector mode');
+assert(nssDaedNssFallback.warnings.includes('nss_daed_nss_fallback_may_be_inaccurate'), 'NSS+daed NSS fallback must warn that rates may be inaccurate');
+
+const nssDaedConfigOnly = simulateNssSourceSelection({
+  config: { enable_conntrack_fallback: true, bpf_full_available: true },
+  probe: {
+    nf_conntrack_acct: true,
+    nss_present: true,
+    nss_ecm_active: true,
+    nss_ecm_direct_state: true,
+    daed_config: true
+  }
+});
+assert(nssDaedConfigOnly.primary_source === 'nss_conntrack_sync', 'NSS must keep NSS sync when only daed config exists');
+assert(!nssDaedConfigOnly.warnings.includes('nss_daed_prefers_bpf'), 'daed config alone must not emit NSS+daed BPF warning');
+
+const nssDaedStoppedWithLeftovers = simulateNssSourceSelection({
+  config: { enable_conntrack_fallback: true, bpf_full_available: true },
+  probe: {
+    nf_conntrack_acct: true,
+    nss_present: true,
+    nss_ecm_active: true,
+    nss_ecm_direct_state: true,
+    daed_service: true,
+    dae_iface: true
+  }
+});
+assert(nssDaedStoppedWithLeftovers.primary_source === 'nss_conntrack_sync', 'NSS must keep NSS sync when daed service exists but has no running instance');
+assert(!nssDaedStoppedWithLeftovers.warnings.includes('nss_daed_prefers_bpf'), 'stopped daed leftovers must not emit NSS+daed BPF warning');
+
+const nssForcedDirectWithDaed = simulateNssSourceSelection({
+  config: { enable_conntrack_fallback: true, bpf_full_available: true, rate_collector_mode: 'nss_ecm_direct' },
+  probe: {
+    nf_conntrack_acct: true,
+    nss_present: true,
+    nss_ecm_active: true,
+    nss_ecm_direct_state: true,
+    daed_running: true
+  }
+});
+assert(nssForcedDirectWithDaed.primary_source === 'nss_ecm_direct', 'forced NSS-direct must override automatic NSS+daed BPF preference');
+assert(!nssForcedDirectWithDaed.warnings.includes('nss_daed_prefers_bpf'), 'forced NSS-direct must not claim automatic NSS+daed BPF preference');
+
+const nssForcedDirectUnreadable = simulateNssSourceSelection({
+  config: { enable_conntrack_fallback: true, bpf_full_available: false, rate_collector_mode: 'nss_ecm_direct' },
+  probe: {
+    nf_conntrack_acct: true,
+    nss_present: true,
+    nss_ecm_active: true,
+    nss_ecm_direct_state: true,
+    nss_ecm_direct_readable: false
+  }
+});
+assert(nssForcedDirectUnreadable.primary_source === 'nss_conntrack_sync', 'unreadable NSS-direct state must fall back to NSS sync even when direct is selected');
+assert(nssForcedDirectUnreadable.collector_mode === 'conntrack_ecm_sync', 'unreadable NSS-direct fallback must keep existing NSS sync client collector_mode');
+
+const nssForcedSyncWithDirectAvailable = simulateNssSourceSelection({
+  config: { enable_conntrack_fallback: true, bpf_full_available: true, rate_collector_mode: 'nss_conntrack_sync' },
+  probe: {
+    nf_conntrack_acct: true,
+    nss_present: true,
+    nss_ecm_active: true,
+    nss_ecm_direct_state: true
+  }
+});
+assert(nssForcedSyncWithDirectAvailable.primary_source === 'nss_conntrack_sync', 'forced NSS sync must override available NSS-direct');
+assert(nssForcedSyncWithDirectAvailable.collector_mode === 'conntrack_ecm_sync', 'forced NSS sync keeps existing client collector_mode for API compatibility');
 
 const daeIngressPreempt = simulateNssSourceSelection({
   config: { enable_conntrack_fallback: true, bpf_full_available: true, dae_early_bpf: true },

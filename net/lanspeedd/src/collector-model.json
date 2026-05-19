@@ -222,8 +222,8 @@
       "ip_role": "LAN client IP maps to an existing MAC/zone identity through ARP or IPv6 neighbor and is never the primary identity"
     },
     "direction": {
-      "tx_bps": "NSS ECM/PPE sync only: LAN client original-direction bytes from conntrack accounting",
-      "rx_bps": "NSS ECM/PPE sync only: LAN client reply-direction bytes from conntrack accounting"
+      "tx_bps": "NSS ECM/PPE sync only: bytes sent by the LAN endpoint from the client point of view",
+      "rx_bps": "NSS ECM/PPE sync only: bytes received by the LAN endpoint from the client point of view"
     },
     "nlbwmon_policy": "detect_conflict_without_reading_or_resetting_nlbwmon_counters",
     "procfs_paths": [
@@ -249,6 +249,7 @@
     "state_sources": [
       "/dev/ecm_state",
       "/sys/kernel/debug/ecm/ecm_state/state_dev_major",
+      "/dev/lanspeed-ecm-state",
       "/proc/net/arp",
       "netlink:rtnetlink_neigh"
     ],
@@ -260,17 +261,18 @@
     ],
     "identity_model": {
       "primary_key": "mac+zone",
-      "ip_role": "sip_address maps through ARP/neighbor",
-      "mac_role": "snode_address preferred when valid"
+      "ip_role": "sip_address/dip_address and sip_address_nat/dip_address_nat map through ARP/neighbor",
+      "mac_role": "snode_address or snode_address_nat preferred for source-side LAN, dnode_address or dnode_address_nat preferred for destination-side LAN; MAC can identify LAN when ECM IP endpoints are post-NAT"
     },
     "direction": {
-      "tx_bps": "ECM adv_stats.from_data_total delta from LAN client perspective",
-      "rx_bps": "ECM adv_stats.to_data_total delta from LAN client perspective"
+      "tx_bps": "ECM adv_stats bytes sent by the LAN endpoint from the client point of view",
+      "rx_bps": "ECM adv_stats bytes received by the LAN endpoint from the client point of view"
     },
     "snapshot_policy": {
       "first_sample_warning": "nss_ecm_direct_snapshot_pending",
       "previous_snapshot": "in_daemon_memory",
-      "delta_formula": "max(0, current_bytes - previous_bytes) * 8 * 1000 / delta_ms"
+      "delta_formula": "max(0, current_bytes - previous_bytes) * 8 * 1000 / delta_ms",
+      "overlay_policy": "only overlay NSS sync when direct tx_bps or rx_bps is non-zero"
     }
   }
 }

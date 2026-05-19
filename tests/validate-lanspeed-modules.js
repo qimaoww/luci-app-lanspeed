@@ -243,6 +243,72 @@ function assertConfigView(src) {
 	if (!src.includes('lanspeed-config-body')) {
 		fail('view/lanspeed/config.js must wrap daemon settings in a padded body for theme compatibility');
 	}
+	if (!src.includes('lsRpc.status()')) {
+		fail('view/lanspeed/config.js must load runtime status for NSS-aware configuration text');
+	}
+	if (!src.includes('function isNssDevice(') || !src.includes('nss.present === true')) {
+		fail('view/lanspeed/config.js must detect NSS devices from status.evidence.nss.present');
+	}
+	if (src.includes('return !!(status && status.evidence && status.evidence.nss && status.evidence.nss.present);')) {
+		fail('view/lanspeed/config.js must not rely only on status.evidence.nss.present for NSS detection');
+	}
+	if (!src.includes('caps.nss === true') ||
+	    !src.includes("key.indexOf('nss') === 0") ||
+	    !src.includes('nss.ecm_offload_active') ||
+	    !src.includes('nss.direct_supported')) {
+		fail('view/lanspeed/config.js must also detect NSS from runtime capabilities and NSS offload evidence');
+	}
+	if (!src.includes('function daedRuntimeActive(') ||
+	    !src.includes('dae.dae_running') ||
+	    !src.includes('dae.daed_running')) {
+		fail('view/lanspeed/config.js must distinguish running daed from installed daed config');
+	}
+	if (src.includes('dae.dae0 || dae.dae0peer') ||
+	    src.includes('dae.dae_service || dae.daed_service') ||
+	    src.includes('dae.runtime_active')) {
+		fail('view/lanspeed/config.js must not treat stopped daed service or leftover dae0 as runtime-active daed');
+	}
+	if (!src.includes('lanspeed-nss-config-only')) {
+		fail('view/lanspeed/config.js must render NSS-only configuration guidance separately');
+	}
+	if (!src.includes('lanspeed-nss-config-only') ||
+	    !src.includes('NSS-direct') ||
+	    !src.includes('NSS sync')) {
+		fail('view/lanspeed/config.js must explain NSS direct and NSS sync only on NSS devices');
+	}
+	if (!src.includes('function rateCollectorModesForStatus(') ||
+	    !src.includes("[ 'nss_ecm_direct', 'NSS-direct' ]") ||
+	    !src.includes("[ 'nss_conntrack_sync', 'NSS sync' ]") ||
+	    !src.includes('lanspeed-rate-badge')) {
+		fail('view/lanspeed/config.js must show NSS-aware rate_collector_mode labels on NSS devices');
+	}
+	if (!src.includes('function rateCollectorModesForStatus(status, currentValue)') ||
+	    !src.includes("currentValue === 'nss_ecm_direct'") ||
+	    !src.includes("currentValue === 'nss_conntrack_sync'")) {
+		fail('view/lanspeed/config.js must preserve saved NSS rate_collector_mode values even when runtime NSS detection is unavailable');
+	}
+	if (!src.includes('当前采集方式') || !src.includes('nssRateHint(status)')) {
+		fail('view/lanspeed/config.js must keep NSS explanations in hint rows instead of option labels');
+	}
+	if (src.includes('自动（NSS-direct') ||
+	    src.includes('自动（BPF') ||
+	    src.includes('BPF（LAN 边缘）') ||
+	    src.includes('CT-Netlink（连接数）') ||
+	    src.includes('CT-Procfs（连接数）') ||
+	    src.includes('BPF / NSS-direct / NSS sync') ||
+	    src.includes('NSS-direct / NSS sync')) {
+		fail('view/lanspeed/config.js rate_collector_mode options must keep explanations out of option labels');
+	}
+	if (!src.includes("[ 'conntrack_netlink', 'CT-Netlink' ]") ||
+	    !src.includes("[ 'conntrack_procfs', 'CT-Procfs' ]")) {
+		fail('view/lanspeed/config.js connection collector options must use plain labels');
+	}
+	if (!src.includes('daed 运行中') || !src.includes('BPF')) {
+		fail('view/lanspeed/config.js must explain the NSS+daed BPF preference');
+	}
+	if (!src.includes('if (refs.nssRows)')) {
+		fail('view/lanspeed/config.js must hide NSS-only rows on non-NSS devices');
+	}
 	if (!src.includes('font-weight:400')) {
 		fail('view/lanspeed/config.js must pin normal LAN Speed text weight for Argon compatibility');
 	}
@@ -305,7 +371,7 @@ function assertConfigView(src) {
 	if (!src.includes('速率采集') || !src.includes('连接数采集')) {
 		fail('view/lanspeed/config.js must split speed and connection collector settings');
 	}
-	if (!src.includes('非 NSS 实时测速只使用 BPF') || !src.includes('CT 只影响连接数和诊断')) {
+	if (!src.includes('非 NSS 实时测速只使用 BPF') || !src.includes('CT 只用于连接数和诊断')) {
 		fail('view/lanspeed/config.js must make the non-NSS BPF-only live-rate policy explicit');
 	}
 	if (!src.includes('ifaceCfg.load(viewState)')) {
@@ -372,10 +438,10 @@ function assertStatusViewSourceOnlyState(src) {
 	    src.includes('.lanspeed-root button,.lanspeed-root input,.lanspeed-root select{font-size:')) {
 		fail('view/lanspeed/index.js must not force LAN Speed root or form control text larger than the theme');
 	}
-	if (!src.includes('grid-template-columns:repeat(5,minmax(0,1fr))') ||
-	    !src.includes('gap:1.1em 2em;align-items:center;justify-content:stretch;margin:0') ||
+	if (!src.includes('grid-template-columns:repeat(5,12.5em)') ||
+	    !src.includes('row-gap:1.1em;column-gap:1.2em;align-items:center;justify-content:start;margin:0') ||
 	    !src.includes('@media (max-width:1100px){.lanspeed-metrics{grid-template-columns:repeat(auto-fit,minmax(10em,1fr))}}')) {
-		fail('view/lanspeed/index.js must keep overview metrics evenly spaced and center-aligned on wide Argon layouts');
+		fail('view/lanspeed/index.js must keep overview metrics left-aligned with compact spacing on wide Argon layouts');
 	}
 	if (src.includes('.lanspeed-metric .caption{font-size:.86em') ||
 	    src.includes('.lanspeed-metric .big{font-size:1.7em') ||
@@ -395,10 +461,15 @@ function assertStatusViewSourceOnlyState(src) {
 		fail('view/lanspeed/index.js must group toolbar controls for Argon compatibility');
 	}
 	if (!src.includes('lanspeed-active-only') ||
-	    !src.includes('position:static;top:auto;right:auto;margin:0') ||
+	    !src.includes('position:relative;top:auto;right:auto;margin:0') ||
+	    !src.includes("E('label', { 'class': 'lanspeed-active-only cbi-checkbox', 'for': 'lanspeed-active' }") ||
 	    !src.includes("'class': 'cbi-input-checkbox'") ||
-	    !src.includes("'class': 'lanspeed-active-label', 'for': 'lanspeed-active'")) {
+	    !src.includes("'class': 'lanspeed-active-label'")) {
 		fail('view/lanspeed/index.js must align the active-only checkbox in the toolbar on Argon');
+	}
+	if (src.includes('appearance:auto') ||
+	    src.includes('-webkit-appearance:checkbox')) {
+		fail('view/lanspeed/index.js must let Aurora/LuCI theme draw the active-only checkbox');
 	}
 	if (!src.includes('.lanspeed-clients-card .lanspeed-table{font-weight:500}')) {
 		fail('view/lanspeed/index.js must make the LAN client table weight stronger without enlarging it');
@@ -414,7 +485,9 @@ function assertStatusViewSourceOnlyState(src) {
 	if (!src.includes('function collectorClass(mode)')) {
 		fail('view/lanspeed/index.js must style the collector source pill without using confidence text');
 	}
-	if (!src.includes('function effectiveCollector(status, clients)')) {
+	if (!src.includes('function effectiveCollector(status, clientsData)') ||
+	    !src.includes('var clientEvidence = (clientsData && clientsData.evidence) || {}') ||
+	    !src.includes('clientEvidence.collector_mode')) {
 		fail('view/lanspeed/index.js must derive the current collector source before rendering the header');
 	}
 	if (!src.includes('refs.collectorPill') ||
@@ -427,6 +500,11 @@ function assertStatusViewSourceOnlyState(src) {
 	}
 	if (src.includes("status.collector_mode;")) {
 		fail('view/lanspeed/index.js header must not show configured collector_mode as the current collector source');
+	}
+	if (!src.includes('grid-template-columns:repeat(5,12.5em)') ||
+	    !src.includes('justify-content:start') ||
+	    !src.includes('column-gap:1.2em')) {
+		fail('view/lanspeed/index.js overview metrics must be left-aligned with compact desktop spacing');
 	}
 	if (!src.includes("return 'NSS sync'")) {
 		fail('view/lanspeed/index.js must keep NSS sync as a clear collector label');
@@ -474,13 +552,13 @@ function assertStatusViewSourceOnlyState(src) {
 }
 
 function assertVersionModule(src) {
-	if (!src.includes("PACKAGE_VERSION: '0.1.2'")) {
+	if (!src.includes("PACKAGE_VERSION: '0.1.3'")) {
 		fail('version.js must expose luci-app-lanspeed PACKAGE_VERSION');
 	}
-	if (!src.includes("PACKAGE_RELEASE: '2'")) {
+	if (!src.includes("PACKAGE_RELEASE: '4'")) {
 		fail('version.js must expose luci-app-lanspeed PACKAGE_RELEASE');
 	}
-	if (!src.includes("FULL_VERSION: '0.1.2-r2'")) {
+	if (!src.includes("FULL_VERSION: '0.1.3-r4'")) {
 		fail('version.js must expose full luci-app-lanspeed version with r suffix');
 	}
 }
