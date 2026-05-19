@@ -258,6 +258,47 @@ function assertConfigView(src) {
 	if (!src.includes('conn_collector_mode')) {
 		fail('view/lanspeed/config.js must expose conn_collector_mode');
 	}
+	if (!src.includes('show_ipv6')) {
+		fail('view/lanspeed/config.js must expose show_ipv6 for client IP display');
+	}
+	if (!src.includes('显示 IPv6 地址') || !src.includes('关闭后客户端列表只显示 IPv4。')) {
+		fail('view/lanspeed/config.js must explain the IPv6 display toggle');
+	}
+	if (src.includes('关闭后客户端列表只显示 IPv4；fe80::/10')) {
+		fail('view/lanspeed/config.js must keep fe80::/10 wording with the private IPv6 option');
+	}
+	if (src.includes('fe80::/10 链路本地地址始终隐藏')) {
+		fail('view/lanspeed/config.js must not describe fe80::/10 as always hidden');
+	}
+	if (!src.includes('hide_private_ipv6')) {
+		fail('view/lanspeed/config.js must expose hide_private_ipv6 for client IP display');
+	}
+	if (!src.includes('隐藏私有 IPv6 地址') ||
+	    !src.includes('fc00::/7 私有 IPv6 地址和 fe80::/10 链路本地地址')) {
+		fail('view/lanspeed/config.js must explain the private IPv6 display toggle');
+	}
+	if (!src.includes('hide_ipv6_ranges')) {
+		fail('view/lanspeed/config.js must expose hide_ipv6_ranges for custom IPv6 hiding');
+	}
+	if (!src.includes('隐藏 IPv6 范围') ||
+	    !src.includes('fc00::/7 fe80::/10') ||
+	    !src.includes('用空格或逗号分隔')) {
+		fail('view/lanspeed/config.js must explain custom hidden IPv6 ranges');
+	}
+	if (!src.includes('lanspeed-range-list') ||
+	    !src.includes('lanspeed-range-pill') ||
+	    !src.includes('function rangeListValue(refs)') ||
+	    !src.includes('function buildRangeList(refs, value)')) {
+		fail('view/lanspeed/config.js must render hidden IPv6 ranges as removable range pills');
+	}
+	if (src.includes('border-radius:1.35em') ||
+	    src.includes('box-shadow:0 .1em .45em')) {
+		fail('view/lanspeed/config.js hidden IPv6 range boxes must match the normal input style, not pill styling');
+	}
+	if (!src.includes('border-radius:.4em') ||
+	    !src.includes('box-shadow:none')) {
+		fail('view/lanspeed/config.js hidden IPv6 range boxes must keep the same rectangular frame style as nearby form controls');
+	}
 	if (!src.includes('conntrack_netlink') || !src.includes('conntrack_procfs')) {
 		fail('view/lanspeed/config.js must offer CT-Netlink and CT-Procfs connection collector choices');
 	}
@@ -331,9 +372,10 @@ function assertStatusViewSourceOnlyState(src) {
 	    src.includes('.lanspeed-root button,.lanspeed-root input,.lanspeed-root select{font-size:')) {
 		fail('view/lanspeed/index.js must not force LAN Speed root or form control text larger than the theme');
 	}
-	if (!src.includes('grid-template-columns:repeat(auto-fit,minmax(10em,12em))') ||
-	    !src.includes('gap:1.1em 2em;align-items:center;justify-content:start;margin:0')) {
-		fail('view/lanspeed/index.js must center-align overview metrics instead of bottom-aligning them');
+	if (!src.includes('grid-template-columns:repeat(5,minmax(0,1fr))') ||
+	    !src.includes('gap:1.1em 2em;align-items:center;justify-content:stretch;margin:0') ||
+	    !src.includes('@media (max-width:1100px){.lanspeed-metrics{grid-template-columns:repeat(auto-fit,minmax(10em,1fr))}}')) {
+		fail('view/lanspeed/index.js must keep overview metrics evenly spaced and center-aligned on wide Argon layouts');
 	}
 	if (src.includes('.lanspeed-metric .caption{font-size:.86em') ||
 	    src.includes('.lanspeed-metric .big{font-size:1.7em') ||
@@ -386,8 +428,8 @@ function assertStatusViewSourceOnlyState(src) {
 	if (src.includes("status.collector_mode;")) {
 		fail('view/lanspeed/index.js header must not show configured collector_mode as the current collector source');
 	}
-	if (!src.includes("return 'ECM sync'")) {
-		fail('view/lanspeed/index.js must keep ECM sync as a clear collector label');
+	if (!src.includes("return 'NSS sync'")) {
+		fail('view/lanspeed/index.js must keep NSS sync as a clear collector label');
 	}
 	if (!src.includes("return 'CT-Netlink'")) {
 		fail('view/lanspeed/index.js must keep conntrack netlink as a clear collector label');
@@ -404,16 +446,41 @@ function assertStatusViewSourceOnlyState(src) {
 	if (!src.includes("return 'NSS-direct'")) {
 		fail('view/lanspeed/index.js must keep existing nss_ecm_direct label');
 	}
+	if (!src.includes('function isIpv6Address(ip)') ||
+	    !src.includes('function parseIpv6ToWords(ip)') ||
+	    !src.includes('function parseIpv6Cidr(range)') ||
+	    !src.includes('function isIpInIpv6Ranges(ip, ranges)') ||
+	    !src.includes('function displayIpsForClient(ips, showIpv6, hidePrivateIpv6, hideIpv6Ranges)')) {
+		fail('view/lanspeed/index.js must filter IPv6 display through custom range helpers');
+	}
+	if (!src.includes("DEFAULT_HIDE_IPV6_RANGES = 'fc00::/7 fe80::/10'") ||
+	    !src.includes('hidePrivateIpv6') ||
+	    !src.includes('hideIpv6Ranges')) {
+		fail('view/lanspeed/index.js must hide configurable IPv6 ranges when the private IPv6 option is enabled');
+	}
+	if (!src.includes("lsRpc.uciGet('lanspeed', 'main')") ||
+	    !src.includes('show_ipv6') ||
+	    !src.includes('hide_private_ipv6') ||
+	    !src.includes('hide_ipv6_ranges')) {
+		fail('view/lanspeed/index.js must read IPv6 display options before rendering client IPs');
+	}
+	if (!src.includes('function loadUiConfig()') ||
+	    !src.includes(".catch(function() { return {}; })")) {
+		fail('view/lanspeed/index.js must keep show_ipv6 reads non-fatal');
+	}
+	if (/\bvar ips = fmt\.asArray\(c\.ips\);/.test(src)) {
+		fail('view/lanspeed/index.js must not render raw client IP arrays directly');
+	}
 }
 
 function assertVersionModule(src) {
 	if (!src.includes("PACKAGE_VERSION: '0.1.2'")) {
 		fail('version.js must expose luci-app-lanspeed PACKAGE_VERSION');
 	}
-	if (!src.includes("PACKAGE_RELEASE: '1'")) {
+	if (!src.includes("PACKAGE_RELEASE: '2'")) {
 		fail('version.js must expose luci-app-lanspeed PACKAGE_RELEASE');
 	}
-	if (!src.includes("FULL_VERSION: '0.1.2-r1'")) {
+	if (!src.includes("FULL_VERSION: '0.1.2-r2'")) {
 		fail('version.js must expose full luci-app-lanspeed version with r suffix');
 	}
 }

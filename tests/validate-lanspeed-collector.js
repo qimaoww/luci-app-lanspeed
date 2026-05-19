@@ -533,15 +533,31 @@ function parseConntrackProcfsLine(line) {
   return flow.orig_src && flow.orig_bytes !== null ? flow : null;
 }
 
+function normalizeIp(ip) {
+  if (typeof ip !== 'string' || ip.length === 0) {
+    return ip;
+  }
+  if (!ip.includes(':')) {
+    return ip;
+  }
+  try {
+    const hostname = new URL(`http://[${ip}]/`).hostname;
+    return hostname.replace(/^\[/, '').replace(/\]$/, '');
+  } catch (error) {
+    return ip.toLowerCase();
+  }
+}
+
 function buildArpMap(fixture) {
   const entries = new Map();
 
-  for (const entry of fixture.arp_entries || []) {
+  for (const entry of (fixture.arp_entries || []).concat(fixture.neighbor_entries || [])) {
     if (isExcludedIdentityInterface(entry.interface || '')) {
       continue;
     }
-    entries.set(entry.ip, {
-      ip: entry.ip,
+    const ip = normalizeIp(entry.ip);
+    entries.set(ip, {
+      ip,
       mac: entry.mac.toLowerCase(),
       zone: entry.zone || 'lan',
       interface: entry.interface || 'br-lan'
@@ -568,7 +584,7 @@ function buildConntrackSnapshot(fixture, snapshot) {
       continue;
     }
 
-    const arp = arpByIp.get(flow.orig_src);
+    const arp = arpByIp.get(normalizeIp(flow.orig_src));
     if (!arp) {
       skippedNoArp += 1;
       continue;
@@ -672,7 +688,7 @@ function buildNssEcmDirectSnapshot(fixture, snapshot) {
       continue;
     }
 
-    const arp = arpByIp.get(flow.sip_address);
+    const arp = arpByIp.get(normalizeIp(flow.sip_address));
     if (!arp) {
       skippedNoArp += 1;
       continue;
@@ -756,7 +772,7 @@ function simulateConntrackFallback(fixture) {
     fixture.config.enable_conntrack_fallback &&
     probe.nf_conntrack_acct &&
     probe.nss_present &&
-    probe.nss_ecm_active
+    (probe.nss_ecm_active || probe.nss_ppe_active)
   );
   const active = Boolean(
     nssSyncPreferred
@@ -874,7 +890,7 @@ function simulateNssSourceSelection(fixture) {
     fixture.config.enable_conntrack_fallback &&
     probe.nf_conntrack_acct &&
     probe.nss_present &&
-    probe.nss_ecm_active
+    (probe.nss_ecm_active || probe.nss_ppe_active)
   );
   const preferred = directPreferred || syncPreferred;
   const warnings = [];
@@ -1026,6 +1042,9 @@ function assertLifecycleInit(initScript, hotplugScript, packageMakefile, default
   assert(defaultConfig.includes("option refresh_interval_ms '1000'"), 'default config must keep refresh_interval_ms=1000');
   assert(defaultConfig.includes("option active_client_window_ms '10000'"), 'default config must keep active window at 10s');
   assert(defaultConfig.includes("option active_client_min_bps '1'"), 'default config must keep active speed threshold at nonzero');
+  assert(defaultConfig.includes("option show_ipv6 '1'"), 'default config must show IPv6 client addresses');
+  assert(defaultConfig.includes("option hide_private_ipv6 '0'"), 'default config must not hide private IPv6 client addresses by default');
+  assert(defaultConfig.includes("option hide_ipv6_ranges 'fc00::/7 fe80::/10'"), 'default config must provide hidden IPv6 ranges');
   assert(defaultConfig.includes("option overview_window_samples '240'"), 'default config must keep trend history at 240 samples');
   assert(defaultConfig.includes("option warning_stale_client_ms '5000'"), 'default config must keep stale warning at 5000ms');
   assert(defaultConfig.includes("option warning_map_full '1'"), 'default config must represent map_full warning guardrail');
@@ -1133,9 +1152,18 @@ function assertRuntimeConntrackFallbackSource(source) {
   for (const required of [
     '#include <libmnl/libmnl.h>',
     '#include <linux/netfilter/nfnetlink_conntrack.h>',
+    '#include <linux/rtnetlink.h>',
     'CONNTRACK_PROCFS_PATH "/proc/net/nf_conntrack"',
     'CONNTRACK_LEGACY_PROCFS_PATH "/proc/net/ip_conntrack"',
     'ARP_PROCFS_PATH "/proc/net/arp"',
+    'NEIGHBOR_NETLINK_SOURCE "netlink:rtnetlink_neigh"',
+    'RTM_GETNEIGH',
+    'RTM_NEWNEIGH',
+    'NETLINK_ROUTE',
+    'NDA_DST',
+    'NDA_LLADDR',
+    'AF_INET6',
+    'static bool read_neighbor_table',
     'static bool read_conntrack_netlink_snapshot',
     'static int conntrack_netlink_data_cb',
     'IPCTNL_MSG_CT_GET',
@@ -1157,6 +1185,7 @@ function assertRuntimeConntrackFallbackSource(source) {
     'lanspeedd_procfs_conntrack_acct',
     'procfs_conntrack_acct_orig_reply_bytes',
     'json_object_new_string(ARP_PROCFS_PATH)',
+    'json_object_new_string(NEIGHBOR_NETLINK_SOURCE)',
     'collect_conntrack_procfs_clients(root, clients, &probe)'
   ]) {
     assert(source.includes(required), `C runtime conntrack fallback missing ${required}`);
@@ -1173,6 +1202,9 @@ function assertRuntimeConntrackFallbackSource(source) {
   assert(source.includes('primary_source", json_object_new_string("nss_conntrack_sync")'), 'runtime evidence must expose NSS conntrack sync as primary source');
   assert(source.includes('coverage_current_client_bytes(const struct runtime_probe *probe'), 'coverage client bytes must take probe/source policy');
   assert(source.includes('nss_conntrack_sync_preferred(probe)'), 'runtime must route clients and coverage through NSS sync preference');
+  assert(/nss_conntrack_sync_preferred[\s\S]{0,220}?probe->nss_ecm_active[\s\S]{0,120}?probe->nss_ppe_active/.test(source),
+         'NSS sync preference must cover both ECM and PPE offload paths');
+  assert(source.includes('normalize_ip_address'), 'runtime must normalize IPv4/IPv6 addresses before LAN identity matching');
   assert(source.includes('json_object_new_string("nss_prefers_conntrack_sync")'), 'runtime must explain why NSS sync overrides available BPF metrics');
   assert(source.includes('static bool dae_tc_preempts_bpf_ingress'), 'runtime must detect DAE/daed tc filters that run before lanspeed ingress');
   assert(source.includes('json_object_new_string("dae_tc_preempts_bpf_ingress")'), 'runtime must explain when DAE tc preemption is detected');
@@ -1279,15 +1311,15 @@ function assertRuntimeNssDirectSource(source, collectorModel, indexSource, nssPa
   assert(/static bool nss_ecm_direct_preferred[\s\S]{0,220}?nss_ecm_direct_supported\(probe\)/.test(source),
          'NSS direct preference must be explicit and capability-gated');
   assert(/static bool conntrack_primary_preferred[\s\S]{0,220}?nss_ecm_direct_preferred\(probe\)[\s\S]{0,220}?nss_conntrack_sync_preferred\(probe\)/.test(source),
-         'NSS direct must outrank ECM sync in primary source selection');
+         'NSS direct must outrank NSS sync in primary source selection');
   assert(source.includes('static bool conntrack_clients_read_active'),
-         'NSS direct failure must still allow ECM sync/conntrack as a secondary read path');
+         'NSS direct failure must still allow NSS sync/conntrack as a secondary read path');
   assert(/static bool conntrack_clients_read_active[\s\S]{0,420}?nss_ecm_direct_preferred\(probe\)[\s\S]{0,420}?nss_conntrack_sync_reader_available\(probe\)/.test(source),
-         'NSS direct secondary read path must be limited to NSS ECM sync availability');
+         'NSS direct secondary read path must be limited to NSS sync availability');
   assert(/collect_conntrack_procfs_clients[\s\S]{0,760}?!conntrack_clients_read_active\(probe\)/.test(source),
          'NSS direct failure must not be blocked by primary conntrack_fallback_active');
   assert(/add_conntrack_common_warnings[\s\S]{0,360}?nss_ecm_direct_preferred\(probe\)[\s\S]{0,360}?nss_ecm_direct_unavailable/.test(source),
-         'ECM sync fallback after NSS direct failure must explain that direct was unavailable');
+         'NSS sync fallback after NSS direct failure must explain that direct was unavailable');
   assert(/coverage_current_client_bytes[\s\S]{0,700}?nss_ecm_direct_preferred\(probe\)/.test(source),
          'coverage must use NSS direct client bytes when direct is primary');
   assert(/add_capabilities_from_values\(root,[\s\S]{0,140}?nss_ecm_direct_preferred\(&probe\)[\s\S]{0,180}?nss_ecm_direct_preferred\(&probe\)/.test(source),
@@ -1299,7 +1331,7 @@ function assertRuntimeNssDirectSource(source, collectorModel, indexSource, nssPa
   assert(collectorModel.nss_direct_model.collector_mode === 'nss_ecm_direct', 'collector model must document nss_ecm_direct collector_mode');
   assert(collectorModel.nss_direct_model.primary_source === 'nss_ecm_direct', 'collector model must document nss_ecm_direct primary source');
   assert(collectorModel.nss_direct_model.read_only === true, 'collector model must declare NSS direct read-only');
-  assert(collectorModel.nss_direct_model.fallback_to === 'conntrack_ecm_sync', 'collector model must document ECM sync fallback');
+  assert(collectorModel.nss_direct_model.fallback_to === 'conntrack_ecm_sync', 'collector model must document NSS sync fallback');
   assert(collectorModel.nss_direct_model.forbidden_writes.includes('defunct_all'), 'collector model must forbid defunct_all writes');
 }
 
@@ -1543,6 +1575,7 @@ assert(collectorModel.map_model.client_limit_warning === 'client_limit_exceeded'
 assert(collectorModel.map_model.map_read_failure_warning === 'map_read_failed', 'map read failure warning is required');
 assert(collectorModel.conntrack_fallback_model.collector_mode === 'conntrack', 'conntrack fallback model must expose collector_mode=conntrack');
 assert(collectorModel.conntrack_fallback_model.nss_sync_collector_mode === 'conntrack_ecm_sync', 'NSS sync model must expose collector_mode=conntrack_ecm_sync');
+assert(collectorModel.conntrack_fallback_model.active_only_when.includes('nss_ecm_or_ppe_sync_preferred'), 'conntrack fallback model must document NSS ECM/PPE sync preference');
 assert(collectorModel.conntrack_fallback_model.primary_sources.includes('nss_conntrack_sync'), 'NSS sync model must expose nss_conntrack_sync primary source');
 assert(!collectorModel.conntrack_fallback_model.primary_sources.includes('conntrack'), 'plain non-NSS conntrack must not be documented as a live speed primary source');
 assert(collectorModel.conntrack_fallback_model.non_nss_live_rate_policy === 'bpf_only', 'non-NSS live rate policy must be BPF-only');
@@ -1551,7 +1584,7 @@ assert(collectorModel.conntrack_fallback_model.mode === 'Degraded', 'conntrack f
 assert(collectorModel.conntrack_fallback_model.coverage === 'routed_nat_only', 'conntrack fallback must be routed/NAT-only');
 assert(collectorModel.conntrack_fallback_model.coverage_warning === 'conntrack_routed_nat_only', 'conntrack fallback must expose routed/NAT-only warning');
 assert(collectorModel.conntrack_fallback_model.active_only_when.includes('nf_conntrack_acct=1'), 'conntrack fallback must require nf_conntrack_acct=1');
-assert(collectorModel.conntrack_fallback_model.active_only_when.includes('nss_ecm_sync_preferred'), 'conntrack fallback model must document NSS ECM sync preference');
+assert(collectorModel.conntrack_fallback_model.active_only_when.includes('nss_ecm_sync_preferred'), 'conntrack fallback model must keep the legacy NSS ECM sync marker');
 assert(!collectorModel.conntrack_fallback_model.active_only_when.includes('bpf_full_unavailable'), 'BPF failure alone must not activate non-NSS conntrack speed fallback');
 assert(collectorModel.conntrack_fallback_model.inactive_when.includes('non_nss_device'), 'conntrack speed fallback must be inactive on non-NSS devices');
 assert(collectorModel.conntrack_fallback_model.inactive_when.includes('bpf_full_unavailable_without_nss_ecm_sync'), 'non-NSS BPF failure must not become CT byte-rate fallback');
@@ -1564,6 +1597,7 @@ assert(collectorModel.conntrack_fallback_model.counter_sources.includes('ctnetli
 assert(collectorModel.conntrack_fallback_model.counter_sources.includes('procfs_conntrack_acct_orig_reply_bytes'), 'conntrack fallback model must name procfs accounting source');
 assert(collectorModel.conntrack_fallback_model.netlink_path === 'netlink:ctnetlink', 'conntrack fallback model must document raw ctnetlink as the preferred reader');
 assert(collectorModel.conntrack_fallback_model.procfs_paths.includes('/proc/net/arp'), 'conntrack fallback model must include ARP identity source');
+assert(collectorModel.conntrack_fallback_model.neighbor_source === 'netlink:rtnetlink_neigh', 'conntrack fallback model must include IPv6 neighbor identity source');
 assert(collectorModel.conntrack_fallback_model.snapshot_policy.first_sample_warning === 'conntrack_snapshot_pending', 'first conntrack sample must be explicit snapshot pending');
 assert(collectorModel.conntrack_fallback_model.confidence.maximum === 'medium', 'conntrack fallback confidence must not exceed medium');
 assert(collectorModel.conntrack_fallback_model.confidence.degrade_to_low_when.includes('flowtable_counter_missing'), 'missing flowtable counter must lower confidence');
@@ -1679,6 +1713,41 @@ assert(conntrackAcctDisabled.active === false, 'nf_conntrack_acct=0 must disable
 assert(conntrackAcctDisabled.clients.length === 0, 'acct disabled fixture must not emit conntrack client rates');
 assert(conntrackAcctDisabled.confidence === 'unsupported', 'acct disabled fallback confidence must be unsupported');
 assert(conntrackAcctDisabled.warnings.includes('conntrack_acct_disabled'), 'acct disabled warning is required');
+{
+  const ipv6SyncFixture = clone(conntrackNatFixture);
+  ipv6SyncFixture.config.bpf_full_available = true;
+  ipv6SyncFixture.probe.nss_present = true;
+  ipv6SyncFixture.probe.nss_ecm_active = true;
+  ipv6SyncFixture.probe.flowtable_counter = true;
+  ipv6SyncFixture.probe.openclash_fake_ip_or_tun = false;
+  ipv6SyncFixture.probe.sqm_qosify_or_ifb = false;
+  ipv6SyncFixture.probe.nlbwmon = false;
+  ipv6SyncFixture.arp_entries = [];
+  ipv6SyncFixture.neighbor_entries = [
+    { ip: '240e:abc:1234::100', mac: '02:aa:bb:cc:dd:08', interface: 'br-lan', zone: 'lan', family: 'ipv6' }
+  ];
+  ipv6SyncFixture.procfs_snapshots = [
+    {
+      t_ms: 1000,
+      lines: [
+        'ipv6 10 tcp 6 431999 ESTABLISHED src=240E:0ABC:1234:0000:0000:0000:0000:0100 dst=2606:4700:4700::1111 sport=41000 dport=443 packets=10 bytes=1000000 src=2606:4700:4700::1111 dst=240E:0ABC:1234:0000:0000:0000:0000:0100 sport=443 dport=41000 packets=20 bytes=2000000 [ASSURED] mark=0 use=1'
+      ]
+    },
+    {
+      t_ms: 2000,
+      lines: [
+        'ipv6 10 tcp 6 431998 ESTABLISHED src=240E:0ABC:1234:0000:0000:0000:0000:0100 dst=2606:4700:4700::1111 sport=41000 dport=443 packets=15 bytes=1500000 src=2606:4700:4700::1111 dst=240E:0ABC:1234:0000:0000:0000:0000:0100 sport=443 dport=41000 packets=35 bytes=3250000 [ASSURED] mark=0 use=1'
+      ]
+    }
+  ];
+  const ipv6Sync = simulateConntrackFallback(ipv6SyncFixture);
+  assert(ipv6Sync.active === true, 'NSS sync must stay active for IPv6 conntrack samples');
+  assert(ipv6Sync.collector_mode === 'conntrack_ecm_sync', 'NSS sync IPv6 rows must keep collector_mode=conntrack_ecm_sync');
+  assert(ipv6Sync.clients.length === 1, 'NSS sync must emit IPv6 client rows');
+  assert(ipv6Sync.clients[0].ips.includes('240e:abc:1234::100'), 'NSS sync IPv6 client must keep its normalized IPv6 address');
+  assert(ipv6Sync.clients[0].tx_bps === 4000000, 'NSS sync IPv6 tx_bps must use orig byte deltas');
+  assert(ipv6Sync.clients[0].rx_bps === 10000000, 'NSS sync IPv6 rx_bps must use reply byte deltas');
+}
 
 const nssEcmDirect = simulateNssEcmDirect(nssEcmDirectFixture);
 assert(nssEcmDirect.primary_source === nssEcmDirectFixture.expected.primary_source, 'NSS direct must become the primary source when ECM state is readable');
@@ -1698,6 +1767,47 @@ assert(nssEcmDirect.clients[0].tx_bps === nssEcmDirectFixture.expected.first_tx_
 assert(nssEcmDirect.clients[0].rx_bps === nssEcmDirectFixture.expected.first_rx_bps, 'NSS direct rx_bps must use to_data_total deltas');
 assert(nssEcmDirect.clients[1].tx_bps === nssEcmDirectFixture.expected.second_tx_bps, 'NSS direct must aggregate second client tx correctly');
 assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx_bps, 'NSS direct must aggregate second client rx correctly');
+{
+  const ipv6Fixture = clone(nssEcmDirectFixture);
+  ipv6Fixture.arp_entries = [];
+  ipv6Fixture.neighbor_entries = [
+    { ip: '240e:abc:1234::100', mac: 'aa:bb:cc:00:00:01', interface: 'br-lan', zone: 'lan', family: 'ipv6' }
+  ];
+  ipv6Fixture.state_snapshots = [
+    {
+      t_ms: 100000,
+      lines: [
+        'conns.conn.20.serial=20',
+        'conns.conn.20.sip_address=240E:0ABC:1234:0000:0000:0000:0000:0100',
+        'conns.conn.20.dip_address=2606:4700:4700::1111',
+        'conns.conn.20.snode_address=aa:bb:cc:00:00:01',
+        'conns.conn.20.dnode_address=00:11:22:33:44:55',
+        'conns.conn.20.protocol=6',
+        'conns.conn.20.adv_stats.from_data_total=1000000',
+        'conns.conn.20.adv_stats.to_data_total=2000000'
+      ]
+    },
+    {
+      t_ms: 101000,
+      lines: [
+        'conns.conn.20.serial=20',
+        'conns.conn.20.sip_address=240E:0ABC:1234:0000:0000:0000:0000:0100',
+        'conns.conn.20.dip_address=2606:4700:4700::1111',
+        'conns.conn.20.snode_address=aa:bb:cc:00:00:01',
+        'conns.conn.20.dnode_address=00:11:22:33:44:55',
+        'conns.conn.20.protocol=6',
+        'conns.conn.20.adv_stats.from_data_total=1500000',
+        'conns.conn.20.adv_stats.to_data_total=3250000'
+      ]
+    }
+  ];
+  const ipv6Direct = simulateNssEcmDirect(ipv6Fixture);
+  assert(ipv6Direct.first_snapshot.entries_matched === 1, 'NSS direct must match IPv6 ECM state flows through neighbor entries');
+  assert(ipv6Direct.clients.length === 1, 'NSS direct must emit IPv6 client rows');
+  assert(ipv6Direct.clients[0].ips.includes('240e:abc:1234::100'), 'NSS direct IPv6 client must keep its normalized IPv6 address');
+  assert(ipv6Direct.clients[0].tx_bps === 4000000, 'NSS direct IPv6 tx_bps must use from_data_total deltas');
+  assert(ipv6Direct.clients[0].rx_bps === 10000000, 'NSS direct IPv6 rx_bps must use to_data_total deltas');
+}
 
 const nssEcmSync = simulateNssSourceSelection(nssEcmSyncFixture);
 assert(nssEcmSync.preferred === true, 'NSS ECM direct fixture must prefer direct collection before conntrack sync');
@@ -1714,14 +1824,14 @@ assert(nssEcmSync.warnings.includes('nss_prefers_direct'), 'NSS direct must expl
   nssConntrackFixture.probe.nss_ecm_active = true;
   nssConntrackFixture.config.bpf_full_available = true;
   const nssConntrack = simulateConntrackFallback(nssConntrackFixture);
-  assert(nssConntrack.active === true, 'NSS ECM sync may use conntrack byte counters as the speed source');
-  assert(nssConntrack.collector_mode === 'conntrack_ecm_sync', 'NSS ECM sync conntrack clients must expose collector_mode=conntrack_ecm_sync');
-  assert(nssConntrack.coverage === 'nss_ecm_sync', 'NSS ECM sync conntrack coverage must not claim routed/NAT-only fallback');
-  assert(nssConntrack.clients.length === 1, 'NSS ECM sync fixture must still produce client speed rows');
-  assert(nssConntrack.clients[0].tx_bps === nssConntrackFixture.expected.tx_bps, 'NSS ECM sync tx_bps must be computed from original-direction bytes');
-  assert(nssConntrack.clients[0].rx_bps === nssConntrackFixture.expected.rx_bps, 'NSS ECM sync rx_bps must be computed from reply-direction bytes');
-  assert(nssConntrack.warnings.includes('nss_ecm_sync_cadence'), 'NSS ECM sync speed path must warn about sync cadence');
-  assert(nssConntrack.warnings.includes('nss_prefers_conntrack_sync'), 'NSS ECM sync speed path must explain BPF override');
+  assert(nssConntrack.active === true, 'NSS sync may use conntrack byte counters as the speed source');
+  assert(nssConntrack.collector_mode === 'conntrack_ecm_sync', 'NSS sync conntrack clients must expose collector_mode=conntrack_ecm_sync');
+  assert(nssConntrack.coverage === 'nss_ecm_sync', 'NSS sync conntrack coverage must not claim routed/NAT-only fallback');
+  assert(nssConntrack.clients.length === 1, 'NSS sync fixture must still produce client speed rows');
+  assert(nssConntrack.clients[0].tx_bps === nssConntrackFixture.expected.tx_bps, 'NSS sync tx_bps must be computed from original-direction bytes');
+  assert(nssConntrack.clients[0].rx_bps === nssConntrackFixture.expected.rx_bps, 'NSS sync rx_bps must be computed from reply-direction bytes');
+  assert(nssConntrack.warnings.includes('nss_ecm_sync_cadence'), 'NSS sync speed path must warn about sync cadence');
+  assert(nssConntrack.warnings.includes('nss_prefers_conntrack_sync'), 'NSS sync speed path must explain BPF override');
 }
 
 const nssEcmSyncBpfFallback = simulateNssSourceSelection(nssEcmSyncBpfFallbackFixture);
@@ -1733,8 +1843,9 @@ const nssPpeOnly = simulateNssSourceSelection({
   config: { enable_conntrack_fallback: true, bpf_full_available: true },
   probe: { nf_conntrack_acct: true, nss_present: true, nss_ecm_active: false, nss_ppe_active: true }
 });
-assert(nssPpeOnly.preferred === false, 'PPE-only NSS detection must not enable conntrack-sync primary source in the first implementation');
-assert(nssPpeOnly.primary_source === 'bpf', 'PPE-only NSS detection must preserve BPF primary source when BPF is available');
+assert(nssPpeOnly.preferred === true, 'PPE-only NSS detection must enable conntrack-sync primary source');
+assert(nssPpeOnly.primary_source === 'nss_conntrack_sync', 'PPE-only NSS detection must prefer conntrack sync over BPF when accounting is available');
+assert(nssPpeOnly.collector_mode === 'conntrack_ecm_sync', 'PPE-only NSS sync currently shares the conntrack_ecm_sync collector mode');
 
 const daeIngressPreempt = simulateNssSourceSelection({
   config: { enable_conntrack_fallback: true, bpf_full_available: true, dae_early_bpf: true },

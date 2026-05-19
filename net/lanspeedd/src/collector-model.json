@@ -170,6 +170,7 @@
     "non_nss_conntrack_policy": "connection_counts_and_diagnostics_only",
     "mode": "Degraded",
     "active_only_when": [
+      "nss_ecm_or_ppe_sync_preferred",
       "nss_ecm_sync_preferred",
       "enable_conntrack_fallback=1",
       "nf_conntrack_acct=1"
@@ -218,19 +219,21 @@
     ],
     "identity_model": {
       "primary_key": "mac+zone",
-      "ip_role": "LAN client IP maps to an existing MAC/zone identity and is never the primary identity"
+      "ip_role": "LAN client IP maps to an existing MAC/zone identity through ARP or IPv6 neighbor and is never the primary identity"
     },
     "direction": {
-      "tx_bps": "NSS ECM sync only: LAN client original-direction bytes from conntrack accounting",
-      "rx_bps": "NSS ECM sync only: LAN client reply-direction bytes from conntrack accounting"
+      "tx_bps": "NSS ECM/PPE sync only: LAN client original-direction bytes from conntrack accounting",
+      "rx_bps": "NSS ECM/PPE sync only: LAN client reply-direction bytes from conntrack accounting"
     },
     "nlbwmon_policy": "detect_conflict_without_reading_or_resetting_nlbwmon_counters",
     "procfs_paths": [
       "/proc/net/nf_conntrack",
       "/proc/net/ip_conntrack",
-      "/proc/net/arp"
+      "/proc/net/arp",
+      "netlink:rtnetlink_neigh"
     ],
     "netlink_path": "netlink:ctnetlink",
+    "neighbor_source": "netlink:rtnetlink_neigh",
     "snapshot_policy": {
       "first_sample_warning": "conntrack_snapshot_pending",
       "previous_snapshot": "in_daemon_memory",
@@ -245,7 +248,9 @@
     "fallback_to": "conntrack_ecm_sync",
     "state_sources": [
       "/dev/ecm_state",
-      "/sys/kernel/debug/ecm/ecm_state/state_dev_major"
+      "/sys/kernel/debug/ecm/ecm_state/state_dev_major",
+      "/proc/net/arp",
+      "netlink:rtnetlink_neigh"
     ],
     "counter_source": "ecm_state_adv_stats_from_to_data_total",
     "forbidden_writes": [

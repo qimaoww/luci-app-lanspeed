@@ -39,7 +39,26 @@ var CONFIG_CSS = [
 	'  font-size:.9em;white-space:nowrap}',
 	'.lanspeed-config-table .value{width:12em}',
 	'.lanspeed-config-table .value input{width:100%;max-width:12em}',
+	'.lanspeed-config-table .value.range{width:18em}',
+	'.lanspeed-config-table .value.range input{max-width:none}',
 	'.lanspeed-config-table .hint,.lanspeed-ifcfg-table .muted{font-size:.85em;opacity:.72}',
+	'.lanspeed-range-stack{display:flex;flex-direction:column;gap:.6em;align-items:stretch;max-width:22em}',
+	'.lanspeed-range-list{display:flex;flex-direction:column;gap:.6em}',
+	'.lanspeed-range-pill{display:flex;align-items:center;justify-content:space-between;',
+	'  gap:.65em;min-height:2.9em;padding:.35em .45em .35em .75em;',
+	'  border:1px solid var(--border,rgba(128,128,128,.22));border-radius:.4em;',
+	'  background:var(--background,rgba(255,255,255,.04));box-sizing:border-box;',
+	'  box-shadow:none}',
+	'.lanspeed-range-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
+	'  font-family:var(--font-monospace,ui-monospace,monospace);font-size:.95em}',
+	'.lanspeed-range-remove{display:inline-flex;align-items:center;justify-content:center;',
+	'  width:2.1em;height:2.1em;min-width:2.1em;padding:0;border:0;border-radius:.35em;',
+	'  background:var(--label-surface,rgba(128,128,128,.18));color:inherit;cursor:pointer;',
+	'  font-size:1em;line-height:1}',
+	'.lanspeed-range-remove:hover{background:var(--border,rgba(128,128,128,.28))}',
+	'.lanspeed-range-add{display:flex;gap:.5em;align-items:center}',
+	'.lanspeed-range-add input{flex:1 1 auto;min-width:0}',
+	'.lanspeed-range-add button{flex:0 0 auto}',
 	'.lanspeed-ifcfg-table .action{text-align:right;width:17em}',
 	'.lanspeed-ifcfg-table .devtags{font-size:.8em;opacity:.7;display:inline-flex;gap:.4em;flex-wrap:wrap}',
 	'.lanspeed-ifcfg-table .devtag{padding:.05em .45em;border-radius:.25em;',
@@ -72,7 +91,10 @@ var DEFAULTS = {
 	rate_collector_mode: 'auto',
 	conn_collector_mode: 'auto',
 	active_client_window_ms: 10000,
-	active_client_min_bps: 1
+	active_client_min_bps: 1,
+	show_ipv6: '1',
+	hide_private_ipv6: '0',
+	hide_ipv6_ranges: 'fc00::/7 fe80::/10'
 };
 
 var RATE_COLLECTOR_MODES = [
@@ -130,6 +152,80 @@ function connCollectorModeValue(value) {
 	return DEFAULTS.conn_collector_mode;
 }
 
+function boolValue(value, fallback) {
+	if (value === '0')
+		return '0';
+	if (value === '1')
+		return '1';
+	return fallback;
+}
+
+function stringValue(value, fallback) {
+	if (typeof value === 'string')
+		return value;
+	return fallback;
+}
+
+function splitRanges(value) {
+	var raw = stringValue(value, '');
+	return raw.split(/[,\s]+/).filter(function(item) {
+		return item;
+	});
+}
+
+function rangeListValue(refs) {
+	return refs.hideIpv6RangesItems.join(' ');
+}
+
+function buildRangePill(refs, value) {
+	var text = E('span', { 'class': 'lanspeed-range-text', 'title': value }, value);
+	var remove = E('button', {
+		'type': 'button',
+		'class': 'lanspeed-range-remove',
+		'title': _('删除')
+	}, '\u00d7');
+
+	remove.addEventListener('click', function() {
+		var items = [];
+		for (var i = 0; i < refs.hideIpv6RangesItems.length; i++) {
+			if (refs.hideIpv6RangesItems[i] !== value)
+				items.push(refs.hideIpv6RangesItems[i]);
+		}
+		refs.hideIpv6RangesItems = items;
+		buildRangeList(refs, rangeListValue(refs));
+	});
+
+	return E('div', { 'class': 'lanspeed-range-pill' }, [ text, remove ]);
+}
+
+function buildRangeList(refs, value) {
+	var items = splitRanges(value);
+
+	refs.hideIpv6RangesItems = items;
+	refs.hideIpv6RangesList.innerHTML = '';
+	for (var i = 0; i < items.length; i++)
+		refs.hideIpv6RangesList.appendChild(buildRangePill(refs, items[i]));
+}
+
+function addRangeItem(refs) {
+	var values = splitRanges(refs.hideIpv6RangeInput.value);
+	var map = {};
+	var i;
+
+	for (i = 0; i < refs.hideIpv6RangesItems.length; i++)
+		map[refs.hideIpv6RangesItems[i]] = true;
+
+	for (i = 0; i < values.length; i++) {
+		if (!map[values[i]]) {
+			refs.hideIpv6RangesItems.push(values[i]);
+			map[values[i]] = true;
+		}
+	}
+
+	refs.hideIpv6RangeInput.value = '';
+	buildRangeList(refs, rangeListValue(refs));
+}
+
 function legacyRateCollectorMode(value) {
 	return value === 'bpf' ? 'bpf' : 'auto';
 }
@@ -170,7 +266,10 @@ function readForm(refs) {
 		active_client_window_ms: intValue(refs.activeWindow.value,
 			DEFAULTS.active_client_window_ms, 1000, 0),
 		active_client_min_bps: intValue(refs.activeMin.value,
-			DEFAULTS.active_client_min_bps, 1, 0)
+			DEFAULTS.active_client_min_bps, 1, 0),
+		show_ipv6: refs.showIpv6.checked ? '1' : '0',
+		hide_private_ipv6: refs.hidePrivateIpv6.checked ? '1' : '0',
+		hide_ipv6_ranges: rangeListValue(refs)
 	};
 }
 
@@ -179,6 +278,10 @@ function fillForm(refs, values) {
 	refs.connCollectorMode.value = connCollectorModeValue(values.conn_collector_mode);
 	refs.activeWindow.value = String(values.active_client_window_ms);
 	refs.activeMin.value = String(values.active_client_min_bps);
+	refs.showIpv6.checked = boolValue(values.show_ipv6, DEFAULTS.show_ipv6) !== '0';
+	refs.hidePrivateIpv6.checked = boolValue(values.hide_private_ipv6, DEFAULTS.hide_private_ipv6) !== '0';
+	buildRangeList(refs, stringValue(values.hide_ipv6_ranges, DEFAULTS.hide_ipv6_ranges));
+	refs.hideIpv6RangeInput.value = '';
 }
 
 function saveDaemonSettings(refs) {
@@ -188,7 +291,10 @@ function saveDaemonSettings(refs) {
 		conn_collector_mode: values.conn_collector_mode,
 		collector_mode: values.rate_collector_mode,
 		active_client_window_ms: String(values.active_client_window_ms),
-		active_client_min_bps: String(values.active_client_min_bps)
+		active_client_min_bps: String(values.active_client_min_bps),
+		show_ipv6: values.show_ipv6,
+		hide_private_ipv6: values.hide_private_ipv6,
+		hide_ipv6_ranges: values.hide_ipv6_ranges
 	};
 
 	setBusy(refs, true);
@@ -223,6 +329,38 @@ function buildDaemonSection(values) {
 	refs.connCollectorMode = selectConnCollectorMode(values.conn_collector_mode);
 	refs.activeWindow = inputNumber(values.active_client_window_ms, 1000, 0, 1000);
 	refs.activeMin = inputNumber(values.active_client_min_bps, 1, 0, 1);
+	refs.showIpv6 = E('input', {
+		'type': 'checkbox',
+		'class': 'cbi-input-checkbox'
+	});
+	if (boolValue(values.show_ipv6, DEFAULTS.show_ipv6) !== '0')
+		refs.showIpv6.checked = 'checked';
+	refs.hidePrivateIpv6 = E('input', {
+		'type': 'checkbox',
+		'class': 'cbi-input-checkbox'
+	});
+	if (boolValue(values.hide_private_ipv6, DEFAULTS.hide_private_ipv6) !== '0')
+		refs.hidePrivateIpv6.checked = 'checked';
+	refs.hideIpv6RangesItems = splitRanges(stringValue(values.hide_ipv6_ranges, DEFAULTS.hide_ipv6_ranges));
+	refs.hideIpv6RangesList = E('div', { 'class': 'lanspeed-range-list' });
+	refs.hideIpv6RangeInput = E('input', {
+		'type': 'text',
+		'class': 'cbi-input-text',
+		'placeholder': '2001:db8::/32'
+	});
+	refs.addRangeBtn = E('button', {
+		'type': 'button',
+		'class': 'cbi-button',
+		'title': _('添加')
+	}, _('添加'));
+	refs.rangeEditor = E('div', { 'class': 'lanspeed-range-stack' }, [
+		refs.hideIpv6RangesList,
+		E('div', { 'class': 'lanspeed-range-add' }, [
+			refs.hideIpv6RangeInput,
+			refs.addRangeBtn
+		])
+	]);
+	buildRangeList(refs, stringValue(values.hide_ipv6_ranges, DEFAULTS.hide_ipv6_ranges));
 	refs.status = E('span', { 'class': 'status' }, '');
 	refs.saveBtn = E('button', {
 		'class': 'cbi-button cbi-button-apply',
@@ -238,6 +376,15 @@ function buildDaemonSection(values) {
 	});
 	refs.resetBtn.addEventListener('click', function() {
 		fillForm(refs, DEFAULTS);
+	});
+	refs.addRangeBtn.addEventListener('click', function() {
+		addRangeItem(refs);
+	});
+	refs.hideIpv6RangeInput.addEventListener('keydown', function(ev) {
+		if (ev.key === 'Enter') {
+			ev.preventDefault();
+			addRangeItem(refs);
+		}
 	});
 
 	return E('div', { 'class': 'cbi-section' }, [
@@ -278,6 +425,24 @@ function buildDaemonSection(values) {
 						E('td', { 'class': 'key' }, 'active_client_min_bps'),
 						E('td', { 'class': 'value' }, refs.activeMin),
 						E('td', { 'class': 'hint' }, _('1 bps 以上'))
+					]),
+					E('tr', {}, [
+						E('td', {}, _('显示 IPv6 地址')),
+						E('td', { 'class': 'key' }, 'show_ipv6'),
+						E('td', { 'class': 'value' }, refs.showIpv6),
+						E('td', { 'class': 'hint' }, _('关闭后客户端列表只显示 IPv4。'))
+					]),
+					E('tr', {}, [
+						E('td', {}, _('隐藏私有 IPv6 地址')),
+						E('td', { 'class': 'key' }, 'hide_private_ipv6'),
+						E('td', { 'class': 'value' }, refs.hidePrivateIpv6),
+						E('td', { 'class': 'hint' }, _('开启后客户端列表隐藏 fc00::/7 私有 IPv6 地址和 fe80::/10 链路本地地址；公网 IPv6 仍显示。'))
+					]),
+					E('tr', {}, [
+						E('td', {}, _('隐藏 IPv6 范围')),
+						E('td', { 'class': 'key' }, 'hide_ipv6_ranges'),
+						E('td', { 'class': 'value range' }, refs.rangeEditor),
+						E('td', { 'class': 'hint' }, _('仅在隐藏私有 IPv6 地址开启时生效；用空格或逗号分隔，例如 fc00::/7 fe80::/10。'))
 					])
 				])
 			]),
@@ -302,7 +467,10 @@ return view.extend({
 				rate_collector_mode: rateCollectorModeValue(rateMode || legacyRateCollectorMode(legacy)),
 				conn_collector_mode: connCollectorModeValue(connMode || legacyConnCollectorMode(legacy)),
 				active_client_window_ms: uciInt('active_client_window_ms'),
-				active_client_min_bps: uciInt('active_client_min_bps')
+				active_client_min_bps: uciInt('active_client_min_bps'),
+				show_ipv6: boolValue(uci.get('lanspeed', 'main', 'show_ipv6'), DEFAULTS.show_ipv6),
+				hide_private_ipv6: boolValue(uci.get('lanspeed', 'main', 'hide_private_ipv6'), DEFAULTS.hide_private_ipv6),
+				hide_ipv6_ranges: stringValue(uci.get('lanspeed', 'main', 'hide_ipv6_ranges'), DEFAULTS.hide_ipv6_ranges)
 			};
 		});
 	},

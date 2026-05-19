@@ -53,8 +53,9 @@ var LAYOUT_CSS = [
 	'.lanspeed-body{padding:1.15em 1.25em}',
 
 	/* metrics row */
-	'.lanspeed-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(10em,12em));',
-	'  gap:1.1em 2em;align-items:center;justify-content:start;margin:0}',
+	'.lanspeed-metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));',
+	'  gap:1.1em 2em;align-items:center;justify-content:stretch;margin:0}',
+	'@media (max-width:1100px){.lanspeed-metrics{grid-template-columns:repeat(auto-fit,minmax(10em,1fr))}}',
 	'.lanspeed-metric{min-width:0}',
 	'.lanspeed-metric .caption{font-size:.75em;text-transform:uppercase;letter-spacing:.04em;opacity:.7;margin:0}',
 	'.lanspeed-metric .big{font-size:1.6em;font-weight:600;font-variant-numeric:tabular-nums;',
@@ -148,6 +149,8 @@ var LAYOUT_CSS = [
 	'.lanspeed-hint{margin:.8em 0 0 0;font-size:.85em;opacity:.75}'
 ].join('\n');
 
+var DEFAULT_HIDE_IPV6_RANGES = 'fc00::/7 fe80::/10';
+
 /* ---------- shell ----------
  *
  * DOM layout (Aurora-aware, but theme-neutral):
@@ -170,7 +173,7 @@ function collectorLabel(mode) {
 	if (mode === 'nss_ecm_direct')
 		return 'NSS-direct';
 	if (mode === 'conntrack_ecm_sync' || mode === 'nss_conntrack_sync')
-		return 'ECM sync';
+		return 'NSS sync';
 	if (mode === 'conntrack_netlink')
 		return 'CT-Netlink';
 	if (mode === 'conntrack_procfs')
@@ -206,6 +209,126 @@ function effectiveCollector(status, clients) {
 	}
 
 	return collector || 'unsupported';
+}
+
+function isIpv6Address(ip) {
+	return String(ip || '').indexOf(':') >= 0;
+}
+
+function parseIpv6ToWords(ip) {
+	var s = String(ip || '').toLowerCase();
+	var zone = s.indexOf('%');
+	var parts, head, tail, missing, words = [];
+	var i, n;
+
+	if (zone >= 0)
+		s = s.slice(0, zone);
+
+	if (s.charAt(0) === '[' && s.charAt(s.length - 1) === ']')
+		s = s.slice(1, -1);
+
+	if (!s || s.indexOf(':') < 0)
+		return null;
+
+	if (s.indexOf('.') >= 0)
+		return null;
+
+	parts = s.split('::');
+	if (parts.length > 2)
+		return null;
+
+	head = parts[0] ? parts[0].split(':') : [];
+	tail = parts.length === 2 && parts[1] ? parts[1].split(':') : [];
+	missing = 8 - head.length - tail.length;
+	if (parts.length === 1)
+		missing = 0;
+	if (missing < 0)
+		return null;
+
+	for (i = 0; i < head.length; i++) {
+		if (!/^[0-9a-f]{1,4}$/.test(head[i]))
+			return null;
+		n = parseInt(head[i], 16);
+		if (isNaN(n) || n < 0 || n > 0xffff)
+			return null;
+		words.push(n);
+	}
+	for (i = 0; i < missing; i++)
+		words.push(0);
+	for (i = 0; i < tail.length; i++) {
+		if (!/^[0-9a-f]{1,4}$/.test(tail[i]))
+			return null;
+		n = parseInt(tail[i], 16);
+		if (isNaN(n) || n < 0 || n > 0xffff)
+			return null;
+		words.push(n);
+	}
+
+	return words.length === 8 ? words : null;
+}
+
+function parseIpv6Cidr(range) {
+	var parts = String(range || '').trim().split('/');
+	var prefix = parts[0];
+	var bits = parts.length > 1 ? parseInt(parts[1], 10) : 128;
+	var words = parseIpv6ToWords(prefix);
+
+	if (!words || isNaN(bits) || bits < 0 || bits > 128)
+		return null;
+
+	return { words: words, bits: bits };
+}
+
+function parseIpv6Ranges(ranges) {
+	return String(ranges).split(/[,\s]+/).map(parseIpv6Cidr).filter(function(r) {
+		return !!r;
+	});
+}
+
+function hideIpv6RangesValue(value) {
+	return typeof value === 'string' ? value : DEFAULT_HIDE_IPV6_RANGES;
+}
+
+function isIpInIpv6Ranges(ip, ranges) {
+	var words = parseIpv6ToWords(ip);
+	var parsed = parseIpv6Ranges(ranges);
+	var i, wordIndex, remaining, mask;
+
+	if (!words)
+		return false;
+
+	for (i = 0; i < parsed.length; i++) {
+		wordIndex = 0;
+		remaining = parsed[i].bits;
+		while (remaining > 0) {
+			if (remaining >= 16) {
+				if (words[wordIndex] !== parsed[i].words[wordIndex])
+					break;
+			} else {
+				mask = (0xffff << (16 - remaining)) & 0xffff;
+				if ((words[wordIndex] & mask) !== (parsed[i].words[wordIndex] & mask))
+					break;
+			}
+			wordIndex++;
+			remaining -= 16;
+		}
+		if (remaining <= 0)
+			return true;
+	}
+
+	return false;
+}
+
+function displayIpsForClient(ips, showIpv6, hidePrivateIpv6, hideIpv6Ranges) {
+	return fmt.asArray(ips).filter(function(ip) {
+		if (hidePrivateIpv6 && isIpInIpv6Ranges(ip, hideIpv6Ranges))
+			return false;
+		return showIpv6 || !isIpv6Address(ip);
+	});
+}
+
+function loadUiConfig() {
+	return lsRpc.uciGet('lanspeed', 'main').catch(function() { return {}; });
 }
 
 function buildShell(viewState) {
@@ -505,6 +628,9 @@ function refreshLive(viewState) {
 	var clientsAll = fmt.asArray(viewState.clients && viewState.clients.clients);
 	var prefs = viewState.prefs;
 	var activeCfg = fmt.activeConfig(status);
+	var showIpv6 = viewState.showIpv6 !== false;
+	var hidePrivateIpv6 = viewState.hidePrivateIpv6 === true;
+	var hideIpv6Ranges = hideIpv6RangesValue(viewState.hideIpv6Ranges);
 
 	/* error */
 	if (viewState.error) {
@@ -649,7 +775,7 @@ function refreshLive(viewState) {
 		fmt.replaceChildren(refs.tbody, sorted.map(function(c) {
 			var tx = Number(c.tx_bps) || 0, rx = Number(c.rx_bps) || 0;
 			var idle = !fmt.isActiveClient(c, latestSample, activeCfg);
-			var ips = fmt.asArray(c.ips);
+			var ips = displayIpsForClient(c.ips, showIpv6, hidePrivateIpv6, hideIpv6Ranges);
 			var rawWarnings = fmt.asArray(c.warnings);
 			var specificWarnings = rawWarnings.filter(function(w) { return !globalWarnings[w]; });
 			var critClient = specificWarnings.some(function(w) { return vocab.CRITICAL_WARNINGS[w]; });
@@ -662,7 +788,7 @@ function refreshLive(viewState) {
 			} else if (mode === 'nss_ecm_direct') {
 				modeTitle = _('采集方式 NSS-direct：只读 qca-nss-ecm state 设备，直接按 ECM flow 字节计数聚合到 LAN 客户端，不等待 ECM 同步回 conntrack。');
 			} else if (mode === 'conntrack_ecm_sync' || mode === 'nss_conntrack_sync') {
-				modeTitle = _('采集方式 ECM 同步：NSS 硬件加速流的字节计数由 qca-nss-ecm 以秒级节拍同步回 conntrack，再由 lanspeedd 读取。桥接流也覆盖，精度等于 ECM sync 间隔 (≈1-2 秒)。');
+				modeTitle = _('采集方式 NSS 同步：NSS 硬件加速流的字节计数以秒级节拍同步回 conntrack，再由 lanspeedd 读取。桥接流也覆盖，精度等于同步间隔 (≈1-2 秒)。');
 			} else if (mode === 'conntrack_netlink') {
 				modeTitle = _('采集方式 Netlink Conntrack：非 NSS 仅用于连接数与诊断，不作为客户端实时测速来源。');
 			} else if (mode === 'conntrack') {
@@ -855,15 +981,24 @@ function refreshLive(viewState) {
 
 return view.extend({
 	load: function() {
-		return Promise.all([lsRpc.status(), lsRpc.clients(), lsRpc.interfaces()]).then(function(d) {
+		return Promise.all([
+			lsRpc.status(),
+			lsRpc.clients(),
+			lsRpc.interfaces(),
+			loadUiConfig()
+		]).then(function(d) {
+			var uciMain = d[3] || {};
 			return {
 				status: d[0] || {},
 				clients: d[1] || {},
 				interfaces: d[2] || { interfaces: [] },
+				showIpv6: uciMain.show_ipv6 !== '0',
+				hidePrivateIpv6: uciMain.hide_private_ipv6 === '1',
+				hideIpv6Ranges: hideIpv6RangesValue(uciMain.hide_ipv6_ranges),
 				error: null
 			};
 		}).catch(function(error) {
-			return { status: {}, clients: { clients: [] }, interfaces: { interfaces: [] }, error: error };
+			return { status: {}, clients: { clients: [] }, interfaces: { interfaces: [] }, showIpv6: true, hidePrivateIpv6: false, hideIpv6Ranges: DEFAULT_HIDE_IPV6_RANGES, error: error };
 		});
 	},
 
@@ -872,6 +1007,9 @@ return view.extend({
 			status: data.status || {},
 			clients: data.clients || { clients: [] },
 			interfaces: data.interfaces || { interfaces: [] },
+			showIpv6: data.showIpv6 !== false,
+			hidePrivateIpv6: data.hidePrivateIpv6 === true,
+			hideIpv6Ranges: hideIpv6RangesValue(data.hideIpv6Ranges),
 			error: data.error,
 			filter: '',
 			prefs: fmt.loadPrefs(),
@@ -895,10 +1033,19 @@ return view.extend({
 			reload: function(force) {
 				var self = this;
 				if (force) this.stopTimer();
-				return Promise.all([lsRpc.status(), lsRpc.clients(), lsRpc.interfaces()]).then(function(r) {
+				return Promise.all([
+					lsRpc.status(),
+					lsRpc.clients(),
+					lsRpc.interfaces(),
+					loadUiConfig()
+				]).then(function(r) {
+					var uciMain = r[3] || {};
 					self.status = r[0] || {};
 					self.clients = r[1] || { clients: [] };
 					self.interfaces = r[2] || { interfaces: [] };
+					self.showIpv6 = uciMain.show_ipv6 !== '0';
+					self.hidePrivateIpv6 = uciMain.hide_private_ipv6 === '1';
+					self.hideIpv6Ranges = hideIpv6RangesValue(uciMain.hide_ipv6_ranges);
 					self.error = null;
 					self.refreshLive();
 					self.schedule();

@@ -10,6 +10,9 @@
           "health",
           "interfaces",
           "sysdevices"
+        ],
+        "uci": [
+          "get"
         ]
       },
       "uci": [

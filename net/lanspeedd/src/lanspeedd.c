@@ -29,6 +29,7 @@
 #include <linux/netfilter/nfnetlink.h>
 #include <linux/netfilter/nfnetlink_conntrack.h>
 #include <linux/netlink.h>
+#include <linux/rtnetlink.h>
 #include <uci.h>
 
 #include "lanspeed_bpf.h"
@@ -75,6 +76,7 @@
 #define CONNTRACK_PROCFS_PATH "/proc/net/nf_conntrack"
 #define CONNTRACK_LEGACY_PROCFS_PATH "/proc/net/ip_conntrack"
 #define ARP_PROCFS_PATH "/proc/net/arp"
+#define NEIGHBOR_NETLINK_SOURCE "netlink:rtnetlink_neigh"
 #define NSS_ECM_DIRECT_SOURCE "nss_ecm_direct"
 #define NSS_ECM_STATE_DEBUGFS_DIR "/sys/kernel/debug/ecm/ecm_state"
 #define NSS_ECM_STATE_DEV_MAJOR_PATH NSS_ECM_STATE_DEBUGFS_DIR "/state_dev_major"
@@ -1618,7 +1620,7 @@ static void inspect_nss(struct runtime_probe *probe)
 	 * (control plane, first packets, broadcast, exceptions).
 	 *
 	 * /proc/net/nf_conntrack stays usable because ECM periodically syncs
-	 * per-flow byte counters back into conntrack, at ECM sync cadence
+	 * per-flow byte counters back into conntrack, at NSS sync cadence
 	 * rather than true per-packet precision.
 	 *
 	 * /sys/class/net/<if>/statistics/{rx,tx}_bytes stays accurate
@@ -1834,7 +1836,7 @@ static bool nss_conntrack_sync_preferred(const struct runtime_probe *probe)
 	return rate_collector_mode_allows_conntrack_sync() &&
 	       conntrack_fallback_accounting_safe(probe) &&
 	       probe->nss_present &&
-	       probe->nss_ecm_active;
+	       (probe->nss_ecm_active || probe->nss_ppe_active);
 }
 
 static bool nss_conntrack_sync_reader_available(const struct runtime_probe *probe)
@@ -1907,7 +1909,7 @@ static const char *collector_primary_source(const struct runtime_probe *probe)
 
 static bool conntrack_fallback_low_confidence(const struct runtime_probe *probe)
 {
-	/* NSS ECM syncs per-flow byte counters (incl. hw-offloaded
+	/* NSS syncs per-flow byte counters (incl. hw-offloaded
 	 * routed and bridged flows) back into conntrack at ~1-2 s cadence.
 	 * In that scenario hardware_flow_offload=true is not a confidence
 	 * killer because conntrack_acct data is still accurate, just
@@ -2214,6 +2216,7 @@ static void add_collector_evidence(struct runtime_probe *probe)
 		json_object_array_add(direct_sources, json_object_new_string(NSS_ECM_STATE_DEV_PATH));
 		json_object_array_add(direct_sources, json_object_new_string(NSS_ECM_STATE_DEV_MAJOR_PATH));
 		json_object_array_add(direct_sources, json_object_new_string("procfs:/proc/net/arp"));
+		json_object_array_add(direct_sources, json_object_new_string(NEIGHBOR_NETLINK_SOURCE));
 		json_object_array_add(direct_forbidden, json_object_new_string("defunct_all"));
 		json_object_array_add(direct_forbidden, json_object_new_string("flush"));
 		json_object_array_add(direct_forbidden, json_object_new_string("decelerate"));
@@ -2236,6 +2239,7 @@ static void add_collector_evidence(struct runtime_probe *probe)
 	}
 
 	json_object_array_add(conntrack_active_when, json_object_new_string("nss_ecm_sync_preferred"));
+	json_object_array_add(conntrack_active_when, json_object_new_string("nss_ecm_or_ppe_sync_preferred"));
 	json_object_array_add(conntrack_active_when, json_object_new_string("enable_conntrack_fallback=1"));
 	json_object_array_add(conntrack_active_when, json_object_new_string("nf_conntrack_acct=1"));
 	json_object_array_add(conntrack_inactive_when, json_object_new_string("non_nss_device"));
@@ -2272,8 +2276,8 @@ static void add_collector_evidence(struct runtime_probe *probe)
 	if (probe->hardware_flow_offload || probe->software_flow_offload)
 		json_object_array_add(conntrack_warnings, json_object_new_string("flow_offload_confidence_low"));
 
-	json_object_object_add(conntrack_directions, "tx_bps", json_object_new_string("NSS ECM sync only: LAN client original-direction bytes from conntrack accounting"));
-	json_object_object_add(conntrack_directions, "rx_bps", json_object_new_string("NSS ECM sync only: LAN client reply-direction bytes from conntrack accounting"));
+	json_object_object_add(conntrack_directions, "tx_bps", json_object_new_string("NSS ECM/PPE sync only: LAN client original-direction bytes from conntrack accounting"));
+	json_object_object_add(conntrack_directions, "rx_bps", json_object_new_string("NSS ECM/PPE sync only: LAN client reply-direction bytes from conntrack accounting"));
 	json_object_object_add(conntrack_identity, "primary_key", json_object_new_string("mac+zone"));
 	json_object_object_add(conntrack_identity, "ip_role", json_object_new_string("LAN client IP maps to an existing MAC/zone identity and is never the primary identity"));
 	json_object_object_add(conntrack_identity, "router_self_policy", json_object_new_string("router-originated proxy traffic is bucketed as router_self and is never attributed to a LAN client"));
@@ -2789,6 +2793,22 @@ static void normalize_mac_address(char *mac)
 		mac[i] = (char)tolower((unsigned char)mac[i]);
 }
 
+static bool normalize_ip_address(const char *ip, char *out, size_t out_size)
+{
+	struct in_addr addr4;
+	struct in6_addr addr6;
+
+	if (!ip || !out || !out_size)
+		return false;
+	if (inet_pton(AF_INET, ip, &addr4) == 1)
+		return inet_ntop(AF_INET, &addr4, out, out_size) != NULL;
+	if (inet_pton(AF_INET6, ip, &addr6) == 1)
+		return inet_ntop(AF_INET6, &addr6, out, out_size) != NULL;
+
+	snprintf(out, out_size, "%s", ip);
+	return out[0] != '\0';
+}
+
 static void derive_zone_from_ifname(const char *ifname, char *zone, size_t zone_size)
 {
 	if (!zone || !zone_size)
@@ -3125,7 +3145,8 @@ static size_t load_arp_table(struct arp_entry *entries, size_t max_entries,
 			continue;
 
 		normalize_mac_address(mac);
-		snprintf(entries[count].ip, sizeof(entries[count].ip), "%s", ip);
+		if (!normalize_ip_address(ip, entries[count].ip, sizeof(entries[count].ip)))
+			continue;
 		snprintf(entries[count].mac, sizeof(entries[count].mac), "%s", mac);
 		snprintf(entries[count].ifname, sizeof(entries[count].ifname), "%s", ifname);
 		derive_zone_from_ifname(ifname, entries[count].zone, sizeof(entries[count].zone));
@@ -3133,6 +3154,170 @@ static size_t load_arp_table(struct arp_entry *entries, size_t max_entries,
 	}
 
 	fclose(file);
+	return count;
+}
+
+struct neigh_dump_ctx {
+	struct arp_entry *entries;
+	size_t max_entries;
+	size_t count;
+};
+
+struct neighbor_attr_table {
+	struct nlattr **tb;
+	uint16_t max;
+};
+
+static bool add_neighbor_entry(struct arp_entry *entries, size_t *count,
+			       size_t max_entries, const char *ip,
+			       const char *mac, const char *ifname)
+{
+	size_t i;
+
+	if (!entries || !count || *count >= max_entries || !ip || !mac || !ifname)
+		return false;
+	if (!valid_mac_address(mac) || ifname_is_excluded_identity_source(ifname))
+		return false;
+	if (!normalize_ip_address(ip, entries[*count].ip, sizeof(entries[*count].ip)))
+		return false;
+
+	for (i = 0; i < *count; i++) {
+		if (!strcmp(entries[i].ip, entries[*count].ip))
+			return true;
+	}
+
+	snprintf(entries[*count].mac, sizeof(entries[*count].mac), "%s", mac);
+	normalize_mac_address(entries[*count].mac);
+	snprintf(entries[*count].ifname, sizeof(entries[*count].ifname), "%s", ifname);
+	derive_zone_from_ifname(ifname, entries[*count].zone, sizeof(entries[*count].zone));
+	(*count)++;
+	return true;
+}
+
+static int neighbor_attr_cb(const struct nlattr *attr, void *data)
+{
+	struct neighbor_attr_table *table = data;
+	uint16_t type = mnl_attr_get_type(attr);
+
+	type &= NLA_TYPE_MASK;
+	if (type <= table->max)
+		table->tb[type] = (struct nlattr *)attr;
+	return MNL_CB_OK;
+}
+
+static int neighbor_netlink_data_cb(const struct nlmsghdr *nlh, void *data)
+{
+	struct neigh_dump_ctx *ctx = data;
+	struct nlattr *tb[NDA_MAX + 1];
+	struct neighbor_attr_table table = { tb, NDA_MAX };
+	struct ndmsg *ndm = mnl_nlmsg_get_payload(nlh);
+	char ip[IP_STR_LEN];
+	char mac[MAC_STR_LEN];
+	char ifname[IFNAME_STR_LEN];
+	const void *dst;
+	const unsigned char *lladdr;
+
+	if (nlh->nlmsg_type != RTM_NEWNEIGH)
+		return MNL_CB_OK;
+	if (!ctx || ctx->count >= ctx->max_entries)
+		return MNL_CB_OK;
+	if (!ndm || ndm->ndm_family != AF_INET6 || ndm->ndm_ifindex <= 0)
+		return MNL_CB_OK;
+	if (ndm->ndm_state == NUD_FAILED || ndm->ndm_state == NUD_NONE ||
+	    ndm->ndm_state == NUD_NOARP)
+		return MNL_CB_OK;
+
+	memset(tb, 0, sizeof(tb));
+	if (mnl_attr_parse(nlh, sizeof(*ndm), neighbor_attr_cb, &table) < 0)
+		return MNL_CB_OK;
+	if (!tb[NDA_DST] || !tb[NDA_LLADDR])
+		return MNL_CB_OK;
+	if (mnl_attr_get_payload_len(tb[NDA_DST]) < sizeof(struct in6_addr) ||
+	    mnl_attr_get_payload_len(tb[NDA_LLADDR]) < 6)
+		return MNL_CB_OK;
+
+	dst = mnl_attr_get_payload(tb[NDA_DST]);
+	if (!inet_ntop(AF_INET6, dst, ip, sizeof(ip)))
+		return MNL_CB_OK;
+	lladdr = mnl_attr_get_payload(tb[NDA_LLADDR]);
+	snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x",
+		 lladdr[0], lladdr[1], lladdr[2],
+		 lladdr[3], lladdr[4], lladdr[5]);
+	if (!if_indextoname((unsigned int)ndm->ndm_ifindex, ifname))
+		snprintf(ifname, sizeof(ifname), "if%d", ndm->ndm_ifindex);
+
+	add_neighbor_entry(ctx->entries, &ctx->count, ctx->max_entries,
+			   ip, mac, ifname);
+	return MNL_CB_OK;
+}
+
+static bool read_neighbor_table(struct arp_entry *entries, size_t *count,
+				size_t max_entries)
+{
+	char sndbuf[MNL_SOCKET_BUFFER_SIZE];
+	char rcvbuf[MNL_SOCKET_DUMP_SIZE];
+	struct mnl_socket *nl;
+	struct nlmsghdr *nlh;
+	struct ndmsg *ndm;
+	struct neigh_dump_ctx dump_ctx;
+	unsigned int seq = (unsigned int)time(NULL);
+	unsigned int portid;
+	ssize_t ret;
+	int cb_ret = MNL_CB_OK;
+
+	if (!entries || !count || *count >= max_entries)
+		return false;
+
+	nl = mnl_socket_open(NETLINK_ROUTE);
+	if (!nl)
+		return false;
+	if (mnl_socket_bind(nl, 0, MNL_SOCKET_AUTOPID) < 0) {
+		mnl_socket_close(nl);
+		return false;
+	}
+	portid = mnl_socket_get_portid(nl);
+
+	memset(sndbuf, 0, sizeof(sndbuf));
+	nlh = mnl_nlmsg_put_header(sndbuf);
+	nlh->nlmsg_type = RTM_GETNEIGH;
+	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+	nlh->nlmsg_seq = seq;
+	ndm = mnl_nlmsg_put_extra_header(nlh, sizeof(*ndm));
+	memset(ndm, 0, sizeof(*ndm));
+	ndm->ndm_family = AF_INET6;
+
+	if (mnl_socket_sendto(nl, nlh, nlh->nlmsg_len) < 0) {
+		mnl_socket_close(nl);
+		return false;
+	}
+
+	memset(&dump_ctx, 0, sizeof(dump_ctx));
+	dump_ctx.entries = entries;
+	dump_ctx.max_entries = max_entries;
+	dump_ctx.count = *count;
+
+	while ((ret = mnl_socket_recvfrom(nl, rcvbuf, sizeof(rcvbuf))) > 0) {
+		cb_ret = mnl_cb_run(rcvbuf, (size_t)ret, seq, portid,
+				    neighbor_netlink_data_cb, &dump_ctx);
+		if (cb_ret <= MNL_CB_STOP)
+			break;
+	}
+
+	mnl_socket_close(nl);
+	if (ret < 0 || cb_ret < 0)
+		return false;
+
+	*count = dump_ctx.count;
+	return true;
+}
+
+static size_t load_lan_identity_table(struct arp_entry *entries, size_t max_entries,
+				      struct json_object *warnings)
+{
+	size_t count;
+
+	count = load_arp_table(entries, max_entries, warnings);
+	(void)read_neighbor_table(entries, &count, max_entries);
 	return count;
 }
 
@@ -3406,7 +3591,13 @@ static bool add_nss_ecm_direct_flow_to_samples(struct conntrack_client_sample *s
 	if (!flow || !flow->has_sip_address || !flow->has_from_data_total)
 		return false;
 
-	arp = find_arp_entry(arp_entries, arp_count, flow->sip_address);
+	{
+		char normalized_ip[IP_STR_LEN];
+
+		if (!normalize_ip_address(flow->sip_address, normalized_ip, sizeof(normalized_ip)))
+			return false;
+		arp = find_arp_entry(arp_entries, arp_count, normalized_ip);
+	}
 	if (!arp) {
 		if (stats)
 			stats->skipped_no_arp++;
@@ -3531,7 +3722,7 @@ static bool read_nss_ecm_direct_snapshot(struct conntrack_client_sample *samples
 	memset(stats, 0, sizeof(*stats));
 	stats->state_attempted = true;
 
-	arp_count = load_arp_table(arp_entries, ARRAY_SIZE(arp_entries), warnings);
+	arp_count = load_lan_identity_table(arp_entries, ARRAY_SIZE(arp_entries), warnings);
 	if (arp_count == 0) {
 		add_string_unique(warnings, "skip_nss_ecm_direct_flow_without_lan_identity");
 		return false;
@@ -3607,7 +3798,13 @@ static bool add_conntrack_flow_to_samples(struct conntrack_client_sample *sample
 	if (!flow || !flow->has_orig_src || !flow->has_orig_bytes)
 		return false;
 
-	arp = find_arp_entry(arp_entries, arp_count, flow->orig_src);
+	{
+		char normalized_ip[IP_STR_LEN];
+
+		if (!normalize_ip_address(flow->orig_src, normalized_ip, sizeof(normalized_ip)))
+			return false;
+		arp = find_arp_entry(arp_entries, arp_count, normalized_ip);
+	}
 	if (!arp) {
 		if (stats)
 			stats->skipped_no_arp++;
@@ -3933,7 +4130,7 @@ static bool read_conntrack_netlink_snapshot(struct conntrack_client_sample *samp
 	snprintf(stats->source_path, sizeof(stats->source_path), "%s",
 		 CONNTRACK_NETLINK_SOURCE_PATH);
 
-	arp_count = load_arp_table(arp_entries, ARRAY_SIZE(arp_entries), warnings);
+	arp_count = load_lan_identity_table(arp_entries, ARRAY_SIZE(arp_entries), warnings);
 	if (arp_count == 0)
 		return false;
 
@@ -4009,7 +4206,7 @@ static bool read_conntrack_procfs_snapshot(struct conntrack_client_sample *sampl
 
 	*sample_count = 0;
 	memset(stats, 0, sizeof(*stats));
-	arp_count = load_arp_table(arp_entries, ARRAY_SIZE(arp_entries), warnings);
+	arp_count = load_lan_identity_table(arp_entries, ARRAY_SIZE(arp_entries), warnings);
 	if (arp_count == 0)
 		return false;
 
@@ -4150,7 +4347,7 @@ static void add_conntrack_common_warnings(const struct runtime_probe *probe,
 	if (probe->sqm || probe->qosify || probe->ifb)
 		add_string_unique(warnings, "qos_ifb_confidence_low");
 	if (probe->hardware_flow_offload || probe->software_flow_offload) {
-		/* NSS ECM syncs counters back to conntrack; downgrade
+		/* NSS syncs counters back to conntrack; downgrade
 		 * the blanket "flow_offload_confidence_low" to a softer
 		 * warning that reflects the actual sync cadence. */
 		if (nss_conntrack_sync_preferred(probe))
@@ -4168,8 +4365,9 @@ static void add_conntrack_identity_model(struct json_object *evidence)
 	json_object_array_add(primary_key, json_object_new_string("mac"));
 	json_object_array_add(primary_key, json_object_new_string("zone"));
 	json_object_object_add(identity, "primary_key", primary_key);
-	json_object_object_add(identity, "ip_identity", json_object_new_string("LAN IPs are attributes mapped through ARP, never primary identity keys"));
+	json_object_object_add(identity, "ip_identity", json_object_new_string("LAN IPs are attributes mapped through ARP/neighbor, never primary identity keys"));
 	json_object_object_add(identity, "mac_source", json_object_new_string(ARP_PROCFS_PATH));
+	json_object_object_add(identity, "neighbor_source", json_object_new_string(NEIGHBOR_NETLINK_SOURCE));
 	json_object_object_add(identity, "excluded_interfaces", json_object_new_string("dae0,dae0peer,tun*,ppp*,wg*"));
 	json_object_object_add(identity, "missing_mac_policy", json_object_new_string("skip_conntrack_entry_without_fabricating_client"));
 	json_object_object_add(evidence, "identity_model", identity);
@@ -4189,6 +4387,7 @@ static void add_conntrack_clients_evidence(struct json_object *root,
 	json_object_array_add(sources, json_object_new_string("procfs:/proc/net/nf_conntrack"));
 	json_object_array_add(sources, json_object_new_string("procfs:/proc/net/ip_conntrack"));
 	json_object_array_add(sources, json_object_new_string("procfs:/proc/net/arp"));
+	json_object_array_add(sources, json_object_new_string(NEIGHBOR_NETLINK_SOURCE));
 	json_object_array_add(sources, json_object_new_string("netlink:ctnetlink"));
 	json_object_array_add(forbidden, json_object_new_string("firewall_forward_chain_counters"));
 	json_object_array_add(forbidden, json_object_new_string("iptables_forward_chain_counters"));
@@ -4423,8 +4622,8 @@ static void bpf_collect_samples(void)
 	bpf_current_sample_count = 0;
 	bpf_current_snapshot_ms = now_ms;
 
-	arp_count = load_arp_table(arp_entries, ARRAY_SIZE(arp_entries),
-				   discard_warnings);
+	arp_count = load_lan_identity_table(arp_entries, ARRAY_SIZE(arp_entries),
+					    discard_warnings);
 
 	for (i = 0; i < raw_count; i++) {
 		char mac_str[MAC_STR_LEN];
@@ -4506,6 +4705,7 @@ static void add_bpf_clients_evidence(struct json_object *root,
 
 	json_object_array_add(sources, json_object_new_string("bpf:lanspeed_clients"));
 	json_object_array_add(sources, json_object_new_string("procfs:/proc/net/arp"));
+	json_object_array_add(sources, json_object_new_string(NEIGHBOR_NETLINK_SOURCE));
 
 	json_object_object_add(evidence, "collector_mode", json_object_new_string("bpf"));
 	json_object_object_add(evidence, "primary_source", json_object_new_string("bpf"));
@@ -4684,6 +4884,7 @@ static void add_nss_ecm_direct_clients_evidence(struct json_object *root,
 	json_object_array_add(sources, json_object_new_string(NSS_ECM_STATE_DEV_PATH));
 	json_object_array_add(sources, json_object_new_string(NSS_ECM_STATE_DEV_MAJOR_PATH));
 	json_object_array_add(sources, json_object_new_string("procfs:/proc/net/arp"));
+	json_object_array_add(sources, json_object_new_string(NEIGHBOR_NETLINK_SOURCE));
 	json_object_array_add(forbidden, json_object_new_string("defunct_all"));
 	json_object_array_add(forbidden, json_object_new_string("flush"));
 	json_object_array_add(forbidden, json_object_new_string("decelerate"));
