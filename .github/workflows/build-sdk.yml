@@ -9,6 +9,14 @@ permissions:
   contents: read
 
 env:
+  APK_SDK_URL: https://downloads.immortalwrt.org/releases/25.12.0-rc2/targets/x86/64/immortalwrt-sdk-25.12.0-rc2-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+  APK_SDK_SHA256: fb665aabb627d3b3a7d98cd426ee90febdb84ceffa6ce4c18fbda934c46053d5
+  APK_AARCH64_SDK_URL: https://downloads.immortalwrt.org/releases/25.12.0-rc2/targets/armsr/armv8/immortalwrt-sdk-25.12.0-rc2-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+  APK_AARCH64_SDK_SHA256: 8fd6e4177ad99b567035cbc2825dd060773556249831fad5560cb1ef9eb1e290
+  IPK_SDK_URL: https://downloads.immortalwrt.org/releases/23.05.6/targets/x86/64/immortalwrt-sdk-23.05.6-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+  IPK_SDK_SHA256: 4dc46a6a612031f14d7d64ca9717895cd8907da7fd01b85f0edee18cb895dc77
+  IPK_AARCH64_SDK_URL: https://downloads.immortalwrt.org/releases/23.05.6/targets/armsr/armv8/immortalwrt-sdk-23.05.6-armsr-armv8_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+  IPK_AARCH64_SDK_SHA256: a56748c4d70b956102d4a728418d9b7bcf1208b526816221b4389597a24238fa
   IPK_BASE_FEED_REF: 5804844cf812c07b2d66d513bec2e36e7a8270ee
 
 jobs:
@@ -26,14 +34,12 @@ jobs:
       - name: Run unit validations
         run: ./tests/run.sh unit
 
-  release-init:
+  release:
     needs: unit
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-    outputs:
-      code_version: ${{ steps.meta.outputs.code_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,178 +55,44 @@ jobs:
           fi
           printf 'code_version=%s\n' "$code_version" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          code_version="${{ steps.meta.outputs.code_version }}"
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | while IFS= read -r asset; do
-              [ -n "$asset" ] || continue
-              gh release delete-asset "$GITHUB_REF_NAME" "$asset" --yes
-            done
-            gh release edit "$GITHUB_REF_NAME" --title "$code_version" --draft=true
-          else
-            gh release create "$GITHUB_REF_NAME" --title "$code_version" --generate-notes --draft
-          fi
-
-  release-build:
-    needs: release-init
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        sdk:
-          - id: apk-x86-64
-            format: apk
-            asset_suffix: x86-64
-            sdk_release: "25.12"
-            archive: tar.zst
-            sdk_url: https://downloads.immortalwrt.org/releases/25.12.0-rc2/targets/x86/64/immortalwrt-sdk-25.12.0-rc2-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
-            sdk_sha256: fb665aabb627d3b3a7d98cd426ee90febdb84ceffa6ce4c18fbda934c46053d5
-          - id: apk-qualcommax-ipq60xx
-            format: apk
-            asset_suffix: qualcommax-ipq60xx
-            sdk_release: "25.12"
-            archive: tar.zst
-            sdk_url: https://downloads.immortalwrt.org/releases/25.12.0-rc2/targets/qualcommax/ipq60xx/immortalwrt-sdk-25.12.0-rc2-qualcommax-ipq60xx_gcc-14.3.0_musl.Linux-x86_64.tar.zst
-            sdk_sha256: 00ca445b6dd94ae370dddbc27722c21328ca3191f7781792d3de292347370fe1
-          - id: apk-qualcommax-ipq807x
-            format: apk
-            asset_suffix: qualcommax-ipq807x
-            sdk_release: "25.12"
-            archive: tar.zst
-            sdk_url: https://downloads.immortalwrt.org/releases/25.12.0-rc2/targets/qualcommax/ipq807x/immortalwrt-sdk-25.12.0-rc2-qualcommax-ipq807x_gcc-14.3.0_musl.Linux-x86_64.tar.zst
-            sdk_sha256: 865b718966bd6e197155f6e76c30f5958f1d3207eb14d69469c1e4f6056a028f
-          - id: apk-mediatek-filogic
-            format: apk
-            asset_suffix: mediatek-filogic
-            sdk_release: "25.12"
-            archive: tar.zst
-            sdk_url: https://downloads.immortalwrt.org/releases/25.12.0-rc2/targets/mediatek/filogic/immortalwrt-sdk-25.12.0-rc2-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.zst
-            sdk_sha256: afe3b64caac160bbe5c2ec8948768210dc75068a26c9c8ff1b77735200a52611
-          - id: apk-rockchip-armv8
-            format: apk
-            asset_suffix: rockchip-armv8
-            sdk_release: "25.12"
-            archive: tar.zst
-            sdk_url: https://downloads.immortalwrt.org/releases/25.12.0-rc2/targets/rockchip/armv8/immortalwrt-sdk-25.12.0-rc2-rockchip-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst
-            sdk_sha256: 757b6382b0dc540849e8a62f8b1df5520ef24b663f911cbb4add36eaa475be92
-          - id: apk-ramips-mt7621
-            format: apk
-            asset_suffix: ramips-mt7621
-            sdk_release: "25.12"
-            archive: tar.zst
-            sdk_url: https://downloads.immortalwrt.org/releases/25.12.0-rc2/targets/ramips/mt7621/immortalwrt-sdk-25.12.0-rc2-ramips-mt7621_gcc-14.3.0_musl.Linux-x86_64.tar.zst
-            sdk_sha256: 1c1af00794dddd47b3ec69bc925f5e86a78c12aca2ad5b2bdc4e90cf8eb7ae4c
-          - id: apk-ath79-generic
-            format: apk
-            asset_suffix: ath79-generic
-            sdk_release: "25.12"
-            archive: tar.zst
-            sdk_url: https://downloads.immortalwrt.org/releases/25.12.0-rc2/targets/ath79/generic/immortalwrt-sdk-25.12.0-rc2-ath79-generic_gcc-14.3.0_musl.Linux-x86_64.tar.zst
-            sdk_sha256: 0ec0c7622883625a71bdb3f02182071c9184e7902292d4210c015873d3e81188
-          - id: apk-ipq40xx-generic
-            format: apk
-            asset_suffix: ipq40xx-generic
-            sdk_release: "25.12"
-            archive: tar.zst
-            sdk_url: https://downloads.immortalwrt.org/releases/25.12.0-rc2/targets/ipq40xx/generic/immortalwrt-sdk-25.12.0-rc2-ipq40xx-generic_gcc-14.3.0_musl_eabi.Linux-x86_64.tar.zst
-            sdk_sha256: c8b381e5dda9246fc9eec8af1206ef662871523035cf4dba74bf5a7464aed101
-          - id: ipk-x86-64
-            format: ipk
-            asset_suffix: x86-64
-            sdk_release: "23.05"
-            archive: tar.xz
-            sdk_url: https://downloads.immortalwrt.org/releases/23.05.6/targets/x86/64/immortalwrt-sdk-23.05.6-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-            sdk_sha256: 4dc46a6a612031f14d7d64ca9717895cd8907da7fd01b85f0edee18cb895dc77
-          - id: ipk-ipq807x-generic
-            format: ipk
-            asset_suffix: ipq807x-generic
-            sdk_release: "23.05"
-            archive: tar.xz
-            sdk_url: https://downloads.immortalwrt.org/releases/23.05.6/targets/ipq807x/generic/immortalwrt-sdk-23.05.6-ipq807x-generic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-            sdk_sha256: 4133a2d227edd7af4795509bfc1a5efad877301dceccbf8f3c6034b5e3422f42
-          - id: ipk-mediatek-filogic
-            format: ipk
-            asset_suffix: mediatek-filogic
-            sdk_release: "23.05"
-            archive: tar.xz
-            sdk_url: https://downloads.immortalwrt.org/releases/23.05.6/targets/mediatek/filogic/immortalwrt-sdk-23.05.6-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-            sdk_sha256: e5e0531023995604be605e6539cd508ae8a9a12c033ee8237c2b85d5457cd1d3
-          - id: ipk-rockchip-armv8
-            format: ipk
-            asset_suffix: rockchip-armv8
-            sdk_release: "23.05"
-            archive: tar.xz
-            sdk_url: https://downloads.immortalwrt.org/releases/23.05.6/targets/rockchip/armv8/immortalwrt-sdk-23.05.6-rockchip-armv8_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-            sdk_sha256: a803f50e25ba72929131de0b9181243fa1676fa1d9a3b1c7a63dc2e8d4846343
-          - id: ipk-ramips-mt7621
-            format: ipk
-            asset_suffix: ramips-mt7621
-            sdk_release: "23.05"
-            archive: tar.xz
-            sdk_url: https://downloads.immortalwrt.org/releases/23.05.6/targets/ramips/mt7621/immortalwrt-sdk-23.05.6-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-            sdk_sha256: b1f63c2591979a19132e1af20896e366a0ecf84490601bcb9266c51782a6ba94
-          - id: ipk-ath79-generic
-            format: ipk
-            asset_suffix: ath79-generic
-            sdk_release: "23.05"
-            archive: tar.xz
-            sdk_url: https://downloads.immortalwrt.org/releases/23.05.6/targets/ath79/generic/immortalwrt-sdk-23.05.6-ath79-generic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-            sdk_sha256: 150faaa4e8aabd1f17e8100e6d44b552f7653b354feee805c09c3d76f6fc4aae
-          - id: ipk-ipq40xx-generic
-            format: ipk
-            asset_suffix: ipq40xx-generic
-            sdk_release: "23.05"
-            archive: tar.xz
-            sdk_url: https://downloads.immortalwrt.org/releases/23.05.6/targets/ipq40xx/generic/immortalwrt-sdk-23.05.6-ipq40xx-generic_gcc-12.3.0_musl_eabi.Linux-x86_64.tar.xz
-            sdk_sha256: 22359425ea59fa03030fbd33d32bd0560823baf01e0caa940c37268de6726d49
-    env:
-      SDK_ID: ${{ matrix.sdk.id }}
-      SDK_FORMAT: ${{ matrix.sdk.format }}
-      ASSET_SUFFIX: ${{ matrix.sdk.asset_suffix }}
-      SDK_RELEASE: ${{ matrix.sdk.sdk_release }}
-      SDK_ARCHIVE: ${{ matrix.sdk.archive }}
-      SDK_URL: ${{ matrix.sdk.sdk_url }}
-      SDK_SHA256: ${{ matrix.sdk.sdk_sha256 }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Install build prerequisites
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential clang flex g++ gawk gcc-multilib gettext git libncurses5-dev libssl-dev python3 rsync unzip wget xz-utils zlib1g-dev zstd
 
-      - name: Download public SDK
+      - name: Download public SDKs
         run: |
-          sdk_base="$RUNNER_TEMP/sdk-${SDK_ID}-base"
-          sdk_bpf="$RUNNER_TEMP/sdk-${SDK_ID}-bpf"
-          mkdir -p "$sdk_base"
-          case "$SDK_ARCHIVE" in
-            tar.zst)
-              archive="$sdk_base/sdk.tar.zst"
-              curl -L "$SDK_URL" -o "$archive"
-              printf '%s  %s\n' "$SDK_SHA256" "$archive" | sha256sum -c -
-              tar --zstd -xf "$archive" -C "$sdk_base" --strip-components=1
-              ;;
-            tar.xz)
-              archive="$sdk_base/sdk.tar.xz"
-              curl -L "$SDK_URL" -o "$archive"
-              printf '%s  %s\n' "$SDK_SHA256" "$archive" | sha256sum -c -
-              tar -xJf "$archive" -C "$sdk_base" --strip-components=1
-              ;;
-            *)
-              printf '%s\n' "error: unsupported SDK archive type $SDK_ARCHIVE" >&2
-              exit 1
-              ;;
-          esac
-          mkdir -p "$sdk_bpf"
-          cp -a "$sdk_base/." "$sdk_bpf/"
+          mkdir -p "$RUNNER_TEMP/sdk-apk-base"
+          curl -L "$APK_SDK_URL" -o "$RUNNER_TEMP/sdk-apk-base/sdk.tar.zst"
+          printf '%s  %s\n' "$APK_SDK_SHA256" "$RUNNER_TEMP/sdk-apk-base/sdk.tar.zst" | sha256sum -c -
+          tar --zstd -xf "$RUNNER_TEMP/sdk-apk-base/sdk.tar.zst" -C "$RUNNER_TEMP/sdk-apk-base" --strip-components=1
+
+          mkdir -p "$RUNNER_TEMP/sdk-apk-bpf"
+          cp -a "$RUNNER_TEMP/sdk-apk-base/." "$RUNNER_TEMP/sdk-apk-bpf/"
+
+          mkdir -p "$RUNNER_TEMP/sdk-apk-aarch64-base"
+          curl -L "$APK_AARCH64_SDK_URL" -o "$RUNNER_TEMP/sdk-apk-aarch64-base/sdk.tar.zst"
+          printf '%s  %s\n' "$APK_AARCH64_SDK_SHA256" "$RUNNER_TEMP/sdk-apk-aarch64-base/sdk.tar.zst" | sha256sum -c -
+          tar --zstd -xf "$RUNNER_TEMP/sdk-apk-aarch64-base/sdk.tar.zst" -C "$RUNNER_TEMP/sdk-apk-aarch64-base" --strip-components=1
+
+          mkdir -p "$RUNNER_TEMP/sdk-apk-aarch64-bpf"
+          cp -a "$RUNNER_TEMP/sdk-apk-aarch64-base/." "$RUNNER_TEMP/sdk-apk-aarch64-bpf/"
+
+          mkdir -p "$RUNNER_TEMP/sdk-ipk-base"
+          curl -L "$IPK_SDK_URL" -o "$RUNNER_TEMP/sdk-ipk-base/sdk.tar.xz"
+          printf '%s  %s\n' "$IPK_SDK_SHA256" "$RUNNER_TEMP/sdk-ipk-base/sdk.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/sdk-ipk-base/sdk.tar.xz" -C "$RUNNER_TEMP/sdk-ipk-base" --strip-components=1
+
+          mkdir -p "$RUNNER_TEMP/sdk-ipk-bpf"
+          cp -a "$RUNNER_TEMP/sdk-ipk-base/." "$RUNNER_TEMP/sdk-ipk-bpf/"
+
+          mkdir -p "$RUNNER_TEMP/sdk-ipk-aarch64-base"
+          curl -L "$IPK_AARCH64_SDK_URL" -o "$RUNNER_TEMP/sdk-ipk-aarch64-base/sdk.tar.xz"
+          printf '%s  %s\n' "$IPK_AARCH64_SDK_SHA256" "$RUNNER_TEMP/sdk-ipk-aarch64-base/sdk.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/sdk-ipk-aarch64-base/sdk.tar.xz" -C "$RUNNER_TEMP/sdk-ipk-aarch64-base" --strip-components=1
+
+          mkdir -p "$RUNNER_TEMP/sdk-ipk-aarch64-bpf"
+          cp -a "$RUNNER_TEMP/sdk-ipk-aarch64-base/." "$RUNNER_TEMP/sdk-ipk-aarch64-bpf/"
 
       - name: Build SDK packages
         run: |
@@ -239,16 +111,15 @@ jobs:
             printf '%s %s %s\n' "$!" "$name" "$log_file" >> "$RUNNER_TEMP/build-pids.txt"
           }
 
-          sdk_base="$RUNNER_TEMP/sdk-${SDK_ID}-base"
-          sdk_bpf="$RUNNER_TEMP/sdk-${SDK_ID}-bpf"
-          base_feed_ref=
-          if [ "$SDK_FORMAT" = "ipk" ]; then
-            base_feed_ref="$IPK_BASE_FEED_REF"
-          fi
-
           : > "$RUNNER_TEMP/build-pids.txt"
-          run_build "${SDK_ID}-base" "$sdk_base" 0 "$SDK_RELEASE" "$base_feed_ref"
-          run_build "${SDK_ID}-bpf" "$sdk_bpf" 1 "$SDK_RELEASE" "$base_feed_ref"
+          run_build apk-base "$RUNNER_TEMP/sdk-apk-base" 0 25.12
+          run_build apk-bpf "$RUNNER_TEMP/sdk-apk-bpf" 1 25.12
+          run_build apk-aarch64-base "$RUNNER_TEMP/sdk-apk-aarch64-base" 0 25.12
+          run_build apk-aarch64-bpf "$RUNNER_TEMP/sdk-apk-aarch64-bpf" 1 25.12
+          run_build ipk-base "$RUNNER_TEMP/sdk-ipk-base" 0 23.05 "$IPK_BASE_FEED_REF"
+          run_build ipk-bpf "$RUNNER_TEMP/sdk-ipk-bpf" 1 23.05 "$IPK_BASE_FEED_REF"
+          run_build ipk-aarch64-base "$RUNNER_TEMP/sdk-ipk-aarch64-base" 0 23.05 "$IPK_BASE_FEED_REF"
+          run_build ipk-aarch64-bpf "$RUNNER_TEMP/sdk-ipk-aarch64-bpf" 1 23.05 "$IPK_BASE_FEED_REF"
 
           status=0
           while read -r pid name log_file; do
@@ -266,10 +137,8 @@ jobs:
       - name: Collect release files
         id: release_files
         run: |
-          code_version="${{ needs.release-init.outputs.code_version }}"
+          code_version="${{ steps.meta.outputs.code_version }}"
           ipk_version="${code_version%-r*}-${code_version##*-r}"
-          sdk_base="$RUNNER_TEMP/sdk-${SDK_ID}-base"
-          sdk_bpf="$RUNNER_TEMP/sdk-${SDK_ID}-bpf"
           release_dir="$RUNNER_TEMP/release/files"
           file_list="$RUNNER_TEMP/release/files.txt"
           mkdir -p "$release_dir"
@@ -278,17 +147,18 @@ jobs:
           collect_one() {
             sdk_dir=$1
             pattern=$2
-            asset_name=$3
+            asset_name=${3:-}
             found=0
             for file in "$sdk_dir"/bin/packages/*/lanspeed/$pattern "$sdk_dir"/bin/packages/*/base/$pattern; do
               [ -f "$file" ] || continue
-              found=$((found + 1))
-              if [ "$found" -gt 1 ]; then
-                printf '%s\n' "error: duplicate release package $pattern in $sdk_dir/bin" >&2
-                exit 1
+              if [ -n "$asset_name" ]; then
+                cp "$file" "$release_dir/$asset_name"
+                printf '%s/%s\n' "$release_dir" "$asset_name" >> "$file_list"
+              else
+                cp "$file" "$release_dir/"
+                printf '%s/%s\n' "$release_dir" "$(basename "$file")" >> "$file_list"
               fi
-              cp "$file" "$release_dir/$asset_name"
-              printf '%s/%s\n' "$release_dir" "$asset_name" >> "$file_list"
+              found=1
             done
             if [ "$found" = 0 ]; then
               printf '%s\n' "error: missing release package $pattern in $sdk_dir/bin" >&2
@@ -296,15 +166,18 @@ jobs:
             fi
           }
 
-          if [ "$SDK_FORMAT" = "apk" ]; then
-            collect_one "$sdk_base" "lanspeedd-${code_version}.apk" "lanspeedd-${code_version}-${ASSET_SUFFIX}.apk"
-            collect_one "$sdk_bpf" "lanspeedd-bpf-${code_version}.apk" "lanspeedd-bpf-${code_version}-${ASSET_SUFFIX}.apk"
-            collect_one "$sdk_base" "luci-app-lanspeed-${code_version}.apk" "luci-app-lanspeed-${code_version}-${ASSET_SUFFIX}.apk"
-          else
-            collect_one "$sdk_base" "lanspeedd_${ipk_version}_*.ipk" "lanspeedd_${ipk_version}_${ASSET_SUFFIX}.ipk"
-            collect_one "$sdk_bpf" "lanspeedd-bpf_${ipk_version}_*.ipk" "lanspeedd-bpf_${ipk_version}_${ASSET_SUFFIX}.ipk"
-            collect_one "$sdk_base" "luci-app-lanspeed_${ipk_version}_*.ipk" "luci-app-lanspeed_${ipk_version}_${ASSET_SUFFIX}.ipk"
-          fi
+          collect_one "$RUNNER_TEMP/sdk-apk-base" "lanspeedd-${code_version}.apk"
+          collect_one "$RUNNER_TEMP/sdk-apk-bpf" "lanspeedd-bpf-${code_version}.apk"
+          collect_one "$RUNNER_TEMP/sdk-apk-base" "luci-app-lanspeed-${code_version}.apk"
+          collect_one "$RUNNER_TEMP/sdk-apk-aarch64-base" "lanspeedd-${code_version}.apk" "lanspeedd-${code_version}-aarch64.apk"
+          collect_one "$RUNNER_TEMP/sdk-apk-aarch64-bpf" "lanspeedd-bpf-${code_version}.apk" "lanspeedd-bpf-${code_version}-aarch64.apk"
+          collect_one "$RUNNER_TEMP/sdk-apk-aarch64-base" "luci-app-lanspeed-${code_version}.apk" "luci-app-lanspeed-${code_version}-aarch64.apk"
+          collect_one "$RUNNER_TEMP/sdk-ipk-base" "lanspeedd_${ipk_version}_*.ipk"
+          collect_one "$RUNNER_TEMP/sdk-ipk-bpf" "lanspeedd-bpf_${ipk_version}_*.ipk"
+          collect_one "$RUNNER_TEMP/sdk-ipk-base" "luci-app-lanspeed_${ipk_version}_*.ipk"
+          collect_one "$RUNNER_TEMP/sdk-ipk-aarch64-base" "lanspeedd_${ipk_version}_*.ipk" "lanspeedd_${ipk_version}_aarch64.ipk"
+          collect_one "$RUNNER_TEMP/sdk-ipk-aarch64-bpf" "lanspeedd-bpf_${ipk_version}_*.ipk" "lanspeedd-bpf_${ipk_version}_aarch64.ipk"
+          collect_one "$RUNNER_TEMP/sdk-ipk-aarch64-base" "luci-app-lanspeed_${ipk_version}_*.ipk" "luci-app-lanspeed_${ipk_version}_aarch64.ipk"
 
           if [ ! -s "$file_list" ]; then
             printf '%s\n' "error: no release files were collected" >&2
@@ -316,28 +189,23 @@ jobs:
             printf 'EOF\n'
           } >> "$GITHUB_OUTPUT"
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2.6.2
-        with:
-          name: ${{ needs.release-init.outputs.code_version }}
-          tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
-          draft: true
-          fail_on_unmatched_files: true
-          overwrite_files: true
-          files: ${{ steps.release_files.outputs.files }}
-
-  release-finish:
-    needs:
-      - release-init
-      - release-build
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - name: Publish completed release
+      - name: Remove previous release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release edit "$GITHUB_REF_NAME" --draft=false
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | while IFS= read -r asset; do
+              [ -n "$asset" ] || continue
+              gh release delete-asset "$GITHUB_REF_NAME" "$asset" --yes
+            done
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2.6.2
+        with:
+          name: ${{ steps.meta.outputs.code_version }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          files: ${{ steps.release_files.outputs.files }}

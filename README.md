@@ -135,7 +135,7 @@ SDK_DIR=/openwrt/25.12 ENABLE_BPF=1 scripts/build-sdk.sh
 
 常见 ABI 注意点：包必须用目标 SDK 编译，APK/IPK 格式跟固件分支一致，不能混用不同 kernel ABI 的 `lanspeedd-bpf`。
 
-GitHub Actions 在 `v*` tag 发布时自动编译常见路由器目标。APK 使用 ImmortalWrt 25.12 SDK，覆盖 `x86/64`、`qualcommax/ipq60xx`、`qualcommax/ipq807x`、`ipq40xx/generic`、`mediatek/filogic`、`rockchip/armv8`、`ramips/mt7621` 和 `ath79/generic`；IPK 使用 ImmortalWrt 23.05 SDK，覆盖 `x86/64`、`ipq807x/generic`、`ipq40xx/generic`、`mediatek/filogic`、`rockchip/armv8`、`ramips/mt7621` 和 `ath79/generic`。每个目标都会分别编译基础包和 `lanspeedd-bpf`，最终只上传到 GitHub Releases。Release 文件名会带目标后缀，下载时按固件分支和目标平台选择，不能跨架构混装。
+GitHub Actions 在 `v*` tag 发布时会编译 x86_64 和 aarch64 两类产物。aarch64 产物使用官方 `armsr/armv8` SDK 编译，Release 文件名带 `aarch64` 后缀。
 
 ## 安装与启动
 
