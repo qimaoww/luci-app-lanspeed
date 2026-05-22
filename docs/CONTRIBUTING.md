@@ -203,6 +203,19 @@ Commit messages must match the existing repository style.
 - Version bumps, packaging fixes, and daemon changes should say what user or
   runtime behavior changed, not just that files moved.
 
+Commit early enough that rollback is cheap.
+
+- Make a commit after each independent, reviewable, and verified unit of work.
+- Do not batch unrelated fixes, refactors, version bumps, and deployment
+  plumbing into one late commit.
+- Long refactors must land as a sequence of behavior-preserving checkpoints
+  before semantic changes.
+- Before committing, run the narrowest relevant validation command and mention
+  any skipped verification in the handoff.
+- If a follow-up fix corrects a bad local commit before it is shared, amend is
+  allowed. Once the work has been handed off or pushed, prefer a new follow-up
+  commit for rollback clarity.
+
 ## Pull Request Checklist
 
 Before submitting a change, verify:
