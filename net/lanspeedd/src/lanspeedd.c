@@ -1,63 +1,41 @@
 #include <ctype.h>
-#include <arpa/inet.h>
 #include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <net/if.h>
-#include <netinet/in.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <fcntl.h>
-#include <sys/sysmacros.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
 #include <json-c/json.h>
-#include <libmnl/libmnl.h>
 #include <libubox/blobmsg_json.h>
 #include <libubox/utils.h>
 #include <libubox/uloop.h>
 #include <libubus.h>
-#include <linux/netfilter/nf_conntrack_common.h>
-#include <linux/netfilter/nf_conntrack_tcp.h>
-#include <linux/netfilter/nfnetlink.h>
-#include <linux/netfilter/nfnetlink_conntrack.h>
-#include <linux/netlink.h>
-#include <linux/rtnetlink.h>
 #include <uci.h>
 
 #include "lanspeed_bpf.h"
+#include "lanspeed_bpf_collector.h"
+#include "lanspeed_config.h"
+#include "lanspeed_conntrack.h"
+#include "lanspeed_history.h"
+#include "lanspeed_identity.h"
+#include "lanspeed_nss.h"
 
-#define LANSPEED_VERSION "0.1.3"
+#define LANSPEED_VERSION "0.1.5"
 #ifndef LANSPEED_RELEASE
 #define LANSPEED_RELEASE "2"
 #endif
 #define LANSPEED_FULL_VERSION LANSPEED_VERSION "-r" LANSPEED_RELEASE
-#define DEFAULT_REFRESH_INTERVAL_MS 1000
-#define MIN_REFRESH_INTERVAL_MS 500
-#define DEFAULT_MAX_CLIENTS 2048
 #define RATE_WINDOW_COUNT 3
 #define STALE_CLIENT_MS 5000
-#define DEFAULT_ACTIVE_CLIENT_WINDOW_MS 10000ULL
-#define MIN_ACTIVE_CLIENT_WINDOW_MS 1000ULL
-#define DEFAULT_ACTIVE_CLIENT_MIN_BPS 1ULL
-/* Coverage ring buffer: window_size samples, pushed on every status_method
- * call. With LuCI's default 3 s refresh cadence this yields ~48 s of
- * history, which averages out the per-tick noise caused by ARP/mDNS/LLDP
- * bursts in the iface bytes denominator. No new timer is needed because
- * the only consumer of coverage is status, which is called on demand. */
-#define LANSPEED_COVERAGE_WINDOW 16
-#define LANSPEED_COVERAGE_MIN_WINDOW_MS 3000
-#define LANSPEED_COVERAGE_MIN_DENOM_BYTES 524288ULL /* 512 KiB over the window */
-#define LANSPEED_OVERVIEW_WINDOW 240
-#define DEFAULT_OVERVIEW_WINDOW_SAMPLES LANSPEED_OVERVIEW_WINDOW
-#define MIN_OVERVIEW_WINDOW_SAMPLES 2
 #define COMMAND_OUTPUT_LIMIT 4096
 #define LANSPEED_BPF_PACKAGE_MARKER "/usr/share/lanspeed/bpf/collector-model.json"
 #define LANSPEED_BPF_OBJECT_PATH "/usr/lib/bpf/lanspeed_tc.o"
@@ -69,28 +47,6 @@
 #define LANSPEED_TC_FILTER_OWNER "lanspeed"
 #define DAE_FWMARK "0x8000000"
 #define DAE_ROUTE_TABLE "2023"
-#define CONNTRACK_NETLINK_SOURCE_PATH "netlink:ctnetlink"
-#define CONNTRACK_NETLINK_SOURCE "conntrack_netlink"
-#define CONNTRACK_PROCFS_SOURCE "conntrack_procfs"
-#define CONNTRACK_LEGACY_SOURCE "conntrack"
-#define CONNTRACK_PROCFS_PATH "/proc/net/nf_conntrack"
-#define CONNTRACK_LEGACY_PROCFS_PATH "/proc/net/ip_conntrack"
-#define ARP_PROCFS_PATH "/proc/net/arp"
-#define NEIGHBOR_NETLINK_SOURCE "netlink:rtnetlink_neigh"
-#define NSS_ECM_DIRECT_SOURCE "nss_ecm_direct"
-#define NSS_ECM_STATE_DEBUGFS_DIR "/sys/kernel/debug/ecm/ecm_state"
-#define NSS_ECM_STATE_DEV_MAJOR_PATH NSS_ECM_STATE_DEBUGFS_DIR "/state_dev_major"
-#define NSS_ECM_STATE_OUTPUT_MASK_PATH NSS_ECM_STATE_DEBUGFS_DIR "/state_file_output_mask"
-#define NSS_ECM_STATE_DEV_PATH "/dev/ecm_state"
-#define NSS_ECM_STATE_TMP_DEV_PATH "/dev/lanspeed-ecm-state"
-#define NSS_ECM_STATE_LINE_MAX 1024
-#define CONNTRACK_LINE_MAX 1024
-#define IP_STR_LEN 46
-#define MAC_STR_LEN 18
-#define IFNAME_STR_LEN 32
-#define ZONE_STR_LEN 32
-#define IDENTITY_KEY_STR_LEN 80
-#define MAX_CLIENT_IPS 4
 #define OPENCLASH_VALUE_STR_LEN 64
 #define HOSTNAME_STR_LEN 64
 #define HOSTNAME_CACHE_MAX 1024
@@ -114,137 +70,8 @@ static bool active_client_min_bps_clamped;
 static bool overview_window_samples_clamped;
 static bool rejected_nssifb_collect;
 
-enum collector_mode_setting {
-	COLLECTOR_MODE_AUTO,
-	COLLECTOR_MODE_BPF,
-	COLLECTOR_MODE_NSS_ECM_DIRECT,
-	COLLECTOR_MODE_NSS_CONNTRACK_SYNC,
-	COLLECTOR_MODE_CONNTRACK_NETLINK,
-	COLLECTOR_MODE_CONNTRACK_PROCFS
-};
-
 static enum collector_mode_setting rate_collector_mode = COLLECTOR_MODE_AUTO;
 static enum collector_mode_setting conn_collector_mode = COLLECTOR_MODE_AUTO;
-
-struct arp_entry {
-	char ip[IP_STR_LEN];
-	char mac[MAC_STR_LEN];
-	char ifname[IFNAME_STR_LEN];
-	char zone[ZONE_STR_LEN];
-};
-
-struct conntrack_client_sample {
-	char mac[MAC_STR_LEN];
-	char identity_key[IDENTITY_KEY_STR_LEN];
-	char zone[ZONE_STR_LEN];
-	char ifname[IFNAME_STR_LEN];
-	char ips[MAX_CLIENT_IPS][IP_STR_LEN];
-	size_t ip_count;
-	uint64_t tx_bytes;
-	uint64_t rx_bytes;
-	uint64_t last_seen_ms;
-	uint32_t tcp_conns;
-	uint32_t udp_conns;
-	uint32_t udp_dns_conns;
-	uint32_t udp_other_conns;
-};
-
-struct conntrack_flow_sample {
-	char orig_src[IP_STR_LEN];
-	char orig_dst[IP_STR_LEN];
-	char reply_src[IP_STR_LEN];
-	char reply_dst[IP_STR_LEN];
-	uint64_t orig_bytes;
-	uint64_t reply_bytes;
-	uint16_t orig_sport;
-	uint16_t orig_dport;
-	uint16_t reply_sport;
-	uint16_t reply_dport;
-	bool has_orig_src;
-	bool has_orig_dst;
-	bool has_reply_src;
-	bool has_reply_dst;
-	bool has_orig_bytes;
-	char protocol[8];
-	char tcp_state[16];
-	bool assured;
-	bool is_tcp;
-	bool is_udp;
-	bool udp_is_dns;
-};
-
-struct conntrack_collect_stats {
-	char source_path[PATH_MAX];
-	bool netlink_attempted;
-	bool netlink_read;
-	bool procfs_read;
-	bool snapshot_pending;
-	int netlink_errno;
-	size_t current_clients;
-	size_t emitted_clients;
-	size_t skipped_no_arp;
-	size_t no_lan_flows;
-	size_t both_lan_flows;
-	size_t src_lan_flows;
-	size_t dst_lan_flows;
-	size_t ipv4_lan_flows;
-	size_t ipv6_lan_flows;
-	size_t malformed_lines;
-	size_t entries_seen;
-	size_t entries_matched;
-};
-
-struct nss_ecm_direct_flow {
-	char serial[32];
-	char sip_address[IP_STR_LEN];
-	char dip_address[IP_STR_LEN];
-	char sip_address_nat[IP_STR_LEN];
-	char dip_address_nat[IP_STR_LEN];
-	char snode_address[MAC_STR_LEN];
-	char dnode_address[MAC_STR_LEN];
-	char snode_address_nat[MAC_STR_LEN];
-	char dnode_address_nat[MAC_STR_LEN];
-	uint64_t from_data_total;
-	uint64_t to_data_total;
-	int protocol;
-	bool has_sip_address;
-	bool has_sip_address_nat;
-	bool has_from_data_total;
-};
-
-struct nss_ecm_direct_stats {
-	char source_path[PATH_MAX];
-	bool state_attempted;
-	bool state_read;
-	bool snapshot_pending;
-	int state_errno;
-	unsigned int state_major;
-	size_t entries_seen;
-	size_t entries_matched;
-	size_t skipped_no_arp;
-	size_t no_lan_flows;
-	size_t both_lan_flows;
-	size_t src_lan_flows;
-	size_t dst_lan_flows;
-	size_t ipv4_lan_flows;
-	size_t ipv6_lan_flows;
-	size_t malformed_lines;
-	size_t current_clients;
-	size_t emitted_clients;
-};
-
-enum flow_endpoint_role {
-	FLOW_ENDPOINT_ORIG_SRC,
-	FLOW_ENDPOINT_ORIG_DST,
-	FLOW_ENDPOINT_REPLY_SRC,
-	FLOW_ENDPOINT_REPLY_DST
-};
-
-struct flow_lan_endpoint {
-	const struct arp_entry *arp;
-	enum flow_endpoint_role role;
-	bool matched;
-};
 
 struct runtime_probe;
 static bool nss_ecm_direct_preferred(const struct runtime_probe *probe);
@@ -256,38 +83,13 @@ static bool nss_conntrack_sync_reader_available(const struct runtime_probe *prob
 static bool daed_runtime_active(const struct runtime_probe *probe);
 static bool nss_daed_should_prefer_bpf(const struct runtime_probe *probe);
 static bool nss_daed_nss_fallback_active(const struct runtime_probe *probe);
-static bool read_nss_ecm_direct_snapshot(struct conntrack_client_sample *samples,
-					 size_t *sample_count, size_t max_samples,
-					 uint64_t now_ms, struct json_object *warnings,
-					 struct nss_ecm_direct_stats *stats);
-static bool read_conntrack_snapshot_mode(struct conntrack_client_sample *samples,
-					 size_t *sample_count, size_t max_samples,
-					 uint64_t now_ms, struct json_object *warnings,
-					 struct conntrack_collect_stats *stats,
-					 enum collector_mode_setting mode);
-static bool nss_ecm_state_open(FILE **file, char *source_path,
-			       size_t source_path_size, int *err_out,
-			       unsigned int *major_out);
-
-static const char *collector_mode_name(enum collector_mode_setting mode)
-{
-	switch (mode) {
-	case COLLECTOR_MODE_BPF:
-		return "bpf";
-	case COLLECTOR_MODE_NSS_ECM_DIRECT:
-		return NSS_ECM_DIRECT_SOURCE;
-	case COLLECTOR_MODE_NSS_CONNTRACK_SYNC:
-		return "nss_conntrack_sync";
-	case COLLECTOR_MODE_CONNTRACK_NETLINK:
-		return CONNTRACK_NETLINK_SOURCE;
-	case COLLECTOR_MODE_CONNTRACK_PROCFS:
-		return CONNTRACK_PROCFS_SOURCE;
-	case COLLECTOR_MODE_AUTO:
-	default:
-		return "auto";
-	}
-}
-
+static void add_conntrack_fallback_runtime_warnings(struct runtime_probe *probe);
+static void add_nss_ecm_direct_runtime_warnings(struct runtime_probe *probe);
+static void add_conflicts_from_probe(struct runtime_probe *probe);
+static void inspect_bpf_assets(struct runtime_probe *probe);
+static void inspect_files_direct(struct runtime_probe *probe);
+static void inspect_nss(struct runtime_probe *probe);
+static void inspect_collector_attach_model(struct runtime_probe *probe);
 static const char *rate_collector_mode_config_name(void)
 {
 	return collector_mode_name(rate_collector_mode);
@@ -340,59 +142,6 @@ static bool rate_collector_mode_allows_conntrack_sync(void)
 	       rate_collector_mode == COLLECTOR_MODE_NSS_CONNTRACK_SYNC;
 }
 
-static enum collector_mode_setting parse_rate_collector_mode(const char *value,
-							     enum collector_mode_setting fallback)
-{
-	if (!value)
-		return fallback;
-	if (!strcmp(value, "bpf"))
-		return COLLECTOR_MODE_BPF;
-	if (!strcmp(value, NSS_ECM_DIRECT_SOURCE))
-		return COLLECTOR_MODE_NSS_ECM_DIRECT;
-	if (!strcmp(value, "nss_conntrack_sync") ||
-	    !strcmp(value, "conntrack_ecm_sync"))
-		return COLLECTOR_MODE_NSS_CONNTRACK_SYNC;
-	if (!strcmp(value, "auto"))
-		return COLLECTOR_MODE_AUTO;
-	return fallback;
-}
-
-static enum collector_mode_setting parse_conn_collector_mode(const char *value,
-							     enum collector_mode_setting fallback)
-{
-	if (!value)
-		return fallback;
-	if (!strcmp(value, CONNTRACK_NETLINK_SOURCE))
-		return COLLECTOR_MODE_CONNTRACK_NETLINK;
-	if (!strcmp(value, CONNTRACK_PROCFS_SOURCE))
-		return COLLECTOR_MODE_CONNTRACK_PROCFS;
-	if (!strcmp(value, "auto"))
-		return COLLECTOR_MODE_AUTO;
-	return fallback;
-}
-
-static void apply_legacy_collector_mode(const char *value)
-{
-	if (!value)
-		return;
-	if (!strcmp(value, "bpf")) {
-		rate_collector_mode = COLLECTOR_MODE_BPF;
-		return;
-	}
-	if (!strcmp(value, CONNTRACK_NETLINK_SOURCE)) {
-		conn_collector_mode = COLLECTOR_MODE_CONNTRACK_NETLINK;
-		return;
-	}
-	if (!strcmp(value, CONNTRACK_PROCFS_SOURCE)) {
-		conn_collector_mode = COLLECTOR_MODE_CONNTRACK_PROCFS;
-		return;
-	}
-	if (!strcmp(value, "auto")) {
-		rate_collector_mode = COLLECTOR_MODE_AUTO;
-		conn_collector_mode = COLLECTOR_MODE_AUTO;
-	}
-}
-
 static const char *conntrack_stats_source(const struct conntrack_collect_stats *stats)
 {
 	if (stats && stats->netlink_read)
@@ -441,20 +190,6 @@ static bool previous_nss_ecm_direct_snapshot_valid;
 #define LANSPEED_BPF_IFACE_MAX 16
 #define LANSPEED_BPF_IFNAME_LEN IFNAME_STR_LEN
 
-struct bpf_client_sample {
-	char mac[MAC_STR_LEN];
-	char identity_key[IDENTITY_KEY_STR_LEN];
-	char zone[ZONE_STR_LEN];
-	char ifname[IFNAME_STR_LEN];
-	char ips[MAX_CLIENT_IPS][IP_STR_LEN];
-	size_t ip_count;
-	uint64_t tx_bytes;
-	uint64_t rx_bytes;
-	uint64_t last_seen_ms;
-	uint32_t tcp_conns;
-	uint32_t udp_conns;
-};
-
 static char bpf_attach_ifnames[LANSPEED_BPF_IFACE_MAX][LANSPEED_BPF_IFNAME_LEN];
 static size_t bpf_attach_ifname_count;
 static char bpf_object_runtime_path[PATH_MAX];
@@ -463,51 +198,10 @@ static char bpf_object_runtime_path[PATH_MAX];
 static char observe_ifnames[LANSPEED_BPF_IFACE_MAX][LANSPEED_BPF_IFNAME_LEN];
 static size_t observe_ifname_count;
 
-static struct bpf_client_sample bpf_current_samples[DEFAULT_MAX_CLIENTS];
-static size_t bpf_current_sample_count;
-static uint64_t bpf_current_snapshot_ms;
+static struct bpf_snapshot_cache bpf_cache;
 
-static struct bpf_client_sample bpf_previous_samples[DEFAULT_MAX_CLIENTS];
-static size_t bpf_previous_sample_count;
-static uint64_t bpf_previous_snapshot_ms;
-static bool bpf_previous_snapshot_valid;
-
-/* Coverage sliding window: one entry per status_method call.
- * iface_rx/iface_tx are accumulated netdev byte counters summed over LAN
- * attach ifaces (role=lan). client_rx/client_tx are accumulated client
- * byte counters summed over the most recent collector snapshot
- * (BPF bpf_current_samples, or conntrack previous_conntrack_samples
- * when BPF is unavailable). Monotonic within a single daemon lifetime;
- * counter resets are detected by (cur < old) and invalidate the window. */
-struct coverage_sample {
-	uint64_t ts_ms;
-	uint64_t iface_rx_bytes;
-	uint64_t iface_tx_bytes;
-	uint64_t client_rx_bytes;
-	uint64_t client_tx_bytes;
-	bool iface_valid;
-	bool client_valid;
-};
-
-static struct coverage_sample coverage_ring[LANSPEED_COVERAGE_WINDOW];
-static size_t coverage_ring_head; /* next write slot */
-static size_t coverage_ring_count; /* 0..LANSPEED_COVERAGE_WINDOW */
-
-struct overview_sample {
-	uint64_t ts_ms;
-	uint64_t tx_bps;
-	uint64_t rx_bps;
-	uint32_t client_count;
-	uint32_t active_clients;
-	uint32_t tcp_conns;
-	uint32_t udp_conns;
-	uint32_t udp_dns_conns;
-	uint32_t udp_other_conns;
-};
-
-static struct overview_sample overview_ring[LANSPEED_OVERVIEW_WINDOW];
-static size_t overview_ring_head; /* next write slot */
-static size_t overview_ring_count; /* 0..LANSPEED_OVERVIEW_WINDOW */
+static struct lanspeed_coverage_ring coverage_ring;
+static struct lanspeed_overview_ring overview_ring;
 
 static struct uloop_timeout bpf_collect_timer;
 static bool bpf_runtime_enabled;
@@ -606,6 +300,9 @@ struct runtime_probe {
 	char openclash_en_mode[OPENCLASH_VALUE_STR_LEN];
 	char openclash_stack_type[OPENCLASH_VALUE_STR_LEN];
 };
+
+static struct runtime_probe cached_runtime_probe;
+static bool cached_runtime_probe_valid;
 
 static void add_string_unique(struct json_object *array, const char *value)
 {
@@ -870,16 +567,6 @@ static bool uci_bool_value(const char *value)
 static bool value_contains_token(const char *value, const char *token)
 {
 	return value && token && strstr(value, token) != NULL;
-}
-
-static bool ifname_is_excluded_identity_source(const char *ifname)
-{
-	if (!ifname || !ifname[0])
-		return false;
-
-	return !strcmp(ifname, "dae0") || !strcmp(ifname, "dae0peer") ||
-	       !strncmp(ifname, "tun", 3) || !strncmp(ifname, "ppp", 3) ||
-	       !strncmp(ifname, "wg", 2);
 }
 
 static bool line_contains_lanspeed_filter_conflict(const char *line)
@@ -1249,6 +936,92 @@ static void inspect_command_capabilities(struct runtime_probe *probe)
 		add_warning(probe, "tc_missing");
 }
 
+static void runtime_probe_copy_cached_scalars(struct runtime_probe *dst,
+					     const struct runtime_probe *src)
+{
+	struct json_object *warnings = dst->warnings;
+	struct json_object *conflicts = dst->conflicts;
+	struct json_object *evidence = dst->evidence;
+	struct json_object *tc_filters = dst->tc_filters;
+	struct json_object *commands = dst->commands;
+	struct json_object *files = dst->files;
+	struct json_object *uci = dst->uci;
+	struct json_object *ubus_evidence = dst->ubus_evidence;
+	struct json_object *source_commands = dst->source_commands;
+	struct json_object *source_files = dst->source_files;
+	struct json_object *source_uci = dst->source_uci;
+	struct json_object *source_ubus = dst->source_ubus;
+
+	*dst = *src;
+	dst->warnings = warnings;
+	dst->conflicts = conflicts;
+	dst->evidence = evidence;
+	dst->tc_filters = tc_filters;
+	dst->commands = commands;
+	dst->files = files;
+	dst->uci = uci;
+	dst->ubus_evidence = ubus_evidence;
+	dst->source_commands = source_commands;
+	dst->source_files = source_files;
+	dst->source_uci = source_uci;
+	dst->source_ubus = source_ubus;
+}
+
+static void runtime_probe_cache_store(const struct runtime_probe *probe)
+{
+	if (!probe)
+		return;
+	runtime_probe_copy_cached_scalars(&cached_runtime_probe, probe);
+	cached_runtime_probe_valid = true;
+}
+
+static void apply_runtime_probe_common_warnings(struct runtime_probe *probe)
+{
+	if (probe->software_flow_offload)
+		add_warning(probe, "software_flow_offload_enabled");
+	if (probe->hardware_flow_offload)
+		add_warning(probe, "hardware_flow_offload_unsupported");
+	if (probe->nss_present)
+		add_warning(probe, "nss_detected");
+	if (probe->nss_ecm_active)
+		add_warning(probe, "nss_ecm_offload_active");
+	if (probe->nss_ppe_active)
+		add_warning(probe, "nss_ppe_offload_active");
+	if (probe->nss_ifb_active)
+		add_warning(probe, "nssifb_detected");
+	if (rejected_nssifb_collect)
+		add_warning(probe, "nssifb_collect_rejected");
+	if (probe->fullcone) {
+		add_warning(probe, "fullcone_detected");
+		add_warning(probe, "fullcone_nat_enabled");
+	}
+	if (refresh_interval_clamped)
+		add_warning(probe, "refresh_interval_below_minimum");
+	if (active_client_window_clamped)
+		add_warning(probe, "active_client_window_below_minimum");
+	if (active_client_min_bps_clamped)
+		add_warning(probe, "active_client_min_bps_below_minimum");
+	if (overview_window_samples_clamped)
+		add_warning(probe, "overview_window_samples_out_of_range");
+	add_nss_ecm_direct_runtime_warnings(probe);
+	add_conntrack_fallback_runtime_warnings(probe);
+	add_conflicts_from_probe(probe);
+}
+
+static void load_cached_runtime_probe(struct runtime_probe *probe)
+{
+	if (cached_runtime_probe_valid)
+		runtime_probe_copy_cached_scalars(probe, &cached_runtime_probe);
+	else
+		inspect_command_capabilities(probe);
+
+	inspect_files_direct(probe);
+	inspect_bpf_assets(probe);
+	inspect_nss(probe);
+	inspect_collector_attach_model(probe);
+	apply_runtime_probe_common_warnings(probe);
+}
+
 static void inspect_tc(struct runtime_probe *probe)
 {
 	char output[COMMAND_OUTPUT_LIMIT];
@@ -1475,15 +1248,21 @@ static bool bpf_runtime_metrics_available(const struct runtime_probe *probe)
 
 static bool dae_tc_preempts_bpf_ingress(const struct runtime_probe *probe);
 
+static struct lanspeed_overview_config overview_config(void)
+{
+	struct lanspeed_overview_config config = {
+		.overview_window_samples = overview_window_samples,
+		.active_client_window_ms = active_client_window_ms,
+		.active_client_min_bps = active_client_min_bps
+	};
+
+	return config;
+}
+
 static void bpf_runtime_reset_rate_state(void)
 {
-	bpf_current_sample_count = 0;
-	bpf_current_snapshot_ms = 0;
-	bpf_previous_sample_count = 0;
-	bpf_previous_snapshot_ms = 0;
-	bpf_previous_snapshot_valid = false;
-	coverage_ring_count = 0;
-	coverage_ring_head = 0;
+	bpf_snapshot_cache_reset(&bpf_cache);
+	lanspeed_coverage_reset(&coverage_ring);
 }
 
 static bool bpf_runtime_recover_if_needed(const char *reason)
@@ -1640,10 +1419,12 @@ static void inspect_flowtable_counter(struct runtime_probe *probe)
 	}
 }
 
-static void inspect_files(struct runtime_probe *probe)
+static void inspect_files_common(struct runtime_probe *probe, bool refresh_flowtable_command)
 {
 	char value[64];
 	bool present;
+	bool proc_present;
+	bool debug_present;
 
 	present = read_file_trimmed("/proc/sys/net/netfilter/nf_conntrack_acct", value, sizeof(value));
 	probe->nf_conntrack_acct_present = present;
@@ -1654,7 +1435,17 @@ static void inspect_files(struct runtime_probe *probe)
 		add_warning(probe, "conntrack_acct_disabled");
 	}
 
-	inspect_flowtable_counter(probe);
+	proc_present = file_exists("/proc/net/nf_flowtable");
+	debug_present = file_exists("/sys/kernel/debug/netfilter/nf_flowtable");
+	if (refresh_flowtable_command) {
+		inspect_flowtable_counter(probe);
+	} else {
+		add_file_evidence(probe, "flowtable_proc", "/proc/net/nf_flowtable", proc_present, NULL);
+		add_file_evidence(probe, "flowtable_debug", "/sys/kernel/debug/netfilter/nf_flowtable", debug_present, NULL);
+		probe->flowtable_counter = probe->flowtable_counter || proc_present || debug_present;
+		if (!probe->flowtable_counter)
+			add_warning(probe, "flowtable_counter_missing");
+	}
 
 	probe->ifb = file_exists("/sys/class/net/ifb0") || dir_has_entries("/sys/class/net/ifb");
 	add_file_evidence(probe, "ifb0", "/sys/class/net/ifb0", file_exists("/sys/class/net/ifb0"), NULL);
@@ -1695,6 +1486,16 @@ static void inspect_files(struct runtime_probe *probe)
 	add_file_evidence(probe, "daed_config", "/etc/config/daed", file_exists("/etc/config/daed"), NULL);
 	add_file_evidence(probe, "homeproxy_config", "/etc/config/homeproxy", file_exists("/etc/config/homeproxy"), NULL);
 	add_file_evidence(probe, "nlbwmon_config", "/etc/config/nlbwmon", file_exists("/etc/config/nlbwmon"), NULL);
+}
+
+static void inspect_files_direct(struct runtime_probe *probe)
+{
+	inspect_files_common(probe, false);
+}
+
+static void inspect_files(struct runtime_probe *probe)
+{
+	inspect_files_common(probe, true);
 }
 
 static void inspect_ubus(struct runtime_probe *probe)
@@ -2527,35 +2328,7 @@ static void inspect_runtime(struct runtime_probe *probe)
 	inspect_collector_attach_model(probe);
 	inspect_service_presence(probe);
 
-	if (probe->software_flow_offload)
-		add_warning(probe, "software_flow_offload_enabled");
-	if (probe->hardware_flow_offload)
-		add_warning(probe, "hardware_flow_offload_unsupported");
-	if (probe->nss_present)
-		add_warning(probe, "nss_detected");
-	if (probe->nss_ecm_active)
-		add_warning(probe, "nss_ecm_offload_active");
-	if (probe->nss_ppe_active)
-		add_warning(probe, "nss_ppe_offload_active");
-	if (probe->nss_ifb_active)
-		add_warning(probe, "nss_ifb_detected");
-	if (rejected_nssifb_collect)
-		add_warning(probe, "nssifb_collect_rejected");
-	if (probe->fullcone) {
-		add_warning(probe, "fullcone_detected");
-		add_warning(probe, "fullcone_nat_enabled");
-	}
-	if (refresh_interval_clamped)
-		add_warning(probe, "refresh_interval_below_minimum");
-	if (active_client_window_clamped)
-		add_warning(probe, "active_client_window_below_minimum");
-	if (active_client_min_bps_clamped)
-		add_warning(probe, "active_client_min_bps_below_minimum");
-	if (overview_window_samples_clamped)
-		add_warning(probe, "overview_window_samples_out_of_range");
-	add_nss_ecm_direct_runtime_warnings(probe);
-	add_conntrack_fallback_runtime_warnings(probe);
-	add_conflicts_from_probe(probe);
+	apply_runtime_probe_common_warnings(probe);
 }
 
 static void init_runtime_probe(struct runtime_probe *probe)
@@ -2577,6 +2350,9 @@ static void init_runtime_probe(struct runtime_probe *probe)
 
 static void free_runtime_probe(struct runtime_probe *probe)
 {
+	if (!probe)
+		return;
+
 	json_object_put(probe->warnings);
 	json_object_put(probe->conflicts);
 	json_object_put(probe->evidence);
@@ -2589,6 +2365,29 @@ static void free_runtime_probe(struct runtime_probe *probe)
 	json_object_put(probe->source_files);
 	json_object_put(probe->source_uci);
 	json_object_put(probe->source_ubus);
+	probe->warnings = NULL;
+	probe->conflicts = NULL;
+	probe->evidence = NULL;
+	probe->tc_filters = NULL;
+	probe->commands = NULL;
+	probe->files = NULL;
+	probe->uci = NULL;
+	probe->ubus_evidence = NULL;
+	probe->source_commands = NULL;
+	probe->source_files = NULL;
+	probe->source_uci = NULL;
+	probe->source_ubus = NULL;
+}
+
+static struct json_object *runtime_probe_take_json(struct json_object **slot)
+{
+	struct json_object *obj;
+
+	if (!slot)
+		return NULL;
+	obj = *slot;
+	*slot = NULL;
+	return obj;
 }
 
 static const char *probe_mode(const struct runtime_probe *probe)
@@ -2742,19 +2541,19 @@ static void finish_probe_evidence(struct runtime_probe *probe, const char *metho
 	json_object_object_add(dae, "identity_policy", json_object_new_string("dae0 and dae0peer MAC/IP observations are excluded from LAN clients"));
 	json_object_object_add(probe->evidence, "dae", dae);
 
-	json_object_object_add(sources, "command", probe->source_commands);
-	json_object_object_add(sources, "file", probe->source_files);
-	json_object_object_add(sources, "uci", probe->source_uci);
-	json_object_object_add(sources, "ubus", probe->source_ubus);
+	json_object_object_add(sources, "command", runtime_probe_take_json(&probe->source_commands));
+	json_object_object_add(sources, "file", runtime_probe_take_json(&probe->source_files));
+	json_object_object_add(sources, "uci", runtime_probe_take_json(&probe->source_uci));
+	json_object_object_add(sources, "ubus", runtime_probe_take_json(&probe->source_ubus));
 
 	json_object_object_add(probe->evidence, "source", json_object_new_string("lanspeedd_runtime_probe"));
 	json_object_object_add(probe->evidence, "method", json_object_new_string(method));
 	json_object_object_add(probe->evidence, "read_only", json_object_new_boolean(true));
 	json_object_object_add(probe->evidence, "probe_sources", sources);
-	json_object_object_add(probe->evidence, "commands", probe->commands);
-	json_object_object_add(probe->evidence, "files", probe->files);
-	json_object_object_add(probe->evidence, "uci", probe->uci);
-	json_object_object_add(probe->evidence, "ubus", probe->ubus_evidence);
+	json_object_object_add(probe->evidence, "commands", runtime_probe_take_json(&probe->commands));
+	json_object_object_add(probe->evidence, "files", runtime_probe_take_json(&probe->files));
+	json_object_object_add(probe->evidence, "uci", runtime_probe_take_json(&probe->uci));
+	json_object_object_add(probe->evidence, "ubus", runtime_probe_take_json(&probe->ubus_evidence));
 	json_object_object_add(probe->evidence, "probe_error", json_object_new_boolean(probe->probe_error || probe->lan_probe_error));
 	json_object_object_add(probe->evidence, "lan_probe_error", json_object_new_boolean(probe->lan_probe_error));
 }
@@ -2812,93 +2611,6 @@ static void add_capabilities_from_values(struct json_object *parent, bool bpf,
 	json_object_object_add(parent, "capabilities", capabilities);
 }
 
-static void add_capabilities(struct json_object *parent)
-{
-	add_capabilities_from_values(parent, false, enable_conntrack_fallback, false, NULL);
-}
-
-static void add_stub_warning(struct json_object *parent)
-{
-	struct json_object *warnings = json_object_new_array();
-
-	json_object_array_add(warnings, json_object_new_string("stub_no_live_metrics"));
-	if (refresh_interval_clamped)
-		json_object_array_add(warnings, json_object_new_string("refresh_interval_below_minimum"));
-	if (active_client_window_clamped)
-		json_object_array_add(warnings, json_object_new_string("active_client_window_below_minimum"));
-	if (active_client_min_bps_clamped)
-		json_object_array_add(warnings, json_object_new_string("active_client_min_bps_below_minimum"));
-	if (overview_window_samples_clamped)
-		json_object_array_add(warnings, json_object_new_string("overview_window_samples_out_of_range"));
-	json_object_object_add(parent, "warnings", warnings);
-}
-
-static void add_stub_evidence(struct json_object *parent, const char *method)
-{
-	struct json_object *evidence = json_object_new_object();
-
-	json_object_object_add(evidence, "source", json_object_new_string("lanspeedd_stub"));
-	json_object_object_add(evidence, "method", json_object_new_string(method));
-	json_object_object_add(evidence, "fixture_safe", json_object_new_boolean(true));
-	json_object_object_add(evidence, "live_metrics", json_object_new_boolean(false));
-	json_object_object_add(evidence, "refresh_interval_min_ms", json_object_new_int(MIN_REFRESH_INTERVAL_MS));
-	json_object_object_add(evidence, "refresh_interval_clamped", json_object_new_boolean(refresh_interval_clamped));
-	json_object_object_add(evidence, "active_client_window_ms",
-			       json_object_new_int64((int64_t)active_client_window_ms));
-	json_object_object_add(evidence, "active_client_min_bps",
-			       json_object_new_int64((int64_t)active_client_min_bps));
-	json_object_object_add(evidence, "overview_window_samples",
-			       json_object_new_int(overview_window_samples));
-	json_object_object_add(parent, "evidence", evidence);
-}
-
-static void add_clients_identity_evidence(struct json_object *parent)
-{
-	struct json_object *evidence = json_object_new_object();
-	struct json_object *identity_model = json_object_new_object();
-	struct json_object *primary_key = json_object_new_array();
-	struct json_object *sources = json_object_new_array();
-	struct json_object *direction = json_object_new_object();
-	struct json_object *excluded = json_object_new_array();
-
-	json_object_object_add(evidence, "source", json_object_new_string("lanspeedd_stub"));
-	json_object_object_add(evidence, "method", json_object_new_string("clients"));
-	json_object_object_add(evidence, "fixture_safe", json_object_new_boolean(true));
-	json_object_object_add(evidence, "live_metrics", json_object_new_boolean(false));
-
-	json_object_array_add(primary_key, json_object_new_string("mac"));
-	json_object_array_add(primary_key, json_object_new_string("zone"));
-	json_object_object_add(identity_model, "primary_key", primary_key);
-	json_object_object_add(identity_model, "attached_fields", json_object_new_string("ips,hostname,interface,last_seen"));
-	json_object_object_add(identity_model, "ip_identity", json_object_new_string("addresses are attributes only, not unique identity keys"));
-
-	json_object_array_add(sources, json_object_new_string("dhcp_lease"));
-	json_object_array_add(sources, json_object_new_string("arp_nd_neighbor"));
-	json_object_array_add(sources, json_object_new_string("hostapd_nl80211"));
-	json_object_array_add(sources, json_object_new_string("netifd_ubus"));
-	json_object_object_add(identity_model, "merge_sources", sources);
-
-	json_object_object_add(direction, "tx_bps", json_object_new_string("client-originated traffic from the client point of view"));
-	json_object_object_add(direction, "rx_bps", json_object_new_string("traffic to client from the client point of view"));
-	json_object_object_add(identity_model, "direction", direction);
-
-	json_object_array_add(excluded, json_object_new_string("router_mac"));
-	json_object_array_add(excluded, json_object_new_string("broadcast"));
-	json_object_array_add(excluded, json_object_new_string("multicast"));
-	json_object_array_add(excluded, json_object_new_string("arp"));
-	json_object_array_add(excluded, json_object_new_string("nd"));
-	json_object_array_add(excluded, json_object_new_string("dae0"));
-	json_object_array_add(excluded, json_object_new_string("dae0peer"));
-	json_object_array_add(excluded, json_object_new_string("tun"));
-	json_object_array_add(excluded, json_object_new_string("ppp"));
-	json_object_array_add(excluded, json_object_new_string("wg"));
-	json_object_object_add(identity_model, "excluded_from_clients", excluded);
-
-	json_object_object_add(evidence, "identity_model", identity_model);
-	json_object_object_add(parent, "evidence", evidence);
-}
-
-
 static uint64_t monotonic_time_ms(void)
 {
 	struct timespec ts;
@@ -2907,114 +2619,6 @@ static uint64_t monotonic_time_ms(void)
 		return 0;
 
 	return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
-}
-
-static uint64_t monotonic_ns_to_ms(uint64_t ns)
-{
-	return ns / 1000000ULL;
-}
-
-static bool client_is_active_recent(uint64_t sample_ms, uint64_t last_seen_ms)
-{
-	if (sample_ms == 0 || last_seen_ms == 0 || last_seen_ms > sample_ms)
-		return false;
-	return sample_ms - last_seen_ms <= active_client_window_ms;
-}
-
-static bool client_has_active_rate(uint64_t tx_bps, uint64_t rx_bps)
-{
-	uint64_t total = tx_bps + rx_bps;
-
-	if (total < tx_bps)
-		total = UINT64_MAX;
-	return total >= active_client_min_bps;
-}
-
-static uint64_t json_uint64_value(struct json_object *obj)
-{
-	int64_t value;
-
-	if (!obj)
-		return 0;
-	value = json_object_get_int64(obj);
-	return value > 0 ? (uint64_t)value : 0;
-}
-
-static bool valid_mac_address(const char *mac)
-{
-	bool any_non_zero = false;
-	bool any_not_ff = false;
-	char first_octet[3];
-	unsigned long mac_first_octet;
-	size_t i;
-
-	if (!mac || strlen(mac) != 17)
-		return false;
-	if (!isxdigit((unsigned char)mac[0]) ||
-	    !isxdigit((unsigned char)mac[1]))
-		return false;
-
-	first_octet[0] = mac[0];
-	first_octet[1] = mac[1];
-	first_octet[2] = '\0';
-	mac_first_octet = strtoul(first_octet, NULL, 16);
-	if ((mac_first_octet & 0x01) != 0)
-		return false;
-
-	for (i = 0; i < 17; i++) {
-		if ((i + 1) % 3 == 0) {
-			if (mac[i] != ':')
-				return false;
-			continue;
-		}
-
-		if (!isxdigit((unsigned char)mac[i]))
-			return false;
-		if (mac[i] != '0')
-			any_non_zero = true;
-		if (tolower((unsigned char)mac[i]) != 'f')
-			any_not_ff = true;
-	}
-
-	return any_non_zero && any_not_ff;
-}
-
-static void normalize_mac_address(char *mac)
-{
-	size_t i;
-
-	for (i = 0; mac && mac[i]; i++)
-		mac[i] = (char)tolower((unsigned char)mac[i]);
-}
-
-static bool normalize_ip_address(const char *ip, char *out, size_t out_size)
-{
-	struct in_addr addr4;
-	struct in6_addr addr6;
-
-	if (!ip || !out || !out_size)
-		return false;
-	if (inet_pton(AF_INET, ip, &addr4) == 1)
-		return inet_ntop(AF_INET, &addr4, out, out_size) != NULL;
-	if (inet_pton(AF_INET6, ip, &addr6) == 1)
-		return inet_ntop(AF_INET6, &addr6, out, out_size) != NULL;
-
-	snprintf(out, out_size, "%s", ip);
-	return out[0] != '\0';
-}
-
-static void derive_zone_from_ifname(const char *ifname, char *zone, size_t zone_size)
-{
-	if (!zone || !zone_size)
-		return;
-
-	if (ifname && (!strncmp(ifname, "br-lan", 6) || !strncmp(ifname, "lan", 3) ||
-	    !strncmp(ifname, "wlan", 4)))
-		snprintf(zone, zone_size, "lan");
-	else if (ifname && ifname[0])
-		snprintf(zone, zone_size, "%s", ifname);
-	else
-		snprintf(zone, zone_size, "lan");
 }
 
 /* ------------------------------------------------------------------
@@ -3300,439 +2904,6 @@ static const char *hostname_lookup(const char *mac, const char *const *ips, size
 	return NULL;
 }
 
-static size_t load_arp_table(struct arp_entry *entries, size_t max_entries,
-			     struct json_object *warnings)
-{
-	FILE *file;
-	char line[256];
-	size_t count = 0;
-
-	file = fopen(ARP_PROCFS_PATH, "r");
-	if (!file) {
-		add_string_unique(warnings, "conntrack_unavailable");
-		return 0;
-	}
-
-	if (!fgets(line, sizeof(line), file)) {
-		fclose(file);
-		add_string_unique(warnings, "conntrack_unavailable");
-		return 0;
-	}
-
-	while (count < max_entries && fgets(line, sizeof(line), file)) {
-		char ip[IP_STR_LEN];
-		char hw_type[16];
-		char flags[16];
-		char mac[MAC_STR_LEN];
-		char mask[32];
-		char ifname[IFNAME_STR_LEN];
-		unsigned long flag_value;
-
-		if (sscanf(line, "%45s %15s %15s %17s %31s %31s",
-		           ip, hw_type, flags, mac, mask, ifname) != 6)
-			continue;
-
-		flag_value = strtoul(flags, NULL, 0);
-		if (flag_value == 0 || !valid_mac_address(mac))
-			continue;
-		if (ifname_is_excluded_identity_source(ifname))
-			continue;
-
-		normalize_mac_address(mac);
-		if (!normalize_ip_address(ip, entries[count].ip, sizeof(entries[count].ip)))
-			continue;
-		snprintf(entries[count].mac, sizeof(entries[count].mac), "%s", mac);
-		snprintf(entries[count].ifname, sizeof(entries[count].ifname), "%s", ifname);
-		derive_zone_from_ifname(ifname, entries[count].zone, sizeof(entries[count].zone));
-		count++;
-	}
-
-	fclose(file);
-	return count;
-}
-
-struct neigh_dump_ctx {
-	struct arp_entry *entries;
-	size_t max_entries;
-	size_t count;
-};
-
-struct neighbor_attr_table {
-	struct nlattr **tb;
-	uint16_t max;
-};
-
-static bool add_neighbor_entry(struct arp_entry *entries, size_t *count,
-			       size_t max_entries, const char *ip,
-			       const char *mac, const char *ifname)
-{
-	size_t i;
-
-	if (!entries || !count || *count >= max_entries || !ip || !mac || !ifname)
-		return false;
-	if (!valid_mac_address(mac) || ifname_is_excluded_identity_source(ifname))
-		return false;
-	if (!normalize_ip_address(ip, entries[*count].ip, sizeof(entries[*count].ip)))
-		return false;
-
-	for (i = 0; i < *count; i++) {
-		if (!strcmp(entries[i].ip, entries[*count].ip))
-			return true;
-	}
-
-	snprintf(entries[*count].mac, sizeof(entries[*count].mac), "%s", mac);
-	normalize_mac_address(entries[*count].mac);
-	snprintf(entries[*count].ifname, sizeof(entries[*count].ifname), "%s", ifname);
-	derive_zone_from_ifname(ifname, entries[*count].zone, sizeof(entries[*count].zone));
-	(*count)++;
-	return true;
-}
-
-static int neighbor_attr_cb(const struct nlattr *attr, void *data)
-{
-	struct neighbor_attr_table *table = data;
-	uint16_t type = mnl_attr_get_type(attr);
-
-	type &= NLA_TYPE_MASK;
-	if (type <= table->max)
-		table->tb[type] = (struct nlattr *)attr;
-	return MNL_CB_OK;
-}
-
-static int neighbor_netlink_data_cb(const struct nlmsghdr *nlh, void *data)
-{
-	struct neigh_dump_ctx *ctx = data;
-	struct nlattr *tb[NDA_MAX + 1];
-	struct neighbor_attr_table table = { tb, NDA_MAX };
-	struct ndmsg *ndm = mnl_nlmsg_get_payload(nlh);
-	char ip[IP_STR_LEN];
-	char mac[MAC_STR_LEN];
-	char ifname[IFNAME_STR_LEN];
-	const void *dst;
-	const unsigned char *lladdr;
-
-	if (nlh->nlmsg_type != RTM_NEWNEIGH)
-		return MNL_CB_OK;
-	if (!ctx || ctx->count >= ctx->max_entries)
-		return MNL_CB_OK;
-	if (!ndm || ndm->ndm_family != AF_INET6 || ndm->ndm_ifindex <= 0)
-		return MNL_CB_OK;
-	if (ndm->ndm_state == NUD_FAILED || ndm->ndm_state == NUD_NONE ||
-	    ndm->ndm_state == NUD_NOARP)
-		return MNL_CB_OK;
-
-	memset(tb, 0, sizeof(tb));
-	if (mnl_attr_parse(nlh, sizeof(*ndm), neighbor_attr_cb, &table) < 0)
-		return MNL_CB_OK;
-	if (!tb[NDA_DST] || !tb[NDA_LLADDR])
-		return MNL_CB_OK;
-	if (mnl_attr_get_payload_len(tb[NDA_DST]) < sizeof(struct in6_addr) ||
-	    mnl_attr_get_payload_len(tb[NDA_LLADDR]) < 6)
-		return MNL_CB_OK;
-
-	dst = mnl_attr_get_payload(tb[NDA_DST]);
-	if (!inet_ntop(AF_INET6, dst, ip, sizeof(ip)))
-		return MNL_CB_OK;
-	lladdr = mnl_attr_get_payload(tb[NDA_LLADDR]);
-	snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x",
-		 lladdr[0], lladdr[1], lladdr[2],
-		 lladdr[3], lladdr[4], lladdr[5]);
-	if (!if_indextoname((unsigned int)ndm->ndm_ifindex, ifname))
-		snprintf(ifname, sizeof(ifname), "if%d", ndm->ndm_ifindex);
-
-	add_neighbor_entry(ctx->entries, &ctx->count, ctx->max_entries,
-			   ip, mac, ifname);
-	return MNL_CB_OK;
-}
-
-static bool read_neighbor_table(struct arp_entry *entries, size_t *count,
-				size_t max_entries)
-{
-	char sndbuf[MNL_SOCKET_BUFFER_SIZE];
-	char rcvbuf[MNL_SOCKET_DUMP_SIZE];
-	struct mnl_socket *nl;
-	struct nlmsghdr *nlh;
-	struct ndmsg *ndm;
-	struct neigh_dump_ctx dump_ctx;
-	unsigned int seq = (unsigned int)time(NULL);
-	unsigned int portid;
-	ssize_t ret;
-	int cb_ret = MNL_CB_OK;
-
-	if (!entries || !count || *count >= max_entries)
-		return false;
-
-	nl = mnl_socket_open(NETLINK_ROUTE);
-	if (!nl)
-		return false;
-	if (mnl_socket_bind(nl, 0, MNL_SOCKET_AUTOPID) < 0) {
-		mnl_socket_close(nl);
-		return false;
-	}
-	portid = mnl_socket_get_portid(nl);
-
-	memset(sndbuf, 0, sizeof(sndbuf));
-	nlh = mnl_nlmsg_put_header(sndbuf);
-	nlh->nlmsg_type = RTM_GETNEIGH;
-	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
-	nlh->nlmsg_seq = seq;
-	ndm = mnl_nlmsg_put_extra_header(nlh, sizeof(*ndm));
-	memset(ndm, 0, sizeof(*ndm));
-	ndm->ndm_family = AF_INET6;
-
-	if (mnl_socket_sendto(nl, nlh, nlh->nlmsg_len) < 0) {
-		mnl_socket_close(nl);
-		return false;
-	}
-
-	memset(&dump_ctx, 0, sizeof(dump_ctx));
-	dump_ctx.entries = entries;
-	dump_ctx.max_entries = max_entries;
-	dump_ctx.count = *count;
-
-	while ((ret = mnl_socket_recvfrom(nl, rcvbuf, sizeof(rcvbuf))) > 0) {
-		cb_ret = mnl_cb_run(rcvbuf, (size_t)ret, seq, portid,
-				    neighbor_netlink_data_cb, &dump_ctx);
-		if (cb_ret <= MNL_CB_STOP)
-			break;
-	}
-
-	mnl_socket_close(nl);
-	if (ret < 0 || cb_ret < 0)
-		return false;
-
-	*count = dump_ctx.count;
-	return true;
-}
-
-static size_t load_lan_identity_table(struct arp_entry *entries, size_t max_entries,
-				      struct json_object *warnings)
-{
-	size_t count;
-
-	count = load_arp_table(entries, max_entries, warnings);
-	(void)read_neighbor_table(entries, &count, max_entries);
-	return count;
-}
-
-static const struct arp_entry *find_arp_entry(const struct arp_entry *entries,
-					      size_t count, const char *ip)
-{
-	size_t i;
-
-	for (i = 0; i < count; i++) {
-		if (!strcmp(entries[i].ip, ip))
-			return &entries[i];
-	}
-
-	return NULL;
-}
-
-static const struct arp_entry *find_lan_identity_by_mac(const struct arp_entry *entries,
-							size_t count, const char *mac)
-{
-	char normalized_mac[MAC_STR_LEN];
-	size_t i;
-
-	if (!entries || !valid_mac_address(mac))
-		return NULL;
-
-	snprintf(normalized_mac, sizeof(normalized_mac), "%s", mac);
-	normalize_mac_address(normalized_mac);
-
-	for (i = 0; i < count; i++) {
-		if (!strcmp(entries[i].mac, normalized_mac))
-			return &entries[i];
-	}
-
-	return NULL;
-}
-
-static bool ip_address_is_ipv6(const char *ip)
-{
-	return ip && strchr(ip, ':') != NULL;
-}
-
-static bool flow_endpoint_lookup(const struct arp_entry *entries, size_t count,
-				 const char *ip, enum flow_endpoint_role role,
-				 struct flow_lan_endpoint *endpoint)
-{
-	char normalized_ip[IP_STR_LEN];
-	const struct arp_entry *arp;
-
-	if (endpoint) {
-		memset(endpoint, 0, sizeof(*endpoint));
-		endpoint->role = role;
-	}
-	if (!entries || !ip || !ip[0])
-		return false;
-	if (!normalize_ip_address(ip, normalized_ip, sizeof(normalized_ip)))
-		return false;
-
-	arp = find_arp_entry(entries, count, normalized_ip);
-	if (!arp)
-		return false;
-	if (endpoint) {
-		endpoint->arp = arp;
-		endpoint->matched = true;
-	}
-	return true;
-}
-
-static bool nss_ecm_direct_endpoint_lookup(const struct arp_entry *entries,
-					   size_t count, const char *ip,
-					   const char *nat_ip, const char *mac,
-					   enum flow_endpoint_role role,
-					   struct flow_lan_endpoint *endpoint)
-{
-	const struct arp_entry *arp;
-
-	if (flow_endpoint_lookup(entries, count, ip, role, endpoint))
-		return true;
-	if (flow_endpoint_lookup(entries, count, nat_ip, role, endpoint))
-		return true;
-
-	arp = find_lan_identity_by_mac(entries, count, mac);
-	if (!arp)
-		return false;
-
-	if (endpoint) {
-		memset(endpoint, 0, sizeof(*endpoint));
-		endpoint->role = role;
-		endpoint->arp = arp;
-		endpoint->matched = true;
-	}
-	return true;
-}
-
-static void flow_endpoint_stats_add(bool source_side, const struct arp_entry *arp,
-				    size_t *src_lan_flows, size_t *dst_lan_flows,
-				    size_t *ipv4_lan_flows, size_t *ipv6_lan_flows)
-{
-	if (source_side)
-		(*src_lan_flows)++;
-	else
-		(*dst_lan_flows)++;
-	if (arp && ip_address_is_ipv6(arp->ip))
-		(*ipv6_lan_flows)++;
-	else
-		(*ipv4_lan_flows)++;
-}
-
-static bool parse_conntrack_procfs_line(const char *line,
-					struct conntrack_flow_sample *flow)
-{
-	char buffer[CONNTRACK_LINE_MAX];
-	char *saveptr = NULL;
-	char *token;
-	int src_index = 0;
-	int dst_index = 0;
-	int sport_index = 0;
-	int dport_index = 0;
-	int bytes_index = 0;
-	int token_index = 0;
-
-	if (!line || !flow)
-		return false;
-
-	memset(flow, 0, sizeof(*flow));
-	snprintf(buffer, sizeof(buffer), "%s", line);
-
-	for (token = strtok_r(buffer, " \t\r\n", &saveptr); token;
-	     token = strtok_r(NULL, " \t\r\n", &saveptr)) {
-		/* Token 2: protocol name (tcp/udp/icmp/...) */
-		if (token_index == 2) {
-			snprintf(flow->protocol, sizeof(flow->protocol), "%s", token);
-			flow->is_tcp = (strcmp(token, "tcp") == 0);
-			flow->is_udp = (strcmp(token, "udp") == 0);
-		}
-
-		/* Token 5: connection state for TCP (ESTABLISHED/TIME_WAIT/etc) */
-		if (token_index == 5 && flow->is_tcp) {
-			snprintf(flow->tcp_state, sizeof(flow->tcp_state), "%s", token);
-		}
-
-		if (!strncmp(token, "src=", 4)) {
-			if (src_index == 0) {
-				snprintf(flow->orig_src, sizeof(flow->orig_src), "%s", token + 4);
-				flow->has_orig_src = true;
-			} else if (src_index == 1) {
-				snprintf(flow->reply_src, sizeof(flow->reply_src), "%s", token + 4);
-				flow->has_reply_src = true;
-			}
-			src_index++;
-		} else if (!strncmp(token, "dst=", 4)) {
-			if (dst_index == 0) {
-				snprintf(flow->orig_dst, sizeof(flow->orig_dst), "%s", token + 4);
-				flow->has_orig_dst = true;
-			} else if (dst_index == 1) {
-				snprintf(flow->reply_dst, sizeof(flow->reply_dst), "%s", token + 4);
-				flow->has_reply_dst = true;
-			}
-			dst_index++;
-		} else if (!strncmp(token, "sport=", 6)) {
-			char *end = NULL;
-			unsigned long value = strtoul(token + 6, &end, 10);
-
-			if (end != token + 6 && value <= UINT16_MAX) {
-				if (sport_index == 0)
-					flow->orig_sport = (uint16_t)value;
-				else if (sport_index == 1)
-					flow->reply_sport = (uint16_t)value;
-			}
-			sport_index++;
-		} else if (!strncmp(token, "dport=", 6)) {
-			char *end = NULL;
-			unsigned long value = strtoul(token + 6, &end, 10);
-
-			if (end != token + 6 && value <= UINT16_MAX) {
-				if (dport_index == 0)
-					flow->orig_dport = (uint16_t)value;
-				else if (dport_index == 1)
-					flow->reply_dport = (uint16_t)value;
-			}
-			dport_index++;
-		} else if (!strncmp(token, "bytes=", 6)) {
-			char *end = NULL;
-			uint64_t value = strtoull(token + 6, &end, 10);
-
-			if (end == token + 6) {
-				token_index++;
-				continue;
-			}
-			if (bytes_index == 0) {
-				flow->orig_bytes = value;
-				flow->has_orig_bytes = true;
-			} else if (bytes_index == 1)
-				flow->reply_bytes = value;
-			bytes_index++;
-		} else if (!strcmp(token, "[ASSURED]")) {
-			flow->assured = true;
-		}
-
-		token_index++;
-	}
-
-	flow->udp_is_dns = flow->is_udp &&
-		(flow->orig_sport == 53 || flow->orig_dport == 53 ||
-		 flow->reply_sport == 53 || flow->reply_dport == 53);
-
-	return flow->has_orig_src && flow->has_orig_bytes;
-}
-
-static struct conntrack_client_sample *find_conntrack_client_sample(
-	struct conntrack_client_sample *samples, size_t count, const char *identity_key)
-{
-	size_t i;
-
-	for (i = 0; i < count; i++) {
-		if (!strcmp(samples[i].identity_key, identity_key))
-			return &samples[i];
-	}
-
-	return NULL;
-}
-
 static const struct conntrack_client_sample *find_previous_conntrack_sample(
 	const char *identity_key)
 {
@@ -3746,254 +2917,6 @@ static const struct conntrack_client_sample *find_previous_conntrack_sample(
 	return NULL;
 }
 
-static void add_client_ip_unique(struct conntrack_client_sample *sample, const char *ip)
-{
-	size_t i;
-
-	if (!sample || !ip || !ip[0])
-		return;
-
-	for (i = 0; i < sample->ip_count; i++) {
-		if (!strcmp(sample->ips[i], ip))
-			return;
-	}
-
-	if (sample->ip_count >= MAX_CLIENT_IPS)
-		return;
-
-	snprintf(sample->ips[sample->ip_count], sizeof(sample->ips[sample->ip_count]), "%s", ip);
-	sample->ip_count++;
-}
-
-static void add_client_ip_unique_raw(struct conntrack_client_sample *sample, const char *ip)
-{
-	add_client_ip_unique(sample, ip);
-}
-
-static bool add_endpoint_sample_bytes(struct conntrack_client_sample *samples,
-				      size_t *sample_count, size_t max_samples,
-				      const struct arp_entry *arp,
-				      const char *mac_override,
-				      uint64_t tx_bytes, uint64_t rx_bytes,
-				      uint64_t now_ms, uint32_t protocol,
-				      bool count_connections)
-{
-	struct conntrack_client_sample *sample;
-	char mac[MAC_STR_LEN];
-	char identity_key[IDENTITY_KEY_STR_LEN];
-
-	if (!arp)
-		return false;
-	if (valid_mac_address(mac_override))
-		snprintf(mac, sizeof(mac), "%s", mac_override);
-	else
-		snprintf(mac, sizeof(mac), "%s", arp->mac);
-	normalize_mac_address(mac);
-
-	snprintf(identity_key, sizeof(identity_key), "%s@%s", mac, arp->zone);
-	sample = find_conntrack_client_sample(samples, *sample_count, identity_key);
-	if (!sample) {
-		if (*sample_count >= max_samples)
-			return true;
-		sample = &samples[*sample_count];
-		memset(sample, 0, sizeof(*sample));
-		snprintf(sample->mac, sizeof(sample->mac), "%s", mac);
-		snprintf(sample->identity_key, sizeof(sample->identity_key), "%s", identity_key);
-		snprintf(sample->zone, sizeof(sample->zone), "%s", arp->zone);
-		snprintf(sample->ifname, sizeof(sample->ifname), "%s", arp->ifname);
-		(*sample_count)++;
-	}
-
-	add_client_ip_unique_raw(sample, arp->ip);
-	sample->tx_bytes += tx_bytes;
-	sample->rx_bytes += rx_bytes;
-	sample->last_seen_ms = now_ms;
-
-	if (count_connections) {
-		if (protocol == 6)
-			sample->tcp_conns++;
-		else if (protocol == 17)
-			sample->udp_conns++;
-	}
-
-	return true;
-}
-
-static bool nss_ecm_direct_flow_add_endpoint(struct conntrack_client_sample *samples,
-					     size_t *sample_count,
-					     size_t max_samples,
-					     const struct arp_entry *arp,
-					     enum flow_endpoint_role role,
-					     const struct nss_ecm_direct_flow *flow,
-					     uint64_t now_ms,
-					     struct nss_ecm_direct_stats *stats)
-{
-	const char *mac = NULL;
-	uint64_t tx_bytes;
-	uint64_t rx_bytes;
-	bool source_side = role == FLOW_ENDPOINT_ORIG_SRC;
-
-	if (!flow || !arp)
-		return false;
-
-	if (source_side) {
-		mac = flow->snode_address;
-		tx_bytes = flow->from_data_total;
-		rx_bytes = flow->to_data_total;
-	} else {
-		mac = flow->dnode_address;
-		tx_bytes = flow->to_data_total;
-		rx_bytes = flow->from_data_total;
-	}
-
-	if (!add_endpoint_sample_bytes(samples, sample_count, max_samples, arp,
-				       mac, tx_bytes, rx_bytes, now_ms,
-				       (uint32_t)flow->protocol, true))
-		return false;
-
-	if (stats) {
-		stats->entries_matched++;
-		flow_endpoint_stats_add(source_side, arp,
-					&stats->src_lan_flows,
-					&stats->dst_lan_flows,
-					&stats->ipv4_lan_flows,
-					&stats->ipv6_lan_flows);
-	}
-	return true;
-}
-
-static void conntrack_sample_add_conn_counts(struct conntrack_client_sample *sample,
-					     const struct conntrack_flow_sample *flow)
-{
-	if (!sample || !flow)
-		return;
-	if (flow->is_tcp && strcmp(flow->tcp_state, "ESTABLISHED") == 0 && flow->assured)
-		sample->tcp_conns++;
-	else if (flow->is_udp) {
-		sample->udp_conns++;
-		if (flow->udp_is_dns)
-			sample->udp_dns_conns++;
-		else
-			sample->udp_other_conns++;
-	}
-}
-
-static struct conntrack_client_sample *find_or_add_endpoint_sample(
-	struct conntrack_client_sample *samples, size_t *sample_count,
-	size_t max_samples, const struct arp_entry *arp)
-{
-	struct conntrack_client_sample *sample;
-	char identity_key[IDENTITY_KEY_STR_LEN];
-
-	if (!arp)
-		return NULL;
-	snprintf(identity_key, sizeof(identity_key), "%s@%s", arp->mac, arp->zone);
-	sample = find_conntrack_client_sample(samples, *sample_count, identity_key);
-	if (sample)
-		return sample;
-	if (*sample_count >= max_samples)
-		return NULL;
-
-	sample = &samples[*sample_count];
-	memset(sample, 0, sizeof(*sample));
-	snprintf(sample->mac, sizeof(sample->mac), "%s", arp->mac);
-	snprintf(sample->identity_key, sizeof(sample->identity_key), "%s", identity_key);
-	snprintf(sample->zone, sizeof(sample->zone), "%s", arp->zone);
-	snprintf(sample->ifname, sizeof(sample->ifname), "%s", arp->ifname);
-	(*sample_count)++;
-	return sample;
-}
-
-static bool conntrack_flow_add_single_endpoint(struct conntrack_client_sample *samples,
-					       size_t *sample_count,
-					       size_t max_samples,
-					       const struct arp_entry *arp,
-					       bool original_source_side,
-					       const struct conntrack_flow_sample *flow,
-					       uint64_t now_ms,
-					       struct conntrack_collect_stats *stats)
-{
-	struct conntrack_client_sample *sample;
-	uint64_t tx_bytes = original_source_side ? flow->orig_bytes : flow->reply_bytes;
-	uint64_t rx_bytes = original_source_side ? flow->reply_bytes : flow->orig_bytes;
-
-	sample = find_or_add_endpoint_sample(samples, sample_count, max_samples, arp);
-	if (!sample)
-		return true;
-
-	add_client_ip_unique(sample, arp->ip);
-	sample->tx_bytes += tx_bytes;
-	sample->rx_bytes += rx_bytes;
-	sample->last_seen_ms = now_ms;
-	conntrack_sample_add_conn_counts(sample, flow);
-
-	if (stats) {
-		stats->entries_matched++;
-		flow_endpoint_stats_add(original_source_side, arp,
-					&stats->src_lan_flows,
-					&stats->dst_lan_flows,
-					&stats->ipv4_lan_flows,
-					&stats->ipv6_lan_flows);
-	}
-	return true;
-}
-
-static bool conntrack_flow_add_endpoint(struct conntrack_client_sample *samples,
-					size_t *sample_count,
-					size_t max_samples,
-					const struct arp_entry *arp_entries,
-					size_t arp_count,
-					const struct conntrack_flow_sample *flow,
-					uint64_t now_ms,
-					struct conntrack_collect_stats *stats)
-{
-	struct flow_lan_endpoint orig_src;
-	struct flow_lan_endpoint orig_dst;
-	struct flow_lan_endpoint reply_src;
-	struct flow_lan_endpoint reply_dst;
-	bool has_orig_src;
-	bool has_orig_dst;
-	bool has_reply_src;
-	bool has_reply_dst;
-
-	has_orig_src = flow_endpoint_lookup(arp_entries, arp_count, flow->orig_src,
-					    FLOW_ENDPOINT_ORIG_SRC, &orig_src);
-	has_orig_dst = flow_endpoint_lookup(arp_entries, arp_count, flow->orig_dst,
-					    FLOW_ENDPOINT_ORIG_DST, &orig_dst);
-	has_reply_src = flow_endpoint_lookup(arp_entries, arp_count, flow->reply_src,
-					     FLOW_ENDPOINT_REPLY_SRC, &reply_src);
-	has_reply_dst = flow_endpoint_lookup(arp_entries, arp_count, flow->reply_dst,
-					     FLOW_ENDPOINT_REPLY_DST, &reply_dst);
-
-	if ((has_orig_src && has_orig_dst) || (has_reply_src && has_reply_dst)) {
-		if (stats)
-			stats->both_lan_flows++;
-		return true;
-	}
-	if (has_orig_src)
-		return conntrack_flow_add_single_endpoint(samples, sample_count, max_samples,
-							  orig_src.arp, true, flow,
-							  now_ms, stats);
-	if (has_orig_dst)
-		return conntrack_flow_add_single_endpoint(samples, sample_count, max_samples,
-							  orig_dst.arp, false, flow,
-							  now_ms, stats);
-	if (has_reply_src)
-		return conntrack_flow_add_single_endpoint(samples, sample_count, max_samples,
-							  reply_src.arp, false, flow,
-							  now_ms, stats);
-	if (has_reply_dst)
-		return conntrack_flow_add_single_endpoint(samples, sample_count, max_samples,
-							  reply_dst.arp, true, flow,
-							  now_ms, stats);
-
-	if (stats) {
-		stats->skipped_no_arp++;
-		stats->no_lan_flows++;
-	}
-	return true;
-}
-
 static const struct conntrack_client_sample *find_previous_nss_ecm_direct_sample(
 	const char *identity_key)
 {
@@ -4005,813 +2928,6 @@ static const struct conntrack_client_sample *find_previous_nss_ecm_direct_sample
 	}
 
 	return NULL;
-}
-
-static void nss_ecm_direct_flow_reset(struct nss_ecm_direct_flow *flow,
-				      const char *serial)
-{
-	memset(flow, 0, sizeof(*flow));
-	if (serial)
-		snprintf(flow->serial, sizeof(flow->serial), "%s", serial);
-}
-
-static bool parse_nss_ecm_state_key(const char *key, char *serial,
-				    size_t serial_size, char *field,
-				    size_t field_size)
-{
-	const char *prefix = "conns.conn.";
-	const char *p;
-	const char *dot;
-	size_t serial_len;
-
-	if (!key || strncmp(key, prefix, strlen(prefix)))
-		return false;
-
-	p = key + strlen(prefix);
-	dot = strchr(p, '.');
-	if (!dot || dot == p)
-		return false;
-
-	serial_len = (size_t)(dot - p);
-	if (serial_len >= serial_size)
-		return false;
-
-	memcpy(serial, p, serial_len);
-	serial[serial_len] = '\0';
-	snprintf(field, field_size, "%s", dot + 1);
-	return field[0] != '\0';
-}
-
-static void nss_ecm_direct_flow_apply_field(struct nss_ecm_direct_flow *flow,
-					    const char *field, const char *value)
-{
-	if (!strcmp(field, "sip_address")) {
-		snprintf(flow->sip_address, sizeof(flow->sip_address), "%s", value);
-		flow->has_sip_address = true;
-	} else if (!strcmp(field, "dip_address")) {
-		snprintf(flow->dip_address, sizeof(flow->dip_address), "%s", value);
-	} else if (!strcmp(field, "sip_address_nat")) {
-		snprintf(flow->sip_address_nat, sizeof(flow->sip_address_nat), "%s", value);
-		flow->has_sip_address_nat = true;
-	} else if (!strcmp(field, "dip_address_nat")) {
-		snprintf(flow->dip_address_nat, sizeof(flow->dip_address_nat), "%s", value);
-	} else if (!strcmp(field, "snode_address")) {
-		snprintf(flow->snode_address, sizeof(flow->snode_address), "%s", value);
-		normalize_mac_address(flow->snode_address);
-	} else if (!strcmp(field, "dnode_address")) {
-		snprintf(flow->dnode_address, sizeof(flow->dnode_address), "%s", value);
-		normalize_mac_address(flow->dnode_address);
-	} else if (!strcmp(field, "snode_address_nat")) {
-		snprintf(flow->snode_address_nat, sizeof(flow->snode_address_nat), "%s", value);
-		normalize_mac_address(flow->snode_address_nat);
-	} else if (!strcmp(field, "dnode_address_nat")) {
-		snprintf(flow->dnode_address_nat, sizeof(flow->dnode_address_nat), "%s", value);
-		normalize_mac_address(flow->dnode_address_nat);
-	} else if (!strcmp(field, "protocol")) {
-		flow->protocol = atoi(value);
-	} else if (!strcmp(field, "adv_stats.from_data_total")) {
-		char *end = NULL;
-		flow->from_data_total = strtoull(value, &end, 10);
-		flow->has_from_data_total = end && end != value;
-	} else if (!strcmp(field, "adv_stats.to_data_total")) {
-		char *end = NULL;
-		flow->to_data_total = strtoull(value, &end, 10);
-		(void)end;
-	}
-}
-
-static bool parse_nss_ecm_state_line(const char *line, char *serial,
-				     size_t serial_size, char *field,
-				     size_t field_size, char *value,
-				     size_t value_size)
-{
-	char buffer[NSS_ECM_STATE_LINE_MAX];
-	char *eq;
-	char *raw_value;
-
-	if (!line || !serial || !field || !value)
-		return false;
-
-	snprintf(buffer, sizeof(buffer), "%s", line);
-	eq = strchr(buffer, '=');
-	if (!eq)
-		return false;
-	*eq = '\0';
-	raw_value = eq + 1;
-	raw_value[strcspn(raw_value, "\r\n")] = '\0';
-
-	if (!parse_nss_ecm_state_key(buffer, serial, serial_size,
-				     field, field_size))
-		return false;
-	snprintf(value, value_size, "%s", raw_value);
-	return true;
-}
-
-static bool add_nss_ecm_direct_flow_to_samples(struct conntrack_client_sample *samples,
-					       size_t *sample_count,
-					       size_t max_samples,
-					       const struct arp_entry *arp_entries,
-					       size_t arp_count,
-					       const struct nss_ecm_direct_flow *flow,
-					       uint64_t now_ms,
-					       struct nss_ecm_direct_stats *stats)
-{
-	struct flow_lan_endpoint src;
-	struct flow_lan_endpoint dst;
-	const char *src_mac;
-	const char *dst_mac;
-	bool has_src;
-	bool has_dst;
-
-	if (!flow || (!flow->has_sip_address && !flow->has_sip_address_nat) ||
-	    !flow->has_from_data_total)
-		return false;
-
-	src_mac = valid_mac_address(flow->snode_address) ?
-		flow->snode_address : flow->snode_address_nat;
-	dst_mac = valid_mac_address(flow->dnode_address) ?
-		flow->dnode_address : flow->dnode_address_nat;
-	has_src = nss_ecm_direct_endpoint_lookup(arp_entries, arp_count,
-						 flow->sip_address,
-						 flow->sip_address_nat,
-						 src_mac,
-						 FLOW_ENDPOINT_ORIG_SRC, &src);
-	has_dst = nss_ecm_direct_endpoint_lookup(arp_entries, arp_count,
-						 flow->dip_address,
-						 flow->dip_address_nat,
-						 dst_mac,
-						 FLOW_ENDPOINT_ORIG_DST, &dst);
-
-	if (has_src && has_dst) {
-		if (stats)
-			stats->both_lan_flows++;
-		return true;
-	}
-	if (!has_src && !has_dst) {
-		if (stats) {
-			stats->skipped_no_arp++;
-			stats->no_lan_flows++;
-		}
-		return true;
-	}
-
-	if (has_src)
-		return nss_ecm_direct_flow_add_endpoint(samples, sample_count, max_samples,
-							src.arp, FLOW_ENDPOINT_ORIG_SRC,
-							flow, now_ms, stats);
-
-	return nss_ecm_direct_flow_add_endpoint(samples, sample_count, max_samples,
-						dst.arp, FLOW_ENDPOINT_ORIG_DST,
-						flow, now_ms, stats);
-}
-
-static bool nss_ecm_state_open_path(const char *path, FILE **file, int *err_out)
-{
-	FILE *fp;
-	int fd;
-
-	*file = NULL;
-	if (err_out)
-		*err_out = 0;
-
-	fd = open(path, O_RDONLY | O_CLOEXEC);
-	if (fd < 0) {
-		if (err_out)
-			*err_out = errno;
-		return false;
-	}
-
-	fp = fdopen(fd, "r");
-	if (!fp) {
-		if (err_out)
-			*err_out = errno;
-		close(fd);
-		return false;
-	}
-
-	*file = fp;
-	return true;
-}
-
-static bool nss_ecm_state_open(FILE **file, char *source_path,
-			       size_t source_path_size, int *err_out,
-			       unsigned int *major_out)
-{
-	FILE *major_file;
-	unsigned int major = 0;
-
-	if (major_out)
-		*major_out = 0;
-	if (nss_ecm_state_open_path(NSS_ECM_STATE_DEV_PATH, file, err_out)) {
-		snprintf(source_path, source_path_size, "%s", NSS_ECM_STATE_DEV_PATH);
-		return true;
-	}
-
-	major_file = fopen(NSS_ECM_STATE_DEV_MAJOR_PATH, "r");
-	if (!major_file)
-		return false;
-	if (fscanf(major_file, "%u", &major) != 1 || major == 0) {
-		fclose(major_file);
-		if (err_out)
-			*err_out = EINVAL;
-		return false;
-	}
-	fclose(major_file);
-	if (major_out)
-		*major_out = major;
-
-	unlink(NSS_ECM_STATE_TMP_DEV_PATH);
-	if (mknod(NSS_ECM_STATE_TMP_DEV_PATH, S_IFCHR | 0600, makedev(major, 0)) != 0) {
-		if (err_out)
-			*err_out = errno;
-		return false;
-	}
-
-	if (!nss_ecm_state_open_path(NSS_ECM_STATE_TMP_DEV_PATH, file, err_out)) {
-		unlink(NSS_ECM_STATE_TMP_DEV_PATH);
-		return false;
-	}
-	unlink(NSS_ECM_STATE_TMP_DEV_PATH);
-
-	snprintf(source_path, source_path_size, "%s", NSS_ECM_STATE_TMP_DEV_PATH);
-	return true;
-}
-
-static bool read_nss_ecm_direct_snapshot(struct conntrack_client_sample *samples,
-					 size_t *sample_count, size_t max_samples,
-					 uint64_t now_ms, struct json_object *warnings,
-					 struct nss_ecm_direct_stats *stats)
-{
-	struct arp_entry arp_entries[DEFAULT_MAX_CLIENTS];
-	size_t arp_count;
-	FILE *file = NULL;
-	char line[NSS_ECM_STATE_LINE_MAX];
-	struct nss_ecm_direct_flow active_flow;
-	char active_serial[32] = "";
-	bool have_active = false;
-
-	*sample_count = 0;
-	memset(stats, 0, sizeof(*stats));
-	stats->state_attempted = true;
-
-	arp_count = load_lan_identity_table(arp_entries, ARRAY_SIZE(arp_entries), warnings);
-	if (arp_count == 0) {
-		add_string_unique(warnings, "skip_nss_ecm_direct_flow_without_lan_identity");
-		return false;
-	}
-
-	if (!nss_ecm_state_open(&file, stats->source_path,
-				sizeof(stats->source_path), &stats->state_errno,
-				&stats->state_major)) {
-		add_string_unique(warnings, "nss_ecm_direct_unavailable");
-		return false;
-	}
-
-	stats->state_read = true;
-	nss_ecm_direct_flow_reset(&active_flow, NULL);
-	while (fgets(line, sizeof(line), file)) {
-		char serial[32];
-		char field[96];
-		char value[NSS_ECM_STATE_LINE_MAX];
-
-		if (!parse_nss_ecm_state_line(line, serial, sizeof(serial),
-					      field, sizeof(field),
-					      value, sizeof(value))) {
-			stats->malformed_lines++;
-			continue;
-		}
-
-		if (active_serial[0] && strcmp(active_serial, serial)) {
-			stats->entries_seen++;
-			add_nss_ecm_direct_flow_to_samples(samples, sample_count,
-							   max_samples,
-							   arp_entries, arp_count,
-							   &active_flow, now_ms,
-							   stats);
-			nss_ecm_direct_flow_reset(&active_flow, serial);
-			snprintf(active_serial, sizeof(active_serial), "%s", serial);
-		} else if (!active_serial[0]) {
-			nss_ecm_direct_flow_reset(&active_flow, serial);
-			snprintf(active_serial, sizeof(active_serial), "%s", serial);
-		}
-
-		nss_ecm_direct_flow_apply_field(&active_flow, field, value);
-		have_active = true;
-	}
-
-	if (have_active) {
-		stats->entries_seen++;
-		add_nss_ecm_direct_flow_to_samples(samples, sample_count,
-						   max_samples, arp_entries,
-						   arp_count, &active_flow,
-						   now_ms, stats);
-	}
-
-	fclose(file);
-	stats->current_clients = *sample_count;
-	if (stats->malformed_lines)
-		add_string_unique(warnings, "nss_ecm_direct_parse_errors");
-	if (stats->skipped_no_arp)
-		add_string_unique(warnings, "skip_nss_ecm_direct_flow_without_lan_identity");
-	if (*sample_count == 0) {
-		add_string_unique(warnings, "nss_direct_no_data");
-		return false;
-	}
-	return true;
-}
-
-static bool add_conntrack_flow_to_samples(struct conntrack_client_sample *samples,
-					  size_t *sample_count, size_t max_samples,
-					  const struct arp_entry *arp_entries, size_t arp_count,
-					  const struct conntrack_flow_sample *flow,
-					  uint64_t now_ms, struct conntrack_collect_stats *stats)
-{
-	if (!flow || !flow->has_orig_src || !flow->has_orig_bytes)
-		return false;
-
-	return conntrack_flow_add_endpoint(samples, sample_count, max_samples,
-					   arp_entries, arp_count, flow,
-					   now_ms, stats);
-}
-
-static bool open_conntrack_procfs(FILE **file, char *source_path, size_t source_path_size)
-{
-	*file = fopen(CONNTRACK_PROCFS_PATH, "r");
-	if (*file) {
-		snprintf(source_path, source_path_size, "%s", CONNTRACK_PROCFS_PATH);
-		return true;
-	}
-
-	*file = fopen(CONNTRACK_LEGACY_PROCFS_PATH, "r");
-	if (*file) {
-		snprintf(source_path, source_path_size, "%s", CONNTRACK_LEGACY_PROCFS_PATH);
-		return true;
-	}
-
-	return false;
-}
-
-static uint64_t be64_to_host(uint64_t value)
-{
-	const uint8_t *p = (const uint8_t *)&value;
-
-	return ((uint64_t)p[0] << 56) |
-	       ((uint64_t)p[1] << 48) |
-	       ((uint64_t)p[2] << 40) |
-	       ((uint64_t)p[3] << 32) |
-	       ((uint64_t)p[4] << 24) |
-	       ((uint64_t)p[5] << 16) |
-	       ((uint64_t)p[6] << 8) |
-	       (uint64_t)p[7];
-}
-
-struct conntrack_attr_table {
-	struct nlattr **tb;
-	uint16_t max;
-};
-
-static int conntrack_store_attr_cb(const struct nlattr *attr, void *data)
-{
-	struct conntrack_attr_table *table = data;
-	uint16_t type = mnl_attr_get_type(attr);
-
-	type &= NLA_TYPE_MASK;
-	if (type <= table->max)
-		table->tb[type] = (struct nlattr *)attr;
-	return MNL_CB_OK;
-}
-
-static bool conntrack_netlink_parse_tuple(const struct nlattr *attr,
-					  struct conntrack_flow_sample *flow,
-					  bool original)
-{
-	struct nlattr *tuple[CTA_TUPLE_MAX + 1];
-	struct nlattr *ip[CTA_IP_MAX + 1];
-	struct nlattr *proto[CTA_PROTO_MAX + 1];
-	struct conntrack_attr_table tuple_table = { tuple, CTA_TUPLE_MAX };
-	struct conntrack_attr_table ip_table = { ip, CTA_IP_MAX };
-	struct conntrack_attr_table proto_table = { proto, CTA_PROTO_MAX };
-	uint8_t proto_num;
-
-	memset(tuple, 0, sizeof(tuple));
-	memset(ip, 0, sizeof(ip));
-	memset(proto, 0, sizeof(proto));
-	if (mnl_attr_parse_nested(attr, conntrack_store_attr_cb, &tuple_table) < 0)
-		return false;
-	if (!tuple[CTA_TUPLE_IP] || !tuple[CTA_TUPLE_PROTO])
-		return false;
-	if (mnl_attr_parse_nested(tuple[CTA_TUPLE_IP], conntrack_store_attr_cb, &ip_table) < 0)
-		return false;
-	if (mnl_attr_parse_nested(tuple[CTA_TUPLE_PROTO], conntrack_store_attr_cb, &proto_table) < 0)
-		return false;
-
-	if (original) {
-		if (ip[CTA_IP_V4_SRC]) {
-			struct in_addr addr;
-			memcpy(&addr, mnl_attr_get_payload(ip[CTA_IP_V4_SRC]), sizeof(addr));
-			if (!inet_ntop(AF_INET, &addr, flow->orig_src, sizeof(flow->orig_src)))
-				return false;
-			flow->has_orig_src = true;
-		} else if (ip[CTA_IP_V6_SRC]) {
-			struct in6_addr addr6;
-			memcpy(&addr6, mnl_attr_get_payload(ip[CTA_IP_V6_SRC]), sizeof(addr6));
-			if (!inet_ntop(AF_INET6, &addr6, flow->orig_src, sizeof(flow->orig_src)))
-				return false;
-			flow->has_orig_src = true;
-		}
-		if (ip[CTA_IP_V4_DST]) {
-			struct in_addr addr;
-			memcpy(&addr, mnl_attr_get_payload(ip[CTA_IP_V4_DST]), sizeof(addr));
-			if (!inet_ntop(AF_INET, &addr, flow->orig_dst, sizeof(flow->orig_dst)))
-				return false;
-			flow->has_orig_dst = true;
-		} else if (ip[CTA_IP_V6_DST]) {
-			struct in6_addr addr6;
-			memcpy(&addr6, mnl_attr_get_payload(ip[CTA_IP_V6_DST]), sizeof(addr6));
-			if (!inet_ntop(AF_INET6, &addr6, flow->orig_dst, sizeof(flow->orig_dst)))
-				return false;
-			flow->has_orig_dst = true;
-		}
-	} else {
-		if (ip[CTA_IP_V4_SRC]) {
-			struct in_addr addr;
-			memcpy(&addr, mnl_attr_get_payload(ip[CTA_IP_V4_SRC]), sizeof(addr));
-			if (!inet_ntop(AF_INET, &addr, flow->reply_src, sizeof(flow->reply_src)))
-				return false;
-			flow->has_reply_src = true;
-		} else if (ip[CTA_IP_V6_SRC]) {
-			struct in6_addr addr6;
-			memcpy(&addr6, mnl_attr_get_payload(ip[CTA_IP_V6_SRC]), sizeof(addr6));
-			if (!inet_ntop(AF_INET6, &addr6, flow->reply_src, sizeof(flow->reply_src)))
-				return false;
-			flow->has_reply_src = true;
-		}
-		if (ip[CTA_IP_V4_DST]) {
-			struct in_addr addr;
-			memcpy(&addr, mnl_attr_get_payload(ip[CTA_IP_V4_DST]), sizeof(addr));
-			if (!inet_ntop(AF_INET, &addr, flow->reply_dst, sizeof(flow->reply_dst)))
-				return false;
-			flow->has_reply_dst = true;
-		} else if (ip[CTA_IP_V6_DST]) {
-			struct in6_addr addr6;
-			memcpy(&addr6, mnl_attr_get_payload(ip[CTA_IP_V6_DST]), sizeof(addr6));
-			if (!inet_ntop(AF_INET6, &addr6, flow->reply_dst, sizeof(flow->reply_dst)))
-				return false;
-			flow->has_reply_dst = true;
-		}
-	}
-
-	if (proto[CTA_PROTO_NUM]) {
-		proto_num = mnl_attr_get_u8(proto[CTA_PROTO_NUM]);
-		if (proto_num == IPPROTO_TCP) {
-			snprintf(flow->protocol, sizeof(flow->protocol), "tcp");
-			flow->is_tcp = true;
-		} else if (proto_num == IPPROTO_UDP) {
-			snprintf(flow->protocol, sizeof(flow->protocol), "udp");
-			flow->is_udp = true;
-		} else {
-			snprintf(flow->protocol, sizeof(flow->protocol), "%u", proto_num);
-		}
-	}
-
-	if (proto[CTA_PROTO_SRC_PORT]) {
-		uint16_t port = ntohs(mnl_attr_get_u16(proto[CTA_PROTO_SRC_PORT]));
-		if (original)
-			flow->orig_sport = port;
-		else
-			flow->reply_sport = port;
-	}
-	if (proto[CTA_PROTO_DST_PORT]) {
-		uint16_t port = ntohs(mnl_attr_get_u16(proto[CTA_PROTO_DST_PORT]));
-		if (original)
-			flow->orig_dport = port;
-		else
-			flow->reply_dport = port;
-	}
-
-	return true;
-}
-
-static bool conntrack_netlink_parse_counters(const struct nlattr *attr,
-					     uint64_t *bytes)
-{
-	struct nlattr *counters[CTA_COUNTERS_MAX + 1];
-	struct conntrack_attr_table counters_table = { counters, CTA_COUNTERS_MAX };
-
-	memset(counters, 0, sizeof(counters));
-	if (mnl_attr_parse_nested(attr, conntrack_store_attr_cb, &counters_table) < 0)
-		return false;
-	if (counters[CTA_COUNTERS_BYTES]) {
-		*bytes = be64_to_host(mnl_attr_get_u64(counters[CTA_COUNTERS_BYTES]));
-		return true;
-	}
-	if (counters[CTA_COUNTERS32_BYTES]) {
-		*bytes = ntohl(mnl_attr_get_u32(counters[CTA_COUNTERS32_BYTES]));
-		return true;
-	}
-	return false;
-}
-
-static void conntrack_tcp_state_name(uint8_t state, char *buffer, size_t size)
-{
-	const char *name = "";
-
-	switch (state) {
-	case TCP_CONNTRACK_ESTABLISHED:
-		name = "ESTABLISHED";
-		break;
-	case TCP_CONNTRACK_SYN_SENT:
-		name = "SYN_SENT";
-		break;
-	case TCP_CONNTRACK_SYN_RECV:
-		name = "SYN_RECV";
-		break;
-	case TCP_CONNTRACK_FIN_WAIT:
-		name = "FIN_WAIT";
-		break;
-	case TCP_CONNTRACK_CLOSE_WAIT:
-		name = "CLOSE_WAIT";
-		break;
-	case TCP_CONNTRACK_LAST_ACK:
-		name = "LAST_ACK";
-		break;
-	case TCP_CONNTRACK_TIME_WAIT:
-		name = "TIME_WAIT";
-		break;
-	case TCP_CONNTRACK_CLOSE:
-		name = "CLOSE";
-		break;
-	default:
-		name = "";
-		break;
-	}
-
-	snprintf(buffer, size, "%s", name);
-}
-
-static bool conntrack_netlink_parse_protoinfo(const struct nlattr *attr,
-					      struct conntrack_flow_sample *flow)
-{
-	struct nlattr *protoinfo[CTA_PROTOINFO_MAX + 1];
-	struct nlattr *tcp[CTA_PROTOINFO_TCP_MAX + 1];
-	struct conntrack_attr_table protoinfo_table = { protoinfo, CTA_PROTOINFO_MAX };
-	struct conntrack_attr_table tcp_table = { tcp, CTA_PROTOINFO_TCP_MAX };
-
-	memset(protoinfo, 0, sizeof(protoinfo));
-	memset(tcp, 0, sizeof(tcp));
-	if (mnl_attr_parse_nested(attr, conntrack_store_attr_cb, &protoinfo_table) < 0)
-		return false;
-	if (!protoinfo[CTA_PROTOINFO_TCP])
-		return true;
-	if (mnl_attr_parse_nested(protoinfo[CTA_PROTOINFO_TCP], conntrack_store_attr_cb, &tcp_table) < 0)
-		return false;
-	if (tcp[CTA_PROTOINFO_TCP_STATE])
-		conntrack_tcp_state_name(mnl_attr_get_u8(tcp[CTA_PROTOINFO_TCP_STATE]),
-					 flow->tcp_state, sizeof(flow->tcp_state));
-	return true;
-}
-
-struct conntrack_netlink_dump_ctx {
-	struct conntrack_client_sample *samples;
-	size_t *sample_count;
-	size_t max_samples;
-	const struct arp_entry *arp_entries;
-	size_t arp_count;
-	uint64_t now_ms;
-	struct conntrack_collect_stats *stats;
-};
-
-static int conntrack_netlink_data_cb(const struct nlmsghdr *nlh, void *data)
-{
-	struct conntrack_netlink_dump_ctx *ctx = data;
-	struct nlattr *tb[CTA_MAX + 1];
-	struct conntrack_attr_table tb_table = { tb, CTA_MAX };
-	struct conntrack_flow_sample flow;
-
-	memset(tb, 0, sizeof(tb));
-	memset(&flow, 0, sizeof(flow));
-	if (mnl_attr_parse(nlh, sizeof(struct nfgenmsg), conntrack_store_attr_cb, &tb_table) < 0) {
-		ctx->stats->malformed_lines++;
-		return MNL_CB_OK;
-	}
-
-	ctx->stats->entries_seen++;
-	if (!tb[CTA_TUPLE_ORIG] || !tb[CTA_COUNTERS_ORIG]) {
-		ctx->stats->malformed_lines++;
-		return MNL_CB_OK;
-	}
-
-	if (!conntrack_netlink_parse_tuple(tb[CTA_TUPLE_ORIG], &flow, true)) {
-		ctx->stats->malformed_lines++;
-		return MNL_CB_OK;
-	}
-	if (tb[CTA_TUPLE_REPLY])
-		conntrack_netlink_parse_tuple(tb[CTA_TUPLE_REPLY], &flow, false);
-	if (!conntrack_netlink_parse_counters(tb[CTA_COUNTERS_ORIG], &flow.orig_bytes)) {
-		ctx->stats->malformed_lines++;
-		return MNL_CB_OK;
-	}
-	flow.has_orig_bytes = true;
-	if (tb[CTA_COUNTERS_REPLY])
-		conntrack_netlink_parse_counters(tb[CTA_COUNTERS_REPLY], &flow.reply_bytes);
-	if (tb[CTA_STATUS])
-		flow.assured = (ntohl(mnl_attr_get_u32(tb[CTA_STATUS])) & IPS_ASSURED) != 0;
-	if (tb[CTA_PROTOINFO])
-		conntrack_netlink_parse_protoinfo(tb[CTA_PROTOINFO], &flow);
-	if (flow.is_tcp && flow.tcp_state[0] == '\0')
-		conntrack_tcp_state_name(TCP_CONNTRACK_ESTABLISHED,
-					 flow.tcp_state, sizeof(flow.tcp_state));
-	flow.udp_is_dns = flow.is_udp &&
-		(flow.orig_sport == 53 || flow.orig_dport == 53 ||
-		 flow.reply_sport == 53 || flow.reply_dport == 53);
-
-	add_conntrack_flow_to_samples(ctx->samples, ctx->sample_count,
-				      ctx->max_samples, ctx->arp_entries,
-				      ctx->arp_count, &flow, ctx->now_ms,
-				      ctx->stats);
-	return MNL_CB_OK;
-}
-
-static bool read_conntrack_netlink_snapshot(struct conntrack_client_sample *samples,
-					    size_t *sample_count, size_t max_samples,
-					    uint64_t now_ms, struct json_object *warnings,
-					    struct conntrack_collect_stats *stats)
-{
-	char sndbuf[MNL_SOCKET_BUFFER_SIZE];
-	char rcvbuf[MNL_SOCKET_DUMP_SIZE];
-	struct arp_entry arp_entries[DEFAULT_MAX_CLIENTS];
-	struct mnl_socket *nl;
-	struct nlmsghdr *nlh;
-	struct nfgenmsg *nfg;
-	struct conntrack_netlink_dump_ctx dump_ctx;
-	unsigned int seq = (unsigned int)time(NULL);
-	unsigned int portid;
-	ssize_t ret;
-	int cb_ret = MNL_CB_OK;
-	size_t arp_count;
-
-	(void)warnings;
-
-	*sample_count = 0;
-	memset(stats, 0, sizeof(*stats));
-	stats->netlink_attempted = true;
-	snprintf(stats->source_path, sizeof(stats->source_path), "%s",
-		 CONNTRACK_NETLINK_SOURCE_PATH);
-
-	arp_count = load_lan_identity_table(arp_entries, ARRAY_SIZE(arp_entries), warnings);
-	if (arp_count == 0)
-		return false;
-
-	nl = mnl_socket_open(NETLINK_NETFILTER);
-	if (!nl) {
-		stats->netlink_errno = errno;
-		return false;
-	}
-	if (mnl_socket_bind(nl, 0, MNL_SOCKET_AUTOPID) < 0) {
-		stats->netlink_errno = errno;
-		mnl_socket_close(nl);
-		return false;
-	}
-	portid = mnl_socket_get_portid(nl);
-
-	memset(sndbuf, 0, sizeof(sndbuf));
-	nlh = mnl_nlmsg_put_header(sndbuf);
-	nlh->nlmsg_type = (NFNL_SUBSYS_CTNETLINK << 8) | IPCTNL_MSG_CT_GET;
-	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
-	nlh->nlmsg_seq = seq;
-	nfg = mnl_nlmsg_put_extra_header(nlh, sizeof(*nfg));
-	nfg->nfgen_family = AF_UNSPEC;
-	nfg->version = NFNETLINK_V0;
-	nfg->res_id = 0;
-
-	if (mnl_socket_sendto(nl, nlh, nlh->nlmsg_len) < 0) {
-		stats->netlink_errno = errno;
-		mnl_socket_close(nl);
-		return false;
-	}
-
-	memset(&dump_ctx, 0, sizeof(dump_ctx));
-	dump_ctx.samples = samples;
-	dump_ctx.sample_count = sample_count;
-	dump_ctx.max_samples = max_samples;
-	dump_ctx.arp_entries = arp_entries;
-	dump_ctx.arp_count = arp_count;
-	dump_ctx.now_ms = now_ms;
-	dump_ctx.stats = stats;
-
-	while ((ret = mnl_socket_recvfrom(nl, rcvbuf, sizeof(rcvbuf))) > 0) {
-		cb_ret = mnl_cb_run(rcvbuf, (size_t)ret, seq, portid,
-				    conntrack_netlink_data_cb, &dump_ctx);
-		if (cb_ret <= MNL_CB_STOP)
-			break;
-	}
-	if (ret < 0) {
-		stats->netlink_errno = errno;
-		mnl_socket_close(nl);
-		return false;
-	}
-	if (cb_ret < 0) {
-		stats->netlink_errno = errno;
-		mnl_socket_close(nl);
-		return false;
-	}
-
-	mnl_socket_close(nl);
-	stats->netlink_read = true;
-	stats->current_clients = *sample_count;
-	return true;
-}
-
-static bool read_conntrack_procfs_snapshot(struct conntrack_client_sample *samples,
-					   size_t *sample_count, size_t max_samples,
-					   uint64_t now_ms, struct json_object *warnings,
-					   struct conntrack_collect_stats *stats)
-{
-	struct arp_entry arp_entries[DEFAULT_MAX_CLIENTS];
-	size_t arp_count;
-	FILE *file = NULL;
-	char line[CONNTRACK_LINE_MAX];
-
-	*sample_count = 0;
-	memset(stats, 0, sizeof(*stats));
-	arp_count = load_lan_identity_table(arp_entries, ARRAY_SIZE(arp_entries), warnings);
-	if (arp_count == 0)
-		return false;
-
-	if (!open_conntrack_procfs(&file, stats->source_path, sizeof(stats->source_path))) {
-		add_string_unique(warnings, "conntrack_unavailable");
-		return false;
-	}
-
-	stats->procfs_read = true;
-	while (fgets(line, sizeof(line), file)) {
-		struct conntrack_flow_sample flow;
-
-		stats->entries_seen++;
-
-		if (!parse_conntrack_procfs_line(line, &flow)) {
-			stats->malformed_lines++;
-			continue;
-		}
-
-		add_conntrack_flow_to_samples(samples, sample_count, max_samples,
-					      arp_entries, arp_count, &flow, now_ms, stats);
-	}
-
-	fclose(file);
-	stats->current_clients = *sample_count;
-	return true;
-}
-
-static bool read_conntrack_snapshot(struct conntrack_client_sample *samples,
-				    size_t *sample_count, size_t max_samples,
-				    uint64_t now_ms, struct json_object *warnings,
-				    struct conntrack_collect_stats *stats)
-{
-	return read_conntrack_snapshot_mode(samples, sample_count, max_samples,
-					    now_ms, warnings, stats, COLLECTOR_MODE_AUTO);
-}
-
-static bool read_conntrack_snapshot_mode(struct conntrack_client_sample *samples,
-					 size_t *sample_count, size_t max_samples,
-					 uint64_t now_ms, struct json_object *warnings,
-					 struct conntrack_collect_stats *stats,
-					 enum collector_mode_setting mode)
-{
-	struct conntrack_collect_stats netlink_stats;
-	struct conntrack_collect_stats procfs_stats;
-
-	if (mode == COLLECTOR_MODE_CONNTRACK_PROCFS) {
-		if (read_conntrack_procfs_snapshot(samples, sample_count, max_samples,
-						   now_ms, warnings, &procfs_stats)) {
-			*stats = procfs_stats;
-			return true;
-		}
-		*stats = procfs_stats;
-		return false;
-	}
-
-	if (read_conntrack_netlink_snapshot(samples, sample_count, max_samples,
-					    now_ms, warnings, &netlink_stats)) {
-		*stats = netlink_stats;
-		return true;
-	}
-
-	if (mode == COLLECTOR_MODE_CONNTRACK_NETLINK) {
-		*stats = netlink_stats;
-		return false;
-	}
-
-	if (read_conntrack_procfs_snapshot(samples, sample_count, max_samples,
-					   now_ms, warnings, &procfs_stats)) {
-		procfs_stats.netlink_attempted = netlink_stats.netlink_attempted;
-		procfs_stats.netlink_errno = netlink_stats.netlink_errno;
-		*stats = procfs_stats;
-		return true;
-	}
-
-	*stats = netlink_stats.netlink_attempted ? netlink_stats : procfs_stats;
-	return false;
 }
 
 static uint64_t delta_bps(uint64_t current, uint64_t previous, uint64_t delta_ms,
@@ -4896,6 +3012,84 @@ static void add_conntrack_identity_model(struct json_object *evidence)
 	json_object_object_add(identity, "excluded_interfaces", json_object_new_string("dae0,dae0peer,tun*,ppp*,wg*"));
 	json_object_object_add(identity, "missing_mac_policy", json_object_new_string("skip_conntrack_entry_without_fabricating_client"));
 	json_object_object_add(evidence, "identity_model", identity);
+}
+
+static void add_clients_identity_evidence(struct json_object *parent)
+{
+	struct json_object *evidence = NULL;
+	struct json_object *identity_model = NULL;
+	struct json_object *existing_identity = NULL;
+	struct json_object *primary_key = json_object_new_array();
+	struct json_object *sources = json_object_new_array();
+	struct json_object *direction = json_object_new_object();
+	struct json_object *excluded = json_object_new_array();
+
+	if (!parent)
+		goto out;
+
+	if (!json_object_object_get_ex(parent, "evidence", &evidence) ||
+	    !json_object_is_type(evidence, json_type_object)) {
+		evidence = json_object_new_object();
+		json_object_object_add(parent, "evidence", evidence);
+		json_object_object_add(evidence, "source",
+				       json_object_new_string("lanspeedd_identity_model"));
+		json_object_object_add(evidence, "method",
+				       json_object_new_string("clients"));
+		json_object_object_add(evidence, "read_only",
+				       json_object_new_boolean(true));
+		json_object_object_add(evidence, "live_metrics",
+				       json_object_new_boolean(false));
+	}
+
+	if (json_object_object_get_ex(evidence, "identity_model", &existing_identity) &&
+	    json_object_is_type(existing_identity, json_type_object)) {
+		identity_model = existing_identity;
+	} else {
+		identity_model = json_object_new_object();
+		json_object_object_add(evidence, "identity_model", identity_model);
+	}
+
+	json_object_array_add(primary_key, json_object_new_string("mac"));
+	json_object_array_add(primary_key, json_object_new_string("zone"));
+	json_object_object_add(identity_model, "primary_key", primary_key);
+	primary_key = NULL;
+	json_object_object_add(identity_model, "attached_fields",
+			       json_object_new_string("ips,hostname,interface,last_seen"));
+	json_object_object_add(identity_model, "ip_identity",
+			       json_object_new_string("addresses are attributes only, not unique identity keys"));
+
+	json_object_array_add(sources, json_object_new_string("dhcp_lease"));
+	json_object_array_add(sources, json_object_new_string("arp_nd_neighbor"));
+	json_object_array_add(sources, json_object_new_string("hostapd_nl80211"));
+	json_object_array_add(sources, json_object_new_string("netifd_ubus"));
+	json_object_object_add(identity_model, "merge_sources", sources);
+	sources = NULL;
+
+	json_object_object_add(direction, "tx_bps",
+			       json_object_new_string("client-originated traffic from the client point of view"));
+	json_object_object_add(direction, "rx_bps",
+			       json_object_new_string("traffic to client from the client point of view"));
+	json_object_object_add(identity_model, "direction", direction);
+	direction = NULL;
+
+	json_object_array_add(excluded, json_object_new_string("router_mac"));
+	json_object_array_add(excluded, json_object_new_string("broadcast"));
+	json_object_array_add(excluded, json_object_new_string("multicast"));
+	json_object_array_add(excluded, json_object_new_string("arp"));
+	json_object_array_add(excluded, json_object_new_string("nd"));
+	json_object_array_add(excluded, json_object_new_string("dae0"));
+	json_object_array_add(excluded, json_object_new_string("dae0peer"));
+	json_object_array_add(excluded, json_object_new_string("tun"));
+	json_object_array_add(excluded, json_object_new_string("ppp"));
+	json_object_array_add(excluded, json_object_new_string("wg"));
+	json_object_object_add(identity_model, "excluded_from_clients", excluded);
+	excluded = NULL;
+
+out:
+	json_object_put(primary_key);
+	json_object_put(sources);
+	json_object_put(direction);
+	json_object_put(excluded);
 }
 
 static void add_conntrack_clients_evidence(struct json_object *root,
@@ -5080,129 +3274,14 @@ static void emit_conntrack_clients(struct json_object *root,
 	previous_conntrack_snapshot_valid = true;
 }
 
-static struct bpf_client_sample *bpf_find_or_insert_client(
-	struct bpf_client_sample *samples, size_t *count, size_t max_samples,
-	const char *mac, const char *zone, const char *ifname,
-	const char *identity_key,
-	const struct arp_entry *arp_entries, size_t arp_count)
-{
-	struct bpf_client_sample *sample;
-	size_t i;
-
-	for (i = 0; i < *count; i++) {
-		if (!strcmp(samples[i].identity_key, identity_key))
-			return &samples[i];
-	}
-
-	if (*count >= max_samples)
-		return NULL;
-
-	sample = &samples[*count];
-	memset(sample, 0, sizeof(*sample));
-	snprintf(sample->mac, sizeof(sample->mac), "%s", mac);
-	snprintf(sample->identity_key, sizeof(sample->identity_key), "%s", identity_key);
-	snprintf(sample->zone, sizeof(sample->zone), "%s", zone);
-	snprintf(sample->ifname, sizeof(sample->ifname), "%s", ifname);
-
-	for (i = 0; i < arp_count && sample->ip_count < MAX_CLIENT_IPS; i++) {
-		size_t k;
-		bool dup = false;
-
-		if (strcasecmp(arp_entries[i].mac, mac))
-			continue;
-		for (k = 0; k < sample->ip_count; k++) {
-			if (!strcmp(sample->ips[k], arp_entries[i].ip)) {
-				dup = true;
-				break;
-			}
-		}
-		if (!dup)
-			snprintf(sample->ips[sample->ip_count++],
-				 sizeof(sample->ips[0]), "%.*s",
-				 (int)(sizeof(sample->ips[0]) - 1),
-				 arp_entries[i].ip);
-	}
-
-	(*count)++;
-	return sample;
-}
-
 static void bpf_collect_samples(void)
 {
-	struct lanspeed_bpf_sample raw[DEFAULT_MAX_CLIENTS * 2];
-	struct arp_entry arp_entries[DEFAULT_MAX_CLIENTS];
 	struct json_object *discard_warnings = json_object_new_array();
-	size_t raw_count = 0;
-	size_t arp_count;
 	uint64_t now_ms = monotonic_time_ms();
 	size_t max_folded = max_clients > 0 && max_clients < DEFAULT_MAX_CLIENTS ?
 			    (size_t)max_clients : DEFAULT_MAX_CLIENTS;
-	size_t i;
 
-	if (lanspeed_bpf_read_samples(raw, ARRAY_SIZE(raw), &raw_count) != 0) {
-		json_object_put(discard_warnings);
-		return;
-	}
-
-	memcpy(bpf_previous_samples, bpf_current_samples,
-	       bpf_current_sample_count * sizeof(bpf_current_samples[0]));
-	bpf_previous_sample_count = bpf_current_sample_count;
-	bpf_previous_snapshot_ms = bpf_current_snapshot_ms;
-	bpf_previous_snapshot_valid = bpf_previous_snapshot_ms > 0;
-
-	bpf_current_sample_count = 0;
-	bpf_current_snapshot_ms = now_ms;
-
-	arp_count = load_lan_identity_table(arp_entries, ARRAY_SIZE(arp_entries),
-					    discard_warnings);
-
-	for (i = 0; i < raw_count; i++) {
-		char mac_str[MAC_STR_LEN];
-		char ifname_buf[IFNAME_STR_LEN];
-		char zone[ZONE_STR_LEN];
-		char identity_key[IDENTITY_KEY_STR_LEN];
-		struct bpf_client_sample *sample;
-
-		snprintf(mac_str, sizeof(mac_str),
-			 "%02x:%02x:%02x:%02x:%02x:%02x",
-			 raw[i].mac[0], raw[i].mac[1], raw[i].mac[2],
-			 raw[i].mac[3], raw[i].mac[4], raw[i].mac[5]);
-
-		if (!valid_mac_address(mac_str))
-			continue;
-
-		if (!if_indextoname(raw[i].ifindex, ifname_buf))
-			snprintf(ifname_buf, sizeof(ifname_buf), "if%u",
-				 raw[i].ifindex);
-		if (ifname_is_excluded_identity_source(ifname_buf))
-			continue;
-
-		derive_zone_from_ifname(ifname_buf, zone, sizeof(zone));
-		snprintf(identity_key, sizeof(identity_key), "%s@%s", mac_str, zone);
-
-		sample = bpf_find_or_insert_client(bpf_current_samples,
-						   &bpf_current_sample_count,
-						   max_folded, mac_str, zone,
-						   ifname_buf, identity_key,
-						   arp_entries, arp_count);
-		if (!sample)
-			break;
-
-		if (raw[i].direction == LANSPEED_BPF_DIR_TX) {
-			sample->tx_bytes += raw[i].bytes;
-			sample->tcp_conns = raw[i].tcp_conns;
-			sample->udp_conns = raw[i].udp_conns;
-		} else if (raw[i].direction == LANSPEED_BPF_DIR_RX)
-			sample->rx_bytes += raw[i].bytes;
-		if (raw[i].last_seen_ns) {
-			uint64_t raw_last_seen_ms = monotonic_ns_to_ms(raw[i].last_seen_ns);
-			if (raw_last_seen_ms > sample->last_seen_ms)
-				sample->last_seen_ms = raw_last_seen_ms;
-		} else if (now_ms > sample->last_seen_ms) {
-			sample->last_seen_ms = now_ms;
-		}
-	}
-
+	bpf_collect_snapshot(&bpf_cache, max_folded, now_ms, discard_warnings);
 	json_object_put(discard_warnings);
 }
 
@@ -5212,8 +3291,7 @@ static void bpf_collect_tick(struct uloop_timeout *t)
 		struct runtime_probe probe;
 
 		init_runtime_probe(&probe);
-		inspect_command_capabilities(&probe);
-		inspect_tc(&probe);
+		load_cached_runtime_probe(&probe);
 		(void)bpf_runtime_refresh_attach_policy(&probe);
 		free_runtime_probe(&probe);
 
@@ -5226,7 +3304,9 @@ static void bpf_collect_tick(struct uloop_timeout *t)
 
 static void add_bpf_clients_evidence(struct json_object *root,
 				     const struct runtime_probe *probe,
-				     uint64_t delta_ms, size_t emitted_clients)
+				     uint64_t delta_ms, size_t emitted_clients,
+				     uint64_t approx_tcp_tuples,
+				     uint64_t approx_udp_tuples)
 {
 	struct json_object *evidence = json_object_new_object();
 	struct json_object *sources = json_object_new_array();
@@ -5250,6 +3330,12 @@ static void add_bpf_clients_evidence(struct json_object *root,
 	json_object_object_add(evidence, "delta_ms", json_object_new_int64((int64_t)delta_ms));
 	json_object_object_add(evidence, "emitted_clients",
 			       json_object_new_int((int)emitted_clients));
+	json_object_object_add(evidence, "bpf_approx_tcp_tuples",
+			       json_object_new_int64((int64_t)approx_tcp_tuples));
+	json_object_object_add(evidence, "bpf_approx_udp_tuples",
+			       json_object_new_int64((int64_t)approx_udp_tuples));
+	json_object_object_add(evidence, "bpf_approx_tuple_semantics",
+			       json_object_new_string("diagnostic_only_not_conntrack_current_table"));
 	if (nss_daed_should_prefer_bpf(probe)) {
 		struct json_object *warnings = json_object_new_array();
 		json_object_array_add(warnings, json_object_new_string("nss_daed_prefers_bpf"));
@@ -5275,93 +3361,76 @@ static bool collect_bpf_clients(struct json_object *root,
 				struct json_object *clients,
 				const struct runtime_probe *probe)
 {
+	struct bpf_rate_sample rates[DEFAULT_MAX_CLIENTS];
 	uint64_t delta_ms;
 	size_t emitted = 0;
+	uint64_t approx_tcp_tuples = 0;
+	uint64_t approx_udp_tuples = 0;
+	size_t max_rates = max_clients > 0 && max_clients < DEFAULT_MAX_CLIENTS ?
+		(size_t)max_clients : DEFAULT_MAX_CLIENTS;
 	size_t i;
 
 	if (!bpf_runtime_metrics_available(probe))
 		return false;
-	if (!bpf_previous_snapshot_valid || bpf_current_sample_count == 0)
-		return false;
-	if (bpf_current_snapshot_ms <= bpf_previous_snapshot_ms)
-		return false;
-	delta_ms = bpf_current_snapshot_ms - bpf_previous_snapshot_ms;
-	if (delta_ms == 0)
+
+	emitted = bpf_build_rate_samples(&bpf_cache, rates, max_rates, &delta_ms);
+	if (emitted == 0)
 		return false;
 
-	for (i = 0; i < bpf_current_sample_count; i++) {
+	for (i = 0; i < emitted; i++) {
 		struct json_object *client = json_object_new_object();
 		struct json_object *ips = json_object_new_array();
 		struct json_object *warnings = json_object_new_array();
-		struct bpf_client_sample *cur = &bpf_current_samples[i];
-		struct bpf_client_sample *prev = NULL;
-		bool counter_anomaly = false;
-		uint64_t tx_bps = 0;
-		uint64_t rx_bps = 0;
+		const struct bpf_rate_sample *rate = &rates[i];
 		size_t j;
 
-		for (j = 0; j < bpf_previous_sample_count; j++) {
-			if (!strcmp(bpf_previous_samples[j].identity_key,
-				    cur->identity_key)) {
-				prev = &bpf_previous_samples[j];
-				break;
-			}
-		}
-		if (prev) {
-			tx_bps = delta_bps(cur->tx_bytes, prev->tx_bytes,
-					   delta_ms, &counter_anomaly);
-			rx_bps = delta_bps(cur->rx_bytes, prev->rx_bytes,
-					   delta_ms, &counter_anomaly);
-		}
-		if (counter_anomaly)
+		if (rate->counter_anomaly)
 			add_string_unique(warnings, "counter_anomaly");
 
-		for (j = 0; j < cur->ip_count; j++)
-			json_object_array_add(ips, json_object_new_string(cur->ips[j]));
+		for (j = 0; j < rate->ip_count; j++)
+			json_object_array_add(ips, json_object_new_string(rate->ips[j]));
 
-		json_object_object_add(client, "mac", json_object_new_string(cur->mac));
+		json_object_object_add(client, "mac", json_object_new_string(rate->mac));
 		json_object_object_add(client, "identity_key",
-				       json_object_new_string(cur->identity_key));
-		json_object_object_add(client, "zone", json_object_new_string(cur->zone));
+				       json_object_new_string(rate->identity_key));
+		json_object_object_add(client, "zone", json_object_new_string(rate->zone));
 		json_object_object_add(client, "interface",
-				       json_object_new_string(cur->ifname));
+				       json_object_new_string(rate->ifname));
 		json_object_object_add(client, "ips", ips);
 		{
-			const char *ip_ptrs[MAX_CLIENT_IPS];
+			const char *ip_ptrs[BPF_MAX_CLIENT_IPS];
 			const char *name;
 			size_t k;
-			for (k = 0; k < cur->ip_count; k++)
-				ip_ptrs[k] = cur->ips[k];
-			name = hostname_lookup(cur->mac, ip_ptrs, cur->ip_count);
+			for (k = 0; k < rate->ip_count; k++)
+				ip_ptrs[k] = rate->ips[k];
+			name = hostname_lookup(rate->mac, ip_ptrs, rate->ip_count);
 			json_object_object_add(client, "hostname",
 			                       name ? json_object_new_string(name) : NULL);
 		}
 		json_object_object_add(client, "rx_bps",
-				       json_object_new_int64((int64_t)rx_bps));
+				       json_object_new_int64((int64_t)rate->rx_bps));
 		json_object_object_add(client, "tx_bps",
-				       json_object_new_int64((int64_t)tx_bps));
+				       json_object_new_int64((int64_t)rate->tx_bps));
 		json_object_object_add(client, "rx_bytes",
-				       json_object_new_int64((int64_t)cur->rx_bytes));
+				       json_object_new_int64((int64_t)rate->rx_bytes));
 		json_object_object_add(client, "tx_bytes",
-				       json_object_new_int64((int64_t)cur->tx_bytes));
-		json_object_object_add(client, "tcp_conns",
-				       json_object_new_int64((int64_t)cur->tcp_conns));
-		json_object_object_add(client, "udp_conns",
-				       json_object_new_int64((int64_t)cur->udp_conns));
+				       json_object_new_int64((int64_t)rate->tx_bytes));
+		approx_tcp_tuples += rate->bpf_approx_tcp_tuples;
+		approx_udp_tuples += rate->bpf_approx_udp_tuples;
 		json_object_object_add(client, "sample_ms",
-				       json_object_new_int64((int64_t)bpf_current_snapshot_ms));
+				       json_object_new_int64((int64_t)rate->sample_ms));
 		json_object_object_add(client, "last_seen",
-				       json_object_new_int64((int64_t)cur->last_seen_ms));
+				       json_object_new_int64((int64_t)rate->last_seen_ms));
 		json_object_object_add(client, "collector_mode",
 				       json_object_new_string("bpf"));
 		json_object_object_add(client, "confidence",
 				       json_object_new_string("high"));
 		json_object_object_add(client, "warnings", warnings);
 		json_object_array_add(clients, client);
-		emitted++;
 	}
 
-	add_bpf_clients_evidence(root, probe, delta_ms, emitted);
+	add_bpf_clients_evidence(root, probe, delta_ms, emitted,
+				 approx_tcp_tuples, approx_udp_tuples);
 	return true;
 }
 
@@ -5878,9 +3947,10 @@ static bool collect_nss_stable_clients(struct json_object *root,
 /* Sum byte counters from the latest collector snapshot selected by the
  * active source policy. Returns false when no usable snapshot
  * exists yet, in which case the caller must mark the sample invalid. */
-static bool coverage_current_client_bytes(const struct runtime_probe *probe,
+static bool coverage_current_client_bytes(void *arg,
 					  uint64_t *rx_out, uint64_t *tx_out)
 {
+	const struct runtime_probe *probe = arg;
 	size_t i;
 	uint64_t rx = 0, tx = 0;
 
@@ -5907,11 +3977,7 @@ static bool coverage_current_client_bytes(const struct runtime_probe *probe,
 		*tx_out = tx;
 		return true;
 	}
-	if (bpf_runtime_enabled && bpf_current_sample_count > 0) {
-		for (i = 0; i < bpf_current_sample_count; i++) {
-			rx += bpf_current_samples[i].rx_bytes;
-			tx += bpf_current_samples[i].tx_bytes;
-		}
+	if (bpf_runtime_enabled && bpf_snapshot_totals(&bpf_cache, &rx, &tx)) {
 		*rx_out = rx;
 		*tx_out = tx;
 		return true;
@@ -5922,11 +3988,13 @@ static bool coverage_current_client_bytes(const struct runtime_probe *probe,
 /* Sum LAN-role iface byte counters straight from /sys/class/net. Uses
  * the same source as interfaces_method so the numerator and denominator
  * live in the same observation domain. */
-static bool coverage_current_iface_bytes(uint64_t *rx_out, uint64_t *tx_out)
+static bool coverage_current_iface_bytes(void *arg, uint64_t *rx_out, uint64_t *tx_out)
 {
 	size_t i;
 	uint64_t rx = 0, tx = 0;
 	bool any_ok = false;
+
+	(void)arg;
 
 	for (i = 0; i < bpf_attach_ifname_count; i++) {
 		const char *name = bpf_attach_ifnames[i];
@@ -5964,222 +4032,6 @@ static bool coverage_current_iface_bytes(uint64_t *rx_out, uint64_t *tx_out)
 	return true;
 }
 
-static void coverage_push_sample(uint64_t now_ms,
-				 const struct runtime_probe *probe)
-{
-	struct coverage_sample *slot = &coverage_ring[coverage_ring_head];
-	uint64_t irx = 0, itx = 0, crx = 0, ctx_bytes = 0;
-
-	slot->ts_ms = now_ms;
-	slot->iface_valid = coverage_current_iface_bytes(&irx, &itx);
-	slot->iface_rx_bytes = irx;
-	slot->iface_tx_bytes = itx;
-	slot->client_valid = coverage_current_client_bytes(probe, &crx, &ctx_bytes);
-	slot->client_rx_bytes = crx;
-	slot->client_tx_bytes = ctx_bytes;
-
-	coverage_ring_head = (coverage_ring_head + 1) % LANSPEED_COVERAGE_WINDOW;
-	if (coverage_ring_count < LANSPEED_COVERAGE_WINDOW)
-		coverage_ring_count++;
-}
-
-static const struct coverage_sample *coverage_sample_at(size_t idx_back)
-{
-	size_t offset;
-
-	if (idx_back >= coverage_ring_count)
-		return NULL;
-	/* head points to the next write slot; idx_back=0 is the newest. */
-	offset = (coverage_ring_head + LANSPEED_COVERAGE_WINDOW - 1 - idx_back) %
-		 LANSPEED_COVERAGE_WINDOW;
-	return &coverage_ring[offset];
-}
-
-/* Attach a status-level "coverage" object to root. Direction semantics
- * match the UI: cov_tx = client upload / iface rx (client -> router),
- * cov_rx = client download / iface tx (router -> client).
- *
- * quality values:
- *   "warmup"      - not enough samples yet (< 2 or < MIN_WINDOW_MS apart)
- *   "idle"        - window's iface denominator below MIN_DENOM_BYTES
- *   "counter_reset" - detected a decrease; window is being rebuilt
- *   "ok"          - valid pct computed
- *   "unsupported" - collector path cannot produce client bytes
- */
-static void add_coverage_to_status(struct json_object *root,
-				   const struct runtime_probe *probe)
-{
-	struct json_object *cov = json_object_new_object();
-	const struct coverage_sample *newest = coverage_sample_at(0);
-	const struct coverage_sample *oldest = NULL;
-	size_t i;
-	uint64_t window_ms = 0;
-	uint64_t di_rx = 0, di_tx = 0, dc_rx = 0, dc_tx = 0;
-	int pct_tx = -1, pct_rx = -1;
-	const char *quality = "warmup";
-
-	if (!bpf_runtime_enabled && !nss_ecm_direct_preferred(probe) &&
-	    !nss_conntrack_sync_stable_active(probe)) {
-		json_object_object_add(cov, "quality",
-				       json_object_new_string("unsupported"));
-		json_object_object_add(cov, "samples",
-				       json_object_new_int((int)coverage_ring_count));
-		json_object_object_add(root, "coverage", cov);
-		return;
-	}
-
-	/* Find the oldest sample that is valid on both sides. */
-	for (i = coverage_ring_count; i > 0; i--) {
-		const struct coverage_sample *s = coverage_sample_at(i - 1);
-		if (s && s->iface_valid && s->client_valid) {
-			oldest = s;
-			break;
-		}
-	}
-	if (newest && oldest && newest != oldest &&
-	    newest->iface_valid && newest->client_valid &&
-	    newest->ts_ms > oldest->ts_ms) {
-		window_ms = newest->ts_ms - oldest->ts_ms;
-		if (newest->iface_rx_bytes >= oldest->iface_rx_bytes &&
-		    newest->iface_tx_bytes >= oldest->iface_tx_bytes &&
-		    newest->client_rx_bytes >= oldest->client_rx_bytes &&
-		    newest->client_tx_bytes >= oldest->client_tx_bytes) {
-			di_rx = newest->iface_rx_bytes - oldest->iface_rx_bytes;
-			di_tx = newest->iface_tx_bytes - oldest->iface_tx_bytes;
-			dc_rx = newest->client_rx_bytes - oldest->client_rx_bytes;
-			dc_tx = newest->client_tx_bytes - oldest->client_tx_bytes;
-
-			if (window_ms < LANSPEED_COVERAGE_MIN_WINDOW_MS) {
-				quality = "warmup";
-			} else if (di_rx + di_tx < LANSPEED_COVERAGE_MIN_DENOM_BYTES) {
-				quality = "idle";
-			} else {
-				/* Clamp each direction to [0, 100]. */
-				if (di_rx > 0) {
-					uint64_t p = dc_tx * 100ULL / di_rx;
-					pct_tx = (int)(p > 100 ? 100 : p);
-				}
-				if (di_tx > 0) {
-					uint64_t p = dc_rx * 100ULL / di_tx;
-					pct_rx = (int)(p > 100 ? 100 : p);
-				}
-				quality = "ok";
-			}
-		} else {
-			quality = "counter_reset";
-			/* Invalidate the window so next tick starts fresh. */
-			coverage_ring_count = 0;
-			coverage_ring_head = 0;
-		}
-	}
-
-	json_object_object_add(cov, "quality", json_object_new_string(quality));
-	json_object_object_add(cov, "samples",
-			       json_object_new_int((int)coverage_ring_count));
-	json_object_object_add(cov, "window_ms",
-			       json_object_new_int64((int64_t)window_ms));
-	if (pct_tx >= 0)
-		json_object_object_add(cov, "tx_pct", json_object_new_int(pct_tx));
-	if (pct_rx >= 0)
-		json_object_object_add(cov, "rx_pct", json_object_new_int(pct_rx));
-	json_object_object_add(cov, "denom_rx_bytes",
-			       json_object_new_int64((int64_t)di_rx));
-	json_object_object_add(cov, "denom_tx_bytes",
-			       json_object_new_int64((int64_t)di_tx));
-	json_object_object_add(cov, "numer_rx_bytes",
-			       json_object_new_int64((int64_t)dc_rx));
-	json_object_object_add(cov, "numer_tx_bytes",
-			       json_object_new_int64((int64_t)dc_tx));
-
-	json_object_object_add(root, "coverage", cov);
-}
-
-static void overview_push_from_clients(struct json_object *root,
-				       struct json_object *clients)
-{
-	struct overview_sample *slot = &overview_ring[overview_ring_head];
-	struct json_object *obj = NULL;
-	uint64_t tx = 0, rx = 0;
-	uint64_t tcp_total = 0, udp_total = 0;
-	uint64_t udp_dns_total = 0, udp_other_total = 0;
-	size_t i, n;
-
-	memset(slot, 0, sizeof(*slot));
-	slot->ts_ms = monotonic_time_ms();
-
-	if (clients) {
-		n = json_object_array_length(clients);
-		slot->client_count = (uint32_t)n;
-		for (i = 0; i < n; i++) {
-			struct json_object *client = json_object_array_get_idx(clients, i);
-			struct json_object *value = NULL;
-			uint64_t client_tx = 0, client_rx = 0;
-			uint64_t client_sample_ms = 0, client_last_seen_ms = 0;
-
-			if (!client)
-				continue;
-			if (json_object_object_get_ex(client, "tx_bps", &value))
-				client_tx = json_uint64_value(value);
-			if (json_object_object_get_ex(client, "rx_bps", &value))
-				client_rx = json_uint64_value(value);
-			tx += client_tx;
-			rx += client_rx;
-			if (json_object_object_get_ex(client, "sample_ms", &value))
-				client_sample_ms = json_uint64_value(value);
-			if (json_object_object_get_ex(client, "last_seen", &value))
-				client_last_seen_ms = json_uint64_value(value);
-			if (client_has_active_rate(client_tx, client_rx) &&
-			    client_is_active_recent(client_sample_ms, client_last_seen_ms))
-				slot->active_clients++;
-			if (json_object_object_get_ex(client, "tcp_conns", &value))
-				tcp_total += json_uint64_value(value);
-			if (json_object_object_get_ex(client, "udp_conns", &value))
-				udp_total += json_uint64_value(value);
-			if (json_object_object_get_ex(client, "udp_dns_conns", &value))
-				udp_dns_total += json_uint64_value(value);
-			if (json_object_object_get_ex(client, "udp_other_conns", &value))
-				udp_other_total += json_uint64_value(value);
-		}
-	}
-
-	if (root) {
-		if (json_object_object_get_ex(root, "tcp_conns_total", &obj)) {
-			tcp_total = json_uint64_value(obj);
-		}
-		if (json_object_object_get_ex(root, "udp_conns_total", &obj)) {
-			udp_total = json_uint64_value(obj);
-		}
-		if (json_object_object_get_ex(root, "udp_dns_conns_total", &obj)) {
-			udp_dns_total = json_uint64_value(obj);
-		}
-		if (json_object_object_get_ex(root, "udp_other_conns_total", &obj)) {
-			udp_other_total = json_uint64_value(obj);
-		}
-	}
-
-	slot->tx_bps = tx;
-	slot->rx_bps = rx;
-	slot->tcp_conns = (uint32_t)tcp_total;
-	slot->udp_conns = (uint32_t)udp_total;
-	slot->udp_dns_conns = (uint32_t)udp_dns_total;
-	slot->udp_other_conns = (uint32_t)udp_other_total;
-
-	overview_ring_head = (overview_ring_head + 1) % LANSPEED_OVERVIEW_WINDOW;
-	if (overview_ring_count < LANSPEED_OVERVIEW_WINDOW)
-		overview_ring_count++;
-}
-
-static const struct overview_sample *overview_sample_at(size_t idx_back)
-{
-	size_t offset;
-
-	if (idx_back >= overview_ring_count)
-		return NULL;
-	offset = (overview_ring_head + LANSPEED_OVERVIEW_WINDOW - 1 - idx_back) %
-		 LANSPEED_OVERVIEW_WINDOW;
-	return &overview_ring[offset];
-}
-
 static int send_json_reply(struct ubus_context *ubus, struct ubus_request_data *req,
 			   struct json_object *root);
 
@@ -6187,49 +4039,14 @@ static int overview_method(struct ubus_context *ubus, struct ubus_object *obj,
 			   struct ubus_request_data *req, const char *method,
 			   struct blob_attr *msg)
 {
-	struct json_object *root = json_object_new_object();
-	struct json_object *samples = json_object_new_array();
-	size_t i;
+	struct lanspeed_overview_config config = overview_config();
+	struct json_object *root;
 
 	(void)obj;
 	(void)method;
 	(void)msg;
 
-	for (i = overview_ring_count; i > 0; i--) {
-		const struct overview_sample *s = overview_sample_at(i - 1);
-		struct json_object *sample;
-
-		if (i > (size_t)overview_window_samples)
-			continue;
-
-		if (!s)
-			continue;
-		sample = json_object_new_object();
-		json_object_object_add(sample, "sample_ms", json_object_new_int64((int64_t)s->ts_ms));
-		json_object_object_add(sample, "tx_bps", json_object_new_int64((int64_t)s->tx_bps));
-		json_object_object_add(sample, "rx_bps", json_object_new_int64((int64_t)s->rx_bps));
-		json_object_object_add(sample, "client_count", json_object_new_int((int)s->client_count));
-		json_object_object_add(sample, "active_clients", json_object_new_int((int)s->active_clients));
-		json_object_object_add(sample, "tcp_conns", json_object_new_int((int)s->tcp_conns));
-		json_object_object_add(sample, "udp_conns", json_object_new_int((int)s->udp_conns));
-		json_object_object_add(sample, "udp_dns_conns", json_object_new_int((int)s->udp_dns_conns));
-		json_object_object_add(sample, "udp_other_conns", json_object_new_int((int)s->udp_other_conns));
-		json_object_array_add(samples, sample);
-	}
-
-	json_object_object_add(root, "samples", samples);
-	json_object_object_add(root, "max_samples",
-			       json_object_new_int(LANSPEED_OVERVIEW_WINDOW));
-	json_object_object_add(root, "overview_window_samples",
-			       json_object_new_int(overview_window_samples));
-	json_object_object_add(root, "active_client_window_ms",
-			       json_object_new_int64((int64_t)active_client_window_ms));
-	json_object_object_add(root, "active_client_min_bps",
-			       json_object_new_int64((int64_t)active_client_min_bps));
-	json_object_object_add(root, "sample_source",
-			       json_object_new_string("clients_refresh_daemon_ring"));
-	json_object_object_add(root, "conn_semantics",
-			       json_object_new_string("conntrack_current_tcp_established_assured_udp_tracked_dns_split"));
+	root = lanspeed_overview_to_json(&overview_ring, &config);
 
 	return send_json_reply(ubus, req, root);
 }
@@ -6261,11 +4078,11 @@ static int status_method(struct ubus_context *ubus, struct ubus_object *obj,
 	(void)msg;
 
 	init_runtime_probe(&probe);
-	inspect_runtime(&probe);
+	load_cached_runtime_probe(&probe);
 	if (bpf_runtime_refresh_attach_policy(&probe)) {
 		free_runtime_probe(&probe);
 		init_runtime_probe(&probe);
-		inspect_runtime(&probe);
+		load_cached_runtime_probe(&probe);
 	}
 	mode = probe_mode(&probe);
 	if (strcmp(mode, "Full"))
@@ -6274,8 +4091,8 @@ static int status_method(struct ubus_context *ubus, struct ubus_object *obj,
 
 	json_object_object_add(root, "mode", json_object_new_string(mode));
 	json_object_object_add(root, "confidence", json_object_new_string(probe_confidence(&probe, mode)));
-	json_object_object_add(root, "warnings", probe.warnings);
-	json_object_object_add(root, "evidence", probe.evidence);
+	json_object_object_add(root, "warnings", runtime_probe_take_json(&probe.warnings));
+	json_object_object_add(root, "evidence", runtime_probe_take_json(&probe.evidence));
 	json_object_object_add(root, "refresh_interval_ms", json_object_new_int(refresh_interval_ms));
 	json_object_object_add(root, "active_client_window_ms",
 			       json_object_new_int64((int64_t)active_client_window_ms));
@@ -6296,9 +4113,24 @@ static int status_method(struct ubus_context *ubus, struct ubus_object *obj,
 				     nss_conntrack_sync_stable_active(&probe) ||
 				     nss_ecm_direct_preferred(&probe) ||
 				     bpf_primary_active(&probe), &probe);
-	coverage_push_sample(monotonic_time_ms(), &probe);
-	add_coverage_to_status(root, &probe);
-	json_object_put(probe.conflicts);
+	{
+		struct lanspeed_coverage_readers readers = {
+			.read_iface_bytes = coverage_current_iface_bytes,
+			.read_client_bytes = coverage_current_client_bytes,
+			.arg = &probe
+		};
+		struct lanspeed_coverage_config coverage_config = {
+			.supported = bpf_runtime_enabled ||
+				nss_ecm_direct_preferred(&probe) ||
+				nss_conntrack_sync_stable_active(&probe)
+		};
+
+		lanspeed_coverage_push_sample(&coverage_ring, monotonic_time_ms(),
+					      &readers);
+		lanspeed_coverage_add_json(&coverage_ring, root,
+					   &coverage_config);
+	}
+	free_runtime_probe(&probe);
 
 	return send_json_reply(ubus, req, root);
 }
@@ -6412,12 +4244,12 @@ static int clients_method(struct ubus_context *ubus, struct ubus_object *obj,
 	{
 		struct runtime_probe probe;
 		init_runtime_probe(&probe);
-		inspect_runtime(&probe);
+		load_cached_runtime_probe(&probe);
 		if (bpf_runtime_refresh_attach_policy(&probe)) {
 			bpf_collect_samples();
 			free_runtime_probe(&probe);
 			init_runtime_probe(&probe);
-			inspect_runtime(&probe);
+			load_cached_runtime_probe(&probe);
 		}
 		if (nss_conntrack_sync_stable_active(&probe)) {
 			if (collect_nss_stable_clients(root, clients, &probe)) {
@@ -6446,7 +4278,13 @@ static int clients_method(struct ubus_context *ubus, struct ubus_object *obj,
 		free_runtime_probe(&probe);
 	}
 
-	overview_push_from_clients(root, clients);
+	add_clients_identity_evidence(root);
+	{
+		struct lanspeed_overview_config config = overview_config();
+		lanspeed_overview_push_from_clients(&overview_ring, root, clients,
+						    monotonic_time_ms(),
+						    &config);
+	}
 	return send_json_reply(ubus, req, root);
 }
 
@@ -6464,10 +4302,12 @@ static int health_method(struct ubus_context *ubus, struct ubus_object *obj,
 
 	init_runtime_probe(&probe);
 	inspect_runtime(&probe);
+	runtime_probe_cache_store(&probe);
 	if (bpf_runtime_refresh_attach_policy(&probe)) {
 		free_runtime_probe(&probe);
 		init_runtime_probe(&probe);
 		inspect_runtime(&probe);
+		runtime_probe_cache_store(&probe);
 	}
 	mode = probe_mode(&probe);
 	if (strcmp(mode, "Full"))
@@ -6482,9 +4322,10 @@ static int health_method(struct ubus_context *ubus, struct ubus_object *obj,
 				     nss_conntrack_sync_stable_active(&probe) ||
 				     nss_ecm_direct_preferred(&probe) ||
 				     bpf_primary_active(&probe), &probe);
-	json_object_object_add(root, "conflicts", probe.conflicts);
-	json_object_object_add(root, "warnings", probe.warnings);
-	json_object_object_add(root, "evidence", probe.evidence);
+	json_object_object_add(root, "conflicts", runtime_probe_take_json(&probe.conflicts));
+	json_object_object_add(root, "warnings", runtime_probe_take_json(&probe.warnings));
+	json_object_object_add(root, "evidence", runtime_probe_take_json(&probe.evidence));
+	free_runtime_probe(&probe);
 
 	return send_json_reply(ubus, req, root);
 }
@@ -6882,104 +4723,25 @@ static void load_observe_list(struct uci_context *uci)
 static void load_config(void)
 {
 	struct uci_context *uci = uci_alloc_context();
-	struct uci_ptr ptr;
-	char value[32];
-	char refresh_path[] = "lanspeed.main.refresh_interval_ms";
-	char active_window_path[] = "lanspeed.main.active_client_window_ms";
-	char active_min_bps_path[] = "lanspeed.main.active_client_min_bps";
-	char overview_window_path[] = "lanspeed.main.overview_window_samples";
-	char max_clients_path[] = "lanspeed.main.max_clients";
-	char collector_mode_path[] = "lanspeed.main.collector_mode";
-	char rate_collector_mode_path[] = "lanspeed.main.rate_collector_mode";
-	char conn_collector_mode_path[] = "lanspeed.main.conn_collector_mode";
-	char bpf_path[] = "lanspeed.main.enable_bpf";
-	char fallback_path[] = "lanspeed.main.enable_conntrack_fallback";
+	struct lanspeed_runtime_config config;
+
+	lanspeed_config_load_uci(&config, uci);
+	refresh_interval_ms = config.refresh_interval_ms;
+	max_clients = config.max_clients;
+	active_client_window_ms = config.active_client_window_ms;
+	active_client_min_bps = config.active_client_min_bps;
+	overview_window_samples = config.overview_window_samples;
+	enable_bpf = config.enable_bpf;
+	enable_conntrack_fallback = config.enable_conntrack_fallback;
+	refresh_interval_clamped = config.refresh_interval_clamped;
+	active_client_window_clamped = config.active_client_window_clamped;
+	active_client_min_bps_clamped = config.active_client_min_bps_clamped;
+	overview_window_samples_clamped = config.overview_window_samples_clamped;
+	rate_collector_mode = config.rate_collector_mode;
+	conn_collector_mode = config.conn_collector_mode;
 
 	if (!uci)
 		return;
-
-	if (!uci_lookup_ptr(uci, &ptr, refresh_path, true) && ptr.o && ptr.o->v.string) {
-		int parsed = atoi(ptr.o->v.string);
-
-		if (parsed >= MIN_REFRESH_INTERVAL_MS)
-			refresh_interval_ms = parsed;
-		else if (parsed > 0) {
-			refresh_interval_ms = MIN_REFRESH_INTERVAL_MS;
-			refresh_interval_clamped = true;
-		}
-	}
-
-	if (!uci_lookup_ptr(uci, &ptr, active_window_path, true) && ptr.o && ptr.o->v.string) {
-		unsigned long long parsed = strtoull(ptr.o->v.string, NULL, 10);
-
-		if (parsed >= MIN_ACTIVE_CLIENT_WINDOW_MS)
-			active_client_window_ms = (uint64_t)parsed;
-		else if (parsed > 0) {
-			active_client_window_ms = MIN_ACTIVE_CLIENT_WINDOW_MS;
-			active_client_window_clamped = true;
-		}
-	}
-
-	if (!uci_lookup_ptr(uci, &ptr, active_min_bps_path, true) && ptr.o && ptr.o->v.string) {
-		unsigned long long parsed = strtoull(ptr.o->v.string, NULL, 10);
-
-		if (parsed >= DEFAULT_ACTIVE_CLIENT_MIN_BPS)
-			active_client_min_bps = (uint64_t)parsed;
-		else {
-			active_client_min_bps = DEFAULT_ACTIVE_CLIENT_MIN_BPS;
-			active_client_min_bps_clamped = true;
-		}
-	}
-
-	if (!uci_lookup_ptr(uci, &ptr, overview_window_path, true) && ptr.o && ptr.o->v.string) {
-		int parsed = atoi(ptr.o->v.string);
-
-		if (parsed >= MIN_OVERVIEW_WINDOW_SAMPLES &&
-		    parsed <= LANSPEED_OVERVIEW_WINDOW)
-			overview_window_samples = parsed;
-		else if (parsed > 0) {
-			overview_window_samples = parsed < MIN_OVERVIEW_WINDOW_SAMPLES ?
-				MIN_OVERVIEW_WINDOW_SAMPLES : LANSPEED_OVERVIEW_WINDOW;
-			overview_window_samples_clamped = true;
-		}
-	}
-
-	if (!uci_lookup_ptr(uci, &ptr, max_clients_path, true) && ptr.o && ptr.o->v.string) {
-		int parsed = atoi(ptr.o->v.string);
-
-		if (parsed >= 0)
-			max_clients = parsed;
-	}
-
-	if (!uci_lookup_ptr(uci, &ptr, collector_mode_path, true) && ptr.o && ptr.o->v.string) {
-		strncpy(value, ptr.o->v.string, sizeof(value) - 1);
-		value[sizeof(value) - 1] = '\0';
-		apply_legacy_collector_mode(value);
-	}
-
-	if (!uci_lookup_ptr(uci, &ptr, rate_collector_mode_path, true) && ptr.o && ptr.o->v.string) {
-		strncpy(value, ptr.o->v.string, sizeof(value) - 1);
-		value[sizeof(value) - 1] = '\0';
-		rate_collector_mode = parse_rate_collector_mode(value, rate_collector_mode);
-	}
-
-	if (!uci_lookup_ptr(uci, &ptr, conn_collector_mode_path, true) && ptr.o && ptr.o->v.string) {
-		strncpy(value, ptr.o->v.string, sizeof(value) - 1);
-		value[sizeof(value) - 1] = '\0';
-		conn_collector_mode = parse_conn_collector_mode(value, conn_collector_mode);
-	}
-
-	if (!uci_lookup_ptr(uci, &ptr, bpf_path, true) && ptr.o && ptr.o->v.string) {
-		strncpy(value, ptr.o->v.string, sizeof(value) - 1);
-		value[sizeof(value) - 1] = '\0';
-		enable_bpf = !strcmp(value, "1") || !strcmp(value, "true");
-	}
-
-	if (!uci_lookup_ptr(uci, &ptr, fallback_path, true) && ptr.o && ptr.o->v.string) {
-		strncpy(value, ptr.o->v.string, sizeof(value) - 1);
-		value[sizeof(value) - 1] = '\0';
-		enable_conntrack_fallback = !strcmp(value, "1") || !strcmp(value, "true");
-	}
 
 	load_bpf_attach_list(uci);
 	load_observe_list(uci);
@@ -7011,6 +4773,7 @@ static void start_bpf_runtime(void)
 		init_runtime_probe(&probe);
 		inspect_command_capabilities(&probe);
 		inspect_tc(&probe);
+		runtime_probe_cache_store(&probe);
 		bpf_runtime_early_passthrough = dae_tc_preempts_bpf_ingress(&probe);
 		free_runtime_probe(&probe);
 	}

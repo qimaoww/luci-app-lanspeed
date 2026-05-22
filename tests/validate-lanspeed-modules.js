@@ -486,9 +486,14 @@ function assertStatusViewSourceOnlyState(src) {
 		fail('view/lanspeed/index.js must style the collector source pill without using confidence text');
 	}
 	if (!src.includes('function effectiveCollector(status, clientsData)') ||
-	    !src.includes('var clientEvidence = (clientsData && clientsData.evidence) || {}') ||
+	    !src.includes('evidence.effective_collector') ||
+	    !src.includes('clientEvidence.primary_source') ||
 	    !src.includes('clientEvidence.collector_mode')) {
-		fail('view/lanspeed/index.js must derive the current collector source before rendering the header');
+		fail('view/lanspeed/index.js must display the daemon-published collector source before rendering the header');
+	}
+	if (/for\s*\([^)]*clients\.length[\s\S]{0,260}?collector_mode/.test(src) ||
+	    /fmt\.asArray\(clientsData && clientsData\.clients\)/.test(src)) {
+		fail('view/lanspeed/index.js must not infer the global collector source from client rows');
 	}
 	if (!src.includes('refs.collectorPill') ||
 	    !src.includes('refs.collectorPill.className = collectorClass(collector)') ||
@@ -552,13 +557,13 @@ function assertStatusViewSourceOnlyState(src) {
 }
 
 function assertVersionModule(src) {
-	if (!src.includes("PACKAGE_VERSION: '0.1.3'")) {
+	if (!src.includes("PACKAGE_VERSION: '0.1.5'")) {
 		fail('version.js must expose luci-app-lanspeed PACKAGE_VERSION');
 	}
-	if (!src.includes("PACKAGE_RELEASE: '4'")) {
+	if (!src.includes("PACKAGE_RELEASE: '1'")) {
 		fail('version.js must expose luci-app-lanspeed PACKAGE_RELEASE');
 	}
-	if (!src.includes("FULL_VERSION: '0.1.3-r4'")) {
+	if (!src.includes("FULL_VERSION: '0.1.5-r1'")) {
 		fail('version.js must expose full luci-app-lanspeed version with r suffix');
 	}
 }

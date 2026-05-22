@@ -16,6 +16,69 @@ function assert(condition, message) {
   }
 }
 
+function extractFunctionBody(source, name) {
+  const signature = new RegExp(`static\\s+[^{;]+?\\b\\*?\\s*${name}\\s*\\([^)]*\\)\\s*\\{`);
+  const match = signature.exec(source);
+  assert(match, `C source must define ${name}`);
+
+  let depth = 1;
+  let index = match.index + match[0].length;
+  while (index < source.length && depth > 0) {
+    const ch = source[index++];
+    if (ch === '{') {
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+    }
+  }
+  assert(depth === 0, `C source function ${name} must have balanced braces`);
+  return source.slice(match.index, index);
+}
+
+function assertRuntimeProbeJsonOwnership(source) {
+  const helperBody = extractFunctionBody(source, 'runtime_probe_take_json');
+  const finishBody = extractFunctionBody(source, 'finish_probe_evidence');
+  assert(/\*\s*slot\s*=\s*NULL/.test(helperBody),
+         'runtime_probe_take_json must clear transferred probe JSON pointers');
+
+  for (const [jsonField, evidenceField] of [
+    ['source_commands', 'command'],
+    ['source_files', 'file'],
+    ['source_uci', 'uci'],
+    ['source_ubus', 'ubus'],
+    ['commands', 'commands'],
+    ['files', 'files'],
+    ['uci', 'uci'],
+    ['ubus_evidence', 'ubus']
+  ]) {
+    assert(finishBody.includes(`"${evidenceField}", runtime_probe_take_json(&probe->${jsonField})`),
+           `finish_probe_evidence must transfer probe.${jsonField} ownership before adding ${evidenceField}`);
+    assert(!new RegExp(`"[^"]+",\\s*probe\\.${jsonField}\\b`).test(finishBody),
+           `finish_probe_evidence must not attach raw probe.${jsonField} while free_runtime_probe still owns it`);
+  }
+
+  for (const methodName of ['status_method', 'health_method']) {
+    const body = extractFunctionBody(source, methodName);
+
+    for (const field of ['warnings', 'evidence']) {
+      assert(body.includes(`runtime_probe_take_json(&probe.${field})`),
+             `${methodName} must transfer probe.${field} through runtime_probe_take_json`);
+      assert(!new RegExp(`json_object_object_add\\(\\s*root\\s*,\\s*"${field}"\\s*,\\s*probe\\.${field}\\s*\\)`).test(body),
+             `${methodName} must not hand raw probe.${field} ownership to the reply`);
+    }
+
+    if (methodName === 'health_method') {
+      assert(body.includes('runtime_probe_take_json(&probe.conflicts)'),
+             'health_method must transfer probe.conflicts through runtime_probe_take_json');
+      assert(!/json_object_object_add\(\s*root\s*,\s*"conflicts"\s*,\s*probe\.conflicts\s*\)/.test(body),
+             'health_method must not hand raw probe.conflicts ownership to the reply');
+    }
+
+    assert(body.includes('free_runtime_probe(&probe);'),
+           `${methodName} must free any runtime_probe JSON members that were not transferred`);
+  }
+}
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -1338,21 +1401,16 @@ function assertNoDestructiveTcCommands(text) {
 }
 
 function assertRuntimeConntrackFallbackSource(source) {
+  assert(source.includes('#include "lanspeed_conntrack.h"'), 'daemon must include the conntrack collector module header');
+  assert(srcMakefile.includes('lanspeed_conntrack.o'), 'local daemon build must compile the conntrack module');
+
   for (const required of [
     '#include <libmnl/libmnl.h>',
     '#include <linux/netfilter/nfnetlink_conntrack.h>',
-    '#include <linux/rtnetlink.h>',
-    'CONNTRACK_PROCFS_PATH "/proc/net/nf_conntrack"',
-    'CONNTRACK_LEGACY_PROCFS_PATH "/proc/net/ip_conntrack"',
-    'ARP_PROCFS_PATH "/proc/net/arp"',
-    'NEIGHBOR_NETLINK_SOURCE "netlink:rtnetlink_neigh"',
-    'RTM_GETNEIGH',
-    'RTM_NEWNEIGH',
-    'NETLINK_ROUTE',
-    'NDA_DST',
-    'NDA_LLADDR',
-    'AF_INET6',
-    'static bool read_neighbor_table',
+    '#define CONNTRACK_PROCFS_PATH "/proc/net/nf_conntrack"',
+    '#define CONNTRACK_LEGACY_PROCFS_PATH "/proc/net/ip_conntrack"',
+    'struct conntrack_client_sample',
+    'struct conntrack_collect_stats',
     'static bool read_conntrack_netlink_snapshot',
     'static int conntrack_netlink_data_cb',
     'IPCTNL_MSG_CT_GET',
@@ -1364,24 +1422,57 @@ function assertRuntimeConntrackFallbackSource(source) {
     'conntrack_netlink',
     'static bool parse_conntrack_procfs_line',
     'static bool read_conntrack_procfs_snapshot',
-    'static bool read_conntrack_snapshot',
-    'static bool collect_conntrack_procfs_clients',
-    'static void emit_conntrack_clients',
+    'bool read_conntrack_snapshot',
+    'bool read_conntrack_snapshot_mode',
+    'static bool conntrack_flow_add_endpoint',
     'previous_conntrack_samples',
     'conntrack_snapshot_pending',
     'conntrack_unavailable',
     'skip_conntrack_entry_without_fabricating_client',
     'lanspeedd_procfs_conntrack_acct',
-    'procfs_conntrack_acct_orig_reply_bytes',
-    'json_object_new_string(ARP_PROCFS_PATH)',
-    'json_object_new_string(NEIGHBOR_NETLINK_SOURCE)',
+    'procfs_conntrack_acct_orig_reply_bytes'
+  ]) {
+    assert(conntrackHeader.includes(required) || conntrackSource.includes(required) || source.includes(required),
+           `conntrack collector module missing ${required}`);
+  }
+  for (const required of [
+    'static bool collect_conntrack_procfs_clients',
+    'static void emit_conntrack_clients',
+    'previous_conntrack_samples',
     'collect_conntrack_procfs_clients(root, clients, &probe)'
   ]) {
-    assert(source.includes(required), `C runtime conntrack fallback missing ${required}`);
+    assert(source.includes(required), `C runtime conntrack API glue missing ${required}`);
   }
+  for (const required of [
+    '#define ARP_PROCFS_PATH "/proc/net/arp"',
+    '#define NEIGHBOR_NETLINK_SOURCE "netlink:rtnetlink_neigh"',
+    'struct arp_entry',
+    'enum flow_endpoint_role',
+    'RTM_GETNEIGH',
+    'RTM_NEWNEIGH',
+    'NETLINK_ROUTE',
+    'NDA_DST',
+    'NDA_LLADDR',
+    'AF_INET6',
+    'bool read_neighbor_table',
+    'size_t load_lan_identity_table',
+    'bool flow_endpoint_lookup',
+    'bool nss_ecm_direct_endpoint_lookup',
+    'void normalize_mac_address',
+    'bool normalize_ip_address',
+    'bool ifname_is_excluded_identity_source',
+    'bool valid_mac_address'
+  ]) {
+    assert(identityHeader.includes(required) || identitySource.includes(required),
+           `identity module missing ${required}`);
+  }
+  assert(source.includes('#include "lanspeed_identity.h"'), 'daemon must include the identity module header');
+  assert(srcMakefile.includes('lanspeed_identity.o'), 'local daemon build must compile the identity module');
+  assert(source.includes('json_object_new_string(ARP_PROCFS_PATH)'), 'runtime evidence must expose ARP identity source');
+  assert(source.includes('json_object_new_string(NEIGHBOR_NETLINK_SOURCE)'), 'runtime evidence must expose IPv6 neighbor identity source');
   assert(!source.includes('#include <libnetfilter_conntrack/libnetfilter_conntrack.h>'), 'runtime must not include libnetfilter-conntrack');
   assert(!/\bnfct_/.test(source), 'runtime must not use libnetfilter-conntrack nfct_* APIs');
-  assert(/read_conntrack_snapshot[\s\S]{0,900}?read_conntrack_netlink_snapshot[\s\S]{0,900}?read_conntrack_procfs_snapshot/.test(source),
+  assert(/read_conntrack_snapshot[\s\S]{0,900}?read_conntrack_netlink_snapshot[\s\S]{0,900}?read_conntrack_procfs_snapshot/.test(conntrackSource),
          'conntrack snapshot wrapper must try netlink before procfs fallback');
   assert(/merge_conntrack_conn_counts[\s\S]{0,1400}?read_conntrack_snapshot/.test(source),
          'BPF connection-count merge must use the netlink-first conntrack wrapper');
@@ -1389,19 +1480,20 @@ function assertRuntimeConntrackFallbackSource(source) {
          'NSS conntrack-sync collection must use the netlink-first conntrack wrapper');
   assert(source.includes('static bool nss_conntrack_sync_preferred'), 'runtime must define explicit NSS conntrack-sync preference');
   assert(source.includes('primary_source", json_object_new_string("nss_conntrack_sync")'), 'runtime evidence must expose NSS conntrack sync as primary source');
-  assert(source.includes('coverage_current_client_bytes(const struct runtime_probe *probe'), 'coverage client bytes must take probe/source policy');
+  assert(/coverage_current_client_bytes[\s\S]{0,120}?const struct runtime_probe \*probe = arg/.test(source),
+         'coverage client bytes callback must take runtime probe/source policy');
   assert(source.includes('nss_conntrack_sync_preferred(probe)'), 'runtime must route clients and coverage through NSS sync preference');
   assert(/nss_conntrack_sync_fallback_available[\s\S]{0,420}?probe->nss_ecm_active[\s\S]{0,120}?probe->nss_ppe_active/.test(source),
          'NSS sync preference must cover both ECM and PPE offload paths');
-  assert(source.includes('normalize_ip_address'), 'runtime must normalize IPv4/IPv6 addresses before LAN identity matching');
-  assert(source.includes('orig_dst') && source.includes('reply_src') && source.includes('reply_dst'),
-         'NSS sync must parse original and reply source/destination endpoints');
-  assert(source.includes('conntrack_flow_add_endpoint') &&
-         source.includes('FLOW_ENDPOINT_ORIG_SRC') &&
-         source.includes('FLOW_ENDPOINT_ORIG_DST') &&
-         source.includes('FLOW_ENDPOINT_REPLY_SRC') &&
-         source.includes('FLOW_ENDPOINT_REPLY_DST'),
-         'NSS sync must map all conntrack endpoints to client-view tx/rx directions');
+  assert(identitySource.includes('normalize_ip_address'), 'identity module must normalize IPv4/IPv6 addresses before LAN identity matching');
+  assert(conntrackSource.includes('orig_dst') && conntrackSource.includes('reply_src') && conntrackSource.includes('reply_dst'),
+         'conntrack module must parse original and reply source/destination endpoints');
+  assert(conntrackSource.includes('conntrack_flow_add_endpoint') &&
+         conntrackSource.includes('FLOW_ENDPOINT_ORIG_SRC') &&
+         conntrackSource.includes('FLOW_ENDPOINT_ORIG_DST') &&
+         conntrackSource.includes('FLOW_ENDPOINT_REPLY_SRC') &&
+         conntrackSource.includes('FLOW_ENDPOINT_REPLY_DST'),
+         'conntrack module must map all endpoints to client-view tx/rx directions');
   assert(source.includes('"src_lan_flows"') &&
          source.includes('"dst_lan_flows"') &&
          source.includes('"both_lan_flows"'),
@@ -1443,22 +1535,61 @@ function assertRuntimeConntrackFallbackSource(source) {
   assert(source.includes('conntrack_refresh_last_seen'), 'runtime must keep conntrack last_seen tied to byte counter changes');
   assert(source.includes('udp_dns_conns'), 'runtime must split UDP DNS connection counts from other UDP flows');
   assert(source.includes('udp_other_conns'), 'runtime must expose non-DNS UDP connection counts');
-  assert(/sport_index|orig_sport/.test(source) && /dport_index|orig_dport/.test(source), 'conntrack parser must read ports so DNS UDP can be identified');
+  assert(/sport_index|orig_sport/.test(conntrackSource) && /dport_index|orig_dport/.test(conntrackSource), 'conntrack parser must read ports so DNS UDP can be identified');
   assert(/json_object_object_add\(\s*client\s*,\s*"tcp_conns"\s*,\s*json_object_new_int64?\(\s*\(int64?_t?\)?\s*cs->tcp_conns/.test(source) ||
          /json_object_object_add\(\s*client\s*,\s*"tcp_conns"\s*,\s*json_object_new_int\(\s*\(int\)cs->tcp_conns/.test(source),
          'BPF client connection counts must be overwritten from conntrack current table when conntrack is readable');
+  const bpfCollectBody = extractFunctionBody(source, 'collect_bpf_clients');
+  assert(!/json_object_object_add\(\s*client\s*,\s*"tcp_conns"/.test(bpfCollectBody),
+         'BPF collector must not publish approximate TCP tuple counters as stable tcp_conns');
+  assert(!/json_object_object_add\(\s*client\s*,\s*"udp_conns"/.test(bpfCollectBody),
+         'BPF collector must not publish approximate UDP tuple counters as stable udp_conns');
+  assert(source.includes('"bpf_approx_tcp_tuples"'), 'BPF approximate TCP tuple counters must be exposed only as evidence');
+  assert(source.includes('"bpf_approx_udp_tuples"'), 'BPF approximate UDP tuple counters must be exposed only as evidence');
   assert(!/bpf_tcp\s*==\s*0/.test(source), 'conntrack connection merge must not keep stale/nonzero BPF conn counts');
+  assert(source.includes('#include "lanspeed_config.h"'), 'daemon must include the normalized config module header');
+  assert(srcMakefile.includes('lanspeed_config.o'), 'local daemon build must compile the config module');
+  assert(packageMakefile.includes('./src/*.c ./src/*.h'), 'package build must copy config module sources');
+  assert(source.includes('#include "lanspeed_history.h"'), 'daemon must include the coverage/overview history module header');
+  assert(srcMakefile.includes('lanspeed_history.o'), 'local daemon build must compile the coverage/overview history module');
+  for (const required of [
+    'struct lanspeed_coverage_ring',
+    'struct lanspeed_overview_ring',
+    'void lanspeed_coverage_reset',
+    'void lanspeed_coverage_push_sample',
+    'void lanspeed_coverage_add_json',
+    'void lanspeed_overview_push_from_clients',
+    'struct lanspeed_overview_config',
+    'json_object_new_string("clients_refresh_daemon_ring")',
+    '"counter_reset"',
+    '"warmup"',
+    '"idle"',
+    '"ok"',
+    '"unsupported"',
+    'client_is_active_recent',
+    'client_has_active_rate'
+  ]) {
+    assert(historyHeader.includes(required) || historySource.includes(required),
+           `coverage/overview history module missing ${required}`);
+  }
   assert(source.includes('static int overview_method'), 'runtime must expose a daemon-side overview history method');
   assert(source.includes('UBUS_METHOD_NOARG("overview", overview_method)'), 'runtime must register the overview ubus method');
-  assert(source.includes('overview_push_from_clients'), 'clients_method must feed daemon-side overview history from current samples');
-  assert(source.includes('#define DEFAULT_ACTIVE_CLIENT_WINDOW_MS 10000ULL'), 'daemon must default active clients to a 10s window');
-  assert(source.includes('#define DEFAULT_ACTIVE_CLIENT_MIN_BPS 1ULL'), 'daemon must default active clients to a nonzero speed threshold');
-  assert(source.includes('char active_window_path[] = "lanspeed.main.active_client_window_ms"'), 'daemon must read active_client_window_ms from UCI');
-  assert(source.includes('char active_min_bps_path[] = "lanspeed.main.active_client_min_bps"'), 'daemon must read active_client_min_bps from UCI');
-  assert(source.includes('char overview_window_path[] = "lanspeed.main.overview_window_samples"'), 'daemon must read overview_window_samples from UCI');
-  assert(source.includes('char rate_collector_mode_path[] = "lanspeed.main.rate_collector_mode"'), 'daemon must read rate_collector_mode from UCI');
-  assert(source.includes('char conn_collector_mode_path[] = "lanspeed.main.conn_collector_mode"'), 'daemon must read conn_collector_mode from UCI');
-  assert(source.includes('char collector_mode_path[] = "lanspeed.main.collector_mode"'), 'daemon must still read legacy collector_mode from UCI');
+  assert(source.includes('lanspeed_overview_push_from_clients'), 'clients_method must feed daemon-side overview history from current samples');
+  {
+    const overviewBody = extractFunctionBody(source, 'overview_method');
+    assert(overviewBody.includes('lanspeed_overview_to_json'),
+           'overview method must serialize the daemon-side overview ring');
+    assert(!/collect_|inspect_|load_cached_runtime_probe|read_conntrack|lanspeed_bpf_read_samples/.test(overviewBody),
+           'overview method must not trigger collector rescans or runtime probes');
+  }
+  assert(configHeader.includes('#define DEFAULT_ACTIVE_CLIENT_WINDOW_MS 10000ULL'), 'config module must default active clients to a 10s window');
+  assert(configHeader.includes('#define DEFAULT_ACTIVE_CLIENT_MIN_BPS 1ULL'), 'config module must default active clients to a nonzero speed threshold');
+  assert(configSource.includes('char active_window_path[] = "lanspeed.main.active_client_window_ms"'), 'config module must read active_client_window_ms from UCI');
+  assert(configSource.includes('char active_min_bps_path[] = "lanspeed.main.active_client_min_bps"'), 'config module must read active_client_min_bps from UCI');
+  assert(configSource.includes('char overview_window_path[] = "lanspeed.main.overview_window_samples"'), 'config module must read overview_window_samples from UCI');
+  assert(configSource.includes('char rate_collector_mode_path[] = "lanspeed.main.rate_collector_mode"'), 'config module must read rate_collector_mode from UCI');
+  assert(configSource.includes('char conn_collector_mode_path[] = "lanspeed.main.conn_collector_mode"'), 'config module must read conn_collector_mode from UCI');
+  assert(configSource.includes('char collector_mode_path[] = "lanspeed.main.collector_mode"'), 'config module must still read legacy collector_mode from UCI');
   assert(source.includes('conn_collector_mode_is_forced()'), 'daemon must allow UCI to force conntrack collectors for connection counts');
   assert(source.includes('rate_collector_mode_allows_bpf()'), 'daemon must expose rate BPF mode policy for evidence');
   assert(source.includes('return rate_collector_mode == COLLECTOR_MODE_AUTO ||\n\t       rate_collector_mode == COLLECTOR_MODE_BPF;'),
@@ -1469,9 +1600,9 @@ function assertRuntimeConntrackFallbackSource(source) {
   assert(source.includes('rate_collector_mode_forces_nss_ecm_direct') &&
          source.includes('rate_collector_mode_forces_nss_conntrack_sync'),
          'daemon must distinguish forced NSS direct and forced NSS sync modes');
-  assert(source.includes('!strcmp(value, "nss_conntrack_sync")') &&
-         source.includes('!strcmp(value, "conntrack_ecm_sync")'),
-         'daemon must parse the new NSS sync config value while keeping the old collector name as input compatibility');
+  assert(configSource.includes('!strcmp(value, "nss_conntrack_sync")') &&
+         configSource.includes('!strcmp(value, "conntrack_ecm_sync")'),
+         'config module must parse the new NSS sync config value while keeping the old collector name as input compatibility');
   assert(/static bool conntrack_fallback_active[\s\S]{0,260}?conntrack_primary_preferred\(probe\)/.test(source),
          'non-NSS conntrack must not become a live rate fallback when BPF is unavailable');
   assert(source.includes('read_conntrack_snapshot_mode(current, &current_count'), 'conntrack client collection must honor forced netlink/procfs mode');
@@ -1479,24 +1610,101 @@ function assertRuntimeConntrackFallbackSource(source) {
          'NSS conntrack-sync speed reads must honor conn_collector_mode source selection');
   assert(/merge_conntrack_conn_counts[\s\S]{0,1800}?read_conntrack_snapshot_mode\(conn_samples,[\s\S]{0,360}?conn_collector_mode\)/.test(source),
          'BPF connection-count merge must honor conn_collector_mode source selection');
-  assert(source.includes('client_is_active_recent'), 'overview active_clients must use last_seen/sample_ms freshness');
-  assert(source.includes('client_has_active_rate'), 'overview active_clients must require configured current speed');
+  assert(historySource.includes('client_is_active_recent'), 'overview active_clients must use last_seen/sample_ms freshness');
+  assert(historySource.includes('client_has_active_rate'), 'overview active_clients must require configured current speed');
   assert(source.includes('active_client_window_ms'), 'runtime must publish active_client_window_ms');
   assert(source.includes('active_client_min_bps'), 'runtime must publish active_client_min_bps');
   assert(!source.includes('LANSPEED_OVERVIEW_ACTIVE_BPS'), 'overview active_clients must not be based on a bitrate threshold');
 }
 
+function assertRuntimeBpfCollectorModule(source) {
+  assert(source.includes('#include "lanspeed_bpf_collector.h"'), 'daemon must include the BPF collector module header');
+  assert(srcMakefile.includes('lanspeed_bpf_collector.o'), 'local daemon build must compile the BPF collector module');
+
+  for (const required of [
+    'struct bpf_client_sample',
+    'struct bpf_rate_sample',
+    'struct bpf_snapshot_cache',
+    'void bpf_snapshot_cache_reset',
+    'bool bpf_collect_snapshot',
+    'size_t bpf_build_rate_samples',
+    'bool bpf_snapshot_totals',
+    'lanspeed_bpf_read_samples',
+    'load_lan_identity_table',
+    'derive_zone_from_ifname',
+    'ifname_is_excluded_identity_source',
+    'bpf_approx_tcp_tuples',
+    'bpf_approx_udp_tuples',
+    'counter_anomaly'
+  ]) {
+    assert(bpfCollectorHeader.includes(required) || bpfCollectorSource.includes(required),
+           `BPF collector module missing ${required}`);
+  }
+
+  assert(!source.includes('struct bpf_client_sample {'),
+         'daemon must not own the BPF folded client sample layout');
+  assert(!source.includes('static struct bpf_client_sample bpf_current_samples'),
+         'daemon must not keep BPF current sample arrays directly');
+  assert(!source.includes('static struct bpf_client_sample bpf_previous_samples'),
+         'daemon must not keep BPF previous sample arrays directly');
+  assert(!source.includes('static struct bpf_client_sample *bpf_find_or_insert_client'),
+         'daemon must not fold raw BPF map entries itself');
+  assert(!/lanspeed_bpf_read_samples\(/.test(source),
+         'daemon must not read raw BPF map entries directly');
+  assert(/bpf_collect_samples[\s\S]{0,260}?bpf_collect_snapshot\(&bpf_cache/.test(source),
+         'daemon BPF tick must delegate map folding to the BPF collector module');
+  assert(/collect_bpf_clients[\s\S]{0,700}?bpf_build_rate_samples\(&bpf_cache/.test(source),
+         'daemon BPF clients path must consume module rate samples');
+}
+
+function assertRuntimeProbeHotPathPolicy(source) {
+  assert(source.includes('runtime_probe_cache_store'), 'daemon must maintain a runtime probe cache');
+  assert(source.includes('load_cached_runtime_probe'), 'daemon hot paths must load cached runtime probe state');
+
+  const statusBody = extractFunctionBody(source, 'status_method');
+  const clientsBody = extractFunctionBody(source, 'clients_method');
+  const healthBody = extractFunctionBody(source, 'health_method');
+  const tickBody = extractFunctionBody(source, 'bpf_collect_tick');
+  const cachedProbeBody = extractFunctionBody(source, 'load_cached_runtime_probe');
+
+  assert(statusBody.includes('load_cached_runtime_probe(&probe)'),
+         'status_method must use cached/direct probe state');
+  assert(!statusBody.includes('inspect_runtime(&probe)'),
+         'status_method must not refresh shell-backed runtime probes');
+  assert(clientsBody.includes('load_cached_runtime_probe(&probe)'),
+         'clients_method must use cached/direct probe state');
+  assert(!clientsBody.includes('inspect_runtime(&probe)'),
+         'clients_method must not refresh shell-backed runtime probes');
+  assert(healthBody.includes('inspect_runtime(&probe)') &&
+         healthBody.includes('runtime_probe_cache_store(&probe)'),
+         'health_method may explicitly refresh diagnostics and must update the probe cache');
+  assert(!tickBody.includes('inspect_command_capabilities(&probe)') &&
+         !tickBody.includes('inspect_tc(&probe)'),
+         'periodic BPF tick must not run shell-backed tc probes');
+  assert(tickBody.includes('load_cached_runtime_probe(&probe)'),
+         'periodic BPF tick must use cached probe state for TC policy decisions');
+  assert(!cachedProbeBody.includes('run_command_capture') &&
+         !cachedProbeBody.includes('inspect_tc(probe)') &&
+         !cachedProbeBody.includes('inspect_ubus(probe)') &&
+         !cachedProbeBody.includes('inspect_dae_runtime(probe)'),
+         'cached runtime probes must not execute shell-backed diagnostic probes');
+  assert(cachedProbeBody.includes('inspect_files_direct(probe)'),
+         'cached runtime probes must use direct file/API refresh only');
+}
+
 function assertRuntimeNssDirectSource(source, collectorModel, indexSource, nssPanelSource) {
+  assert(source.includes('#include "lanspeed_nss.h"'), 'daemon must include the NSS collector module header');
+  assert(srcMakefile.includes('lanspeed_nss.o'), 'local daemon build must compile the NSS collector module');
+  assert(configHeader.includes('#define NSS_ECM_DIRECT_SOURCE "nss_ecm_direct"'),
+         'config module must define the NSS direct collector source literal');
   for (const required of [
     'NSS_ECM_STATE_DEBUGFS_DIR "/sys/kernel/debug/ecm/ecm_state"',
     'NSS_ECM_STATE_DEV_MAJOR_PATH',
-    'NSS_ECM_DIRECT_SOURCE "nss_ecm_direct"',
     'struct nss_ecm_direct_flow',
     'struct nss_ecm_direct_stats',
-    'static bool nss_ecm_direct_supported',
-    'static bool read_nss_ecm_direct_snapshot',
+    'bool read_nss_ecm_direct_snapshot',
     'static bool parse_nss_ecm_state_line',
-    'static bool nss_ecm_state_open',
+    'bool nss_ecm_state_open',
     'makedev(major, 0)',
     'open(path, O_RDONLY | O_CLOEXEC)',
     'fdopen(fd, "r")',
@@ -1508,6 +1716,24 @@ function assertRuntimeNssDirectSource(source, collectorModel, indexSource, nssPa
     'dip_address_nat',
     'snode_address_nat',
     'dnode_address_nat',
+    'flow->sip_address_nat',
+    'flow->dip_address_nat',
+    'nss_ecm_direct_flow_add_endpoint',
+    'FLOW_ENDPOINT_ORIG_SRC',
+    'FLOW_ENDPOINT_ORIG_DST',
+    'stats->state_major',
+    'NSS_ECM_STATE_TMP_DEV_PATH',
+    'source_path, source_path_size, "%s", NSS_ECM_STATE_TMP_DEV_PATH',
+    'NSS_ECM_STATE_TMP_DEV_PATH "/dev/lanspeed-ecm-state"',
+    'nss_ecm_direct_unavailable',
+    'nss_ecm_direct_parse_errors',
+    'skip_nss_ecm_direct_flow_without_lan_identity'
+  ]) {
+    assert(nssHeader.includes(required) || nssSource.includes(required),
+           `NSS collector module missing ${required}`);
+  }
+  for (const required of [
+    'static bool nss_ecm_direct_supported',
     'nss_ecm_direct_preferred(probe)',
     'static bool collect_nss_ecm_direct_clients',
     'collect_nss_stable_clients(root, clients, &probe)',
@@ -1518,9 +1744,6 @@ function assertRuntimeNssDirectSource(source, collectorModel, indexSource, nssPa
     'nss_direct_partial',
     'nss_sync_fallback',
     'nss_ecm_direct_snapshot_pending',
-    'nss_ecm_direct_unavailable',
-    'nss_ecm_direct_parse_errors',
-    'skip_nss_ecm_direct_flow_without_lan_identity',
     'json_object_new_string("nss_ecm_direct")'
   ]) {
     assert(source.includes(required), `C runtime NSS direct missing ${required}`);
@@ -1531,26 +1754,27 @@ function assertRuntimeNssDirectSource(source, collectorModel, indexSource, nssPa
     'decelerate',
     'flush'
   ]) {
-    assert(!/open\([^)]*O_WR/.test(source) && !new RegExp(`fopen\\([^\\n]*${forbidden}`).test(source),
+    assert(!/open\([^)]*O_WR/.test(nssSource) && !new RegExp(`fopen\\([^\\n]*${forbidden}`).test(nssSource),
            `NSS direct must not write ${forbidden}`);
   }
 
   assert(/static bool nss_ecm_direct_preferred[\s\S]{0,220}?nss_ecm_direct_supported\(probe\)/.test(source),
          'NSS direct preference must be explicit and capability-gated');
-  assert(source.includes('nss_ecm_direct_flow_add_endpoint') &&
-         source.includes('FLOW_ENDPOINT_ORIG_SRC') &&
-         source.includes('FLOW_ENDPOINT_ORIG_DST'),
+  assert(nssSource.includes('nss_ecm_direct_flow_add_endpoint') &&
+         nssSource.includes('FLOW_ENDPOINT_ORIG_SRC') &&
+         nssSource.includes('FLOW_ENDPOINT_ORIG_DST'),
          'NSS direct must map ECM source/destination endpoints to client-view tx/rx directions');
-  assert(source.includes('find_lan_identity_by_mac') &&
-         source.includes('nss_ecm_direct_endpoint_lookup') &&
-         source.includes('flow->sip_address_nat') &&
-         source.includes('flow->dip_address_nat'),
+  assert(identitySource.includes('find_lan_identity_by_mac') &&
+         identitySource.includes('nss_ecm_direct_endpoint_lookup') &&
+         nssSource.includes('flow->sip_address_nat') &&
+         nssSource.includes('flow->dip_address_nat'),
          'NSS direct must match NAT endpoints and fall back to ECM node MAC identities');
-  assert(source.includes('stats->state_major') &&
-         source.includes('NSS_ECM_STATE_TMP_DEV_PATH') &&
-         source.includes('source_path, source_path_size, "%s", NSS_ECM_STATE_TMP_DEV_PATH'),
+  assert(nssSource.includes('stats->state_major') &&
+         nssSource.includes('NSS_ECM_STATE_TMP_DEV_PATH') &&
+         nssSource.includes('source_path, source_path_size, "%s", NSS_ECM_STATE_TMP_DEV_PATH'),
          'NSS direct evidence must expose debugfs major and real temporary state path');
-  assert(source.includes('NSS_ECM_STATE_TMP_DEV_PATH "/dev/lanspeed-ecm-state"'),
+  assert(nssHeader.includes('NSS_ECM_STATE_TMP_DEV_PATH "/dev/lanspeed-ecm-state"') ||
+         nssSource.includes('NSS_ECM_STATE_TMP_DEV_PATH "/dev/lanspeed-ecm-state"'),
          'NSS direct temporary character device must live under /dev, not a nodev /tmp mount');
   assert(source.includes('nss_ecm_state_open(&state_file') &&
          source.includes('nss_ecm_direct_state_errno') &&
@@ -1680,7 +1904,7 @@ function assertBpfLoaderModule(header, loader, daemonSource, packageMakefile, sr
   assert(daemonSource.includes('bpf_tc_self_heal'), 'lanspeedd.c must expose BPF self-heal evidence');
   assert(daemonSource.includes('lanspeed_bpf_shutdown('), 'lanspeedd.c must shut the loader down on exit');
   assert(daemonSource.includes('lanspeed_bpf_runtime_ok('), 'lanspeedd.c must consult lanspeed_bpf_runtime_ok for Full gating');
-  assert(daemonSource.includes('lanspeed_bpf_read_samples('), 'lanspeedd.c must read BPF samples for Full mode');
+  assert(bpfCollectorSource.includes('lanspeed_bpf_read_samples('), 'BPF collector module must read BPF samples for Full mode');
   assert(daemonSource.includes('collect_bpf_clients('), 'lanspeedd.c must expose a BPF client collector path');
   assert(/collector_mode[^\n]+"bpf"/.test(daemonSource), 'lanspeedd.c must emit collector_mode=bpf in the Full path');
   assert(/if\s*\(\s*collect_bpf_clients\(root,\s*clients,\s*&probe\)\s*\)[\s\S]{0,260}?merge_conntrack_conn_counts\(root,\s*clients\)/.test(daemonSource),
@@ -1729,6 +1953,18 @@ const routerLocalFixture = readJson('tests/fixtures/lanspeed-router-local.json')
 const topologyVlanFixture = readJson('tests/fixtures/lanspeed-topology-vlan.json');
 const lifecycleFixture = readJson('tests/fixtures/lanspeed-lifecycle.json');
 const source = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeedd.c'), 'utf8');
+const configHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_config.h'), 'utf8');
+const configSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_config.c'), 'utf8');
+const identityHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_identity.h'), 'utf8');
+const identitySource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_identity.c'), 'utf8');
+const conntrackHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_conntrack.h'), 'utf8');
+const conntrackSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_conntrack.c'), 'utf8');
+const bpfCollectorHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_bpf_collector.h'), 'utf8');
+const bpfCollectorSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_bpf_collector.c'), 'utf8');
+const nssHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_nss.h'), 'utf8');
+const nssSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_nss.c'), 'utf8');
+const historyHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_history.h'), 'utf8');
+const historySource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_history.c'), 'utf8');
 const packageMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
 const srcMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/src/Makefile'), 'utf8');
 const sdkHelper = fs.readFileSync(path.join(root, 'scripts/build-sdk.sh'), 'utf8');
@@ -1751,7 +1987,10 @@ assertNoDestructiveTcCommands(bpfSource);
 assertNoDestructiveTcCommands(bpfLoaderSource);
 assertBpfSource(bpfSource);
 assertBpfBuildRules(packageMakefile, srcMakefile, sdkHelper);
+assertRuntimeProbeJsonOwnership(source);
 assertRuntimeConntrackFallbackSource(source);
+assertRuntimeBpfCollectorModule(source);
+assertRuntimeProbeHotPathPolicy(source);
 assertRuntimeNssDirectSource(source, collectorModel, indexSource, nssPanelSource);
 assertRuntimeBpfGateSource(source);
 assertBpfLoaderModule(bpfLoaderHeader, bpfLoaderSource, source, packageMakefile, srcMakefile);
@@ -2554,7 +2793,7 @@ assert(refreshInterval.default_ms === 1000, 'refresh interval default must be 10
 assert(refreshInterval.minimum_ms === 500, 'refresh interval minimum must be 500ms');
 assert(refreshInterval.effective_ms === 500, 'refresh interval below 500ms must be clamped');
 assert(refreshInterval.warnings.includes('refresh_interval_below_minimum'), 'refresh interval clamp warning is required');
-assert(source.includes('#define MIN_REFRESH_INTERVAL_MS 500'), 'C daemon must define 500ms minimum refresh interval');
+assert(configHeader.includes('#define MIN_REFRESH_INTERVAL_MS 500'), 'config module must define 500ms minimum refresh interval');
 assert(source.includes('refresh_interval_below_minimum'), 'C daemon must expose machine-readable refresh interval warning');
 
 const lifecycleRestart = simulateLifecycleRestart(lifecycleFixture);

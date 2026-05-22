@@ -817,7 +817,7 @@ function writeEvidence(fileName, health) {
   fs.writeFileSync(path.join(evidenceDir, fileName), `${JSON.stringify(health, null, 2)}\n`);
 }
 
-function assertNoForbiddenRuntimePatterns(source) {
+function assertNoForbiddenRuntimePatterns(source, conntrackHeader, conntrackSource, identitySource) {
   const forbidden = [
     /uci\s+commit/i,
     /fw4\s+reload/i,
@@ -830,9 +830,9 @@ function assertNoForbiddenRuntimePatterns(source) {
     assert(!pattern.test(source), `forbidden runtime pattern matched ${pattern}`);
   }
 
-  assert(source.includes('CONNTRACK_PROCFS_PATH "/proc/net/nf_conntrack"'), 'fallback must read procfs conntrack accounting');
-  assert(source.includes('CONNTRACK_LEGACY_PROCFS_PATH "/proc/net/ip_conntrack"'), 'fallback must support legacy procfs conntrack accounting');
-  assert(source.includes('json_object_new_string("procfs_conntrack_acct_orig_reply_bytes")'), 'fallback counter source must be procfs conntrack accounting');
+  assert(conntrackHeader.includes('CONNTRACK_PROCFS_PATH "/proc/net/nf_conntrack"'), 'fallback must read procfs conntrack accounting');
+  assert(conntrackHeader.includes('CONNTRACK_LEGACY_PROCFS_PATH "/proc/net/ip_conntrack"'), 'fallback must support legacy procfs conntrack accounting');
+  assert(conntrackSource.includes('procfs_conntrack_acct_orig_reply_bytes') || source.includes('json_object_new_string("procfs_conntrack_acct_orig_reply_bytes")'), 'fallback counter source must be procfs conntrack accounting');
   assert(source.includes('openclash_fake_ip_low_remote_confidence'), 'OpenClash fake-ip warning must be implemented');
   assert(source.includes('openclash_tun_conntrack_low_confidence'), 'OpenClash TUN/mix warning must be implemented');
   assert(source.includes('openclash_dns_chain_incomplete'), 'OpenClash DNS chain warning must be implemented');
@@ -840,9 +840,9 @@ function assertNoForbiddenRuntimePatterns(source) {
   assert(source.includes('router_self@local_router'), 'router self proxy traffic must have a separate local router identity bucket');
   assert(source.includes('DAE_FWMARK "0x8000000"'), 'dae fwmark constant must be implemented');
   assert(source.includes('DAE_ROUTE_TABLE "2023"'), 'dae route table constant must be implemented');
-  assert(source.includes('dae0peer'), 'dae0peer must be handled explicitly');
+  assert(source.includes('dae0peer') || identitySource.includes('dae0peer'), 'dae0peer must be handled explicitly');
   assert(source.includes('tc_filter_conflict'), 'tc filter pref/handle conflict warning must be implemented');
-  assert(source.includes('ifname_is_excluded_identity_source'), 'runtime clients must exclude proxy/uplink interface identity sources');
+  assert(source.includes('ifname_is_excluded_identity_source') || identitySource.includes('ifname_is_excluded_identity_source'), 'runtime clients must exclude proxy/uplink interface identity sources');
   assert(source.includes('lan_to_lan_visibility_limited'), 'runtime collector evidence must expose hardware-switch LAN-to-LAN limited visibility warning');
   assert(source.includes('duplicate_mac_across_vlans'), 'runtime collector evidence must expose duplicate MAC across VLAN warning');
   assert(source.includes('never_attribute_router_originated_traffic_to_lan_client'), 'runtime collector evidence must keep router-originated traffic separate from LAN clients');
@@ -853,7 +853,10 @@ function assertNoForbiddenRuntimePatterns(source) {
 fs.mkdirSync(evidenceDir, { recursive: true });
 
 const runtimeSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeedd.c'), 'utf8');
-assertNoForbiddenRuntimePatterns(runtimeSource);
+const conntrackHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_conntrack.h'), 'utf8');
+const conntrackSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_conntrack.c'), 'utf8');
+const identitySource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_identity.c'), 'utf8');
+assertNoForbiddenRuntimePatterns(runtimeSource, conntrackHeader, conntrackSource, identitySource);
 
 const baseHealth = buildHealth(readJson('tests/fixtures/lanspeed-probe-base.json'));
 const softwareFlowOffloadHealth = buildHealth(readJson('tests/fixtures/lanspeed-probe-software-flow-offload.json'));

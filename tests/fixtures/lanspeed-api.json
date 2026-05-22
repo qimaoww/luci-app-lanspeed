@@ -15,7 +15,7 @@
     "collector_mode": "auto",
     "rate_collector_mode": "auto",
     "conn_collector_mode": "auto",
-    "version": "0.1.3-r4",
+    "version": "0.1.5-r1",
     "capabilities": {
       "bpf": false,
       "bpf_package": false,
@@ -160,5 +160,34 @@
       "fixture_safe": true,
       "live_metrics": false
     }
+  },
+  "sysdevices": {
+    "devices": [
+      {
+        "name": "br-lan",
+        "selected": true,
+        "observed": false,
+        "recommended_lan": true,
+        "is_bridge": true,
+        "is_bridge_port": false,
+        "is_nss_ifb": false,
+        "speed_mbps": 1000
+      },
+      {
+        "name": "nssifb",
+        "selected": false,
+        "observed": true,
+        "recommended_lan": false,
+        "is_bridge": false,
+        "is_bridge_port": false,
+        "is_nss_ifb": true
+      }
+    ],
+    "current_ifnames": [
+      "br-lan"
+    ],
+    "current_observed": [
+      "nssifb"
+    ]
   }
 }

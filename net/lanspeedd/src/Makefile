@@ -11,7 +11,7 @@ LIBBPF_LIBS ?= -lbpf
 
 BPF_IMPL_OBJ := lanspeed_bpf_stub.o
 
-OBJS := lanspeedd.o $(BPF_IMPL_OBJ)
+OBJS := lanspeedd.o lanspeed_config.o lanspeed_identity.o lanspeed_conntrack.o lanspeed_bpf_collector.o lanspeed_nss.o lanspeed_history.o $(BPF_IMPL_OBJ)
 
 all: lanspeedd
 

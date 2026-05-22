@@ -128,7 +128,7 @@ function validateValue(schema, definition, value, pathName) {
 function validateRootSchema(schema) {
   assertArray(schema.oneOf, 'schema.oneOf');
   const refs = schema.oneOf.map((entry) => entry.$ref).sort();
-  const expectedRefs = ['#/$defs/clients', '#/$defs/health', '#/$defs/interfaces', '#/$defs/overview', '#/$defs/status'].sort();
+  const expectedRefs = ['#/$defs/clients', '#/$defs/health', '#/$defs/interfaces', '#/$defs/overview', '#/$defs/status', '#/$defs/sysdevices'].sort();
   assert(JSON.stringify(refs) === JSON.stringify(expectedRefs), 'root schema must validate single ubus method responses');
   assert(!schema.$defs.status.properties.mode.enum.includes('Stub'), 'mode enum must not introduce Stub outside Full/Degraded/Unsupported contract');
 }
@@ -149,7 +149,7 @@ function validateFixture(fixture) {
   assertObject(fixture.status.evidence, 'status.evidence');
   assertObject(fixture.status.capabilities, 'status.capabilities');
   assert(fixture.status.mode === 'Unsupported', 'status fixture must use planned Unsupported mode for stub stage');
-  assert(/^0\.1\.3-r\d+$/.test(fixture.status.version), 'status fixture version must include package release suffix, e.g. 0.1.3-r1');
+  assert(/^0\.1\.5-r\d+$/.test(fixture.status.version), 'status fixture version must include package release suffix, e.g. 0.1.5-r1');
   assert(fixture.status.capabilities.bpf === false, 'status fixture must not claim BPF is available in stub stage');
   assert(fixture.status.capabilities.live_metrics === false, 'status fixture must not pretend live metrics exist');
 
@@ -207,6 +207,23 @@ function validateFixture(fixture) {
     assertRequired(iface, ['name', 'role', 'status', 'evidence'], `interfaces.interfaces[${index}]`);
     assertObject(iface.evidence, `interfaces.interfaces[${index}].evidence`);
   }
+
+  assertRequired(fixture.sysdevices, ['devices', 'current_ifnames', 'current_observed'], 'sysdevices response');
+  assertArray(fixture.sysdevices.devices, 'sysdevices.devices');
+  assertArray(fixture.sysdevices.current_ifnames, 'sysdevices.current_ifnames');
+  assertArray(fixture.sysdevices.current_observed, 'sysdevices.current_observed');
+  assert(fixture.sysdevices.devices.length > 0, 'sysdevices fixture must include at least one network device');
+  for (const [index, dev] of fixture.sysdevices.devices.entries()) {
+    assertRequired(dev, [
+      'name',
+      'selected',
+      'observed',
+      'recommended_lan',
+      'is_bridge',
+      'is_bridge_port',
+      'is_nss_ifb'
+    ], `sysdevices.devices[${index}]`);
+  }
 }
 
 function validateMethodFixtures(schema, fixtures) {
@@ -215,6 +232,7 @@ function validateMethodFixtures(schema, fixtures) {
   validateValue(schema, schema.$defs.overview, fixtures.overview, 'overview method response');
   validateValue(schema, schema.$defs.health, fixtures.health, 'health method response');
   validateValue(schema, schema.$defs.interfaces, fixtures.interfaces, 'interfaces method response');
+  validateValue(schema, schema.$defs.sysdevices, fixtures.sysdevices, 'sysdevices method response');
 }
 
 function validateAcl(acl) {
@@ -275,7 +293,7 @@ function validateMenu(menu) {
     'config menu must require luci-app-lanspeed ACL');
 }
 
-function validateSource(source) {
+function validateSource(source, conntrackHeader, conntrackSource) {
   for (const method of ['status', 'clients', 'overview', 'health', 'interfaces']) {
     assert(source.includes(`UBUS_METHOD_NOARG("${method}"`), `C stub must register ${method} ubus method`);
     assert(source.includes(`"${method}"`), `C stub must represent ${method} response`);
@@ -316,7 +334,7 @@ function validateSource(source) {
   assert(source.includes('"bpf_object_missing"'), 'C health probe must warn when runtime BPF object is missing');
   assert(source.includes('"unsafe_attach"'), 'C health probe must report unsafe attach as structured warning');
   assert(source.includes('"map_full"'), 'C health probe must report map_full without crashing');
-  assert(source.includes('char max_clients_path[] = "lanspeed.main.max_clients"'), 'C daemon must read max_clients for the BPF map guard');
+  assert(configSource.includes('char max_clients_path[] = "lanspeed.main.max_clients"'), 'config module must read max_clients for the BPF map guard');
   assert(source.includes('"lan_bridge_members"') && source.includes('"vlan_subinterfaces"') && source.includes('"wlan_interfaces"'), 'C collector model must target CPU-visible LAN edges');
   assert(source.includes('"wan"') && source.includes('"tun"'), 'C collector model must exclude WAN/TUN-side MAC ownership');
   assert(source.includes('"delete_existing", json_object_new_boolean(false)'), 'C collector evidence must forbid deleting existing tc filters');
@@ -324,18 +342,19 @@ function validateSource(source) {
   assert(source.includes('"ifindex"') && source.includes('"vlan_or_zone"') && source.includes('"direction"'), 'C collector map key must include ifindex, VLAN/zone, MAC, and direction');
   assert(source.includes('"bytes"') && source.includes('"packets"') && source.includes('"last_seen"'), 'C collector map model must include bytes, packets, and last_seen counters');
   assert(source.includes('LANSPEED_BPF_SOURCE'), 'C collector evidence must expose the BPF source name');
-  assert(source.includes('#define DEFAULT_REFRESH_INTERVAL_MS 1000'), 'C daemon must default refresh interval to 1000ms');
-  assert(source.includes('#define MIN_REFRESH_INTERVAL_MS 500'), 'C daemon must enforce 500ms minimum refresh interval');
+  assert(source.includes('lanspeed_runtime_config'), 'C daemon must use a normalized runtime config struct');
+  assert(configHeader.includes('#define DEFAULT_REFRESH_INTERVAL_MS 1000'), 'config module must default refresh interval to 1000ms');
+  assert(configHeader.includes('#define MIN_REFRESH_INTERVAL_MS 500'), 'config module must enforce 500ms minimum refresh interval');
   assert(source.includes('refresh_interval_below_minimum'), 'C daemon must expose refresh interval clamp warning');
-  assert(source.includes('#define DEFAULT_ACTIVE_CLIENT_WINDOW_MS 10000ULL'), 'C daemon must default active client window to 10000ms');
-  assert(source.includes('#define DEFAULT_ACTIVE_CLIENT_MIN_BPS 1ULL'), 'C daemon must default active client minimum speed to 1bps');
+  assert(configHeader.includes('#define DEFAULT_ACTIVE_CLIENT_WINDOW_MS 10000ULL'), 'config module must default active client window to 10000ms');
+  assert(configHeader.includes('#define DEFAULT_ACTIVE_CLIENT_MIN_BPS 1ULL'), 'config module must default active client minimum speed to 1bps');
   assert(source.includes('active_client_window_below_minimum'), 'C daemon must expose active window clamp warning');
   assert(source.includes('active_client_min_bps'), 'C daemon must read/publish active_client_min_bps');
   assert(source.includes('overview_window_samples'), 'C daemon must read/publish overview_window_samples for the trend chart');
-  assert(source.includes('enum collector_mode_setting'), 'C daemon must define configurable collector modes');
-  assert(source.includes('rate_collector_mode_path[] = "lanspeed.main.rate_collector_mode"'), 'C daemon must read rate_collector_mode from UCI');
-  assert(source.includes('conn_collector_mode_path[] = "lanspeed.main.conn_collector_mode"'), 'C daemon must read conn_collector_mode from UCI');
-  assert(source.includes('collector_mode_path[] = "lanspeed.main.collector_mode"'), 'C daemon must keep legacy collector_mode UCI fallback');
+  assert(configHeader.includes('enum collector_mode_setting'), 'config module must define configurable collector modes');
+  assert(configSource.includes('rate_collector_mode_path[] = "lanspeed.main.rate_collector_mode"'), 'config module must read rate_collector_mode from UCI');
+  assert(configSource.includes('conn_collector_mode_path[] = "lanspeed.main.conn_collector_mode"'), 'config module must read conn_collector_mode from UCI');
+  assert(configSource.includes('collector_mode_path[] = "lanspeed.main.collector_mode"'), 'config module must keep legacy collector_mode UCI fallback');
   assert(/"collector_mode"[\s\S]{0,120}json_object_new_string\(collector_mode_config_name\(\)\)/.test(source), 'status must publish configured collector_mode');
   assert(/"rate_collector_mode"[\s\S]{0,120}json_object_new_string\(rate_collector_mode_config_name\(\)\)/.test(source), 'status must publish configured rate_collector_mode');
   assert(/"conn_collector_mode"[\s\S]{0,120}json_object_new_string\(conn_collector_mode_config_name\(\)\)/.test(source), 'status must publish configured conn_collector_mode');
@@ -373,8 +392,11 @@ function validateSource(source) {
   assert(source.includes('127.0.0.1#7874'), 'C daemon must probe dnsmasq forwarding to OpenClash DNS read-only');
   assert(source.includes('DAE_FWMARK "0x8000000"'), 'C daemon must detect dae fwmark 0x8000000 evidence');
   assert(source.includes('DAE_ROUTE_TABLE "2023"'), 'C daemon must detect dae route table 2023 evidence');
-  assert(source.includes('"dae0"') && source.includes('"dae0peer"'), 'C daemon must explicitly exclude dae0/dae0peer identity sources');
-  assert(source.includes('mac_first_octet') && source.includes('(mac_first_octet & 0x01) != 0'), 'C daemon must reject multicast MACs from clients');
+  assert(identityHeader.includes('bool ifname_is_excluded_identity_source') &&
+         identitySource.includes('"dae0"') && identitySource.includes('"dae0peer"'),
+         'identity module must explicitly exclude dae0/dae0peer identity sources');
+  assert(identitySource.includes('mac_first_octet') && identitySource.includes('(mac_first_octet & 0x01) != 0'),
+         'identity module must reject multicast MACs from clients');
   assert(source.includes('"tc_filter_conflict"'), 'C daemon must expose stable tc_filter_conflict warning');
   assert(source.includes('create_or_reuse_clsact_and_append_owned_filter_only'), 'C daemon must preserve append-only tc attach model');
   assert(source.includes('bpf_runtime_recover_if_needed'), 'C daemon must self-heal missing or displaced owned TC BPF hooks');
@@ -384,18 +406,20 @@ function validateSource(source) {
          'C daemon must skip non-LAN interfaces when building the BPF attach list');
   assert(source.includes('"nft_forward_chain_counters"'), 'C conntrack fallback must forbid firewall forward-chain counters');
   assert(source.includes('"nlbwmon_read_counters", json_object_new_boolean(false)'), 'C conntrack fallback must not read nlbwmon counters');
-  assert(source.includes('CONNTRACK_PROCFS_PATH "/proc/net/nf_conntrack"'), 'C runtime fallback must read procfs conntrack table');
-  assert(source.includes('CONNTRACK_LEGACY_PROCFS_PATH "/proc/net/ip_conntrack"'), 'C runtime fallback must support legacy procfs conntrack path');
-  assert(source.includes('#include <libmnl/libmnl.h>'), 'C runtime fallback must use libmnl for raw ctnetlink');
-  assert(source.includes('static bool read_conntrack_netlink_snapshot'), 'C runtime fallback must implement a raw ctnetlink snapshot reader');
-  assert(source.includes('static bool read_conntrack_snapshot'), 'C runtime fallback must keep a netlink-first snapshot wrapper');
+  assert(conntrackHeader.includes('CONNTRACK_PROCFS_PATH "/proc/net/nf_conntrack"'), 'conntrack module must read procfs conntrack table');
+  assert(conntrackHeader.includes('CONNTRACK_LEGACY_PROCFS_PATH "/proc/net/ip_conntrack"'), 'conntrack module must support legacy procfs conntrack path');
+  assert(conntrackSource.includes('#include <libmnl/libmnl.h>'), 'conntrack module must use libmnl for raw ctnetlink');
+  assert(conntrackSource.includes('static bool read_conntrack_netlink_snapshot'), 'conntrack module must implement a raw ctnetlink snapshot reader');
+  assert(conntrackSource.includes('bool read_conntrack_snapshot'), 'conntrack module must keep a netlink-first snapshot wrapper');
   assert(source.includes('"lanspeedd_ctnetlink_conntrack_acct"'), 'C runtime fallback must honestly name ctnetlink source');
   assert(source.includes('"ctnetlink_conntrack_acct_orig_reply_bytes"'), 'C runtime fallback must name ctnetlink accounting counters');
-  assert(source.includes('"conntrack_netlink"'), 'C runtime fallback must expose conn_source=conntrack_netlink when netlink is active');
+  assert(source.includes('CONNTRACK_NETLINK_SOURCE') &&
+         configHeader.includes('#define CONNTRACK_NETLINK_SOURCE "conntrack_netlink"'),
+         'C runtime fallback must expose conn_source=conntrack_netlink when netlink is active');
   assert(!source.includes('libnetfilter_conntrack'), 'C runtime fallback must not include libnetfilter-conntrack');
   assert(!/\bnfct_/.test(source), 'C runtime fallback must not call libnetfilter-conntrack nfct_* APIs');
-  assert(source.includes('ARP_PROCFS_PATH "/proc/net/arp"'), 'C runtime fallback must map LAN IPs to MACs through ARP');
-  assert(source.includes('static bool parse_conntrack_procfs_line'), 'C runtime fallback must parse conntrack procfs lines');
+  assert(identityHeader.includes('#define ARP_PROCFS_PATH "/proc/net/arp"'), 'identity module must map LAN IPs to MACs through ARP');
+  assert(conntrackSource.includes('static bool parse_conntrack_procfs_line'), 'conntrack module must parse conntrack procfs lines');
   assert(source.includes('static bool collect_conntrack_procfs_clients'), 'C runtime clients method must have real conntrack collector plumbing');
   assert(source.includes('collect_conntrack_procfs_clients(root, clients, &probe)'), 'clients_method must invoke conntrack fallback collector');
   assert(source.includes('previous_conntrack_samples'), 'C runtime fallback must keep previous snapshots for rates');
@@ -498,11 +522,18 @@ const methodFixtures = {
   clients: readJson('tests/fixtures/lanspeed-clients.json'),
   overview: readJson('tests/fixtures/lanspeed-overview.json'),
   health: readJson('tests/fixtures/lanspeed-health.json'),
-  interfaces: readJson('tests/fixtures/lanspeed-interfaces.json')
+  interfaces: readJson('tests/fixtures/lanspeed-interfaces.json'),
+  sysdevices: readJson('tests/fixtures/lanspeed-sysdevices.json')
 };
 const acl = readJson('applications/luci-app-lanspeed/root/usr/share/rpcd/acl.d/luci-app-lanspeed.json');
 const menu = readJson('applications/luci-app-lanspeed/root/usr/share/luci/menu.d/luci-app-lanspeed.json');
 const source = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeedd.c'), 'utf8');
+const configHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_config.h'), 'utf8');
+const configSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_config.c'), 'utf8');
+const identityHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_identity.h'), 'utf8');
+const identitySource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_identity.c'), 'utf8');
+const conntrackHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_conntrack.h'), 'utf8');
+const conntrackSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_conntrack.c'), 'utf8');
 const bpfSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_tc.bpf.c'), 'utf8');
 const packageMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
 const uciConfig = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/config/lanspeed'), 'utf8');
@@ -511,6 +542,8 @@ assertSchemaRequired(schema, 'status', ['mode', 'confidence', 'warnings', 'evide
 assertSchemaRequired(schema, 'client', ['mac', 'identity_key', 'zone', 'interface', 'ips', 'hostname', 'rx_bps', 'tx_bps', 'last_seen', 'collector_mode', 'confidence', 'warnings']);
 assertSchemaRequired(schema, 'health', ['mode', 'confidence', 'capabilities', 'conflicts', 'warnings', 'evidence']);
 assertSchemaRequired(schema, 'interface', ['name', 'role', 'status']);
+assertSchemaRequired(schema, 'sysdevice', ['name', 'selected', 'observed', 'recommended_lan', 'is_bridge', 'is_bridge_port', 'is_nss_ifb']);
+assertSchemaRequired(schema, 'sysdevices', ['devices', 'current_ifnames', 'current_observed']);
 validateRootSchema(schema);
 assert(schema.$defs.status.properties.refresh_interval_ms.minimum === 500, 'schema must reject/clamp refresh_interval_ms below 500ms');
 assert(schema.$defs.status.properties.active_client_window_ms.minimum === 1000, 'schema must reject/clamp active_client_window_ms below 1000ms');
@@ -541,7 +574,7 @@ validateFixture(fixture);
 validateMethodFixtures(schema, methodFixtures);
 validateAcl(acl);
 validateMenu(menu);
-validateSource(source);
+validateSource(source, conntrackHeader, conntrackSource);
 validateBpfSource(bpfSource);
 validatePackageMakefile(packageMakefile);
 validateUci(uciConfig);

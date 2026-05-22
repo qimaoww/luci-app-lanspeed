@@ -19,6 +19,9 @@
     },
     {
       "$ref": "#/$defs/interfaces"
+    },
+    {
+      "$ref": "#/$defs/sysdevices"
     }
   ],
   "$defs": {
@@ -700,6 +703,78 @@
       },
       "required": [
         "interfaces"
+      ]
+    },
+    "sysdevice": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "selected": {
+          "type": "boolean"
+        },
+        "observed": {
+          "type": "boolean"
+        },
+        "recommended_lan": {
+          "type": "boolean"
+        },
+        "is_bridge": {
+          "type": "boolean"
+        },
+        "is_bridge_port": {
+          "type": "boolean"
+        },
+        "is_nss_ifb": {
+          "type": "boolean"
+        },
+        "speed_mbps": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "name",
+        "selected",
+        "observed",
+        "recommended_lan",
+        "is_bridge",
+        "is_bridge_port",
+        "is_nss_ifb"
+      ]
+    },
+    "sysdevices": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "devices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sysdevice"
+          }
+        },
+        "current_ifnames": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "current_observed": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "devices",
+        "current_ifnames",
+        "current_observed"
       ]
     }
   }

@@ -2,7 +2,7 @@
 'require baseclass';
 
 return baseclass.extend({
-	PACKAGE_VERSION: '0.1.3',
-	PACKAGE_RELEASE: '4',
-	FULL_VERSION: '0.1.3-r4'
+	PACKAGE_VERSION: '0.1.5',
+	PACKAGE_RELEASE: '1',
+	FULL_VERSION: '0.1.5-r1'
 });
