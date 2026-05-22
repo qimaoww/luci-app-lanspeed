@@ -1794,22 +1794,40 @@ static bool nss_conntrack_sync_reader_available(const struct runtime_probe *prob
 static bool nss_ecm_direct_supported(const struct runtime_probe *probe)
 {
 	return probe &&
-	       !rate_collector_mode_forces_bpf() &&
-	       !rate_collector_mode_forces_nss_conntrack_sync() &&
 	       probe->nss_present &&
 	       probe->nss_ecm_active &&
 	       probe->nss_ecm_direct_supported;
 }
 
+static bool nss_ecm_direct_state_readable(const struct runtime_probe *probe)
+{
+	return nss_ecm_direct_supported(probe);
+}
+
+static const char *nss_ecm_direct_fallback_reason(const struct runtime_probe *probe)
+{
+	if (nss_ecm_direct_overlay_enabled(probe))
+		return "";
+	if (!nss_ecm_direct_state_readable(probe))
+		return "state_unavailable_or_unreadable";
+	if (rate_collector_mode_forces_bpf())
+		return "collector_mode_bpf";
+	if (rate_collector_mode_forces_nss_conntrack_sync())
+		return "collector_mode_nss_conntrack_sync";
+	if (nss_daed_should_prefer_bpf(probe))
+		return "nss_daed_prefers_bpf";
+	return "not_selected";
+}
+
 static bool nss_ecm_direct_preferred(const struct runtime_probe *probe)
 {
-	return nss_ecm_direct_supported(probe) &&
+	return nss_ecm_direct_state_readable(probe) &&
 	       rate_collector_mode_forces_nss_ecm_direct();
 }
 
 static bool nss_ecm_direct_overlay_enabled(const struct runtime_probe *probe)
 {
-	return nss_ecm_direct_supported(probe) &&
+	return nss_ecm_direct_state_readable(probe) &&
 	       (rate_collector_mode == COLLECTOR_MODE_AUTO ||
 	        rate_collector_mode_forces_nss_ecm_direct()) &&
 	       !nss_daed_should_prefer_bpf(probe);
@@ -2238,7 +2256,7 @@ static void add_collector_evidence(struct runtime_probe *probe)
 		json_object_object_add(nss_direct, "confidence", json_object_new_string(nss_ecm_direct_overlay_enabled(probe) ? "high" : "unsupported"));
 		json_object_object_add(nss_direct, "coverage", json_object_new_string(NSS_ECM_DIRECT_SOURCE));
 		json_object_object_add(nss_direct, "fallback_to", json_object_new_string("conntrack_ecm_sync"));
-		json_object_object_add(nss_direct, "fallback_reason", json_object_new_string(nss_ecm_direct_overlay_enabled(probe) ? "" : "state_unavailable_or_unreadable"));
+		json_object_object_add(nss_direct, "fallback_reason", json_object_new_string(nss_ecm_direct_fallback_reason(probe)));
 		json_object_object_add(nss_direct, "counter_source", json_object_new_string("ecm_state_adv_stats_from_to_data_total"));
 		json_object_object_add(nss_direct, "sources", direct_sources);
 		json_object_object_add(nss_direct, "forbidden_writes", direct_forbidden);
@@ -2460,7 +2478,7 @@ static void finish_probe_evidence(struct runtime_probe *probe, const char *metho
 		json_object_object_add(nss, "direct_supported", json_object_new_boolean(nss_ecm_direct_supported(probe)));
 		json_object_object_add(nss, "direct_enabled", json_object_new_boolean(nss_ecm_direct_overlay_enabled(probe)));
 		json_object_object_add(nss, "direct_source", json_object_new_string(NSS_ECM_DIRECT_SOURCE));
-		json_object_object_add(nss, "fallback_reason", json_object_new_string(nss_ecm_direct_overlay_enabled(probe) ? "" : "state_unavailable_or_unreadable"));
+		json_object_object_add(nss, "fallback_reason", json_object_new_string(nss_ecm_direct_fallback_reason(probe)));
 		json_object_object_add(nss, "direct_state_present", json_object_new_boolean(probe->nss_ecm_direct_state));
 		json_object_object_add(nss, "direct_state_errno", json_object_new_int(probe->nss_ecm_direct_state_errno));
 		json_object_object_add(nss, "direct_state_major", json_object_new_int((int)probe->nss_ecm_direct_state_major));

@@ -209,6 +209,25 @@ function assertFormatActiveWindow(src) {
 	}
 }
 
+function assertNssPanelSource(src) {
+	if (!src.includes('function hasNssSignal(status)') ||
+	    !src.includes('function isNssAccelerated(status)')) {
+		fail('lanspeed/nssPanel.js must keep NSS panel signal helpers');
+	}
+	if (!src.includes('function nssDirectFallbackText(reason)') ||
+	    !src.includes('collector_mode_bpf') ||
+	    !src.includes('当前使用 BPF') ||
+	    !src.includes('collector_mode_nss_conntrack_sync') ||
+	    !src.includes('当前使用 NSS sync')) {
+		fail('lanspeed/nssPanel.js must render NSS-direct collector-mode fallback reasons as user-facing text');
+	}
+	if (!src.includes('NSS 状态') ||
+	    !src.includes('引擎与加速') ||
+	    !src.includes('NSS 相关告警')) {
+		fail('lanspeed/nssPanel.js must render NSS panel sections');
+	}
+}
+
 function assertNoRpcDeclare(src, modName) {
 	if (/\brpc\s*\.\s*declare\s*\(/.test(src)) {
 		fail(`${modName} must not contain rpc.declare (belongs in rpc.js)`);
@@ -592,6 +611,9 @@ EXPECTED_MODULES.forEach(function(name) {
 	}
 	if (name === 'ifaceConfig.js') {
 		assertIfaceConfigThemeLayout(src);
+	}
+	if (name === 'nssPanel.js') {
+		assertNssPanelSource(src);
 	}
 	if (name === 'version.js') {
 		assertVersionModule(src);

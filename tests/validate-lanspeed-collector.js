@@ -1761,8 +1761,8 @@ function assertRuntimeNssDirectSource(source, collectorModel, indexSource, nssPa
            `NSS direct must not write ${forbidden}`);
   }
 
-  assert(/static bool nss_ecm_direct_preferred[\s\S]{0,220}?nss_ecm_direct_supported\(probe\)/.test(source),
-         'NSS direct preference must be explicit and capability-gated');
+  assert(/static bool nss_ecm_direct_preferred[\s\S]{0,220}?nss_ecm_direct_state_readable\(probe\)/.test(source),
+         'NSS direct preference must be explicit and readable-state gated');
   assert(nssSource.includes('nss_ecm_direct_flow_add_endpoint') &&
          nssSource.includes('FLOW_ENDPOINT_ORIG_SRC') &&
          nssSource.includes('FLOW_ENDPOINT_ORIG_DST'),
@@ -1783,6 +1783,11 @@ function assertRuntimeNssDirectSource(source, collectorModel, indexSource, nssPa
          source.includes('nss_ecm_direct_state_errno') &&
          source.includes('nss_ecm_direct_state_major'),
          'NSS direct support must require a readable ECM state device and expose open diagnostics');
+  assert(source.includes('static bool nss_ecm_direct_state_readable') &&
+         source.includes('static const char *nss_ecm_direct_fallback_reason') &&
+         source.includes('"collector_mode_bpf"') &&
+         source.includes('"collector_mode_nss_conntrack_sync"'),
+         'NSS direct status must separate readable ECM state from collector-mode gating');
   assert(source.includes('"src_lan_flows"') &&
          source.includes('"dst_lan_flows"') &&
          source.includes('"both_lan_flows"'),

@@ -44,6 +44,20 @@ function isNssAccelerated(status) {
 	return Boolean(ev.ecm_offload_active || ev.ppe_offload_active);
 }
 
+function nssDirectFallbackText(reason) {
+	if (reason === 'collector_mode_bpf')
+		return _('当前使用 BPF');
+	if (reason === 'collector_mode_nss_conntrack_sync')
+		return _('当前使用 NSS sync');
+	if (reason === 'nss_daed_prefers_bpf')
+		return _('daed 运行中，当前优先使用 BPF');
+	if (reason === 'state_unavailable_or_unreadable')
+		return _('ECM state 设备不可用或不可读');
+	if (reason === 'not_selected')
+		return _('当前未选择 NSS-direct');
+	return reason || '';
+}
+
 function build(refs) {
 	refs.nssEngine    = E('span', { 'class': 'label' }, '-');
 	refs.nssSummary   = E('span', { 'class': 'sum' }, '');
@@ -150,7 +164,7 @@ function render(refs, status) {
 		directParts.push(_('NSS-direct 未启用'));
 	}
 	if (ev.fallback_reason && !ev.direct_enabled)
-		directParts.push(_('回退原因: %s').format(ev.fallback_reason));
+		directParts.push(nssDirectFallbackText(ev.fallback_reason));
 	refs.nssEngineLine.textContent = _('引擎: %s').format(engine) + ' · ' + directParts.join(' · ');
 
 	/* connections line */
