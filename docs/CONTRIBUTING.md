@@ -23,6 +23,20 @@ Every change must answer four questions:
 
 If you cannot answer those questions, the change is not ready.
 
+## Focused Change Discipline
+
+Keep each change small, explicit, and verifiable.
+
+- State the smallest useful behavior change before editing.
+- Write down assumptions when the request leaves room for interpretation.
+- Read the relevant local code or docs before changing them.
+- Prefer direct edits that match nearby style over new abstractions.
+- Avoid drive-by formatting, dependency changes, and speculative cleanup.
+- Verify with the narrowest meaningful command first, then broaden only when
+  the touched surface needs it.
+- In the handoff, report changed files, verification commands, assumptions, and
+  any remaining risk.
+
 ## C Daemon Rules
 
 Keep C code direct and explicit.
