@@ -1996,6 +1996,7 @@ static void add_collector_evidence(struct runtime_probe *probe)
 	struct json_object *conntrack_identity = json_object_new_object();
 	struct json_object *conntrack_directions = json_object_new_object();
 	struct json_object *router_self = json_object_new_object();
+	const struct lanspeed_bpf_status *bpf_status = lanspeed_bpf_get_status();
 
 	json_object_object_add(probe->evidence, "collector_mode",
 			       json_object_new_string(collector_mode_config_name()));
@@ -2018,6 +2019,19 @@ static void add_collector_evidence(struct runtime_probe *probe)
 	json_object_object_add(collector, "safe_attach", json_object_new_boolean(probe->safe_attach));
 	json_object_object_add(collector, "bpf_assets_are_evidence_only", json_object_new_boolean(true));
 	json_object_object_add(collector, "runtime_attach_map_read_success", json_object_new_boolean(probe->bpf_runtime_metrics));
+	json_object_object_add(collector, "runtime_object_loaded",
+			       json_object_new_boolean(bpf_status ? bpf_status->object_loaded : false));
+	json_object_object_add(collector, "runtime_any_attached",
+			       json_object_new_boolean(bpf_status ? bpf_status->any_attached : false));
+	json_object_object_add(collector, "runtime_last_read_attempted",
+			       json_object_new_boolean(bpf_status ? bpf_status->last_read_attempted : false));
+	json_object_object_add(collector, "runtime_last_read_ok",
+			       json_object_new_boolean(bpf_status ? bpf_status->last_read_ok : false));
+	json_object_object_add(collector, "runtime_last_sample_count",
+			       json_object_new_int64(bpf_status ? (int64_t)bpf_status->last_sample_count : 0));
+	json_object_object_add(collector, "runtime_error",
+			       json_object_new_string((bpf_status && bpf_status->error[0]) ?
+						      bpf_status->error : ""));
 	json_object_object_add(collector, "live_metrics", json_object_new_boolean(bpf_primary_active(probe)));
 	json_object_object_add(collector, "primary_source", json_object_new_string(collector_primary_source(probe)));
 	json_object_object_add(collector, "runtime_gate_warning",
