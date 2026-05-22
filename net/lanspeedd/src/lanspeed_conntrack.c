@@ -239,7 +239,7 @@ static void conntrack_sample_add_conn_counts(struct conntrack_client_sample *sam
 		return;
 	if (flow->is_tcp && strcmp(flow->tcp_state, "ESTABLISHED") == 0 && flow->assured)
 		sample->tcp_conns++;
-	else if (flow->is_udp) {
+	else if (flow->is_udp && flow->assured) {
 		sample->udp_conns++;
 		if (flow->udp_is_dns)
 			sample->udp_dns_conns++;

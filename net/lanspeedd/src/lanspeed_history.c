@@ -296,7 +296,7 @@ struct json_object *lanspeed_overview_to_json(const struct lanspeed_overview_rin
 	json_object_object_add(root, "sample_source",
 			       json_object_new_string("clients_refresh_daemon_ring"));
 	json_object_object_add(root, "conn_semantics",
-			       json_object_new_string("conntrack_current_tcp_established_assured_udp_tracked_dns_split"));
+			       json_object_new_string("conntrack_current_tcp_established_assured_udp_assured_dns_split"));
 
 	return root;
 }

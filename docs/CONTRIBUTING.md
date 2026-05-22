@@ -107,7 +107,7 @@ BPF code must stay small and verifier-friendly.
 - CT-Procfs is a fallback and parser behavior must be covered by fixtures.
 - Non-NSS conntrack must not be used as a real-time rate source.
 - TCP connection counts mean established and assured.
-- UDP connection counts mean currently tracked conntrack entries.
+- UDP connection counts mean assured conntrack entries only.
 - DNS UDP and non-DNS UDP must remain split when the source supports ports.
 
 ## NSS Rules

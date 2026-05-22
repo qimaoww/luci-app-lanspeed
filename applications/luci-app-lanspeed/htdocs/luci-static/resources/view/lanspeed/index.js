@@ -533,7 +533,7 @@ function buildShell(viewState) {
 			E('th', { 'class': 'num' }, _('上行')),
 			E('th', { 'class': 'num' }, _('下行')),
 			E('th', { 'class': 'num', 'title': _('TCP 仅统计 ESTABLISHED + ASSURED') }, 'TCP'),
-			E('th', { 'class': 'num', 'title': _('conntrack 表中尚未超时的 UDP 条目') }, 'UDP'),
+			E('th', { 'class': 'num', 'title': _('UDP 仅统计 ASSURED conntrack 条目') }, 'UDP'),
 			E('th', {}, _('状态'))
 		])),
 		refs.tbody

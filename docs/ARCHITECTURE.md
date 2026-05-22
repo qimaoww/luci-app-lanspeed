@@ -181,8 +181,8 @@ Rules:
 
 - Non-NSS conntrack is not a real-time rate source.
 - TCP counts are established and assured only.
-- UDP counts represent currently tracked conntrack entries and must split DNS
-  UDP from other UDP when available.
+- UDP counts represent assured conntrack entries only and must split DNS UDP
+  from other UDP when available.
 - CT-Netlink is preferred over procfs when both are usable.
 
 ### `collector_nss`
