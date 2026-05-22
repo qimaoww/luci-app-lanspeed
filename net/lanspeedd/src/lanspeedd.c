@@ -569,12 +569,20 @@ static bool value_contains_token(const char *value, const char *token)
 	return value && token && strstr(value, token) != NULL;
 }
 
+static bool line_contains_lanspeed_tc_program(const char *line)
+{
+	if (!line)
+		return false;
+	return strstr(line, "lanspeed_ingres") != NULL ||
+	       strstr(line, "lanspeed_egress") != NULL;
+}
+
 static bool line_contains_lanspeed_filter_conflict(const char *line)
 {
 	bool default_conflict;
 	bool early_conflict;
 
-	if (!line || strstr(line, LANSPEED_TC_FILTER_OWNER) != NULL)
+	if (!line || line_contains_lanspeed_tc_program(line))
 		return false;
 
 	default_conflict = strstr(line, "pref 49152") != NULL &&
@@ -606,7 +614,7 @@ static const char *tc_filter_owner_from_line(const char *line)
 {
 	if (!line)
 		return "unknown";
-	if (strstr(line, LANSPEED_TC_FILTER_OWNER))
+	if (line_contains_lanspeed_tc_program(line))
 		return LANSPEED_TC_FILTER_OWNER;
 	if (strstr(line, "dae") || strstr(line, "daed") || strstr(line, "dae0"))
 		return "dae";
@@ -675,7 +683,8 @@ static void inspect_tc_filter_lines(struct runtime_probe *probe, const char *ifn
 			    atoi(pref) > 0 && atoi(pref) < LANSPEED_TC_FILTER_PREF)
 				probe->dae_preempts_bpf_ingress = true;
 		}
-		if (line_contains_lanspeed_filter_conflict(line))
+		if (line_contains_lanspeed_filter_conflict(line) &&
+		    strcmp(owner, LANSPEED_TC_FILTER_OWNER))
 			probe->tc_filter_conflict = true;
 
 		add_detected_tc_filter(probe, ifname, direction, pref, handle, owner, "tc_filter_show");
@@ -3279,7 +3288,7 @@ static void emit_conntrack_clients(struct json_object *root,
 	json_object_object_add(root, "conntrack_entries_matched", json_object_new_int64((int64_t)stats->entries_matched));
 	json_object_object_add(root, "conntrack_parse_errors", json_object_new_int64((int64_t)stats->malformed_lines));
 	json_object_object_add(root, "conn_source", json_object_new_string(conntrack_stats_source(stats)));
-	json_object_object_add(root, "conn_semantics", json_object_new_string("conntrack_current_tcp_established_assured_udp_tracked_dns_split"));
+	json_object_object_add(root, "conn_semantics", json_object_new_string("conntrack_current_tcp_established_assured_udp_assured_dns_split"));
 
 	memcpy(previous_conntrack_samples, current,
 	       current_count * sizeof(struct conntrack_client_sample));
@@ -4237,7 +4246,7 @@ static void merge_conntrack_conn_counts(struct json_object *root,
 	json_object_object_add(root, "conn_collector_mode",
 			       json_object_new_string(conn_collector_mode_config_name()));
 	json_object_object_add(root, "conn_semantics",
-			       json_object_new_string("conntrack_current_tcp_established_assured_udp_tracked_dns_split"));
+			       json_object_new_string("conntrack_current_tcp_established_assured_udp_assured_dns_split"));
 }
 
 static int clients_method(struct ubus_context *ubus, struct ubus_object *obj,
@@ -4788,6 +4797,11 @@ static void start_bpf_runtime(void)
 		inspect_command_capabilities(&probe);
 		inspect_tc(&probe);
 		runtime_probe_cache_store(&probe);
+		if (probe.tc_filter_conflict) {
+			free_runtime_probe(&probe);
+			lanspeed_bpf_shutdown();
+			return;
+		}
 		bpf_runtime_early_passthrough = dae_tc_preempts_bpf_ingress(&probe);
 		free_runtime_probe(&probe);
 	}

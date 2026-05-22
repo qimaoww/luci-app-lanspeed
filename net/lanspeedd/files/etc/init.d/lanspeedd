@@ -12,7 +12,6 @@ LANSPEED_TC_PREF="49152"
 LANSPEED_TC_HANDLE="0x1eed"
 LANSPEED_TC_EARLY_PREF="1"
 LANSPEED_TC_EARLY_HANDLE="0x1eee"
-LANSPEED_TC_OBJECT="/usr/lib/bpf/lanspeed_tc.o"
 
 config_ifaces() {
 	config_get ifnames "$1" ifname
@@ -36,7 +35,7 @@ lanspeed_tc_filter_owned() {
 		return 1
 	fi
 	printf '%s\n' "$section" | grep -F -q "$LANSPEED_TC_OWNER" || return 1
-	printf '%s\n' "$section" | grep -F -q "$LANSPEED_TC_OBJECT" || return 1
+	printf '%s\n' "$section" | grep -E -q 'lanspeed_ingres|lanspeed_egress' || return 1
 	return 0
 }
 

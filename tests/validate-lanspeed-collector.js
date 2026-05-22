@@ -1279,9 +1279,9 @@ function assertLifecycleInit(initScript, hotplugScript, packageMakefile, default
   assert(initScript.includes('LANSPEED_TC_OWNER="lanspeed"'), 'init cleanup must encode lanspeed owner');
   assert(initScript.includes('LANSPEED_TC_PREF="49152"'), 'init cleanup must encode lanspeed pref');
   assert(initScript.includes('LANSPEED_TC_HANDLE="0x1eed"'), 'init cleanup must encode lanspeed handle');
-  assert(initScript.includes('LANSPEED_TC_OBJECT="/usr/lib/bpf/lanspeed_tc.o"'), 'init cleanup must encode BPF object path');
   assert(initScript.includes('grep -F -q "$LANSPEED_TC_OWNER"'), 'init cleanup must require exact owner marker');
-  assert(initScript.includes('grep -F -q "$LANSPEED_TC_OBJECT"'), 'init cleanup must require exact object marker');
+  assert(initScript.includes("grep -E -q 'lanspeed_ingres|lanspeed_egress'"), 'init cleanup must require the installed lanspeed BPF program name from tc output');
+  assert(!initScript.includes('grep -F -q "$LANSPEED_TC_OBJECT"'), 'init cleanup must not require an object marker absent from tc filter show output');
   assert(!initScript.includes('$LANSPEED_TC_OWNER\\|$LANSPEED_TC_OBJECT'), 'init cleanup must not treat owner/object as alternatives');
   assert(!/service\s+network\s+reload/i.test(initScript), 'init script must not reload user network config');
   assert(!/uci\s+commit/i.test(initScript), 'init script must not commit user config');
@@ -1536,6 +1536,9 @@ function assertRuntimeConntrackFallbackSource(source) {
   assert(source.includes('udp_dns_conns'), 'runtime must split UDP DNS connection counts from other UDP flows');
   assert(source.includes('udp_other_conns'), 'runtime must expose non-DNS UDP connection counts');
   assert(/sport_index|orig_sport/.test(conntrackSource) && /dport_index|orig_dport/.test(conntrackSource), 'conntrack parser must read ports so DNS UDP can be identified');
+  const connCountBody = extractFunctionBody(conntrackSource, 'conntrack_sample_add_conn_counts');
+  assert(/flow->is_udp\s*&&\s*flow->assured/.test(connCountBody),
+         'stable UDP connection counts must include only ASSURED conntrack UDP flows');
   assert(/json_object_object_add\(\s*client\s*,\s*"tcp_conns"\s*,\s*json_object_new_int64?\(\s*\(int64?_t?\)?\s*cs->tcp_conns/.test(source) ||
          /json_object_object_add\(\s*client\s*,\s*"tcp_conns"\s*,\s*json_object_new_int\(\s*\(int\)cs->tcp_conns/.test(source),
          'BPF client connection counts must be overwritten from conntrack current table when conntrack is readable');
@@ -1900,8 +1903,19 @@ function assertBpfLoaderModule(header, loader, daemonSource, packageMakefile, sr
          'daed-compatible early mode must also move egress before daed so download bytes are sampled before TC redirect/drop actions');
   assert(/egress_fd\s*=\s*early_passthrough\s*\?\s*g_state\.egress_early_prog_fd/.test(loader),
          'daed-compatible early mode must attach egress_early at the early pref');
+  const modeAttach = loader.match(/int\s+lanspeed_bpf_attach_iface_mode\s*\([^)]*\)\s*{[\s\S]*?^}/m);
+  assert(modeAttach, 'lanspeed_bpf.c must define lanspeed_bpf_attach_iface_mode');
+  assert(/hook_present\(ifindex,\s*BPF_TC_INGRESS,\s*ingress_priority,\s*ingress_handle\)/.test(modeAttach[0]),
+         'policy-aware attach must treat stale owned ingress hooks as replaceable after a daemon crash');
+  assert(/attach_point\([^;]+BPF_TC_INGRESS[^;]+ingress_present\)/.test(modeAttach[0]),
+         'policy-aware attach must replace stale owned ingress hooks with the current process BPF program');
   assert(/hook_present\(ifindex,\s*BPF_TC_EGRESS,\s*egress_priority,\s*egress_handle\)/.test(loader),
          'policy-aware attach must treat the shared egress hook as idempotent during daed policy switches');
+  assert(/attach_point\([^;]+BPF_TC_EGRESS[^;]+egress_present\)/.test(modeAttach[0]),
+         'policy-aware attach must replace stale owned egress hooks with the current process BPF program');
+  assert(daemonSource.includes('line_contains_lanspeed_tc_program'), 'runtime probe must identify owned TC hooks by BPF program name');
+  assert(/line_contains_lanspeed_filter_conflict\(line\)[\s\S]{0,160}strcmp\(owner,\s*LANSPEED_TC_FILTER_OWNER\)/.test(daemonSource),
+         'runtime probe must not classify stale lanspeed-owned pref/handle hooks as foreign tc conflicts');
   const modeDetach = loader.match(/int\s+lanspeed_bpf_detach_iface_mode\s*\([^)]*\)\s*{[\s\S]*?^}/m);
   assert(modeDetach, 'lanspeed_bpf.c must define lanspeed_bpf_detach_iface_mode');
   assert(/BPF_TC_EGRESS/.test(modeDetach[0]),

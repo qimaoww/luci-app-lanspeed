@@ -332,6 +332,8 @@ int lanspeed_bpf_attach_iface_mode(const char *ifname, bool early_passthrough)
 					    g_state.egress_prog_fd;
 	int ifindex;
 	int err;
+	bool ingress_present;
+	bool egress_present;
 
 	if (!g_state.obj) {
 		set_status_error("bpf_object_not_loaded");
@@ -348,25 +350,19 @@ int lanspeed_bpf_attach_iface_mode(const char *ifname, bool early_passthrough)
 		return -errno;
 	}
 
+	ingress_present = hook_present(ifindex, BPF_TC_INGRESS,
+				       ingress_priority, ingress_handle);
 	err = attach_point(ifname, ifindex, BPF_TC_INGRESS, ingress_fd,
-			   ingress_priority, ingress_handle, false);
+			   ingress_priority, ingress_handle, ingress_present);
 	if (err)
 		return err;
 
-	if (!hook_present(ifindex, BPF_TC_EGRESS, egress_priority, egress_handle)) {
-		err = attach_point(ifname, ifindex, BPF_TC_EGRESS, egress_fd,
-				   egress_priority, egress_handle, false);
-		if (err)
-			return err;
-	} else if (!hook_tracked(ifindex, BPF_TC_EGRESS, egress_priority, egress_handle) &&
-		   g_state.attached_count < LANSPEED_BPF_MAX_ATTACHED) {
-		g_state.attached[g_state.attached_count].ifindex = ifindex;
-		g_state.attached[g_state.attached_count].point = BPF_TC_EGRESS;
-		g_state.attached[g_state.attached_count].priority = egress_priority;
-		g_state.attached[g_state.attached_count].handle = egress_handle;
-		g_state.attached[g_state.attached_count].created_hook = false;
-		g_state.attached_count++;
-	}
+	egress_present = hook_present(ifindex, BPF_TC_EGRESS,
+				      egress_priority, egress_handle);
+	err = attach_point(ifname, ifindex, BPF_TC_EGRESS, egress_fd,
+			   egress_priority, egress_handle, egress_present);
+	if (err)
+		return err;
 
 	g_state.status.any_attached = true;
 	g_state.status.attached_hook_count = g_state.attached_count;
