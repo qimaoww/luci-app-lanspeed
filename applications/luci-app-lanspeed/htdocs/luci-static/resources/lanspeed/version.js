@@ -4,5 +4,5 @@
 return baseclass.extend({
 	PACKAGE_VERSION: '0.1.5',
 	PACKAGE_RELEASE: '1',
-	FULL_VERSION: '0.1.5-r1'
+	FULL_VERSION: '0.1.5-r2'
 });
