@@ -35,6 +35,8 @@ const resDir = path.join(root,
 const modDir = path.join(resDir, 'lanspeed');
 const viewFile = path.join(resDir, 'view/lanspeed/index.js');
 const configViewFile = path.join(resDir, 'view/lanspeed/config.js');
+const daemonMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
+const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/Makefile'), 'utf8');
 
 const EXPECTED_MODULES = [
 	'vocab.js',
@@ -58,6 +60,15 @@ const EXPECTED_CONFIG_VIEW_REQUIRES = [
 	'lanspeed.rpc',
 	'lanspeed.ifaceConfig'
 ];
+
+function readMakeVar(source, name, fileLabel) {
+	const match = source.match(new RegExp(`^${name}:=(.+)$`, 'm'));
+	if (!match) {
+		fail(`${fileLabel} must define ${name}`);
+		return '';
+	}
+	return match[1].trim();
+}
 
 const MODULE_REQUIRES = {
 	'vocab.js':       [ 'baseclass' ],
@@ -576,13 +587,24 @@ function assertStatusViewSourceOnlyState(src) {
 }
 
 function assertVersionModule(src) {
-	if (!src.includes("PACKAGE_VERSION: '0.1.5'")) {
+	const daemonVersion = readMakeVar(daemonMakefile, 'PKG_VERSION', 'net/lanspeedd/Makefile');
+	const daemonRelease = readMakeVar(daemonMakefile, 'PKG_RELEASE', 'net/lanspeedd/Makefile');
+	const luciVersion = readMakeVar(luciMakefile, 'PKG_VERSION', 'applications/luci-app-lanspeed/Makefile');
+	const luciRelease = readMakeVar(luciMakefile, 'PKG_RELEASE', 'applications/luci-app-lanspeed/Makefile');
+
+	if (daemonVersion !== luciVersion) {
+		fail('daemon and LuCI PKG_VERSION must match');
+	}
+	if (daemonRelease !== luciRelease) {
+		fail('daemon and LuCI PKG_RELEASE must match');
+	}
+	if (!src.includes(`PACKAGE_VERSION: '${luciVersion}'`)) {
 		fail('version.js must expose luci-app-lanspeed PACKAGE_VERSION');
 	}
-	if (!src.includes("PACKAGE_RELEASE: '1'")) {
+	if (!src.includes(`PACKAGE_RELEASE: '${luciRelease}'`)) {
 		fail('version.js must expose luci-app-lanspeed PACKAGE_RELEASE');
 	}
-	if (!src.includes("FULL_VERSION: '0.1.5-r2'")) {
+	if (!src.includes(`FULL_VERSION: '${luciVersion}-r${luciRelease}'`)) {
 		fail('version.js must expose full luci-app-lanspeed version with r suffix');
 	}
 }
