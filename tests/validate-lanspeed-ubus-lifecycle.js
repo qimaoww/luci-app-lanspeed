@@ -1,0 +1,44 @@
+#!/usr/bin/env node
+
+const fs = require('fs');
+const path = require('path');
+
+const root = path.resolve(__dirname, '..');
+const source = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeedd.c'), 'utf8');
+
+function assert(condition, message) {
+  if (!condition) {
+    throw new Error(message);
+  }
+}
+
+assert(
+  source.includes('static struct uloop_timeout ubus_reconnect_timer;'),
+  'lanspeedd must keep a uloop timer for ubus reconnect retries'
+);
+assert(
+  source.includes('static void schedule_ubus_reconnect(void)'),
+  'lanspeedd must centralize ubus reconnect scheduling'
+);
+assert(
+  source.includes('ctx->connection_lost = handle_ubus_connection_lost;'),
+  'lanspeedd must install a ubus connection_lost handler'
+);
+assert(
+  /handle_ubus_connection_lost[\s\S]{0,500}uloop_fd_delete\(&lost_ctx->sock\)/.test(source),
+  'ubus connection_lost handler must remove the dead ubus fd from uloop'
+);
+assert(
+  /ubus_reconnect_cb[\s\S]{0,700}ubus_reconnect\(ctx, NULL\)/.test(source),
+  'ubus reconnect callback must call ubus_reconnect'
+);
+assert(
+  /ubus_reconnect_cb[\s\S]{0,1200}ubus_add_object\(ctx, &lanspeed_object\)/.test(source),
+  'ubus reconnect callback must re-register the lanspeed object'
+);
+assert(
+  /ubus_reconnect_cb[\s\S]{0,1200}schedule_ubus_reconnect\(\)/.test(source),
+  'ubus reconnect callback must retry when reconnect or object registration fails'
+);
+
+console.log('validate-lanspeed-ubus-lifecycle: PASS');

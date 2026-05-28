@@ -31,7 +31,7 @@
 
 #define LANSPEED_VERSION "0.1.5"
 #ifndef LANSPEED_RELEASE
-#define LANSPEED_RELEASE "2"
+#define LANSPEED_RELEASE "3"
 #endif
 #define LANSPEED_FULL_VERSION LANSPEED_VERSION "-r" LANSPEED_RELEASE
 #define RATE_WINDOW_COUNT 3
@@ -57,6 +57,7 @@
 
 static struct ubus_context *ctx;
 static struct blob_buf reply;
+static struct uloop_timeout ubus_reconnect_timer;
 static int refresh_interval_ms = DEFAULT_REFRESH_INTERVAL_MS;
 static int max_clients = DEFAULT_MAX_CLIENTS;
 static uint64_t active_client_window_ms = DEFAULT_ACTIVE_CLIENT_WINDOW_MS;
@@ -4858,6 +4859,42 @@ static void handle_signal(int signo)
 	uloop_end();
 }
 
+static void schedule_ubus_reconnect(void)
+{
+	uloop_timeout_set(&ubus_reconnect_timer, 1000);
+}
+
+static void ubus_reconnect_cb(struct uloop_timeout *t)
+{
+	uint32_t id = 0;
+	int ret;
+
+	(void)t;
+	if (!ctx)
+		return;
+
+	ret = ubus_reconnect(ctx, NULL);
+	if (ret) {
+		schedule_ubus_reconnect();
+		return;
+	}
+
+	ubus_add_uloop(ctx);
+	if (ubus_lookup_id(ctx, lanspeed_object.name, &id) || !id) {
+		ret = ubus_add_object(ctx, &lanspeed_object);
+		if (ret) {
+			schedule_ubus_reconnect();
+			return;
+		}
+	}
+}
+
+static void handle_ubus_connection_lost(struct ubus_context *lost_ctx)
+{
+	uloop_fd_delete(&lost_ctx->sock);
+	schedule_ubus_reconnect();
+}
+
 int main(void)
 {
 	int ret;
@@ -4873,6 +4910,8 @@ int main(void)
 		return EXIT_FAILURE;
 	}
 
+	ubus_reconnect_timer.cb = ubus_reconnect_cb;
+	ctx->connection_lost = handle_ubus_connection_lost;
 	ubus_add_uloop(ctx);
 	ret = ubus_add_object(ctx, &lanspeed_object);
 	if (ret) {
