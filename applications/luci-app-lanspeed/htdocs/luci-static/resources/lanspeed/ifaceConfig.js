@@ -194,10 +194,10 @@ function saveIfaceConfig(viewState) {
 		.then(function() { return lsRpc.uciCommit('lanspeed'); })
 		.then(function() {
 			refs.ifcfgStatus.textContent = _('重载 daemon…');
-			return lsRpc.init('lanspeedd', 'reload').catch(function() {});
+			return lsRpc.reload();
 		})
 		.then(function() {
-			return new Promise(function(resolve) { window.setTimeout(resolve, 4000); });
+			return new Promise(function(resolve) { window.setTimeout(resolve, 1000); });
 		})
 		.then(function() {
 			refs.ifcfgStatus.textContent = _('已应用');

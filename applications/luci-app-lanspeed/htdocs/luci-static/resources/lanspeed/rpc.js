@@ -6,7 +6,7 @@
  * LAN Speed RPC module.
  *
  * Declares every ubus / rc / uci call the LuCI view needs and exposes them
- * as pre-bound call* functions.  Consumers call lsRpc.status(), lsRpc.init(),
+ * as pre-bound call* functions.  Consumers call lsRpc.status(), lsRpc.reload(),
  * etc.; they should never re-declare rpc handles themselves.
  */
 
@@ -35,10 +35,9 @@ var callSysdevices = rpc.declare({
 	method: 'sysdevices',
 	expect: { '': {} }
 });
-var callInit = rpc.declare({
-	object: 'rc',
-	method: 'init',
-	params: [ 'name', 'action' ],
+var callReload = rpc.declare({
+	object: 'lanspeed',
+	method: 'reload',
 	expect: { '': {} }
 });
 var callUciSet = rpc.declare({
@@ -69,7 +68,7 @@ return baseclass.extend({
 	overview:   callOverview,
 	interfaces: callInterfaces,
 	sysdevices: callSysdevices,
-	init:       callInit,
+	reload:     callReload,
 	uciSet:     callUciSet,
 	uciGet:     callUciGet,
 	uciDelete:  callUciDelete,

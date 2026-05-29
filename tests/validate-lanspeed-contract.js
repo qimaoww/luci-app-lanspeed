@@ -256,14 +256,17 @@ function validateAcl(acl) {
 
   /* The write side is intentionally narrow: the LuCI page writes the lanspeed
    * UCI config (to persist interface assignments), commits it via uci.*, and
-   * triggers `rc init lanspeedd reload`.  Anything broader would be a bug. */
+   * triggers lanspeed.reload.  Routing this through rc.init is both broader
+   * than needed and rejected by some rpcd rc implementations. */
   if (Object.prototype.hasOwnProperty.call(app, 'write')) {
     assertObject(app.write, 'ACL write');
     assertObject(app.write.ubus, 'ACL write.ubus');
 
-    assertArray(app.write.ubus.rc, 'ACL write.ubus.rc');
-    assert(app.write.ubus.rc.length === 1 && app.write.ubus.rc[0] === 'init',
-      'ACL write.ubus.rc must grant only the init method');
+    assertArray(app.write.ubus.lanspeed, 'ACL write.ubus.lanspeed');
+    assert(app.write.ubus.lanspeed.length === 1 && app.write.ubus.lanspeed[0] === 'reload',
+      'ACL write.ubus.lanspeed must grant only the reload method');
+    assert(!Object.prototype.hasOwnProperty.call(app.write.ubus, 'rc'),
+      'ACL write.ubus must not grant rc methods');
 
     assertArray(app.write.ubus.uci, 'ACL write.ubus.uci');
     const allowedUciMethods = ['set', 'delete', 'add', 'commit', 'apply'];

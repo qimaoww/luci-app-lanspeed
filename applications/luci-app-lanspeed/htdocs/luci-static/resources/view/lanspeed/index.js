@@ -418,16 +418,19 @@ function buildShell(viewState) {
 		var original = refs.btnReload.textContent;
 		refs.btnReload.disabled = true;
 		refs.btnReload.textContent = _('正在重载…');
-		lsRpc.init('lanspeedd', 'reload').catch(function() {
-			/* rpcd returns ubus error on non-zero exit; init scripts exit 0 normally */
-		}).then(function() {
-			/* give procd time to respawn and daemon time to re-probe + attach */
+		lsRpc.reload().then(function() {
 			window.setTimeout(function() {
 				refs.btnReload.disabled = false;
 				refs.btnReload.textContent = original;
 				viewState.reloading = false;
 				viewState.reload(true);
-			}, 4000);
+			}, 1000);
+		}).catch(function(error) {
+			refs.btnReload.disabled = false;
+			refs.btnReload.textContent = original;
+			viewState.reloading = false;
+			viewState.error = error;
+			viewState.refreshLive();
 		});
 	});
 

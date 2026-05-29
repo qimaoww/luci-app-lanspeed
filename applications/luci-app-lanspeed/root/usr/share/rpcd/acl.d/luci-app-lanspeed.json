@@ -21,8 +21,8 @@
     },
     "write": {
       "ubus": {
-        "rc": [
-          "init"
+        "lanspeed": [
+          "reload"
         ],
         "uci": [
           "set",

@@ -419,7 +419,7 @@ function saveDaemonSettings(refs) {
 		.then(function() { return lsRpc.uciCommit('lanspeed'); })
 		.then(function() {
 			refs.status.textContent = _('重载 daemon…');
-			return lsRpc.init('lanspeedd', 'reload');
+			return lsRpc.reload();
 		})
 		.then(function() {
 			fillForm(refs, values);
