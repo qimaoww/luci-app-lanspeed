@@ -407,8 +407,11 @@ function assertConfigView(src) {
 	if (!src.includes('ifaceCfg.load(viewState)')) {
 		fail('view/lanspeed/config.js must reuse ifaceConfig for interface assignments');
 	}
-	if (!src.includes('lsRpc.init(\'lanspeedd\', \'reload\')')) {
-		fail('view/lanspeed/config.js must reload lanspeedd after saving daemon settings');
+	if (!src.includes('lsRpc.reload()')) {
+		fail('view/lanspeed/config.js must call the lanspeed reload ubus method after saving daemon settings');
+	}
+	if (src.includes('lsRpc.init(\'lanspeedd\', \'reload\')')) {
+		fail('view/lanspeed/config.js must not reload through rc init');
 	}
 	if (src.includes('overview_window_samples') || src.includes('趋势采样点')) {
 		fail('view/lanspeed/config.js must not expose trend sampling after the trend chart is removed');
@@ -439,6 +442,15 @@ function assertStatusViewNoInterfaceConfig(src) {
 	}
 	if (src.includes('ifcfgCard')) {
 		fail('view/lanspeed/index.js must not include the interface configuration card');
+	}
+	if (!src.includes('lsRpc.reload()')) {
+		fail('view/lanspeed/index.js must call the lanspeed reload ubus method from the daemon reload button');
+	}
+	if (src.includes('lsRpc.init(\'lanspeedd\', \'reload\')')) {
+		fail('view/lanspeed/index.js must not reload through rc init');
+	}
+	if (!src.includes('self.error = error')) {
+		fail('view/lanspeed/index.js must surface daemon reload errors instead of swallowing them');
 	}
 }
 
