@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <net/if.h>
+#include <net/if_arp.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -31,7 +32,7 @@
 
 #define LANSPEED_VERSION "0.1.5"
 #ifndef LANSPEED_RELEASE
-#define LANSPEED_RELEASE "4"
+#define LANSPEED_RELEASE "5"
 #endif
 #define LANSPEED_FULL_VERSION LANSPEED_VERSION "-r" LANSPEED_RELEASE
 #define RATE_WINDOW_COUNT 3
@@ -88,6 +89,7 @@ static void add_conntrack_fallback_runtime_warnings(struct runtime_probe *probe)
 static void add_nss_ecm_direct_runtime_warnings(struct runtime_probe *probe);
 static void add_conflicts_from_probe(struct runtime_probe *probe);
 static void inspect_bpf_assets(struct runtime_probe *probe);
+static bool sysdevice_read_u64(const char *ifname, const char *field, uint64_t *out);
 static void inspect_files_direct(struct runtime_probe *probe);
 static void inspect_nss(struct runtime_probe *probe);
 static void inspect_collector_attach_model(struct runtime_probe *probe);
@@ -4429,7 +4431,11 @@ static bool sysdevice_is_candidate(const char *name)
 
 static bool sysdevice_is_recommended_lan(const char *name)
 {
+	uint64_t link_type;
+
 	if (!name || !name[0])
+		return false;
+	if (sysdevice_read_u64(name, "type", &link_type) && link_type != ARPHRD_ETHER)
 		return false;
 	/* Proxy/uplink-only identity sources must stay observe-only.
 	 * This keeps daed's dae0/dae0peer out of the collect path. */

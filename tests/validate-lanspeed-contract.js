@@ -407,6 +407,9 @@ function validateSource(source, conntrackHeader, conntrackSource) {
   assert(source.includes('"bpf_tc_self_heal_failed"'), 'C daemon must warn when owned TC BPF hooks cannot be restored');
   assert(/static void add_bpf_attach_ifname[\s\S]*if\s*\(!sysdevice_is_recommended_lan\(name\)\)\s*return;/.test(source),
          'C daemon must skip non-LAN interfaces when building the BPF attach list');
+  assert(source.includes('ARPHRD_ETHER') &&
+         /sysdevice_is_recommended_lan[\s\S]{0,900}sysdevice_read_u64\(name,\s*"type"/.test(source),
+         'C daemon must reject non-Ethernet sysdevices before allowing BPF collect');
   assert(source.includes('"nft_forward_chain_counters"'), 'C conntrack fallback must forbid firewall forward-chain counters');
   assert(source.includes('"nlbwmon_read_counters", json_object_new_boolean(false)'), 'C conntrack fallback must not read nlbwmon counters');
   assert(conntrackHeader.includes('CONNTRACK_PROCFS_PATH "/proc/net/nf_conntrack"'), 'conntrack module must read procfs conntrack table');
