@@ -1335,8 +1335,9 @@ function assertBpfSource(source) {
   assert(parseInt(sizeMatch[1], 10) >= 2048, `LANSPEED_MAX_CLIENTS must be >= 2048 (got ${sizeMatch && sizeMatch[1]})`);
   assert(source.includes('if (direction == LANSPEED_DIR_TX)') && source.includes('__builtin_memcpy(key.mac, eth->h_source, ETH_ALEN)'), 'BPF TX direction must use client source MAC');
   assert(source.includes('__builtin_memcpy(key.mac, eth->h_dest, ETH_ALEN)'), 'BPF RX direction must use client destination MAC');
-  assert(source.includes('static __always_inline bool valid_client_mac'), 'BPF source must validate client MACs before accounting');
-  assert(source.includes('return false;') && source.includes('mac[0] & 0x01'), 'BPF source must reject multicast destination/source MACs');
+  assert(source.includes('#define IPPROTO_TCP 6') && source.includes('#define IPPROTO_UDP 17'), 'BPF source must provide protocol fallbacks for SDK headers without netinet constants');
+  assert(/static\s+__always_inline\s+(?:bool|int)\s+valid_client_mac\(/.test(source), 'BPF source must validate client MACs before accounting');
+  assert(/mac\[0\]\s*&\s*0x01[\s\S]{0,80}?return\s+(?:false|0)\s*;/.test(source), 'BPF source must reject multicast destination/source MACs');
   assert(source.includes('if (!valid_client_mac(key.mac))'), 'BPF source must skip broadcast/multicast/zero MAC map entries');
   assert(/SEC\("tc\/ingress"\)\s+int\s+lanspeed_ingress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_TX, TC_ACT_OK\);\s*}/m.test(source), 'BPF ingress must account client TX and terminate normally in the default position');
   assert(/SEC\("tc\/egress"\)\s+int\s+lanspeed_egress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_RX, TC_ACT_OK\);\s*}/m.test(source), 'BPF egress must account client RX and terminate normally in the default position');

@@ -11,6 +11,13 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
+#ifndef IPPROTO_TCP
+#define IPPROTO_TCP 6
+#endif
+#ifndef IPPROTO_UDP
+#define IPPROTO_UDP 17
+#endif
+
 /* LAN client cardinality: each client takes two entries (tx and rx).
  * 2048 keys ≈ 1024 distinct MAC+zone clients, which covers large homes
  * with VLANs, guest SSIDs and many IoT devices.  Override with
@@ -82,20 +89,20 @@ extern struct nf_conn *bpf_skb_ct_lookup(struct __sk_buff *,
 					 struct bpf_ct_opts___local *, __u32) __ksym __weak;
 extern void bpf_ct_release(struct nf_conn *) __ksym __weak;
 
-static __always_inline bool valid_client_mac(const __u8 *mac)
+static __always_inline int valid_client_mac(const __u8 *mac)
 {
-	bool any_non_zero = false;
-	bool any_not_ff = false;
+	int any_non_zero = 0;
+	int any_not_ff = 0;
 	int i;
 
 	if (mac[0] & 0x01)
-		return false;
+		return 0;
 
 	for (i = 0; i < ETH_ALEN; i++) {
 		if (mac[i] != 0)
-			any_non_zero = true;
+			any_non_zero = 1;
 		if (mac[i] != 0xff)
-			any_not_ff = true;
+			any_not_ff = 1;
 	}
 
 	return any_non_zero && any_not_ff;
