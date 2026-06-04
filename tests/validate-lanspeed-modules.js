@@ -422,6 +422,15 @@ function assertIfaceConfigThemeLayout(src) {
 	if (!src.includes('lanspeed-ifcfg-body')) {
 		fail('resources/lanspeed/ifaceConfig.js must wrap the interface table in a padded body for theme compatibility');
 	}
+	if (!src.includes("d.selected && isCollectAllowed(d) ? 'collect'")) {
+		fail('resources/lanspeed/ifaceConfig.js must not render unsafe preselected interfaces as collectable');
+	}
+	if (!src.includes('var values = {};') ||
+	    !src.includes('if (sel.attach.length)') ||
+	    !src.includes('if (sel.observe.length)') ||
+	    src.includes('observe:           sel.observe')) {
+		fail('resources/lanspeed/ifaceConfig.js must not send empty UCI list arrays when saving interface assignments');
+	}
 	if (src.includes('置信度 high')) {
 		fail('resources/lanspeed/ifaceConfig.js must not show confidence wording in interface config tooltips');
 	}

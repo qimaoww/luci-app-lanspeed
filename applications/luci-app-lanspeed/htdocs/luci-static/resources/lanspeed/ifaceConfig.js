@@ -32,17 +32,17 @@ function renderIfaceConfig(viewState) {
 	refs.ifcfgSummary.textContent = _('采集 %d · 观察 %d · 候选 %d').format(
 		attachNow.length, observeNow.length, devs.length);
 
-	/* store per-device state in a lookup so segmented toggle can mutate it */
-	viewState.ifcfgState = {};
-	devs.forEach(function(d) {
-		viewState.ifcfgState[d.name] = d.selected ? 'collect'
-		                             : d.observed ? 'observe'
-		                             : 'off';
-	});
-
 	function isCollectAllowed(dev) {
 		return Boolean(dev && dev.recommended_lan && !dev.is_nss_ifb);
 	}
+
+	/* store per-device state in a lookup so segmented toggle can mutate it */
+	viewState.ifcfgState = {};
+	devs.forEach(function(d) {
+		viewState.ifcfgState[d.name] = d.selected && isCollectAllowed(d) ? 'collect'
+		                             : (d.observed || d.selected) ? 'observe'
+		                             : 'off';
+	});
 
 	function makeSeg(name) {
 		var wrap = E('div', { 'class': 'lanspeed-ifcfg-seg', 'data-name': name });
@@ -56,10 +56,10 @@ function renderIfaceConfig(viewState) {
 		}
 		var modes = [
 			{ k: 'off',     t: _('关闭'), title: _('不挂载、不显示') },
-			{ k: 'observe', t: _('观察'), title: _('只读接口计数，不 attach BPF；适合 WAN / tun / nssifb') },
+			{ k: 'observe', t: _('观察'), title: _('只读接口计数，不 attach BPF；适合 WAN / WireGuard / TUN / nssifb') },
 			{ k: 'collect', t: _('采集'),
 			  title: !isCollectable
-			    ? _('该接口不是推荐的 LAN 采集点；请改为“观察”。')
+			    ? _('该接口不是推荐的 LAN 二层采集点；WireGuard/TUN/VPN 请改为“观察”。')
 			    : _('挂 BPF filter，按客户端拆速率') }
 		];
 		modes.forEach(function(m) {
@@ -168,10 +168,17 @@ function saveIfaceConfig(viewState) {
 	var refs = viewState.refs;
 	if (!refs || viewState.ifcfgSaving) return;
 	var sel = collectIfaceSelections(viewState);
+	var values = {};
 	if (!sel.attach.length && !sel.observe.length) {
 		refs.ifcfgStatus.textContent = _('请至少选择一个设备');
 		return;
 	}
+	if (sel.attach.length) {
+		values.ifname = sel.attach;
+		values.interface_include = sel.attach;
+	}
+	if (sel.observe.length)
+		values.observe = sel.observe;
 
 	viewState.ifcfgSaving = true;
 	refs.ifcfgSaveBtn.disabled = true;
@@ -185,11 +192,7 @@ function saveIfaceConfig(viewState) {
 				['ifname','interface_include','observe']).catch(function(){});
 		})
 		.then(function() {
-			return lsRpc.uciSet('lanspeed', 'main', {
-				ifname:            sel.attach,
-				interface_include: sel.attach,
-				observe:           sel.observe
-			});
+			return lsRpc.uciSet('lanspeed', 'main', values);
 		})
 		.then(function() { return lsRpc.uciCommit('lanspeed'); })
 		.then(function() {
