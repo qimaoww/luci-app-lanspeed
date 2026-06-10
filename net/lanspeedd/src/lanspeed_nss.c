@@ -56,7 +56,6 @@ static bool nss_ecm_direct_flow_add_endpoint(struct conntrack_client_sample *sam
 					     uint64_t now_ms,
 					     struct nss_ecm_direct_stats *stats)
 {
-	const char *mac = NULL;
 	uint64_t tx_bytes;
 	uint64_t rx_bytes;
 	bool source_side = role == FLOW_ENDPOINT_ORIG_SRC;
@@ -65,17 +64,15 @@ static bool nss_ecm_direct_flow_add_endpoint(struct conntrack_client_sample *sam
 		return false;
 
 	if (source_side) {
-		mac = flow->snode_address;
 		tx_bytes = flow->from_data_total;
 		rx_bytes = flow->to_data_total;
 	} else {
-		mac = flow->dnode_address;
 		tx_bytes = flow->to_data_total;
 		rx_bytes = flow->from_data_total;
 	}
 
 	if (!add_endpoint_sample_bytes(samples, sample_count, max_samples, arp,
-				       mac, tx_bytes, rx_bytes, now_ms,
+				       NULL, tx_bytes, rx_bytes, now_ms,
 				       (uint32_t)flow->protocol, true))
 		return false;
 
