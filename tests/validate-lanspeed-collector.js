@@ -838,16 +838,12 @@ function buildNssEcmDirectSnapshot(fixture, snapshot) {
       continue;
     } else if (srcArp) {
       arp = srcArp;
-      mac = sourceMac && sourceMac !== '00:00:00:00:00:00'
-        ? sourceMac
-        : arp.mac;
+      mac = arp.mac;
       txBytes = flow.from_data_total;
       rxBytes = flow.to_data_total;
     } else if (dstArp) {
       arp = dstArp;
-      mac = destMac && destMac !== '00:00:00:00:00:00'
-        ? destMac
-        : arp.mac;
+      mac = arp.mac;
       txBytes = flow.to_data_total;
       rxBytes = flow.from_data_total;
     } else {
@@ -1768,6 +1764,8 @@ function assertRuntimeNssDirectSource(source, collectorModel, indexSource, nssPa
          nssSource.includes('FLOW_ENDPOINT_ORIG_SRC') &&
          nssSource.includes('FLOW_ENDPOINT_ORIG_DST'),
          'NSS direct must map ECM source/destination endpoints to client-view tx/rx directions');
+  assert(/add_endpoint_sample_bytes\([\s\S]{0,260}?arp,\s*NULL,\s*tx_bytes/.test(nssSource),
+         'NSS direct samples must keep ARP/neighbor MAC identity instead of overriding it with ECM node MAC');
   assert(identitySource.includes('find_lan_identity_by_mac') &&
          identitySource.includes('nss_ecm_direct_endpoint_lookup') &&
          nssSource.includes('flow->sip_address_nat') &&
@@ -2511,6 +2509,45 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
   assert(ipv6DestDirect.clients[0].identity_key === 'aa:bb:cc:00:00:01@lan', 'NSS direct destination-side LAN must fall back to neighbor MAC when dnode is invalid');
   assert(ipv6DestDirect.clients[0].tx_bps === 2000000, 'NSS direct destination-side LAN tx_bps must use to_data_total deltas');
   assert(ipv6DestDirect.clients[0].rx_bps === 8000000, 'NSS direct destination-side LAN rx_bps must use from_data_total deltas');
+}
+{
+  const mismatchedNodeMacFixture = clone(nssEcmDirectFixture);
+  mismatchedNodeMacFixture.arp_entries = [
+    { ip: '192.168.31.104', mac: 'aa:bb:cc:00:00:05', interface: 'br-lan', zone: 'lan' }
+  ];
+  mismatchedNodeMacFixture.neighbor_entries = [];
+  mismatchedNodeMacFixture.state_snapshots = [
+    {
+      t_ms: 100000,
+      lines: [
+        'conns.conn.35.serial=35',
+        'conns.conn.35.sip_address=192.168.31.104',
+        'conns.conn.35.dip_address=1.1.1.1',
+        'conns.conn.35.snode_address=00:11:22:33:44:55',
+        'conns.conn.35.dnode_address=00:00:00:00:00:00',
+        'conns.conn.35.protocol=6',
+        'conns.conn.35.adv_stats.from_data_total=1000000',
+        'conns.conn.35.adv_stats.to_data_total=2000000'
+      ]
+    },
+    {
+      t_ms: 101000,
+      lines: [
+        'conns.conn.35.serial=35',
+        'conns.conn.35.sip_address=192.168.31.104',
+        'conns.conn.35.dip_address=1.1.1.1',
+        'conns.conn.35.snode_address=00:11:22:33:44:55',
+        'conns.conn.35.dnode_address=00:00:00:00:00:00',
+        'conns.conn.35.protocol=6',
+        'conns.conn.35.adv_stats.from_data_total=1250000',
+        'conns.conn.35.adv_stats.to_data_total=2500000'
+      ]
+    }
+  ];
+  const mismatchedNodeMac = simulateNssEcmDirect(mismatchedNodeMacFixture);
+  assert(mismatchedNodeMac.clients[0].identity_key === 'aa:bb:cc:00:00:05@lan', 'NSS direct must keep ARP MAC identity when ECM node MAC disagrees with the LAN IP owner');
+  assert(mismatchedNodeMac.clients[0].tx_bps === 2000000, 'NSS direct mismatched node MAC tx_bps must still follow source-side LAN direction');
+  assert(mismatchedNodeMac.clients[0].rx_bps === 4000000, 'NSS direct mismatched node MAC rx_bps must still follow source-side LAN direction');
 }
 {
   const bothLanFixture = clone(nssEcmDirectFixture);
