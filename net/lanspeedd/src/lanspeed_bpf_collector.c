@@ -29,6 +29,24 @@ static uint64_t bpf_delta_bps(uint64_t current, uint64_t previous,
 	return ((current - previous) * 8ULL * 1000ULL) / delta_ms;
 }
 
+static const struct arp_entry *bpf_find_lan_identity_by_mac_zone(
+	const struct arp_entry *entries, size_t count,
+	const char *mac, const char *zone)
+{
+	size_t i;
+
+	if (!entries || !mac || !zone)
+		return NULL;
+
+	for (i = 0; i < count; i++) {
+		if (!strcasecmp(entries[i].mac, mac) &&
+		    !strcmp(entries[i].zone, zone))
+			return &entries[i];
+	}
+
+	return NULL;
+}
+
 static struct bpf_client_sample *bpf_find_or_insert_client(
 	struct bpf_client_sample *samples, size_t *count, size_t max_samples,
 	const char *mac, const char *zone, const char *ifname,
@@ -57,7 +75,8 @@ static struct bpf_client_sample *bpf_find_or_insert_client(
 		size_t k;
 		bool dup = false;
 
-		if (strcasecmp(arp_entries[i].mac, mac))
+		if (strcasecmp(arp_entries[i].mac, mac) ||
+		    strcmp(arp_entries[i].zone, zone))
 			continue;
 		for (k = 0; k < sample->ip_count; k++) {
 			if (!strcmp(sample->ips[k], arp_entries[i].ip)) {
@@ -138,6 +157,7 @@ bool bpf_collect_snapshot(struct bpf_snapshot_cache *cache, size_t max_clients,
 		char zone[ZONE_STR_LEN];
 		char identity_key[IDENTITY_KEY_STR_LEN];
 		struct bpf_client_sample *sample;
+		const struct arp_entry *identity;
 
 		snprintf(mac_str, sizeof(mac_str),
 			 "%02x:%02x:%02x:%02x:%02x:%02x",
@@ -154,11 +174,19 @@ bool bpf_collect_snapshot(struct bpf_snapshot_cache *cache, size_t max_clients,
 			continue;
 
 		derive_zone_from_ifname(ifname_buf, zone, sizeof(zone));
-		snprintf(identity_key, sizeof(identity_key), "%s@%s", mac_str, zone);
+		identity = bpf_find_lan_identity_by_mac_zone(arp_entries,
+							     arp_count,
+							     mac_str, zone);
+		if (!identity)
+			continue;
+
+		snprintf(identity_key, sizeof(identity_key), "%s@%s",
+			 identity->mac, identity->zone);
 
 		sample = bpf_find_or_insert_client(cache->current,
 						   &cache->current_count,
-						   max_folded, mac_str, zone,
+						   max_folded, identity->mac,
+						   identity->zone,
 						   ifname_buf, identity_key,
 						   arp_entries, arp_count);
 		if (!sample)
