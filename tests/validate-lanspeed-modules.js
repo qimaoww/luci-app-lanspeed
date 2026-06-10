@@ -387,13 +387,15 @@ function assertConfigView(src) {
 	    !src.includes('function buildRangeList(refs, value)')) {
 		fail('view/lanspeed/config.js must render hidden IPv6 ranges as removable range pills');
 	}
-	if (src.includes('border-radius:1.35em') ||
-	    src.includes('box-shadow:0 .1em .45em')) {
-		fail('view/lanspeed/config.js hidden IPv6 range boxes must match the normal input style, not pill styling');
+	if (!src.includes("'class': 'lanspeed-range-text cbi-input-text'") ||
+	    !src.includes("'readonly': 'readonly'") ||
+	    !src.includes("'class': 'lanspeed-range-remove cbi-button cbi-button-remove'")) {
+		fail('view/lanspeed/config.js hidden IPv6 range editor must use LuCI theme classes');
 	}
-	if (!src.includes('border-radius:.4em') ||
-	    !src.includes('box-shadow:none')) {
-		fail('view/lanspeed/config.js hidden IPv6 range boxes must keep the same rectangular frame style as nearby form controls');
+	if (/\.lanspeed-range-pill\{[^}]*\b(background|border|border-radius|box-shadow|color)\s*:/s.test(src) ||
+	    /\.lanspeed-range-remove\{[^}]*\b(background|border|border-radius|color)\s*:/s.test(src) ||
+	    src.includes('.lanspeed-range-remove:hover')) {
+		fail('view/lanspeed/config.js hidden IPv6 range editor must not override LuCI theme visual styling');
 	}
 	if (!src.includes('conntrack_netlink') || !src.includes('conntrack_procfs')) {
 		fail('view/lanspeed/config.js must offer CT-Netlink and CT-Procfs connection collector choices');

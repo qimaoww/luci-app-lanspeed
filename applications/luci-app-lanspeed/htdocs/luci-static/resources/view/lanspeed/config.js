@@ -52,17 +52,10 @@ var CONFIG_CSS = [
 	'.lanspeed-range-stack{display:flex;flex-direction:column;gap:.6em;align-items:stretch;max-width:22em}',
 	'.lanspeed-range-list{display:flex;flex-direction:column;gap:.6em}',
 	'.lanspeed-range-pill{display:flex;align-items:center;justify-content:space-between;',
-	'  gap:.65em;min-height:2.9em;padding:.35em .45em .35em .75em;',
-	'  border:1px solid var(--border,rgba(128,128,128,.22));border-radius:.4em;',
-	'  background:var(--background,rgba(255,255,255,.04));box-sizing:border-box;',
-	'  box-shadow:none}',
-	'.lanspeed-range-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
-	'  font-family:var(--font-monospace,ui-monospace,monospace);font-size:.95em}',
-	'.lanspeed-range-remove{display:inline-flex;align-items:center;justify-content:center;',
-	'  width:2.1em;height:2.1em;min-width:2.1em;padding:0;border:0;border-radius:.35em;',
-	'  background:var(--label-surface,rgba(128,128,128,.18));color:inherit;cursor:pointer;',
-	'  font-size:1em;line-height:1}',
-	'.lanspeed-range-remove:hover{background:var(--border,rgba(128,128,128,.28))}',
+	'  gap:.5em;box-sizing:border-box}',
+	'.lanspeed-range-text{flex:1 1 auto;min-width:0;',
+	'  font-family:var(--font-monospace,ui-monospace,monospace)}',
+	'.lanspeed-range-remove{flex:0 0 auto}',
 	'.lanspeed-range-add{display:flex;gap:.5em;align-items:center}',
 	'.lanspeed-range-add input{flex:1 1 auto;min-width:0}',
 	'.lanspeed-range-add button{flex:0 0 auto}',
@@ -186,10 +179,16 @@ function rangeListValue(refs) {
 }
 
 function buildRangePill(refs, value) {
-	var text = E('span', { 'class': 'lanspeed-range-text', 'title': value }, value);
+	var text = E('input', {
+		'type': 'text',
+		'class': 'lanspeed-range-text cbi-input-text',
+		'title': value,
+		'value': value,
+		'readonly': 'readonly'
+	});
 	var remove = E('button', {
 		'type': 'button',
-		'class': 'lanspeed-range-remove',
+		'class': 'lanspeed-range-remove cbi-button cbi-button-remove',
 		'title': _('删除')
 	}, '\u00d7');
 
