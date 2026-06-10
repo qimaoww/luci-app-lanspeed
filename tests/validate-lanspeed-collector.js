@@ -647,6 +647,74 @@ function isExcludedIdentityInterface(ifname) {
   return ifname === 'dae0' || ifname === 'dae0peer' || ifname.startsWith('tun') || ifname.startsWith('ppp') || ifname.startsWith('wg');
 }
 
+function buildArpByMacZone(fixture) {
+  const entries = new Map();
+
+  for (const entry of (fixture.arp_entries || []).concat(fixture.neighbor_entries || [])) {
+    if (!entry.mac || isExcludedIdentityInterface(entry.interface || '')) {
+      continue;
+    }
+
+    const mac = entry.mac.toLowerCase();
+    const zone = entry.zone || 'lan';
+    const key = `${mac}@${zone}`;
+
+    if (!entries.has(key)) {
+      entries.set(key, {
+        ip: normalizeIp(entry.ip),
+        mac,
+        zone,
+        interface: entry.interface || 'br-lan'
+      });
+    }
+  }
+
+  return entries;
+}
+
+function simulateBpfIdentityFolding(fixture) {
+  const arpByMacZone = buildArpByMacZone(fixture);
+  const clients = new Map();
+  let skippedNoIdentity = 0;
+
+  for (const sample of fixture.raw_bpf_samples || []) {
+    const mac = sample.mac.toLowerCase();
+    const zone = sample.zone || 'lan';
+    const identity = arpByMacZone.get(`${mac}@${zone}`);
+
+    if (!identity) {
+      skippedNoIdentity += 1;
+      continue;
+    }
+
+    const identityKey = `${identity.mac}@${identity.zone}`;
+    const client = clients.get(identityKey) || {
+      mac: identity.mac,
+      identity_key: identityKey,
+      zone: identity.zone,
+      interface: sample.interface || identity.interface,
+      ips: [],
+      tx_bytes: 0,
+      rx_bytes: 0
+    };
+
+    if (identity.ip && !client.ips.includes(identity.ip)) {
+      client.ips.push(identity.ip);
+    }
+    if (sample.direction === 'tx') {
+      client.tx_bytes += sample.bytes || 0;
+    } else if (sample.direction === 'rx') {
+      client.rx_bytes += sample.bytes || 0;
+    }
+    clients.set(identityKey, client);
+  }
+
+  return {
+    clients: Array.from(clients.values()).sort((left, right) => left.identity_key.localeCompare(right.identity_key)),
+    skipped_no_identity: skippedNoIdentity
+  };
+}
+
 function buildConntrackSnapshot(fixture, snapshot) {
   const arpByIp = buildArpMap(fixture);
   const clients = new Map();
@@ -1655,6 +1723,9 @@ function assertRuntimeBpfCollectorModule(source) {
          'daemon BPF tick must delegate map folding to the BPF collector module');
   assert(/collect_bpf_clients[\s\S]{0,700}?bpf_build_rate_samples\(&bpf_cache/.test(source),
          'daemon BPF clients path must consume module rate samples');
+  assert(bpfCollectorSource.includes('bpf_find_lan_identity_by_mac_zone') &&
+         /if\s*\(\s*!identity\s*\)\s*continue;/.test(bpfCollectorSource),
+         'BPF collector must skip raw MAC samples without an ARP/neighbor LAN identity');
 }
 
 function assertRuntimeProbeHotPathPolicy(source) {
@@ -2047,6 +2118,23 @@ assert(bpfAttached.warnings.length === 0 || !bpfAttached.warnings.includes('bpf_
        'attached-success fixture must not warn about the runtime loader being unavailable');
 assert(bpfAttached.tc_filter.pref === 49152 && bpfAttached.tc_filter.handle === '0x1eed',
        'attached-success filter must use the documented pref/handle that init.d cleans up');
+
+{
+  const bpfIdentity = simulateBpfIdentityFolding({
+    arp_entries: [
+      { ip: '192.168.31.110', mac: '00:11:22:33:44:55', interface: 'br-lan', zone: 'lan' }
+    ],
+    neighbor_entries: [],
+    raw_bpf_samples: [
+      { mac: '00:11:22:33:44:55', zone: 'lan', interface: 'br-lan', direction: 'tx', bytes: 1000 },
+      { mac: '00:aa:bb:cc:dd:ee', zone: 'lan', interface: 'br-lan', direction: 'tx', bytes: 2000 }
+    ]
+  });
+  assert(bpfIdentity.clients.length === 1, 'BPF identity folding must keep only ARP/neighbor-backed LAN clients');
+  assert(bpfIdentity.clients[0].identity_key === '00:11:22:33:44:55@lan', 'BPF identity folding must allow real clients whose MAC starts with 00');
+  assert(bpfIdentity.clients[0].ips.includes('192.168.31.110'), 'BPF identity folding must attach the ARP IP for a real 00-prefix client');
+  assert(bpfIdentity.skipped_no_identity === 1, 'BPF identity folding must skip unknown 00-prefix MAC samples without LAN identity');
+}
 
 const uploadRate = computeRateTimeline(uploadRateFixture);
 assert(uploadRate.reached_within_3s === true, '10Mbps upload must reach 8M-12M within 3 seconds');
