@@ -424,7 +424,6 @@ function buildDaemonSection(values) {
 	refs.nssRows = [
 		E('tr', { 'class': 'lanspeed-nss-config-only' }, [
 			E('td', {}, _('当前采集方式')),
-			E('td', { 'class': 'key' }, _('运行时')),
 			E('td', { 'class': 'value' }, refs.currentRateSource),
 			refs.currentRateHint
 		])
@@ -439,14 +438,12 @@ function buildDaemonSection(values) {
 			E('table', { 'class': 'lanspeed-config-table' }, [
 				E('thead', {}, E('tr', {}, [
 					E('th', {}, _('项目')),
-					E('th', {}, _('UCI')),
 					E('th', { 'class': 'value' }, _('值')),
 					E('th', {}, _('范围'))
 				])),
 				E('tbody', {}, [
 					E('tr', {}, [
 						E('td', {}, _('速率采集')),
-						E('td', { 'class': 'key' }, 'rate_collector_mode'),
 						E('td', { 'class': 'value rate' }, E('div', { 'class': 'lanspeed-rate-control' }, [
 							refs.rateCollectorMode,
 							refs.rateBadge
@@ -456,37 +453,31 @@ function buildDaemonSection(values) {
 					refs.nssRows[0],
 					E('tr', {}, [
 						E('td', {}, _('连接数采集')),
-						E('td', { 'class': 'key' }, 'conn_collector_mode'),
 						E('td', { 'class': 'value' }, refs.connCollectorMode),
 						E('td', { 'class': 'hint' }, _('CT 只用于连接数和诊断。'))
 					]),
 					E('tr', {}, [
 						E('td', {}, _('活跃客户端窗口')),
-						E('td', { 'class': 'key' }, 'active_client_window_ms'),
 						E('td', { 'class': 'value' }, refs.activeWindow),
 						E('td', { 'class': 'hint' }, _('1000 ms 以上'))
 					]),
 					E('tr', {}, [
 						E('td', {}, _('活跃最小速率')),
-						E('td', { 'class': 'key' }, 'active_client_min_bps'),
 						E('td', { 'class': 'value' }, refs.activeMin),
 						E('td', { 'class': 'hint' }, _('1 bps 以上'))
 					]),
 					E('tr', {}, [
 						E('td', {}, _('显示 IPv6 地址')),
-						E('td', { 'class': 'key' }, 'show_ipv6'),
 						E('td', { 'class': 'value' }, refs.showIpv6),
 						E('td', { 'class': 'hint' }, _('关闭后客户端列表只显示 IPv4。'))
 					]),
 					E('tr', {}, [
 						E('td', {}, _('隐藏私有 IPv6 地址')),
-						E('td', { 'class': 'key' }, 'hide_private_ipv6'),
 						E('td', { 'class': 'value' }, refs.hidePrivateIpv6),
 						E('td', { 'class': 'hint' }, _('开启后客户端列表隐藏 fc00::/7 私有 IPv6 地址和 fe80::/10 链路本地地址；公网 IPv6 仍显示。'))
 					]),
 					E('tr', {}, [
 						E('td', {}, _('隐藏 IPv6 范围')),
-						E('td', { 'class': 'key' }, 'hide_ipv6_ranges'),
 						E('td', { 'class': 'value range' }, refs.rangeEditor),
 						E('td', { 'class': 'hint' }, _('仅在隐藏私有 IPv6 地址开启时生效；用空格或逗号分隔，例如 fc00::/7 fe80::/10。'))
 					])

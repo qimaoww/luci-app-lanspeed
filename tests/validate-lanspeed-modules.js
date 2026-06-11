@@ -767,6 +767,14 @@ function assertConfigStyleModule(src) {
 	    !src.includes('.lanspeed-theme-argon .lanspeed-ifcfg-body{overflow-x:auto}')) {
 		fail('lanspeed/configStyle.js must keep mobile interface tables horizontally scrollable inside Aurora/Argon cards');
 	}
+	if (!src.includes('.lanspeed-theme-aurora .lanspeed-config-table td:nth-child(2){width:18rem}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-config-table td:nth-child(2){width:18rem}')) {
+		fail('lanspeed/configStyle.js must size the runtime settings value column after hiding the UCI column');
+	}
+	if (src.includes('.lanspeed-theme-aurora .lanspeed-config-table td:nth-child(3){width:18rem}') ||
+	    src.includes('.lanspeed-theme-argon .lanspeed-config-table td:nth-child(3){width:18rem}')) {
+		fail('lanspeed/configStyle.js must not keep the old fourth-column width rule after hiding the UCI column');
+	}
 }
 
 function assertConfigFormModule(src) {
@@ -779,6 +787,22 @@ function assertConfigFormModule(src) {
 	if (src.includes("E('span', { 'class': 'sum' }, _('UCI'))")) {
 		fail('lanspeed/configForm.js must not show a redundant UCI badge in the runtime settings header');
 	}
+	if (src.includes("E('th', {}, _('UCI'))")) {
+		fail('lanspeed/configForm.js must not show a UCI column in the runtime settings table');
+	}
+	[
+		'rate_collector_mode',
+		'conn_collector_mode',
+		'active_client_window_ms',
+		'active_client_min_bps',
+		'show_ipv6',
+		'hide_private_ipv6',
+		'hide_ipv6_ranges'
+	].forEach(function(name) {
+		if (src.includes("E('td', { 'class': 'key' }, '" + name + "')")) {
+			fail('lanspeed/configForm.js must not show UCI option names in the runtime settings table');
+		}
+	});
 }
 
 function assertStatusViewEntryIsThin(src) {
