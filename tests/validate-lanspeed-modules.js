@@ -718,6 +718,37 @@ function assertStatusStyleModule(src) {
 	    !src.includes('.lanspeed-theme-argon .lanspeed-clients-card .lanspeed-body{overflow-x:auto}')) {
 		fail('lanspeed/statusStyle.js must keep mobile client tables horizontally scrollable inside Aurora/Argon cards');
 	}
+	if (!src.includes('.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-table td:nth-child(2).mono{font-size:.95rem}')) {
+		fail('lanspeed/statusStyle.js must keep Aurora client MAC text readable without changing other themes');
+	}
+	if (!src.includes('@media (min-width:901px){.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-table{table-layout:fixed}') ||
+	    !src.includes('.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-table th:nth-child(1),.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-table td:nth-child(1){width:18rem}')) {
+		fail('lanspeed/statusStyle.js must keep Aurora client and MAC columns close on desktop');
+	}
+	if (!src.includes('.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-table th:nth-child(2),.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-table td:nth-child(2){width:15rem}')) {
+		fail('lanspeed/statusStyle.js must keep Aurora MAC and upload columns comfortably spaced on desktop');
+	}
+	if (!src.includes('.lanspeed-theme-argon{display:flex;flex-direction:column;gap:1rem;margin:0;font-size:1rem}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-table th,.lanspeed-theme-argon .lanspeed-table td{padding:.65rem .75rem;font-size:1rem;line-height:1.45}')) {
+		fail('lanspeed/statusStyle.js must enlarge Argon status page typography without changing other themes');
+	}
+	if (!src.includes('.lanspeed-theme-argon .lanspeed-clients-card .lanspeed-table td:nth-child(2).mono{font-size:.96rem}')) {
+		fail('lanspeed/statusStyle.js must keep Argon client MAC text readable without changing other themes');
+	}
+	if (!src.includes('@media (min-width:901px){.lanspeed-theme-argon .lanspeed-clients-card .lanspeed-table{table-layout:fixed}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-clients-card .lanspeed-table th:nth-child(1),.lanspeed-theme-argon .lanspeed-clients-card .lanspeed-table td:nth-child(1){width:17rem}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-clients-card .lanspeed-table th:nth-child(2),.lanspeed-theme-argon .lanspeed-clients-card .lanspeed-table td:nth-child(2){width:14.5rem}')) {
+		fail('lanspeed/statusStyle.js must keep Argon client, MAC and upload columns balanced on desktop');
+	}
+	if (!src.includes('.lanspeed-theme-argon .lanspeed-table th:first-child,.lanspeed-theme-argon .lanspeed-table td:first-child{padding-left:.35rem}')) {
+		fail('lanspeed/statusStyle.js must keep Argon status table text away from the card edge');
+	}
+	if (!src.includes('.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:repeat(auto-fill,17rem);max-width:72rem;justify-content:start;gap:.5rem 1rem}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:.65rem;padding:.18rem 0;min-width:0}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}') ||
+	    !src.includes('@media (max-width:700px){.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:1fr;max-width:none}}')) {
+		fail('lanspeed/statusStyle.js must keep Argon NSS and diagnostics capability grids compact instead of stretched');
+	}
 }
 
 function assertStatusIpModule(src) {
@@ -774,6 +805,27 @@ function assertConfigStyleModule(src) {
 	if (src.includes('.lanspeed-theme-aurora .lanspeed-config-table td:nth-child(3){width:18rem}') ||
 	    src.includes('.lanspeed-theme-argon .lanspeed-config-table td:nth-child(3){width:18rem}')) {
 		fail('lanspeed/configStyle.js must not keep the old fourth-column width rule after hiding the UCI column');
+	}
+	if (!src.includes('@media (min-width:801px){') ||
+	    !src.includes('grid-template-areas:"label control" "hint control"') ||
+	    !src.includes('.lanspeed-theme-aurora .lanspeed-config-table tbody tr,.lanspeed-theme-argon .lanspeed-config-table tbody tr{display:grid;')) {
+		fail('lanspeed/configStyle.js must compact runtime settings into a desktop two-column theme layout');
+	}
+	if (!src.includes('.lanspeed-theme-aurora .lanspeed-range-add button,.lanspeed-theme-argon .lanspeed-range-add button{min-width:4rem;height:2.25rem}')) {
+		fail('lanspeed/configStyle.js must keep IPv6 range add controls compact in themed config layouts');
+	}
+	if (!src.includes('.lanspeed-theme-argon{display:flex;flex-direction:column;gap:1rem;margin:0;font-size:1rem}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-config-table th,.lanspeed-theme-argon .lanspeed-config-table td,.lanspeed-theme-argon .lanspeed-ifcfg-table th,.lanspeed-theme-argon .lanspeed-ifcfg-table td{padding:.68rem .75rem;font-size:1rem;line-height:1.45}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-config-table .hint,.lanspeed-theme-argon .lanspeed-ifcfg-table .muted{font-size:.88rem;line-height:1.45}')) {
+		fail('lanspeed/configStyle.js must enlarge Argon config page typography without changing other themes');
+	}
+	if (!src.includes('.lanspeed-theme-argon .lanspeed-config-table th:first-child,.lanspeed-theme-argon .lanspeed-config-table td:first-child,.lanspeed-theme-argon .lanspeed-ifcfg-table th:first-child,.lanspeed-theme-argon .lanspeed-ifcfg-table td:first-child{padding-left:.35rem}')) {
+		fail('lanspeed/configStyle.js must keep Argon config table text away from the card edge');
+	}
+	if (!src.includes('@media (min-width:801px){.lanspeed-theme-argon .lanspeed-ifcfg-table{table-layout:fixed}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-ifcfg-table th:nth-child(1),.lanspeed-theme-argon .lanspeed-ifcfg-table td:nth-child(1){width:16rem}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-ifcfg-table th:nth-child(3),.lanspeed-theme-argon .lanspeed-ifcfg-table td:nth-child(3){width:21rem}')) {
+		fail('lanspeed/configStyle.js must keep Argon interface configuration columns compact on desktop');
 	}
 }
 
