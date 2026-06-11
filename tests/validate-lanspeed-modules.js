@@ -6,18 +6,18 @@
  * Contract enforced:
  *   1. Every expected sub-module file exists under
  *      applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/
- *      and the view entry under resources/view/lanspeed/index.js.
+ *      and the active view entry under resources/view/lanspeed/index_live.js.
  *   2. Each sub-module begins with 'use strict' and declares the expected
  *      'require baseclass' (plus 'require rpc' for rpc.js). NSS panel
  *      additionally requires vocab + format.
  *   3. Each sub-module ends its body with `return baseclass.extend({...})`
  *      so LuCI's module loader receives a class.
- *   4. The status and config view entries declare their expected sub-module
- *      requires at the top of the file.
+ *   4. The status implementation module and config view entry declare their
+ *      expected sub-module requires at the top of the file.
  *   5. Boundary hygiene: rpc.declare must only appear in rpc.js. The
  *      vocab/format/nssPanel modules must stay free of RPC declarations.
- *   6. Every *.js file under resources/lanspeed/ and the view entry parses
- *      as JavaScript (acorn-free: we use VM compile to catch syntax errors).
+ *   6. Every expected module and view entry parses as JavaScript
+ *      (acorn-free: we use VM compile to catch syntax errors).
  *
  * Output: writes a short PASS summary to stdout and exits 0 on success.
  * On any failure, prints the failing rule and exits 1.
@@ -33,8 +33,10 @@ const root = path.resolve(__dirname, '..');
 const resDir = path.join(root,
 	'applications/luci-app-lanspeed/htdocs/luci-static/resources');
 const modDir = path.join(resDir, 'lanspeed');
-const viewFile = path.join(resDir, 'view/lanspeed/index.js');
+const viewFile = path.join(resDir, 'view/lanspeed/index_live3.js');
+const legacyViewFile = path.join(resDir, 'view/lanspeed/index.js');
 const configViewFile = path.join(resDir, 'view/lanspeed/config.js');
+const statusViewFile = path.join(modDir, 'statusViewLive.js');
 const daemonMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
 const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/Makefile'), 'utf8');
 
@@ -47,6 +49,10 @@ const EXPECTED_MODULES = [
 	'theme.js',
 	'version.js',
 	'statusStyle.js',
+	'statusStyleCompatLive.js',
+	'statusStyleCompatLive2.js',
+	'statusViewLive.js',
+	'statusViewLive2.js',
 	'statusIp.js',
 	'statusCollector.js',
 	'statusShell.js',
@@ -60,7 +66,8 @@ const EXPECTED_VIEW_REQUIRES = [
 	'lanspeed.rpc',
 	'lanspeed.statusIp',
 	'lanspeed.statusShell',
-	'lanspeed.statusRefresh'
+	'lanspeed.statusRefresh',
+	'lanspeed.statusStyleCompatLive'
 ];
 
 const EXPECTED_CONFIG_VIEW_REQUIRES = [
@@ -89,6 +96,22 @@ const MODULE_REQUIRES = {
 	'theme.js':       [ 'baseclass' ],
 	'version.js':     [ 'baseclass' ],
 	'statusStyle.js': [ 'baseclass' ],
+	'statusStyleCompatLive.js': [ 'baseclass' ],
+	'statusStyleCompatLive2.js': [ 'baseclass' ],
+	'statusViewLive.js': [
+		'baseclass',
+		'lanspeed.format',
+		'lanspeed.rpc',
+		'lanspeed.statusIp',
+		'lanspeed.statusShell',
+		'lanspeed.statusRefresh',
+		'lanspeed.statusStyleCompatLive'
+	],
+	'statusViewLive2.js': [
+		'baseclass',
+		'lanspeed.statusViewLive',
+		'lanspeed.statusStyleCompatLive2'
+	],
 	'statusIp.js':    [ 'baseclass', 'lanspeed.format' ],
 	'statusCollector.js': [ 'baseclass' ],
 	'statusShell.js': [
@@ -119,6 +142,10 @@ const RPC_FREE_MODULES = [
 	'format.js',
 	'nssPanel.js',
 	'statusStyle.js',
+	'statusStyleCompatLive.js',
+	'statusStyleCompatLive2.js',
+	'statusViewLive.js',
+	'statusViewLive2.js',
 	'statusIp.js',
 	'statusCollector.js',
 	'statusRefresh.js',
@@ -296,9 +323,24 @@ function assertViewRequires(src) {
 	EXPECTED_VIEW_REQUIRES.forEach(function(req) {
 		const re = new RegExp("^\\s*['\"]require\\s+" + req.replace(/\./g, '\\.') + "\\s+as\\s+\\w+['\"]\\s*;", 'm');
 		if (!re.test(src)) {
-			fail(`view/index.js must declare 'require ${req} as <alias>'`);
+			fail(`lanspeed/statusView.js must declare 'require ${req} as <alias>'`);
 		}
 	});
+}
+
+function assertStatusViewWrapper(src, label) {
+	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
+	    !/^\s*['"]require\s+lanspeed\.statusViewLive2\s+as\s+statusViewLive2['"]\s*;/m.test(src) ||
+	    !src.includes('return view.extend({') ||
+	    !src.includes('return statusViewLive2.load();') ||
+	    !src.includes('return statusViewLive2.render(data);')) {
+		fail(`${label} must wrap lanspeed/statusViewLive2.js through a concrete LuCI view.extend() constructor`);
+	}
+	if (src.includes('statusShell.buildShell(') ||
+	    src.includes('statusRefresh.refreshLive(') ||
+	    src.includes('loadAll()')) {
+		fail(`${label} must remain a cache-busting wrapper, not duplicate status view logic`);
+	}
 }
 
 function assertConfigViewRequires(src) {
@@ -743,12 +785,24 @@ function assertStatusStyleModule(src) {
 	if (!src.includes('.lanspeed-theme-argon .lanspeed-table th:first-child,.lanspeed-theme-argon .lanspeed-table td:first-child{padding-left:.35rem}')) {
 		fail('lanspeed/statusStyle.js must keep Argon status table text away from the card edge');
 	}
-	if (!src.includes('.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:repeat(auto-fill,14.25rem);max-width:61rem;justify-content:start;gap:.5rem 1rem}') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap{display:grid;grid-template-columns:11rem 2.75rem;align-items:center;gap:.5rem;padding:.18rem 0;min-width:0}') ||
+	if (!src.includes('.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:max-content 2.55rem max-content 2.55rem max-content 2.55rem max-content 2.55rem;') ||
+	    !src.includes('  max-width:none;justify-content:start;align-items:center;column-gap:.9rem;row-gap:.5rem}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap{display:contents}') ||
 	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}') ||
 	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap>span:last-child{justify-self:start;min-width:2.25rem;text-align:center}') ||
-	    !src.includes('@media (max-width:700px){.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:1fr;max-width:none}}')) {
-		fail('lanspeed/statusStyle.js must align Argon NSS and diagnostics capability badges in fixed paired columns');
+	    !src.includes('@media (max-width:700px){.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:minmax(0,max-content) 2.55rem;max-width:none}}')) {
+		fail('lanspeed/statusStyle.js must align Argon NSS and diagnostics capability badges with compact parent-level paired columns');
+	}
+}
+
+function assertStatusStyleCompatModule(src) {
+	if (!src.includes('lanspeed-style-argon-caps-compat') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:max-content 2.55rem max-content 2.55rem max-content 2.55rem max-content 2.55rem;') ||
+	    !src.includes('  max-width:none;justify-content:start;align-items:center;column-gap:.9rem;row-gap:.5rem}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap{display:contents}') ||
+	    !src.includes('@media (max-width:700px){.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:minmax(0,max-content) 2.55rem;max-width:none}}') ||
+	    !src.includes('install: install')) {
+		fail('lanspeed/statusStyleCompatLive.js must install the Argon capability-grid override from a fresh module path');
 	}
 }
 
@@ -913,7 +967,9 @@ if (!fs.existsSync(modDir)) {
 if (!assertFileExists(viewFile, 'view entry')) {
 	/* keep going, other checks still useful */
 }
+assertFileExists(legacyViewFile, 'legacy view wrapper');
 assertFileExists(configViewFile, 'config view entry');
+assertFileExists(statusViewFile, 'status view module');
 
 EXPECTED_MODULES.forEach(function(name) {
 	const p = path.join(modDir, name);
@@ -941,6 +997,12 @@ EXPECTED_MODULES.forEach(function(name) {
 	}
 	if (name === 'statusStyle.js') {
 		assertStatusStyleModule(src);
+	}
+	if (name === 'statusStyleCompatLive.js' || name === 'statusStyleCompatLive2.js') {
+		assertStatusStyleCompatModule(src);
+	}
+	if (name === 'statusViewLive.js') {
+		assertStatusViewEntryIsThin(src);
 	}
 	if (name === 'statusIp.js') {
 		assertStatusIpModule(src);
@@ -972,24 +1034,40 @@ RPC_FREE_MODULES.forEach(function(name) {
 if (fs.existsSync(viewFile)) {
 	const vsrc = readModule(viewFile);
 	const vcleaned = stripComments(vsrc);
+	assertStrict(vsrc, 'view/lanspeed/index_live3.js');
+	assertStatusViewWrapper(vsrc, 'view/lanspeed/index_live3.js');
+	assertSyntax(vsrc, 'view/lanspeed/index_live3.js');
+	assertNoRpcDeclare(vcleaned, 'view/lanspeed/index_live3.js');
+}
+
+if (fs.existsSync(legacyViewFile)) {
+	const lsrc = readModule(legacyViewFile);
+	const lcleaned = stripComments(lsrc);
+	assertStrict(lsrc, 'view/lanspeed/index.js');
+	assertStatusViewWrapper(lsrc, 'view/lanspeed/index.js');
+	assertSyntax(lsrc, 'view/lanspeed/index.js');
+	assertNoRpcDeclare(lcleaned, 'view/lanspeed/index.js');
+}
+
+if (fs.existsSync(statusViewFile)) {
+	const vsrc = readModule(statusViewFile);
+	const vcleaned = stripComments(vsrc);
 	const statusSrc = [
 		vsrc,
 		readModuleByName('statusStyle.js'),
+		readModuleByName('statusStyleCompatLive.js'),
+		readModuleByName('statusStyleCompatLive2.js'),
 		readModuleByName('statusIp.js'),
 		readModuleByName('statusCollector.js'),
 		readModuleByName('statusShell.js'),
 		readModuleByName('statusRefresh.js')
 	].join('\n');
-	assertStrict(vsrc, 'view/lanspeed/index.js');
-	assertViewRequires(vsrc);
-	assertStatusViewEntryIsThin(vsrc);
 	assertStatusViewNoInterfaceConfig(statusSrc);
-	assertNoInlineNavigation(statusSrc, 'view/lanspeed/index.js');
+	assertNoInlineNavigation(statusSrc, 'lanspeed/statusViewLive.js');
 	assertStatusViewNoTrend(statusSrc);
 	assertStatusViewSourceOnlyState(statusSrc);
-	assertSyntax(vsrc, 'view/lanspeed/index.js');
 	/* View should no longer declare rpc; it goes through lsRpc */
-	assertNoRpcDeclare(vcleaned, 'view/lanspeed/index.js');
+	assertNoRpcDeclare(vcleaned, 'lanspeed/statusViewLive.js');
 }
 
 if (fs.existsSync(configViewFile)) {
@@ -1019,3 +1097,4 @@ if (errors.length) {
 console.log('validate-lanspeed-modules: PASS');
 console.log(`  modules checked: ${EXPECTED_MODULES.length} (${EXPECTED_MODULES.join(', ')})`);
 console.log(`  view entry: ${path.relative(root, viewFile)}`);
+console.log(`  status view: ${path.relative(root, statusViewFile)}`);

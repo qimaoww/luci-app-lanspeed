@@ -55,6 +55,12 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/statusRefresh.js \
 		./htdocs/luci-static/resources/lanspeed/statusShell.js \
 		./htdocs/luci-static/resources/lanspeed/statusStyle.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyleCompat.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyleCompatLive.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyleCompatLive2.js \
+		./htdocs/luci-static/resources/lanspeed/statusView.js \
+		./htdocs/luci-static/resources/lanspeed/statusViewLive.js \
+		./htdocs/luci-static/resources/lanspeed/statusViewLive2.js \
 		./htdocs/luci-static/resources/lanspeed/theme.js \
 		./htdocs/luci-static/resources/lanspeed/vocab.js \
 		$(1)/www/luci-static/resources/lanspeed/
