@@ -285,8 +285,8 @@ function validateMenu(menu) {
   assert(menu['admin/status/lanspeed'].action.type === 'firstchild',
     'status menu parent must route to its first child so config can navigate back');
   assertObject(menu['admin/status/lanspeed/overview'], 'status overview menu entry');
-  assert(menu['admin/status/lanspeed/overview'].action.path === 'lanspeed/index',
-    'status overview menu must point to lanspeed/index');
+  assert(menu['admin/status/lanspeed/overview'].action.path === 'lanspeed/index_live3',
+    'status overview menu must point to the cache-busting lanspeed/index_live3 entry');
   assert(menu['admin/status/lanspeed/overview'].depends.acl.includes('luci-app-lanspeed'),
     'status overview menu must require luci-app-lanspeed ACL');
   assertObject(menu['admin/status/lanspeed/config'], 'config menu entry');

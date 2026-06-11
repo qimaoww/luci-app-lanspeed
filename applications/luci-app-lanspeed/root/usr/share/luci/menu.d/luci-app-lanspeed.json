@@ -14,7 +14,7 @@
     "order": 1,
     "action": {
       "type": "view",
-      "path": "lanspeed/index"
+      "path": "lanspeed/index_live3"
     },
     "depends": {
       "acl": [ "luci-app-lanspeed" ]
