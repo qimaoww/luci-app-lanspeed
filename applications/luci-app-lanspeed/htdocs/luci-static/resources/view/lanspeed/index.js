@@ -158,8 +158,8 @@ var LAYOUT_CSS = [
 	'.lanspeed-theme-aurora .lanspeed-details>summary{padding:1rem 1.25rem .85rem}',
 	'.lanspeed-theme-aurora .lanspeed-body,',
 	'.lanspeed-theme-aurora .lanspeed-details-body{padding:1rem 1.25rem}',
-	'.lanspeed-theme-aurora .lanspeed-metrics{grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));',
-	'  column-gap:1rem;row-gap:.9rem}',
+	'.lanspeed-theme-aurora .lanspeed-metrics{grid-template-columns:repeat(auto-fit,minmax(11em,12.5em));',
+	'  justify-content:start;column-gap:1rem;row-gap:.9rem}',
 	'.lanspeed-theme-aurora .lanspeed-metric .big{font-size:1.45rem}',
 	'.lanspeed-theme-aurora .lanspeed-toolbar{grid-template-columns:auto minmax(16rem,1fr) auto;',
 	'  gap:.65rem .9rem;margin-bottom:.85rem}',
@@ -176,7 +176,41 @@ var LAYOUT_CSS = [
 	'.lanspeed-theme-aurora .lanspeed-body,',
 	'.lanspeed-theme-aurora .lanspeed-details-body{padding:.85rem 1rem}',
 	'.lanspeed-theme-aurora .lanspeed-toolbar{grid-template-columns:1fr}',
-	'.lanspeed-theme-aurora .lanspeed-toolbar-options{justify-content:flex-start}}'
+	'.lanspeed-theme-aurora .lanspeed-toolbar-options{justify-content:flex-start}}',
+
+	/* Argon: align with its compact white card system and side-nav
+	   content column.  Argon paints cards, buttons and dark mode; LAN
+	   Speed only controls inner rhythm and responsive table density. */
+	'.lanspeed-theme-argon{display:flex;flex-direction:column;gap:1rem;margin:0}',
+	'.lanspeed-theme-argon>.cbi-section{margin:0;padding:0;overflow:hidden}',
+	'.lanspeed-theme-argon .lanspeed-header,',
+	'.lanspeed-theme-argon .lanspeed-details>summary{padding:.95rem 1.25rem .8rem}',
+	'.lanspeed-theme-argon .lanspeed-body,',
+	'.lanspeed-theme-argon .lanspeed-details-body{padding:1rem 1.25rem}',
+	'.lanspeed-theme-argon .lanspeed-metrics{grid-template-columns:repeat(auto-fit,minmax(10.5em,12.5em));',
+	'  justify-content:start;gap:.9rem 1rem}',
+	'.lanspeed-theme-argon .lanspeed-metric .big{font-size:1.5rem}',
+	'.lanspeed-theme-argon .lanspeed-toolbar{grid-template-columns:auto minmax(14rem,1fr) auto;',
+	'  gap:.65rem .85rem;margin-bottom:.9rem}',
+	'.lanspeed-theme-argon .lanspeed-toolbar input[type=search]{min-width:13rem;max-width:22rem}',
+	'.lanspeed-theme-argon .lanspeed-table th,',
+	'.lanspeed-theme-argon .lanspeed-table td{padding:.55rem .65rem}',
+	'.lanspeed-theme-argon .lanspeed-table th:first-child,',
+	'.lanspeed-theme-argon .lanspeed-table td:first-child{padding-left:0}',
+	'.lanspeed-theme-argon .lanspeed-table th:last-child,',
+	'.lanspeed-theme-argon .lanspeed-table td:last-child{padding-right:0}',
+	'.lanspeed-theme-argon .lanspeed-table .mono{font-size:.86em}',
+	'.lanspeed-theme-argon .lanspeed-table td .ipline{max-width:18rem}',
+	'.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:repeat(auto-fit,minmax(12rem,1fr));',
+	'  gap:.35rem 1rem}',
+	'.lanspeed-theme-argon .lanspeed-caps .cap{padding:.2rem 0}',
+	'@media (max-width:700px){.lanspeed-theme-argon .lanspeed-header,',
+	'.lanspeed-theme-argon .lanspeed-details>summary{padding:.85rem 1rem .7rem}',
+	'.lanspeed-theme-argon .lanspeed-body,',
+	'.lanspeed-theme-argon .lanspeed-details-body{padding:.85rem 1rem;overflow-x:auto}',
+	'.lanspeed-theme-argon .lanspeed-toolbar{grid-template-columns:1fr}',
+	'.lanspeed-theme-argon .lanspeed-toolbar-options{justify-content:flex-start}',
+	'.lanspeed-theme-argon .lanspeed-toolbar input[type=search]{min-width:0;width:100%;max-width:none}}'
 ].join('\n');
 
 var DEFAULT_HIDE_IPV6_RANGES = 'fc00::/7 fe80::/10';
