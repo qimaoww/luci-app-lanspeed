@@ -2068,7 +2068,12 @@ const bpfLoaderSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lansp
 const initScript = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/init.d/lanspeedd'), 'utf8');
 const hotplugScript = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/hotplug.d/iface/90-lanspeedd'), 'utf8');
 const defaultConfig = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/config/lanspeed'), 'utf8');
-const indexSource = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/htdocs/luci-static/resources/view/lanspeed/index.js'), 'utf8');
+const statusResourceDir = path.join(root, 'applications/luci-app-lanspeed/htdocs/luci-static/resources');
+const indexSource = [
+  'view/lanspeed/index.js',
+  'lanspeed/statusCollector.js',
+  'lanspeed/statusRefresh.js'
+].map((relativePath) => fs.readFileSync(path.join(statusResourceDir, relativePath), 'utf8')).join('\n');
 const nssPanelSource = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/nssPanel.js'), 'utf8');
 const collectorModel = readJson('net/lanspeedd/src/collector-model.json');
 const bpfAttachedFixture = readJson('tests/fixtures/lanspeed-bpf-attached.json');

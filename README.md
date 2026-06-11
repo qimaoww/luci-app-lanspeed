@@ -6,11 +6,6 @@ LAN 侧按客户端实时吞吐监控 + TCP/UDP 连接数统计，适用于 Immo
 
 本项目的定位是观察 CPU 可见 LAN 边缘流量：它不是完整流量审计系统，不声明全流量绝对准确。硬件加速、旁路网关、同网段直连、桥内转发、驱动 offload、代理 TUN/IFB 等路径可能让部分流量绕过 CPU 或改变可见方向。
 
-## 工程规范
-
-- [架构规范](docs/ARCHITECTURE.md)：系统边界、数据模型、采集器职责、ubus 契约和重构路线。
-- [贡献规范](docs/CONTRIBUTING.md)：编码规则、测试要求、兼容性要求和 PR 检查清单。
-
 ## 特性
 
 - **实时速率**：BPF tc 按 MAC + zone/VLAN 直接计数，字段为 `tx_bps` / `rx_bps`；非 NSS / x86 / daed 场景测速只使用 BPF；NSS 设备开启 daed 后优先降级到 BPF。

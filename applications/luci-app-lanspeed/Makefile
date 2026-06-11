@@ -44,10 +44,17 @@ define Package/luci-app-lanspeed/install
 		$(1)/www/luci-static/resources/view/lanspeed/
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/lanspeed
 	$(INSTALL_DATA) \
+		./htdocs/luci-static/resources/lanspeed/configForm.js \
+		./htdocs/luci-static/resources/lanspeed/configStyle.js \
 		./htdocs/luci-static/resources/lanspeed/format.js \
 		./htdocs/luci-static/resources/lanspeed/ifaceConfig.js \
 		./htdocs/luci-static/resources/lanspeed/nssPanel.js \
 		./htdocs/luci-static/resources/lanspeed/rpc.js \
+		./htdocs/luci-static/resources/lanspeed/statusCollector.js \
+		./htdocs/luci-static/resources/lanspeed/statusIp.js \
+		./htdocs/luci-static/resources/lanspeed/statusRefresh.js \
+		./htdocs/luci-static/resources/lanspeed/statusShell.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyle.js \
 		./htdocs/luci-static/resources/lanspeed/theme.js \
 		./htdocs/luci-static/resources/lanspeed/vocab.js \
 		$(1)/www/luci-static/resources/lanspeed/

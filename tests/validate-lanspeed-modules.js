@@ -45,23 +45,30 @@ const EXPECTED_MODULES = [
 	'ifaceConfig.js',
 	'nssPanel.js',
 	'theme.js',
-	'version.js'
+	'version.js',
+	'statusStyle.js',
+	'statusIp.js',
+	'statusCollector.js',
+	'statusShell.js',
+	'statusRefresh.js',
+	'configStyle.js',
+	'configForm.js'
 ];
 
 const EXPECTED_VIEW_REQUIRES = [
-	'lanspeed.vocab',
 	'lanspeed.format',
 	'lanspeed.rpc',
-	'lanspeed.version',
-	'lanspeed.nssPanel',
-	'lanspeed.theme'
+	'lanspeed.statusIp',
+	'lanspeed.statusShell',
+	'lanspeed.statusRefresh'
 ];
 
 const EXPECTED_CONFIG_VIEW_REQUIRES = [
 	'form',
-	'lanspeed.rpc',
 	'lanspeed.ifaceConfig',
-	'lanspeed.theme'
+	'lanspeed.theme',
+	'lanspeed.configStyle',
+	'lanspeed.configForm'
 ];
 
 function readMakeVar(source, name, fileLabel) {
@@ -80,12 +87,43 @@ const MODULE_REQUIRES = {
 	'ifaceConfig.js': [ 'baseclass', 'lanspeed.format', 'lanspeed.rpc' ],
 	'nssPanel.js':    [ 'baseclass', 'lanspeed.vocab', 'lanspeed.format' ],
 	'theme.js':       [ 'baseclass' ],
-	'version.js':     [ 'baseclass' ]
+	'version.js':     [ 'baseclass' ],
+	'statusStyle.js': [ 'baseclass' ],
+	'statusIp.js':    [ 'baseclass', 'lanspeed.format' ],
+	'statusCollector.js': [ 'baseclass' ],
+	'statusShell.js': [
+		'baseclass',
+		'lanspeed.format',
+		'lanspeed.rpc',
+		'lanspeed.nssPanel',
+		'lanspeed.theme',
+		'lanspeed.statusStyle'
+	],
+	'statusRefresh.js': [
+		'baseclass',
+		'lanspeed.vocab',
+		'lanspeed.format',
+		'lanspeed.version',
+		'lanspeed.nssPanel',
+		'lanspeed.statusIp',
+		'lanspeed.statusCollector'
+	],
+	'configStyle.js': [ 'baseclass' ],
+	'configForm.js': [ 'baseclass', 'uci', 'lanspeed.rpc' ]
 };
 
 /* Modules that MUST NOT contain `rpc.declare`. rpc.js is the only file
  * allowed to declare rpc handles. */
-const RPC_FREE_MODULES = [ 'vocab.js', 'format.js', 'nssPanel.js' ];
+const RPC_FREE_MODULES = [
+	'vocab.js',
+	'format.js',
+	'nssPanel.js',
+	'statusStyle.js',
+	'statusIp.js',
+	'statusCollector.js',
+	'statusRefresh.js',
+	'configStyle.js'
+];
 
 const errors = [];
 function fail(msg) { errors.push(msg); }
@@ -100,6 +138,11 @@ function assertFileExists(absPath, label) {
 
 function readModule(absPath) {
 	return fs.readFileSync(absPath, 'utf8');
+}
+
+function readModuleByName(name) {
+	const p = path.join(modDir, name);
+	return fs.existsSync(p) ? readModule(p) : '';
 }
 
 function stripComments(src) {
@@ -553,8 +596,10 @@ function assertStatusViewSourceOnlyState(src) {
 		fail('view/lanspeed/index.js must not infer the global collector source from client rows');
 	}
 	if (!src.includes('refs.collectorPill') ||
-	    !src.includes('refs.collectorPill.className = collectorClass(collector)') ||
-	    !src.includes('refs.collectorPill.textContent = collectorLabel(collector)')) {
+	    !(src.includes('refs.collectorPill.className = collectorClass(collector)') ||
+	      src.includes('refs.collectorPill.className = statusCollector.collectorClass(collector)')) ||
+	    !(src.includes('refs.collectorPill.textContent = collectorLabel(collector)') ||
+	      src.includes('refs.collectorPill.textContent = statusCollector.collectorLabel(collector)'))) {
 		fail('view/lanspeed/index.js header must show the current collector source in the status pill');
 	}
 	if (src.includes("metaParts.push(_('采集方式 ')")) {
@@ -641,12 +686,6 @@ function assertThemeWiring(src, label) {
 	if (!src.includes('lsTheme.applyRoot(root)')) {
 		fail(`${label} must apply detected theme classes to the LAN Speed root`);
 	}
-	if (!src.includes('.lanspeed-theme-aurora ')) {
-		fail(`${label} must keep Aurora-specific CSS scoped under .lanspeed-theme-aurora`);
-	}
-	if (!src.includes('.lanspeed-theme-argon ')) {
-		fail(`${label} must keep Argon-specific CSS scoped under .lanspeed-theme-argon`);
-	}
 }
 
 function assertStatusThemeMetricAlignment(src) {
@@ -664,6 +703,102 @@ function assertStatusThemeMetricAlignment(src) {
 function assertStatusThemeMobileOverflow(src) {
 	if (!src.includes('.lanspeed-theme-argon .lanspeed-details-body{padding:.85rem 1rem;overflow-x:auto}')) {
 		fail('view/lanspeed/index.js must keep Argon mobile status tables horizontally scrollable inside clipped theme cards');
+	}
+}
+
+function assertStatusStyleModule(src) {
+	if (!src.includes('CSS: LAYOUT_CSS') ||
+	    !src.includes('.lanspeed-theme-aurora ') ||
+	    !src.includes('.lanspeed-theme-argon ') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-metrics{grid-template-columns:repeat(auto-fit,minmax(10.5em,12.5em));') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-details-body{padding:.85rem 1rem;overflow-x:auto}')) {
+		fail('lanspeed/statusStyle.js must own status view CSS, including Aurora/Argon theme rules');
+	}
+	if (!src.includes('.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-body{overflow-x:auto}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-clients-card .lanspeed-body{overflow-x:auto}')) {
+		fail('lanspeed/statusStyle.js must keep mobile client tables horizontally scrollable inside Aurora/Argon cards');
+	}
+}
+
+function assertStatusIpModule(src) {
+	if (!src.includes('DEFAULT_HIDE_IPV6_RANGES') ||
+	    !src.includes('displayIpsForClient: function(') ||
+	    !src.includes('hideIpv6RangesValue: function(') ||
+	    !src.includes('parseIpv6Cidr')) {
+		fail('lanspeed/statusIp.js must own status view IPv6 filtering helpers');
+	}
+}
+
+function assertStatusCollectorModule(src) {
+	if (!src.includes('collectorLabel: function(') ||
+	    !src.includes('collectorClass: function(') ||
+	    !src.includes('effectiveCollector: function(')) {
+		fail('lanspeed/statusCollector.js must own collector label/class/effective-mode helpers');
+	}
+}
+
+function assertStatusShellModule(src) {
+	if (!src.includes('buildShell: function(viewState)') ||
+	    !src.includes('statusStyle.CSS') ||
+	    !src.includes('lsTheme.applyRoot(root)') ||
+	    !src.includes('nssPanel.build(refs)')) {
+		fail('lanspeed/statusShell.js must own status page DOM shell construction');
+	}
+}
+
+function assertStatusRefreshModule(src) {
+	if (!src.includes('refreshLive: function(viewState)') ||
+	    !src.includes('statusIp.displayIpsForClient') ||
+	    !src.includes('statusCollector.collectorLabel') ||
+	    !src.includes('lsVersion.FULL_VERSION') ||
+	    !src.includes('nssPanel.render(refs, status)')) {
+		fail('lanspeed/statusRefresh.js must own status page live refresh rendering');
+	}
+}
+
+function assertConfigStyleModule(src) {
+	if (!src.includes('CSS: CONFIG_CSS') ||
+	    !src.includes('.lanspeed-theme-aurora ') ||
+	    !src.includes('.lanspeed-theme-argon ') ||
+	    !src.includes('.lanspeed-config-table')) {
+		fail('lanspeed/configStyle.js must own config view CSS, including Aurora/Argon theme rules');
+	}
+	if (!src.includes('.lanspeed-theme-aurora .lanspeed-ifcfg-body{overflow-x:auto}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-ifcfg-body{overflow-x:auto}')) {
+		fail('lanspeed/configStyle.js must keep mobile interface tables horizontally scrollable inside Aurora/Argon cards');
+	}
+}
+
+function assertConfigFormModule(src) {
+	if (!src.includes('DEFAULTS: DEFAULTS') ||
+	    !src.includes('loadValues: function()') ||
+	    !src.includes('buildDaemonSection: function(values)') ||
+	    !src.includes('applyRuntimeInfo(refs, values.status || {})')) {
+		fail('lanspeed/configForm.js must own config form defaults, loading, and daemon section rendering');
+	}
+}
+
+function assertStatusViewEntryIsThin(src) {
+	if (src.includes('var LAYOUT_CSS = [') || src.includes('function buildShell(') ||
+	    src.includes('function refreshLive(') || src.includes('function parseIpv6ToWords(')) {
+		fail('view/lanspeed/index.js must stay a thin page lifecycle entry and delegate CSS/shell/refresh/IP helpers to modules');
+	}
+	if (!src.includes('statusShell.buildShell(viewState)') ||
+	    !src.includes('statusRefresh.refreshLive(this)') ||
+	    !src.includes('statusIp.hideIpv6RangesValue')) {
+		fail('view/lanspeed/index.js must delegate shell, refresh, and IPv6 helper work to status modules');
+	}
+}
+
+function assertConfigViewEntryIsThin(src) {
+	if (src.includes('var CONFIG_CSS = [') || src.includes('function buildDaemonSection(') ||
+	    src.includes('function saveDaemonSettings(') || src.includes('var DEFAULTS = {')) {
+		fail('view/lanspeed/config.js must stay a thin page lifecycle entry and delegate CSS/form logic to modules');
+	}
+	if (!src.includes('configStyle.CSS') ||
+	    !src.includes('configForm.loadValues()') ||
+	    !src.includes('configForm.buildDaemonSection(values || configForm.DEFAULTS)')) {
+		fail('view/lanspeed/config.js must delegate CSS, loading, and form rendering to config modules');
 	}
 }
 
@@ -724,6 +859,27 @@ EXPECTED_MODULES.forEach(function(name) {
 	if (name === 'version.js') {
 		assertVersionModule(src);
 	}
+	if (name === 'statusStyle.js') {
+		assertStatusStyleModule(src);
+	}
+	if (name === 'statusIp.js') {
+		assertStatusIpModule(src);
+	}
+	if (name === 'statusCollector.js') {
+		assertStatusCollectorModule(src);
+	}
+	if (name === 'statusShell.js') {
+		assertStatusShellModule(src);
+	}
+	if (name === 'statusRefresh.js') {
+		assertStatusRefreshModule(src);
+	}
+	if (name === 'configStyle.js') {
+		assertConfigStyleModule(src);
+	}
+	if (name === 'configForm.js') {
+		assertConfigFormModule(src);
+	}
 });
 
 RPC_FREE_MODULES.forEach(function(name) {
@@ -736,18 +892,21 @@ RPC_FREE_MODULES.forEach(function(name) {
 if (fs.existsSync(viewFile)) {
 	const vsrc = readModule(viewFile);
 	const vcleaned = stripComments(vsrc);
+	const statusSrc = [
+		vsrc,
+		readModuleByName('statusStyle.js'),
+		readModuleByName('statusIp.js'),
+		readModuleByName('statusCollector.js'),
+		readModuleByName('statusShell.js'),
+		readModuleByName('statusRefresh.js')
+	].join('\n');
 	assertStrict(vsrc, 'view/lanspeed/index.js');
 	assertViewRequires(vsrc);
-	if (!vsrc.includes('lsVersion.FULL_VERSION')) {
-		fail('view/lanspeed/index.js must render luci-app-lanspeed full package version');
-	}
-	assertThemeWiring(vsrc, 'view/lanspeed/index.js');
-	assertStatusThemeMetricAlignment(vsrc);
-	assertStatusThemeMobileOverflow(vsrc);
-	assertStatusViewNoInterfaceConfig(vsrc);
-	assertNoInlineNavigation(vsrc, 'view/lanspeed/index.js');
-	assertStatusViewNoTrend(vsrc);
-	assertStatusViewSourceOnlyState(vsrc);
+	assertStatusViewEntryIsThin(vsrc);
+	assertStatusViewNoInterfaceConfig(statusSrc);
+	assertNoInlineNavigation(statusSrc, 'view/lanspeed/index.js');
+	assertStatusViewNoTrend(statusSrc);
+	assertStatusViewSourceOnlyState(statusSrc);
 	assertSyntax(vsrc, 'view/lanspeed/index.js');
 	/* View should no longer declare rpc; it goes through lsRpc */
 	assertNoRpcDeclare(vcleaned, 'view/lanspeed/index.js');
@@ -756,11 +915,17 @@ if (fs.existsSync(viewFile)) {
 if (fs.existsSync(configViewFile)) {
 	const csrc = readModule(configViewFile);
 	const ccleaned = stripComments(csrc);
+	const configSrc = [
+		csrc,
+		readModuleByName('configStyle.js'),
+		readModuleByName('configForm.js')
+	].join('\n');
 	assertStrict(csrc, 'view/lanspeed/config.js');
 	assertConfigViewRequires(csrc);
 	assertThemeWiring(csrc, 'view/lanspeed/config.js');
-	assertConfigView(csrc);
-	assertNoInlineNavigation(csrc, 'view/lanspeed/config.js');
+	assertConfigViewEntryIsThin(csrc);
+	assertConfigView(configSrc);
+	assertNoInlineNavigation(configSrc, 'view/lanspeed/config.js');
 	assertSyntax(csrc, 'view/lanspeed/config.js');
 	assertNoRpcDeclare(ccleaned, 'view/lanspeed/config.js');
 }
