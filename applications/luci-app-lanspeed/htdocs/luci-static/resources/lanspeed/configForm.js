@@ -433,9 +433,7 @@ function buildDaemonSection(values) {
 
 	return E('div', { 'class': 'cbi-section' }, [
 		E('div', { 'class': 'lanspeed-header' }, [
-			E('h3', {}, _('运行参数')),
-			E('span', { 'class': 'spacer' }),
-			E('span', { 'class': 'sum' }, _('UCI'))
+			E('h3', {}, _('运行参数'))
 		]),
 		E('div', { 'class': 'lanspeed-config-body' }, [
 			E('table', { 'class': 'lanspeed-config-table' }, [

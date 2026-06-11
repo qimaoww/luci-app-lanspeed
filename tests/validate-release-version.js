@@ -6,6 +6,7 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 const daemonMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
 const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/Makefile'), 'utf8');
+const daemonSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeedd.c'), 'utf8');
 const versionJs = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/version.js'), 'utf8');
 const workflow = fs.readFileSync(path.join(root, '.github/workflows/build-sdk.yml'), 'utf8');
 const releaseScript = fs.readFileSync(path.join(root, 'scripts/release-version.sh'), 'utf8');
@@ -40,6 +41,9 @@ try {
   assert(daemonVersion === luciVersion, 'daemon and LuCI PKG_VERSION must match for releases');
   assert(daemonRelease === luciRelease, 'daemon and LuCI PKG_RELEASE must match for releases');
   assert(versionJs.includes(`FULL_VERSION: '${fullVersion}'`), 'version.js FULL_VERSION must match package version and release');
+  assert(/-DLANSPEED_VERSION=.*\$\(PKG_VERSION\)/.test(daemonMakefile), 'daemon package must pass PKG_VERSION into lanspeedd status.version');
+  assert(daemonSource.includes('#ifndef LANSPEED_VERSION\n#define LANSPEED_VERSION "0.0.0"\n#endif'), 'lanspeedd.c must use package-provided LANSPEED_VERSION with a neutral fallback');
+  assert(daemonSource.includes('#define LANSPEED_FULL_VERSION LANSPEED_VERSION "-r" LANSPEED_RELEASE'), 'lanspeedd.c must compose status.version from package version and release');
   assert(!luciMakefile.includes('./htdocs/luci-static/resources/lanspeed/*.js'), 'LuCI package must not install stale static version.js via wildcard');
   assert(luciMakefile.includes("PACKAGE_VERSION: '$(PKG_VERSION)'"), 'LuCI package must generate version.js from PKG_VERSION during install');
   assert(luciMakefile.includes("PACKAGE_RELEASE: '$(PKG_RELEASE)'"), 'LuCI package must generate version.js from PKG_RELEASE during install');

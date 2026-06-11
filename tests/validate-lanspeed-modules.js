@@ -776,6 +776,9 @@ function assertConfigFormModule(src) {
 	    !src.includes('applyRuntimeInfo(refs, values.status || {})')) {
 		fail('lanspeed/configForm.js must own config form defaults, loading, and daemon section rendering');
 	}
+	if (src.includes("E('span', { 'class': 'sum' }, _('UCI'))")) {
+		fail('lanspeed/configForm.js must not show a redundant UCI badge in the runtime settings header');
+	}
 }
 
 function assertStatusViewEntryIsThin(src) {
