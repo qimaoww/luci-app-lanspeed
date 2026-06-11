@@ -624,9 +624,17 @@ function assertThemeModule(src) {
 	    !src.includes('applyRoot: function(root')) {
 		fail('resources/lanspeed/theme.js must detect Aurora from theme assets and shell markers before applying the scoped class');
 	}
+	if (!src.includes('function isArgon') ||
+	    !src.includes('/luci-static/argon/') ||
+	    !src.includes('menu-argon.js') ||
+	    !src.includes('.main-left#mainmenu') ||
+	    !src.includes('.darkMask') ||
+	    !src.includes('lanspeed-theme-argon')) {
+		fail('resources/lanspeed/theme.js must detect Argon from theme assets and shell markers before applying the scoped class');
+	}
 }
 
-function assertAuroraThemeWiring(src, label) {
+function assertThemeWiring(src, label) {
 	if (!/^\s*['"]require\s+lanspeed\.theme\s+as\s+lsTheme['"]\s*;/m.test(src)) {
 		fail(`${label} must require the LAN Speed theme helper as lsTheme`);
 	}
@@ -635,6 +643,27 @@ function assertAuroraThemeWiring(src, label) {
 	}
 	if (!src.includes('.lanspeed-theme-aurora ')) {
 		fail(`${label} must keep Aurora-specific CSS scoped under .lanspeed-theme-aurora`);
+	}
+	if (!src.includes('.lanspeed-theme-argon ')) {
+		fail(`${label} must keep Argon-specific CSS scoped under .lanspeed-theme-argon`);
+	}
+}
+
+function assertStatusThemeMetricAlignment(src) {
+	if (!src.includes('.lanspeed-theme-aurora .lanspeed-metrics{grid-template-columns:repeat(auto-fit,minmax(11em,12.5em));')) {
+		fail('view/lanspeed/index.js must keep Aurora overview metrics left-aligned with fixed-width columns');
+	}
+	if (!src.includes('.lanspeed-theme-argon .lanspeed-metrics{grid-template-columns:repeat(auto-fit,minmax(10.5em,12.5em));')) {
+		fail('view/lanspeed/index.js must keep Argon overview metrics left-aligned with fixed-width columns');
+	}
+	if (!src.includes('justify-content:start')) {
+		fail('view/lanspeed/index.js must keep overview metric grids left-aligned');
+	}
+}
+
+function assertStatusThemeMobileOverflow(src) {
+	if (!src.includes('.lanspeed-theme-argon .lanspeed-details-body{padding:.85rem 1rem;overflow-x:auto}')) {
+		fail('view/lanspeed/index.js must keep Argon mobile status tables horizontally scrollable inside clipped theme cards');
 	}
 }
 
@@ -712,7 +741,9 @@ if (fs.existsSync(viewFile)) {
 	if (!vsrc.includes('lsVersion.FULL_VERSION')) {
 		fail('view/lanspeed/index.js must render luci-app-lanspeed full package version');
 	}
-	assertAuroraThemeWiring(vsrc, 'view/lanspeed/index.js');
+	assertThemeWiring(vsrc, 'view/lanspeed/index.js');
+	assertStatusThemeMetricAlignment(vsrc);
+	assertStatusThemeMobileOverflow(vsrc);
 	assertStatusViewNoInterfaceConfig(vsrc);
 	assertNoInlineNavigation(vsrc, 'view/lanspeed/index.js');
 	assertStatusViewNoTrend(vsrc);
@@ -727,7 +758,7 @@ if (fs.existsSync(configViewFile)) {
 	const ccleaned = stripComments(csrc);
 	assertStrict(csrc, 'view/lanspeed/config.js');
 	assertConfigViewRequires(csrc);
-	assertAuroraThemeWiring(csrc, 'view/lanspeed/config.js');
+	assertThemeWiring(csrc, 'view/lanspeed/config.js');
 	assertConfigView(csrc);
 	assertNoInlineNavigation(csrc, 'view/lanspeed/config.js');
 	assertSyntax(csrc, 'view/lanspeed/config.js');

@@ -3,6 +3,7 @@
 
 var AURORA_CLASS = 'lanspeed-theme-aurora';
 var AURORA_META = 'LuCI Aurora';
+var ARGON_CLASS = 'lanspeed-theme-argon';
 
 function docOrGlobal(doc) {
 	if (doc)
@@ -22,6 +23,11 @@ function hasSelector(doc, selector) {
 
 function hasAuroraAsset(doc) {
 	return hasSelector(doc, 'link[href*="/luci-static/aurora/"]');
+}
+
+function hasArgonAsset(doc) {
+	return hasSelector(doc, 'link[href*="/luci-static/argon/"]') ||
+		hasSelector(doc, 'script[src*="menu-argon.js"]');
 }
 
 function hasAuroraMeta(doc) {
@@ -50,14 +56,37 @@ function isAurora(doc) {
 	return !!(doc && (hasAuroraAsset(doc) || hasAuroraMeta(doc) || hasAuroraShell(doc)));
 }
 
+function hasArgonShell(doc) {
+	return !!(
+		hasSelector(doc, '.main') &&
+		hasSelector(doc, '.main-left#mainmenu') &&
+		hasSelector(doc, '.main-right') &&
+		hasSelector(doc, '.darkMask') &&
+		hasSelector(doc, '#tabmenu')
+	);
+}
+
+function isArgon(doc) {
+	doc = docOrGlobal(doc);
+	return !!(doc && (hasArgonAsset(doc) || hasArgonShell(doc)));
+}
+
 return baseclass.extend({
 	detect: function(doc) {
-		return isAurora(doc) ? 'aurora' : '';
+		if (isAurora(doc))
+			return 'aurora';
+		if (isArgon(doc))
+			return 'argon';
+		return '';
 	},
 
 	className: function(doc) {
 		var theme = this.detect(doc);
-		return theme === 'aurora' ? AURORA_CLASS : '';
+		if (theme === 'aurora')
+			return AURORA_CLASS;
+		if (theme === 'argon')
+			return ARGON_CLASS;
+		return '';
 	},
 
 	applyRoot: function(root, doc) {
