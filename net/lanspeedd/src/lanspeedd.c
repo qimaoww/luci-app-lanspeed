@@ -30,9 +30,11 @@
 #include "lanspeed_identity.h"
 #include "lanspeed_nss.h"
 
-#define LANSPEED_VERSION "0.1.5"
+#ifndef LANSPEED_VERSION
+#define LANSPEED_VERSION "0.0.0"
+#endif
 #ifndef LANSPEED_RELEASE
-#define LANSPEED_RELEASE "5"
+#define LANSPEED_RELEASE "0"
 #endif
 #define LANSPEED_FULL_VERSION LANSPEED_VERSION "-r" LANSPEED_RELEASE
 #define RATE_WINDOW_COUNT 3

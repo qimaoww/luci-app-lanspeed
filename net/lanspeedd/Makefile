@@ -47,7 +47,7 @@ endef
 define Build/Compile
 	$(MAKE) -C $(PKG_BUILD_DIR) \
 		CC="$(TARGET_CC)" \
-		CFLAGS="$(TARGET_CFLAGS) -Wall -Wextra -DLANSPEED_RELEASE=\\\"$(PKG_RELEASE)\\\"" \
+		CFLAGS="$(TARGET_CFLAGS) -Wall -Wextra -DLANSPEED_VERSION=\\\"$(PKG_VERSION)\\\" -DLANSPEED_RELEASE=\\\"$(PKG_RELEASE)\\\"" \
 		LDFLAGS="$(TARGET_LDFLAGS)" \
 		LIBS="-lubox -lubus -luci -lblobmsg_json -ljson-c -lmnl -ldl" \
 		LANSPEED_WITH_BPF="0"
