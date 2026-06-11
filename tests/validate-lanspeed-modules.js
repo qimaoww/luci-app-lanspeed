@@ -743,11 +743,12 @@ function assertStatusStyleModule(src) {
 	if (!src.includes('.lanspeed-theme-argon .lanspeed-table th:first-child,.lanspeed-theme-argon .lanspeed-table td:first-child{padding-left:.35rem}')) {
 		fail('lanspeed/statusStyle.js must keep Argon status table text away from the card edge');
 	}
-	if (!src.includes('.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:repeat(auto-fill,17rem);max-width:72rem;justify-content:start;gap:.5rem 1rem}') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:.65rem;padding:.18rem 0;min-width:0}') ||
+	if (!src.includes('.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:repeat(auto-fill,14.25rem);max-width:61rem;justify-content:start;gap:.5rem 1rem}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap{display:grid;grid-template-columns:11rem 2.75rem;align-items:center;gap:.5rem;padding:.18rem 0;min-width:0}') ||
 	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap>span:last-child{justify-self:start;min-width:2.25rem;text-align:center}') ||
 	    !src.includes('@media (max-width:700px){.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:1fr;max-width:none}}')) {
-		fail('lanspeed/statusStyle.js must keep Argon NSS and diagnostics capability grids compact instead of stretched');
+		fail('lanspeed/statusStyle.js must align Argon NSS and diagnostics capability badges in fixed paired columns');
 	}
 }
 
