@@ -4,6 +4,7 @@
 'require uci';
 'require lanspeed.rpc as lsRpc';
 'require lanspeed.ifaceConfig as ifaceCfg';
+'require lanspeed.theme as lsTheme';
 
 /*
  * LAN Speed configuration view.
@@ -84,7 +85,60 @@ var CONFIG_CSS = [
 	'.lanspeed-ifcfg-actions>.spacer{flex:1 1 auto}',
 	'.lanspeed-ifcfg-actions .status{font-size:.85em;opacity:.75;',
 	'  font-family:var(--font-monospace,ui-monospace,monospace)}',
-	'.lanspeed-hint{margin:.8em 0 0 0;font-size:.85em;opacity:.75}'
+	'.lanspeed-hint{margin:.8em 0 0 0;font-size:.85em;opacity:.75}',
+
+	/* Aurora-specific layout pass.  Aurora owns colours and control
+	   rendering; these rules only remove double card padding and shape
+	   LAN Speed tables/forms to Aurora's spacing scale. */
+	'.lanspeed-theme-aurora{display:flex;flex-direction:column;gap:1rem;margin:0}',
+	'.lanspeed-theme-aurora>.cbi-section{margin:0;padding:0;overflow:hidden}',
+	'.lanspeed-theme-aurora .lanspeed-header{padding:1rem 1.25rem .85rem}',
+	'.lanspeed-theme-aurora .lanspeed-config-body,',
+	'.lanspeed-theme-aurora .lanspeed-ifcfg-body{padding:1rem 1.25rem}',
+	'.lanspeed-theme-aurora .lanspeed-config-table th,',
+	'.lanspeed-theme-aurora .lanspeed-config-table td,',
+	'.lanspeed-theme-aurora .lanspeed-ifcfg-table th,',
+	'.lanspeed-theme-aurora .lanspeed-ifcfg-table td{padding:.55rem .65rem}',
+	'.lanspeed-theme-aurora .lanspeed-config-table th:nth-child(1),',
+	'.lanspeed-theme-aurora .lanspeed-config-table td:nth-child(1){width:9rem}',
+	'.lanspeed-theme-aurora .lanspeed-config-table th:nth-child(2),',
+	'.lanspeed-theme-aurora .lanspeed-config-table td:nth-child(2){width:13rem}',
+	'.lanspeed-theme-aurora .lanspeed-config-table th:nth-child(3),',
+	'.lanspeed-theme-aurora .lanspeed-config-table td:nth-child(3){width:18rem}',
+	'.lanspeed-theme-aurora .lanspeed-config-table .value{width:auto}',
+	'.lanspeed-theme-aurora .lanspeed-config-table .value input{max-width:16rem}',
+	'.lanspeed-theme-aurora .lanspeed-config-table .value.range input{max-width:none}',
+	'.lanspeed-theme-aurora .lanspeed-range-stack{max-width:26rem;gap:.5rem}',
+	'.lanspeed-theme-aurora .lanspeed-range-pill{display:grid;grid-template-columns:minmax(0,1fr) auto;',
+	'  gap:.5rem;align-items:center}',
+	'.lanspeed-theme-aurora .lanspeed-range-remove{width:2.25rem;min-width:2.25rem;',
+	'  height:2.25rem;padding:0}',
+	'.lanspeed-theme-aurora .lanspeed-range-add{display:grid;grid-template-columns:minmax(0,1fr) auto;',
+	'  gap:.5rem;align-items:center}',
+	'.lanspeed-theme-aurora .lanspeed-range-add button{height:2.25rem}',
+	'.lanspeed-theme-aurora .lanspeed-config-actions,',
+	'.lanspeed-theme-aurora .lanspeed-ifcfg-actions{margin:.8rem 0 0 0}',
+	'.lanspeed-theme-aurora .lanspeed-ifcfg-table .action{width:19rem}',
+	'.lanspeed-theme-aurora .lanspeed-ifcfg-seg{gap:.35rem;min-width:17rem}',
+	'.lanspeed-theme-aurora .lanspeed-ifcfg-seg>button{padding:.48rem .7rem;',
+	'  border-radius:calc(var(--radius-base, .5rem)*1.5)}',
+	'@media (max-width:800px){.lanspeed-theme-aurora .lanspeed-header{padding:.85rem 1rem .7rem}',
+	'.lanspeed-theme-aurora .lanspeed-config-body,',
+	'.lanspeed-theme-aurora .lanspeed-ifcfg-body{padding:.85rem 1rem}',
+	'.lanspeed-theme-aurora .lanspeed-config-table,',
+	'.lanspeed-theme-aurora .lanspeed-config-table thead,',
+	'.lanspeed-theme-aurora .lanspeed-config-table tbody,',
+	'.lanspeed-theme-aurora .lanspeed-config-table tr,',
+	'.lanspeed-theme-aurora .lanspeed-config-table th,',
+	'.lanspeed-theme-aurora .lanspeed-config-table td{display:block;width:auto}',
+	'.lanspeed-theme-aurora .lanspeed-config-table thead{display:none}',
+	'.lanspeed-theme-aurora .lanspeed-config-table tr{padding:.7rem 0;border-bottom:1px solid var(--border,rgba(128,128,128,.18))}',
+	'.lanspeed-theme-aurora .lanspeed-config-table td{padding:.2rem 0;border-bottom:0}',
+	'.lanspeed-theme-aurora .lanspeed-config-table td:nth-child(1),',
+	'.lanspeed-theme-aurora .lanspeed-config-table td:nth-child(2),',
+	'.lanspeed-theme-aurora .lanspeed-config-table td:nth-child(3){width:auto}',
+	'.lanspeed-theme-aurora .lanspeed-ifcfg-table .action{width:auto;text-align:left}',
+	'.lanspeed-theme-aurora .lanspeed-ifcfg-seg{min-width:0;width:100%}}'
 ].join('\n');
 
 var DEFAULTS = {
@@ -628,6 +682,8 @@ return view.extend({
 				ifaceCfg.buildSection(viewState, _('接口配置'))
 			])
 		]);
+
+		lsTheme.applyRoot(root);
 
 		ifaceCfg.load(viewState);
 		return root;

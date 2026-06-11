@@ -44,6 +44,7 @@ const EXPECTED_MODULES = [
 	'rpc.js',
 	'ifaceConfig.js',
 	'nssPanel.js',
+	'theme.js',
 	'version.js'
 ];
 
@@ -52,13 +53,15 @@ const EXPECTED_VIEW_REQUIRES = [
 	'lanspeed.format',
 	'lanspeed.rpc',
 	'lanspeed.version',
-	'lanspeed.nssPanel'
+	'lanspeed.nssPanel',
+	'lanspeed.theme'
 ];
 
 const EXPECTED_CONFIG_VIEW_REQUIRES = [
 	'form',
 	'lanspeed.rpc',
-	'lanspeed.ifaceConfig'
+	'lanspeed.ifaceConfig',
+	'lanspeed.theme'
 ];
 
 function readMakeVar(source, name, fileLabel) {
@@ -76,6 +79,7 @@ const MODULE_REQUIRES = {
 	'rpc.js':         [ 'baseclass', 'rpc' ],
 	'ifaceConfig.js': [ 'baseclass', 'lanspeed.format', 'lanspeed.rpc' ],
 	'nssPanel.js':    [ 'baseclass', 'lanspeed.vocab', 'lanspeed.format' ],
+	'theme.js':       [ 'baseclass' ],
 	'version.js':     [ 'baseclass' ]
 };
 
@@ -609,6 +613,31 @@ function assertStatusViewSourceOnlyState(src) {
 	}
 }
 
+function assertThemeModule(src) {
+	if (!src.includes('function isAurora') ||
+	    !src.includes('/luci-static/aurora/') ||
+	    !src.includes('LuCI Aurora') ||
+	    !src.includes('data-darkmode') ||
+	    !src.includes('data-nav-type') ||
+	    !src.includes('lanspeed-theme-aurora') ||
+	    !src.includes('data-lanspeed-theme') ||
+	    !src.includes('applyRoot: function(root')) {
+		fail('resources/lanspeed/theme.js must detect Aurora from theme assets and shell markers before applying the scoped class');
+	}
+}
+
+function assertAuroraThemeWiring(src, label) {
+	if (!/^\s*['"]require\s+lanspeed\.theme\s+as\s+lsTheme['"]\s*;/m.test(src)) {
+		fail(`${label} must require the LAN Speed theme helper as lsTheme`);
+	}
+	if (!src.includes('lsTheme.applyRoot(root)')) {
+		fail(`${label} must apply detected theme classes to the LAN Speed root`);
+	}
+	if (!src.includes('.lanspeed-theme-aurora ')) {
+		fail(`${label} must keep Aurora-specific CSS scoped under .lanspeed-theme-aurora`);
+	}
+}
+
 function assertVersionModule(src) {
 	const daemonVersion = readMakeVar(daemonMakefile, 'PKG_VERSION', 'net/lanspeedd/Makefile');
 	const daemonRelease = readMakeVar(daemonMakefile, 'PKG_RELEASE', 'net/lanspeedd/Makefile');
@@ -660,6 +689,9 @@ EXPECTED_MODULES.forEach(function(name) {
 	if (name === 'nssPanel.js') {
 		assertNssPanelSource(src);
 	}
+	if (name === 'theme.js') {
+		assertThemeModule(src);
+	}
 	if (name === 'version.js') {
 		assertVersionModule(src);
 	}
@@ -680,6 +712,7 @@ if (fs.existsSync(viewFile)) {
 	if (!vsrc.includes('lsVersion.FULL_VERSION')) {
 		fail('view/lanspeed/index.js must render luci-app-lanspeed full package version');
 	}
+	assertAuroraThemeWiring(vsrc, 'view/lanspeed/index.js');
 	assertStatusViewNoInterfaceConfig(vsrc);
 	assertNoInlineNavigation(vsrc, 'view/lanspeed/index.js');
 	assertStatusViewNoTrend(vsrc);
@@ -694,6 +727,7 @@ if (fs.existsSync(configViewFile)) {
 	const ccleaned = stripComments(csrc);
 	assertStrict(csrc, 'view/lanspeed/config.js');
 	assertConfigViewRequires(csrc);
+	assertAuroraThemeWiring(csrc, 'view/lanspeed/config.js');
 	assertConfigView(csrc);
 	assertNoInlineNavigation(csrc, 'view/lanspeed/config.js');
 	assertSyntax(csrc, 'view/lanspeed/config.js');

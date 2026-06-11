@@ -48,6 +48,7 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/ifaceConfig.js \
 		./htdocs/luci-static/resources/lanspeed/nssPanel.js \
 		./htdocs/luci-static/resources/lanspeed/rpc.js \
+		./htdocs/luci-static/resources/lanspeed/theme.js \
 		./htdocs/luci-static/resources/lanspeed/vocab.js \
 		$(1)/www/luci-static/resources/lanspeed/
 	printf "%s\n" \
