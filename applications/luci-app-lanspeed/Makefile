@@ -43,8 +43,23 @@ define Package/luci-app-lanspeed/install
 	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/lanspeed/*.js \
 		$(1)/www/luci-static/resources/view/lanspeed/
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/lanspeed
-	$(INSTALL_DATA) ./htdocs/luci-static/resources/lanspeed/*.js \
+	$(INSTALL_DATA) \
+		./htdocs/luci-static/resources/lanspeed/format.js \
+		./htdocs/luci-static/resources/lanspeed/ifaceConfig.js \
+		./htdocs/luci-static/resources/lanspeed/nssPanel.js \
+		./htdocs/luci-static/resources/lanspeed/rpc.js \
+		./htdocs/luci-static/resources/lanspeed/vocab.js \
 		$(1)/www/luci-static/resources/lanspeed/
+	printf "%s\n" \
+		"'use strict';" \
+		"'require baseclass';" \
+		"" \
+		"return baseclass.extend({" \
+		"	PACKAGE_VERSION: '$(PKG_VERSION)'," \
+		"	PACKAGE_RELEASE: '$(PKG_RELEASE)'," \
+		"	FULL_VERSION: '$(PKG_VERSION)-r$(PKG_RELEASE)'" \
+		"});" \
+		> $(1)/www/luci-static/resources/lanspeed/version.js
 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
 	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-lanspeed.json \
 		$(1)/usr/share/luci/menu.d/luci-app-lanspeed.json
