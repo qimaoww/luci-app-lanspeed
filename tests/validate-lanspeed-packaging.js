@@ -141,8 +141,10 @@ try {
   [
     'statusStyleCompatLive.js',
     'statusStyleCompatLive2.js',
+    'statusStyleCompatLive3.js',
     'statusViewLive.js',
-    'statusViewLive2.js'
+    'statusViewLive2.js',
+    'statusViewLive3.js'
   ].forEach((name) => {
     assertMatch(
       luciMakefile,

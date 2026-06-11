@@ -33,7 +33,7 @@ const root = path.resolve(__dirname, '..');
 const resDir = path.join(root,
 	'applications/luci-app-lanspeed/htdocs/luci-static/resources');
 const modDir = path.join(resDir, 'lanspeed');
-const viewFile = path.join(resDir, 'view/lanspeed/index_live3.js');
+const viewFile = path.join(resDir, 'view/lanspeed/index_live4.js');
 const legacyViewFile = path.join(resDir, 'view/lanspeed/index.js');
 const configViewFile = path.join(resDir, 'view/lanspeed/config.js');
 const statusViewFile = path.join(modDir, 'statusViewLive.js');
@@ -51,8 +51,10 @@ const EXPECTED_MODULES = [
 	'statusStyle.js',
 	'statusStyleCompatLive.js',
 	'statusStyleCompatLive2.js',
+	'statusStyleCompatLive3.js',
 	'statusViewLive.js',
 	'statusViewLive2.js',
+	'statusViewLive3.js',
 	'statusIp.js',
 	'statusCollector.js',
 	'statusShell.js',
@@ -98,6 +100,7 @@ const MODULE_REQUIRES = {
 	'statusStyle.js': [ 'baseclass' ],
 	'statusStyleCompatLive.js': [ 'baseclass' ],
 	'statusStyleCompatLive2.js': [ 'baseclass' ],
+	'statusStyleCompatLive3.js': [ 'baseclass' ],
 	'statusViewLive.js': [
 		'baseclass',
 		'lanspeed.format',
@@ -111,6 +114,11 @@ const MODULE_REQUIRES = {
 		'baseclass',
 		'lanspeed.statusViewLive',
 		'lanspeed.statusStyleCompatLive2'
+	],
+	'statusViewLive3.js': [
+		'baseclass',
+		'lanspeed.statusViewLive',
+		'lanspeed.statusStyleCompatLive3'
 	],
 	'statusIp.js':    [ 'baseclass', 'lanspeed.format' ],
 	'statusCollector.js': [ 'baseclass' ],
@@ -144,8 +152,10 @@ const RPC_FREE_MODULES = [
 	'statusStyle.js',
 	'statusStyleCompatLive.js',
 	'statusStyleCompatLive2.js',
+	'statusStyleCompatLive3.js',
 	'statusViewLive.js',
 	'statusViewLive2.js',
+	'statusViewLive3.js',
 	'statusIp.js',
 	'statusCollector.js',
 	'statusRefresh.js',
@@ -330,11 +340,11 @@ function assertViewRequires(src) {
 
 function assertStatusViewWrapper(src, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !/^\s*['"]require\s+lanspeed\.statusViewLive2\s+as\s+statusViewLive2['"]\s*;/m.test(src) ||
+	    !/^\s*['"]require\s+lanspeed\.statusViewLive3\s+as\s+statusViewLive3['"]\s*;/m.test(src) ||
 	    !src.includes('return view.extend({') ||
-	    !src.includes('return statusViewLive2.load();') ||
-	    !src.includes('return statusViewLive2.render(data);')) {
-		fail(`${label} must wrap lanspeed/statusViewLive2.js through a concrete LuCI view.extend() constructor`);
+	    !src.includes('return statusViewLive3.load();') ||
+	    !src.includes('return statusViewLive3.render(data);')) {
+		fail(`${label} must wrap lanspeed/statusViewLive3.js through a concrete LuCI view.extend() constructor`);
 	}
 	if (src.includes('statusShell.buildShell(') ||
 	    src.includes('statusRefresh.refreshLive(') ||
@@ -785,22 +795,22 @@ function assertStatusStyleModule(src) {
 	if (!src.includes('.lanspeed-theme-argon .lanspeed-table th:first-child,.lanspeed-theme-argon .lanspeed-table td:first-child{padding-left:.35rem}')) {
 		fail('lanspeed/statusStyle.js must keep Argon status table text away from the card edge');
 	}
-	if (!src.includes('.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:max-content 2.55rem max-content 2.55rem max-content 2.55rem max-content 2.55rem;') ||
-	    !src.includes('  max-width:none;justify-content:start;align-items:center;column-gap:.9rem;row-gap:.5rem}') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap{display:contents}') ||
+	if (!src.includes('.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:repeat(4,12.95rem);max-width:56rem;justify-content:start;align-items:center;gap:.5rem 1rem;margin:.2rem 0 1rem 1.25rem}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap{display:grid;grid-template-columns:minmax(0,9.65rem) 2.55rem;') ||
+	    !src.includes('  align-items:center;column-gap:.45rem;min-width:0;padding:.18rem 0}') ||
 	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}') ||
 	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap>span:last-child{justify-self:start;min-width:2.25rem;text-align:center}') ||
-	    !src.includes('@media (max-width:700px){.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:minmax(0,max-content) 2.55rem;max-width:none}}')) {
-		fail('lanspeed/statusStyle.js must align Argon NSS and diagnostics capability badges with compact parent-level paired columns');
+	    !src.includes('@media (max-width:700px){.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:1fr;max-width:none}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap{grid-template-columns:minmax(0,9.65rem) 2.55rem;max-width:12.95rem}}')) {
+		fail('lanspeed/statusStyle.js must align Argon capability badges with fixed label/pill slots');
 	}
 }
 
 function assertStatusStyleCompatModule(src) {
 	if (!src.includes('lanspeed-style-argon-caps-compat') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:max-content 2.55rem max-content 2.55rem max-content 2.55rem max-content 2.55rem;') ||
-	    !src.includes('  max-width:none;justify-content:start;align-items:center;column-gap:.9rem;row-gap:.5rem}') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap{display:contents}') ||
-	    !src.includes('@media (max-width:700px){.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:minmax(0,max-content) 2.55rem;max-width:none}}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:repeat(4,12.95rem);max-width:56rem;justify-content:start;align-items:center;gap:.5rem 1rem;margin:.2rem 0 1rem 1.25rem}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap{display:grid;grid-template-columns:minmax(0,9.65rem) 2.55rem;') ||
+	    !src.includes('@media (max-width:700px){.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:1fr;max-width:none}') ||
 	    !src.includes('install: install')) {
 		fail('lanspeed/statusStyleCompatLive.js must install the Argon capability-grid override from a fresh module path');
 	}
@@ -998,7 +1008,7 @@ EXPECTED_MODULES.forEach(function(name) {
 	if (name === 'statusStyle.js') {
 		assertStatusStyleModule(src);
 	}
-	if (name === 'statusStyleCompatLive.js' || name === 'statusStyleCompatLive2.js') {
+	if (name === 'statusStyleCompatLive.js' || name === 'statusStyleCompatLive2.js' || name === 'statusStyleCompatLive3.js') {
 		assertStatusStyleCompatModule(src);
 	}
 	if (name === 'statusViewLive.js') {
@@ -1034,10 +1044,10 @@ RPC_FREE_MODULES.forEach(function(name) {
 if (fs.existsSync(viewFile)) {
 	const vsrc = readModule(viewFile);
 	const vcleaned = stripComments(vsrc);
-	assertStrict(vsrc, 'view/lanspeed/index_live3.js');
-	assertStatusViewWrapper(vsrc, 'view/lanspeed/index_live3.js');
-	assertSyntax(vsrc, 'view/lanspeed/index_live3.js');
-	assertNoRpcDeclare(vcleaned, 'view/lanspeed/index_live3.js');
+	assertStrict(vsrc, 'view/lanspeed/index_live4.js');
+	assertStatusViewWrapper(vsrc, 'view/lanspeed/index_live4.js');
+	assertSyntax(vsrc, 'view/lanspeed/index_live4.js');
+	assertNoRpcDeclare(vcleaned, 'view/lanspeed/index_live4.js');
 }
 
 if (fs.existsSync(legacyViewFile)) {
@@ -1057,6 +1067,7 @@ if (fs.existsSync(statusViewFile)) {
 		readModuleByName('statusStyle.js'),
 		readModuleByName('statusStyleCompatLive.js'),
 		readModuleByName('statusStyleCompatLive2.js'),
+		readModuleByName('statusStyleCompatLive3.js'),
 		readModuleByName('statusIp.js'),
 		readModuleByName('statusCollector.js'),
 		readModuleByName('statusShell.js'),

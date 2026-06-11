@@ -1,7 +1,7 @@
 'use strict';
 'require baseclass';
 
-var STYLE_ID = 'lanspeed-style-argon-caps-compat';
+var STYLE_ID = 'lanspeed-style-argon-caps-compat-live3';
 
 var ARGON_CAPS_CSS = [
 	'.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:repeat(4,12.95rem);max-width:56rem;justify-content:start;align-items:center;gap:.5rem 1rem;margin:.2rem 0 1rem 1.25rem}',
@@ -13,13 +13,17 @@ var ARGON_CAPS_CSS = [
 	'.lanspeed-theme-argon .lanspeed-caps .cap{grid-template-columns:minmax(0,9.65rem) 2.55rem;max-width:12.95rem}}'
 ].join('\n');
 
-function install() {
-	if (document.getElementById(STYLE_ID)) return;
+function install(root) {
+	var host = root || document.head;
+	var oldStyle = document.getElementById(STYLE_ID);
+	if (oldStyle && oldStyle.parentNode === host) return oldStyle;
+	if (oldStyle && oldStyle.parentNode) oldStyle.parentNode.removeChild(oldStyle);
 
 	var style = document.createElement('style');
 	style.id = STYLE_ID;
 	style.textContent = ARGON_CAPS_CSS;
-	document.head.appendChild(style);
+	host.appendChild(style);
+	return style;
 }
 
 return baseclass.extend({

@@ -2070,9 +2070,10 @@ const hotplugScript = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/h
 const defaultConfig = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/config/lanspeed'), 'utf8');
 const statusResourceDir = path.join(root, 'applications/luci-app-lanspeed/htdocs/luci-static/resources');
 const indexSource = [
-  'view/lanspeed/index_live3.js',
+  'view/lanspeed/index_live4.js',
   'lanspeed/statusViewLive.js',
   'lanspeed/statusViewLive2.js',
+  'lanspeed/statusViewLive3.js',
   'lanspeed/statusCollector.js',
   'lanspeed/statusRefresh.js'
 ].map((relativePath) => fs.readFileSync(path.join(statusResourceDir, relativePath), 'utf8')).join('\n');
