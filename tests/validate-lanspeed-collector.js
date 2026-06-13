@@ -624,11 +624,73 @@ function normalizeIp(ip) {
   }
 }
 
+function ipv4ToInt(ip) {
+  const parts = String(ip).split('.');
+  if (parts.length !== 4) {
+    return null;
+  }
+  let value = 0;
+  for (const part of parts) {
+    if (!/^\d+$/.test(part)) {
+      return null;
+    }
+    const octet = Number.parseInt(part, 10);
+    if (octet < 0 || octet > 255) {
+      return null;
+    }
+    value = ((value << 8) | octet) >>> 0;
+  }
+  return value >>> 0;
+}
+
+function ipv4InCidr(ip, cidr) {
+  const [base, bitsText] = String(cidr).split('/');
+  const ipInt = ipv4ToInt(ip);
+  const baseInt = ipv4ToInt(base);
+  const bits = Number.parseInt(bitsText, 10);
+  if (ipInt === null || baseInt === null || !Number.isInteger(bits) || bits < 0 || bits > 32) {
+    return false;
+  }
+  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+  return (ipInt & mask) === (baseInt & mask);
+}
+
+function interfaceFilterEnabled(fixture) {
+  return Array.isArray(fixture.collect_ifnames) && fixture.collect_ifnames.length > 0;
+}
+
+function interfacePrefixes(fixture, ifname) {
+  const selected = new Set(fixture.collect_ifnames || []);
+
+  if (!interfaceFilterEnabled(fixture) || !selected.has(ifname)) {
+    return [];
+  }
+
+  return (fixture.interface_addresses || [])
+    .filter((addr) => addr.interface === ifname && typeof addr.address === 'string')
+    .map((addr) => addr.address);
+}
+
+function identityAddressAllowedByCollectedInterface(entry, fixture) {
+  const ip = normalizeIp(entry.ip);
+  const ifname = entry.interface || 'br-lan';
+  const prefixes = interfacePrefixes(fixture, ifname);
+
+  if (!interfaceFilterEnabled(fixture)) {
+    return true;
+  }
+
+  return prefixes.some((cidr) => ipv4InCidr(ip, cidr));
+}
+
 function buildArpMap(fixture) {
   const entries = new Map();
 
   for (const entry of (fixture.arp_entries || []).concat(fixture.neighbor_entries || [])) {
     if (isExcludedIdentityInterface(entry.interface || '')) {
+      continue;
+    }
+    if (!identityAddressAllowedByCollectedInterface(entry, fixture)) {
       continue;
     }
     const ip = normalizeIp(entry.ip);
@@ -654,19 +716,23 @@ function buildArpByMacZone(fixture) {
     if (!entry.mac || isExcludedIdentityInterface(entry.interface || '')) {
       continue;
     }
+    if (!identityAddressAllowedByCollectedInterface(entry, fixture)) {
+      continue;
+    }
 
     const mac = entry.mac.toLowerCase();
     const zone = entry.zone || 'lan';
     const key = `${mac}@${zone}`;
 
     if (!entries.has(key)) {
-      entries.set(key, {
-        ip: normalizeIp(entry.ip),
-        mac,
-        zone,
-        interface: entry.interface || 'br-lan'
-      });
+      entries.set(key, []);
     }
+    entries.get(key).push({
+      ip: normalizeIp(entry.ip),
+      mac,
+      zone,
+      interface: entry.interface || 'br-lan'
+    });
   }
 
   return entries;
@@ -680,7 +746,8 @@ function simulateBpfIdentityFolding(fixture) {
   for (const sample of fixture.raw_bpf_samples || []) {
     const mac = sample.mac.toLowerCase();
     const zone = sample.zone || 'lan';
-    const identity = arpByMacZone.get(`${mac}@${zone}`);
+    const identities = arpByMacZone.get(`${mac}@${zone}`) || [];
+    const identity = identities[0];
 
     if (!identity) {
       skippedNoIdentity += 1;
@@ -698,8 +765,10 @@ function simulateBpfIdentityFolding(fixture) {
       rx_bytes: 0
     };
 
-    if (identity.ip && !client.ips.includes(identity.ip)) {
-      client.ips.push(identity.ip);
+    for (const item of identities) {
+      if (item.ip && !client.ips.includes(item.ip)) {
+        client.ips.push(item.ip);
+      }
     }
     if (sample.direction === 'tx') {
       client.tx_bytes += sample.bytes || 0;
@@ -1518,9 +1587,17 @@ function assertRuntimeConntrackFallbackSource(source) {
     'NETLINK_ROUTE',
     'NDA_DST',
     'NDA_LLADDR',
+    'RTM_GETADDR',
+    'IFA_ADDRESS',
+    'IFA_LOCAL',
     'AF_INET6',
     'bool read_neighbor_table',
     'size_t load_lan_identity_table',
+    'struct lan_identity_filter',
+    'lanspeed.main.ifname',
+    'lanspeed.main.interface_include',
+    'load_lan_identity_filter',
+    'identity_entry_allowed_by_collected_interface',
     'bool flow_endpoint_lookup',
     'bool nss_ecm_direct_endpoint_lookup',
     'void normalize_mac_address',
@@ -2142,6 +2219,31 @@ assert(bpfAttached.tc_filter.pref === 49152 && bpfAttached.tc_filter.handle === 
   assert(bpfIdentity.clients[0].identity_key === '00:11:22:33:44:55@lan', 'BPF identity folding must allow real clients whose MAC starts with 00');
   assert(bpfIdentity.clients[0].ips.includes('192.168.31.110'), 'BPF identity folding must attach the ARP IP for a real 00-prefix client');
   assert(bpfIdentity.skipped_no_identity === 1, 'BPF identity folding must skip unknown 00-prefix MAC samples without LAN identity');
+}
+
+{
+  const filteredIdentity = simulateBpfIdentityFolding({
+    collect_ifnames: [ 'eth1' ],
+    interface_addresses: [
+      { interface: 'eth1', address: '192.168.31.1/24' },
+      { interface: 'eth0', address: '192.168.2.100/24' }
+    ],
+    arp_entries: [
+      { ip: '192.168.31.177', mac: 'd2:4f:70:5d:5e:8d', interface: 'eth1', zone: 'eth1' },
+      { ip: '10.19.153.104', mac: 'd2:4f:70:5d:5e:8d', interface: 'eth1', zone: 'eth1' },
+      { ip: '169.254.156.62', mac: 'd8:bb:c1:67:fe:bd', interface: 'eth1', zone: 'eth1' }
+    ],
+    neighbor_entries: [],
+    raw_bpf_samples: [
+      { mac: 'd2:4f:70:5d:5e:8d', zone: 'eth1', interface: 'eth1', direction: 'tx', bytes: 1000 },
+      { mac: 'd8:bb:c1:67:fe:bd', zone: 'eth1', interface: 'eth1', direction: 'tx', bytes: 2000 }
+    ]
+  });
+  assert(filteredIdentity.clients.length === 1, 'collected interface subnet filter must drop clients without an IP in that interface subnet');
+  assert(filteredIdentity.clients[0].identity_key === 'd2:4f:70:5d:5e:8d@eth1', 'collected interface subnet filter must keep the matching client identity');
+  assert(JSON.stringify(filteredIdentity.clients[0].ips) === JSON.stringify([ '192.168.31.177' ]),
+         'collected interface subnet filter must keep only IPs inside the collected interface subnet');
+  assert(filteredIdentity.skipped_no_identity === 1, 'collected interface subnet filter must skip MACs whose only IP is outside the collected interface subnet');
 }
 
 const uploadRate = computeRateTimeline(uploadRateFixture);
