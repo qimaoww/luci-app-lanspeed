@@ -1,0 +1,20 @@
+[package]
+description = "Build-time support for aya projects"
+name = "aya-build"
+version = "0.2.0"
+
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true, default-features = true }
+cargo_metadata = { workspace = true }
+rustc_version = { workspace = true }
+which = { workspace = true, features = ["real-sys"] }

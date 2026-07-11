@@ -1,0 +1,13 @@
+[package]
+name = "lanspeed-ebpf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lanspeed-ebpf"
+path = "src/main.rs"
+
+[dependencies]
+aya-ebpf.workspace = true
+lanspeed-common = { path = "../lanspeed-common" }

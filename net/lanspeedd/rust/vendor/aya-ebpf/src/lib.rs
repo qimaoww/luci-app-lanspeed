@@ -1,0 +1,256 @@
+//! [![](https://aya-rs.dev/assets/images/aya_logo_docs.svg)](https://aya-rs.dev)
+//!
+//! A library to write eBPF programs.
+//!
+//! Aya-bpf is an eBPF library built with a focus on operability and developer experience.
+//! It is the kernel-space counterpart of [Aya](https://docs.rs/aya)
+#![doc(
+    html_logo_url = "https://aya-rs.dev/assets/images/crabby.svg",
+    html_favicon_url = "https://aya-rs.dev/assets/images/crabby.svg"
+)]
+#![cfg_attr(
+    generic_const_exprs,
+    expect(
+        incomplete_features,
+        reason = "generic_const_exprs requires incomplete features"
+    ),
+    expect(
+        unstable_features,
+        reason = "generic_const_exprs requires unstable features"
+    ),
+    feature(generic_const_exprs)
+)]
+#![cfg_attr(
+    target_arch = "bpf",
+    expect(
+        unstable_features,
+        reason = "asm_experimental_arch requires unstable features"
+    ),
+    feature(asm_experimental_arch)
+)]
+#![warn(clippy::cast_lossless, clippy::cast_sign_loss)]
+#![no_std]
+
+mod args;
+pub mod bindings;
+#[cfg(generic_const_exprs)]
+mod const_assert;
+pub use args::Argument;
+pub mod btf_maps;
+#[expect(
+    clippy::missing_safety_doc,
+    reason = "helpers mirror kernel helpers with implicit safety contracts"
+)]
+pub mod helpers;
+pub mod maps;
+pub mod programs;
+
+use core::{
+    mem::MaybeUninit,
+    ptr::{self, NonNull},
+};
+
+pub use aya_ebpf_cty as cty;
+pub use aya_ebpf_macros as macros;
+use cty::c_void;
+pub use helpers::TASK_COMM_LEN;
+use helpers::{
+    bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid, bpf_map_delete_elem,
+    bpf_map_lookup_elem, bpf_map_update_elem,
+};
+
+pub trait EbpfContext {
+    fn as_ptr(&self) -> *mut c_void;
+
+    #[inline]
+    fn command(&self) -> Result<[u8; TASK_COMM_LEN], i32> {
+        bpf_get_current_comm()
+    }
+
+    fn pid(&self) -> u32 {
+        bpf_get_current_pid_tgid() as u32
+    }
+
+    fn tgid(&self) -> u32 {
+        (bpf_get_current_pid_tgid() >> 32) as u32
+    }
+
+    fn uid(&self) -> u32 {
+        bpf_get_current_uid_gid() as u32
+    }
+
+    fn gid(&self) -> u32 {
+        (bpf_get_current_uid_gid() >> 32) as u32
+    }
+}
+
+#[cfg_attr(
+    runtime_symbol_lint,
+    expect(
+        invalid_runtime_symbol_definitions,
+        reason = "BPF subprograms cannot return pointers into the caller's stack"
+    )
+)]
+mod intrinsics {
+    use super::cty::c_int;
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn memset(s: *mut u8, c: c_int, n: usize) {
+        #[expect(clippy::cast_sign_loss, reason = "architecture-specific")]
+        let b = c as u8;
+        for i in 0..n {
+            unsafe { *s.add(i) = b }
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn memcpy(dest: *mut u8, src: *mut u8, n: usize) {
+        unsafe { copy_forward(dest, src, n) }
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn memmove(dest: *mut u8, src: *mut u8, n: usize) {
+        let delta = (dest as usize).wrapping_sub(src as usize);
+        if delta >= n {
+            // We can copy forwards because either dest is far enough ahead of src,
+            // or src is ahead of dest (and delta overflowed).
+            unsafe { copy_forward(dest, src, n) }
+        } else {
+            unsafe { copy_backward(dest, src, n) }
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn copy_forward(dest: *mut u8, src: *mut u8, n: usize) {
+        for i in 0..n {
+            unsafe { *dest.add(i) = *src.add(i) }
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn copy_backward(dest: *mut u8, src: *mut u8, n: usize) {
+        for i in (0..n).rev() {
+            unsafe { *dest.add(i) = *src.add(i) }
+        }
+    }
+}
+
+/// Builds a flag for [`SkBuffContext::adjust_room`](programs::SkBuffContext::adjust_room)
+/// that defines L2 encapsulation, using `len` as the inner MAC header length.
+///
+/// Equivalent to the [`BPF_F_ADJ_ROOM_ENCAP_L2`][uapi-bpf-adj-room-encap-l2] macro
+/// in the Linux user-space API.
+///
+/// [uapi-bpf-adj-room-encap-l2]: https://github.com/torvalds/linux/blob/v6.17/include/uapi/linux/bpf.h#L6181
+#[doc(alias = "BPF_F_ADJ_ROOM_ENCAP_L2")]
+#[inline(always)]
+pub const fn bpf_f_adj_room_encap_l2(len: u64) -> u64 {
+    (len & bindings::BPF_ADJ_ROOM_ENCAP_L2_MASK as u64) << bindings::BPF_ADJ_ROOM_ENCAP_L2_SHIFT
+}
+
+/// Check if a value is within a range, using conditional forms compatible with
+/// the verifier.
+#[inline(always)]
+pub fn check_bounds_signed<T: Into<i64>>(value: T, lower: T, upper: T) -> bool {
+    let value = value.into();
+    let lower = lower.into();
+    let upper = upper.into();
+    #[cfg(target_arch = "bpf")]
+    unsafe {
+        let mut in_bounds = 0u64;
+        core::arch::asm!(
+            "if {value} s< {lower} goto +2",
+            "if {value} s> {upper} goto +1",
+            "{i} = 1",
+            i = inout(reg) in_bounds,
+            lower = in(reg) lower,
+            upper = in(reg) upper,
+            value = in(reg) value,
+        );
+        in_bounds == 1
+    }
+    // We only need this for doc tests which are compiled for the host target
+    #[expect(clippy::unreachable, reason = "only used for doc tests")]
+    #[cfg(not(target_arch = "bpf"))]
+    {
+        unreachable!("value={value} lower={lower} upper={upper}");
+    }
+}
+
+#[inline]
+fn insert<K, V>(def: *mut c_void, key: &K, value: &V, flags: u64) -> Result<(), i32> {
+    let key = ptr::from_ref(key);
+    let value = ptr::from_ref(value);
+    match unsafe { bpf_map_update_elem(def, key.cast(), value.cast(), flags) } {
+        0 => Ok(()),
+        ret => Err(ret as i32),
+    }
+}
+
+#[inline]
+fn remove<K>(def: *mut c_void, key: &K) -> Result<(), i32> {
+    let key = ptr::from_ref(key);
+    match unsafe { bpf_map_delete_elem(def, key.cast()) } {
+        0 => Ok(()),
+        ret => Err(ret as i32),
+    }
+}
+
+#[inline]
+fn lookup<K, V>(def: *mut c_void, key: &K) -> Option<NonNull<V>> {
+    let key = ptr::from_ref(key);
+    NonNull::new(unsafe { bpf_map_lookup_elem(def, key.cast()) }.cast())
+}
+
+/// `ENOENT` errno value, returned (negated) when [`lookup`] misses.
+pub(crate) const ENOENT: i32 = 2;
+
+/// A read-only global value that may be initialized by the loader.
+///
+/// Prefer using this to a plain `static` variable to avoid compiler optimizations eliding reads.
+///
+/// Use `EbpfLoader::override_global` to override the value at load time from userspace.
+/// # Example
+/// ```
+/// # use aya_ebpf::Global;
+/// #[unsafe(no_mangle)]
+/// static VERSION: Global<i32> = Global::new(0);
+///
+/// # fn loadit() {
+/// let version = VERSION.load();
+/// # }
+/// ```
+#[repr(transparent)]
+pub struct Global<T> {
+    // `MaybeUninit` is used to inhibit compiler analysis and optimizations that may
+    // cause unexpected behavior; in reality, this value is always be initialized with a valid `T`.
+    value: MaybeUninit<T>,
+}
+
+impl<T> Global<T> {
+    /// Returns a new [`Global`] which may be overridden at load
+    /// time by the loader.
+    pub const fn new(value: T) -> Self {
+        Self {
+            value: MaybeUninit::new(value),
+        }
+    }
+}
+
+impl<T: Default> Default for Global<T> {
+    fn default() -> Self {
+        Self::new(T::default())
+    }
+}
+
+impl<T> Global<T>
+where
+    T: Copy,
+{
+    /// Load the contents of this global variable. Internally, uses a [volatile read](ptr::read_volatile) to avoid
+    /// compiler optimizations reordering/removing loads (as would normally be done for a read-only static).
+    #[inline]
+    pub fn load(&self) -> T {
+        unsafe { ptr::read_volatile(self.value.as_ptr()) }
+    }
+}

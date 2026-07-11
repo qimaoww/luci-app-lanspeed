@@ -1,0 +1,15 @@
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
+
+[net]
+offline = true
+
+[target.bpfel-unknown-none]
+linker = "bpf-linker"
+
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-openwrt-linux-musl-gcc"
+rustflags = ["-C", "target-feature=-crt-static"]

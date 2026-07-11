@@ -1,0 +1,57 @@
+use core::{borrow::Borrow, ptr::NonNull};
+
+use crate::{btf_maps::btf_map_def, insert, lookup};
+
+btf_map_def!(
+    /// A BTF-compatible BPF array map.
+    ///
+    /// This map type stores elements of type `T` indexed by `u32` keys.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use aya_ebpf::{btf_maps::Array, macros::btf_map};
+    ///
+    /// #[btf_map]
+    /// static ARRAY: Array<u32, 10, 0> = Array::new();
+    /// ```
+    pub struct Array<T; const MAX_ENTRIES: usize, const FLAGS: usize = 0>,
+    map_type: BPF_MAP_TYPE_ARRAY,
+    max_entries: MAX_ENTRIES,
+    map_flags: FLAGS,
+    key_type: u32,
+    value_type: T,
+);
+
+impl<T, const MAX_ENTRIES: usize, const FLAGS: usize> crate::btf_maps::private::SafeInnerLookup
+    for Array<T, MAX_ENTRIES, FLAGS>
+{
+}
+
+impl<T, const MAX_ENTRIES: usize, const FLAGS: usize> Array<T, MAX_ENTRIES, FLAGS> {
+    #[inline(always)]
+    pub fn get(&self, index: u32) -> Option<&T> {
+        unsafe { self.lookup(index).map(|p| p.as_ref()) }
+    }
+
+    #[inline(always)]
+    pub fn get_ptr(&self, index: u32) -> Option<*const T> {
+        unsafe { self.lookup(index).map(|p| p.as_ptr().cast_const()) }
+    }
+
+    #[inline(always)]
+    pub fn get_ptr_mut(&self, index: u32) -> Option<*mut T> {
+        unsafe { self.lookup(index).map(NonNull::as_ptr) }
+    }
+
+    #[inline(always)]
+    unsafe fn lookup(&self, index: u32) -> Option<NonNull<T>> {
+        lookup(self.as_ptr(), &index)
+    }
+
+    /// Sets the value of the element at the given index.
+    #[inline(always)]
+    pub fn set(&self, index: u32, value: impl Borrow<T>, flags: u64) -> Result<(), i32> {
+        insert(self.as_ptr(), &index, value.borrow(), flags)
+    }
+}

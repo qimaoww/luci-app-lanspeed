@@ -1,0 +1,13 @@
+[package]
+name = "lanspeedd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lanspeedd"
+path = "src/main.rs"
+
+[dependencies]
+aya.workspace = true
+lanspeed-common = { path = "../lanspeed-common" }
