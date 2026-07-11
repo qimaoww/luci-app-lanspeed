@@ -702,3 +702,28 @@ fn collector_modes_preserve_source_evidence_and_fallback_policy() {
         "ctnetlink_conntrack_acct_orig_reply_bytes"
     );
 }
+
+#[test]
+fn netlink_collector_entries_seen_includes_malformed_flow_attempts() {
+    let table = identities();
+    let snapshot = collect_with(
+        CollectorMode::Netlink,
+        &table,
+        10,
+        8,
+        || {
+            Ok(NetlinkSnapshot {
+                flows: vec![flow("192.168.1.42", "8.8.8.8", "8.8.8.8", "192.168.1.42")],
+                source_path: "netlink:ctnetlink",
+                counter_source: "ctnetlink_conntrack_acct_orig_reply_bytes",
+                malformed_entries: 1,
+            })
+        },
+        || panic!("forced netlink must not read procfs"),
+    )
+    .unwrap();
+
+    assert_eq!(snapshot.stats.entries_seen, 2);
+    assert_eq!(snapshot.stats.malformed_lines, 1);
+    assert_eq!(snapshot.stats.entries_matched, 1);
+}

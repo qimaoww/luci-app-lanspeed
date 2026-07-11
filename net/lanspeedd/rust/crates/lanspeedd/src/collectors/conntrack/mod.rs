@@ -189,6 +189,10 @@ fn finish_netlink(
     now_ms: u64,
     max_clients: usize,
 ) -> Result<CollectedSnapshot, CollectorReadError> {
+    let entries_seen = snapshot
+        .flows
+        .len()
+        .saturating_add(snapshot.malformed_entries);
     let aggregate = aggregate_flows(identities, snapshot.flows.iter(), now_ms, max_clients);
     let stats = stats_from_aggregate(
         &aggregate,
@@ -198,7 +202,7 @@ fn finish_netlink(
         false,
         None,
         snapshot.malformed_entries,
-        snapshot.flows.len(),
+        entries_seen,
     );
     Ok(CollectedSnapshot {
         clients: aggregate.clients,
