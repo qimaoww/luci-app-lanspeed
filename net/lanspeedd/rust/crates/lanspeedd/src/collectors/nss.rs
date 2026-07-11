@@ -5,7 +5,7 @@ use crate::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::CString,
+    ffi::{CStr, CString},
     fmt,
     fs::File,
     io::{self, BufRead, BufReader, Read},
@@ -535,10 +535,22 @@ pub trait EcmStateFs {
 
     fn open(&mut self, path: &str, flags: i32) -> io::Result<Self::Reader>;
     fn mknod_char(&mut self, path: &str, mode: u32, major: u32, minor: u32) -> io::Result<()>;
-    fn unlink(&mut self, path: &str) -> io::Result<()>;
     fn fstat(&mut self, reader: &Self::Reader) -> io::Result<EcmNodeMetadata>;
     fn lstat(&mut self, path: &str) -> io::Result<EcmNodeMetadata>;
     fn clear_nonblock(&mut self, reader: &Self::Reader) -> io::Result<()>;
+    fn lock_device_dir(&mut self) -> io::Result<()>;
+    fn unlock_device_dir(&mut self) -> io::Result<()>;
+    fn remove_if_same(
+        &mut self,
+        path: &str,
+        expected: EcmNodeMetadata,
+    ) -> io::Result<RemoveOutcome>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemoveOutcome {
+    Removed,
+    Changed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -593,6 +605,20 @@ impl fmt::Display for StateOpenError {
 impl std::error::Error for StateOpenError {}
 
 pub fn open_ecm_state_with<F: EcmStateFs>(
+    fs: &mut F,
+) -> Result<OpenedEcmState<F::Reader>, StateOpenError> {
+    fs.lock_device_dir()
+        .map_err(|error| state_open_error(error, None, 0, None))?;
+    let result = open_ecm_state_locked(fs);
+    let unlock = fs.unlock_device_dir();
+    match (result, unlock) {
+        (Ok(opened), Ok(())) => Ok(opened),
+        (Ok(_), Err(error)) => Err(state_open_error(error, None, 0, None)),
+        (Err(error), _) => Err(error),
+    }
+}
+
+fn open_ecm_state_locked<F: EcmStateFs>(
     fs: &mut F,
 ) -> Result<OpenedEcmState<F::Reader>, StateOpenError> {
     let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK;
@@ -729,11 +755,9 @@ fn metadata_matches_device(metadata: EcmNodeMetadata, major: u32, minor: u32) ->
 }
 
 fn cleanup_owned_temp<F: EcmStateFs>(fs: &mut F, owned: EcmNodeMetadata) -> io::Result<()> {
-    match fs.lstat(ECM_STATE_TMP_DEV_PATH) {
-        Ok(current) if owned.same_owned_node(current) => fs.unlink(ECM_STATE_TMP_DEV_PATH),
-        Ok(_) => Err(io::Error::from_raw_os_error(libc::ESTALE)),
-        Err(error) if error.raw_os_error() == Some(libc::ENOENT) => Ok(()),
-        Err(error) => Err(error),
+    match fs.remove_if_same(ECM_STATE_TMP_DEV_PATH, owned)? {
+        RemoveOutcome::Removed => Ok(()),
+        RemoveOutcome::Changed => Err(io::Error::from_raw_os_error(libc::ESTALE)),
     }
 }
 
@@ -756,14 +780,22 @@ fn read_state_major(reader: &mut impl Read) -> io::Result<u32> {
 }
 
 #[derive(Default)]
-pub struct LibcEcmStateFs;
+pub struct LibcEcmStateFs {
+    device_dir: Option<File>,
+}
 
 impl EcmStateFs for LibcEcmStateFs {
     type Reader = File;
 
     fn open(&mut self, path: &str, flags: i32) -> io::Result<Self::Reader> {
-        let path = CString::new(path).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
-        let fd = unsafe { libc::open(path.as_ptr(), flags) };
+        let fd =
+            if let (Some(directory), Some(name)) = (self.device_dir.as_ref(), device_name(path)) {
+                unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) }
+            } else {
+                let path =
+                    CString::new(path).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+                unsafe { libc::open(path.as_ptr(), flags) }
+            };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -771,19 +803,22 @@ impl EcmStateFs for LibcEcmStateFs {
     }
 
     fn mknod_char(&mut self, path: &str, mode: u32, major: u32, minor: u32) -> io::Result<()> {
-        let path = CString::new(path).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
         let device = libc::makedev(major, minor);
-        let result = unsafe { libc::mknod(path.as_ptr(), libc::S_IFCHR | mode, device) };
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
-    }
-
-    fn unlink(&mut self, path: &str) -> io::Result<()> {
-        let path = CString::new(path).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
-        let result = unsafe { libc::unlink(path.as_ptr()) };
+        let result =
+            if let (Some(directory), Some(name)) = (self.device_dir.as_ref(), device_name(path)) {
+                unsafe {
+                    libc::mknodat(
+                        directory.as_raw_fd(),
+                        name.as_ptr(),
+                        libc::S_IFCHR | mode,
+                        device,
+                    )
+                }
+            } else {
+                let path =
+                    CString::new(path).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+                unsafe { libc::mknod(path.as_ptr(), libc::S_IFCHR | mode, device) }
+            };
         if result == 0 {
             Ok(())
         } else {
@@ -800,9 +835,23 @@ impl EcmStateFs for LibcEcmStateFs {
     }
 
     fn lstat(&mut self, path: &str) -> io::Result<EcmNodeMetadata> {
-        let path = CString::new(path).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
         let mut metadata = unsafe { core::mem::zeroed::<libc::stat>() };
-        if unsafe { libc::lstat(path.as_ptr(), &mut metadata) } != 0 {
+        let result =
+            if let (Some(directory), Some(name)) = (self.device_dir.as_ref(), device_name(path)) {
+                unsafe {
+                    libc::fstatat(
+                        directory.as_raw_fd(),
+                        name.as_ptr(),
+                        &mut metadata,
+                        libc::AT_SYMLINK_NOFOLLOW,
+                    )
+                }
+            } else {
+                let path =
+                    CString::new(path).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+                unsafe { libc::lstat(path.as_ptr(), &mut metadata) }
+            };
+        if result != 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(metadata_from_stat(&metadata))
@@ -819,6 +868,91 @@ impl EcmStateFs for LibcEcmStateFs {
         }
         Ok(())
     }
+
+    fn lock_device_dir(&mut self) -> io::Result<()> {
+        if self.device_dir.is_some() {
+            return Err(io::Error::from_raw_os_error(libc::EALREADY));
+        }
+        let path = c"/dev";
+        let fd = unsafe {
+            libc::open(
+                path.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let directory = unsafe { File::from_raw_fd(fd) };
+        if unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        self.device_dir = Some(directory);
+        Ok(())
+    }
+
+    fn unlock_device_dir(&mut self) -> io::Result<()> {
+        let directory = self
+            .device_dir
+            .take()
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
+        if unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_UN) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn remove_if_same(
+        &mut self,
+        path: &str,
+        expected: EcmNodeMetadata,
+    ) -> io::Result<RemoveOutcome> {
+        if path != ECM_STATE_TMP_DEV_PATH {
+            return Err(io::Error::from_raw_os_error(libc::EINVAL));
+        }
+        let directory = self
+            .device_dir
+            .as_ref()
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EPERM))?;
+        let name = c"lanspeed-ecm-state";
+        let mut metadata = unsafe { core::mem::zeroed::<libc::stat>() };
+        let result = unsafe {
+            libc::fstatat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                &mut metadata,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if result != 0 {
+            let error = io::Error::last_os_error();
+            return if error.raw_os_error() == Some(libc::ENOENT) {
+                Ok(RemoveOutcome::Changed)
+            } else {
+                Err(error)
+            };
+        }
+        if metadata_from_stat(&metadata) != expected {
+            return Ok(RemoveOutcome::Changed);
+        }
+
+        // Linux has no conditional-unlink-by-inode syscall. The /dev flock
+        // serializes cooperating lanspeedd processes; an uncooperative root
+        // process can still race this final fstatat/unlinkat pair. Every
+        // observable mismatch returns Changed and deliberately leaks safely.
+        if unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(RemoveOutcome::Removed)
+    }
+}
+
+fn device_name(path: &str) -> Option<&'static CStr> {
+    match path {
+        ECM_STATE_DEV_PATH => Some(c"ecm_state"),
+        ECM_STATE_TMP_DEV_PATH => Some(c"lanspeed-ecm-state"),
+        _ => None,
+    }
 }
 
 fn metadata_from_stat(metadata: &libc::stat) -> EcmNodeMetadata {
@@ -831,7 +965,7 @@ fn metadata_from_stat(metadata: &libc::stat) -> EcmNodeMetadata {
 }
 
 pub fn open_ecm_state() -> Result<OpenedEcmState<File>, StateOpenError> {
-    open_ecm_state_with(&mut LibcEcmStateFs)
+    open_ecm_state_with(&mut LibcEcmStateFs::default())
 }
 
 #[derive(Debug)]

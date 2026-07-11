@@ -4,10 +4,10 @@ use lanspeedd::{
         nss::{
             direct_fallback_reason, nss_sync_reader_available, nss_sync_warnings,
             open_ecm_state_with, parse_direct_reader, DirectFallbackInput, EcmNodeMetadata,
-            EcmStateFs, NssParseError, ParseLimits, SyncAvailability, ECM_DIRECT_COUNTER_SOURCE,
-            ECM_STATE_DEV_MAJOR_PATH, ECM_STATE_DEV_PATH, ECM_STATE_LINE_MAX,
-            ECM_STATE_OUTPUT_MASK_PATH, ECM_STATE_TMP_DEV_PATH, NSS_DIRECT_SOURCE,
-            NSS_SYNC_COLLECTOR_MODE, NSS_SYNC_PRIMARY_SOURCE,
+            EcmStateFs, NssParseError, ParseLimits, RemoveOutcome, SyncAvailability,
+            ECM_DIRECT_COUNTER_SOURCE, ECM_STATE_DEV_MAJOR_PATH, ECM_STATE_DEV_PATH,
+            ECM_STATE_LINE_MAX, ECM_STATE_OUTPUT_MASK_PATH, ECM_STATE_TMP_DEV_PATH,
+            NSS_DIRECT_SOURCE, NSS_SYNC_COLLECTOR_MODE, NSS_SYNC_PRIMARY_SOURCE,
         },
     },
     config::RateCollectorMode,
@@ -408,7 +408,6 @@ struct MockFs {
     open_metadata: HashMap<String, VecDeque<EcmNodeMetadata>>,
     reader_metadata: HashMap<u64, EcmNodeMetadata>,
     current_nodes: HashMap<String, EcmNodeMetadata>,
-    lstat_replies: HashMap<String, VecDeque<io::Result<EcmNodeMetadata>>>,
     next_reader_id: u64,
     next_inode: u64,
     nodes: Vec<(String, u32, u32, u32)>,
@@ -416,6 +415,10 @@ struct MockFs {
     unlinks: Vec<String>,
     cleared_nonblock: Vec<u64>,
     clear_nonblock_error: Option<i32>,
+    replace_before_remove: Option<EcmNodeMetadata>,
+    lock_calls: usize,
+    unlock_calls: usize,
+    locked: bool,
 }
 
 impl MockFs {
@@ -430,14 +433,6 @@ impl MockFs {
     fn reply_with_metadata(mut self, path: &str, bytes: &[u8], metadata: EcmNodeMetadata) -> Self {
         self = self.reply(path, Ok(bytes.to_vec()));
         self.open_metadata
-            .entry(path.to_owned())
-            .or_default()
-            .push_back(metadata);
-        self
-    }
-
-    fn lstat_reply(mut self, path: &str, metadata: io::Result<EcmNodeMetadata>) -> Self {
-        self.lstat_replies
             .entry(path.to_owned())
             .or_default()
             .push_back(metadata);
@@ -493,12 +488,6 @@ impl EcmStateFs for MockFs {
         }
     }
 
-    fn unlink(&mut self, path: &str) -> io::Result<()> {
-        self.unlinks.push(path.to_owned());
-        self.current_nodes.remove(path);
-        Ok(())
-    }
-
     fn fstat(&mut self, reader: &Self::Reader) -> io::Result<EcmNodeMetadata> {
         self.reader_metadata
             .get(&reader.id)
@@ -507,13 +496,6 @@ impl EcmStateFs for MockFs {
     }
 
     fn lstat(&mut self, path: &str) -> io::Result<EcmNodeMetadata> {
-        if let Some(reply) = self
-            .lstat_replies
-            .get_mut(path)
-            .and_then(VecDeque::pop_front)
-        {
-            return reply;
-        }
         self.current_nodes
             .get(path)
             .copied()
@@ -525,6 +507,40 @@ impl EcmStateFs for MockFs {
         match self.clear_nonblock_error {
             Some(errno) => Err(io::Error::from_raw_os_error(errno)),
             None => Ok(()),
+        }
+    }
+
+    fn lock_device_dir(&mut self) -> io::Result<()> {
+        self.lock_calls = self.lock_calls.saturating_add(1);
+        self.locked = true;
+        Ok(())
+    }
+
+    fn unlock_device_dir(&mut self) -> io::Result<()> {
+        self.unlock_calls = self.unlock_calls.saturating_add(1);
+        self.locked = false;
+        Ok(())
+    }
+
+    fn remove_if_same(
+        &mut self,
+        path: &str,
+        expected: EcmNodeMetadata,
+    ) -> io::Result<RemoveOutcome> {
+        assert!(
+            self.locked,
+            "conditional removal must run under the /dev lock"
+        );
+        if let Some(replacement) = self.replace_before_remove.take() {
+            self.current_nodes.insert(path.to_owned(), replacement);
+        }
+        match self.current_nodes.get(path).copied() {
+            Some(current) if current == expected => {
+                self.unlinks.push(path.to_owned());
+                self.current_nodes.remove(path);
+                Ok(RemoveOutcome::Removed)
+            }
+            _ => Ok(RemoveOutcome::Changed),
         }
     }
 }
@@ -561,6 +577,7 @@ fn state_open_is_read_only_cloexec_and_only_unlinks_a_node_created_by_this_attem
             && flags & libc::O_NONBLOCK != 0
     }));
     assert_eq!(primary.cleared_nonblock.len(), 1);
+    assert_eq!((primary.lock_calls, primary.unlock_calls), (1, 1));
     assert!(primary.nodes.is_empty());
     assert!(primary.unlinks.is_empty());
 
@@ -586,6 +603,7 @@ fn state_open_is_read_only_cloexec_and_only_unlinks_a_node_created_by_this_attem
             && flags & libc::O_NONBLOCK != 0
     }));
     assert_eq!(fallback.cleared_nonblock.len(), 1);
+    assert_eq!((fallback.lock_calls, fallback.unlock_calls), (1, 1));
 
     let mut existing = MockFs {
         node_error: Some(libc::EEXIST),
@@ -664,19 +682,19 @@ fn owned_temp_cleanup_never_unlinks_a_replaced_inode_or_symlink() {
             rdev: 0,
         },
     ] {
-        let owned = char_metadata(7, 1_001, 240, 0);
         let mut fs = MockFs::default()
             .reply(
                 ECM_STATE_DEV_PATH,
                 Err(io::Error::from_raw_os_error(libc::ENOENT)),
             )
             .reply(ECM_STATE_DEV_MAJOR_PATH, Ok(b"240\n".to_vec()))
-            .reply(ECM_STATE_TMP_DEV_PATH, Ok(b"state".to_vec()))
-            .lstat_reply(ECM_STATE_TMP_DEV_PATH, Ok(owned))
-            .lstat_reply(ECM_STATE_TMP_DEV_PATH, Ok(replacement));
+            .reply(ECM_STATE_TMP_DEV_PATH, Ok(b"state".to_vec()));
+        fs.replace_before_remove = Some(replacement);
         let error = open_ecm_state_with(&mut fs).unwrap_err();
         assert_eq!(error.errno(), Some(libc::ESTALE));
         assert!(fs.unlinks.is_empty());
+        assert_eq!(fs.current_nodes[ECM_STATE_TMP_DEV_PATH], replacement);
+        assert_eq!((fs.lock_calls, fs.unlock_calls), (1, 1));
     }
 }
 
