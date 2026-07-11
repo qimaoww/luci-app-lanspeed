@@ -19,5 +19,5 @@ pub use error::{Error, Result};
 pub use ubus::{
     UbusConnection, UbusMethod, UbusObject, UbusRequest, STATUS_OK, STATUS_UNKNOWN_ERROR,
 };
-pub use uci::{UciContext, UciOption, UciPackage, UciSection, UciValue};
+pub use uci::{UciContext, UciOption, UciPackage, UciSection, UciValue, UCI_ERR_NOTFOUND};
 pub use uloop::{Timer, UloopGuard};

@@ -1,9 +1,10 @@
 use lanspeedd::config::{
-    ConfigError, ConfigSource, ConfigValue, ConnectionCollectorMode, RateCollectorMode,
-    RuntimeConfig, DEFAULT_ACTIVE_CLIENT_MIN_BPS, DEFAULT_ACTIVE_CLIENT_WINDOW_MS,
-    DEFAULT_MAX_CLIENTS, DEFAULT_OVERVIEW_WINDOW_SAMPLES, DEFAULT_REFRESH_INTERVAL_MS,
-    MAX_INTERFACE_NAMES, MAX_INTERFACE_NAME_LEN, MAX_OVERVIEW_WINDOW_SAMPLES,
-    MIN_ACTIVE_CLIENT_WINDOW_MS, MIN_OVERVIEW_WINDOW_SAMPLES, MIN_REFRESH_INTERVAL_MS,
+    ConfigError, ConfigSource, ConfigValue, ConnectionCollectorMode, InterfaceEligibility,
+    RateCollectorMode, RuntimeConfig, DEFAULT_ACTIVE_CLIENT_MIN_BPS,
+    DEFAULT_ACTIVE_CLIENT_WINDOW_MS, DEFAULT_MAX_CLIENTS, DEFAULT_OVERVIEW_WINDOW_SAMPLES,
+    DEFAULT_REFRESH_INTERVAL_MS, MAX_INTERFACE_NAMES, MAX_INTERFACE_NAME_LEN,
+    MAX_OVERVIEW_WINDOW_SAMPLES, MIN_ACTIVE_CLIENT_WINDOW_MS, MIN_OVERVIEW_WINDOW_SAMPLES,
+    MIN_REFRESH_INTERVAL_MS,
 };
 use std::collections::HashMap;
 
@@ -44,6 +45,14 @@ impl ConfigSource for MemorySource {
             return Err(ConfigError::Source(message.clone()));
         }
         Ok(self.values.get(path).cloned())
+    }
+}
+
+struct RejectNamed(&'static str);
+
+impl InterfaceEligibility for RejectNamed {
+    fn is_collect_eligible(&self, name: &str) -> bool {
+        name != self.0
     }
 }
 
@@ -244,6 +253,16 @@ fn scalar_options_preserve_legacy_boolean_and_zero_semantics() {
     );
     assert!(!negative_signed_values.refresh_interval_clamped);
     assert_eq!(negative_signed_values.max_clients, DEFAULT_MAX_CLIENTS);
+
+    for overflow in ["18446744073709551616", "-18446744073709551616"] {
+        let overflowed = load(
+            MemorySource::default()
+                .with("active_client_window_ms", overflow)
+                .with("active_client_min_bps", overflow),
+        );
+        assert_eq!(overflowed.active_client_window_ms, u64::MAX, "{overflow}");
+        assert_eq!(overflowed.active_client_min_bps, u64::MAX, "{overflow}");
+    }
 }
 
 #[test]
@@ -338,7 +357,7 @@ fn nssifb_is_rejected_from_both_collect_lists_but_remains_observe_only() {
 
 #[test]
 fn nssifb_rejection_is_recorded_even_after_the_collect_limit_is_full() {
-    let mut values = (0..MAX_INTERFACE_NAMES)
+    let mut values = (0..MAX_INTERFACE_NAMES + 1)
         .map(|index| format!("lan{index}"))
         .collect::<Vec<_>>();
     values.push("nssifb".into());
@@ -350,6 +369,41 @@ fn nssifb_rejection_is_recorded_even_after_the_collect_limit_is_full() {
     let config = load(source);
     assert_eq!(config.ifnames.len(), MAX_INTERFACE_NAMES);
     assert!(config.rejected_nssifb_collect);
+}
+
+#[test]
+fn ineligible_collect_names_do_not_consume_capacity() {
+    let mut names = (0..MAX_INTERFACE_NAMES)
+        .map(|index| format!("wan{index}"))
+        .collect::<Vec<_>>();
+    names.push("br-lan".into());
+    let mut source = MemorySource::default();
+    source
+        .values
+        .insert("lanspeed.main.ifname".into(), ConfigValue::List(names));
+
+    let config = RuntimeConfig::load(&mut source).unwrap();
+    assert_eq!(config.ifnames, ["br-lan"]);
+
+    let mut injected = MemorySource::default().with_list("ifname", &["nonether0", "br-lan"]);
+    let config =
+        RuntimeConfig::load_with_eligibility(&mut injected, &RejectNamed("nonether0")).unwrap();
+    assert_eq!(config.ifnames, ["br-lan"]);
+}
+
+#[cfg(feature = "openwrt")]
+#[test]
+fn missing_uci_package_loads_runtime_defaults() {
+    let directory =
+        std::env::temp_dir().join(format!("lanspeed-missing-config-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut source = lanspeed_openwrt_sys::UciContext::with_confdir(&directory).unwrap();
+
+    let loaded = RuntimeConfig::load(&mut source).unwrap();
+    assert_eq!(loaded, RuntimeConfig::default());
+
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

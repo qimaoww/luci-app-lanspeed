@@ -104,6 +104,18 @@ pub trait ConfigSource {
     fn get(&mut self, path: &str) -> Result<Option<ConfigValue>, ConfigError>;
 }
 
+pub trait InterfaceEligibility {
+    fn is_collect_eligible(&self, name: &str) -> bool;
+}
+
+struct AllowAllInterfaces;
+
+impl InterfaceEligibility for AllowAllInterfaces {
+    fn is_collect_eligible(&self, _name: &str) -> bool {
+        true
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeConfig {
     pub refresh_interval_ms: u32,
@@ -155,6 +167,13 @@ impl Default for RuntimeConfig {
 
 impl RuntimeConfig {
     pub fn load(source: &mut impl ConfigSource) -> Result<Self, ConfigError> {
+        Self::load_with_eligibility(source, &AllowAllInterfaces)
+    }
+
+    pub fn load_with_eligibility(
+        source: &mut impl ConfigSource,
+        eligibility: &impl InterfaceEligibility,
+    ) -> Result<Self, ConfigError> {
         let mut config = Self::default();
 
         if let Some(value) = scalar(source, "refresh_interval_ms")? {
@@ -239,13 +258,15 @@ impl RuntimeConfig {
                     config.rejected_nssifb_collect = true;
                     continue;
                 }
-                if collect_count == MAX_INTERFACE_NAMES {
-                    break;
-                }
                 if !valid_interface_name(&value)
+                    || !legacy_collect_name_eligible(&value)
+                    || !eligibility.is_collect_eligible(&value)
                     || config.ifnames.contains(&value)
                     || config.interface_include.contains(&value)
                 {
+                    continue;
+                }
+                if collect_count == MAX_INTERFACE_NAMES {
                     continue;
                 }
                 if option == "ifname" {
@@ -321,6 +342,19 @@ fn valid_interface_name(value: &str) -> bool {
     !value.is_empty() && value.len() < MAX_INTERFACE_NAME_LEN
 }
 
+fn legacy_collect_name_eligible(value: &str) -> bool {
+    value != "dae0"
+        && value != "dae0peer"
+        && value != "nssifb"
+        && !value.starts_with("tun")
+        && !value.starts_with("ppp")
+        && !value.starts_with("wg")
+        && !value.starts_with("wan")
+        && !value.starts_with("pppoe-")
+        && !value.starts_with("tap")
+        && !value.starts_with("utun")
+}
+
 fn push_unique_bounded(target: &mut Vec<String>, value: String) {
     if target.len() < MAX_INTERFACE_NAMES
         && valid_interface_name(&value)
@@ -359,24 +393,50 @@ fn parse_c_signed(value: &str) -> i128 {
 }
 
 fn parse_c_unsigned(value: &str) -> u64 {
-    let parsed = parse_c_signed(value);
-    if parsed < 0 {
-        0u64.wrapping_sub(parsed.unsigned_abs() as u64)
+    let value = value.trim_start();
+    let (negative, digits) = match value.as_bytes().first() {
+        Some(b'-') => (true, &value[1..]),
+        Some(b'+') => (false, &value[1..]),
+        _ => (false, value),
+    };
+    let mut parsed = 0u64;
+    let mut found_digit = false;
+    for digit in digits.bytes() {
+        if !digit.is_ascii_digit() {
+            break;
+        }
+        found_digit = true;
+        let Some(next) = parsed
+            .checked_mul(10)
+            .and_then(|number| number.checked_add(u64::from(digit - b'0')))
+        else {
+            return u64::MAX;
+        };
+        parsed = next;
+    }
+    if !found_digit {
+        return 0;
+    }
+    if negative {
+        0u64.wrapping_sub(parsed)
     } else {
-        parsed.min(u64::MAX as i128) as u64
+        parsed
     }
 }
 
 #[cfg(feature = "openwrt")]
 impl ConfigSource for lanspeed_openwrt_sys::UciContext {
     fn get(&mut self, path: &str) -> Result<Option<ConfigValue>, ConfigError> {
-        self.lookup(path)
-            .map(|value| {
-                value.map(|value| match value {
-                    lanspeed_openwrt_sys::UciValue::String(value) => ConfigValue::String(value),
-                    lanspeed_openwrt_sys::UciValue::List(values) => ConfigValue::List(values),
-                })
-            })
-            .map_err(|error| ConfigError::Source(error.to_string()))
+        match self.lookup(path) {
+            Ok(value) => Ok(value.map(|value| match value {
+                lanspeed_openwrt_sys::UciValue::String(value) => ConfigValue::String(value),
+                lanspeed_openwrt_sys::UciValue::List(values) => ConfigValue::List(values),
+            })),
+            Err(lanspeed_openwrt_sys::Error::Platform {
+                operation: "uci_lookup_ptr",
+                code: lanspeed_openwrt_sys::UCI_ERR_NOTFOUND,
+            }) => Ok(None),
+            Err(error) => Err(ConfigError::Source(error.to_string())),
+        }
     }
 }

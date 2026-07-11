@@ -6,6 +6,9 @@ use std::path::Path;
 use std::ptr;
 use std::rc::Rc;
 
+/// libuci's stable error code for a tuple whose package does not exist.
+pub const UCI_ERR_NOTFOUND: libc::c_int = 3;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UciValue {
     String(String),
