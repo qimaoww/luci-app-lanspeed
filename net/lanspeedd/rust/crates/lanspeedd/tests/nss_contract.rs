@@ -3,8 +3,8 @@ use lanspeedd::{
         conntrack::{NETLINK_COUNTER_SOURCE, PROCFS_COUNTER_SOURCE},
         nss::{
             direct_fallback_reason, nss_sync_reader_available, nss_sync_warnings,
-            open_ecm_state_with, parse_direct_reader, DirectFallbackInput, EcmStateFs,
-            NssParseError, ParseLimits, SyncAvailability, ECM_DIRECT_COUNTER_SOURCE,
+            open_ecm_state_with, parse_direct_reader, DirectFallbackInput, EcmNodeMetadata,
+            EcmStateFs, NssParseError, ParseLimits, SyncAvailability, ECM_DIRECT_COUNTER_SOURCE,
             ECM_STATE_DEV_MAJOR_PATH, ECM_STATE_DEV_PATH, ECM_STATE_LINE_MAX,
             ECM_STATE_OUTPUT_MASK_PATH, ECM_STATE_TMP_DEV_PATH, NSS_DIRECT_SOURCE,
             NSS_SYNC_COLLECTOR_MODE, NSS_SYNC_PRIMARY_SOURCE,
@@ -16,7 +16,7 @@ use lanspeedd::{
 use serde_json::Value;
 use std::{
     collections::{HashMap, VecDeque},
-    io::{self, Cursor},
+    io::{self, Cursor, Read},
 };
 
 fn fixture(name: &str) -> Value {
@@ -125,22 +125,22 @@ fn nat_ip_then_node_mac_mapping_reuses_identity_and_keeps_lan_view_direction() {
     ]);
     let table = identities(&entries);
     let text = concat!(
-        "conns.conn.nat-source.serial=nat-source\n",
-        "conns.conn.nat-source.sip_address=198.51.100.20\n",
-        "conns.conn.nat-source.sip_address_nat=192.168.31.102\n",
-        "conns.conn.nat-source.dip_address=203.0.113.10\n",
-        "conns.conn.nat-source.snode_address=00:00:00:00:00:00\n",
-        "conns.conn.nat-source.snode_address_nat=02:bb:cc:00:00:03\n",
-        "conns.conn.nat-source.protocol=6\n",
-        "conns.conn.nat-source.adv_stats.from_data_total=1500000\n",
-        "conns.conn.nat-source.adv_stats.to_data_total=3000000\n",
-        "conns.conn.mac-destination.serial=mac-destination\n",
-        "conns.conn.mac-destination.sip_address=203.0.113.11\n",
-        "conns.conn.mac-destination.dip_address=198.51.100.21\n",
-        "conns.conn.mac-destination.dnode_address=02:bb:cc:00:00:04\n",
-        "conns.conn.mac-destination.protocol=17\n",
-        "conns.conn.mac-destination.adv_stats.from_data_total=900000\n",
-        "conns.conn.mac-destination.adv_stats.to_data_total=250000\n",
+        "conns.conn.70.serial=70\n",
+        "conns.conn.70.sip_address=198.51.100.20\n",
+        "conns.conn.70.sip_address_nat=192.168.31.102\n",
+        "conns.conn.70.dip_address=203.0.113.10\n",
+        "conns.conn.70.snode_address=00:00:00:00:00:00\n",
+        "conns.conn.70.snode_address_nat=02:bb:cc:00:00:03\n",
+        "conns.conn.70.protocol=6\n",
+        "conns.conn.70.adv_stats.from_data_total=1500000\n",
+        "conns.conn.70.adv_stats.to_data_total=3000000\n",
+        "conns.conn.71.serial=71\n",
+        "conns.conn.71.sip_address=203.0.113.11\n",
+        "conns.conn.71.dip_address=198.51.100.21\n",
+        "conns.conn.71.dnode_address=02:bb:cc:00:00:04\n",
+        "conns.conn.71.protocol=17\n",
+        "conns.conn.71.adv_stats.from_data_total=900000\n",
+        "conns.conn.71.adv_stats.to_data_total=250000\n",
     );
     let parsed = parse_direct_reader(
         Cursor::new(text),
@@ -212,11 +212,11 @@ fn endpoint_family_stats_follow_the_address_that_matched_the_shared_identity() {
     ]);
     let table = identities(&entries);
     let text = concat!(
-        "conns.conn.v6.sip_address=240E:0ABC:1234:0000:0000:0000:0000:0100\n",
-        "conns.conn.v6.dip_address=2606:4700:4700::1111\n",
-        "conns.conn.v6.protocol=6\n",
-        "conns.conn.v6.adv_stats.from_data_total=10\n",
-        "conns.conn.v6.adv_stats.to_data_total=20\n",
+        "conns.conn.80.sip_address=240E:0ABC:1234:0000:0000:0000:0000:0100\n",
+        "conns.conn.80.dip_address=2606:4700:4700::1111\n",
+        "conns.conn.80.protocol=6\n",
+        "conns.conn.80.adv_stats.from_data_total=10\n",
+        "conns.conn.80.adv_stats.to_data_total=20\n",
     );
     let parsed = parse_direct_reader(
         Cursor::new(text),
@@ -239,17 +239,17 @@ fn parser_is_bounded_tolerates_unknown_fields_and_strictly_rejects_bad_required_
     ]);
     let table = identities(&entries);
     let mut text = String::new();
-    text.push_str("conns.conn.alpha.sip_address=192.168.1.2\n");
-    text.push_str("conns.conn.alpha.unknown.future.field=accepted\n");
-    text.push_str("conns.conn.alpha.protocol=6tail\n");
-    text.push_str("conns.conn.alpha.adv_stats.from_data_total=10tail\n");
-    text.push_str("conns.conn.beta.sip_address=192.168.1.2\n");
-    text.push_str("conns.conn.beta.protocol=17\n");
-    text.push_str("conns.conn.beta.adv_stats.from_data_total=20\n");
-    text.push_str("conns.conn.beta.adv_stats.to_data_total=30\n");
-    text.push_str("conns.conn.gamma.sip_address=192.168.1.2\n");
-    text.push_str("conns.conn.gamma.adv_stats.from_data_total=40\n");
-    text.push_str("conns.conn.gamma.adv_stats.from_data_total=invalid\n");
+    text.push_str("conns.conn.90.sip_address=192.168.1.2\n");
+    text.push_str("conns.conn.90.unknown.future.field=accepted\n");
+    text.push_str("conns.conn.90.protocol=6tail\n");
+    text.push_str("conns.conn.90.adv_stats.from_data_total=10tail\n");
+    text.push_str("conns.conn.91.sip_address=192.168.1.2\n");
+    text.push_str("conns.conn.91.protocol=17\n");
+    text.push_str("conns.conn.91.adv_stats.from_data_total=20\n");
+    text.push_str("conns.conn.91.adv_stats.to_data_total=30\n");
+    text.push_str("conns.conn.92.sip_address=192.168.1.2\n");
+    text.push_str("conns.conn.92.adv_stats.from_data_total=40\n");
+    text.push_str("conns.conn.92.adv_stats.from_data_total=invalid\n");
     text.push_str(&"x".repeat(ECM_STATE_LINE_MAX + 1));
     text.push('\n');
     let parsed = parse_direct_reader(
@@ -305,13 +305,117 @@ fn parser_is_bounded_tolerates_unknown_fields_and_strictly_rejects_bad_required_
     );
 }
 
+#[test]
+fn parser_caps_all_consumed_bytes_including_an_oversized_unterminated_line() {
+    let table = IdentityTable::new(1);
+    let input = vec![b'x'; ECM_STATE_LINE_MAX * 8];
+    assert_eq!(
+        parse_direct_reader(
+            Cursor::new(input),
+            "fixture",
+            &table,
+            1,
+            1,
+            ParseLimits::new(64, 8).with_max_bytes(ECM_STATE_LINE_MAX + 17),
+        )
+        .unwrap_err(),
+        NssParseError::ByteLimit(ECM_STATE_LINE_MAX + 17)
+    );
+}
+
+#[test]
+fn parser_requires_bounded_u64_serials_and_rejects_noncontiguous_reappearance() {
+    let entries = serde_json::json!([
+        {"ip":"192.168.1.2","mac":"02:00:00:00:00:02","interface":"br-lan","zone":"lan"}
+    ]);
+    let table = identities(&entries);
+    let text = concat!(
+        "conns.conn.alpha.sip_address=192.168.1.2\n",
+        "conns.conn.18446744073709551616.sip_address=192.168.1.2\n",
+        "conns.conn.100.sip_address=192.168.1.2\n",
+        "conns.conn.100.adv_stats.from_data_total=10\n",
+        "conns.conn.101.sip_address=203.0.113.1\n",
+        "conns.conn.101.adv_stats.from_data_total=20\n",
+        "conns.conn.100.adv_stats.to_data_total=30\n",
+    );
+    let parsed = parse_direct_reader(
+        Cursor::new(text),
+        "fixture",
+        &table,
+        1,
+        8,
+        ParseLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(parsed.stats.entries_seen, 2);
+    assert_eq!(parsed.stats.entries_matched, 1);
+    assert_eq!(parsed.stats.malformed_lines, 3);
+    assert_eq!(
+        (parsed.clients[0].tx_bytes, parsed.clients[0].rx_bytes),
+        (10, 0)
+    );
+}
+
+#[test]
+fn duplicate_known_fields_invalidate_the_flow_while_duplicate_unknown_fields_are_tolerated() {
+    let entries = serde_json::json!([
+        {"ip":"192.168.1.2","mac":"02:00:00:00:00:02","interface":"br-lan","zone":"lan"}
+    ]);
+    let table = identities(&entries);
+    let text = concat!(
+        "conns.conn.110.sip_address=192.168.1.2\n",
+        "conns.conn.110.sip_address=192.168.1.2\n",
+        "conns.conn.110.adv_stats.from_data_total=10\n",
+        "conns.conn.111.sip_address=192.168.1.2\n",
+        "conns.conn.111.future_field=one\n",
+        "conns.conn.111.future_field=two\n",
+        "conns.conn.111.adv_stats.from_data_total=20\n",
+        "conns.conn.112.serial=999\n",
+        "conns.conn.112.sip_address=192.168.1.2\n",
+        "conns.conn.112.adv_stats.from_data_total=30\n",
+    );
+    let parsed = parse_direct_reader(
+        Cursor::new(text),
+        "fixture",
+        &table,
+        1,
+        8,
+        ParseLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(parsed.stats.entries_seen, 3);
+    assert_eq!(parsed.stats.entries_matched, 1);
+    assert_eq!(parsed.stats.malformed_lines, 2);
+    assert_eq!(parsed.clients[0].tx_bytes, 20);
+}
+
+#[derive(Debug)]
+struct MockReader {
+    id: u64,
+    cursor: Cursor<Vec<u8>>,
+}
+
+impl Read for MockReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.cursor.read(buffer)
+    }
+}
+
 #[derive(Default)]
 struct MockFs {
     opens: Vec<(String, i32)>,
     replies: HashMap<String, VecDeque<io::Result<Vec<u8>>>>,
+    open_metadata: HashMap<String, VecDeque<EcmNodeMetadata>>,
+    reader_metadata: HashMap<u64, EcmNodeMetadata>,
+    current_nodes: HashMap<String, EcmNodeMetadata>,
+    lstat_replies: HashMap<String, VecDeque<io::Result<EcmNodeMetadata>>>,
+    next_reader_id: u64,
+    next_inode: u64,
     nodes: Vec<(String, u32, u32, u32)>,
     node_error: Option<i32>,
     unlinks: Vec<String>,
+    cleared_nonblock: Vec<u64>,
+    clear_nonblock_error: Option<i32>,
 }
 
 impl MockFs {
@@ -322,31 +426,124 @@ impl MockFs {
             .push_back(reply);
         self
     }
+
+    fn reply_with_metadata(mut self, path: &str, bytes: &[u8], metadata: EcmNodeMetadata) -> Self {
+        self = self.reply(path, Ok(bytes.to_vec()));
+        self.open_metadata
+            .entry(path.to_owned())
+            .or_default()
+            .push_back(metadata);
+        self
+    }
+
+    fn lstat_reply(mut self, path: &str, metadata: io::Result<EcmNodeMetadata>) -> Self {
+        self.lstat_replies
+            .entry(path.to_owned())
+            .or_default()
+            .push_back(metadata);
+        self
+    }
+
+    fn default_metadata(&self, path: &str) -> EcmNodeMetadata {
+        if path == ECM_STATE_DEV_PATH || path == ECM_STATE_TMP_DEV_PATH {
+            char_metadata(1, 10, 240, 0)
+        } else {
+            regular_metadata(1, 20)
+        }
+    }
 }
 
 impl EcmStateFs for MockFs {
-    type Reader = Cursor<Vec<u8>>;
+    type Reader = MockReader;
 
     fn open(&mut self, path: &str, flags: i32) -> io::Result<Self::Reader> {
         self.opens.push((path.to_owned(), flags));
-        self.replies
+        let bytes = self
+            .replies
             .get_mut(path)
             .and_then(VecDeque::pop_front)
-            .unwrap_or_else(|| Err(io::Error::from_raw_os_error(libc::ENOENT)))
-            .map(Cursor::new)
+            .unwrap_or_else(|| Err(io::Error::from_raw_os_error(libc::ENOENT)))?;
+        self.next_reader_id = self.next_reader_id.saturating_add(1);
+        let id = self.next_reader_id;
+        let metadata = self
+            .open_metadata
+            .get_mut(path)
+            .and_then(VecDeque::pop_front)
+            .or_else(|| self.current_nodes.get(path).copied())
+            .unwrap_or_else(|| self.default_metadata(path));
+        self.reader_metadata.insert(id, metadata);
+        Ok(MockReader {
+            id,
+            cursor: Cursor::new(bytes),
+        })
     }
 
     fn mknod_char(&mut self, path: &str, mode: u32, major: u32, minor: u32) -> io::Result<()> {
         self.nodes.push((path.to_owned(), mode, major, minor));
         match self.node_error {
             Some(errno) => Err(io::Error::from_raw_os_error(errno)),
-            None => Ok(()),
+            None => {
+                self.next_inode = self.next_inode.saturating_add(1);
+                self.current_nodes.insert(
+                    path.to_owned(),
+                    char_metadata(7, 1_000 + self.next_inode, major, minor),
+                );
+                Ok(())
+            }
         }
     }
 
     fn unlink(&mut self, path: &str) -> io::Result<()> {
         self.unlinks.push(path.to_owned());
+        self.current_nodes.remove(path);
         Ok(())
+    }
+
+    fn fstat(&mut self, reader: &Self::Reader) -> io::Result<EcmNodeMetadata> {
+        self.reader_metadata
+            .get(&reader.id)
+            .copied()
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EBADF))
+    }
+
+    fn lstat(&mut self, path: &str) -> io::Result<EcmNodeMetadata> {
+        if let Some(reply) = self
+            .lstat_replies
+            .get_mut(path)
+            .and_then(VecDeque::pop_front)
+        {
+            return reply;
+        }
+        self.current_nodes
+            .get(path)
+            .copied()
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))
+    }
+
+    fn clear_nonblock(&mut self, reader: &Self::Reader) -> io::Result<()> {
+        self.cleared_nonblock.push(reader.id);
+        match self.clear_nonblock_error {
+            Some(errno) => Err(io::Error::from_raw_os_error(errno)),
+            None => Ok(()),
+        }
+    }
+}
+
+fn char_metadata(dev: u64, ino: u64, major: u32, minor: u32) -> EcmNodeMetadata {
+    EcmNodeMetadata {
+        mode: libc::S_IFCHR,
+        dev,
+        ino,
+        rdev: libc::makedev(major, minor),
+    }
+}
+
+fn regular_metadata(dev: u64, ino: u64) -> EcmNodeMetadata {
+    EcmNodeMetadata {
+        mode: libc::S_IFREG,
+        dev,
+        ino,
+        rdev: 0,
     }
 }
 
@@ -356,13 +553,14 @@ fn state_open_is_read_only_cloexec_and_only_unlinks_a_node_created_by_this_attem
     let opened = open_ecm_state_with(&mut primary).unwrap();
     assert_eq!(opened.source_path, ECM_STATE_DEV_PATH);
     assert_eq!(opened.state_major, 0);
-    assert_eq!(
-        primary.opens,
-        [(
-            ECM_STATE_DEV_PATH.to_owned(),
-            libc::O_RDONLY | libc::O_CLOEXEC
-        )]
-    );
+    assert_eq!(primary.opens.len(), 2);
+    assert!(primary.opens.iter().all(|(_, flags)| {
+        flags & libc::O_ACCMODE == libc::O_RDONLY
+            && flags & libc::O_CLOEXEC != 0
+            && flags & libc::O_NOFOLLOW != 0
+            && flags & libc::O_NONBLOCK != 0
+    }));
+    assert_eq!(primary.cleared_nonblock.len(), 1);
     assert!(primary.nodes.is_empty());
     assert!(primary.unlinks.is_empty());
 
@@ -381,10 +579,13 @@ fn state_open_is_read_only_cloexec_and_only_unlinks_a_node_created_by_this_attem
         [(ECM_STATE_TMP_DEV_PATH.to_owned(), 0o600, 240, 0)]
     );
     assert_eq!(fallback.unlinks, [ECM_STATE_TMP_DEV_PATH]);
-    assert!(fallback
-        .opens
-        .iter()
-        .all(|(_, flags)| { *flags == libc::O_RDONLY | libc::O_CLOEXEC }));
+    assert!(fallback.opens.iter().all(|(_, flags)| {
+        flags & libc::O_ACCMODE == libc::O_RDONLY
+            && flags & libc::O_CLOEXEC != 0
+            && flags & libc::O_NOFOLLOW != 0
+            && flags & libc::O_NONBLOCK != 0
+    }));
+    assert_eq!(fallback.cleared_nonblock.len(), 1);
 
     let mut existing = MockFs {
         node_error: Some(libc::EEXIST),
@@ -401,6 +602,99 @@ fn state_open_is_read_only_cloexec_and_only_unlinks_a_node_created_by_this_attem
         existing.unlinks.is_empty(),
         "pre-existing temp node must survive"
     );
+}
+
+#[test]
+fn state_open_rejects_symlink_regular_fifo_and_wrong_rdev_without_blocking() {
+    let mut symlink = MockFs::default()
+        .reply(
+            ECM_STATE_DEV_PATH,
+            Err(io::Error::from_raw_os_error(libc::ELOOP)),
+        )
+        .reply(ECM_STATE_DEV_MAJOR_PATH, Ok(b"240\n".to_vec()));
+    let error = open_ecm_state_with(&mut symlink).unwrap_err();
+    assert_eq!(error.errno(), Some(libc::ELOOP));
+    assert!(symlink.nodes.is_empty());
+
+    for mode in [libc::S_IFREG, libc::S_IFIFO] {
+        let metadata = EcmNodeMetadata {
+            mode,
+            dev: 1,
+            ino: 2,
+            rdev: 0,
+        };
+        let mut fs = MockFs::default().reply_with_metadata(ECM_STATE_DEV_PATH, b"bad", metadata);
+        let error = open_ecm_state_with(&mut fs).unwrap_err();
+        assert_eq!(error.errno(), Some(libc::ENODEV));
+        assert!(fs.nodes.is_empty());
+        assert!(fs.cleared_nonblock.is_empty());
+    }
+
+    let mut mismatched_primary = MockFs::default()
+        .reply_with_metadata(ECM_STATE_DEV_PATH, b"state", char_metadata(1, 2, 241, 0))
+        .reply(ECM_STATE_DEV_MAJOR_PATH, Ok(b"240\n".to_vec()));
+    let error = open_ecm_state_with(&mut mismatched_primary).unwrap_err();
+    assert_eq!(error.errno(), Some(libc::ENODEV));
+    assert!(mismatched_primary.nodes.is_empty());
+
+    let mut wrong_rdev = MockFs::default()
+        .reply(
+            ECM_STATE_DEV_PATH,
+            Err(io::Error::from_raw_os_error(libc::ENOENT)),
+        )
+        .reply(ECM_STATE_DEV_MAJOR_PATH, Ok(b"240\n".to_vec()))
+        .reply_with_metadata(
+            ECM_STATE_TMP_DEV_PATH,
+            b"state",
+            char_metadata(7, 1_001, 241, 0),
+        );
+    let error = open_ecm_state_with(&mut wrong_rdev).unwrap_err();
+    assert_eq!(error.errno(), Some(libc::ENODEV));
+    assert_eq!(wrong_rdev.unlinks, [ECM_STATE_TMP_DEV_PATH]);
+}
+
+#[test]
+fn owned_temp_cleanup_never_unlinks_a_replaced_inode_or_symlink() {
+    for replacement in [
+        regular_metadata(9, 9_999),
+        EcmNodeMetadata {
+            mode: libc::S_IFLNK,
+            dev: 9,
+            ino: 10_000,
+            rdev: 0,
+        },
+    ] {
+        let owned = char_metadata(7, 1_001, 240, 0);
+        let mut fs = MockFs::default()
+            .reply(
+                ECM_STATE_DEV_PATH,
+                Err(io::Error::from_raw_os_error(libc::ENOENT)),
+            )
+            .reply(ECM_STATE_DEV_MAJOR_PATH, Ok(b"240\n".to_vec()))
+            .reply(ECM_STATE_TMP_DEV_PATH, Ok(b"state".to_vec()))
+            .lstat_reply(ECM_STATE_TMP_DEV_PATH, Ok(owned))
+            .lstat_reply(ECM_STATE_TMP_DEV_PATH, Ok(replacement));
+        let error = open_ecm_state_with(&mut fs).unwrap_err();
+        assert_eq!(error.errno(), Some(libc::ESTALE));
+        assert!(fs.unlinks.is_empty());
+    }
+}
+
+#[test]
+fn owned_temp_is_cleaned_when_clearing_nonblock_fails() {
+    let mut fs = MockFs {
+        clear_nonblock_error: Some(libc::EIO),
+        ..MockFs::default()
+    }
+    .reply(
+        ECM_STATE_DEV_PATH,
+        Err(io::Error::from_raw_os_error(libc::ENOENT)),
+    )
+    .reply(ECM_STATE_DEV_MAJOR_PATH, Ok(b"240\n".to_vec()))
+    .reply(ECM_STATE_TMP_DEV_PATH, Ok(b"state".to_vec()));
+    let error = open_ecm_state_with(&mut fs).unwrap_err();
+    assert_eq!(error.errno(), Some(libc::EIO));
+    assert_eq!(fs.unlinks, [ECM_STATE_TMP_DEV_PATH]);
 }
 
 #[test]

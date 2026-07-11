@@ -4,13 +4,13 @@ use crate::{
     identity::{ClientIdentity, IdentityTable, MacAddress},
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     ffi::CString,
     fmt,
     fs::File,
     io::{self, BufRead, BufReader, Read},
     net::IpAddr,
-    os::fd::FromRawFd,
+    os::fd::{AsRawFd, FromRawFd},
     str::FromStr,
 };
 
@@ -23,6 +23,7 @@ pub const ECM_STATE_TMP_DEV_PATH: &str = "/dev/lanspeed-ecm-state";
 pub const ECM_STATE_LINE_MAX: usize = 1024;
 pub const ECM_STATE_DEFAULT_LINE_LIMIT: usize = 131_072;
 pub const ECM_STATE_DEFAULT_CONNECTION_LIMIT: usize = 4_096;
+pub const ECM_STATE_DEFAULT_BYTE_LIMIT: usize = ECM_STATE_DEFAULT_LINE_LIMIT * ECM_STATE_LINE_MAX;
 pub const ECM_DIRECT_COUNTER_SOURCE: &str = "ecm_state_adv_stats_from_to_data_total";
 pub const NSS_DIRECT_SOURCE: &str = "nss_ecm_direct";
 pub const NSS_SYNC_PRIMARY_SOURCE: &str = "nss_conntrack_sync";
@@ -36,6 +37,7 @@ const ECM_STATE_FIELD_MAX: usize = 95;
 pub struct ParseLimits {
     pub max_lines: usize,
     pub max_connections: usize,
+    pub max_bytes: usize,
 }
 
 impl ParseLimits {
@@ -43,7 +45,13 @@ impl ParseLimits {
         Self {
             max_lines,
             max_connections,
+            max_bytes: ECM_STATE_DEFAULT_BYTE_LIMIT,
         }
+    }
+
+    pub const fn with_max_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_bytes = max_bytes;
+        self
     }
 }
 
@@ -59,6 +67,7 @@ impl Default for ParseLimits {
 #[derive(Debug)]
 pub enum NssParseError {
     Io(io::Error),
+    ByteLimit(usize),
     LineLimit(usize),
     ConnectionLimit(usize),
 }
@@ -69,6 +78,7 @@ impl PartialEq for NssParseError {
             (Self::Io(left), Self::Io(right)) => {
                 left.kind() == right.kind() && left.raw_os_error() == right.raw_os_error()
             }
+            (Self::ByteLimit(left), Self::ByteLimit(right)) => left == right,
             (Self::LineLimit(left), Self::LineLimit(right)) => left == right,
             (Self::ConnectionLimit(left), Self::ConnectionLimit(right)) => left == right,
             _ => false,
@@ -82,6 +92,9 @@ impl fmt::Display for NssParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "failed to read NSS ECM state: {error}"),
+            Self::ByteLimit(limit) => {
+                write!(formatter, "NSS ECM state exceeded {limit} consumed bytes")
+            }
             Self::LineLimit(limit) => {
                 write!(formatter, "NSS ECM state exceeded {limit} physical lines")
             }
@@ -124,7 +137,7 @@ pub struct DirectSnapshot {
 
 #[derive(Default)]
 struct DirectFlow {
-    serial: String,
+    serial: u64,
     sip_address: Option<IpAddr>,
     dip_address: Option<IpAddr>,
     sip_address_nat: Option<IpAddr>,
@@ -136,18 +149,40 @@ struct DirectFlow {
     from_data_total: Option<u64>,
     to_data_total: u64,
     protocol: u8,
+    known_fields: u16,
+    invalid: bool,
 }
 
 impl DirectFlow {
-    fn new(serial: &str) -> Self {
+    fn new(serial: u64) -> Self {
         Self {
-            serial: serial.to_owned(),
+            serial,
             ..Self::default()
         }
     }
 
     fn apply(&mut self, field: &str, value: &str) -> bool {
-        match field {
+        let bit = match field {
+            "sip_address" => 1 << 0,
+            "dip_address" => 1 << 1,
+            "sip_address_nat" => 1 << 2,
+            "dip_address_nat" => 1 << 3,
+            "snode_address" => 1 << 4,
+            "dnode_address" => 1 << 5,
+            "snode_address_nat" => 1 << 6,
+            "dnode_address_nat" => 1 << 7,
+            "protocol" => 1 << 8,
+            "adv_stats.from_data_total" => 1 << 9,
+            "adv_stats.to_data_total" => 1 << 10,
+            "serial" => 1 << 11,
+            _ => return true,
+        };
+        if self.known_fields & bit != 0 {
+            self.invalid = true;
+            return false;
+        }
+        self.known_fields |= bit;
+        let valid = match field {
             "sip_address" => assign_ip(&mut self.sip_address, value),
             "dip_address" => assign_ip(&mut self.dip_address, value),
             "sip_address_nat" => assign_ip(&mut self.sip_address_nat, value),
@@ -186,8 +221,13 @@ impl DirectFlow {
                     false
                 }
             },
+            "serial" => value.parse::<u64>() == Ok(self.serial),
             _ => true,
+        };
+        if !valid {
+            self.invalid = true;
         }
+        valid
     }
 }
 
@@ -230,8 +270,12 @@ pub fn parse_direct_reader<R: BufRead>(
     let mut active: Option<DirectFlow> = None;
     let mut physical_lines = 0usize;
     let mut connections = 0usize;
+    let mut consumed_bytes = 0usize;
+    let mut completed = BTreeSet::new();
 
-    while let Some((line, oversized)) = read_bounded_line(&mut reader)? {
+    while let Some((line, oversized)) =
+        read_bounded_line(&mut reader, &mut consumed_bytes, limits.max_bytes)?
+    {
         physical_lines = physical_lines.saturating_add(1);
         if physical_lines > limits.max_lines {
             return Err(NssParseError::LineLimit(limits.max_lines));
@@ -244,11 +288,9 @@ pub fn parse_direct_reader<R: BufRead>(
             stats.malformed_lines = stats.malformed_lines.saturating_add(1);
             continue;
         };
-        if active
-            .as_ref()
-            .is_some_and(|flow| flow.serial.as_str() != serial)
-        {
+        if active.as_ref().is_some_and(|flow| flow.serial != serial) {
             if let Some(flow) = active.take() {
+                completed.insert(flow.serial);
                 finish_flow(
                     flow,
                     identities,
@@ -260,6 +302,10 @@ pub fn parse_direct_reader<R: BufRead>(
             }
         }
         if active.is_none() {
+            if completed.contains(&serial) {
+                stats.malformed_lines = stats.malformed_lines.saturating_add(1);
+                continue;
+            }
             connections = connections.saturating_add(1);
             if connections > limits.max_connections {
                 return Err(NssParseError::ConnectionLimit(limits.max_connections));
@@ -311,6 +357,9 @@ fn finish_flow(
     stats: &mut DirectStats,
 ) {
     stats.entries_seen = stats.entries_seen.saturating_add(1);
+    if flow.invalid {
+        return;
+    }
     let Some(from_data_total) = flow.from_data_total else {
         return;
     };
@@ -426,7 +475,7 @@ fn endpoint_owner<'a>(
     Some(EndpointOwner { identity, address })
 }
 
-fn parse_state_line(bytes: &[u8]) -> Option<(&str, &str, &str)> {
+fn parse_state_line(bytes: &[u8]) -> Option<(u64, &str, &str)> {
     let line = std::str::from_utf8(bytes).ok()?;
     let line = line.strip_suffix('\n').unwrap_or(line);
     let line = line.strip_suffix('\r').unwrap_or(line);
@@ -435,15 +484,20 @@ fn parse_state_line(bytes: &[u8]) -> Option<(&str, &str, &str)> {
     let (serial, field) = tail.split_once('.')?;
     if serial.is_empty()
         || serial.len() > ECM_STATE_SERIAL_MAX
+        || !serial.bytes().all(|byte| byte.is_ascii_digit())
         || field.is_empty()
         || field.len() > ECM_STATE_FIELD_MAX
     {
         return None;
     }
-    Some((serial, field, value))
+    Some((serial.parse::<u64>().ok()?, field, value))
 }
 
-fn read_bounded_line<R: BufRead>(reader: &mut R) -> Result<Option<(Vec<u8>, bool)>, NssParseError> {
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    consumed_bytes: &mut usize,
+    max_bytes: usize,
+) -> Result<Option<(Vec<u8>, bool)>, NssParseError> {
     let mut line = Vec::new();
     let mut oversized = false;
     let mut saw_data = false;
@@ -457,6 +511,10 @@ fn read_bounded_line<R: BufRead>(reader: &mut R) -> Result<Option<(Vec<u8>, bool
             .iter()
             .position(|byte| *byte == b'\n')
             .map_or(available.len(), |index| index + 1);
+        if take > max_bytes.saturating_sub(*consumed_bytes) {
+            return Err(NssParseError::ByteLimit(max_bytes));
+        }
+        *consumed_bytes = consumed_bytes.saturating_add(take);
         if !oversized {
             let room = ECM_STATE_LINE_MAX.saturating_sub(line.len());
             line.extend_from_slice(&available[..take.min(room)]);
@@ -478,6 +536,31 @@ pub trait EcmStateFs {
     fn open(&mut self, path: &str, flags: i32) -> io::Result<Self::Reader>;
     fn mknod_char(&mut self, path: &str, mode: u32, major: u32, minor: u32) -> io::Result<()>;
     fn unlink(&mut self, path: &str) -> io::Result<()>;
+    fn fstat(&mut self, reader: &Self::Reader) -> io::Result<EcmNodeMetadata>;
+    fn lstat(&mut self, path: &str) -> io::Result<EcmNodeMetadata>;
+    fn clear_nonblock(&mut self, reader: &Self::Reader) -> io::Result<()>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EcmNodeMetadata {
+    pub mode: u32,
+    pub dev: u64,
+    pub ino: u64,
+    pub rdev: u64,
+}
+
+impl EcmNodeMetadata {
+    fn is_char(self) -> bool {
+        self.mode & libc::S_IFMT == libc::S_IFCHR
+    }
+
+    fn same_owned_node(self, other: Self) -> bool {
+        self.is_char()
+            && other.is_char()
+            && self.dev == other.dev
+            && self.ino == other.ino
+            && self.rdev == other.rdev
+    }
 }
 
 #[derive(Debug)]
@@ -512,57 +595,97 @@ impl std::error::Error for StateOpenError {}
 pub fn open_ecm_state_with<F: EcmStateFs>(
     fs: &mut F,
 ) -> Result<OpenedEcmState<F::Reader>, StateOpenError> {
-    let flags = libc::O_RDONLY | libc::O_CLOEXEC;
+    let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK;
     match fs.open(ECM_STATE_DEV_PATH, flags) {
         Ok(reader) => {
+            let metadata = fs
+                .fstat(&reader)
+                .map_err(|error| state_open_error(error, None, 0, None))?;
+            if !metadata.is_char() {
+                return Err(state_open_error(
+                    io::Error::from_raw_os_error(libc::ENODEV),
+                    None,
+                    0,
+                    None,
+                ));
+            }
+            let state_major = match read_optional_state_major(fs, flags) {
+                Ok(Some(major)) => {
+                    if libc::major(metadata.rdev) != major {
+                        return Err(state_open_error(
+                            io::Error::from_raw_os_error(libc::ENODEV),
+                            None,
+                            major,
+                            None,
+                        ));
+                    }
+                    major
+                }
+                Ok(None) | Err(_) => 0,
+            };
+            fs.clear_nonblock(&reader)
+                .map_err(|error| state_open_error(error, None, state_major, None))?;
             return Ok(OpenedEcmState {
                 reader,
                 source_path: ECM_STATE_DEV_PATH.to_owned(),
-                state_major: 0,
+                state_major,
             });
         }
         Err(primary) => {
             let primary_errno = primary.raw_os_error();
-            let mut major_reader = fs.open(ECM_STATE_DEV_MAJOR_PATH, flags).map_err(|error| {
-                let reported_errno = primary_errno.or_else(|| error.raw_os_error());
-                StateOpenError {
-                    error,
-                    reported_errno,
-                    primary_errno,
-                    state_major: 0,
-                }
-            })?;
-            let major = read_state_major(&mut major_reader).map_err(|error| {
-                let reported_errno = error.raw_os_error();
-                StateOpenError {
-                    error,
-                    reported_errno,
-                    primary_errno,
-                    state_major: 0,
-                }
-            })?;
-            fs.mknod_char(ECM_STATE_TMP_DEV_PATH, 0o600, major, 0)
-                .map_err(|error| {
-                    let reported_errno = error.raw_os_error();
-                    StateOpenError {
-                        error,
-                        reported_errno,
+            if primary_errno == Some(libc::ELOOP) {
+                return Err(state_open_error(primary, primary_errno, 0, primary_errno));
+            }
+            let major = read_optional_state_major(fs, flags)
+                .map_err(|error| state_open_error(error, primary_errno, 0, None))?
+                .ok_or_else(|| {
+                    state_open_error(
+                        io::Error::from_raw_os_error(libc::ENOENT),
                         primary_errno,
-                        state_major: major,
-                    }
+                        0,
+                        primary_errno,
+                    )
                 })?;
+            fs.mknod_char(ECM_STATE_TMP_DEV_PATH, 0o600, major, 0)
+                .map_err(|error| state_open_error(error, primary_errno, major, None))?;
+            let owned = fs
+                .lstat(ECM_STATE_TMP_DEV_PATH)
+                .map_err(|error| state_open_error(error, primary_errno, major, None))?;
+            if !metadata_matches_device(owned, major, 0) {
+                return Err(state_open_error(
+                    io::Error::from_raw_os_error(libc::ENODEV),
+                    primary_errno,
+                    major,
+                    None,
+                ));
+            }
             let opened = fs.open(ECM_STATE_TMP_DEV_PATH, flags);
             match opened {
                 Ok(reader) => {
-                    if let Err(error) = fs.unlink(ECM_STATE_TMP_DEV_PATH) {
-                        let reported_errno = error.raw_os_error();
-                        return Err(StateOpenError {
-                            error,
-                            reported_errno,
+                    let opened_metadata = match fs.fstat(&reader) {
+                        Ok(metadata) => metadata,
+                        Err(error) => {
+                            let _ = cleanup_owned_temp(fs, owned);
+                            return Err(state_open_error(error, primary_errno, major, None));
+                        }
+                    };
+                    if !opened_metadata.same_owned_node(owned)
+                        || !metadata_matches_device(opened_metadata, major, 0)
+                    {
+                        let _ = cleanup_owned_temp(fs, owned);
+                        return Err(state_open_error(
+                            io::Error::from_raw_os_error(libc::ENODEV),
                             primary_errno,
-                            state_major: major,
-                        });
+                            major,
+                            None,
+                        ));
                     }
+                    if let Err(error) = fs.clear_nonblock(&reader) {
+                        let _ = cleanup_owned_temp(fs, owned);
+                        return Err(state_open_error(error, primary_errno, major, None));
+                    }
+                    cleanup_owned_temp(fs, owned)
+                        .map_err(|error| state_open_error(error, primary_errno, major, None))?;
                     Ok(OpenedEcmState {
                         reader,
                         source_path: ECM_STATE_TMP_DEV_PATH.to_owned(),
@@ -570,17 +693,47 @@ pub fn open_ecm_state_with<F: EcmStateFs>(
                     })
                 }
                 Err(error) => {
-                    let reported_errno = error.raw_os_error();
-                    let _ = fs.unlink(ECM_STATE_TMP_DEV_PATH);
-                    Err(StateOpenError {
-                        error,
-                        reported_errno,
-                        primary_errno,
-                        state_major: major,
-                    })
+                    let _ = cleanup_owned_temp(fs, owned);
+                    Err(state_open_error(error, primary_errno, major, None))
                 }
             }
         }
+    }
+}
+
+fn state_open_error(
+    error: io::Error,
+    primary_errno: Option<i32>,
+    state_major: u32,
+    reported_errno: Option<i32>,
+) -> StateOpenError {
+    let reported_errno = reported_errno.or_else(|| error.raw_os_error());
+    StateOpenError {
+        error,
+        reported_errno,
+        primary_errno,
+        state_major,
+    }
+}
+
+fn read_optional_state_major<F: EcmStateFs>(fs: &mut F, flags: i32) -> io::Result<Option<u32>> {
+    match fs.open(ECM_STATE_DEV_MAJOR_PATH, flags) {
+        Ok(mut reader) => read_state_major(&mut reader).map(Some),
+        Err(error) if error.raw_os_error() == Some(libc::ENOENT) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn metadata_matches_device(metadata: EcmNodeMetadata, major: u32, minor: u32) -> bool {
+    metadata.is_char() && libc::major(metadata.rdev) == major && libc::minor(metadata.rdev) == minor
+}
+
+fn cleanup_owned_temp<F: EcmStateFs>(fs: &mut F, owned: EcmNodeMetadata) -> io::Result<()> {
+    match fs.lstat(ECM_STATE_TMP_DEV_PATH) {
+        Ok(current) if owned.same_owned_node(current) => fs.unlink(ECM_STATE_TMP_DEV_PATH),
+        Ok(_) => Err(io::Error::from_raw_os_error(libc::ESTALE)),
+        Err(error) if error.raw_os_error() == Some(libc::ENOENT) => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -636,6 +789,44 @@ impl EcmStateFs for LibcEcmStateFs {
         } else {
             Err(io::Error::last_os_error())
         }
+    }
+
+    fn fstat(&mut self, reader: &Self::Reader) -> io::Result<EcmNodeMetadata> {
+        let mut metadata = unsafe { core::mem::zeroed::<libc::stat>() };
+        if unsafe { libc::fstat(reader.as_raw_fd(), &mut metadata) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(metadata_from_stat(&metadata))
+    }
+
+    fn lstat(&mut self, path: &str) -> io::Result<EcmNodeMetadata> {
+        let path = CString::new(path).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+        let mut metadata = unsafe { core::mem::zeroed::<libc::stat>() };
+        if unsafe { libc::lstat(path.as_ptr(), &mut metadata) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(metadata_from_stat(&metadata))
+    }
+
+    fn clear_nonblock(&mut self, reader: &Self::Reader) -> io::Result<()> {
+        let fd = reader.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+fn metadata_from_stat(metadata: &libc::stat) -> EcmNodeMetadata {
+    EcmNodeMetadata {
+        mode: metadata.st_mode,
+        dev: metadata.st_dev,
+        ino: metadata.st_ino,
+        rdev: metadata.st_rdev,
     }
 }
 
