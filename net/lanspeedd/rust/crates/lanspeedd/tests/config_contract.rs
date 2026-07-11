@@ -1,6 +1,6 @@
 use lanspeedd::config::{
     ConfigError, ConfigSource, ConfigValue, ConnectionCollectorMode, InterfaceEligibility,
-    RateCollectorMode, RuntimeConfig, DEFAULT_ACTIVE_CLIENT_MIN_BPS,
+    LegacyNameEligibility, RateCollectorMode, RuntimeConfig, DEFAULT_ACTIVE_CLIENT_MIN_BPS,
     DEFAULT_ACTIVE_CLIENT_WINDOW_MS, DEFAULT_MAX_CLIENTS, DEFAULT_OVERVIEW_WINDOW_SAMPLES,
     DEFAULT_REFRESH_INTERVAL_MS, MAX_INTERFACE_NAMES, MAX_INTERFACE_NAME_LEN,
     MAX_OVERVIEW_WINDOW_SAMPLES, MIN_ACTIVE_CLIENT_WINDOW_MS, MIN_OVERVIEW_WINDOW_SAMPLES,
@@ -58,7 +58,7 @@ impl InterfaceEligibility for RejectNamed {
 
 fn load(source: MemorySource) -> RuntimeConfig {
     let mut source = source;
-    RuntimeConfig::load(&mut source).unwrap()
+    RuntimeConfig::load(&mut source, &LegacyNameEligibility).unwrap()
 }
 
 #[cfg(feature = "openwrt")]
@@ -382,12 +382,11 @@ fn ineligible_collect_names_do_not_consume_capacity() {
         .values
         .insert("lanspeed.main.ifname".into(), ConfigValue::List(names));
 
-    let config = RuntimeConfig::load(&mut source).unwrap();
+    let config = RuntimeConfig::load(&mut source, &LegacyNameEligibility).unwrap();
     assert_eq!(config.ifnames, ["br-lan"]);
 
     let mut injected = MemorySource::default().with_list("ifname", &["nonether0", "br-lan"]);
-    let config =
-        RuntimeConfig::load_with_eligibility(&mut injected, &RejectNamed("nonether0")).unwrap();
+    let config = RuntimeConfig::load(&mut injected, &RejectNamed("nonether0")).unwrap();
     assert_eq!(config.ifnames, ["br-lan"]);
 }
 
@@ -400,7 +399,7 @@ fn missing_uci_package_loads_runtime_defaults() {
     std::fs::create_dir_all(&directory).unwrap();
     let mut source = lanspeed_openwrt_sys::UciContext::with_confdir(&directory).unwrap();
 
-    let loaded = RuntimeConfig::load(&mut source).unwrap();
+    let loaded = RuntimeConfig::load(&mut source, &LegacyNameEligibility).unwrap();
     assert_eq!(loaded, RuntimeConfig::default());
 
     std::fs::remove_dir_all(directory).unwrap();
@@ -411,22 +410,23 @@ fn atomic_reload_replaces_only_a_fully_valid_candidate() {
     let mut config = RuntimeConfig::default();
     let mut valid = MemorySource::default()
         .with("refresh_interval_ms", "2000")
-        .with_list("ifname", &["br-lan"]);
-    config.reload(&mut valid).unwrap();
+        .with_list("ifname", &["lo", "br-lan"]);
+    let policy = RejectNamed("lo");
+    config.reload(&mut valid, &policy).unwrap();
     assert_eq!(config.refresh_interval_ms, 2_000);
     assert_eq!(config.ifnames, ["br-lan"]);
 
     let before = config.clone();
     let mut failed = MemorySource::failing("uci context unavailable");
     assert_eq!(
-        config.reload(&mut failed),
+        config.reload(&mut failed, &policy),
         Err(ConfigError::Source("uci context unavailable".into()))
     );
     assert_eq!(config, before);
 
     let mut wrong_type = MemorySource::default().with_list("refresh_interval_ms", &["500"]);
     assert!(matches!(
-        config.reload(&mut wrong_type),
+        config.reload(&mut wrong_type, &policy),
         Err(ConfigError::WrongType { option, .. }) if option == "refresh_interval_ms"
     ));
     assert_eq!(config, before);

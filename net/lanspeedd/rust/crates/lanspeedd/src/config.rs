@@ -108,11 +108,21 @@ pub trait InterfaceEligibility {
     fn is_collect_eligible(&self, name: &str) -> bool;
 }
 
-struct AllowAllInterfaces;
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LegacyNameEligibility;
 
-impl InterfaceEligibility for AllowAllInterfaces {
-    fn is_collect_eligible(&self, _name: &str) -> bool {
-        true
+impl InterfaceEligibility for LegacyNameEligibility {
+    fn is_collect_eligible(&self, name: &str) -> bool {
+        name != "dae0"
+            && name != "dae0peer"
+            && name != "nssifb"
+            && !name.starts_with("tun")
+            && !name.starts_with("ppp")
+            && !name.starts_with("wg")
+            && !name.starts_with("wan")
+            && !name.starts_with("pppoe-")
+            && !name.starts_with("tap")
+            && !name.starts_with("utun")
     }
 }
 
@@ -166,11 +176,7 @@ impl Default for RuntimeConfig {
 }
 
 impl RuntimeConfig {
-    pub fn load(source: &mut impl ConfigSource) -> Result<Self, ConfigError> {
-        Self::load_with_eligibility(source, &AllowAllInterfaces)
-    }
-
-    pub fn load_with_eligibility(
+    pub fn load(
         source: &mut impl ConfigSource,
         eligibility: &impl InterfaceEligibility,
     ) -> Result<Self, ConfigError> {
@@ -259,7 +265,7 @@ impl RuntimeConfig {
                     continue;
                 }
                 if !valid_interface_name(&value)
-                    || !legacy_collect_name_eligible(&value)
+                    || !LegacyNameEligibility.is_collect_eligible(&value)
                     || !eligibility.is_collect_eligible(&value)
                     || config.ifnames.contains(&value)
                     || config.interface_include.contains(&value)
@@ -291,8 +297,12 @@ impl RuntimeConfig {
         Ok(config)
     }
 
-    pub fn reload(&mut self, source: &mut impl ConfigSource) -> Result<(), ConfigError> {
-        let candidate = Self::load(source)?;
+    pub fn reload(
+        &mut self,
+        source: &mut impl ConfigSource,
+        eligibility: &impl InterfaceEligibility,
+    ) -> Result<(), ConfigError> {
+        let candidate = Self::load(source, eligibility)?;
         *self = candidate;
         Ok(())
     }
@@ -340,19 +350,6 @@ fn legacy_bool(value: &str) -> bool {
 
 fn valid_interface_name(value: &str) -> bool {
     !value.is_empty() && value.len() < MAX_INTERFACE_NAME_LEN
-}
-
-fn legacy_collect_name_eligible(value: &str) -> bool {
-    value != "dae0"
-        && value != "dae0peer"
-        && value != "nssifb"
-        && !value.starts_with("tun")
-        && !value.starts_with("ppp")
-        && !value.starts_with("wg")
-        && !value.starts_with("wan")
-        && !value.starts_with("pppoe-")
-        && !value.starts_with("tap")
-        && !value.starts_with("utun")
 }
 
 fn push_unique_bounded(target: &mut Vec<String>, value: String) {
@@ -427,6 +424,8 @@ fn parse_c_unsigned(value: &str) -> u64 {
 #[cfg(feature = "openwrt")]
 impl ConfigSource for lanspeed_openwrt_sys::UciContext {
     fn get(&mut self, path: &str) -> Result<Option<ConfigValue>, ConfigError> {
+        // UciContext currently normalizes C strings to UTF-8 String values.
+        // Non-UTF-8 UCI bytes require a future byte-preserving wrapper API.
         match self.lookup(path) {
             Ok(value) => Ok(value.map(|value| match value {
                 lanspeed_openwrt_sys::UciValue::String(value) => ConfigValue::String(value),
