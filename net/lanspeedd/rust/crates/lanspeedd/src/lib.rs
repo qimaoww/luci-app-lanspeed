@@ -9,6 +9,7 @@ use std::{
     os::fd::{FromRawFd, OwnedFd},
 };
 
+pub mod collectors;
 pub mod config;
 pub mod history;
 pub mod identity;
