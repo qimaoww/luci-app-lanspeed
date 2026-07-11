@@ -229,6 +229,7 @@ dependencies = [
  "aya",
  "aya-obj",
  "lanspeed-common",
+ "lanspeed-openwrt-sys",
  "libc",
  "object",
 ]

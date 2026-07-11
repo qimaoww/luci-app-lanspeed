@@ -1,0 +1,382 @@
+use std::fmt;
+
+pub const DEFAULT_REFRESH_INTERVAL_MS: u32 = 1_000;
+pub const MIN_REFRESH_INTERVAL_MS: u32 = 500;
+pub const DEFAULT_MAX_CLIENTS: usize = 2_048;
+pub const DEFAULT_ACTIVE_CLIENT_WINDOW_MS: u64 = 10_000;
+pub const MIN_ACTIVE_CLIENT_WINDOW_MS: u64 = 1_000;
+pub const DEFAULT_ACTIVE_CLIENT_MIN_BPS: u64 = 1;
+pub const DEFAULT_OVERVIEW_WINDOW_SAMPLES: usize = 240;
+pub const MIN_OVERVIEW_WINDOW_SAMPLES: usize = 2;
+pub const MAX_OVERVIEW_WINDOW_SAMPLES: usize = 240;
+pub const MAX_INTERFACE_NAMES: usize = 16;
+pub const MAX_INTERFACE_NAME_LEN: usize = 32;
+
+const CONFIG_PREFIX: &str = "lanspeed.main.";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RateCollectorMode {
+    Auto,
+    Bpf,
+    NssEcmDirect,
+    NssConntrackSync,
+}
+
+impl RateCollectorMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Auto),
+            "bpf" => Some(Self::Bpf),
+            "nss_ecm_direct" => Some(Self::NssEcmDirect),
+            "nss_conntrack_sync" | "conntrack_ecm_sync" => Some(Self::NssConntrackSync),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Bpf => "bpf",
+            Self::NssEcmDirect => "nss_ecm_direct",
+            Self::NssConntrackSync => "nss_conntrack_sync",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectionCollectorMode {
+    Auto,
+    ConntrackNetlink,
+    ConntrackProcfs,
+}
+
+impl ConnectionCollectorMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Auto),
+            "conntrack_netlink" => Some(Self::ConntrackNetlink),
+            "conntrack_procfs" => Some(Self::ConntrackProcfs),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::ConntrackNetlink => "conntrack_netlink",
+            Self::ConntrackProcfs => "conntrack_procfs",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConfigValue {
+    String(String),
+    List(Vec<String>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConfigError {
+    Source(String),
+    WrongType {
+        option: String,
+        expected: &'static str,
+    },
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Source(message) => write!(formatter, "configuration source failed: {message}"),
+            Self::WrongType { option, expected } => {
+                write!(
+                    formatter,
+                    "configuration option {option} must be {expected}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+pub trait ConfigSource {
+    fn get(&mut self, path: &str) -> Result<Option<ConfigValue>, ConfigError>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeConfig {
+    pub refresh_interval_ms: u32,
+    pub max_clients: usize,
+    pub active_client_window_ms: u64,
+    pub active_client_min_bps: u64,
+    pub overview_window_samples: usize,
+    pub enable_bpf: bool,
+    pub enable_conntrack_fallback: bool,
+    pub refresh_interval_clamped: bool,
+    pub active_client_window_clamped: bool,
+    pub active_client_min_bps_clamped: bool,
+    pub overview_window_samples_clamped: bool,
+    pub rate_collector_mode: RateCollectorMode,
+    pub conn_collector_mode: ConnectionCollectorMode,
+    pub ifnames: Vec<String>,
+    pub interface_include: Vec<String>,
+    /// Retained for the LuCI/UCI contract. The legacy daemon does not use it
+    /// to alter its attach set.
+    pub interface_exclude: Vec<String>,
+    pub observe_ifnames: Vec<String>,
+    pub rejected_nssifb_collect: bool,
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            refresh_interval_ms: DEFAULT_REFRESH_INTERVAL_MS,
+            max_clients: DEFAULT_MAX_CLIENTS,
+            active_client_window_ms: DEFAULT_ACTIVE_CLIENT_WINDOW_MS,
+            active_client_min_bps: DEFAULT_ACTIVE_CLIENT_MIN_BPS,
+            overview_window_samples: DEFAULT_OVERVIEW_WINDOW_SAMPLES,
+            enable_bpf: false,
+            enable_conntrack_fallback: true,
+            refresh_interval_clamped: false,
+            active_client_window_clamped: false,
+            active_client_min_bps_clamped: false,
+            overview_window_samples_clamped: false,
+            rate_collector_mode: RateCollectorMode::Auto,
+            conn_collector_mode: ConnectionCollectorMode::Auto,
+            ifnames: Vec::new(),
+            interface_include: Vec::new(),
+            interface_exclude: Vec::new(),
+            observe_ifnames: Vec::new(),
+            rejected_nssifb_collect: false,
+        }
+    }
+}
+
+impl RuntimeConfig {
+    pub fn load(source: &mut impl ConfigSource) -> Result<Self, ConfigError> {
+        let mut config = Self::default();
+
+        if let Some(value) = scalar(source, "refresh_interval_ms")? {
+            let parsed = parse_c_signed(&value);
+            if parsed >= i128::from(MIN_REFRESH_INTERVAL_MS) {
+                config.refresh_interval_ms = parsed.min(i128::from(u32::MAX)) as u32;
+            } else if parsed > 0 {
+                config.refresh_interval_ms = MIN_REFRESH_INTERVAL_MS;
+                config.refresh_interval_clamped = true;
+            }
+        }
+
+        if let Some(value) = scalar(source, "active_client_window_ms")? {
+            let parsed = parse_c_unsigned(&value);
+            if parsed >= MIN_ACTIVE_CLIENT_WINDOW_MS {
+                config.active_client_window_ms = parsed;
+            } else if parsed > 0 {
+                config.active_client_window_ms = MIN_ACTIVE_CLIENT_WINDOW_MS;
+                config.active_client_window_clamped = true;
+            }
+        }
+
+        if let Some(value) = scalar(source, "active_client_min_bps")? {
+            let parsed = parse_c_unsigned(&value);
+            if parsed >= DEFAULT_ACTIVE_CLIENT_MIN_BPS {
+                config.active_client_min_bps = parsed;
+            } else {
+                config.active_client_min_bps = DEFAULT_ACTIVE_CLIENT_MIN_BPS;
+                config.active_client_min_bps_clamped = true;
+            }
+        }
+
+        if let Some(value) = scalar(source, "overview_window_samples")? {
+            let parsed = parse_c_signed(&value);
+            if parsed >= MIN_OVERVIEW_WINDOW_SAMPLES as i128
+                && parsed <= MAX_OVERVIEW_WINDOW_SAMPLES as i128
+            {
+                config.overview_window_samples = parsed as usize;
+            } else if parsed > 0 {
+                config.overview_window_samples = if parsed < MIN_OVERVIEW_WINDOW_SAMPLES as i128 {
+                    MIN_OVERVIEW_WINDOW_SAMPLES
+                } else {
+                    MAX_OVERVIEW_WINDOW_SAMPLES
+                };
+                config.overview_window_samples_clamped = true;
+            }
+        }
+
+        if let Some(value) = scalar(source, "max_clients")? {
+            let parsed = parse_c_signed(&value);
+            if parsed >= 0 {
+                config.max_clients = parsed.min(usize::MAX as i128) as usize;
+            }
+        }
+
+        if let Some(value) = scalar(source, "collector_mode")? {
+            config.apply_legacy_collector_mode(&value);
+        }
+        if let Some(value) = scalar(source, "rate_collector_mode")? {
+            if let Some(mode) = RateCollectorMode::parse(&value) {
+                config.rate_collector_mode = mode;
+            }
+        }
+        if let Some(value) = scalar(source, "conn_collector_mode")? {
+            if let Some(mode) = ConnectionCollectorMode::parse(&value) {
+                config.conn_collector_mode = mode;
+            }
+        }
+
+        if let Some(value) = scalar(source, "enable_bpf")? {
+            config.enable_bpf = legacy_bool(&value);
+        }
+        if let Some(value) = scalar(source, "enable_conntrack_fallback")? {
+            config.enable_conntrack_fallback = legacy_bool(&value);
+        }
+
+        let mut collect_count = 0;
+        for option in ["ifname", "interface_include"] {
+            let values = list(source, option)?;
+            for value in values {
+                if value == "nssifb" {
+                    config.rejected_nssifb_collect = true;
+                    continue;
+                }
+                if collect_count == MAX_INTERFACE_NAMES {
+                    break;
+                }
+                if !valid_interface_name(&value)
+                    || config.ifnames.contains(&value)
+                    || config.interface_include.contains(&value)
+                {
+                    continue;
+                }
+                if option == "ifname" {
+                    config.ifnames.push(value);
+                } else {
+                    config.interface_include.push(value);
+                }
+                collect_count += 1;
+            }
+        }
+
+        for value in list(source, "interface_exclude")? {
+            push_unique_bounded(&mut config.interface_exclude, value);
+        }
+        for value in list(source, "observe")? {
+            if config.ifnames.contains(&value) || config.interface_include.contains(&value) {
+                continue;
+            }
+            push_unique_bounded(&mut config.observe_ifnames, value);
+        }
+
+        Ok(config)
+    }
+
+    pub fn reload(&mut self, source: &mut impl ConfigSource) -> Result<(), ConfigError> {
+        let candidate = Self::load(source)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    fn apply_legacy_collector_mode(&mut self, value: &str) {
+        match value {
+            "bpf" => self.rate_collector_mode = RateCollectorMode::Bpf,
+            "conntrack_netlink" => {
+                self.conn_collector_mode = ConnectionCollectorMode::ConntrackNetlink;
+            }
+            "conntrack_procfs" => {
+                self.conn_collector_mode = ConnectionCollectorMode::ConntrackProcfs;
+            }
+            "auto" => {
+                self.rate_collector_mode = RateCollectorMode::Auto;
+                self.conn_collector_mode = ConnectionCollectorMode::Auto;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn scalar(source: &mut impl ConfigSource, option: &str) -> Result<Option<String>, ConfigError> {
+    match source.get(&format!("{CONFIG_PREFIX}{option}"))? {
+        Some(ConfigValue::String(value)) => Ok(Some(value)),
+        Some(ConfigValue::List(_)) => Err(ConfigError::WrongType {
+            option: option.to_owned(),
+            expected: "a string",
+        }),
+        None => Ok(None),
+    }
+}
+
+fn list(source: &mut impl ConfigSource, option: &str) -> Result<Vec<String>, ConfigError> {
+    match source.get(&format!("{CONFIG_PREFIX}{option}"))? {
+        Some(ConfigValue::String(value)) => Ok(vec![value]),
+        Some(ConfigValue::List(values)) => Ok(values),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn legacy_bool(value: &str) -> bool {
+    value == "1" || value == "true"
+}
+
+fn valid_interface_name(value: &str) -> bool {
+    !value.is_empty() && value.len() < MAX_INTERFACE_NAME_LEN
+}
+
+fn push_unique_bounded(target: &mut Vec<String>, value: String) {
+    if target.len() < MAX_INTERFACE_NAMES
+        && valid_interface_name(&value)
+        && !target.contains(&value)
+    {
+        target.push(value);
+    }
+}
+
+fn parse_c_signed(value: &str) -> i128 {
+    let value = value.trim_start();
+    let (negative, digits) = match value.as_bytes().first() {
+        Some(b'-') => (true, &value[1..]),
+        Some(b'+') => (false, &value[1..]),
+        _ => (false, value),
+    };
+    let mut parsed = 0i128;
+    let mut found_digit = false;
+    for digit in digits.bytes() {
+        if !digit.is_ascii_digit() {
+            break;
+        }
+        found_digit = true;
+        parsed = parsed
+            .saturating_mul(10)
+            .saturating_add(i128::from(digit - b'0'));
+    }
+    if !found_digit {
+        return 0;
+    }
+    if negative {
+        -parsed
+    } else {
+        parsed
+    }
+}
+
+fn parse_c_unsigned(value: &str) -> u64 {
+    let parsed = parse_c_signed(value);
+    if parsed < 0 {
+        0u64.wrapping_sub(parsed.unsigned_abs() as u64)
+    } else {
+        parsed.min(u64::MAX as i128) as u64
+    }
+}
+
+#[cfg(feature = "openwrt")]
+impl ConfigSource for lanspeed_openwrt_sys::UciContext {
+    fn get(&mut self, path: &str) -> Result<Option<ConfigValue>, ConfigError> {
+        self.lookup(path)
+            .map(|value| {
+                value.map(|value| match value {
+                    lanspeed_openwrt_sys::UciValue::String(value) => ConfigValue::String(value),
+                    lanspeed_openwrt_sys::UciValue::List(values) => ConfigValue::List(values),
+                })
+            })
+            .map_err(|error| ConfigError::Source(error.to_string()))
+    }
+}
