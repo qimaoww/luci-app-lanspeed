@@ -173,14 +173,55 @@ pub fn collect(
     now_ms: u64,
     max_clients: usize,
 ) -> Result<CollectedSnapshot, CollectorReadError> {
-    collect_with(
-        mode,
-        identities,
-        now_ms,
-        max_clients,
-        || netlink::read_snapshot().map_err(CollectorReadError::Netlink),
-        || procfs::read_snapshot().map_err(CollectorReadError::Procfs),
-    )
+    match mode {
+        CollectorMode::Netlink => finish_netlink(
+            netlink::read_snapshot().map_err(CollectorReadError::Netlink)?,
+            identities,
+            now_ms,
+            max_clients,
+        ),
+        CollectorMode::Procfs => finish_procfs_aggregate(
+            procfs::read_aggregate(identities, now_ms, max_clients)
+                .map_err(CollectorReadError::Procfs)?,
+            false,
+            None,
+        ),
+        CollectorMode::Auto => match netlink::read_snapshot() {
+            Ok(snapshot) => finish_netlink(snapshot, identities, now_ms, max_clients),
+            Err(netlink_error) => {
+                let errno = match &netlink_error {
+                    DumpError::Kernel(error) => error.raw_os_error(),
+                    _ => None,
+                };
+                match procfs::read_aggregate(identities, now_ms, max_clients) {
+                    Ok(snapshot) => finish_procfs_aggregate(snapshot, true, errno),
+                    Err(_) => Err(CollectorReadError::Netlink(netlink_error)),
+                }
+            }
+        },
+    }
+}
+
+fn finish_procfs_aggregate(
+    snapshot: procfs::ProcfsAggregateSnapshot,
+    netlink_attempted: bool,
+    netlink_errno: Option<i32>,
+) -> Result<CollectedSnapshot, CollectorReadError> {
+    let stats = stats_from_aggregate(
+        &snapshot.aggregate,
+        &snapshot.source_path,
+        netlink_attempted,
+        false,
+        true,
+        netlink_errno,
+        snapshot.malformed_lines,
+        snapshot.entries_seen,
+    );
+    Ok(CollectedSnapshot {
+        clients: snapshot.aggregate.clients,
+        counter_source: snapshot.counter_source,
+        stats,
+    })
 }
 
 fn finish_netlink(

@@ -3,10 +3,15 @@ use lanspeedd::{
         aggregate::aggregate_flows,
         collect_with,
         netlink::{
-            build_dump_request, parse_dump, parse_dump_detailed, parse_dump_with_limit, Datagram,
-            DumpError, NetlinkSnapshot,
+            build_dump_request, parse_dump, parse_dump_detailed, parse_dump_for_port,
+            parse_dump_with_limit, read_snapshot as read_netlink_snapshot, retry_eintr,
+            validate_received_datagram_len, Datagram, DumpError, NetlinkSnapshot,
+            MAX_DATAGRAM_BYTES,
         },
-        procfs::{parse_reader, ProcfsError, ProcfsSnapshot, CONNTRACK_LINE_MAX},
+        procfs::{
+            aggregate_reader, parse_reader, ProcfsError, ProcfsSnapshot, CONNTRACK_LINE_MAX,
+            PROCFS_PARSE_FLOW_CAP,
+        },
         CollectorMode, CollectorReadError, FlowSample, Protocol, TcpState,
     },
     identity::{IdentityObservation, IdentityTable, ObservationSource},
@@ -591,6 +596,114 @@ fn netlink_dump_request_matches_minimal_conntrack_uapi() {
         0x5566_7788
     );
     assert_eq!(&request[16..20], &[libc::AF_UNSPEC as u8, 0, 0, 0]);
+}
+
+#[test]
+fn netlink_response_header_pid_matches_local_port_while_sender_is_kernel() {
+    let seq = 0x1234;
+    let port_id = 0x5566_7788u32;
+    let mut bytes = data_message(seq, false, false);
+    bytes[12..16].copy_from_slice(&port_id.to_ne_bytes());
+    let mut done_message = done(seq, NLM_F_MULTI, 0);
+    done_message[12..16].copy_from_slice(&port_id.to_ne_bytes());
+    bytes.extend(done_message);
+    assert_eq!(
+        parse_dump_for_port(&[Datagram::kernel(bytes)], seq, port_id)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let mut wrong = data_message(seq, false, false);
+    wrong[12..16].copy_from_slice(&(port_id + 1).to_ne_bytes());
+    let mut done_message = done(seq, NLM_F_MULTI, 0);
+    done_message[12..16].copy_from_slice(&port_id.to_ne_bytes());
+    wrong.extend(done_message);
+    assert!(matches!(
+        parse_dump_for_port(&[Datagram::kernel(wrong)], seq, port_id),
+        Err(DumpError::UnexpectedPortId { .. })
+    ));
+}
+
+#[test]
+fn netlink_datagram_truncation_is_a_dedicated_resource_error() {
+    assert!(matches!(
+        validate_received_datagram_len(MAX_DATAGRAM_BYTES + 1, MAX_DATAGRAM_BYTES),
+        Err(DumpError::TruncatedDatagram { .. })
+    ));
+    assert_eq!(
+        validate_received_datagram_len(MAX_DATAGRAM_BYTES, MAX_DATAGRAM_BYTES).unwrap(),
+        MAX_DATAGRAM_BYTES
+    );
+}
+
+#[test]
+fn netlink_syscall_retry_retries_only_eintr() {
+    let mut calls = 0;
+    let value = retry_eintr(|| {
+        calls += 1;
+        if calls == 1 {
+            Err(std::io::Error::from_raw_os_error(libc::EINTR))
+        } else {
+            Ok(7)
+        }
+    })
+    .unwrap();
+    assert_eq!((value, calls), (7, 2));
+
+    let mut timeout_calls = 0;
+    let error = retry_eintr(|| {
+        timeout_calls += 1;
+        Err::<(), _>(std::io::Error::from_raw_os_error(libc::EAGAIN))
+    })
+    .unwrap_err();
+    assert_eq!(timeout_calls, 1);
+    assert_eq!(error.raw_os_error(), Some(libc::EAGAIN));
+}
+
+#[test]
+fn live_host_conntrack_netlink_dump_uses_kernel_sender_and_local_header_pid() {
+    match read_netlink_snapshot() {
+        Ok(snapshot) => {
+            assert_eq!(snapshot.source_path, "netlink:ctnetlink");
+            assert_eq!(
+                snapshot.counter_source,
+                "ctnetlink_conntrack_acct_orig_reply_bytes"
+            );
+        }
+        Err(DumpError::Kernel(error))
+            if matches!(error.raw_os_error(), Some(libc::EPERM | libc::EACCES)) => {}
+        Err(error) => panic!("host conntrack netlink smoke failed: {error}"),
+    }
+}
+
+#[test]
+fn procfs_runtime_aggregation_is_streaming_and_bounded_by_clients() {
+    let table = identities();
+    let line = concat!(
+        "ipv4 2 udp 17 20 src=192.168.1.42 dst=8.8.8.8 sport=53000 dport=53 ",
+        "packets=2 bytes=3 src=8.8.8.8 dst=192.168.1.42 sport=53 dport=53000 ",
+        "packets=2 bytes=4 [ASSURED]\n"
+    );
+    let input = line.repeat(20_000);
+    let snapshot = aggregate_reader(Cursor::new(input), "fixture", &table, 10, 1).unwrap();
+    assert_eq!(snapshot.aggregate.clients.len(), 1);
+    assert_eq!(snapshot.entries_seen, 20_000);
+    assert_eq!(snapshot.malformed_lines, 0);
+    assert_eq!(snapshot.aggregate.stats.entries_matched, 20_000);
+    assert_eq!(snapshot.aggregate.clients[0].tx_bytes, 60_000);
+    assert_eq!(snapshot.aggregate.clients[0].rx_bytes, 80_000);
+    assert_eq!(snapshot.aggregate.clients[0].udp_dns_conns, 20_000);
+}
+
+#[test]
+fn procfs_vec_snapshot_helper_has_an_explicit_flow_cap() {
+    let line = "ipv4 2 udp 17 20 src=192.168.1.42 dst=8.8.8.8 sport=1 dport=2 packets=1 bytes=3\n";
+    let input = line.repeat(PROCFS_PARSE_FLOW_CAP + 1);
+    assert!(matches!(
+        parse_reader(Cursor::new(input), "fixture"),
+        Err(ProcfsError::FlowLimit(limit)) if limit == PROCFS_PARSE_FLOW_CAP
+    ));
 }
 
 #[test]

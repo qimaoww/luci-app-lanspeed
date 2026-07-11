@@ -22,6 +22,7 @@ const TCP_CONNTRACK_ESTABLISHED: u8 = 3;
 const IPCTNL_MSG_CT_NEW: u16 = 1 << 8;
 const NETLINK_NETFILTER: i32 = 12;
 const MAX_DUMP_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_DATAGRAM_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Datagram {
@@ -41,12 +42,14 @@ impl Datagram {
 #[derive(Debug)]
 pub enum DumpError {
     UnexpectedSender(u32),
+    UnexpectedPortId { expected: u32, actual: u32 },
     UnexpectedSequence { expected: u32, actual: u32 },
     Interrupted,
     Kernel(io::Error),
     Malformed(&'static str),
     MissingDone,
     LimitExceeded,
+    TruncatedDatagram { reported: usize, capacity: usize },
 }
 
 impl std::fmt::Display for DumpError {
@@ -59,6 +62,10 @@ impl std::fmt::Display for DumpError {
                 formatter,
                 "conntrack dump sequence {actual} did not match {expected}"
             ),
+            Self::UnexpectedPortId { expected, actual } => write!(
+                formatter,
+                "conntrack header port id {actual} did not match local port id {expected}"
+            ),
             Self::Interrupted => write!(formatter, "conntrack dump was interrupted"),
             Self::Kernel(error) => write!(formatter, "kernel rejected conntrack dump: {error}"),
             Self::Malformed(reason) => {
@@ -69,6 +76,10 @@ impl std::fmt::Display for DumpError {
                 "conntrack multipart dump ended without NLMSG_DONE"
             ),
             Self::LimitExceeded => write!(formatter, "conntrack dump exceeded its byte limit"),
+            Self::TruncatedDatagram { reported, capacity } => write!(
+                formatter,
+                "conntrack datagram length {reported} exceeded receive capacity {capacity}"
+            ),
         }
     }
 }
@@ -76,7 +87,18 @@ impl std::fmt::Display for DumpError {
 impl std::error::Error for DumpError {}
 
 pub fn parse_dump(datagrams: &[Datagram], expected_seq: u32) -> Result<Vec<FlowSample>, DumpError> {
-    parse_dump_with_limit(datagrams, expected_seq, MAX_DUMP_BYTES)
+    parse_dump_for_port(datagrams, expected_seq, 0)
+}
+
+pub fn parse_dump_for_port(
+    datagrams: &[Datagram],
+    expected_seq: u32,
+    expected_port_id: u32,
+) -> Result<Vec<FlowSample>, DumpError> {
+    Ok(
+        parse_dump_detailed_with_limit(datagrams, expected_seq, expected_port_id, MAX_DUMP_BYTES)?
+            .flows,
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -98,19 +120,20 @@ pub fn parse_dump_with_limit(
     expected_seq: u32,
     max_bytes: usize,
 ) -> Result<Vec<FlowSample>, DumpError> {
-    Ok(parse_dump_detailed_with_limit(datagrams, expected_seq, max_bytes)?.flows)
+    Ok(parse_dump_detailed_with_limit(datagrams, expected_seq, 0, max_bytes)?.flows)
 }
 
 pub fn parse_dump_detailed(
     datagrams: &[Datagram],
     expected_seq: u32,
 ) -> Result<ParsedDump, DumpError> {
-    parse_dump_detailed_with_limit(datagrams, expected_seq, MAX_DUMP_BYTES)
+    parse_dump_detailed_with_limit(datagrams, expected_seq, 0, MAX_DUMP_BYTES)
 }
 
 fn parse_dump_detailed_with_limit(
     datagrams: &[Datagram],
     expected_seq: u32,
+    expected_port_id: u32,
     max_bytes: usize,
 ) -> Result<ParsedDump, DumpError> {
     let total = datagrams.iter().try_fold(0usize, |total, datagram| {
@@ -172,8 +195,11 @@ fn parse_dump_detailed_with_limit(
                     actual: seq,
                 });
             }
-            if pid != 0 {
-                return Err(DumpError::UnexpectedSender(pid));
+            if pid != expected_port_id {
+                return Err(DumpError::UnexpectedPortId {
+                    expected: expected_port_id,
+                    actual: pid,
+                });
             }
             if flags & NLM_F_DUMP_INTR != 0 {
                 return Err(DumpError::Interrupted);
@@ -503,19 +529,22 @@ pub fn read_snapshot() -> Result<NetlinkSnapshot, DumpError> {
     let request = build_dump_request(seq, port_id);
     let mut kernel = unsafe { std::mem::zeroed::<libc::sockaddr_nl>() };
     kernel.nl_family = libc::AF_NETLINK as libc::sa_family_t;
-    let sent = unsafe {
-        libc::sendto(
-            socket.as_raw_fd(),
-            request.as_ptr().cast(),
-            request.len(),
-            0,
-            (&raw const kernel).cast(),
-            std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
-        )
-    };
-    if sent < 0 {
-        return Err(DumpError::Kernel(io::Error::last_os_error()));
-    }
+    let sent = retry_eintr(|| {
+        let result = unsafe {
+            libc::sendto(
+                socket.as_raw_fd(),
+                request.as_ptr().cast(),
+                request.len(),
+                0,
+                (&raw const kernel).cast(),
+                std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+            )
+        };
+        (result >= 0)
+            .then_some(result)
+            .ok_or_else(io::Error::last_os_error)
+    })
+    .map_err(DumpError::Kernel)?;
     if sent as usize != request.len() {
         return Err(DumpError::Kernel(io::Error::new(
             io::ErrorKind::WriteZero,
@@ -525,26 +554,35 @@ pub fn read_snapshot() -> Result<NetlinkSnapshot, DumpError> {
     let mut datagrams = Vec::new();
     let mut total = 0usize;
     loop {
-        let mut bytes = vec![0u8; 64 * 1024];
+        let mut bytes = vec![0u8; MAX_DATAGRAM_BYTES];
         let mut sender = unsafe { std::mem::zeroed::<libc::sockaddr_nl>() };
         let mut sender_len = std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t;
-        let received = unsafe {
-            libc::recvfrom(
-                socket.as_raw_fd(),
-                bytes.as_mut_ptr().cast(),
-                bytes.len(),
-                0,
-                (&raw mut sender).cast(),
-                &mut sender_len,
-            )
-        };
-        if received < 0 {
-            return Err(DumpError::Kernel(io::Error::last_os_error()));
-        }
+        let received = retry_eintr(|| {
+            sender = unsafe { std::mem::zeroed::<libc::sockaddr_nl>() };
+            sender_len = std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t;
+            let result = unsafe {
+                libc::recvfrom(
+                    socket.as_raw_fd(),
+                    bytes.as_mut_ptr().cast(),
+                    bytes.len(),
+                    libc::MSG_TRUNC,
+                    (&raw mut sender).cast(),
+                    &mut sender_len,
+                )
+            };
+            (result >= 0)
+                .then_some(result)
+                .ok_or_else(io::Error::last_os_error)
+        })
+        .map_err(DumpError::Kernel)?;
         if sender_len < std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t {
             return Err(DumpError::Malformed("short netlink sender address"));
         }
-        bytes.truncate(received as usize);
+        if sender.nl_family != libc::AF_NETLINK as libc::sa_family_t {
+            return Err(DumpError::Malformed("unexpected netlink sender family"));
+        }
+        let received = validate_received_datagram_len(received as usize, bytes.len())?;
+        bytes.truncate(received);
         total = total
             .checked_add(bytes.len())
             .ok_or(DumpError::LimitExceeded)?;
@@ -555,7 +593,7 @@ pub fn read_snapshot() -> Result<NetlinkSnapshot, DumpError> {
             sender_pid: sender.nl_pid,
             bytes,
         });
-        match parse_dump_detailed_with_limit(&datagrams, seq, MAX_DUMP_BYTES) {
+        match parse_dump_detailed_with_limit(&datagrams, seq, port_id, MAX_DUMP_BYTES) {
             Ok(parsed) => {
                 return Ok(NetlinkSnapshot {
                     flows: parsed.flows,
@@ -566,6 +604,26 @@ pub fn read_snapshot() -> Result<NetlinkSnapshot, DumpError> {
             }
             Err(DumpError::MissingDone) => {}
             Err(error) => return Err(error),
+        }
+    }
+}
+
+pub fn validate_received_datagram_len(
+    reported: usize,
+    capacity: usize,
+) -> Result<usize, DumpError> {
+    if reported > capacity {
+        Err(DumpError::TruncatedDatagram { reported, capacity })
+    } else {
+        Ok(reported)
+    }
+}
+
+pub fn retry_eintr<T>(mut operation: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    loop {
+        match operation() {
+            Err(error) if error.raw_os_error() == Some(libc::EINTR) => {}
+            result => return result,
         }
     }
 }

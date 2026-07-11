@@ -38,25 +38,36 @@ pub struct AggregateSnapshot {
     pub stats: AggregateStats,
 }
 
-pub fn aggregate_flows<'a>(
-    identities: &IdentityTable,
-    flows: impl IntoIterator<Item = &'a FlowSample>,
+pub struct AggregateState<'a> {
+    identities: &'a IdentityTable,
+    clients: BTreeMap<String, ClientSample>,
+    stats: AggregateStats,
     now_ms: u64,
     max_clients: usize,
-) -> AggregateSnapshot {
-    let mut clients = BTreeMap::<String, ClientSample>::new();
-    let mut stats = AggregateStats::default();
-    for flow in flows {
-        stats.entries_seen = stats.entries_seen.saturating_add(1);
-        let orig_src = owner(identities, flow.orig_src);
-        let orig_dst = owner(identities, flow.orig_dst);
-        let reply_src = owner(identities, flow.reply_src);
-        let reply_dst = owner(identities, flow.reply_dst);
+}
+
+impl<'a> AggregateState<'a> {
+    pub fn new(identities: &'a IdentityTable, now_ms: u64, max_clients: usize) -> Self {
+        Self {
+            identities,
+            clients: BTreeMap::new(),
+            stats: AggregateStats::default(),
+            now_ms,
+            max_clients,
+        }
+    }
+
+    pub fn push(&mut self, flow: &FlowSample) {
+        self.stats.entries_seen = self.stats.entries_seen.saturating_add(1);
+        let orig_src = owner(self.identities, flow.orig_src);
+        let orig_dst = owner(self.identities, flow.orig_dst);
+        let reply_src = owner(self.identities, flow.reply_src);
+        let reply_dst = owner(self.identities, flow.reply_dst);
         if (orig_src.is_some() && orig_dst.is_some())
             || (reply_src.is_some() && reply_dst.is_some())
         {
-            stats.both_lan_flows = stats.both_lan_flows.saturating_add(1);
-            continue;
+            self.stats.both_lan_flows = self.stats.both_lan_flows.saturating_add(1);
+            return;
         }
         let endpoint = if let Some(identity) = orig_src {
             Some((identity, true, flow.orig_src))
@@ -68,29 +79,32 @@ pub fn aggregate_flows<'a>(
             reply_dst.map(|identity| (identity, true, flow.reply_dst))
         };
         let Some((identity, source_side, endpoint_ip)) = endpoint else {
-            stats.skipped_no_arp = stats.skipped_no_arp.saturating_add(1);
-            stats.no_lan_flows = stats.no_lan_flows.saturating_add(1);
-            continue;
+            self.stats.skipped_no_arp = self.stats.skipped_no_arp.saturating_add(1);
+            self.stats.no_lan_flows = self.stats.no_lan_flows.saturating_add(1);
+            return;
         };
         let key = identity.key.to_string();
-        if !clients.contains_key(&key) && clients.len() >= max_clients {
-            stats.clients_dropped = stats.clients_dropped.saturating_add(1);
-            continue;
+        if !self.clients.contains_key(&key) && self.clients.len() >= self.max_clients {
+            self.stats.clients_dropped = self.stats.clients_dropped.saturating_add(1);
+            return;
         }
-        let sample = clients.entry(key.clone()).or_insert_with(|| ClientSample {
-            mac: identity.key.mac.to_string(),
-            identity_key: key,
-            zone: identity.key.zone.clone(),
-            interface: identity.interface.clone(),
-            ips: identity.ips.clone(),
-            tx_bytes: 0,
-            rx_bytes: 0,
-            last_seen_ms: now_ms,
-            tcp_conns: 0,
-            udp_conns: 0,
-            udp_dns_conns: 0,
-            udp_other_conns: 0,
-        });
+        let sample = self
+            .clients
+            .entry(key.clone())
+            .or_insert_with(|| ClientSample {
+                mac: identity.key.mac.to_string(),
+                identity_key: key,
+                zone: identity.key.zone.clone(),
+                interface: identity.interface.clone(),
+                ips: identity.ips.clone(),
+                tx_bytes: 0,
+                rx_bytes: 0,
+                last_seen_ms: self.now_ms,
+                tcp_conns: 0,
+                udp_conns: 0,
+                udp_dns_conns: 0,
+                udp_other_conns: 0,
+            });
         let (tx, rx) = if source_side {
             (flow.orig_bytes, flow.reply_bytes)
         } else {
@@ -98,24 +112,40 @@ pub fn aggregate_flows<'a>(
         };
         sample.tx_bytes = sample.tx_bytes.saturating_add(tx);
         sample.rx_bytes = sample.rx_bytes.saturating_add(rx);
-        sample.last_seen_ms = now_ms;
+        sample.last_seen_ms = self.now_ms;
         add_connection_count(sample, flow);
-        stats.entries_matched = stats.entries_matched.saturating_add(1);
+        self.stats.entries_matched = self.stats.entries_matched.saturating_add(1);
         if source_side {
-            stats.src_lan_flows = stats.src_lan_flows.saturating_add(1);
+            self.stats.src_lan_flows = self.stats.src_lan_flows.saturating_add(1);
         } else {
-            stats.dst_lan_flows = stats.dst_lan_flows.saturating_add(1);
+            self.stats.dst_lan_flows = self.stats.dst_lan_flows.saturating_add(1);
         }
         if endpoint_ip.is_some_and(|ip| ip.is_ipv6()) {
-            stats.ipv6_lan_flows = stats.ipv6_lan_flows.saturating_add(1);
+            self.stats.ipv6_lan_flows = self.stats.ipv6_lan_flows.saturating_add(1);
         } else {
-            stats.ipv4_lan_flows = stats.ipv4_lan_flows.saturating_add(1);
+            self.stats.ipv4_lan_flows = self.stats.ipv4_lan_flows.saturating_add(1);
         }
     }
-    AggregateSnapshot {
-        clients: clients.into_values().collect(),
-        stats,
+
+    pub fn finish(self) -> AggregateSnapshot {
+        AggregateSnapshot {
+            clients: self.clients.into_values().collect(),
+            stats: self.stats,
+        }
     }
+}
+
+pub fn aggregate_flows<'a>(
+    identities: &IdentityTable,
+    flows: impl IntoIterator<Item = &'a FlowSample>,
+    now_ms: u64,
+    max_clients: usize,
+) -> AggregateSnapshot {
+    let mut state = AggregateState::new(identities, now_ms, max_clients);
+    for flow in flows {
+        state.push(flow);
+    }
+    state.finish()
 }
 
 fn owner(table: &IdentityTable, address: Option<IpAddr>) -> Option<&ClientIdentity> {

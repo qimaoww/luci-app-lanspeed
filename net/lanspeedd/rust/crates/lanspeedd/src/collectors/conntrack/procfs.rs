@@ -1,4 +1,8 @@
 use super::{FlowSample, Protocol, TcpState, PROCFS_COUNTER_SOURCE};
+use crate::{
+    collectors::conntrack::aggregate::{AggregateSnapshot, AggregateState},
+    identity::IdentityTable,
+};
 use std::{
     fs::File,
     io::{self, BufRead, BufReader},
@@ -7,16 +11,22 @@ use std::{
 pub const CONNTRACK_LINE_MAX: usize = 1024;
 pub const CONNTRACK_PROCFS_PATH: &str = "/proc/net/nf_conntrack";
 pub const CONNTRACK_LEGACY_PROCFS_PATH: &str = "/proc/net/ip_conntrack";
+pub const PROCFS_PARSE_FLOW_CAP: usize = 4096;
 
 #[derive(Debug)]
 pub enum ProcfsError {
     Io(io::Error),
+    FlowLimit(usize),
 }
 
 impl std::fmt::Display for ProcfsError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "failed to read conntrack procfs: {error}"),
+            Self::FlowLimit(limit) => write!(
+                formatter,
+                "conntrack procfs test snapshot exceeded {limit} flows"
+            ),
         }
     }
 }
@@ -32,24 +42,27 @@ pub struct ProcfsSnapshot {
     pub malformed_lines: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProcfsAggregateSnapshot {
+    pub aggregate: AggregateSnapshot,
+    pub source_path: String,
+    pub counter_source: &'static str,
+    pub entries_seen: usize,
+    pub malformed_lines: usize,
+}
+
 pub fn parse_reader<R: BufRead>(
     mut reader: R,
     source_path: &str,
 ) -> Result<ProcfsSnapshot, ProcfsError> {
     let mut flows = Vec::new();
-    let mut entries_seen = 0usize;
-    let mut malformed_lines = 0usize;
-    while let Some((line, oversized)) = read_bounded_line(&mut reader)? {
-        entries_seen = entries_seen.saturating_add(1);
-        if oversized {
-            malformed_lines = malformed_lines.saturating_add(1);
-            continue;
+    let (entries_seen, malformed_lines) = visit_reader(&mut reader, |flow| {
+        if flows.len() >= PROCFS_PARSE_FLOW_CAP {
+            return Err(ProcfsError::FlowLimit(PROCFS_PARSE_FLOW_CAP));
         }
-        match parse_line(&line) {
-            Some(flow) => flows.push(flow),
-            None => malformed_lines = malformed_lines.saturating_add(1),
-        }
-    }
+        flows.push(flow);
+        Ok(())
+    })?;
     Ok(ProcfsSnapshot {
         flows,
         source_path: source_path.to_owned(),
@@ -59,11 +72,78 @@ pub fn parse_reader<R: BufRead>(
     })
 }
 
+pub fn aggregate_reader<R: BufRead>(
+    mut reader: R,
+    source_path: &str,
+    identities: &IdentityTable,
+    now_ms: u64,
+    max_clients: usize,
+) -> Result<ProcfsAggregateSnapshot, ProcfsError> {
+    let mut aggregate = AggregateState::new(identities, now_ms, max_clients);
+    let (entries_seen, malformed_lines) = visit_reader(&mut reader, |flow| {
+        aggregate.push(&flow);
+        Ok(())
+    })?;
+    Ok(ProcfsAggregateSnapshot {
+        aggregate: aggregate.finish(),
+        source_path: source_path.to_owned(),
+        counter_source: PROCFS_COUNTER_SOURCE,
+        entries_seen,
+        malformed_lines,
+    })
+}
+
+fn visit_reader<R: BufRead>(
+    reader: &mut R,
+    mut visit: impl FnMut(FlowSample) -> Result<(), ProcfsError>,
+) -> Result<(usize, usize), ProcfsError> {
+    let mut entries_seen = 0usize;
+    let mut malformed_lines = 0usize;
+    while let Some((line, oversized)) = read_bounded_line(reader)? {
+        entries_seen = entries_seen.saturating_add(1);
+        if oversized {
+            malformed_lines = malformed_lines.saturating_add(1);
+            continue;
+        }
+        match parse_line(&line) {
+            Some(flow) => visit(flow)?,
+            None => malformed_lines = malformed_lines.saturating_add(1),
+        }
+    }
+    Ok((entries_seen, malformed_lines))
+}
+
 pub fn read_snapshot() -> Result<ProcfsSnapshot, ProcfsError> {
     match File::open(CONNTRACK_PROCFS_PATH) {
         Ok(file) => parse_reader(BufReader::new(file), CONNTRACK_PROCFS_PATH),
         Err(primary) => match File::open(CONNTRACK_LEGACY_PROCFS_PATH) {
             Ok(file) => parse_reader(BufReader::new(file), CONNTRACK_LEGACY_PROCFS_PATH),
+            Err(_) => Err(ProcfsError::Io(primary)),
+        },
+    }
+}
+
+pub fn read_aggregate(
+    identities: &IdentityTable,
+    now_ms: u64,
+    max_clients: usize,
+) -> Result<ProcfsAggregateSnapshot, ProcfsError> {
+    match File::open(CONNTRACK_PROCFS_PATH) {
+        Ok(file) => aggregate_reader(
+            BufReader::new(file),
+            CONNTRACK_PROCFS_PATH,
+            identities,
+            now_ms,
+            max_clients,
+        ),
+        Err(primary) => match File::open(CONNTRACK_LEGACY_PROCFS_PATH) {
+            Ok(file) => aggregate_reader(
+                BufReader::new(file),
+                CONNTRACK_LEGACY_PROCFS_PATH,
+                identities,
+                now_ms,
+                max_clients,
+            ),
             Err(_) => Err(ProcfsError::Io(primary)),
         },
     }
