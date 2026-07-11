@@ -72,14 +72,13 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
         }
         BuildTarget::Ebpf => {
             ToolVersions::detect()?.validate()?;
-            build_ebpf_variant(&cargo, &workspace, false)?;
-            let output = workspace.join("target/bpfel-unknown-none/release/lanspeed-ebpf");
-            let kfunc = output.with_file_name("lanspeed-ebpf-kfunc");
-            fs::copy(&output, &kfunc)?;
-
-            build_ebpf_variant(&cargo, &workspace, true)?;
-            fs::copy(&output, output.with_file_name("lanspeed-ebpf-fallback"))?;
-            fs::copy(kfunc, output)?;
+            let kfunc = build_ebpf_variant(&cargo, &workspace, "kfunc", false)?;
+            let fallback = build_ebpf_variant(&cargo, &workspace, "fallback", true)?;
+            let output_dir = workspace.join("target/bpfel-unknown-none/release");
+            fs::create_dir_all(&output_dir)?;
+            fs::copy(&kfunc, output_dir.join("lanspeed-ebpf-kfunc"))?;
+            fs::copy(&fallback, output_dir.join("lanspeed-ebpf-fallback"))?;
+            fs::copy(kfunc, output_dir.join("lanspeed-ebpf"))?;
             Ok(())
         }
     }
@@ -88,8 +87,12 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
 fn build_ebpf_variant(
     cargo: &OsStr,
     workspace: &PathBuf,
+    variant: &str,
     fallback: bool,
-) -> Result<(), BuildError> {
+) -> Result<PathBuf, BuildError> {
+    let target_dir = workspace
+        .join("target")
+        .join(format!("lanspeed-ebpf-{variant}"));
     let mut command = Command::new(cargo);
     command.current_dir(workspace).args([
         "build",
@@ -103,6 +106,7 @@ fn build_ebpf_variant(
         "--locked",
         "--offline",
     ]);
+    command.arg("--target-dir").arg(&target_dir);
     if fallback {
         command.arg("--no-default-features");
     }
@@ -110,7 +114,8 @@ fn build_ebpf_variant(
     if let Some(linker) = env::var_os("BPF_LINKER") {
         command.env("CARGO_TARGET_BPFEL_UNKNOWN_NONE_LINKER", linker);
     }
-    ensure_success(command.status()?, BuildTarget::Ebpf)
+    ensure_success(command.status()?, BuildTarget::Ebpf)?;
+    Ok(target_dir.join("bpfel-unknown-none/release/lanspeed-ebpf"))
 }
 
 fn detect_rustc() -> Result<String, BuildError> {

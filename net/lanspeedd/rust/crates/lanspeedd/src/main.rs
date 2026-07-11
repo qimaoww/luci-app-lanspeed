@@ -74,7 +74,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     if let Some(error) = loaded.primary_error {
         eprintln!(
-            "warning: local nf_conntrack kfunc metadata is incompatible; \
+            "warning: local kernel does not expose compatible nf_conntrack kfunc metadata; \
              loading byte/packet accounting fallback: {error}"
         );
     }

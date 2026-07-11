@@ -107,7 +107,37 @@ fn malformed_application_elf_does_not_enter_fallback() {
     for error in [
         KfuncPatchError::InvalidBtf("missing module BTF".into()),
         KfuncPatchError::Io(std::io::Error::from_raw_os_error(libc::ENOENT)),
+        KfuncPatchError::Io(std::io::Error::from_raw_os_error(libc::ENOSYS)),
+        KfuncPatchError::Io(std::io::Error::from_raw_os_error(libc::EOPNOTSUPP)),
     ] {
         assert!(error.is_kernel_incompatibility());
+    }
+
+    for errno in [libc::EACCES, libc::EMFILE, libc::EIO] {
+        let error = KfuncPatchError::Io(std::io::Error::from_raw_os_error(errno));
+        assert!(!error.is_kernel_incompatibility());
+    }
+}
+
+#[test]
+fn resource_and_permission_errors_do_not_attempt_fallback() {
+    for errno in [libc::EACCES, libc::EMFILE, libc::EIO] {
+        let fallback_calls = Cell::new(0);
+        let error = load_with_fallback(
+            || {
+                Err::<u8, _>(KfuncPatchError::Io(std::io::Error::from_raw_os_error(
+                    errno,
+                )))
+            },
+            || {
+                fallback_calls.set(fallback_calls.get() + 1);
+                Ok(11)
+            },
+            KfuncPatchError::is_kernel_incompatibility,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, KfuncPatchError::Io(_)));
+        assert_eq!(fallback_calls.get(), 0);
     }
 }

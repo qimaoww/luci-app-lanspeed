@@ -267,13 +267,22 @@ pub fn merge_split_btf(base: &[u8], split: &[u8]) -> Result<Vec<u8>, KfuncPatchE
     let split_types = btf_section(split, split_header.0, split_header.1, split_header.2)?;
     let split_strings = btf_section(split, split_header.0, split_header.3, split_header.4)?;
 
-    let type_len = base_types.len() + split_types.len();
-    let string_len = base_strings.len() + split_strings.len();
-    let mut merged = base[..base_header.0].to_vec();
+    let type_len = checked_btf_len(base_types.len(), split_types.len())?;
+    let string_len = checked_btf_len(base_strings.len(), split_strings.len())?;
+    let base_prefix = base
+        .get(..base_header.0)
+        .ok_or_else(|| KfuncPatchError::InvalidBtf("truncated BTF header".into()))?;
+    let merged_len =
+        checked_total_btf_len(base_prefix.len(), type_len as usize, string_len as usize)?;
+    let mut merged = Vec::new();
+    merged
+        .try_reserve_exact(merged_len)
+        .map_err(|_| KfuncPatchError::InvalidBtf("merged BTF is too large".into()))?;
+    merged.extend_from_slice(base_prefix);
     merged[8..12].copy_from_slice(&0u32.to_le_bytes());
-    merged[12..16].copy_from_slice(&(type_len as u32).to_le_bytes());
-    merged[16..20].copy_from_slice(&(type_len as u32).to_le_bytes());
-    merged[20..24].copy_from_slice(&(string_len as u32).to_le_bytes());
+    merged[12..16].copy_from_slice(&type_len.to_le_bytes());
+    merged[16..20].copy_from_slice(&type_len.to_le_bytes());
+    merged[20..24].copy_from_slice(&string_len.to_le_bytes());
     merged.extend_from_slice(base_types);
     merged.extend_from_slice(split_types);
     merged.extend_from_slice(base_strings);
@@ -285,8 +294,22 @@ fn btf_header(bytes: &[u8]) -> Result<(usize, usize, usize, usize, usize), Kfunc
     if bytes.len() < 24 || u16::from_le_bytes([bytes[0], bytes[1]]) != 0xeb9f {
         return Err(KfuncPatchError::InvalidBtf("invalid BTF header".into()));
     }
-    let read = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
-    Ok((read(4), read(8), read(12), read(16), read(20)))
+    let read = |offset| -> Result<usize, KfuncPatchError> {
+        let value = bytes
+            .get(offset..offset + 4)
+            .ok_or_else(|| KfuncPatchError::InvalidBtf("truncated BTF header".into()))?;
+        usize::try_from(u32::from_le_bytes(value.try_into().map_err(|_| {
+            KfuncPatchError::InvalidBtf("invalid BTF header field".into())
+        })?))
+        .map_err(|_| KfuncPatchError::InvalidBtf("BTF header field is too large".into()))
+    };
+    let header_len = read(4)?;
+    if !(24..=bytes.len()).contains(&header_len) {
+        return Err(KfuncPatchError::InvalidBtf(
+            "invalid BTF header length".into(),
+        ));
+    }
+    Ok((header_len, read(8)?, read(12)?, read(16)?, read(20)?))
 }
 
 fn btf_section(
@@ -295,9 +318,34 @@ fn btf_section(
     offset: usize,
     len: usize,
 ) -> Result<&[u8], KfuncPatchError> {
+    let start = header_len
+        .checked_add(offset)
+        .ok_or_else(|| KfuncPatchError::InvalidBtf("BTF section offset overflow".into()))?;
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| KfuncPatchError::InvalidBtf("BTF section length overflow".into()))?;
     bytes
-        .get(header_len + offset..header_len + offset + len)
+        .get(start..end)
         .ok_or_else(|| KfuncPatchError::InvalidBtf("truncated BTF section".into()))
+}
+
+fn checked_btf_len(left: usize, right: usize) -> Result<u32, KfuncPatchError> {
+    let combined = left
+        .checked_add(right)
+        .ok_or_else(|| KfuncPatchError::InvalidBtf("combined BTF length overflow".into()))?;
+    u32::try_from(combined)
+        .map_err(|_| KfuncPatchError::InvalidBtf("combined BTF length exceeds u32".into()))
+}
+
+fn checked_total_btf_len(
+    header_len: usize,
+    type_len: usize,
+    string_len: usize,
+) -> Result<usize, KfuncPatchError> {
+    header_len
+        .checked_add(type_len)
+        .and_then(|length| length.checked_add(string_len))
+        .ok_or_else(|| KfuncPatchError::InvalidBtf("merged BTF length overflow".into()))
 }
 
 #[derive(Debug)]
@@ -313,10 +361,14 @@ pub enum KfuncPatchError {
 
 impl KfuncPatchError {
     pub fn is_kernel_incompatibility(&self) -> bool {
-        matches!(
-            self,
-            Self::KernelBtf(_) | Self::Resolve { .. } | Self::InvalidBtf(_) | Self::Io(_)
-        )
+        match self {
+            Self::KernelBtf(_) | Self::Resolve { .. } | Self::InvalidBtf(_) => true,
+            Self::Io(error) => matches!(
+                error.raw_os_error(),
+                Some(libc::ENOENT | libc::ENOSYS | libc::EOPNOTSUPP)
+            ),
+            Self::Object(_) | Self::MissingRelocation(_) | Self::InvalidInstruction(_) => false,
+        }
     }
 }
 
@@ -344,3 +396,20 @@ impl std::fmt::Display for KfuncPatchError {
 }
 
 impl std::error::Error for KfuncPatchError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn combined_btf_lengths_must_fit_the_wire_u32() {
+        assert!(matches!(
+            checked_btf_len(u32::MAX as usize, 1),
+            Err(KfuncPatchError::InvalidBtf(_))
+        ));
+        assert!(matches!(
+            checked_total_btf_len(usize::MAX, 1, 0),
+            Err(KfuncPatchError::InvalidBtf(_))
+        ));
+    }
+}
