@@ -78,6 +78,7 @@ run_logged() {
 
 run_node_check() {
 	for validator in \
+		"$SCRIPT_DIR/validate-lanspeed-rust-layout.js" \
 		"$SCRIPT_DIR/validate-lanspeed-contract.js" \
 		"$SCRIPT_DIR/validate-lanspeed-identity.js" \
 		"$SCRIPT_DIR/validate-lanspeed-collector.js" \
@@ -95,8 +96,9 @@ run_unit() {
 	reset_unit_evidence
 	append_unit_evidence "BEGIN unit run_id=$RUN_ID"
 	append_unit_evidence "command=unit"
-	append_unit_evidence "scenarios=node syntax, contract, identity, collector lifecycle, probes, lanspeed modules, build-sdk"
+	append_unit_evidence "scenarios=node syntax, rust layout, contract, identity, collector lifecycle, probes, lanspeed modules, build-sdk"
 	run_node_check || return $?
+	run_logged "rust-layout" node "$SCRIPT_DIR/validate-lanspeed-rust-layout.js" || return $?
 	run_logged "contract" node "$SCRIPT_DIR/validate-lanspeed-contract.js" || return $?
 	run_logged "identity" node "$SCRIPT_DIR/validate-lanspeed-identity.js" || return $?
 	run_logged "collector" node "$SCRIPT_DIR/validate-lanspeed-collector.js" || return $?
