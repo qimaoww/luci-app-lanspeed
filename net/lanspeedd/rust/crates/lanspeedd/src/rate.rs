@@ -228,6 +228,8 @@ impl RateBook {
 
             let state = &mut self.clients[state_index];
             let previous = state.latest();
+            let client_time_rollback = previous.is_some_and(|point| now_ms < point.sample_ms);
+            let rate_time_rollback = time_rollback || client_time_rollback;
             let effective_last_seen = previous
                 .filter(|point| {
                     point.tx_bytes == sample.tx_bytes && point.rx_bytes == sample.rx_bytes
@@ -243,11 +245,12 @@ impl RateBook {
                 last_seen_ms: effective_last_seen,
                 warnings: Vec::new(),
             };
-            if time_rollback {
+            if rate_time_rollback {
                 push_unique(&mut client.warnings, RateWarning::TimeRollback);
+                push_unique(&mut update.warnings, RateWarning::TimeRollback);
             }
             if let Some(previous) = previous {
-                let delta_ms = if time_rollback {
+                let delta_ms = if rate_time_rollback {
                     0
                 } else {
                     now_ms.checked_sub(previous.sample_ms).unwrap_or(0)

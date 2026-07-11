@@ -145,6 +145,40 @@ fn counter_and_time_rollbacks_are_zero_without_poisoning_healthy_rates() {
 }
 
 #[test]
+fn client_local_time_rollback_warns_resets_baseline_and_isolates_other_clients() {
+    let mut rates = RateBook::new(2, STALE_CLIENT_MS);
+    rates.update(
+        1_000,
+        [
+            counters("a@lan", 1_000, 0, 1_000),
+            counters("b@lan", 1_000, 0, 1_000),
+        ],
+    );
+
+    rates.update(900, [counters("b@lan", 1_000, 0, 1_000)]);
+    let returned = rates.update(
+        950,
+        [
+            counters("a@lan", 1_100, 0, 950),
+            counters("b@lan", 1_100, 0, 950),
+        ],
+    );
+
+    let a = returned.client("a@lan").unwrap();
+    let b = returned.client("b@lan").unwrap();
+    assert_eq!(a.tx_bps, 0);
+    assert_eq!(a.warnings, [RateWarning::TimeRollback]);
+    assert_eq!(b.tx_bps, 16_000);
+    assert!(b.warnings.is_empty());
+    assert_eq!(returned.warnings, [RateWarning::TimeRollback]);
+
+    let recovered = rates.update(1_050, [counters("a@lan", 1_200, 0, 1_050)]);
+    assert_eq!(recovered.clients[0].tx_bps, 8_000);
+    assert!(recovered.clients[0].warnings.is_empty());
+    assert!(recovered.warnings.is_empty());
+}
+
+#[test]
 fn rate_arithmetic_and_json_conversion_saturate_instead_of_wrapping() {
     let delta = RateBook::rate_from_delta(u64::MAX, 0, 1);
     assert_eq!(delta.bps, u64::MAX);
