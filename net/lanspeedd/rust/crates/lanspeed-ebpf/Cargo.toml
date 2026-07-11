@@ -11,3 +11,7 @@ path = "src/main.rs"
 [dependencies]
 aya-ebpf.workspace = true
 lanspeed-common = { path = "../lanspeed-common" }
+
+[features]
+default = ["conntrack-kfunc"]
+conntrack-kfunc = []

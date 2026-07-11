@@ -362,6 +362,23 @@ pub enum Program {
 }
 
 impl Program {
+    pub(crate) fn set_kfunc_btf_fds(&mut self, fds: Arc<[crate::MockableFd]>) {
+        macro_rules! set_fds {
+            ($($variant:ident),+ $(,)?) => {
+                match self {
+                    $(Self::$variant(program) => program.data.kfunc_btf_fds = Arc::clone(&fds),)+
+                }
+            };
+        }
+        set_fds!(
+            KProbe, UProbe, TracePoint, SocketFilter, ReusePortSocketFilter, Xdp, SkMsg, SkSkb,
+            SockOps, SchedClassifier, CgroupSkb, CgroupSysctl, CgroupSockopt, LircMode2,
+            PerfEvent, RawTracePoint, Lsm, LsmCgroup, BtfTracePoint, FEntry, FExit,
+            FlowDissector, Extension, CgroupSockAddr, SkLookup, SkReuseport, CgroupSock,
+            CgroupDevice, Iter,
+        );
+    }
+
     /// Returns the program type.
     pub const fn prog_type(&self) -> ProgramType {
         match self {
@@ -562,6 +579,7 @@ pub(crate) struct ProgramData<T: Link> {
     pub(crate) verifier_log_level: VerifierLogLevel,
     pub(crate) path: Option<PathBuf>,
     pub(crate) flags: u32,
+    pub(crate) kfunc_btf_fds: Arc<[crate::MockableFd]>,
 }
 
 impl<T: Link> ProgramData<T> {
@@ -583,6 +601,7 @@ impl<T: Link> ProgramData<T> {
             verifier_log_level,
             path: None,
             flags: 0,
+            kfunc_btf_fds: Arc::from([]),
         }
     }
 
@@ -610,6 +629,7 @@ impl<T: Link> ProgramData<T> {
             verifier_log_level,
             path: Some(path.to_path_buf()),
             flags: 0,
+            kfunc_btf_fds: Arc::from([]),
         })
     }
 
@@ -722,6 +742,7 @@ fn load_program<T: Link>(
         verifier_log_level,
         path: _,
         flags,
+        kfunc_btf_fds,
     } = data;
     if fd.is_some() {
         return Err(ProgramError::AlreadyLoaded);
@@ -777,6 +798,7 @@ fn load_program<T: Link>(
         line_info_rec_size: *line_info_rec_size,
         line_info: line_info.clone(),
         flags: *flags,
+        kfunc_btf_fds: kfunc_btf_fds.iter().map(|fd| fd.as_fd()).collect(),
     };
 
     let (ret, verifier_log) = retry_with_verifier_logs(10, |logger| {

@@ -41,6 +41,7 @@ use crate::{
     util::KernelVersion,
 };
 
+
 pub(crate) fn bpf_create_iter(link_fd: BorrowedFd<'_>) -> io::Result<crate::MockableFd> {
     let mut attr = unsafe { mem::zeroed::<bpf_attr>() };
 
@@ -158,6 +159,7 @@ pub(crate) struct EbpfLoadProgramAttrs<'a> {
     pub(crate) line_info_rec_size: usize,
     pub(crate) line_info: LineSecInfo,
     pub(crate) flags: u32,
+    pub(crate) kfunc_btf_fds: Vec<BorrowedFd<'a>>,
 }
 
 pub(crate) fn bpf_load_program(
@@ -168,7 +170,17 @@ pub(crate) fn bpf_load_program(
     let mut attr = unsafe { mem::zeroed::<bpf_attr>() };
 
     let u = unsafe { &mut attr.__bindgen_anon_3 };
-
+    let kfunc_fd_array = std::iter::once(0)
+        .chain(
+            aya_attr
+                .kfunc_btf_fds
+                .iter()
+                .map(|fd| fd.as_raw_fd()),
+        )
+        .collect::<Vec<_>>();
+    if kfunc_fd_array.len() > 1 {
+        u.fd_array = kfunc_fd_array.as_ptr() as u64;
+    }
     if let Some(name) = &aya_attr.name {
         let name_bytes = name.to_bytes();
         let len = cmp::min(name_bytes.len(), u.prog_name.len() - 1); // Ensure NULL termination.
@@ -1444,6 +1456,43 @@ mod tests {
 
     use super::*;
     use crate::sys::override_syscall;
+
+    #[test]
+    fn test_program_load_propagates_kfunc_btf_fd_array() {
+        override_syscall(|call| match call {
+            Syscall::Ebpf {
+                cmd: bpf_cmd::BPF_PROG_LOAD,
+                attr,
+            } => {
+                let fd_array = unsafe { attr.__bindgen_anon_3.fd_array as *const RawFd };
+                assert!(!fd_array.is_null());
+                assert_eq!(unsafe { std::slice::from_raw_parts(fd_array, 2) }, [0, 42]);
+                Ok(crate::MockableFd::mock_signed_fd().into())
+            }
+            _ => Err((-1, io::Error::from_raw_os_error(EINVAL))),
+        });
+
+        let module_btf_fd = unsafe { BorrowedFd::borrow_raw(42) };
+        let attrs = EbpfLoadProgramAttrs {
+            name: None,
+            ty: bpf_prog_type::BPF_PROG_TYPE_SCHED_CLS,
+            insns: &[],
+            license: c"GPL",
+            kernel_version: 0,
+            expected_attach_type: None,
+            prog_btf_fd: None,
+            attach_btf_obj_fd: None,
+            attach_btf_id: None,
+            attach_prog_fd: None,
+            func_info_rec_size: 0,
+            func_info: FuncSecInfo::default(),
+            line_info_rec_size: 0,
+            line_info: LineSecInfo::default(),
+            flags: 0,
+            kfunc_btf_fds: &[module_btf_fd],
+        };
+        bpf_load_program(&attrs, &mut [], VerifierLogLevel::default()).unwrap();
+    }
 
     #[test]
     fn test_attach_with_attributes() {

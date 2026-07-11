@@ -1,6 +1,7 @@
 use std::{
     env,
     ffi::{OsStr, OsString},
+    fs,
     path::PathBuf,
     process::{Command, ExitStatus},
 };
@@ -52,12 +53,11 @@ impl BuildTarget {
 pub fn build(target: BuildTarget) -> Result<(), BuildError> {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let workspace = workspace_root();
-    let mut command = Command::new(cargo);
-    command.current_dir(workspace).arg("build");
-
     match target {
         BuildTarget::Userspace => {
             validate_version("rustc", &detect_rustc()?, EXPECTED_RUSTC)?;
+            let mut command = Command::new(&cargo);
+            command.current_dir(&workspace).arg("build");
             command.env_remove("RUSTC_BOOTSTRAP");
             command.args([
                 "-p",
@@ -68,28 +68,49 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
                 "--locked",
                 "--offline",
             ]);
+            ensure_success(command.status()?, target)
         }
         BuildTarget::Ebpf => {
             ToolVersions::detect()?.validate()?;
-            command.args([
-                "-p",
-                "lanspeed-ebpf",
-                "--release",
-                "--target",
-                "bpfel-unknown-none",
-                "-Z",
-                "build-std=core",
-                "--locked",
-                "--offline",
-            ]);
-            command.env("RUSTC_BOOTSTRAP", "1");
-            if let Some(linker) = env::var_os("BPF_LINKER") {
-                command.env("CARGO_TARGET_BPFEL_UNKNOWN_NONE_LINKER", linker);
-            }
+            build_ebpf_variant(&cargo, &workspace, false)?;
+            let output = workspace.join("target/bpfel-unknown-none/release/lanspeed-ebpf");
+            let kfunc = output.with_file_name("lanspeed-ebpf-kfunc");
+            fs::copy(&output, &kfunc)?;
+
+            build_ebpf_variant(&cargo, &workspace, true)?;
+            fs::copy(&output, output.with_file_name("lanspeed-ebpf-fallback"))?;
+            fs::copy(kfunc, output)?;
+            Ok(())
         }
     }
+}
 
-    ensure_success(command.status()?, target)
+fn build_ebpf_variant(
+    cargo: &OsStr,
+    workspace: &PathBuf,
+    fallback: bool,
+) -> Result<(), BuildError> {
+    let mut command = Command::new(cargo);
+    command.current_dir(workspace).args([
+        "build",
+        "-p",
+        "lanspeed-ebpf",
+        "--release",
+        "--target",
+        "bpfel-unknown-none",
+        "-Z",
+        "build-std=core",
+        "--locked",
+        "--offline",
+    ]);
+    if fallback {
+        command.arg("--no-default-features");
+    }
+    command.env("RUSTC_BOOTSTRAP", "1");
+    if let Some(linker) = env::var_os("BPF_LINKER") {
+        command.env("CARGO_TARGET_BPFEL_UNKNOWN_NONE_LINKER", linker);
+    }
+    ensure_success(command.status()?, BuildTarget::Ebpf)
 }
 
 fn detect_rustc() -> Result<String, BuildError> {

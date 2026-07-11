@@ -63,7 +63,19 @@ pub fn is_valid_client_mac(mac: [u8; 6]) -> bool {
 }
 
 pub fn parse_packet(frame: &[u8]) -> Result<PacketIdentity, ParseError> {
+    parse_packet_prefix(frame, frame.len())
+}
+
+/// Parses transport identity from a bounded packet prefix.
+///
+/// `frame_len` is the complete skb length. The prefix must contain every
+/// header byte used by the parser, while payload bytes after the transport
+/// header may be omitted.
+pub fn parse_packet_prefix(frame: &[u8], frame_len: usize) -> Result<PacketIdentity, ParseError> {
     if frame.len() < ETHERNET_HEADER_LEN {
+        return Err(ParseError::TruncatedEthernet);
+    }
+    if frame_len < ETHERNET_HEADER_LEN {
         return Err(ParseError::TruncatedEthernet);
     }
 
@@ -74,9 +86,10 @@ pub fn parse_packet(frame: &[u8]) -> Result<PacketIdentity, ParseError> {
 
     let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
     let payload = &frame[ETHERNET_HEADER_LEN..];
+    let payload_len = frame_len - ETHERNET_HEADER_LEN;
     let network = match ethertype {
-        ETHERTYPE_IPV4 => parse_ipv4(payload)?,
-        ETHERTYPE_IPV6 => parse_ipv6(payload)?,
+        ETHERTYPE_IPV4 => parse_ipv4(payload, payload_len)?,
+        ETHERTYPE_IPV6 => parse_ipv6(payload, payload_len)?,
         _ => return Err(ParseError::UnsupportedEtherType),
     };
 
@@ -102,7 +115,7 @@ struct NetworkIdentity {
     dst_port: u16,
 }
 
-fn parse_ipv4(packet: &[u8]) -> Result<NetworkIdentity, ParseError> {
+fn parse_ipv4(packet: &[u8], packet_len: usize) -> Result<NetworkIdentity, ParseError> {
     if packet.len() < IPV4_MIN_HEADER_LEN {
         return Err(ParseError::TruncatedIpv4);
     }
@@ -123,7 +136,7 @@ fn parse_ipv4(packet: &[u8]) -> Result<NetworkIdentity, ParseError> {
     if total_len < header_len {
         return Err(ParseError::InvalidIpv4TotalLength);
     }
-    if packet.len() < total_len {
+    if packet_len < total_len {
         return Err(ParseError::TruncatedIpv4);
     }
     let fragment = u16::from_be_bytes([packet[6], packet[7]]);
@@ -131,6 +144,7 @@ fn parse_ipv4(packet: &[u8]) -> Result<NetworkIdentity, ParseError> {
         return Err(ParseError::NonInitialIpv4Fragment);
     }
     let allow_incomplete_datagram = fragment & 0x2000 != 0;
+    let transport_len = total_len - header_len;
 
     let mut src_addr = [0; 16];
     src_addr[..4].copy_from_slice(&packet[12..16]);
@@ -138,7 +152,8 @@ fn parse_ipv4(packet: &[u8]) -> Result<NetworkIdentity, ParseError> {
     dst_addr[..4].copy_from_slice(&packet[16..20]);
     let (protocol, src_port, dst_port) = parse_transport(
         packet[9],
-        &packet[header_len..total_len],
+        packet.get(header_len..).ok_or(ParseError::TruncatedIpv4)?,
+        transport_len,
         allow_incomplete_datagram,
     )?;
 
@@ -152,7 +167,7 @@ fn parse_ipv4(packet: &[u8]) -> Result<NetworkIdentity, ParseError> {
     })
 }
 
-fn parse_ipv6(packet: &[u8]) -> Result<NetworkIdentity, ParseError> {
+fn parse_ipv6(packet: &[u8], packet_len: usize) -> Result<NetworkIdentity, ParseError> {
     if packet.len() < IPV6_HEADER_LEN {
         return Err(ParseError::TruncatedIpv6);
     }
@@ -161,10 +176,10 @@ fn parse_ipv6(packet: &[u8]) -> Result<NetworkIdentity, ParseError> {
     }
 
     let payload_len = usize::from(u16::from_be_bytes([packet[4], packet[5]]));
-    let packet_len = IPV6_HEADER_LEN
+    let declared_len = IPV6_HEADER_LEN
         .checked_add(payload_len)
         .ok_or(ParseError::TruncatedIpv6)?;
-    if packet.len() < packet_len {
+    if packet_len < declared_len {
         return Err(ParseError::TruncatedIpv6);
     }
 
@@ -173,7 +188,7 @@ fn parse_ipv6(packet: &[u8]) -> Result<NetworkIdentity, ParseError> {
     let mut dst_addr = [0; 16];
     dst_addr.copy_from_slice(&packet[24..40]);
     let (protocol, src_port, dst_port) =
-        parse_transport(packet[6], &packet[IPV6_HEADER_LEN..packet_len], false)?;
+        parse_transport(packet[6], &packet[IPV6_HEADER_LEN..], payload_len, false)?;
 
     Ok(NetworkIdentity {
         family: AddressFamily::Ipv6,
@@ -188,17 +203,18 @@ fn parse_ipv6(packet: &[u8]) -> Result<NetworkIdentity, ParseError> {
 fn parse_transport(
     protocol: u8,
     transport: &[u8],
+    transport_len: usize,
     allow_incomplete_datagram: bool,
 ) -> Result<(TransportProtocol, u16, u16), ParseError> {
     match protocol {
-        IPPROTO_TCP => parse_tcp(transport),
-        IPPROTO_UDP => parse_udp(transport, allow_incomplete_datagram),
+        IPPROTO_TCP => parse_tcp(transport, transport_len),
+        IPPROTO_UDP => parse_udp(transport, transport_len, allow_incomplete_datagram),
         _ => Err(ParseError::UnsupportedTransportProtocol),
     }
 }
 
-fn parse_tcp(tcp: &[u8]) -> Result<(TransportProtocol, u16, u16), ParseError> {
-    if tcp.len() < TCP_MIN_HEADER_LEN {
+fn parse_tcp(tcp: &[u8], tcp_len: usize) -> Result<(TransportProtocol, u16, u16), ParseError> {
+    if tcp_len < TCP_MIN_HEADER_LEN || tcp.len() < TCP_MIN_HEADER_LEN {
         return Err(ParseError::TruncatedTcp);
     }
 
@@ -206,7 +222,8 @@ fn parse_tcp(tcp: &[u8]) -> Result<(TransportProtocol, u16, u16), ParseError> {
     if header_words < 5 {
         return Err(ParseError::InvalidTcpHeaderLength);
     }
-    if tcp.len() < usize::from(header_words) * 4 {
+    let header_len = usize::from(header_words) * 4;
+    if tcp_len < header_len || tcp.len() < header_len {
         return Err(ParseError::TruncatedTcp);
     }
 
@@ -219,13 +236,14 @@ fn parse_tcp(tcp: &[u8]) -> Result<(TransportProtocol, u16, u16), ParseError> {
 
 fn parse_udp(
     udp: &[u8],
+    udp_len: usize,
     allow_incomplete_datagram: bool,
 ) -> Result<(TransportProtocol, u16, u16), ParseError> {
-    if udp.len() < UDP_HEADER_LEN {
+    if udp_len < UDP_HEADER_LEN || udp.len() < UDP_HEADER_LEN {
         return Err(ParseError::TruncatedUdp);
     }
     let datagram_len = usize::from(u16::from_be_bytes([udp[4], udp[5]]));
-    if datagram_len < UDP_HEADER_LEN || (!allow_incomplete_datagram && datagram_len > udp.len()) {
+    if datagram_len < UDP_HEADER_LEN || (!allow_incomplete_datagram && datagram_len > udp_len) {
         return Err(ParseError::InvalidUdpLength);
     }
 

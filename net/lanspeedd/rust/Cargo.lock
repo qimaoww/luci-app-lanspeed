@@ -229,7 +229,10 @@ name = "lanspeedd"
 version = "0.1.0"
 dependencies = [
  "aya",
+ "aya-obj",
  "lanspeed-common",
+ "libc",
+ "object",
 ]
 
 [[package]]

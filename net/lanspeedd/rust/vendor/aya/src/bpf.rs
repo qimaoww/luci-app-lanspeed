@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     fs, io, iter,
-    os::fd::{AsFd as _, AsRawFd as _},
+    os::fd::{AsFd as _, AsRawFd as _, OwnedFd},
     path::{Path, PathBuf},
     sync::{Arc, LazyLock},
 };
@@ -129,6 +129,7 @@ pub struct EbpfLoader<'a> {
     extensions: HashSet<&'a str>,
     verifier_log_level: VerifierLogLevel,
     allow_unsupported_maps: bool,
+    kfunc_btf_fds: Arc<[crate::MockableFd]>,
 }
 
 /// Builder style API for advanced loading of eBPF programs.
@@ -168,7 +169,19 @@ impl<'a> EbpfLoader<'a> {
             extensions: HashSet::new(),
             verifier_log_level: VerifierLogLevel::default(),
             allow_unsupported_maps: false,
+            kfunc_btf_fds: Arc::from([]),
         }
+    }
+
+    /// Supplies owned kernel module BTF descriptors used by kfunc calls.
+    #[doc(hidden)]
+    pub fn kfunc_btf_fds(&mut self, fds: Vec<OwnedFd>) -> &mut Self {
+        self.kfunc_btf_fds = fds
+            .into_iter()
+            .map(crate::MockableFd::from_fd)
+            .collect::<Vec<_>>()
+            .into();
+        self
     }
 
     /// Sets the target [BTF](Btf) info.
@@ -426,6 +439,7 @@ impl<'a> EbpfLoader<'a> {
             verifier_log_level,
             allow_unsupported_maps,
             map_pin_path_by_name,
+            kfunc_btf_fds,
         } = self;
         let mut obj = Object::parse(data)?;
         obj.patch_map_data(globals.clone())?;
@@ -782,6 +796,8 @@ impl<'a> EbpfLoader<'a> {
                         }
                     }
                 };
+                let mut program = program;
+                program.set_kfunc_btf_fds(Arc::clone(kfunc_btf_fds));
                 (name, program)
             })
             .collect();

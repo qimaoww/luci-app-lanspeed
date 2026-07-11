@@ -1,41 +1,42 @@
 #![no_std]
 #![no_main]
+#![allow(internal_features)]
+#![feature(core_intrinsics)]
+#![feature(asm_experimental_arch)]
 
+mod account;
+#[cfg(feature = "conntrack-kfunc")]
+mod conntrack;
+mod panic;
+
+use account::account_frame;
 use aya_ebpf::{
-    bindings::TC_ACT_PIPE,
-    macros::{classifier, map},
-    maps::HashMap,
+    bindings::{TC_ACT_OK, TC_ACT_UNSPEC},
+    macros::classifier,
     programs::TcContext,
 };
-use lanspeed_common::BYTE_COUNT_KEY;
+use lanspeed_common::{DIR_RX, DIR_TX};
 
 #[link_section = "license"]
 #[no_mangle]
-static LICENSE: [u8; 11] = *b"Apache-2.0\0";
-
-#[map(name = "BYTE_COUNTS")]
-static BYTE_COUNTS: HashMap<u32, u64> = HashMap::with_max_entries(1, 0);
+static LICENSE: [u8; 4] = *b"GPL\0";
 
 #[classifier]
-pub fn lanspeed_count(ctx: TcContext) -> i32 {
-    count_bytes(ctx)
+pub fn lanspeed_ingress(ctx: TcContext) -> i32 {
+    account_frame(ctx, DIR_TX, TC_ACT_OK)
 }
 
-fn count_bytes(ctx: TcContext) -> i32 {
-    let packet_bytes = ctx.len() as u64;
-
-    unsafe {
-        if let Some(counter) = BYTE_COUNTS.get_ptr_mut(&BYTE_COUNT_KEY) {
-            *counter += packet_bytes;
-        } else {
-            let _ = BYTE_COUNTS.insert(&BYTE_COUNT_KEY, &packet_bytes, 0);
-        }
-    }
-
-    TC_ACT_PIPE
+#[classifier]
+pub fn lanspeed_egress(ctx: TcContext) -> i32 {
+    account_frame(ctx, DIR_RX, TC_ACT_OK)
 }
 
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
-    unsafe { core::hint::unreachable_unchecked() }
+#[classifier]
+pub fn lanspeed_ingress_early(ctx: TcContext) -> i32 {
+    account_frame(ctx, DIR_TX, TC_ACT_UNSPEC)
+}
+
+#[classifier]
+pub fn lanspeed_egress_early(ctx: TcContext) -> i32 {
+    account_frame(ctx, DIR_RX, TC_ACT_UNSPEC)
 }

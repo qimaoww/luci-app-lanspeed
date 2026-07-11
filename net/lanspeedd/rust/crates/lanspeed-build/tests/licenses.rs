@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 #[test]
-fn workspace_members_and_bpf_declare_apache_2_license() {
+fn workspace_is_apache_2_and_bpf_declares_gpl_kfunc_compatibility() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let workspace = fs::read_to_string(root.join("Cargo.toml")).unwrap();
     assert!(workspace.contains("license = \"Apache-2.0\""));
@@ -22,5 +22,5 @@ fn workspace_members_and_bpf_declare_apache_2_license() {
     }
 
     let ebpf = fs::read_to_string(root.join("crates/lanspeed-ebpf/src/main.rs")).unwrap();
-    assert!(ebpf.contains("static LICENSE: [u8; 11] = *b\"Apache-2.0\\0\";"));
+    assert!(ebpf.contains("static LICENSE: [u8; 4] = *b\"GPL\\0\";"));
 }

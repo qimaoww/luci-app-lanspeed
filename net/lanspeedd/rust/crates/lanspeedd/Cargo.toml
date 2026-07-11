@@ -10,4 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 aya.workspace = true
+aya-obj = "=0.3.0"
 lanspeed-common = { path = "../lanspeed-common" }
+libc.workspace = true
+object = { version = "=0.39.1", default-features = false, features = ["elf", "read_core"] }

@@ -1,6 +1,6 @@
 use lanspeed_common::packet::{
-    is_valid_client_mac, parse_packet, vlan_zone, AddressFamily, PacketIdentity, ParseError,
-    TransportProtocol,
+    is_valid_client_mac, parse_packet, parse_packet_prefix, vlan_zone, AddressFamily,
+    PacketIdentity, ParseError, TransportProtocol,
 };
 
 const SRC_MAC: [u8; 6] = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55];
@@ -293,4 +293,29 @@ fn accepts_only_nonzero_unicast_client_macs() {
     assert!(!is_valid_client_mac([0; 6]));
     assert!(!is_valid_client_mac([0xff; 6]));
     assert!(!is_valid_client_mac([0x01, 0, 0x5e, 0, 0, 1]));
+}
+
+#[test]
+fn parses_transport_headers_from_a_bounded_ipv4_prefix() {
+    let mut frame = ethernet(0x0800, &ipv4(6, 5, &tcp(12_345, 443, 5)));
+    frame.extend_from_slice(&[0xaa; 1200]);
+    let frame_len = frame.len();
+    frame[16..18].copy_from_slice(&((frame_len - 14) as u16).to_be_bytes());
+    frame.truncate(96);
+
+    let identity = parse_packet_prefix(&frame, frame_len).unwrap();
+    assert_eq!(identity.protocol, TransportProtocol::Tcp);
+    assert_eq!(identity.src_port, 12_345);
+    assert_eq!(identity.dst_port, 443);
+}
+
+#[test]
+fn bounded_prefix_still_rejects_lengths_beyond_the_real_packet() {
+    let mut frame = ethernet(0x86dd, &ipv6(17, &udp(1, 2)));
+    frame[18..20].copy_from_slice(&1200u16.to_be_bytes());
+
+    assert_eq!(
+        parse_packet_prefix(&frame, frame.len()),
+        Err(ParseError::TruncatedIpv6)
+    );
 }
