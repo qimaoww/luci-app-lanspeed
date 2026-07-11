@@ -62,9 +62,11 @@ impl Drop for BlobBuf {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     static INIT_CALLS: AtomicUsize = AtomicUsize::new(0);
     static FREE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     unsafe extern "C" fn init(_buf: *mut crate::raw::blob_buf, _id: libc::c_int) -> libc::c_int {
         INIT_CALLS.fetch_add(1, Ordering::SeqCst);
@@ -96,6 +98,7 @@ mod tests {
 
     #[test]
     fn from_json_frees_owned_buffer_on_drop() {
+        let _lock = TEST_LOCK.lock().unwrap();
         reset();
         let value = BlobBuf::from_json_with(
             r#"{"ok":true}"#,
@@ -115,6 +118,7 @@ mod tests {
 
     #[test]
     fn from_json_frees_initialized_buffer_when_json_is_rejected() {
+        let _lock = TEST_LOCK.lock().unwrap();
         reset();
         let result = BlobBuf::from_json_with(
             "not-json",

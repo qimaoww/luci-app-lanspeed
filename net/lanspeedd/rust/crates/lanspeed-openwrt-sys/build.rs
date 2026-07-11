@@ -11,6 +11,10 @@ fn main() {
 
     let library_dir = discover_library_dir().unwrap_or_else(|error| panic!("{error}"));
     println!("cargo:rustc-link-search=native={}", library_dir.display());
+    println!(
+        "cargo:rustc-link-arg=-Wl,-rpath-link,{}",
+        library_dir.display()
+    );
     for library in PLATFORM_LIBRARIES {
         println!("cargo:rustc-link-lib=dylib={library}");
     }

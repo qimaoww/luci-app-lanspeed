@@ -1,10 +1,11 @@
 use crate::{raw, BlobBuf, Error, Result};
+use std::cell::{RefCell, UnsafeCell};
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
-use std::marker::{PhantomData, PhantomPinned};
+use std::marker::PhantomData;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::pin::Pin;
 use std::ptr;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 pub const STATUS_OK: libc::c_int = raw::ubus_msg_status_UBUS_STATUS_OK.0 as libc::c_int;
 pub const STATUS_UNKNOWN_ERROR: libc::c_int =
@@ -15,6 +16,7 @@ type Handler = dyn for<'request> FnMut(UbusRequest<'request>) -> libc::c_int;
 #[derive(Clone, Copy)]
 struct UbusOps {
     connect: unsafe extern "C" fn(*const libc::c_char) -> *mut raw::ubus_context,
+    reconnect: unsafe extern "C" fn(*mut raw::ubus_context, *const libc::c_char) -> libc::c_int,
     free: unsafe extern "C" fn(*mut raw::ubus_context),
     add_object: unsafe extern "C" fn(*mut raw::ubus_context, *mut raw::ubus_object) -> libc::c_int,
     remove_object:
@@ -24,14 +26,40 @@ struct UbusOps {
         *mut raw::ubus_request_data,
         *mut raw::blob_attr,
     ) -> libc::c_int,
+    fd_add: unsafe extern "C" fn(*mut raw::uloop_fd, libc::c_uint) -> libc::c_int,
+    fd_delete: unsafe extern "C" fn(*mut raw::uloop_fd) -> libc::c_int,
+    defer_cleanup: fn(Rc<ConnectionInner>),
+}
+
+thread_local! {
+    static OBJECT_REGISTRY: RefCell<HashMap<usize, Weak<ObjectInner>>> =
+        RefCell::new(HashMap::new());
+    static DEFERRED_CONNECTION_DROPS: RefCell<Vec<Rc<ConnectionInner>>> =
+        const { RefCell::new(Vec::new()) };
+    static DEFERRED_CONNECTION_TIMER: crate::Timer = crate::Timer::new(|| {
+        DEFERRED_CONNECTION_DROPS.with(|connections| connections.borrow_mut().clear());
+    });
+}
+
+fn defer_connection_cleanup(connection: Rc<ConnectionInner>) {
+    DEFERRED_CONNECTION_DROPS.with(|connections| connections.borrow_mut().push(connection));
+    // If scheduling fails, retain the connection in the queue. A leak is safer
+    // than freeing a context while libubus is still unwinding its dispatch.
+    DEFERRED_CONNECTION_TIMER.with(|timer| {
+        let _ = timer.schedule(0);
+    });
 }
 
 const REAL_OPS: UbusOps = UbusOps {
     connect: raw::ubus_connect,
+    reconnect: raw::ubus_reconnect,
     free: raw::ubus_free,
     add_object: raw::ubus_add_object,
     remove_object: raw::ubus_remove_object,
     send_reply: raw::ubus_send_reply,
+    fd_add: raw::uloop_fd_add,
+    fd_delete: raw::uloop_fd_delete,
+    defer_cleanup: defer_connection_cleanup,
 };
 
 pub struct UbusMethod {
@@ -52,16 +80,17 @@ impl UbusMethod {
 }
 
 pub struct UbusRequest<'request> {
-    context: *mut raw::ubus_context,
+    connection: Rc<ConnectionInner>,
     request: *mut raw::ubus_request_data,
-    ops: UbusOps,
     _lifetime: PhantomData<&'request mut raw::ubus_request_data>,
 }
 
 impl UbusRequest<'_> {
     pub fn reply_json(&mut self, json: &str) -> Result<()> {
         let message = BlobBuf::from_json(json)?;
-        let result = unsafe { (self.ops.send_reply)(self.context, self.request, message.head()) };
+        let result = unsafe {
+            (self.connection.ops.send_reply)(self.connection.context, self.request, message.head())
+        };
         if result == 0 {
             Ok(())
         } else {
@@ -73,23 +102,51 @@ impl UbusRequest<'_> {
     }
 }
 
-#[repr(C)]
 pub struct UbusObject {
-    raw: raw::ubus_object,
-    object_type: raw::ubus_object_type,
     name: CString,
     methods: Vec<UbusMethod>,
-    raw_methods: Vec<raw::ubus_method>,
-    ops: UbusOps,
     _not_send_or_sync: PhantomData<Rc<()>>,
-    _pinned: PhantomPinned,
 }
 
 impl UbusObject {
-    pub fn new(name: &str, methods: Vec<UbusMethod>) -> Result<Pin<Box<Self>>> {
-        let name = CString::new(name)?;
-        let method_count = libc::c_int::try_from(methods.len())
+    pub fn new(name: &str, methods: Vec<UbusMethod>) -> Result<Self> {
+        libc::c_int::try_from(methods.len())
             .map_err(|_| Error::InvalidData("too many ubus methods"))?;
+        Ok(Self {
+            name: CString::new(name)?,
+            methods,
+            _not_send_or_sync: PhantomData,
+        })
+    }
+}
+
+struct MethodCell {
+    name: CString,
+    handler: RefCell<Option<Box<Handler>>>,
+}
+
+#[repr(C)]
+struct ObjectInner {
+    raw: UnsafeCell<raw::ubus_object>,
+    object_type: UnsafeCell<raw::ubus_object_type>,
+    name: CString,
+    methods: Vec<MethodCell>,
+    raw_methods: Box<[raw::ubus_method]>,
+    connection: Weak<ConnectionInner>,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+impl ObjectInner {
+    fn new(object: UbusObject, connection: Weak<ConnectionInner>) -> Rc<Self> {
+        let method_count = object.methods.len() as libc::c_int;
+        let methods = object
+            .methods
+            .into_iter()
+            .map(|method| MethodCell {
+                name: method.name,
+                handler: RefCell::new(Some(method.handler)),
+            })
+            .collect::<Vec<_>>();
         let raw_methods = methods
             .iter()
             .map(|method| raw::ubus_method {
@@ -100,57 +157,38 @@ impl UbusObject {
                 policy: ptr::null(),
                 n_policy: 0,
             })
-            .collect();
-        let mut object = Box::pin(Self {
-            raw: raw::ubus_object::default(),
-            object_type: raw::ubus_object_type::default(),
-            name,
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let inner = Rc::new(Self {
+            raw: UnsafeCell::new(raw::ubus_object::default()),
+            object_type: UnsafeCell::new(raw::ubus_object_type::default()),
+            name: object.name,
             methods,
             raw_methods,
-            ops: REAL_OPS,
+            connection,
             _not_send_or_sync: PhantomData,
-            _pinned: PhantomPinned,
         });
-        let this = unsafe { object.as_mut().get_unchecked_mut() };
-        this.object_type.name = this.name.as_ptr();
-        this.object_type.methods = this.raw_methods.as_ptr();
-        this.object_type.n_methods = method_count;
-        this.raw.name = this.name.as_ptr();
-        this.raw.type_ = &mut this.object_type;
-        this.raw.methods = this.raw_methods.as_ptr();
-        this.raw.n_methods = method_count;
-        Ok(object)
+        unsafe {
+            let object_type = &mut *inner.object_type.get();
+            object_type.name = inner.name.as_ptr();
+            object_type.methods = inner.raw_methods.as_ptr();
+            object_type.n_methods = method_count;
+            let raw = &mut *inner.raw.get();
+            raw.name = inner.name.as_ptr();
+            raw.type_ = object_type;
+            raw.methods = inner.raw_methods.as_ptr();
+            raw.n_methods = method_count;
+        }
+        inner
     }
 
-    fn raw_mut(self: Pin<&mut Self>) -> *mut raw::ubus_object {
-        let this = unsafe { self.get_unchecked_mut() };
-        &mut this.raw
-    }
-
-    #[cfg(test)]
-    fn raw_ptr(self: Pin<&Self>) -> *const raw::ubus_object {
-        &self.get_ref().raw
-    }
-
-    #[cfg(test)]
-    fn methods_ptr(self: Pin<&Self>) -> *const raw::ubus_method {
-        self.get_ref().raw_methods.as_ptr()
-    }
-
-    #[cfg(test)]
-    fn invoke_for_test(
-        self: Pin<&Self>,
-        method: *const libc::c_char,
-        request: *mut raw::ubus_request_data,
-        _ops: UbusOps,
-    ) -> libc::c_int {
-        let object = self.raw_ptr().cast_mut();
-        unsafe { method_trampoline(ptr::null_mut(), object, request, method, ptr::null_mut()) }
+    fn raw_ptr(&self) -> *mut raw::ubus_object {
+        self.raw.get()
     }
 }
 
 unsafe extern "C" fn method_trampoline(
-    context: *mut raw::ubus_context,
+    _context: *mut raw::ubus_context,
     object: *mut raw::ubus_object,
     request: *mut raw::ubus_request_data,
     method: *const libc::c_char,
@@ -159,30 +197,63 @@ unsafe extern "C" fn method_trampoline(
     if object.is_null() || request.is_null() || method.is_null() {
         return STATUS_UNKNOWN_ERROR;
     }
-    let object = unsafe { &mut *object.cast::<UbusObject>() };
+    let Some(object) = OBJECT_REGISTRY.with(|registry| {
+        registry
+            .borrow()
+            .get(&(object as usize))
+            .and_then(Weak::upgrade)
+    }) else {
+        return STATUS_UNKNOWN_ERROR;
+    };
+    let Some(connection) = object.connection.upgrade() else {
+        return STATUS_UNKNOWN_ERROR;
+    };
+    connection
+        .dispatch_depth
+        .set(connection.dispatch_depth.get() + 1);
+    struct DispatchGuard<'a>(&'a ConnectionInner);
+    impl Drop for DispatchGuard<'_> {
+        fn drop(&mut self) {
+            self.0.dispatch_depth.set(self.0.dispatch_depth.get() - 1);
+        }
+    }
+    let _dispatch_guard = DispatchGuard(&connection);
     let method_name = unsafe { CStr::from_ptr(method) }.to_bytes();
     let Some(method) = object
         .methods
-        .iter_mut()
+        .iter()
         .find(|candidate| candidate.name.as_bytes() == method_name)
     else {
         return STATUS_UNKNOWN_ERROR;
     };
+    let Some(mut handler) = method.handler.borrow_mut().take() else {
+        return STATUS_UNKNOWN_ERROR;
+    };
     let ubus_request = UbusRequest {
-        context,
+        connection: Rc::clone(&connection),
         request,
-        ops: object.ops,
         _lifetime: PhantomData,
     };
-    catch_unwind(AssertUnwindSafe(|| (method.handler)(ubus_request)))
-        .unwrap_or(STATUS_UNKNOWN_ERROR)
+    let status =
+        catch_unwind(AssertUnwindSafe(|| handler(ubus_request))).unwrap_or(STATUS_UNKNOWN_ERROR);
+    *method.handler.borrow_mut() = Some(handler);
+    status
 }
 
 pub struct UbusConnection {
-    context: *mut raw::ubus_context,
-    objects: Vec<Pin<Box<UbusObject>>>,
-    ops: UbusOps,
+    inner: Rc<ConnectionInner>,
+}
+
+struct ConnectionState {
+    objects: Vec<Rc<ObjectInner>>,
     attached_to_uloop: bool,
+}
+
+struct ConnectionInner {
+    context: *mut raw::ubus_context,
+    state: RefCell<ConnectionState>,
+    ops: UbusOps,
+    dispatch_depth: std::cell::Cell<usize>,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
@@ -199,49 +270,77 @@ impl UbusConnection {
             return Err(Error::Allocation("ubus context"));
         }
         Ok(Self {
-            context,
-            objects: Vec::new(),
-            ops,
-            attached_to_uloop: false,
-            _not_send_or_sync: PhantomData,
+            inner: Rc::new(ConnectionInner {
+                context,
+                state: RefCell::new(ConnectionState {
+                    objects: Vec::new(),
+                    attached_to_uloop: false,
+                }),
+                ops,
+                dispatch_depth: std::cell::Cell::new(0),
+                _not_send_or_sync: PhantomData,
+            }),
         })
     }
 
     pub fn attach_uloop(&mut self) -> Result<()> {
-        if self.attached_to_uloop {
+        if self.inner.state.borrow().attached_to_uloop {
             return Ok(());
         }
-        let socket = unsafe { &mut (*self.context).sock };
+        let socket = unsafe { &mut (*self.inner.context).sock };
         let flags = raw::ULOOP_READ | raw::ULOOP_BLOCKING;
-        let result = unsafe { raw::uloop_fd_add(socket, flags) };
+        let result = unsafe { (self.inner.ops.fd_add)(socket, flags) };
         if result != 0 {
             return Err(Error::Platform {
                 operation: "uloop_fd_add",
                 code: result,
             });
         }
-        self.attached_to_uloop = true;
+        self.inner.state.borrow_mut().attached_to_uloop = true;
         Ok(())
     }
 
     pub fn reconnect(&mut self, path: Option<&str>) -> Result<()> {
         let path = path.map(CString::new).transpose()?;
         let path_pointer = path.as_ref().map_or(ptr::null(), |value| value.as_ptr());
-        let result = unsafe { raw::ubus_reconnect(self.context, path_pointer) };
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(Error::Platform {
+        let was_attached = self.inner.state.borrow().attached_to_uloop;
+        if was_attached {
+            let socket = unsafe { &mut (*self.inner.context).sock };
+            let result = unsafe { (self.inner.ops.fd_delete)(socket) };
+            if result != 0 {
+                return Err(Error::Platform {
+                    operation: "uloop_fd_delete",
+                    code: result,
+                });
+            }
+            self.inner.state.borrow_mut().attached_to_uloop = false;
+        }
+        let result = unsafe { (self.inner.ops.reconnect)(self.inner.context, path_pointer) };
+        if result != 0 {
+            return Err(Error::Platform {
                 operation: "ubus_reconnect",
                 code: result,
-            })
+            });
         }
+        if was_attached {
+            let socket = unsafe { &mut (*self.inner.context).sock };
+            let flags = raw::ULOOP_READ | raw::ULOOP_BLOCKING;
+            let result = unsafe { (self.inner.ops.fd_add)(socket, flags) };
+            if result != 0 {
+                return Err(Error::Platform {
+                    operation: "uloop_fd_add",
+                    code: result,
+                });
+            }
+            self.inner.state.borrow_mut().attached_to_uloop = true;
+        }
+        Ok(())
     }
 
     pub fn lookup_id(&mut self, path: &str) -> Result<u32> {
         let path = CString::new(path)?;
         let mut id = 0;
-        let result = unsafe { raw::ubus_lookup_id(self.context, path.as_ptr(), &mut id) };
+        let result = unsafe { raw::ubus_lookup_id(self.inner.context, path.as_ptr(), &mut id) };
         if result == 0 {
             Ok(id)
         } else {
@@ -252,50 +351,65 @@ impl UbusConnection {
         }
     }
 
-    pub fn register_object(&mut self, mut object: Pin<Box<UbusObject>>) -> Result<()> {
-        unsafe { object.as_mut().get_unchecked_mut().ops = self.ops };
-        let result = unsafe { (self.ops.add_object)(self.context, object.as_mut().raw_mut()) };
+    pub fn register_object(&mut self, object: UbusObject) -> Result<()> {
+        let object = ObjectInner::new(object, Rc::downgrade(&self.inner));
+        let result = unsafe { (self.inner.ops.add_object)(self.inner.context, object.raw_ptr()) };
         if result != 0 {
             return Err(Error::Platform {
                 operation: "ubus_add_object",
                 code: result,
             });
         }
-        self.objects.push(object);
+        OBJECT_REGISTRY.with(|registry| {
+            registry
+                .borrow_mut()
+                .insert(object.raw_ptr() as usize, Rc::downgrade(&object));
+        });
+        self.inner.state.borrow_mut().objects.push(object);
         Ok(())
     }
 
     #[cfg(test)]
-    fn object_ptr_for_test(&self, index: usize) -> *const raw::ubus_object {
-        self.objects[index].as_ref().raw_ptr()
+    fn object_ptr_for_test(&self, index: usize) -> *mut raw::ubus_object {
+        self.inner.state.borrow().objects[index].raw_ptr()
     }
 
     #[cfg(test)]
-    fn methods_ptr_for_test(&self, index: usize) -> *const raw::ubus_method {
-        self.objects[index].as_ref().methods_ptr()
-    }
-
-    #[cfg(test)]
-    fn invoke_for_test(
-        &mut self,
-        index: usize,
+    unsafe fn invoke_raw_for_test(
+        object: *mut raw::ubus_object,
         method: *const libc::c_char,
         request: *mut raw::ubus_request_data,
     ) -> libc::c_int {
-        let object = self.objects[index].as_mut().raw_mut();
-        unsafe { method_trampoline(self.context, object, request, method, ptr::null_mut()) }
+        unsafe { method_trampoline(ptr::null_mut(), object, request, method, ptr::null_mut()) }
+    }
+
+    #[cfg(test)]
+    fn is_attached_for_test(&self) -> bool {
+        self.inner.state.borrow().attached_to_uloop
     }
 }
 
 impl Drop for UbusConnection {
     fn drop(&mut self) {
-        for object in &mut self.objects {
-            let _ = unsafe { (self.ops.remove_object)(self.context, object.as_mut().raw_mut()) };
+        if self.inner.dispatch_depth.get() > 0 {
+            (self.inner.ops.defer_cleanup)(Rc::clone(&self.inner));
         }
-        self.objects.clear();
-        if self.attached_to_uloop {
+    }
+}
+
+impl Drop for ConnectionInner {
+    fn drop(&mut self) {
+        let state = self.state.get_mut();
+        for object in &state.objects {
+            let _ = OBJECT_REGISTRY.try_with(|registry| {
+                registry.borrow_mut().remove(&(object.raw_ptr() as usize));
+            });
+            let _ = unsafe { (self.ops.remove_object)(self.context, object.raw_ptr()) };
+        }
+        state.objects.clear();
+        if state.attached_to_uloop {
             let socket = unsafe { &mut (*self.context).sock };
-            let _ = unsafe { raw::uloop_fd_delete(socket) };
+            let _ = unsafe { (self.ops.fd_delete)(socket) };
         }
         unsafe { (self.ops.free)(self.context) };
     }
@@ -304,20 +418,40 @@ impl Drop for UbusConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::ffi::CString;
     use std::rc::Rc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     static EVENTS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    static FREED: AtomicBool = AtomicBool::new(false);
+    static FAIL_READD: AtomicBool = AtomicBool::new(false);
+    static FD_ADD_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    thread_local! {
+        static TEST_DEFERRED_DROPS: RefCell<Vec<Rc<ConnectionInner>>> =
+            const { RefCell::new(Vec::new()) };
+    }
 
     unsafe extern "C" fn connect(_path: *const libc::c_char) -> *mut crate::raw::ubus_context {
+        FREED.store(false, Ordering::SeqCst);
         EVENTS.lock().unwrap().push("connect");
         Box::into_raw(Box::new(crate::raw::ubus_context::default()))
     }
 
+    unsafe extern "C" fn reconnect(
+        _context: *mut crate::raw::ubus_context,
+        _path: *const libc::c_char,
+    ) -> libc::c_int {
+        EVENTS.lock().unwrap().push("reconnect");
+        0
+    }
+
     unsafe extern "C" fn free(context: *mut crate::raw::ubus_context) {
         EVENTS.lock().unwrap().push("free");
+        FREED.store(true, Ordering::SeqCst);
         drop(unsafe { Box::from_raw(context) });
     }
 
@@ -342,16 +476,51 @@ mod tests {
         _request: *mut crate::raw::ubus_request_data,
         _message: *mut crate::raw::blob_attr,
     ) -> libc::c_int {
+        assert!(!FREED.load(Ordering::SeqCst));
+        EVENTS.lock().unwrap().push("reply");
         0
+    }
+
+    unsafe extern "C" fn fd_add(
+        socket: *mut crate::raw::uloop_fd,
+        _flags: libc::c_uint,
+    ) -> libc::c_int {
+        let call = FD_ADD_CALLS.fetch_add(1, Ordering::SeqCst);
+        EVENTS.lock().unwrap().push("fd_add");
+        if call > 0 && FAIL_READD.load(Ordering::SeqCst) {
+            return -5;
+        }
+        unsafe { (*socket).registered = true };
+        0
+    }
+
+    unsafe extern "C" fn fd_delete(socket: *mut crate::raw::uloop_fd) -> libc::c_int {
+        EVENTS.lock().unwrap().push("fd_delete");
+        unsafe { (*socket).registered = false };
+        0
+    }
+
+    fn defer_cleanup(connection: Rc<ConnectionInner>) {
+        EVENTS.lock().unwrap().push("defer");
+        TEST_DEFERRED_DROPS.with(|connections| connections.borrow_mut().push(connection));
+    }
+
+    fn run_deferred_cleanup() {
+        EVENTS.lock().unwrap().push("next_tick");
+        TEST_DEFERRED_DROPS.with(|connections| connections.borrow_mut().clear());
     }
 
     fn fake_ops() -> UbusOps {
         UbusOps {
             connect,
+            reconnect,
             free,
             add_object,
             remove_object,
             send_reply,
+            fd_add,
+            fd_delete,
+            defer_cleanup,
         }
     }
 
@@ -364,58 +533,200 @@ mod tests {
     }
 
     #[test]
-    fn connection_owns_stable_object_method_and_callback_storage() {
+    fn handler_drop_keeps_context_alive_until_the_next_event_loop_tick() {
+        let _lock = TEST_LOCK.lock().unwrap();
         EVENTS.lock().unwrap().clear();
-        let calls = Rc::new(Cell::new(0));
         let drops = Rc::new(Cell::new(0));
-        let callback_calls = Rc::clone(&calls);
+        let slot = Rc::new(RefCell::new(None));
+        let callback_slot = Rc::clone(&slot);
         let probe = DropProbe(Rc::clone(&drops));
-        let method = UbusMethod::new("status", move |_request| {
+        let method = UbusMethod::new("status", move |mut request| {
             let _keep_alive = &probe;
-            callback_calls.set(callback_calls.get() + 1);
+            EVENTS.lock().unwrap().push("handler_start");
+            drop(callback_slot.borrow_mut().take().unwrap());
+            assert!(!FREED.load(Ordering::SeqCst));
+            request.reply_json(r#"{"ok":true}"#).unwrap();
+            EVENTS.lock().unwrap().push("handler_end");
             STATUS_OK
         })
         .unwrap();
         let object = UbusObject::new("lanspeed", vec![method]).unwrap();
-        let object_pointer = UbusObject::raw_ptr(object.as_ref());
-        let methods_pointer = UbusObject::methods_ptr(object.as_ref());
         let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
-
         connection.register_object(object).unwrap();
-
-        assert_eq!(connection.object_ptr_for_test(0), object_pointer);
-        assert_eq!(connection.methods_ptr_for_test(0), methods_pointer);
+        let object_pointer = connection.object_ptr_for_test(0);
         let method_name = CString::new("status").unwrap();
         let mut request = crate::raw::ubus_request_data::default();
+        *slot.borrow_mut() = Some(connection);
+
         assert_eq!(
-            connection.invoke_for_test(0, method_name.as_ptr(), &mut request),
+            unsafe {
+                UbusConnection::invoke_raw_for_test(
+                    object_pointer,
+                    method_name.as_ptr(),
+                    &mut request,
+                )
+            },
             STATUS_OK
         );
-        assert_eq!(calls.get(), 1);
+        assert!(slot.borrow().is_none());
         assert_eq!(drops.get(), 0);
+        assert!(!FREED.load(Ordering::SeqCst));
+        assert_eq!(
+            &*EVENTS.lock().unwrap(),
+            &[
+                "connect",
+                "add",
+                "handler_start",
+                "defer",
+                "reply",
+                "handler_end",
+            ]
+        );
 
-        drop(connection);
+        // This represents libubus finishing the current dispatch and uloop
+        // invoking the zero-delay cleanup timer on its next turn.
+        run_deferred_cleanup();
+        assert!(FREED.load(Ordering::SeqCst));
         assert_eq!(drops.get(), 1);
         assert_eq!(
             &*EVENTS.lock().unwrap(),
-            &["connect", "add", "remove", "free"]
+            &[
+                "connect",
+                "add",
+                "handler_start",
+                "defer",
+                "reply",
+                "handler_end",
+                "next_tick",
+                "remove",
+                "free"
+            ]
         );
     }
 
     #[test]
+    fn same_method_reentrancy_returns_error_without_borrowing_freed_storage() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        EVENTS.lock().unwrap().clear();
+        let raw_object = Rc::new(Cell::new(ptr::null_mut()));
+        let callback_object = Rc::clone(&raw_object);
+        let method_name = CString::new("nested").unwrap();
+        let callback_name = method_name.clone();
+        let method = UbusMethod::new("nested", move |_request| {
+            let mut nested_request = crate::raw::ubus_request_data::default();
+            assert_eq!(
+                unsafe {
+                    UbusConnection::invoke_raw_for_test(
+                        callback_object.get(),
+                        callback_name.as_ptr(),
+                        &mut nested_request,
+                    )
+                },
+                STATUS_UNKNOWN_ERROR
+            );
+            STATUS_OK
+        })
+        .unwrap();
+        let object = UbusObject::new("lanspeed", vec![method]).unwrap();
+        let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
+        connection.register_object(object).unwrap();
+        raw_object.set(connection.object_ptr_for_test(0));
+        let mut request = crate::raw::ubus_request_data::default();
+
+        let status = unsafe {
+            UbusConnection::invoke_raw_for_test(
+                raw_object.get(),
+                method_name.as_ptr(),
+                &mut request,
+            )
+        };
+
+        assert_eq!(status, STATUS_OK);
+    }
+
+    #[test]
     fn method_callback_panic_is_caught_at_ffi_boundary() {
+        let _lock = TEST_LOCK.lock().unwrap();
         let method = UbusMethod::new("panic", |_request| panic!("handler failure")).unwrap();
         let object = UbusObject::new("lanspeed", vec![method]).unwrap();
+        let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
+        connection.register_object(object).unwrap();
+        let object = connection.object_ptr_for_test(0);
         let method_name = CString::new("panic").unwrap();
         let mut request = crate::raw::ubus_request_data::default();
 
-        let status = UbusObject::invoke_for_test(
-            object.as_ref(),
-            method_name.as_ptr(),
-            &mut request,
-            fake_ops(),
-        );
+        let status = unsafe {
+            UbusConnection::invoke_raw_for_test(object, method_name.as_ptr(), &mut request)
+        };
 
         assert_eq!(status, STATUS_UNKNOWN_ERROR);
+    }
+
+    #[test]
+    fn attached_reconnect_detaches_and_adds_the_new_socket() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        EVENTS.lock().unwrap().clear();
+        FD_ADD_CALLS.store(0, Ordering::SeqCst);
+        FAIL_READD.store(false, Ordering::SeqCst);
+        let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
+        connection.attach_uloop().unwrap();
+
+        connection.reconnect(None).unwrap();
+
+        assert!(connection.is_attached_for_test());
+        drop(connection);
+        assert_eq!(
+            &*EVENTS.lock().unwrap(),
+            &[
+                "connect",
+                "fd_add",
+                "fd_delete",
+                "reconnect",
+                "fd_add",
+                "fd_delete",
+                "free"
+            ]
+        );
+    }
+
+    #[test]
+    fn unattached_reconnect_does_not_add_socket() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        EVENTS.lock().unwrap().clear();
+        FD_ADD_CALLS.store(0, Ordering::SeqCst);
+        FAIL_READD.store(false, Ordering::SeqCst);
+        let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
+
+        connection.reconnect(None).unwrap();
+
+        assert!(!connection.is_attached_for_test());
+        drop(connection);
+        assert_eq!(&*EVENTS.lock().unwrap(), &["connect", "reconnect", "free"]);
+    }
+
+    #[test]
+    fn reconnect_readd_failure_leaves_connection_detached() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        EVENTS.lock().unwrap().clear();
+        FD_ADD_CALLS.store(0, Ordering::SeqCst);
+        FAIL_READD.store(true, Ordering::SeqCst);
+        let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
+        connection.attach_uloop().unwrap();
+
+        assert!(connection.reconnect(None).is_err());
+
+        assert!(!connection.is_attached_for_test());
+        drop(connection);
+        assert_eq!(
+            &*EVENTS.lock().unwrap(),
+            &[
+                "connect",
+                "fd_add",
+                "fd_delete",
+                "reconnect",
+                "fd_add",
+                "free"
+            ]
+        );
     }
 }

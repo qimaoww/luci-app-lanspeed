@@ -1,7 +1,8 @@
 use crate::{raw, Error, Result};
-use std::marker::{PhantomData, PhantomPinned};
+use std::cell::{Cell, RefCell, UnsafeCell};
+use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -37,6 +38,11 @@ const REAL_ULOOP_OPS: UloopOps = UloopOps {
 };
 
 static ULOOP_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    static TIMER_REGISTRY: RefCell<HashMap<usize, std::rc::Weak<TimerInner>>> =
+        RefCell::new(HashMap::new());
+}
 
 pub struct UloopGuard {
     ops: UloopOps,
@@ -111,37 +117,45 @@ const REAL_TIMER_OPS: TimerOps = TimerOps {
 
 #[repr(C)]
 pub struct Timer {
-    raw: raw::uloop_timeout,
-    callback: Box<dyn FnMut()>,
-    callback_panicked: bool,
+    inner: Rc<TimerInner>,
+}
+
+#[repr(C)]
+struct TimerInner {
+    raw: UnsafeCell<raw::uloop_timeout>,
+    callback: RefCell<Option<Box<dyn FnMut()>>>,
+    callback_panicked: Cell<bool>,
     ops: TimerOps,
     _not_send_or_sync: PhantomData<Rc<()>>,
-    _pinned: PhantomPinned,
 }
 
 impl Timer {
-    pub fn new(callback: impl FnMut() + 'static) -> Pin<Box<Self>> {
+    pub fn new(callback: impl FnMut() + 'static) -> Self {
         Self::new_with(callback, REAL_TIMER_OPS)
     }
 
-    fn new_with(callback: impl FnMut() + 'static, ops: TimerOps) -> Pin<Box<Self>> {
+    fn new_with(callback: impl FnMut() + 'static, ops: TimerOps) -> Self {
         let mut raw = raw::uloop_timeout::default();
         raw.cb = Some(timer_trampoline);
-        Box::pin(Self {
-            raw,
-            callback: Box::new(callback),
-            callback_panicked: false,
+        let inner = Rc::new(TimerInner {
+            raw: UnsafeCell::new(raw),
+            callback: RefCell::new(Some(Box::new(callback))),
+            callback_panicked: Cell::new(false),
             ops,
             _not_send_or_sync: PhantomData,
-            _pinned: PhantomPinned,
-        })
+        });
+        TIMER_REGISTRY.with(|registry| {
+            registry
+                .borrow_mut()
+                .insert(inner.raw.get() as usize, Rc::downgrade(&inner));
+        });
+        Self { inner }
     }
 
-    pub fn schedule(self: Pin<&mut Self>, milliseconds: u32) -> Result<()> {
+    pub fn schedule(&self, milliseconds: u32) -> Result<()> {
         let milliseconds = libc::c_int::try_from(milliseconds)
             .map_err(|_| Error::InvalidData("timer delay exceeds c_int"))?;
-        let this = unsafe { self.get_unchecked_mut() };
-        let result = unsafe { (this.ops.set)(&mut this.raw, milliseconds) };
+        let result = unsafe { (self.inner.ops.set)(self.inner.raw.get(), milliseconds) };
         if result == 0 {
             Ok(())
         } else {
@@ -152,12 +166,12 @@ impl Timer {
         }
     }
 
-    pub fn cancel(self: Pin<&mut Self>) -> Result<()> {
-        let this = unsafe { self.get_unchecked_mut() };
-        if !this.raw.pending {
+    pub fn cancel(&self) -> Result<()> {
+        let raw = unsafe { &mut *self.inner.raw.get() };
+        if !raw.pending {
             return Ok(());
         }
-        let result = unsafe { (this.ops.cancel)(&mut this.raw) };
+        let result = unsafe { (self.inner.ops.cancel)(raw) };
         if result == 0 {
             Ok(())
         } else {
@@ -169,18 +183,32 @@ impl Timer {
     }
 
     pub fn callback_panicked(&self) -> bool {
-        self.callback_panicked
+        self.inner.callback_panicked.get()
     }
 
     #[cfg(test)]
-    fn raw_ptr(self: Pin<&Self>) -> *const raw::uloop_timeout {
-        &self.get_ref().raw
+    fn raw_ptr(&self) -> *mut raw::uloop_timeout {
+        self.inner.raw.get()
     }
 
     #[cfg(test)]
-    fn invoke_for_test(self: Pin<&mut Self>) {
-        let pointer = unsafe { &mut self.get_unchecked_mut().raw as *mut raw::uloop_timeout };
+    fn invoke_for_test(&self) {
+        unsafe { Self::invoke_raw_for_test(self.raw_ptr()) };
+    }
+
+    #[cfg(test)]
+    unsafe fn invoke_raw_for_test(pointer: *mut raw::uloop_timeout) {
         unsafe { timer_trampoline(pointer) };
+    }
+
+    #[cfg(test)]
+    fn downgrade_for_test(&self) -> std::rc::Weak<TimerInner> {
+        Rc::downgrade(&self.inner)
+    }
+
+    #[cfg(test)]
+    fn from_inner_for_test(inner: Rc<TimerInner>) -> Self {
+        Self { inner }
     }
 }
 
@@ -188,16 +216,33 @@ unsafe extern "C" fn timer_trampoline(timeout: *mut raw::uloop_timeout) {
     if timeout.is_null() {
         return;
     }
-    let timer = unsafe { &mut *timeout.cast::<Timer>() };
-    if catch_unwind(AssertUnwindSafe(|| (timer.callback)())).is_err() {
-        timer.callback_panicked = true;
+    // The registry is populated from the original `Rc`, so upgrading its Weak
+    // pointer preserves provenance and keeps the timer alive during user code.
+    let Some(inner) = TIMER_REGISTRY.with(|registry| {
+        registry
+            .borrow()
+            .get(&(timeout as usize))
+            .and_then(std::rc::Weak::upgrade)
+    }) else {
+        return;
+    };
+    let Some(mut callback) = inner.callback.borrow_mut().take() else {
+        return;
+    };
+    if catch_unwind(AssertUnwindSafe(|| callback())).is_err() {
+        inner.callback_panicked.set(true);
     }
+    *inner.callback.borrow_mut() = Some(callback);
 }
 
-impl Drop for Timer {
+impl Drop for TimerInner {
     fn drop(&mut self) {
-        if self.raw.pending {
-            let _ = unsafe { (self.ops.cancel)(&mut self.raw) };
+        let _ = TIMER_REGISTRY.try_with(|registry| {
+            registry.borrow_mut().remove(&(self.raw.get() as usize));
+        });
+        let raw = self.raw.get_mut();
+        if raw.pending {
+            let _ = unsafe { (self.ops.cancel)(raw) };
         }
     }
 }
@@ -205,13 +250,13 @@ impl Drop for Timer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
-    use std::pin::Pin;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     static EVENTS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    static SET_CALLS: AtomicUsize = AtomicUsize::new(0);
     static CANCEL_CALLS: AtomicUsize = AtomicUsize::new(0);
 
     unsafe fn init() -> libc::c_int {
@@ -236,6 +281,7 @@ mod tests {
         timeout: *mut crate::raw::uloop_timeout,
         _milliseconds: libc::c_int,
     ) -> libc::c_int {
+        SET_CALLS.fetch_add(1, Ordering::SeqCst);
         unsafe { (*timeout).pending = true };
         0
     }
@@ -263,48 +309,70 @@ mod tests {
         assert_eq!(&*EVENTS.lock().unwrap(), &["init", "run", "stop", "done"]);
     }
 
-    struct DropProbe(Rc<Cell<usize>>);
-
-    impl Drop for DropProbe {
-        fn drop(&mut self) {
-            self.0.set(self.0.get() + 1);
-        }
-    }
-
     #[test]
-    fn pinned_timer_keeps_callback_alive_and_cancels_before_drop() {
+    fn timer_self_drop_is_deferred_until_callback_returns() {
+        SET_CALLS.store(0, Ordering::SeqCst);
         CANCEL_CALLS.store(0, Ordering::SeqCst);
-        let calls = Rc::new(Cell::new(0));
-        let drops = Rc::new(Cell::new(0));
-        let callback_calls = Rc::clone(&calls);
-        let probe = DropProbe(Rc::clone(&drops));
-        let mut timer = Timer::new_with(
+        let completed = Rc::new(Cell::new(false));
+        let slot = Rc::new(RefCell::new(None));
+        let callback_slot = Rc::clone(&slot);
+        let callback_completed = Rc::clone(&completed);
+        let timer = Timer::new_with(
             move || {
-                let _keep_alive = &probe;
-                callback_calls.set(callback_calls.get() + 1);
+                drop(callback_slot.borrow_mut().take().unwrap());
+                assert_eq!(CANCEL_CALLS.load(Ordering::SeqCst), 0);
+                callback_completed.set(true);
             },
             TimerOps {
                 set: set_timer,
                 cancel: cancel_timer,
             },
         );
+        timer.schedule(25).unwrap();
+        let raw = timer.raw_ptr();
+        *slot.borrow_mut() = Some(timer);
 
-        let before = Timer::raw_ptr(Pin::as_ref(&timer));
-        timer.as_mut().schedule(25).unwrap();
-        Timer::invoke_for_test(Pin::as_mut(&mut timer));
-        let after = Timer::raw_ptr(Pin::as_ref(&timer));
+        unsafe { Timer::invoke_raw_for_test(raw) };
 
-        assert_eq!(before, after);
-        assert_eq!(calls.get(), 1);
-        assert_eq!(drops.get(), 0);
-        drop(timer);
+        assert!(slot.borrow().is_none());
+        assert!(completed.get());
         assert_eq!(CANCEL_CALLS.load(Ordering::SeqCst), 1);
-        assert_eq!(drops.get(), 1);
+    }
+
+    #[test]
+    fn timer_callback_can_reentrantly_schedule_and_cancel_without_double_cancel() {
+        SET_CALLS.store(0, Ordering::SeqCst);
+        CANCEL_CALLS.store(0, Ordering::SeqCst);
+        let weak = Rc::new(RefCell::new(None));
+        let callback_weak = Rc::clone(&weak);
+        let timer = Timer::new_with(
+            move || {
+                let timer = callback_weak
+                    .borrow()
+                    .as_ref()
+                    .and_then(std::rc::Weak::upgrade)
+                    .map(Timer::from_inner_for_test)
+                    .unwrap();
+                timer.schedule(10).unwrap();
+                timer.cancel().unwrap();
+            },
+            TimerOps {
+                set: set_timer,
+                cancel: cancel_timer,
+            },
+        );
+        *weak.borrow_mut() = Some(timer.downgrade_for_test());
+
+        timer.invoke_for_test();
+        drop(timer);
+
+        assert_eq!(SET_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(CANCEL_CALLS.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn timer_callback_panic_is_caught_at_ffi_boundary() {
-        let mut timer = Timer::new_with(
+        let timer = Timer::new_with(
             || panic!("callback failure"),
             TimerOps {
                 set: set_timer,
@@ -312,7 +380,7 @@ mod tests {
             },
         );
 
-        Timer::invoke_for_test(Pin::as_mut(&mut timer));
+        timer.invoke_for_test();
 
         assert!(timer.callback_panicked());
     }
