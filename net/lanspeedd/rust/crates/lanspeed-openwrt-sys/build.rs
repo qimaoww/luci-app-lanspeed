@@ -10,6 +10,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PATH");
 
     let library_dir = discover_library_dir().unwrap_or_else(|error| panic!("{error}"));
+    println!("cargo::metadata=libdir={}", library_dir.display());
     println!("cargo:rustc-link-search=native={}", library_dir.display());
     println!(
         "cargo:rustc-link-arg=-Wl,-rpath-link,{}",

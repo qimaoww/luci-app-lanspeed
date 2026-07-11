@@ -266,6 +266,20 @@ fn scalar_options_preserve_legacy_boolean_and_zero_semantics() {
 }
 
 #[test]
+fn numeric_parsing_skips_only_c_locale_ascii_whitespace() {
+    let ascii =
+        load(MemorySource::default().with("refresh_interval_ms", " \t\n\r\u{000b}\u{000c}500"));
+    assert_eq!(ascii.refresh_interval_ms, 500);
+
+    for unicode_space in ['\u{00a0}', '\u{3000}'] {
+        let value = format!("{unicode_space}500");
+        let config = load(MemorySource::default().with("refresh_interval_ms", value));
+        assert_eq!(config.refresh_interval_ms, DEFAULT_REFRESH_INTERVAL_MS);
+        assert!(!config.refresh_interval_clamped);
+    }
+}
+
+#[test]
 fn every_clamped_value_sets_its_machine_readable_flag() {
     let low = load(
         MemorySource::default()

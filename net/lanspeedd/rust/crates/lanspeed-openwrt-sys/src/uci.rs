@@ -6,8 +6,7 @@ use std::path::Path;
 use std::ptr;
 use std::rc::Rc;
 
-/// libuci's stable error code for a tuple whose package does not exist.
-pub const UCI_ERR_NOTFOUND: libc::c_int = 3;
+const UCI_ERR_NOTFOUND: libc::c_int = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UciValue {
@@ -75,6 +74,10 @@ impl UciContext {
             context: self.context,
             package: lookup.p,
         });
+        if result == UCI_ERR_NOTFOUND {
+            drop(loaded);
+            return Ok(None);
+        }
         if result != 0 {
             return Err(Error::Platform {
                 operation: "uci_lookup_ptr",
@@ -257,6 +260,21 @@ mod tests {
             name: "ifname".into(),
             value: UciValue::List(vec!["br-lan".into(), "eth1".into()]),
         }));
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn missing_package_is_an_absent_value() {
+        let suffix = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let directory = std::env::temp_dir().join(format!(
+            "lanspeed-uci-missing-{}-{suffix}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+
+        let mut context = UciContext::with_confdir(&directory).unwrap();
+        assert_eq!(context.lookup("lanspeed.main.enabled").unwrap(), None);
 
         fs::remove_dir_all(directory).unwrap();
     }

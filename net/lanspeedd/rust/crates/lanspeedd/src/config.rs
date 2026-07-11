@@ -362,7 +362,7 @@ fn push_unique_bounded(target: &mut Vec<String>, value: String) {
 }
 
 fn parse_c_signed(value: &str) -> i128 {
-    let value = value.trim_start();
+    let value = trim_c_ascii_whitespace(value);
     let (negative, digits) = match value.as_bytes().first() {
         Some(b'-') => (true, &value[1..]),
         Some(b'+') => (false, &value[1..]),
@@ -390,7 +390,7 @@ fn parse_c_signed(value: &str) -> i128 {
 }
 
 fn parse_c_unsigned(value: &str) -> u64 {
-    let value = value.trim_start();
+    let value = trim_c_ascii_whitespace(value);
     let (negative, digits) = match value.as_bytes().first() {
         Some(b'-') => (true, &value[1..]),
         Some(b'+') => (false, &value[1..]),
@@ -421,21 +421,27 @@ fn parse_c_unsigned(value: &str) -> u64 {
     }
 }
 
+fn trim_c_ascii_whitespace(value: &str) -> &str {
+    let prefix_len = value
+        .as_bytes()
+        .iter()
+        .take_while(|byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
+        .count();
+    &value[prefix_len..]
+}
+
 #[cfg(feature = "openwrt")]
 impl ConfigSource for lanspeed_openwrt_sys::UciContext {
     fn get(&mut self, path: &str) -> Result<Option<ConfigValue>, ConfigError> {
         // UciContext currently normalizes C strings to UTF-8 String values.
         // Non-UTF-8 UCI bytes require a future byte-preserving wrapper API.
-        match self.lookup(path) {
-            Ok(value) => Ok(value.map(|value| match value {
-                lanspeed_openwrt_sys::UciValue::String(value) => ConfigValue::String(value),
-                lanspeed_openwrt_sys::UciValue::List(values) => ConfigValue::List(values),
-            })),
-            Err(lanspeed_openwrt_sys::Error::Platform {
-                operation: "uci_lookup_ptr",
-                code: lanspeed_openwrt_sys::UCI_ERR_NOTFOUND,
-            }) => Ok(None),
-            Err(error) => Err(ConfigError::Source(error.to_string())),
-        }
+        self.lookup(path)
+            .map(|value| {
+                value.map(|value| match value {
+                    lanspeed_openwrt_sys::UciValue::String(value) => ConfigValue::String(value),
+                    lanspeed_openwrt_sys::UciValue::List(values) => ConfigValue::List(values),
+                })
+            })
+            .map_err(|error| ConfigError::Source(error.to_string()))
     }
 }

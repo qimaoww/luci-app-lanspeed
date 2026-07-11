@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 build = "build.rs"
+links = "lanspeed_openwrt_sys"
 
 [lib]
 path = "src/lib.rs"
