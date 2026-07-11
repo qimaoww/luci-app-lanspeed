@@ -2,8 +2,9 @@ use lanspeedd::identity::{
     arp::parse_arp_table,
     filter::{IdentityFilter, InterfacePrefix},
     hostname::{
-        HostnameCache, HostnamePaths, HOSTNAME_CACHE_MAX, HOSTNAME_MAX_HOST_FILES,
-        HOSTNAME_MAX_LINE_BYTES, HOSTNAME_MAX_SOURCE_BYTES, HOSTNAME_REFRESH_MS,
+        HostnameCache, HostnamePaths, HOSTNAME_CACHE_MAX, HOSTNAME_MAX_DIR_ENTRIES,
+        HOSTNAME_MAX_HOST_FILES, HOSTNAME_MAX_LINE_BYTES, HOSTNAME_MAX_SOURCE_BYTES,
+        HOSTNAME_REFRESH_MS,
     },
     netlink::{parse_ipv6_neighbor_dump, parse_ipv6_neighbor_messages, NetlinkParseError},
     FrameKind, IdentityObservation, IdentityPolicy, IdentityTable, LegacyZoneResolver,
@@ -380,7 +381,12 @@ fn netlink_sequence(mut message: Vec<u8>, sequence: u32) -> Vec<u8> {
 }
 
 fn netlink_control_message(kind: u16, flags: u16, sequence: u32, error: Option<i32>) -> Vec<u8> {
-    let mut message = vec![0; 16 + error.map(|_| 4).unwrap_or(0)];
+    let payload_len = match (kind, error) {
+        (2, Some(_)) => 20,
+        (_, Some(_)) => 4,
+        _ => 0,
+    };
+    let mut message = vec![0; 16 + payload_len];
     let length = message.len() as u32;
     message[..4].copy_from_slice(&length.to_ne_bytes());
     message[4..6].copy_from_slice(&kind.to_ne_bytes());
@@ -502,6 +508,47 @@ fn strict_rtnetlink_dump_validates_sequence_ack_interrupt_error_and_trailing_att
         ),
         Err(NetlinkParseError::DumpInterrupted)
     );
+    let truncated_error = {
+        let mut message = netlink_control_message(2, 0, 42, None);
+        message.extend(0i32.to_ne_bytes());
+        let length = message.len() as u32;
+        message[..4].copy_from_slice(&length.to_ne_bytes());
+        message
+    };
+    assert!(
+        parse_ipv6_neighbor_dump(&truncated_error, 42, 16, |_| None, &LegacyZoneResolver,).is_err()
+    );
+    assert_eq!(
+        parse_ipv6_neighbor_dump(
+            &netlink_control_message(3, 0, 42, Some(-5)),
+            42,
+            16,
+            |_| None,
+            &LegacyZoneResolver,
+        ),
+        Err(NetlinkParseError::Kernel(-5))
+    );
+    assert!(
+        parse_ipv6_neighbor_dump(
+            &netlink_control_message(3, 0, 42, Some(0)),
+            42,
+            16,
+            |_| None,
+            &LegacyZoneResolver,
+        )
+        .unwrap()
+        .done
+    );
+    let malformed_done = {
+        let mut message = netlink_control_message(3, 0, 42, None);
+        message.push(0);
+        let length = message.len() as u32;
+        message[..4].copy_from_slice(&length.to_ne_bytes());
+        message
+    };
+    assert!(
+        parse_ipv6_neighbor_dump(&malformed_done, 42, 16, |_| None, &LegacyZoneResolver,).is_err()
+    );
 
     let mut malformed = netlink_sequence(neighbor, 42);
     malformed.extend([2, 0, 0, 0]);
@@ -594,6 +641,7 @@ fn hostname_refresh_is_streaming_bounded_and_skips_only_invalid_lines() {
     assert_eq!(HOSTNAME_MAX_LINE_BYTES, 512);
     assert!(HOSTNAME_MAX_SOURCE_BYTES >= HOSTNAME_MAX_LINE_BYTES);
     assert!(HOSTNAME_MAX_HOST_FILES > 0);
+    assert!(HOSTNAME_MAX_DIR_ENTRIES >= HOSTNAME_MAX_HOST_FILES);
 
     let (root, paths) = temporary_hostname_paths();
     let mut leases = b"0 02:00:00:00:00:01 192.0.2.1 First *\n".to_vec();
@@ -644,6 +692,26 @@ fn hostname_refresh_is_streaming_bounded_and_skips_only_invalid_lines() {
     fs::write(&paths.leases, &full_source).unwrap();
     assert!(small.refresh_from_paths(&paths, 5, true));
     assert!(small.last_refresh_stats().bytes_read < full_source.len());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn hostname_directory_raw_iteration_is_bounded_even_for_hidden_entries() {
+    let (root, paths) = temporary_hostname_paths();
+    for index in 0..HOSTNAME_MAX_DIR_ENTRIES + 5 {
+        fs::write(
+            paths.hosts_dir.join(format!(".hidden-{index:05}")),
+            b"ignored\n",
+        )
+        .unwrap();
+    }
+    let mut cache = HostnameCache::new();
+    assert!(cache.refresh_from_paths(&paths, 1, true));
+    assert_eq!(
+        cache.last_refresh_stats().directory_entries,
+        HOSTNAME_MAX_DIR_ENTRIES
+    );
+    assert_eq!(cache.last_refresh_stats().host_files, 0);
     fs::remove_dir_all(root).unwrap();
 }
 

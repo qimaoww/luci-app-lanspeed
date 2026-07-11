@@ -11,6 +11,7 @@ pub const HOSTNAME_REFRESH_MS: u64 = 10_000;
 pub const HOSTNAME_MAX_LINE_BYTES: usize = 512;
 pub const HOSTNAME_MAX_SOURCE_BYTES: usize = 1024 * 1024;
 pub const HOSTNAME_MAX_HOST_FILES: usize = HOSTNAME_CACHE_MAX;
+pub const HOSTNAME_MAX_DIR_ENTRIES: usize = HOSTNAME_MAX_HOST_FILES * 4;
 const HOSTNAME_READ_BUFFER_BYTES: usize = 4096;
 
 #[derive(Clone, Debug)]
@@ -41,6 +42,7 @@ struct SourceMtimes {
 pub struct HostnameRefreshStats {
     pub bytes_read: usize,
     pub host_files: usize,
+    pub directory_entries: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -96,7 +98,9 @@ impl HostnameCache {
         self.parse_leases_path(&paths.leases, &mut lease_budget);
         let mut hosts_budget = HOSTNAME_MAX_SOURCE_BYTES;
         if let Ok(directory) = fs::read_dir(&paths.hosts_dir) {
-            for entry in directory.flatten() {
+            for result in directory.take(HOSTNAME_MAX_DIR_ENTRIES) {
+                self.last_refresh_stats.directory_entries += 1;
+                let Ok(entry) = result else { continue };
                 let name = entry.file_name();
                 if name.to_string_lossy().starts_with('.') {
                     continue;
@@ -320,10 +324,16 @@ fn mtime(path: &Path) -> u64 {
 fn latest_directory_mtime(path: &Path) -> u64 {
     let mut latest = mtime(path);
     if let Ok(directory) = fs::read_dir(path) {
-        for entry in directory.flatten().take(HOSTNAME_MAX_HOST_FILES) {
+        let mut visible_files = 0usize;
+        for result in directory.take(HOSTNAME_MAX_DIR_ENTRIES) {
+            let Ok(entry) = result else { continue };
             if entry.file_name().to_string_lossy().starts_with('.') {
                 continue;
             }
+            if visible_files == HOSTNAME_MAX_HOST_FILES {
+                break;
+            }
+            visible_files += 1;
             latest = latest.max(mtime(&entry.path()));
         }
     }

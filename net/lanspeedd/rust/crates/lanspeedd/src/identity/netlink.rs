@@ -131,12 +131,26 @@ where
             return Err(NetlinkParseError::DumpInterrupted);
         }
         if message_type == NLMSG_ERROR {
+            if message_len_usize < NLMSG_HEADER_LEN + 4 + NLMSG_HEADER_LEN {
+                return Err(NetlinkParseError::InvalidMessageLength(message_len));
+            }
             let error = read_i32(bytes, offset + NLMSG_HEADER_LEN)
                 .ok_or(NetlinkParseError::InvalidMessageLength(message_len))?;
             if error != 0 {
                 return Err(NetlinkParseError::Kernel(error));
             }
         } else if message_type == NLMSG_DONE {
+            let payload_len = message_len_usize - NLMSG_HEADER_LEN;
+            if (1..4).contains(&payload_len) {
+                return Err(NetlinkParseError::InvalidMessageLength(message_len));
+            }
+            if payload_len >= 4 {
+                let error = read_i32(bytes, offset + NLMSG_HEADER_LEN)
+                    .ok_or(NetlinkParseError::InvalidMessageLength(message_len))?;
+                if error != 0 {
+                    return Err(NetlinkParseError::Kernel(error));
+                }
+            }
             done = true;
             break;
         }
