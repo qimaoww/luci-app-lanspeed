@@ -246,7 +246,8 @@ pub struct UbusConnection {
 
 struct ConnectionState {
     objects: Vec<Rc<ObjectInner>>,
-    attached_to_uloop: bool,
+    wants_uloop: bool,
+    fd_registered: bool,
 }
 
 struct ConnectionInner {
@@ -274,7 +275,8 @@ impl UbusConnection {
                 context,
                 state: RefCell::new(ConnectionState {
                     objects: Vec::new(),
-                    attached_to_uloop: false,
+                    wants_uloop: false,
+                    fd_registered: false,
                 }),
                 ops,
                 dispatch_depth: std::cell::Cell::new(0),
@@ -284,7 +286,8 @@ impl UbusConnection {
     }
 
     pub fn attach_uloop(&mut self) -> Result<()> {
-        if self.inner.state.borrow().attached_to_uloop {
+        self.inner.state.borrow_mut().wants_uloop = true;
+        if self.inner.state.borrow().fd_registered {
             return Ok(());
         }
         let socket = unsafe { &mut (*self.inner.context).sock };
@@ -296,15 +299,15 @@ impl UbusConnection {
                 code: result,
             });
         }
-        self.inner.state.borrow_mut().attached_to_uloop = true;
+        self.inner.state.borrow_mut().fd_registered = true;
         Ok(())
     }
 
     pub fn reconnect(&mut self, path: Option<&str>) -> Result<()> {
         let path = path.map(CString::new).transpose()?;
         let path_pointer = path.as_ref().map_or(ptr::null(), |value| value.as_ptr());
-        let was_attached = self.inner.state.borrow().attached_to_uloop;
-        if was_attached {
+        let was_registered = self.inner.state.borrow().fd_registered;
+        if was_registered {
             let socket = unsafe { &mut (*self.inner.context).sock };
             let result = unsafe { (self.inner.ops.fd_delete)(socket) };
             if result != 0 {
@@ -313,7 +316,7 @@ impl UbusConnection {
                     code: result,
                 });
             }
-            self.inner.state.borrow_mut().attached_to_uloop = false;
+            self.inner.state.borrow_mut().fd_registered = false;
         }
         let result = unsafe { (self.inner.ops.reconnect)(self.inner.context, path_pointer) };
         if result != 0 {
@@ -322,7 +325,7 @@ impl UbusConnection {
                 code: result,
             });
         }
-        if was_attached {
+        if self.inner.state.borrow().wants_uloop {
             let socket = unsafe { &mut (*self.inner.context).sock };
             let flags = raw::ULOOP_READ | raw::ULOOP_BLOCKING;
             let result = unsafe { (self.inner.ops.fd_add)(socket, flags) };
@@ -332,7 +335,7 @@ impl UbusConnection {
                     code: result,
                 });
             }
-            self.inner.state.borrow_mut().attached_to_uloop = true;
+            self.inner.state.borrow_mut().fd_registered = true;
         }
         Ok(())
     }
@@ -385,7 +388,12 @@ impl UbusConnection {
 
     #[cfg(test)]
     fn is_attached_for_test(&self) -> bool {
-        self.inner.state.borrow().attached_to_uloop
+        self.inner.state.borrow().fd_registered
+    }
+
+    #[cfg(test)]
+    fn wants_uloop_for_test(&self) -> bool {
+        self.inner.state.borrow().wants_uloop
     }
 }
 
@@ -407,7 +415,7 @@ impl Drop for ConnectionInner {
             let _ = unsafe { (self.ops.remove_object)(self.context, object.raw_ptr()) };
         }
         state.objects.clear();
-        if state.attached_to_uloop {
+        if state.fd_registered {
             let socket = unsafe { &mut (*self.context).sock };
             let _ = unsafe { (self.ops.fd_delete)(socket) };
         }
@@ -427,6 +435,7 @@ mod tests {
     static EVENTS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     static FREED: AtomicBool = AtomicBool::new(false);
+    static FAIL_RECONNECT: AtomicBool = AtomicBool::new(false);
     static FAIL_READD: AtomicBool = AtomicBool::new(false);
     static FD_ADD_CALLS: AtomicUsize = AtomicUsize::new(0);
 
@@ -446,7 +455,11 @@ mod tests {
         _path: *const libc::c_char,
     ) -> libc::c_int {
         EVENTS.lock().unwrap().push("reconnect");
-        0
+        if FAIL_RECONNECT.load(Ordering::SeqCst) {
+            -6
+        } else {
+            0
+        }
     }
 
     unsafe extern "C" fn free(context: *mut crate::raw::ubus_context) {
@@ -667,6 +680,7 @@ mod tests {
         let _lock = TEST_LOCK.lock().unwrap();
         EVENTS.lock().unwrap().clear();
         FD_ADD_CALLS.store(0, Ordering::SeqCst);
+        FAIL_RECONNECT.store(false, Ordering::SeqCst);
         FAIL_READD.store(false, Ordering::SeqCst);
         let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
         connection.attach_uloop().unwrap();
@@ -694,6 +708,7 @@ mod tests {
         let _lock = TEST_LOCK.lock().unwrap();
         EVENTS.lock().unwrap().clear();
         FD_ADD_CALLS.store(0, Ordering::SeqCst);
+        FAIL_RECONNECT.store(false, Ordering::SeqCst);
         FAIL_READD.store(false, Ordering::SeqCst);
         let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
 
@@ -709,6 +724,7 @@ mod tests {
         let _lock = TEST_LOCK.lock().unwrap();
         EVENTS.lock().unwrap().clear();
         FD_ADD_CALLS.store(0, Ordering::SeqCst);
+        FAIL_RECONNECT.store(false, Ordering::SeqCst);
         FAIL_READD.store(true, Ordering::SeqCst);
         let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
         connection.attach_uloop().unwrap();
@@ -725,6 +741,73 @@ mod tests {
                 "fd_delete",
                 "reconnect",
                 "fd_add",
+                "free"
+            ]
+        );
+    }
+
+    #[test]
+    fn reconnect_failure_preserves_uloop_intent_for_a_successful_retry() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        EVENTS.lock().unwrap().clear();
+        FD_ADD_CALLS.store(0, Ordering::SeqCst);
+        FAIL_READD.store(false, Ordering::SeqCst);
+        FAIL_RECONNECT.store(true, Ordering::SeqCst);
+        let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
+        connection.attach_uloop().unwrap();
+
+        assert!(connection.reconnect(None).is_err());
+        assert!(!connection.is_attached_for_test());
+        assert!(connection.wants_uloop_for_test());
+        FAIL_RECONNECT.store(false, Ordering::SeqCst);
+        connection.reconnect(None).unwrap();
+
+        assert!(connection.is_attached_for_test());
+        drop(connection);
+        assert_eq!(
+            &*EVENTS.lock().unwrap(),
+            &[
+                "connect",
+                "fd_add",
+                "fd_delete",
+                "reconnect",
+                "reconnect",
+                "fd_add",
+                "fd_delete",
+                "free"
+            ]
+        );
+    }
+
+    #[test]
+    fn readd_failure_preserves_uloop_intent_for_a_successful_retry() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        EVENTS.lock().unwrap().clear();
+        FD_ADD_CALLS.store(0, Ordering::SeqCst);
+        FAIL_RECONNECT.store(false, Ordering::SeqCst);
+        FAIL_READD.store(true, Ordering::SeqCst);
+        let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
+        connection.attach_uloop().unwrap();
+
+        assert!(connection.reconnect(None).is_err());
+        assert!(!connection.is_attached_for_test());
+        assert!(connection.wants_uloop_for_test());
+        FAIL_READD.store(false, Ordering::SeqCst);
+        connection.reconnect(None).unwrap();
+
+        assert!(connection.is_attached_for_test());
+        drop(connection);
+        assert_eq!(
+            &*EVENTS.lock().unwrap(),
+            &[
+                "connect",
+                "fd_add",
+                "fd_delete",
+                "reconnect",
+                "fd_add",
+                "reconnect",
+                "fd_add",
+                "fd_delete",
                 "free"
             ]
         );
