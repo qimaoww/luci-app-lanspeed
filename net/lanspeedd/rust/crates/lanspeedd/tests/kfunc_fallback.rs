@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use lanspeedd::{is_known_kfunc_metadata_incompatibility, load_with_fallback};
+use lanspeedd::{is_known_kfunc_metadata_incompatibility, load_with_fallback, KfuncPatchError};
 
 #[test]
 fn recognizes_only_the_router_kfunc_metadata_mismatch() {
@@ -67,4 +67,47 @@ fn never_loads_fallback_after_success_or_an_unknown_error() {
     .unwrap_err();
     assert_eq!(error, "unknown");
     assert_eq!(fallback_calls.get(), 0);
+}
+
+#[test]
+fn kernel_btf_preflight_errors_retry_fallback_once() {
+    let fallback_calls = Cell::new(0);
+    let loaded = load_with_fallback(
+        || {
+            Err::<u8, _>(KfuncPatchError::Resolve {
+                name: "bpf_skb_ct_lookup".into(),
+                reason: "not in kernel BTF".into(),
+            })
+        },
+        || {
+            fallback_calls.set(fallback_calls.get() + 1);
+            Ok(11)
+        },
+        KfuncPatchError::is_kernel_incompatibility,
+    )
+    .unwrap();
+
+    assert_eq!(loaded.value, 11);
+    assert!(matches!(
+        loaded.primary_error,
+        Some(KfuncPatchError::Resolve { .. })
+    ));
+    assert_eq!(fallback_calls.get(), 1);
+}
+
+#[test]
+fn malformed_application_elf_does_not_enter_fallback() {
+    for error in [
+        KfuncPatchError::MissingRelocation("bpf_ct_release".into()),
+        KfuncPatchError::InvalidInstruction("bpf_skb_ct_lookup".into()),
+    ] {
+        assert!(!error.is_kernel_incompatibility());
+    }
+
+    for error in [
+        KfuncPatchError::InvalidBtf("missing module BTF".into()),
+        KfuncPatchError::Io(std::io::Error::from_raw_os_error(libc::ENOENT)),
+    ] {
+        assert!(error.is_kernel_incompatibility());
+    }
 }

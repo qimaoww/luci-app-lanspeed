@@ -164,6 +164,20 @@ fn fallback_object_preserves_abi_without_kfunc_relocations() {
             EGRESS_EARLY_PROGRAM_NAME,
         ])
     );
+    let clients = &parsed.maps[CLIENTS_MAP_NAME];
+    assert_eq!(
+        clients.map_type(),
+        bpf_map_type::BPF_MAP_TYPE_LRU_HASH as u32
+    );
+    assert_eq!((clients.key_size(), clients.value_size()), (16, 32));
+    assert_eq!(clients.max_entries(), MAX_CLIENTS);
+    let seen = &parsed.maps[SEEN_CONNS_MAP_NAME];
+    assert_eq!(seen.map_type(), bpf_map_type::BPF_MAP_TYPE_LRU_HASH as u32);
+    assert_eq!((seen.key_size(), seen.value_size()), (28, 1));
+    assert_eq!(seen.max_entries(), MAX_CONN_TUPLES);
+    for program in parsed.programs.values() {
+        assert!(matches!(program.section, ProgramSection::SchedClassifier));
+    }
 
     let elf = object::File::parse(bytes.as_slice()).expect("object crate must parse fallback ELF");
     assert!(elf.section_by_name(".BTF").is_some(), "missing .BTF");

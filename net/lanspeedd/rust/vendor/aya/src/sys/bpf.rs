@@ -41,7 +41,6 @@ use crate::{
     util::KernelVersion,
 };
 
-
 pub(crate) fn bpf_create_iter(link_fd: BorrowedFd<'_>) -> io::Result<crate::MockableFd> {
     let mut attr = unsafe { mem::zeroed::<bpf_attr>() };
 
@@ -170,14 +169,7 @@ pub(crate) fn bpf_load_program(
     let mut attr = unsafe { mem::zeroed::<bpf_attr>() };
 
     let u = unsafe { &mut attr.__bindgen_anon_3 };
-    let kfunc_fd_array = std::iter::once(0)
-        .chain(
-            aya_attr
-                .kfunc_btf_fds
-                .iter()
-                .map(|fd| fd.as_raw_fd()),
-        )
-        .collect::<Vec<_>>();
+    let kfunc_fd_array = crate::module_kfunc_fd_array(&aya_attr.kfunc_btf_fds);
     if kfunc_fd_array.len() > 1 {
         u.fd_array = kfunc_fd_array.as_ptr() as u64;
     }
@@ -1489,7 +1481,7 @@ mod tests {
             line_info_rec_size: 0,
             line_info: LineSecInfo::default(),
             flags: 0,
-            kfunc_btf_fds: &[module_btf_fd],
+            kfunc_btf_fds: vec![module_btf_fd],
         };
         bpf_load_program(&attrs, &mut [], VerifierLogLevel::default()).unwrap();
     }

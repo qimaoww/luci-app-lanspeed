@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{fs, os::fd::BorrowedFd, path::PathBuf};
 
 #[test]
 fn aya_program_load_owns_and_propagates_module_btf_fds() {
@@ -10,6 +10,9 @@ fn aya_program_load_owns_and_propagates_module_btf_fds() {
     assert!(loader.contains("pub fn kfunc_btf_fds"));
     assert!(loader.contains("Arc<[crate::MockableFd]>"));
     assert!(programs.contains("kfunc_btf_fds: Arc<[crate::MockableFd]>,"));
-    assert!(syscall.contains("let kfunc_fd_array = std::iter::once(0)"));
+    assert!(syscall.contains("crate::module_kfunc_fd_array"));
     assert!(syscall.contains("u.fd_array = kfunc_fd_array.as_ptr() as u64"));
+
+    let module_fd = unsafe { BorrowedFd::borrow_raw(42) };
+    assert_eq!(aya::module_kfunc_fd_array(&[module_fd]), [0, 42]);
 }

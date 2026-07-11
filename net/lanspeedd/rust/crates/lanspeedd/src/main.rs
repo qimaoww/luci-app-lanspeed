@@ -61,14 +61,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let mut object = fs::read(kfunc_object)?;
-    let module_btf_fds = patch_conntrack_kfunc_calls(&mut object)?;
     let loaded = load_with_fallback(
-        || load_program_object(&object, module_btf_fds),
+        || {
+            let module_btf_fds = patch_conntrack_kfunc_calls(&mut object)?;
+            load_program_object(&object, module_btf_fds)
+        },
         || {
             let fallback = fs::read(fallback_object)?;
             load_program_object(&fallback, Vec::new())
         },
-        is_known_program_load_incompatibility,
+        is_known_kernel_incompatibility,
     )?;
     if let Some(error) = loaded.primary_error {
         eprintln!(
@@ -161,7 +163,10 @@ fn load_program_object(bytes: &[u8], module_btf_fds: Vec<OwnedFd>) -> Result<Ebp
     Ok(ebpf)
 }
 
-fn is_known_program_load_incompatibility(error: &Box<dyn Error>) -> bool {
+fn is_known_kernel_incompatibility(error: &Box<dyn Error>) -> bool {
+    if let Some(error) = error.downcast_ref::<lanspeedd::KfuncPatchError>() {
+        return error.is_kernel_incompatibility();
+    }
     match error.downcast_ref::<aya::programs::ProgramError>() {
         Some(aya::programs::ProgramError::LoadError { verifier_log, .. }) => {
             is_known_kfunc_metadata_incompatibility(&verifier_log.to_string())

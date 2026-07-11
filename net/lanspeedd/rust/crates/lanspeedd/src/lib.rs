@@ -1,7 +1,9 @@
 use aya::maps::MapError;
 use aya_obj::btf::{Btf, BtfKind};
 use aya_obj::generated::{bpf_attr, bpf_btf_info, bpf_cmd};
-use object::{Object as _, ObjectSection as _, ObjectSymbol as _, RelocationTarget};
+use object::{
+    Object as _, ObjectSection as _, ObjectSymbol as _, RelocationFlags, RelocationTarget,
+};
 use std::{
     fs, io,
     os::fd::{FromRawFd, OwnedFd},
@@ -201,6 +203,19 @@ where
                 if CONNTRACK_KFUNCS.contains(&name) {
                     let offset = usize::try_from(file_offset + offset)
                         .map_err(|_| KfuncPatchError::InvalidInstruction(name.to_owned()))?;
+                    if !matches!(relocation.flags(), RelocationFlags::Elf { r_type: 10 }) {
+                        return Err(KfuncPatchError::InvalidInstruction(name.to_owned()));
+                    }
+                    let instruction = bytes
+                        .get(offset..offset + 8)
+                        .ok_or_else(|| KfuncPatchError::InvalidInstruction(name.to_owned()))?;
+                    if instruction[0] != 0x85
+                        || instruction[1] != 0x10
+                        || instruction[2..4] != 0i16.to_le_bytes()
+                        || instruction[4..8] != (-1i32).to_le_bytes()
+                    {
+                        return Err(KfuncPatchError::InvalidInstruction(name.to_owned()));
+                    }
                     patches.push((offset, name.to_owned()));
                 }
             }
@@ -294,6 +309,15 @@ pub enum KfuncPatchError {
     Resolve { name: String, reason: String },
     InvalidBtf(String),
     Io(io::Error),
+}
+
+impl KfuncPatchError {
+    pub fn is_kernel_incompatibility(&self) -> bool {
+        matches!(
+            self,
+            Self::KernelBtf(_) | Self::Resolve { .. } | Self::InvalidBtf(_) | Self::Io(_)
+        )
+    }
 }
 
 impl std::fmt::Display for KfuncPatchError {

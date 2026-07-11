@@ -52,7 +52,10 @@ pub mod sys;
 pub mod test_helpers;
 pub mod util;
 
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::{
+    iter,
+    os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd},
+};
 
 pub use aya_obj::btf::{Btf, BtfError};
 pub use bpf::*;
@@ -63,6 +66,14 @@ pub use programs::{
 };
 #[doc(hidden)]
 pub use sys::netlink_set_link_up;
+
+/// Builds the file-descriptor array used by module kfunc program loads.
+#[doc(hidden)]
+pub fn module_kfunc_fd_array(fds: &[BorrowedFd<'_>]) -> Vec<RawFd> {
+    iter::once(0)
+        .chain(fds.iter().map(AsRawFd::as_raw_fd))
+        .collect()
+}
 
 // See https://github.com/rust-lang/rust/pull/124210; this structure exists to avoid crashing the
 // process when we try to close a fake file descriptor.

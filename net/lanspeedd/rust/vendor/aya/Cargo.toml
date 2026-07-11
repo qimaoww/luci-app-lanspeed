@@ -45,10 +45,7 @@ rustdoc-args = [
 ]
 
 [features]
-test-helpers = [
-    "dep:anyhow",
-    "dep:nix",
-]
+test-helpers = []
 
 [lib]
 name = "aya"
@@ -86,15 +83,6 @@ default-features = false
 version = "0.4"
 default-features = false
 
-[dependencies.nix]
-version = "0.31.1"
-features = [
-    "mount",
-    "sched",
-]
-optional = true
-default-features = false
-
 [dependencies.object]
 version = "0.39"
 features = [
@@ -115,22 +103,6 @@ default-features = false
 
 [dependencies.thiserror]
 version = "2.0.3"
-default-features = false
-
-[dev-dependencies.nix]
-version = "0.31.1"
-features = [
-    "net",
-    "socket",
-]
-default-features = false
-
-[dev-dependencies.rstest]
-version = "0.26.1"
-default-features = false
-
-[dev-dependencies.tempfile]
-version = "3"
 default-features = false
 
 [lints.clippy]
