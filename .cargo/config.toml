@@ -6,3 +6,11 @@ directory = "net/lanspeedd/rust/vendor"
 
 [net]
 offline = true
+
+[target.bpfel-unknown-none]
+linker = "bpf-linker"
+rustflags = ["-C", "debuginfo=2", "-C", "link-arg=--btf"]
+
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-openwrt-linux-musl-gcc"
+rustflags = ["-C", "target-feature=-crt-static"]
