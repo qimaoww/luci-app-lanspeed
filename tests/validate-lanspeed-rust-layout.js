@@ -13,21 +13,26 @@ function assert(condition, message) {
   }
 }
 
-function collectProjectSources(directory) {
+function collectProjectEntries(directory, entries = { sources: [], symlinks: [] }) {
   if (!fs.existsSync(directory) || path.resolve(directory) === vendorRoot) {
-    return [];
+    return entries;
   }
 
-  const sources = [];
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     const entryPath = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      sources.push(...collectProjectSources(entryPath));
+    if (entryPath === vendorRoot) {
+      continue;
+    }
+
+    if (entry.isSymbolicLink()) {
+      entries.symlinks.push(path.relative(root, entryPath));
+    } else if (entry.isDirectory()) {
+      collectProjectEntries(entryPath, entries);
     } else if (entry.isFile() && /\.(?:c|h)$/.test(entry.name)) {
-      sources.push(path.relative(root, entryPath));
+      entries.sources.push(path.relative(root, entryPath));
     }
   }
-  return sources;
+  return entries;
 }
 
 try {
@@ -42,13 +47,27 @@ try {
   ];
 
   for (const file of required) {
-    assert(fs.existsSync(path.join(root, file)), `${file} is required`);
+    const filePath = path.join(root, file);
+    let fileStats;
+    try {
+      fileStats = fs.lstatSync(filePath);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        throw new Error(`${file} is required`);
+      }
+      throw error;
+    }
+    assert(fileStats.isFile(), `${file} must be a regular file`);
   }
 
-  const projectSources = collectProjectSources(lanspeeddRoot);
+  const projectEntries = collectProjectEntries(lanspeeddRoot);
   assert(
-    projectSources.length === 0,
-    `project-owned C/H sources are forbidden: ${projectSources.join(', ')}`
+    projectEntries.symlinks.length === 0,
+    `symbolic links are forbidden below net/lanspeedd: ${projectEntries.symlinks.join(', ')}`
+  );
+  assert(
+    projectEntries.sources.length === 0,
+    `project-owned C/H sources are forbidden: ${projectEntries.sources.join(', ')}`
   );
 
   const packageMakefile = fs.readFileSync(path.join(lanspeeddRoot, 'Makefile'), 'utf8');
