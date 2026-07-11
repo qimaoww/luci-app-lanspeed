@@ -1,8 +1,11 @@
 use lanspeedd::identity::{
     arp::parse_arp_table,
     filter::{IdentityFilter, InterfacePrefix},
-    hostname::{HostnameCache, HostnamePaths, HOSTNAME_CACHE_MAX, HOSTNAME_REFRESH_MS},
-    netlink::parse_ipv6_neighbor_messages,
+    hostname::{
+        HostnameCache, HostnamePaths, HOSTNAME_CACHE_MAX, HOSTNAME_MAX_HOST_FILES,
+        HOSTNAME_MAX_LINE_BYTES, HOSTNAME_MAX_SOURCE_BYTES, HOSTNAME_REFRESH_MS,
+    },
+    netlink::{parse_ipv6_neighbor_dump, parse_ipv6_neighbor_messages, NetlinkParseError},
     FrameKind, IdentityObservation, IdentityPolicy, IdentityTable, LegacyZoneResolver,
     ObservationSource,
 };
@@ -371,6 +374,24 @@ fn neighbor_message(state: u16, dst: &[u8], lladdr: &[u8], ifindex: i32) -> Vec<
     message
 }
 
+fn netlink_sequence(mut message: Vec<u8>, sequence: u32) -> Vec<u8> {
+    message[8..12].copy_from_slice(&sequence.to_ne_bytes());
+    message
+}
+
+fn netlink_control_message(kind: u16, flags: u16, sequence: u32, error: Option<i32>) -> Vec<u8> {
+    let mut message = vec![0; 16 + error.map(|_| 4).unwrap_or(0)];
+    let length = message.len() as u32;
+    message[..4].copy_from_slice(&length.to_ne_bytes());
+    message[4..6].copy_from_slice(&kind.to_ne_bytes());
+    message[6..8].copy_from_slice(&flags.to_ne_bytes());
+    message[8..12].copy_from_slice(&sequence.to_ne_bytes());
+    if let Some(error) = error {
+        message[16..20].copy_from_slice(&error.to_ne_bytes());
+    }
+    message
+}
+
 #[test]
 fn raw_rtnetlink_parser_handles_ipv6_states_short_attrs_and_unaligned_buffers() {
     let address = IpAddr::from_str("fd00::42").unwrap();
@@ -429,6 +450,72 @@ fn raw_rtnetlink_parser_handles_ipv6_states_short_attrs_and_unaligned_buffers() 
         &LegacyZoneResolver,
     )
     .unwrap()
+    .is_empty());
+}
+
+#[test]
+fn strict_rtnetlink_dump_validates_sequence_ack_interrupt_error_and_trailing_attrs() {
+    let address = "fd00::99".parse::<std::net::Ipv6Addr>().unwrap();
+    let neighbor = neighbor_message(1, &address.octets(), &[0x02, 0, 0, 0, 0, 0x99], 9);
+
+    let mismatch = parse_ipv6_neighbor_dump(
+        &netlink_sequence(neighbor.clone(), 7),
+        42,
+        16,
+        |_| Some("br-lan".to_owned()),
+        &LegacyZoneResolver,
+    )
+    .unwrap();
+    assert!(mismatch.entries.is_empty());
+    assert!(!mismatch.done);
+
+    let mut acknowledged = netlink_control_message(2, 0, 42, Some(0));
+    acknowledged.extend(netlink_sequence(neighbor.clone(), 42));
+    let acknowledged = parse_ipv6_neighbor_dump(
+        &acknowledged,
+        42,
+        16,
+        |_| Some("br-lan".to_owned()),
+        &LegacyZoneResolver,
+    )
+    .unwrap();
+    assert_eq!(acknowledged.entries.len(), 1);
+    assert!(!acknowledged.done);
+
+    assert_eq!(
+        parse_ipv6_neighbor_dump(
+            &netlink_control_message(2, 0, 42, Some(-2)),
+            42,
+            16,
+            |_| None,
+            &LegacyZoneResolver,
+        ),
+        Err(NetlinkParseError::Kernel(-2))
+    );
+    assert_eq!(
+        parse_ipv6_neighbor_dump(
+            &netlink_control_message(3, 0x10, 42, None),
+            42,
+            16,
+            |_| None,
+            &LegacyZoneResolver,
+        ),
+        Err(NetlinkParseError::DumpInterrupted)
+    );
+
+    let mut malformed = netlink_sequence(neighbor, 42);
+    malformed.extend([2, 0, 0, 0]);
+    let length = malformed.len() as u32;
+    malformed[..4].copy_from_slice(&length.to_ne_bytes());
+    assert!(parse_ipv6_neighbor_dump(
+        &malformed,
+        42,
+        16,
+        |_| Some("br-lan".to_owned()),
+        &LegacyZoneResolver,
+    )
+    .unwrap()
+    .entries
     .is_empty());
 }
 
@@ -500,6 +587,64 @@ fn hostname_cache_checks_capacity_before_updating_duplicate_keys() {
          0 02:00:00:00:00:01 192.0.2.1 MustNotReplace *\n",
     );
     assert_eq!(cache.lookup("02:00:00:00:00:01", &[]), Some("First"));
+}
+
+#[test]
+fn hostname_refresh_is_streaming_bounded_and_skips_only_invalid_lines() {
+    assert_eq!(HOSTNAME_MAX_LINE_BYTES, 512);
+    assert!(HOSTNAME_MAX_SOURCE_BYTES >= HOSTNAME_MAX_LINE_BYTES);
+    assert!(HOSTNAME_MAX_HOST_FILES > 0);
+
+    let (root, paths) = temporary_hostname_paths();
+    let mut leases = b"0 02:00:00:00:00:01 192.0.2.1 First *\n".to_vec();
+    leases.extend(b"0 02:00:00:00:00:02 192.0.2.2 ");
+    leases.push(0xff);
+    leases.extend(b" *\n0 02:00:00:00:00:03 192.0.2.3 Third *\n");
+    fs::write(&paths.leases, leases).unwrap();
+
+    let mut cache = HostnameCache::new();
+    assert!(cache.refresh_from_paths(&paths, 1, true));
+    assert_eq!(cache.lookup("02:00:00:00:00:01", &[]), Some("First"));
+    assert_eq!(cache.lookup("02:00:00:00:00:02", &[]), None);
+    assert_eq!(cache.lookup("02:00:00:00:00:03", &[]), Some("Third"));
+
+    let mut overlong = vec![b'x'; HOSTNAME_MAX_LINE_BYTES + 1];
+    overlong.extend(b"\n192.0.2.42 bounded-host\n");
+    fs::write(&paths.etc_hosts, overlong).unwrap();
+    assert!(cache.refresh_from_paths(&paths, 2, true));
+    assert_eq!(
+        cache.lookup("02:00:00:00:00:ff", &["192.0.2.42"]),
+        Some("bounded-host")
+    );
+
+    let mut oversized = vec![b'#'; HOSTNAME_MAX_SOURCE_BYTES];
+    oversized.extend(b"\n192.0.2.99 beyond-budget\n");
+    fs::write(&paths.etc_hosts, oversized).unwrap();
+    assert!(cache.refresh_from_paths(&paths, 3, true));
+    assert_eq!(cache.lookup("02:00:00:00:00:ff", &["192.0.2.99"]), None);
+
+    for index in 0..HOSTNAME_MAX_HOST_FILES + 5 {
+        fs::write(
+            paths.hosts_dir.join(format!("host-{index:04}")),
+            format!("198.51.100.{} host-{index}\n", index % 250 + 1),
+        )
+        .unwrap();
+    }
+    assert!(cache.refresh_from_paths(&paths, 4, true));
+    assert_eq!(
+        cache.last_refresh_stats().host_files,
+        HOSTNAME_MAX_HOST_FILES
+    );
+
+    let mut small = HostnameCache::with_capacity(1);
+    let full_source = format!(
+        "0 02:00:00:00:00:10 203.0.113.10 Full *\n{}",
+        "# padding\n".repeat(1000)
+    );
+    fs::write(&paths.leases, &full_source).unwrap();
+    assert!(small.refresh_from_paths(&paths, 5, true));
+    assert!(small.last_refresh_stats().bytes_read < full_source.len());
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -596,4 +741,9 @@ fn duplicate_ip_lookup_is_deterministic_by_mac_zone_key_order() {
         identities.by_ip("192.0.2.42").unwrap().key.to_string(),
         "02:00:00:00:00:10@lan"
     );
+    for (mac, zone) in [("02:00:00:00:00:20", "guest"), ("02:00:00:00:00:10", "lan")] {
+        assert!(identities
+            .traffic_owner(mac, zone, Some("192.0.2.42"), FrameKind::Unicast)
+            .is_some());
+    }
 }

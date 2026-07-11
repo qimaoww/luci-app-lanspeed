@@ -330,8 +330,10 @@ impl IdentityTable {
         }
         let owner = self.by_mac_zone(mac, zone)?;
         if let Some(client_ip) = client_ip {
-            let by_ip = self.by_ip(client_ip)?;
-            if by_ip.key != owner.key {
+            let client_ip = normalize_ip_address(client_ip)?;
+            if self.policy.excludes_ip(&client_ip)
+                || !owner.ips.iter().any(|candidate| candidate == &client_ip)
+            {
                 return None;
             }
         }

@@ -15,6 +15,7 @@ const NLMSG_ERROR: u16 = 2;
 const NLMSG_DONE: u16 = 3;
 const NLM_F_REQUEST: u16 = 1;
 const NLM_F_DUMP: u16 = 0x300;
+const NLM_F_DUMP_INTR: u16 = 0x10;
 const NDA_DST: u16 = 1;
 const NDA_LLADDR: u16 = 2;
 const NLA_TYPE_MASK: u16 = 0x3fff;
@@ -27,6 +28,8 @@ const MAX_DUMP_BYTES: usize = 4 * 1024 * 1024;
 pub enum NetlinkParseError {
     TruncatedHeader,
     InvalidMessageLength(u32),
+    DumpInterrupted,
+    Kernel(i32),
 }
 
 impl fmt::Display for NetlinkParseError {
@@ -36,11 +39,19 @@ impl fmt::Display for NetlinkParseError {
             Self::InvalidMessageLength(length) => {
                 write!(formatter, "invalid rtnetlink message length {length}")
             }
+            Self::DumpInterrupted => formatter.write_str("rtnetlink dump was interrupted"),
+            Self::Kernel(error) => write!(formatter, "rtnetlink kernel error {error}"),
         }
     }
 }
 
 impl std::error::Error for NetlinkParseError {}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct NeighborDump {
+    pub entries: Vec<NeighborEntry>,
+    pub done: bool,
+}
 
 pub fn parse_ipv6_neighbor_messages<F, Z>(
     bytes: &[u8],
@@ -52,14 +63,53 @@ where
     F: FnMut(i32) -> Option<String>,
     Z: ZoneResolver,
 {
+    parse_ipv6_neighbor_messages_inner(bytes, None, max_entries, &mut interface_name, zone_resolver)
+        .map(|dump| dump.entries)
+}
+
+pub fn parse_ipv6_neighbor_dump<F, Z>(
+    bytes: &[u8],
+    expected_sequence: u32,
+    max_entries: usize,
+    mut interface_name: F,
+    zone_resolver: &Z,
+) -> Result<NeighborDump, NetlinkParseError>
+where
+    F: FnMut(i32) -> Option<String>,
+    Z: ZoneResolver,
+{
+    parse_ipv6_neighbor_messages_inner(
+        bytes,
+        Some(expected_sequence),
+        max_entries,
+        &mut interface_name,
+        zone_resolver,
+    )
+}
+
+fn parse_ipv6_neighbor_messages_inner<F, Z>(
+    bytes: &[u8],
+    expected_sequence: Option<u32>,
+    max_entries: usize,
+    interface_name: &mut F,
+    zone_resolver: &Z,
+) -> Result<NeighborDump, NetlinkParseError>
+where
+    F: FnMut(i32) -> Option<String>,
+    Z: ZoneResolver,
+{
     if bytes.is_empty() {
-        return Ok(Vec::new());
+        return Ok(NeighborDump {
+            entries: Vec::new(),
+            done: false,
+        });
     }
     if bytes.len() < NLMSG_HEADER_LEN {
         return Err(NetlinkParseError::TruncatedHeader);
     }
     let mut entries = Vec::new();
     let mut seen_ips = HashSet::new();
+    let mut done = false;
     let mut offset = 0usize;
     while offset < bytes.len() {
         if bytes.len() - offset < NLMSG_HEADER_LEN {
@@ -71,27 +121,52 @@ where
             return Err(NetlinkParseError::InvalidMessageLength(message_len));
         }
         let message_type = read_u16(bytes, offset + 4).unwrap_or_default();
-        if message_type == NLMSG_DONE {
+        let flags = read_u16(bytes, offset + 6).unwrap_or_default();
+        let sequence = read_u32(bytes, offset + 8).unwrap_or_default();
+        if expected_sequence.is_some_and(|expected| sequence != expected) {
+            offset = advance_message(bytes, offset, message_len, message_len_usize)?;
+            continue;
+        }
+        if flags & NLM_F_DUMP_INTR != 0 {
+            return Err(NetlinkParseError::DumpInterrupted);
+        }
+        if message_type == NLMSG_ERROR {
+            let error = read_i32(bytes, offset + NLMSG_HEADER_LEN)
+                .ok_or(NetlinkParseError::InvalidMessageLength(message_len))?;
+            if error != 0 {
+                return Err(NetlinkParseError::Kernel(error));
+            }
+        } else if message_type == NLMSG_DONE {
+            done = true;
             break;
         }
         if message_type == RTM_NEWNEIGH && entries.len() < max_entries {
             let payload = &bytes[offset + NLMSG_HEADER_LEN..offset + message_len_usize];
-            if let Some(entry) = parse_neighbor(payload, &mut interface_name, zone_resolver) {
+            if let Some(entry) = parse_neighbor(payload, interface_name, zone_resolver) {
                 if seen_ips.insert(entry.ip.clone()) {
                     entries.push(entry);
                 }
             }
         }
-        let aligned = align4(message_len_usize);
-        if aligned > bytes.len() - offset {
-            if message_len_usize == bytes.len() - offset {
-                break;
-            }
-            return Err(NetlinkParseError::InvalidMessageLength(message_len));
-        }
-        offset += aligned;
+        offset = advance_message(bytes, offset, message_len, message_len_usize)?;
     }
-    Ok(entries)
+    Ok(NeighborDump { entries, done })
+}
+
+fn advance_message(
+    bytes: &[u8],
+    offset: usize,
+    message_len: u32,
+    message_len_usize: usize,
+) -> Result<usize, NetlinkParseError> {
+    let aligned = align4(message_len_usize);
+    if aligned > bytes.len() - offset {
+        if message_len_usize == bytes.len() - offset {
+            return Ok(bytes.len());
+        }
+        return Err(NetlinkParseError::InvalidMessageLength(message_len));
+    }
+    Ok(offset + aligned)
 }
 
 fn parse_neighbor<F, Z>(
@@ -114,11 +189,14 @@ where
     let mut dst = None;
     let mut lladdr = None;
     let mut offset = NDMSG_LEN;
-    while payload.len().saturating_sub(offset) >= 4 {
+    while offset < payload.len() {
+        if payload.len() - offset < 4 {
+            return None;
+        }
         let length = read_u16(payload, offset)? as usize;
         let kind = read_u16(payload, offset + 2)? & NLA_TYPE_MASK;
         if length < 4 || length > payload.len() - offset {
-            break;
+            return None;
         }
         let value = &payload[offset + 4..offset + length];
         match kind {
@@ -126,7 +204,11 @@ where
             NDA_LLADDR if value.len() >= 6 => lladdr = Some(&value[..6]),
             _ => {}
         }
-        offset = offset.saturating_add(align4(length));
+        let next = offset.saturating_add(align4(length));
+        if next > payload.len() {
+            return None;
+        }
+        offset = next;
     }
     let address = Ipv6Addr::from(<[u8; 16]>::try_from(dst?).ok()?);
     let mac_bytes = <[u8; 6]>::try_from(lladdr?).ok()?;
@@ -209,50 +291,67 @@ pub fn read_ipv6_neighbor_table(
         ));
     }
 
-    let mut dump = Vec::new();
     let mut buffer = vec![0u8; 64 * 1024];
+    let mut total_bytes = 0usize;
+    let mut entries = Vec::new();
+    let mut seen_ips = HashSet::new();
     loop {
+        let mut sender = SockAddrNl::new();
+        let mut sender_len = size_of::<SockAddrNl>() as libc::socklen_t;
         let received = unsafe {
-            libc::recv(
+            libc::recvfrom(
                 socket.as_raw_fd(),
                 buffer.as_mut_ptr().cast(),
                 buffer.len(),
                 0,
+                (&mut sender as *mut SockAddrNl).cast(),
+                &mut sender_len,
             )
         };
         if received < 0 {
             return Err(io::Error::last_os_error());
         }
         if received == 0 {
-            break;
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "rtnetlink dump ended before NLMSG_DONE",
+            ));
         }
         let packet = &buffer[..received as usize];
-        if dump.len().saturating_add(packet.len()) > MAX_DUMP_BYTES {
+        total_bytes = total_bytes.saturating_add(packet.len());
+        if total_bytes > MAX_DUMP_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "rtnetlink dump exceeds bound",
             ));
         }
-        let done = packet_contains_type(packet, NLMSG_DONE)?;
-        if packet_contains_type(packet, NLMSG_ERROR)? {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "rtnetlink returned NLMSG_ERROR",
-            ));
+        if sender_len < size_of::<SockAddrNl>() as libc::socklen_t
+            || sender.family != libc::AF_NETLINK as u16
+            || sender.pid != 0
+        {
+            continue;
         }
-        dump.extend_from_slice(packet);
-        if done {
+        let chunk = parse_ipv6_neighbor_dump(
+            packet,
+            sequence,
+            max_entries.saturating_sub(entries.len()),
+            interface_name_for_index,
+            zone_resolver,
+        )
+        .map_err(netlink_error_to_io)?;
+        for entry in chunk.entries {
+            if entries.len() == max_entries {
+                break;
+            }
+            if filter.allows(&entry.interface, &entry.ip) && seen_ips.insert(entry.ip.clone()) {
+                entries.push(entry);
+            }
+        }
+        if chunk.done {
             break;
         }
     }
-
-    let entries =
-        parse_ipv6_neighbor_messages(&dump, max_entries, interface_name_for_index, zone_resolver)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    Ok(entries
-        .into_iter()
-        .filter(|entry| filter.allows(&entry.interface, &entry.ip))
-        .collect())
+    Ok(entries)
 }
 
 #[repr(C)]
@@ -309,28 +408,13 @@ fn interface_name_for_index(index: i32) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn packet_contains_type(bytes: &[u8], expected: u16) -> io::Result<bool> {
-    let mut offset = 0;
-    while offset < bytes.len() {
-        if bytes.len() - offset < NLMSG_HEADER_LEN {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "truncated rtnetlink packet",
-            ));
+fn netlink_error_to_io(error: NetlinkParseError) -> io::Error {
+    match error {
+        NetlinkParseError::Kernel(error) if error < 0 => {
+            io::Error::from_raw_os_error(error.checked_neg().unwrap_or(libc::EINVAL))
         }
-        let length = read_u32(bytes, offset).unwrap_or_default() as usize;
-        if length < NLMSG_HEADER_LEN || length > bytes.len() - offset {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid rtnetlink packet",
-            ));
-        }
-        if read_u16(bytes, offset + 4) == Some(expected) {
-            return Ok(true);
-        }
-        offset += align4(length);
+        error => io::Error::new(io::ErrorKind::InvalidData, error),
     }
-    Ok(false)
 }
 
 fn syscall_zero(result: libc::c_int) -> io::Result<()> {
