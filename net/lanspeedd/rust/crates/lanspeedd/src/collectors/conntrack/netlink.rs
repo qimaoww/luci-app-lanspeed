@@ -80,10 +80,17 @@ pub fn parse_dump(datagrams: &[Datagram], expected_seq: u32) -> Result<Vec<FlowS
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParsedDump {
+    pub flows: Vec<FlowSample>,
+    pub malformed_entries: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetlinkSnapshot {
     pub flows: Vec<FlowSample>,
     pub source_path: &'static str,
     pub counter_source: &'static str,
+    pub malformed_entries: usize,
 }
 
 pub fn parse_dump_with_limit(
@@ -91,6 +98,21 @@ pub fn parse_dump_with_limit(
     expected_seq: u32,
     max_bytes: usize,
 ) -> Result<Vec<FlowSample>, DumpError> {
+    Ok(parse_dump_detailed_with_limit(datagrams, expected_seq, max_bytes)?.flows)
+}
+
+pub fn parse_dump_detailed(
+    datagrams: &[Datagram],
+    expected_seq: u32,
+) -> Result<ParsedDump, DumpError> {
+    parse_dump_detailed_with_limit(datagrams, expected_seq, MAX_DUMP_BYTES)
+}
+
+fn parse_dump_detailed_with_limit(
+    datagrams: &[Datagram],
+    expected_seq: u32,
+    max_bytes: usize,
+) -> Result<ParsedDump, DumpError> {
     let total = datagrams.iter().try_fold(0usize, |total, datagram| {
         total
             .checked_add(datagram.bytes.len())
@@ -100,6 +122,7 @@ pub fn parse_dump_with_limit(
         return Err(DumpError::LimitExceeded);
     }
     let mut flows = Vec::new();
+    let mut malformed_entries = 0usize;
     let mut done = false;
     for datagram in datagrams {
         if datagram.sender_pid != 0 {
@@ -156,13 +179,20 @@ pub fn parse_dump_with_limit(
                 return Err(DumpError::Interrupted);
             }
             let payload = &datagram.bytes[offset + 16..offset + len];
+            if done {
+                return if kind == NLMSG_DONE {
+                    Err(DumpError::Malformed("duplicate NLMSG_DONE"))
+                } else {
+                    Err(DumpError::Malformed("message after NLMSG_DONE"))
+                };
+            }
             match kind {
                 NLMSG_DONE => {
-                    if done {
-                        return Err(DumpError::Malformed("duplicate NLMSG_DONE"));
-                    }
                     if flags & NLM_F_MULTI == 0 {
                         return Err(DumpError::Malformed("NLMSG_DONE is not multipart"));
+                    }
+                    if (1..4).contains(&payload.len()) {
+                        return Err(DumpError::Malformed("short NLMSG_DONE status"));
                     }
                     if payload.len() >= 4 {
                         let error = i32::from_ne_bytes(
@@ -170,21 +200,28 @@ pub fn parse_dump_with_limit(
                                 .try_into()
                                 .map_err(|_| DumpError::Malformed("invalid DONE status"))?,
                         );
-                        if error != 0 {
+                        if error < 0 {
                             return Err(DumpError::Kernel(io::Error::from_raw_os_error(
                                 error.saturating_abs(),
                             )));
+                        } else if error > 0 {
+                            return Err(DumpError::Malformed("positive NLMSG_DONE status"));
                         }
                     }
                     done = true;
                 }
                 NLMSG_ERROR => parse_ack(payload)?,
-                _ if done => return Err(DumpError::Malformed("data after NLMSG_DONE")),
                 IPCTNL_MSG_CT_NEW => {
                     if flags & NLM_F_MULTI == 0 {
                         return Err(DumpError::Malformed("conntrack data is not multipart"));
                     }
-                    flows.push(parse_flow(payload)?);
+                    match parse_flow(payload) {
+                        Ok(flow) => flows.push(flow),
+                        Err(DumpError::Malformed(_)) => {
+                            malformed_entries = malformed_entries.saturating_add(1);
+                        }
+                        Err(error) => return Err(error),
+                    }
                 }
                 _ => return Err(DumpError::Malformed("unexpected netlink message type")),
             }
@@ -200,24 +237,29 @@ pub fn parse_dump_with_limit(
     if !done {
         return Err(DumpError::MissingDone);
     }
-    Ok(flows)
+    Ok(ParsedDump {
+        flows,
+        malformed_entries,
+    })
 }
 
 fn parse_ack(payload: &[u8]) -> Result<(), DumpError> {
     let error = payload
-        .get(..4)
+        .get(..20)
         .ok_or(DumpError::Malformed("short NLMSG_ERROR"))?;
     let error = i32::from_ne_bytes(
-        error
+        error[..4]
             .try_into()
             .map_err(|_| DumpError::Malformed("invalid NLMSG_ERROR"))?,
     );
     if error == 0 {
         Ok(())
-    } else {
+    } else if error < 0 {
         Err(DumpError::Kernel(io::Error::from_raw_os_error(
             error.saturating_abs(),
         )))
+    } else {
+        Err(DumpError::Malformed("positive NLMSG_ERROR errno"))
     }
 }
 
@@ -230,9 +272,14 @@ fn parse_flow(payload: &[u8]) -> Result<FlowSample, DumpError> {
     let orig_counters =
         attrs[CTA_COUNTERS_ORIG].ok_or(DumpError::Malformed("missing original counters"))?;
     let mut flow = FlowSample::default();
-    parse_tuple(orig.payload, true, &mut flow)?;
+    let orig_meta = parse_tuple(orig.payload, true, &mut flow)?;
     if let Some(reply) = attrs[CTA_TUPLE_REPLY] {
-        parse_tuple(reply.payload, false, &mut flow)?;
+        let reply_meta = parse_tuple(reply.payload, false, &mut flow)?;
+        if reply_meta != orig_meta {
+            return Err(DumpError::Malformed(
+                "reply tuple protocol or address family mismatch",
+            ));
+        }
     }
     flow.orig_bytes = parse_counters(orig_counters.payload)?;
     if let Some(reply) = attrs[CTA_COUNTERS_REPLY] {
@@ -253,7 +300,17 @@ fn parse_flow(payload: &[u8]) -> Result<FlowSample, DumpError> {
     Ok(flow)
 }
 
-fn parse_tuple(payload: &[u8], original: bool, flow: &mut FlowSample) -> Result<(), DumpError> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TupleMeta {
+    protocol: Protocol,
+    ipv6: bool,
+}
+
+fn parse_tuple(
+    payload: &[u8],
+    original: bool,
+    flow: &mut FlowSample,
+) -> Result<TupleMeta, DumpError> {
     let table = attr_table(payload, 2)?;
     let ip = attr_table(
         table[1]
@@ -267,14 +324,25 @@ fn parse_tuple(payload: &[u8], original: bool, flow: &mut FlowSample) -> Result<
             .payload,
         3,
     )?;
-    let src = parse_ip(ip[1], ip[3])?;
-    let dst = parse_ip(ip[2], ip[4])?;
+    let src =
+        parse_ip(ip[1], ip[3])?.ok_or(DumpError::Malformed("tuple missing source address"))?;
+    let dst =
+        parse_ip(ip[2], ip[4])?.ok_or(DumpError::Malformed("tuple missing destination address"))?;
+    if src.is_ipv4() != dst.is_ipv4() {
+        return Err(DumpError::Malformed("tuple address family mismatch"));
+    }
     let number = exact(
         proto[1]
             .ok_or(DumpError::Malformed("tuple missing protocol number"))?
             .payload,
         1,
     )?[0];
+    let parsed_protocol = protocol(number);
+    if matches!(parsed_protocol, Protocol::Tcp | Protocol::Udp)
+        && (proto[2].is_none() || proto[3].is_none())
+    {
+        return Err(DumpError::Malformed("TCP/UDP tuple missing ports"));
+    }
     let sport = proto[2]
         .map(|attr| be_u16(attr.payload))
         .transpose()?
@@ -284,21 +352,24 @@ fn parse_tuple(payload: &[u8], original: bool, flow: &mut FlowSample) -> Result<
         .transpose()?
         .unwrap_or(0);
     if original {
-        flow.orig_src = src;
-        flow.orig_dst = dst;
+        flow.orig_src = Some(src);
+        flow.orig_dst = Some(dst);
         flow.orig_sport = sport;
         flow.orig_dport = dport;
-        flow.protocol = protocol(number);
+        flow.protocol = parsed_protocol;
     } else {
-        flow.reply_src = src;
-        flow.reply_dst = dst;
+        flow.reply_src = Some(src);
+        flow.reply_dst = Some(dst);
         flow.reply_sport = sport;
         flow.reply_dport = dport;
         if flow.protocol == Protocol::Other(0) {
-            flow.protocol = protocol(number);
+            flow.protocol = parsed_protocol;
         }
     }
-    Ok(())
+    Ok(TupleMeta {
+        protocol: parsed_protocol,
+        ipv6: src.is_ipv6(),
+    })
 }
 
 fn parse_ip(v4: Option<AttrRef<'_>>, v6: Option<AttrRef<'_>>) -> Result<Option<IpAddr>, DumpError> {
@@ -405,10 +476,12 @@ pub fn snapshot_from_datagrams(
     datagrams: &[Datagram],
     expected_seq: u32,
 ) -> Result<NetlinkSnapshot, DumpError> {
+    let parsed = parse_dump_detailed(datagrams, expected_seq)?;
     Ok(NetlinkSnapshot {
-        flows: parse_dump(datagrams, expected_seq)?,
+        flows: parsed.flows,
         source_path: NETLINK_SOURCE_PATH,
         counter_source: NETLINK_COUNTER_SOURCE,
+        malformed_entries: parsed.malformed_entries,
     })
 }
 
@@ -482,12 +555,13 @@ pub fn read_snapshot() -> Result<NetlinkSnapshot, DumpError> {
             sender_pid: sender.nl_pid,
             bytes,
         });
-        match parse_dump_with_limit(&datagrams, seq, MAX_DUMP_BYTES) {
-            Ok(flows) => {
+        match parse_dump_detailed_with_limit(&datagrams, seq, MAX_DUMP_BYTES) {
+            Ok(parsed) => {
                 return Ok(NetlinkSnapshot {
-                    flows,
+                    flows: parsed.flows,
                     source_path: NETLINK_SOURCE_PATH,
                     counter_source: NETLINK_COUNTER_SOURCE,
+                    malformed_entries: parsed.malformed_entries,
                 })
             }
             Err(DumpError::MissingDone) => {}

@@ -197,7 +197,7 @@ fn finish_netlink(
         true,
         false,
         None,
-        0,
+        snapshot.malformed_entries,
         snapshot.flows.len(),
     );
     Ok(CollectedSnapshot {

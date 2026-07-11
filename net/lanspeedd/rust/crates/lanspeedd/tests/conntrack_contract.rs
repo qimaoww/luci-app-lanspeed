@@ -3,8 +3,8 @@ use lanspeedd::{
         aggregate::aggregate_flows,
         collect_with,
         netlink::{
-            build_dump_request, parse_dump, parse_dump_with_limit, Datagram, DumpError,
-            NetlinkSnapshot,
+            build_dump_request, parse_dump, parse_dump_detailed, parse_dump_with_limit, Datagram,
+            DumpError, NetlinkSnapshot,
         },
         procfs::{parse_reader, ProcfsError, ProcfsSnapshot, CONNTRACK_LINE_MAX},
         CollectorMode, CollectorReadError, FlowSample, Protocol, TcpState,
@@ -228,21 +228,33 @@ fn nested(kind: u16, children: &[Vec<u8>]) -> Vec<u8> {
 }
 
 fn tuple(v6: bool, src: &[u8], dst: &[u8], proto: u8, sport: u16, dport: u16) -> Vec<u8> {
-    let ip = nested(
-        1,
-        &[
-            attr(if v6 { 3 } else { 1 }, src),
-            attr(if v6 { 4 } else { 2 }, dst),
-        ],
-    );
-    let proto = nested(
-        2,
-        &[
-            attr(1, &[proto]),
-            attr(2, &sport.to_be_bytes()),
-            attr(3, &dport.to_be_bytes()),
-        ],
-    );
+    tuple_parts(v6, Some(src), Some(dst), proto, Some(sport), Some(dport))
+}
+
+fn tuple_parts(
+    v6: bool,
+    src: Option<&[u8]>,
+    dst: Option<&[u8]>,
+    proto: u8,
+    sport: Option<u16>,
+    dport: Option<u16>,
+) -> Vec<u8> {
+    let mut ip_parts = Vec::new();
+    if let Some(src) = src {
+        ip_parts.push(attr(if v6 { 3 } else { 1 }, src));
+    }
+    if let Some(dst) = dst {
+        ip_parts.push(attr(if v6 { 4 } else { 2 }, dst));
+    }
+    let ip = nested(1, &ip_parts);
+    let mut proto_parts = vec![attr(1, &[proto])];
+    if let Some(sport) = sport {
+        proto_parts.push(attr(2, &sport.to_be_bytes()));
+    }
+    if let Some(dport) = dport {
+        proto_parts.push(attr(3, &dport.to_be_bytes()));
+    }
+    let proto = nested(2, &proto_parts);
     nested(1, &[ip, proto])
 }
 
@@ -275,11 +287,25 @@ fn data_message(seq: u32, v6: bool, counter32: bool) -> Vec<u8> {
             &[203, 0, 113, 2],
         )
     };
-    let mut attrs = Vec::new();
-    attrs.extend(tuple(v6, src, dst, 17, 53000, 53));
-    let mut reply = tuple(v6, reply_src, reply_dst, 17, 53, 53000);
-    reply[2..4].copy_from_slice(&(2u16 | 0x8000).to_ne_bytes());
-    attrs.extend(reply);
+    data_message_with_tuples(
+        seq,
+        tuple(v6, src, dst, 17, 53000, 53),
+        Some(tuple(v6, reply_src, reply_dst, 17, 53, 53000)),
+        counter32,
+    )
+}
+
+fn data_message_with_tuples(
+    seq: u32,
+    orig: Vec<u8>,
+    reply: Option<Vec<u8>>,
+    counter32: bool,
+) -> Vec<u8> {
+    let mut attrs = orig;
+    if let Some(mut reply) = reply {
+        reply[2..4].copy_from_slice(&(2u16 | 0x8000).to_ne_bytes());
+        attrs.extend(reply);
+    }
     attrs.extend(attr(3, &4u32.to_be_bytes()));
     let counter = if counter32 {
         attr(4, &1234u32.to_be_bytes())
@@ -371,6 +397,118 @@ fn netlink_requires_kernel_sender_matching_seq_and_clean_done() {
 }
 
 #[test]
+fn netlink_rejects_messages_after_done_and_short_control_payloads() {
+    let seq = 89;
+    let mut after_done_ack = done(seq, NLM_F_MULTI, 0);
+    let mut ack_payload = 0i32.to_ne_bytes().to_vec();
+    ack_payload.resize(20, 0);
+    after_done_ack.extend(nlmsg(NLMSG_ERROR, 0, seq, &ack_payload));
+    assert!(matches!(
+        parse_dump(&[Datagram::kernel(after_done_ack)], seq),
+        Err(DumpError::Malformed(_))
+    ));
+
+    let mut after_done_error = done(seq, NLM_F_MULTI, 0);
+    let mut error_payload = (-libc::EIO).to_ne_bytes().to_vec();
+    error_payload.resize(20, 0);
+    after_done_error.extend(nlmsg(NLMSG_ERROR, 0, seq, &error_payload));
+    assert!(matches!(
+        parse_dump(&[Datagram::kernel(after_done_error)], seq),
+        Err(DumpError::Malformed(_))
+    ));
+    assert!(matches!(
+        parse_dump(
+            &[Datagram::kernel(nlmsg(NLMSG_DONE, NLM_F_MULTI, seq, &[0]))],
+            seq
+        ),
+        Err(DumpError::Malformed(_))
+    ));
+    assert!(matches!(
+        parse_dump(
+            &[Datagram::kernel(nlmsg(
+                NLMSG_ERROR,
+                0,
+                seq,
+                &0i32.to_ne_bytes()
+            ))],
+            seq
+        ),
+        Err(DumpError::Malformed(_))
+    ));
+}
+
+#[test]
+fn netlink_requires_complete_consistent_orig_and_present_reply_tuples() {
+    let seq = 90;
+    let v4_src = [192, 168, 1, 42];
+    let v4_dst = [8, 8, 8, 8];
+    let v4_reply_src = [8, 8, 8, 8];
+    let v4_reply_dst = [203, 0, 113, 2];
+    let v6_src = [0x20, 1, 0xdb, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+    let cases = [
+        data_message_with_tuples(
+            seq,
+            tuple_parts(false, Some(&v4_src), None, 17, Some(1), Some(2)),
+            None,
+            false,
+        ),
+        data_message_with_tuples(
+            seq,
+            tuple_parts(false, Some(&v4_src), Some(&v4_dst), 17, None, Some(2)),
+            None,
+            false,
+        ),
+        data_message_with_tuples(
+            seq,
+            tuple_parts(false, Some(&v4_src), Some(&v4_dst), 17, Some(1), None),
+            None,
+            false,
+        ),
+        data_message_with_tuples(
+            seq,
+            tuple(false, &v4_src, &v4_dst, 17, 1, 2),
+            Some(tuple_parts(
+                false,
+                Some(&v4_reply_src),
+                None,
+                17,
+                Some(2),
+                Some(1),
+            )),
+            false,
+        ),
+        data_message_with_tuples(
+            seq,
+            tuple(false, &v4_src, &v4_dst, 17, 1, 2),
+            Some(tuple(false, &v4_reply_src, &v4_reply_dst, 6, 2, 1)),
+            false,
+        ),
+        data_message_with_tuples(
+            seq,
+            tuple(false, &v4_src, &v4_dst, 17, 1, 2),
+            Some(tuple(true, &v6_src, &v6_src, 17, 2, 1)),
+            false,
+        ),
+    ];
+    for mut message in cases {
+        message.extend(done(seq, NLM_F_MULTI, 0));
+        let parsed = parse_dump_detailed(&[Datagram::kernel(message)], seq).unwrap();
+        assert!(parsed.flows.is_empty());
+        assert_eq!(parsed.malformed_entries, 1);
+    }
+
+    let mut no_reply =
+        data_message_with_tuples(seq, tuple(false, &v4_src, &v4_dst, 17, 1, 53), None, false);
+    no_reply.extend(done(seq, NLM_F_MULTI, 0));
+    assert_eq!(
+        parse_dump(&[Datagram::kernel(no_reply)], seq)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn netlink_handles_ack_and_rejects_error_or_malformed_nested_lengths() {
     let seq = 99;
     let mut ack_payload = 0i32.to_ne_bytes().to_vec();
@@ -397,10 +535,9 @@ fn netlink_handles_ack_and_rejects_error_or_malformed_nested_lengths() {
     let mut malformed = data_message(seq, false, false);
     malformed[22..24].copy_from_slice(&2u16.to_ne_bytes());
     malformed.extend(done(seq, NLM_F_MULTI, 0));
-    assert!(matches!(
-        parse_dump(&[Datagram::kernel(malformed)], seq),
-        Err(DumpError::Malformed(_))
-    ));
+    let parsed = parse_dump_detailed(&[Datagram::kernel(malformed)], seq).unwrap();
+    assert!(parsed.flows.is_empty());
+    assert_eq!(parsed.malformed_entries, 1);
 
     let mut no_nested_flag = data_message(seq, false, false);
     no_nested_flag[22..24].copy_from_slice(&1u16.to_ne_bytes());
@@ -431,10 +568,9 @@ fn netlink_bounds_total_dump_and_rejects_duplicate_known_attributes() {
     duplicate[0..4].copy_from_slice(&new_len.to_ne_bytes());
     duplicate.resize(align4(duplicate.len()), 0);
     duplicate.extend(done(seq, NLM_F_MULTI, 0));
-    assert!(matches!(
-        parse_dump(&[Datagram::kernel(duplicate)], seq),
-        Err(DumpError::Malformed(_))
-    ));
+    let parsed = parse_dump_detailed(&[Datagram::kernel(duplicate)], seq).unwrap();
+    assert!(parsed.flows.is_empty());
+    assert_eq!(parsed.malformed_entries, 1);
 }
 
 #[test]
@@ -554,6 +690,7 @@ fn collector_modes_preserve_source_evidence_and_fallback_policy() {
                 flows: vec![make_flow()],
                 source_path: "netlink:ctnetlink",
                 counter_source: "ctnetlink_conntrack_acct_orig_reply_bytes",
+                malformed_entries: 0,
             })
         },
         || panic!("successful netlink must not fall back"),
