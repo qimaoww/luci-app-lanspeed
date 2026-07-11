@@ -9,6 +9,7 @@ use aya::{
     Ebpf,
 };
 use lanspeed_common::{BYTE_COUNTS_MAP, BYTE_COUNT_KEY};
+use lanspeedd::counter_value;
 
 const TC_PRIORITY: u16 = 49152;
 const TC_HANDLE: TcHandle = TcHandle::new(0, 0x1eed);
@@ -57,7 +58,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .map(BYTE_COUNTS_MAP)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "BYTE_COUNTS map missing"))?;
         let counters = HashMap::<_, u32, u64>::try_from(map)?;
-        Ok(counters.get(&BYTE_COUNT_KEY, 0).unwrap_or(0))
+        Ok(counter_value(counters.get(&BYTE_COUNT_KEY, 0))?)
     })();
 
     let program: &mut SchedClassifier = ebpf

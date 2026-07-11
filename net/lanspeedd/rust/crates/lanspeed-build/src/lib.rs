@@ -21,12 +21,9 @@ pub struct ToolVersions {
 
 impl ToolVersions {
     pub fn detect() -> Result<Self, BuildError> {
-        let rustc = env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc"));
-        let bpf_linker = env::var_os("BPF_LINKER").unwrap_or_else(|| OsString::from("bpf-linker"));
-
         Ok(Self {
-            rustc: command_version(&rustc, "rustc")?,
-            bpf_linker: command_version(&bpf_linker, "bpf-linker")?,
+            rustc: detect_rustc()?,
+            bpf_linker: detect_bpf_linker()?,
         })
     }
 
@@ -53,8 +50,6 @@ impl BuildTarget {
 }
 
 pub fn build(target: BuildTarget) -> Result<(), BuildError> {
-    ToolVersions::detect()?.validate()?;
-
     let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let workspace = workspace_root();
     let mut command = Command::new(cargo);
@@ -62,6 +57,7 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
 
     match target {
         BuildTarget::Userspace => {
+            validate_version("rustc", &detect_rustc()?, EXPECTED_RUSTC)?;
             command.env_remove("RUSTC_BOOTSTRAP");
             command.args([
                 "-p",
@@ -74,6 +70,7 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
             ]);
         }
         BuildTarget::Ebpf => {
+            ToolVersions::detect()?.validate()?;
             command.args([
                 "-p",
                 "lanspeed-ebpf",
@@ -93,6 +90,16 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
     }
 
     ensure_success(command.status()?, target)
+}
+
+fn detect_rustc() -> Result<String, BuildError> {
+    let rustc = env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc"));
+    command_version(&rustc, "rustc")
+}
+
+fn detect_bpf_linker() -> Result<String, BuildError> {
+    let bpf_linker = env::var_os("BPF_LINKER").unwrap_or_else(|| OsString::from("bpf-linker"));
+    command_version(&bpf_linker, "bpf-linker")
 }
 
 fn command_version(command: &OsStr, name: &'static str) -> Result<String, BuildError> {

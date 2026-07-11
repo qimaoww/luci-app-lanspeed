@@ -11,7 +11,7 @@ use lanspeed_common::BYTE_COUNT_KEY;
 
 #[link_section = "license"]
 #[no_mangle]
-static LICENSE: [u8; 4] = *b"GPL\0";
+static LICENSE: [u8; 11] = *b"Apache-2.0\0";
 
 #[map(name = "BYTE_COUNTS")]
 static BYTE_COUNTS: HashMap<u32, u64> = HashMap::with_max_entries(1, 0);
