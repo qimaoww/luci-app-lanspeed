@@ -10,6 +10,7 @@ use std::{
 };
 
 pub mod config;
+pub mod identity;
 
 pub fn counter_value(result: Result<u64, MapError>) -> Result<u64, MapError> {
     match result {
