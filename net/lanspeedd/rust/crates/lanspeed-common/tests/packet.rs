@@ -51,6 +51,7 @@ fn udp(source: u16, destination: u16) -> [u8; 8] {
     let mut header = [0; 8];
     header[0..2].copy_from_slice(&source.to_be_bytes());
     header[2..4].copy_from_slice(&destination.to_be_bytes());
+    header[4..6].copy_from_slice(&8u16.to_be_bytes());
     header
 }
 
@@ -220,6 +221,64 @@ fn rejects_non_initial_ipv4_fragments() {
     assert_eq!(
         parse_packet(&ethernet(0x0800, &fragment)),
         Err(ParseError::NonInitialIpv4Fragment)
+    );
+}
+
+#[test]
+fn rejects_invalid_udp_lengths() {
+    let mut zero_length = udp(1, 2);
+    zero_length[4..6].copy_from_slice(&0u16.to_be_bytes());
+    assert_eq!(
+        parse_packet(&ethernet(0x0800, &ipv4(17, 5, &zero_length))),
+        Err(ParseError::InvalidUdpLength)
+    );
+
+    let mut short_length = udp(1, 2);
+    short_length[4..6].copy_from_slice(&7u16.to_be_bytes());
+    assert_eq!(
+        parse_packet(&ethernet(0x86dd, &ipv6(17, &short_length))),
+        Err(ParseError::InvalidUdpLength)
+    );
+
+    let mut oversized = udp(1, 2);
+    oversized[4..6].copy_from_slice(&9u16.to_be_bytes());
+    assert_eq!(
+        parse_packet(&ethernet(0x0800, &ipv4(17, 5, &oversized))),
+        Err(ParseError::InvalidUdpLength)
+    );
+    assert_eq!(
+        parse_packet(&ethernet(0x86dd, &ipv6(17, &oversized))),
+        Err(ParseError::InvalidUdpLength)
+    );
+}
+
+#[test]
+fn accepts_exact_udp_length_and_ignores_ip_payload_after_datagram() {
+    let mut transport = udp(1, 2).to_vec();
+    transport.extend_from_slice(&[0xaa; 4]);
+
+    let identity = parse_packet(&ethernet(0x0800, &ipv4(17, 5, &transport))).unwrap();
+    assert_eq!(identity.protocol, TransportProtocol::Udp);
+    assert_eq!(identity.src_port, 1);
+    assert_eq!(identity.dst_port, 2);
+}
+
+#[test]
+fn allows_incomplete_udp_only_in_first_ipv4_fragment() {
+    let mut first_fragment_udp = udp(1, 2);
+    first_fragment_udp[4..6].copy_from_slice(&1200u16.to_be_bytes());
+    let mut first_fragment = ipv4(17, 5, &first_fragment_udp);
+    first_fragment[6..8].copy_from_slice(&0x2000u16.to_be_bytes());
+
+    assert!(parse_packet(&ethernet(0x0800, &first_fragment)).is_ok());
+
+    let mut short_header = first_fragment_udp[..7].to_vec();
+    short_header[4..6].copy_from_slice(&1200u16.to_be_bytes());
+    let mut truncated_first_fragment = ipv4(17, 5, &short_header);
+    truncated_first_fragment[6..8].copy_from_slice(&0x2000u16.to_be_bytes());
+    assert_eq!(
+        parse_packet(&ethernet(0x0800, &truncated_first_fragment)),
+        Err(ParseError::TruncatedUdp)
     );
 }
 

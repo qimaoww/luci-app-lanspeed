@@ -33,8 +33,12 @@ pub struct LanspeedKey {
     pub padding: [u8; 2],
 }
 
+/// BPF counter value with an explicit eight-byte alignment on every target.
+///
+/// The alignment is part of the map ABI: userspace and 32-bit eBPF build hosts
+/// must retain the same 32-byte layout as 64-bit targets.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[repr(C)]
+#[repr(C, align(8))]
 pub struct LanspeedCounters {
     pub bytes: u64,
     pub packets: u64,

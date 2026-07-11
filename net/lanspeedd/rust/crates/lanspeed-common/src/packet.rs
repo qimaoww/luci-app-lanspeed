@@ -51,6 +51,7 @@ pub enum ParseError {
     TruncatedTcp,
     InvalidTcpHeaderLength,
     TruncatedUdp,
+    InvalidUdpLength,
 }
 
 pub fn vlan_zone(tci: u16) -> u16 {
@@ -129,13 +130,17 @@ fn parse_ipv4(packet: &[u8]) -> Result<NetworkIdentity, ParseError> {
     if fragment & 0x1fff != 0 {
         return Err(ParseError::NonInitialIpv4Fragment);
     }
+    let allow_incomplete_datagram = fragment & 0x2000 != 0;
 
     let mut src_addr = [0; 16];
     src_addr[..4].copy_from_slice(&packet[12..16]);
     let mut dst_addr = [0; 16];
     dst_addr[..4].copy_from_slice(&packet[16..20]);
-    let (protocol, src_port, dst_port) =
-        parse_transport(packet[9], &packet[header_len..total_len])?;
+    let (protocol, src_port, dst_port) = parse_transport(
+        packet[9],
+        &packet[header_len..total_len],
+        allow_incomplete_datagram,
+    )?;
 
     Ok(NetworkIdentity {
         family: AddressFamily::Ipv4,
@@ -168,7 +173,7 @@ fn parse_ipv6(packet: &[u8]) -> Result<NetworkIdentity, ParseError> {
     let mut dst_addr = [0; 16];
     dst_addr.copy_from_slice(&packet[24..40]);
     let (protocol, src_port, dst_port) =
-        parse_transport(packet[6], &packet[IPV6_HEADER_LEN..packet_len])?;
+        parse_transport(packet[6], &packet[IPV6_HEADER_LEN..packet_len], false)?;
 
     Ok(NetworkIdentity {
         family: AddressFamily::Ipv6,
@@ -183,10 +188,11 @@ fn parse_ipv6(packet: &[u8]) -> Result<NetworkIdentity, ParseError> {
 fn parse_transport(
     protocol: u8,
     transport: &[u8],
+    allow_incomplete_datagram: bool,
 ) -> Result<(TransportProtocol, u16, u16), ParseError> {
     match protocol {
         IPPROTO_TCP => parse_tcp(transport),
-        IPPROTO_UDP => parse_udp(transport),
+        IPPROTO_UDP => parse_udp(transport, allow_incomplete_datagram),
         _ => Err(ParseError::UnsupportedTransportProtocol),
     }
 }
@@ -211,9 +217,16 @@ fn parse_tcp(tcp: &[u8]) -> Result<(TransportProtocol, u16, u16), ParseError> {
     ))
 }
 
-fn parse_udp(udp: &[u8]) -> Result<(TransportProtocol, u16, u16), ParseError> {
+fn parse_udp(
+    udp: &[u8],
+    allow_incomplete_datagram: bool,
+) -> Result<(TransportProtocol, u16, u16), ParseError> {
     if udp.len() < UDP_HEADER_LEN {
         return Err(ParseError::TruncatedUdp);
+    }
+    let datagram_len = usize::from(u16::from_be_bytes([udp[4], udp[5]]));
+    if datagram_len < UDP_HEADER_LEN || (!allow_incomplete_datagram && datagram_len > udp.len()) {
+        return Err(ParseError::InvalidUdpLength);
     }
 
     Ok((
