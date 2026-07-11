@@ -1,4 +1,4 @@
-use super::{filter::IdentityFilter, MacAddress, NeighborEntry};
+use super::{filter::IdentityFilter, resolve_zone, MacAddress, NeighborEntry, ZoneResolver};
 use std::{
     collections::HashSet,
     ffi::CStr,
@@ -42,13 +42,15 @@ impl fmt::Display for NetlinkParseError {
 
 impl std::error::Error for NetlinkParseError {}
 
-pub fn parse_ipv6_neighbor_messages<F>(
+pub fn parse_ipv6_neighbor_messages<F, Z>(
     bytes: &[u8],
     max_entries: usize,
     mut interface_name: F,
+    zone_resolver: &Z,
 ) -> Result<Vec<NeighborEntry>, NetlinkParseError>
 where
     F: FnMut(i32) -> Option<String>,
+    Z: ZoneResolver,
 {
     if bytes.is_empty() {
         return Ok(Vec::new());
@@ -74,7 +76,7 @@ where
         }
         if message_type == RTM_NEWNEIGH && entries.len() < max_entries {
             let payload = &bytes[offset + NLMSG_HEADER_LEN..offset + message_len_usize];
-            if let Some(entry) = parse_neighbor(payload, &mut interface_name) {
+            if let Some(entry) = parse_neighbor(payload, &mut interface_name, zone_resolver) {
                 if seen_ips.insert(entry.ip.clone()) {
                     entries.push(entry);
                 }
@@ -92,9 +94,14 @@ where
     Ok(entries)
 }
 
-fn parse_neighbor<F>(payload: &[u8], interface_name: &mut F) -> Option<NeighborEntry>
+fn parse_neighbor<F, Z>(
+    payload: &[u8],
+    interface_name: &mut F,
+    zone_resolver: &Z,
+) -> Option<NeighborEntry>
 where
     F: FnMut(i32) -> Option<String>,
+    Z: ZoneResolver,
 {
     if payload.len() < NDMSG_LEN || payload[0] != libc::AF_INET6 as u8 {
         return None;
@@ -136,7 +143,7 @@ where
     Some(NeighborEntry {
         ip: address.to_string(),
         mac,
-        zone: super::filter::derive_zone_from_ifname(&interface),
+        zone: resolve_zone(zone_resolver, &interface),
         interface,
     })
 }
@@ -144,6 +151,7 @@ where
 pub fn read_ipv6_neighbor_table(
     max_entries: usize,
     filter: &IdentityFilter,
+    zone_resolver: &impl ZoneResolver,
 ) -> io::Result<Vec<NeighborEntry>> {
     let raw_fd = unsafe {
         libc::socket(
@@ -238,8 +246,9 @@ pub fn read_ipv6_neighbor_table(
         }
     }
 
-    let entries = parse_ipv6_neighbor_messages(&dump, max_entries, interface_name_for_index)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let entries =
+        parse_ipv6_neighbor_messages(&dump, max_entries, interface_name_for_index, zone_resolver)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     Ok(entries
         .into_iter()
         .filter(|entry| filter.allows(&entry.interface, &entry.ip))

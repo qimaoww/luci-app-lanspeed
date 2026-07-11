@@ -12,6 +12,35 @@ pub mod netlink;
 
 pub const MAX_IPS_PER_IDENTITY: usize = 4;
 
+pub trait ZoneResolver {
+    fn zone_for_ifname(&self, ifname: &str) -> Option<String>;
+}
+
+impl<F> ZoneResolver for F
+where
+    F: Fn(&str) -> Option<String>,
+{
+    fn zone_for_ifname(&self, ifname: &str) -> Option<String> {
+        self(ifname)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LegacyZoneResolver;
+
+impl ZoneResolver for LegacyZoneResolver {
+    fn zone_for_ifname(&self, _ifname: &str) -> Option<String> {
+        None
+    }
+}
+
+pub fn resolve_zone(resolver: &impl ZoneResolver, ifname: &str) -> String {
+    resolver
+        .zone_for_ifname(ifname)
+        .filter(|zone| !zone.is_empty())
+        .unwrap_or_else(|| filter::derive_zone_from_ifname(ifname))
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct MacAddress([u8; 6]);
 
@@ -150,32 +179,108 @@ impl fmt::Display for IdentityError {
 
 impl std::error::Error for IdentityError {}
 
+#[derive(Clone, Debug, Default)]
+pub struct IdentityPolicy {
+    router_macs: HashSet<MacAddress>,
+    excluded_ips: HashSet<String>,
+}
+
+impl IdentityPolicy {
+    pub fn exclude_router_mac(&mut self, mac: &str) -> Result<(), IdentityError> {
+        self.router_macs.insert(mac.parse()?);
+        Ok(())
+    }
+
+    pub fn exclude_router_ip(&mut self, ip: &str) {
+        self.exclude_ip(ip);
+    }
+
+    pub fn exclude_control_ip(&mut self, ip: &str) {
+        self.exclude_ip(ip);
+    }
+
+    pub fn exclude_remote_ip(&mut self, ip: &str) {
+        self.exclude_ip(ip);
+    }
+
+    fn exclude_ip(&mut self, ip: &str) {
+        if let Some(ip) = normalize_ip_address(ip) {
+            self.excluded_ips.insert(ip);
+        }
+    }
+
+    fn excludes_mac(&self, mac: MacAddress) -> bool {
+        self.router_macs.contains(&mac)
+    }
+
+    fn excludes_ip(&self, ip: &str) -> bool {
+        normalize_ip_address(ip)
+            .map(|ip| self.excluded_ips.contains(&ip))
+            .unwrap_or(false)
+    }
+}
+
 pub struct IdentityTable {
     max_clients: usize,
-    router_macs: HashSet<MacAddress>,
+    policy: IdentityPolicy,
     clients: BTreeMap<IdentityKey, ClientIdentity>,
 }
 
 impl IdentityTable {
     pub fn new(max_clients: usize) -> Self {
+        Self::with_policy(max_clients, IdentityPolicy::default())
+    }
+
+    pub fn with_policy(max_clients: usize, policy: IdentityPolicy) -> Self {
         Self {
             max_clients,
-            router_macs: HashSet::new(),
+            policy,
             clients: BTreeMap::new(),
         }
     }
 
     pub fn exclude_router_mac(&mut self, mac: &str) -> Result<(), IdentityError> {
         let mac = mac.parse()?;
-        self.router_macs.insert(mac);
+        self.policy.router_macs.insert(mac);
         self.clients.retain(|key, _| key.mac != mac);
         Ok(())
     }
 
+    pub fn exclude_router_ip(&mut self, ip: &str) {
+        self.policy.exclude_router_ip(ip);
+        self.remove_excluded_ip(ip);
+    }
+
+    pub fn exclude_control_ip(&mut self, ip: &str) {
+        self.policy.exclude_control_ip(ip);
+        self.remove_excluded_ip(ip);
+    }
+
+    pub fn exclude_remote_ip(&mut self, ip: &str) {
+        self.policy.exclude_remote_ip(ip);
+        self.remove_excluded_ip(ip);
+    }
+
+    fn remove_excluded_ip(&mut self, ip: &str) {
+        let Some(ip) = normalize_ip_address(ip) else {
+            return;
+        };
+        for client in self.clients.values_mut() {
+            client.ips.retain(|candidate| candidate != &ip);
+        }
+    }
+
     pub fn observe(&mut self, observation: IdentityObservation<'_>) -> Result<bool, IdentityError> {
         let mac: MacAddress = observation.mac.parse()?;
-        if self.router_macs.contains(&mac)
+        if self.policy.excludes_mac(mac)
             || filter::ifname_is_excluded_identity_source(observation.interface)
+        {
+            return Ok(false);
+        }
+        let normalized_ip = observation.ip.and_then(normalize_ip_address);
+        if normalized_ip
+            .as_deref()
+            .is_some_and(|ip| self.policy.excludes_ip(ip))
         {
             return Ok(false);
         }
@@ -198,7 +303,7 @@ impl IdentityTable {
                 hostname: None,
                 last_seen: 0,
             });
-        if let Some(ip) = observation.ip.and_then(normalize_ip_address) {
+        if let Some(ip) = normalized_ip {
             if client.ips.len() < MAX_IPS_PER_IDENTITY && !client.ips.contains(&ip) {
                 client.ips.push(ip);
             }
@@ -213,13 +318,53 @@ impl IdentityTable {
         Ok(true)
     }
 
-    pub fn traffic_is_client_owned(&self, mac: &str, frame: FrameKind) -> bool {
+    pub fn traffic_owner(
+        &self,
+        mac: &str,
+        zone: &str,
+        client_ip: Option<&str>,
+        frame: FrameKind,
+    ) -> Option<&ClientIdentity> {
         if frame != FrameKind::Unicast {
-            return false;
+            return None;
         }
-        mac.parse::<MacAddress>()
-            .map(|mac| !self.router_macs.contains(&mac))
-            .unwrap_or(false)
+        let owner = self.by_mac_zone(mac, zone)?;
+        if let Some(client_ip) = client_ip {
+            let by_ip = self.by_ip(client_ip)?;
+            if by_ip.key != owner.key {
+                return None;
+            }
+        }
+        Some(owner)
+    }
+
+    pub fn clients(&self) -> std::collections::btree_map::Values<'_, IdentityKey, ClientIdentity> {
+        self.clients.values()
+    }
+
+    pub fn iter(&self) -> std::collections::btree_map::Values<'_, IdentityKey, ClientIdentity> {
+        self.clients.values()
+    }
+
+    pub fn by_mac_zone(&self, mac: &str, zone: &str) -> Option<&ClientIdentity> {
+        let mac = mac.parse::<MacAddress>().ok()?;
+        if self.policy.excludes_mac(mac) || zone.is_empty() {
+            return None;
+        }
+        self.clients.get(&IdentityKey {
+            mac,
+            zone: zone.to_owned(),
+        })
+    }
+
+    pub fn by_ip(&self, ip: &str) -> Option<&ClientIdentity> {
+        let ip = normalize_ip_address(ip)?;
+        if self.policy.excludes_ip(&ip) {
+            return None;
+        }
+        self.clients
+            .values()
+            .find(|client| client.ips.iter().any(|candidate| candidate == &ip))
     }
 
     pub fn warnings(&self) -> Vec<&'static str> {

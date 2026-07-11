@@ -3,7 +3,8 @@ use lanspeedd::identity::{
     filter::{IdentityFilter, InterfacePrefix},
     hostname::{HostnameCache, HostnamePaths, HOSTNAME_CACHE_MAX, HOSTNAME_REFRESH_MS},
     netlink::parse_ipv6_neighbor_messages,
-    FrameKind, IdentityObservation, IdentityTable, ObservationSource,
+    FrameKind, IdentityObservation, IdentityPolicy, IdentityTable, LegacyZoneResolver,
+    ObservationSource,
 };
 use serde_json::Value;
 use std::{fs, net::IpAddr, path::PathBuf, str::FromStr};
@@ -40,6 +41,20 @@ fn fixture_multi_ip_addresses_are_attributes_of_one_mac_zone_identity() {
             .exclude_router_mac(router_mac.as_str().unwrap())
             .unwrap();
     }
+    for source in fixture["sources"]["netifd"].as_array().unwrap() {
+        if source["role"] == "router" {
+            identities
+                .exclude_router_mac(source["mac"].as_str().unwrap())
+                .unwrap();
+            assert!(identities
+                .by_mac_zone(
+                    source["mac"].as_str().unwrap(),
+                    source["zone"].as_str().unwrap(),
+                )
+                .is_none());
+            assert!(!source["interface"].as_str().unwrap().is_empty());
+        }
+    }
     for source in fixture["sources"]["dhcp_leases"].as_array().unwrap() {
         identities
             .observe(IdentityObservation {
@@ -70,6 +85,26 @@ fn fixture_multi_ip_addresses_are_attributes_of_one_mac_zone_identity() {
         observe_json(&mut identities, source, ObservationSource::Wireless);
     }
 
+    for traffic in fixture["sources"]["traffic"].as_array().unwrap() {
+        if let Some(remote_ip) = traffic["remote_ip"].as_str() {
+            identities.exclude_remote_ip(remote_ip);
+            assert!(identities.by_ip(remote_ip).is_none());
+        }
+        assert!(identities
+            .traffic_owner(
+                traffic["mac"].as_str().unwrap(),
+                traffic["zone"].as_str().unwrap(),
+                None,
+                FrameKind::Unicast,
+            )
+            .is_some());
+    }
+
+    assert_eq!(identities.clients().len(), 1);
+    assert_eq!(identities.iter().count(), 1);
+    let merged = identities.by_mac_zone("02:11:22:33:44:55", "lan").unwrap();
+    assert_eq!(merged, identities.by_ip("192.168.1.42").unwrap());
+    assert_eq!(merged, identities.by_ip("fd00:0:0:0:0:0:0:42").unwrap());
     let clients = identities.into_clients();
     assert_eq!(clients.len(), 1);
     assert_eq!(clients[0].key.to_string(), "02:11:22:33:44:55@lan");
@@ -95,34 +130,93 @@ fn router_fixture_never_creates_a_router_client() {
             .exclude_router_mac(mac.as_str().unwrap())
             .unwrap();
     }
+    for source in fixture["sources"]["netifd"].as_array().unwrap() {
+        if source["role"] == "router" {
+            identities
+                .exclude_router_mac(source["mac"].as_str().unwrap())
+                .unwrap();
+            assert!(identities
+                .by_mac_zone(
+                    source["mac"].as_str().unwrap(),
+                    source["zone"].as_str().unwrap(),
+                )
+                .is_none());
+            assert!(!source["interface"].as_str().unwrap().is_empty());
+        }
+    }
+    for source in fixture["sources"]["neighbors"].as_array().unwrap() {
+        if source["role"] == "router" {
+            identities
+                .exclude_router_mac(source["mac"].as_str().unwrap())
+                .unwrap();
+        }
+    }
     for source in fixture["sources"]["neighbors"].as_array().unwrap() {
         observe_json(&mut identities, source, ObservationSource::Neighbor);
+    }
+
+    for traffic in fixture["sources"]["traffic"].as_array().unwrap() {
+        let kind =
+            FrameKind::from_str(traffic["frame_type"].as_str().unwrap_or("unicast")).unwrap();
+        let owner = identities.traffic_owner(
+            traffic["mac"].as_str().unwrap(),
+            traffic["zone"].as_str().unwrap(),
+            None,
+            kind,
+        );
+        assert_eq!(owner.is_some(), kind == FrameKind::Unicast);
     }
 
     let clients = identities.into_clients();
     assert_eq!(clients.len(), 1);
     assert_eq!(clients[0].key.to_string(), "02:aa:bb:cc:dd:ee@lan");
-    assert_eq!(clients[0].ips.len(), 2);
+    assert_eq!(clients[0].interface, "br-lan");
+    assert_eq!(clients[0].hostname, None);
+    assert_eq!(clients[0].last_seen, 1_710_000_112);
+    assert_eq!(clients[0].ips, ["192.168.1.50", "fe80::2aa:bbff:fecc:ddee"]);
 }
 
 #[test]
 fn topology_fixture_keeps_same_mac_in_distinct_vlan_zones() {
     let fixture = fixture("lanspeed-topology-vlan.json");
     let mut identities = IdentityTable::new(16);
-    for source in fixture["observations"].as_array().unwrap() {
+    let observations = fixture["observations"].as_array().unwrap();
+    let mut arp = String::from(
+        "IP address       HW type     Flags       HW address            Mask     Device\n",
+    );
+    for (index, source) in observations.iter().enumerate() {
+        arp.push_str(&format!(
+            "192.0.2.{} 0x1 0x2 {} * {}\n",
+            index + 1,
+            source["mac"].as_str().unwrap(),
+            source["interface"].as_str().unwrap(),
+        ));
+    }
+    let resolve_zone = |ifname: &str| {
+        observations
+            .iter()
+            .find(|source| source["interface"].as_str() == Some(ifname))
+            .and_then(|source| source["zone"].as_str())
+            .map(str::to_owned)
+    };
+    for entry in parse_arp_table(&arp, 16, &IdentityFilter::disabled(), &resolve_zone) {
+        let mac = entry.mac.to_string();
         identities
             .observe(IdentityObservation {
-                mac: source["mac"].as_str().unwrap(),
-                zone: source["zone"].as_str(),
-                interface: source["interface"].as_str().unwrap(),
-                ip: None,
+                mac: &mac,
+                zone: Some(&entry.zone),
+                interface: &entry.interface,
+                ip: Some(&entry.ip),
                 hostname: None,
                 last_seen: 0,
-                source: ObservationSource::Wireless,
+                source: ObservationSource::Neighbor,
             })
             .unwrap();
     }
     for source in fixture["uplink_observations"].as_array().unwrap() {
+        let identity_key = source["encapsulated_client_identity"].as_str().unwrap();
+        let (mac, zone) = identity_key.split_once('@').unwrap();
+        assert!(identities.by_mac_zone(mac, zone).is_some());
         assert!(!identities
             .observe(IdentityObservation {
                 mac: "02:00:00:00:00:01",
@@ -179,14 +273,24 @@ fn control_fixture_only_allows_unicast_client_ownership() {
         .unwrap()
         .iter()
         .filter(|entry| {
-            identities.traffic_is_client_owned(
-                entry["mac"].as_str().unwrap(),
-                FrameKind::from_str(entry["frame_type"].as_str().unwrap()).unwrap(),
-            )
+            identities
+                .traffic_owner(
+                    entry["mac"].as_str().unwrap(),
+                    entry["zone"].as_str().unwrap(),
+                    None,
+                    FrameKind::from_str(entry["frame_type"].as_str().unwrap()).unwrap(),
+                )
+                .is_some()
         })
         .count();
     assert_eq!(eligible, 1);
-    assert_eq!(identities.into_clients().len(), 1);
+    let clients = identities.into_clients();
+    assert_eq!(clients.len(), 1);
+    assert_eq!(clients[0].key.to_string(), "02:66:77:88:99:aa@lan");
+    assert_eq!(clients[0].interface, "br-lan");
+    assert_eq!(clients[0].hostname.as_deref(), Some("phone"));
+    assert_eq!(clients[0].last_seen, 1_710_000_200);
+    assert_eq!(clients[0].ips, ["192.168.1.66"]);
 }
 
 #[test]
@@ -224,7 +328,7 @@ garbage 0x1 010 02:11:22:33:44:57 * br-lan\n\
 192.168.1.5 0x1 0x2 02:11:22:33:44:58 * tun0\n\
 192.168.1.6 0x1 0x2junk 02:11:22:33:44:59 * br-lan ignored-tail\n\
 short line\n";
-    let entries = parse_arp_table(input, 16, &IdentityFilter::disabled());
+    let entries = parse_arp_table(input, 16, &IdentityFilter::disabled(), &LegacyZoneResolver);
     assert_eq!(entries.len(), 3);
     assert_eq!(entries[0].ip, "192.168.1.2");
     assert_eq!(entries[0].mac.to_string(), "02:11:22:33:44:55");
@@ -233,7 +337,12 @@ short line\n";
     assert_eq!(entries[2].ip, "192.168.1.6");
 
     for prefix in 0..input.len() {
-        let _ = parse_arp_table(&input[..prefix], 16, &IdentityFilter::disabled());
+        let _ = parse_arp_table(
+            &input[..prefix],
+            16,
+            &IdentityFilter::disabled(),
+            &LegacyZoneResolver,
+        );
     }
 }
 
@@ -275,39 +384,49 @@ fn raw_rtnetlink_parser_handles_ipv6_states_short_attrs_and_unaligned_buffers() 
         &[0x02, 0x11, 0x22, 0x33, 0x44, 0x55],
         7,
     ));
-    let entries = parse_ipv6_neighbor_messages(&bytes[1..], 16, |index| {
-        (index == 7).then(|| "br-lan".to_owned())
-    })
+    let resolve_zone = |ifname: &str| (ifname == "br-lan").then(|| "vlan42".to_owned());
+    let entries = parse_ipv6_neighbor_messages(
+        &bytes[1..],
+        16,
+        |index| (index == 7).then(|| "br-lan".to_owned()),
+        &resolve_zone,
+    )
     .unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].ip, "fd00::42");
     assert_eq!(entries[0].interface, "br-lan");
+    assert_eq!(entries[0].zone, "vlan42");
 
     for rejected in [0x00, 0x20, 0x40] {
         assert!(parse_ipv6_neighbor_messages(
             &neighbor_message(rejected, &address.octets(), &[2, 1, 2, 3, 4, 5], 9),
             16,
             |_| None,
+            &LegacyZoneResolver,
         )
         .unwrap()
         .is_empty());
     }
+    let combined_state = parse_ipv6_neighbor_messages(
+        &neighbor_message(0x21, &address.octets(), &[2, 1, 2, 3, 4, 5], 9),
+        16,
+        |_| None,
+        &LegacyZoneResolver,
+    )
+    .unwrap();
     assert_eq!(
-        parse_ipv6_neighbor_messages(
-            &neighbor_message(0x21, &address.octets(), &[2, 1, 2, 3, 4, 5], 9),
-            16,
-            |_| None,
-        )
-        .unwrap()
-        .len(),
+        combined_state.len(),
         1,
         "legacy rejects exact state values, not state bitmasks"
     );
-    assert!(parse_ipv6_neighbor_messages(&[1, 2, 3], 16, |_| None).is_err());
+    assert_eq!(combined_state[0].interface, "if9");
+    assert_eq!(combined_state[0].zone, "if9");
+    assert!(parse_ipv6_neighbor_messages(&[1, 2, 3], 16, |_| None, &LegacyZoneResolver).is_err());
     assert!(parse_ipv6_neighbor_messages(
         &neighbor_message(1, &[0; 15], &[2, 1, 2, 3, 4], 9),
         16,
         |_| None,
+        &LegacyZoneResolver,
     )
     .unwrap()
     .is_empty());
@@ -401,4 +520,80 @@ fn identity_ip_attributes_keep_the_legacy_four_address_bound() {
             .unwrap();
     }
     assert_eq!(identities.into_clients()[0].ips.len(), 4);
+}
+
+#[test]
+fn identity_policy_excludes_router_control_and_remote_ips_from_all_paths() {
+    let mut policy = IdentityPolicy::default();
+    policy.exclude_router_ip("192.168.1.1");
+    policy.exclude_control_ip("224.0.0.1");
+    policy.exclude_remote_ip("198.18.0.1");
+    let mut identities = IdentityTable::with_policy(8, policy);
+
+    for (index, ip) in ["192.168.1.1", "224.0.0.1", "198.18.0.1"]
+        .into_iter()
+        .enumerate()
+    {
+        let mac = format!("02:00:00:00:00:{:02x}", index + 1);
+        assert!(!identities
+            .observe(IdentityObservation {
+                mac: &mac,
+                zone: Some("lan"),
+                interface: "br-lan",
+                ip: Some(ip),
+                hostname: None,
+                last_seen: 0,
+                source: ObservationSource::Neighbor,
+            })
+            .unwrap());
+        assert!(identities.by_ip(ip).is_none());
+        assert!(identities
+            .traffic_owner(&mac, "lan", Some(ip), FrameKind::Unicast)
+            .is_none());
+    }
+
+    assert!(identities
+        .observe(IdentityObservation {
+            mac: "02:00:00:00:00:10",
+            zone: Some("lan"),
+            interface: "br-lan",
+            ip: Some("192.168.1.42"),
+            hostname: None,
+            last_seen: 0,
+            source: ObservationSource::Neighbor,
+        })
+        .unwrap());
+    assert!(identities
+        .traffic_owner(
+            "02:00:00:00:00:10",
+            "lan",
+            Some("192.168.1.42"),
+            FrameKind::Unicast,
+        )
+        .is_some());
+    identities.exclude_control_ip("192.168.1.42");
+    assert!(identities.by_ip("192.168.1.42").is_none());
+    assert!(identities.clients().next().unwrap().ips.is_empty());
+}
+
+#[test]
+fn duplicate_ip_lookup_is_deterministic_by_mac_zone_key_order() {
+    let mut identities = IdentityTable::new(2);
+    for (mac, zone) in [("02:00:00:00:00:20", "guest"), ("02:00:00:00:00:10", "lan")] {
+        identities
+            .observe(IdentityObservation {
+                mac,
+                zone: Some(zone),
+                interface: "br-lan",
+                ip: Some("192.0.2.42"),
+                hostname: None,
+                last_seen: 0,
+                source: ObservationSource::Neighbor,
+            })
+            .unwrap();
+    }
+    assert_eq!(
+        identities.by_ip("192.0.2.42").unwrap().key.to_string(),
+        "02:00:00:00:00:10@lan"
+    );
 }

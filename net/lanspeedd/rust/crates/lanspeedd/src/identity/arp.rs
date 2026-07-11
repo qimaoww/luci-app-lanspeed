@@ -1,4 +1,7 @@
-use super::{filter::IdentityFilter, normalize_ip_address, MacAddress, NeighborEntry};
+use super::{
+    filter::IdentityFilter, normalize_ip_address, resolve_zone, MacAddress, NeighborEntry,
+    ZoneResolver,
+};
 use std::{fs, io, path::Path};
 
 pub const ARP_PROCFS_PATH: &str = "/proc/net/arp";
@@ -7,14 +10,17 @@ pub fn read_arp_table(
     path: impl AsRef<Path>,
     max_entries: usize,
     filter: &IdentityFilter,
+    zone_resolver: &impl ZoneResolver,
 ) -> io::Result<Vec<NeighborEntry>> {
-    fs::read_to_string(path).map(|contents| parse_arp_table(&contents, max_entries, filter))
+    fs::read_to_string(path)
+        .map(|contents| parse_arp_table(&contents, max_entries, filter, zone_resolver))
 }
 
 pub fn parse_arp_table(
     contents: &str,
     max_entries: usize,
     filter: &IdentityFilter,
+    zone_resolver: &impl ZoneResolver,
 ) -> Vec<NeighborEntry> {
     let mut entries = Vec::new();
     for line in contents.lines().skip(1) {
@@ -42,7 +48,7 @@ pub fn parse_arp_table(
             ip,
             mac,
             interface: interface.to_owned(),
-            zone: super::filter::derive_zone_from_ifname(interface),
+            zone: resolve_zone(zone_resolver, interface),
         });
     }
     entries
