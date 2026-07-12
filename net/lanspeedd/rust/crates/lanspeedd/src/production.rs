@@ -15,8 +15,9 @@ use crate::{
     collectors::{
         bpf::{
             runtime::{
-                AttachMode, BpfCollectionCheckpoint, BpfRuntime, SystemAyaAdapter, SystemAyaLink,
-                FALLBACK_OBJECT_PATH, PRIMARY_OBJECT_PATH,
+                AdapterErrorKind, AttachMode, BpfCollectionCheckpoint, BpfPostCommitCleanup,
+                BpfReconfigureTxn, BpfRuntime, ReconfigureRateBaseline, SystemAyaAdapter,
+                SystemAyaLink, FALLBACK_OBJECT_PATH, PRIMARY_OBJECT_PATH,
             },
             snapshot::{
                 BpfClientSample, BpfSnapshotCollector, ConnectionCounts, ConnectionOverlay,
@@ -209,13 +210,14 @@ impl ProductionRuntime {
 
     fn collect(&mut self, method: ProbeMethod) -> Result<ResponseSnapshot, DaemonError> {
         let checkpoint = self.checkpoint();
-        match self.collect_inner(method) {
-            Ok(snapshot) => {
-                for method in ubus::Method::ALL {
-                    snapshot.response(method)?;
-                }
-                Ok(snapshot)
+        let result = self.collect_inner(method, None).and_then(|snapshot| {
+            for method in ubus::Method::ALL {
+                snapshot.response(method)?;
             }
+            Ok(snapshot)
+        });
+        match result {
+            Ok(snapshot) => Ok(snapshot),
             Err(error) => {
                 self.restore(checkpoint);
                 Err(error)
@@ -223,7 +225,37 @@ impl ProductionRuntime {
         }
     }
 
-    fn collect_inner(&mut self, method: ProbeMethod) -> Result<ResponseSnapshot, DaemonError> {
+    fn collect_with_external_bpf(
+        &mut self,
+        runtime: &mut Bpf,
+        adapter: &mut SystemAyaAdapter,
+        method: ProbeMethod,
+    ) -> Result<(ResponseSnapshot, BpfCollectionCheckpoint), DaemonError> {
+        let checkpoint = self.checkpoint();
+        let bpf_checkpoint = runtime.collection_checkpoint(&self.bpf_collector);
+        let result = self
+            .collect_inner(method, Some((&mut *runtime, &mut *adapter)))
+            .and_then(|snapshot| {
+                for method in ubus::Method::ALL {
+                    snapshot.response(method)?;
+                }
+                Ok(snapshot)
+            });
+        match result {
+            Ok(snapshot) => Ok((snapshot, bpf_checkpoint)),
+            Err(error) => {
+                runtime.restore_collection_checkpoint(&mut self.bpf_collector, bpf_checkpoint);
+                self.restore(checkpoint);
+                Err(error)
+            }
+        }
+    }
+
+    fn collect_inner(
+        &mut self,
+        method: ProbeMethod,
+        external_bpf: Option<(&mut Bpf, &mut SystemAyaAdapter)>,
+    ) -> Result<ResponseSnapshot, DaemonError> {
         let now_ms = self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         let (identities, identity_errors) = read_identities(&self.config, now_ms);
         let conntrack = conntrack::collect(
@@ -234,26 +266,60 @@ impl ProductionRuntime {
         )
         .ok();
         let overlay = connection_overlay(conntrack.as_ref());
-        let bpf_snapshot = match self.bpf.as_mut() {
-            Some(runtime) => match runtime.collect_snapshot(
-                &mut self.adapter,
-                &mut self.bpf_collector,
-                &identities,
-                &overlay,
-                now_ms,
-            ) {
-                Ok(snapshot) => {
-                    self.bpf_error = None;
-                    Some(snapshot)
+        let freshness_ms = u64::from(self.config.refresh_interval_ms) * 3;
+        let (bpf_snapshot, mut runtime_health) = match external_bpf {
+            Some((runtime, adapter)) => {
+                let snapshot = match runtime.collect_snapshot(
+                    adapter,
+                    &mut self.bpf_collector,
+                    &identities,
+                    &overlay,
+                    now_ms,
+                ) {
+                    Ok(snapshot) => {
+                        self.bpf_error = None;
+                        Some(snapshot)
+                    }
+                    Err(error) => {
+                        self.bpf_error = Some(error.to_string());
+                        self.bpf_collector.last_complete().cloned()
+                    }
+                };
+                (snapshot, runtime.runtime_health(now_ms, freshness_ms))
+            }
+            None => match self.bpf.as_mut() {
+                Some(runtime) => {
+                    let snapshot = match runtime.collect_snapshot(
+                        &mut self.adapter,
+                        &mut self.bpf_collector,
+                        &identities,
+                        &overlay,
+                        now_ms,
+                    ) {
+                        Ok(snapshot) => {
+                            self.bpf_error = None;
+                            Some(snapshot)
+                        }
+                        Err(error) => {
+                            self.bpf_error = Some(error.to_string());
+                            self.bpf_collector.last_complete().cloned()
+                        }
+                    };
+                    (snapshot, runtime.runtime_health(now_ms, freshness_ms))
                 }
-                Err(error) => {
-                    self.bpf_error = Some(error.to_string());
-                    self.bpf_collector.last_complete().cloned()
-                }
+                None => (None, RuntimeHealth::default()),
             },
-            None => None,
         };
-        let mut runtime_health = self.runtime_health(now_ms, conntrack.as_ref());
+        runtime_health.now_ms = now_ms;
+        runtime_health.conntrack_netlink_available = conntrack
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.stats.netlink_read);
+        runtime_health.conntrack_procfs_available = conntrack
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.stats.procfs_read);
+        if runtime_health.runtime_error.is_none() {
+            runtime_health.runtime_error = self.bpf_error.clone();
+        }
         runtime_health.nss_sync_read_ok = Some(conntrack.is_some());
         if should_refresh_probe(self.next_probe_ms, method) {
             self.probe_report = self.probe.collect(&self.config, &runtime_health, method);
@@ -528,25 +594,6 @@ impl ProductionRuntime {
         })
     }
 
-    fn runtime_health(&self, now_ms: u64, conntrack: Option<&CollectedSnapshot>) -> RuntimeHealth {
-        let mut health = self
-            .bpf
-            .as_ref()
-            .map(|runtime| {
-                runtime.runtime_health(now_ms, u64::from(self.config.refresh_interval_ms) * 3)
-            })
-            .unwrap_or_default();
-        health.now_ms = now_ms;
-        health.conntrack_netlink_available =
-            conntrack.is_some_and(|snapshot| snapshot.stats.netlink_read);
-        health.conntrack_procfs_available =
-            conntrack.is_some_and(|snapshot| snapshot.stats.procfs_read);
-        if health.runtime_error.is_none() {
-            health.runtime_error = self.bpf_error.clone();
-        }
-        health
-    }
-
     fn update_overview(&mut self, now_ms: u64, response: &ClientsResponse) -> OverviewResponse {
         let clients = response
             .clients
@@ -763,6 +810,11 @@ struct App {
     last_error: Option<String>,
 }
 
+struct PreparedBpfReload {
+    transaction: BpfReconfigureTxn,
+    collection_checkpoint: BpfCollectionCheckpoint,
+}
+
 impl App {
     fn collection_tick(&mut self) {
         let timer = self.collection_timer.as_ref().unwrap();
@@ -830,56 +882,95 @@ impl App {
     }
 
     fn reload_inner(&mut self) -> Result<(), DaemonError> {
+        if self.runtime.is_none() {
+            return Err(DaemonError::reload("runtime is not started"));
+        }
         let config = load_config()?;
         let mut candidate = ProductionRuntime::prepare(config.clone())?;
-        let mut handed_off = false;
-        if config.enable_bpf && candidate.probe_report.facts.tc.safe_attach {
+        let wants_bpf = config.enable_bpf && candidate.probe_report.facts.tc.safe_attach;
+        let reuse_bpf = wants_bpf
+            && self
+                .runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.bpf.is_some());
+        let mut prepared_bpf = None;
+        let snapshot = if reuse_bpf {
             let current = self.runtime.as_mut().unwrap();
-            if let Some(mut runtime) = current.bpf.take() {
-                if let Err(error) = runtime.switch_mode(
-                    &mut current.adapter,
-                    &collect_ifnames(&config),
-                    candidate.desired_attach_mode(),
-                ) {
-                    let recovery = runtime.ensure_attached(&mut current.adapter, "reload_rollback");
-                    current.bpf = Some(runtime);
-                    if let Err(recovery) = recovery {
-                        return Err(record_fatal_cleanup(
-                            "BPF switch rollback",
-                            &error.to_string(),
-                            &recovery.to_string(),
-                            self.state.fatal_cell(),
-                        ));
+            candidate.started = current.started;
+            if current.config.max_clients == config.max_clients
+                && current.config.active_client_window_ms == config.active_client_window_ms
+            {
+                candidate.bpf_collector = current.bpf_collector.clone();
+            }
+            candidate.bpf_error = current.bpf_error.clone();
+            let runtime = current.bpf.as_mut().unwrap();
+            let transaction = match runtime.prepare_reconfigure(
+                &mut current.adapter,
+                &collect_ifnames(&config),
+                candidate.desired_attach_mode(),
+            ) {
+                Ok(transaction) => transaction,
+                Err(error) => {
+                    if error.kind() == AdapterErrorKind::DetachFailed {
+                        *self.state.fatal_cell().borrow_mut() =
+                            Some(format!("BPF reconfigure prepare cleanup failed: {error}"));
+                        UloopGuard::request_stop();
                     }
                     return Err(DaemonError::reload(error.to_string()));
                 }
-                candidate.adapter = std::mem::take(&mut current.adapter);
-                candidate.bpf = Some(runtime);
-                candidate.bpf_error = current.bpf_error.take();
-                handed_off = true;
-            } else {
+            };
+            if transaction.topology_changed() {
+                candidate.bpf_collector.reset_rates();
+            }
+            match candidate.collect_with_external_bpf(
+                runtime,
+                &mut current.adapter,
+                ProbeMethod::Reload,
+            ) {
+                Ok((snapshot, collection_checkpoint)) => {
+                    prepared_bpf = Some(PreparedBpfReload {
+                        transaction,
+                        collection_checkpoint,
+                    });
+                    snapshot
+                }
+                Err(error) => {
+                    if let Err(rollback) =
+                        runtime.abort_reconfigure(&mut current.adapter, transaction)
+                    {
+                        return Err(record_fatal_cleanup(
+                            "BPF reconfigure abort",
+                            &error.to_string(),
+                            &rollback.to_string(),
+                            self.state.fatal_cell(),
+                        ));
+                    }
+                    return Err(abort_reload_candidate(
+                        &self.state,
+                        &mut candidate,
+                        error,
+                        UloopGuard::request_stop,
+                    ));
+                }
+            }
+        } else {
+            if wants_bpf {
                 if let Err(error) = candidate.activate_new_bpf() {
                     *self.state.fatal_cell().borrow_mut() = Some(error.to_string());
                     UloopGuard::request_stop();
                     return Err(error);
                 }
             }
-        }
-        let snapshot = match candidate.collect(ProbeMethod::Reload) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                if let Err(rollback) = self.rollback_bpf_handoff(&mut candidate, handed_off) {
-                    let combined = format!("{error}; BPF rollback failed: {rollback}");
-                    *self.state.fatal_cell().borrow_mut() = Some(combined.clone());
-                    UloopGuard::request_stop();
-                    return Err(DaemonError::reload(combined));
+            match candidate.collect(ProbeMethod::Reload) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    return Err(abort_reload_candidate(
+                        &self.state,
+                        &mut candidate,
+                        error,
+                        UloopGuard::request_stop,
+                    ));
                 }
-                return Err(abort_reload_candidate(
-                    &self.state,
-                    &mut candidate,
-                    error,
-                    UloopGuard::request_stop,
-                ));
             }
         };
         let old_interval = self.state.config().refresh_interval_ms;
@@ -889,7 +980,17 @@ impl App {
             .unwrap()
             .schedule(config.refresh_interval_ms)
         {
-            let bpf_rollback = self.rollback_bpf_handoff(&mut candidate, handed_off).err();
+            let bpf_rollback = prepared_bpf.take().and_then(|prepared| {
+                let current = self.runtime.as_mut().unwrap();
+                let runtime = current.bpf.as_mut().unwrap();
+                runtime.restore_collection_checkpoint(
+                    &mut candidate.bpf_collector,
+                    prepared.collection_checkpoint,
+                );
+                runtime
+                    .abort_reconfigure(&mut current.adapter, prepared.transaction)
+                    .err()
+            });
             let bpf_rollback_failed = bpf_rollback.is_some();
             let primary = match bpf_rollback {
                 Some(rollback) => {
@@ -915,39 +1016,31 @@ impl App {
             }
             return Err(failure);
         }
-        let timer = self.collection_timer.as_ref().unwrap();
+        let postcommit_cleanup: Option<BpfPostCommitCleanup<SystemAyaLink>> =
+            prepared_bpf.take().map(|prepared| {
+                let current = self.runtime.as_mut().unwrap();
+                let runtime = current.bpf.as_mut().unwrap();
+                let cleanup = runtime
+                    .commit_reconfigure(prepared.transaction, ReconfigureRateBaseline::Prepared);
+                candidate.adapter = std::mem::take(&mut current.adapter);
+                candidate.bpf = current.bpf.take();
+                cleanup
+            });
         commit_reload(
             &mut self.state,
             &mut self.runtime,
             candidate,
             config,
             snapshot,
-            || {
-                timer
-                    .schedule(old_interval)
-                    .map_err(|error| DaemonError::transport(error.to_string()))
-            },
             UloopGuard::request_stop,
-        )
-    }
-
-    fn rollback_bpf_handoff(
-        &mut self,
-        candidate: &mut ProductionRuntime,
-        handed_off: bool,
-    ) -> Result<(), DaemonError> {
-        if !handed_off {
-            return Ok(());
-        }
-        let current = self.runtime.as_mut().unwrap();
-        current.adapter = std::mem::take(&mut candidate.adapter);
-        current.bpf = candidate.bpf.take();
-        current.bpf_error = candidate.bpf_error.take();
-        let old_mode = current.desired_attach_mode();
-        let old_ifnames = collect_ifnames(&current.config);
-        if let Some(runtime) = current.bpf.as_mut() {
-            if let Err(error) = runtime.switch_mode(&mut current.adapter, &old_ifnames, old_mode) {
-                return Err(DaemonError::reload(error.to_string()));
+        );
+        if let Some(cleanup) = postcommit_cleanup {
+            let current = self.runtime.as_mut().unwrap();
+            let runtime = current.bpf.as_mut().unwrap();
+            if let Err(error) = runtime.run_postcommit_cleanup(&mut current.adapter, cleanup) {
+                let message = format!("reload committed; postcommit BPF cleanup failed: {error}");
+                *self.state.fatal_cell().borrow_mut() = Some(message);
+                UloopGuard::request_stop();
             }
         }
         Ok(())

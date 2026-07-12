@@ -5,7 +5,7 @@ use lanspeedd::{
     collectors::bpf::{
         runtime::{
             AdapterError, AdapterErrorKind, AttachMode, AyaAdapter, BpfRuntime, HookState,
-            LinkDirection, LinkSpec, ObjectFlavor,
+            LinkDirection, LinkSpec, ObjectFlavor, ReconfigureRateBaseline,
         },
         snapshot::{
             BpfSnapshotCollector, ConnectionCounts, ConnectionOverlay, MapRead, RawMapSample,
@@ -29,6 +29,7 @@ struct FakeAya {
     forgotten: Vec<LinkSpec>,
     fail_attach_at: Option<usize>,
     fail_detach: bool,
+    fail_detach_after_mutation: bool,
     fail_inspect: bool,
     events: Vec<String>,
     clsact: Vec<String>,
@@ -107,6 +108,13 @@ impl AyaAdapter for FakeAya {
     fn detach_link(&mut self, spec: &LinkSpec, _link: Self::Link) -> Result<(), AdapterError> {
         self.detached.push(spec.clone());
         self.events.push(format!("detach:{}", spec.program));
+        if self.fail_detach_after_mutation {
+            self.hooks.remove(spec);
+            return Err(AdapterError::new(
+                AdapterErrorKind::DetachFailed,
+                "injected detach failure after mutation",
+            ));
+        }
         if self.fail_detach {
             return Err(AdapterError::new(
                 AdapterErrorKind::DetachFailed,
@@ -266,6 +274,125 @@ fn mode_switch_failure_cleans_new_links_and_preserves_the_old_pair() {
     }
     for spec in LinkSpec::pair("br-lan", AttachMode::EarlyPassthrough) {
         assert_ne!(adapter.hooks.get(&spec), Some(&HookState::Owned));
+    }
+    assert!(runtime.is_attached());
+}
+
+#[test]
+fn aborted_reconfigure_preserves_the_exact_old_topology_and_mode() {
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let old_hooks = adapter.hooks.clone();
+    let old_health = runtime.health(10_000, 3_000);
+
+    let transaction = runtime
+        .prepare_reconfigure(
+            &mut adapter,
+            &["br-lan".into(), "lan2".into()],
+            AttachMode::EarlyPassthrough,
+        )
+        .unwrap();
+    runtime
+        .abort_reconfigure(&mut adapter, transaction)
+        .unwrap();
+
+    assert_eq!(adapter.hooks, old_hooks);
+    assert_eq!(runtime.health(10_000, 3_000), old_health);
+    assert!(runtime.is_attached());
+}
+
+#[test]
+fn reconfigure_rejects_a_stale_tracked_hook_without_mutating_topology() {
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let missing = LinkSpec::pair("br-lan", AttachMode::Normal)[0].clone();
+    adapter.hooks.remove(&missing);
+    let attached_before = adapter.attached.clone();
+    let detached_before = adapter.detached.clone();
+
+    let error = runtime
+        .prepare_reconfigure(&mut adapter, &["br-lan".into()], AttachMode::Normal)
+        .unwrap_err();
+
+    assert_eq!(error.kind(), AdapterErrorKind::AttachFailed);
+    assert_eq!(adapter.attached, attached_before);
+    assert_eq!(adapter.detached, detached_before);
+    assert_eq!(runtime.health(10_000, 3_000).mode, Some(AttachMode::Normal));
+}
+
+#[test]
+fn committed_reconfigure_detaches_each_obsolete_hook_once_without_rollback() {
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let old_specs = LinkSpec::pair("br-lan", AttachMode::Normal);
+
+    let transaction = runtime
+        .prepare_reconfigure(
+            &mut adapter,
+            &["br-lan".into()],
+            AttachMode::EarlyPassthrough,
+        )
+        .unwrap();
+    let cleanup =
+        runtime.commit_reconfigure(transaction, ReconfigureRateBaseline::ResetOnNextCollection);
+    runtime
+        .run_postcommit_cleanup(&mut adapter, cleanup)
+        .unwrap();
+
+    assert_eq!(
+        runtime.health(10_000, 3_000).mode,
+        Some(AttachMode::EarlyPassthrough)
+    );
+    for spec in old_specs {
+        assert_eq!(
+            adapter
+                .detached
+                .iter()
+                .filter(|value| **value == spec)
+                .count(),
+            1
+        );
+    }
+    assert!(runtime.is_attached());
+}
+
+#[test]
+fn postcommit_cleanup_error_keeps_the_committed_topology() {
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+
+    let transaction = runtime
+        .prepare_reconfigure(
+            &mut adapter,
+            &["br-lan".into()],
+            AttachMode::EarlyPassthrough,
+        )
+        .unwrap();
+    let cleanup =
+        runtime.commit_reconfigure(transaction, ReconfigureRateBaseline::ResetOnNextCollection);
+    adapter.fail_detach_after_mutation = true;
+    assert!(runtime
+        .run_postcommit_cleanup(&mut adapter, cleanup)
+        .is_err());
+
+    assert_eq!(
+        runtime.health(10_000, 3_000).mode,
+        Some(AttachMode::EarlyPassthrough)
+    );
+    for spec in LinkSpec::pair("br-lan", AttachMode::EarlyPassthrough) {
+        assert_eq!(adapter.hooks.get(&spec), Some(&HookState::Owned));
     }
     assert!(runtime.is_attached());
 }
@@ -640,6 +767,123 @@ fn unpublished_late_cycle_can_restore_bpf_rate_and_health_baselines() {
         published.clients[0].tx_bps, 4_000,
         "rate baseline must ignore the unpublished 11s cycle"
     );
+}
+
+#[test]
+fn aborted_reconfigure_restores_the_old_ratebook_baseline() {
+    let identities = identities();
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let mut old_collector = BpfSnapshotCollector::new(16, 5_000);
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 1_000, 10_000_000_000)])));
+    runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut old_collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            10_000,
+        )
+        .unwrap();
+    let old_hooks = adapter.hooks.clone();
+
+    let transaction = runtime
+        .prepare_reconfigure(
+            &mut adapter,
+            &["br-lan".into()],
+            AttachMode::EarlyPassthrough,
+        )
+        .unwrap();
+    let mut candidate_collector = old_collector.clone();
+    candidate_collector.reset_rates();
+    let checkpoint = runtime.collection_checkpoint(&candidate_collector);
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 2_000, 11_000_000_000)])));
+    let staged = runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut candidate_collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            11_000,
+        )
+        .unwrap();
+    assert_eq!(staged.clients[0].tx_bps, 0);
+
+    runtime.restore_collection_checkpoint(&mut candidate_collector, checkpoint);
+    runtime
+        .abort_reconfigure(&mut adapter, transaction)
+        .unwrap();
+    assert_eq!(adapter.hooks, old_hooks);
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 2_000, 12_000_000_000)])));
+    let published = runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut old_collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            12_000,
+        )
+        .unwrap();
+    assert_eq!(published.clients[0].tx_bps, 4_000);
+}
+
+#[test]
+fn prepared_reconfigure_baseline_is_not_reset_again_after_commit() {
+    let identities = identities();
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let mut collector = BpfSnapshotCollector::new(16, 5_000);
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 1_000, 10_000_000_000)])));
+    runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            10_000,
+        )
+        .unwrap();
+
+    let transaction = runtime
+        .prepare_reconfigure(
+            &mut adapter,
+            &["br-lan".into()],
+            AttachMode::EarlyPassthrough,
+        )
+        .unwrap();
+    collector.reset_rates();
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 2_000, 11_000_000_000)])));
+    runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            11_000,
+        )
+        .unwrap();
+    let cleanup = runtime.commit_reconfigure(transaction, ReconfigureRateBaseline::Prepared);
+    runtime
+        .run_postcommit_cleanup(&mut adapter, cleanup)
+        .unwrap();
+
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 3_000, 12_000_000_000)])));
+    let next = runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            12_000,
+        )
+        .unwrap();
+    assert_eq!(next.clients[0].tx_bps, 8_000);
 }
 
 #[test]

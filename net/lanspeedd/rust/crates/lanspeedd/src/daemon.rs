@@ -311,35 +311,21 @@ pub fn install_control_or_shutdown<R: Runtime, C>(
 pub fn commit_reload<R: Runtime>(
     state: &mut CoordinatorState,
     runtime: &mut Option<R>,
-    mut candidate: R,
+    candidate: R,
     config: RuntimeConfig,
     snapshot: ResponseSnapshot,
-    mut restore_timer: impl FnMut() -> Result<(), DaemonError>,
     request_stop: impl FnOnce(),
-) -> Result<(), DaemonError> {
+) {
     let mut old = runtime
         .take()
-        .ok_or_else(|| DaemonError::reload("runtime is not started"))?;
-    if let Err(old_cleanup) = old.shutdown() {
-        let candidate_cleanup = candidate.shutdown().err();
-        let timer_cleanup = restore_timer().err();
-        let mut cleanup = old_cleanup.to_string();
-        if let Some(error) = candidate_cleanup {
-            cleanup.push_str(&format!("; candidate cleanup failed: {error}"));
-        }
-        if let Some(error) = timer_cleanup {
-            cleanup.push_str(&format!("; timer rollback failed: {error}"));
-        }
-        *runtime = Some(old);
-        let message =
-            format!("old runtime cleanup: reload not committed; cleanup failed: {cleanup}");
-        state.record_fatal(message.clone());
-        request_stop();
-        return Err(DaemonError::reload(message));
-    }
+        .expect("runtime checked before reload staging");
     *runtime = Some(candidate);
     state.commit(config, Arc::new(snapshot));
-    Ok(())
+    if let Err(cleanup) = old.shutdown() {
+        let message = format!("reload committed; postcommit old runtime cleanup failed: {cleanup}");
+        state.record_fatal(message.clone());
+        request_stop();
+    }
 }
 
 pub struct ProductionCoordinator<T: Transport, F: RuntimeFactory> {
@@ -437,6 +423,9 @@ impl<T: Transport, F: RuntimeFactory> ProductionCoordinator<T, F> {
     }
 
     pub fn reload(&mut self, config: RuntimeConfig) -> Result<(), DaemonError> {
+        if self.runtime.is_none() {
+            return Err(DaemonError::reload("runtime is not started"));
+        }
         let mut candidate = self.factory.stage(&config)?;
         let snapshot = match candidate.collect() {
             Ok(snapshot) => {
@@ -472,16 +461,15 @@ impl<T: Transport, F: RuntimeFactory> ProductionCoordinator<T, F> {
                 SignalBridge::request_for_test,
             ));
         }
-        let old_interval = self.state.config().refresh_interval_ms;
         commit_reload(
             &mut self.state,
             &mut self.runtime,
             candidate,
             config,
             snapshot,
-            || self.transport.schedule_collection(old_interval),
             SignalBridge::request_for_test,
-        )
+        );
+        Ok(())
     }
 
     pub fn on_signal_shutdown(&mut self) -> Result<(), DaemonError> {

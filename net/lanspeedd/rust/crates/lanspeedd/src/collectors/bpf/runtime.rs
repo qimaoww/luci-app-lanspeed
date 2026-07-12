@@ -169,6 +169,31 @@ struct OwnedLink<L> {
     link: L,
 }
 
+#[derive(Debug)]
+pub struct BpfReconfigureTxn {
+    desired_specs: Vec<LinkSpec>,
+    desired_mode: AttachMode,
+    added_specs: Vec<LinkSpec>,
+    topology_changed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReconfigureRateBaseline {
+    ResetOnNextCollection,
+    Prepared,
+}
+
+impl BpfReconfigureTxn {
+    pub const fn topology_changed(&self) -> bool {
+        self.topology_changed
+    }
+}
+
+#[derive(Debug)]
+pub struct BpfPostCommitCleanup<L> {
+    obsolete: Vec<OwnedLink<L>>,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BpfHealth {
     pub object_loaded: bool,
@@ -466,6 +491,200 @@ impl<L> BpfRuntime<L> {
             self.current_mode = Some(new_mode);
             self.rate_reset_required = true;
             self.last_runtime_error = None;
+            Ok(())
+        }
+    }
+
+    pub fn prepare_reconfigure<A: AyaAdapter<Link = L>>(
+        &mut self,
+        adapter: &mut A,
+        interfaces: &[String],
+        desired_mode: AttachMode,
+    ) -> Result<BpfReconfigureTxn, AdapterError> {
+        if self.reconcile_required {
+            return Err(AdapterError::new(
+                AdapterErrorKind::AttachFailed,
+                "BPF hooks require reconciliation before reconfigure",
+            ));
+        }
+        let mut desired_specs = interfaces
+            .iter()
+            .flat_map(|interface| LinkSpec::pair(interface, desired_mode))
+            .collect::<Vec<_>>();
+        desired_specs.sort();
+        desired_specs.dedup();
+        let mut old_specs = self.expected_specs.clone();
+        old_specs.sort();
+        old_specs.dedup();
+        let topology_changed =
+            self.current_mode != Some(desired_mode) || old_specs != desired_specs;
+        let mut added_specs = Vec::new();
+
+        for interface in interfaces {
+            if let Err(error) = adapter.ensure_clsact(interface) {
+                return Err(self.abort_prepared_specs(adapter, added_specs, error));
+            }
+        }
+        for spec in &desired_specs {
+            let tracked = self.links.iter().any(|owned| owned.spec == *spec);
+            let state = match adapter.inspect_hook(spec) {
+                Ok(state) => state,
+                Err(error) => {
+                    return Err(self.abort_prepared_specs(adapter, added_specs, error));
+                }
+            };
+            if tracked {
+                match state {
+                    HookState::Owned => continue,
+                    HookState::Absent => {
+                        let error = AdapterError::new(
+                            AdapterErrorKind::AttachFailed,
+                            format!(
+                                "tracked filter is absent before reconfigure {} {:?}",
+                                spec.interface, spec.direction
+                            ),
+                        );
+                        return Err(self.abort_prepared_specs(adapter, added_specs, error));
+                    }
+                    HookState::Foreign => {
+                        let error = AdapterError::new(
+                            AdapterErrorKind::OwnershipConflict,
+                            format!(
+                                "foreign filter replaced tracked slot {} {:?}",
+                                spec.interface, spec.direction
+                            ),
+                        );
+                        return Err(self.abort_prepared_specs(adapter, added_specs, error));
+                    }
+                }
+            }
+            if state != HookState::Absent {
+                let error = AdapterError::new(
+                    AdapterErrorKind::OwnershipConflict,
+                    format!(
+                        "cannot transactionally adopt occupied filter {} {:?}",
+                        spec.interface, spec.direction
+                    ),
+                );
+                return Err(self.abort_prepared_specs(adapter, added_specs, error));
+            }
+            match adapter.attach_netlink(spec) {
+                Ok(link) => {
+                    self.links.push(OwnedLink {
+                        spec: spec.clone(),
+                        link,
+                    });
+                    added_specs.push(spec.clone());
+                }
+                Err(error) => {
+                    return Err(self.abort_prepared_specs(adapter, added_specs, error));
+                }
+            }
+        }
+
+        Ok(BpfReconfigureTxn {
+            desired_specs,
+            desired_mode,
+            added_specs,
+            topology_changed,
+        })
+    }
+
+    pub fn abort_reconfigure<A: AyaAdapter<Link = L>>(
+        &mut self,
+        adapter: &mut A,
+        transaction: BpfReconfigureTxn,
+    ) -> Result<(), AdapterError> {
+        self.detach_prepared_specs(adapter, transaction.added_specs)
+    }
+
+    pub fn commit_reconfigure(
+        &mut self,
+        transaction: BpfReconfigureTxn,
+        rate_baseline: ReconfigureRateBaseline,
+    ) -> BpfPostCommitCleanup<L> {
+        let mut obsolete = Vec::new();
+        let mut index = 0;
+        while index < self.links.len() {
+            if transaction.desired_specs.contains(&self.links[index].spec) {
+                index += 1;
+            } else {
+                obsolete.push(self.links.remove(index));
+            }
+        }
+        self.expected_specs = transaction.desired_specs;
+        self.current_mode = Some(transaction.desired_mode);
+        match rate_baseline {
+            ReconfigureRateBaseline::ResetOnNextCollection => {
+                self.rate_reset_required |= transaction.topology_changed;
+            }
+            ReconfigureRateBaseline::Prepared => self.rate_reset_required = false,
+        }
+        self.last_runtime_error = None;
+        BpfPostCommitCleanup { obsolete }
+    }
+
+    pub fn run_postcommit_cleanup<A: AyaAdapter<Link = L>>(
+        &mut self,
+        adapter: &mut A,
+        cleanup: BpfPostCommitCleanup<L>,
+    ) -> Result<(), AdapterError> {
+        let mut first_error = None;
+        for owned in cleanup.obsolete {
+            let spec = owned.spec;
+            if let Err(error) = adapter.detach_link(&spec, owned.link) {
+                first_error.get_or_insert(error);
+                push_unique_spec(&mut self.unresolved_specs, spec);
+            }
+        }
+        if let Some(error) = first_error {
+            self.last_runtime_error = Some(error.to_string());
+            Err(error)
+        } else {
+            self.last_runtime_error = None;
+            Ok(())
+        }
+    }
+
+    fn abort_prepared_specs<A: AyaAdapter<Link = L>>(
+        &mut self,
+        adapter: &mut A,
+        added_specs: Vec<LinkSpec>,
+        primary: AdapterError,
+    ) -> AdapterError {
+        match self.detach_prepared_specs(adapter, added_specs) {
+            Ok(()) => primary,
+            Err(cleanup) => {
+                let error = AdapterError::new(
+                    AdapterErrorKind::DetachFailed,
+                    format!("{primary}; prepared hook cleanup failed: {cleanup}"),
+                );
+                self.last_runtime_error = Some(error.to_string());
+                error
+            }
+        }
+    }
+
+    fn detach_prepared_specs<A: AyaAdapter<Link = L>>(
+        &mut self,
+        adapter: &mut A,
+        added_specs: Vec<LinkSpec>,
+    ) -> Result<(), AdapterError> {
+        let mut first_error = None;
+        for spec in added_specs.into_iter().rev() {
+            let Some(index) = self.links.iter().position(|owned| owned.spec == spec) else {
+                continue;
+            };
+            let owned = self.links.remove(index);
+            if let Err(error) = adapter.detach_link(&owned.spec, owned.link) {
+                first_error.get_or_insert(error);
+                push_unique_spec(&mut self.unresolved_specs, owned.spec);
+            }
+        }
+        if let Some(error) = first_error {
+            self.last_runtime_error = Some(error.to_string());
+            Err(error)
+        } else {
             Ok(())
         }
     }

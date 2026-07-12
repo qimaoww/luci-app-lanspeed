@@ -127,6 +127,113 @@ struct FakeFactory {
     next_fail_collect: bool,
     next_fail_shutdown: bool,
 }
+
+#[derive(Clone)]
+struct MutableRuntimeHandle {
+    generation: u64,
+    hooks: Rc<RefCell<Vec<String>>>,
+    shutdowns: Rc<Cell<u64>>,
+}
+
+struct MutableRuntime {
+    handle: MutableRuntimeHandle,
+    fail_collect: bool,
+    fail_shutdown: bool,
+    cycles: u64,
+}
+
+impl Runtime for MutableRuntime {
+    type Checkpoint = u64;
+
+    fn checkpoint(&self) -> Self::Checkpoint {
+        self.cycles
+    }
+
+    fn restore(&mut self, checkpoint: Self::Checkpoint) {
+        self.cycles = checkpoint;
+    }
+
+    fn collect(&mut self) -> Result<ResponseSnapshot, DaemonError> {
+        self.cycles += 1;
+        if self.fail_collect {
+            return Err(DaemonError::collection("incomplete mutable cycle"));
+        }
+        let mut snapshot = ResponseSnapshot::unsupported(format!("v{}", self.handle.generation));
+        snapshot.status.refresh_interval_ms = 500 + self.handle.generation as u32;
+        Ok(snapshot)
+    }
+
+    fn shutdown(&mut self) -> Result<(), DaemonError> {
+        self.handle
+            .shutdowns
+            .set(self.handle.shutdowns.get().saturating_add(1));
+        self.handle.hooks.borrow_mut().clear();
+        if self.fail_shutdown {
+            Err(DaemonError::collection(
+                "mutable shutdown failed after detaching hooks",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+struct MutableFactory {
+    handles: Rc<RefCell<Vec<MutableRuntimeHandle>>>,
+    next_generation: u64,
+    first_fail_shutdown: bool,
+    next_fail_collect: bool,
+}
+
+impl RuntimeFactory for MutableFactory {
+    type Runtime = MutableRuntime;
+
+    fn stage(&mut self, _config: &RuntimeConfig) -> Result<Self::Runtime, DaemonError> {
+        let generation = self.next_generation;
+        self.next_generation += 1;
+        let handle = MutableRuntimeHandle {
+            generation,
+            hooks: Rc::new(RefCell::new(vec![
+                format!("generation-{generation}-ingress"),
+                format!("generation-{generation}-egress"),
+            ])),
+            shutdowns: Rc::new(Cell::new(0)),
+        };
+        self.handles.borrow_mut().push(handle.clone());
+        let fail_collect = self.next_fail_collect;
+        self.next_fail_collect = false;
+        Ok(MutableRuntime {
+            handle,
+            fail_collect,
+            fail_shutdown: generation == 1 && self.first_fail_shutdown,
+            cycles: 0,
+        })
+    }
+}
+
+fn mutable_daemon(
+    handles: Rc<RefCell<Vec<MutableRuntimeHandle>>>,
+    first_fail_shutdown: bool,
+) -> ProductionCoordinator<FakeTransport, MutableFactory> {
+    ProductionCoordinator::new(
+        FakeTransport {
+            events: Events::default(),
+            fail_connect: false,
+            fail_register: false,
+            fail_reconnect: false,
+            fail_collection_timer: false,
+            fail_shutdown: false,
+        },
+        MutableFactory {
+            handles,
+            next_generation: 1,
+            first_fail_shutdown,
+            next_fail_collect: false,
+        },
+        RuntimeConfig::default(),
+        Arc::new(ResponseSnapshot::unsupported("boot")),
+    )
+}
 impl RuntimeFactory for FakeFactory {
     type Runtime = FakeRuntime;
     fn stage(&mut self, _config: &RuntimeConfig) -> Result<Self::Runtime, DaemonError> {
@@ -538,32 +645,36 @@ fn shared_reload_abort_path_restores_old_timer_and_combines_cleanup_failures() {
 }
 
 #[test]
-fn old_runtime_cleanup_failure_is_fatal_and_does_not_commit_reload() {
-    let events = Events::default();
-    let mut daemon = daemon(events);
+fn postcommit_cleanup_failure_is_fatal_but_reports_the_committed_reload() {
+    let handles = Rc::new(RefCell::new(Vec::new()));
+    let mut daemon = mutable_daemon(Rc::clone(&handles), true);
     daemon.start().unwrap();
     let old_snapshot = daemon.snapshot();
-    let old_config = daemon.config().clone();
-    daemon.runtime_mut().unwrap().fail_shutdown = true;
+    let old = handles.borrow()[0].clone();
     SignalBridge::clear();
     assert!(daemon
         .reload(RuntimeConfig {
             refresh_interval_ms: 2_000,
             ..RuntimeConfig::default()
         })
-        .is_err());
-    assert_eq!(daemon.config(), &old_config);
-    assert!(Arc::ptr_eq(&old_snapshot, &daemon.snapshot()));
-    assert_eq!(daemon.snapshot().status.version, "v1");
+        .is_ok());
+    assert_eq!(daemon.config().refresh_interval_ms, 2_000);
+    assert!(!Arc::ptr_eq(&old_snapshot, &daemon.snapshot()));
+    assert_eq!(daemon.snapshot().status.version, "v2");
+    assert_eq!(daemon.runtime_mut().unwrap().handle.generation, 2);
+    assert_eq!(old.shutdowns.get(), 1);
+    assert!(old.hooks.borrow().is_empty());
     assert!(daemon.fatal_error().is_some());
     assert!(SignalBridge::take_requested());
 }
 
 #[test]
-fn candidate_collect_failure_cleans_candidate_and_preserves_old_arc_and_content() {
-    let events = Events::default();
-    let mut daemon = daemon(events.clone());
+fn candidate_collect_failure_preserves_old_runtime_identity_hooks_arc_and_content() {
+    let handles = Rc::new(RefCell::new(Vec::new()));
+    let mut daemon = mutable_daemon(Rc::clone(&handles), false);
     daemon.start().unwrap();
+    let old = handles.borrow()[0].clone();
+    let old_hooks = old.hooks.borrow().clone();
     let old_snapshot = daemon.snapshot();
     let old_content = snapshot_content(&old_snapshot);
     let old_config = daemon.config().clone();
@@ -577,11 +688,12 @@ fn candidate_collect_failure_cleans_candidate_and_preserves_old_arc_and_content(
     assert_eq!(daemon.config(), &old_config);
     assert!(Arc::ptr_eq(&old_snapshot, &daemon.snapshot()));
     assert_eq!(snapshot_content(&daemon.snapshot()), old_content);
-    assert!(events.values().ends_with(&[
-        "stage:2".into(),
-        "collect:2".into(),
-        "runtime_shutdown:2".into()
-    ]));
+    assert_eq!(daemon.runtime_mut().unwrap().handle.generation, 1);
+    assert_eq!(old.shutdowns.get(), 0);
+    assert_eq!(*old.hooks.borrow(), old_hooks);
+    let candidate = handles.borrow()[1].clone();
+    assert_eq!(candidate.shutdowns.get(), 1);
+    assert!(candidate.hooks.borrow().is_empty());
 }
 
 #[test]
