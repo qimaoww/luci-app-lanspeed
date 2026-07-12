@@ -17,21 +17,32 @@ fn userspace_build_does_not_invoke_bpf_linker() {
     let bpf_linker = tools.join("bpf-linker");
     let cargo = tools.join("cargo");
     let marker = tools.join("bpf-linker-invoked");
+    let cargo_args = tools.join("cargo-args");
 
     write_executable(&rustc, "#!/bin/sh\nprintf 'rustc 1.94.0 (fake)\\n'\n");
     write_executable(
         &bpf_linker,
         "#!/bin/sh\nprintf invoked > \"$MARKER\"\nexit 99\n",
     );
-    write_executable(&cargo, "#!/bin/sh\nexit 0\n");
+    write_executable(
+        &cargo,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CARGO_ARGS\"\nexit 0\n",
+    );
 
     env::set_var("RUSTC", &rustc);
     env::set_var("BPF_LINKER", &bpf_linker);
     env::set_var("CARGO", &cargo);
     env::set_var("MARKER", &marker);
+    env::set_var("CARGO_ARGS", &cargo_args);
 
     build(BuildTarget::Userspace).unwrap();
     assert!(!marker.exists());
+    let args = fs::read_to_string(&cargo_args).unwrap();
+    assert!(args
+        .lines()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|pair| pair == ["--features", "openwrt"]));
 
     assert!(matches!(
         build(BuildTarget::Ebpf),

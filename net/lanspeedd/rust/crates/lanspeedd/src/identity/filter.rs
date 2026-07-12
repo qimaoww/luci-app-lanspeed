@@ -111,7 +111,7 @@ impl IdentityFilter {
     }
 
     pub fn is_enabled(&self) -> bool {
-        !self.prefixes.is_empty()
+        !self.interfaces.is_empty()
     }
 
     pub fn allows(&self, interface: &str, address: &str) -> bool {
@@ -124,6 +124,9 @@ impl IdentityFilter {
         let Ok(address) = address.parse::<IpAddr>() else {
             return false;
         };
+        if self.prefixes.is_empty() {
+            return true;
+        }
         self.prefixes
             .iter()
             .any(|prefix| prefix.interface == interface && prefix_contains(prefix, address))

@@ -316,10 +316,12 @@ fn interface_filter_splits_legacy_uci_string_values_and_matches_v4_v6_prefixes()
 }
 
 #[test]
-fn identity_filter_fails_open_without_a_successfully_collected_prefix() {
+fn identity_filter_without_prefixes_still_restricts_selected_interfaces() {
     let filter = IdentityFilter::from_uci_values(["br-lan"]);
-    assert!(!filter.is_enabled());
-    assert!(filter.allows("eth0", "not-an-ip"));
+    assert!(filter.is_enabled());
+    assert!(filter.allows("br-lan", "192.168.1.2"));
+    assert!(!filter.allows("eth0", "192.168.1.2"));
+    assert!(!filter.allows("br-lan", "not-an-ip"));
 }
 
 #[test]

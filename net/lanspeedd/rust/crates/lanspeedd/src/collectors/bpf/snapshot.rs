@@ -114,6 +114,7 @@ struct FoldedClient {
     bpf_approx_udp_tuples: u32,
 }
 
+#[derive(Clone)]
 pub struct BpfSnapshotCollector {
     rate_book: RateBook,
     max_clients: usize,

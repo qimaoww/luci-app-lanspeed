@@ -574,10 +574,20 @@ where
                 "/usr/share/lanspeed/bpf/collector-model.json",
                 &mut o.bpf.package,
             ),
-            ("/usr/lib/bpf/lanspeed_tc.o", &mut o.bpf.object),
         ] {
             *slot = self.exists(path, evidence, &mut o.probe_error);
         }
+        let primary = self.exists(
+            crate::collectors::bpf::runtime::PRIMARY_OBJECT_PATH,
+            evidence,
+            &mut o.probe_error,
+        );
+        let fallback = self.exists(
+            crate::collectors::bpf::runtime::FALLBACK_OBJECT_PATH,
+            evidence,
+            &mut o.probe_error,
+        );
+        o.bpf.object = primary && fallback;
         for path in [
             "/etc/config/openclash",
             "/etc/config/dae",

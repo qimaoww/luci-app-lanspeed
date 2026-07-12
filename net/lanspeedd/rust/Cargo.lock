@@ -232,6 +232,7 @@ dependencies = [
  "lanspeed-openwrt-sys",
  "libc",
  "object",
+ "serde",
  "serde_json",
 ]
 

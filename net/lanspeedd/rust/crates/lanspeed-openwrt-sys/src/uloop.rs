@@ -42,6 +42,8 @@ static ULOOP_ACTIVE: AtomicBool = AtomicBool::new(false);
 thread_local! {
     static TIMER_REGISTRY: RefCell<HashMap<usize, std::rc::Weak<TimerInner>>> =
         RefCell::new(HashMap::new());
+    static SIGNAL_REGISTRY: RefCell<HashMap<usize, std::rc::Weak<SignalInner>>> =
+        RefCell::new(HashMap::new());
 }
 
 pub struct UloopGuard {
@@ -94,6 +96,10 @@ impl UloopGuard {
             unsafe { (self.ops.stop)() };
             self.stopped = true;
         }
+    }
+
+    pub fn request_stop() {
+        unsafe { (REAL_ULOOP_OPS.stop)() };
     }
 }
 
@@ -247,6 +253,82 @@ impl Drop for TimerInner {
     }
 }
 
+pub struct Signal {
+    inner: Rc<SignalInner>,
+}
+
+struct SignalInner {
+    raw: UnsafeCell<raw::uloop_signal>,
+    callback: RefCell<Option<Box<dyn FnMut()>>>,
+    registered: Cell<bool>,
+    callback_panicked: Cell<bool>,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+impl Signal {
+    pub fn new(signo: libc::c_int, callback: impl FnMut() + 'static) -> Result<Self> {
+        let mut raw = raw::uloop_signal::default();
+        raw.cb = Some(signal_trampoline);
+        raw.signo = signo;
+        let inner = Rc::new(SignalInner {
+            raw: UnsafeCell::new(raw),
+            callback: RefCell::new(Some(Box::new(callback))),
+            registered: Cell::new(false),
+            callback_panicked: Cell::new(false),
+            _not_send_or_sync: PhantomData,
+        });
+        SIGNAL_REGISTRY.with(|registry| {
+            registry
+                .borrow_mut()
+                .insert(inner.raw.get() as usize, Rc::downgrade(&inner));
+        });
+        let result = unsafe { raw::uloop_signal_add(inner.raw.get()) };
+        if result != 0 {
+            return Err(Error::Platform {
+                operation: "uloop_signal_add",
+                code: result,
+            });
+        }
+        inner.registered.set(true);
+        Ok(Self { inner })
+    }
+
+    pub fn callback_panicked(&self) -> bool {
+        self.inner.callback_panicked.get()
+    }
+}
+
+unsafe extern "C" fn signal_trampoline(signal: *mut raw::uloop_signal) {
+    if signal.is_null() {
+        return;
+    }
+    let Some(inner) = SIGNAL_REGISTRY.with(|registry| {
+        registry
+            .borrow()
+            .get(&(signal as usize))
+            .and_then(std::rc::Weak::upgrade)
+    }) else {
+        return;
+    };
+    let Some(mut callback) = inner.callback.borrow_mut().take() else {
+        return;
+    };
+    if catch_unwind(AssertUnwindSafe(|| callback())).is_err() {
+        inner.callback_panicked.set(true);
+    }
+    *inner.callback.borrow_mut() = Some(callback);
+}
+
+impl Drop for SignalInner {
+    fn drop(&mut self) {
+        let _ = SIGNAL_REGISTRY
+            .try_with(|registry| registry.borrow_mut().remove(&(self.raw.get() as usize)));
+        if self.registered.get() {
+            let _ = unsafe { raw::uloop_signal_delete(self.raw.get()) };
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,5 +465,67 @@ mod tests {
         timer.invoke_for_test();
 
         assert!(timer.callback_panicked());
+    }
+
+    #[test]
+    fn sigterm_wakes_a_blocking_real_uloop_and_returns_to_normal_cleanup() {
+        const CHILD: &str = "LANSPEED_ULOOP_SIGNAL_CHILD";
+        const READY: &str = "LANSPEED_ULOOP_SIGNAL_READY";
+        if std::env::var_os(CHILD).is_some() {
+            let mut guard = UloopGuard::init().unwrap();
+            let _signal = Signal::new(libc::SIGTERM, UloopGuard::request_stop).unwrap();
+            std::fs::write(std::env::var_os(READY).unwrap(), b"ready").unwrap();
+            guard.run().unwrap();
+            return;
+        }
+
+        let ready =
+            std::env::temp_dir().join(format!("lanspeed-uloop-signal-{}", std::process::id()));
+        let _ = std::fs::remove_file(&ready);
+        let executable = std::env::var_os("LANSPEED_TEST_BINARY")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::current_exe().unwrap());
+        let mut command = if let Some(loader) = std::env::var_os("LANSPEED_TEST_MUSL_LOADER") {
+            let mut command = std::process::Command::new(loader);
+            command
+                .arg("--library-path")
+                .arg(std::env::var_os("LANSPEED_TEST_LIBRARY_PATH").unwrap());
+            command.arg(executable);
+            command
+        } else {
+            std::process::Command::new(executable)
+        };
+        let mut child = command
+            .args([
+                "--exact",
+                "uloop::tests::sigterm_wakes_a_blocking_real_uloop_and_returns_to_normal_cleanup",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env(READY, &ready)
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !ready.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(ready.exists(), "child did not enter blocking uloop");
+        assert_eq!(
+            unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) },
+            0
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGKILL) };
+                panic!("SIGTERM did not wake blocking uloop");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let _ = std::fs::remove_file(ready);
+        assert!(status.success(), "signal child exited with {status}");
     }
 }

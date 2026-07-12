@@ -927,7 +927,16 @@ fn build_evidence(
             o.bpf.package,
             None,
         ),
-        ("/usr/lib/bpf/lanspeed_tc.o", o.bpf.object, None),
+        (
+            crate::collectors::bpf::runtime::PRIMARY_OBJECT_PATH,
+            o.bpf.object,
+            None,
+        ),
+        (
+            crate::collectors::bpf::runtime::FALLBACK_OBJECT_PATH,
+            o.bpf.object,
+            None,
+        ),
         ("/etc/config/openclash", o.uci.openclash, None),
         ("/etc/config/dae", o.uci.dae, None),
         ("/etc/config/daed", o.uci.daed, None),

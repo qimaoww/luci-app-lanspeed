@@ -16,7 +16,7 @@ use lanspeedd::probe::{
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-const REQUIRED_PROBE_FILES: [&str; 14] = [
+const REQUIRED_PROBE_FILES: [&str; 15] = [
     "/proc/sys/net/netfilter/nf_conntrack_acct",
     "/proc/net/nf_flowtable",
     "/sys/kernel/debug/netfilter/nf_flowtable",
@@ -25,7 +25,8 @@ const REQUIRED_PROBE_FILES: [&str; 14] = [
     "/proc/net/vlan/config",
     "/sys/class/ieee80211",
     "/usr/share/lanspeed/bpf/collector-model.json",
-    "/usr/lib/bpf/lanspeed_tc.o",
+    "/usr/lib/bpf/lanspeed-ebpf-kfunc",
+    "/usr/lib/bpf/lanspeed-ebpf-fallback",
     "/etc/config/openclash",
     "/etc/config/dae",
     "/etc/config/daed",
@@ -558,7 +559,8 @@ fn every_fixture_has_complete_typed_evidence_and_an_explicit_flowtable_alias() {
         "/proc/net/vlan/config",
         "/sys/class/ieee80211",
         "/usr/share/lanspeed/bpf/collector-model.json",
-        "/usr/lib/bpf/lanspeed_tc.o",
+        "/usr/lib/bpf/lanspeed-ebpf-kfunc",
+        "/usr/lib/bpf/lanspeed-ebpf-fallback",
         "/etc/config/openclash",
         "/etc/config/dae",
         "/etc/config/daed",
@@ -978,7 +980,8 @@ fn injectable_production_collector_records_every_read_only_source_and_error() {
         "/proc/net/nf_flowtable",
         "/sys/class/net/br-lan/bridge",
         "/usr/share/lanspeed/bpf/collector-model.json",
-        "/usr/lib/bpf/lanspeed_tc.o",
+        "/usr/lib/bpf/lanspeed-ebpf-kfunc",
+        "/usr/lib/bpf/lanspeed-ebpf-fallback",
     ] {
         files.entries.insert(
             path.into(),

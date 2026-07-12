@@ -362,6 +362,40 @@ fn repeated_attach_of_the_same_mode_is_idempotent() {
 }
 
 #[test]
+fn same_generation_reconfigure_retains_overlap_and_only_changes_interface_diff() {
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let original_attaches = adapter.attached.len();
+    runtime
+        .switch_mode(&mut adapter, &["br-lan".into()], AttachMode::Normal)
+        .unwrap();
+    assert_eq!(adapter.attached.len(), original_attaches);
+    assert!(adapter.detached.is_empty());
+
+    runtime
+        .switch_mode(
+            &mut adapter,
+            &["br-lan".into(), "lan2".into()],
+            AttachMode::Normal,
+        )
+        .unwrap();
+    assert_eq!(adapter.attached.len(), original_attaches + 2);
+    assert!(adapter.detached.is_empty(), "overlap must remain attached");
+    runtime
+        .switch_mode(&mut adapter, &["lan2".into()], AttachMode::Normal)
+        .unwrap();
+    assert_eq!(
+        adapter.detached.len(),
+        2,
+        "only removed br-lan hooks detach"
+    );
+    assert!(runtime.is_attached());
+}
+
+#[test]
 fn self_heal_restores_only_missing_owned_specs_and_shutdown_leaves_clsact_alone() {
     let mut adapter = FakeAya::default();
     let mut runtime = BpfRuntime::loaded_for_test();
@@ -552,6 +586,60 @@ fn map_read_failure_retains_the_last_complete_snapshot_but_marks_health_failed()
     assert!(health.map_read_attempted);
     assert!(!health.map_read_ok);
     assert!(health.fresh_snapshot);
+}
+
+#[test]
+fn unpublished_late_cycle_can_restore_bpf_rate_and_health_baselines() {
+    let identities = identities();
+    let mut adapter = FakeAya::default();
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 1_000, 10_000_000_000)])));
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let mut collector = BpfSnapshotCollector::new(16, 5_000);
+    runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            10_000,
+        )
+        .unwrap();
+
+    let checkpoint = runtime.collection_checkpoint(&collector);
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 2_000, 11_000_000_000)])));
+    let unpublished = runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            11_000,
+        )
+        .unwrap();
+    assert_eq!(unpublished.clients[0].tx_bps, 8_000);
+    runtime.restore_collection_checkpoint(&mut collector, checkpoint);
+    assert_eq!(
+        runtime.health(11_000, 3_000).last_complete_snapshot_ms,
+        Some(10_000)
+    );
+
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 2_000, 12_000_000_000)])));
+    let published = runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            12_000,
+        )
+        .unwrap();
+    assert_eq!(
+        published.clients[0].tx_bps, 4_000,
+        "rate baseline must ignore the unpublished 11s cycle"
+    );
 }
 
 #[test]

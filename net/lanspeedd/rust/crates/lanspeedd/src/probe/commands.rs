@@ -794,11 +794,11 @@ mod tests {
 
         let mut pipe_fds = [-1; 2];
         assert_eq!(unsafe { libc::pipe(pipe_fds.as_mut_ptr()) }, 0);
-        let target = unsafe { libc::pthread_self() };
+        let target = unsafe { libc::pthread_self() } as usize;
         let sender = thread::spawn(move || {
             let stop = Instant::now() + Duration::from_millis(200);
             while Instant::now() < stop {
-                unsafe { libc::pthread_kill(target, libc::SIGUSR1) };
+                unsafe { libc::pthread_kill(target as libc::pthread_t, libc::SIGUSR1) };
                 thread::sleep(Duration::from_millis(1));
             }
         });

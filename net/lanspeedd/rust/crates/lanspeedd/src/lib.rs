@@ -11,11 +11,19 @@ use std::{
 
 pub mod collectors;
 pub mod config;
+pub mod daemon;
+pub mod error;
 pub mod history;
 pub mod identity;
+pub mod interfaces;
+pub mod model;
 pub mod policy;
 pub mod probe;
+#[cfg(feature = "openwrt")]
+pub mod production;
 pub mod rate;
+pub mod state;
+pub mod ubus;
 
 pub const fn is_fresh(now_ms: u64, sample_ms: u64, limit_ms: u64) -> bool {
     sample_ms <= now_ms && now_ms - sample_ms <= limit_ms

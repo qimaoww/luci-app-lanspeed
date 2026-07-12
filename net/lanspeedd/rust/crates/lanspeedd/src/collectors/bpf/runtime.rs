@@ -24,6 +24,9 @@ use crate::{
     KfuncPatchError,
 };
 
+pub const PRIMARY_OBJECT_PATH: &str = "/usr/lib/bpf/lanspeed-ebpf-kfunc";
+pub const FALLBACK_OBJECT_PATH: &str = "/usr/lib/bpf/lanspeed-ebpf-fallback";
+
 use super::snapshot::{BpfSnapshot, BpfSnapshotCollector, ConnectionOverlay, MapRead};
 
 pub const NORMAL_PRIORITY: u16 = 49_152;
@@ -202,7 +205,50 @@ pub struct BpfRuntime<L> {
     last_runtime_error: Option<String>,
 }
 
+#[derive(Clone)]
+pub struct BpfCollectionCheckpoint {
+    rate_reset_required: bool,
+    map_read_attempted: bool,
+    last_map_read_ok: bool,
+    last_complete_snapshot_ms: Option<u64>,
+    snapshot_clients: usize,
+    map_iteration_truncated_observed: bool,
+    last_runtime_error: Option<String>,
+    collector: BpfSnapshotCollector,
+}
+
 impl<L> BpfRuntime<L> {
+    pub fn collection_checkpoint(
+        &self,
+        collector: &BpfSnapshotCollector,
+    ) -> BpfCollectionCheckpoint {
+        BpfCollectionCheckpoint {
+            rate_reset_required: self.rate_reset_required,
+            map_read_attempted: self.map_read_attempted,
+            last_map_read_ok: self.last_map_read_ok,
+            last_complete_snapshot_ms: self.last_complete_snapshot_ms,
+            snapshot_clients: self.snapshot_clients,
+            map_iteration_truncated_observed: self.map_iteration_truncated_observed,
+            last_runtime_error: self.last_runtime_error.clone(),
+            collector: collector.clone(),
+        }
+    }
+
+    pub fn restore_collection_checkpoint(
+        &mut self,
+        collector: &mut BpfSnapshotCollector,
+        checkpoint: BpfCollectionCheckpoint,
+    ) {
+        self.rate_reset_required = checkpoint.rate_reset_required;
+        self.map_read_attempted = checkpoint.map_read_attempted;
+        self.last_map_read_ok = checkpoint.last_map_read_ok;
+        self.last_complete_snapshot_ms = checkpoint.last_complete_snapshot_ms;
+        self.snapshot_clients = checkpoint.snapshot_clients;
+        self.map_iteration_truncated_observed = checkpoint.map_iteration_truncated_observed;
+        self.last_runtime_error = checkpoint.last_runtime_error;
+        *collector = checkpoint.collector;
+    }
+
     pub fn load<A: AyaAdapter<Link = L>>(
         adapter: &mut A,
         primary_path: impl AsRef<Path>,
@@ -368,6 +414,19 @@ impl<L> BpfRuntime<L> {
         interfaces: &[String],
         new_mode: AttachMode,
     ) -> Result<(), AdapterError> {
+        let desired = interfaces
+            .iter()
+            .flat_map(|interface| LinkSpec::pair(interface, new_mode))
+            .collect::<Vec<_>>();
+        if self.current_mode == Some(new_mode)
+            && self.expected_specs.len() == desired.len()
+            && self
+                .expected_specs
+                .iter()
+                .all(|spec| desired.contains(spec))
+        {
+            return Ok(());
+        }
         let old_count = self.links.len();
         let old_specs = self.expected_specs.clone();
         let old_mode = self.current_mode;
@@ -375,7 +434,13 @@ impl<L> BpfRuntime<L> {
             self.current_mode = old_mode;
             return Err(error);
         }
-        let old_links: Vec<_> = self.links.drain(..old_count).collect();
+        let obsolete = (0..old_count)
+            .filter(|index| !desired.contains(&self.links[*index].spec))
+            .collect::<Vec<_>>();
+        let mut old_links = Vec::with_capacity(obsolete.len());
+        for index in obsolete.into_iter().rev() {
+            old_links.push(self.links.remove(index));
+        }
         let mut first_error = None;
         for owned in old_links {
             if let Err(error) = adapter.detach_link(&owned.spec, owned.link) {
@@ -397,6 +462,7 @@ impl<L> BpfRuntime<L> {
             self.last_runtime_error = Some(error.to_string());
             Err(error)
         } else {
+            self.expected_specs = desired;
             self.current_mode = Some(new_mode);
             self.rate_reset_required = true;
             self.last_runtime_error = None;

@@ -33,7 +33,10 @@ impl<T> ::core::fmt::Debug for __IncompleteArrayField<T> {
 pub const ULOOP_READ: u32 = 1;
 pub const ULOOP_BLOCKING: u32 = 8;
 pub type time_t = libc::c_long;
+pub type uid_t = libc::c_uint;
 pub type suseconds_t = libc::c_long;
+pub type clock_t = libc::c_long;
+pub type pid_t = libc::c_int;
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct timeval {
@@ -47,6 +50,18 @@ const _: () = {
     ["Offset of field: timeval::tv_sec"][::core::mem::offset_of!(timeval, tv_sec) - 0usize];
     ["Offset of field: timeval::tv_usec"][::core::mem::offset_of!(timeval, tv_usec) - 8usize];
 };
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct __sigset_t {
+    pub __bits: [libc::c_ulong; 16usize],
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of __sigset_t"][::core::mem::size_of::<__sigset_t>() - 128usize];
+    ["Alignment of __sigset_t"][::core::mem::align_of::<__sigset_t>() - 8usize];
+    ["Offset of field: __sigset_t::__bits"][::core::mem::offset_of!(__sigset_t, __bits) - 0usize];
+};
+pub type sigset_t = __sigset_t;
 #[repr(C, packed)]
 pub struct blob_attr {
     pub id_len: u32,
@@ -146,6 +161,417 @@ unsafe extern "C" {
     pub fn blobmsg_add_json_from_string(b: *mut blob_buf, str_: *const libc::c_char) -> bool;
 }
 #[repr(C)]
+#[derive(Copy, Clone)]
+pub union sigval {
+    pub sival_int: libc::c_int,
+    pub sival_ptr: *mut libc::c_void,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of sigval"][::core::mem::size_of::<sigval>() - 8usize];
+    ["Alignment of sigval"][::core::mem::align_of::<sigval>() - 8usize];
+    ["Offset of field: sigval::sival_int"][::core::mem::offset_of!(sigval, sival_int) - 0usize];
+    ["Offset of field: sigval::sival_ptr"][::core::mem::offset_of!(sigval, sival_ptr) - 0usize];
+};
+impl Default for sigval {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct siginfo_t {
+    pub si_signo: libc::c_int,
+    pub si_errno: libc::c_int,
+    pub si_code: libc::c_int,
+    pub __si_fields: siginfo_t__bindgen_ty_1,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union siginfo_t__bindgen_ty_1 {
+    pub __pad: [libc::c_char; 112usize],
+    pub __si_common: siginfo_t__bindgen_ty_1__bindgen_ty_1,
+    pub __sigfault: siginfo_t__bindgen_ty_1__bindgen_ty_2,
+    pub __sigpoll: siginfo_t__bindgen_ty_1__bindgen_ty_3,
+    pub __sigsys: siginfo_t__bindgen_ty_1__bindgen_ty_4,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct siginfo_t__bindgen_ty_1__bindgen_ty_1 {
+    pub __first: siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1,
+    pub __second: siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1 {
+    pub __piduid: siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1,
+    pub __timer: siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2,
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1 {
+    pub si_pid: pid_t,
+    pub si_uid: uid_t,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1"]
+        [::core::mem::size_of::<siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1>(
+        ) - 8usize];
+    ["Alignment of siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1"]
+        [::core::mem::align_of::<siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1>(
+        ) - 4usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1::si_pid"] [:: core :: mem :: offset_of ! (siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1 , si_pid) - 0usize] ;
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1::si_uid"] [:: core :: mem :: offset_of ! (siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1 , si_uid) - 4usize] ;
+};
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2 {
+    pub si_timerid: libc::c_int,
+    pub si_overrun: libc::c_int,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2"]
+        [::core::mem::size_of::<siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2>(
+        ) - 8usize];
+    ["Alignment of siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2"]
+        [::core::mem::align_of::<siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2>(
+        ) - 4usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2::si_timerid"] [:: core :: mem :: offset_of ! (siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2 , si_timerid) - 0usize] ;
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2::si_overrun"] [:: core :: mem :: offset_of ! (siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2 , si_overrun) - 4usize] ;
+};
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1"]
+        [::core::mem::size_of::<siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1>() - 8usize];
+    ["Alignment of siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1"]
+        [::core::mem::align_of::<siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1>() - 4usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1::__piduid"][::core::mem::offset_of!(
+        siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1,
+        __piduid
+    ) - 0usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1::__timer"][::core::mem::offset_of!(
+        siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1,
+        __timer
+    ) - 0usize];
+};
+impl Default for siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2 {
+    pub si_value: sigval,
+    pub __sigchld: siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1,
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1 {
+    pub si_status: libc::c_int,
+    pub si_utime: clock_t,
+    pub si_stime: clock_t,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1"]
+        [::core::mem::size_of::<siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1>(
+        ) - 24usize];
+    ["Alignment of siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1"]
+        [::core::mem::align_of::<siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1>(
+        ) - 8usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1::si_status"] [:: core :: mem :: offset_of ! (siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1 , si_status) - 0usize] ;
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1::si_utime"] [:: core :: mem :: offset_of ! (siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1 , si_utime) - 8usize] ;
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1::si_stime"] [:: core :: mem :: offset_of ! (siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1 , si_stime) - 16usize] ;
+};
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2"]
+        [::core::mem::size_of::<siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2>() - 24usize];
+    ["Alignment of siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2"]
+        [::core::mem::align_of::<siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2>() - 8usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2::si_value"][::core::mem::offset_of!(
+        siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2,
+        si_value
+    ) - 0usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2::__sigchld"][::core::mem::offset_of!(
+        siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2,
+        __sigchld
+    ) - 0usize];
+};
+impl Default for siginfo_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_2 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of siginfo_t__bindgen_ty_1__bindgen_ty_1"]
+        [::core::mem::size_of::<siginfo_t__bindgen_ty_1__bindgen_ty_1>() - 32usize];
+    ["Alignment of siginfo_t__bindgen_ty_1__bindgen_ty_1"]
+        [::core::mem::align_of::<siginfo_t__bindgen_ty_1__bindgen_ty_1>() - 8usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_1::__first"]
+        [::core::mem::offset_of!(siginfo_t__bindgen_ty_1__bindgen_ty_1, __first) - 0usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_1::__second"]
+        [::core::mem::offset_of!(siginfo_t__bindgen_ty_1__bindgen_ty_1, __second) - 8usize];
+};
+impl Default for siginfo_t__bindgen_ty_1__bindgen_ty_1 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct siginfo_t__bindgen_ty_1__bindgen_ty_2 {
+    pub si_addr: *mut libc::c_void,
+    pub si_addr_lsb: libc::c_short,
+    pub __first: siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1 {
+    pub __addr_bnd: siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1__bindgen_ty_1,
+    pub si_pkey: libc::c_uint,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1__bindgen_ty_1 {
+    pub si_lower: *mut libc::c_void,
+    pub si_upper: *mut libc::c_void,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1__bindgen_ty_1"]
+        [::core::mem::size_of::<siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1__bindgen_ty_1>(
+        ) - 16usize];
+    ["Alignment of siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1__bindgen_ty_1"]
+        [::core::mem::align_of::<siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1__bindgen_ty_1>(
+        ) - 8usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1__bindgen_ty_1::si_lower"] [:: core :: mem :: offset_of ! (siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1__bindgen_ty_1 , si_lower) - 0usize] ;
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1__bindgen_ty_1::si_upper"] [:: core :: mem :: offset_of ! (siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1__bindgen_ty_1 , si_upper) - 8usize] ;
+};
+impl Default for siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1__bindgen_ty_1 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1"]
+        [::core::mem::size_of::<siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1>() - 16usize];
+    ["Alignment of siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1"]
+        [::core::mem::align_of::<siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1>() - 8usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1::__addr_bnd"][::core::mem::offset_of!(
+        siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1,
+        __addr_bnd
+    )
+        - 0usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1::si_pkey"][::core::mem::offset_of!(
+        siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1,
+        si_pkey
+    ) - 0usize];
+};
+impl Default for siginfo_t__bindgen_ty_1__bindgen_ty_2__bindgen_ty_1 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of siginfo_t__bindgen_ty_1__bindgen_ty_2"]
+        [::core::mem::size_of::<siginfo_t__bindgen_ty_1__bindgen_ty_2>() - 32usize];
+    ["Alignment of siginfo_t__bindgen_ty_1__bindgen_ty_2"]
+        [::core::mem::align_of::<siginfo_t__bindgen_ty_1__bindgen_ty_2>() - 8usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_2::si_addr"]
+        [::core::mem::offset_of!(siginfo_t__bindgen_ty_1__bindgen_ty_2, si_addr) - 0usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_2::si_addr_lsb"]
+        [::core::mem::offset_of!(siginfo_t__bindgen_ty_1__bindgen_ty_2, si_addr_lsb) - 8usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_2::__first"]
+        [::core::mem::offset_of!(siginfo_t__bindgen_ty_1__bindgen_ty_2, __first) - 16usize];
+};
+impl Default for siginfo_t__bindgen_ty_1__bindgen_ty_2 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct siginfo_t__bindgen_ty_1__bindgen_ty_3 {
+    pub si_band: libc::c_long,
+    pub si_fd: libc::c_int,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of siginfo_t__bindgen_ty_1__bindgen_ty_3"]
+        [::core::mem::size_of::<siginfo_t__bindgen_ty_1__bindgen_ty_3>() - 16usize];
+    ["Alignment of siginfo_t__bindgen_ty_1__bindgen_ty_3"]
+        [::core::mem::align_of::<siginfo_t__bindgen_ty_1__bindgen_ty_3>() - 8usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_3::si_band"]
+        [::core::mem::offset_of!(siginfo_t__bindgen_ty_1__bindgen_ty_3, si_band) - 0usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_3::si_fd"]
+        [::core::mem::offset_of!(siginfo_t__bindgen_ty_1__bindgen_ty_3, si_fd) - 8usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct siginfo_t__bindgen_ty_1__bindgen_ty_4 {
+    pub si_call_addr: *mut libc::c_void,
+    pub si_syscall: libc::c_int,
+    pub si_arch: libc::c_uint,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of siginfo_t__bindgen_ty_1__bindgen_ty_4"]
+        [::core::mem::size_of::<siginfo_t__bindgen_ty_1__bindgen_ty_4>() - 16usize];
+    ["Alignment of siginfo_t__bindgen_ty_1__bindgen_ty_4"]
+        [::core::mem::align_of::<siginfo_t__bindgen_ty_1__bindgen_ty_4>() - 8usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_4::si_call_addr"]
+        [::core::mem::offset_of!(siginfo_t__bindgen_ty_1__bindgen_ty_4, si_call_addr) - 0usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_4::si_syscall"]
+        [::core::mem::offset_of!(siginfo_t__bindgen_ty_1__bindgen_ty_4, si_syscall) - 8usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1__bindgen_ty_4::si_arch"]
+        [::core::mem::offset_of!(siginfo_t__bindgen_ty_1__bindgen_ty_4, si_arch) - 12usize];
+};
+impl Default for siginfo_t__bindgen_ty_1__bindgen_ty_4 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of siginfo_t__bindgen_ty_1"]
+        [::core::mem::size_of::<siginfo_t__bindgen_ty_1>() - 112usize];
+    ["Alignment of siginfo_t__bindgen_ty_1"]
+        [::core::mem::align_of::<siginfo_t__bindgen_ty_1>() - 8usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1::__pad"]
+        [::core::mem::offset_of!(siginfo_t__bindgen_ty_1, __pad) - 0usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1::__si_common"]
+        [::core::mem::offset_of!(siginfo_t__bindgen_ty_1, __si_common) - 0usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1::__sigfault"]
+        [::core::mem::offset_of!(siginfo_t__bindgen_ty_1, __sigfault) - 0usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1::__sigpoll"]
+        [::core::mem::offset_of!(siginfo_t__bindgen_ty_1, __sigpoll) - 0usize];
+    ["Offset of field: siginfo_t__bindgen_ty_1::__sigsys"]
+        [::core::mem::offset_of!(siginfo_t__bindgen_ty_1, __sigsys) - 0usize];
+};
+impl Default for siginfo_t__bindgen_ty_1 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of siginfo_t"][::core::mem::size_of::<siginfo_t>() - 128usize];
+    ["Alignment of siginfo_t"][::core::mem::align_of::<siginfo_t>() - 8usize];
+    ["Offset of field: siginfo_t::si_signo"][::core::mem::offset_of!(siginfo_t, si_signo) - 0usize];
+    ["Offset of field: siginfo_t::si_errno"][::core::mem::offset_of!(siginfo_t, si_errno) - 4usize];
+    ["Offset of field: siginfo_t::si_code"][::core::mem::offset_of!(siginfo_t, si_code) - 8usize];
+    ["Offset of field: siginfo_t::__si_fields"]
+        [::core::mem::offset_of!(siginfo_t, __si_fields) - 16usize];
+};
+impl Default for siginfo_t {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct sigaction {
+    pub __sa_handler: sigaction__bindgen_ty_1,
+    pub sa_mask: sigset_t,
+    pub sa_flags: libc::c_int,
+    pub sa_restorer: ::core::option::Option<unsafe extern "C" fn()>,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union sigaction__bindgen_ty_1 {
+    pub sa_handler: ::core::option::Option<unsafe extern "C" fn(arg1: libc::c_int)>,
+    pub sa_sigaction: ::core::option::Option<
+        unsafe extern "C" fn(arg1: libc::c_int, arg2: *mut siginfo_t, arg3: *mut libc::c_void),
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of sigaction__bindgen_ty_1"][::core::mem::size_of::<sigaction__bindgen_ty_1>() - 8usize];
+    ["Alignment of sigaction__bindgen_ty_1"]
+        [::core::mem::align_of::<sigaction__bindgen_ty_1>() - 8usize];
+    ["Offset of field: sigaction__bindgen_ty_1::sa_handler"]
+        [::core::mem::offset_of!(sigaction__bindgen_ty_1, sa_handler) - 0usize];
+    ["Offset of field: sigaction__bindgen_ty_1::sa_sigaction"]
+        [::core::mem::offset_of!(sigaction__bindgen_ty_1, sa_sigaction) - 0usize];
+};
+impl Default for sigaction__bindgen_ty_1 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of sigaction"][::core::mem::size_of::<sigaction>() - 152usize];
+    ["Alignment of sigaction"][::core::mem::align_of::<sigaction>() - 8usize];
+    ["Offset of field: sigaction::__sa_handler"]
+        [::core::mem::offset_of!(sigaction, __sa_handler) - 0usize];
+    ["Offset of field: sigaction::sa_mask"][::core::mem::offset_of!(sigaction, sa_mask) - 8usize];
+    ["Offset of field: sigaction::sa_flags"]
+        [::core::mem::offset_of!(sigaction, sa_flags) - 136usize];
+    ["Offset of field: sigaction::sa_restorer"]
+        [::core::mem::offset_of!(sigaction, sa_restorer) - 144usize];
+};
+impl Default for sigaction {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct list_head {
     pub next: *mut list_head,
@@ -171,6 +597,7 @@ pub type uloop_fd_handler =
     ::core::option::Option<unsafe extern "C" fn(u: *mut uloop_fd, events: libc::c_uint)>;
 pub type uloop_timeout_handler =
     ::core::option::Option<unsafe extern "C" fn(t: *mut uloop_timeout)>;
+pub type uloop_signal_handler = ::core::option::Option<unsafe extern "C" fn(s: *mut uloop_signal)>;
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct uloop_fd {
@@ -221,6 +648,36 @@ impl Default for uloop_timeout {
         }
     }
 }
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct uloop_signal {
+    pub list: list_head,
+    pub orig: sigaction,
+    pub pending: bool,
+    pub cb: uloop_signal_handler,
+    pub signo: libc::c_int,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of uloop_signal"][::core::mem::size_of::<uloop_signal>() - 192usize];
+    ["Alignment of uloop_signal"][::core::mem::align_of::<uloop_signal>() - 8usize];
+    ["Offset of field: uloop_signal::list"][::core::mem::offset_of!(uloop_signal, list) - 0usize];
+    ["Offset of field: uloop_signal::orig"][::core::mem::offset_of!(uloop_signal, orig) - 16usize];
+    ["Offset of field: uloop_signal::pending"]
+        [::core::mem::offset_of!(uloop_signal, pending) - 168usize];
+    ["Offset of field: uloop_signal::cb"][::core::mem::offset_of!(uloop_signal, cb) - 176usize];
+    ["Offset of field: uloop_signal::signo"]
+        [::core::mem::offset_of!(uloop_signal, signo) - 184usize];
+};
+impl Default for uloop_signal {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
 unsafe extern "C" {
     pub static mut uloop_cancelled: bool;
 }
@@ -235,6 +692,12 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     pub fn uloop_timeout_cancel(timeout: *mut uloop_timeout) -> libc::c_int;
+}
+unsafe extern "C" {
+    pub fn uloop_signal_add(s: *mut uloop_signal) -> libc::c_int;
+}
+unsafe extern "C" {
+    pub fn uloop_signal_delete(s: *mut uloop_signal) -> libc::c_int;
 }
 unsafe extern "C" {
     pub fn uloop_init() -> libc::c_int;

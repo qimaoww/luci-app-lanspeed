@@ -32,6 +32,8 @@ struct UbusOps {
 }
 
 thread_local! {
+    static CONNECTION_REGISTRY: RefCell<HashMap<usize, Weak<ConnectionInner>>> =
+        RefCell::new(HashMap::new());
     static OBJECT_REGISTRY: RefCell<HashMap<usize, Weak<ObjectInner>>> =
         RefCell::new(HashMap::new());
     static DEFERRED_CONNECTION_DROPS: RefCell<Vec<Rc<ConnectionInner>>> =
@@ -133,6 +135,7 @@ struct ObjectInner {
     methods: Vec<MethodCell>,
     raw_methods: Box<[raw::ubus_method]>,
     connection: Weak<ConnectionInner>,
+    registered: std::cell::Cell<bool>,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
@@ -166,6 +169,7 @@ impl ObjectInner {
             methods,
             raw_methods,
             connection,
+            registered: std::cell::Cell::new(false),
             _not_send_or_sync: PhantomData,
         });
         unsafe {
@@ -255,6 +259,7 @@ struct ConnectionInner {
     state: RefCell<ConnectionState>,
     ops: UbusOps,
     dispatch_depth: std::cell::Cell<usize>,
+    connection_lost_handler: RefCell<Option<Box<dyn FnMut()>>>,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
@@ -270,19 +275,24 @@ impl UbusConnection {
         if context.is_null() {
             return Err(Error::Allocation("ubus context"));
         }
-        Ok(Self {
-            inner: Rc::new(ConnectionInner {
-                context,
-                state: RefCell::new(ConnectionState {
-                    objects: Vec::new(),
-                    wants_uloop: false,
-                    fd_registered: false,
-                }),
-                ops,
-                dispatch_depth: std::cell::Cell::new(0),
-                _not_send_or_sync: PhantomData,
+        let inner = Rc::new(ConnectionInner {
+            context,
+            state: RefCell::new(ConnectionState {
+                objects: Vec::new(),
+                wants_uloop: false,
+                fd_registered: false,
             }),
-        })
+            ops,
+            dispatch_depth: std::cell::Cell::new(0),
+            connection_lost_handler: RefCell::new(None),
+            _not_send_or_sync: PhantomData,
+        });
+        CONNECTION_REGISTRY.with(|registry| {
+            registry
+                .borrow_mut()
+                .insert(context as usize, Rc::downgrade(&inner));
+        });
+        Ok(Self { inner })
     }
 
     pub fn attach_uloop(&mut self) -> Result<()> {
@@ -337,6 +347,9 @@ impl UbusConnection {
             }
             self.inner.state.borrow_mut().fd_registered = true;
         }
+        for object in &self.inner.state.borrow().objects {
+            object.registered.set(false);
+        }
         Ok(())
     }
 
@@ -368,7 +381,31 @@ impl UbusConnection {
                 .borrow_mut()
                 .insert(object.raw_ptr() as usize, Rc::downgrade(&object));
         });
+        object.registered.set(true);
         self.inner.state.borrow_mut().objects.push(object);
+        Ok(())
+    }
+
+    pub fn set_connection_lost_handler(&mut self, handler: impl FnMut() + 'static) {
+        *self.inner.connection_lost_handler.borrow_mut() = Some(Box::new(handler));
+        unsafe { (*self.inner.context).connection_lost = Some(connection_lost_trampoline) };
+    }
+
+    pub fn reregister_objects(&mut self) -> Result<()> {
+        for object in &self.inner.state.borrow().objects {
+            if object.registered.get() {
+                continue;
+            }
+            let result =
+                unsafe { (self.inner.ops.add_object)(self.inner.context, object.raw_ptr()) };
+            if result != 0 {
+                return Err(Error::Platform {
+                    operation: "ubus_add_object",
+                    code: result,
+                });
+            }
+            object.registered.set(true);
+        }
         Ok(())
     }
 
@@ -395,6 +432,38 @@ impl UbusConnection {
     fn wants_uloop_for_test(&self) -> bool {
         self.inner.state.borrow().wants_uloop
     }
+
+    #[cfg(test)]
+    unsafe fn invoke_connection_lost_for_test(connection: &Self) {
+        unsafe { connection_lost_trampoline(connection.inner.context) };
+    }
+}
+
+unsafe extern "C" fn connection_lost_trampoline(context: *mut raw::ubus_context) {
+    if context.is_null() {
+        return;
+    }
+    let Some(connection) = CONNECTION_REGISTRY.with(|registry| {
+        registry
+            .borrow()
+            .get(&(context as usize))
+            .and_then(Weak::upgrade)
+    }) else {
+        return;
+    };
+    if connection.state.borrow().fd_registered {
+        let socket = unsafe { &mut (*context).sock };
+        let _ = unsafe { (connection.ops.fd_delete)(socket) };
+        connection.state.borrow_mut().fd_registered = false;
+    }
+    for object in &connection.state.borrow().objects {
+        object.registered.set(false);
+    }
+    let Some(mut handler) = connection.connection_lost_handler.borrow_mut().take() else {
+        return;
+    };
+    let _ = catch_unwind(AssertUnwindSafe(|| handler()));
+    *connection.connection_lost_handler.borrow_mut() = Some(handler);
 }
 
 impl Drop for UbusConnection {
@@ -407,6 +476,9 @@ impl Drop for UbusConnection {
 
 impl Drop for ConnectionInner {
     fn drop(&mut self) {
+        let _ = CONNECTION_REGISTRY.try_with(|registry| {
+            registry.borrow_mut().remove(&(self.context as usize));
+        });
         let state = self.state.get_mut();
         for object in &state.objects {
             let _ = OBJECT_REGISTRY.try_with(|registry| {
@@ -717,6 +789,40 @@ mod tests {
         assert!(!connection.is_attached_for_test());
         drop(connection);
         assert_eq!(&*EVENTS.lock().unwrap(), &["connect", "reconnect", "free"]);
+    }
+
+    #[test]
+    fn connection_loss_detaches_and_reregisters_existing_object_without_duplication() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        EVENTS.lock().unwrap().clear();
+        let losses = Rc::new(Cell::new(0));
+        let callback_losses = Rc::clone(&losses);
+        let method = UbusMethod::new("status", |_request| STATUS_OK).unwrap();
+        let object = UbusObject::new("lanspeed", vec![method]).unwrap();
+        let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
+        connection.attach_uloop().unwrap();
+        connection.register_object(object).unwrap();
+        connection
+            .set_connection_lost_handler(move || callback_losses.set(callback_losses.get() + 1));
+        let object_pointer = connection.object_ptr_for_test(0);
+
+        unsafe { UbusConnection::invoke_connection_lost_for_test(&connection) };
+        assert_eq!(losses.get(), 1);
+        assert!(!connection.is_attached_for_test());
+        connection.reconnect(None).unwrap();
+        connection.reregister_objects().unwrap();
+
+        assert_eq!(connection.object_ptr_for_test(0), object_pointer);
+        assert_eq!(connection.inner.state.borrow().objects.len(), 1);
+        assert_eq!(
+            EVENTS
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| **event == "add")
+                .count(),
+            2
+        );
     }
 
     #[test]

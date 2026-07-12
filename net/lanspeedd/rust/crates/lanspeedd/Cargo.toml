@@ -16,6 +16,7 @@ lanspeed-common = { path = "../lanspeed-common" }
 lanspeed-openwrt-sys = { path = "../lanspeed-openwrt-sys", optional = true }
 libc.workspace = true
 object = { version = "=0.39.1", default-features = false, features = ["elf", "read_core"] }
+serde.workspace = true
 serde_json.workspace = true
 
 [features]

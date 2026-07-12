@@ -20,4 +20,4 @@ pub use ubus::{
     UbusConnection, UbusMethod, UbusObject, UbusRequest, STATUS_OK, STATUS_UNKNOWN_ERROR,
 };
 pub use uci::{UciContext, UciOption, UciPackage, UciSection, UciValue};
-pub use uloop::{Timer, UloopGuard};
+pub use uloop::{Signal, Timer, UloopGuard};
