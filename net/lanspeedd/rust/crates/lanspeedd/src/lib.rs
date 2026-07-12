@@ -13,6 +13,8 @@ pub mod collectors;
 pub mod config;
 pub mod history;
 pub mod identity;
+pub mod policy;
+pub mod probe;
 pub mod rate;
 
 pub fn counter_value(result: Result<u64, MapError>) -> Result<u64, MapError> {

@@ -1,0 +1,271 @@
+use crate::{
+    config::{ConnectionCollectorMode, RateCollectorMode, RuntimeConfig},
+    probe::{push_unique, Confidence, Mode, ProbeFacts, RuntimeHealth},
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RateCollector {
+    Bpf,
+    NssEcmDirect,
+    NssConntrackSync,
+    Unsupported,
+}
+impl RateCollector {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bpf => "bpf",
+            Self::NssEcmDirect => "nss_ecm_direct",
+            Self::NssConntrackSync => "nss_conntrack_sync",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectionCollector {
+    Netlink,
+    Procfs,
+    Unsupported,
+}
+impl ConnectionCollector {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Netlink => "conntrack_netlink",
+            Self::Procfs => "conntrack_procfs",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PolicyEvidence {
+    pub rate_reason: &'static str,
+    pub connection_reason: &'static str,
+    pub dae_early_bpf: bool,
+    pub runtime_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyDecision {
+    pub rate: RateCollector,
+    pub connection: ConnectionCollector,
+    pub nss_direct_overlay: bool,
+    pub mode: Mode,
+    pub confidence: Confidence,
+    pub warnings: Vec<&'static str>,
+    pub evidence: PolicyEvidence,
+}
+
+pub fn select_collectors(
+    config: &RuntimeConfig,
+    facts: &ProbeFacts,
+    runtime: &RuntimeHealth,
+) -> PolicyDecision {
+    let mut warnings = Vec::new();
+    if !config.enable_bpf {
+        push_unique(&mut warnings, "bpf_disabled");
+    }
+    if !facts.bpf.package {
+        push_unique(&mut warnings, "bpf_optional_package_missing");
+    }
+    if !facts.bpf.object {
+        push_unique(&mut warnings, "bpf_object_missing");
+    }
+    if config.enable_bpf && !facts.tc.safe_attach {
+        push_unique(&mut warnings, "unsafe_attach");
+    }
+    if !facts.files.nf_conntrack_acct
+        && (facts.files.nf_conntrack_acct_present
+            || (facts.nss.present && (facts.nss.ecm_active || facts.nss.ppe_active)))
+    {
+        push_unique(&mut warnings, "nf_conntrack_acct_disabled");
+        push_unique(&mut warnings, "conntrack_acct_disabled");
+    }
+    if facts.offload.hardware {
+        push_unique(&mut warnings, "hardware_flow_offload_unsupported");
+    }
+
+    let bpf_prerequisites = config.enable_bpf
+        && facts.tc.safe_attach
+        && facts.bpf.package
+        && facts.bpf.object
+        && runtime.bpf_object_loaded
+        && runtime.bpf_attached;
+    let bpf_full = bpf_prerequisites && runtime.bpf_map_read_ok && !facts.offload.hardware;
+    let nss_sync = config.enable_conntrack_fallback
+        && facts.files.nf_conntrack_acct
+        && facts.nss.present
+        && (facts.nss.ecm_active || facts.nss.ppe_active);
+    let nss_direct = config.enable_conntrack_fallback
+        && facts.nss.present
+        && facts.nss.ecm_active
+        && facts.nss.direct_state_readable;
+    let daed_active = facts.proxy.dae_running
+        || facts.proxy.daed_running
+        || facts.proxy.dae_process
+        || facts.proxy.daed_process;
+    let daed_prefers_bpf = config.rate_collector_mode == RateCollectorMode::Auto
+        && facts.nss.present
+        && daed_active
+        && bpf_full;
+
+    let (rate, rate_reason) = match config.rate_collector_mode {
+        RateCollectorMode::Bpf => {
+            if bpf_full {
+                (RateCollector::Bpf, "forced_bpf")
+            } else {
+                (RateCollector::Unsupported, "forced_bpf_unavailable")
+            }
+        }
+        RateCollectorMode::NssEcmDirect => {
+            if nss_direct {
+                (RateCollector::NssEcmDirect, "forced_nss_ecm_direct")
+            } else if nss_sync {
+                (
+                    RateCollector::NssConntrackSync,
+                    "forced_direct_fallback_to_sync",
+                )
+            } else {
+                (
+                    RateCollector::Unsupported,
+                    "forced_nss_ecm_direct_unavailable",
+                )
+            }
+        }
+        RateCollectorMode::NssConntrackSync => {
+            if nss_sync {
+                (RateCollector::NssConntrackSync, "forced_nss_conntrack_sync")
+            } else {
+                (
+                    RateCollector::Unsupported,
+                    "forced_nss_conntrack_sync_unavailable",
+                )
+            }
+        }
+        RateCollectorMode::Auto => {
+            if daed_prefers_bpf {
+                (RateCollector::Bpf, "nss_daed_prefers_bpf")
+            } else if nss_sync {
+                (RateCollector::NssConntrackSync, "nss_sync_preferred")
+            } else if bpf_full {
+                (RateCollector::Bpf, "bpf_available")
+            } else {
+                (RateCollector::Unsupported, "no_live_rate_collector")
+            }
+        }
+    };
+    let nss_direct_overlay = nss_direct
+        && config.rate_collector_mode == RateCollectorMode::Auto
+        && rate == RateCollector::NssConntrackSync
+        && !daed_prefers_bpf;
+
+    match rate {
+        RateCollector::NssEcmDirect => push_unique(&mut warnings, "nss_ecm_direct_active"),
+        RateCollector::NssConntrackSync => {
+            push_unique(&mut warnings, "nss_ecm_sync_cadence");
+            if bpf_full {
+                push_unique(&mut warnings, "nss_prefers_conntrack_sync");
+            }
+            if facts.nss.present && daed_active && !bpf_full {
+                push_unique(&mut warnings, "nss_daed_nss_fallback_may_be_inaccurate");
+            }
+        }
+        RateCollector::Bpf if daed_prefers_bpf => {
+            push_unique(&mut warnings, "nss_daed_prefers_bpf")
+        }
+        _ => {}
+    }
+    if nss_direct_overlay {
+        push_unique(&mut warnings, "nss_ecm_direct_active");
+    }
+    if bpf_prerequisites && !runtime.bpf_map_read_ok {
+        push_unique(&mut warnings, "map_read_failed");
+    }
+    if rate == RateCollector::Unsupported && config.enable_bpf && facts.tc.safe_attach {
+        push_unique(&mut warnings, "bpf_runtime_loader_unavailable");
+    }
+
+    let (connection, connection_reason) = match config.conn_collector_mode {
+        ConnectionCollectorMode::ConntrackNetlink => {
+            if runtime.conntrack_netlink_available {
+                (ConnectionCollector::Netlink, "forced_conntrack_netlink")
+            } else {
+                (
+                    ConnectionCollector::Unsupported,
+                    "forced_conntrack_netlink_unavailable",
+                )
+            }
+        }
+        ConnectionCollectorMode::ConntrackProcfs => {
+            if runtime.conntrack_procfs_available {
+                (ConnectionCollector::Procfs, "forced_conntrack_procfs")
+            } else {
+                (
+                    ConnectionCollector::Unsupported,
+                    "forced_conntrack_procfs_unavailable",
+                )
+            }
+        }
+        ConnectionCollectorMode::Auto => {
+            if runtime.conntrack_netlink_available {
+                (ConnectionCollector::Netlink, "netlink_preferred")
+            } else if runtime.conntrack_procfs_available {
+                (ConnectionCollector::Procfs, "procfs_fallback")
+            } else {
+                (ConnectionCollector::Unsupported, "conntrack_unavailable")
+            }
+        }
+    };
+    if connection == ConnectionCollector::Unsupported {
+        push_unique(&mut warnings, "conntrack_unavailable");
+    }
+
+    let mode = match rate {
+        RateCollector::Bpf if bpf_full => Mode::Full,
+        RateCollector::NssEcmDirect => Mode::Full,
+        RateCollector::NssConntrackSync => Mode::Degraded,
+        _ if !facts.tc.available && !nss_sync => Mode::Unsupported,
+        _ => Mode::Degraded,
+    };
+    if mode != Mode::Full {
+        push_unique(&mut warnings, "live_metrics_unavailable");
+    }
+    let confidence = match (mode, rate) {
+        (Mode::Full, _) => Confidence::High,
+        _ if facts.probe_error || facts.lan_probe_error => Confidence::Low,
+        (Mode::Unsupported, _) => Confidence::Unsupported,
+        (_, RateCollector::NssConntrackSync) if low_conntrack_confidence(facts) => Confidence::Low,
+        _ => Confidence::Medium,
+    };
+    PolicyDecision {
+        rate,
+        connection,
+        nss_direct_overlay,
+        mode,
+        confidence,
+        warnings,
+        evidence: PolicyEvidence {
+            rate_reason,
+            connection_reason,
+            dae_early_bpf: facts.tc.dae_preempts_lan_ingress && runtime.dae_early_bpf,
+            runtime_error: runtime.runtime_error.clone(),
+        },
+    }
+}
+
+fn low_conntrack_confidence(facts: &ProbeFacts) -> bool {
+    !facts.files.flowtable_counter
+        || facts.offload.software
+        || facts.proxy.openclash_fake_ip
+        || facts.proxy.openclash_tun_mix
+        || facts.proxy.openclash_router_self_proxy
+        || facts.proxy.openclash_udp_proxy
+        || facts.proxy.dae
+        || facts.homeproxy
+        || facts.sqm
+        || facts.qosify
+        || facts.files.ifb
+        || facts.nlbwmon
+        || facts.probe_error
+        || facts.lan_probe_error
+}
