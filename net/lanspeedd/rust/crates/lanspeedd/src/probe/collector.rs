@@ -387,7 +387,7 @@ where
                     result.stdout.contains("flowtable") && result.stdout.contains("counter");
             }
             if let Some(result) = self.command(
-                ReadOnlyCommand::NftListRuleset,
+                ReadOnlyCommand::NftDaeDnsUdp53,
                 &[],
                 "nft list ruleset",
                 &mut evidence,
@@ -491,7 +491,7 @@ where
                     ReadOnlyCommand::Pidof | ReadOnlyCommand::TcFilterShow
                 );
                 let optional_truncation =
-                    command == ReadOnlyCommand::NftListRuleset && result.output_truncated;
+                    command == ReadOnlyCommand::NftDaeDnsUdp53 && result.output_truncated;
                 let failed = (nonzero_is_error && result.exit_code != Some(0))
                     || result.timed_out
                     || (result.output_truncated && !optional_truncation);

@@ -36,7 +36,7 @@ pub enum ReadOnlyCommand {
     TcQdiscHelp,
     TcFilterShow,
     NftListFlowtables,
-    NftListRuleset,
+    NftDaeDnsUdp53,
     IpRuleShow,
     IpRouteShow,
     UbusNetworkLanStatus,
@@ -51,7 +51,7 @@ impl ReadOnlyCommand {
             Self::Fw4 => "fw4",
             Self::Qosify => "qosify",
             Self::TcFilterHelp | Self::TcQdiscHelp | Self::TcFilterShow => "tc",
-            Self::NftListFlowtables | Self::NftListRuleset => "nft",
+            Self::NftListFlowtables | Self::NftDaeDnsUdp53 => "nft",
             Self::IpRuleShow | Self::IpRouteShow => "ip",
             Self::UbusNetworkLanStatus | Self::UbusServiceDae | Self::UbusServiceDaed => "ubus",
             Self::Pidof => "pidof",
@@ -64,7 +64,7 @@ impl ReadOnlyCommand {
             Self::TcFilterHelp => &["filter", "help"],
             Self::TcQdiscHelp => &["qdisc", "help"],
             Self::NftListFlowtables => &["list", "flowtables"],
-            Self::NftListRuleset => &["list", "ruleset"],
+            Self::NftDaeDnsUdp53 => &["list", "ruleset"],
             Self::IpRuleShow => &["rule", "show"],
             Self::UbusNetworkLanStatus => &["call", "network.interface.lan", "status"],
             Self::UbusServiceDae => &["call", "service", "list", "{\"name\":\"dae\"}"],
@@ -75,7 +75,7 @@ impl ReadOnlyCommand {
 
     pub const fn output_cap(self) -> usize {
         match self {
-            Self::NftListRuleset => 128 * 1024,
+            Self::NftDaeDnsUdp53 => 128 * 1024,
             _ => DEFAULT_OUTPUT_CAP,
         }
     }
@@ -95,7 +95,7 @@ impl ReadOnlyCommand {
             }
             Self::TcFilterShow => "tc_filter_show".into(),
             Self::NftListFlowtables => "nft_list_flowtables".into(),
-            Self::NftListRuleset => "nft_list_ruleset".into(),
+            Self::NftDaeDnsUdp53 => "nft_dae_dns_udp53".into(),
             Self::IpRuleShow => "ip_rule_show".into(),
             Self::IpRouteShow => "ip_route_table_2023".into(),
             Self::UbusNetworkLanStatus => "ubus_network_lan_status".into(),

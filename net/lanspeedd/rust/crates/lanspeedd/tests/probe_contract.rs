@@ -15,6 +15,23 @@ use lanspeedd::probe::{
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
+
+const REQUIRED_PROBE_FILES: [&str; 14] = [
+    "/proc/sys/net/netfilter/nf_conntrack_acct",
+    "/proc/net/nf_flowtable",
+    "/sys/kernel/debug/netfilter/nf_flowtable",
+    "/sys/class/net/ifb0",
+    "any_configured_device/bridge",
+    "/proc/net/vlan/config",
+    "/sys/class/ieee80211",
+    "/usr/share/lanspeed/bpf/collector-model.json",
+    "/usr/lib/bpf/lanspeed_tc.o",
+    "/etc/config/openclash",
+    "/etc/config/dae",
+    "/etc/config/daed",
+    "/etc/config/homeproxy",
+    "/etc/config/nlbwmon",
+];
 use std::{fs, path::PathBuf};
 
 fn fixture(name: &str) -> Value {
@@ -387,15 +404,87 @@ fn every_legacy_probe_fixture_matches_the_production_rust_assessment() {
     for (name, mode, confidence, warnings, conflicts) in cases {
         let fixture = fixture(name);
         let (config, observations) = observations(&fixture);
-        let report = assess(
-            &config,
-            observations.clone(),
-            &ProbeRuntimeHealth::default(),
-        );
-        let repeated = assess(&config, observations, &ProbeRuntimeHealth::default());
+        let report = assess(&config, observations, &ProbeRuntimeHealth::default());
+        let mut expected_commands = vec![
+            "command:fw4".to_string(),
+            "command:nft".into(),
+            "command:tc".into(),
+            "command:ubus".into(),
+            "command:qosify".into(),
+            "command:tc_filter_help".into(),
+            "command:tc_qdisc_help".into(),
+            "command:nft_list_flowtables".into(),
+            "command:nft_list_ruleset".into(),
+        ];
+        let mut filter_sources = fixture["tc"]["filters"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|filter| {
+                format!(
+                    "command:tc_filter_show_{}_{}",
+                    filter["interface"].as_str().unwrap().replace('-', "_"),
+                    filter["direction"].as_str().unwrap()
+                )
+            })
+            .collect::<Vec<_>>();
+        filter_sources.dedup();
+        if filter_sources.is_empty() {
+            filter_sources.push("command:tc_filter_show_br_lan_ingress".into());
+        }
+        expected_commands.extend(filter_sources);
         assert_eq!(
-            report.evidence, repeated.evidence,
-            "{name}: evidence order/value drift"
+            report.evidence.probe_sources.command, expected_commands,
+            "{name}: command golden"
+        );
+        assert_eq!(
+            report.evidence.probe_sources.file,
+            REQUIRED_PROBE_FILES
+                .iter()
+                .map(|path| format!("file:{path}"))
+                .collect::<Vec<_>>(),
+            "{name}: file golden"
+        );
+        let mut expected_uci = [
+            "firewall",
+            "sqm",
+            "qosify",
+            "openclash",
+            "dae",
+            "daed",
+            "homeproxy",
+            "nlbwmon",
+        ]
+        .into_iter()
+        .map(|package| format!("uci:{package}"))
+        .collect::<Vec<_>>();
+        if flag(&fixture, &["uci", "openclash"]) {
+            let section = text(&fixture, &["openclash", "section"]).unwrap();
+            expected_uci.extend(
+                [
+                    "en_mode",
+                    "enable_redirect_dns",
+                    "router_self_proxy",
+                    "enable_udp_proxy",
+                    "stack_type",
+                    "ipv6_enable",
+                ]
+                .into_iter()
+                .map(|option| format!("uci:openclash.{section}.{option}")),
+            );
+            expected_uci.push("uci:dhcp".into());
+        }
+        assert_eq!(
+            report.evidence.probe_sources.uci, expected_uci,
+            "{name}: uci golden"
+        );
+        let mut expected_ubus = vec!["ubus:network.interface.lan".to_string()];
+        if flag(&fixture, &["uci", "dae"]) || flag(&fixture, &["uci", "daed"]) {
+            expected_ubus.extend(["ubus:service.dae".into(), "ubus:service.daed".into()]);
+        }
+        assert_eq!(
+            report.evidence.probe_sources.ubus, expected_ubus,
+            "{name}: ubus golden"
         );
         for sources in [
             &report.evidence.probe_sources.command,
@@ -620,14 +709,14 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
         "nft_list_flowtables"
     );
     assert_eq!(
-        ReadOnlyCommand::NftListRuleset.evidence_key(&[]),
-        "nft_list_ruleset"
+        ReadOnlyCommand::NftDaeDnsUdp53.evidence_key(&[]),
+        "nft_dae_dns_udp53"
     );
     assert_eq!(
         ReadOnlyCommand::TcFilterShow.evidence_key(&["dev", "br-lan", "ingress"]),
         "tc_filter_show_br_lan_ingress"
     );
-    assert!(ReadOnlyCommand::NftListRuleset.output_cap() >= 64 * 1024);
+    assert!(ReadOnlyCommand::NftDaeDnsUdp53.output_cap() >= 64 * 1024);
     assert_eq!(ReadOnlyCommand::NftListFlowtables.output_cap(), 4_096);
 
     let filters = parse_filter_lines(
@@ -792,7 +881,7 @@ impl CommandRunner for FakeCommands {
             },
             timed_out: self.timeout,
             output_truncated: self.truncated
-                || (self.ruleset_truncated_only && command == ReadOnlyCommand::NftListRuleset),
+                || (self.ruleset_truncated_only && command == ReadOnlyCommand::NftDaeDnsUdp53),
         })
     }
 }
@@ -938,6 +1027,26 @@ fn injectable_production_collector_records_every_read_only_source_and_error() {
         .command
         .iter()
         .any(|source| source == "command:nft_list_ruleset"));
+    assert!(report
+        .evidence
+        .probe_sources
+        .command
+        .iter()
+        .any(|source| source == "command:nft_dae_dns_udp53"));
+    let legacy_alias = report
+        .evidence
+        .command
+        .iter()
+        .find(|entry| entry.source == "command:nft_list_ruleset")
+        .unwrap();
+    assert_eq!(legacy_alias.command, "nft list flowtables");
+    let dae_scan = report
+        .evidence
+        .command
+        .iter()
+        .find(|entry| entry.source == "command:nft_dae_dns_udp53")
+        .unwrap();
+    assert_eq!(dae_scan.command, "nft list ruleset");
     assert!(report.evidence.command.iter().all(|entry| {
         entry.source.strip_prefix("command:").is_some_and(|key| {
             key.bytes()

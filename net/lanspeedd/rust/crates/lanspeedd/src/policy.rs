@@ -56,6 +56,7 @@ pub struct PolicyDecision {
     pub rate: RateCollector,
     pub connection: ConnectionCollector,
     pub nss_direct_overlay: bool,
+    pub nss_sync_secondary: bool,
     pub mode: Mode,
     pub confidence: Confidence,
     pub warnings: Vec<&'static str>,
@@ -133,13 +134,13 @@ pub fn select_collectors(
             }
         }
         RateCollectorMode::NssEcmDirect => {
-            if nss_sync {
+            if nss_direct {
+                (RateCollector::NssEcmDirect, "forced_nss_ecm_direct")
+            } else if nss_sync {
                 (
                     RateCollector::NssConntrackSync,
-                    "forced_direct_sync_primary",
+                    "forced_direct_fallback_to_sync",
                 )
-            } else if nss_direct {
-                (RateCollector::NssEcmDirect, "forced_nss_ecm_direct")
             } else {
                 (
                     RateCollector::Unsupported,
@@ -173,11 +174,9 @@ pub fn select_collectors(
     };
     let nss_direct_overlay = nss_direct
         && rate == RateCollector::NssConntrackSync
-        && matches!(
-            config.rate_collector_mode,
-            RateCollectorMode::Auto | RateCollectorMode::NssEcmDirect
-        )
+        && config.rate_collector_mode == RateCollectorMode::Auto
         && !daed_prefers_bpf;
+    let nss_sync_secondary = rate == RateCollector::NssEcmDirect && nss_sync;
 
     match rate {
         RateCollector::NssEcmDirect => push_unique(&mut warnings, "nss_ecm_direct_active"),
@@ -261,6 +260,7 @@ pub fn select_collectors(
         rate,
         connection,
         nss_direct_overlay,
+        nss_sync_secondary,
         mode,
         confidence,
         warnings,
