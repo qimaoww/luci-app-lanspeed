@@ -67,6 +67,7 @@ impl ConnectionOverlay {
 pub enum SnapshotWarning {
     MapIterationTruncated,
     ClientLimitExceeded,
+    ConnectionOverlayUnavailable,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -84,10 +85,10 @@ pub struct BpfClientSample {
     pub last_seen_ms: u64,
     pub bpf_approx_tcp_tuples: u32,
     pub bpf_approx_udp_tuples: u32,
-    pub tcp_conns: u32,
-    pub udp_conns: u32,
-    pub udp_dns_conns: u32,
-    pub udp_other_conns: u32,
+    pub tcp_conns: Option<u32>,
+    pub udp_conns: Option<u32>,
+    pub udp_dns_conns: Option<u32>,
+    pub udp_other_conns: Option<u32>,
     pub warnings: Vec<RateWarning>,
 }
 
@@ -221,7 +222,7 @@ impl BpfSnapshotCollector {
             let Some(client) = folded.get(&rate.identity_key) else {
                 continue;
             };
-            let counts = connections.get(&rate.identity_key).unwrap_or_default();
+            let counts = connections.get(&rate.identity_key);
             clients.push(BpfClientSample {
                 mac: client.mac.clone(),
                 identity_key: client.identity_key.clone(),
@@ -236,10 +237,10 @@ impl BpfSnapshotCollector {
                 last_seen_ms: rate.last_seen_ms,
                 bpf_approx_tcp_tuples: client.bpf_approx_tcp_tuples,
                 bpf_approx_udp_tuples: client.bpf_approx_udp_tuples,
-                tcp_conns: counts.tcp,
-                udp_conns: counts.udp,
-                udp_dns_conns: counts.udp_dns,
-                udp_other_conns: counts.udp_other,
+                tcp_conns: counts.map(|counts| counts.tcp),
+                udp_conns: counts.map(|counts| counts.udp),
+                udp_dns_conns: counts.map(|counts| counts.udp_dns),
+                udp_other_conns: counts.map(|counts| counts.udp_other),
                 warnings: rate.warnings,
             });
         }
@@ -249,6 +250,9 @@ impl BpfSnapshotCollector {
         }
         if client_limit_exceeded || !rates.rejected_clients.is_empty() {
             warnings.push(SnapshotWarning::ClientLimitExceeded);
+        }
+        if connections.unavailable_reason().is_some() {
+            warnings.push(SnapshotWarning::ConnectionOverlayUnavailable);
         }
         let snapshot = BpfSnapshot {
             clients,

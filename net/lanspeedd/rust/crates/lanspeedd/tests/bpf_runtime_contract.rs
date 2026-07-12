@@ -87,6 +87,13 @@ impl AyaAdapter for FakeAya {
         Ok(FakeLink(self.attached.len()))
     }
 
+    fn replace_owned_netlink_atomic(
+        &mut self,
+        spec: &LinkSpec,
+    ) -> Result<Self::Link, AdapterError> {
+        self.attach_netlink(spec)
+    }
+
     fn detach_link(&mut self, spec: &LinkSpec, _link: Self::Link) -> Result<(), AdapterError> {
         self.detached.push(spec.clone());
         self.hooks.remove(spec);
@@ -263,6 +270,10 @@ fn mode_switch_detach_failure_enters_inconsistent_state_and_blocks_snapshots() {
         )
         .is_err());
     assert!(!runtime.is_attached());
+    adapter.fail_detach = false;
+    assert!(runtime.ensure_attached(&mut adapter, "reconcile").is_ok());
+    assert!(runtime.is_attached());
+    adapter.map_read = Some(Ok(read(Vec::new())));
     let mut collector = BpfSnapshotCollector::new(16, 5_000);
     assert!(runtime
         .collect_snapshot(
@@ -272,7 +283,7 @@ fn mode_switch_detach_failure_enters_inconsistent_state_and_blocks_snapshots() {
             &ConnectionOverlay::available(),
             10_000,
         )
-        .is_err());
+        .is_ok());
 }
 
 #[test]
@@ -290,18 +301,18 @@ fn a_foreign_filter_in_the_fixed_slot_is_never_replaced() {
 }
 
 #[test]
-fn an_existing_owned_orphan_is_rejected_without_destructive_replacement() {
+fn an_existing_owned_orphan_is_atomically_replaced_without_a_detach_gap() {
     let mut adapter = FakeAya::default();
     for spec in LinkSpec::pair("br-lan", AttachMode::Normal) {
         adapter.hooks.insert(spec, HookState::Owned);
     }
     let mut runtime = BpfRuntime::loaded_for_test();
-    assert!(runtime
+    runtime
         .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
-        .is_err());
-    assert!(adapter.attached.is_empty());
+        .unwrap();
+    assert_eq!(adapter.attached.len(), 2);
     assert!(adapter.detached.is_empty());
-    assert!(!runtime.is_attached());
+    assert!(runtime.is_attached());
 }
 
 #[test]
@@ -444,7 +455,7 @@ fn map_read_failure_retains_the_last_complete_snapshot_but_marks_health_failed()
 }
 
 #[test]
-fn unavailable_connection_overlay_rejects_the_candidate_and_retains_last_complete() {
+fn unavailable_connection_overlay_keeps_rates_and_omits_stable_counts() {
     let identities = identities();
     let mut adapter = FakeAya::default();
     adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 1_000, 10_000_000_000)])));
@@ -453,7 +464,7 @@ fn unavailable_connection_overlay_rejects_the_candidate_and_retains_last_complet
         .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
         .unwrap();
     let mut collector = BpfSnapshotCollector::new(16, 5_000);
-    let first = runtime
+    runtime
         .collect_snapshot(
             &mut adapter,
             &mut collector,
@@ -462,7 +473,8 @@ fn unavailable_connection_overlay_rejects_the_candidate_and_retains_last_complet
             10_000,
         )
         .unwrap();
-    let error = runtime
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 2_000, 11_000_000_000)])));
+    let snapshot = runtime
         .collect_snapshot(
             &mut adapter,
             &mut collector,
@@ -470,9 +482,11 @@ fn unavailable_connection_overlay_rejects_the_candidate_and_retains_last_complet
             &ConnectionOverlay::unavailable("conntrack dump failed"),
             11_000,
         )
-        .unwrap_err();
-    assert_eq!(error.kind(), AdapterErrorKind::ConnectionReadFailed);
-    assert_eq!(collector.last_complete(), Some(&first));
+        .unwrap();
+    assert_eq!(snapshot.clients[0].tcp_conns, None);
+    assert!(snapshot
+        .warnings
+        .contains(&SnapshotWarning::ConnectionOverlayUnavailable));
 }
 
 #[test]
@@ -550,8 +564,11 @@ fn snapshot_merges_directions_resolves_identity_computes_rates_and_overlays_conn
         (client.bpf_approx_tcp_tuples, client.bpf_approx_udp_tuples),
         (3, 4)
     );
-    assert_eq!((client.tcp_conns, client.udp_conns), (7, 5));
-    assert_eq!((client.udp_dns_conns, client.udp_other_conns), (2, 3));
+    assert_eq!((client.tcp_conns, client.udp_conns), (Some(7), Some(5)));
+    assert_eq!(
+        (client.udp_dns_conns, client.udp_other_conns),
+        (Some(2), Some(3))
+    );
 }
 
 #[test]

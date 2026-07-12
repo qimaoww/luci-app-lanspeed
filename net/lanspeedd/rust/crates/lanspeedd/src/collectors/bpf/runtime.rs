@@ -46,7 +46,6 @@ pub enum AdapterErrorKind {
     AttachFailed,
     DetachFailed,
     MapReadFailed,
-    ConnectionReadFailed,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -150,6 +149,8 @@ pub trait AyaAdapter {
     fn ensure_clsact(&mut self, interface: &str) -> Result<(), AdapterError>;
     fn inspect_hook(&mut self, spec: &LinkSpec) -> Result<HookState, AdapterError>;
     fn attach_netlink(&mut self, spec: &LinkSpec) -> Result<Self::Link, AdapterError>;
+    fn replace_owned_netlink_atomic(&mut self, spec: &LinkSpec)
+        -> Result<Self::Link, AdapterError>;
     fn detach_link(&mut self, spec: &LinkSpec, link: Self::Link) -> Result<(), AdapterError>;
     fn detach_exact(&mut self, spec: &LinkSpec) -> Result<(), AdapterError>;
     fn forget_link(&mut self, spec: &LinkSpec, link: Self::Link) -> Result<(), AdapterError>;
@@ -282,22 +283,16 @@ impl<L> BpfRuntime<L> {
         }) {
             return Ok(());
         }
-        if specs.iter().zip(&states).any(|(spec, state)| {
-            *state == HookState::Owned && !self.links.iter().any(|owned| owned.spec == *spec)
-        }) {
-            let error = AdapterError::new(
-                AdapterErrorKind::OwnershipConflict,
-                "owned orphan occupies the fixed slot; refusing destructive replacement",
-            );
-            self.last_runtime_error = Some(error.to_string());
-            return Err(error);
-        }
         let start = self.links.len();
         for (spec, state) in specs.into_iter().zip(states) {
-            if state == HookState::Owned {
+            if state == HookState::Owned && self.links.iter().any(|owned| owned.spec == spec) {
                 continue;
             }
-            let attached = adapter.attach_netlink(&spec);
+            let attached = if state == HookState::Owned {
+                adapter.replace_owned_netlink_atomic(&spec)
+            } else {
+                adapter.attach_netlink(&spec)
+            };
             match attached {
                 Ok(link) => self.links.push(OwnedLink { spec, link }),
                 Err(error) => {
@@ -305,7 +300,7 @@ impl<L> BpfRuntime<L> {
                         let owned = self.links.pop().expect("length checked");
                         if let Err(rollback) = adapter.detach_link(&owned.spec, owned.link) {
                             self.reconcile_required = true;
-                            self.unresolved_specs.push(owned.spec);
+                            push_unique_spec(&mut self.unresolved_specs, owned.spec);
                             self.last_runtime_error =
                                 Some(format!("{error}; rollback detach failed: {rollback}"));
                         }
@@ -334,18 +329,20 @@ impl<L> BpfRuntime<L> {
     ) -> Result<(), AdapterError> {
         let start = self.links.len();
         let previous_expected = self.expected_specs.len();
+        let previous_mode = self.current_mode;
         for interface in interfaces {
             if let Err(error) = self.attach_interface(adapter, interface, mode) {
                 while self.links.len() > start {
                     let owned = self.links.pop().expect("length checked");
                     if let Err(rollback) = adapter.detach_link(&owned.spec, owned.link) {
                         self.reconcile_required = true;
-                        self.unresolved_specs.push(owned.spec);
+                        push_unique_spec(&mut self.unresolved_specs, owned.spec);
                         self.last_runtime_error =
                             Some(format!("{error}; rollback detach failed: {rollback}"));
                     }
                 }
                 self.expected_specs.truncate(previous_expected);
+                self.current_mode = previous_mode;
                 return Err(error);
             }
         }
@@ -362,6 +359,7 @@ impl<L> BpfRuntime<L> {
         let old_specs = self.expected_specs.clone();
         let old_mode = self.current_mode;
         if let Err(error) = self.attach_interfaces(adapter, interfaces, new_mode) {
+            self.current_mode = old_mode;
             return Err(error);
         }
         let old_links: Vec<_> = self.links.drain(..old_count).collect();
@@ -369,7 +367,7 @@ impl<L> BpfRuntime<L> {
         for owned in old_links {
             if let Err(error) = adapter.detach_link(&owned.spec, owned.link) {
                 first_error.get_or_insert(error);
-                self.unresolved_specs.push(owned.spec.clone());
+                push_unique_spec(&mut self.unresolved_specs, owned.spec.clone());
             } else {
                 self.expected_specs.retain(|spec| spec != &owned.spec);
             }
@@ -396,6 +394,9 @@ impl<L> BpfRuntime<L> {
         adapter: &mut A,
         reason: &str,
     ) -> Result<usize, AdapterError> {
+        if self.reconcile_required {
+            self.reconcile(adapter)?;
+        }
         let mut restored = 0;
         for spec in self.expected_specs.clone() {
             let state = adapter.inspect_hook(&spec)?;
@@ -437,6 +438,62 @@ impl<L> BpfRuntime<L> {
         Ok(restored)
     }
 
+    fn reconcile<A: AyaAdapter<Link = L>>(&mut self, adapter: &mut A) -> Result<(), AdapterError> {
+        let mode = self.current_mode.ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::AttachFailed,
+                "missing mode for reconciliation",
+            )
+        })?;
+        let mut interfaces = self
+            .expected_specs
+            .iter()
+            .map(|spec| spec.interface.clone())
+            .collect::<Vec<_>>();
+        interfaces.sort();
+        interfaces.dedup();
+        let mut first_error = None;
+        while let Some(owned) = self.links.pop() {
+            if let Err(error) = adapter.detach_link(&owned.spec, owned.link) {
+                first_error.get_or_insert(error);
+                push_unique_spec(&mut self.unresolved_specs, owned.spec);
+            }
+        }
+        let unresolved = core::mem::take(&mut self.unresolved_specs);
+        for spec in unresolved {
+            match adapter.inspect_hook(&spec) {
+                Ok(HookState::Absent) => {}
+                Ok(HookState::Owned) => {
+                    if let Err(error) = adapter.detach_exact(&spec) {
+                        first_error.get_or_insert(error);
+                        push_unique_spec(&mut self.unresolved_specs, spec);
+                    }
+                }
+                Ok(HookState::Foreign) => {
+                    let error = AdapterError::new(
+                        AdapterErrorKind::OwnershipConflict,
+                        "foreign filter occupies a reconciliation slot",
+                    );
+                    first_error.get_or_insert(error);
+                    push_unique_spec(&mut self.unresolved_specs, spec);
+                }
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    push_unique_spec(&mut self.unresolved_specs, spec);
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            self.last_runtime_error = Some(error.to_string());
+            return Err(error);
+        }
+        self.expected_specs.clear();
+        self.reconcile_required = false;
+        self.attach_interfaces(adapter, &interfaces, mode)?;
+        self.rate_reset_required = true;
+        Ok(())
+    }
+
     fn record_self_heal_failure(&mut self, reason: &str, error: &AdapterError) {
         self.self_heal_failures = self.self_heal_failures.saturating_add(1);
         self.last_self_heal_reason = Some(reason.to_owned());
@@ -457,11 +514,6 @@ impl<L> BpfRuntime<L> {
                 AdapterErrorKind::AttachFailed,
                 "BPF hooks require reconciliation before collecting",
             );
-            self.last_runtime_error = Some(error.to_string());
-            return Err(error);
-        }
-        if let Some(reason) = connections.unavailable_reason() {
-            let error = AdapterError::new(AdapterErrorKind::ConnectionReadFailed, reason);
             self.last_runtime_error = Some(error.to_string());
             return Err(error);
         }
@@ -739,6 +791,30 @@ impl AyaAdapter for SystemAyaAdapter {
         })
     }
 
+    fn replace_owned_netlink_atomic(
+        &mut self,
+        spec: &LinkSpec,
+    ) -> Result<Self::Link, AdapterError> {
+        let link = SchedClassifierLink::attached(
+            &spec.interface,
+            attach_type(spec.direction),
+            spec.priority,
+            TcHandle::new(0, spec.handle),
+            None,
+        )
+        .map_err(|error| AdapterError::new(AdapterErrorKind::AttachFailed, error.to_string()))?;
+        let id = self
+            .classifier(spec.program)?
+            .attach_to_link(link)
+            .map_err(|error| {
+                AdapterError::new(AdapterErrorKind::AttachFailed, error.to_string())
+            })?;
+        Ok(SystemAyaLink {
+            program: spec.program,
+            id,
+        })
+    }
+
     fn detach_link(&mut self, _spec: &LinkSpec, link: Self::Link) -> Result<(), AdapterError> {
         self.classifier(link.program)?
             .detach(link.id)
@@ -803,6 +879,7 @@ impl AyaAdapter for SystemAyaAdapter {
                 }
             }
         }
+        truncated |= entries.len() == MAX_CLIENTS as usize;
         Ok(MapRead { entries, truncated })
     }
 
@@ -818,6 +895,12 @@ impl AyaAdapter for SystemAyaAdapter {
 
     fn unload(&mut self) {
         self.ebpf = None;
+    }
+}
+
+fn push_unique_spec(specs: &mut Vec<LinkSpec>, spec: LinkSpec) {
+    if !specs.contains(&spec) {
+        specs.push(spec);
     }
 }
 
