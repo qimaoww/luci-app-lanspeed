@@ -1,0 +1,839 @@
+use super::{
+    assess, commands::CommandResult, files::BoundedFile, CollectedEvidence, CommandEvidence,
+    FileEvidence, ProbeObservations, ProbeReport, RuntimeHealth, UbusEvidence, UciEvidence,
+};
+use super::{commands::ReadOnlyCommand, tc};
+use crate::config::RuntimeConfig;
+use std::{io, path::Path};
+
+const FILE_CAP: usize = 4_096;
+const PACKAGES: [&str; 9] = [
+    "firewall",
+    "sqm",
+    "qosify",
+    "openclash",
+    "dae",
+    "daed",
+    "homeproxy",
+    "nlbwmon",
+    "dhcp",
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProbeMethod {
+    Status,
+    Health,
+    Reload,
+}
+impl ProbeMethod {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::Health => "health",
+            Self::Reload => "reload",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UciOptionSnapshot {
+    pub name: String,
+    pub values: Vec<String>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UciSectionSnapshot {
+    pub name: String,
+    pub kind: String,
+    pub options: Vec<UciOptionSnapshot>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UciPackageSnapshot {
+    pub name: String,
+    pub sections: Vec<UciSectionSnapshot>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UbusQuery {
+    NetworkLanStatus,
+    ServiceDae,
+    ServiceDaed,
+}
+impl UbusQuery {
+    pub const fn object(self) -> &'static str {
+        match self {
+            Self::NetworkLanStatus => "network.interface.lan",
+            Self::ServiceDae => "service.dae",
+            Self::ServiceDaed => "service.daed",
+        }
+    }
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UbusProbeResult {
+    pub query: UbusQuery,
+    pub exit_code: i32,
+    pub summary: String,
+    pub output: String,
+    pub truncated: bool,
+}
+
+pub trait CommandRunner {
+    type Error: ToString;
+    fn available(&mut self, command: ReadOnlyCommand) -> Result<bool, Self::Error>;
+    fn run(
+        &mut self,
+        command: ReadOnlyCommand,
+        args: &[&str],
+    ) -> Result<CommandResult, Self::Error>;
+}
+pub trait FileSource {
+    type Error: ToString;
+    fn read(&mut self, path: &str, cap: usize) -> Result<BoundedFile, Self::Error>;
+    fn exists(&mut self, path: &str) -> Result<bool, Self::Error>;
+    fn dir_has_entries(&mut self, path: &str) -> Result<bool, Self::Error>;
+    fn probe_nss_state(&mut self) -> Result<NssStateProbe, Self::Error> {
+        Ok(NssStateProbe::default())
+    }
+}
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct NssStateProbe {
+    pub present: bool,
+    pub readable: bool,
+    pub errno: i32,
+    pub state_major: u32,
+    pub source_path: Option<String>,
+}
+pub trait UciSource {
+    type Error: ToString;
+    fn load(&mut self, package: &'static str) -> Result<Option<UciPackageSnapshot>, Self::Error>;
+}
+pub trait UbusSource {
+    type Error: ToString;
+    fn query(&mut self, query: UbusQuery) -> Result<UbusProbeResult, Self::Error>;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemCommandRunner;
+impl CommandRunner for SystemCommandRunner {
+    type Error = io::Error;
+    fn available(&mut self, command: ReadOnlyCommand) -> Result<bool, Self::Error> {
+        Ok(super::commands::command_available(command.program()))
+    }
+    fn run(
+        &mut self,
+        command: ReadOnlyCommand,
+        args: &[&str],
+    ) -> Result<CommandResult, Self::Error> {
+        super::commands::run_read_only(
+            command,
+            args,
+            super::commands::DEFAULT_TIMEOUT,
+            super::commands::DEFAULT_OUTPUT_CAP,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemFileSource;
+impl FileSource for SystemFileSource {
+    type Error = String;
+    fn read(&mut self, path: &str, cap: usize) -> Result<BoundedFile, Self::Error> {
+        super::files::read_bounded(Path::new(path), cap).map_err(|error| error.to_string())
+    }
+    fn exists(&mut self, path: &str) -> Result<bool, Self::Error> {
+        Ok(Path::new(path).exists())
+    }
+    fn dir_has_entries(&mut self, path: &str) -> Result<bool, Self::Error> {
+        let mut entries = match std::fs::read_dir(path) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.to_string()),
+        };
+        Ok(entries
+            .next()
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .is_some())
+    }
+    fn probe_nss_state(&mut self) -> Result<NssStateProbe, Self::Error> {
+        match crate::collectors::nss::open_ecm_state() {
+            Ok(opened) => Ok(NssStateProbe {
+                present: true,
+                readable: true,
+                errno: 0,
+                state_major: opened.state_major,
+                source_path: Some(opened.source_path),
+            }),
+            Err(error) => Ok(NssStateProbe {
+                present: error.errno() != Some(libc::ENOENT),
+                readable: false,
+                errno: error.errno().unwrap_or(0),
+                state_major: error.state_major,
+                source_path: None,
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemUbusSource;
+impl UbusSource for SystemUbusSource {
+    type Error = io::Error;
+    fn query(&mut self, query: UbusQuery) -> Result<UbusProbeResult, Self::Error> {
+        let command = match query {
+            UbusQuery::NetworkLanStatus => ReadOnlyCommand::UbusNetworkLanStatus,
+            UbusQuery::ServiceDae => ReadOnlyCommand::UbusServiceDae,
+            UbusQuery::ServiceDaed => ReadOnlyCommand::UbusServiceDaed,
+        };
+        let result = super::commands::run_read_only(
+            command,
+            &[],
+            super::commands::DEFAULT_TIMEOUT,
+            super::commands::DEFAULT_OUTPUT_CAP,
+        )?;
+        let exit_code = result.exit_code.unwrap_or(-1);
+        Ok(UbusProbeResult {
+            query,
+            exit_code,
+            summary: if exit_code == 0 {
+                "status available"
+            } else {
+                "status unavailable"
+            }
+            .into(),
+            output: result.stdout,
+            truncated: result.output_truncated || result.timed_out,
+        })
+    }
+}
+
+#[cfg(feature = "openwrt")]
+pub struct SystemUciSource {
+    context: lanspeed_openwrt_sys::UciContext,
+}
+#[cfg(feature = "openwrt")]
+impl SystemUciSource {
+    pub fn new() -> lanspeed_openwrt_sys::Result<Self> {
+        Ok(Self {
+            context: lanspeed_openwrt_sys::UciContext::new()?,
+        })
+    }
+}
+#[cfg(feature = "openwrt")]
+impl UciSource for SystemUciSource {
+    type Error = lanspeed_openwrt_sys::Error;
+    fn load(&mut self, package: &'static str) -> Result<Option<UciPackageSnapshot>, Self::Error> {
+        match self.context.load_package(package) {
+            Ok(package) => Ok(Some(UciPackageSnapshot {
+                name: package.name,
+                sections: package
+                    .sections
+                    .into_iter()
+                    .map(|section| UciSectionSnapshot {
+                        name: section.name,
+                        kind: section.kind,
+                        options: section
+                            .options
+                            .into_iter()
+                            .map(|option| UciOptionSnapshot {
+                                name: option.name,
+                                values: match option.value {
+                                    lanspeed_openwrt_sys::UciValue::String(value) => vec![value],
+                                    lanspeed_openwrt_sys::UciValue::List(values) => values,
+                                },
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            })),
+            Err(lanspeed_openwrt_sys::Error::Platform {
+                operation: "uci_load",
+                code: 3,
+            }) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+#[cfg(feature = "openwrt")]
+pub type SystemProbeCollector =
+    ProbeCollector<SystemCommandRunner, SystemFileSource, SystemUciSource, SystemUbusSource>;
+
+#[cfg(feature = "openwrt")]
+pub fn system_collector() -> lanspeed_openwrt_sys::Result<SystemProbeCollector> {
+    Ok(ProbeCollector::new(
+        SystemCommandRunner,
+        SystemFileSource,
+        SystemUciSource::new()?,
+        SystemUbusSource,
+    ))
+}
+
+pub struct ProbeCollector<C, F, U, B> {
+    commands: C,
+    files: F,
+    uci: U,
+    ubus: B,
+}
+impl<C, F, U, B> ProbeCollector<C, F, U, B>
+where
+    C: CommandRunner,
+    F: FileSource,
+    U: UciSource,
+    B: UbusSource,
+{
+    pub fn new(commands: C, files: F, uci: U, ubus: B) -> Self {
+        Self {
+            commands,
+            files,
+            uci,
+            ubus,
+        }
+    }
+    pub fn into_parts(self) -> (C, F, U, B) {
+        (self.commands, self.files, self.uci, self.ubus)
+    }
+
+    pub fn collect(
+        &mut self,
+        config: &RuntimeConfig,
+        runtime: &RuntimeHealth,
+        method: ProbeMethod,
+    ) -> ProbeReport {
+        let mut observations = ProbeObservations::default();
+        let mut evidence = CollectedEvidence::default();
+
+        observations.commands.tc = self.availability(
+            ReadOnlyCommand::TcFilterHelp,
+            "tc",
+            &mut evidence,
+            &mut observations.probe_error,
+        );
+        observations.commands.nft = self.availability(
+            ReadOnlyCommand::NftListFlowtables,
+            "nft",
+            &mut evidence,
+            &mut observations.probe_error,
+        );
+        observations.commands.ubus = self.availability(
+            ReadOnlyCommand::UbusNetworkLanStatus,
+            "ubus",
+            &mut evidence,
+            &mut observations.probe_error,
+        );
+        observations.commands.fw4 = self.availability(
+            ReadOnlyCommand::Fw4,
+            "fw4",
+            &mut evidence,
+            &mut observations.probe_error,
+        );
+        observations.commands.qosify = self.availability(
+            ReadOnlyCommand::Qosify,
+            "qosify",
+            &mut evidence,
+            &mut observations.probe_error,
+        );
+
+        if observations.commands.tc {
+            if let Some(result) = self.command(
+                ReadOnlyCommand::TcFilterHelp,
+                &[],
+                "tc filter help",
+                &mut evidence,
+                &mut observations.probe_error,
+            ) {
+                observations.commands.tc_filter_help_exit_code = result.exit_code.unwrap_or(-1);
+                observations.tc.bpf = result.stdout.to_ascii_lowercase().contains("bpf");
+            }
+            if let Some(result) = self.command(
+                ReadOnlyCommand::TcQdiscHelp,
+                &[],
+                "tc qdisc help",
+                &mut evidence,
+                &mut observations.probe_error,
+            ) {
+                observations.commands.tc_qdisc_help_exit_code = result.exit_code.unwrap_or(-1);
+                observations.tc.clsact = result.stdout.contains("clsact");
+            }
+            for ifname in config.ifnames.iter().chain(config.interface_include.iter()) {
+                for direction in ["ingress", "egress"] {
+                    let args = ["dev", ifname.as_str(), direction];
+                    if let Some(result) = self.command(
+                        ReadOnlyCommand::TcFilterShow,
+                        &args,
+                        &format!("tc filter show dev {ifname} {direction}"),
+                        &mut evidence,
+                        &mut observations.probe_error,
+                    ) {
+                        let filters = tc::parse_filter_lines(ifname, direction, &result.stdout);
+                        observations.tc.existing_filters |= !filters.is_empty();
+                        observations.tc.filters.extend(filters);
+                    }
+                }
+            }
+        }
+        if observations.commands.nft {
+            if let Some(result) = self.command(
+                ReadOnlyCommand::NftListFlowtables,
+                &[],
+                "nft list flowtables",
+                &mut evidence,
+                &mut observations.probe_error,
+            ) {
+                observations.commands.flowtable_exit_code = result.exit_code.unwrap_or(-1);
+                observations.commands.flowtable_counter =
+                    result.stdout.contains("flowtable") && result.stdout.contains("counter");
+            }
+            if let Some(result) = self.command(
+                ReadOnlyCommand::NftListRuleset,
+                &[],
+                "nft list ruleset",
+                &mut evidence,
+                &mut observations.probe_error,
+            ) {
+                observations.proxy.dae_dns_udp53 = result.stdout.contains("dport 53")
+                    && (result.stdout.contains("dae") || result.stdout.contains("0x8000000"));
+            }
+        }
+        for process in ["dae", "daed"] {
+            if let Some(result) = self.command(
+                ReadOnlyCommand::Pidof,
+                &[process],
+                &format!("pidof {process}"),
+                &mut evidence,
+                &mut observations.probe_error,
+            ) {
+                let running = result.exit_code == Some(0) && !result.stdout.trim().is_empty();
+                if process == "dae" {
+                    observations.proxy.dae_process = running;
+                } else {
+                    observations.proxy.daed_process = running;
+                }
+            }
+        }
+        if let Some(result) = self.command(
+            ReadOnlyCommand::IpRuleShow,
+            &[],
+            "ip rule show",
+            &mut evidence,
+            &mut observations.probe_error,
+        ) {
+            observations.proxy.dae_fwmark = result.stdout.contains("0x8000000");
+        }
+        if let Some(result) = self.command(
+            ReadOnlyCommand::IpRouteShow,
+            &["show", "table", "2023"],
+            "ip route show table 2023",
+            &mut evidence,
+            &mut observations.probe_error,
+        ) {
+            observations.proxy.dae_route_table =
+                result.stdout.contains("dae0") || result.stdout.contains("default");
+        }
+
+        self.collect_files(config, &mut observations, &mut evidence);
+        self.collect_uci(&mut observations, &mut evidence);
+        self.collect_ubus(&mut observations, &mut evidence);
+        observations.collected_evidence = evidence;
+        let mut report = assess(config, observations, runtime);
+        report.evidence.method = method.as_str();
+        report
+    }
+
+    fn availability(
+        &mut self,
+        command: ReadOnlyCommand,
+        name: &str,
+        evidence: &mut CollectedEvidence,
+        error: &mut bool,
+    ) -> bool {
+        match self.commands.available(command) {
+            Ok(available) => {
+                evidence.command.push(CommandEvidence {
+                    source: format!("command:{name}"),
+                    command: name.into(),
+                    available,
+                    exit_code: None,
+                    supported: None,
+                    summary: None,
+                });
+                available
+            }
+            Err(_) => {
+                *error = true;
+                evidence.command.push(CommandEvidence {
+                    source: format!("command:{name}"),
+                    command: name.into(),
+                    available: false,
+                    exit_code: None,
+                    supported: None,
+                    summary: Some("availability probe failed".into()),
+                });
+                false
+            }
+        }
+    }
+
+    fn command(
+        &mut self,
+        command: ReadOnlyCommand,
+        args: &[&str],
+        display: &str,
+        evidence: &mut CollectedEvidence,
+        error: &mut bool,
+    ) -> Option<CommandResult> {
+        match self.commands.run(command, args) {
+            Ok(result) => {
+                let nonzero_is_error = !matches!(
+                    command,
+                    ReadOnlyCommand::Pidof | ReadOnlyCommand::TcFilterShow
+                );
+                let failed = (nonzero_is_error && result.exit_code != Some(0))
+                    || result.timed_out
+                    || result.output_truncated;
+                *error |= failed;
+                evidence.command.push(CommandEvidence {
+                    source: canonical_command_source(command, args),
+                    command: display.into(),
+                    available: true,
+                    exit_code: result.exit_code,
+                    supported: Some(!failed),
+                    summary: Some(
+                        if result.timed_out {
+                            "probe timed out"
+                        } else if result.output_truncated {
+                            "probe output truncated"
+                        } else if failed {
+                            "probe failed"
+                        } else {
+                            "probe completed"
+                        }
+                        .into(),
+                    ),
+                });
+                Some(result)
+            }
+            Err(_) => {
+                *error = true;
+                evidence.command.push(CommandEvidence {
+                    source: canonical_command_source(command, args),
+                    command: display.into(),
+                    available: true,
+                    exit_code: None,
+                    supported: Some(false),
+                    summary: Some("probe execution failed".into()),
+                });
+                None
+            }
+        }
+    }
+
+    fn collect_files(
+        &mut self,
+        config: &RuntimeConfig,
+        o: &mut ProbeObservations,
+        evidence: &mut CollectedEvidence,
+    ) {
+        let acct = "/proc/sys/net/netfilter/nf_conntrack_acct";
+        match self.files.read(acct, FILE_CAP) {
+            Ok(entry) => {
+                o.files.nf_conntrack_acct_present = entry.present;
+                o.files.nf_conntrack_acct_value = entry.value.clone();
+                o.probe_error |= entry.truncated;
+                evidence.file.push(to_file_evidence(entry));
+            }
+            Err(_) => evidence.file.push(file_missing(acct)),
+        }
+        for (path, slot) in [
+            ("/proc/net/nf_flowtable", &mut o.files.flowtable_proc),
+            (
+                "/sys/kernel/debug/netfilter/nf_flowtable",
+                &mut o.files.flowtable_debug,
+            ),
+            ("/sys/class/net/ifb0", &mut o.files.ifb),
+            ("/proc/net/vlan/config", &mut o.files.vlan),
+            (
+                "/usr/share/lanspeed/bpf/collector-model.json",
+                &mut o.bpf.package,
+            ),
+            ("/usr/lib/bpf/lanspeed_tc.o", &mut o.bpf.object),
+        ] {
+            *slot = self.exists(path, evidence, &mut o.probe_error);
+        }
+        for path in [
+            "/etc/config/openclash",
+            "/etc/config/dae",
+            "/etc/config/daed",
+            "/etc/config/homeproxy",
+            "/etc/config/nlbwmon",
+        ] {
+            let _ = self.exists(path, evidence, &mut o.probe_error);
+        }
+        o.files.wlan = self.dir_entries("/sys/class/ieee80211", evidence, &mut o.probe_error);
+        o.files.lan_bridge = config
+            .ifnames
+            .iter()
+            .chain(config.interface_include.iter())
+            .any(|ifname| {
+                let path = format!("/sys/class/net/{ifname}/bridge");
+                self.exists(&path, evidence, &mut o.probe_error)
+            });
+        for (path, slot) in [
+            ("/sys/module/qca_nss_drv", &mut o.nss.present),
+            ("/sys/module/ecm", &mut o.nss.ecm_active),
+            ("/sys/module/qca_nss_ppe", &mut o.nss.ppe_active),
+        ] {
+            *slot |= self.exists(path, evidence, &mut o.probe_error);
+        }
+        o.nss.bridge_mgr = self.exists(
+            "/sys/module/qca_nss_bridge_mgr",
+            evidence,
+            &mut o.probe_error,
+        );
+        o.nss.ifb_active = self.exists("/sys/class/net/nssifb", evidence, &mut o.probe_error);
+        o.nss.nsm_active = self.exists("/sys/module/qca_nss_nsm", evidence, &mut o.probe_error);
+        o.nss.dp_active = self.exists("/sys/module/qca_nss_dp", evidence, &mut o.probe_error);
+        o.nss.mcs_active = self.exists("/sys/module/qca_mcs", evidence, &mut o.probe_error);
+        match self.files.probe_nss_state() {
+            Ok(state) => {
+                o.nss.direct_state_present = state.present;
+                o.nss.direct_state_readable = state.readable;
+                o.nss.direct_state_errno = state.errno;
+                o.nss.direct_state_major = state.state_major;
+                o.nss.direct_source_path = state.source_path;
+            }
+            Err(_) => o.probe_error = true,
+        }
+    }
+
+    fn exists(&mut self, path: &str, evidence: &mut CollectedEvidence, error: &mut bool) -> bool {
+        match self.files.exists(path) {
+            Ok(present) => {
+                evidence.file.push(FileEvidence {
+                    source: format!("file:{path}"),
+                    path: path.into(),
+                    present,
+                    value: None,
+                });
+                present
+            }
+            Err(_) => {
+                *error = true;
+                evidence.file.push(file_missing(path));
+                false
+            }
+        }
+    }
+    fn dir_entries(
+        &mut self,
+        path: &str,
+        evidence: &mut CollectedEvidence,
+        error: &mut bool,
+    ) -> bool {
+        match self.files.dir_has_entries(path) {
+            Ok(present) => {
+                evidence.file.push(FileEvidence {
+                    source: format!("file:{path}"),
+                    path: path.into(),
+                    present,
+                    value: None,
+                });
+                present
+            }
+            Err(_) => {
+                *error = true;
+                evidence.file.push(file_missing(path));
+                false
+            }
+        }
+    }
+
+    fn collect_uci(&mut self, o: &mut ProbeObservations, evidence: &mut CollectedEvidence) {
+        for package in PACKAGES {
+            match self.uci.load(package) {
+                Ok(snapshot) => {
+                    let loaded = snapshot.is_some();
+                    evidence.uci.push(UciEvidence {
+                        source: format!("uci:{package}"),
+                        package: package.into(),
+                        loaded,
+                        section: None,
+                        option: None,
+                        present: None,
+                        value: None,
+                    });
+                    match package {
+                        "firewall" => o.uci.firewall_loaded = loaded,
+                        "sqm" => o.uci.sqm = loaded,
+                        "qosify" => o.uci.qosify = loaded,
+                        "openclash" => o.uci.openclash = loaded,
+                        "dae" => o.uci.dae = loaded,
+                        "daed" => o.uci.daed = loaded,
+                        "homeproxy" => o.uci.homeproxy = loaded,
+                        "nlbwmon" => o.uci.nlbwmon = loaded,
+                        "dhcp" => o.proxy.dhcp_loaded = loaded,
+                        _ => {}
+                    }
+                    if let Some(snapshot) = snapshot {
+                        self.apply_uci_package(&snapshot, o, evidence);
+                    }
+                }
+                Err(_) => {
+                    o.probe_error = true;
+                    evidence.uci.push(UciEvidence {
+                        source: format!("uci:{package}"),
+                        package: package.into(),
+                        loaded: false,
+                        section: None,
+                        option: None,
+                        present: None,
+                        value: None,
+                    });
+                }
+            }
+        }
+    }
+
+    fn apply_uci_package(
+        &self,
+        package: &UciPackageSnapshot,
+        o: &mut ProbeObservations,
+        evidence: &mut CollectedEvidence,
+    ) {
+        for section in &package.sections {
+            for option in &section.options {
+                let value = option.values.first().cloned();
+                evidence.uci.push(UciEvidence {
+                    source: format!("uci:{}.{}.{}", package.name, section.name, option.name),
+                    package: package.name.clone(),
+                    loaded: true,
+                    section: Some(section.name.clone()),
+                    option: Some(option.name.clone()),
+                    present: Some(true),
+                    value: value.clone(),
+                });
+                if package.name == "firewall" && section.kind == "defaults" {
+                    match option.name.as_str() {
+                        "flow_offloading" => o.offload.software |= bool_value(value.as_deref()),
+                        "flow_offloading_hw" => o.offload.hardware |= bool_value(value.as_deref()),
+                        "fullcone" => o.offload.fullcone |= bool_value(value.as_deref()),
+                        _ => {}
+                    }
+                }
+                if package.name == "dhcp"
+                    && option
+                        .values
+                        .iter()
+                        .any(|value| value.contains("127.0.0.1#7874"))
+                {
+                    o.proxy.openclash_dnsmasq_chain = true;
+                }
+                if package.name == "openclash" {
+                    if o.proxy.openclash_section.is_none() {
+                        o.proxy.openclash_section = Some(section.name.clone());
+                    }
+                    match option.name.as_str() {
+                        "en_mode" => o.proxy.openclash_en_mode = value,
+                        "enable_redirect_dns" => {
+                            o.proxy.openclash_redirect_dns = bool_value(value.as_deref())
+                        }
+                        "router_self_proxy" => {
+                            o.proxy.openclash_router_self_proxy = bool_value(value.as_deref())
+                        }
+                        "enable_udp_proxy" => {
+                            o.proxy.openclash_udp_proxy = bool_value(value.as_deref())
+                        }
+                        "stack_type" => o.proxy.openclash_stack_type = value,
+                        "ipv6_enable" => o.proxy.openclash_ipv6 = bool_value(value.as_deref()),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        o.proxy.openclash_installed = o.uci.openclash;
+    }
+
+    fn collect_ubus(&mut self, o: &mut ProbeObservations, evidence: &mut CollectedEvidence) {
+        for query in [
+            UbusQuery::NetworkLanStatus,
+            UbusQuery::ServiceDae,
+            UbusQuery::ServiceDaed,
+        ] {
+            match self.ubus.query(query) {
+                Ok(result) => {
+                    let failed = result.exit_code != 0 || result.truncated;
+                    o.probe_error |= failed;
+                    if query == UbusQuery::NetworkLanStatus {
+                        o.ubus.network_lan_attempted = true;
+                        o.ubus.network_lan_exit_code = result.exit_code;
+                        o.lan_probe_error |= failed;
+                    } else {
+                        let present = result.output.contains(if query == UbusQuery::ServiceDae {
+                            "dae"
+                        } else {
+                            "daed"
+                        });
+                        let running = present
+                            && (result.output.contains("\"running\": true")
+                                || result.output.contains("\"running\":true"));
+                        if query == UbusQuery::ServiceDae {
+                            o.proxy.dae_service = present;
+                            o.proxy.dae_running = running;
+                        } else {
+                            o.proxy.daed_service = present;
+                            o.proxy.daed_running = running;
+                        }
+                    }
+                    evidence.ubus.push(UbusEvidence {
+                        source: format!("ubus:{}", query.object()),
+                        object: query.object().into(),
+                        attempted: true,
+                        exit_code: result.exit_code,
+                        summary: result.summary,
+                    });
+                }
+                Err(_) => {
+                    o.probe_error = true;
+                    o.lan_probe_error |= query == UbusQuery::NetworkLanStatus;
+                    evidence.ubus.push(UbusEvidence {
+                        source: format!("ubus:{}", query.object()),
+                        object: query.object().into(),
+                        attempted: true,
+                        exit_code: -1,
+                        summary: "query failed".into(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn canonical_command_source(command: ReadOnlyCommand, args: &[&str]) -> String {
+    match command {
+        ReadOnlyCommand::TcFilterHelp => "command:tc_filter_help".into(),
+        ReadOnlyCommand::TcQdiscHelp => "command:tc_qdisc_help".into(),
+        ReadOnlyCommand::TcFilterShow if args.len() == 3 => {
+            format!("command:tc_filter_show_{}_{}", args[1], args[2])
+        }
+        ReadOnlyCommand::NftListFlowtables => "command:nft_list_flowtables".into(),
+        other => format!("command:{other:?}"),
+    }
+}
+fn to_file_evidence(entry: BoundedFile) -> FileEvidence {
+    FileEvidence {
+        source: entry.source,
+        path: entry.path,
+        present: entry.present,
+        value: entry.value,
+    }
+}
+fn file_missing(path: &str) -> FileEvidence {
+    FileEvidence {
+        source: format!("file:{path}"),
+        path: path.into(),
+        present: false,
+        value: None,
+    }
+}
+fn bool_value(value: Option<&str>) -> bool {
+    matches!(value, Some("1" | "true" | "on" | "yes"))
+}

@@ -1,5 +1,10 @@
 use lanspeedd::config::RuntimeConfig;
+use lanspeedd::probe::collector::{
+    CommandRunner, FileSource, ProbeCollector, ProbeMethod, UbusProbeResult, UbusQuery, UbusSource,
+    UciOptionSnapshot, UciPackageSnapshot, UciSectionSnapshot, UciSource,
+};
 use lanspeedd::probe::commands::{validate_read_only_args, ReadOnlyCommand};
+use lanspeedd::probe::files::BoundedFile;
 use lanspeedd::probe::tc::{
     dae_preempts_lan_ingress, has_owned_identity_collision, parse_filter_lines,
 };
@@ -9,6 +14,7 @@ use lanspeedd::probe::{
     TcFilter, TcObservations, UbusObservations, UciObservations,
 };
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::{fs, path::PathBuf};
 
 fn fixture(name: &str) -> Value {
@@ -45,7 +51,7 @@ fn observations(value: &Value) -> (RuntimeConfig, ProbeObservations) {
     config.enable_conntrack_fallback = flag(value, &["config", "enable_conntrack_fallback"]);
     config.max_clients = number(value, &["config", "max_clients"], 512) as usize;
 
-    let filters = value["tc"]["filters"]
+    let filters: Vec<TcFilter> = value["tc"]["filters"]
         .as_array()
         .into_iter()
         .flatten()
@@ -81,6 +87,13 @@ fn observations(value: &Value) -> (RuntimeConfig, ProbeObservations) {
                 .into(),
         })
         .collect();
+    config.ifnames = filters
+        .iter()
+        .filter(|filter| filter.interface != "dae0" && filter.interface != "dae0peer")
+        .map(|filter| filter.interface.clone())
+        .collect();
+    config.ifnames.sort();
+    config.ifnames.dedup();
     let openclash_installed = flag(value, &["uci", "openclash"]);
     let redirect_dns = flag(value, &["openclash", "enable_redirect_dns"]);
     let dns_chain = flag(value, &["openclash", "dnsmasq_to_openclash_dns"]);
@@ -130,6 +143,8 @@ fn observations(value: &Value) -> (RuntimeConfig, ProbeObservations) {
         },
         proxy: ProxyObservation {
             openclash_installed,
+            openclash_section: text(value, &["openclash", "section"]),
+            dhcp_loaded: flag(value, &["openclash", "dhcp_loaded"]),
             openclash_en_mode: text(value, &["openclash", "en_mode"]),
             openclash_redirect_dns: redirect_dns,
             openclash_dnsmasq_chain: dns_chain,
@@ -160,6 +175,9 @@ fn observations(value: &Value) -> (RuntimeConfig, ProbeObservations) {
             object: flag(value, &["files", "bpf_object"]),
             ..BpfObservation::default()
         },
+        probe_error: false,
+        lan_probe_error: false,
+        collected_evidence: Default::default(),
     };
     (config, observations)
 }
@@ -387,6 +405,10 @@ fn every_legacy_probe_fixture_matches_the_production_rust_assessment() {
             conflicts,
             "{name}"
         );
+        for conflict in &report.conflicts {
+            assert!(!conflict.severity.is_empty(), "{name}:{}", conflict.id);
+            assert!(!conflict.message.is_empty(), "{name}:{}", conflict.id);
+        }
         assert!(report.evidence.read_only, "{name}");
         assert!(!report.evidence.command.is_empty(), "{name}");
         assert!(!report.evidence.file.is_empty(), "{name}");
@@ -402,6 +424,128 @@ fn every_legacy_probe_fixture_matches_the_production_rust_assessment() {
             report.facts.offload.hardware
         );
         assert_eq!(report.evidence.bpf.object_present, report.facts.bpf.object);
+    }
+}
+
+#[test]
+fn every_fixture_has_complete_typed_evidence_and_an_explicit_flowtable_alias() {
+    let names = [
+        "lanspeed-probe-base.json",
+        "lanspeed-probe-conntrack-acct-disabled.json",
+        "lanspeed-probe-dae-tc-conflict.json",
+        "lanspeed-probe-dae-tc-preserve.json",
+        "lanspeed-probe-error.json",
+        "lanspeed-probe-flowtable-missing-nlbwmon.json",
+        "lanspeed-probe-hardware-flow-offload.json",
+        "lanspeed-probe-missing-tc.json",
+        "lanspeed-probe-openclash-fakeip.json",
+        "lanspeed-probe-openclash-router-self.json",
+        "lanspeed-probe-software-flow-offload.json",
+    ];
+    let required_files = [
+        "/proc/sys/net/netfilter/nf_conntrack_acct",
+        "/proc/net/nf_flowtable",
+        "/sys/kernel/debug/netfilter/nf_flowtable",
+        "/sys/class/net/ifb0",
+        "any_configured_device/bridge",
+        "/proc/net/vlan/config",
+        "/sys/class/ieee80211",
+        "/usr/share/lanspeed/bpf/collector-model.json",
+        "/usr/lib/bpf/lanspeed_tc.o",
+        "/etc/config/openclash",
+        "/etc/config/dae",
+        "/etc/config/daed",
+        "/etc/config/homeproxy",
+        "/etc/config/nlbwmon",
+    ];
+    for name in names {
+        let fixture = fixture(name);
+        let (config, observations) = observations(&fixture);
+        let report = assess(&config, observations, &ProbeRuntimeHealth::default());
+        for path in required_files {
+            assert!(
+                report.evidence.file.iter().any(|entry| entry.path == path),
+                "{name}:{path}"
+            );
+        }
+        for package in [
+            "firewall",
+            "sqm",
+            "qosify",
+            "openclash",
+            "dae",
+            "daed",
+            "homeproxy",
+            "nlbwmon",
+        ] {
+            assert!(
+                report
+                    .evidence
+                    .uci
+                    .iter()
+                    .any(|entry| entry.package == package && entry.section.is_none()),
+                "{name}:{package}"
+            );
+        }
+        let canonical = report
+            .evidence
+            .command
+            .iter()
+            .find(|entry| entry.source == "command:nft_list_flowtables")
+            .unwrap();
+        let alias = report
+            .evidence
+            .command
+            .iter()
+            .find(|entry| entry.source == "command:nft_list_ruleset")
+            .unwrap();
+        assert_eq!(canonical.command, "nft list flowtables");
+        assert_eq!(alias.command, "nft list flowtables");
+        assert!(alias
+            .summary
+            .as_deref()
+            .unwrap()
+            .contains("legacy evidence alias"));
+        assert_eq!(report.evidence.collector.mode, report.mode.as_str());
+        assert_eq!(
+            report.evidence.collector.confidence,
+            report.confidence.as_str()
+        );
+        assert_eq!(report.evidence.tc.owner, "lanspeed");
+        assert!(!report.evidence.tc.delete_existing);
+        assert!(!report.evidence.tc.reorder_existing);
+        assert_eq!(report.evidence.probe_error, report.facts.probe_error);
+        assert_eq!(
+            report.evidence.lan_probe_error,
+            report.facts.lan_probe_error
+        );
+        if flag(&fixture, &["uci", "openclash"]) {
+            let section = text(&fixture, &["openclash", "section"]).unwrap();
+            for option in [
+                "en_mode",
+                "enable_redirect_dns",
+                "router_self_proxy",
+                "enable_udp_proxy",
+                "stack_type",
+                "ipv6_enable",
+            ] {
+                assert!(
+                    report
+                        .evidence
+                        .uci
+                        .iter()
+                        .any(|entry| entry.section.as_deref() == Some(&section)
+                            && entry.option.as_deref() == Some(option)),
+                    "{name}:{option}"
+                );
+            }
+            assert!(report
+                .evidence
+                .uci
+                .iter()
+                .any(|entry| entry.package == "dhcp"
+                    && entry.loaded == flag(&fixture, &["openclash", "dhcp_loaded"])));
+        }
     }
 }
 
@@ -449,6 +593,10 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
         &["dev", "br-lan;reboot", "ingress"]
     )
     .is_err());
+    assert!(validate_read_only_args(ReadOnlyCommand::UbusNetworkLanStatus, &[]).is_ok());
+    assert!(validate_read_only_args(ReadOnlyCommand::UbusServiceDae, &[]).is_ok());
+    assert!(validate_read_only_args(ReadOnlyCommand::UbusServiceDaed, &[]).is_ok());
+    assert!(validate_read_only_args(ReadOnlyCommand::UbusServiceDae, &["start"]).is_err());
 
     let filters = parse_filter_lines(
         "eth1",
@@ -456,11 +604,276 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
         "filter protocol all pref 2 bpf chain 0 handle 0x20230005 dae direct-action\n\
          filter protocol all pref 49152 bpf chain 0 handle 0x1eed lanspeed_ingress direct-action\n",
     );
-    assert!(dae_preempts_lan_ingress(&filters));
+    assert!(dae_preempts_lan_ingress(&filters, &["eth1".into()]));
+    assert!(!dae_preempts_lan_ingress(&filters, &["br-lan".into()]));
     assert!(!has_owned_identity_collision(&filters));
     let foreign = vec![TcFilter {
         owner: "dae".into(),
         ..filters[1].clone()
     }];
     assert!(has_owned_identity_collision(&foreign));
+}
+
+#[test]
+fn command_availability_requires_an_executable_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory =
+        std::env::temp_dir().join(format!("lanspeed-probe-path-{}", std::process::id()));
+    fs::create_dir_all(&directory).unwrap();
+    let command = directory.join("probe-command");
+    fs::write(&command, b"not executed").unwrap();
+    fs::set_permissions(&command, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(!lanspeedd::probe::commands::command_available(
+        command.to_str().unwrap()
+    ));
+    fs::set_permissions(&command, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(lanspeedd::probe::commands::command_available(
+        command.to_str().unwrap()
+    ));
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn report_mode_confidence_and_capabilities_come_from_the_single_policy_decision() {
+    let mut config = RuntimeConfig::default();
+    config.enable_bpf = true;
+    config.enable_conntrack_fallback = true;
+    let mut observations = ProbeObservations::default();
+    observations.commands.tc = true;
+    observations.tc.clsact = true;
+    observations.tc.bpf = true;
+    observations.files.lan_bridge = true;
+    observations.files.nf_conntrack_acct_present = true;
+    observations.bpf.package = true;
+    observations.bpf.object = true;
+    observations.nss.present = true;
+    observations.nss.ecm_active = true;
+    observations.nss.direct_state_present = true;
+    observations.nss.direct_state_readable = true;
+
+    let direct = assess(
+        &config,
+        observations.clone(),
+        &ProbeRuntimeHealth::default(),
+    );
+    assert_eq!(direct.mode.as_str(), "Full");
+    assert_eq!(direct.confidence.as_str(), "high");
+    assert!(direct.capabilities.live_metrics);
+    assert!(!direct.capabilities.bpf);
+    assert!(!direct.capabilities.conntrack_fallback);
+
+    observations.files.nf_conntrack_acct_value = Some("1".into());
+    let sync = assess(
+        &config,
+        observations.clone(),
+        &ProbeRuntimeHealth::default(),
+    );
+    assert_eq!(sync.mode.as_str(), "Degraded");
+    assert!(sync.capabilities.live_metrics);
+    assert!(sync.capabilities.conntrack_fallback);
+    assert!(!sync.capabilities.bpf);
+
+    observations.commands.tc = false;
+    let no_tc_sync = assess(&config, observations, &ProbeRuntimeHealth::default());
+    assert_eq!(no_tc_sync.mode.as_str(), "Degraded");
+    assert!(no_tc_sync.capabilities.live_metrics);
+}
+
+#[derive(Default)]
+struct FakeCommands {
+    calls: Vec<(ReadOnlyCommand, Vec<String>)>,
+    timeout: bool,
+    truncated: bool,
+}
+
+impl CommandRunner for FakeCommands {
+    type Error = String;
+    fn available(&mut self, command: ReadOnlyCommand) -> Result<bool, Self::Error> {
+        Ok(!matches!(command, ReadOnlyCommand::Pidof))
+    }
+    fn run(
+        &mut self,
+        command: ReadOnlyCommand,
+        args: &[&str],
+    ) -> Result<lanspeedd::probe::commands::CommandResult, Self::Error> {
+        self.calls
+            .push((command, args.iter().map(|arg| (*arg).into()).collect()));
+        let stdout = match command {
+            ReadOnlyCommand::TcFilterHelp => "Usage: tc ... bpf".into(),
+            ReadOnlyCommand::TcQdiscHelp => "Usage: tc ... clsact".into(),
+            ReadOnlyCommand::NftListFlowtables => "flowtable ft { counter; }".into(),
+            _ => String::new(),
+        };
+        Ok(lanspeedd::probe::commands::CommandResult {
+            source: format!("command:{command:?}"),
+            program: command.program().into(),
+            args: args.iter().map(|arg| (*arg).into()).collect(),
+            exit_code: Some(0),
+            stdout,
+            stderr: String::new(),
+            timed_out: self.timeout,
+            output_truncated: self.truncated,
+        })
+    }
+}
+
+#[derive(Default)]
+struct FakeFiles(BTreeMap<String, BoundedFile>);
+impl FileSource for FakeFiles {
+    type Error = String;
+    fn read(&mut self, path: &str, _cap: usize) -> Result<BoundedFile, Self::Error> {
+        self.0.get(path).cloned().ok_or_else(|| "missing".into())
+    }
+    fn exists(&mut self, path: &str) -> Result<bool, Self::Error> {
+        Ok(self.0.get(path).is_some_and(|entry| entry.present))
+    }
+    fn dir_has_entries(&mut self, path: &str) -> Result<bool, Self::Error> {
+        self.exists(path)
+    }
+}
+
+#[derive(Default)]
+struct FakeUci(BTreeMap<String, UciPackageSnapshot>);
+impl UciSource for FakeUci {
+    type Error = String;
+    fn load(&mut self, package: &'static str) -> Result<Option<UciPackageSnapshot>, Self::Error> {
+        Ok(self.0.get(package).cloned())
+    }
+}
+
+#[derive(Default)]
+struct FakeUbus {
+    fail: bool,
+}
+impl UbusSource for FakeUbus {
+    type Error = String;
+    fn query(&mut self, query: UbusQuery) -> Result<UbusProbeResult, Self::Error> {
+        if self.fail {
+            return Err("ubus unavailable".into());
+        }
+        Ok(UbusProbeResult {
+            query,
+            exit_code: 0,
+            summary: "status available".into(),
+            output: "{}".into(),
+            truncated: false,
+        })
+    }
+}
+
+#[test]
+fn injectable_production_collector_records_every_read_only_source_and_error() {
+    let commands = FakeCommands::default();
+    let mut files = FakeFiles::default();
+    for path in [
+        "/proc/sys/net/netfilter/nf_conntrack_acct",
+        "/proc/net/nf_flowtable",
+        "/sys/class/net/br-lan/bridge",
+        "/usr/share/lanspeed/bpf/collector-model.json",
+        "/usr/lib/bpf/lanspeed_tc.o",
+    ] {
+        files.0.insert(
+            path.into(),
+            BoundedFile {
+                source: format!("file:{path}"),
+                path: path.into(),
+                present: true,
+                value: (path.contains("acct")).then(|| "1".into()),
+                truncated: false,
+            },
+        );
+    }
+    let mut uci = FakeUci::default();
+    uci.0.insert(
+        "firewall".into(),
+        UciPackageSnapshot {
+            name: "firewall".into(),
+            sections: vec![UciSectionSnapshot {
+                name: "defaults".into(),
+                kind: "defaults".into(),
+                options: vec![UciOptionSnapshot {
+                    name: "flow_offloading".into(),
+                    values: vec!["0".into()],
+                }],
+            }],
+        },
+    );
+    uci.0.insert(
+        "openclash".into(),
+        UciPackageSnapshot {
+            name: "openclash".into(),
+            sections: vec![UciSectionSnapshot {
+                name: "config".into(),
+                kind: "config".into(),
+                options: vec![
+                    UciOptionSnapshot {
+                        name: "en_mode".into(),
+                        values: vec!["fake-ip".into()],
+                    },
+                    UciOptionSnapshot {
+                        name: "enable_redirect_dns".into(),
+                        values: vec!["1".into()],
+                    },
+                ],
+            }],
+        },
+    );
+    uci.0.insert(
+        "dhcp".into(),
+        UciPackageSnapshot {
+            name: "dhcp".into(),
+            sections: vec![UciSectionSnapshot {
+                name: "dnsmasq".into(),
+                kind: "dnsmasq".into(),
+                options: vec![UciOptionSnapshot {
+                    name: "server".into(),
+                    values: vec!["127.0.0.1#7874".into()],
+                }],
+            }],
+        },
+    );
+    let mut config = RuntimeConfig::default();
+    config.enable_bpf = true;
+    config.ifnames = vec!["br-lan".into()];
+    let mut runtime = ProbeRuntimeHealth::default();
+    runtime.bpf_object_loaded = true;
+    runtime.bpf_attached = true;
+    runtime.bpf_map_read_attempted = true;
+    runtime.bpf_map_read_ok = true;
+
+    let mut collector = ProbeCollector::new(commands, files, uci, FakeUbus::default());
+    let report = collector.collect(&config, &runtime, ProbeMethod::Health);
+    assert_eq!(report.mode.as_str(), "Full");
+    assert!(report
+        .evidence
+        .probe_sources
+        .command
+        .contains(&"command:nft_list_flowtables".into()));
+    assert!(!report
+        .evidence
+        .probe_sources
+        .command
+        .iter()
+        .any(|source| source.contains("nft_list_ruleset")));
+    assert!(report
+        .evidence
+        .uci
+        .iter()
+        .any(|entry| entry.package == "firewall" && entry.loaded));
+    assert!(report
+        .evidence
+        .ubus
+        .iter()
+        .any(|entry| entry.object == "network.interface.lan"));
+    assert!(report.facts.proxy.openclash_fake_ip);
+    assert!(report.facts.proxy.openclash_dns_chain_complete);
+
+    let (mut commands, files, uci, mut ubus) = collector.into_parts();
+    commands.timeout = true;
+    commands.truncated = true;
+    ubus.fail = true;
+    let mut failed = ProbeCollector::new(commands, files, uci, ubus);
+    let failed_report = failed.collect(&config, &runtime, ProbeMethod::Health);
+    assert!(failed_report.evidence.probe_error);
+    assert!(failed_report.warnings.contains(&"probe_error"));
 }

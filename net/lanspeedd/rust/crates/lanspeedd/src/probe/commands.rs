@@ -1,5 +1,8 @@
 use std::{
+    env,
     io::{self, Read},
+    os::unix::fs::PermissionsExt,
+    path::Path,
     process::{Command, ExitStatus, Stdio},
     thread,
     time::{Duration, Instant},
@@ -8,8 +11,27 @@ use std::{
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2);
 pub const DEFAULT_OUTPUT_CAP: usize = 4_096;
 
+pub fn command_available(program: &str) -> bool {
+    if program.contains('/') {
+        return is_executable(Path::new(program));
+    }
+    env::var_os("PATH")
+        .as_deref()
+        .and_then(|paths| {
+            env::split_paths(paths).find(|directory| is_executable(&directory.join(program)))
+        })
+        .is_some()
+}
+
+fn is_executable(path: &Path) -> bool {
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReadOnlyCommand {
+    Fw4,
+    Qosify,
     TcFilterHelp,
     TcQdiscHelp,
     TcFilterShow,
@@ -17,29 +39,37 @@ pub enum ReadOnlyCommand {
     NftListRuleset,
     IpRuleShow,
     IpRouteShow,
-    UbusCall,
+    UbusNetworkLanStatus,
+    UbusServiceDae,
+    UbusServiceDaed,
     Pidof,
 }
 
 impl ReadOnlyCommand {
     pub const fn program(self) -> &'static str {
         match self {
+            Self::Fw4 => "fw4",
+            Self::Qosify => "qosify",
             Self::TcFilterHelp | Self::TcQdiscHelp | Self::TcFilterShow => "tc",
             Self::NftListFlowtables | Self::NftListRuleset => "nft",
             Self::IpRuleShow | Self::IpRouteShow => "ip",
-            Self::UbusCall => "ubus",
+            Self::UbusNetworkLanStatus | Self::UbusServiceDae | Self::UbusServiceDaed => "ubus",
             Self::Pidof => "pidof",
         }
     }
 
     pub fn fixed_args(self) -> &'static [&'static str] {
         match self {
+            Self::Fw4 | Self::Qosify => &[],
             Self::TcFilterHelp => &["filter", "help"],
             Self::TcQdiscHelp => &["qdisc", "help"],
             Self::NftListFlowtables => &["list", "flowtables"],
             Self::NftListRuleset => &["list", "ruleset"],
             Self::IpRuleShow => &["rule", "show"],
-            Self::TcFilterShow | Self::IpRouteShow | Self::UbusCall | Self::Pidof => &[],
+            Self::UbusNetworkLanStatus => &["call", "network.interface.lan", "status"],
+            Self::UbusServiceDae => &["call", "service", "list", "{\"name\":\"dae\"}"],
+            Self::UbusServiceDaed => &["call", "service", "list", "{\"name\":\"daed\"}"],
+            Self::TcFilterShow | Self::IpRouteShow | Self::Pidof => &[],
         }
     }
 }
@@ -77,8 +107,14 @@ pub fn run_read_only(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    let stdout = child.stdout.take().expect("stdout is piped");
-    let stderr = child.stderr.take().expect("stderr is piped");
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("probe stdout pipe missing"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("probe stderr pipe missing"))?;
     let stdout_reader = thread::spawn(move || read_capped(stdout, output_cap));
     let stderr_reader = thread::spawn(move || read_capped(stderr, output_cap));
     let deadline = Instant::now() + timeout;
@@ -125,7 +161,9 @@ pub fn validate_read_only_args(command: ReadOnlyCommand, args: &[&str]) -> io::R
                 && args[1] == "table"
                 && args[2].bytes().all(|byte| byte.is_ascii_digit())
         }
-        ReadOnlyCommand::UbusCall => args.len() >= 3 && args[0] == "call" && args.len() <= 4,
+        ReadOnlyCommand::UbusNetworkLanStatus
+        | ReadOnlyCommand::UbusServiceDae
+        | ReadOnlyCommand::UbusServiceDaed => args.is_empty(),
         ReadOnlyCommand::Pidof => args.len() == 1 && matches!(args[0], "dae" | "daed"),
         _ => args.is_empty(),
     };
@@ -174,12 +212,16 @@ fn source_key(command: ReadOnlyCommand, args: &[&str]) -> String {
             format!("tc_filter_show_{}_{}", args[1], args[2])
         }
         ReadOnlyCommand::TcFilterHelp => "tc_filter_help".into(),
+        ReadOnlyCommand::Fw4 => "fw4".into(),
+        ReadOnlyCommand::Qosify => "qosify".into(),
         ReadOnlyCommand::TcQdiscHelp => "tc_qdisc_help".into(),
         ReadOnlyCommand::NftListFlowtables => "nft_list_flowtables".into(),
         ReadOnlyCommand::NftListRuleset => "nft_list_ruleset".into(),
         ReadOnlyCommand::IpRuleShow => "ip_rule_show".into(),
         ReadOnlyCommand::IpRouteShow => "ip_route_table".into(),
-        ReadOnlyCommand::UbusCall => format!("ubus_{}", args.get(1).copied().unwrap_or("unknown")),
+        ReadOnlyCommand::UbusNetworkLanStatus => "ubus_network_lan_status".into(),
+        ReadOnlyCommand::UbusServiceDae => "ubus_service_dae".into(),
+        ReadOnlyCommand::UbusServiceDaed => "ubus_service_daed".into(),
         ReadOnlyCommand::Pidof => format!("pidof_{}", args.first().copied().unwrap_or("unknown")),
         ReadOnlyCommand::TcFilterShow => "tc_filter_show".into(),
     }

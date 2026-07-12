@@ -14,14 +14,15 @@ pub fn has_owned_identity_collision(filters: &[TcFilter]) -> bool {
     })
 }
 
-pub fn dae_preempts_lan_ingress(filters: &[TcFilter]) -> bool {
+pub fn dae_preempts_lan_ingress(filters: &[TcFilter], attach_ifnames: &[String]) -> bool {
     filters.iter().any(|filter| {
         filter.owner == "dae"
             && filter.direction == "ingress"
             && filter.pref > 0
             && filter.pref < LANSPEED_PREF
-            && filter.interface != "dae0"
-            && filter.interface != "dae0peer"
+            && attach_ifnames
+                .iter()
+                .any(|ifname| ifname == &filter.interface)
     })
 }
 

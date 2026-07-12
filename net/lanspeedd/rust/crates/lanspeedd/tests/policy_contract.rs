@@ -44,7 +44,7 @@ fn forced_and_auto_rate_modes_preserve_task10_selection_contract() {
     facts.nss.direct_state_readable = true;
     let auto_nss = select_collectors(&config, &facts, &healthy());
     assert_eq!(auto_nss.rate, RateCollector::NssConntrackSync);
-    assert!(auto_nss.nss_direct_overlay);
+    assert!(!auto_nss.nss_direct_overlay);
     assert!(auto_nss.warnings.contains(&"nss_prefers_conntrack_sync"));
 
     facts.proxy.daed_running = true;
@@ -76,6 +76,39 @@ fn forced_and_auto_rate_modes_preserve_task10_selection_contract() {
 }
 
 #[test]
+fn auto_uses_readable_nss_direct_when_accounting_disables_sync() {
+    let mut config = RuntimeConfig::default();
+    config.enable_bpf = true;
+    config.enable_conntrack_fallback = true;
+    let mut facts = bpf_facts();
+    facts.files.nf_conntrack_acct = false;
+    facts.files.nf_conntrack_acct_present = true;
+    facts.nss.present = true;
+    facts.nss.ecm_active = true;
+    facts.nss.direct_state_present = true;
+    facts.nss.direct_state_readable = true;
+
+    let with_bpf = select_collectors(&config, &facts, &healthy());
+    assert_eq!(with_bpf.rate, RateCollector::NssEcmDirect);
+    assert!(!with_bpf.nss_direct_overlay);
+    assert_eq!(
+        with_bpf.warnings,
+        vec![
+            "nf_conntrack_acct_disabled",
+            "conntrack_acct_disabled",
+            "nss_ecm_direct_active"
+        ]
+    );
+
+    let mut no_bpf = healthy();
+    no_bpf.bpf_attached = false;
+    assert_eq!(
+        select_collectors(&config, &facts, &no_bpf).rate,
+        RateCollector::NssEcmDirect
+    );
+}
+
+#[test]
 fn unsafe_attach_missing_object_map_failure_and_recovery_are_honest() {
     let mut config = RuntimeConfig::default();
     config.enable_bpf = true;
@@ -95,6 +128,7 @@ fn unsafe_attach_missing_object_map_failure_and_recovery_are_honest() {
 
     facts.bpf.object = true;
     let mut failed = healthy();
+    failed.bpf_map_read_attempted = true;
     failed.bpf_map_read_ok = false;
     failed.runtime_error = Some("map lookup failed".into());
     let map_failure = select_collectors(&config, &facts, &failed);
@@ -112,6 +146,43 @@ fn unsafe_attach_missing_object_map_failure_and_recovery_are_honest() {
     assert_eq!(recovered.rate, RateCollector::Bpf);
     assert_eq!(recovered.mode, Mode::Full);
     assert!(!recovered.warnings.contains(&"map_read_failed"));
+}
+
+#[test]
+fn map_failure_keeps_a_fresh_complete_snapshot_then_expires_and_recovers() {
+    let mut config = RuntimeConfig::default();
+    config.enable_bpf = true;
+    let facts = bpf_facts();
+    let mut runtime = healthy();
+    runtime.bpf_map_read_attempted = true;
+    runtime.bpf_map_read_ok = false;
+    runtime.bpf_last_complete_snapshot_ms = Some(9_000);
+    runtime.now_ms = 10_000;
+    runtime.bpf_freshness_ms = 3_000;
+    runtime.bpf_snapshot_clients = 4;
+    runtime.bpf_self_heal_recoveries = 2;
+    runtime.bpf_self_heal_failures = 1;
+    runtime.bpf_self_heal_last_reason = Some("network_reload".into());
+
+    let retained = select_collectors(&config, &facts, &runtime);
+    assert_eq!(retained.rate, RateCollector::Bpf);
+    assert_eq!(retained.mode, Mode::Full);
+    assert!(retained.warnings.contains(&"map_read_failed"));
+    assert!(retained.evidence.retained_fresh_snapshot);
+    assert_eq!(retained.evidence.bpf_snapshot_clients, 4);
+
+    runtime.now_ms = 13_001;
+    let stale = select_collectors(&config, &facts, &runtime);
+    assert_eq!(stale.mode, Mode::Degraded);
+    assert!(!stale.evidence.retained_fresh_snapshot);
+
+    runtime.bpf_map_read_ok = true;
+    runtime.bpf_last_complete_snapshot_ms = Some(runtime.now_ms);
+    let recovered = select_collectors(&config, &facts, &runtime);
+    assert_eq!(recovered.mode, Mode::Full);
+    assert!(!recovered
+        .warnings
+        .contains(&"bpf_runtime_loader_unavailable"));
 }
 
 #[test]

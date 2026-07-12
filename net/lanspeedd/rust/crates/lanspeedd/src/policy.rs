@@ -43,6 +43,12 @@ pub struct PolicyEvidence {
     pub connection_reason: &'static str,
     pub dae_early_bpf: bool,
     pub runtime_error: Option<String>,
+    pub retained_fresh_snapshot: bool,
+    pub bpf_snapshot_clients: usize,
+    pub bpf_self_heal_recoveries: u64,
+    pub bpf_self_heal_failures: u64,
+    pub bpf_self_heal_last_reason: Option<String>,
+    pub bpf_self_heal_last_failure: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -91,15 +97,24 @@ pub fn select_collectors(
         && facts.bpf.object
         && runtime.bpf_object_loaded
         && runtime.bpf_attached;
-    let bpf_full = bpf_prerequisites && runtime.bpf_map_read_ok && !facts.offload.hardware;
+    let retained_fresh_snapshot = !runtime.bpf_map_read_ok
+        && runtime
+            .bpf_last_complete_snapshot_ms
+            .is_some_and(|sample_ms| {
+                runtime.now_ms.saturating_sub(sample_ms) <= runtime.bpf_freshness_ms
+            });
+    let bpf_full = bpf_prerequisites
+        && (runtime.bpf_map_read_ok || retained_fresh_snapshot)
+        && !facts.offload.hardware;
     let nss_sync = config.enable_conntrack_fallback
         && facts.files.nf_conntrack_acct
         && facts.nss.present
-        && (facts.nss.ecm_active || facts.nss.ppe_active);
-    let nss_direct = config.enable_conntrack_fallback
-        && facts.nss.present
+        && (facts.nss.ecm_active || facts.nss.ppe_active)
+        && runtime.nss_sync_read_ok.unwrap_or(true);
+    let nss_direct = facts.nss.present
         && facts.nss.ecm_active
-        && facts.nss.direct_state_readable;
+        && facts.nss.direct_state_readable
+        && runtime.nss_direct_read_ok.unwrap_or(true);
     let daed_active = facts.proxy.dae_running
         || facts.proxy.daed_running
         || facts.proxy.dae_process
@@ -147,6 +162,8 @@ pub fn select_collectors(
                 (RateCollector::Bpf, "nss_daed_prefers_bpf")
             } else if nss_sync {
                 (RateCollector::NssConntrackSync, "nss_sync_preferred")
+            } else if nss_direct {
+                (RateCollector::NssEcmDirect, "nss_direct_fallback")
             } else if bpf_full {
                 (RateCollector::Bpf, "bpf_available")
             } else {
@@ -154,10 +171,7 @@ pub fn select_collectors(
             }
         }
     };
-    let nss_direct_overlay = nss_direct
-        && config.rate_collector_mode == RateCollectorMode::Auto
-        && rate == RateCollector::NssConntrackSync
-        && !daed_prefers_bpf;
+    let nss_direct_overlay = false;
 
     match rate {
         RateCollector::NssEcmDirect => push_unique(&mut warnings, "nss_ecm_direct_active"),
@@ -178,7 +192,7 @@ pub fn select_collectors(
     if nss_direct_overlay {
         push_unique(&mut warnings, "nss_ecm_direct_active");
     }
-    if bpf_prerequisites && !runtime.bpf_map_read_ok {
+    if bpf_prerequisites && runtime.bpf_map_read_attempted && !runtime.bpf_map_read_ok {
         push_unique(&mut warnings, "map_read_failed");
     }
     if rate == RateCollector::Unsupported && config.enable_bpf && facts.tc.safe_attach {
@@ -249,6 +263,12 @@ pub fn select_collectors(
             connection_reason,
             dae_early_bpf: facts.tc.dae_preempts_lan_ingress && runtime.dae_early_bpf,
             runtime_error: runtime.runtime_error.clone(),
+            retained_fresh_snapshot,
+            bpf_snapshot_clients: runtime.bpf_snapshot_clients,
+            bpf_self_heal_recoveries: runtime.bpf_self_heal_recoveries,
+            bpf_self_heal_failures: runtime.bpf_self_heal_failures,
+            bpf_self_heal_last_reason: runtime.bpf_self_heal_last_reason.clone(),
+            bpf_self_heal_last_failure: runtime.bpf_self_heal_last_failure.clone(),
         },
     }
 }

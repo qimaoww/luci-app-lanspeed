@@ -1,3 +1,4 @@
+pub mod collector;
 pub mod commands;
 pub mod files;
 pub mod proxy;
@@ -39,15 +40,50 @@ impl Confidence {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeHealth {
     pub bpf_object_loaded: bool,
     pub bpf_attached: bool,
+    pub bpf_map_read_attempted: bool,
     pub bpf_map_read_ok: bool,
+    pub bpf_last_complete_snapshot_ms: Option<u64>,
+    pub bpf_freshness_ms: u64,
+    pub now_ms: u64,
+    pub bpf_snapshot_clients: usize,
+    pub bpf_self_heal_recoveries: u64,
+    pub bpf_self_heal_failures: u64,
+    pub bpf_self_heal_last_reason: Option<String>,
+    pub bpf_self_heal_last_failure: Option<String>,
+    pub nss_direct_read_ok: Option<bool>,
+    pub nss_sync_read_ok: Option<bool>,
     pub conntrack_netlink_available: bool,
     pub conntrack_procfs_available: bool,
     pub dae_early_bpf: bool,
     pub runtime_error: Option<String>,
+}
+impl Default for RuntimeHealth {
+    fn default() -> Self {
+        Self {
+            bpf_object_loaded: false,
+            bpf_attached: false,
+            bpf_map_read_attempted: false,
+            bpf_map_read_ok: false,
+            bpf_last_complete_snapshot_ms: None,
+            bpf_freshness_ms: 0,
+            now_ms: 0,
+            bpf_snapshot_clients: 0,
+            bpf_self_heal_recoveries: 0,
+            bpf_self_heal_failures: 0,
+            bpf_self_heal_last_reason: None,
+            bpf_self_heal_last_failure: None,
+            nss_direct_read_ok: None,
+            nss_sync_read_ok: None,
+            conntrack_netlink_available: true,
+            conntrack_procfs_available: true,
+            dae_early_bpf: false,
+            runtime_error: None,
+        }
+    }
 }
 pub type ProbeRuntimeHealth = RuntimeHealth;
 
@@ -100,6 +136,8 @@ pub struct TcObservations {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProxyObservation {
     pub openclash_installed: bool,
+    pub openclash_section: Option<String>,
+    pub dhcp_loaded: bool,
     pub openclash_en_mode: Option<String>,
     pub openclash_redirect_dns: bool,
     pub openclash_dnsmasq_chain: bool,
@@ -132,6 +170,14 @@ pub struct NssObservation {
     pub ppe_active: bool,
     pub direct_state_present: bool,
     pub direct_state_readable: bool,
+    pub bridge_mgr: bool,
+    pub ifb_active: bool,
+    pub nsm_active: bool,
+    pub dp_active: bool,
+    pub mcs_active: bool,
+    pub direct_state_errno: i32,
+    pub direct_state_major: u32,
+    pub direct_source_path: Option<String>,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BpfObservation {
@@ -150,6 +196,9 @@ pub struct ProbeObservations {
     pub offload: OffloadObservation,
     pub nss: NssObservation,
     pub bpf: BpfObservation,
+    pub probe_error: bool,
+    pub lan_probe_error: bool,
+    pub collected_evidence: CollectedEvidence,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -283,9 +332,11 @@ pub struct Conflict {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandEvidence {
     pub source: String,
+    pub command: String,
     pub available: bool,
     pub exit_code: Option<i32>,
     pub supported: Option<bool>,
+    pub summary: Option<String>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileEvidence {
@@ -299,6 +350,10 @@ pub struct UciEvidence {
     pub source: String,
     pub package: String,
     pub loaded: bool,
+    pub section: Option<String>,
+    pub option: Option<String>,
+    pub present: Option<bool>,
+    pub value: Option<String>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UbusEvidence {
@@ -306,12 +361,36 @@ pub struct UbusEvidence {
     pub object: String,
     pub attempted: bool,
     pub exit_code: i32,
+    pub summary: String,
+}
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProbeSources {
+    pub command: Vec<String>,
+    pub file: Vec<String>,
+    pub uci: Vec<String>,
+    pub ubus: Vec<String>,
+}
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CollectedEvidence {
+    pub command: Vec<CommandEvidence>,
+    pub file: Vec<FileEvidence>,
+    pub uci: Vec<UciEvidence>,
+    pub ubus: Vec<UbusEvidence>,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TcEvidence {
     pub filters: Vec<TcFilter>,
     pub conflict: bool,
     pub dae_preempts_bpf_ingress: bool,
+    pub qdisc: &'static str,
+    pub coexistence: &'static str,
+    pub delete_existing: bool,
+    pub reorder_existing: bool,
+    pub owner: &'static str,
+    pub pref: u32,
+    pub handle: &'static str,
+    pub early_pref: u32,
+    pub early_handle: &'static str,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OpenClashEvidence {
@@ -371,6 +450,15 @@ pub struct NssEvidence {
     pub ppe_active: bool,
     pub direct_state_present: bool,
     pub direct_state_readable: bool,
+    pub bridge_mgr: bool,
+    pub ifb_active: bool,
+    pub nsm_active: bool,
+    pub dp_active: bool,
+    pub mcs_active: bool,
+    pub direct_state_errno: i32,
+    pub direct_state_major: u32,
+    pub direct_source_path: Option<String>,
+    pub subsystems: Vec<&'static str>,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BpfEvidence {
@@ -378,6 +466,29 @@ pub struct BpfEvidence {
     pub object_present: bool,
     pub runtime_attach_map_read_success: bool,
     pub map_full_observed: bool,
+    pub object_loaded: bool,
+    pub attached: bool,
+    pub map_read_attempted: bool,
+    pub map_read_ok: bool,
+    pub sample_count: usize,
+    pub error: Option<String>,
+    pub self_heal_recoveries: u64,
+    pub self_heal_failures: u64,
+    pub self_heal_last_reason: Option<String>,
+    pub self_heal_last_failure: Option<String>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CollectorEvidence {
+    pub configured_rate_mode: &'static str,
+    pub configured_connection_mode: &'static str,
+    pub effective_rate_collector: &'static str,
+    pub effective_connection_collector: &'static str,
+    pub nss_direct_overlay: bool,
+    pub rate_reason: &'static str,
+    pub connection_reason: &'static str,
+    pub mode: &'static str,
+    pub confidence: &'static str,
+    pub warnings: Vec<&'static str>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProbeEvidence {
@@ -388,11 +499,15 @@ pub struct ProbeEvidence {
     pub file: Vec<FileEvidence>,
     pub uci: Vec<UciEvidence>,
     pub ubus: Vec<UbusEvidence>,
+    pub probe_sources: ProbeSources,
+    pub probe_error: bool,
+    pub lan_probe_error: bool,
     pub tc: TcEvidence,
     pub proxy: ProxyEvidence,
     pub offload: OffloadEvidence,
     pub nss: NssEvidence,
     pub bpf: BpfEvidence,
+    pub collector: CollectorEvidence,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProbeReport {
@@ -411,7 +526,13 @@ pub fn assess(
     runtime: &RuntimeHealth,
 ) -> ProbeReport {
     let conflict = tc::has_owned_identity_collision(&observations.tc.filters);
-    let dae_preempts = tc::dae_preempts_lan_ingress(&observations.tc.filters);
+    let attach_ifnames = config
+        .ifnames
+        .iter()
+        .chain(config.interface_include.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    let dae_preempts = tc::dae_preempts_lan_ingress(&observations.tc.filters, &attach_ifnames);
     let (proxy_facts, proxy_evidence) = proxy::evaluate(
         &observations.proxy,
         observations.uci.dae,
@@ -436,12 +557,20 @@ pub fn assess(
         && safe_attach
         && runtime.bpf_object_loaded
         && runtime.bpf_attached
-        && runtime.bpf_map_read_ok;
-    let probe_error = observations.commands.flowtable_exit_code != 0
+        && (runtime.bpf_map_read_ok
+            || runtime
+                .bpf_last_complete_snapshot_ms
+                .is_some_and(|sample_ms| {
+                    runtime.now_ms.saturating_sub(sample_ms) <= runtime.bpf_freshness_ms
+                }))
+        && !observations.offload.hardware;
+    let probe_error = observations.probe_error
+        || observations.commands.flowtable_exit_code != 0
         || observations.commands.tc_filter_help_exit_code != 0
         || observations.commands.tc_qdisc_help_exit_code != 0
         || observations.ubus.network_lan_exit_code != 0;
-    let lan_probe_error = observations.ubus.network_lan_exit_code != 0;
+    let lan_probe_error =
+        observations.lan_probe_error || observations.ubus.network_lan_exit_code != 0;
     let facts = ProbeFacts {
         fw4: observations.commands.fw4,
         nft: observations.commands.nft,
@@ -469,7 +598,9 @@ pub fn assess(
         proxy: proxy_facts,
         offload: OffloadFacts {
             software: observations.offload.software,
-            hardware: observations.offload.hardware,
+            hardware: observations.offload.hardware
+                || (observations.nss.present
+                    && (observations.nss.ecm_active || observations.nss.ppe_active)),
             fullcone: observations.offload.fullcone,
         },
         nss: NssFacts {
@@ -573,28 +704,6 @@ pub fn assess(
     if config.enable_bpf && !safe_attach {
         push_unique(&mut warnings, "unsafe_attach");
     }
-    if config.enable_bpf && safe_attach && !bpf_runtime {
-        push_unique(&mut warnings, "bpf_runtime_loader_unavailable");
-    }
-    let mode = if !facts.tc.available {
-        Mode::Unsupported
-    } else if !bpf_runtime || probe_error || facts.offload.hardware {
-        Mode::Degraded
-    } else {
-        Mode::Full
-    };
-    if mode != Mode::Full {
-        push_unique(&mut warnings, "live_metrics_unavailable");
-    }
-    let confidence = if mode == Mode::Full {
-        Confidence::High
-    } else if probe_error || lan_probe_error {
-        Confidence::Low
-    } else if mode == Mode::Unsupported {
-        Confidence::Unsupported
-    } else {
-        Confidence::Medium
-    };
     let mut conflicts = Vec::new();
     if conflict {
         conflicts.push(conflict_item("tc_filter_conflict"));
@@ -617,14 +726,27 @@ pub fn assess(
     if facts.proxy.openclash || facts.proxy.dae || facts.homeproxy {
         conflicts.push(conflict_item("proxy_stack"));
     }
-    let evidence = build_evidence(&observations, &facts, proxy_evidence, bpf_runtime);
+    let decision = crate::policy::select_collectors(config, &facts, runtime);
+    let evidence = build_evidence(
+        config,
+        &observations,
+        &facts,
+        proxy_evidence,
+        bpf_runtime,
+        runtime,
+        &decision,
+    );
+    for warning in &decision.warnings {
+        push_unique(&mut warnings, warning);
+    }
+    let live_metrics = decision.rate != crate::policy::RateCollector::Unsupported;
     let capabilities = ProbeCapabilities {
-        bpf: bpf_runtime,
+        bpf: decision.rate == crate::policy::RateCollector::Bpf && decision.mode == Mode::Full,
         bpf_package: facts.bpf.package,
         bpf_object: facts.bpf.object,
         bpf_runtime_metrics: bpf_runtime,
-        conntrack_fallback: false,
-        live_metrics: bpf_runtime,
+        conntrack_fallback: decision.rate == crate::policy::RateCollector::NssConntrackSync,
+        live_metrics,
         fw4: facts.fw4,
         nft: facts.nft,
         software_flow_offload: facts.offload.software,
@@ -656,8 +778,8 @@ pub fn assess(
         map_full,
     };
     ProbeReport {
-        mode,
-        confidence,
+        mode: decision.mode,
+        confidence: decision.confidence,
         capabilities,
         facts,
         warnings,
@@ -667,12 +789,15 @@ pub fn assess(
 }
 
 fn build_evidence(
+    config: &RuntimeConfig,
     o: &ProbeObservations,
     facts: &ProbeFacts,
     proxy: ProxyEvidence,
     bpf_runtime: bool,
+    runtime: &RuntimeHealth,
+    decision: &crate::policy::PolicyDecision,
 ) -> ProbeEvidence {
-    let command = [
+    let mut command: Vec<CommandEvidence> = [
         ("fw4", o.commands.fw4),
         ("nft", o.commands.nft),
         ("tc", o.commands.tc),
@@ -682,31 +807,96 @@ fn build_evidence(
     .into_iter()
     .map(|(name, available)| CommandEvidence {
         source: format!("command:{name}"),
+        command: name.into(),
         available,
         exit_code: None,
         supported: None,
+        summary: None,
     })
     .chain([
         CommandEvidence {
             source: "command:tc_filter_help".into(),
+            command: "tc filter help".into(),
             available: o.commands.tc,
             exit_code: Some(o.commands.tc_filter_help_exit_code),
             supported: Some(o.tc.bpf),
+            summary: Some(
+                if o.tc.bpf {
+                    "bpf filter support advertised"
+                } else {
+                    "bpf filter support not advertised"
+                }
+                .into(),
+            ),
         },
         CommandEvidence {
             source: "command:tc_qdisc_help".into(),
+            command: "tc qdisc help".into(),
             available: o.commands.tc,
             exit_code: Some(o.commands.tc_qdisc_help_exit_code),
             supported: Some(o.tc.clsact),
+            summary: Some(
+                if o.tc.clsact {
+                    "clsact qdisc support advertised"
+                } else {
+                    "clsact qdisc support not advertised"
+                }
+                .into(),
+            ),
         },
         CommandEvidence {
             source: "command:nft_list_flowtables".into(),
+            command: "nft list flowtables".into(),
             available: o.commands.nft,
             exit_code: Some(o.commands.flowtable_exit_code),
             supported: Some(facts.files.flowtable_counter),
+            summary: Some(
+                if facts.files.flowtable_counter {
+                    "flowtable counter detected"
+                } else {
+                    "flowtable counter not detected"
+                }
+                .into(),
+            ),
         },
     ])
     .collect();
+    command.push(CommandEvidence {
+        source: "command:nft_list_ruleset".into(),
+        command: "nft list flowtables".into(),
+        available: o.commands.nft,
+        exit_code: Some(o.commands.flowtable_exit_code),
+        supported: Some(facts.files.flowtable_counter),
+        summary: Some(
+            "legacy evidence alias; canonical source is command:nft_list_flowtables".into(),
+        ),
+    });
+    let mut tc_seen = Vec::new();
+    for filter in &facts.tc.filters {
+        let pair = (filter.interface.clone(), filter.direction.clone());
+        if tc_seen.contains(&pair) {
+            continue;
+        }
+        tc_seen.push(pair.clone());
+        command.push(CommandEvidence {
+            source: format!("command:tc_filter_show_{}_{}", pair.0, pair.1),
+            command: format!("tc filter show dev {} {}", pair.0, pair.1),
+            available: o.commands.tc,
+            exit_code: Some(0),
+            supported: Some(true),
+            summary: Some("existing filters detected".into()),
+        });
+    }
+    if tc_seen.is_empty() {
+        command.push(CommandEvidence {
+            source: "command:tc_filter_show_br_lan_ingress".into(),
+            command: "tc filter show dev br-lan ingress".into(),
+            available: o.commands.tc,
+            exit_code: Some(0),
+            supported: Some(false),
+            summary: Some("no existing ingress filters detected".into()),
+        });
+    }
     let file = [
         (
             "/proc/sys/net/netfilter/nf_conntrack_acct",
@@ -729,6 +919,11 @@ fn build_evidence(
             None,
         ),
         ("/usr/lib/bpf/lanspeed_tc.o", o.bpf.object, None),
+        ("/etc/config/openclash", o.uci.openclash, None),
+        ("/etc/config/dae", o.uci.dae, None),
+        ("/etc/config/daed", o.uci.daed, None),
+        ("/etc/config/homeproxy", o.uci.homeproxy, None),
+        ("/etc/config/nlbwmon", o.uci.nlbwmon, None),
     ]
     .into_iter()
     .map(|(path, present, value)| FileEvidence {
@@ -738,7 +933,7 @@ fn build_evidence(
         value,
     })
     .collect();
-    let uci = [
+    let mut uci: Vec<UciEvidence> = [
         ("firewall", o.uci.firewall_loaded),
         ("sqm", o.uci.sqm),
         ("qosify", o.uci.qosify),
@@ -753,14 +948,154 @@ fn build_evidence(
         source: format!("uci:{package}"),
         package: package.into(),
         loaded,
+        section: None,
+        option: None,
+        present: None,
+        value: None,
     })
     .collect();
-    let ubus = vec![UbusEvidence {
+    if o.uci.openclash {
+        let section = o.proxy.openclash_section.as_deref().unwrap_or("config");
+        for (option, value) in [
+            ("en_mode", o.proxy.openclash_en_mode.clone()),
+            (
+                "enable_redirect_dns",
+                Some(
+                    if o.proxy.openclash_redirect_dns {
+                        "1"
+                    } else {
+                        "0"
+                    }
+                    .into(),
+                ),
+            ),
+            (
+                "router_self_proxy",
+                Some(
+                    if o.proxy.openclash_router_self_proxy {
+                        "1"
+                    } else {
+                        "0"
+                    }
+                    .into(),
+                ),
+            ),
+            (
+                "enable_udp_proxy",
+                Some(
+                    if o.proxy.openclash_udp_proxy {
+                        "1"
+                    } else {
+                        "0"
+                    }
+                    .into(),
+                ),
+            ),
+            ("stack_type", o.proxy.openclash_stack_type.clone()),
+            (
+                "ipv6_enable",
+                Some(if o.proxy.openclash_ipv6 { "1" } else { "0" }.into()),
+            ),
+        ] {
+            uci.push(UciEvidence {
+                source: format!("uci:openclash.{section}.{option}"),
+                package: "openclash".into(),
+                loaded: true,
+                section: Some(section.into()),
+                option: Some(option.into()),
+                present: Some(value.is_some()),
+                value,
+            });
+        }
+        uci.push(UciEvidence {
+            source: "uci:dhcp".into(),
+            package: "dhcp".into(),
+            loaded: o.proxy.dhcp_loaded,
+            section: None,
+            option: None,
+            present: None,
+            value: None,
+        });
+    }
+    let mut ubus = vec![UbusEvidence {
         source: "ubus:network.interface.lan".into(),
         object: "network.interface.lan".into(),
         attempted: o.ubus.network_lan_attempted,
         exit_code: o.ubus.network_lan_exit_code,
+        summary: if o.ubus.network_lan_exit_code == 0 {
+            "status available"
+        } else {
+            "status unavailable"
+        }
+        .into(),
     }];
+    if facts.proxy.dae {
+        ubus.push(UbusEvidence {
+            source: "ubus:service.dae".into(),
+            object: "service.dae".into(),
+            attempted: true,
+            exit_code: 0,
+            summary: if o.proxy.dae_service {
+                "dae service present"
+            } else {
+                "dae service not present"
+            }
+            .into(),
+        });
+        ubus.push(UbusEvidence {
+            source: "ubus:service.daed".into(),
+            object: "service.daed".into(),
+            attempted: true,
+            exit_code: 0,
+            summary: if o.proxy.daed_service {
+                "daed service present"
+            } else {
+                "daed service not present"
+            }
+            .into(),
+        });
+    }
+    let command = if o.collected_evidence.command.is_empty() {
+        command
+    } else {
+        o.collected_evidence.command.clone()
+    };
+    let file = if o.collected_evidence.file.is_empty() {
+        file
+    } else {
+        o.collected_evidence.file.clone()
+    };
+    let uci = if o.collected_evidence.uci.is_empty() {
+        uci
+    } else {
+        o.collected_evidence.uci.clone()
+    };
+    let ubus = if o.collected_evidence.ubus.is_empty() {
+        ubus
+    } else {
+        o.collected_evidence.ubus.clone()
+    };
+    let mut probe_sources = ProbeSources::default();
+    for source in command.iter().map(|entry| &entry.source) {
+        if !probe_sources.command.contains(source) {
+            probe_sources.command.push(source.clone());
+        }
+    }
+    for source in file.iter().map(|entry| &entry.source) {
+        if !probe_sources.file.contains(source) {
+            probe_sources.file.push(source.clone());
+        }
+    }
+    for source in uci.iter().map(|entry| &entry.source) {
+        if !probe_sources.uci.contains(source) {
+            probe_sources.uci.push(source.clone());
+        }
+    }
+    for source in ubus.iter().map(|entry| &entry.source) {
+        if !probe_sources.ubus.contains(source) {
+            probe_sources.ubus.push(source.clone());
+        }
+    }
     ProbeEvidence {
         source: "lanspeedd_runtime_probe",
         method: "health",
@@ -769,10 +1104,22 @@ fn build_evidence(
         file,
         uci,
         ubus,
+        probe_sources,
+        probe_error: facts.probe_error,
+        lan_probe_error: facts.lan_probe_error,
         tc: TcEvidence {
             filters: facts.tc.filters.clone(),
             conflict: facts.tc.conflict,
             dae_preempts_bpf_ingress: facts.tc.dae_preempts_lan_ingress,
+            qdisc: "clsact",
+            coexistence: "create_or_reuse_clsact_and_append_owned_filter_only",
+            delete_existing: false,
+            reorder_existing: false,
+            owner: "lanspeed",
+            pref: tc::LANSPEED_PREF,
+            handle: tc::LANSPEED_HANDLE,
+            early_pref: tc::LANSPEED_EARLY_PREF,
+            early_handle: tc::LANSPEED_EARLY_HANDLE,
         },
         proxy,
         offload: OffloadEvidence {
@@ -786,12 +1133,55 @@ fn build_evidence(
             ppe_active: facts.nss.ppe_active,
             direct_state_present: facts.nss.direct_state_present,
             direct_state_readable: facts.nss.direct_state_readable,
+            bridge_mgr: o.nss.bridge_mgr,
+            ifb_active: o.nss.ifb_active,
+            nsm_active: o.nss.nsm_active,
+            dp_active: o.nss.dp_active,
+            mcs_active: o.nss.mcs_active,
+            direct_state_errno: o.nss.direct_state_errno,
+            direct_state_major: o.nss.direct_state_major,
+            direct_source_path: o.nss.direct_source_path.clone(),
+            subsystems: [
+                (facts.nss.present, "drv"),
+                (o.nss.dp_active, "dp"),
+                (facts.nss.ecm_active, "ecm"),
+                (facts.nss.ppe_active, "ppe"),
+                (o.nss.nsm_active, "nsm"),
+                (o.nss.bridge_mgr, "bridge_mgr"),
+                (o.nss.ifb_active, "ifb"),
+                (o.nss.mcs_active, "mcs"),
+            ]
+            .into_iter()
+            .filter_map(|(present, name)| present.then_some(name))
+            .collect(),
         },
         bpf: BpfEvidence {
             package_present: facts.bpf.package,
             object_present: facts.bpf.object,
             runtime_attach_map_read_success: bpf_runtime,
             map_full_observed: facts.bpf.map_full_observed,
+            object_loaded: runtime.bpf_object_loaded,
+            attached: runtime.bpf_attached,
+            map_read_attempted: runtime.bpf_map_read_attempted,
+            map_read_ok: runtime.bpf_map_read_ok,
+            sample_count: runtime.bpf_snapshot_clients,
+            error: runtime.runtime_error.clone(),
+            self_heal_recoveries: runtime.bpf_self_heal_recoveries,
+            self_heal_failures: runtime.bpf_self_heal_failures,
+            self_heal_last_reason: runtime.bpf_self_heal_last_reason.clone(),
+            self_heal_last_failure: runtime.bpf_self_heal_last_failure.clone(),
+        },
+        collector: CollectorEvidence {
+            configured_rate_mode: config.rate_collector_mode.as_str(),
+            configured_connection_mode: config.conn_collector_mode.as_str(),
+            effective_rate_collector: decision.rate.as_str(),
+            effective_connection_collector: decision.connection.as_str(),
+            nss_direct_overlay: decision.nss_direct_overlay,
+            rate_reason: decision.evidence.rate_reason,
+            connection_reason: decision.evidence.connection_reason,
+            mode: decision.mode.as_str(),
+            confidence: decision.confidence.as_str(),
+            warnings: decision.warnings.clone(),
         },
     }
 }
