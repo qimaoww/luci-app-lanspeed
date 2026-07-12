@@ -161,12 +161,12 @@ pub fn run_read_only(
         .spawn()?;
     let mut child = ChildGuard::new(child);
     let mut stdout = child
-        .child_mut()
+        .child_mut()?
         .stdout
         .take()
         .ok_or_else(|| io::Error::other("probe stdout pipe missing"))?;
     let mut stderr = child
-        .child_mut()
+        .child_mut()?
         .stderr
         .take()
         .ok_or_else(|| io::Error::other("probe stderr pipe missing"))?;
@@ -184,7 +184,7 @@ pub fn run_read_only(
 
         let now = Instant::now();
         if status.is_none() {
-            if let Some(observed_status) = try_wait(child.child_mut())? {
+            if let Some(observed_status) = try_wait(child.child_mut()?)? {
                 status = Some(child.finish(observed_status)?);
                 output_deadline = Some(now + OUTPUT_DRAIN_TIMEOUT);
             } else if now >= deadline {
@@ -303,17 +303,25 @@ impl ChildGuard {
         Self { child: Some(child) }
     }
 
-    fn child_mut(&mut self) -> &mut Child {
-        self.child.as_mut().expect("child guard is armed")
+    fn child_mut(&mut self) -> io::Result<&mut Child> {
+        self.child
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "child guard is disarmed"))
     }
 
     fn finish(&mut self, observed_status: ExitStatus) -> io::Result<ExitStatus> {
-        let mut child = self.child.take().expect("child guard is armed");
+        let mut child = self
+            .child
+            .take()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "child guard is disarmed"))?;
         finish_child(&mut child, observed_status)
     }
 
     fn terminate(&mut self) -> io::Result<ExitStatus> {
-        let mut child = self.child.take().expect("child guard is armed");
+        let mut child = self
+            .child
+            .take()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "child guard is disarmed"))?;
         terminate_child(&mut child)
     }
 }
@@ -506,14 +514,17 @@ fn poll_pipes(
     stderr_fd: RawFd,
     deadline: Instant,
 ) -> io::Result<()> {
-    #[cfg(test)]
-    inject_test_failure(TestFailure::Poll)?;
     let mut descriptors = [
         poll_descriptor(stdout_fd, stdout.done),
         poll_descriptor(stderr_fd, stderr.done),
     ];
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        #[cfg(test)]
+        inject_test_failure(TestFailure::Poll)?;
         let timeout = poll_timeout(remaining.min(Duration::from_millis(10)));
         let result = unsafe {
             libc::poll(
@@ -831,6 +842,39 @@ mod tests {
 
         assert_process_gone(pid);
         assert_process_group_gone(pid);
+    }
+
+    #[test]
+    fn disarmed_child_guard_misuse_returns_errors_without_panicking() {
+        let mut guard = ChildGuard { child: None };
+        assert_eq!(
+            guard.child_mut().unwrap_err().kind(),
+            ErrorKind::InvalidData
+        );
+        let status = Command::new("/bin/true").status().expect("true status");
+        assert_eq!(
+            guard.finish(status).unwrap_err().kind(),
+            ErrorKind::InvalidData
+        );
+        assert_eq!(
+            guard.terminate().unwrap_err().kind(),
+            ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn expired_poll_deadline_returns_before_poll_or_failure_injection() {
+        let capture = PipeCapture::new(1);
+        with_test_failure(TestFailure::Poll, || {
+            poll_pipes(
+                &capture,
+                -1,
+                &capture,
+                -1,
+                Instant::now() - Duration::from_millis(1),
+            )
+        })
+        .expect("expired poll deadline");
     }
 
     #[test]
