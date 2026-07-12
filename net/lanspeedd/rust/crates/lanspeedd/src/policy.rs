@@ -133,13 +133,13 @@ pub fn select_collectors(
             }
         }
         RateCollectorMode::NssEcmDirect => {
-            if nss_direct {
-                (RateCollector::NssEcmDirect, "forced_nss_ecm_direct")
-            } else if nss_sync {
+            if nss_sync {
                 (
                     RateCollector::NssConntrackSync,
-                    "forced_direct_fallback_to_sync",
+                    "forced_direct_sync_primary",
                 )
+            } else if nss_direct {
+                (RateCollector::NssEcmDirect, "forced_nss_ecm_direct")
             } else {
                 (
                     RateCollector::Unsupported,
@@ -171,7 +171,13 @@ pub fn select_collectors(
             }
         }
     };
-    let nss_direct_overlay = false;
+    let nss_direct_overlay = nss_direct
+        && rate == RateCollector::NssConntrackSync
+        && matches!(
+            config.rate_collector_mode,
+            RateCollectorMode::Auto | RateCollectorMode::NssEcmDirect
+        )
+        && !daed_prefers_bpf;
 
     match rate {
         RateCollector::NssEcmDirect => push_unique(&mut warnings, "nss_ecm_direct_active"),

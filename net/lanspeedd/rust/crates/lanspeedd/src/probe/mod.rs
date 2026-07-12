@@ -598,9 +598,7 @@ pub fn assess(
         proxy: proxy_facts,
         offload: OffloadFacts {
             software: observations.offload.software,
-            hardware: observations.offload.hardware
-                || (observations.nss.present
-                    && (observations.nss.ecm_active || observations.nss.ppe_active)),
+            hardware: observations.offload.hardware,
             fullcone: observations.offload.fullcone,
         },
         nss: NssFacts {
@@ -878,8 +876,13 @@ fn build_evidence(
             continue;
         }
         tc_seen.push(pair.clone());
+        let key = commands::ReadOnlyCommand::TcFilterShow.evidence_key(&[
+            "dev",
+            pair.0.as_str(),
+            pair.1.as_str(),
+        ]);
         command.push(CommandEvidence {
-            source: format!("command:tc_filter_show_{}_{}", pair.0, pair.1),
+            source: format!("command:{key}"),
             command: format!("tc filter show dev {} {}", pair.0, pair.1),
             available: o.commands.tc,
             exit_code: Some(0),
@@ -897,7 +900,7 @@ fn build_evidence(
             summary: Some("no existing ingress filters detected".into()),
         });
     }
-    let file = [
+    let mut file: Vec<FileEvidence> = [
         (
             "/proc/sys/net/netfilter/nf_conntrack_acct",
             o.files.nf_conntrack_acct_present,
@@ -1055,26 +1058,46 @@ fn build_evidence(
             .into(),
         });
     }
-    let command = if o.collected_evidence.command.is_empty() {
-        command
-    } else {
-        o.collected_evidence.command.clone()
-    };
-    let file = if o.collected_evidence.file.is_empty() {
-        file
-    } else {
-        o.collected_evidence.file.clone()
-    };
-    let uci = if o.collected_evidence.uci.is_empty() {
-        uci
-    } else {
-        o.collected_evidence.uci.clone()
-    };
-    let ubus = if o.collected_evidence.ubus.is_empty() {
-        ubus
-    } else {
-        o.collected_evidence.ubus.clone()
-    };
+    for collected in &o.collected_evidence.command {
+        if let Some(index) = command
+            .iter()
+            .position(|entry| entry.source == collected.source)
+        {
+            command[index] = collected.clone();
+        } else {
+            command.push(collected.clone());
+        }
+    }
+    for collected in &o.collected_evidence.file {
+        if let Some(index) = file
+            .iter()
+            .position(|entry| entry.source == collected.source)
+        {
+            file[index] = collected.clone();
+        } else {
+            file.push(collected.clone());
+        }
+    }
+    for collected in &o.collected_evidence.uci {
+        if let Some(index) = uci
+            .iter()
+            .position(|entry| entry.source == collected.source)
+        {
+            uci[index] = collected.clone();
+        } else {
+            uci.push(collected.clone());
+        }
+    }
+    for collected in &o.collected_evidence.ubus {
+        if let Some(index) = ubus
+            .iter()
+            .position(|entry| entry.source == collected.source)
+        {
+            ubus[index] = collected.clone();
+        } else {
+            ubus.push(collected.clone());
+        }
+    }
     let mut probe_sources = ProbeSources::default();
     for source in command.iter().map(|entry| &entry.source) {
         if !probe_sources.command.contains(source) {

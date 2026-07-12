@@ -387,7 +387,25 @@ fn every_legacy_probe_fixture_matches_the_production_rust_assessment() {
     for (name, mode, confidence, warnings, conflicts) in cases {
         let fixture = fixture(name);
         let (config, observations) = observations(&fixture);
-        let report = assess(&config, observations, &ProbeRuntimeHealth::default());
+        let report = assess(
+            &config,
+            observations.clone(),
+            &ProbeRuntimeHealth::default(),
+        );
+        let repeated = assess(&config, observations, &ProbeRuntimeHealth::default());
+        assert_eq!(
+            report.evidence, repeated.evidence,
+            "{name}: evidence order/value drift"
+        );
+        for sources in [
+            &report.evidence.probe_sources.command,
+            &report.evidence.probe_sources.file,
+            &report.evidence.probe_sources.uci,
+            &report.evidence.probe_sources.ubus,
+        ] {
+            let unique = sources.iter().collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(unique.len(), sources.len(), "{name}: duplicate source");
+        }
         assert_eq!(report.mode.as_str(), mode, "{name}");
         assert_eq!(report.confidence.as_str(), confidence, "{name}");
         assert_eq!(report.warnings, warnings, "{name}");
@@ -597,6 +615,20 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
     assert!(validate_read_only_args(ReadOnlyCommand::UbusServiceDae, &[]).is_ok());
     assert!(validate_read_only_args(ReadOnlyCommand::UbusServiceDaed, &[]).is_ok());
     assert!(validate_read_only_args(ReadOnlyCommand::UbusServiceDae, &["start"]).is_err());
+    assert_eq!(
+        ReadOnlyCommand::NftListFlowtables.evidence_key(&[]),
+        "nft_list_flowtables"
+    );
+    assert_eq!(
+        ReadOnlyCommand::NftListRuleset.evidence_key(&[]),
+        "nft_list_ruleset"
+    );
+    assert_eq!(
+        ReadOnlyCommand::TcFilterShow.evidence_key(&["dev", "br-lan", "ingress"]),
+        "tc_filter_show_br_lan_ingress"
+    );
+    assert!(ReadOnlyCommand::NftListRuleset.output_cap() >= 64 * 1024);
+    assert_eq!(ReadOnlyCommand::NftListFlowtables.output_cap(), 4_096);
 
     let filters = parse_filter_lines(
         "eth1",
@@ -679,11 +711,46 @@ fn report_mode_confidence_and_capabilities_come_from_the_single_policy_decision(
     assert!(no_tc_sync.capabilities.live_metrics);
 }
 
+#[test]
+fn nss_presence_does_not_invent_the_firewall_hardware_offload_flag() {
+    let mut config = RuntimeConfig::default();
+    config.enable_bpf = true;
+    config.enable_conntrack_fallback = true;
+    let mut observations = ProbeObservations::default();
+    observations.commands.tc = true;
+    observations.tc.clsact = true;
+    observations.tc.bpf = true;
+    observations.files.lan_bridge = true;
+    observations.files.nf_conntrack_acct_present = true;
+    observations.files.nf_conntrack_acct_value = Some("1".into());
+    observations.bpf.package = true;
+    observations.bpf.object = true;
+    observations.nss.present = true;
+    observations.nss.ecm_active = true;
+    observations.proxy.daed_running = true;
+    let runtime = ProbeRuntimeHealth {
+        bpf_object_loaded: true,
+        bpf_attached: true,
+        bpf_map_read_attempted: true,
+        bpf_map_read_ok: true,
+        ..ProbeRuntimeHealth::default()
+    };
+    let report = assess(&config, observations, &runtime);
+    assert!(report.capabilities.bpf);
+    assert!(!report.capabilities.hardware_flow_offload);
+    assert!(!report
+        .warnings
+        .contains(&"hardware_flow_offload_unsupported"));
+    assert!(report.warnings.contains(&"nss_daed_prefers_bpf"));
+}
+
 #[derive(Default)]
 struct FakeCommands {
     calls: Vec<(ReadOnlyCommand, Vec<String>)>,
     timeout: bool,
     truncated: bool,
+    tc_help_stderr_only: bool,
+    ruleset_truncated_only: bool,
 }
 
 impl CommandRunner for FakeCommands {
@@ -699,8 +766,12 @@ impl CommandRunner for FakeCommands {
         self.calls
             .push((command, args.iter().map(|arg| (*arg).into()).collect()));
         let stdout = match command {
-            ReadOnlyCommand::TcFilterHelp => "Usage: tc ... bpf".into(),
-            ReadOnlyCommand::TcQdiscHelp => "Usage: tc ... clsact".into(),
+            ReadOnlyCommand::TcFilterHelp if !self.tc_help_stderr_only => {
+                "Usage: tc ... bpf".into()
+            }
+            ReadOnlyCommand::TcQdiscHelp if !self.tc_help_stderr_only => {
+                "Usage: tc ... clsact".into()
+            }
             ReadOnlyCommand::NftListFlowtables => "flowtable ft { counter; }".into(),
             _ => String::new(),
         };
@@ -710,9 +781,18 @@ impl CommandRunner for FakeCommands {
             args: args.iter().map(|arg| (*arg).into()).collect(),
             exit_code: Some(0),
             stdout,
-            stderr: String::new(),
+            stderr: match command {
+                ReadOnlyCommand::TcFilterHelp if self.tc_help_stderr_only => {
+                    "Usage: tc ... bpf".into()
+                }
+                ReadOnlyCommand::TcQdiscHelp if self.tc_help_stderr_only => {
+                    "Usage: tc ... clsact".into()
+                }
+                _ => String::new(),
+            },
             timed_out: self.timeout,
-            output_truncated: self.truncated,
+            output_truncated: self.truncated
+                || (self.ruleset_truncated_only && command == ReadOnlyCommand::NftListRuleset),
         })
     }
 }
@@ -763,7 +843,10 @@ impl UbusSource for FakeUbus {
 
 #[test]
 fn injectable_production_collector_records_every_read_only_source_and_error() {
-    let commands = FakeCommands::default();
+    let commands = FakeCommands {
+        tc_help_stderr_only: true,
+        ..FakeCommands::default()
+    };
     let mut files = FakeFiles::default();
     for path in [
         "/proc/sys/net/netfilter/nf_conntrack_acct",
@@ -849,12 +932,19 @@ fn injectable_production_collector_records_every_read_only_source_and_error() {
         .probe_sources
         .command
         .contains(&"command:nft_list_flowtables".into()));
-    assert!(!report
+    assert!(report
         .evidence
         .probe_sources
         .command
         .iter()
-        .any(|source| source.contains("nft_list_ruleset")));
+        .any(|source| source == "command:nft_list_ruleset"));
+    assert!(report.evidence.command.iter().all(|entry| {
+        entry.source.strip_prefix("command:").is_some_and(|key| {
+            key.bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        })
+    }));
+    assert!(report.facts.tc.bpf && report.facts.tc.clsact);
     assert!(report
         .evidence
         .uci
@@ -868,7 +958,15 @@ fn injectable_production_collector_records_every_read_only_source_and_error() {
     assert!(report.facts.proxy.openclash_fake_ip);
     assert!(report.facts.proxy.openclash_dns_chain_complete);
 
-    let (mut commands, files, uci, mut ubus) = collector.into_parts();
+    let (mut commands, files, uci, ubus) = collector.into_parts();
+    commands.tc_help_stderr_only = false;
+    commands.ruleset_truncated_only = true;
+    let mut large_ruleset = ProbeCollector::new(commands, files, uci, ubus);
+    let large_ruleset_report = large_ruleset.collect(&config, &runtime, ProbeMethod::Health);
+    assert!(!large_ruleset_report.evidence.probe_error);
+
+    let (mut commands, files, uci, mut ubus) = large_ruleset.into_parts();
+    commands.ruleset_truncated_only = false;
     commands.timeout = true;
     commands.truncated = true;
     ubus.fail = true;
@@ -876,4 +974,62 @@ fn injectable_production_collector_records_every_read_only_source_and_error() {
     let failed_report = failed.collect(&config, &runtime, ProbeMethod::Health);
     assert!(failed_report.evidence.probe_error);
     assert!(failed_report.warnings.contains(&"probe_error"));
+}
+
+#[test]
+fn production_collector_honors_every_legacy_nss_alternative_path() {
+    let cases = [
+        ("present", "/sys/bus/platform/drivers/qca-nss"),
+        ("present", "/sys/kernel/debug/qca-nss-drv"),
+        ("present", "/proc/sys/dev/nss"),
+        ("ecm", "/sys/kernel/debug/ecm"),
+        ("ppe", "/sys/module/ppe_drv"),
+        ("ppe", "/sys/kernel/debug/qca-nss-ppe"),
+        ("ppe", "/sys/kernel/debug/ppe_drv"),
+        ("nsm", "/sys/module/nss_nsm"),
+        ("nsm", "/sys/kernel/debug/qca-nss-nsm"),
+        ("dp", "/sys/module/nss_dp"),
+        ("mcs", "/sys/module/mc_snooping"),
+        ("bridge", "/sys/module/qca_nss_bridge_mgr"),
+        ("ifb", "/sys/module/nss_ifb"),
+        ("ifb", "/sys/module/nss-ifb"),
+    ];
+    for (kind, path) in cases {
+        let mut files = FakeFiles::default();
+        files.0.insert(
+            path.into(),
+            BoundedFile {
+                source: format!("file:{path}"),
+                path: path.into(),
+                present: true,
+                value: None,
+                truncated: false,
+            },
+        );
+        let mut collector = ProbeCollector::new(
+            FakeCommands::default(),
+            files,
+            FakeUci::default(),
+            FakeUbus::default(),
+        );
+        let report = collector.collect(
+            &RuntimeConfig::default(),
+            &ProbeRuntimeHealth::default(),
+            ProbeMethod::Health,
+        );
+        match kind {
+            "present" => assert!(report.facts.nss.present, "{path}"),
+            "ecm" => assert!(report.facts.nss.ecm_active, "{path}"),
+            "ppe" => assert!(report.facts.nss.ppe_active, "{path}"),
+            "nsm" => assert!(report.evidence.nss.nsm_active, "{path}"),
+            "dp" => {
+                assert!(report.evidence.nss.dp_active, "{path}");
+                assert!(report.facts.nss.present, "{path}");
+            }
+            "mcs" => assert!(report.evidence.nss.mcs_active, "{path}"),
+            "bridge" => assert!(report.evidence.nss.bridge_mgr, "{path}"),
+            "ifb" => assert!(report.evidence.nss.ifb_active, "{path}"),
+            _ => unreachable!(),
+        }
+    }
 }

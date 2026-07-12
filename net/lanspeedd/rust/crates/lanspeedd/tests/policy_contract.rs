@@ -44,7 +44,7 @@ fn forced_and_auto_rate_modes_preserve_task10_selection_contract() {
     facts.nss.direct_state_readable = true;
     let auto_nss = select_collectors(&config, &facts, &healthy());
     assert_eq!(auto_nss.rate, RateCollector::NssConntrackSync);
-    assert!(!auto_nss.nss_direct_overlay);
+    assert!(auto_nss.nss_direct_overlay);
     assert!(auto_nss.warnings.contains(&"nss_prefers_conntrack_sync"));
 
     facts.proxy.daed_running = true;
@@ -54,12 +54,14 @@ fn forced_and_auto_rate_modes_preserve_task10_selection_contract() {
 
     config.rate_collector_mode = RateCollectorMode::NssEcmDirect;
     let forced_direct = select_collectors(&config, &facts, &healthy());
-    assert_eq!(forced_direct.rate, RateCollector::NssEcmDirect);
+    assert_eq!(forced_direct.rate, RateCollector::NssConntrackSync);
+    assert!(forced_direct.nss_direct_overlay);
     assert!(!forced_direct.warnings.contains(&"nss_daed_prefers_bpf"));
 
     facts.nss.direct_state_readable = false;
     let direct_fallback = select_collectors(&config, &facts, &healthy());
     assert_eq!(direct_fallback.rate, RateCollector::NssConntrackSync);
+    assert!(!direct_fallback.nss_direct_overlay);
 
     facts.nss.direct_state_readable = true;
     config.rate_collector_mode = RateCollectorMode::NssConntrackSync;

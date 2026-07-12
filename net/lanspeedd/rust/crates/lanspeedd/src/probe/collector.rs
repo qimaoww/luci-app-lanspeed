@@ -127,7 +127,7 @@ impl CommandRunner for SystemCommandRunner {
             command,
             args,
             super::commands::DEFAULT_TIMEOUT,
-            super::commands::DEFAULT_OUTPUT_CAP,
+            command.output_cap(),
         )
     }
 }
@@ -342,7 +342,9 @@ where
                 &mut observations.probe_error,
             ) {
                 observations.commands.tc_filter_help_exit_code = result.exit_code.unwrap_or(-1);
-                observations.tc.bpf = result.stdout.to_ascii_lowercase().contains("bpf");
+                observations.tc.bpf = format!("{}\n{}", result.stdout, result.stderr)
+                    .to_ascii_lowercase()
+                    .contains("bpf");
             }
             if let Some(result) = self.command(
                 ReadOnlyCommand::TcQdiscHelp,
@@ -352,7 +354,8 @@ where
                 &mut observations.probe_error,
             ) {
                 observations.commands.tc_qdisc_help_exit_code = result.exit_code.unwrap_or(-1);
-                observations.tc.clsact = result.stdout.contains("clsact");
+                observations.tc.clsact =
+                    result.stdout.contains("clsact") || result.stderr.contains("clsact");
             }
             for ifname in config.ifnames.iter().chain(config.interface_include.iter()) {
                 for direction in ["ingress", "egress"] {
@@ -487,9 +490,11 @@ where
                     command,
                     ReadOnlyCommand::Pidof | ReadOnlyCommand::TcFilterShow
                 );
+                let optional_truncation =
+                    command == ReadOnlyCommand::NftListRuleset && result.output_truncated;
                 let failed = (nonzero_is_error && result.exit_code != Some(0))
                     || result.timed_out
-                    || result.output_truncated;
+                    || (result.output_truncated && !optional_truncation);
                 *error |= failed;
                 evidence.command.push(CommandEvidence {
                     source: canonical_command_source(command, args),
@@ -498,7 +503,9 @@ where
                     exit_code: result.exit_code,
                     supported: Some(!failed),
                     summary: Some(
-                        if result.timed_out {
+                        if optional_truncation {
+                            "optional ruleset scan truncated"
+                        } else if result.timed_out {
                             "probe timed out"
                         } else if result.output_truncated {
                             "probe output truncated"
@@ -577,22 +584,65 @@ where
                 let path = format!("/sys/class/net/{ifname}/bridge");
                 self.exists(&path, evidence, &mut o.probe_error)
             });
-        for (path, slot) in [
-            ("/sys/module/qca_nss_drv", &mut o.nss.present),
-            ("/sys/module/ecm", &mut o.nss.ecm_active),
-            ("/sys/module/qca_nss_ppe", &mut o.nss.ppe_active),
-        ] {
-            *slot |= self.exists(path, evidence, &mut o.probe_error);
-        }
-        o.nss.bridge_mgr = self.exists(
-            "/sys/module/qca_nss_bridge_mgr",
+        o.nss.present = self.any_exists(
+            &[
+                "/sys/module/qca_nss_drv",
+                "/sys/bus/platform/drivers/qca-nss",
+                "/sys/kernel/debug/qca-nss-drv",
+                "/proc/sys/dev/nss",
+            ],
             evidence,
             &mut o.probe_error,
         );
-        o.nss.ifb_active = self.exists("/sys/class/net/nssifb", evidence, &mut o.probe_error);
-        o.nss.nsm_active = self.exists("/sys/module/qca_nss_nsm", evidence, &mut o.probe_error);
-        o.nss.dp_active = self.exists("/sys/module/qca_nss_dp", evidence, &mut o.probe_error);
-        o.nss.mcs_active = self.exists("/sys/module/qca_mcs", evidence, &mut o.probe_error);
+        o.nss.ecm_active = self.any_exists(
+            &["/sys/module/ecm", "/sys/kernel/debug/ecm"],
+            evidence,
+            &mut o.probe_error,
+        );
+        o.nss.ppe_active = self.any_exists(
+            &[
+                "/sys/module/qca_nss_ppe",
+                "/sys/module/ppe_drv",
+                "/sys/kernel/debug/qca-nss-ppe",
+                "/sys/kernel/debug/ppe_drv",
+            ],
+            evidence,
+            &mut o.probe_error,
+        );
+        o.nss.bridge_mgr = self.any_exists(
+            &["/sys/module/qca_nss_bridge_mgr"],
+            evidence,
+            &mut o.probe_error,
+        );
+        o.nss.ifb_active = self.any_exists(
+            &[
+                "/sys/class/net/nssifb",
+                "/sys/module/nss_ifb",
+                "/sys/module/nss-ifb",
+            ],
+            evidence,
+            &mut o.probe_error,
+        );
+        o.nss.nsm_active = self.any_exists(
+            &[
+                "/sys/module/qca_nss_nsm",
+                "/sys/module/nss_nsm",
+                "/sys/kernel/debug/qca-nss-nsm",
+            ],
+            evidence,
+            &mut o.probe_error,
+        );
+        o.nss.dp_active = self.any_exists(
+            &["/sys/module/qca_nss_dp", "/sys/module/nss_dp"],
+            evidence,
+            &mut o.probe_error,
+        );
+        o.nss.mcs_active = self.any_exists(
+            &["/sys/module/qca_mcs", "/sys/module/mc_snooping"],
+            evidence,
+            &mut o.probe_error,
+        );
+        o.nss.present |= o.nss.dp_active;
         match self.files.probe_nss_state() {
             Ok(state) => {
                 o.nss.direct_state_present = state.present;
@@ -622,6 +672,18 @@ where
                 false
             }
         }
+    }
+    fn any_exists(
+        &mut self,
+        paths: &[&str],
+        evidence: &mut CollectedEvidence,
+        error: &mut bool,
+    ) -> bool {
+        let mut present = false;
+        for path in paths {
+            present |= self.exists(path, evidence, error);
+        }
+        present
     }
     fn dir_entries(
         &mut self,
@@ -808,15 +870,7 @@ where
 }
 
 fn canonical_command_source(command: ReadOnlyCommand, args: &[&str]) -> String {
-    match command {
-        ReadOnlyCommand::TcFilterHelp => "command:tc_filter_help".into(),
-        ReadOnlyCommand::TcQdiscHelp => "command:tc_qdisc_help".into(),
-        ReadOnlyCommand::TcFilterShow if args.len() == 3 => {
-            format!("command:tc_filter_show_{}_{}", args[1], args[2])
-        }
-        ReadOnlyCommand::NftListFlowtables => "command:nft_list_flowtables".into(),
-        other => format!("command:{other:?}"),
-    }
+    format!("command:{}", command.evidence_key(args))
 }
 fn to_file_evidence(entry: BoundedFile) -> FileEvidence {
     FileEvidence {

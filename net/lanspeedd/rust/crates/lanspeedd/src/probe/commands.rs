@@ -72,6 +72,53 @@ impl ReadOnlyCommand {
             Self::TcFilterShow | Self::IpRouteShow | Self::Pidof => &[],
         }
     }
+
+    pub const fn output_cap(self) -> usize {
+        match self {
+            Self::NftListRuleset => 128 * 1024,
+            _ => DEFAULT_OUTPUT_CAP,
+        }
+    }
+
+    pub fn evidence_key(self, args: &[&str]) -> String {
+        match self {
+            Self::Fw4 => "fw4".into(),
+            Self::Qosify => "qosify".into(),
+            Self::TcFilterHelp => "tc_filter_help".into(),
+            Self::TcQdiscHelp => "tc_qdisc_help".into(),
+            Self::TcFilterShow if args.len() == 3 => {
+                format!(
+                    "tc_filter_show_{}_{}",
+                    snake_component(args[1]),
+                    snake_component(args[2])
+                )
+            }
+            Self::TcFilterShow => "tc_filter_show".into(),
+            Self::NftListFlowtables => "nft_list_flowtables".into(),
+            Self::NftListRuleset => "nft_list_ruleset".into(),
+            Self::IpRuleShow => "ip_rule_show".into(),
+            Self::IpRouteShow => "ip_route_table_2023".into(),
+            Self::UbusNetworkLanStatus => "ubus_network_lan_status".into(),
+            Self::UbusServiceDae => "ubus_service_dae".into(),
+            Self::UbusServiceDaed => "ubus_service_daed".into(),
+            Self::Pidof if args.first() == Some(&"dae") => "pidof_dae".into(),
+            Self::Pidof if args.first() == Some(&"daed") => "pidof_daed".into(),
+            Self::Pidof => "pidof".into(),
+        }
+    }
+}
+
+fn snake_component(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() {
+                byte.to_ascii_lowercase() as char
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -207,22 +254,5 @@ fn exit_code(status: ExitStatus) -> Option<i32> {
 }
 
 fn source_key(command: ReadOnlyCommand, args: &[&str]) -> String {
-    match command {
-        ReadOnlyCommand::TcFilterShow if args.len() >= 3 => {
-            format!("tc_filter_show_{}_{}", args[1], args[2])
-        }
-        ReadOnlyCommand::TcFilterHelp => "tc_filter_help".into(),
-        ReadOnlyCommand::Fw4 => "fw4".into(),
-        ReadOnlyCommand::Qosify => "qosify".into(),
-        ReadOnlyCommand::TcQdiscHelp => "tc_qdisc_help".into(),
-        ReadOnlyCommand::NftListFlowtables => "nft_list_flowtables".into(),
-        ReadOnlyCommand::NftListRuleset => "nft_list_ruleset".into(),
-        ReadOnlyCommand::IpRuleShow => "ip_rule_show".into(),
-        ReadOnlyCommand::IpRouteShow => "ip_route_table".into(),
-        ReadOnlyCommand::UbusNetworkLanStatus => "ubus_network_lan_status".into(),
-        ReadOnlyCommand::UbusServiceDae => "ubus_service_dae".into(),
-        ReadOnlyCommand::UbusServiceDaed => "ubus_service_daed".into(),
-        ReadOnlyCommand::Pidof => format!("pidof_{}", args.first().copied().unwrap_or("unknown")),
-        ReadOnlyCommand::TcFilterShow => "tc_filter_show".into(),
-    }
+    command.evidence_key(args)
 }
