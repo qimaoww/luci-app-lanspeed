@@ -29,6 +29,8 @@ struct FakeAya {
     forgotten: Vec<LinkSpec>,
     fail_attach_at: Option<usize>,
     fail_detach: bool,
+    fail_inspect: bool,
+    events: Vec<String>,
     clsact: Vec<String>,
     map_read: Option<Result<MapRead, AdapterError>>,
     unloaded: bool,
@@ -72,6 +74,12 @@ impl AyaAdapter for FakeAya {
     }
 
     fn inspect_hook(&mut self, spec: &LinkSpec) -> Result<HookState, AdapterError> {
+        if self.fail_inspect {
+            return Err(AdapterError::new(
+                AdapterErrorKind::AttachFailed,
+                "injected inspect failure",
+            ));
+        }
         Ok(self.hooks.get(spec).copied().unwrap_or(HookState::Absent))
     }
 
@@ -83,6 +91,7 @@ impl AyaAdapter for FakeAya {
             ));
         }
         self.attached.push(spec.clone());
+        self.events.push(format!("attach:{}", spec.program));
         self.hooks.insert(spec.clone(), HookState::Owned);
         Ok(FakeLink(self.attached.len()))
     }
@@ -91,11 +100,13 @@ impl AyaAdapter for FakeAya {
         &mut self,
         spec: &LinkSpec,
     ) -> Result<Self::Link, AdapterError> {
+        self.events.push(format!("replace:{}", spec.program));
         self.attach_netlink(spec)
     }
 
     fn detach_link(&mut self, spec: &LinkSpec, _link: Self::Link) -> Result<(), AdapterError> {
         self.detached.push(spec.clone());
+        self.events.push(format!("detach:{}", spec.program));
         self.hooks.remove(spec);
         if self.fail_detach {
             return Err(AdapterError::new(
@@ -270,8 +281,23 @@ fn mode_switch_detach_failure_enters_inconsistent_state_and_blocks_snapshots() {
         )
         .is_err());
     assert!(!runtime.is_attached());
+    assert_eq!(runtime.health(10_000, 3_000).mode, None);
+    let mixed_health = runtime.runtime_health(10_000, 3_000);
+    assert!(!mixed_health.dae_early_bpf);
+    assert!(mixed_health.runtime_error.is_some());
+    let reconcile_event_start = adapter.events.len();
     adapter.fail_detach = false;
     assert!(runtime.ensure_attached(&mut adapter, "reconcile").is_ok());
+    let reconcile_events = &adapter.events[reconcile_event_start..];
+    let first_restore = reconcile_events
+        .iter()
+        .position(|event| event == "replace:lanspeed_ingress" || event == "attach:lanspeed_ingress")
+        .unwrap();
+    let first_new_detach = reconcile_events
+        .iter()
+        .position(|event| event == "detach:lanspeed_ingress_early")
+        .unwrap();
+    assert!(first_restore < first_new_detach);
     assert!(runtime.is_attached());
     adapter.map_read = Some(Ok(read(Vec::new())));
     let mut collector = BpfSnapshotCollector::new(16, 5_000);
@@ -397,6 +423,53 @@ fn self_heal_failure_is_counted_and_does_not_claim_complete_attachment() {
     adapter.fail_attach_at = None;
     assert_eq!(runtime.ensure_attached(&mut adapter, "retry").unwrap(), 1);
     assert!(runtime.is_attached());
+}
+
+#[test]
+fn inspect_failure_is_recorded_in_self_heal_and_runtime_health() {
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    adapter.fail_inspect = true;
+    assert!(runtime.ensure_attached(&mut adapter, "inspect").is_err());
+    assert_eq!(runtime.self_heal_failures(), 1);
+    assert_eq!(runtime.last_self_heal_reason(), Some("inspect"));
+    assert!(runtime
+        .runtime_health(10_000, 3_000)
+        .runtime_error
+        .is_some());
+}
+
+#[test]
+fn exact_physical_map_capacity_is_reported_as_at_capacity() {
+    let identities = identities();
+    let entries = (0..lanspeed_common::MAX_CLIENTS)
+        .map(|_| raw(DIR_TX, 1, 10_000_000_000))
+        .collect();
+    let mut adapter = FakeAya {
+        map_read: Some(Ok(MapRead {
+            entries,
+            truncated: false,
+        })),
+        ..FakeAya::default()
+    };
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let mut collector = BpfSnapshotCollector::new(16, 5_000);
+    runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            10_000,
+        )
+        .unwrap();
+    assert!(runtime.map_iteration_truncated_observed());
 }
 
 #[test]
