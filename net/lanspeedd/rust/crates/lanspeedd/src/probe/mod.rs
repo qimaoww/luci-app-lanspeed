@@ -699,8 +699,11 @@ pub fn assess(
     if !lan_edge {
         push_unique(&mut warnings, "lan_edge_missing");
     }
-    if map_full {
+    if map_full || facts.bpf.map_full_observed {
         push_unique(&mut warnings, "map_full");
+    }
+    if runtime.bpf_self_heal_failures > 0 {
+        push_unique(&mut warnings, "bpf_tc_self_heal_failed");
     }
     if config.enable_bpf && !safe_attach {
         push_unique(&mut warnings, "unsafe_attach");

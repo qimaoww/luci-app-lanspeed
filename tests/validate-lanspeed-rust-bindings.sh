@@ -12,20 +12,24 @@ committed="$repo_root/net/lanspeedd/rust/crates/lanspeed-openwrt-sys/src/raw.rs"
 generated=$(mktemp)
 trap 'rm -f "$generated"' EXIT HUP INT TERM
 
-for config in "$repo_root/.cargo/config.toml" "$repo_root/net/lanspeedd/rust/.cargo/config.toml"; do
-	grep -Fq '[target.x86_64-unknown-linux-musl]' "$config" || {
-		printf 'validate-lanspeed-rust-bindings: FAIL\n  missing musl target config: %s\n' "$config" >&2
-		exit 1
-	}
-	grep -Fq 'linker = "x86_64-openwrt-linux-musl-gcc"' "$config" || {
-		printf 'validate-lanspeed-rust-bindings: FAIL\n  wrong musl linker config: %s\n' "$config" >&2
-		exit 1
-	}
-	grep -Fq 'rustflags = ["-C", "target-feature=-crt-static"]' "$config" || {
-		printf 'validate-lanspeed-rust-bindings: FAIL\n  missing dynamic musl rustflags: %s\n' "$config" >&2
-		exit 1
-	}
-done
+root_config="$repo_root/.cargo/config.toml"
+nested_config="$repo_root/net/lanspeedd/rust/.cargo/config.toml"
+grep -Fq '[target.x86_64-unknown-linux-musl]' "$root_config" || {
+	printf 'validate-lanspeed-rust-bindings: FAIL\n  missing root musl target config\n' >&2
+	exit 1
+}
+grep -Fq 'linker = "x86_64-openwrt-linux-musl-gcc"' "$root_config" || {
+	printf 'validate-lanspeed-rust-bindings: FAIL\n  wrong root musl linker config\n' >&2
+	exit 1
+}
+grep -Fq 'rustflags = ["-C", "target-feature=-crt-static"]' "$root_config" || {
+	printf 'validate-lanspeed-rust-bindings: FAIL\n  missing root dynamic musl rustflags\n' >&2
+	exit 1
+}
+if grep -Eq '^\[target\.' "$nested_config"; then
+	printf 'validate-lanspeed-rust-bindings: FAIL\n  nested Cargo config duplicates target settings\n' >&2
+	exit 1
+fi
 
 if [ ! -f "$committed" ]; then
 	printf 'validate-lanspeed-rust-bindings: FAIL\n  committed bindings are missing: %s\n' "$committed" >&2

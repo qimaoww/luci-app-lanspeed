@@ -833,6 +833,21 @@ fn nss_presence_does_not_invent_the_firewall_hardware_offload_flag() {
     assert!(report.warnings.contains(&"nss_daed_prefers_bpf"));
 }
 
+#[test]
+fn runtime_bpf_capacity_and_self_heal_failures_are_visible_warnings() {
+    let config = RuntimeConfig::default();
+    let mut observations = ProbeObservations::default();
+    observations.bpf.map_full_observed = true;
+    let runtime = ProbeRuntimeHealth {
+        bpf_self_heal_failures: 1,
+        bpf_self_heal_last_failure: Some("attach failed".into()),
+        ..ProbeRuntimeHealth::default()
+    };
+    let report = assess(&config, observations, &runtime);
+    assert!(report.warnings.contains(&"map_full"));
+    assert!(report.warnings.contains(&"bpf_tc_self_heal_failed"));
+}
+
 #[derive(Default)]
 struct FakeCommands {
     calls: Vec<(ReadOnlyCommand, Vec<String>)>,

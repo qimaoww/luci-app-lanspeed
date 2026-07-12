@@ -66,6 +66,7 @@ impl ReadOnlyCommand {
         match self {
             Self::Fw4 | Self::Qosify => &[],
             Self::TcFilterHelp => &["filter", "help"],
+            Self::TcFilterShow => &["filter", "show"],
             Self::TcQdiscHelp => &["qdisc", "help"],
             Self::NftListFlowtables => &["list", "flowtables"],
             Self::NftDaeDnsUdp53 => &["list", "ruleset"],
@@ -73,7 +74,7 @@ impl ReadOnlyCommand {
             Self::UbusNetworkLanStatus => &["call", "network.interface.lan", "status"],
             Self::UbusServiceDae => &["call", "service", "list", "{\"name\":\"dae\"}"],
             Self::UbusServiceDaed => &["call", "service", "list", "{\"name\":\"daed\"}"],
-            Self::TcFilterShow | Self::IpRouteShow | Self::Pidof => &[],
+            Self::IpRouteShow | Self::Pidof => &[],
         }
     }
 

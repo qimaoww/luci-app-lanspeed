@@ -28,4 +28,10 @@ fn custom_aya_and_vendor_resolution_do_not_depend_on_the_current_directory() {
     let root_config = fs::read_to_string(repository.join(".cargo/config.toml")).unwrap();
     assert!(root_config.contains("directory = \"net/lanspeedd/rust/vendor\""));
     assert!(root_config.contains("offline = true"));
+    assert!(root_config.contains("[target.bpfel-unknown-none]"));
+    assert!(root_config.contains("[target.x86_64-unknown-linux-musl]"));
+
+    let nested_config = fs::read_to_string(workspace.join(".cargo/config.toml")).unwrap();
+    assert!(nested_config.contains("directory = \"vendor\""));
+    assert!(!nested_config.contains("[target."));
 }

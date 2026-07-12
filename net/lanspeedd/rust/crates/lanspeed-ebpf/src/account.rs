@@ -18,7 +18,7 @@ use lanspeed_common::packet::parse_packet_prefix;
 
 const ETHERNET_HEADER_LEN: usize = 14;
 #[cfg(feature = "conntrack-kfunc")]
-const PACKET_PREFIX_LEN: usize = 128;
+const PACKET_PREFIX_LEN: usize = 134;
 
 #[map(name = "lanspeed_clients")]
 pub static LANSPEED_CLIENTS: LruHashMap<LanspeedKey, LanspeedCounters> =

@@ -219,3 +219,12 @@ fn conntrack_prefix_load_uses_the_guarded_nonzero_frame_length() {
     assert!(source.contains("frame_len.min(PACKET_PREFIX_LEN as u32)"));
     assert!(source.contains("bpf_skb_load_bytes("));
 }
+
+#[test]
+fn packet_prefix_covers_maximum_ipv4_and_tcp_headers() {
+    let source = include_str!("../../lanspeed-ebpf/src/account.rs");
+    assert!(
+        source.contains("const PACKET_PREFIX_LEN: usize = 134;"),
+        "Ethernet(14)+IPv4(60)+TCP(60) requires a 134-byte bounded prefix"
+    );
+}
