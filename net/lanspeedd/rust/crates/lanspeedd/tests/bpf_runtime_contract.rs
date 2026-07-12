@@ -107,13 +107,13 @@ impl AyaAdapter for FakeAya {
     fn detach_link(&mut self, spec: &LinkSpec, _link: Self::Link) -> Result<(), AdapterError> {
         self.detached.push(spec.clone());
         self.events.push(format!("detach:{}", spec.program));
-        self.hooks.remove(spec);
         if self.fail_detach {
             return Err(AdapterError::new(
                 AdapterErrorKind::DetachFailed,
                 "injected detach failure",
             ));
         }
+        self.hooks.remove(spec);
         Ok(())
     }
 
@@ -124,6 +124,11 @@ impl AyaAdapter for FakeAya {
     }
 
     fn forget_link(&mut self, spec: &LinkSpec, _link: Self::Link) -> Result<(), AdapterError> {
+        self.forgotten.push(spec.clone());
+        Ok(())
+    }
+
+    fn abandon_link(&mut self, spec: &LinkSpec, _link: Self::Link) -> Result<(), AdapterError> {
         self.forgotten.push(spec.clone());
         Ok(())
     }
@@ -473,7 +478,7 @@ fn exact_physical_map_capacity_is_reported_as_at_capacity() {
 }
 
 #[test]
-fn shutdown_attempts_every_owned_detach_even_after_the_first_error() {
+fn shutdown_detach_failure_retains_cleanup_state_for_a_second_retry() {
     let mut adapter = FakeAya::default();
     let mut runtime = BpfRuntime::loaded_for_test();
     runtime
@@ -482,8 +487,30 @@ fn shutdown_attempts_every_owned_detach_even_after_the_first_error() {
     adapter.fail_detach = true;
     assert!(runtime.shutdown(&mut adapter).is_err());
     assert_eq!(adapter.detached.len(), 2);
-    assert!(adapter.unloaded);
+    assert!(!adapter.unloaded);
+    assert!(runtime.runtime_health(10_000, 3_000).bpf_object_loaded);
     assert!(!runtime.is_attached());
+    adapter.fail_detach = false;
+    runtime.shutdown(&mut adapter).unwrap();
+    assert_eq!(adapter.detached.len(), 4);
+    assert!(adapter.unloaded);
+    assert!(!runtime.runtime_health(10_000, 3_000).bpf_object_loaded);
+}
+
+#[test]
+fn shutdown_never_detaches_a_fixed_slot_replaced_by_a_foreign_filter() {
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let foreign = LinkSpec::pair("br-lan", AttachMode::Normal)[0].clone();
+    adapter.hooks.insert(foreign.clone(), HookState::Foreign);
+    runtime.shutdown(&mut adapter).unwrap();
+    assert_eq!(adapter.hooks.get(&foreign), Some(&HookState::Foreign));
+    assert!(!adapter.detached.contains(&foreign));
+    assert!(adapter.forgotten.contains(&foreign));
+    assert!(adapter.unloaded);
 }
 
 #[test]

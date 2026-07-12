@@ -154,6 +154,7 @@ pub trait AyaAdapter {
     fn detach_link(&mut self, spec: &LinkSpec, link: Self::Link) -> Result<(), AdapterError>;
     fn detach_exact(&mut self, spec: &LinkSpec) -> Result<(), AdapterError>;
     fn forget_link(&mut self, spec: &LinkSpec, link: Self::Link) -> Result<(), AdapterError>;
+    fn abandon_link(&mut self, spec: &LinkSpec, link: Self::Link) -> Result<(), AdapterError>;
     fn read_clients(&mut self) -> Result<MapRead, AdapterError>;
     fn interface_name(&mut self, ifindex: u32) -> Option<String>;
     fn unload(&mut self);
@@ -696,15 +697,71 @@ impl<L> BpfRuntime<L> {
         adapter: &mut A,
     ) -> Result<(), AdapterError> {
         let mut first_error = None;
-        while let Some(owned) = self.links.pop() {
-            if let Err(error) = adapter.detach_link(&owned.spec, owned.link) {
-                first_error.get_or_insert(error);
+        let pending = core::mem::take(&mut self.unresolved_specs);
+        for spec in pending {
+            match adapter.inspect_hook(&spec) {
+                Ok(HookState::Absent) => {}
+                Ok(HookState::Foreign) => {
+                    self.last_runtime_error = Some(format!(
+                        "foreign filter replaced owned shutdown slot {} {:?}",
+                        spec.interface, spec.direction
+                    ));
+                }
+                Ok(HookState::Owned) => {
+                    if let Err(error) = adapter.detach_exact(&spec) {
+                        first_error.get_or_insert(error);
+                        push_unique_spec(&mut self.unresolved_specs, spec);
+                    }
+                }
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    push_unique_spec(&mut self.unresolved_specs, spec);
+                }
             }
         }
-        for spec in self.unresolved_specs.drain(..) {
-            if let Err(error) = adapter.detach_exact(&spec) {
-                first_error.get_or_insert(error);
+
+        let tracked = core::mem::take(&mut self.links);
+        for owned in tracked {
+            match adapter.inspect_hook(&owned.spec) {
+                Ok(HookState::Foreign) => {
+                    let spec = owned.spec;
+                    match adapter.abandon_link(&spec, owned.link) {
+                        Ok(()) => {
+                            self.last_runtime_error = Some(format!(
+                                "foreign filter replaced owned shutdown slot {} {:?}",
+                                spec.interface, spec.direction
+                            ));
+                        }
+                        Err(error) => {
+                            first_error.get_or_insert(error);
+                            push_unique_spec(&mut self.unresolved_specs, spec);
+                        }
+                    }
+                }
+                Ok(HookState::Absent) => {
+                    let spec = owned.spec;
+                    if let Err(error) = adapter.forget_link(&spec, owned.link) {
+                        first_error.get_or_insert(error);
+                        push_unique_spec(&mut self.unresolved_specs, spec);
+                    }
+                }
+                Ok(HookState::Owned) => {
+                    let spec = owned.spec;
+                    if let Err(error) = adapter.detach_link(&spec, owned.link) {
+                        first_error.get_or_insert(error);
+                        push_unique_spec(&mut self.unresolved_specs, spec);
+                    }
+                }
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    self.links.push(owned);
+                }
             }
+        }
+
+        if let Some(error) = first_error {
+            self.last_runtime_error = Some(error.to_string());
+            return Err(error);
         }
         self.expected_specs.clear();
         self.reconcile_required = false;
@@ -713,7 +770,7 @@ impl<L> BpfRuntime<L> {
         self.recovery_specs = None;
         self.object_loaded = false;
         adapter.unload();
-        first_error.map_or(Ok(()), Err)
+        Ok(())
     }
 }
 
@@ -932,6 +989,17 @@ impl AyaAdapter for SystemAyaAdapter {
                 AdapterError::new(AdapterErrorKind::DetachFailed, error.to_string())
             })?;
         drop(stale);
+        Ok(())
+    }
+
+    fn abandon_link(&mut self, _spec: &LinkSpec, link: Self::Link) -> Result<(), AdapterError> {
+        let stale = self
+            .classifier(link.program)?
+            .take_link(link.id)
+            .map_err(|error| {
+                AdapterError::new(AdapterErrorKind::DetachFailed, error.to_string())
+            })?;
+        core::mem::forget(stale);
         Ok(())
     }
 
