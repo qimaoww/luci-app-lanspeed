@@ -1,7 +1,7 @@
 use lanspeedd::config::RuntimeConfig;
 use lanspeedd::probe::collector::{
-    CommandRunner, FileSource, ProbeCollector, ProbeMethod, UbusProbeResult, UbusQuery, UbusSource,
-    UciOptionSnapshot, UciPackageSnapshot, UciSectionSnapshot, UciSource,
+    CommandRunner, FilePresence, FileSource, ProbeCollector, ProbeMethod, UbusProbeResult,
+    UbusQuery, UbusSource, UciOptionSnapshot, UciPackageSnapshot, UciSectionSnapshot, UciSource,
 };
 use lanspeedd::probe::commands::{validate_read_only_args, ReadOnlyCommand};
 use lanspeedd::probe::files::BoundedFile;
@@ -14,7 +14,7 @@ use lanspeedd::probe::{
     TcFilter, TcObservations, UbusObservations, UciObservations,
 };
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const REQUIRED_PROBE_FILES: [&str; 14] = [
     "/proc/sys/net/netfilter/nf_conntrack_acct",
@@ -887,17 +887,38 @@ impl CommandRunner for FakeCommands {
 }
 
 #[derive(Default)]
-struct FakeFiles(BTreeMap<String, BoundedFile>);
+struct FakeFiles {
+    entries: BTreeMap<String, BoundedFile>,
+    errors: BTreeSet<String>,
+}
 impl FileSource for FakeFiles {
     type Error = String;
     fn read(&mut self, path: &str, _cap: usize) -> Result<BoundedFile, Self::Error> {
-        self.0.get(path).cloned().ok_or_else(|| "missing".into())
+        if self.errors.contains(path) {
+            return Err("permission denied".into());
+        }
+        Ok(self.entries.get(path).cloned().unwrap_or(BoundedFile {
+            source: format!("file:{path}"),
+            path: path.into(),
+            present: false,
+            value: None,
+            truncated: false,
+        }))
     }
-    fn exists(&mut self, path: &str) -> Result<bool, Self::Error> {
-        Ok(self.0.get(path).is_some_and(|entry| entry.present))
+    fn exists(&mut self, path: &str) -> Result<FilePresence, Self::Error> {
+        if self.errors.contains(path) {
+            return Err("symlink loop".into());
+        }
+        Ok(
+            if self.entries.get(path).is_some_and(|entry| entry.present) {
+                FilePresence::Present
+            } else {
+                FilePresence::Absent
+            },
+        )
     }
     fn dir_has_entries(&mut self, path: &str) -> Result<bool, Self::Error> {
-        self.exists(path)
+        Ok(self.exists(path)? == FilePresence::Present)
     }
 }
 
@@ -944,7 +965,7 @@ fn injectable_production_collector_records_every_read_only_source_and_error() {
         "/usr/share/lanspeed/bpf/collector-model.json",
         "/usr/lib/bpf/lanspeed_tc.o",
     ] {
-        files.0.insert(
+        files.entries.insert(
             path.into(),
             BoundedFile {
                 source: format!("file:{path}"),
@@ -1086,6 +1107,99 @@ fn injectable_production_collector_records_every_read_only_source_and_error() {
 }
 
 #[test]
+fn openclash_uses_one_relevant_section_without_cross_section_splicing() {
+    let mut uci = FakeUci::default();
+    uci.0.insert(
+        "openclash".into(),
+        UciPackageSnapshot {
+            name: "openclash".into(),
+            sections: vec![
+                UciSectionSnapshot {
+                    name: "irrelevant".into(),
+                    kind: "config".into(),
+                    options: vec![UciOptionSnapshot {
+                        name: "enabled".into(),
+                        values: vec!["1".into()],
+                    }],
+                },
+                UciSectionSnapshot {
+                    name: "first".into(),
+                    kind: "config".into(),
+                    options: vec![UciOptionSnapshot {
+                        name: "en_mode".into(),
+                        values: vec!["fake-ip".into()],
+                    }],
+                },
+                UciSectionSnapshot {
+                    name: "second".into(),
+                    kind: "config".into(),
+                    options: vec![UciOptionSnapshot {
+                        name: "enable_redirect_dns".into(),
+                        values: vec!["1".into()],
+                    }],
+                },
+            ],
+        },
+    );
+    let mut collector = ProbeCollector::new(
+        FakeCommands::default(),
+        FakeFiles::default(),
+        uci,
+        FakeUbus::default(),
+    );
+    let report = collector.collect(
+        &RuntimeConfig::default(),
+        &ProbeRuntimeHealth::default(),
+        ProbeMethod::Health,
+    );
+    assert!(report
+        .evidence
+        .uci
+        .iter()
+        .any(|entry| entry.source == "uci:openclash.first.en_mode"));
+    assert!(report.facts.proxy.openclash_fake_ip);
+    assert!(!report.facts.proxy.openclash_redirect_dns);
+}
+
+#[test]
+fn file_io_errors_are_probe_errors_while_not_found_is_only_missing() {
+    let acct = "/proc/sys/net/netfilter/nf_conntrack_acct";
+    let loop_path = "/proc/net/nf_flowtable";
+    let mut files = FakeFiles::default();
+    files.errors.insert(acct.into());
+    files.errors.insert(loop_path.into());
+    let mut collector = ProbeCollector::new(
+        FakeCommands::default(),
+        files,
+        FakeUci::default(),
+        FakeUbus::default(),
+    );
+    let report = collector.collect(
+        &RuntimeConfig::default(),
+        &ProbeRuntimeHealth::default(),
+        ProbeMethod::Health,
+    );
+    assert!(report.evidence.probe_error);
+    assert!(report.evidence.file.iter().any(|entry| entry.path == acct
+        && entry.status == "error"
+        && entry.error.as_deref() == Some("permission denied")));
+    assert!(report
+        .evidence
+        .file
+        .iter()
+        .any(|entry| entry.path == loop_path
+            && entry.status == "error"
+            && entry.error.as_deref() == Some("symlink loop")));
+    assert!(report
+        .evidence
+        .file
+        .iter()
+        .any(|entry| entry.path == "/sys/class/net/ifb0"
+            && entry.source == "file:/sys/class/net/ifb0"
+            && !entry.present));
+}
+
+#[test]
 fn production_collector_honors_every_legacy_nss_alternative_path() {
     let cases = [
         ("present", "/sys/bus/platform/drivers/qca-nss"),
@@ -1105,7 +1219,7 @@ fn production_collector_honors_every_legacy_nss_alternative_path() {
     ];
     for (kind, path) in cases {
         let mut files = FakeFiles::default();
-        files.0.insert(
+        files.entries.insert(
             path.into(),
             BoundedFile {
                 source: format!("file:{path}"),

@@ -88,11 +88,16 @@ pub trait CommandRunner {
 pub trait FileSource {
     type Error: ToString;
     fn read(&mut self, path: &str, cap: usize) -> Result<BoundedFile, Self::Error>;
-    fn exists(&mut self, path: &str) -> Result<bool, Self::Error>;
+    fn exists(&mut self, path: &str) -> Result<FilePresence, Self::Error>;
     fn dir_has_entries(&mut self, path: &str) -> Result<bool, Self::Error>;
     fn probe_nss_state(&mut self) -> Result<NssStateProbe, Self::Error> {
         Ok(NssStateProbe::default())
     }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FilePresence {
+    Present,
+    Absent,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct NssStateProbe {
@@ -139,8 +144,12 @@ impl FileSource for SystemFileSource {
     fn read(&mut self, path: &str, cap: usize) -> Result<BoundedFile, Self::Error> {
         super::files::read_bounded(Path::new(path), cap).map_err(|error| error.to_string())
     }
-    fn exists(&mut self, path: &str) -> Result<bool, Self::Error> {
-        Ok(Path::new(path).exists())
+    fn exists(&mut self, path: &str) -> Result<FilePresence, Self::Error> {
+        match std::fs::metadata(path) {
+            Ok(_) => Ok(FilePresence::Present),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(FilePresence::Absent),
+            Err(error) => Err(error.to_string()),
+        }
     }
     fn dir_has_entries(&mut self, path: &str) -> Result<bool, Self::Error> {
         let mut entries = match std::fs::read_dir(path) {
@@ -548,7 +557,10 @@ where
                 o.probe_error |= entry.truncated;
                 evidence.file.push(to_file_evidence(entry));
             }
-            Err(_) => evidence.file.push(file_missing(acct)),
+            Err(error) => {
+                o.probe_error = true;
+                evidence.file.push(file_error(acct, error.to_string()));
+            }
         }
         for (path, slot) in [
             ("/proc/net/nf_flowtable", &mut o.files.flowtable_proc),
@@ -657,18 +669,23 @@ where
 
     fn exists(&mut self, path: &str, evidence: &mut CollectedEvidence, error: &mut bool) -> bool {
         match self.files.exists(path) {
-            Ok(present) => {
+            Ok(presence) => {
+                let present = presence == FilePresence::Present;
                 evidence.file.push(FileEvidence {
                     source: format!("file:{path}"),
                     path: path.into(),
                     present,
                     value: None,
+                    status: if present { "present" } else { "absent" },
+                    error: None,
                 });
                 present
             }
-            Err(_) => {
+            Err(error_value) => {
                 *error = true;
-                evidence.file.push(file_missing(path));
+                evidence
+                    .file
+                    .push(file_error(path, error_value.to_string()));
                 false
             }
         }
@@ -698,6 +715,8 @@ where
                     path: path.into(),
                     present,
                     value: None,
+                    status: if present { "present" } else { "absent" },
+                    error: None,
                 });
                 present
             }
@@ -761,6 +780,27 @@ where
         o: &mut ProbeObservations,
         evidence: &mut CollectedEvidence,
     ) {
+        let openclash_section = (package.name == "openclash")
+            .then(|| {
+                package
+                    .sections
+                    .iter()
+                    .find(|section| {
+                        section.options.iter().any(|option| {
+                            matches!(
+                                option.name.as_str(),
+                                "en_mode"
+                                    | "enable_redirect_dns"
+                                    | "router_self_proxy"
+                                    | "enable_udp_proxy"
+                                    | "stack_type"
+                                    | "ipv6_enable"
+                            )
+                        })
+                    })
+                    .map(|section| section.name.as_str())
+            })
+            .flatten();
         for section in &package.sections {
             for option in &section.options {
                 let value = option.values.first().cloned();
@@ -789,10 +829,8 @@ where
                 {
                     o.proxy.openclash_dnsmasq_chain = true;
                 }
-                if package.name == "openclash" {
-                    if o.proxy.openclash_section.is_none() {
-                        o.proxy.openclash_section = Some(section.name.clone());
-                    }
+                if package.name == "openclash" && openclash_section == Some(section.name.as_str()) {
+                    o.proxy.openclash_section = Some(section.name.clone());
                     match option.name.as_str() {
                         "en_mode" => o.proxy.openclash_en_mode = value,
                         "enable_redirect_dns" => {
@@ -878,6 +916,8 @@ fn to_file_evidence(entry: BoundedFile) -> FileEvidence {
         path: entry.path,
         present: entry.present,
         value: entry.value,
+        status: if entry.present { "present" } else { "absent" },
+        error: None,
     }
 }
 fn file_missing(path: &str) -> FileEvidence {
@@ -886,6 +926,18 @@ fn file_missing(path: &str) -> FileEvidence {
         path: path.into(),
         present: false,
         value: None,
+        status: "absent",
+        error: None,
+    }
+}
+fn file_error(path: &str, error: String) -> FileEvidence {
+    FileEvidence {
+        source: format!("file:{path}"),
+        path: path.into(),
+        present: false,
+        value: None,
+        status: "error",
+        error: Some(error),
     }
 }
 fn bool_value(value: Option<&str>) -> bool {

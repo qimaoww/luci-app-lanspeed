@@ -344,6 +344,8 @@ pub struct FileEvidence {
     pub path: String,
     pub present: bool,
     pub value: Option<String>,
+    pub status: &'static str,
+    pub error: Option<String>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UciEvidence {
@@ -562,7 +564,7 @@ pub fn assess(
             || runtime
                 .bpf_last_complete_snapshot_ms
                 .is_some_and(|sample_ms| {
-                    runtime.now_ms.saturating_sub(sample_ms) <= runtime.bpf_freshness_ms
+                    crate::is_fresh(runtime.now_ms, sample_ms, runtime.bpf_freshness_ms)
                 }))
         && !observations.offload.hardware;
     let probe_error = observations.probe_error
@@ -935,6 +937,8 @@ fn build_evidence(
         path: path.into(),
         present,
         value,
+        status: if present { "present" } else { "absent" },
+        error: None,
     })
     .collect();
     let mut uci: Vec<UciEvidence> = [

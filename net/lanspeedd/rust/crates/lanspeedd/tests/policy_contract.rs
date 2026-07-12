@@ -176,6 +176,12 @@ fn map_failure_keeps_a_fresh_complete_snapshot_then_expires_and_recovers() {
     assert!(retained.evidence.retained_fresh_snapshot);
     assert_eq!(retained.evidence.bpf_snapshot_clients, 4);
 
+    runtime.bpf_last_complete_snapshot_ms = Some(10_001);
+    let future = select_collectors(&config, &facts, &runtime);
+    assert_eq!(future.mode, Mode::Degraded);
+    assert!(!future.evidence.retained_fresh_snapshot);
+    runtime.bpf_last_complete_snapshot_ms = Some(9_000);
+
     runtime.now_ms = 13_001;
     let stale = select_collectors(&config, &facts, &runtime);
     assert_eq!(stale.mode, Mode::Degraded);
@@ -186,6 +192,19 @@ fn map_failure_keeps_a_fresh_complete_snapshot_then_expires_and_recovers() {
     let recovered = select_collectors(&config, &facts, &runtime);
     assert_eq!(recovered.mode, Mode::Full);
     assert!(!recovered
+        .warnings
+        .contains(&"bpf_runtime_loader_unavailable"));
+}
+
+#[test]
+fn forced_nss_does_not_report_a_bpf_runtime_failure() {
+    let mut config = RuntimeConfig::default();
+    config.enable_bpf = true;
+    config.rate_collector_mode = RateCollectorMode::NssEcmDirect;
+    let facts = bpf_facts();
+    let decision = select_collectors(&config, &facts, &RuntimeHealth::default());
+    assert_eq!(decision.rate, RateCollector::Unsupported);
+    assert!(!decision
         .warnings
         .contains(&"bpf_runtime_loader_unavailable"));
 }

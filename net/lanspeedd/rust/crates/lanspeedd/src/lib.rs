@@ -17,6 +17,10 @@ pub mod policy;
 pub mod probe;
 pub mod rate;
 
+pub const fn is_fresh(now_ms: u64, sample_ms: u64, limit_ms: u64) -> bool {
+    sample_ms <= now_ms && now_ms - sample_ms <= limit_ms
+}
+
 pub fn counter_value(result: Result<u64, MapError>) -> Result<u64, MapError> {
     match result {
         Ok(value) => Ok(value),

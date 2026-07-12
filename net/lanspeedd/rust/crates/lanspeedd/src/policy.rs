@@ -102,7 +102,7 @@ pub fn select_collectors(
         && runtime
             .bpf_last_complete_snapshot_ms
             .is_some_and(|sample_ms| {
-                runtime.now_ms.saturating_sub(sample_ms) <= runtime.bpf_freshness_ms
+                crate::is_fresh(runtime.now_ms, sample_ms, runtime.bpf_freshness_ms)
             });
     let bpf_full = bpf_prerequisites
         && (runtime.bpf_map_read_ok || retained_fresh_snapshot)
@@ -200,7 +200,19 @@ pub fn select_collectors(
     if bpf_prerequisites && runtime.bpf_map_read_attempted && !runtime.bpf_map_read_ok {
         push_unique(&mut warnings, "map_read_failed");
     }
-    if rate == RateCollector::Unsupported && config.enable_bpf && facts.tc.safe_attach {
+    let bpf_mode_allowed = matches!(
+        config.rate_collector_mode,
+        RateCollectorMode::Auto | RateCollectorMode::Bpf
+    );
+    let bpf_runtime_failed = runtime.bpf_object_loaded == false
+        || runtime.bpf_attached == false
+        || (runtime.bpf_map_read_attempted && !runtime.bpf_map_read_ok && !retained_fresh_snapshot);
+    if rate == RateCollector::Unsupported
+        && bpf_mode_allowed
+        && config.enable_bpf
+        && facts.tc.safe_attach
+        && bpf_runtime_failed
+    {
         push_unique(&mut warnings, "bpf_runtime_loader_unavailable");
     }
 
