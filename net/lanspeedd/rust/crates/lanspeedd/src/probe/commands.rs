@@ -12,6 +12,8 @@ use std::{
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2);
 pub const DEFAULT_OUTPUT_CAP: usize = 4_096;
 const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
+const DRAIN_READ_BUDGET: usize = 16;
+const DRAIN_BYTE_BUDGET: usize = 64 * 1024;
 
 pub fn command_available(program: &str) -> bool {
     if program.contains('/') {
@@ -150,18 +152,21 @@ pub fn run_read_only(
         .collect::<Vec<_>>();
     validate_read_only_args(command, dynamic_args)?;
     let program = command.program();
-    let mut child = Command::new(program)
+    let child = Command::new(program)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0)
         .spawn()?;
+    let mut child = ChildGuard::new(child);
     let mut stdout = child
+        .child_mut()
         .stdout
         .take()
         .ok_or_else(|| io::Error::other("probe stdout pipe missing"))?;
     let mut stderr = child
+        .child_mut()
         .stderr
         .take()
         .ok_or_else(|| io::Error::other("probe stderr pipe missing"))?;
@@ -179,11 +184,11 @@ pub fn run_read_only(
 
         let now = Instant::now();
         if status.is_none() {
-            if let Some(observed_status) = try_wait(&mut child)? {
-                status = Some(finish_child(&mut child, observed_status)?);
+            if let Some(observed_status) = try_wait(child.child_mut())? {
+                status = Some(child.finish(observed_status)?);
                 output_deadline = Some(now + OUTPUT_DRAIN_TIMEOUT);
             } else if now >= deadline {
-                status = Some(terminate_child(&mut child)?);
+                status = Some(child.terminate()?);
                 timed_out = true;
                 output_deadline = Some(now + OUTPUT_DRAIN_TIMEOUT);
             }
@@ -223,6 +228,110 @@ pub fn run_read_only(
         timed_out,
         output_truncated: stdout_truncated || stderr_truncated,
     })
+}
+
+struct ChildGuard {
+    child: Option<Child>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TestFailure {
+    SecondSetNonblocking,
+    Drain,
+    Poll,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+struct TestFailureState {
+    failure: TestFailure,
+    set_nonblocking_calls: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_FAILURE: std::cell::Cell<Option<TestFailureState>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+#[cfg(test)]
+fn with_test_failure<T>(failure: TestFailure, operation: impl FnOnce() -> T) -> T {
+    struct Reset;
+
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_FAILURE.set(None);
+        }
+    }
+
+    TEST_FAILURE.set(Some(TestFailureState {
+        failure,
+        set_nonblocking_calls: 0,
+    }));
+    let _reset = Reset;
+    operation()
+}
+
+#[cfg(test)]
+fn inject_test_failure(site: TestFailure) -> io::Result<()> {
+    let should_fail = TEST_FAILURE.with(|configured| {
+        let Some(mut state) = configured.get() else {
+            return false;
+        };
+        let should_fail = match (state.failure, site) {
+            (TestFailure::SecondSetNonblocking, TestFailure::SecondSetNonblocking) => {
+                state.set_nonblocking_calls += 1;
+                state.set_nonblocking_calls == 2
+            }
+            (expected, observed) => expected == observed,
+        };
+        configured.set(Some(state));
+        should_fail
+    });
+    if should_fail {
+        std::thread::sleep(Duration::from_millis(50));
+        Err(io::Error::other(format!("injected {site:?} failure")))
+    } else {
+        Ok(())
+    }
+}
+
+impl ChildGuard {
+    fn new(child: Child) -> Self {
+        Self { child: Some(child) }
+    }
+
+    fn child_mut(&mut self) -> &mut Child {
+        self.child.as_mut().expect("child guard is armed")
+    }
+
+    fn finish(&mut self, observed_status: ExitStatus) -> io::Result<ExitStatus> {
+        let mut child = self.child.take().expect("child guard is armed");
+        finish_child(&mut child, observed_status)
+    }
+
+    fn terminate(&mut self) -> io::Result<ExitStatus> {
+        let mut child = self.child.take().expect("child guard is armed");
+        terminate_child(&mut child)
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let _ = kill_process_group(child.id());
+        let _ = child.kill();
+        loop {
+            match child.wait() {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                _ => break,
+            }
+        }
+    }
 }
 
 #[doc(hidden)]
@@ -311,6 +420,8 @@ fn try_wait(child: &mut Child) -> io::Result<Option<ExitStatus>> {
 }
 
 fn set_nonblocking(fd: RawFd) -> io::Result<()> {
+    #[cfg(test)]
+    inject_test_failure(TestFailure::SecondSetNonblocking)?;
     let flags = loop {
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if flags >= 0 {
@@ -350,11 +461,19 @@ impl PipeCapture {
     }
 
     fn drain(&mut self, reader: &mut impl Read) -> io::Result<()> {
+        #[cfg(test)]
+        inject_test_failure(TestFailure::Drain)?;
         let mut buffer = [0u8; 4_096];
-        while !self.done {
-            match reader.read(&mut buffer) {
+        let mut reads = 0;
+        let mut bytes = 0;
+        while !self.done && reads < DRAIN_READ_BUDGET && bytes < DRAIN_BYTE_BUDGET {
+            let remaining_budget = DRAIN_BYTE_BUDGET - bytes;
+            let read_len = remaining_budget.min(buffer.len());
+            reads += 1;
+            match reader.read(&mut buffer[..read_len]) {
                 Ok(0) => self.done = true,
                 Ok(count) => {
+                    bytes += count;
                     let remaining = self.cap.saturating_sub(self.kept.len());
                     let take = count.min(remaining);
                     self.kept.extend_from_slice(&buffer[..take]);
@@ -387,13 +506,15 @@ fn poll_pipes(
     stderr_fd: RawFd,
     deadline: Instant,
 ) -> io::Result<()> {
+    #[cfg(test)]
+    inject_test_failure(TestFailure::Poll)?;
     let mut descriptors = [
         poll_descriptor(stdout_fd, stdout.done),
         poll_descriptor(stderr_fd, stderr.done),
     ];
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let timeout = poll_timeout(remaining.min(Duration::from_millis(10)));
     loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let timeout = poll_timeout(remaining.min(Duration::from_millis(10)));
         let result = unsafe {
             libc::poll(
                 descriptors.as_mut_ptr(),
@@ -438,8 +559,10 @@ fn source_key(command: ReadOnlyCommand, args: &[&str]) -> String {
 mod tests {
     use super::*;
     use std::{
+        cell::Cell,
         ffi::OsString,
         fs,
+        io::ErrorKind,
         os::unix::fs::PermissionsExt,
         path::PathBuf,
         sync::{Mutex, OnceLock},
@@ -448,6 +571,14 @@ mod tests {
     };
 
     static PATH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    static SIGNAL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn lock_path() -> std::sync::MutexGuard<'static, ()> {
+        PATH_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     struct TestCommand {
         directory: PathBuf,
@@ -499,7 +630,7 @@ mod tests {
 
     #[test]
     fn parent_exit_kills_pipe_holding_descendant_without_blocking() {
-        let _lock = PATH_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _lock = lock_path();
         let command = TestCommand::install(
             "#!/bin/sh\n/bin/sleep 3 &\nprintf '%s %s\\n' \"$$\" \"$!\" > child-pids\nprintf 'parent exited\\n'\n",
         );
@@ -530,7 +661,7 @@ mod tests {
 
     #[test]
     fn timeout_kills_process_group_and_returns_before_descendant_closes_pipes() {
-        let _lock = PATH_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _lock = lock_path();
         let command = TestCommand::install(
             "#!/bin/sh\n/bin/sleep 3 &\nprintf '%s %s\\n' \"$$\" \"$!\" > child-pids\nwait\n",
         );
@@ -560,7 +691,7 @@ mod tests {
 
     #[test]
     fn stdout_and_stderr_are_collected_with_independent_hard_caps() {
-        let _lock = PATH_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _lock = lock_path();
         let _command = TestCommand::install(
             "#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 200 ]; do\n  printf x\n  printf y >&2\n  i=$((i + 1))\ndone\n",
         );
@@ -579,8 +710,147 @@ mod tests {
     }
 
     #[test]
+    fn pipe_capture_limits_each_drain_to_sixteen_reads_and_sixty_four_kibibytes() {
+        struct BusyReader {
+            reads: Cell<usize>,
+        }
+
+        impl Read for BusyReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let reads = self.reads.get();
+                self.reads.set(reads + 1);
+                if reads == 17 {
+                    return Err(io::Error::from(ErrorKind::WouldBlock));
+                }
+                buffer.fill(b'x');
+                Ok(buffer.len())
+            }
+        }
+
+        let mut reader = BusyReader {
+            reads: Cell::new(0),
+        };
+        let mut capture = PipeCapture::new(128 * 1024);
+
+        capture.drain(&mut reader).expect("drain busy reader");
+
+        assert_eq!(reader.reads.get(), 16);
+        assert_eq!(capture.kept.len(), 64 * 1024);
+        assert!(!capture.done);
+    }
+
+    #[test]
+    fn continuously_writable_command_still_observes_timeout() {
+        let _lock = lock_path();
+        let _command = TestCommand::install("#!/bin/sh\nexec /usr/bin/yes x\n");
+
+        let started = Instant::now();
+        let result = run_read_only(
+            ReadOnlyCommand::TcFilterHelp,
+            &[],
+            DEFAULT_TIMEOUT,
+            DEFAULT_OUTPUT_CAP,
+        )
+        .expect("run continuously writable command");
+        let elapsed = started.elapsed();
+
+        assert!(result.timed_out);
+        assert!(result.output_truncated);
+        assert!(
+            elapsed >= Duration::from_millis(1_800),
+            "continuously writable command timed out too early after {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "continuously writable command delayed timeout by {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn interrupted_poll_does_not_extend_absolute_deadline() {
+        unsafe extern "C" fn handle_signal(_: libc::c_int) {}
+
+        let _path_lock = lock_path();
+        let _signal_lock = SIGNAL_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let mut old_action = unsafe { std::mem::zeroed::<libc::sigaction>() };
+        let mut action = unsafe { std::mem::zeroed::<libc::sigaction>() };
+        action.sa_sigaction = handle_signal as *const () as usize;
+        unsafe {
+            libc::sigemptyset(&mut action.sa_mask);
+            assert_eq!(libc::sigaction(libc::SIGUSR1, &action, &mut old_action), 0);
+        }
+
+        let mut pipe_fds = [-1; 2];
+        assert_eq!(unsafe { libc::pipe(pipe_fds.as_mut_ptr()) }, 0);
+        let target = unsafe { libc::pthread_self() };
+        let sender = thread::spawn(move || {
+            let stop = Instant::now() + Duration::from_millis(200);
+            while Instant::now() < stop {
+                unsafe { libc::pthread_kill(target, libc::SIGUSR1) };
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+
+        let capture = PipeCapture::new(1);
+        let started = Instant::now();
+        poll_pipes(
+            &capture,
+            pipe_fds[0],
+            &capture,
+            pipe_fds[0],
+            started + Duration::from_millis(40),
+        )
+        .expect("poll interrupted pipe");
+        let elapsed = started.elapsed();
+
+        sender.join().expect("join signal sender");
+        unsafe {
+            libc::close(pipe_fds[0]);
+            libc::close(pipe_fds[1]);
+            assert_eq!(
+                libc::sigaction(libc::SIGUSR1, &old_action, std::ptr::null_mut()),
+                0
+            );
+        }
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "EINTR extended poll deadline to {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn dropping_child_guard_kills_and_reaps_process_group() {
+        let child = Command::new("/bin/sleep")
+            .arg("3")
+            .process_group(0)
+            .spawn()
+            .expect("spawn guarded child");
+        let pid = child.id() as i32;
+
+        drop(ChildGuard::new(child));
+
+        assert_process_gone(pid);
+        assert_process_group_gone(pid);
+    }
+
+    #[test]
+    fn second_pipe_nonblocking_failure_reaps_spawned_process_group() {
+        assert_runner_failure_reaps_process_group(TestFailure::SecondSetNonblocking);
+    }
+
+    #[test]
+    fn drain_failure_reaps_spawned_process_group() {
+        assert_runner_failure_reaps_process_group(TestFailure::Drain);
+    }
+
+    #[test]
+    fn poll_failure_reaps_spawned_process_group() {
+        assert_runner_failure_reaps_process_group(TestFailure::Poll);
+    }
+
+    #[test]
     fn pipe_holding_setsid_escape_does_not_leave_reader_threads() {
-        let _lock = PATH_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _lock = lock_path();
         let command = TestCommand::install(
             "#!/bin/sh\n/usr/bin/setsid /bin/sleep 3 &\nprintf '%s\\n' \"$!\" > escaped-pid\nprintf 'parent exited\\n'\n",
         );
@@ -621,7 +891,7 @@ mod tests {
 
     #[test]
     fn repeated_commands_do_not_increase_thread_count() {
-        let _lock = PATH_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _lock = lock_path();
         let _command = TestCommand::install("#!/bin/sh\nprintf 'ok\\n'\n");
         let thread_count_before = process_thread_count();
 
@@ -643,6 +913,31 @@ mod tests {
         fs::read_dir("/proc/self/task")
             .expect("read process thread directory")
             .count()
+    }
+
+    fn assert_runner_failure_reaps_process_group(failure: TestFailure) {
+        let _lock = lock_path();
+        let command = TestCommand::install(
+            "#!/bin/sh\n/bin/sleep 3 &\nprintf '%s %s\\n' \"$$\" \"$!\" > child-pids\nwait\n",
+        );
+        let original_directory = env::current_dir().expect("read current directory");
+        env::set_current_dir(&command.directory).expect("enter command test directory");
+
+        let result = with_test_failure(failure, || {
+            run_read_only(
+                ReadOnlyCommand::TcFilterHelp,
+                &[],
+                Duration::from_millis(100),
+                DEFAULT_OUTPUT_CAP,
+            )
+        });
+        env::set_current_dir(original_directory).expect("restore current directory");
+
+        let error = result.expect_err("runner should return injected error");
+        assert!(error.to_string().contains("injected"));
+        let (group, descendant) = read_pids(&command.path("child-pids"));
+        assert_process_gone(descendant);
+        assert_process_group_gone(group);
     }
 
     fn read_pids(path: &Path) -> (i32, i32) {
