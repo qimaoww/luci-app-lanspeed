@@ -5,7 +5,7 @@ use lanspeedd::{
     collectors::bpf::{
         runtime::{
             AdapterError, AdapterErrorKind, AttachMode, AyaAdapter, BpfRuntime, HookState,
-            LinkDirection, LinkSpec, ObjectFlavor, ReconfigureRateBaseline,
+            LinkDirection, LinkSpec, ObjectFlavor, ReconfigureRateBaseline, ReconfigureStrategy,
         },
         snapshot::{
             BpfSnapshotCollector, ConnectionCounts, ConnectionOverlay, MapRead, RawMapSample,
@@ -29,8 +29,11 @@ struct FakeAya {
     forgotten: Vec<LinkSpec>,
     fail_attach_at: Option<usize>,
     fail_detach: bool,
+    fail_detach_at: Option<usize>,
     fail_detach_after_mutation: bool,
     fail_inspect: bool,
+    fail_inspect_at: Option<usize>,
+    inspect_count: usize,
     events: Vec<String>,
     clsact: Vec<String>,
     map_read: Option<Result<MapRead, AdapterError>>,
@@ -75,7 +78,9 @@ impl AyaAdapter for FakeAya {
     }
 
     fn inspect_hook(&mut self, spec: &LinkSpec) -> Result<HookState, AdapterError> {
-        if self.fail_inspect {
+        let inspect_index = self.inspect_count;
+        self.inspect_count += 1;
+        if self.fail_inspect || self.fail_inspect_at == Some(inspect_index) {
             return Err(AdapterError::new(
                 AdapterErrorKind::AttachFailed,
                 "injected inspect failure",
@@ -85,6 +90,16 @@ impl AyaAdapter for FakeAya {
     }
 
     fn attach_netlink(&mut self, spec: &LinkSpec) -> Result<Self::Link, AdapterError> {
+        if !self
+            .clsact
+            .iter()
+            .any(|interface| interface == &spec.interface)
+        {
+            return Err(AdapterError::new(
+                AdapterErrorKind::AttachFailed,
+                "injected missing clsact",
+            ));
+        }
         if self.fail_attach_at == Some(self.attached.len()) {
             return Err(AdapterError::new(
                 AdapterErrorKind::AttachFailed,
@@ -106,6 +121,7 @@ impl AyaAdapter for FakeAya {
     }
 
     fn detach_link(&mut self, spec: &LinkSpec, _link: Self::Link) -> Result<(), AdapterError> {
+        let detach_index = self.detached.len();
         self.detached.push(spec.clone());
         self.events.push(format!("detach:{}", spec.program));
         if self.fail_detach_after_mutation {
@@ -119,6 +135,12 @@ impl AyaAdapter for FakeAya {
             return Err(AdapterError::new(
                 AdapterErrorKind::DetachFailed,
                 "injected detach failure",
+            ));
+        }
+        if self.fail_detach_at == Some(detach_index) {
+            return Err(AdapterError::new(
+                AdapterErrorKind::DetachFailed,
+                "injected indexed detach failure",
             ));
         }
         self.hooks.remove(spec);
@@ -165,6 +187,282 @@ fn production_adapter_uses_only_explicit_legacy_netlink_attach() {
     assert!(source.contains("attach_with_options"));
     assert!(source.contains("TcAttachOptions::Netlink"));
     assert!(!source.contains(".attach("));
+}
+
+#[test]
+fn production_mode_switch_suspends_before_attaching_on_the_same_bpf_object() {
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+
+    assert_eq!(
+        runtime.reconfigure_strategy(AttachMode::Normal),
+        ReconfigureStrategy::InPlace
+    );
+    assert_eq!(
+        runtime.reconfigure_strategy(AttachMode::EarlyPassthrough),
+        ReconfigureStrategy::SuspendThenAttach
+    );
+    let source = include_str!("../src/production.rs");
+    assert!(source.contains("ReconfigureStrategy::SuspendThenAttach"));
+    assert!(!source.contains("load_independent_bpf"));
+    let mode_switch = source
+        .split("let suspended = match {")
+        .nth(1)
+        .unwrap()
+        .split("commit_reload(")
+        .next()
+        .unwrap();
+    assert!(mode_switch.contains("suspend_for_replacement"));
+    assert!(mode_switch.contains("attach_suspended"));
+    assert!(mode_switch.contains("collect_with_external_bpf"));
+    assert!(mode_switch.contains("candidate.bpf = current.bpf.take()"));
+    assert!(mode_switch.contains("finish_mode_switch_rollback"));
+    let rollback = source
+        .split("fn finish_mode_switch_rollback")
+        .nth(1)
+        .unwrap()
+        .split("pub fn run")
+        .next()
+        .unwrap();
+    assert!(rollback.contains("old BPF restore failed"));
+    assert!(mode_switch.contains("let old_topology_intact = runtime.is_attached()"));
+    assert!(mode_switch.contains("finish_mode_switch_suspend_failure"));
+}
+
+fn assert_suspended_mode_switch_abort_is_rate_safe(old_mode: AttachMode, new_mode: AttachMode) {
+    let identities = identities();
+    let mut old_adapter = FakeAya::default();
+    let mut old_runtime = BpfRuntime::loaded_for_test();
+    old_runtime
+        .attach_interface(&mut old_adapter, "br-lan", old_mode)
+        .unwrap();
+    let mut old_collector = BpfSnapshotCollector::new(16, 5_000);
+    old_adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 1_000, 10_000_000_000)])));
+    old_runtime
+        .collect_snapshot(
+            &mut old_adapter,
+            &mut old_collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            10_000,
+        )
+        .unwrap();
+    let suspended = old_runtime
+        .suspend_for_replacement(&mut old_adapter)
+        .unwrap();
+    assert_eq!(old_adapter.detached, LinkSpec::pair("br-lan", old_mode));
+
+    old_runtime
+        .attach_suspended(&mut old_adapter, &suspended, &["br-lan".into()], new_mode)
+        .unwrap();
+    old_adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 50_000, 11_000_000_000)])));
+    let mut candidate_collector = BpfSnapshotCollector::new(16, 5_000);
+    let candidate = old_runtime
+        .collect_snapshot(
+            &mut old_adapter,
+            &mut candidate_collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            11_000,
+        )
+        .unwrap();
+    assert_eq!(candidate.clients[0].tx_bytes, 50_000);
+
+    let suspended_candidate = old_runtime
+        .suspend_for_replacement(&mut old_adapter)
+        .unwrap();
+    drop(suspended_candidate);
+    old_runtime
+        .resume_suspended(&mut old_adapter, suspended)
+        .unwrap();
+    old_adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 52_000, 12_000_000_000)])));
+    let old = old_runtime
+        .collect_snapshot(
+            &mut old_adapter,
+            &mut old_collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            12_000,
+        )
+        .unwrap();
+    assert_eq!(old.clients[0].tx_bytes, 52_000);
+    assert_eq!(old.clients[0].tx_bps, 0);
+    assert_eq!(old_adapter.detached.len(), 4);
+}
+
+#[test]
+fn normal_to_early_abort_keeps_the_old_map_and_ratebook_exact() {
+    assert_suspended_mode_switch_abort_is_rate_safe(
+        AttachMode::Normal,
+        AttachMode::EarlyPassthrough,
+    );
+}
+
+#[test]
+fn early_to_normal_abort_keeps_the_old_map_and_ratebook_exact() {
+    assert_suspended_mode_switch_abort_is_rate_safe(
+        AttachMode::EarlyPassthrough,
+        AttachMode::Normal,
+    );
+}
+
+#[test]
+fn committed_suspended_mode_switch_detaches_each_hook_once() {
+    for (old_mode, new_mode) in [
+        (AttachMode::Normal, AttachMode::EarlyPassthrough),
+        (AttachMode::EarlyPassthrough, AttachMode::Normal),
+    ] {
+        let mut adapter = FakeAya::default();
+        let mut runtime = BpfRuntime::loaded_for_test();
+        runtime
+            .attach_interface(&mut adapter, "br-lan", old_mode)
+            .unwrap();
+        let suspended = runtime.suspend_for_replacement(&mut adapter).unwrap();
+        runtime
+            .attach_suspended(&mut adapter, &suspended, &["br-lan".into()], new_mode)
+            .unwrap();
+        drop(suspended);
+
+        runtime.shutdown(&mut adapter).unwrap();
+        let mut expected = LinkSpec::pair("br-lan", old_mode).to_vec();
+        expected.extend(LinkSpec::pair("br-lan", new_mode));
+        assert_eq!(adapter.detached, expected);
+    }
+}
+
+#[test]
+fn suspended_attach_rolls_back_when_a_later_hook_inspection_fails() {
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let suspended = runtime.suspend_for_replacement(&mut adapter).unwrap();
+    adapter.inspect_count = 0;
+    adapter.fail_inspect_at = Some(1);
+
+    let error = runtime
+        .attach_suspended(
+            &mut adapter,
+            &suspended,
+            &["br-lan".into()],
+            AttachMode::EarlyPassthrough,
+        )
+        .unwrap_err();
+
+    assert_eq!(error.kind(), AdapterErrorKind::AttachFailed);
+    assert_eq!(adapter.detached.len(), 3);
+    assert_eq!(
+        adapter
+            .hooks
+            .values()
+            .filter(|state| **state == HookState::Owned)
+            .count(),
+        0
+    );
+    adapter.fail_inspect_at = None;
+    runtime.resume_suspended(&mut adapter, suspended).unwrap();
+    assert_eq!(runtime.attach_mode(), Some(AttachMode::Normal));
+}
+
+#[test]
+fn suspend_inspection_failure_is_pre_mutation_and_keeps_old_topology_attached() {
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let hooks_before = adapter.hooks.clone();
+    let detached_before = adapter.detached.clone();
+    adapter.fail_inspect_at = Some(adapter.inspect_count);
+
+    let error = match runtime.suspend_for_replacement(&mut adapter) {
+        Ok(_) => panic!("suspend inspection unexpectedly succeeded"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.kind(), AdapterErrorKind::AttachFailed);
+    assert_eq!(adapter.hooks, hooks_before);
+    assert_eq!(adapter.detached, detached_before);
+    assert_eq!(runtime.attach_mode(), Some(AttachMode::Normal));
+    assert!(runtime.is_attached());
+}
+
+#[test]
+fn suspended_attach_rollback_detach_failure_blocks_resume() {
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let suspended = runtime.suspend_for_replacement(&mut adapter).unwrap();
+    adapter.inspect_count = 0;
+    adapter.fail_inspect_at = Some(1);
+    adapter.fail_detach_at = Some(2);
+
+    let error = runtime
+        .attach_suspended(
+            &mut adapter,
+            &suspended,
+            &["br-lan".into()],
+            AttachMode::EarlyPassthrough,
+        )
+        .unwrap_err();
+
+    assert_eq!(error.kind(), AdapterErrorKind::DetachFailed);
+    assert!(!runtime.is_attached());
+    assert_eq!(
+        adapter
+            .hooks
+            .values()
+            .filter(|state| **state == HookState::Owned)
+            .count(),
+        1
+    );
+    adapter.fail_inspect_at = None;
+    adapter.fail_detach_at = None;
+    let resume_error = runtime
+        .resume_suspended(&mut adapter, suspended)
+        .unwrap_err();
+    assert_eq!(resume_error.kind(), AdapterErrorKind::AttachFailed);
+    assert_eq!(
+        adapter
+            .hooks
+            .values()
+            .filter(|state| **state == HookState::Owned)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn suspended_mode_switch_creates_clsact_only_for_new_interfaces() {
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interfaces(
+            &mut adapter,
+            &["br-lan".into(), "lan2".into()],
+            AttachMode::Normal,
+        )
+        .unwrap();
+    let suspended = runtime.suspend_for_replacement(&mut adapter).unwrap();
+
+    runtime
+        .attach_suspended(
+            &mut adapter,
+            &suspended,
+            &["lan2".into(), "lan3".into()],
+            AttachMode::EarlyPassthrough,
+        )
+        .unwrap();
+
+    assert_eq!(adapter.clsact, ["br-lan", "lan2", "lan3"]);
+    assert_eq!(adapter.attached.len(), 8);
+    drop(suspended);
 }
 
 #[test]

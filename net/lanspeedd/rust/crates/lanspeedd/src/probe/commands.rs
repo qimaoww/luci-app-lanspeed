@@ -38,6 +38,7 @@ pub enum ReadOnlyCommand {
     Qosify,
     TcFilterHelp,
     TcQdiscHelp,
+    TcQdiscShow,
     TcFilterShow,
     NftListFlowtables,
     NftDaeDnsUdp53,
@@ -54,7 +55,7 @@ impl ReadOnlyCommand {
         match self {
             Self::Fw4 => "fw4",
             Self::Qosify => "qosify",
-            Self::TcFilterHelp | Self::TcQdiscHelp | Self::TcFilterShow => "tc",
+            Self::TcFilterHelp | Self::TcQdiscHelp | Self::TcQdiscShow | Self::TcFilterShow => "tc",
             Self::NftListFlowtables | Self::NftDaeDnsUdp53 => "nft",
             Self::IpRuleShow | Self::IpRouteShow => "ip",
             Self::UbusNetworkLanStatus | Self::UbusServiceDae | Self::UbusServiceDaed => "ubus",
@@ -68,6 +69,7 @@ impl ReadOnlyCommand {
             Self::TcFilterHelp => &["filter", "help"],
             Self::TcFilterShow => &["filter", "show"],
             Self::TcQdiscHelp => &["qdisc", "help"],
+            Self::TcQdiscShow => &["qdisc", "show"],
             Self::NftListFlowtables => &["list", "flowtables"],
             Self::NftDaeDnsUdp53 => &["list", "ruleset"],
             Self::IpRuleShow => &["rule", "show"],
@@ -91,6 +93,10 @@ impl ReadOnlyCommand {
             Self::Qosify => "qosify".into(),
             Self::TcFilterHelp => "tc_filter_help".into(),
             Self::TcQdiscHelp => "tc_qdisc_help".into(),
+            Self::TcQdiscShow if args.len() == 2 => {
+                format!("tc_qdisc_show_{}", snake_component(args[1]))
+            }
+            Self::TcQdiscShow => "tc_qdisc_show".into(),
             Self::TcFilterShow if args.len() == 3 => {
                 format!(
                     "tc_filter_show_{}_{}",
@@ -354,6 +360,14 @@ pub fn validate_read_only_args(command: ReadOnlyCommand, args: &[&str]) -> io::R
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || b"-_.@".contains(&byte))
                 && matches!(args[2], "ingress" | "egress")
+        }
+        ReadOnlyCommand::TcQdiscShow => {
+            args.len() == 2
+                && args[0] == "dev"
+                && !args[1].is_empty()
+                && args[1]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_.@".contains(&byte))
         }
         ReadOnlyCommand::IpRouteShow => {
             args.len() == 3

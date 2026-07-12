@@ -697,6 +697,10 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
         validate_read_only_args(ReadOnlyCommand::TcFilterShow, &["dev", "br-lan", "ingress"])
             .is_ok()
     );
+    assert!(validate_read_only_args(ReadOnlyCommand::TcQdiscShow, &["dev", "br-lan"]).is_ok());
+    assert!(
+        validate_read_only_args(ReadOnlyCommand::TcQdiscShow, &["dev", "br-lan;reboot"]).is_err()
+    );
     assert!(validate_read_only_args(
         ReadOnlyCommand::TcFilterShow,
         &["dev", "br-lan;reboot", "ingress"]
@@ -717,6 +721,10 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
     assert_eq!(
         ReadOnlyCommand::TcFilterShow.evidence_key(&["dev", "br-lan", "ingress"]),
         "tc_filter_show_br_lan_ingress"
+    );
+    assert_eq!(
+        ReadOnlyCommand::TcQdiscShow.evidence_key(&["dev", "br-lan"]),
+        "tc_qdisc_show_br_lan"
     );
     assert!(ReadOnlyCommand::NftDaeDnsUdp53.output_cap() >= 64 * 1024);
     assert_eq!(ReadOnlyCommand::NftListFlowtables.output_cap(), 4_096);

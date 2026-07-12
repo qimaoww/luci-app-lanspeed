@@ -15,9 +15,10 @@ use crate::{
     collectors::{
         bpf::{
             runtime::{
-                AdapterErrorKind, AttachMode, BpfCollectionCheckpoint, BpfPostCommitCleanup,
-                BpfReconfigureTxn, BpfRuntime, ReconfigureRateBaseline, SystemAyaAdapter,
-                SystemAyaLink, FALLBACK_OBJECT_PATH, PRIMARY_OBJECT_PATH,
+                AdapterError, AdapterErrorKind, AttachMode, BpfCollectionCheckpoint,
+                BpfPostCommitCleanup, BpfReconfigureTxn, BpfRuntime, ReconfigureRateBaseline,
+                ReconfigureStrategy, SystemAyaAdapter, SystemAyaLink, FALLBACK_OBJECT_PATH,
+                PRIMARY_OBJECT_PATH,
             },
             snapshot::{
                 BpfClientSample, BpfSnapshotCollector, ConnectionCounts, ConnectionOverlay,
@@ -888,13 +889,28 @@ impl App {
         let config = load_config()?;
         let mut candidate = ProductionRuntime::prepare(config.clone())?;
         let wants_bpf = config.enable_bpf && candidate.probe_report.facts.tc.safe_attach;
-        let reuse_bpf = wants_bpf
-            && self
-                .runtime
-                .as_ref()
-                .is_some_and(|runtime| runtime.bpf.is_some());
+        let desired_mode = candidate.desired_attach_mode();
+        let current_has_bpf = self
+            .runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.bpf.is_some());
+        let reconfigure_strategy = if wants_bpf && current_has_bpf {
+            let current_bpf = self.runtime.as_ref().unwrap().bpf.as_ref().unwrap();
+            if current_bpf.attach_mode().is_none() {
+                return Err(DaemonError::reload(
+                    "current BPF topology is not healthy enough to reload",
+                ));
+            }
+            Some(current_bpf.reconfigure_strategy(desired_mode))
+        } else {
+            None
+        };
+        let reuse_bpf = reconfigure_strategy == Some(ReconfigureStrategy::InPlace);
+        let suspended_mode_switch =
+            reconfigure_strategy == Some(ReconfigureStrategy::SuspendThenAttach);
         let mut prepared_bpf = None;
-        let snapshot = if reuse_bpf {
+        let mut mode_switch_checkpoint = None;
+        let mut snapshot = if reuse_bpf {
             let current = self.runtime.as_mut().unwrap();
             candidate.started = current.started;
             if current.config.max_clients == config.max_clients
@@ -907,7 +923,7 @@ impl App {
             let transaction = match runtime.prepare_reconfigure(
                 &mut current.adapter,
                 &collect_ifnames(&config),
-                candidate.desired_attach_mode(),
+                desired_mode,
             ) {
                 Ok(transaction) => transaction,
                 Err(error) => {
@@ -954,7 +970,17 @@ impl App {
                 }
             }
         } else {
-            if wants_bpf {
+            if suspended_mode_switch {
+                let current = self.runtime.as_ref().unwrap();
+                candidate.started = current.started;
+                if current.config.max_clients == config.max_clients
+                    && current.config.active_client_window_ms == config.active_client_window_ms
+                {
+                    candidate.bpf_collector = current.bpf_collector.clone();
+                }
+                candidate.bpf_error = current.bpf_error.clone();
+                mode_switch_checkpoint = Some(candidate.checkpoint());
+            } else if wants_bpf {
                 if let Err(error) = candidate.activate_new_bpf() {
                     *self.state.fatal_cell().borrow_mut() = Some(error.to_string());
                     UloopGuard::request_stop();
@@ -1016,6 +1042,115 @@ impl App {
             }
             return Err(failure);
         }
+        if suspended_mode_switch {
+            let suspended = match {
+                let current = self.runtime.as_mut().unwrap();
+                let runtime = current.bpf.as_mut().unwrap();
+                match runtime.suspend_for_replacement(&mut current.adapter) {
+                    Ok(suspended) => Ok(suspended),
+                    Err(error) => {
+                        let old_topology_intact = runtime.is_attached();
+                        Err((error, old_topology_intact))
+                    }
+                }
+            } {
+                Ok(suspended) => suspended,
+                Err((error, old_topology_intact)) => {
+                    let primary =
+                        DaemonError::reload(format!("BPF mode-switch suspend failed: {error}"));
+                    let timer = self.collection_timer.as_ref().unwrap();
+                    let restore_timer = || {
+                        timer
+                            .schedule(old_interval)
+                            .map_err(|error| DaemonError::transport(error.to_string()))
+                    };
+                    let failure = finish_mode_switch_suspend_failure(
+                        &self.state,
+                        &mut candidate,
+                        primary,
+                        old_topology_intact,
+                        restore_timer,
+                        UloopGuard::request_stop,
+                    );
+                    return Err(failure);
+                }
+            };
+            candidate.restore(
+                mode_switch_checkpoint
+                    .take()
+                    .expect("suspended mode switch checkpointed before collection"),
+            );
+            candidate.bpf_collector.reset_rates();
+            let interfaces = collect_ifnames(&config);
+            let attach_result = {
+                let current = self.runtime.as_mut().unwrap();
+                current.bpf.as_mut().unwrap().attach_suspended(
+                    &mut current.adapter,
+                    &suspended,
+                    &interfaces,
+                    desired_mode,
+                )
+            };
+            if let Err(error) = attach_result {
+                let restore = {
+                    let current = self.runtime.as_mut().unwrap();
+                    current
+                        .bpf
+                        .as_mut()
+                        .unwrap()
+                        .resume_suspended(&mut current.adapter, suspended)
+                };
+                let timer = self.collection_timer.as_ref().unwrap();
+                return Err(finish_mode_switch_rollback(
+                    &self.state,
+                    &mut candidate,
+                    DaemonError::reload(error.to_string()),
+                    restore,
+                    || {
+                        timer
+                            .schedule(old_interval)
+                            .map_err(|error| DaemonError::transport(error.to_string()))
+                    },
+                    UloopGuard::request_stop,
+                ));
+            }
+            let collected = {
+                let current = self.runtime.as_mut().unwrap();
+                candidate.collect_with_external_bpf(
+                    current.bpf.as_mut().unwrap(),
+                    &mut current.adapter,
+                    ProbeMethod::Reload,
+                )
+            };
+            snapshot = match collected {
+                Ok((snapshot, _)) => snapshot,
+                Err(error) => {
+                    let restore = {
+                        let current = self.runtime.as_mut().unwrap();
+                        let runtime = current.bpf.as_mut().unwrap();
+                        runtime
+                            .suspend_for_replacement(&mut current.adapter)
+                            .and_then(|_| runtime.resume_suspended(&mut current.adapter, suspended))
+                    };
+                    let timer = self.collection_timer.as_ref().unwrap();
+                    return Err(finish_mode_switch_rollback(
+                        &self.state,
+                        &mut candidate,
+                        error,
+                        restore,
+                        || {
+                            timer
+                                .schedule(old_interval)
+                                .map_err(|error| DaemonError::transport(error.to_string()))
+                        },
+                        UloopGuard::request_stop,
+                    ));
+                }
+            };
+            let current = self.runtime.as_mut().unwrap();
+            candidate.adapter = std::mem::take(&mut current.adapter);
+            candidate.bpf = current.bpf.take();
+        }
         let postcommit_cleanup: Option<BpfPostCommitCleanup<SystemAyaLink>> =
             prepared_bpf.take().map(|prepared| {
                 let current = self.runtime.as_mut().unwrap();
@@ -1045,6 +1180,72 @@ impl App {
         }
         Ok(())
     }
+}
+
+fn finish_mode_switch_suspend_failure<R: Runtime>(
+    state: &CoordinatorState,
+    candidate: &mut R,
+    primary: DaemonError,
+    old_topology_intact: bool,
+    restore_timer: impl FnOnce() -> Result<(), DaemonError>,
+    request_stop: impl FnOnce(),
+) -> DaemonError {
+    if old_topology_intact {
+        abort_reload_after_timer_failure(state, candidate, primary, restore_timer, request_stop)
+    } else {
+        abort_unrecoverable_mode_switch(state, candidate, primary, restore_timer, request_stop)
+    }
+}
+
+fn abort_unrecoverable_mode_switch<R: Runtime>(
+    state: &CoordinatorState,
+    candidate: &mut R,
+    primary: DaemonError,
+    restore_timer: impl FnOnce() -> Result<(), DaemonError>,
+    request_stop: impl FnOnce(),
+) -> DaemonError {
+    let candidate_cleanup = candidate.shutdown().err();
+    let timer_rollback = restore_timer().err();
+    let mut message = primary.to_string();
+    if let Some(error) = candidate_cleanup {
+        message.push_str(&format!("; candidate cleanup failed: {error}"));
+    }
+    if let Some(error) = timer_rollback {
+        message.push_str(&format!("; timer rollback failed: {error}"));
+    }
+    *state.fatal_cell().borrow_mut() = Some(message.clone());
+    request_stop();
+    DaemonError::reload(message)
+}
+
+fn finish_mode_switch_rollback<R: Runtime>(
+    state: &CoordinatorState,
+    candidate: &mut R,
+    primary: DaemonError,
+    bpf_restore: Result<(), AdapterError>,
+    restore_timer: impl FnOnce() -> Result<(), DaemonError>,
+    request_stop: impl FnOnce(),
+) -> DaemonError {
+    let candidate_cleanup = candidate.shutdown().err();
+    let old_restore = bpf_restore.err();
+    let timer_rollback = restore_timer().err();
+    if candidate_cleanup.is_none() && old_restore.is_none() && timer_rollback.is_none() {
+        return primary;
+    }
+
+    let mut message = primary.to_string();
+    if let Some(error) = candidate_cleanup {
+        message.push_str(&format!("; candidate cleanup failed: {error}"));
+    }
+    if let Some(error) = old_restore {
+        message.push_str(&format!("; old BPF restore failed: {error}"));
+    }
+    if let Some(error) = timer_rollback {
+        message.push_str(&format!("; timer rollback failed: {error}"));
+    }
+    *state.fatal_cell().borrow_mut() = Some(message.clone());
+    request_stop();
+    DaemonError::reload(message)
 }
 
 pub fn run() -> Result<(), DaemonError> {
@@ -1613,6 +1814,138 @@ fn record_fatal_cleanup(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct FakeRuntime {
+        shutdowns: usize,
+        fail_shutdown: bool,
+    }
+
+    impl Runtime for FakeRuntime {
+        type Checkpoint = ();
+
+        fn checkpoint(&self) -> Self::Checkpoint {}
+
+        fn restore(&mut self, _checkpoint: Self::Checkpoint) {}
+
+        fn collect(&mut self) -> Result<ResponseSnapshot, DaemonError> {
+            unreachable!("mode-switch failure tests do not collect")
+        }
+
+        fn shutdown(&mut self) -> Result<(), DaemonError> {
+            self.shutdowns += 1;
+            if self.fail_shutdown {
+                Err(DaemonError::collection("candidate shutdown failed"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn test_state() -> CoordinatorState {
+        CoordinatorState::new(
+            RuntimeConfig::default(),
+            Arc::new(ResponseSnapshot::unsupported("test")),
+        )
+    }
+
+    #[test]
+    fn intact_suspend_failure_restores_timer_without_fatal_stop() {
+        let state = test_state();
+        let mut candidate = FakeRuntime::default();
+        let timer_restores = Cell::new(0);
+        let stopped = Cell::new(false);
+
+        let error = finish_mode_switch_suspend_failure(
+            &state,
+            &mut candidate,
+            DaemonError::reload("inspect failed"),
+            true,
+            || {
+                timer_restores.set(timer_restores.get() + 1);
+                Ok(())
+            },
+            || stopped.set(true),
+        );
+
+        assert!(error.to_string().contains("inspect failed"));
+        assert_eq!(candidate.shutdowns, 1);
+        assert_eq!(timer_restores.get(), 1);
+        assert!(!stopped.get());
+        assert!(state.fatal_error().is_none());
+    }
+
+    #[test]
+    fn mutated_suspend_failure_is_fatal_even_when_cleanup_succeeds() {
+        let state = test_state();
+        let mut candidate = FakeRuntime::default();
+        let timer_restores = Cell::new(0);
+        let stopped = Cell::new(false);
+
+        finish_mode_switch_suspend_failure(
+            &state,
+            &mut candidate,
+            DaemonError::reload("detach failed"),
+            false,
+            || {
+                timer_restores.set(timer_restores.get() + 1);
+                Ok(())
+            },
+            || stopped.set(true),
+        );
+
+        assert_eq!(candidate.shutdowns, 1);
+        assert_eq!(timer_restores.get(), 1);
+        assert!(stopped.get());
+        assert!(state
+            .fatal_error()
+            .is_some_and(|error| error.contains("detach failed")));
+    }
+
+    #[test]
+    fn failed_old_topology_restore_is_fatal_and_preserves_both_causes() {
+        let state = test_state();
+        let mut candidate = FakeRuntime::default();
+        let stopped = Cell::new(false);
+
+        let error = finish_mode_switch_rollback(
+            &state,
+            &mut candidate,
+            DaemonError::reload("candidate collect failed"),
+            Err(AdapterError::new(
+                AdapterErrorKind::DetachFailed,
+                "old restore failed",
+            )),
+            || Ok(()),
+            || stopped.set(true),
+        );
+
+        assert!(error.to_string().contains("candidate collect failed"));
+        assert!(error.to_string().contains("old restore failed"));
+        assert!(stopped.get());
+        assert!(state.fatal_error().is_some());
+    }
+
+    #[test]
+    fn successful_old_topology_restore_returns_plain_reload_error() {
+        let state = test_state();
+        let mut candidate = FakeRuntime::default();
+        let stopped = Cell::new(false);
+
+        let error = finish_mode_switch_rollback(
+            &state,
+            &mut candidate,
+            DaemonError::reload("candidate collect failed"),
+            Ok(()),
+            || Ok(()),
+            || stopped.set(true),
+        );
+
+        assert!(error.to_string().contains("candidate collect failed"));
+        assert_eq!(candidate.shutdowns, 1);
+        assert!(!stopped.get());
+        assert!(state.fatal_error().is_none());
+    }
 
     #[test]
     fn cleanup_failures_are_fatal_and_preserve_both_causes() {

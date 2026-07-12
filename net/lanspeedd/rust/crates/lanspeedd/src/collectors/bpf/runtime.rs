@@ -183,6 +183,12 @@ pub enum ReconfigureRateBaseline {
     Prepared,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReconfigureStrategy {
+    InPlace,
+    SuspendThenAttach,
+}
+
 impl BpfReconfigureTxn {
     pub const fn topology_changed(&self) -> bool {
         self.topology_changed
@@ -192,6 +198,11 @@ impl BpfReconfigureTxn {
 #[derive(Debug)]
 pub struct BpfPostCommitCleanup<L> {
     obsolete: Vec<OwnedLink<L>>,
+}
+
+pub struct BpfSuspendedTopology {
+    retained_interfaces: Vec<String>,
+    mode: AttachMode,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -324,6 +335,164 @@ impl<L> BpfRuntime<L> {
 
     pub fn primary_kfunc_incompatibility(&self) -> Option<&str> {
         self.primary_kfunc_incompatibility.as_deref()
+    }
+
+    pub const fn attach_mode(&self) -> Option<AttachMode> {
+        self.current_mode
+    }
+
+    pub fn reconfigure_strategy(&self, desired_mode: AttachMode) -> ReconfigureStrategy {
+        if self.current_mode == Some(desired_mode) {
+            ReconfigureStrategy::InPlace
+        } else {
+            ReconfigureStrategy::SuspendThenAttach
+        }
+    }
+
+    pub fn suspend_for_replacement<A: AyaAdapter<Link = L>>(
+        &mut self,
+        adapter: &mut A,
+    ) -> Result<BpfSuspendedTopology, AdapterError> {
+        if !self.is_attached() {
+            return Err(AdapterError::new(
+                AdapterErrorKind::DetachFailed,
+                "BPF topology is not healthy enough to suspend",
+            ));
+        }
+        let desired_specs = self.expected_specs.clone();
+        let mut retained_interfaces = desired_specs
+            .iter()
+            .map(|spec| spec.interface.clone())
+            .collect::<Vec<_>>();
+        retained_interfaces.dedup();
+        let mode = self.current_mode.expect("is_attached requires a mode");
+        let tracked_specs = self
+            .links
+            .iter()
+            .map(|owned| owned.spec.clone())
+            .collect::<Vec<_>>();
+        for spec in tracked_specs {
+            match adapter.inspect_hook(&spec) {
+                Ok(HookState::Owned) => {}
+                Ok(HookState::Absent | HookState::Foreign) => {
+                    let error = AdapterError::new(
+                        AdapterErrorKind::OwnershipConflict,
+                        format!(
+                            "owned filter changed before suspend {} {:?}",
+                            spec.interface, spec.direction
+                        ),
+                    );
+                    self.reconcile_required = true;
+                    self.recovery_specs = Some(desired_specs.clone());
+                    self.recovery_mode = Some(mode);
+                    self.last_runtime_error = Some(error.to_string());
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        let mut tracked = core::mem::take(&mut self.links).into_iter();
+        while let Some(owned) = tracked.next() {
+            if let Err(error) = adapter.detach_link(&owned.spec, owned.link) {
+                push_unique_spec(&mut self.unresolved_specs, owned.spec);
+                self.links.extend(tracked);
+                self.reconcile_required = true;
+                self.recovery_specs = Some(desired_specs);
+                self.recovery_mode = Some(mode);
+                self.last_runtime_error = Some(error.to_string());
+                return Err(error);
+            }
+        }
+        self.expected_specs.clear();
+        self.current_mode = None;
+        self.last_runtime_error = None;
+        Ok(BpfSuspendedTopology {
+            retained_interfaces,
+            mode,
+        })
+    }
+
+    pub fn resume_suspended<A: AyaAdapter<Link = L>>(
+        &mut self,
+        adapter: &mut A,
+        suspended: BpfSuspendedTopology,
+    ) -> Result<(), AdapterError> {
+        let interfaces = suspended.retained_interfaces.clone();
+        self.attach_suspended(adapter, &suspended, &interfaces, suspended.mode)
+    }
+
+    pub fn attach_suspended<A: AyaAdapter<Link = L>>(
+        &mut self,
+        adapter: &mut A,
+        suspended: &BpfSuspendedTopology,
+        interfaces: &[String],
+        mode: AttachMode,
+    ) -> Result<(), AdapterError> {
+        if !self.object_loaded
+            || !self.links.is_empty()
+            || !self.expected_specs.is_empty()
+            || self.reconcile_required
+            || !self.unresolved_specs.is_empty()
+        {
+            return Err(AdapterError::new(
+                AdapterErrorKind::AttachFailed,
+                "BPF runtime is not in a suspended state",
+            ));
+        }
+        let desired_interfaces = interfaces.iter().fold(Vec::new(), |mut unique, interface| {
+            if !unique.contains(interface) {
+                unique.push(interface.clone());
+            }
+            unique
+        });
+        let mut attached = Vec::new();
+        for interface in &desired_interfaces {
+            if !suspended.retained_interfaces.contains(interface) {
+                if let Err(error) = adapter.ensure_clsact(interface) {
+                    return Err(self.abort_prepared_specs(adapter, attached, error));
+                }
+            }
+        }
+        let desired_specs = desired_interfaces
+            .iter()
+            .flat_map(|interface| LinkSpec::pair(interface, mode))
+            .collect::<Vec<_>>();
+        for spec in &desired_specs {
+            let state = match adapter.inspect_hook(spec) {
+                Ok(state) => state,
+                Err(error) => return Err(self.abort_prepared_specs(adapter, attached, error)),
+            };
+            match state {
+                HookState::Absent => {}
+                HookState::Owned | HookState::Foreign => {
+                    let error = AdapterError::new(
+                        AdapterErrorKind::OwnershipConflict,
+                        format!(
+                            "cannot attach suspended topology over occupied filter {} {:?}",
+                            spec.interface, spec.direction
+                        ),
+                    );
+                    return Err(self.abort_prepared_specs(adapter, attached, error));
+                }
+            }
+
+            match adapter.attach_netlink(spec) {
+                Ok(link) => {
+                    self.links.push(OwnedLink {
+                        spec: spec.clone(),
+                        link,
+                    });
+                    attached.push(spec.clone());
+                }
+                Err(error) => return Err(self.abort_prepared_specs(adapter, attached, error)),
+            }
+        }
+        self.expected_specs = desired_specs;
+        self.current_mode = Some(mode);
+        self.rate_reset_required = true;
+        self.last_runtime_error = None;
+        Ok(())
     }
 
     pub fn is_attached(&self) -> bool {
@@ -682,6 +851,11 @@ impl<L> BpfRuntime<L> {
             }
         }
         if let Some(error) = first_error {
+            self.reconcile_required = true;
+            if !self.expected_specs.is_empty() && self.current_mode.is_some() {
+                self.recovery_specs = Some(self.expected_specs.clone());
+                self.recovery_mode = self.current_mode;
+            }
             self.last_runtime_error = Some(error.to_string());
             Err(error)
         } else {
@@ -1152,8 +1326,37 @@ impl AyaAdapter for SystemAyaAdapter {
     }
 
     fn ensure_clsact(&mut self, interface: &str) -> Result<(), AdapterError> {
+        let clsact_present = || -> Result<bool, AdapterError> {
+            let output = run_read_only(
+                ReadOnlyCommand::TcQdiscShow,
+                &["dev", interface],
+                DEFAULT_TIMEOUT,
+                DEFAULT_OUTPUT_CAP,
+            )
+            .map_err(|error| {
+                AdapterError::new(
+                    AdapterErrorKind::AttachFailed,
+                    format!("tc qdisc inspection failed: {error}"),
+                )
+            })?;
+            if output.exit_code != Some(0) || output.timed_out {
+                return Err(AdapterError::new(
+                    AdapterErrorKind::AttachFailed,
+                    format!("tc qdisc inspection failed: {}", output.stderr.trim()),
+                ));
+            }
+            Ok(output.stdout.lines().any(|line| {
+                let mut tokens = line.split_whitespace();
+                tokens.next() == Some("qdisc") && tokens.next() == Some("clsact")
+            }))
+        };
+
+        if clsact_present()? {
+            return Ok(());
+        }
         match tc::qdisc_add_clsact(interface) {
             Ok(()) | Err(TcError::AlreadyAttached) => Ok(()),
+            Err(_error) if clsact_present()? => Ok(()),
             Err(error) => Err(AdapterError::new(
                 AdapterErrorKind::AttachFailed,
                 error.to_string(),
