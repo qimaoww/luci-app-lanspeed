@@ -720,9 +720,11 @@ where
                 });
                 present
             }
-            Err(_) => {
+            Err(error_value) => {
                 *error = true;
-                evidence.file.push(file_missing(path));
+                evidence
+                    .file
+                    .push(file_error(path, error_value.to_string()));
                 false
             }
         }
@@ -917,16 +919,6 @@ fn to_file_evidence(entry: BoundedFile) -> FileEvidence {
         present: entry.present,
         value: entry.value,
         status: if entry.present { "present" } else { "absent" },
-        error: None,
-    }
-}
-fn file_missing(path: &str) -> FileEvidence {
-    FileEvidence {
-        source: format!("file:{path}"),
-        path: path.into(),
-        present: false,
-        value: None,
-        status: "absent",
         error: None,
     }
 }

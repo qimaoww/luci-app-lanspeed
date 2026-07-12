@@ -1,12 +1,11 @@
 use std::{
     env,
     io::{self, Read},
+    os::fd::{AsRawFd, RawFd},
     os::unix::fs::PermissionsExt,
     os::unix::process::CommandExt,
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
-    sync::{Arc, Condvar, Mutex},
-    thread,
     time::{Duration, Instant},
 };
 
@@ -158,29 +157,61 @@ pub fn run_read_only(
         .stderr(Stdio::piped())
         .process_group(0)
         .spawn()?;
-    let stdout = child
+    let mut stdout = child
         .stdout
         .take()
         .ok_or_else(|| io::Error::other("probe stdout pipe missing"))?;
-    let stderr = child
+    let mut stderr = child
         .stderr
         .take()
         .ok_or_else(|| io::Error::other("probe stderr pipe missing"))?;
-    let stdout_reader = CappedReader::spawn(stdout, output_cap);
-    let stderr_reader = CappedReader::spawn(stderr, output_cap);
+    set_nonblocking(stdout.as_raw_fd())?;
+    set_nonblocking(stderr.as_raw_fd())?;
+    let mut stdout_capture = PipeCapture::new(output_cap);
+    let mut stderr_capture = PipeCapture::new(output_cap);
     let deadline = Instant::now() + timeout;
-    let (status, timed_out) = loop {
-        if let Some(status) = child.try_wait()? {
-            break (finish_child(&mut child, status)?, false);
+    let mut status = None;
+    let mut timed_out = false;
+    let mut output_deadline = None;
+    loop {
+        stdout_capture.drain(&mut stdout)?;
+        stderr_capture.drain(&mut stderr)?;
+
+        let now = Instant::now();
+        if status.is_none() {
+            if let Some(observed_status) = try_wait(&mut child)? {
+                status = Some(finish_child(&mut child, observed_status)?);
+                output_deadline = Some(now + OUTPUT_DRAIN_TIMEOUT);
+            } else if now >= deadline {
+                status = Some(terminate_child(&mut child)?);
+                timed_out = true;
+                output_deadline = Some(now + OUTPUT_DRAIN_TIMEOUT);
+            }
         }
-        if Instant::now() >= deadline {
-            break (terminate_child(&mut child)?, true);
+
+        if stdout_capture.done && stderr_capture.done {
+            if status.is_some() {
+                break;
+            }
         }
-        thread::sleep(Duration::from_millis(10));
-    };
-    let output_deadline = Instant::now() + OUTPUT_DRAIN_TIMEOUT;
-    let (stdout, stdout_truncated) = stdout_reader.collect(output_deadline)?;
-    let (stderr, stderr_truncated) = stderr_reader.collect(output_deadline)?;
+        if output_deadline.is_some_and(|drain_deadline| Instant::now() >= drain_deadline) {
+            stdout_capture.finish_at_deadline();
+            stderr_capture.finish_at_deadline();
+            break;
+        }
+
+        let wake_deadline = output_deadline.unwrap_or(deadline);
+        poll_pipes(
+            &stdout_capture,
+            stdout.as_raw_fd(),
+            &stderr_capture,
+            stderr.as_raw_fd(),
+            wake_deadline,
+        )?;
+    }
+    let status = status.ok_or_else(|| io::Error::other("probe command status missing"))?;
+    let (stdout, stdout_truncated) = stdout_capture.finish();
+    let (stderr, stderr_truncated) = stderr_capture.finish();
     let source = format!("command:{}", source_key(command, dynamic_args));
     Ok(CommandResult {
         source,
@@ -253,7 +284,12 @@ fn terminate_child(child: &mut Child) -> io::Result<ExitStatus> {
 }
 
 fn kill_process_group(leader: u32) -> io::Result<()> {
-    let result = unsafe { libc::kill(-(leader as i32), libc::SIGKILL) };
+    let leader = i32::try_from(leader)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "process id exceeds i32"))?;
+    let group = leader
+        .checked_neg()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid process group id"))?;
+    let result = unsafe { libc::kill(group, libc::SIGKILL) };
     if result == 0 {
         return Ok(());
     }
@@ -265,85 +301,129 @@ fn kill_process_group(leader: u32) -> io::Result<()> {
     }
 }
 
-struct CappedReader {
-    state: Arc<(Mutex<ReaderState>, Condvar)>,
-}
-
-struct ReaderState {
-    kept: Vec<u8>,
-    truncated: bool,
-    done: bool,
-    error: Option<io::Error>,
-}
-
-impl CappedReader {
-    fn spawn(mut reader: impl Read + Send + 'static, cap: usize) -> Self {
-        let state = Arc::new((
-            Mutex::new(ReaderState {
-                kept: Vec::with_capacity(cap.min(4_096)),
-                truncated: false,
-                done: false,
-                error: None,
-            }),
-            Condvar::new(),
-        ));
-        let thread_state = Arc::clone(&state);
-        thread::spawn(move || {
-            let mut buffer = [0u8; 1_024];
-            loop {
-                match reader.read(&mut buffer) {
-                    Ok(0) => {
-                        let (lock, changed) = &*thread_state;
-                        lock.lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .done = true;
-                        changed.notify_all();
-                        break;
-                    }
-                    Ok(count) => {
-                        let (lock, _) = &*thread_state;
-                        let mut state =
-                            lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                        let remaining = cap.saturating_sub(state.kept.len());
-                        let take = count.min(remaining);
-                        state.kept.extend_from_slice(&buffer[..take]);
-                        state.truncated |= take != count;
-                    }
-                    Err(error) => {
-                        let (lock, changed) = &*thread_state;
-                        let mut state =
-                            lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                        state.error = Some(error);
-                        state.done = true;
-                        changed.notify_all();
-                        break;
-                    }
-                }
-            }
-        });
-        Self { state }
-    }
-
-    fn collect(self, deadline: Instant) -> io::Result<(String, bool)> {
-        let (lock, changed) = &*self.state;
-        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        while !state.done {
-            let now = Instant::now();
-            if now >= deadline {
-                break;
-            }
-            let remaining = deadline.saturating_duration_since(now);
-            state = changed
-                .wait_timeout(state, remaining)
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .0;
+fn try_wait(child: &mut Child) -> io::Result<Option<ExitStatus>> {
+    loop {
+        match child.try_wait() {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => return result,
         }
-        if let Some(error) = state.error.take() {
+    }
+}
+
+fn set_nonblocking(fd: RawFd) -> io::Result<()> {
+    let flags = loop {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags >= 0 {
+            break flags;
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
             return Err(error);
         }
-        let truncated = state.truncated || !state.done;
-        Ok((String::from_utf8_lossy(&state.kept).into_owned(), truncated))
+    };
+    loop {
+        if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
     }
+}
+
+struct PipeCapture {
+    kept: Vec<u8>,
+    cap: usize,
+    truncated: bool,
+    done: bool,
+}
+
+impl PipeCapture {
+    fn new(cap: usize) -> Self {
+        Self {
+            kept: Vec::with_capacity(cap.min(4_096)),
+            cap,
+            truncated: false,
+            done: false,
+        }
+    }
+
+    fn drain(&mut self, reader: &mut impl Read) -> io::Result<()> {
+        let mut buffer = [0u8; 4_096];
+        while !self.done {
+            match reader.read(&mut buffer) {
+                Ok(0) => self.done = true,
+                Ok(count) => {
+                    let remaining = self.cap.saturating_sub(self.kept.len());
+                    let take = count.min(remaining);
+                    self.kept.extend_from_slice(&buffer[..take]);
+                    self.truncated |= take != count;
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    fn finish_at_deadline(&mut self) {
+        self.truncated |= !self.done;
+    }
+
+    fn finish(self) -> (String, bool) {
+        (
+            String::from_utf8_lossy(&self.kept).into_owned(),
+            self.truncated,
+        )
+    }
+}
+
+fn poll_pipes(
+    stdout: &PipeCapture,
+    stdout_fd: RawFd,
+    stderr: &PipeCapture,
+    stderr_fd: RawFd,
+    deadline: Instant,
+) -> io::Result<()> {
+    let mut descriptors = [
+        poll_descriptor(stdout_fd, stdout.done),
+        poll_descriptor(stderr_fd, stderr.done),
+    ];
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let timeout = poll_timeout(remaining.min(Duration::from_millis(10)));
+    loop {
+        let result = unsafe {
+            libc::poll(
+                descriptors.as_mut_ptr(),
+                descriptors.len() as libc::nfds_t,
+                timeout,
+            )
+        };
+        if result >= 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+fn poll_descriptor(fd: RawFd, done: bool) -> libc::pollfd {
+    libc::pollfd {
+        fd: if done { -1 } else { fd },
+        events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+        revents: 0,
+    }
+}
+
+fn poll_timeout(duration: Duration) -> i32 {
+    if duration.is_zero() {
+        return 0;
+    }
+    duration.as_millis().clamp(1, i32::MAX as u128) as i32
 }
 
 fn exit_code(status: ExitStatus) -> Option<i32> {
@@ -363,6 +443,7 @@ mod tests {
         os::unix::fs::PermissionsExt,
         path::PathBuf,
         sync::{Mutex, OnceLock},
+        thread,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -495,6 +576,73 @@ mod tests {
         assert_eq!(result.stdout.len(), 64);
         assert_eq!(result.stderr.len(), 64);
         assert!(result.output_truncated);
+    }
+
+    #[test]
+    fn pipe_holding_setsid_escape_does_not_leave_reader_threads() {
+        let _lock = PATH_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let command = TestCommand::install(
+            "#!/bin/sh\n/usr/bin/setsid /bin/sleep 3 &\nprintf '%s\\n' \"$!\" > escaped-pid\nprintf 'parent exited\\n'\n",
+        );
+        let original_directory = env::current_dir().expect("read current directory");
+        env::set_current_dir(&command.directory).expect("enter command test directory");
+        let thread_count_before = process_thread_count();
+
+        let started = Instant::now();
+        let result = run_read_only(
+            ReadOnlyCommand::TcFilterHelp,
+            &[],
+            Duration::from_secs(1),
+            DEFAULT_OUTPUT_CAP,
+        )
+        .expect("run test command");
+        let elapsed = started.elapsed();
+        let thread_count_after = process_thread_count();
+        env::set_current_dir(original_directory).expect("restore current directory");
+
+        let escaped = fs::read_to_string(command.path("escaped-pid"))
+            .expect("read escaped pid")
+            .trim()
+            .parse::<i32>()
+            .expect("escaped pid should be numeric");
+        unsafe { libc::kill(escaped, libc::SIGKILL) };
+
+        assert!(!result.timed_out);
+        assert_eq!(result.stdout, "parent exited\n");
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "escaped pipe holder delayed return by {elapsed:?}"
+        );
+        assert_eq!(
+            thread_count_after, thread_count_before,
+            "reader threads remained after returning"
+        );
+    }
+
+    #[test]
+    fn repeated_commands_do_not_increase_thread_count() {
+        let _lock = PATH_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _command = TestCommand::install("#!/bin/sh\nprintf 'ok\\n'\n");
+        let thread_count_before = process_thread_count();
+
+        for _ in 0..100 {
+            let result = run_read_only(
+                ReadOnlyCommand::TcFilterHelp,
+                &[],
+                Duration::from_secs(1),
+                DEFAULT_OUTPUT_CAP,
+            )
+            .expect("run test command");
+            assert_eq!(result.stdout, "ok\n");
+        }
+
+        assert_eq!(process_thread_count(), thread_count_before);
+    }
+
+    fn process_thread_count() -> usize {
+        fs::read_dir("/proc/self/task")
+            .expect("read process thread directory")
+            .count()
     }
 
     fn read_pids(path: &Path) -> (i32, i32) {

@@ -1165,9 +1165,11 @@ fn openclash_uses_one_relevant_section_without_cross_section_splicing() {
 fn file_io_errors_are_probe_errors_while_not_found_is_only_missing() {
     let acct = "/proc/sys/net/netfilter/nf_conntrack_acct";
     let loop_path = "/proc/net/nf_flowtable";
+    let directory = "/sys/class/ieee80211";
     let mut files = FakeFiles::default();
     files.errors.insert(acct.into());
     files.errors.insert(loop_path.into());
+    files.errors.insert(directory.into());
     let mut collector = ProbeCollector::new(
         FakeCommands::default(),
         files,
@@ -1188,6 +1190,13 @@ fn file_io_errors_are_probe_errors_while_not_found_is_only_missing() {
         .file
         .iter()
         .any(|entry| entry.path == loop_path
+            && entry.status == "error"
+            && entry.error.as_deref() == Some("symlink loop")));
+    assert!(report
+        .evidence
+        .file
+        .iter()
+        .any(|entry| entry.path == directory
             && entry.status == "error"
             && entry.error.as_deref() == Some("symlink loop")));
     assert!(report
