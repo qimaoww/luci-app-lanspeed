@@ -29,7 +29,11 @@ use crate::{
         nss::{self, ParseLimits},
     },
     config::{ConnectionCollectorMode, InterfaceEligibility, LegacyNameEligibility, RuntimeConfig},
-    daemon::UloopSignalBridge,
+    daemon::{
+        abort_reload_after_timer_failure, abort_reload_candidate, activate_runtime,
+        collect_and_reschedule, commit_reload, install_control_or_shutdown, reconnect_and_register,
+        shutdown_runtime, CoordinatorState, Runtime, UloopSignalBridge,
+    },
     error::DaemonError,
     history::{
         coverage::{ByteTotals, CoverageRing, CoverageSample},
@@ -58,7 +62,7 @@ use crate::{
         RuntimeHealth,
     },
     rate::{ClientCounters, RateBook},
-    state::{ResponseSnapshot, SnapshotStore, CONNECTION_SEMANTICS, OVERVIEW_SAMPLE_SOURCE},
+    state::{ResponseSnapshot, CONNECTION_SEMANTICS, OVERVIEW_SAMPLE_SOURCE},
     ubus,
 };
 
@@ -729,42 +733,54 @@ impl Drop for ProductionRuntime {
     }
 }
 
+impl Runtime for ProductionRuntime {
+    type Checkpoint = RuntimeCheckpoint;
+
+    fn checkpoint(&self) -> Self::Checkpoint {
+        ProductionRuntime::checkpoint(self)
+    }
+
+    fn restore(&mut self, checkpoint: Self::Checkpoint) {
+        ProductionRuntime::restore(self, checkpoint);
+    }
+
+    fn collect(&mut self) -> Result<ResponseSnapshot, DaemonError> {
+        ProductionRuntime::collect(self, ProbeMethod::Status)
+    }
+
+    fn shutdown(&mut self) -> Result<(), DaemonError> {
+        ProductionRuntime::shutdown(self)
+    }
+}
+
 struct App {
-    config: RuntimeConfig,
-    runtime: ProductionRuntime,
-    snapshots: SnapshotStore,
+    state: CoordinatorState,
+    runtime: Option<ProductionRuntime>,
     ubus: Option<UbusConnection>,
     collection_timer: Option<Timer>,
     reconnect_timer: Option<Timer>,
     reconnect_pending: Cell<bool>,
     last_error: Option<String>,
-    fatal_error: RefCell<Option<String>>,
 }
 
 impl App {
     fn collection_tick(&mut self) {
-        match self.runtime.collect(ProbeMethod::Status) {
-            Ok(mut snapshot) => {
-                if let Some(error) = self.last_error.take() {
-                    add_runtime_error(&mut snapshot, &error);
-                }
-                self.snapshots.publish(Arc::new(snapshot));
-            }
-            Err(error) => {
-                self.last_error = Some(error.to_string());
-                self.publish_degraded(error.to_string());
-            }
-        }
-        if let Err(error) = self
-            .collection_timer
-            .as_ref()
-            .unwrap()
-            .schedule(self.config.refresh_interval_ms)
-        {
+        let timer = self.collection_timer.as_ref().unwrap();
+        let runtime = self
+            .runtime
+            .as_mut()
+            .expect("collection timer requires a staged runtime");
+        if let Err(error) = collect_and_reschedule(
+            &self.state,
+            runtime,
+            |delay| {
+                timer
+                    .schedule(delay)
+                    .map_err(|error| DaemonError::transport(error.to_string()))
+            },
+            UloopGuard::request_stop,
+        ) {
             self.last_error = Some(error.to_string());
-            self.publish_degraded(error.to_string());
-            *self.fatal_error.borrow_mut() = Some(error.to_string());
-            UloopGuard::request_stop();
         }
     }
     fn schedule_reconnect(&self) {
@@ -777,31 +793,40 @@ impl App {
                 .is_err()
         {
             self.reconnect_pending.set(false);
-            *self.fatal_error.borrow_mut() = Some("failed to schedule ubus reconnect".into());
+            *self.state.fatal_cell().borrow_mut() =
+                Some("failed to schedule ubus reconnect".into());
             UloopGuard::request_stop();
         }
     }
     fn reconnect(&mut self) {
         self.reconnect_pending.set(false);
-        let result = self
-            .ubus
-            .as_mut()
-            .unwrap()
-            .reconnect(None)
-            .and_then(|_| self.ubus.as_mut().unwrap().reregister_objects());
+        let connection = self.ubus.as_mut().unwrap();
+        let timer = self.reconnect_timer.as_ref().unwrap();
+        let mut context = (connection, timer);
+        let result = reconnect_and_register(
+            &self.state,
+            &mut context,
+            |(connection, _)| {
+                connection
+                    .reconnect(None)
+                    .map_err(|error| DaemonError::transport(error.to_string()))?;
+                connection
+                    .reregister_objects()
+                    .map_err(|error| DaemonError::transport(error.to_string()))
+            },
+            |(_, timer), delay| {
+                timer
+                    .schedule(delay)
+                    .map_err(|error| DaemonError::transport(error.to_string()))
+            },
+            UloopGuard::request_stop,
+        );
         if let Err(error) = result {
             self.last_error = Some(error.to_string());
-            self.publish_degraded(error.to_string());
-            self.schedule_reconnect();
         }
     }
     fn reload(&mut self) -> Result<(), DaemonError> {
-        let result = self.reload_inner();
-        if let Err(error) = &result {
-            self.last_error = Some(error.to_string());
-            self.publish_degraded(error.to_string());
-        }
-        result
+        self.reload_inner()
     }
 
     fn reload_inner(&mut self) -> Result<(), DaemonError> {
@@ -809,31 +834,32 @@ impl App {
         let mut candidate = ProductionRuntime::prepare(config.clone())?;
         let mut handed_off = false;
         if config.enable_bpf && candidate.probe_report.facts.tc.safe_attach {
-            if let Some(runtime) = self.runtime.bpf.as_mut() {
+            let current = self.runtime.as_mut().unwrap();
+            if let Some(mut runtime) = current.bpf.take() {
                 if let Err(error) = runtime.switch_mode(
-                    &mut self.runtime.adapter,
+                    &mut current.adapter,
                     &collect_ifnames(&config),
                     candidate.desired_attach_mode(),
                 ) {
-                    let recovery =
-                        runtime.ensure_attached(&mut self.runtime.adapter, "reload_rollback");
+                    let recovery = runtime.ensure_attached(&mut current.adapter, "reload_rollback");
+                    current.bpf = Some(runtime);
                     if let Err(recovery) = recovery {
                         return Err(record_fatal_cleanup(
                             "BPF switch rollback",
                             &error.to_string(),
                             &recovery.to_string(),
-                            &self.fatal_error,
+                            self.state.fatal_cell(),
                         ));
                     }
                     return Err(DaemonError::reload(error.to_string()));
                 }
-                candidate.adapter = std::mem::take(&mut self.runtime.adapter);
-                candidate.bpf = self.runtime.bpf.take();
-                candidate.bpf_error = self.runtime.bpf_error.take();
+                candidate.adapter = std::mem::take(&mut current.adapter);
+                candidate.bpf = Some(runtime);
+                candidate.bpf_error = current.bpf_error.take();
                 handed_off = true;
             } else {
                 if let Err(error) = candidate.activate_new_bpf() {
-                    *self.fatal_error.borrow_mut() = Some(error.to_string());
+                    *self.state.fatal_cell().borrow_mut() = Some(error.to_string());
                     UloopGuard::request_stop();
                     return Err(error);
                 }
@@ -844,59 +870,65 @@ impl App {
             Err(error) => {
                 if let Err(rollback) = self.rollback_bpf_handoff(&mut candidate, handed_off) {
                     let combined = format!("{error}; BPF rollback failed: {rollback}");
-                    *self.fatal_error.borrow_mut() = Some(combined.clone());
+                    *self.state.fatal_cell().borrow_mut() = Some(combined.clone());
                     UloopGuard::request_stop();
                     return Err(DaemonError::reload(combined));
                 }
-                if let Err(cleanup) = candidate.shutdown() {
-                    return Err(record_fatal_cleanup(
-                        "candidate cleanup",
-                        &error.to_string(),
-                        &cleanup.to_string(),
-                        &self.fatal_error,
-                    ));
-                }
-                self.last_error = Some(error.to_string());
-                return Err(error);
+                return Err(abort_reload_candidate(
+                    &self.state,
+                    &mut candidate,
+                    error,
+                    UloopGuard::request_stop,
+                ));
             }
         };
+        let old_interval = self.state.config().refresh_interval_ms;
         if let Err(error) = self
             .collection_timer
             .as_ref()
             .unwrap()
             .schedule(config.refresh_interval_ms)
         {
-            if let Err(rollback) = self.rollback_bpf_handoff(&mut candidate, handed_off) {
-                let combined = format!("{error}; BPF rollback failed: {rollback}");
-                *self.fatal_error.borrow_mut() = Some(combined.clone());
-                UloopGuard::request_stop();
-                return Err(DaemonError::reload(combined));
-            }
-            if let Err(cleanup) = candidate.shutdown() {
-                return Err(record_fatal_cleanup(
-                    "candidate cleanup",
-                    &error.to_string(),
-                    &cleanup.to_string(),
-                    &self.fatal_error,
-                ));
-            }
-            self.last_error = Some(error.to_string());
-            return Err(DaemonError::reload(error.to_string()));
-        }
-        let mut old = std::mem::replace(&mut self.runtime, candidate);
-        self.config = config;
-        self.snapshots.publish(Arc::new(snapshot));
-        if let Err(error) = old.shutdown() {
-            let fatal = record_fatal_cleanup(
-                "postcommit old runtime cleanup",
-                "reload committed",
-                &error.to_string(),
-                &self.fatal_error,
+            let bpf_rollback = self.rollback_bpf_handoff(&mut candidate, handed_off).err();
+            let bpf_rollback_failed = bpf_rollback.is_some();
+            let primary = match bpf_rollback {
+                Some(rollback) => {
+                    DaemonError::reload(format!("{error}; BPF rollback failed: {rollback}"))
+                }
+                None => DaemonError::reload(error.to_string()),
+            };
+            let timer = self.collection_timer.as_ref().unwrap();
+            let failure = abort_reload_after_timer_failure(
+                &self.state,
+                &mut candidate,
+                primary,
+                || {
+                    timer
+                        .schedule(old_interval)
+                        .map_err(|error| DaemonError::transport(error.to_string()))
+                },
+                UloopGuard::request_stop,
             );
-            self.last_error = Some(fatal.to_string());
-            return Err(fatal);
+            if bpf_rollback_failed && self.state.fatal_error().is_none() {
+                *self.state.fatal_cell().borrow_mut() = Some(failure.to_string());
+                UloopGuard::request_stop();
+            }
+            return Err(failure);
         }
-        Ok(())
+        let timer = self.collection_timer.as_ref().unwrap();
+        commit_reload(
+            &mut self.state,
+            &mut self.runtime,
+            candidate,
+            config,
+            snapshot,
+            || {
+                timer
+                    .schedule(old_interval)
+                    .map_err(|error| DaemonError::transport(error.to_string()))
+            },
+            UloopGuard::request_stop,
+        )
     }
 
     fn rollback_bpf_handoff(
@@ -907,45 +939,38 @@ impl App {
         if !handed_off {
             return Ok(());
         }
-        self.runtime.adapter = std::mem::take(&mut candidate.adapter);
-        self.runtime.bpf = candidate.bpf.take();
-        self.runtime.bpf_error = candidate.bpf_error.take();
-        let old_mode = self.runtime.desired_attach_mode();
-        let old_ifnames = collect_ifnames(&self.runtime.config);
-        if let Some(runtime) = self.runtime.bpf.as_mut() {
-            if let Err(error) =
-                runtime.switch_mode(&mut self.runtime.adapter, &old_ifnames, old_mode)
-            {
+        let current = self.runtime.as_mut().unwrap();
+        current.adapter = std::mem::take(&mut candidate.adapter);
+        current.bpf = candidate.bpf.take();
+        current.bpf_error = candidate.bpf_error.take();
+        let old_mode = current.desired_attach_mode();
+        let old_ifnames = collect_ifnames(&current.config);
+        if let Some(runtime) = current.bpf.as_mut() {
+            if let Err(error) = runtime.switch_mode(&mut current.adapter, &old_ifnames, old_mode) {
                 return Err(DaemonError::reload(error.to_string()));
             }
         }
         Ok(())
     }
-
-    fn publish_degraded(&self, error: String) {
-        let mut snapshot = (*self.snapshots.load()).clone();
-        add_runtime_error(&mut snapshot, &error);
-        self.snapshots.publish(Arc::new(snapshot));
-    }
 }
 
 pub fn run() -> Result<(), DaemonError> {
     let config = load_config()?;
-    let mut runtime = ProductionRuntime::stage(config.clone())?;
-    let initial = Arc::new(runtime.collect(ProbeMethod::Status)?);
-    let snapshots = SnapshotStore::new(initial);
     let mut event_loop =
         UloopGuard::init().map_err(|error| DaemonError::platform(error.to_string()))?;
+    let state = CoordinatorState::new(
+        config.clone(),
+        Arc::new(ResponseSnapshot::unsupported("starting")),
+    );
+    let snapshots = state.snapshot_store();
     let app = Rc::new(RefCell::new(App {
-        config,
-        runtime,
-        snapshots: snapshots.clone(),
+        state,
+        runtime: None,
         ubus: None,
         collection_timer: None,
         reconnect_timer: None,
         reconnect_pending: Cell::new(false),
         last_error: None,
-        fatal_error: RefCell::new(None),
     }));
     let weak = Rc::downgrade(&app);
     app.borrow_mut().collection_timer = Some(Timer::new(move || {
@@ -982,18 +1007,40 @@ pub fn run() -> Result<(), DaemonError> {
         }
     });
     app.borrow_mut().ubus = Some(connection);
-    app.borrow()
-        .collection_timer
-        .as_ref()
-        .unwrap()
-        .schedule(app.borrow().config.refresh_interval_ms)
-        .map_err(|error| DaemonError::transport(error.to_string()))?;
-    let _signals = UloopSignalBridge::install()?;
+
+    let runtime = ProductionRuntime::stage(config.clone())?;
+    let runtime = {
+        let app = app.borrow();
+        let timer = app.collection_timer.as_ref().unwrap();
+        activate_runtime(
+            &app.state,
+            runtime,
+            |delay| {
+                timer
+                    .schedule(delay)
+                    .map_err(|error| DaemonError::transport(error.to_string()))
+            },
+            UloopGuard::request_stop,
+        )?
+    };
+    app.borrow_mut().runtime = Some(runtime);
+    let _signals = {
+        let mut app = app.borrow_mut();
+        let App { runtime, ubus, .. } = &mut *app;
+        install_control_or_shutdown(runtime.as_mut(), UloopSignalBridge::install, || {
+            ubus.take();
+            Ok(())
+        })?
+    };
     let run_result = event_loop
         .run()
         .map_err(|error| DaemonError::platform(error.to_string()));
-    let shutdown_result = app.borrow_mut().runtime.shutdown();
-    let fatal = app.borrow().fatal_error.borrow_mut().take();
+    let shutdown_result = {
+        let mut app = app.borrow_mut();
+        let _connection = app.ubus.take();
+        shutdown_runtime(app.runtime.as_mut(), || Ok(()))
+    };
+    let fatal = app.borrow().state.fatal_error();
     if let Some(error) = fatal {
         return Err(DaemonError::platform(error));
     }
@@ -1456,34 +1503,6 @@ fn version_from(version: Option<&str>, release: Option<&str>) -> String {
 
 fn should_refresh_probe(next_probe_ms: u64, method: ProbeMethod) -> bool {
     next_probe_ms == 0 || method == ProbeMethod::Reload
-}
-
-fn add_runtime_error(snapshot: &mut ResponseSnapshot, error: &str) {
-    for warning in [&mut snapshot.status.warnings, &mut snapshot.health.warnings] {
-        if !warning.iter().any(|value| value == "runtime_error") {
-            warning.push("runtime_error".into());
-        }
-    }
-    if snapshot.status.mode != Mode::Unsupported {
-        snapshot.status.mode = Mode::Degraded;
-        snapshot.status.confidence = Confidence::Low;
-    }
-    snapshot.status.capabilities.live_metrics = false;
-    if snapshot.health.mode != Mode::Unsupported {
-        snapshot.health.mode = Mode::Degraded;
-        snapshot.health.confidence = Confidence::Low;
-    }
-    snapshot.health.capabilities.live_metrics = false;
-    snapshot
-        .status
-        .evidence
-        .details
-        .insert("runtime_error".into(), json!(error));
-    snapshot
-        .health
-        .evidence
-        .details
-        .insert("runtime_error".into(), json!(error));
 }
 
 fn record_fatal_cleanup(

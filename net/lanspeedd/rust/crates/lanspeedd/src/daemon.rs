@@ -1,6 +1,9 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
+use std::{
+    cell::RefCell,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 use crate::{
@@ -94,18 +97,261 @@ pub trait RuntimeFactory {
     fn stage(&mut self, config: &RuntimeConfig) -> Result<Self::Runtime, DaemonError>;
 }
 
-pub struct Daemon<T: Transport, F: RuntimeFactory> {
+pub struct CoordinatorState {
+    config: RuntimeConfig,
+    snapshots: SnapshotStore,
+    fatal_error: RefCell<Option<String>>,
+}
+
+impl CoordinatorState {
+    pub fn new(config: RuntimeConfig, initial: Arc<ResponseSnapshot>) -> Self {
+        Self {
+            config,
+            snapshots: SnapshotStore::new(initial),
+            fatal_error: RefCell::new(None),
+        }
+    }
+
+    pub fn config(&self) -> &RuntimeConfig {
+        &self.config
+    }
+
+    pub fn snapshot(&self) -> Arc<ResponseSnapshot> {
+        self.snapshots.load()
+    }
+
+    pub fn snapshot_store(&self) -> SnapshotStore {
+        self.snapshots.clone()
+    }
+
+    pub fn publish(&self, snapshot: Arc<ResponseSnapshot>) {
+        self.snapshots.publish(snapshot);
+    }
+
+    pub fn commit(&mut self, config: RuntimeConfig, snapshot: Arc<ResponseSnapshot>) {
+        self.config = config;
+        self.snapshots.publish(snapshot);
+    }
+
+    pub fn fatal_error(&self) -> Option<String> {
+        self.fatal_error.borrow().clone()
+    }
+
+    pub fn fatal_cell(&self) -> &RefCell<Option<String>> {
+        &self.fatal_error
+    }
+
+    fn record_fatal(&self, message: String) {
+        *self.fatal_error.borrow_mut() = Some(message);
+    }
+}
+
+pub fn abort_reload_candidate<R: Runtime>(
+    state: &CoordinatorState,
+    candidate: &mut R,
+    primary: DaemonError,
+    request_stop: impl FnOnce(),
+) -> DaemonError {
+    match candidate.shutdown() {
+        Ok(()) => primary,
+        Err(cleanup) => {
+            let message = format!("candidate cleanup: {primary}; cleanup failed: {cleanup}");
+            state.record_fatal(message.clone());
+            request_stop();
+            DaemonError::reload(message)
+        }
+    }
+}
+
+pub fn abort_reload_after_timer_failure<R: Runtime>(
+    state: &CoordinatorState,
+    candidate: &mut R,
+    primary: DaemonError,
+    restore_timer: impl FnOnce() -> Result<(), DaemonError>,
+    request_stop: impl FnOnce(),
+) -> DaemonError {
+    let timer_rollback = restore_timer().err();
+    let candidate_cleanup = candidate.shutdown().err();
+    if candidate_cleanup.is_none() && timer_rollback.is_none() {
+        return primary;
+    }
+
+    let mut message = primary.to_string();
+    if let Some(error) = candidate_cleanup {
+        message.push_str(&format!("; candidate cleanup failed: {error}"));
+    }
+    if let Some(error) = timer_rollback {
+        message.push_str(&format!("; timer rollback failed: {error}"));
+    }
+    state.record_fatal(message.clone());
+    request_stop();
+    DaemonError::reload(message)
+}
+
+pub fn activate_runtime<R: Runtime>(
+    state: &CoordinatorState,
+    mut runtime: R,
+    schedule_collection: impl FnOnce(u32) -> Result<(), DaemonError>,
+    request_stop: impl FnOnce(),
+) -> Result<R, DaemonError> {
+    let startup = runtime.collect().and_then(|snapshot| {
+        validate_snapshot(&snapshot)?;
+        Ok(snapshot)
+    });
+    match startup {
+        Ok(snapshot) => {
+            let previous = state.snapshot();
+            state.publish(Arc::new(snapshot));
+            if let Err(error) = schedule_collection(state.config().refresh_interval_ms) {
+                state.publish(previous);
+                return match runtime.shutdown() {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => {
+                        let message =
+                            format!("startup cleanup: {error}; cleanup failed: {cleanup}");
+                        state.record_fatal(message.clone());
+                        request_stop();
+                        Err(DaemonError::reload(message))
+                    }
+                };
+            }
+            Ok(runtime)
+        }
+        Err(error) => match runtime.shutdown() {
+            Ok(()) => Err(error),
+            Err(cleanup) => {
+                let message = format!("startup cleanup: {error}; cleanup failed: {cleanup}");
+                state.record_fatal(message.clone());
+                request_stop();
+                Err(DaemonError::reload(message))
+            }
+        },
+    }
+}
+
+pub fn collect_and_reschedule<R: Runtime>(
+    state: &CoordinatorState,
+    runtime: &mut R,
+    schedule_collection: impl FnOnce(u32) -> Result<(), DaemonError>,
+    request_stop: impl FnOnce(),
+) -> Result<(), DaemonError> {
+    let checkpoint = runtime.checkpoint();
+    let result = runtime.collect().and_then(|snapshot| {
+        validate_snapshot(&snapshot)?;
+        Ok(snapshot)
+    });
+    match &result {
+        Ok(snapshot) => state.publish(Arc::new(snapshot.clone())),
+        Err(_) => runtime.restore(checkpoint),
+    }
+    if let Err(schedule) = schedule_collection(state.config().refresh_interval_ms) {
+        let message = match result {
+            Ok(_) => format!("collection timer failed: {schedule}"),
+            Err(collection) => {
+                format!("{collection}; collection timer failed: {schedule}")
+            }
+        };
+        state.record_fatal(message.clone());
+        request_stop();
+        return Err(DaemonError::transport(message));
+    }
+    result.map(|_| ())
+}
+
+pub fn reconnect_and_register<C>(
+    state: &CoordinatorState,
+    context: &mut C,
+    reconnect_and_register: impl FnOnce(&mut C) -> Result<(), DaemonError>,
+    schedule_retry: impl FnOnce(&mut C, u32) -> Result<(), DaemonError>,
+    request_stop: impl FnOnce(),
+) -> Result<(), DaemonError> {
+    if let Err(error) = reconnect_and_register(context) {
+        if let Err(schedule) = schedule_retry(context, UBUS_RECONNECT_DELAY_MS) {
+            let message = format!("{error}; reconnect timer failed: {schedule}");
+            state.record_fatal(message.clone());
+            request_stop();
+            return Err(DaemonError::transport(message));
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+pub fn shutdown_runtime<R: Runtime>(
+    runtime: Option<&mut R>,
+    shutdown_transport: impl FnOnce() -> Result<(), DaemonError>,
+) -> Result<(), DaemonError> {
+    let runtime_error = runtime.and_then(|runtime| runtime.shutdown().err());
+    let transport_error = shutdown_transport().err();
+    match (runtime_error, transport_error) {
+        (None, None) => Ok(()),
+        (Some(error), None) | (None, Some(error)) => Err(error),
+        (Some(runtime), Some(transport)) => Err(DaemonError::platform(format!(
+            "{runtime}; transport cleanup failed: {transport}"
+        ))),
+    }
+}
+
+pub fn install_control_or_shutdown<R: Runtime, C>(
+    runtime: Option<&mut R>,
+    install: impl FnOnce() -> Result<C, DaemonError>,
+    shutdown_transport: impl FnOnce() -> Result<(), DaemonError>,
+) -> Result<C, DaemonError> {
+    match install() {
+        Ok(control) => Ok(control),
+        Err(error) => match shutdown_runtime(runtime, shutdown_transport) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(DaemonError::platform(format!(
+                "{error}; startup cleanup failed: {cleanup}"
+            ))),
+        },
+    }
+}
+
+pub fn commit_reload<R: Runtime>(
+    state: &mut CoordinatorState,
+    runtime: &mut Option<R>,
+    mut candidate: R,
+    config: RuntimeConfig,
+    snapshot: ResponseSnapshot,
+    mut restore_timer: impl FnMut() -> Result<(), DaemonError>,
+    request_stop: impl FnOnce(),
+) -> Result<(), DaemonError> {
+    let mut old = runtime
+        .take()
+        .ok_or_else(|| DaemonError::reload("runtime is not started"))?;
+    if let Err(old_cleanup) = old.shutdown() {
+        let candidate_cleanup = candidate.shutdown().err();
+        let timer_cleanup = restore_timer().err();
+        let mut cleanup = old_cleanup.to_string();
+        if let Some(error) = candidate_cleanup {
+            cleanup.push_str(&format!("; candidate cleanup failed: {error}"));
+        }
+        if let Some(error) = timer_cleanup {
+            cleanup.push_str(&format!("; timer rollback failed: {error}"));
+        }
+        *runtime = Some(old);
+        let message =
+            format!("old runtime cleanup: reload not committed; cleanup failed: {cleanup}");
+        state.record_fatal(message.clone());
+        request_stop();
+        return Err(DaemonError::reload(message));
+    }
+    *runtime = Some(candidate);
+    state.commit(config, Arc::new(snapshot));
+    Ok(())
+}
+
+pub struct ProductionCoordinator<T: Transport, F: RuntimeFactory> {
     transport: T,
     factory: F,
-    config: RuntimeConfig,
+    state: CoordinatorState,
     runtime: Option<F::Runtime>,
-    snapshots: SnapshotStore,
-    maintenance_errors: Vec<DaemonError>,
     started: bool,
     stopped: bool,
 }
 
-impl<T: Transport, F: RuntimeFactory> Daemon<T, F> {
+impl<T: Transport, F: RuntimeFactory> ProductionCoordinator<T, F> {
     pub fn new(
         transport: T,
         factory: F,
@@ -115,10 +361,8 @@ impl<T: Transport, F: RuntimeFactory> Daemon<T, F> {
         Self {
             transport,
             factory,
-            config,
+            state: CoordinatorState::new(config, initial),
             runtime: None,
-            snapshots: SnapshotStore::new(initial),
-            maintenance_errors: Vec::new(),
             started: false,
             stopped: false,
         }
@@ -128,25 +372,35 @@ impl<T: Transport, F: RuntimeFactory> Daemon<T, F> {
         if self.started {
             return Ok(());
         }
-        let mut runtime = self.factory.stage(&self.config)?;
-        let startup = (|| {
-            self.transport.connect()?;
-            self.transport.register(&Method::ALL)?;
-            let snapshot = runtime.collect()?;
-            validate_snapshot(&snapshot)?;
-            self.transport
-                .schedule_collection(self.config.refresh_interval_ms)?;
-            Ok(snapshot)
-        })();
-        let snapshot = match startup {
-            Ok(snapshot) => snapshot,
+        self.transport.connect()?;
+        if let Err(error) = self.transport.register(&Method::ALL) {
+            let _ = self.transport.shutdown();
+            return Err(error);
+        }
+        let mut runtime = match self.factory.stage(self.state.config()) {
+            Ok(runtime) => runtime,
             Err(error) => {
-                let _ = runtime.shutdown();
                 let _ = self.transport.shutdown();
                 return Err(error);
             }
         };
-        self.snapshots.publish(Arc::new(snapshot));
+        runtime = match activate_runtime(
+            &self.state,
+            runtime,
+            |delay| self.transport.schedule_collection(delay),
+            SignalBridge::request_for_test,
+        ) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                if let Err(cleanup) = self.transport.shutdown() {
+                    let message = format!("startup cleanup: {error}; cleanup failed: {cleanup}");
+                    self.state.record_fatal(message.clone());
+                    SignalBridge::request_for_test();
+                    return Err(DaemonError::reload(message));
+                }
+                return Err(error);
+            }
+        };
         self.runtime = Some(runtime);
         self.started = true;
         Ok(())
@@ -157,19 +411,12 @@ impl<T: Transport, F: RuntimeFactory> Daemon<T, F> {
             .runtime
             .as_mut()
             .ok_or_else(|| DaemonError::collection("runtime is not started"))?;
-        let checkpoint = runtime.checkpoint();
-        let result = runtime.collect().and_then(|snapshot| {
-            validate_snapshot(&snapshot)?;
-            Ok(snapshot)
-        });
-        match &result {
-            Ok(snapshot) => self.snapshots.publish(Arc::new(snapshot.clone())),
-            Err(_) => runtime.restore(checkpoint),
-        }
-        let schedule = self
-            .transport
-            .schedule_collection(self.config.refresh_interval_ms);
-        result.and(schedule)
+        collect_and_reschedule(
+            &self.state,
+            runtime,
+            |delay| self.transport.schedule_collection(delay),
+            SignalBridge::request_for_test,
+        )
     }
 
     pub fn on_ubus_disconnect(&mut self) -> Result<(), DaemonError> {
@@ -177,15 +424,16 @@ impl<T: Transport, F: RuntimeFactory> Daemon<T, F> {
     }
 
     pub fn on_reconnect_tick(&mut self) -> Result<(), DaemonError> {
-        if let Err(error) = self.transport.reconnect() {
-            let _ = self.transport.schedule_reconnect(UBUS_RECONNECT_DELAY_MS);
-            return Err(error);
-        }
-        if let Err(error) = self.transport.register(&Method::ALL) {
-            let _ = self.transport.schedule_reconnect(UBUS_RECONNECT_DELAY_MS);
-            return Err(error);
-        }
-        Ok(())
+        reconnect_and_register(
+            &self.state,
+            &mut self.transport,
+            |transport| {
+                transport.reconnect()?;
+                transport.register(&Method::ALL)
+            },
+            |transport, delay| transport.schedule_reconnect(delay),
+            SignalBridge::request_for_test,
+        )
     }
 
     pub fn reload(&mut self, config: RuntimeConfig) -> Result<(), DaemonError> {
@@ -193,58 +441,69 @@ impl<T: Transport, F: RuntimeFactory> Daemon<T, F> {
         let snapshot = match candidate.collect() {
             Ok(snapshot) => {
                 if let Err(error) = validate_snapshot(&snapshot) {
-                    let _ = candidate.shutdown();
-                    return Err(error);
+                    return Err(abort_reload_candidate(
+                        &self.state,
+                        &mut candidate,
+                        error,
+                        SignalBridge::request_for_test,
+                    ));
                 }
                 snapshot
             }
             Err(error) => {
-                let _ = candidate.shutdown();
-                return Err(error);
+                return Err(abort_reload_candidate(
+                    &self.state,
+                    &mut candidate,
+                    error,
+                    SignalBridge::request_for_test,
+                ));
             }
         };
         if let Err(error) = self
             .transport
             .schedule_collection(config.refresh_interval_ms)
         {
-            let _ = candidate.shutdown();
-            return Err(error);
+            let old_interval = self.state.config().refresh_interval_ms;
+            return Err(abort_reload_after_timer_failure(
+                &self.state,
+                &mut candidate,
+                error,
+                || self.transport.schedule_collection(old_interval),
+                SignalBridge::request_for_test,
+            ));
         }
-        let old = self.runtime.replace(candidate);
-        self.config = config;
-        self.snapshots.publish(Arc::new(snapshot));
-        if let Some(mut old) = old {
-            if let Err(error) = old.shutdown() {
-                self.maintenance_errors.push(error);
-            }
-        }
-        Ok(())
+        let old_interval = self.state.config().refresh_interval_ms;
+        commit_reload(
+            &mut self.state,
+            &mut self.runtime,
+            candidate,
+            config,
+            snapshot,
+            || self.transport.schedule_collection(old_interval),
+            SignalBridge::request_for_test,
+        )
     }
 
     pub fn on_signal_shutdown(&mut self) -> Result<(), DaemonError> {
         if self.stopped {
             return Ok(());
         }
-        let runtime_error = self
-            .runtime
-            .as_mut()
-            .and_then(|runtime| runtime.shutdown().err());
-        let transport_error = self.transport.shutdown().err();
+        let result = shutdown_runtime(self.runtime.as_mut(), || self.transport.shutdown());
         self.stopped = true;
-        runtime_error.or(transport_error).map_or(Ok(()), Err)
+        result
     }
 
     pub fn response(&self, method: Method) -> Result<serde_json::Value, DaemonError> {
-        self.snapshots.load().response(method)
+        self.state.snapshot().response(method)
     }
     pub fn snapshot(&self) -> Arc<ResponseSnapshot> {
-        self.snapshots.load()
+        self.state.snapshot()
     }
     pub fn snapshot_store(&self) -> SnapshotStore {
-        self.snapshots.clone()
+        self.state.snapshot_store()
     }
-    pub const fn config(&self) -> &RuntimeConfig {
-        &self.config
+    pub fn config(&self) -> &RuntimeConfig {
+        self.state.config()
     }
     pub fn runtime_mut(&mut self) -> Option<&mut F::Runtime> {
         self.runtime.as_mut()
@@ -255,8 +514,8 @@ impl<T: Transport, F: RuntimeFactory> Daemon<T, F> {
     pub fn factory_mut(&mut self) -> &mut F {
         &mut self.factory
     }
-    pub fn maintenance_errors(&self) -> &[DaemonError] {
-        &self.maintenance_errors
+    pub fn fatal_error(&self) -> Option<String> {
+        self.state.fatal_error()
     }
 }
 
@@ -267,7 +526,7 @@ fn validate_snapshot(snapshot: &ResponseSnapshot) -> Result<(), DaemonError> {
     Ok(())
 }
 
-impl<T: Transport, F: RuntimeFactory> Drop for Daemon<T, F> {
+impl<T: Transport, F: RuntimeFactory> Drop for ProductionCoordinator<T, F> {
     fn drop(&mut self) {
         if !self.stopped {
             if let Some(runtime) = self.runtime.as_mut() {
