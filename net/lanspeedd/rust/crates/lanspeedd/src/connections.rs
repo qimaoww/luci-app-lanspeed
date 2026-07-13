@@ -17,6 +17,32 @@ pub enum PeriodicConntrackPlan {
     Read,
 }
 
+pub const CLIENT_CONNTRACK_CACHE_TTL_MS: u64 = 5_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClientConntrackPlan {
+    ReuseCached,
+    Read,
+}
+
+pub const fn client_conntrack_plan(
+    now_ms: u64,
+    last_attempt_ms: Option<u64>,
+    snapshot_available: bool,
+) -> ClientConntrackPlan {
+    let Some(last_attempt_ms) = last_attempt_ms else {
+        return ClientConntrackPlan::Read;
+    };
+    if snapshot_available
+        && now_ms >= last_attempt_ms
+        && now_ms - last_attempt_ms < CLIENT_CONNTRACK_CACHE_TTL_MS
+    {
+        ClientConntrackPlan::ReuseCached
+    } else {
+        ClientConntrackPlan::Read
+    }
+}
+
 pub const fn periodic_conntrack_plan(rate_collector: RateCollector) -> PeriodicConntrackPlan {
     match rate_collector {
         RateCollector::NssConntrackSync => PeriodicConntrackPlan::Read,

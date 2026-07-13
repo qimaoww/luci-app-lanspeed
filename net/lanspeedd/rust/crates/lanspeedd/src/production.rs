@@ -36,7 +36,8 @@ use crate::{
     },
     connections::{
         apply_conntrack_failure, apply_conntrack_success, before_reply_action,
-        periodic_conntrack_plan, BeforeReplyAction, ConntrackObservation, PeriodicConntrackPlan,
+        client_conntrack_plan, periodic_conntrack_plan, BeforeReplyAction, ClientConntrackPlan,
+        ConntrackObservation, PeriodicConntrackPlan,
     },
     daemon::{
         abort_reload_after_timer_failure, abort_reload_candidate, activate_runtime,
@@ -303,12 +304,31 @@ impl ProductionRuntime {
         base: &ResponseSnapshot,
     ) -> Result<ResponseSnapshot, DaemonError> {
         let now_ms = production_now_ms()?;
-        let (identities, identity_errors) = read_identities(&self.config, now_ms);
-        let mut snapshot = match self.read_conntrack(&identities, now_ms) {
-            Ok(collected) => {
-                apply_conntrack_success(base, &collected, self.config.conn_collector_mode.as_str())
-            }
-            Err(error) => apply_conntrack_failure(base, &error),
+        let plan = client_conntrack_plan(
+            now_ms,
+            self.conntrack_observation.last_attempt_ms,
+            self.conntrack_snapshot.is_some(),
+        );
+        let cached = if plan == ClientConntrackPlan::ReuseCached {
+            self.conntrack_snapshot.as_ref().map(|collected| {
+                apply_conntrack_success(base, collected, self.config.conn_collector_mode.as_str())
+            })
+        } else {
+            None
+        };
+        let (mut snapshot, identity_errors) = if let Some(snapshot) = cached {
+            (snapshot, Vec::new())
+        } else {
+            let (identities, identity_errors) = read_identities(&self.config, now_ms);
+            let snapshot = match self.read_conntrack(&identities, now_ms) {
+                Ok(collected) => apply_conntrack_success(
+                    base,
+                    &collected,
+                    self.config.conn_collector_mode.as_str(),
+                ),
+                Err(error) => apply_conntrack_failure(base, &error),
+            };
+            (snapshot, identity_errors)
         };
         if !identity_errors.is_empty() {
             snapshot

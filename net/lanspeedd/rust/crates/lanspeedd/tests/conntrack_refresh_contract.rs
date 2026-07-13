@@ -2,8 +2,9 @@ use lanspeedd::{
     collectors::conntrack::{aggregate::ClientSample, CollectStats, CollectedSnapshot},
     connections::{
         apply_conntrack_failure, apply_conntrack_success, before_reply_action,
-        periodic_conntrack_plan, BeforeReplyAction, ConntrackObservation,
-        ConntrackObservationState, PeriodicConntrackPlan,
+        client_conntrack_plan, periodic_conntrack_plan, BeforeReplyAction, ClientConntrackPlan,
+        ConntrackObservation, ConntrackObservationState, PeriodicConntrackPlan,
+        CLIENT_CONNTRACK_CACHE_TTL_MS,
     },
     model::{Client, OverviewResponse, OverviewSample},
     policy::RateCollector,
@@ -113,6 +114,56 @@ fn periodic_conntrack_is_only_required_by_sync_rate_source() {
         periodic_conntrack_plan(RateCollector::NssConntrackSync),
         PeriodicConntrackPlan::Read
     );
+}
+
+#[test]
+fn client_conntrack_cache_reuses_only_a_fresh_available_snapshot() {
+    assert_eq!(CLIENT_CONNTRACK_CACHE_TTL_MS, 5_000);
+    assert_eq!(
+        client_conntrack_plan(14_999, Some(10_000), true),
+        ClientConntrackPlan::ReuseCached
+    );
+    assert_eq!(
+        client_conntrack_plan(15_000, Some(10_000), true),
+        ClientConntrackPlan::Read
+    );
+    assert_eq!(
+        client_conntrack_plan(14_999, Some(10_000), false),
+        ClientConntrackPlan::Read
+    );
+    assert_eq!(
+        client_conntrack_plan(9_999, Some(10_000), true),
+        ClientConntrackPlan::Read
+    );
+    assert_eq!(
+        client_conntrack_plan(10_000, None, true),
+        ClientConntrackPlan::Read
+    );
+}
+
+#[test]
+fn production_checks_the_client_cache_before_reading_identities() {
+    let source = include_str!("../src/production.rs");
+    let refresh = source
+        .split("fn refresh_connections(")
+        .nth(1)
+        .unwrap()
+        .split("fn collect(")
+        .next()
+        .unwrap();
+    let plan = refresh
+        .find("client_conntrack_plan(")
+        .expect("clients refresh must consult the conntrack cache policy");
+    let identities = refresh
+        .find("read_identities(")
+        .expect("cache miss must still read identities before conntrack");
+
+    assert!(
+        plan < identities,
+        "cache policy must run before identity IO"
+    );
+    assert!(refresh.contains("ClientConntrackPlan::ReuseCached"));
+    assert!(refresh.contains("self.conntrack_snapshot.as_ref()"));
 }
 
 #[test]
