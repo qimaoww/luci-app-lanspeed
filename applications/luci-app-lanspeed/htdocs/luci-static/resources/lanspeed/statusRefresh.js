@@ -7,6 +7,43 @@
 'require lanspeed.statusIp as statusIp';
 'require lanspeed.statusCollector as statusCollector';
 
+function nssEvidenceState(ev) {
+	ev = ev || {};
+	return {
+		ecmActive: typeof ev.ecm_active === 'boolean'
+			? ev.ecm_active : Boolean(ev.ecm_offload_active),
+		ppeActive: typeof ev.ppe_active === 'boolean'
+			? ev.ppe_active : Boolean(ev.ppe_offload_active)
+	};
+}
+
+function refreshSortHeaders(refs, prefs) {
+	Object.keys(refs.sortHeaders || {}).forEach(function(sortKey) {
+		var ref = refs.sortHeaders[sortKey];
+		var active = prefs.sortCustom && prefs.sortKey === sortKey;
+		var sortedColumn = prefs.sortKey === sortKey;
+		var ascending = prefs.sortDir === 'asc';
+		var title;
+		if (!prefs.sortCustom && sortedColumn)
+			title = _('%s：默认排序，点击开始降序排序').format(ref.label);
+		else if (active && ascending)
+			title = _('%s：当前升序，点击恢复默认排序').format(ref.label);
+		else if (active)
+			title = _('%s：当前降序，点击切换为升序').format(ref.label);
+		else
+			title = _('按%s降序排序').format(ref.label);
+
+		if (ref.description)
+			title = ref.description + ' · ' + title;
+		ref.th.setAttribute('aria-sort', sortedColumn
+			? (ascending ? 'ascending' : 'descending')
+			: 'none');
+		ref.button.setAttribute('title', title);
+		ref.button.setAttribute('aria-label', title);
+		ref.button.lastChild.textContent = active ? (ascending ? '↑' : '↓') : '';
+	});
+}
+
 function refreshLive(viewState) {
 	var refs = viewState.refs;
 	if (!refs) return;
@@ -113,7 +150,8 @@ function refreshLive(viewState) {
 		if (prefs.activeOnly && !fmt.isActiveClient(c, latestSample, activeCfg)) return false;
 		return true;
 	});
-	var sorted = fmt.sortClients(filtered, prefs.sortKey);
+	var sorted = fmt.sortClients(filtered, prefs.sortKey, prefs.sortDir);
+	refreshSortHeaders(refs, prefs);
 
 	var summaryParts = [
 		_('%d 总').format(clientsAll.length),
@@ -134,13 +172,17 @@ function refreshLive(viewState) {
 		refs.empty.style.display = 'none';
 
 		var globalWarnings = {};
-		fmt.asArray(status.warnings).forEach(function(w) { globalWarnings[w] = true; });
+		fmt.asArray(status.warnings).forEach(function(w) {
+			globalWarnings[vocab.normalizeWarningId(w)] = true;
+		});
 
 		fmt.replaceChildren(refs.tbody, sorted.map(function(c) {
 			var tx = Number(c.tx_bps) || 0, rx = Number(c.rx_bps) || 0;
 			var idle = !fmt.isActiveClient(c, latestSample, activeCfg);
 			var ips = statusIp.displayIpsForClient(c.ips, showIpv6, hidePrivateIpv6, hideIpv6Ranges);
-			var rawWarnings = fmt.asArray(c.warnings);
+			var rawWarnings = fmt.asArray(c.warnings).map(function(w) {
+				return vocab.normalizeWarningId(w);
+			});
 			var specificWarnings = rawWarnings.filter(function(w) { return !globalWarnings[w]; });
 			var critClient = specificWarnings.some(function(w) { return vocab.CRITICAL_WARNINGS[w]; });
 
@@ -181,7 +223,7 @@ function refreshLive(viewState) {
 			}
 
 			return E('tr', idle ? { 'class': 'idle' } : {}, [
-				E('td', {}, [
+				E('td', { 'class': 'lanspeed-client-name' }, [
 					displayName,
 					(c.hostname && ips.length)
 						? E('span', { 'class': 'ipline', 'title': ips.join(', ') }, ips.join(', '))
@@ -190,12 +232,25 @@ function refreshLive(viewState) {
 							    ips.slice(1).join(', '))
 							: '')
 				]),
-				E('td', { 'class': 'mono' }, fmt.textOrDash(c.mac)),
-				E('td', { 'class': 'num' }, fmt.formatRate(tx, prefs.unit)),
-				E('td', { 'class': 'num' }, fmt.formatRate(rx, prefs.unit)),
-				E('td', { 'class': 'num' }, typeof c.tcp_conns === 'number' ? String(c.tcp_conns) : '-'),
 				E('td', {
-					'class': 'num',
+					'class': 'mono lanspeed-client-mac',
+					'data-label': 'MAC'
+				}, fmt.textOrDash(c.mac)),
+				E('td', {
+					'class': 'num lanspeed-client-value',
+					'data-label': _('上行')
+				}, fmt.formatRate(tx, prefs.unit)),
+				E('td', {
+					'class': 'num lanspeed-client-value',
+					'data-label': _('下行')
+				}, fmt.formatRate(rx, prefs.unit)),
+				E('td', {
+					'class': 'num lanspeed-client-value',
+					'data-label': 'TCP'
+				}, typeof c.tcp_conns === 'number' ? String(c.tcp_conns) : '-'),
+				E('td', {
+					'class': 'num lanspeed-client-value',
+					'data-label': 'UDP',
 					'title': (typeof c.udp_dns_conns === 'number' || typeof c.udp_other_conns === 'number')
 						? [
 							'DNS ' + (typeof c.udp_dns_conns === 'number' ? c.udp_dns_conns : '-'),
@@ -203,7 +258,10 @@ function refreshLive(viewState) {
 						  ].join(' · ')
 						: ''
 				}, typeof c.udp_conns === 'number' ? String(c.udp_conns) : '-'),
-				E('td', {}, E('span', { 'class': 'state' }, stateCells))
+				E('td', {
+					'class': 'lanspeed-client-state-cell',
+					'data-label': _('状态')
+				}, E('span', { 'class': 'state' }, stateCells))
 			]);
 		}));
 	}
@@ -276,7 +334,9 @@ function refreshLive(viewState) {
 		fmt.replaceChildren(refs.capsGrid, [E('p', {}, _('后端未上报任何能力。'))]);
 	}
 
-	var warnings = fmt.asArray(status.warnings);
+	var warnings = fmt.asArray(status.warnings).map(function(w) {
+		return vocab.normalizeWarningId(w);
+	});
 	if (warnings.length) {
 		fmt.replaceChildren(refs.allWarnings, warnings.map(function(w) {
 			return E('li', {}, [
@@ -294,8 +354,11 @@ function refreshLive(viewState) {
 		_('后端刷新 %s ms').format(fmt.textOrDash(status.refresh_interval_ms))
 	];
 	var nssEvidence = status.evidence && status.evidence.nss;
-	if (nssEvidence && (nssEvidence.ecm_offload_active || nssEvidence.ppe_offload_active)) {
-		var engine = nssEvidence.ppe_offload_active ? 'PPE' : 'ECM';
+	var nssState = nssEvidenceState(nssEvidence);
+	var nssEcmActive = nssState.ecmActive;
+	var nssPpeActive = nssState.ppeActive;
+	if (nssEvidence && (nssEcmActive || nssPpeActive)) {
+		var engine = nssPpeActive ? 'PPE' : 'ECM';
 		var connBits = [];
 		if (typeof nssEvidence.accelerated_connections === 'number')
 			connBits.push(_('总 %d').format(nssEvidence.accelerated_connections));
@@ -328,6 +391,9 @@ function refreshLive(viewState) {
 }
 
 return baseclass.extend({
+	refreshSortHeaders: refreshSortHeaders,
+	nssEvidenceState: nssEvidenceState,
+
 	refreshLive: function(viewState) {
 		return refreshLive(viewState);
 	}

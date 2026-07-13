@@ -15,10 +15,8 @@
  * status.evidence.nss is a non-empty object.  Otherwise the whole section
  * is hidden.
  *
- * Default open state: open when ecm_offload_active or ppe_offload_active;
- * closed otherwise.  User may toggle manually; render() does NOT override
- * an existing <details open> attribute after first pass, only sets the
- * initial state.
+ * Default open state: closed. Refreshes never touch the open attribute, so
+ * the user's manual expand/collapse choice remains stable on this page.
  */
 
 function hasNssSignal(status) {
@@ -38,19 +36,25 @@ function hasNssSignal(status) {
 	return false;
 }
 
-function isNssAccelerated(status) {
-	var ev = status && status.evidence && status.evidence.nss;
-	if (!ev) return false;
-	return Boolean(ev.ecm_offload_active || ev.ppe_offload_active);
+function nssEvidenceState(ev) {
+	return {
+		ecmActive: typeof ev.ecm_active === 'boolean'
+			? ev.ecm_active : Boolean(ev.ecm_offload_active),
+		ppeActive: typeof ev.ppe_active === 'boolean'
+			? ev.ppe_active : Boolean(ev.ppe_offload_active),
+		directSupported: typeof ev.direct_state_readable === 'boolean'
+			? ev.direct_state_readable : Boolean(ev.direct_supported)
+	};
 }
 
 function nssDirectFallbackText(reason) {
+	reason = vocab.normalizeWarningId(reason);
 	if (reason === 'collector_mode_bpf')
 		return _('当前使用 BPF');
 	if (reason === 'collector_mode_nss_conntrack_sync')
 		return _('当前使用 NSS sync');
-	if (reason === 'nss_daed_prefers_bpf')
-		return _('daed 运行中，当前优先使用 BPF');
+	if (reason === 'dae_runtime_prefers_bpf')
+		return _('dae/daed 运行中，当前优先使用 BPF');
 	if (reason === 'state_unavailable_or_unreadable')
 		return _('ECM state 设备不可用或不可读');
 	if (reason === 'not_selected')
@@ -93,7 +97,6 @@ function build(refs) {
 	refs.nssSection = E('div', { 'class': 'cbi-section', 'style': 'display:none' }, [
 		refs.nssDetails
 	]);
-	refs.nssInitialized = false;
 
 	return refs.nssSection;
 }
@@ -108,28 +111,22 @@ function render(refs, status) {
 	}
 	refs.nssSection.style.display = '';
 
-	/* First render: decide default open/close based on whether NSS is
-	 * actively offloading.  Do NOT override on subsequent renders so the
-	 * user's manual toggle sticks. */
-	if (!refs.nssInitialized) {
-		if (isNssAccelerated(status)) {
-			refs.nssDetails.setAttribute('open', 'open');
-		} else {
-			refs.nssDetails.removeAttribute('open');
-		}
-		refs.nssInitialized = true;
-	}
-
 	var ev = (status.evidence && status.evidence.nss) || {};
 	var caps = status.capabilities || {};
-	var warnings = fmt.asArray(status.warnings);
+	var warnings = fmt.asArray(status.warnings).map(function(w) {
+		return vocab.normalizeWarningId(w);
+	});
+	var evidenceState = nssEvidenceState(ev);
+	var ecmActive = evidenceState.ecmActive;
+	var ppeActive = evidenceState.ppeActive;
+	var directSupported = evidenceState.directSupported;
 
 	/* engine pill + summary */
 	var engineLabel, engineCls;
-	if (ev.ppe_offload_active) {
+	if (ppeActive) {
 		engineLabel = _('PPE 活跃');
 		engineCls = 'label label-danger';
-	} else if (ev.ecm_offload_active) {
+	} else if (ecmActive) {
 		engineLabel = _('ECM 活跃');
 		engineCls = 'label label-danger';
 	} else if (caps.nss) {
@@ -152,13 +149,13 @@ function render(refs, status) {
 	refs.nssSummary.textContent = summaryBits.join(' · ');
 
 	/* engine line */
-	var engine = ev.ppe_offload_active ? 'PPE'
-	           : ev.ecm_offload_active ? 'ECM'
+	var engine = ppeActive ? 'PPE'
+	           : ecmActive ? 'ECM'
 	           : '-';
 	var directParts = [];
 	if (ev.direct_enabled) {
 		directParts.push(_('NSS-direct 已启用'));
-	} else if (ev.direct_supported) {
+	} else if (directSupported) {
 		directParts.push(_('NSS-direct 可用'));
 	} else {
 		directParts.push(_('NSS-direct 未启用'));
@@ -244,12 +241,14 @@ function render(refs, status) {
 		]);
 	}
 
-	/* warnings subset: anything starting with "nss" plus nssifb_collect_rejected */
+	/* Keep NSS-specific warnings plus the active dae/daed collector decision. */
 	var nssWarnings = warnings.filter(function(w) {
-		return w.indexOf('nss') === 0 || w === 'nssifb_collect_rejected';
+		return w.indexOf('nss') === 0 || w === 'nssifb_collect_rejected' ||
+			w === 'dae_runtime_prefers_bpf';
 	});
 	if (nssWarnings.length) {
 		fmt.replaceChildren(refs.nssWarnings, nssWarnings.map(function(w) {
+			w = vocab.normalizeWarningId(w);
 			return E('li', {}, [
 				E('span', { 'class': vocab.warningClass(w) + ' key' }, w),
 				vocab.warningText(w)
@@ -267,6 +266,5 @@ return baseclass.extend({
 	render: render,
 
 	/* Exposed for validators / tests. */
-	hasNssSignal:     hasNssSignal,
-	isNssAccelerated: isNssAccelerated
+	hasNssSignal: hasNssSignal
 });

@@ -125,7 +125,6 @@ const MODULE_REQUIRES = {
 	'statusShell.js': [
 		'baseclass',
 		'lanspeed.format',
-		'lanspeed.rpc',
 		'lanspeed.nssPanel',
 		'lanspeed.theme',
 		'lanspeed.statusStyle'
@@ -140,7 +139,7 @@ const MODULE_REQUIRES = {
 		'lanspeed.statusCollector'
 	],
 	'configStyle.js': [ 'baseclass' ],
-	'configForm.js': [ 'baseclass', 'uci', 'lanspeed.rpc' ]
+	'configForm.js': [ 'baseclass', 'uci', 'lanspeed.rpc', 'lanspeed.ifaceConfig' ]
 };
 
 /* Modules that MUST NOT contain `rpc.declare`. rpc.js is the only file
@@ -163,6 +162,7 @@ const RPC_FREE_MODULES = [
 ];
 
 const errors = [];
+const asyncChecks = [];
 function fail(msg) { errors.push(msg); }
 
 function assertFileExists(absPath, label) {
@@ -238,6 +238,86 @@ function loadFormatModule(src) {
 	})(fakeBaseclass);
 }
 
+function loadIfaceConfigModule(src, lsRpc) {
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	const fakeFormat = {
+		asArray: function(value) { return Array.isArray(value) ? value : []; },
+		compareText: function(a, b) { return String(a || '').localeCompare(String(b || '')); },
+		replaceChildren: function() {}
+	};
+	return vm.compileFunction(src,
+		[ 'baseclass', 'fmt', 'lsRpc', 'E', '_' ],
+		{ filename: 'resources/lanspeed/ifaceConfig.js' })(
+			fakeBaseclass, fakeFormat, lsRpc || {}, fakeElement,
+			function(value) { return value; }
+		);
+}
+
+function loadConfigFormModule(src, uci, lsRpc, ifaceCfg) {
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	return vm.compileFunction(src,
+		[ 'baseclass', 'uci', 'lsRpc', 'ifaceCfg', 'E', '_', 'window' ],
+		{ filename: 'resources/lanspeed/configForm.js' })(
+			fakeBaseclass, uci, lsRpc, ifaceCfg, fakeElement,
+			function(value) { return value; },
+			{ setTimeout: function(handler) { handler(); } }
+		);
+}
+
+function loadVocabModule(src) {
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	return vm.compileFunction(src, [ 'baseclass', '_' ], {
+		filename: 'resources/lanspeed/vocab.js'
+	})(fakeBaseclass, function(value) { return value; });
+}
+
+function loadStatusRefreshModule(src) {
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	return vm.compileFunction(src,
+		[ 'baseclass', 'vocab', 'fmt', 'lsVersion', 'nssPanel', 'statusIp',
+		  'statusCollector', '_' ],
+		{ filename: 'resources/lanspeed/statusRefresh.js' })(
+			fakeBaseclass, {}, {}, { FULL_VERSION: 'test' }, {}, {}, {},
+			function(value) {
+				return {
+					format: function(arg) { return value.replace('%s', arg); },
+					toString: function() { return value; }
+				};
+			}
+		);
+}
+
+function fakeElement(tag, attrs, children) {
+	const node = {
+		tagName: tag,
+		attrs: Object.assign({}, attrs || {}),
+		children: [],
+		listeners: {},
+		addEventListener: function(type, handler) { this.listeners[type] = handler; },
+		setAttribute: function(name, value) { this.attrs[name] = value; }
+	};
+	const append = function(child) {
+		if (Array.isArray(child)) child.forEach(append);
+		else if (child !== null && child !== undefined && child !== '') node.children.push(child);
+	};
+	append(children);
+	Object.defineProperty(node, 'lastChild', {
+		get: function() { return this.children[this.children.length - 1]; }
+	});
+	return node;
+}
+
+function findFakeElement(node, className) {
+	if (!node || typeof node !== 'object') return null;
+	const classes = String(node.attrs && node.attrs.class || '').split(/\s+/);
+	if (classes.includes(className)) return node;
+	for (const child of node.children || []) {
+		const found = findFakeElement(child, className);
+		if (found) return found;
+	}
+	return null;
+}
+
 function assertFormatActiveWindow(src) {
 	const fmt = loadFormatModule(src);
 	const clients = [
@@ -304,10 +384,551 @@ function assertFormatActiveWindow(src) {
 	}
 }
 
+function assertFormatSorting(src) {
+	const fmt = loadFormatModule(src);
+	const clients = [
+		{ identity_key: 'zulu@lan', hostname: 'Zulu', mac: '00:00:00:00:00:02', tx_bps: 20, rx_bps: 100, tcp_conns: 2, udp_conns: 4 },
+		{ identity_key: 'alpha@lan', hostname: 'Alpha', mac: '00:00:00:00:00:01', tx_bps: 30, rx_bps: 50, tcp_conns: 5, udp_conns: 1 }
+	];
+	const identities = function(sorted) { return sorted.map(function(client) { return client.identity_key; }).join(','); };
+	if (!fmt.DEFAULT_PREFS || !Array.isArray(fmt.SORT_KEYS) ||
+	    typeof fmt.defaultSortDirection !== 'function' ||
+	    typeof fmt.nextSort !== 'function') {
+		fail('format.js must expose the client sorting state machine');
+		return;
+	}
+
+	if (fmt.DEFAULT_PREFS.sortKey !== 'rx' || fmt.DEFAULT_PREFS.sortDir !== 'desc' || fmt.DEFAULT_PREFS.sortCustom !== false) {
+		fail('format.js must default the client table to descending download speed');
+	}
+	if (JSON.stringify(Array.from(fmt.SORT_KEYS)) !== JSON.stringify([ 'hostname', 'mac', 'tx', 'rx', 'tcp_conns', 'udp_conns' ])) {
+		fail('format.js must expose exactly the six sortable client columns');
+	}
+	if (fmt.defaultSortDirection('hostname') !== 'desc' ||
+	    fmt.defaultSortDirection('mac') !== 'desc' ||
+	    fmt.defaultSortDirection('rx') !== 'desc') {
+		fail('format.js must start every sortable column in descending order');
+	}
+	const first = fmt.nextSort(fmt.DEFAULT_PREFS, 'hostname');
+	const second = fmt.nextSort(first, 'hostname');
+	const third = fmt.nextSort(second, 'hostname');
+	if (first.sortDir !== 'desc' || !first.sortCustom || second.sortDir !== 'asc' ||
+	    !second.sortCustom || third.sortKey !== 'rx' || third.sortDir !== 'desc' || third.sortCustom) {
+		fail('format.js must cycle sort headers through descending, ascending, then default sorting');
+	}
+	if (identities(fmt.sortClients(clients, 'rx')) !== 'zulu@lan,alpha@lan' ||
+	    identities(fmt.sortClients(clients, 'rx', 'asc')) !== 'alpha@lan,zulu@lan') {
+		fail('format.js must sort numeric columns in both directions');
+	}
+	if (identities(fmt.sortClients(clients, 'hostname', 'asc')) !== 'alpha@lan,zulu@lan' ||
+	    identities(fmt.sortClients(clients, 'hostname', 'desc')) !== 'zulu@lan,alpha@lan') {
+		fail('format.js must sort client names in both directions');
+	}
+
+	const withMissingConnections = clients.concat([
+		{ identity_key: 'missing@lan', hostname: 'Missing', mac: '00:00:00:00:00:03', tx_bps: 10, rx_bps: 10 }
+	]);
+	if (identities(fmt.sortClients(withMissingConnections, 'tcp_conns', 'asc')) !==
+		'zulu@lan,alpha@lan,missing@lan' ||
+	    identities(fmt.sortClients(withMissingConnections, 'tcp_conns', 'desc')) !==
+		'alpha@lan,zulu@lan,missing@lan' ||
+	    identities(fmt.sortClients(withMissingConnections, 'udp_conns', 'asc')) !==
+		'alpha@lan,zulu@lan,missing@lan' ||
+	    identities(fmt.sortClients(withMissingConnections, 'udp_conns', 'desc')) !==
+		'zulu@lan,alpha@lan,missing@lan') {
+		fail('format.js must keep missing TCP/UDP counts after known values in both sort directions');
+	}
+}
+
+function assertStatusRefreshSortingInteraction(src) {
+	const mod = loadStatusRefreshModule(src);
+	if (!mod || typeof mod.refreshSortHeaders !== 'function') {
+		fail('statusRefresh.js must expose its sort-header refresh behavior for validation');
+		return;
+	}
+	if (typeof mod.nssEvidenceState !== 'function') {
+		fail('statusRefresh.js must expose Rust-first NSS evidence normalization for validation');
+	} else {
+		const rustWins = mod.nssEvidenceState({
+			ecm_active: false,
+			ecm_offload_active: true,
+			ppe_active: false,
+			ppe_offload_active: true
+		});
+		const legacyFallback = mod.nssEvidenceState({
+			ecm_offload_active: true,
+			ppe_offload_active: true
+		});
+		if (rustWins.ecmActive || rustWins.ppeActive ||
+		    !legacyFallback.ecmActive || !legacyFallback.ppeActive) {
+			fail('statusRefresh.js must let explicit Rust false values override stale old C NSS aliases');
+		}
+	}
+
+	function makeRef(label, description) {
+		return {
+			label: label,
+			description: description || '',
+			th: fakeElement('th', {}),
+			button: fakeElement('button', {}, [
+				fakeElement('span', {}, label),
+				fakeElement('span', {}, '')
+			])
+		};
+	}
+
+	const refs = { sortHeaders: {
+		rx: makeRef('下行'),
+		tcp_conns: makeRef('TCP', 'TCP 仅统计 ESTABLISHED + ASSURED')
+	} };
+	mod.refreshSortHeaders(refs, {
+		sortKey: 'rx', sortDir: 'desc', sortCustom: false
+	});
+	if (refs.sortHeaders.rx.th.attrs['aria-sort'] !== 'descending' ||
+	    refs.sortHeaders.rx.button.lastChild.textContent !== '' ||
+	    !String(refs.sortHeaders.rx.button.attrs['aria-label']).includes('默认排序') ||
+	    refs.sortHeaders.tcp_conns.th.attrs['aria-sort'] !== 'none') {
+		fail('statusRefresh.js must expose default RX descending to assistive tech without a visual arrow');
+	}
+
+	mod.refreshSortHeaders(refs, {
+		sortKey: 'tcp_conns', sortDir: 'asc', sortCustom: true
+	});
+	if (refs.sortHeaders.tcp_conns.th.attrs['aria-sort'] !== 'ascending' ||
+	    refs.sortHeaders.tcp_conns.button.lastChild.textContent !== '↑' ||
+	    !String(refs.sortHeaders.tcp_conns.button.attrs.title).includes('TCP 仅统计 ESTABLISHED + ASSURED') ||
+	    !String(refs.sortHeaders.tcp_conns.button.attrs['aria-label']).includes('升序')) {
+		fail('statusRefresh.js must combine TCP/UDP connection semantics with accessible sorting instructions');
+	}
+}
+
+function sortedJson(values) {
+	return JSON.stringify((values || []).slice().sort());
+}
+
+function assertIfaceSaveBehavior(src) {
+	const rpcCalls = [];
+	let sysdevicesCalls = 0;
+	const rpc = {
+		uciDelete: function(config, section, options) {
+			rpcCalls.push([ 'delete', config, section, options ]);
+			return Promise.resolve();
+		},
+		uciSet: function(config, section, values) {
+			rpcCalls.push([ 'set', config, section, values ]);
+			return Promise.resolve();
+		},
+		sysdevices: function() {
+			sysdevicesCalls++;
+			return Promise.resolve({ devices: [] });
+		}
+	};
+	const mod = loadIfaceConfigModule(src, rpc);
+	if (!mod || typeof mod.prepareSave !== 'function' || typeof mod.applySave !== 'function') {
+		fail('ifaceConfig.js must expose testable prepare/apply steps for the shared save flow');
+		return;
+	}
+
+	const unavailable = mod.prepareSave({ refs: {}, ifaceOriginal: {
+		ifname: [ 'tun0' ], interface_include: [ 'dae0' ], observe: [ 'gretap0' ]
+	} });
+	if (!unavailable || unavailable.changed !== false) {
+		fail('ifaceConfig.js must treat an unavailable sysdevices scan as a no-op save plan');
+	}
+
+	const modeButtons = [
+		{ disabled: false },
+		{ disabled: true, ifcfgAlwaysDisabled: true }
+	];
+	const busyState = {
+		refs: { ifcfgReloadBtn: { disabled: false } },
+		ifcfgButtons: modeButtons,
+		ifcfgDirty: true
+	};
+	mod.setBusy(busyState, true);
+	if (!modeButtons.every(function(button) { return button.disabled; }) ||
+	    !busyState.refs.ifcfgReloadBtn.disabled) {
+		fail('ifaceConfig.js must lock scan and interface mode controls while the shared save is running');
+	}
+	mod.setBusy(busyState, false);
+	if (modeButtons[0].disabled || !modeButtons[1].disabled ||
+	    !busyState.refs.ifcfgReloadBtn.disabled) {
+		fail('ifaceConfig.js must unlock valid modes, retain intrinsic disabled modes, and keep scan disabled while edits remain dirty');
+	}
+
+	const dirtyScanState = {
+		refs: {
+			ifcfgGrid: {},
+			ifcfgStatus: { textContent: '' }
+		},
+		ifcfgDirty: true
+	};
+	asyncChecks.push(Promise.resolve()
+		.then(function() { return mod.load(dirtyScanState); })
+		.then(function(result) {
+			if (result !== false || sysdevicesCalls !== 0 ||
+			    !dirtyScanState.refs.ifcfgStatus.textContent.includes('未保存')) {
+				fail('ifaceConfig.js must refuse to rescan while unsaved interface edits exist');
+			}
+		}));
+
+	const baseState = {
+		refs: {},
+		ifcfgLoaded: true,
+		ifcfgDirty: true,
+		sysdevices: {
+			devices: [
+				{ name: 'br-lan', recommended_lan: true, selected: true },
+				{ name: 'eth1', recommended_lan: true, selected: false }
+			],
+			current_ifnames: [ 'br-lan', 'tun0', 'gone0', 'dae0' ],
+			current_observed: [ 'gretap0' ]
+		},
+		ifaceOriginal: {
+			ifname: [ 'br-lan', 'tun0', 'gone0' ],
+			interface_include: [ 'br-lan', 'dae0' ],
+			observe: [ 'gretap0' ]
+		}
+	};
+
+	baseState.ifcfgState = { 'br-lan': 'collect', eth1: 'off' };
+	const unchanged = mod.prepareSave(baseState);
+	if (!unchanged || unchanged.changed !== false) {
+		fail('ifaceConfig.js must not write interface UCI options when visible selections return to their original state');
+	}
+
+	baseState.ifcfgState = { 'br-lan': 'off', eth1: 'collect' };
+	const changed = mod.prepareSave(baseState);
+	if (!changed || !changed.changed ||
+	    sortedJson(changed.values && changed.values.ifname) !== sortedJson([ 'tun0', 'gone0', 'eth1' ]) ||
+	    sortedJson(changed.values && changed.values.interface_include) !== sortedJson([ 'dae0', 'eth1' ]) ||
+	    Object.prototype.hasOwnProperty.call(changed.values || {}, 'observe') ||
+	    sortedJson(changed.desired && changed.desired.observe) !== sortedJson([ 'gretap0' ])) {
+		fail('ifaceConfig.js must preserve ignored and disappeared configured interfaces while updating visible candidates');
+	}
+
+	asyncChecks.push(Promise.resolve()
+		.then(function() { return mod.applySave(unavailable); })
+		.then(function() {
+			if (rpcCalls.length)
+				fail('ifaceConfig.js no-op plans must issue no interface UCI RPC writes');
+		})
+		.catch(function(err) {
+			fail('ifaceConfig.js no-op save plan unexpectedly failed: ' + (err && err.message || err));
+		}));
+
+	const deleteFailure = new Error('delete failed');
+	const failingMod = loadIfaceConfigModule(src, {
+		uciDelete: function() { return Promise.reject(deleteFailure); },
+		uciSet: function() { return Promise.resolve(); }
+	});
+	asyncChecks.push(Promise.resolve()
+		.then(function() { return failingMod.applySave(changed); })
+		.then(function() {
+			fail('ifaceConfig.js must reject when deleting staged interface options fails');
+		}, function(err) {
+			if (err !== deleteFailure)
+				fail('ifaceConfig.js must preserve the original interface deletion error');
+		}));
+}
+
+function daemonRefsForSave() {
+	return {
+		rateCollectorMode: { value: 'auto' },
+		connCollectorMode: { value: 'auto' },
+		activeWindow: { value: '10000' },
+		activeMin: { value: '1' },
+		showIpv6: { checked: true },
+		hidePrivateIpv6: { checked: false },
+		hideIpv6RangesItems: [ 'fc00::/7', 'fe80::/10' ],
+		hideIpv6RangesList: {
+			innerHTML: '',
+			appendChild: function() {}
+		},
+		hideIpv6RangeInput: { value: '', disabled: false },
+		addRangeBtn: { disabled: false },
+		rangeRemoveButtons: [ { disabled: false } ],
+		resetBtn: { disabled: false }
+	};
+}
+
+function assertConfigCompatibility(src) {
+	const noRpc = {
+		status: function() { return Promise.resolve({}); }
+	};
+	const ifaceCfg = { setBusy: function() {} };
+	const mod = loadConfigFormModule(src, {}, noRpc, ifaceCfg);
+	if (!mod || typeof mod.isNssDevice !== 'function' ||
+	    typeof mod.daeRuntimeActive !== 'function') {
+		fail('configForm.js must expose NSS and dae runtime compatibility helpers for validation');
+		return;
+	}
+
+	if (!mod.isNssDevice({ evidence: { nss: { ecm_active: true } } }) ||
+	    !mod.isNssDevice({ evidence: { nss: { ecm_offload_active: true } } }) ||
+	    !mod.isNssDevice({ evidence: { nss: { direct_state_readable: true } } }) ||
+	    !mod.isNssDevice({ evidence: { nss: { direct_supported: true } } })) {
+		fail('configForm.js must prefer new Rust NSS evidence names and retain old C aliases');
+	}
+	if (!mod.daeRuntimeActive({ evidence: { proxy: { dae_running: true } } }) ||
+	    !mod.daeRuntimeActive({ evidence: { dae: { daed_running: true } } }) ||
+	    !mod.daeRuntimeActive({ evidence: { dae: { dae_process: true } } }) ||
+	    !mod.daeRuntimeActive({ evidence: { proxy: { daed_process: true } } })) {
+		fail('configForm.js must detect running dae/daed processes from new Rust and old C evidence');
+	}
+	if (mod.daeRuntimeActive({ evidence: { collector: { rate_reason: 'dae_runtime_prefers_bpf' } } }) ||
+	    mod.daeRuntimeActive({ warnings: [ 'nss_dae_bpf_fallback_may_be_inaccurate' ] }) ||
+	    mod.daeRuntimeActive({ evidence: { dae: { dae_service: true, dae0: true } } })) {
+		fail('configForm.js must not infer dae runtime activity from decisions, warnings, services, or leftover interfaces');
+	}
+
+	const originalLists = {
+		ifname: [ 'br-lan', 'tun0' ],
+		interface_include: [ 'br-lan', 'dae0' ],
+		observe: [ 'gretap0' ]
+	};
+	const loadMod = loadConfigFormModule(src, {
+		load: function() { return Promise.resolve(); },
+		get: function(config, section, option) { return originalLists[option]; }
+	}, noRpc, ifaceCfg);
+	asyncChecks.push(loadMod.loadValues().then(function(values) {
+		if (!values ||
+		    sortedJson(values.interfaceConfig && values.interfaceConfig.ifname) !== sortedJson(originalLists.ifname) ||
+		    sortedJson(values.interfaceConfig && values.interfaceConfig.interface_include) !== sortedJson(originalLists.interface_include) ||
+		    sortedJson(values.interfaceConfig && values.interfaceConfig.observe) !== sortedJson(originalLists.observe)) {
+			fail('configForm.js must load exact raw UCI interface lists as the hidden-interface preservation baseline');
+		}
+	}).catch(function(err) {
+		fail('configForm.js raw interface baseline load failed: ' + (err && err.message || err));
+	}));
+}
+
+function makeSaveHarness(configSrc, ifaceSrc, overrides) {
+	overrides = overrides || {};
+	const calls = [];
+	const rpc = {
+		uciSet: overrides.uciSet || function() { calls.push('set'); return Promise.resolve(); },
+		uciDelete: overrides.uciDelete || function() { calls.push('delete'); return Promise.resolve(); },
+		uciCommit: overrides.uciCommit || function() { calls.push('commit'); return Promise.resolve(); },
+		uciRevert: overrides.uciRevert || function() { calls.push('revert'); return Promise.resolve(); },
+		reload: overrides.reload || function() { calls.push('reload'); return Promise.resolve(); },
+		status: function() { calls.push('status'); return Promise.resolve(null); },
+		sysdevices: function() { calls.push('sysdevices'); return Promise.reject(new Error('scan unavailable')); }
+	};
+	const uci = {
+		unload: overrides.uciUnload || function(config) { calls.push('unload:' + config); },
+		load: overrides.uciLoad || function(config) { calls.push('load:' + config); return Promise.resolve(); },
+		get: function() { return null; }
+	};
+	const ifaceCfg = loadIfaceConfigModule(ifaceSrc, rpc);
+	const configForm = loadConfigFormModule(configSrc, uci, rpc, ifaceCfg);
+	const viewState = {
+		refs: {},
+		daemonRefs: daemonRefsForSave(),
+		saveRefs: { saveBtn: { disabled: false }, status: { textContent: '' } },
+		ifaceOriginal: { ifname: [], interface_include: [], observe: [] },
+		ifcfgButtons: [ { disabled: false }, { disabled: false } ]
+	};
+	return { calls: calls, form: configForm, state: viewState };
+}
+
+function assertConfigSaveBehavior(configSrc, ifaceSrc) {
+	const probe = makeSaveHarness(configSrc, ifaceSrc);
+	if (!probe.form || typeof probe.form.saveAll !== 'function') {
+		fail('configForm.js must expose the shared save transaction');
+		return;
+	}
+
+	asyncChecks.push(probe.form.saveAll(probe.state).then(function(result) {
+		if (result !== true || probe.calls.filter(function(v) { return v === 'set'; }).length !== 1 ||
+		    probe.calls.filter(function(v) { return v === 'commit'; }).length !== 1 ||
+		    probe.calls.filter(function(v) { return v === 'reload'; }).length !== 1 ||
+		    probe.calls.indexOf('unload:lanspeed') === -1 ||
+		    probe.calls.indexOf('load:lanspeed') === -1) {
+			fail('configForm.js must save daemon settings when sysdevices is unavailable, commit/reload once, and refresh the LuCI UCI cache');
+		}
+	}).catch(function(err) {
+		fail('configForm.js sysdevices-isolated save unexpectedly rejected: ' + (err && err.message || err));
+	}));
+
+	const reloadFailure = makeSaveHarness(configSrc, ifaceSrc, {
+		reload: function() {
+			reloadFailure.calls.push('reload');
+			return Promise.reject(new Error('reload failed'));
+		}
+	});
+	asyncChecks.push(reloadFailure.form.saveAll(reloadFailure.state).then(function(result) {
+		if (result !== false ||
+		    !reloadFailure.state.saveRefs.status.textContent.includes('配置已保存，但 daemon 重载失败') ||
+		    reloadFailure.calls.indexOf('commit') === -1 ||
+		    reloadFailure.calls.indexOf('unload:lanspeed') === -1) {
+			fail('configForm.js must distinguish a committed configuration from a later daemon reload failure');
+		}
+	}).catch(function(err) {
+		fail('configForm.js reload-failure path unexpectedly rejected: ' + (err && err.message || err));
+	}));
+
+	const writeFailure = makeSaveHarness(configSrc, ifaceSrc, {
+		uciSet: function() {
+			writeFailure.calls.push('set');
+			return Promise.reject(new Error('write failed'));
+		}
+	});
+	asyncChecks.push(writeFailure.form.saveAll(writeFailure.state).then(function(result) {
+		if (result !== false ||
+		    !writeFailure.state.saveRefs.status.textContent.includes('配置写入失败') ||
+		    writeFailure.calls.indexOf('revert') === -1 ||
+		    writeFailure.calls.indexOf('commit') !== -1 ||
+		    writeFailure.calls.indexOf('reload') !== -1) {
+			fail('configForm.js must revert staged UCI changes and avoid reload after a configuration write failure');
+		}
+	}).catch(function(err) {
+		fail('configForm.js write-failure path unexpectedly rejected: ' + (err && err.message || err));
+	}));
+
+	let releaseWrite;
+	const busy = makeSaveHarness(configSrc, ifaceSrc, {
+		uciSet: function() {
+			busy.calls.push('set');
+			return new Promise(function(resolve) { releaseWrite = resolve; });
+		}
+	});
+	const busySave = busy.form.saveAll(busy.state);
+	asyncChecks.push(Promise.resolve().then(function() {
+		const refs = busy.state.daemonRefs;
+		const daemonControls = [
+			refs.rateCollectorMode, refs.connCollectorMode, refs.activeWindow,
+			refs.activeMin, refs.showIpv6, refs.hidePrivateIpv6,
+			refs.hideIpv6RangeInput, refs.addRangeBtn, refs.resetBtn
+		].concat(refs.rangeRemoveButtons);
+		if (!daemonControls.every(function(control) { return control.disabled; }) ||
+		    !busy.state.ifcfgButtons.every(function(button) { return button.disabled; })) {
+			fail('configForm.js must lock every editable daemon and interface control while saving');
+		}
+		releaseWrite();
+		return busySave;
+	}).then(function() {
+		if (busy.state.configSaving || busy.state.saveRefs.saveBtn.disabled ||
+		    busy.state.daemonRefs.rateCollectorMode.disabled ||
+		    busy.state.ifcfgButtons[0].disabled) {
+			fail('configForm.js must unlock every control after the save transaction settles');
+		}
+	}));
+
+	const unexpected = makeSaveHarness(configSrc, ifaceSrc, {
+		uciLoad: function() { throw new Error('cache load exploded'); }
+	});
+	asyncChecks.push(unexpected.form.saveAll(unexpected.state).then(function(result) {
+		if (result !== false || unexpected.state.configSaving ||
+		    unexpected.state.saveRefs.saveBtn.disabled ||
+		    !unexpected.state.saveRefs.status.textContent.includes('配置已保存，但后续处理失败')) {
+			fail('configForm.js must release busy state and report unexpected post-commit failures');
+		}
+	}, function(err) {
+		fail('configForm.js unexpected post-commit error escaped the transaction: ' + (err && err.message || err));
+	}));
+}
+
+function assertWarningAliases(src) {
+	const vocab = loadVocabModule(src);
+	if (!vocab || typeof vocab.normalizeWarningId !== 'function') {
+		fail('vocab.js must expose warning ID normalization for old daemon compatibility');
+		return;
+	}
+	if (vocab.normalizeWarningId('nss_daed_prefers_bpf') !== 'dae_runtime_prefers_bpf' ||
+	    vocab.normalizeWarningId('nss_daed_nss_fallback_may_be_inaccurate') !==
+		'nss_dae_bpf_fallback_may_be_inaccurate' ||
+	    vocab.normalizeWarningId('dae_runtime_prefers_bpf') !== 'dae_runtime_prefers_bpf' ||
+	    vocab.warningText('nss_daed_prefers_bpf') !== vocab.warningText('dae_runtime_prefers_bpf')) {
+		fail('vocab.js must accept legacy dae warning IDs while normalizing rendered keys to the new Rust IDs');
+	}
+}
+
+function assertStatusShellInteraction(src) {
+	let saved = 0;
+	let refreshed = 0;
+	const E = fakeElement;
+	const fmt = {
+		REFRESH_CHOICES: [ { value: 1000, label: '1s' }, { value: 3000, label: '3s' } ],
+		MIN_REFRESH_MS: 1000,
+		opt: function(value, label, selected) {
+			const attrs = { value: String(value) };
+			if (selected) attrs.selected = 'selected';
+			return E('option', attrs, label);
+		},
+		nextSort: function(prefs, key) {
+			if (!prefs.sortCustom || prefs.sortKey !== key)
+				return { sortKey: key, sortDir: 'desc', sortCustom: true };
+			if (prefs.sortDir === 'desc')
+				return { sortKey: key, sortDir: 'asc', sortCustom: true };
+			return { sortKey: 'rx', sortDir: 'desc', sortCustom: false };
+		},
+		savePrefs: function() { saved++; }
+	};
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	const shell = vm.compileFunction(src,
+		[ 'baseclass', 'fmt', 'nssPanel', 'lsTheme', 'statusStyle', 'E', '_' ],
+		{ filename: 'resources/lanspeed/statusShell.js' })(
+			fakeBaseclass,
+			fmt,
+			{ build: function() { return E('div', { class: 'nss-test' }); } },
+			{ applyRoot: function() {} },
+			{ CSS: '' },
+			E,
+			function(value) { return value; }
+		);
+	const viewState = {
+		prefs: { refreshMs: 3000, unit: 'bit', activeOnly: false, sortKey: 'rx', sortDir: 'desc', sortCustom: false, paused: false },
+		filter: '',
+		reload: function() {},
+		refreshLive: function() { refreshed++; },
+		stopTimer: function() {},
+		schedule: function() {}
+	};
+	const built = shell.buildShell(viewState);
+	const refs = built.refs;
+	const left = findFakeElement(built.root, 'lanspeed-toolbar-left');
+	const filter = findFakeElement(built.root, 'lanspeed-toolbar-filter');
+	const right = findFakeElement(built.root, 'lanspeed-toolbar-right');
+
+	if (!left || !filter || !right || left.children[1] !== filter ||
+	    filter.children[0] !== refs.filterInput || right.children[1] !== refs.btnRefresh ||
+	    right.children[2] !== refs.btnPause || refs.sortSel) {
+		fail('statusShell.js toolbar DOM must keep unit/filter left and refresh actions right without a sort select');
+	}
+	if (!refs.sortHeaders || !refs.sortHeaders.rx || !refs.sortHeaders.hostname ||
+	    !refs.sortHeaders.rx.button || !refs.sortHeaders.rx.button.listeners.click ||
+	    !refs.sortHeaders.hostname.button || !refs.sortHeaders.hostname.button.listeners.click) {
+		fail('statusShell.js must expose clickable sortable table headers');
+		return;
+	}
+	if (!refs.sortHeaders.tcp_conns ||
+	    refs.sortHeaders.tcp_conns.description !== 'TCP 仅统计 ESTABLISHED + ASSURED' ||
+	    !refs.sortHeaders.udp_conns ||
+	    refs.sortHeaders.udp_conns.description !== 'UDP 仅统计 ASSURED conntrack 条目') {
+		fail('statusShell.js sortable TCP/UDP headers must retain their connection-statistics semantics');
+	}
+	refs.sortHeaders.rx.button.listeners.click();
+	if (viewState.prefs.sortKey !== 'rx' || viewState.prefs.sortDir !== 'desc' || !viewState.prefs.sortCustom || saved !== 1 || refreshed !== 1) {
+		fail('statusShell.js must start an active default sort header in descending order');
+	}
+	refs.sortHeaders.rx.button.listeners.click();
+	if (viewState.prefs.sortKey !== 'rx' || viewState.prefs.sortDir !== 'asc' || !viewState.prefs.sortCustom || saved !== 2 || refreshed !== 2) {
+		fail('statusShell.js must switch an active descending header to ascending');
+	}
+	refs.sortHeaders.rx.button.listeners.click();
+	if (viewState.prefs.sortKey !== 'rx' || viewState.prefs.sortDir !== 'desc' || viewState.prefs.sortCustom || saved !== 3 || refreshed !== 3) {
+		fail('statusShell.js must restore default sorting after ascending');
+	}
+	refs.sortHeaders.hostname.button.listeners.click();
+	if (viewState.prefs.sortKey !== 'hostname' || viewState.prefs.sortDir !== 'desc' || !viewState.prefs.sortCustom || saved !== 4 || refreshed !== 4) {
+		fail('statusShell.js must start a different sort header in descending order');
+	}
+}
+
 function assertNssPanelSource(src) {
-	if (!src.includes('function hasNssSignal(status)') ||
-	    !src.includes('function isNssAccelerated(status)')) {
-		fail('lanspeed/nssPanel.js must keep NSS panel signal helpers');
+	if (!src.includes('function hasNssSignal(status)')) {
+		fail('lanspeed/nssPanel.js must keep the NSS panel signal helper');
 	}
 	if (!src.includes('function nssDirectFallbackText(reason)') ||
 	    !src.includes('collector_mode_bpf') ||
@@ -320,6 +941,27 @@ function assertNssPanelSource(src) {
 	    !src.includes('引擎与加速') ||
 	    !src.includes('NSS 相关告警')) {
 		fail('lanspeed/nssPanel.js must render NSS panel sections');
+	}
+	if (src.includes('nssInitialized') ||
+	    src.includes("setAttribute('open'") ||
+	    src.includes("'open': 'open'")) {
+		fail('lanspeed/nssPanel.js must leave NSS status collapsed by default');
+	}
+	if (!src.includes('ev.ecm_active') || !src.includes('ev.ecm_offload_active') ||
+	    !src.includes('ev.ppe_active') || !src.includes('ev.ppe_offload_active') ||
+	    !src.includes('ev.direct_state_readable') || !src.includes('ev.direct_supported')) {
+		fail('lanspeed/nssPanel.js must prefer new Rust NSS evidence fields and retain old C aliases');
+	}
+	if (!src.includes('vocab.normalizeWarningId(w)')) {
+		fail('lanspeed/nssPanel.js must render legacy dae warning aliases with their new Rust IDs');
+	}
+}
+
+function assertRpcModule(src) {
+	if (!src.includes("method: 'revert'") ||
+	    !src.includes('uciRevert:') ||
+	    !src.includes('callUciRevert')) {
+		fail('lanspeed/rpc.js must expose uci.revert so failed raw writes can clear server-side staged deltas');
 	}
 }
 
@@ -383,32 +1025,29 @@ function assertConfigView(src) {
 	}
 	if (!src.includes('caps.nss === true') ||
 	    !src.includes("key.indexOf('nss') === 0") ||
+	    !src.includes('nss.ecm_active') ||
 	    !src.includes('nss.ecm_offload_active') ||
+	    !src.includes('nss.direct_state_readable') ||
 	    !src.includes('nss.direct_supported')) {
 		fail('view/lanspeed/config.js must also detect NSS from runtime capabilities and NSS offload evidence');
 	}
-	if (!src.includes('function daedRuntimeActive(') ||
+	if (!src.includes('function daeRuntimeActive(') ||
 	    !src.includes('dae.dae_running') ||
 	    !src.includes('dae.daed_running')) {
-		fail('view/lanspeed/config.js must distinguish running daed from installed daed config');
+		fail('view/lanspeed/config.js must distinguish running dae/daed from installed config');
 	}
 	if (src.includes('dae.dae0 || dae.dae0peer') ||
 	    src.includes('dae.dae_service || dae.daed_service') ||
 	    src.includes('dae.runtime_active')) {
 		fail('view/lanspeed/config.js must not treat stopped daed service or leftover dae0 as runtime-active daed');
 	}
-	if (!src.includes('lanspeed-nss-config-only')) {
-		fail('view/lanspeed/config.js must render NSS-only configuration guidance separately');
-	}
-	if (!src.includes('lanspeed-nss-config-only') ||
-	    !src.includes('NSS-direct') ||
+	if (!src.includes('NSS-direct') ||
 	    !src.includes('NSS sync')) {
-		fail('view/lanspeed/config.js must explain NSS direct and NSS sync only on NSS devices');
+		fail('view/lanspeed/config.js must explain NSS direct and NSS sync on NSS devices');
 	}
 	if (!src.includes('function rateCollectorModesForStatus(') ||
 	    !src.includes("[ 'nss_ecm_direct', 'NSS-direct' ]") ||
-	    !src.includes("[ 'nss_conntrack_sync', 'NSS sync' ]") ||
-	    !src.includes('lanspeed-rate-badge')) {
+	    !src.includes("[ 'nss_conntrack_sync', 'NSS sync' ]")) {
 		fail('view/lanspeed/config.js must show NSS-aware rate_collector_mode labels on NSS devices');
 	}
 	if (!src.includes('function rateCollectorModesForStatus(status, currentValue)') ||
@@ -416,8 +1055,13 @@ function assertConfigView(src) {
 	    !src.includes("currentValue === 'nss_conntrack_sync'")) {
 		fail('view/lanspeed/config.js must preserve saved NSS rate_collector_mode values even when runtime NSS detection is unavailable');
 	}
-	if (!src.includes('当前采集方式') || !src.includes('nssRateHint(status)')) {
-		fail('view/lanspeed/config.js must keep NSS explanations in hint rows instead of option labels');
+	if (!src.includes('lanspeed-current-rate-source') ||
+	    !src.includes("_('当前：')") ||
+	    !src.includes('nssRateHint(status)')) {
+		fail('view/lanspeed/config.js must show the configured and current rate collectors in one row');
+	}
+	if (src.includes('lanspeed-nss-config-only') || src.includes("_('当前采集方式')")) {
+		fail('view/lanspeed/config.js must not render a separate current-collector row');
 	}
 	if (src.includes('自动（NSS-direct') ||
 	    src.includes('自动（BPF') ||
@@ -432,11 +1076,11 @@ function assertConfigView(src) {
 	    !src.includes("[ 'conntrack_procfs', 'CT-Procfs' ]")) {
 		fail('view/lanspeed/config.js connection collector options must use plain labels');
 	}
-	if (!src.includes('daed 运行中') || !src.includes('BPF')) {
-		fail('view/lanspeed/config.js must explain the NSS+daed BPF preference');
+	if (!src.includes('dae/daed 运行中') || !src.includes('BPF')) {
+		fail('view/lanspeed/config.js must explain the dae/daed BPF preference');
 	}
-	if (!src.includes('if (refs.nssRows)')) {
-		fail('view/lanspeed/config.js must hide NSS-only rows on non-NSS devices');
+	if (src.includes('lanspeed-rate-badge') || src.includes('rateBadge')) {
+		fail('view/lanspeed/config.js must not render the removed rate badge');
 	}
 	if (!src.includes('font-weight:400')) {
 		fail('view/lanspeed/config.js must pin normal LAN Speed text weight for Argon compatibility');
@@ -511,6 +1155,14 @@ function assertConfigView(src) {
 	if (!src.includes('lsRpc.reload()')) {
 		fail('view/lanspeed/config.js must call the lanspeed reload ubus method after saving daemon settings');
 	}
+	const saveLabels = src.match(/_\('保存并重载'\)/g) || [];
+	const commits = src.match(/lsRpc\.uciCommit\('lanspeed'\)/g) || [];
+	const reloads = src.match(/lsRpc\.reload\(\)/g) || [];
+	if (saveLabels.length !== 1 || commits.length !== 1 || reloads.length !== 1 ||
+	    !src.includes('configForm.buildSaveSection(viewState)') ||
+	    !src.includes('ifaceCfg.prepareSave(viewState)')) {
+		fail('view/lanspeed/config.js must use one bottom save button, one commit and one daemon reload for all settings');
+	}
 	if (src.includes('lsRpc.init(\'lanspeedd\', \'reload\')')) {
 		fail('view/lanspeed/config.js must not reload through rc init');
 	}
@@ -535,6 +1187,20 @@ function assertIfaceConfigThemeLayout(src) {
 	if (src.includes('置信度 high')) {
 		fail('resources/lanspeed/ifaceConfig.js must not show confidence wording in interface config tooltips');
 	}
+	const ignoredPrefixes = [
+		'dae', 'miireg', 'tun', 'erspan', 'gretap', 'gre', 'ip6gre', 'ip6tnl', 'sit',
+		'bonding_masters'
+	];
+	if (!src.includes('var AUTO_IGNORED_INTERFACE_PREFIXES = [') ||
+	    !src.includes('function isAutoIgnoredInterface(name)') ||
+	    ignoredPrefixes.some(function(prefix) { return !src.includes("'" + prefix + "'"); }) ||
+	    !src.includes('visibleDevices(viewState.sysdevices || {})')) {
+		fail('resources/lanspeed/ifaceConfig.js must hide every configured tunnel/proxy interface prefix defensively');
+	}
+	if (src.includes('ifcfgSaveBtn') || src.includes("lsRpc.uciCommit('lanspeed')") ||
+	    src.includes('lsRpc.reload()')) {
+		fail('resources/lanspeed/ifaceConfig.js must stage changes for the shared page save flow');
+	}
 }
 
 function assertStatusViewNoInterfaceConfig(src) {
@@ -553,8 +1219,9 @@ function assertStatusViewNoInterfaceConfig(src) {
 	if (src.includes('ifcfgCard')) {
 		fail('view/lanspeed/index.js must not include the interface configuration card');
 	}
-	if (!src.includes('lsRpc.reload()')) {
-		fail('view/lanspeed/index.js must call the lanspeed reload ubus method from the daemon reload button');
+	if (src.includes('lsRpc.reload()') || src.includes('btnReload') ||
+	    src.includes('重载 daemon') || src.includes('正在重载')) {
+		fail('view/lanspeed/index.js must not expose daemon reload controls on the live status page');
 	}
 	if (src.includes('lsRpc.init(\'lanspeedd\', \'reload\')')) {
 		fail('view/lanspeed/index.js must not reload through rc init');
@@ -609,7 +1276,7 @@ function assertStatusViewSourceOnlyState(src) {
 	if (!src.includes('align-items:baseline') || !src.includes('white-space:nowrap')) {
 		fail('view/lanspeed/index.js header metadata must stay aligned with the section title on Argon');
 	}
-	if (!src.includes('lanspeed-toolbar-left') || !src.includes('lanspeed-toolbar-filter') || !src.includes('lanspeed-toolbar-options')) {
+	if (!src.includes('lanspeed-toolbar-left') || !src.includes('lanspeed-toolbar-filter') || !src.includes('lanspeed-toolbar-right')) {
 		fail('view/lanspeed/index.js must group toolbar controls for Argon compatibility');
 	}
 	if (!src.includes('lanspeed-active-only') ||
@@ -768,7 +1435,38 @@ function assertStatusStyleModule(src) {
 	}
 	if (!src.includes('.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-body{overflow-x:auto}') ||
 	    !src.includes('.lanspeed-theme-argon .lanspeed-clients-card .lanspeed-body{overflow-x:auto}')) {
-		fail('lanspeed/statusStyle.js must keep mobile client tables horizontally scrollable inside Aurora/Argon cards');
+		fail('lanspeed/statusStyle.js must keep client tables scrollable above the narrow stacked breakpoint');
+	}
+	if (!src.includes('.lanspeed-toolbar{display:flex;flex-wrap:wrap;gap:.7em 1em;') ||
+	    !src.includes('.lanspeed-toolbar-left{display:grid;grid-template-columns:auto minmax(14em,1fr);') ||
+	    !src.includes('flex:1 1 36em;gap:.5em;align-items:center;min-width:0') ||
+	    !src.includes('.lanspeed-toolbar-right{flex:0 0 auto;justify-content:flex-end;margin-left:auto;white-space:nowrap}') ||
+	    !src.includes('.lanspeed-toolbar .lanspeed-unit-control select{width:7.5em!important;') ||
+	    !src.includes('.lanspeed-toolbar .lanspeed-refresh-control select{width:6.5em!important;') ||
+	    !src.includes('@media (max-width:600px){.lanspeed-toolbar-left{grid-template-columns:1fr;flex-basis:100%}')) {
+		fail('lanspeed/statusStyle.js must wrap toolbar groups before controls overlap');
+	}
+	if (!src.includes('.lanspeed-sort-button{appearance:none;background:transparent!important;border:0!important;') ||
+	    !src.includes('.lanspeed-sort-button:focus-visible') ||
+	    !src.includes('.lanspeed-sort-indicator{')) {
+		fail('lanspeed/statusStyle.js must render accessible sortable headers without theme button chrome');
+	}
+	if (!src.includes('@media (max-width:700px){.lanspeed-clients-card .lanspeed-body{overflow-x:hidden}') ||
+	    !src.includes('grid-template-columns:repeat(6,minmax(0,1fr));gap:.25em;') ||
+	    !src.includes('.lanspeed-clients-card .lanspeed-table tbody>tr{display:grid;') ||
+	    !src.includes('grid-template-columns:repeat(2,minmax(0,1fr));gap:.7em 1em;') ||
+	    !src.includes('.lanspeed-clients-card .lanspeed-table td[data-label]::before{content:attr(data-label);') ||
+	    !src.includes('@media (min-width:701px) and (max-width:900px){') ||
+	    !src.includes('.lanspeed-clients-card .lanspeed-table{table-layout:fixed;min-width:0}') ||
+	    !src.includes('.lanspeed-clients-card .lanspeed-table th:nth-child(7),.lanspeed-clients-card .lanspeed-table td:nth-child(7){width:16%}') ||
+	    !src.includes('@media (max-width:480px){.lanspeed-clients-card .lanspeed-table thead>tr{') ||
+	    !src.includes('grid-template-columns:repeat(3,minmax(0,1fr));row-gap:.35em}') ||
+	    !src.includes('.lanspeed-theme-aurora .lanspeed-toolbar input[type=search]{min-width:0;width:100%;max-width:none}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-toolbar input[type=search]{min-width:0;width:100%;max-width:none}')) {
+		fail('lanspeed/statusStyle.js must stack client data without horizontal scrolling on narrow screens');
+	}
+	if (src.includes('.lanspeed-clients-card .lanspeed-table thead{display:none}')) {
+		fail('lanspeed/statusStyle.js must keep direct header sorting available on narrow screens');
 	}
 	if (!src.includes('.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-table td:nth-child(2).mono{font-size:.95rem}')) {
 		fail('lanspeed/statusStyle.js must keep Aurora client MAC text readable without changing other themes');
@@ -840,6 +1538,24 @@ function assertStatusShellModule(src) {
 	    !src.includes('nssPanel.build(refs)')) {
 		fail('lanspeed/statusShell.js must own status page DOM shell construction');
 	}
+	if (!/refs\.diagnostics\s*=\s*E\('details',\s*\{\s*'class':\s*'lanspeed-details'\s*\}/.test(src) ||
+	    /refs\.diagnostics\s*=\s*E\('details',[\s\S]{0,120}['"]open['"]/.test(src)) {
+		fail('lanspeed/statusShell.js must leave diagnostics collapsed by default');
+	}
+	const sortableKeys = [ 'hostname', 'mac', 'tx', 'rx', 'tcp_conns', 'udp_conns' ];
+	if (!src.includes('function sortableHeader(viewState, refs, sortKey, label, attrs)') ||
+	    sortableKeys.some(function(key) { return !src.includes(`sortableHeader(viewState, refs, '${key}'`); })) {
+		fail('lanspeed/statusShell.js must sort directly from all six requested client table headers');
+	}
+	if (src.includes('refs.sortSel') || src.includes("_('排序')")) {
+		fail('lanspeed/statusShell.js must not render a separate sorting control');
+	}
+	if (!src.includes("E('div', { 'class': 'lanspeed-toolbar-left' }") ||
+	    !src.includes("E('div', { 'class': 'lanspeed-toolbar-right' }") ||
+	    !src.includes("E('label', { 'class': 'lanspeed-unit-control' }, [ _('单位'), refs.unitSel ])") ||
+	    !src.includes("E('label', { 'class': 'lanspeed-refresh-control' }, [ _('刷新'), refs.intervalSel ])")) {
+		fail('lanspeed/statusShell.js must place unit/filter controls left and refresh controls right');
+	}
 }
 
 function assertStatusRefreshModule(src) {
@@ -849,6 +1565,29 @@ function assertStatusRefreshModule(src) {
 	    !src.includes('lsVersion.FULL_VERSION') ||
 	    !src.includes('nssPanel.render(refs, status)')) {
 		fail('lanspeed/statusRefresh.js must own status page live refresh rendering');
+	}
+	if (!src.includes('fmt.sortClients(filtered, prefs.sortKey, prefs.sortDir)') ||
+	    !src.includes('var active = prefs.sortCustom && prefs.sortKey === sortKey;') ||
+	    !src.includes("setAttribute('aria-sort'") ||
+	    !src.includes("ascending ? '↑' : '↓'")) {
+		fail('lanspeed/statusRefresh.js must only render arrows for an explicit client sort');
+	}
+	if (!src.includes("'class': 'lanspeed-client-name'") ||
+	    !src.includes("'class': 'mono lanspeed-client-mac'") ||
+	    !src.includes("'class': 'num lanspeed-client-value'") ||
+	    !src.includes("'class': 'lanspeed-client-state-cell'") ||
+	    !src.includes("'data-label': _('上行')") ||
+	    !src.includes("'data-label': _('下行')") ||
+	    !src.includes("'data-label': _('状态')")) {
+		fail('lanspeed/statusRefresh.js must label client fields for the narrow stacked layout');
+	}
+	if (!src.includes('function nssEvidenceState(') ||
+	    !src.includes('ev.ecm_active') ||
+	    !src.includes('ev.ecm_offload_active') ||
+	    !src.includes('ev.ppe_active') ||
+	    !src.includes('ev.ppe_offload_active') ||
+	    !src.includes('vocab.normalizeWarningId(w)')) {
+		fail('statusRefresh.js must render new Rust NSS evidence and warning IDs with old C aliases');
 	}
 }
 
@@ -897,15 +1636,23 @@ function assertConfigStyleModule(src) {
 function assertConfigFormModule(src) {
 	if (!src.includes('DEFAULTS: DEFAULTS') ||
 	    !src.includes('loadValues: function()') ||
-	    !src.includes('buildDaemonSection: function(values)') ||
+	    !src.includes('buildDaemonSection: function(values, viewState)') ||
+	    !src.includes('buildSaveSection: function(viewState)') ||
+	    !src.includes('saveAll: function(viewState)') ||
 	    !src.includes('applyRuntimeInfo(refs, values.status || {})')) {
-		fail('lanspeed/configForm.js must own config form defaults, loading, and daemon section rendering');
+		fail('lanspeed/configForm.js must own config defaults, rendering and the shared save flow');
 	}
 	if (src.includes("E('span', { 'class': 'sum' }, _('UCI'))")) {
 		fail('lanspeed/configForm.js must not show a redundant UCI badge in the runtime settings header');
 	}
 	if (src.includes("E('th', {}, _('UCI'))")) {
 		fail('lanspeed/configForm.js must not show a UCI column in the runtime settings table');
+	}
+	if (!src.includes('viewState.ifaceOriginal = values.interfaceConfig') ||
+	    !src.includes("uci.unload('lanspeed')") ||
+	    !src.includes("uci.load('lanspeed')") ||
+	    !src.includes("lsRpc.uciRevert('lanspeed')")) {
+		fail('configForm.js must retain the raw interface baseline, refresh LuCI UCI cache, and revert failed raw writes');
 	}
 	[
 		'rate_collector_mode',
@@ -941,7 +1688,8 @@ function assertConfigViewEntryIsThin(src) {
 	}
 	if (!src.includes('configStyle.CSS') ||
 	    !src.includes('configForm.loadValues()') ||
-	    !src.includes('configForm.buildDaemonSection(values || configForm.DEFAULTS)')) {
+	    !src.includes('configForm.buildDaemonSection(values || configForm.DEFAULTS, viewState)') ||
+	    !src.includes('configForm.buildSaveSection(viewState)')) {
 		fail('view/lanspeed/config.js must delegate CSS, loading, and form rendering to config modules');
 	}
 }
@@ -990,14 +1738,22 @@ EXPECTED_MODULES.forEach(function(name) {
 	assertRequire(src, `resources/lanspeed/${name}`, MODULE_REQUIRES[name]);
 	assertBaseclassExtend(cleaned, `resources/lanspeed/${name}`);
 	assertSyntax(src, `resources/lanspeed/${name}`);
-	if (name === 'format.js') {
-		assertFormatActiveWindow(src);
-	}
+		if (name === 'format.js') {
+			assertFormatActiveWindow(src);
+			assertFormatSorting(src);
+		}
 	if (name === 'ifaceConfig.js') {
 		assertIfaceConfigThemeLayout(src);
+		assertIfaceSaveBehavior(src);
 	}
 	if (name === 'nssPanel.js') {
 		assertNssPanelSource(src);
+	}
+	if (name === 'vocab.js') {
+		assertWarningAliases(src);
+	}
+	if (name === 'rpc.js') {
+		assertRpcModule(src);
 	}
 	if (name === 'theme.js') {
 		assertThemeModule(src);
@@ -1020,19 +1776,27 @@ EXPECTED_MODULES.forEach(function(name) {
 	if (name === 'statusCollector.js') {
 		assertStatusCollectorModule(src);
 	}
-	if (name === 'statusShell.js') {
-		assertStatusShellModule(src);
-	}
+		if (name === 'statusShell.js') {
+			assertStatusShellModule(src);
+			assertStatusShellInteraction(src);
+		}
 	if (name === 'statusRefresh.js') {
 		assertStatusRefreshModule(src);
+		assertStatusRefreshSortingInteraction(src);
 	}
 	if (name === 'configStyle.js') {
 		assertConfigStyleModule(src);
 	}
 	if (name === 'configForm.js') {
 		assertConfigFormModule(src);
+		assertConfigCompatibility(src);
 	}
 });
+
+assertConfigSaveBehavior(
+	readModuleByName('configForm.js'),
+	readModuleByName('ifaceConfig.js')
+);
 
 RPC_FREE_MODULES.forEach(function(name) {
 	const p = path.join(modDir, name);
@@ -1084,11 +1848,12 @@ if (fs.existsSync(statusViewFile)) {
 if (fs.existsSync(configViewFile)) {
 	const csrc = readModule(configViewFile);
 	const ccleaned = stripComments(csrc);
-	const configSrc = [
-		csrc,
-		readModuleByName('configStyle.js'),
-		readModuleByName('configForm.js')
-	].join('\n');
+		const configSrc = [
+			csrc,
+			readModuleByName('configStyle.js'),
+			readModuleByName('configForm.js'),
+			readModuleByName('ifaceConfig.js')
+		].join('\n');
 	assertStrict(csrc, 'view/lanspeed/config.js');
 	assertConfigViewRequires(csrc);
 	assertThemeWiring(csrc, 'view/lanspeed/config.js');
@@ -1099,13 +1864,21 @@ if (fs.existsSync(configViewFile)) {
 	assertNoRpcDeclare(ccleaned, 'view/lanspeed/config.js');
 }
 
-if (errors.length) {
-	console.error('validate-lanspeed-modules: FAIL');
-	errors.forEach(function(e) { console.error('  - ' + e); });
-	process.exit(1);
+function finish() {
+	if (errors.length) {
+		console.error('validate-lanspeed-modules: FAIL');
+		errors.forEach(function(e) { console.error('  - ' + e); });
+		process.exitCode = 1;
+		return;
+	}
+
+	console.log('validate-lanspeed-modules: PASS');
+	console.log(`  modules checked: ${EXPECTED_MODULES.length} (${EXPECTED_MODULES.join(', ')})`);
+	console.log(`  view entry: ${path.relative(root, viewFile)}`);
+	console.log(`  status view: ${path.relative(root, statusViewFile)}`);
 }
 
-console.log('validate-lanspeed-modules: PASS');
-console.log(`  modules checked: ${EXPECTED_MODULES.length} (${EXPECTED_MODULES.join(', ')})`);
-console.log(`  view entry: ${path.relative(root, viewFile)}`);
-console.log(`  status view: ${path.relative(root, statusViewFile)}`);
+Promise.all(asyncChecks).then(finish, function(err) {
+	fail('async module validation failed: ' + (err && err.stack || err));
+	finish();
+});

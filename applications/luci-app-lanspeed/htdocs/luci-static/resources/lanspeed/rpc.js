@@ -61,6 +61,11 @@ var callUciCommit = rpc.declare({
 	method: 'commit',
 	params: [ 'config' ]
 });
+var callUciRevert = rpc.declare({
+	object: 'uci',
+	method: 'revert',
+	params: [ 'config' ]
+});
 
 return baseclass.extend({
 	status:     callStatus,
@@ -72,5 +77,6 @@ return baseclass.extend({
 	uciSet:     callUciSet,
 	uciGet:     callUciGet,
 	uciDelete:  callUciDelete,
-	uciCommit:  callUciCommit
+	uciCommit:  callUciCommit,
+	uciRevert:  callUciRevert
 });
