@@ -271,6 +271,13 @@ function loadVocabModule(src) {
 	})(fakeBaseclass, function(value) { return value; });
 }
 
+function loadNssPanelModule(src) {
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	return vm.compileFunction(src, [ 'baseclass', 'vocab', 'fmt', 'E', '_' ], {
+		filename: 'resources/lanspeed/nssPanel.js'
+	})(fakeBaseclass, {}, {}, fakeElement, function(value) { return value; });
+}
+
 function loadStatusRefreshModule(src) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	return vm.compileFunction(src,
@@ -965,6 +972,25 @@ function assertNssPanelSource(src) {
 	}
 	if (!src.includes('vocab.normalizeWarningId(w)')) {
 		fail('lanspeed/nssPanel.js must render legacy dae warning aliases with their new Rust IDs');
+	}
+	const panel = loadNssPanelModule(src);
+	if (panel.hasNssSignal({ evidence: { nss: {
+		present: false,
+		ecm_active: false,
+		ppe_active: false,
+		direct_state_readable: false,
+		bridge_mgr: false,
+		ifb_active: false,
+		nsm_active: false,
+		dp_active: false,
+		mcs_active: false
+	} } })) {
+		fail('lanspeed/nssPanel.js must hide false-only Rust NSS evidence on non-NSS devices');
+	}
+	if (!panel.hasNssSignal({ evidence: { nss: { present: true } } }) ||
+	    !panel.hasNssSignal({ evidence: { nss: { ecm_offload_active: true } } }) ||
+	    !panel.hasNssSignal({ capabilities: { nss_dp: true } })) {
+		fail('lanspeed/nssPanel.js must still show real Rust, legacy C, or capability NSS signals');
 	}
 }
 

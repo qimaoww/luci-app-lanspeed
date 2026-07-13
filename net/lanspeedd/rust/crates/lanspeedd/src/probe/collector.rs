@@ -7,6 +7,12 @@ use crate::config::RuntimeConfig;
 use std::{io, path::Path};
 
 const FILE_CAP: usize = 4_096;
+const ECM_CONNECTION_COUNT_PATH: &str = "/sys/kernel/debug/ecm/ecm_db/connection_count";
+const ECM_CONNECTION_COUNT_SIMPLE_PATH: &str =
+    "/sys/kernel/debug/ecm/ecm_db/connection_count_simple";
+const ECM_HOST_COUNT_PATH: &str = "/sys/kernel/debug/ecm/ecm_db/host_count";
+const ECM_MAPPING_COUNT_PATH: &str = "/sys/kernel/debug/ecm/ecm_db/mapping_count";
+pub const PROBE_REFRESH_INTERVAL_MS: u64 = 30_000;
 const PACKAGES: [&str; 9] = [
     "firewall",
     "sqm",
@@ -33,6 +39,17 @@ impl ProbeMethod {
             Self::Reload => "reload",
         }
     }
+}
+
+pub const fn probe_due(now_ms: u64, deadline_ms: u64, method: ProbeMethod) -> bool {
+    match method {
+        ProbeMethod::Reload => true,
+        ProbeMethod::Status | ProbeMethod::Health => now_ms >= deadline_ms,
+    }
+}
+
+pub const fn probe_deadline(now_ms: u64) -> u64 {
+    now_ms.saturating_add(PROBE_REFRESH_INTERVAL_MS)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -656,6 +673,61 @@ where
             }
             Err(_) => o.probe_error = true,
         }
+        self.collect_nss_counts(o, evidence);
+    }
+
+    fn collect_nss_counts(&mut self, o: &mut ProbeObservations, evidence: &mut CollectedEvidence) {
+        let primary_total = self
+            .read_optional_file(ECM_CONNECTION_COUNT_PATH, evidence, &mut o.probe_error)
+            .and_then(|value| parse_nonnegative_count(&value));
+        let simple = self
+            .read_optional_file(
+                ECM_CONNECTION_COUNT_SIMPLE_PATH,
+                evidence,
+                &mut o.probe_error,
+            )
+            .and_then(|value| parse_simple_connection_counts(&value));
+        o.nss.accelerated_connections = primary_total.or_else(|| simple.map(|counts| counts.total));
+        o.nss.accelerated_tcp = simple.map(|counts| counts.tcp);
+        o.nss.accelerated_udp = simple.map(|counts| counts.udp);
+        o.nss.accelerated_other = simple.map(|counts| counts.other);
+        o.nss.host_count = self
+            .read_optional_file(ECM_HOST_COUNT_PATH, evidence, &mut o.probe_error)
+            .and_then(|value| parse_nonnegative_count(&value));
+        o.nss.mapping_count = self
+            .read_optional_file(ECM_MAPPING_COUNT_PATH, evidence, &mut o.probe_error)
+            .and_then(|value| parse_nonnegative_count(&value));
+    }
+
+    fn read_optional_file(
+        &mut self,
+        path: &str,
+        evidence: &mut CollectedEvidence,
+        error: &mut bool,
+    ) -> Option<String> {
+        match self.files.read(path, FILE_CAP) {
+            Ok(entry) => {
+                let truncated = entry.truncated;
+                let value = (!truncated && entry.present)
+                    .then(|| entry.value.clone())
+                    .flatten();
+                *error |= truncated;
+                let mut file_evidence = to_file_evidence(entry);
+                if truncated {
+                    file_evidence.status = "truncated";
+                    file_evidence.value = None;
+                }
+                evidence.file.push(file_evidence);
+                value
+            }
+            Err(error_value) => {
+                *error = true;
+                evidence
+                    .file
+                    .push(file_error(path, error_value.to_string()));
+                None
+            }
+        }
     }
 
     fn exists(&mut self, path: &str, evidence: &mut CollectedEvidence, error: &mut bool) -> bool {
@@ -925,4 +997,42 @@ fn file_error(path: &str, error: String) -> FileEvidence {
 }
 fn bool_value(value: Option<&str>) -> bool {
     matches!(value, Some("1" | "true" | "on" | "yes"))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SimpleConnectionCounts {
+    tcp: u64,
+    udp: u64,
+    other: u64,
+    total: u64,
+}
+
+fn parse_nonnegative_count(value: &str) -> Option<u64> {
+    value.trim().parse().ok()
+}
+
+fn parse_simple_connection_counts(value: &str) -> Option<SimpleConnectionCounts> {
+    let mut fields = value.split_whitespace();
+    if fields.next()? != "tcp" {
+        return None;
+    }
+    let tcp = fields.next()?;
+    if fields.next()? != "udp" {
+        return None;
+    }
+    let udp = fields.next()?;
+    if fields.next()? != "other" {
+        return None;
+    }
+    let other = fields.next()?;
+    if fields.next()? != "total" {
+        return None;
+    }
+    let total = fields.next()?;
+    Some(SimpleConnectionCounts {
+        tcp: parse_nonnegative_count(tcp)?,
+        udp: parse_nonnegative_count(udp)?,
+        other: parse_nonnegative_count(other)?,
+        total: parse_nonnegative_count(total)?,
+    })
 }

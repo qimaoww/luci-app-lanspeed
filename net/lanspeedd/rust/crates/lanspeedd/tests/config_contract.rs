@@ -370,6 +370,136 @@ fn nssifb_is_rejected_from_both_collect_lists_but_remains_observe_only() {
 }
 
 #[test]
+fn proxy_and_tunnel_prefixes_are_ignored_for_collect_and_observe() {
+    let ignored = [
+        "dae0",
+        "daed-edge",
+        "miireg0",
+        "tun0",
+        "erspan0",
+        "gretap0",
+        "gre0",
+        "ip6gre0",
+        "ip6tnl0",
+        "sit0",
+        "bonding_masters",
+    ];
+    for name in ignored {
+        assert!(!LegacyNameEligibility.is_collect_eligible(name), "{name}");
+    }
+
+    let config = load(
+        MemorySource::default()
+            .with_list("ifname", &["br-lan", "gretap0", "dae0"])
+            .with_list(
+                "observe",
+                &["wan", "nssifb", "tun0", "erspan0", "bonding_masters"],
+            ),
+    );
+    assert_eq!(config.ifnames, ["br-lan"]);
+    assert_eq!(config.observe_ifnames, ["wan", "nssifb"]);
+}
+
+#[test]
+fn observe_accepts_uplinks_but_rejects_unsafe_and_auto_ignored_names() {
+    let config = load(MemorySource::default().with_list(
+        "observe",
+        &[
+            "wan",
+            "wg0",
+            "pppoe-wan",
+            "nssifb",
+            ".",
+            "..",
+            "nested/name",
+            "bad\0name",
+            "dae0",
+            "tun0",
+        ],
+    ));
+
+    assert_eq!(
+        config.observe_ifnames,
+        ["wan", "wg0", "pppoe-wan", "nssifb"]
+    );
+}
+
+#[test]
+fn auto_ignored_collect_names_do_not_consume_the_sixteen_interface_limit() {
+    let mut names = [
+        "dae0",
+        "miireg0",
+        "tun0",
+        "erspan0",
+        "gretap0",
+        "gre0",
+        "ip6gre0",
+        "ip6tnl0",
+        "sit0",
+        "bonding_masters",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    names.extend((0..MAX_INTERFACE_NAMES).map(|index| format!("lan{index}")));
+    let mut source = MemorySource::default();
+    source
+        .values
+        .insert("lanspeed.main.ifname".into(), ConfigValue::List(names));
+
+    let config = load(source);
+    assert_eq!(config.ifnames.len(), MAX_INTERFACE_NAMES);
+    assert_eq!(config.ifnames.first().map(String::as_str), Some("lan0"));
+    assert_eq!(config.ifnames.last().map(String::as_str), Some("lan15"));
+}
+
+#[test]
+fn runtime_interface_views_defend_against_direct_or_stale_config_values() {
+    let mut config = RuntimeConfig::default();
+    config.ifnames = vec![
+        "br-lan".into(),
+        "dae0".into(),
+        "tun0".into(),
+        "nssifb".into(),
+        "pppoe-wan".into(),
+        "nested/name".into(),
+        "bad\0name".into(),
+    ];
+    config.interface_include = vec!["lan1".into(), "br-lan".into(), "..".into()];
+    config.observe_ifnames = vec![
+        "wan".into(),
+        "wg0".into(),
+        "nssifb".into(),
+        "dae0".into(),
+        "nested/name".into(),
+        "br-lan".into(),
+    ];
+
+    assert_eq!(config.runtime_collect_ifnames(), ["br-lan", "lan1"]);
+    assert_eq!(config.runtime_observe_ifnames(), ["wan", "wg0", "nssifb"]);
+}
+
+#[test]
+fn sysdevice_candidates_hide_auto_ignored_and_unsafe_names() {
+    use lanspeedd::config::is_sysdevice_candidate;
+
+    assert!(is_sysdevice_candidate("br-lan"));
+    assert!(is_sysdevice_candidate("wan"));
+    for name in [
+        "lo",
+        "teql0",
+        "dae0",
+        "tun0",
+        ".",
+        "..",
+        "nested/name",
+        "bad\0name",
+    ] {
+        assert!(!is_sysdevice_candidate(name), "{name}");
+    }
+}
+
+#[test]
 fn nssifb_rejection_is_recorded_even_after_the_collect_limit_is_full() {
     let mut values = (0..MAX_INTERFACE_NAMES + 1)
         .map(|index| format!("lan{index}"))

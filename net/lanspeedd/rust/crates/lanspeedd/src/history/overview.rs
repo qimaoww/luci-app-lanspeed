@@ -149,6 +149,19 @@ impl OverviewRing {
         }
     }
 
+    pub fn replace_latest_connections(&mut self, connections: ConnectionTotals) -> bool {
+        let Some(latest) = self.count.checked_sub(1).and_then(|_| {
+            self.samples[(self.head + OVERVIEW_WINDOW - 1) % OVERVIEW_WINDOW].as_mut()
+        }) else {
+            return false;
+        };
+        latest.tcp_conns = u32::try_from(connections.tcp_conns).unwrap_or(u32::MAX);
+        latest.udp_conns = u32::try_from(connections.udp_conns).unwrap_or(u32::MAX);
+        latest.udp_dns_conns = u32::try_from(connections.udp_dns_conns).unwrap_or(u32::MAX);
+        latest.udp_other_conns = u32::try_from(connections.udp_other_conns).unwrap_or(u32::MAX);
+        true
+    }
+
     pub fn push(
         &mut self,
         now_ms: u64,

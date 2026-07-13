@@ -9,8 +9,11 @@ use std::{
     os::fd::{FromRawFd, OwnedFd},
 };
 
+#[cfg(any(feature = "openwrt", test))]
+mod clock;
 pub mod collectors;
 pub mod config;
+pub mod connections;
 pub mod daemon;
 pub mod error;
 pub mod history;
@@ -21,6 +24,8 @@ pub mod policy;
 pub mod probe;
 #[cfg(feature = "openwrt")]
 pub mod production;
+#[cfg(any(feature = "openwrt", test))]
+mod production_evidence;
 pub mod rate;
 pub mod state;
 pub mod ubus;

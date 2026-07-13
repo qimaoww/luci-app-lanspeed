@@ -43,7 +43,8 @@ try {
     'net/lanspeedd/rust/crates/lanspeed-ebpf/Cargo.toml',
     'net/lanspeedd/rust/crates/lanspeed-openwrt-sys/Cargo.toml',
     'net/lanspeedd/rust/crates/lanspeedd/Cargo.toml',
-    'net/lanspeedd/rust/crates/lanspeed-build/Cargo.toml'
+    'net/lanspeedd/rust/crates/lanspeed-build/Cargo.toml',
+    'tests/validate-lanspeed-openwrt-compile.sh'
   ];
 
   for (const file of required) {
@@ -77,6 +78,16 @@ try {
       `net/lanspeedd/Makefile must not reference ${legacyBuildRule}`
     );
   }
+
+  const testRunner = fs.readFileSync(path.join(root, 'tests/run.sh'), 'utf8');
+  assert(
+    testRunner.includes('validate-lanspeed-openwrt-compile.sh'),
+    'tests/run.sh must compile the production OpenWrt/FFI feature path when the 25.12 SDK is available'
+  );
+  assert(
+    testRunner.includes('RUST_CARGO') && testRunner.includes('rust_cargo'),
+    'tests/run.sh must select the pinned Rust cargo explicitly instead of depending on the login PATH'
+  );
 
   console.log('validate-lanspeed-rust-layout: PASS');
 } catch (error) {

@@ -11,9 +11,9 @@
  * read-only aggregate view — other cards keep their nss_* entries too, so
  * this panel is never the single source of truth.
  *
- * Visibility rule: only render when status.capabilities.nss === true OR
- * status.evidence.nss is a non-empty object.  Otherwise the whole section
- * is hidden.
+ * Visibility rule: only render when capabilities or evidence contain a true
+ * NSS signal. Rust status always includes a false-filled evidence object on
+ * non-NSS devices, which must not make the panel visible.
  *
  * Default open state: closed. Refreshes never touch the open attribute, so
  * the user's manual expand/collapse choice remains stable on this page.
@@ -25,9 +25,12 @@ function hasNssSignal(status) {
 	if (caps.nss === true) return true;
 	var ev = status.evidence && status.evidence.nss;
 	if (ev && typeof ev === 'object') {
-		for (var k in ev) {
-			if (Object.prototype.hasOwnProperty.call(ev, k)) return true;
-		}
+		var state = nssEvidenceState(ev);
+		if (ev.present === true || state.ecmActive || state.ppeActive ||
+		    state.directSupported || ev.direct_enabled || ev.bridge_mgr ||
+		    ev.ifb_active || ev.nsm_active || ev.dp_active || ev.mcs_active ||
+		    (Array.isArray(ev.subsystems) && ev.subsystems.length))
+			return true;
 	}
 	/* any nss_* capability (even if base "nss" missing) still warrants showing */
 	for (var key in caps) {

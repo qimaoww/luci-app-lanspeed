@@ -179,6 +179,12 @@ pub struct NssObservation {
     pub direct_state_errno: i32,
     pub direct_state_major: u32,
     pub direct_source_path: Option<String>,
+    pub accelerated_connections: Option<u64>,
+    pub accelerated_tcp: Option<u64>,
+    pub accelerated_udp: Option<u64>,
+    pub accelerated_other: Option<u64>,
+    pub host_count: Option<u64>,
+    pub mapping_count: Option<u64>,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BpfObservation {
@@ -462,6 +468,12 @@ pub struct NssEvidence {
     pub direct_state_errno: i32,
     pub direct_state_major: u32,
     pub direct_source_path: Option<String>,
+    pub accelerated_connections: Option<u64>,
+    pub accelerated_tcp: Option<u64>,
+    pub accelerated_udp: Option<u64>,
+    pub accelerated_other: Option<u64>,
+    pub host_count: Option<u64>,
+    pub mapping_count: Option<u64>,
     pub subsystems: Vec<&'static str>,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1183,6 +1195,12 @@ fn build_evidence(
             direct_state_errno: o.nss.direct_state_errno,
             direct_state_major: o.nss.direct_state_major,
             direct_source_path: o.nss.direct_source_path.clone(),
+            accelerated_connections: o.nss.accelerated_connections,
+            accelerated_tcp: o.nss.accelerated_tcp,
+            accelerated_udp: o.nss.accelerated_udp,
+            accelerated_other: o.nss.accelerated_other,
+            host_count: o.nss.host_count,
+            mapping_count: o.nss.mapping_count,
             subsystems: [
                 (facts.nss.present, "drv"),
                 (o.nss.dp_active, "dp"),

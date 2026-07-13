@@ -56,20 +56,14 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
     match target {
         BuildTarget::Userspace => {
             validate_version("rustc", &detect_rustc()?, EXPECTED_RUSTC)?;
+            let userspace_target = env::var_os("LANSPEED_USERSPACE_TARGET")
+                .ok_or(BuildError::MissingUserspaceTarget)?;
             let mut command = Command::new(&cargo);
             command.current_dir(&workspace).arg("build");
             command.env_remove("RUSTC_BOOTSTRAP");
-            command.args([
-                "-p",
-                "lanspeedd",
-                "--release",
-                "--target",
-                "x86_64-unknown-linux-musl",
-                "--features",
-                "openwrt",
-                "--locked",
-                "--offline",
-            ]);
+            command.args(["-p", "lanspeedd", "--release", "--target"]);
+            command.arg(userspace_target);
+            command.args(["--features", "openwrt", "--locked", "--offline"]);
             ensure_success(command.status()?, target)
         }
         BuildTarget::Ebpf => {
@@ -163,6 +157,10 @@ fn validate_version(
 }
 
 fn workspace_root() -> PathBuf {
+    if let Some(workspace) = env::var_os("LANSPEED_BUILD_WORKSPACE") {
+        return PathBuf::from(workspace);
+    }
+
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|path| path.parent())
@@ -182,6 +180,8 @@ fn ensure_success(status: ExitStatus, target: BuildTarget) -> Result<(), BuildEr
 pub enum BuildError {
     #[error("usage: lanspeed-build <build-userspace|build-ebpf>")]
     Usage,
+    #[error("LANSPEED_USERSPACE_TARGET is required for userspace builds")]
+    MissingUserspaceTarget,
     #[error("{name} must be {expected}, found {actual}")]
     VersionMismatch {
         name: &'static str,

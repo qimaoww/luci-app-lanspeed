@@ -414,6 +414,43 @@ fn overview_active_rules_and_connection_overrides_are_exact() {
 }
 
 #[test]
+fn on_demand_connections_replace_only_the_latest_overview_counts() {
+    let config = OverviewConfig {
+        window_samples: 240,
+        active_client_window_ms: 10_000,
+        active_client_min_bps: 1,
+    };
+    let mut ring = OverviewRing::new();
+    ring.push(
+        10_000,
+        &[overview_client(
+            1_000,
+            2_000,
+            10_000,
+            10_000,
+            ConnectionTotals::new(9, 8, 7, 6),
+        )],
+        ConnectionTotalsOverride::default(),
+        &config,
+    );
+    let before = *ring.latest().unwrap();
+
+    assert!(ring.replace_latest_connections(ConnectionTotals::new(2, 3, 1, 2)));
+
+    let after = *ring.latest().unwrap();
+    assert_eq!(ring.len(), 1);
+    assert_eq!(after.sample_ms, before.sample_ms);
+    assert_eq!(after.tx_bps, before.tx_bps);
+    assert_eq!(after.rx_bps, before.rx_bps);
+    assert_eq!(after.client_count, before.client_count);
+    assert_eq!(after.active_clients, before.active_clients);
+    assert_eq!(after.tcp_conns, 2);
+    assert_eq!(after.udp_conns, 3);
+    assert_eq!(after.udp_dns_conns, 1);
+    assert_eq!(after.udp_other_conns, 2);
+}
+
+#[test]
 fn overview_ring_caps_at_240_and_serializes_recent_window_oldest_first() {
     let fixture = fixture("lanspeed-overview.json");
     let config = OverviewConfig {

@@ -382,13 +382,15 @@ impl<L> BpfRuntime<L> {
                             spec.interface, spec.direction
                         ),
                     );
-                    self.reconcile_required = true;
-                    self.recovery_specs = Some(desired_specs.clone());
-                    self.recovery_mode = Some(mode);
+                    self.require_reconciliation();
                     self.last_runtime_error = Some(error.to_string());
                     return Err(error);
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    self.require_reconciliation();
+                    self.last_runtime_error = Some(error.to_string());
+                    return Err(error);
+                }
             }
         }
 
@@ -502,6 +504,15 @@ impl<L> BpfRuntime<L> {
                 .expected_specs
                 .iter()
                 .all(|expected| self.links.iter().any(|owned| owned.spec == *expected))
+    }
+
+    fn require_reconciliation(&mut self) {
+        if self.expected_specs.is_empty() || self.current_mode.is_none() {
+            return;
+        }
+        self.reconcile_required = true;
+        self.recovery_specs = Some(self.expected_specs.clone());
+        self.recovery_mode = self.current_mode;
     }
 
     pub fn attach_interface<A: AyaAdapter<Link = L>>(
@@ -876,6 +887,7 @@ impl<L> BpfRuntime<L> {
             let state = match adapter.inspect_hook(&spec) {
                 Ok(state) => state,
                 Err(error) => {
+                    self.require_reconciliation();
                     self.record_self_heal_failure(reason, &error);
                     return Err(error);
                 }
@@ -885,6 +897,7 @@ impl<L> BpfRuntime<L> {
                     AdapterErrorKind::OwnershipConflict,
                     "foreign filter replaced an owned slot",
                 );
+                self.require_reconciliation();
                 self.record_self_heal_failure(reason, &error);
                 return Err(error);
             }
@@ -1043,6 +1056,22 @@ impl<L> BpfRuntime<L> {
         self.last_runtime_error = Some(error.to_string());
     }
 
+    pub fn collect_snapshot_self_healing<A: AyaAdapter<Link = L>>(
+        &mut self,
+        adapter: &mut A,
+        collector: &mut BpfSnapshotCollector,
+        identities: &IdentityTable,
+        connections: &ConnectionOverlay,
+        now_ms: u64,
+        reason: &str,
+    ) -> Result<BpfSnapshot, AdapterError> {
+        if let Err(error) = self.ensure_attached(adapter, reason) {
+            self.last_map_read_ok = false;
+            return Err(error);
+        }
+        self.collect_snapshot(adapter, collector, identities, connections, now_ms)
+    }
+
     pub fn collect_snapshot<A: AyaAdapter<Link = L>>(
         &mut self,
         adapter: &mut A,
@@ -1084,7 +1113,7 @@ impl<L> BpfRuntime<L> {
             sticky,
         );
         self.last_map_read_ok = true;
-        self.last_complete_snapshot_ms = Some(now_ms);
+        self.last_complete_snapshot_ms = Some(snapshot.sample_ms);
         self.snapshot_clients = snapshot.clients.len();
         self.last_runtime_error = None;
         Ok(snapshot)

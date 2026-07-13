@@ -1,7 +1,8 @@
 use lanspeedd::config::RuntimeConfig;
 use lanspeedd::probe::collector::{
-    CommandRunner, FilePresence, FileSource, ProbeCollector, ProbeMethod, UbusProbeResult,
-    UbusQuery, UbusSource, UciOptionSnapshot, UciPackageSnapshot, UciSectionSnapshot, UciSource,
+    probe_deadline, probe_due, CommandRunner, FilePresence, FileSource, ProbeCollector,
+    ProbeMethod, UbusProbeResult, UbusQuery, UbusSource, UciOptionSnapshot, UciPackageSnapshot,
+    UciSectionSnapshot, UciSource, PROBE_REFRESH_INTERVAL_MS,
 };
 use lanspeedd::probe::commands::{validate_read_only_args, ReadOnlyCommand};
 use lanspeedd::probe::files::BoundedFile;
@@ -14,7 +15,11 @@ use lanspeedd::probe::{
     TcFilter, TcObservations, UbusObservations, UciObservations,
 };
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+};
 
 const REQUIRED_PROBE_FILES: [&str; 15] = [
     "/proc/sys/net/netfilter/nf_conntrack_acct",
@@ -33,6 +38,17 @@ const REQUIRED_PROBE_FILES: [&str; 15] = [
     "/etc/config/homeproxy",
     "/etc/config/nlbwmon",
 ];
+
+#[test]
+fn production_probe_deadline_refreshes_every_thirty_seconds_and_on_reload() {
+    assert_eq!(PROBE_REFRESH_INTERVAL_MS, 30_000);
+    assert!(probe_due(0, 0, ProbeMethod::Status));
+    assert!(!probe_due(29_999, 30_000, ProbeMethod::Status));
+    assert!(probe_due(30_000, 30_000, ProbeMethod::Status));
+    assert!(probe_due(1, u64::MAX, ProbeMethod::Reload));
+    assert_eq!(probe_deadline(5), 30_005);
+    assert_eq!(probe_deadline(u64::MAX - 1), u64::MAX);
+}
 use std::{fs, path::PathBuf};
 
 fn fixture(name: &str) -> Value {
@@ -917,10 +933,12 @@ impl CommandRunner for FakeCommands {
 struct FakeFiles {
     entries: BTreeMap<String, BoundedFile>,
     errors: BTreeSet<String>,
+    reads: Rc<RefCell<Vec<(String, usize)>>>,
 }
 impl FileSource for FakeFiles {
     type Error = String;
-    fn read(&mut self, path: &str, _cap: usize) -> Result<BoundedFile, Self::Error> {
+    fn read(&mut self, path: &str, cap: usize) -> Result<BoundedFile, Self::Error> {
+        self.reads.borrow_mut().push((path.into(), cap));
         if self.errors.contains(path) {
             return Err("permission denied".into());
         }
@@ -1292,4 +1310,175 @@ fn production_collector_honors_every_legacy_nss_alternative_path() {
             _ => unreachable!(),
         }
     }
+}
+
+const ECM_CONNECTION_COUNT: &str = "/sys/kernel/debug/ecm/ecm_db/connection_count";
+const ECM_CONNECTION_COUNT_SIMPLE: &str = "/sys/kernel/debug/ecm/ecm_db/connection_count_simple";
+const ECM_HOST_COUNT: &str = "/sys/kernel/debug/ecm/ecm_db/host_count";
+const ECM_MAPPING_COUNT: &str = "/sys/kernel/debug/ecm/ecm_db/mapping_count";
+
+fn fake_file(path: &str, value: &str) -> BoundedFile {
+    BoundedFile {
+        source: format!("file:{path}"),
+        path: path.into(),
+        present: true,
+        value: Some(value.into()),
+        truncated: false,
+    }
+}
+
+fn collect_with_files(files: FakeFiles) -> lanspeedd::probe::ProbeReport {
+    ProbeCollector::new(
+        FakeCommands::default(),
+        files,
+        FakeUci::default(),
+        FakeUbus::default(),
+    )
+    .collect(
+        &RuntimeConfig::default(),
+        &ProbeRuntimeHealth::default(),
+        ProbeMethod::Health,
+    )
+}
+
+#[test]
+fn nss_debugfs_counts_are_bounded_and_primary_total_wins_over_simple_total() {
+    let mut files = FakeFiles::default();
+    let reads = files.reads.clone();
+    for (path, value) in [
+        (ECM_CONNECTION_COUNT, "99"),
+        (
+            ECM_CONNECTION_COUNT_SIMPLE,
+            "tcp 12 udp 34 other 5 total 51",
+        ),
+        (ECM_HOST_COUNT, "7"),
+        (ECM_MAPPING_COUNT, "8"),
+    ] {
+        files.entries.insert(path.into(), fake_file(path, value));
+    }
+
+    let report = collect_with_files(files);
+
+    assert_eq!(report.evidence.nss.accelerated_connections, Some(99));
+    assert_eq!(report.evidence.nss.accelerated_tcp, Some(12));
+    assert_eq!(report.evidence.nss.accelerated_udp, Some(34));
+    assert_eq!(report.evidence.nss.accelerated_other, Some(5));
+    assert_eq!(report.evidence.nss.host_count, Some(7));
+    assert_eq!(report.evidence.nss.mapping_count, Some(8));
+    let debugfs_reads = reads
+        .borrow()
+        .iter()
+        .filter(|(path, _)| {
+            matches!(
+                path.as_str(),
+                ECM_CONNECTION_COUNT
+                    | ECM_CONNECTION_COUNT_SIMPLE
+                    | ECM_HOST_COUNT
+                    | ECM_MAPPING_COUNT
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        debugfs_reads,
+        [
+            (ECM_CONNECTION_COUNT.into(), 4_096),
+            (ECM_CONNECTION_COUNT_SIMPLE.into(), 4_096),
+            (ECM_HOST_COUNT.into(), 4_096),
+            (ECM_MAPPING_COUNT.into(), 4_096),
+        ]
+    );
+    for path in [
+        ECM_CONNECTION_COUNT,
+        ECM_CONNECTION_COUNT_SIMPLE,
+        ECM_HOST_COUNT,
+        ECM_MAPPING_COUNT,
+    ] {
+        assert!(report.evidence.file.iter().any(|entry| {
+            entry.path == path
+                && entry.present
+                && entry.status == "present"
+                && entry.error.is_none()
+        }));
+    }
+}
+
+#[test]
+fn nss_debugfs_simple_counts_reject_the_entire_line_when_any_number_is_invalid() {
+    let mut files = FakeFiles::default();
+    files.entries.insert(
+        ECM_CONNECTION_COUNT.into(),
+        fake_file(ECM_CONNECTION_COUNT, "18446744073709551616"),
+    );
+    files.entries.insert(
+        ECM_CONNECTION_COUNT_SIMPLE.into(),
+        fake_file(
+            ECM_CONNECTION_COUNT_SIMPLE,
+            "tcp -1 udp 34 other 18446744073709551616 total 51",
+        ),
+    );
+
+    let report = collect_with_files(files);
+
+    assert_eq!(report.evidence.nss.accelerated_connections, None);
+    assert_eq!(report.evidence.nss.accelerated_tcp, None);
+    assert_eq!(report.evidence.nss.accelerated_udp, None);
+    assert_eq!(report.evidence.nss.accelerated_other, None);
+}
+
+#[test]
+fn nss_debugfs_missing_or_malformed_files_do_not_invent_counts() {
+    let mut files = FakeFiles::default();
+    files.entries.insert(
+        ECM_CONNECTION_COUNT_SIMPLE.into(),
+        fake_file(
+            ECM_CONNECTION_COUNT_SIMPLE,
+            "udp 12 tcp 34 other 5 total 51",
+        ),
+    );
+    files.entries.insert(
+        ECM_HOST_COUNT.into(),
+        fake_file(ECM_HOST_COUNT, "not-a-number"),
+    );
+
+    let report = collect_with_files(files);
+
+    assert_eq!(report.evidence.nss.accelerated_connections, None);
+    assert_eq!(report.evidence.nss.accelerated_tcp, None);
+    assert_eq!(report.evidence.nss.accelerated_udp, None);
+    assert_eq!(report.evidence.nss.accelerated_other, None);
+    assert_eq!(report.evidence.nss.host_count, None);
+    assert_eq!(report.evidence.nss.mapping_count, None);
+    assert!(!report.evidence.probe_error);
+}
+
+#[test]
+fn nss_debugfs_io_and_truncation_errors_are_evidence_without_losing_valid_fallbacks() {
+    let mut files = FakeFiles::default();
+    files.errors.insert(ECM_CONNECTION_COUNT.into());
+    files.entries.insert(
+        ECM_CONNECTION_COUNT_SIMPLE.into(),
+        fake_file(
+            ECM_CONNECTION_COUNT_SIMPLE,
+            "tcp 12 udp 34 other 5 total 51",
+        ),
+    );
+    let mut host = fake_file(ECM_HOST_COUNT, "7");
+    host.truncated = true;
+    files.entries.insert(ECM_HOST_COUNT.into(), host);
+
+    let report = collect_with_files(files);
+
+    assert!(report.evidence.probe_error);
+    assert_eq!(report.evidence.nss.accelerated_connections, Some(51));
+    assert_eq!(report.evidence.nss.accelerated_tcp, Some(12));
+    assert_eq!(report.evidence.nss.host_count, None);
+    assert!(report.evidence.file.iter().any(|entry| {
+        entry.path == ECM_CONNECTION_COUNT
+            && entry.status == "error"
+            && entry.error.as_deref() == Some("permission denied")
+    }));
+    assert!(report.evidence.file.iter().any(|entry| {
+        entry.path == ECM_HOST_COUNT && entry.status == "truncated" && entry.error.is_none()
+    }));
 }

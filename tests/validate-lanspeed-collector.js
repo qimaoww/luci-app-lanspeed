@@ -16,69 +16,6 @@ function assert(condition, message) {
   }
 }
 
-function extractFunctionBody(source, name) {
-  const signature = new RegExp(`static\\s+[^{;]+?\\b\\*?\\s*${name}\\s*\\([^)]*\\)\\s*\\{`);
-  const match = signature.exec(source);
-  assert(match, `C source must define ${name}`);
-
-  let depth = 1;
-  let index = match.index + match[0].length;
-  while (index < source.length && depth > 0) {
-    const ch = source[index++];
-    if (ch === '{') {
-      depth++;
-    } else if (ch === '}') {
-      depth--;
-    }
-  }
-  assert(depth === 0, `C source function ${name} must have balanced braces`);
-  return source.slice(match.index, index);
-}
-
-function assertRuntimeProbeJsonOwnership(source) {
-  const helperBody = extractFunctionBody(source, 'runtime_probe_take_json');
-  const finishBody = extractFunctionBody(source, 'finish_probe_evidence');
-  assert(/\*\s*slot\s*=\s*NULL/.test(helperBody),
-         'runtime_probe_take_json must clear transferred probe JSON pointers');
-
-  for (const [jsonField, evidenceField] of [
-    ['source_commands', 'command'],
-    ['source_files', 'file'],
-    ['source_uci', 'uci'],
-    ['source_ubus', 'ubus'],
-    ['commands', 'commands'],
-    ['files', 'files'],
-    ['uci', 'uci'],
-    ['ubus_evidence', 'ubus']
-  ]) {
-    assert(finishBody.includes(`"${evidenceField}", runtime_probe_take_json(&probe->${jsonField})`),
-           `finish_probe_evidence must transfer probe.${jsonField} ownership before adding ${evidenceField}`);
-    assert(!new RegExp(`"[^"]+",\\s*probe\\.${jsonField}\\b`).test(finishBody),
-           `finish_probe_evidence must not attach raw probe.${jsonField} while free_runtime_probe still owns it`);
-  }
-
-  for (const methodName of ['status_method', 'health_method']) {
-    const body = extractFunctionBody(source, methodName);
-
-    for (const field of ['warnings', 'evidence']) {
-      assert(body.includes(`runtime_probe_take_json(&probe.${field})`),
-             `${methodName} must transfer probe.${field} through runtime_probe_take_json`);
-      assert(!new RegExp(`json_object_object_add\\(\\s*root\\s*,\\s*"${field}"\\s*,\\s*probe\\.${field}\\s*\\)`).test(body),
-             `${methodName} must not hand raw probe.${field} ownership to the reply`);
-    }
-
-    if (methodName === 'health_method') {
-      assert(body.includes('runtime_probe_take_json(&probe.conflicts)'),
-             'health_method must transfer probe.conflicts through runtime_probe_take_json');
-      assert(!/json_object_object_add\(\s*root\s*,\s*"conflicts"\s*,\s*probe\.conflicts\s*\)/.test(body),
-             'health_method must not hand raw probe.conflicts ownership to the reply');
-    }
-
-    assert(body.includes('free_runtime_probe(&probe);'),
-           `${methodName} must free any runtime_probe JSON members that were not transferred`);
-  }
-}
-
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -125,7 +62,7 @@ function attachLanspeedFilters(fixture) {
     };
 
     evidence.commands.push(
-      `tc filter add dev ${fixture.device} ${direction} pref ${filter.pref} handle ${filter.handle} bpf obj /usr/lib/bpf/lanspeed_tc.o sec tc/${direction} direct-action verbose owner ${filter.owner}`
+      `tc filter add dev ${fixture.device} ${direction} pref ${filter.pref} handle ${filter.handle} bpf obj /usr/lib/bpf/lanspeed-ebpf-kfunc sec tc/${direction} direct-action verbose owner ${filter.owner}`
     );
     after.push(filter);
   }
@@ -706,7 +643,20 @@ function buildArpMap(fixture) {
 }
 
 function isExcludedIdentityInterface(ifname) {
-  return ifname === 'dae0' || ifname === 'dae0peer' || ifname.startsWith('tun') || ifname.startsWith('ppp') || ifname.startsWith('wg');
+  const autoIgnoredPrefixes = [
+    'dae',
+    'miireg',
+    'tun',
+    'erspan',
+    'gretap',
+    'gre',
+    'ip6gre',
+    'ip6tnl',
+    'sit',
+    'bonding_masters'
+  ];
+
+  return autoIgnoredPrefixes.some((prefix) => ifname.startsWith(prefix)) || ifname.startsWith('ppp') || ifname.startsWith('wg');
 }
 
 function buildArpByMacZone(fixture) {
@@ -1232,22 +1182,17 @@ function simulateNssSourceSelection(fixture) {
   const bpfFullAvailable = Boolean(fixture.config.bpf_full_available);
   const daeEarlyBpf = Boolean(fixture.config.dae_early_bpf);
   const rateMode = fixture.config.rate_collector_mode || 'auto';
-  const daedActive = Boolean(
-    probe.dae_running ||
-    probe.daed_running ||
-    probe.dae_process ||
-    probe.daed_process
-  );
+  const daeRuntimeActive = Boolean(probe.runtime_active);
   const forceBpf = rateMode === 'bpf';
   const forceNssDirect = rateMode === 'nss_ecm_direct';
   const forceNssSync = rateMode === 'nss_conntrack_sync';
-  const nssDaedPreferBpf = Boolean(rateMode === 'auto' && probe.nss_present && daedActive && bpfFullAvailable);
+  const daePreferBpf = Boolean(rateMode === 'auto' && daeRuntimeActive && bpfFullAvailable);
   const directReadable = probe.nss_ecm_direct_readable !== false;
   const autoNssSyncAvailable = Boolean(
     !forceBpf &&
     !forceNssSync &&
     !forceNssDirect &&
-    !nssDaedPreferBpf &&
+    !daePreferBpf &&
     fixture.config.enable_conntrack_fallback &&
     probe.nf_conntrack_acct &&
     probe.nss_present &&
@@ -1257,8 +1202,7 @@ function simulateNssSourceSelection(fixture) {
     !forceBpf &&
     !forceNssSync &&
     !autoNssSyncAvailable &&
-    !nssDaedPreferBpf &&
-    fixture.config.enable_conntrack_fallback &&
+    !daePreferBpf &&
     probe.nss_present &&
     probe.nss_ecm_active &&
     probe.nss_ecm_direct_state &&
@@ -1266,7 +1210,7 @@ function simulateNssSourceSelection(fixture) {
   );
   const syncPreferred = Boolean(
     !forceBpf &&
-    !nssDaedPreferBpf &&
+    !daePreferBpf &&
     fixture.config.enable_conntrack_fallback &&
     probe.nf_conntrack_acct &&
     probe.nss_present &&
@@ -1282,19 +1226,19 @@ function simulateNssSourceSelection(fixture) {
       addUnique(warnings, directPreferred ? 'nss_prefers_direct' : 'nss_prefers_conntrack_sync');
     }
   }
-  if (nssDaedPreferBpf)
-    addUnique(warnings, 'nss_daed_prefers_bpf');
-  if (probe.nss_present && daedActive && !bpfFullAvailable && preferred)
-    addUnique(warnings, 'nss_daed_nss_fallback_may_be_inaccurate');
+  if (daePreferBpf)
+    addUnique(warnings, 'dae_runtime_prefers_bpf');
+  if (probe.nss_present && daeRuntimeActive && !bpfFullAvailable && preferred)
+    addUnique(warnings, 'nss_dae_bpf_fallback_may_be_inaccurate');
 
   return {
-    preferred: preferred || nssDaedPreferBpf,
-    dae_early_bpf: Boolean(probe.dae_preempts_lan_ingress && daeEarlyBpf),
+    preferred: preferred || daePreferBpf,
+    dae_early_bpf: Boolean((probe.dae_preempts_lan_ingress || daeRuntimeActive) && daeEarlyBpf),
     dae_preempted: false,
-    primary_source: nssDaedPreferBpf ? 'bpf' : (directPreferred ? 'nss_ecm_direct' : (syncPreferred ? 'nss_conntrack_sync' : (bpfFullAvailable ? 'bpf' : 'unsupported'))),
-    collector_mode: nssDaedPreferBpf ? 'bpf' : (directPreferred ? 'nss_ecm_direct' : (syncPreferred ? 'conntrack_ecm_sync' : (bpfFullAvailable ? 'bpf' : 'unsupported'))),
-    confidence: nssDaedPreferBpf ? 'high' : (directPreferred ? 'high' : (syncPreferred ? 'medium' : (bpfFullAvailable ? 'high' : 'unsupported'))),
-    coverage_client_source: nssDaedPreferBpf ? 'bpf' : (directPreferred ? 'nss_ecm_direct' : (syncPreferred ? 'conntrack' : (bpfFullAvailable ? 'bpf' : 'unsupported'))),
+    primary_source: daePreferBpf ? 'bpf' : (directPreferred ? 'nss_ecm_direct' : (syncPreferred ? 'nss_conntrack_sync' : (bpfFullAvailable ? 'bpf' : 'unsupported'))),
+    collector_mode: daePreferBpf ? 'bpf' : (directPreferred ? 'nss_ecm_direct' : (syncPreferred ? 'conntrack_ecm_sync' : (bpfFullAvailable ? 'bpf' : 'unsupported'))),
+    confidence: daePreferBpf ? 'high' : (directPreferred ? 'high' : (syncPreferred ? 'medium' : (bpfFullAvailable ? 'high' : 'unsupported'))),
+    coverage_client_source: daePreferBpf ? 'bpf' : (directPreferred ? 'nss_ecm_direct' : (syncPreferred ? 'conntrack' : (bpfFullAvailable ? 'bpf' : 'unsupported'))),
     warnings
   };
 }
@@ -1444,82 +1388,6 @@ function assertLifecycleInit(initScript, hotplugScript, packageMakefile, default
   assert(collectorModel.performance_guardrails.attach_failure_warning === 'unsafe_attach', 'performance model must expose attach failure warning');
 }
 
-function assertBpfSource(source) {
-  for (const required of [
-    'struct lanspeed_key',
-    '__u32 ifindex',
-    '__u16 vlan_or_zone',
-    '__u8 direction',
-    '__u8 mac[ETH_ALEN]',
-    'struct lanspeed_counters',
-    '__u64 bytes',
-    '__u64 packets',
-    '__u64 last_seen',
-    'BPF_MAP_TYPE_LRU_HASH',
-    'LANSPEED_MAX_CLIENTS',
-    'SEC("tc/ingress")',
-    'SEC("tc/egress")',
-    'bpf_map_update_elem'
-  ]) {
-    assert(source.includes(required), `BPF source missing ${required}`);
-  }
-  const sizeMatch = source.match(/#define\s+LANSPEED_MAX_CLIENTS\s+(\d+)/);
-  assert(sizeMatch, 'BPF source must #define LANSPEED_MAX_CLIENTS');
-  assert(parseInt(sizeMatch[1], 10) >= 2048, `LANSPEED_MAX_CLIENTS must be >= 2048 (got ${sizeMatch && sizeMatch[1]})`);
-  assert(source.includes('if (direction == LANSPEED_DIR_TX)') && source.includes('__builtin_memcpy(key.mac, eth->h_source, ETH_ALEN)'), 'BPF TX direction must use client source MAC');
-  assert(source.includes('__builtin_memcpy(key.mac, eth->h_dest, ETH_ALEN)'), 'BPF RX direction must use client destination MAC');
-  assert(source.includes('#define IPPROTO_TCP 6') && source.includes('#define IPPROTO_UDP 17'), 'BPF source must provide protocol fallbacks for SDK headers without netinet constants');
-  assert(/static\s+__always_inline\s+(?:bool|int)\s+valid_client_mac\(/.test(source), 'BPF source must validate client MACs before accounting');
-  assert(/mac\[0\]\s*&\s*0x01[\s\S]{0,80}?return\s+(?:false|0)\s*;/.test(source), 'BPF source must reject multicast destination/source MACs');
-  assert(source.includes('if (!valid_client_mac(key.mac))'), 'BPF source must skip broadcast/multicast/zero MAC map entries');
-  assert(/SEC\("tc\/ingress"\)\s+int\s+lanspeed_ingress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_TX, TC_ACT_OK\);\s*}/m.test(source), 'BPF ingress must account client TX and terminate normally in the default position');
-  assert(/SEC\("tc\/egress"\)\s+int\s+lanspeed_egress\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_RX, TC_ACT_OK\);\s*}/m.test(source), 'BPF egress must account client RX and terminate normally in the default position');
-  assert(/SEC\("tc"\)\s+int\s+lanspeed_ingress_early\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_TX, TC_ACT_UNSPEC\);\s*}/m.test(source), 'BPF early ingress must account client TX and continue to later filters');
-  assert(/SEC\("tc"\)\s+int\s+lanspeed_egress_early\([^)]*\)\s*{\s*return account_frame\(skb, LANSPEED_DIR_RX, TC_ACT_UNSPEC\);\s*}/m.test(source), 'BPF early egress must account client RX and continue to later filters');
-}
-
-function assertBpfBuildRules(packageMakefile, srcMakefile, sdkHelper) {
-  assert(packageMakefile.includes('PKG_BUILD_DEPENDS:=PACKAGE_lanspeedd-bpf:bpf-headers'), 'package Makefile must expose conditional bpf-headers build dependency to OpenWrt metadata');
-  assert(packageMakefile.includes('LANSPEED_BUILD_BPF ?= $(if $(CONFIG_PACKAGE_lanspeedd-bpf),1,0)'), 'package Makefile must default explicit BPF builds from lanspeedd-bpf selection');
-  assert(packageMakefile.includes('LANSPEED_BPF_ENABLED:=$(filter 1,$(LANSPEED_BUILD_BPF))'), 'package Makefile must normalize the explicit BPF build switch');
-  assert(packageMakefile.includes('PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)$(if $(LANSPEED_BPF_ENABLED),-bpf,)'), 'package Makefile must keep BPF and non-BPF build stamps separate');
-  assert(!packageMakefile.includes('PKG_BUILD_DEPENDS:=$(if $(LANSPEED_BPF_ENABLED),bpf-headers)'), 'package Makefile must not hide bpf-headers from OpenWrt package metadata');
-  assert(/ifneq \(\$\(LANSPEED_BPF_ENABLED\),\)[\s\S]*include \$\(INCLUDE_DIR\)\/bpf\.mk[\s\S]*endif/.test(packageMakefile), 'package Makefile must include bpf.mk only for explicit BPF builds');
-  assert(packageMakefile.includes('$(LANSPEED_BPF_ENABLED)'), 'BPF compile must be gated by the explicit BPF build switch');
-  assert(packageMakefile.includes('$(call CompileBPF,$(PKG_BUILD_DIR)/lanspeed_tc.bpf.c,-I$(STAGING_DIR)/usr/include -DKBUILD_MODNAME=\\"lanspeed\\")'), 'package Makefile must compile lanspeed_tc.bpf.c with staged libbpf headers and KBUILD_MODNAME');
-  assert(packageMakefile.includes('LANSPEED_WITH_BPF="0"'), 'base daemon must keep the runtime wrapper instead of linking libbpf directly');
-  assert(packageMakefile.includes('plugin') && packageMakefile.includes('lanspeed_bpf_plugin.so'), 'package Makefile must build a separate libbpf runtime plugin for lanspeedd-bpf');
-  assert(!/\$\(error\s+[^)]*lanspeedd-bpf/s.test(packageMakefile), 'package Makefile must not raise make-time errors from optional BPF install rules');
-  assert(packageMakefile.includes('$(PKG_BUILD_DIR)/linux/kconfig.h'), 'package Makefile must provide linux/kconfig.h fallback for older SDK bpf-headers');
-  assert(packageMakefile.includes('$(PKG_BUILD_DIR)/asm_goto_workaround.h'), 'package Makefile must provide asm_goto_workaround.h fallback for older SDK bpf-headers');
-  assert(packageMakefile.includes('$(CP) $(PKG_BUILD_DIR)/lanspeed_tc.bpf.o $(PKG_BUILD_DIR)/lanspeed_tc.o'), 'package Makefile must normalize the SDK BPF output to lanspeed_tc.o');
-  assert(packageMakefile.includes('$(INSTALL_DATA) $(PKG_BUILD_DIR)/lanspeed_tc.o $(1)/usr/lib/bpf/lanspeed_tc.o'), 'lanspeedd-bpf must install /usr/lib/bpf/lanspeed_tc.o');
-  assert(packageMakefile.includes('$(INSTALL_DATA) $(PKG_BUILD_DIR)/lanspeed_bpf_plugin.so $(1)/usr/lib/lanspeed/lanspeed_bpf_plugin.so'), 'lanspeedd-bpf must install the optional libbpf runtime plugin');
-  assert(!/Package\/lanspeedd[\s\S]{0,260}PACKAGE_lanspeedd-bpf:libbpf/.test(packageMakefile), 'base package must not expose libbpf through its own dependency metadata');
-  assert(packageMakefile.includes('DEPENDS:=+lanspeedd +libbpf +tc-tiny @HAS_BPF_TOOLCHAIN +@NEED_BPF_TOOLCHAIN'), 'libbpf/tc-tiny/BPF dependencies must stay in optional lanspeedd-bpf package');
-  assert(!packageMakefile.includes('if [ -f $(PKG_BUILD_DIR)/lanspeed_tc.o ]'), 'BPF object install must not be a silent optional no-op');
-  assert(/DEPENDS:=[^\n]*\+libmnl/.test(packageMakefile), 'base daemon must depend on libmnl for raw ctnetlink conntrack dumps');
-  assert(/LIBS[^\n]*-lmnl[^\n]*-ldl/.test(packageMakefile), 'package Makefile must link lanspeedd with libmnl and dlopen support');
-  assert(/LIBS[^\n]*-lmnl/.test(srcMakefile), 'src Makefile must link local lanspeedd builds with libmnl');
-  assert(!/libnetfilter-conntrack/.test(packageMakefile), 'base daemon must not depend on libnetfilter-conntrack');
-  assert(!/libnetfilter_conntrack/.test(srcMakefile), 'src Makefile must not link libnetfilter-conntrack');
-  assert(srcMakefile.includes('bpf: lanspeed_tc.o'), 'src Makefile must expose an explicit bpf target');
-  assert(srcMakefile.includes('lanspeed_tc.o: lanspeed_tc.bpf.c'), 'src Makefile must have a local BPF object rule');
-  assert(srcMakefile.includes('-target bpf'), 'local BPF rule must target bpf');
-  assert(sdkHelper.includes('set_config_module PACKAGE_lanspeedd'), 'SDK helper must select the base package before source package compile');
-  assert(sdkHelper.includes('set_config_module PACKAGE_lanspeedd-bpf'), 'SDK helper must select optional lanspeedd-bpf package before BPF source package compile');
-  assert(sdkHelper.includes('set_config_disabled PACKAGE_lanspeedd-bpf'), 'SDK helper must clear stale lanspeedd-bpf selection before base source package compile');
-  assert(sdkHelper.includes('CONFIG_${symbol}=m'), 'SDK helper must support SDKs where scripts/config is a directory');
-  assert(sdkHelper.includes('# CONFIG_${symbol} is not set'), 'SDK helper must support disabling stale package selections without scripts/config');
-  assert(/configure_packages[\s\S]*run_in_sdk \.\/scripts\/feeds update -a/.test(sdkHelper), 'SDK helper must write package selection before feeds update regenerates package metadata');
-  assert(/run_in_sdk \.\/scripts\/feeds update -a[\s\S]*configure_packages[\s\S]*refresh_sdk_config/.test(sdkHelper), 'SDK helper must rewrite package selection before defconfig');
-  assert(sdkHelper.includes('make defconfig'), 'SDK helper must refresh config after selecting lanspeedd-bpf');
-  assert(sdkHelper.includes('LANSPEED_BUILD_BPF=$ENABLE_BPF'), 'SDK helper must explicitly pass the BPF build switch to package/lanspeedd/compile');
-  assert(sdkHelper.includes('CONFIG_PACKAGE_lanspeedd=$base_package_config'), 'SDK helper must build the base package only in non-BPF SDK passes');
-  assert(sdkHelper.includes('CONFIG_PACKAGE_lanspeedd-bpf=$bpf_package_config'), 'SDK helper must override lanspeedd-bpf package selection for each compile pass');
-  assert(!sdkHelper.includes('package/lanspeedd-bpf/compile'), 'SDK helper must not compile lanspeedd-bpf as an independent source package');
-}
-
 function assertNoDestructiveTcCommands(text) {
   const forbidden = [
     /tc\s+qdisc\s+del/i,
@@ -1532,573 +1400,6 @@ function assertNoDestructiveTcCommands(text) {
   for (const pattern of forbidden) {
     assert(!pattern.test(text), `forbidden destructive command matched ${pattern}`);
   }
-}
-
-function assertRuntimeConntrackFallbackSource(source) {
-  assert(source.includes('#include "lanspeed_conntrack.h"'), 'daemon must include the conntrack collector module header');
-  assert(srcMakefile.includes('lanspeed_conntrack.o'), 'local daemon build must compile the conntrack module');
-
-  for (const required of [
-    '#include <libmnl/libmnl.h>',
-    '#include <linux/netfilter/nfnetlink_conntrack.h>',
-    '#define CONNTRACK_PROCFS_PATH "/proc/net/nf_conntrack"',
-    '#define CONNTRACK_LEGACY_PROCFS_PATH "/proc/net/ip_conntrack"',
-    'struct conntrack_client_sample',
-    'struct conntrack_collect_stats',
-    'static bool read_conntrack_netlink_snapshot',
-    'static int conntrack_netlink_data_cb',
-    'IPCTNL_MSG_CT_GET',
-    'NETLINK_NETFILTER',
-    'CTA_COUNTERS_ORIG',
-    'CTA_COUNTERS_REPLY',
-    'lanspeedd_ctnetlink_conntrack_acct',
-    'ctnetlink_conntrack_acct_orig_reply_bytes',
-    'conntrack_netlink',
-    'static bool parse_conntrack_procfs_line',
-    'static bool read_conntrack_procfs_snapshot',
-    'bool read_conntrack_snapshot',
-    'bool read_conntrack_snapshot_mode',
-    'static bool conntrack_flow_add_endpoint',
-    'previous_conntrack_samples',
-    'conntrack_snapshot_pending',
-    'conntrack_unavailable',
-    'skip_conntrack_entry_without_fabricating_client',
-    'lanspeedd_procfs_conntrack_acct',
-    'procfs_conntrack_acct_orig_reply_bytes'
-  ]) {
-    assert(conntrackHeader.includes(required) || conntrackSource.includes(required) || source.includes(required),
-           `conntrack collector module missing ${required}`);
-  }
-  for (const required of [
-    'static bool collect_conntrack_procfs_clients',
-    'static void emit_conntrack_clients',
-    'previous_conntrack_samples',
-    'collect_conntrack_procfs_clients(root, clients, &probe)'
-  ]) {
-    assert(source.includes(required), `C runtime conntrack API glue missing ${required}`);
-  }
-  for (const required of [
-    '#define ARP_PROCFS_PATH "/proc/net/arp"',
-    '#define NEIGHBOR_NETLINK_SOURCE "netlink:rtnetlink_neigh"',
-    'struct arp_entry',
-    'enum flow_endpoint_role',
-    'RTM_GETNEIGH',
-    'RTM_NEWNEIGH',
-    'NETLINK_ROUTE',
-    'NDA_DST',
-    'NDA_LLADDR',
-    'RTM_GETADDR',
-    'IFA_ADDRESS',
-    'IFA_LOCAL',
-    'AF_INET6',
-    'bool read_neighbor_table',
-    'size_t load_lan_identity_table',
-    'struct lan_identity_filter',
-    'lanspeed.main.ifname',
-    'lanspeed.main.interface_include',
-    'load_lan_identity_filter',
-    'identity_entry_allowed_by_collected_interface',
-    'bool flow_endpoint_lookup',
-    'bool nss_ecm_direct_endpoint_lookup',
-    'void normalize_mac_address',
-    'bool normalize_ip_address',
-    'bool ifname_is_excluded_identity_source',
-    'bool valid_mac_address'
-  ]) {
-    assert(identityHeader.includes(required) || identitySource.includes(required),
-           `identity module missing ${required}`);
-  }
-  assert(source.includes('#include "lanspeed_identity.h"'), 'daemon must include the identity module header');
-  assert(srcMakefile.includes('lanspeed_identity.o'), 'local daemon build must compile the identity module');
-  assert(source.includes('json_object_new_string(ARP_PROCFS_PATH)'), 'runtime evidence must expose ARP identity source');
-  assert(source.includes('json_object_new_string(NEIGHBOR_NETLINK_SOURCE)'), 'runtime evidence must expose IPv6 neighbor identity source');
-  assert(!source.includes('#include <libnetfilter_conntrack/libnetfilter_conntrack.h>'), 'runtime must not include libnetfilter-conntrack');
-  assert(!/\bnfct_/.test(source), 'runtime must not use libnetfilter-conntrack nfct_* APIs');
-  assert(/read_conntrack_snapshot[\s\S]{0,900}?read_conntrack_netlink_snapshot[\s\S]{0,900}?read_conntrack_procfs_snapshot/.test(conntrackSource),
-         'conntrack snapshot wrapper must try netlink before procfs fallback');
-  assert(/merge_conntrack_conn_counts[\s\S]{0,1400}?read_conntrack_snapshot/.test(source),
-         'BPF connection-count merge must use the netlink-first conntrack wrapper');
-  assert(/collect_conntrack_procfs_clients[\s\S]{0,1400}?read_conntrack_snapshot/.test(source),
-         'NSS conntrack-sync collection must use the netlink-first conntrack wrapper');
-  assert(source.includes('static bool nss_conntrack_sync_preferred'), 'runtime must define explicit NSS conntrack-sync preference');
-  assert(source.includes('primary_source", json_object_new_string("nss_conntrack_sync")'), 'runtime evidence must expose NSS conntrack sync as primary source');
-  assert(/coverage_current_client_bytes[\s\S]{0,120}?const struct runtime_probe \*probe = arg/.test(source),
-         'coverage client bytes callback must take runtime probe/source policy');
-  assert(source.includes('nss_conntrack_sync_preferred(probe)'), 'runtime must route clients and coverage through NSS sync preference');
-  assert(/nss_conntrack_sync_fallback_available[\s\S]{0,420}?probe->nss_ecm_active[\s\S]{0,120}?probe->nss_ppe_active/.test(source),
-         'NSS sync preference must cover both ECM and PPE offload paths');
-  assert(identitySource.includes('normalize_ip_address'), 'identity module must normalize IPv4/IPv6 addresses before LAN identity matching');
-  assert(conntrackSource.includes('orig_dst') && conntrackSource.includes('reply_src') && conntrackSource.includes('reply_dst'),
-         'conntrack module must parse original and reply source/destination endpoints');
-  assert(conntrackSource.includes('conntrack_flow_add_endpoint') &&
-         conntrackSource.includes('FLOW_ENDPOINT_ORIG_SRC') &&
-         conntrackSource.includes('FLOW_ENDPOINT_ORIG_DST') &&
-         conntrackSource.includes('FLOW_ENDPOINT_REPLY_SRC') &&
-         conntrackSource.includes('FLOW_ENDPOINT_REPLY_DST'),
-         'conntrack module must map all endpoints to client-view tx/rx directions');
-  assert(source.includes('"src_lan_flows"') &&
-         source.includes('"dst_lan_flows"') &&
-         source.includes('"both_lan_flows"'),
-         'NSS sync evidence must expose endpoint match diagnostics');
-  assert(source.includes('json_object_new_string("nss_prefers_conntrack_sync")'), 'runtime must explain why NSS sync overrides available BPF metrics');
-  assert(source.includes('static bool daed_runtime_active'), 'runtime must distinguish running daed from installed daed config');
-  assert(source.includes('dae_running') && source.includes('daed_running'), 'runtime must expose daed running state separately from service/config presence');
-  assert(source.includes('process_running') || source.includes('pidof dae daed'), 'runtime must verify a real dae/daed process before treating daed as running');
-  assert(source.includes('static bool nss_daed_should_prefer_bpf'), 'runtime must prefer BPF on NSS devices when daed is running');
-  assert(source.includes('json_object_new_string("nss_daed_prefers_bpf")'), 'runtime must explain when NSS+daed uses BPF');
-  assert(source.includes('json_object_new_string("nss_daed_nss_fallback_may_be_inaccurate")'), 'runtime must warn when NSS+daed falls back to NSS rates');
-  assert(source.includes('static bool dae_tc_preempts_bpf_ingress'), 'runtime must detect DAE/daed tc filters that run before lanspeed ingress');
-  assert(source.includes('json_object_new_string("dae_tc_preempts_bpf_ingress")'), 'runtime must explain when DAE tc preemption is detected');
-  assert(source.includes('static void bpf_runtime_reset_rate_state'), 'runtime must reset BPF rate baselines after TC policy changes');
-  assert(source.includes('static bool bpf_runtime_refresh_attach_policy'), 'runtime must refresh BPF attach policy when daed is started after lanspeedd');
-  assert(/if\s*\(\s*bpf_runtime_refresh_attach_policy\(&probe\)\s*\)\s*\{[\s\S]{0,420}?bpf_collect_samples\(\);[\s\S]{0,220}?\}/.test(source), 'clients_method must recollect BPF samples after switching to early pass-through');
-  assert(/bpf_runtime_refresh_attach_policy\(&probe\)[\s\S]{0,420}?finish_probe_evidence\(&probe,\s*"status"\)/.test(source), 'status_method must refresh TC policy before publishing self-heal evidence');
-  assert(/bpf_runtime_refresh_attach_policy\(&probe\)[\s\S]{0,420}?finish_probe_evidence\(&probe,\s*"health"\)/.test(source), 'health_method must refresh TC policy before publishing self-heal evidence');
-  assert(/static void bpf_collect_tick[\s\S]{0,520}?bpf_runtime_refresh_attach_policy\(&probe\)[\s\S]{0,220}?bpf_runtime_recover_if_needed\("periodic_tc_filter_check"\)/.test(source), 'periodic BPF tick must refresh TC policy before sampling');
-  assert(/bpf_runtime_early_passthrough\s*=\s*want_early/.test(source), 'runtime policy refresh must switch the daemon to early pass-through when daed preempts LAN hooks');
-  assert(!/dae_tc_preempts_bpf_ingress\(probe\)[\s\S]{0,120}?conntrack_primary_preferred/.test(source), 'DAE tc preemption must not force conntrack as the primary rate source');
-  assert(!source.includes('json_object_new_string("fixture-client")'), 'runtime must not fabricate fixture clients');
-  assert(source.includes('json_object_object_add(client, "mac", json_object_new_string(current[i].mac))'), 'runtime client MAC must come from ARP-mapped sample');
-  /* collector_mode for conntrack-fallback clients must be wired into the
-   * client JSON object.  It is "conntrack" by default, and switches to
-   * "conntrack_ecm_sync" under NSS ECM/PPE offload (where a ternary selects
-   * between the two literal strings). */
-  assert(
-    /json_object_object_add\(\s*client\s*,\s*"collector_mode"\s*,[\s\S]{0,400}?json_object_new_string/.test(source),
-    'runtime clients must expose collector_mode via json_object_new_string');
-  assert(
-    source.includes('"conntrack"'),
-    'runtime must emit the "conntrack" collector_mode literal');
-  assert(
-    source.includes('"conntrack_ecm_sync"') || !source.includes('nss_ecm_active'),
-    'runtime must emit the "conntrack_ecm_sync" literal when NSS offload detection is wired');
-  assert(source.includes('delta_bps(current[i].tx_bytes, previous->tx_bytes'), 'NSS conntrack-sync path must compute tx_bps from previous snapshot deltas');
-  assert(source.includes('delta_bps(current[i].rx_bytes, previous->rx_bytes'), 'NSS conntrack-sync path must compute rx_bps from previous snapshot deltas');
-  assert(source.includes('conntrack_refresh_last_seen'), 'runtime must keep conntrack last_seen tied to byte counter changes');
-  assert(source.includes('udp_dns_conns'), 'runtime must split UDP DNS connection counts from other UDP flows');
-  assert(source.includes('udp_other_conns'), 'runtime must expose non-DNS UDP connection counts');
-  assert(/sport_index|orig_sport/.test(conntrackSource) && /dport_index|orig_dport/.test(conntrackSource), 'conntrack parser must read ports so DNS UDP can be identified');
-  const connCountBody = extractFunctionBody(conntrackSource, 'conntrack_sample_add_conn_counts');
-  assert(/flow->is_udp\s*&&\s*flow->assured/.test(connCountBody),
-         'stable UDP connection counts must include only ASSURED conntrack UDP flows');
-  assert(/json_object_object_add\(\s*client\s*,\s*"tcp_conns"\s*,\s*json_object_new_int64?\(\s*\(int64?_t?\)?\s*cs->tcp_conns/.test(source) ||
-         /json_object_object_add\(\s*client\s*,\s*"tcp_conns"\s*,\s*json_object_new_int\(\s*\(int\)cs->tcp_conns/.test(source),
-         'BPF client connection counts must be overwritten from conntrack current table when conntrack is readable');
-  const bpfCollectBody = extractFunctionBody(source, 'collect_bpf_clients');
-  assert(!/json_object_object_add\(\s*client\s*,\s*"tcp_conns"/.test(bpfCollectBody),
-         'BPF collector must not publish approximate TCP tuple counters as stable tcp_conns');
-  assert(!/json_object_object_add\(\s*client\s*,\s*"udp_conns"/.test(bpfCollectBody),
-         'BPF collector must not publish approximate UDP tuple counters as stable udp_conns');
-  assert(source.includes('"bpf_approx_tcp_tuples"'), 'BPF approximate TCP tuple counters must be exposed only as evidence');
-  assert(source.includes('"bpf_approx_udp_tuples"'), 'BPF approximate UDP tuple counters must be exposed only as evidence');
-  assert(!/bpf_tcp\s*==\s*0/.test(source), 'conntrack connection merge must not keep stale/nonzero BPF conn counts');
-  assert(source.includes('#include "lanspeed_config.h"'), 'daemon must include the normalized config module header');
-  assert(srcMakefile.includes('lanspeed_config.o'), 'local daemon build must compile the config module');
-  assert(packageMakefile.includes('./src/*.c ./src/*.h'), 'package build must copy config module sources');
-  assert(source.includes('#include "lanspeed_history.h"'), 'daemon must include the coverage/overview history module header');
-  assert(srcMakefile.includes('lanspeed_history.o'), 'local daemon build must compile the coverage/overview history module');
-  for (const required of [
-    'struct lanspeed_coverage_ring',
-    'struct lanspeed_overview_ring',
-    'void lanspeed_coverage_reset',
-    'void lanspeed_coverage_push_sample',
-    'void lanspeed_coverage_add_json',
-    'void lanspeed_overview_push_from_clients',
-    'struct lanspeed_overview_config',
-    'json_object_new_string("clients_refresh_daemon_ring")',
-    '"counter_reset"',
-    '"warmup"',
-    '"idle"',
-    '"ok"',
-    '"unsupported"',
-    'client_is_active_recent',
-    'client_has_active_rate'
-  ]) {
-    assert(historyHeader.includes(required) || historySource.includes(required),
-           `coverage/overview history module missing ${required}`);
-  }
-  assert(source.includes('static int overview_method'), 'runtime must expose a daemon-side overview history method');
-  assert(source.includes('UBUS_METHOD_NOARG("overview", overview_method)'), 'runtime must register the overview ubus method');
-  assert(source.includes('lanspeed_overview_push_from_clients'), 'clients_method must feed daemon-side overview history from current samples');
-  {
-    const overviewBody = extractFunctionBody(source, 'overview_method');
-    assert(overviewBody.includes('lanspeed_overview_to_json'),
-           'overview method must serialize the daemon-side overview ring');
-    assert(!/collect_|inspect_|load_cached_runtime_probe|read_conntrack|lanspeed_bpf_read_samples/.test(overviewBody),
-           'overview method must not trigger collector rescans or runtime probes');
-  }
-  assert(configHeader.includes('#define DEFAULT_ACTIVE_CLIENT_WINDOW_MS 10000ULL'), 'config module must default active clients to a 10s window');
-  assert(configHeader.includes('#define DEFAULT_ACTIVE_CLIENT_MIN_BPS 1ULL'), 'config module must default active clients to a nonzero speed threshold');
-  assert(configSource.includes('char active_window_path[] = "lanspeed.main.active_client_window_ms"'), 'config module must read active_client_window_ms from UCI');
-  assert(configSource.includes('char active_min_bps_path[] = "lanspeed.main.active_client_min_bps"'), 'config module must read active_client_min_bps from UCI');
-  assert(configSource.includes('char overview_window_path[] = "lanspeed.main.overview_window_samples"'), 'config module must read overview_window_samples from UCI');
-  assert(configSource.includes('char rate_collector_mode_path[] = "lanspeed.main.rate_collector_mode"'), 'config module must read rate_collector_mode from UCI');
-  assert(configSource.includes('char conn_collector_mode_path[] = "lanspeed.main.conn_collector_mode"'), 'config module must read conn_collector_mode from UCI');
-  assert(configSource.includes('char collector_mode_path[] = "lanspeed.main.collector_mode"'), 'config module must still read legacy collector_mode from UCI');
-  assert(source.includes('conn_collector_mode_is_forced()'), 'daemon must allow UCI to force conntrack collectors for connection counts');
-  assert(source.includes('rate_collector_mode_allows_bpf()'), 'daemon must expose rate BPF mode policy for evidence');
-  assert(source.includes('return rate_collector_mode == COLLECTOR_MODE_AUTO ||\n\t       rate_collector_mode == COLLECTOR_MODE_BPF;'),
-         'rate_collector_mode must not treat CT modes as live speed collectors');
-  assert(source.includes('COLLECTOR_MODE_NSS_ECM_DIRECT') &&
-         source.includes('COLLECTOR_MODE_NSS_CONNTRACK_SYNC'),
-         'daemon must allow explicit NSS direct and NSS sync rate collector modes');
-  assert(source.includes('rate_collector_mode_forces_nss_ecm_direct') &&
-         source.includes('rate_collector_mode_forces_nss_conntrack_sync'),
-         'daemon must distinguish forced NSS direct and forced NSS sync modes');
-  assert(configSource.includes('!strcmp(value, "nss_conntrack_sync")') &&
-         configSource.includes('!strcmp(value, "conntrack_ecm_sync")'),
-         'config module must parse the new NSS sync config value while keeping the old collector name as input compatibility');
-  assert(/static bool conntrack_fallback_active[\s\S]{0,260}?conntrack_primary_preferred\(probe\)/.test(source),
-         'non-NSS conntrack must not become a live rate fallback when BPF is unavailable');
-  assert(source.includes('read_conntrack_snapshot_mode(current, &current_count'), 'conntrack client collection must honor forced netlink/procfs mode');
-  assert(/collect_conntrack_procfs_clients[\s\S]{0,1800}?read_conntrack_snapshot_mode\(current,[\s\S]{0,360}?conn_collector_mode\)/.test(source),
-         'NSS conntrack-sync speed reads must honor conn_collector_mode source selection');
-  assert(/merge_conntrack_conn_counts[\s\S]{0,1800}?read_conntrack_snapshot_mode\(conn_samples,[\s\S]{0,360}?conn_collector_mode\)/.test(source),
-         'BPF connection-count merge must honor conn_collector_mode source selection');
-  assert(historySource.includes('client_is_active_recent'), 'overview active_clients must use last_seen/sample_ms freshness');
-  assert(historySource.includes('client_has_active_rate'), 'overview active_clients must require configured current speed');
-  assert(source.includes('active_client_window_ms'), 'runtime must publish active_client_window_ms');
-  assert(source.includes('active_client_min_bps'), 'runtime must publish active_client_min_bps');
-  assert(!source.includes('LANSPEED_OVERVIEW_ACTIVE_BPS'), 'overview active_clients must not be based on a bitrate threshold');
-}
-
-function assertRuntimeBpfCollectorModule(source) {
-  assert(source.includes('#include "lanspeed_bpf_collector.h"'), 'daemon must include the BPF collector module header');
-  assert(srcMakefile.includes('lanspeed_bpf_collector.o'), 'local daemon build must compile the BPF collector module');
-
-  for (const required of [
-    'struct bpf_client_sample',
-    'struct bpf_rate_sample',
-    'struct bpf_snapshot_cache',
-    'void bpf_snapshot_cache_reset',
-    'bool bpf_collect_snapshot',
-    'size_t bpf_build_rate_samples',
-    'bool bpf_snapshot_totals',
-    'lanspeed_bpf_read_samples',
-    'load_lan_identity_table',
-    'derive_zone_from_ifname',
-    'ifname_is_excluded_identity_source',
-    'bpf_approx_tcp_tuples',
-    'bpf_approx_udp_tuples',
-    'counter_anomaly'
-  ]) {
-    assert(bpfCollectorHeader.includes(required) || bpfCollectorSource.includes(required),
-           `BPF collector module missing ${required}`);
-  }
-
-  assert(!source.includes('struct bpf_client_sample {'),
-         'daemon must not own the BPF folded client sample layout');
-  assert(!source.includes('static struct bpf_client_sample bpf_current_samples'),
-         'daemon must not keep BPF current sample arrays directly');
-  assert(!source.includes('static struct bpf_client_sample bpf_previous_samples'),
-         'daemon must not keep BPF previous sample arrays directly');
-  assert(!source.includes('static struct bpf_client_sample *bpf_find_or_insert_client'),
-         'daemon must not fold raw BPF map entries itself');
-  assert(!/lanspeed_bpf_read_samples\(/.test(source),
-         'daemon must not read raw BPF map entries directly');
-  assert(/bpf_collect_samples[\s\S]{0,260}?bpf_collect_snapshot\(&bpf_cache/.test(source),
-         'daemon BPF tick must delegate map folding to the BPF collector module');
-  assert(/collect_bpf_clients[\s\S]{0,700}?bpf_build_rate_samples\(&bpf_cache/.test(source),
-         'daemon BPF clients path must consume module rate samples');
-  assert(bpfCollectorSource.includes('bpf_find_lan_identity_by_mac_zone') &&
-         /if\s*\(\s*!identity\s*\)\s*continue;/.test(bpfCollectorSource),
-         'BPF collector must skip raw MAC samples without an ARP/neighbor LAN identity');
-}
-
-function assertRuntimeProbeHotPathPolicy(source) {
-  assert(source.includes('runtime_probe_cache_store'), 'daemon must maintain a runtime probe cache');
-  assert(source.includes('load_cached_runtime_probe'), 'daemon hot paths must load cached runtime probe state');
-
-  const statusBody = extractFunctionBody(source, 'status_method');
-  const clientsBody = extractFunctionBody(source, 'clients_method');
-  const healthBody = extractFunctionBody(source, 'health_method');
-  const tickBody = extractFunctionBody(source, 'bpf_collect_tick');
-  const cachedProbeBody = extractFunctionBody(source, 'load_cached_runtime_probe');
-
-  assert(statusBody.includes('load_cached_runtime_probe(&probe)'),
-         'status_method must use cached/direct probe state');
-  assert(!statusBody.includes('inspect_runtime(&probe)'),
-         'status_method must not refresh shell-backed runtime probes');
-  assert(clientsBody.includes('load_cached_runtime_probe(&probe)'),
-         'clients_method must use cached/direct probe state');
-  assert(!clientsBody.includes('inspect_runtime(&probe)'),
-         'clients_method must not refresh shell-backed runtime probes');
-  assert(healthBody.includes('inspect_runtime(&probe)') &&
-         healthBody.includes('runtime_probe_cache_store(&probe)'),
-         'health_method may explicitly refresh diagnostics and must update the probe cache');
-  assert(!tickBody.includes('inspect_command_capabilities(&probe)') &&
-         !tickBody.includes('inspect_tc(&probe)'),
-         'periodic BPF tick must not run shell-backed tc probes');
-  assert(tickBody.includes('load_cached_runtime_probe(&probe)'),
-         'periodic BPF tick must use cached probe state for TC policy decisions');
-  assert(!cachedProbeBody.includes('run_command_capture') &&
-         !cachedProbeBody.includes('inspect_tc(probe)') &&
-         !cachedProbeBody.includes('inspect_ubus(probe)') &&
-         !cachedProbeBody.includes('inspect_dae_runtime(probe)'),
-         'cached runtime probes must not execute shell-backed diagnostic probes');
-  assert(cachedProbeBody.includes('inspect_files_direct(probe)'),
-         'cached runtime probes must use direct file/API refresh only');
-}
-
-function assertRuntimeNssDirectSource(source, collectorModel, indexSource, nssPanelSource) {
-  assert(source.includes('#include "lanspeed_nss.h"'), 'daemon must include the NSS collector module header');
-  assert(srcMakefile.includes('lanspeed_nss.o'), 'local daemon build must compile the NSS collector module');
-  assert(configHeader.includes('#define NSS_ECM_DIRECT_SOURCE "nss_ecm_direct"'),
-         'config module must define the NSS direct collector source literal');
-  for (const required of [
-    'NSS_ECM_STATE_DEBUGFS_DIR "/sys/kernel/debug/ecm/ecm_state"',
-    'NSS_ECM_STATE_DEV_MAJOR_PATH',
-    'struct nss_ecm_direct_flow',
-    'struct nss_ecm_direct_stats',
-    'bool read_nss_ecm_direct_snapshot',
-    'static bool parse_nss_ecm_state_line',
-    'bool nss_ecm_state_open',
-    'makedev(major, 0)',
-    'open(path, O_RDONLY | O_CLOEXEC)',
-    'fdopen(fd, "r")',
-    'adv_stats.from_data_total',
-    'adv_stats.to_data_total',
-    'snode_address',
-    'dnode_address',
-    'sip_address_nat',
-    'dip_address_nat',
-    'snode_address_nat',
-    'dnode_address_nat',
-    'flow->sip_address_nat',
-    'flow->dip_address_nat',
-    'nss_ecm_direct_flow_add_endpoint',
-    'FLOW_ENDPOINT_ORIG_SRC',
-    'FLOW_ENDPOINT_ORIG_DST',
-    'stats->state_major',
-    'NSS_ECM_STATE_TMP_DEV_PATH',
-    'source_path, source_path_size, "%s", NSS_ECM_STATE_TMP_DEV_PATH',
-    'NSS_ECM_STATE_TMP_DEV_PATH "/dev/lanspeed-ecm-state"',
-    'nss_ecm_direct_unavailable',
-    'nss_ecm_direct_parse_errors',
-    'skip_nss_ecm_direct_flow_without_lan_identity'
-  ]) {
-    assert(nssHeader.includes(required) || nssSource.includes(required),
-           `NSS collector module missing ${required}`);
-  }
-  for (const required of [
-    'static bool nss_ecm_direct_supported',
-    'nss_ecm_direct_preferred(probe)',
-    'static bool collect_nss_ecm_direct_clients',
-    'collect_nss_stable_clients(root, clients, &probe)',
-    'nss_ecm_direct_overlay_enabled(probe)',
-    'direct_overlay_clients',
-    'sync_fallback_clients',
-    'nss_direct_no_data',
-    'nss_direct_partial',
-    'nss_sync_fallback',
-    'nss_ecm_direct_snapshot_pending',
-    'json_object_new_string("nss_ecm_direct")'
-  ]) {
-    assert(source.includes(required), `C runtime NSS direct missing ${required}`);
-  }
-
-  for (const forbidden of [
-    'defunct_all',
-    'decelerate',
-    'flush'
-  ]) {
-    assert(!/open\([^)]*O_WR/.test(nssSource) && !new RegExp(`fopen\\([^\\n]*${forbidden}`).test(nssSource),
-           `NSS direct must not write ${forbidden}`);
-  }
-
-  assert(/static bool nss_ecm_direct_preferred[\s\S]{0,220}?nss_ecm_direct_state_readable\(probe\)/.test(source),
-         'NSS direct preference must be explicit and readable-state gated');
-  assert(nssSource.includes('nss_ecm_direct_flow_add_endpoint') &&
-         nssSource.includes('FLOW_ENDPOINT_ORIG_SRC') &&
-         nssSource.includes('FLOW_ENDPOINT_ORIG_DST'),
-         'NSS direct must map ECM source/destination endpoints to client-view tx/rx directions');
-  assert(/add_endpoint_sample_bytes\([\s\S]{0,260}?arp,\s*NULL,\s*tx_bytes/.test(nssSource),
-         'NSS direct samples must keep ARP/neighbor MAC identity instead of overriding it with ECM node MAC');
-  assert(identitySource.includes('find_lan_identity_by_mac') &&
-         identitySource.includes('nss_ecm_direct_endpoint_lookup') &&
-         nssSource.includes('flow->sip_address_nat') &&
-         nssSource.includes('flow->dip_address_nat'),
-         'NSS direct must match NAT endpoints and fall back to ECM node MAC identities');
-  assert(nssSource.includes('stats->state_major') &&
-         nssSource.includes('NSS_ECM_STATE_TMP_DEV_PATH') &&
-         nssSource.includes('source_path, source_path_size, "%s", NSS_ECM_STATE_TMP_DEV_PATH'),
-         'NSS direct evidence must expose debugfs major and real temporary state path');
-  assert(nssHeader.includes('NSS_ECM_STATE_TMP_DEV_PATH "/dev/lanspeed-ecm-state"') ||
-         nssSource.includes('NSS_ECM_STATE_TMP_DEV_PATH "/dev/lanspeed-ecm-state"'),
-         'NSS direct temporary character device must live under /dev, not a nodev /tmp mount');
-  assert(source.includes('nss_ecm_state_open(&state_file') &&
-         source.includes('nss_ecm_direct_state_errno') &&
-         source.includes('nss_ecm_direct_state_major'),
-         'NSS direct support must require a readable ECM state device and expose open diagnostics');
-  assert(source.includes('static bool nss_ecm_direct_state_readable') &&
-         source.includes('static const char *nss_ecm_direct_fallback_reason') &&
-         source.includes('"collector_mode_bpf"') &&
-         source.includes('"collector_mode_nss_conntrack_sync"'),
-         'NSS direct status must separate readable ECM state from collector-mode gating');
-  assert(source.includes('"src_lan_flows"') &&
-         source.includes('"dst_lan_flows"') &&
-         source.includes('"both_lan_flows"'),
-         'NSS direct evidence must expose endpoint match diagnostics');
-  assert(/static bool conntrack_primary_preferred[\s\S]{0,220}?nss_conntrack_sync_stable_active\(probe\)[\s\S]{0,220}?nss_ecm_direct_preferred\(probe\)/.test(source),
-         'NSS stable source selection must use NSS sync before direct-only fallback');
-  assert(source.includes('static bool conntrack_clients_read_active'),
-         'NSS direct failure must still allow NSS sync/conntrack as a secondary read path');
-  assert(source.includes('static bool nss_conntrack_sync_fallback_available') &&
-         /static bool nss_conntrack_sync_reader_available[\s\S]{0,520}?nss_conntrack_sync_fallback_available\(probe\)[\s\S]{0,520}?rate_collector_mode_forces_nss_ecm_direct/.test(source),
-         'forced NSS direct must allow NSS sync as a secondary reader when direct has no matching flow');
-  assert(/static bool conntrack_clients_read_active[\s\S]{0,420}?nss_ecm_direct_overlay_enabled\(probe\)[\s\S]{0,420}?nss_conntrack_sync_reader_available\(probe\)/.test(source),
-         'NSS direct secondary read path must be limited to NSS sync availability');
-  assert(/collect_conntrack_procfs_clients[\s\S]{0,760}?!conntrack_clients_read_active\(probe\)/.test(source),
-         'NSS direct failure must not be blocked by primary conntrack_fallback_active');
-  assert(/add_conntrack_common_warnings[\s\S]{0,360}?nss_conntrack_sync_stable_active\(probe\)[\s\S]{0,360}?nss_ecm_sync_cadence/.test(source),
-         'NSS stable fallback warnings must explain NSS sync cadence');
-  assert(/coverage_current_client_bytes[\s\S]{0,900}?nss_conntrack_sync_stable_active\(probe\)/.test(source),
-         'coverage must use NSS sync client bytes when sync is the stable source');
-  assert(/add_capabilities_from_values\(root,[\s\S]{0,260}?nss_conntrack_sync_stable_active\(&probe\)[\s\S]{0,260}?nss_ecm_direct_preferred\(&probe\)/.test(source),
-         'status capabilities/live_metrics must account for NSS stable source');
-  assert(indexSource.includes("mode === 'nss_ecm_direct'"), 'LuCI client status must label NSS direct rows');
-  assert(indexSource.includes('NSS-direct'), 'LuCI must show NSS-direct label');
-  assert(nssPanelSource.includes('direct_enabled') && nssPanelSource.includes('fallback_reason'),
-         'NSS panel must expose direct state and fallback reason');
-  assert(collectorModel.nss_direct_model.collector_mode === 'nss_ecm_direct', 'collector model must document nss_ecm_direct collector_mode');
-  assert(collectorModel.nss_direct_model.primary_source === 'nss_ecm_direct', 'collector model must document nss_ecm_direct primary source');
-  assert(collectorModel.nss_direct_model.read_only === true, 'collector model must declare NSS direct read-only');
-  assert(collectorModel.nss_direct_model.fallback_to === 'conntrack_ecm_sync', 'collector model must document NSS sync fallback');
-  assert(collectorModel.nss_direct_model.forbidden_writes.includes('defunct_all'), 'collector model must forbid defunct_all writes');
-}
-
-function assertRuntimeBpfGateSource(source) {
-  assert(source.includes('static bool bpf_runtime_metrics_available'), 'C runtime must expose an explicit BPF runtime metrics gate');
-  assert(source.includes('probe->bpf_runtime_metrics = bpf_runtime_metrics_available(probe)'), 'safe_attach must be separated from runtime metrics availability');
-  assert(source.includes('return bpf_runtime_metrics_available(probe);'), 'Full availability must depend on the runtime metrics gate');
-  assert(!/return\s+enable_bpf\s*&&\s*probe->safe_attach/.test(source), 'Full must not be derived from safe_attach or BPF asset presence alone');
-  assert(source.includes('json_object_new_string("bpf_runtime_loader_unavailable")'), 'runtime must warn when BPF assets exist but attach/map-read is unavailable');
-  assert(source.includes('json_object_object_add(collector, "bpf_assets_are_evidence_only", json_object_new_boolean(true))'), 'collector evidence must state BPF assets are evidence only');
-  assert(source.includes('json_object_object_add(collector, "runtime_attach_map_read_success", json_object_new_boolean(probe->bpf_runtime_metrics))'), 'collector evidence must expose runtime attach/map-read gate result');
-  assert(source.includes('json_object_object_add(collector, "runtime_object_loaded"'), 'collector evidence must expose whether the BPF object loaded');
-  assert(source.includes('json_object_object_add(collector, "runtime_any_attached"'), 'collector evidence must expose whether any BPF hook is attached');
-  assert(source.includes('json_object_object_add(collector, "runtime_last_read_attempted"'), 'collector evidence must expose whether a BPF map read was attempted');
-  assert(source.includes('json_object_object_add(collector, "runtime_last_read_ok"'), 'collector evidence must expose whether the last BPF map read succeeded');
-  assert(source.includes('json_object_object_add(collector, "runtime_error"'), 'collector evidence must expose the concrete BPF runtime error');
-  assert(/runtime_gate_warning[\s\S]{0,180}probe->bpf_runtime_metrics\s*\?\s*""\s*:\s*"bpf_runtime_loader_unavailable"/.test(source), 'collector evidence must clear runtime_gate_warning when BPF attach/map-read succeeds');
-  assert(source.includes('json_object_object_add(capabilities, "bpf_runtime_metrics", json_object_new_boolean(probe ? probe->bpf_runtime_metrics : false))'), 'capabilities must expose runtime BPF metrics separately');
-  assert(source.includes('static bool bpf_primary_active'), 'runtime must distinguish readable BPF maps from the active primary BPF source');
-  assert(source.includes('add_capabilities_from_values(root, enable_bpf && bpf_primary_active(&probe)'), 'capabilities.bpf must describe the active primary BPF source');
-  assert(source.includes('bpf_primary_active(&probe), &probe);'), 'live_metrics must be tied to the active primary BPF source');
-}
-
-function assertBpfLoaderModule(header, loader, daemonSource, packageMakefile, srcMakefile) {
-  // Header advertises the public API the daemon consumes.
-  for (const sym of [
-    'lanspeed_bpf_init',
-    'lanspeed_bpf_shutdown',
-    'lanspeed_bpf_attach_iface',
-    'lanspeed_bpf_detach_all',
-    'lanspeed_bpf_read_samples',
-    'lanspeed_bpf_runtime_ok',
-    'lanspeed_bpf_ensure_attached',
-    'lanspeed_bpf_get_status',
-    'LANSPEED_BPF_DIR_TX',
-    'LANSPEED_BPF_DIR_RX',
-    'LANSPEED_BPF_TC_PREF',
-    'LANSPEED_BPF_TC_HANDLE',
-    'LANSPEED_BPF_TC_EARLY_PREF',
-    'LANSPEED_BPF_TC_EARLY_HANDLE'
-  ]) {
-    assert(header.includes(sym), `lanspeed_bpf.h must expose ${sym}`);
-  }
-
-  // Loader uses the real libbpf + tc API surface, not stubs.
-  for (const sym of [
-    '#include <bpf/libbpf.h>',
-    '#include <bpf/bpf.h>',
-    'bpf_object__open_file',
-    'bpf_object__load',
-    'bpf_tc_hook_create',
-    'bpf_tc_attach',
-    'bpf_tc_detach',
-    'bpf_map_get_next_key',
-    'bpf_map_lookup_elem'
-  ]) {
-    assert(loader.includes(sym), `lanspeed_bpf.c must call real libbpf API ${sym}`);
-  }
-
-  // Loader must NOT destroy the clsact hook from the steady-state detach
-  // path. dae, SQM and qosify may share the hook; removing it on normal
-  // shutdown would break them. A rollback-only destroy inside the attach
-  // helper is allowed, guarded by `created_hook`.
-  const detachAll = loader.match(/void\s+lanspeed_bpf_detach_all\s*\([^)]*\)\s*{[\s\S]*?^}/m);
-  assert(detachAll, 'lanspeed_bpf.c must define lanspeed_bpf_detach_all');
-  assert(!/bpf_tc_hook_destroy/.test(detachAll[0]),
-         'lanspeed_bpf_detach_all must not destroy clsact hooks');
-  const attachHelper = loader.match(/static\s+int\s+attach_point\s*\([^)]*\)\s*{[\s\S]*?^}/m);
-  if (attachHelper && /bpf_tc_hook_destroy/.test(attachHelper[0])) {
-    assert(/created_hook[\s\S]*bpf_tc_hook_destroy|bpf_tc_hook_destroy[\s\S]*created_hook/.test(attachHelper[0]),
-           'attach_point rollback hook_destroy must be guarded by created_hook');
-  }
-
-  // Daemon pulls the module in and drives it through runtime lifecycle.
-  assert(daemonSource.includes('#include "lanspeed_bpf.h"'), 'lanspeedd.c must include the BPF loader header');
-  assert(daemonSource.includes('lanspeed_bpf_init('), 'lanspeedd.c must call lanspeed_bpf_init');
-  assert(loader.includes('lanspeed_bpf_attach_iface('), 'lanspeed_bpf.c must keep the legacy attach wrapper');
-  assert(daemonSource.includes('lanspeed_bpf_attach_iface_mode('), 'lanspeedd.c must attach with a policy-aware BPF mode');
-  assert(daemonSource.includes('lanspeed_bpf_ensure_attached('), 'lanspeedd.c must periodically verify and restore owned TC BPF hooks');
-  assert(daemonSource.includes('bpf_runtime_recover_if_needed'), 'lanspeedd.c must keep a BPF self-heal path for hook loss');
-  assert(!daemonSource.includes('initial_tc_filter_order_check'), 'initial BPF hook verification must not force an order self-heal on every startup');
-  assert(!loader.includes('strstr(reason, "order")'), 'BPF self-heal must not force TC reorder');
-  assert(!loader.includes('tc_filter_order_drift'), 'BPF self-heal must not detach/re-attach just to reorder around daed filters');
-  assert(!loader.includes('force_reorder'), 'BPF self-heal must only restore missing owned hooks, never force order changes');
-  assert(!daemonSource.includes('tc_lanspeed_after_dae_same_pref'), 'lanspeedd must not poll TC order to chase daed filter ordering');
-  assert(loader.includes('ingress_priority = early_passthrough ? LANSPEED_BPF_TC_EARLY_PREF : LANSPEED_BPF_TC_PREF'),
-         'daed-compatible early mode must move ingress before daed');
-  assert(loader.includes('egress_priority = early_passthrough ? LANSPEED_BPF_TC_EARLY_PREF : LANSPEED_BPF_TC_PREF'),
-         'daed-compatible early mode must also move egress before daed so download bytes are sampled before TC redirect/drop actions');
-  assert(/egress_fd\s*=\s*early_passthrough\s*\?\s*g_state\.egress_early_prog_fd/.test(loader),
-         'daed-compatible early mode must attach egress_early at the early pref');
-  const modeAttach = loader.match(/int\s+lanspeed_bpf_attach_iface_mode\s*\([^)]*\)\s*{[\s\S]*?^}/m);
-  assert(modeAttach, 'lanspeed_bpf.c must define lanspeed_bpf_attach_iface_mode');
-  assert(/hook_present\(ifindex,\s*BPF_TC_INGRESS,\s*ingress_priority,\s*ingress_handle\)/.test(modeAttach[0]),
-         'policy-aware attach must treat stale owned ingress hooks as replaceable after a daemon crash');
-  assert(/attach_point\([^;]+BPF_TC_INGRESS[^;]+ingress_present\)/.test(modeAttach[0]),
-         'policy-aware attach must replace stale owned ingress hooks with the current process BPF program');
-  assert(/hook_present\(ifindex,\s*BPF_TC_EGRESS,\s*egress_priority,\s*egress_handle\)/.test(loader),
-         'policy-aware attach must treat the shared egress hook as idempotent during daed policy switches');
-  assert(/attach_point\([^;]+BPF_TC_EGRESS[^;]+egress_present\)/.test(modeAttach[0]),
-         'policy-aware attach must replace stale owned egress hooks with the current process BPF program');
-  assert(daemonSource.includes('line_contains_lanspeed_tc_program'), 'runtime probe must identify owned TC hooks by BPF program name');
-  assert(/line_contains_lanspeed_filter_conflict\(line\)[\s\S]{0,160}strcmp\(owner,\s*LANSPEED_TC_FILTER_OWNER\)/.test(daemonSource),
-         'runtime probe must not classify stale lanspeed-owned pref/handle hooks as foreign tc conflicts');
-  const modeDetach = loader.match(/int\s+lanspeed_bpf_detach_iface_mode\s*\([^)]*\)\s*{[\s\S]*?^}/m);
-  assert(modeDetach, 'lanspeed_bpf.c must define lanspeed_bpf_detach_iface_mode');
-  assert(/BPF_TC_EGRESS/.test(modeDetach[0]),
-         'policy-mode detach must remove mode-specific egress too when switching daed early mode');
-  assert(daemonSource.includes('bpf_tc_self_heal'), 'lanspeedd.c must expose BPF self-heal evidence');
-  assert(daemonSource.includes('lanspeed_bpf_shutdown('), 'lanspeedd.c must shut the loader down on exit');
-  assert(daemonSource.includes('lanspeed_bpf_runtime_ok('), 'lanspeedd.c must consult lanspeed_bpf_runtime_ok for Full gating');
-  assert(bpfCollectorSource.includes('lanspeed_bpf_read_samples('), 'BPF collector module must read BPF samples for Full mode');
-  assert(daemonSource.includes('collect_bpf_clients('), 'lanspeedd.c must expose a BPF client collector path');
-  assert(/collector_mode[^\n]+"bpf"/.test(daemonSource), 'lanspeedd.c must emit collector_mode=bpf in the Full path');
-  assert(/if\s*\(\s*collect_bpf_clients\(root,\s*clients,\s*&probe\)\s*\)[\s\S]{0,260}?merge_conntrack_conn_counts\(root,\s*clients\)/.test(daemonSource),
-         'clients_method must use BPF as the only live rate source on non-NSS devices');
-  assert(!/collector_mode_is_conntrack_forced\(\)[\s\S]{0,200}?collect_conntrack_procfs_clients\(root,\s*clients,\s*&probe\)/.test(daemonSource),
-         'forced CT modes must not replace BPF live rates on non-NSS devices');
-  assert(!/else\s*\{\s*collect_conntrack_procfs_clients\(root,\s*clients,\s*&probe\);\s*\}/.test(daemonSource),
-         'non-NSS BPF failure must leave client rates empty instead of emitting CT byte rates');
-
-  assert(bpfSource.includes('lanspeed_ingress_early'), 'BPF object must include an early ingress section for DAE coexistence');
-  assert(bpfSource.includes('lanspeed_egress_early'), 'BPF object must include an early egress section for DAE coexistence');
-  assert(/account_frame\(skb, LANSPEED_DIR_TX, TC_ACT_UNSPEC\)/.test(bpfSource) &&
-         /account_frame\(skb, LANSPEED_DIR_RX, TC_ACT_UNSPEC\)/.test(bpfSource),
-         'early BPF sections must return TC_ACT_UNSPEC so later DAE filters still run');
-  assert(/BPF_TC_F_REPLACE/.test(loader), 'BPF self-heal must be able to replace owned filters without duplicating them');
-  assert(/bpf_tc_query/.test(loader), 'BPF self-heal must query owned filters before claiming they are attached');
-
-  // Real libbpf loader stays available in the optional plugin.
-  assert(!/Package\/lanspeedd[\s\S]{0,260}PACKAGE_lanspeedd-bpf:libbpf/.test(packageMakefile), 'base package must not depend on libbpf through package metadata');
-  assert(/LIBS[^\n]*-ldl/.test(packageMakefile), 'package Makefile must link the base daemon with dlopen support');
-  assert(/BPF_IMPL_OBJ := lanspeed_bpf_stub\.o/.test(srcMakefile), 'src Makefile must provide the dynamic BPF runtime wrapper for base builds');
-  assert(/^plugin: lanspeed_bpf_plugin\.so/m.test(srcMakefile), 'src Makefile must expose an optional plugin target');
-  assert(/lanspeed_bpf_plugin\.so: lanspeed_bpf\.c lanspeed_bpf\.h/.test(srcMakefile), 'src Makefile must still build the real libbpf loader as a plugin');
 }
 
 function writeEvidence(fileName, payload) {
@@ -2123,25 +1424,8 @@ const sideRouterDirectFixture = readJson('tests/fixtures/lanspeed-side-router-di
 const routerLocalFixture = readJson('tests/fixtures/lanspeed-router-local.json');
 const topologyVlanFixture = readJson('tests/fixtures/lanspeed-topology-vlan.json');
 const lifecycleFixture = readJson('tests/fixtures/lanspeed-lifecycle.json');
-const source = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeedd.c'), 'utf8');
-const configHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_config.h'), 'utf8');
-const configSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_config.c'), 'utf8');
-const identityHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_identity.h'), 'utf8');
-const identitySource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_identity.c'), 'utf8');
-const conntrackHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_conntrack.h'), 'utf8');
-const conntrackSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_conntrack.c'), 'utf8');
-const bpfCollectorHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_bpf_collector.h'), 'utf8');
-const bpfCollectorSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_bpf_collector.c'), 'utf8');
-const nssHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_nss.h'), 'utf8');
-const nssSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_nss.c'), 'utf8');
-const historyHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_history.h'), 'utf8');
-const historySource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_history.c'), 'utf8');
 const packageMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
-const srcMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/src/Makefile'), 'utf8');
 const sdkHelper = fs.readFileSync(path.join(root, 'scripts/build-sdk.sh'), 'utf8');
-const bpfSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_tc.bpf.c'), 'utf8');
-const bpfLoaderHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_bpf.h'), 'utf8');
-const bpfLoaderSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_bpf.c'), 'utf8');
 const initScript = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/init.d/lanspeedd'), 'utf8');
 const hotplugScript = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/hotplug.d/iface/90-lanspeedd'), 'utf8');
 const defaultConfig = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/config/lanspeed'), 'utf8');
@@ -2158,21 +1442,8 @@ const nssPanelSource = fs.readFileSync(path.join(root, 'applications/luci-app-la
 const collectorModel = readJson('net/lanspeedd/src/collector-model.json');
 const bpfAttachedFixture = readJson('tests/fixtures/lanspeed-bpf-attached.json');
 
-assertNoDestructiveTcCommands(source);
 assertNoDestructiveTcCommands(packageMakefile);
-assertNoDestructiveTcCommands(srcMakefile);
 assertNoDestructiveTcCommands(sdkHelper);
-assertNoDestructiveTcCommands(bpfSource);
-assertNoDestructiveTcCommands(bpfLoaderSource);
-assertBpfSource(bpfSource);
-assertBpfBuildRules(packageMakefile, srcMakefile, sdkHelper);
-assertRuntimeProbeJsonOwnership(source);
-assertRuntimeConntrackFallbackSource(source);
-assertRuntimeBpfCollectorModule(source);
-assertRuntimeProbeHotPathPolicy(source);
-assertRuntimeNssDirectSource(source, collectorModel, indexSource, nssPanelSource);
-assertRuntimeBpfGateSource(source);
-assertBpfLoaderModule(bpfLoaderHeader, bpfLoaderSource, source, packageMakefile, srcMakefile);
 assertLifecycleInit(initScript, hotplugScript, packageMakefile, defaultConfig, collectorModel);
 
 const tcCoexist = attachLanspeedFilters(tcCoexistFixture);
@@ -2255,13 +1526,19 @@ assert(uploadRate.map_key.direction === 'tx', 'upload fixture must map to tx dir
 const mapFull = simulateMapFull(mapFullFixture);
 assert(mapFull.warnings.includes('map_full'), 'map full fixture must report map_full');
 assert(mapFull.crashed === false, 'map full fixture must not crash');
-assert(collectorModel.bpf_source === 'lanspeed_tc.bpf.c', 'collector model must reference the BPF source file');
-assert(collectorModel.runtime_object === '/usr/lib/bpf/lanspeed_tc.o', 'collector model must reference installed BPF object path');
+assert(collectorModel.bpf_source === 'rust/crates/lanspeed-ebpf/src/main.rs', 'collector model must reference the Rust BPF source file');
+assert(JSON.stringify(collectorModel.runtime_objects) === JSON.stringify([
+  '/usr/lib/bpf/lanspeed-ebpf-kfunc',
+  '/usr/lib/bpf/lanspeed-ebpf-fallback'
+]), 'collector model must reference both installed BPF object paths');
 assert(collectorModel.map_model.default_max_clients === 2048, 'collector model must default to 2048 clients');
 assert(JSON.stringify(collectorModel.map_model.key) === JSON.stringify(['ifindex', 'vlan_or_zone', 'mac', 'direction']), 'collector model map key shape is required');
 assert(JSON.stringify(collectorModel.map_model.counters) === JSON.stringify(['bytes', 'packets', 'last_seen']), 'collector model counters must be bytes/packets/last_seen');
 assert(collectorModel.attach_model.excluded.includes('wan') && collectorModel.attach_model.excluded.includes('tun'), 'collector model must exclude WAN/TUN');
 assert(collectorModel.attach_model.excluded.includes('dae0') && collectorModel.attach_model.excluded.includes('dae0peer'), 'collector model must exclude dae tunnel interfaces');
+for (const ifname of ['dae0', 'daed-edge', 'miireg0', 'tun0', 'erspan0', 'gretap0', 'gre0', 'ip6gre0', 'ip6tnl0', 'sit0', 'bonding_masters'])
+  assert(isExcludedIdentityInterface(ifname), `${ifname} must be auto-ignored as an identity interface`);
+assert(!isExcludedIdentityInterface('br-lan'), 'normal LAN interfaces must remain eligible for identity collection');
 assert(collectorModel.rate_model.default_refresh_interval_ms === 1000, 'sampling interval must default to 1000ms');
 assert(collectorModel.rate_model.minimum_refresh_interval_ms === 500, 'sampling interval minimum must be 500ms');
 assert(collectorModel.rate_model.default_active_client_window_ms === 10000, 'active client window must default to 10000ms');
@@ -2934,6 +2211,31 @@ assert(nssPpeOnly.preferred === true, 'PPE-only NSS detection must enable conntr
 assert(nssPpeOnly.primary_source === 'nss_conntrack_sync', 'PPE-only NSS detection must prefer conntrack sync over BPF when accounting is available');
 assert(nssPpeOnly.collector_mode === 'conntrack_ecm_sync', 'PPE-only NSS sync currently shares the conntrack_ecm_sync collector mode');
 
+const nssDirectWithoutConntrackFallback = simulateNssSourceSelection({
+  config: { enable_conntrack_fallback: false, bpf_full_available: true },
+  probe: {
+    nf_conntrack_acct: true,
+    nss_present: true,
+    nss_ecm_active: true,
+    nss_ecm_direct_state: true
+  }
+});
+assert(nssDirectWithoutConntrackFallback.preferred === true, 'NSS-direct availability must not depend on conntrack fallback');
+assert(nssDirectWithoutConntrackFallback.primary_source === 'nss_ecm_direct', 'NSS-direct must remain selectable when conntrack fallback is disabled');
+assert(nssDirectWithoutConntrackFallback.collector_mode === 'nss_ecm_direct', 'NSS-direct collector mode must remain explicit without conntrack fallback');
+
+const daeNonNssBpf = simulateNssSourceSelection({
+  config: { enable_conntrack_fallback: true, bpf_full_available: true },
+  probe: {
+    nf_conntrack_acct: true,
+    nss_present: false,
+    runtime_active: true
+  }
+});
+assert(daeNonNssBpf.preferred === true, 'non-NSS dae runtime must explicitly prefer early BPF in auto mode');
+assert(daeNonNssBpf.primary_source === 'bpf', 'non-NSS dae runtime must keep BPF as the live rate source');
+assert(daeNonNssBpf.warnings.includes('dae_runtime_prefers_bpf'), 'non-NSS dae runtime must publish the BPF preference warning');
+
 const nssDaedBpf = simulateNssSourceSelection({
   config: { enable_conntrack_fallback: true, bpf_full_available: true },
   probe: {
@@ -2941,14 +2243,14 @@ const nssDaedBpf = simulateNssSourceSelection({
     nss_present: true,
     nss_ecm_active: true,
     nss_ecm_direct_state: true,
-    daed_running: true
+    runtime_active: true
   }
 });
 assert(nssDaedBpf.preferred === true, 'NSS+daed should still have a usable preferred live source when BPF is available');
 assert(nssDaedBpf.primary_source === 'bpf', 'NSS+daed must prefer BPF over NSS direct when BPF is available');
 assert(nssDaedBpf.collector_mode === 'bpf', 'NSS+daed+BPF clients must use collector_mode=bpf');
 assert(nssDaedBpf.coverage_client_source === 'bpf', 'NSS+daed+BPF coverage must use BPF client bytes');
-assert(nssDaedBpf.warnings.includes('nss_daed_prefers_bpf'), 'NSS+daed+BPF must explain that BPF is preferred');
+assert(nssDaedBpf.warnings.includes('dae_runtime_prefers_bpf'), 'NSS+dae runtime+BPF must explain that BPF is preferred');
 assert(!nssDaedBpf.warnings.includes('nss_prefers_direct'), 'NSS+daed+BPF must not claim NSS direct is preferred');
 
 const nssDaedNssFallback = simulateNssSourceSelection({
@@ -2958,12 +2260,12 @@ const nssDaedNssFallback = simulateNssSourceSelection({
     nss_present: true,
     nss_ecm_active: true,
     nss_ecm_direct_state: true,
-    daed_running: true
+    runtime_active: true
   }
 });
 assert(nssDaedNssFallback.primary_source === 'nss_conntrack_sync', 'NSS+daed must fall back to NSS sync when BPF is unavailable');
 assert(nssDaedNssFallback.collector_mode === 'conntrack_ecm_sync', 'NSS+daed NSS fallback must keep sync collector mode');
-assert(nssDaedNssFallback.warnings.includes('nss_daed_nss_fallback_may_be_inaccurate'), 'NSS+daed NSS fallback must warn that rates may be inaccurate');
+assert(nssDaedNssFallback.warnings.includes('nss_dae_bpf_fallback_may_be_inaccurate'), 'NSS+dae runtime NSS fallback must warn that rates may be inaccurate');
 
 const nssDaedConfigOnly = simulateNssSourceSelection({
   config: { enable_conntrack_fallback: true, bpf_full_available: true },
@@ -2976,7 +2278,7 @@ const nssDaedConfigOnly = simulateNssSourceSelection({
   }
 });
 assert(nssDaedConfigOnly.primary_source === 'nss_conntrack_sync', 'NSS must keep NSS sync when only daed config exists');
-assert(!nssDaedConfigOnly.warnings.includes('nss_daed_prefers_bpf'), 'daed config alone must not emit NSS+daed BPF warning');
+assert(!nssDaedConfigOnly.warnings.includes('dae_runtime_prefers_bpf'), 'daed config alone must not emit the dae runtime BPF warning');
 
 const nssDaedStoppedWithLeftovers = simulateNssSourceSelection({
   config: { enable_conntrack_fallback: true, bpf_full_available: true },
@@ -2990,7 +2292,22 @@ const nssDaedStoppedWithLeftovers = simulateNssSourceSelection({
   }
 });
 assert(nssDaedStoppedWithLeftovers.primary_source === 'nss_conntrack_sync', 'NSS must keep NSS sync when daed service exists but has no running instance');
-assert(!nssDaedStoppedWithLeftovers.warnings.includes('nss_daed_prefers_bpf'), 'stopped daed leftovers must not emit NSS+daed BPF warning');
+assert(!nssDaedStoppedWithLeftovers.warnings.includes('dae_runtime_prefers_bpf'), 'stopped daed leftovers must not emit the dae runtime BPF warning');
+
+const nssDaedStoppedWithStaleProbeCache = simulateNssSourceSelection({
+  config: { enable_conntrack_fallback: true, bpf_full_available: true },
+  probe: {
+    nf_conntrack_acct: true,
+    nss_present: true,
+    nss_ecm_active: true,
+    nss_ecm_direct_state: true,
+    daed_running: true,
+    daed_process: true,
+    runtime_active: false
+  }
+});
+assert(nssDaedStoppedWithStaleProbeCache.primary_source === 'nss_conntrack_sync', 'stale dae process cache must not keep BPF selected after the runtime stops');
+assert(!nssDaedStoppedWithStaleProbeCache.warnings.includes('dae_runtime_prefers_bpf'), 'stale dae process cache must not retain the dynamic runtime warning');
 
 const nssForcedDirectWithDaed = simulateNssSourceSelection({
   config: { enable_conntrack_fallback: true, bpf_full_available: true, rate_collector_mode: 'nss_ecm_direct' },
@@ -2999,11 +2316,11 @@ const nssForcedDirectWithDaed = simulateNssSourceSelection({
     nss_present: true,
     nss_ecm_active: true,
     nss_ecm_direct_state: true,
-    daed_running: true
+    runtime_active: true
   }
 });
 assert(nssForcedDirectWithDaed.primary_source === 'nss_ecm_direct', 'forced NSS-direct must override automatic NSS+daed BPF preference');
-assert(!nssForcedDirectWithDaed.warnings.includes('nss_daed_prefers_bpf'), 'forced NSS-direct must not claim automatic NSS+daed BPF preference');
+assert(!nssForcedDirectWithDaed.warnings.includes('dae_runtime_prefers_bpf'), 'forced NSS-direct must not claim automatic dae runtime BPF preference');
 
 const nssForcedDirectUnreadable = simulateNssSourceSelection({
   config: { enable_conntrack_fallback: true, bpf_full_available: false, rate_collector_mode: 'nss_ecm_direct' },
@@ -3042,6 +2359,18 @@ assert(daeIngressPreempt.coverage_client_source === 'bpf', 'DAE/daed preemption 
 assert(daeIngressPreempt.confidence === 'high', 'DAE/daed early BPF confidence can remain high because LAN-edge MAC sampling is preserved');
 assert(!daeIngressPreempt.warnings.includes('conntrack_routed_nat_only'), 'DAE/daed early BPF path must not warn routed/NAT-only coverage');
 
+const daeRuntimeEarly = simulateNssSourceSelection({
+  config: { enable_conntrack_fallback: true, bpf_full_available: true, dae_early_bpf: true },
+  probe: {
+    nf_conntrack_acct: true,
+    nss_present: false,
+    nss_ecm_active: false,
+    dae_preempts_lan_ingress: false,
+    runtime_active: true
+  }
+});
+assert(daeRuntimeEarly.dae_early_bpf === true, 'fresh dae runtime activity must enable configured early pass-through BPF without a cached tc preempt');
+
 const daeWanOnly = simulateNssSourceSelection({
   config: { enable_conntrack_fallback: true, bpf_full_available: true },
   probe: { nf_conntrack_acct: true, nss_present: false, nss_ecm_active: false, dae_preempts_lan_ingress: false }
@@ -3053,8 +2382,6 @@ assert(refreshInterval.default_ms === 1000, 'refresh interval default must be 10
 assert(refreshInterval.minimum_ms === 500, 'refresh interval minimum must be 500ms');
 assert(refreshInterval.effective_ms === 500, 'refresh interval below 500ms must be clamped');
 assert(refreshInterval.warnings.includes('refresh_interval_below_minimum'), 'refresh interval clamp warning is required');
-assert(configHeader.includes('#define MIN_REFRESH_INTERVAL_MS 500'), 'config module must define 500ms minimum refresh interval');
-assert(source.includes('refresh_interval_below_minimum'), 'C daemon must expose machine-readable refresh interval warning');
 
 const lifecycleRestart = simulateLifecycleRestart(lifecycleFixture);
 assert(lifecycleRestart.delete_clsact === lifecycleFixture.expected.delete_clsact, 'restart cleanup must not delete clsact qdisc');

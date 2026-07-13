@@ -4,6 +4,7 @@ set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 README="$ROOT_DIR/README.md"
+DAEMON_MAKEFILE="$ROOT_DIR/net/lanspeedd/Makefile"
 EVIDENCE_DIR="$ROOT_DIR/.sisyphus/evidence"
 EVIDENCE="$EVIDENCE_DIR/task-14-doc-check.txt"
 
@@ -25,6 +26,17 @@ require_phrase() {
 	fi
 }
 
+require_block() {
+	block="$1"
+	if BLOCK="$block" awk 'BEGIN { block = ENVIRON["BLOCK"] } { text = text $0 ORS } END { exit(index(text, block) == 0) }' "$README"; then
+		log "ok: required block"
+	else
+		log "missing: required block"
+		printf '%s\n' 'missing required README block' >&2
+		exit 1
+	fi
+}
+
 reject_phrase() {
 	phrase="$1"
 	if grep -Fq "$phrase" "$README"; then
@@ -35,6 +47,27 @@ reject_phrase() {
 		log "absent: $phrase"
 	fi
 }
+
+read_make_var() {
+	name="$1"
+	value="$(awk -v name="$name" '
+		index($0, name ":=") == 1 {
+			value = substr($0, length(name) + 3)
+			gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+			print value
+			exit
+		}
+	' "$DAEMON_MAKEFILE")"
+	if [ -z "$value" ]; then
+		printf 'missing required Makefile variable: %s\n' "$name" >&2
+		exit 1
+	fi
+	printf '%s\n' "$value"
+}
+
+package_version="$(read_make_var PKG_VERSION)"
+package_release="$(read_make_var PKG_RELEASE)"
+current_full_version="${package_version}-r${package_release}"
 
 log "README documentation checklist"
 log "file: $README"
@@ -47,6 +80,8 @@ require_phrase "lanspeedd"
 require_phrase "lanspeedd-bpf"
 require_phrase "ImmortalWrt 25.12"
 require_phrase "23.05"
+require_phrase "OpenWrt 23.05 | 不支持"
+require_phrase "Rust 1.94.0"
 require_phrase "21.02 及更早版本"
 require_phrase "Full"
 require_phrase "Degraded"
@@ -107,9 +142,34 @@ require_phrase "nf_conntrack_acct"
 require_phrase "没有客户端"
 require_phrase "速率长时间为 0"
 require_phrase "OpenClash 或 dae/daed 共存"
-require_phrase "本地环境只能运行确定性检查脚本"
+require_phrase "本地环境可以运行确定性检查脚本"
 require_phrase "真实 SDK 编译"
 require_phrase "目标设备"
+require_phrase "/openwrt/immortalwrt"
+reject_phrase "/openwrt/25"".12"
+require_block "apk add --force-reinstall --allow-untrusted \\
+	/tmp/lanspeedd-${current_full_version}.apk \\
+	/tmp/lanspeedd-bpf-${current_full_version}.apk \\
+	/tmp/luci-app-lanspeed-${current_full_version}.apk"
+require_block "apk add --force-reinstall --allow-untrusted \\
+	/tmp/legacy/lanspeedd-0.1.7-r1.apk \\
+	/tmp/legacy/lanspeedd-bpf-0.1.7-r1.apk \\
+	/tmp/legacy/luci-app-lanspeed-0.1.6-r1.apk
+cp /tmp/legacy/lanspeed /etc/config/lanspeed
+/etc/init.d/lanspeedd restart"
+require_phrase "同一个 APK 事务"
+require_phrase "同版本包不替换"
+require_phrase "人为分步安装造成短暂混合版本"
+require_phrase "以升级前保存的文件名为准"
+require_phrase "目标机当前已安装的 lanspeed APK"
+require_phrase "若使用 BPF"
+require_phrase "三个匹配包放在同一次"
+require_phrase "不使用 BPF 时"
+require_phrase "不应安装 BPF 包"
+require_phrase "本次 x86_64 实测示例"
+require_phrase 'aarch64 Release 文件名带 `-aarch64`'
+require_phrase "按实际产物替换路径"
+require_phrase "本次 x86_64 实测设备备份"
 
 log "result: pass"
 printf 'documentation checklist passed: %s\n' "$EVIDENCE"

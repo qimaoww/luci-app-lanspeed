@@ -144,7 +144,7 @@ fn fixture_snapshot() -> ResponseSnapshot {
             collector_mode: "auto".into(),
             rate_collector_mode: "auto".into(),
             conn_collector_mode: "auto".into(),
-            version: "0.1.7-r2".into(),
+            version: "1.0.0-r1".into(),
             capabilities: capabilities.clone(),
             coverage: Some(Coverage {
                 quality: "good".into(),
@@ -197,7 +197,7 @@ fn fixture_snapshot() -> ResponseSnapshot {
             mode: Mode::Full,
             warnings: vec![],
             evidence: evidence("reload"),
-            version: "0.1.7-r2".into(),
+            version: "1.0.0-r1".into(),
         },
         interfaces: InterfacesResponse {
             interfaces: vec![Interface {
@@ -593,7 +593,7 @@ fn json_names_enums_warnings_evidence_version_and_directions_are_stable() {
         status["evidence"],
         json!({"source":"rust_test","method":"status","read_only":true})
     );
-    assert_eq!(status["version"], "0.1.7-r2");
+    assert_eq!(status["version"], "1.0.0-r1");
     let mut capability_keys = status["capabilities"]
         .as_object()
         .unwrap()

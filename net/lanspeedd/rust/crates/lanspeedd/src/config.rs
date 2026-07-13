@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, fs, path::PathBuf};
 
 pub const DEFAULT_REFRESH_INTERVAL_MS: u32 = 1_000;
 pub const MIN_REFRESH_INTERVAL_MS: u32 = 500;
@@ -13,7 +13,7 @@ pub const MAX_INTERFACE_NAMES: usize = 16;
 pub const MAX_INTERFACE_NAME_LEN: usize = 32;
 
 const CONFIG_PREFIX: &str = "lanspeed.main.";
-
+pub const ARPHRD_ETHER: u32 = 1;
 pub const AUTO_IGNORED_INTERFACE_PREFIXES: [&str; 10] = [
     "dae",
     "miireg",
@@ -33,8 +33,17 @@ pub fn is_auto_ignored_interface(name: &str) -> bool {
         .any(|prefix| name.starts_with(prefix))
 }
 
+pub fn is_valid_interface_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() < MAX_INTERFACE_NAME_LEN
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\0')
+}
+
 pub fn is_sysdevice_candidate(name: &str) -> bool {
-    valid_interface_name(name)
+    is_valid_interface_name(name)
         && name != "lo"
         && !name.starts_with("teql")
         && !is_auto_ignored_interface(name)
@@ -150,6 +159,42 @@ impl InterfaceEligibility for LegacyNameEligibility {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct SysfsInterfaceEligibility {
+    root: PathBuf,
+}
+
+impl SysfsInterfaceEligibility {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+}
+
+impl Default for SysfsInterfaceEligibility {
+    fn default() -> Self {
+        Self::new("/sys/class/net")
+    }
+}
+
+impl InterfaceEligibility for SysfsInterfaceEligibility {
+    fn is_collect_eligible(&self, name: &str) -> bool {
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || name.contains('/')
+            || name.contains('\0')
+            || !LegacyNameEligibility.is_collect_eligible(name)
+        {
+            return false;
+        }
+        let path = self.root.join(name).join("type");
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .is_some_and(|link_type| link_type == ARPHRD_ETHER)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeConfig {
     pub refresh_interval_ms: u32,
@@ -200,6 +245,36 @@ impl Default for RuntimeConfig {
 }
 
 impl RuntimeConfig {
+    pub fn runtime_collect_ifnames(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        for name in self.ifnames.iter().chain(self.interface_include.iter()) {
+            if is_valid_interface_name(name)
+                && LegacyNameEligibility.is_collect_eligible(name)
+                && !names.contains(name)
+                && names.len() < MAX_INTERFACE_NAMES
+            {
+                names.push(name.clone());
+            }
+        }
+        names
+    }
+
+    pub fn runtime_observe_ifnames(&self) -> Vec<String> {
+        let collected = self.runtime_collect_ifnames();
+        let mut names = Vec::new();
+        for name in &self.observe_ifnames {
+            if is_valid_interface_name(name)
+                && !is_auto_ignored_interface(name)
+                && !collected.contains(name)
+                && !names.contains(name)
+                && names.len() < MAX_INTERFACE_NAMES
+            {
+                names.push(name.clone());
+            }
+        }
+        names
+    }
+
     pub fn load(
         source: &mut impl ConfigSource,
         eligibility: &impl InterfaceEligibility,
@@ -288,7 +363,7 @@ impl RuntimeConfig {
                     config.rejected_nssifb_collect = true;
                     continue;
                 }
-                if !valid_interface_name(&value)
+                if !is_valid_interface_name(&value)
                     || !LegacyNameEligibility.is_collect_eligible(&value)
                     || !eligibility.is_collect_eligible(&value)
                     || config.ifnames.contains(&value)
@@ -312,7 +387,8 @@ impl RuntimeConfig {
             push_unique_bounded(&mut config.interface_exclude, value);
         }
         for value in list(source, "observe")? {
-            if is_auto_ignored_interface(&value)
+            if !is_valid_interface_name(&value)
+                || is_auto_ignored_interface(&value)
                 || config.ifnames.contains(&value)
                 || config.interface_include.contains(&value)
             {
@@ -375,13 +451,9 @@ fn legacy_bool(value: &str) -> bool {
     value == "1" || value == "true"
 }
 
-fn valid_interface_name(value: &str) -> bool {
-    !value.is_empty() && value.len() < MAX_INTERFACE_NAME_LEN
-}
-
 fn push_unique_bounded(target: &mut Vec<String>, value: String) {
     if target.len() < MAX_INTERFACE_NAMES
-        && valid_interface_name(&value)
+        && is_valid_interface_name(&value)
         && !target.contains(&value)
     {
         target.push(value);

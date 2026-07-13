@@ -806,7 +806,7 @@ fn direct_fallback_reason_preserves_the_legacy_status_strings() {
         state_readable: true,
         overlay_enabled: false,
         rate_mode: RateCollectorMode::Auto,
-        nss_daed_prefers_bpf: false,
+        dae_runtime_prefers_bpf: false,
     };
     assert_eq!(
         direct_fallback_reason(DirectFallbackInput {
@@ -838,10 +838,10 @@ fn direct_fallback_reason_preserves_the_legacy_status_strings() {
     );
     assert_eq!(
         direct_fallback_reason(DirectFallbackInput {
-            nss_daed_prefers_bpf: true,
+            dae_runtime_prefers_bpf: true,
             ..base
         }),
-        "nss_daed_prefers_bpf"
+        "dae_runtime_prefers_bpf"
     );
     assert_eq!(direct_fallback_reason(base), "not_selected");
 }

@@ -1,8 +1,11 @@
 {
-  "source": "lanspeedd_tc_bpf_collector",
+  "source": "lanspeedd_aya_tc_collector",
   "version": 1,
-  "bpf_source": "lanspeed_tc.bpf.c",
-  "runtime_object": "/usr/lib/bpf/lanspeed_tc.o",
+  "bpf_source": "rust/crates/lanspeed-ebpf/src/main.rs",
+  "runtime_objects": [
+    "/usr/lib/bpf/lanspeed-ebpf-kfunc",
+    "/usr/lib/bpf/lanspeed-ebpf-fallback"
+  ],
   "device_requires_llvm": false,
   "attach_model": {
     "cpu_visible_lan_edges_only": true,
@@ -96,7 +99,10 @@
         "owner": "lanspeed",
         "pref": 49152,
         "handle": "0x1eed",
-        "object": "/usr/lib/bpf/lanspeed_tc.o"
+        "objects": [
+          "/usr/lib/bpf/lanspeed-ebpf-kfunc",
+          "/usr/lib/bpf/lanspeed-ebpf-fallback"
+        ]
       }
     }
   },

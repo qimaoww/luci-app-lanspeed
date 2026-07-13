@@ -5,13 +5,13 @@ use std::{
     path::Path,
     rc::Rc,
     sync::Arc,
-    time::Instant,
 };
 
 use lanspeed_openwrt_sys::{Timer, UbusConnection, UloopGuard};
 use serde_json::{json, Value};
 
 use crate::{
+    clock::monotonic_millis,
     collectors::{
         bpf::{
             runtime::{
@@ -31,8 +31,12 @@ use crate::{
         nss::{self, ParseLimits},
     },
     config::{
-        is_sysdevice_candidate, ConnectionCollectorMode, InterfaceEligibility,
-        LegacyNameEligibility, RuntimeConfig,
+        is_sysdevice_candidate, ConnectionCollectorMode, InterfaceEligibility, RuntimeConfig,
+        SysfsInterfaceEligibility,
+    },
+    connections::{
+        apply_conntrack_failure, apply_conntrack_success, before_reply_action,
+        periodic_conntrack_plan, BeforeReplyAction, ConntrackObservation, PeriodicConntrackPlan,
     },
     daemon::{
         abort_reload_after_timer_failure, abort_reload_candidate, activate_runtime,
@@ -53,7 +57,9 @@ use crate::{
         hostname::{HostnameCache, HostnamePaths},
         netlink, IdentityObservation, IdentityTable, LegacyZoneResolver, ObservationSource,
     },
-    interfaces::{InterfaceCounterReader, InterfaceRateBook, SysfsInterfaceCounterReader},
+    interfaces::{
+        lan_coverage_totals, InterfaceCounterReader, InterfaceRateBook, SysfsInterfaceCounterReader,
+    },
     model::{
         Capabilities, Client, ClientsResponse, Confidence, Conflict, Coverage, Evidence,
         HealthResponse, Interface, InterfaceRole, InterfaceStatus, InterfacesResponse, Mode,
@@ -62,7 +68,7 @@ use crate::{
     },
     policy::{self, RateCollector},
     probe::{
-        collector::{self, ProbeMethod, SystemProbeCollector},
+        collector::{self, probe_deadline, probe_due, ProbeMethod, SystemProbeCollector},
         process::{
             run_dae_mode_tick, DaeModeReloadLatch, DaeModeTickOutcome, DaeModeTickSignals,
             DaeProcessTracker,
@@ -76,9 +82,16 @@ use crate::{
 };
 
 const RECONNECT_MS: u32 = 1_000;
+const INTERNAL_BPF_SELF_HEAL_REASON: &str = "production.collect.internal";
+const EXTERNAL_BPF_SELF_HEAL_REASON: &str = "production.collect.external";
 const INTERFACE_NOTE: &str = "Per-interface totals from kernel net device counters; reflect hardware-offloaded and hardware-switched traffic too.";
 
 type Bpf = BpfRuntime<SystemAyaLink>;
+
+fn production_now_ms() -> Result<u64, DaemonError> {
+    monotonic_millis()
+        .map_err(|error| DaemonError::collection(format!("read CLOCK_MONOTONIC: {error}")))
+}
 
 struct ProductionRuntime {
     config: RuntimeConfig,
@@ -87,6 +100,8 @@ struct ProductionRuntime {
     bpf_error: Option<String>,
     nss_error: Option<String>,
     bpf_collector: BpfSnapshotCollector,
+    conntrack_snapshot: Option<CollectedSnapshot>,
+    conntrack_observation: ConntrackObservation,
     probe: SystemProbeCollector,
     process_tracker: DaeProcessTracker,
     probe_report: ProbeReport,
@@ -96,7 +111,6 @@ struct ProductionRuntime {
     interface_rates: InterfaceRateBook,
     nss_rates: RateBook,
     hostnames: HostnameCache,
-    started: Instant,
     shutdown_complete: bool,
 }
 
@@ -107,6 +121,8 @@ struct RuntimeCheckpoint {
     interface_rates: InterfaceRateBook,
     nss_rates: RateBook,
     hostnames: HostnameCache,
+    conntrack_snapshot: Option<CollectedSnapshot>,
+    conntrack_observation: ConntrackObservation,
     probe_report: ProbeReport,
     next_probe_ms: u64,
     bpf_error: Option<String>,
@@ -138,6 +154,8 @@ impl ProductionRuntime {
                 config.max_clients,
                 config.active_client_window_ms,
             ),
+            conntrack_snapshot: None,
+            conntrack_observation: ConntrackObservation::default(),
             probe,
             process_tracker,
             probe_report: preflight,
@@ -152,7 +170,6 @@ impl ProductionRuntime {
             overview: OverviewRing::new(),
             coverage: CoverageRing::new(),
             interface_rates: InterfaceRateBook::default(),
-            started: Instant::now(),
             shutdown_complete: false,
         })
     }
@@ -220,6 +237,8 @@ impl ProductionRuntime {
             interface_rates: self.interface_rates.clone(),
             nss_rates: self.nss_rates.clone(),
             hostnames: self.hostnames.clone(),
+            conntrack_snapshot: self.conntrack_snapshot.clone(),
+            conntrack_observation: self.conntrack_observation.clone(),
             probe_report: self.probe_report.clone(),
             next_probe_ms: self.next_probe_ms,
             bpf_error: self.bpf_error.clone(),
@@ -236,10 +255,77 @@ impl ProductionRuntime {
         self.interface_rates = checkpoint.interface_rates;
         self.nss_rates = checkpoint.nss_rates;
         self.hostnames = checkpoint.hostnames;
+        self.conntrack_snapshot = checkpoint.conntrack_snapshot;
+        self.conntrack_observation = checkpoint.conntrack_observation;
         self.probe_report = checkpoint.probe_report;
         self.next_probe_ms = checkpoint.next_probe_ms;
         self.bpf_error = checkpoint.bpf_error;
         self.nss_error = checkpoint.nss_error;
+    }
+
+    fn read_conntrack(
+        &mut self,
+        identities: &IdentityTable,
+        now_ms: u64,
+    ) -> Result<CollectedSnapshot, String> {
+        match conntrack::collect(
+            conntrack_mode(self.config.conn_collector_mode),
+            identities,
+            now_ms,
+            self.config.max_clients,
+        ) {
+            Ok(snapshot) => {
+                self.conntrack_observation.record_success(
+                    now_ms,
+                    snapshot.stats.netlink_read,
+                    snapshot.stats.procfs_read,
+                );
+                self.conntrack_snapshot = Some(snapshot.clone());
+                Ok(snapshot)
+            }
+            Err(error) => {
+                let message = error.to_string();
+                self.conntrack_observation
+                    .record_failure(now_ms, message.clone(), false, false);
+                self.conntrack_snapshot = None;
+                Err(message)
+            }
+        }
+    }
+
+    fn apply_conntrack_health(&self, runtime_health: &mut RuntimeHealth) {
+        self.conntrack_observation
+            .apply_runtime_health(self.conntrack_snapshot.is_some(), runtime_health);
+    }
+
+    fn refresh_connections(
+        &mut self,
+        base: &ResponseSnapshot,
+    ) -> Result<ResponseSnapshot, DaemonError> {
+        let now_ms = production_now_ms()?;
+        let (identities, identity_errors) = read_identities(&self.config, now_ms);
+        let mut snapshot = match self.read_conntrack(&identities, now_ms) {
+            Ok(collected) => {
+                apply_conntrack_success(base, &collected, self.config.conn_collector_mode.as_str())
+            }
+            Err(error) => apply_conntrack_failure(base, &error),
+        };
+        if !identity_errors.is_empty() {
+            snapshot
+                .clients
+                .evidence
+                .get_or_insert_default()
+                .details
+                .insert("identity_errors".into(), json!(identity_errors));
+        }
+        let totals = ConnectionTotals::new(
+            snapshot.clients.tcp_conns_total.unwrap_or(0),
+            snapshot.clients.udp_conns_total.unwrap_or(0),
+            snapshot.clients.udp_dns_conns_total.unwrap_or(0),
+            snapshot.clients.udp_other_conns_total.unwrap_or(0),
+        );
+        self.overview.replace_latest_connections(totals);
+        Ok(snapshot)
     }
 
     fn collect(&mut self, method: ProbeMethod) -> Result<ResponseSnapshot, DaemonError> {
@@ -290,25 +376,20 @@ impl ProductionRuntime {
         method: ProbeMethod,
         external_bpf: Option<(&mut Bpf, &mut SystemAyaAdapter)>,
     ) -> Result<ResponseSnapshot, DaemonError> {
-        let now_ms = self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        let mut now_ms = production_now_ms()?;
         let (identities, identity_errors) = read_identities(&self.config, now_ms);
-        let conntrack = conntrack::collect(
-            conntrack_mode(self.config.conn_collector_mode),
-            &identities,
-            now_ms,
-            self.config.max_clients,
-        )
-        .ok();
+        let mut conntrack = self.conntrack_snapshot.clone();
         let overlay = connection_overlay(conntrack.as_ref());
         let freshness_ms = u64::from(self.config.refresh_interval_ms) * 3;
         let (bpf_snapshot, mut runtime_health) = match external_bpf {
             Some((runtime, adapter)) => {
-                let snapshot = match runtime.collect_snapshot(
+                let snapshot = match runtime.collect_snapshot_self_healing(
                     adapter,
                     &mut self.bpf_collector,
                     &identities,
                     &overlay,
                     now_ms,
+                    EXTERNAL_BPF_SELF_HEAL_REASON,
                 ) {
                     Ok(snapshot) => {
                         self.bpf_error = None;
@@ -319,16 +400,23 @@ impl ProductionRuntime {
                         self.bpf_collector.last_complete().cloned()
                     }
                 };
-                (snapshot, runtime.runtime_health(now_ms, freshness_ms))
+                let health_now_ms = snapshot
+                    .as_ref()
+                    .map_or(now_ms, |snapshot| now_ms.max(snapshot.sample_ms));
+                (
+                    snapshot,
+                    runtime.runtime_health(health_now_ms, freshness_ms),
+                )
             }
             None => match self.bpf.as_mut() {
                 Some(runtime) => {
-                    let snapshot = match runtime.collect_snapshot(
+                    let snapshot = match runtime.collect_snapshot_self_healing(
                         &mut self.adapter,
                         &mut self.bpf_collector,
                         &identities,
                         &overlay,
                         now_ms,
+                        INTERNAL_BPF_SELF_HEAL_REASON,
                     ) {
                         Ok(snapshot) => {
                             self.bpf_error = None;
@@ -339,27 +427,33 @@ impl ProductionRuntime {
                             self.bpf_collector.last_complete().cloned()
                         }
                     };
-                    (snapshot, runtime.runtime_health(now_ms, freshness_ms))
+                    let health_now_ms = snapshot
+                        .as_ref()
+                        .map_or(now_ms, |snapshot| now_ms.max(snapshot.sample_ms));
+                    (
+                        snapshot,
+                        runtime.runtime_health(health_now_ms, freshness_ms),
+                    )
                 }
                 None => (None, RuntimeHealth::default()),
             },
         };
+        if let Some(snapshot) = bpf_snapshot.as_ref() {
+            now_ms = now_ms.max(snapshot.sample_ms);
+        }
         runtime_health.now_ms = now_ms;
-        runtime_health.conntrack_netlink_available = conntrack
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.stats.netlink_read);
-        runtime_health.conntrack_procfs_available = conntrack
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.stats.procfs_read);
+        self.apply_conntrack_health(&mut runtime_health);
         if runtime_health.runtime_error.is_none() {
             runtime_health.runtime_error = self.bpf_error.clone();
         }
-        runtime_health.nss_sync_read_ok = Some(conntrack.is_some());
-        if should_refresh_probe(self.next_probe_ms, method) {
+        // Treat sync availability as unknown until this cycle decides whether it
+        // needs a fresh dump. This permits recovery after an earlier read error.
+        runtime_health.nss_sync_read_ok = None;
+        if probe_due(now_ms, self.next_probe_ms, method) {
             let mut report = self.probe.collect(&self.config, &runtime_health, method);
             self.process_tracker.overlay_report(&mut report);
             self.probe_report = report;
-            self.next_probe_ms = u64::MAX;
+            self.next_probe_ms = probe_deadline(now_ms);
         }
         let report = self.probe_report.clone();
         let mut decision = policy::select_collectors(&self.config, &report.facts, &runtime_health);
@@ -385,6 +479,17 @@ impl ProductionRuntime {
         } else {
             None
         };
+        decision = policy::select_collectors(&self.config, &report.facts, &runtime_health);
+        match periodic_conntrack_plan(decision.rate) {
+            PeriodicConntrackPlan::Read => {
+                conntrack = self.read_conntrack(&identities, now_ms).ok();
+            }
+            PeriodicConntrackPlan::Skip => {
+                self.conntrack_observation.record_skipped();
+                conntrack = self.conntrack_snapshot.clone();
+            }
+        }
+        self.apply_conntrack_health(&mut runtime_health);
         decision = policy::select_collectors(&self.config, &report.facts, &runtime_health);
         let effective = decision.rate.as_str();
         let (mut clients, actual_live, actual_degraded) = if decision.rate == RateCollector::Bpf {
@@ -489,7 +594,7 @@ impl ProductionRuntime {
             clients.evidence = Some(evidence(&report, "clients"));
         }
         if let Some(client_evidence) = clients.evidence.as_mut() {
-            apply_decision_evidence(client_evidence, &decision);
+            apply_decision_evidence(client_evidence, &decision, &self.config, &report);
         }
         let overview = self.update_overview(now_ms, &clients);
         let interfaces = self.interfaces(now_ms);
@@ -514,7 +619,7 @@ impl ProductionRuntime {
             confidence(decision.confidence)
         };
         let mut status_evidence = evidence(&report, method.as_str());
-        apply_decision_evidence(&mut status_evidence, &decision);
+        apply_decision_evidence(&mut status_evidence, &decision, &self.config, &report);
         let mut warnings = report
             .warnings
             .iter()
@@ -577,7 +682,7 @@ impl ProductionRuntime {
             coverage: Some(coverage),
         };
         let mut health_evidence = evidence(&report, "health");
-        apply_decision_evidence(&mut health_evidence, &decision);
+        apply_decision_evidence(&mut health_evidence, &decision, &self.config, &report);
         if let Some(error) = &self.bpf_error {
             health_evidence
                 .details
@@ -611,7 +716,7 @@ impl ProductionRuntime {
             evidence: health_evidence,
         };
         let mut reload_evidence = evidence(&report, "reload");
-        apply_decision_evidence(&mut reload_evidence, &decision);
+        apply_decision_evidence(&mut reload_evidence, &decision, &self.config, &report);
         let reload = ReloadResponse {
             ok: true,
             mode,
@@ -752,16 +857,7 @@ impl ProductionRuntime {
         supported: bool,
     ) -> Coverage {
         if supported {
-            let interface =
-                interfaces
-                    .interfaces
-                    .iter()
-                    .fold(ByteTotals::new(0, 0), |total, value| {
-                        ByteTotals::new(
-                            total.rx_bytes.saturating_add(value.rx_bytes.unwrap_or(0)),
-                            total.tx_bytes.saturating_add(value.tx_bytes.unwrap_or(0)),
-                        )
-                    });
+            let interface = lan_coverage_totals(&interfaces.interfaces);
             let client = clients
                 .clients
                 .iter()
@@ -928,7 +1024,37 @@ impl App {
             self.last_error = Some(error.to_string());
         }
     }
-
+    fn refresh_clients_connections(&mut self) -> Result<(), DaemonError> {
+        let base = self.state.snapshot();
+        let runtime = self
+            .runtime
+            .as_mut()
+            .ok_or_else(|| DaemonError::collection("runtime is not started"))?;
+        let checkpoint = runtime.checkpoint();
+        let snapshot = match runtime.refresh_connections(&base) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                runtime.restore(checkpoint);
+                return Err(error);
+            }
+        };
+        if let Err(error) = ubus::Method::ALL
+            .into_iter()
+            .try_for_each(|method| snapshot.response(method).map(|_| ()))
+        {
+            runtime.restore(checkpoint);
+            return Err(error);
+        }
+        self.state.publish(Arc::new(snapshot));
+        Ok(())
+    }
+    fn before_reply(&mut self, method: ubus::Method) -> Result<(), DaemonError> {
+        match before_reply_action(method) {
+            BeforeReplyAction::None => Ok(()),
+            BeforeReplyAction::RefreshConnections => self.refresh_clients_connections(),
+            BeforeReplyAction::Reload => self.reload(),
+        }
+    }
     fn schedule_reconnect(&self) {
         if !self.reconnect_pending.replace(true)
             && self
@@ -1011,7 +1137,6 @@ impl App {
         let mut mode_switch_checkpoint = None;
         let mut snapshot = if reuse_bpf {
             let current = self.runtime.as_mut().unwrap();
-            candidate.started = current.started;
             if current.config.max_clients == config.max_clients
                 && current.config.active_client_window_ms == config.active_client_window_ms
             {
@@ -1071,7 +1196,6 @@ impl App {
         } else {
             if suspended_mode_switch {
                 let current = self.runtime.as_ref().unwrap();
-                candidate.started = current.started;
                 if current.config.max_clients == config.max_clients
                     && current.config.active_client_window_ms == config.active_client_window_ms
                 {
@@ -1380,11 +1504,11 @@ pub fn run() -> Result<(), DaemonError> {
     }));
 
     let weak = Rc::downgrade(&app);
-    let object = ubus::object(snapshots, move || {
+    let object = ubus::object(snapshots, move |method| {
         weak.upgrade()
             .ok_or_else(|| DaemonError::reload("daemon stopped"))?
             .borrow_mut()
-            .reload()
+            .before_reply(method)
     })?;
     let mut connection =
         UbusConnection::connect(None).map_err(|error| DaemonError::transport(error.to_string()))?;
@@ -1444,7 +1568,7 @@ pub fn run() -> Result<(), DaemonError> {
 fn load_config() -> Result<RuntimeConfig, DaemonError> {
     let mut source = lanspeed_openwrt_sys::UciContext::new()
         .map_err(|error| DaemonError::reload(error.to_string()))?;
-    RuntimeConfig::load(&mut source, &LegacyNameEligibility)
+    RuntimeConfig::load(&mut source, &SysfsInterfaceEligibility::default())
         .map_err(|error| DaemonError::reload(error.to_string()))
 }
 
@@ -1722,8 +1846,6 @@ fn evidence(report: &ProbeReport, method: &str) -> Evidence {
     );
     details.insert("collector".into(), json!({"rate_reason":report.evidence.collector.rate_reason,"connection_reason":report.evidence.collector.connection_reason,
         "primary_source":report.evidence.collector.effective_rate_collector,"mode":report.evidence.collector.mode,"confidence":report.evidence.collector.confidence}));
-    details.insert("nss".into(), json!({"present":report.evidence.nss.present,"ecm_active":report.evidence.nss.ecm_active,"ppe_active":report.evidence.nss.ppe_active,
-        "direct_state_readable":report.evidence.nss.direct_state_readable}));
     details.insert(
         "dae".into(),
         json!({
@@ -1742,7 +1864,12 @@ fn evidence(report: &ProbeReport, method: &str) -> Evidence {
     Evidence { details }
 }
 
-fn apply_decision_evidence(evidence: &mut Evidence, decision: &policy::PolicyDecision) {
+fn apply_decision_evidence(
+    evidence: &mut Evidence,
+    decision: &policy::PolicyDecision,
+    config: &RuntimeConfig,
+    report: &ProbeReport,
+) {
     let effective = decision.rate.as_str();
     evidence
         .details
@@ -1762,6 +1889,10 @@ fn apply_decision_evidence(evidence: &mut Evidence, decision: &policy::PolicyDec
         collector.insert("confidence".into(), json!(decision.confidence.as_str()));
         collector.insert("warnings".into(), json!(decision.warnings));
     }
+    evidence.details.insert(
+        "nss".into(),
+        crate::production_evidence::nss_details(config, report, decision),
+    );
 }
 
 fn capabilities(value: &ProbeCapabilities, report: &ProbeReport) -> Capabilities {
@@ -1836,12 +1967,7 @@ fn conntrack_mode(value: ConnectionCollectorMode) -> ConntrackMode {
     }
 }
 fn collect_ifnames(config: &RuntimeConfig) -> Vec<String> {
-    config
-        .ifnames
-        .iter()
-        .chain(config.interface_include.iter())
-        .cloned()
-        .collect()
+    config.runtime_collect_ifnames()
 }
 fn collect_ifnames_with_roles(config: &RuntimeConfig) -> Vec<(String, InterfaceRole)> {
     collect_ifnames(config)
@@ -1849,9 +1975,8 @@ fn collect_ifnames_with_roles(config: &RuntimeConfig) -> Vec<(String, InterfaceR
         .map(|name| (name, InterfaceRole::Lan))
         .chain(
             config
-                .observe_ifnames
-                .iter()
-                .cloned()
+                .runtime_observe_ifnames()
+                .into_iter()
                 .map(|name| (name, InterfaceRole::Observe)),
         )
         .collect()
@@ -1859,7 +1984,8 @@ fn collect_ifnames_with_roles(config: &RuntimeConfig) -> Vec<(String, InterfaceR
 
 fn sysdevices(config: &RuntimeConfig) -> Result<SysdevicesResponse, DaemonError> {
     let selected = collect_ifnames(config);
-    let observed = config.observe_ifnames.clone();
+    let observed = config.runtime_observe_ifnames();
+    let eligibility = SysfsInterfaceEligibility::default();
     let mut devices = Vec::new();
     for entry in fs::read_dir("/sys/class/net")
         .map_err(|error| DaemonError::collection(error.to_string()))?
@@ -1877,7 +2003,7 @@ fn sysdevices(config: &RuntimeConfig) -> Result<SysdevicesResponse, DaemonError>
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
             .filter(|v| *v > 0 && *v < (1 << 31));
-        let recommended = LegacyNameEligibility.is_collect_eligible(&name);
+        let recommended = eligibility.is_collect_eligible(&name);
         devices.push(Sysdevice {
             name: name.clone(),
             selected: selected.contains(&name),
@@ -1908,10 +2034,6 @@ fn version_from(version: Option<&str>, release: Option<&str>) -> String {
         (Some(version), Some(release)) => format!("{version}-r{release}"),
         _ => "unconfigured".into(),
     }
-}
-
-fn should_refresh_probe(next_probe_ms: u64, method: ProbeMethod) -> bool {
-    next_probe_ms == 0 || method == ProbeMethod::Reload
 }
 
 fn record_fatal_cleanup(
@@ -2085,15 +2207,16 @@ mod tests {
 
     #[test]
     fn production_version_requires_package_version_and_release() {
-        assert_eq!(version_from(Some("0.1.7"), Some("2")), "0.1.7-r2");
-        assert_eq!(version_from(Some("0.1.7"), None), "unconfigured");
-        assert_eq!(version_from(None, Some("2")), "unconfigured");
+        assert_eq!(version_from(Some("1.0.0"), Some("1")), "1.0.0-r1");
+        assert_eq!(version_from(Some("1.0.0"), None), "unconfigured");
+        assert_eq!(version_from(None, Some("1")), "unconfigured");
     }
 
     #[test]
     fn periodic_collection_does_not_run_blocking_system_probe() {
-        assert!(should_refresh_probe(0, ProbeMethod::Status));
-        assert!(!should_refresh_probe(u64::MAX, ProbeMethod::Status));
-        assert!(should_refresh_probe(u64::MAX, ProbeMethod::Reload));
+        assert!(probe_due(0, 0, ProbeMethod::Status));
+        assert!(!probe_due(29_999, 30_000, ProbeMethod::Status));
+        assert!(probe_due(30_000, 30_000, ProbeMethod::Status));
+        assert!(probe_due(1, u64::MAX, ProbeMethod::Reload));
     }
 }

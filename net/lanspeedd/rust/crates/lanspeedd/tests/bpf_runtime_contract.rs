@@ -164,6 +164,7 @@ impl AyaAdapter for FakeAya {
     }
 
     fn read_clients(&mut self) -> Result<MapRead, AdapterError> {
+        self.events.push("read_clients".to_owned());
         self.map_read.take().unwrap_or_else(|| {
             Ok(MapRead {
                 entries: Vec::new(),
@@ -187,6 +188,130 @@ fn production_adapter_uses_only_explicit_legacy_netlink_attach() {
     assert!(source.contains("attach_with_options"));
     assert!(source.contains("TcAttachOptions::Netlink"));
     assert!(!source.contains(".attach("));
+}
+
+#[test]
+fn production_sampling_uses_the_same_boot_monotonic_epoch_as_bpf() {
+    let production = include_str!("../src/production.rs");
+    let ebpf = include_str!("../../lanspeed-ebpf/src/account.rs");
+
+    assert!(
+        ebpf.contains("bpf_ktime_get_ns()"),
+        "BPF last_seen must remain based on the kernel boot-monotonic clock"
+    );
+    assert!(
+        !production.contains("started.elapsed()"),
+        "process-relative elapsed time cannot be compared with BPF boot-monotonic last_seen"
+    );
+    assert!(
+        production.contains("monotonic_millis"),
+        "production samples must use the shared boot-monotonic millisecond clock"
+    );
+}
+
+#[test]
+fn production_refreshes_dae_processes_before_bpf_map_reads_and_reloads_mode_transactionally() {
+    let source = include_str!("../src/production.rs");
+    let tick = source
+        .split("fn collection_tick(&mut self)")
+        .nth(1)
+        .unwrap()
+        .split("fn refresh_clients_connections")
+        .next()
+        .unwrap();
+    let refresh = tick.find("refresh_dae_process_state").unwrap();
+    let collect = tick.find("collect_and_reschedule").unwrap();
+
+    assert!(
+        refresh < collect,
+        "the fast /proc scan must precede collection/map reads"
+    );
+    assert!(tick.contains("process_activity_changed"));
+    assert!(tick.contains("runtime.bpf_attach_mode_mismatch()"));
+    assert_eq!(tick.matches("run_dae_mode_tick(").count(), 1);
+    assert!(tick.contains("reload_inner()"));
+    assert!(
+        tick.contains("schedule("),
+        "a failed non-fatal reload must re-arm the timer"
+    );
+    assert!(!source.contains(".switch_mode("));
+
+    let reload = source
+        .split("fn reload_inner(&mut self)")
+        .nth(1)
+        .unwrap()
+        .split("fn finish_mode_switch_suspend_failure")
+        .next()
+        .unwrap();
+    assert!(reload.contains("process_tracker.clone()"));
+    assert!(reload.contains("prepare_with_process_tracker"));
+    assert!(reload.contains("suspend_for_replacement"));
+    assert!(reload.contains("attach_suspended"));
+    assert!(reload.contains("finish_mode_switch_rollback"));
+}
+
+#[test]
+fn production_rust_has_no_pidof_probe_path_and_publishes_dae_and_nss_alias_evidence() {
+    let commands = include_str!("../src/probe/commands.rs");
+    let collector = include_str!("../src/probe/collector.rs");
+    let production = include_str!("../src/production.rs");
+    let nss_evidence = include_str!("../src/production_evidence.rs");
+
+    assert!(!commands.contains("Pidof"));
+    assert!(!commands.contains("pidof"));
+    assert!(!collector.contains("Pidof"));
+    assert!(!collector.contains("pidof"));
+    for field in [
+        "\"running\"",
+        "\"process\"",
+        "\"runtime_active\"",
+        "\"process_probe_error\"",
+    ] {
+        assert!(
+            production.contains(field),
+            "missing production evidence field {field}"
+        );
+    }
+    for field in [
+        "\"present\"",
+        "\"ecm_active\"",
+        "\"ecm_offload_active\"",
+        "\"ppe_active\"",
+        "\"ppe_offload_active\"",
+        "\"direct_state_present\"",
+        "\"direct_state_readable\"",
+        "\"direct_supported\"",
+        "\"direct_enabled\"",
+        "\"direct_source\"",
+        "\"fallback_reason\"",
+        "\"direct_state_errno\"",
+        "\"direct_state_major\"",
+        "\"direct_source_path\"",
+        "\"bridge_mgr\"",
+        "\"ifb_active\"",
+        "\"nsm_active\"",
+        "\"dp_active\"",
+        "\"mcs_active\"",
+        "\"subsystems\"",
+        "\"accelerated_connections\"",
+        "\"accelerated_tcp\"",
+        "\"accelerated_udp\"",
+        "\"accelerated_other\"",
+        "\"host_count\"",
+        "\"mapping_count\"",
+        "\"counter_source\"",
+        "\"counter_cadence_seconds\"",
+        "\"bpf_visibility\"",
+        "\"interface_counters_accurate\"",
+        "\"nssifb_policy\"",
+    ] {
+        assert!(
+            nss_evidence.contains(field),
+            "missing production evidence field {field}"
+        );
+    }
+    assert!(production.contains("production_evidence::nss_details("));
+    assert!(nss_evidence.contains("direct_fallback_reason("));
 }
 
 #[test]
@@ -369,7 +494,7 @@ fn suspended_attach_rolls_back_when_a_later_hook_inspection_fails() {
 }
 
 #[test]
-fn suspend_inspection_failure_is_pre_mutation_and_keeps_old_topology_attached() {
+fn suspend_inspection_failure_preserves_hooks_but_invalidates_attachment_health() {
     let mut adapter = FakeAya::default();
     let mut runtime = BpfRuntime::loaded_for_test();
     runtime
@@ -388,6 +513,11 @@ fn suspend_inspection_failure_is_pre_mutation_and_keeps_old_topology_attached() 
     assert_eq!(adapter.hooks, hooks_before);
     assert_eq!(adapter.detached, detached_before);
     assert_eq!(runtime.attach_mode(), Some(AttachMode::Normal));
+    assert!(!runtime.is_attached());
+    assert!(!runtime.runtime_health(10_000, 3_000).bpf_attached);
+
+    adapter.fail_inspect_at = None;
+    runtime.ensure_attached(&mut adapter, "retry").unwrap();
     assert!(runtime.is_attached());
 }
 
@@ -842,6 +972,167 @@ fn self_heal_restores_only_missing_owned_specs_and_shutdown_leaves_clsact_alone(
 }
 
 #[test]
+fn self_healing_collection_restores_a_missing_hook_before_reading_the_map() {
+    let identities = identities();
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let missing = LinkSpec::pair("br-lan", AttachMode::Normal)[0].clone();
+    adapter.hooks.remove(&missing);
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 1_000, 10_000_000_000)])));
+    let event_start = adapter.events.len();
+    let mut collector = BpfSnapshotCollector::new(16, 5_000);
+
+    let snapshot = runtime
+        .collect_snapshot_self_healing(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            10_000,
+            "production.collect.internal",
+        )
+        .unwrap();
+
+    assert_eq!(snapshot.clients.len(), 1);
+    assert_eq!(
+        &adapter.events[event_start..],
+        [
+            format!("attach:{}", missing.program),
+            "read_clients".to_owned(),
+        ]
+    );
+    assert_eq!(runtime.self_heal_recoveries(), 1);
+    assert_eq!(
+        runtime.last_self_heal_reason(),
+        Some("production.collect.internal")
+    );
+}
+
+#[test]
+fn self_healing_collection_skips_map_read_when_hook_inspection_fails() {
+    let identities = identities();
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 1_000, 9_000_000_000)])));
+    let mut collector = BpfSnapshotCollector::new(16, 5_000);
+    runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            9_000,
+        )
+        .unwrap();
+    adapter.fail_inspect = true;
+    adapter.map_read = Some(Ok(read(Vec::new())));
+
+    let error = runtime
+        .collect_snapshot_self_healing(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            10_000,
+            "production.collect.external",
+        )
+        .unwrap_err();
+
+    assert_eq!(error.kind(), AdapterErrorKind::AttachFailed);
+    assert!(adapter.map_read.is_some(), "map read must not be consumed");
+    let health = runtime.runtime_health(10_000, 3_000);
+    assert!(health.bpf_map_read_attempted);
+    assert!(!health.bpf_map_read_ok);
+    assert_eq!(health.bpf_last_complete_snapshot_ms, Some(9_000));
+    assert_eq!(health.bpf_self_heal_failures, 1);
+    assert_eq!(
+        health.bpf_self_heal_last_reason.as_deref(),
+        Some("production.collect.external")
+    );
+    assert_eq!(
+        health.bpf_self_heal_last_failure.as_deref(),
+        Some("injected inspect failure")
+    );
+    assert_eq!(
+        health.runtime_error.as_deref(),
+        Some("injected inspect failure")
+    );
+}
+
+#[test]
+fn self_healing_collection_skips_map_read_when_hook_reattach_fails() {
+    let identities = identities();
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 1_000, 9_000_000_000)])));
+    let mut collector = BpfSnapshotCollector::new(16, 5_000);
+    runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            9_000,
+        )
+        .unwrap();
+    let missing = LinkSpec::pair("br-lan", AttachMode::Normal)[0].clone();
+    adapter.hooks.remove(&missing);
+    adapter.fail_attach_at = Some(adapter.attached.len());
+    adapter.map_read = Some(Ok(read(Vec::new())));
+
+    let error = runtime
+        .collect_snapshot_self_healing(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            10_000,
+            "production.collect.internal",
+        )
+        .unwrap_err();
+
+    assert_eq!(error.kind(), AdapterErrorKind::AttachFailed);
+    assert!(adapter.map_read.is_some(), "map read must not be consumed");
+    let health = runtime.runtime_health(10_000, 3_000);
+    assert!(!health.bpf_attached);
+    assert!(health.bpf_map_read_attempted);
+    assert!(!health.bpf_map_read_ok);
+    assert_eq!(health.bpf_last_complete_snapshot_ms, Some(9_000));
+    assert_eq!(health.bpf_self_heal_failures, 1);
+    assert_eq!(
+        health.bpf_self_heal_last_reason.as_deref(),
+        Some("production.collect.internal")
+    );
+    assert_eq!(
+        health.bpf_self_heal_last_failure.as_deref(),
+        Some("injected attach failure")
+    );
+    assert_eq!(
+        health.runtime_error.as_deref(),
+        Some("injected attach failure")
+    );
+}
+
+#[test]
+fn production_bpf_sampling_paths_use_stable_self_heal_reasons() {
+    let source = include_str!("../src/production.rs");
+    assert_eq!(source.matches("collect_snapshot_self_healing(").count(), 2);
+    assert!(source
+        .contains("const INTERNAL_BPF_SELF_HEAL_REASON: &str = \"production.collect.internal\";"));
+    assert!(source
+        .contains("const EXTERNAL_BPF_SELF_HEAL_REASON: &str = \"production.collect.external\";"));
+}
+
+#[test]
 fn freshness_expires_at_limit_plus_one_and_rejects_future_timestamps() {
     let identities = identities();
     let mut adapter = FakeAya::default();
@@ -867,6 +1158,49 @@ fn freshness_expires_at_limit_plus_one_and_rejects_future_timestamps() {
     assert!(!probe.bpf_map_read_ok);
     assert_eq!(probe.bpf_last_complete_snapshot_ms, Some(10_000));
     assert_eq!(probe.bpf_snapshot_clients, 1);
+}
+
+#[test]
+fn map_updates_during_iteration_advance_the_snapshot_watermark() {
+    let identities = identities();
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let mut collector = BpfSnapshotCollector::new(16, 5_000);
+
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 1_000, 10_000_000_000)])));
+    runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            10_000,
+        )
+        .unwrap();
+
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 2_000, 11_004_000_000)])));
+    let snapshot = runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            11_000,
+        )
+        .unwrap();
+    let client = &snapshot.clients[0];
+
+    assert_eq!(snapshot.sample_ms, 11_004);
+    assert_eq!(client.sample_ms, 11_004);
+    assert_eq!(client.last_seen_ms, 11_004);
+    assert!(client.tx_bps > 0);
+    assert_eq!(
+        runtime.health(11_004, 3_000).last_complete_snapshot_ms,
+        Some(11_004)
+    );
 }
 
 #[test]
@@ -900,10 +1234,45 @@ fn inspect_failure_is_recorded_in_self_heal_and_runtime_health() {
     assert!(runtime.ensure_attached(&mut adapter, "inspect").is_err());
     assert_eq!(runtime.self_heal_failures(), 1);
     assert_eq!(runtime.last_self_heal_reason(), Some("inspect"));
-    assert!(runtime
-        .runtime_health(10_000, 3_000)
-        .runtime_error
-        .is_some());
+    let failed = runtime.runtime_health(10_000, 3_000);
+    assert!(!runtime.is_attached());
+    assert!(!failed.bpf_attached);
+    assert!(failed.runtime_error.is_some());
+
+    adapter.fail_inspect = false;
+    assert_eq!(runtime.ensure_attached(&mut adapter, "retry").unwrap(), 0);
+    assert!(runtime.is_attached());
+}
+
+#[test]
+fn foreign_replacement_invalidates_health_and_is_never_overwritten() {
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let foreign = LinkSpec::pair("br-lan", AttachMode::Normal)[0].clone();
+    let attached_before = adapter.attached.len();
+    adapter.hooks.insert(foreign.clone(), HookState::Foreign);
+
+    let error = runtime
+        .ensure_attached(&mut adapter, "foreign")
+        .unwrap_err();
+
+    assert_eq!(error.kind(), AdapterErrorKind::OwnershipConflict);
+    assert!(!runtime.is_attached());
+    assert!(!runtime.runtime_health(10_000, 3_000).bpf_attached);
+    assert_eq!(adapter.hooks.get(&foreign), Some(&HookState::Foreign));
+    assert_eq!(adapter.attached.len(), attached_before);
+    assert!(!adapter.detached.contains(&foreign));
+
+    adapter.hooks.remove(&foreign);
+    runtime.ensure_attached(&mut adapter, "retry").unwrap();
+    assert!(runtime.is_attached());
+    assert_eq!(adapter.hooks.get(&foreign), Some(&HookState::Owned));
+    assert_eq!(adapter.attached.len(), attached_before + 1);
+    assert!(adapter.forgotten.contains(&foreign));
+    assert!(!adapter.detached.contains(&foreign));
 }
 
 #[test]

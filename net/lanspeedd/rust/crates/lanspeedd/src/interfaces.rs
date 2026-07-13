@@ -1,4 +1,13 @@
-use std::{collections::BTreeMap, fs, io, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs, io,
+    path::Path,
+};
+
+use crate::{
+    history::coverage::ByteTotals,
+    model::{Interface, InterfaceRole, InterfaceStatus},
+};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct InterfaceCounters {
@@ -63,4 +72,25 @@ impl InterfaceRateBook {
         self.previous.insert(name.to_owned(), (counters, now_ms));
         rates
     }
+}
+
+pub fn lan_coverage_totals(interfaces: &[Interface]) -> ByteTotals {
+    let mut names = BTreeSet::new();
+    interfaces
+        .iter()
+        .filter(|interface| {
+            interface.role == InterfaceRole::Lan
+                && interface.status == InterfaceStatus::Available
+                && names.insert(interface.name.as_str())
+        })
+        .fold(ByteTotals::new(0, 0), |totals, interface| {
+            ByteTotals::new(
+                totals
+                    .rx_bytes
+                    .saturating_add(interface.rx_bytes.unwrap_or(0)),
+                totals
+                    .tx_bytes
+                    .saturating_add(interface.tx_bytes.unwrap_or(0)),
+            )
+        })
 }

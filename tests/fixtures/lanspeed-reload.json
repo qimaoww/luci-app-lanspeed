@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "mode": "Full",
+  "warnings": [],
+  "evidence": {
+    "source": "rust_fixture",
+    "method": "reload",
+    "read_only": false
+  },
+  "version": "1.0.0-r1"
+}

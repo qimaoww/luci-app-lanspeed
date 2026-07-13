@@ -1039,7 +1039,7 @@ pub struct DirectFallbackInput {
     pub state_readable: bool,
     pub overlay_enabled: bool,
     pub rate_mode: RateCollectorMode,
-    pub nss_daed_prefers_bpf: bool,
+    pub dae_runtime_prefers_bpf: bool,
 }
 
 pub const fn direct_fallback_reason(input: DirectFallbackInput) -> &'static str {
@@ -1051,8 +1051,8 @@ pub const fn direct_fallback_reason(input: DirectFallbackInput) -> &'static str 
         "collector_mode_bpf"
     } else if matches!(input.rate_mode, RateCollectorMode::NssConntrackSync) {
         "collector_mode_nss_conntrack_sync"
-    } else if input.nss_daed_prefers_bpf {
-        "nss_daed_prefers_bpf"
+    } else if input.dae_runtime_prefers_bpf {
+        "dae_runtime_prefers_bpf"
     } else {
         "not_selected"
     }

@@ -41,18 +41,18 @@ impl Method {
 #[cfg(feature = "openwrt")]
 pub fn object(
     snapshots: crate::state::SnapshotStore,
-    reload: impl FnMut() -> Result<(), DaemonError> + 'static,
+    before_reply: impl FnMut(Method) -> Result<(), DaemonError> + 'static,
 ) -> Result<lanspeed_openwrt_sys::UbusObject, DaemonError> {
     use lanspeed_openwrt_sys::{UbusMethod, UbusObject, STATUS_OK, STATUS_UNKNOWN_ERROR};
     use std::{cell::RefCell, rc::Rc};
-    let reload = Rc::new(RefCell::new(reload));
+    let before_reply = Rc::new(RefCell::new(before_reply));
     let methods = Method::ALL
         .into_iter()
         .map(|method| {
             let snapshots = snapshots.clone();
-            let reload = Rc::clone(&reload);
+            let before_reply = Rc::clone(&before_reply);
             UbusMethod::new(method.name(), move |mut request| {
-                if method == Method::Reload && reload.borrow_mut()().is_err() {
+                if before_reply.borrow_mut()(method).is_err() {
                     return STATUS_UNKNOWN_ERROR;
                 }
                 let response = snapshots

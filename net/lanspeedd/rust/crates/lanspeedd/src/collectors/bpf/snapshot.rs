@@ -153,6 +153,7 @@ impl BpfSnapshotCollector {
         F: FnMut(u32) -> Option<String>,
     {
         let mut folded = BTreeMap::<String, FoldedClient>::new();
+        let mut sample_ms = now_ms;
         let mut client_limit_exceeded = false;
         for raw in read.entries {
             if raw.key.direction != DIR_TX && raw.key.direction != DIR_RX {
@@ -195,11 +196,13 @@ impl BpfSnapshotCollector {
                 client.rx_bytes = client.rx_bytes.saturating_add(raw.counters.bytes);
             }
             let last_seen_ms = raw.counters.last_seen / 1_000_000;
-            client.last_seen_ms = client.last_seen_ms.max(if last_seen_ms == 0 {
+            let last_seen_ms = if last_seen_ms == 0 {
                 now_ms
             } else {
                 last_seen_ms
-            });
+            };
+            sample_ms = sample_ms.max(last_seen_ms);
+            client.last_seen_ms = client.last_seen_ms.max(last_seen_ms);
         }
 
         if folded.len() > self.max_clients {
@@ -210,7 +213,7 @@ impl BpfSnapshotCollector {
         }
 
         let rates = self.rate_book.update(
-            now_ms,
+            sample_ms,
             folded.values().map(|client| ClientCounters {
                 identity_key: client.identity_key.clone(),
                 tx_bytes: client.tx_bytes,
@@ -259,7 +262,7 @@ impl BpfSnapshotCollector {
             clients,
             warnings,
             rate_warnings: rates.warnings,
-            sample_ms: now_ms,
+            sample_ms,
         };
         self.last_complete = Some(snapshot.clone());
         snapshot

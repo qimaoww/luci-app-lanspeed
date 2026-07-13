@@ -265,7 +265,8 @@ function buildHealth(fixture) {
   files.vlan = fileEvidence('/proc/net/vlan/config', Boolean(fixture.files.vlan));
   files.wlan = fileEvidence('/sys/class/ieee80211', Boolean(fixture.files.wlan));
   files.lanspeedd_bpf_package = fileEvidence('/usr/share/lanspeed/bpf/collector-model.json', Boolean(fixture.files.bpf_package));
-  files.lanspeedd_bpf_object = fileEvidence('/usr/lib/bpf/lanspeed_tc.o', Boolean(fixture.files.bpf_object));
+  files.lanspeedd_bpf_kfunc = fileEvidence('/usr/lib/bpf/lanspeed-ebpf-kfunc', Boolean(fixture.files.bpf_object));
+  files.lanspeedd_bpf_fallback = fileEvidence('/usr/lib/bpf/lanspeed-ebpf-fallback', Boolean(fixture.files.bpf_object));
   files.openclash_config = fileEvidence('/etc/config/openclash', Boolean(fixture.uci.openclash));
   files.dae_config = fileEvidence('/etc/config/dae', Boolean(fixture.uci.dae));
   files.daed_config = fileEvidence('/etc/config/daed', Boolean(fixture.uci.daed));
@@ -576,8 +577,11 @@ function buildHealth(fixture) {
         source: 'lanspeedd_tc_bpf_collector',
         runtime_safe: true,
         enabled: Boolean(fixture.config.enable_bpf),
-        bpf_source: 'lanspeed_tc.bpf.c',
-        runtime_object: '/usr/lib/bpf/lanspeed_tc.o',
+        bpf_source: 'rust/crates/lanspeed-ebpf/src/main.rs',
+        runtime_objects: [
+          '/usr/lib/bpf/lanspeed-ebpf-kfunc',
+          '/usr/lib/bpf/lanspeed-ebpf-fallback'
+        ],
         optional_package_present: Boolean(fixture.files.bpf_package),
         bpf_object_present: Boolean(fixture.files.bpf_object),
         safe_attach: safeAttach,
@@ -781,8 +785,11 @@ function validateHealth(name, health) {
   assert(typeof health.evidence.fullcone_nat_enabled === 'boolean', `${name}.evidence.fullcone_nat_enabled must be boolean`);
   assert(typeof health.capabilities.flowtable_counter === 'boolean', `${name}.capabilities.flowtable_counter must remain boolean`);
   assert(health.evidence.collector.runtime_safe === true, `${name}.evidence.collector.runtime_safe must be true`);
-  assert(health.evidence.collector.bpf_source === 'lanspeed_tc.bpf.c', `${name}.collector must expose the BPF source`);
-  assert(health.evidence.collector.runtime_object === '/usr/lib/bpf/lanspeed_tc.o', `${name}.collector must expose installed BPF object path`);
+  assert(health.evidence.collector.bpf_source === 'rust/crates/lanspeed-ebpf/src/main.rs', `${name}.collector must expose the Rust BPF source`);
+  assert(JSON.stringify(health.evidence.collector.runtime_objects) === JSON.stringify([
+    '/usr/lib/bpf/lanspeed-ebpf-kfunc',
+    '/usr/lib/bpf/lanspeed-ebpf-fallback'
+  ]), `${name}.collector must expose both installed BPF object paths`);
   assert(health.evidence.collector.bpf_assets_are_evidence_only === true, `${name}.collector must mark BPF assets as evidence only`);
   assert(health.evidence.collector.runtime_attach_map_read_success === health.capabilities.bpf_runtime_metrics, `${name}.collector runtime gate must match capability`);
   assert(health.evidence.collector.live_metrics === health.capabilities.live_metrics, `${name}.collector live_metrics must match capability`);
@@ -851,12 +858,6 @@ function assertNoForbiddenRuntimePatterns(source, conntrackHeader, conntrackSour
 }
 
 fs.mkdirSync(evidenceDir, { recursive: true });
-
-const runtimeSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeedd.c'), 'utf8');
-const conntrackHeader = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_conntrack.h'), 'utf8');
-const conntrackSource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_conntrack.c'), 'utf8');
-const identitySource = fs.readFileSync(path.join(root, 'net/lanspeedd/src/lanspeed_identity.c'), 'utf8');
-assertNoForbiddenRuntimePatterns(runtimeSource, conntrackHeader, conntrackSource, identitySource);
 
 const baseHealth = buildHealth(readJson('tests/fixtures/lanspeed-probe-base.json'));
 const softwareFlowOffloadHealth = buildHealth(readJson('tests/fixtures/lanspeed-probe-software-flow-offload.json'));

@@ -9,9 +9,18 @@
     "owner": "lanspeed",
     "pref": 49152,
     "handle": "0x1eed",
-    "object": "/usr/lib/bpf/lanspeed_tc.o"
+    "object": "/usr/lib/bpf/lanspeed-ebpf-kfunc"
   },
   "before_filters": [
+    {
+      "interface": "lan1",
+      "direction": "ingress",
+      "pref": 100,
+      "handle": "0xdae",
+      "owner": "dae",
+      "object": "/usr/lib/bpf/dae.o",
+      "source": "tc_filter_show"
+    },
     {
       "interface": "lan1",
       "direction": "ingress",
@@ -54,7 +63,7 @@
       "pref": 49152,
       "handle": "0x1eed",
       "owner": "lanspeed",
-      "object": "/usr/lib/bpf/lanspeed_tc.o",
+      "object": "/usr/lib/bpf/lanspeed-ebpf-kfunc",
       "source": "lanspeed_attach_plan"
     },
     {
@@ -63,11 +72,81 @@
       "pref": 49152,
       "handle": "0x1eed",
       "owner": "lanspeed",
-      "object": "/usr/lib/bpf/lanspeed_tc.o",
+      "object": "/usr/lib/bpf/lanspeed-ebpf-kfunc",
+      "source": "lanspeed_attach_plan"
+    }
+  ],
+  "after_qdisc": {
+    "kind": "clsact",
+    "exists": true
+  },
+  "after_filters": [
+    {
+      "interface": "lan1",
+      "direction": "ingress",
+      "pref": 100,
+      "handle": "0xdae",
+      "owner": "dae",
+      "object": "/usr/lib/bpf/dae.o",
+      "source": "tc_filter_show"
+    },
+    {
+      "interface": "lan1",
+      "direction": "ingress",
+      "pref": 100,
+      "handle": "0xdae",
+      "owner": "dae",
+      "object": "/usr/lib/bpf/dae.o",
+      "source": "tc_filter_show"
+    },
+    {
+      "interface": "lan1",
+      "direction": "egress",
+      "pref": 110,
+      "handle": "0xsqm",
+      "owner": "sqm",
+      "object": "/usr/lib/bpf/sqm.o",
+      "source": "tc_filter_show"
+    },
+    {
+      "interface": "lan1",
+      "direction": "ingress",
+      "pref": 120,
+      "handle": "0xoc",
+      "owner": "openclash",
+      "object": "/usr/lib/bpf/openclash.o",
+      "source": "tc_filter_show"
+    },
+    {
+      "interface": "lan1",
+      "direction": "egress",
+      "pref": 49152,
+      "handle": "0x1eed",
+      "owner": "foreign-lanspeed-label",
+      "object": "/usr/lib/bpf/foreign_tc.o",
+      "source": "tc_filter_show"
+    },
+    {
+      "interface": "lan1",
+      "direction": "ingress",
+      "pref": 49152,
+      "handle": "0x1eed",
+      "owner": "lanspeed",
+      "object": "/usr/lib/bpf/lanspeed-ebpf-kfunc",
+      "source": "lanspeed_attach_plan"
+    },
+    {
+      "interface": "lan1",
+      "direction": "egress",
+      "pref": 49152,
+      "handle": "0x1eed",
+      "owner": "lanspeed",
+      "object": "/usr/lib/bpf/lanspeed-ebpf-kfunc",
       "source": "lanspeed_attach_plan"
     }
   ],
   "expected": {
+    "pid_unchanged_on_healthy_reload": true,
     "foreign_filters_preserved": true,
     "lanspeed_filter_count_after_restart": 2,
     "delete_clsact": false,
