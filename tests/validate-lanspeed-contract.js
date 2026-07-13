@@ -410,6 +410,17 @@ function validateSource(source, conntrackHeader, conntrackSource) {
   assert(source.includes('ARPHRD_ETHER') &&
          /sysdevice_is_recommended_lan[\s\S]{0,900}sysdevice_read_u64\(name,\s*"type"/.test(source),
          'C daemon must reject non-Ethernet sysdevices before allowing BPF collect');
+  const ignoredInterfacePrefixes = [
+    'dae', 'miireg', 'tun', 'erspan', 'gretap', 'gre', 'ip6gre', 'ip6tnl', 'sit',
+    'bonding_masters'
+  ];
+  assert(source.includes('static const char *const sysdevice_auto_ignored_prefixes[]') &&
+         source.includes('static bool sysdevice_is_auto_ignored') &&
+         ignoredInterfacePrefixes.every((prefix) => source.includes(`"${prefix}"`)),
+         'C daemon must automatically ignore every configured tunnel/proxy interface prefix');
+  assert(/sysdevice_is_candidate[\s\S]{0,500}sysdevice_is_auto_ignored\(name\)/.test(source) &&
+         /static void add_observe_ifname[\s\S]{0,400}sysdevice_is_auto_ignored\(name\)/.test(source),
+         'C daemon must omit ignored interfaces from candidates and runtime observation');
   assert(source.includes('"nft_forward_chain_counters"'), 'C conntrack fallback must forbid firewall forward-chain counters');
   assert(source.includes('"nlbwmon_read_counters", json_object_new_boolean(false)'), 'C conntrack fallback must not read nlbwmon counters');
   assert(conntrackHeader.includes('CONNTRACK_PROCFS_PATH "/proc/net/nf_conntrack"'), 'conntrack module must read procfs conntrack table');
@@ -486,6 +497,7 @@ function validatePackageMakefile(makefile) {
   assert(makefile.includes('LANSPEED_BPF_ENABLED'), 'package Makefile must keep BPF build and packaging controlled by an explicit switch');
   assert(!/Package\/lanspeedd[\s\S]{0,260}PACKAGE_lanspeedd-bpf:libbpf/.test(makefile), 'base package must not expose libbpf through its own dependency metadata');
   assert(makefile.includes('DEPENDS:=+lanspeedd +libbpf +tc-tiny @HAS_BPF_TOOLCHAIN +@NEED_BPF_TOOLCHAIN'), 'optional BPF package must carry libbpf, tc-tiny and BPF dependencies');
+  assert(makefile.includes('DEFAULT:=y if PACKAGE_luci-app-lanspeed && HAS_BPF_TOOLCHAIN'), 'optional BPF package must default on with the LuCI app and a configured BPF toolchain');
   assert(/DEPENDS:=[^\n]*\+libmnl/.test(makefile), 'base daemon must depend on libmnl for raw ctnetlink');
   assert(/-DLANSPEED_RELEASE=.*\$\(PKG_RELEASE\)/.test(makefile), 'package Makefile must pass PKG_RELEASE into lanspeedd status.version');
   assert(/LIBS[^\n]*-lmnl[^\n]*-ldl/.test(makefile), 'package Makefile must link libmnl and dlopen support without libbpf');
@@ -510,6 +522,7 @@ function validateUci(config) {
     "list ifname 'br-lan'",
     "list interface_include 'br-lan'",
     "list interface_exclude 'wan'",
+    "list observe 'wan'",
     "option enable_bpf '1'",
     "option enable_conntrack_fallback '1'",
     "option warning_confidence_below 'medium'",
@@ -519,6 +532,15 @@ function validateUci(config) {
   ]) {
     assert(config.includes(required), `UCI config missing ${required}`);
   }
+
+  const defaultAssignments = config.split('\n').filter((line) =>
+    /^\s*list (?:ifname|interface_include|observe) /.test(line)
+  ).map((line) => line.trim());
+  assert(defaultAssignments.length === 3 &&
+         defaultAssignments.includes("list ifname 'br-lan'") &&
+         defaultAssignments.includes("list interface_include 'br-lan'") &&
+         defaultAssignments.includes("list observe 'wan'"),
+         'default interfaces must collect br-lan, observe wan and leave every other interface off');
 }
 
 const schema = readJson('net/lanspeedd/files/usr/share/lanspeed/schema.json');

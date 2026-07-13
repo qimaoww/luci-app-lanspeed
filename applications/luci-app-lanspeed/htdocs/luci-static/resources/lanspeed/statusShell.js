@@ -1,14 +1,35 @@
 'use strict';
 'require baseclass';
 'require lanspeed.format as fmt';
-'require lanspeed.rpc as lsRpc';
 'require lanspeed.nssPanel as nssPanel';
 'require lanspeed.theme as lsTheme';
 'require lanspeed.statusStyle as statusStyle';
 
+function sortableHeader(viewState, refs, sortKey, label, attrs) {
+	var thAttrs = Object.assign({ 'aria-sort': 'none' }, attrs || {});
+	var button = E('button', {
+		'type': 'button',
+		'class': 'lanspeed-sort-button'
+	}, [
+		E('span', { 'class': 'lanspeed-sort-label' }, label),
+		E('span', { 'class': 'lanspeed-sort-indicator', 'aria-hidden': 'true' }, '')
+	]);
+	var th = E('th', thAttrs, button);
+
+	refs.sortHeaders[sortKey] = { th: th, button: button, label: label };
+	button.addEventListener('click', function() {
+		Object.assign(viewState.prefs, fmt.nextSort(viewState.prefs, sortKey));
+		fmt.savePrefs(viewState.prefs);
+		viewState.refreshLive();
+	});
+
+	return th;
+}
+
 function buildShell(viewState) {
 	var refs = {};
 	var prefs = viewState.prefs;
+	refs.sortHeaders = {};
 
 	refs.collectorPill = E('span', { 'class': 'label' }, '-');
 	refs.meta     = E('span', { 'class': 'meta' }, '');
@@ -85,30 +106,6 @@ function buildShell(viewState) {
 	refs.btnRefresh = E('button', { 'class': 'cbi-button' }, _('立即刷新'));
 	refs.btnRefresh.addEventListener('click', function() { viewState.reload(true); });
 
-	refs.btnReload = E('button', { 'class': 'cbi-button cbi-button-apply' }, _('重载 daemon'));
-	refs.btnReload.title = _('清理旧 tc filter，重新尝试挂载 BPF 运行时。仅清理 lanspeedd 自己拥有的 filter，不影响 dae / SQM 等共存项。');
-	refs.btnReload.addEventListener('click', function() {
-		if (viewState.reloading) return;
-		viewState.reloading = true;
-		var original = refs.btnReload.textContent;
-		refs.btnReload.disabled = true;
-		refs.btnReload.textContent = _('正在重载…');
-		lsRpc.reload().then(function() {
-			window.setTimeout(function() {
-				refs.btnReload.disabled = false;
-				refs.btnReload.textContent = original;
-				viewState.reloading = false;
-				viewState.reload(true);
-			}, 1000);
-		}).catch(function(error) {
-			refs.btnReload.disabled = false;
-			refs.btnReload.textContent = original;
-			viewState.reloading = false;
-			viewState.error = error;
-			viewState.refreshLive();
-		});
-	});
-
 	refs.btnPause = E('button', { 'class': 'cbi-button' }, prefs.paused ? _('恢复') : _('暂停'));
 	refs.btnPause.addEventListener('click', function() {
 		viewState.prefs.paused = !viewState.prefs.paused;
@@ -159,40 +156,21 @@ function buildShell(viewState) {
 		viewState.refreshLive();
 	});
 
-	refs.sortSel = E('select', { 'class': 'cbi-input-select' },
-		[
-			{ k: 'speed',     t: _('总速率')   },
-			{ k: 'tx',        t: _('上行')     },
-			{ k: 'rx',        t: _('下行')     },
-			{ k: 'hostname',  t: _('主机名')   },
-			{ k: 'mac',       t: 'MAC'         },
-			{ k: 'tcp_conns', t: 'TCP'         },
-			{ k: 'udp_conns', t: 'UDP'         }
-		].map(function(o) {
-			return fmt.opt(o.k, o.t, prefs.sortKey === o.k);
-		})
-	);
-	refs.sortSel.addEventListener('change', function(ev) {
-		viewState.prefs.sortKey = ev.target.value;
-		fmt.savePrefs(viewState.prefs);
-		viewState.refreshLive();
-	});
-
 	var toolbar = E('div', { 'class': 'lanspeed-toolbar' }, [
 		E('div', { 'class': 'lanspeed-toolbar-left' }, [
-			refs.btnRefresh, refs.btnReload, refs.btnPause
-		]),
-		E('div', { 'class': 'lanspeed-toolbar-filter' }, [
-			refs.filterInput,
-			E('label', { 'class': 'lanspeed-active-only cbi-checkbox', 'for': 'lanspeed-active' }, [
-				refs.activeChk,
-				E('span', { 'class': 'lanspeed-active-label' }, _('仅活跃'))
+			E('label', { 'class': 'lanspeed-unit-control' }, [ _('单位'), refs.unitSel ]),
+			E('div', { 'class': 'lanspeed-toolbar-filter' }, [
+				refs.filterInput,
+				E('label', { 'class': 'lanspeed-active-only cbi-checkbox', 'for': 'lanspeed-active' }, [
+					refs.activeChk,
+					E('span', { 'class': 'lanspeed-active-label' }, _('仅活跃'))
+				])
 			])
 		]),
-		E('div', { 'class': 'lanspeed-toolbar-options' }, [
-			E('label', {}, [ _('刷新'), refs.intervalSel ]),
-			E('label', {}, [ _('单位'), refs.unitSel ]),
-			E('label', {}, [ _('排序'), refs.sortSel ])
+		E('div', { 'class': 'lanspeed-toolbar-right' }, [
+			E('label', { 'class': 'lanspeed-refresh-control' }, [ _('刷新'), refs.intervalSel ]),
+			refs.btnRefresh,
+			refs.btnPause
 		])
 	]);
 
@@ -206,12 +184,16 @@ function buildShell(viewState) {
 	refs.tbody = E('tbody', {});
 	refs.clientsTable = E('table', { 'class': 'lanspeed-table' }, [
 		E('thead', {}, E('tr', {}, [
-			E('th', {}, _('客户端')),
-			E('th', {}, 'MAC'),
-			E('th', { 'class': 'num' }, _('上行')),
-			E('th', { 'class': 'num' }, _('下行')),
-			E('th', { 'class': 'num', 'title': _('TCP 仅统计 ESTABLISHED + ASSURED') }, 'TCP'),
-			E('th', { 'class': 'num', 'title': _('UDP 仅统计 ASSURED conntrack 条目') }, 'UDP'),
+			sortableHeader(viewState, refs, 'hostname', _('客户端')),
+			sortableHeader(viewState, refs, 'mac', 'MAC'),
+			sortableHeader(viewState, refs, 'tx', _('上行'), { 'class': 'num' }),
+			sortableHeader(viewState, refs, 'rx', _('下行'), { 'class': 'num' }),
+			sortableHeader(viewState, refs, 'tcp_conns', 'TCP', {
+				'class': 'num', 'title': _('TCP 仅统计 ESTABLISHED + ASSURED')
+			}),
+			sortableHeader(viewState, refs, 'udp_conns', 'UDP', {
+				'class': 'num', 'title': _('UDP 仅统计 ASSURED conntrack 条目')
+			}),
 			E('th', {}, _('状态'))
 		])),
 		refs.tbody

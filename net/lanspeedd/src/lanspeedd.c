@@ -84,9 +84,9 @@ static bool nss_conntrack_sync_preferred(const struct runtime_probe *probe);
 static bool nss_conntrack_sync_fallback_available(const struct runtime_probe *probe);
 static bool nss_conntrack_sync_stable_active(const struct runtime_probe *probe);
 static bool nss_conntrack_sync_reader_available(const struct runtime_probe *probe);
-static bool daed_runtime_active(const struct runtime_probe *probe);
-static bool nss_daed_should_prefer_bpf(const struct runtime_probe *probe);
-static bool nss_daed_nss_fallback_active(const struct runtime_probe *probe);
+static bool dae_runtime_active(const struct runtime_probe *probe);
+static bool dae_runtime_should_prefer_bpf(const struct runtime_probe *probe);
+static bool nss_dae_bpf_fallback_active(const struct runtime_probe *probe);
 static void add_conntrack_fallback_runtime_warnings(struct runtime_probe *probe);
 static void add_nss_ecm_direct_runtime_warnings(struct runtime_probe *probe);
 static void add_conflicts_from_probe(struct runtime_probe *probe);
@@ -472,14 +472,58 @@ static bool service_output_has_running_instance(const char *output)
 
 static bool process_running(const char *name)
 {
-	char command[96];
-	char output[COMMAND_OUTPUT_LIMIT];
+	DIR *dir;
+	struct dirent *entry;
+	bool found = false;
 
 	if (!name || !name[0])
 		return false;
 
-	snprintf(command, sizeof(command), "pidof %s 2>/dev/null", name);
-	return run_command_capture(command, output, sizeof(output)) == 0 && output[0] != '\0';
+	dir = opendir("/proc");
+	if (!dir)
+		return false;
+
+	while ((entry = readdir(dir))) {
+		char path[PATH_MAX];
+		char comm[64];
+		FILE *fp;
+		size_t len;
+
+		if (!entry->d_name[0] ||
+		    strspn(entry->d_name, "0123456789") != strlen(entry->d_name))
+			continue;
+		if (snprintf(path, sizeof(path), "/proc/%s/comm", entry->d_name) >=
+		    (int)sizeof(path))
+			continue;
+		fp = fopen(path, "r");
+		if (!fp)
+			continue;
+		if (!fgets(comm, sizeof(comm), fp)) {
+			fclose(fp);
+			continue;
+		}
+		fclose(fp);
+		len = strcspn(comm, "\r\n");
+		comm[len] = '\0';
+		if (!strcmp(comm, name)) {
+			found = true;
+			break;
+		}
+	}
+
+	closedir(dir);
+	return found;
+}
+
+static void refresh_dae_process_state(struct runtime_probe *probe)
+{
+	if (!probe)
+		return;
+
+	probe->dae_process = process_running("dae");
+	probe->daed_process = process_running("daed");
+	if (probe->dae_process || probe->daed_process)
+		probe->dae = true;
 }
 
 static void add_source(struct json_object *array, const char *source)
@@ -1032,6 +1076,7 @@ static void load_cached_runtime_probe(struct runtime_probe *probe)
 	else
 		inspect_command_capabilities(probe);
 
+	refresh_dae_process_state(probe);
 	inspect_files_direct(probe);
 	inspect_bpf_assets(probe);
 	inspect_nss(probe);
@@ -1168,8 +1213,7 @@ static void inspect_dae_runtime(struct runtime_probe *probe)
 		add_ubus_evidence(probe, "service_daed", "service.daed", false, -1, "ubus command missing");
 	}
 
-	probe->dae_process = process_running("dae");
-	probe->daed_process = process_running("daed");
+	refresh_dae_process_state(probe);
 
 	if (probe->dae_service || probe->daed_service ||
 	    probe->dae_running || probe->daed_running ||
@@ -1333,7 +1377,7 @@ static bool bpf_runtime_refresh_attach_policy(struct runtime_probe *probe)
 	if (!enable_bpf || !rate_collector_mode_allows_bpf() || !bpf_runtime_enabled || !probe)
 		return false;
 
-	want_early = dae_tc_preempts_bpf_ingress(probe);
+	want_early = dae_tc_preempts_bpf_ingress(probe) || dae_runtime_active(probe);
 	if (want_early == bpf_runtime_early_passthrough)
 		return false;
 
@@ -1778,7 +1822,7 @@ static bool nss_conntrack_sync_preferred(const struct runtime_probe *probe)
 	       nss_conntrack_sync_fallback_available(probe) &&
 	       (rate_collector_mode_forces_nss_conntrack_sync() ||
 	        rate_collector_mode_forces_nss_ecm_direct() ||
-	        !nss_daed_should_prefer_bpf(probe));
+	        !dae_runtime_should_prefer_bpf(probe));
 }
 
 static bool nss_conntrack_sync_fallback_available(const struct runtime_probe *probe)
@@ -1788,7 +1832,7 @@ static bool nss_conntrack_sync_fallback_available(const struct runtime_probe *pr
 	return conntrack_fallback_accounting_safe(probe) &&
 	       probe->nss_present &&
 	       (probe->nss_ecm_active || probe->nss_ppe_active) &&
-	       !nss_daed_should_prefer_bpf(probe);
+	       !dae_runtime_should_prefer_bpf(probe);
 }
 
 static bool nss_conntrack_sync_reader_available(const struct runtime_probe *probe)
@@ -1822,8 +1866,8 @@ static const char *nss_ecm_direct_fallback_reason(const struct runtime_probe *pr
 		return "collector_mode_bpf";
 	if (rate_collector_mode_forces_nss_conntrack_sync())
 		return "collector_mode_nss_conntrack_sync";
-	if (nss_daed_should_prefer_bpf(probe))
-		return "nss_daed_prefers_bpf";
+	if (dae_runtime_should_prefer_bpf(probe))
+		return "dae_runtime_prefers_bpf";
 	return "not_selected";
 }
 
@@ -1838,7 +1882,7 @@ static bool nss_ecm_direct_overlay_enabled(const struct runtime_probe *probe)
 	return nss_ecm_direct_state_readable(probe) &&
 	       (rate_collector_mode == COLLECTOR_MODE_AUTO ||
 	        rate_collector_mode_forces_nss_ecm_direct()) &&
-	       !nss_daed_should_prefer_bpf(probe);
+	       !dae_runtime_should_prefer_bpf(probe);
 }
 
 static bool nss_conntrack_sync_stable_active(const struct runtime_probe *probe)
@@ -1853,22 +1897,22 @@ static bool dae_tc_preempts_bpf_ingress(const struct runtime_probe *probe)
 	return probe && probe->dae_preempts_bpf_ingress;
 }
 
-static bool daed_runtime_active(const struct runtime_probe *probe)
+static bool dae_runtime_active(const struct runtime_probe *probe)
 {
 	return probe && (probe->dae_running || probe->daed_running ||
 			 probe->dae_process || probe->daed_process);
 }
 
-static bool nss_daed_should_prefer_bpf(const struct runtime_probe *probe)
+static bool dae_runtime_should_prefer_bpf(const struct runtime_probe *probe)
 {
 	return rate_collector_mode == COLLECTOR_MODE_AUTO &&
-	       probe && probe->nss_present && daed_runtime_active(probe) &&
+	       dae_runtime_active(probe) &&
 	       bpf_full_available(probe);
 }
 
-static bool nss_daed_nss_fallback_active(const struct runtime_probe *probe)
+static bool nss_dae_bpf_fallback_active(const struct runtime_probe *probe)
 {
-	return probe && probe->nss_present && daed_runtime_active(probe) &&
+	return probe && probe->nss_present && dae_runtime_active(probe) &&
 	       !bpf_full_available(probe) &&
 	       rate_collector_mode_allows_conntrack_sync() &&
 	       (probe->nss_ecm_active || probe->nss_ppe_active);
@@ -1906,7 +1950,7 @@ static bool conntrack_clients_read_active(const struct runtime_probe *probe)
 
 static const char *collector_primary_source(const struct runtime_probe *probe)
 {
-	if (nss_daed_should_prefer_bpf(probe))
+	if (dae_runtime_should_prefer_bpf(probe))
 		return "bpf";
 	if (nss_conntrack_sync_stable_active(probe))
 		return "nss_conntrack_sync";
@@ -1989,8 +2033,8 @@ static void add_conntrack_fallback_runtime_warnings(struct runtime_probe *probe)
 		add_warning(probe, "flowtable_counter_missing");
 	if (probe->nlbwmon)
 		add_warning(probe, "nlbwmon_counter_conflict");
-	if (nss_daed_nss_fallback_active(probe))
-		add_warning(probe, "nss_daed_nss_fallback_may_be_inaccurate");
+	if (nss_dae_bpf_fallback_active(probe))
+		add_warning(probe, "nss_dae_bpf_fallback_may_be_inaccurate");
 }
 
 static void add_nss_ecm_direct_runtime_warnings(struct runtime_probe *probe)
@@ -1999,8 +2043,8 @@ static void add_nss_ecm_direct_runtime_warnings(struct runtime_probe *probe)
 		return;
 
 	add_warning(probe, "nss_ecm_direct_active");
-	if (nss_daed_nss_fallback_active(probe))
-		add_warning(probe, "nss_daed_nss_fallback_may_be_inaccurate");
+	if (nss_dae_bpf_fallback_active(probe))
+		add_warning(probe, "nss_dae_bpf_fallback_may_be_inaccurate");
 }
 
 static void add_collector_evidence(struct runtime_probe *probe)
@@ -2232,10 +2276,10 @@ static void add_collector_evidence(struct runtime_probe *probe)
 		json_object_array_add(warnings, json_object_new_string("bpf_runtime_loader_unavailable"));
 		json_object_array_add(warnings, json_object_new_string("live_metrics_unavailable"));
 	}
-	if (nss_daed_should_prefer_bpf(probe))
-		json_object_array_add(warnings, json_object_new_string("nss_daed_prefers_bpf"));
-	if (nss_daed_nss_fallback_active(probe))
-		json_object_array_add(warnings, json_object_new_string("nss_daed_nss_fallback_may_be_inaccurate"));
+	if (dae_runtime_should_prefer_bpf(probe))
+		json_object_array_add(warnings, json_object_new_string("dae_runtime_prefers_bpf"));
+	if (nss_dae_bpf_fallback_active(probe))
+		json_object_array_add(warnings, json_object_new_string("nss_dae_bpf_fallback_may_be_inaccurate"));
 	if (nss_conntrack_sync_stable_active(probe) && bpf_full_available(probe))
 		json_object_array_add(warnings, json_object_new_string("nss_prefers_conntrack_sync"));
 
@@ -2577,7 +2621,7 @@ static void finish_probe_evidence(struct runtime_probe *probe, const char *metho
 	json_object_object_add(dae, "daed_running", json_object_new_boolean(probe->daed_running));
 	json_object_object_add(dae, "dae_process", json_object_new_boolean(probe->dae_process));
 	json_object_object_add(dae, "daed_process", json_object_new_boolean(probe->daed_process));
-	json_object_object_add(dae, "runtime_active", json_object_new_boolean(daed_runtime_active(probe)));
+	json_object_object_add(dae, "runtime_active", json_object_new_boolean(dae_runtime_active(probe)));
 	json_object_object_add(dae, "dae0", json_object_new_boolean(probe->dae_iface));
 	json_object_object_add(dae, "dae0peer", json_object_new_boolean(probe->dae_peer_iface));
 	json_object_object_add(dae, "tc_filters", json_object_get(probe->tc_filters));
@@ -3015,8 +3059,8 @@ static void add_conntrack_common_warnings(const struct runtime_probe *probe,
 		add_string_unique(warnings, "nss_ecm_sync_cadence");
 		if (bpf_full_available(probe))
 			add_string_unique(warnings, "nss_prefers_conntrack_sync");
-		if (nss_daed_nss_fallback_active(probe))
-			add_string_unique(warnings, "nss_daed_nss_fallback_may_be_inaccurate");
+		if (nss_dae_bpf_fallback_active(probe))
+			add_string_unique(warnings, "nss_dae_bpf_fallback_may_be_inaccurate");
 	} else {
 		add_string_unique(warnings, "conntrack_routed_nat_only");
 	}
@@ -3385,9 +3429,9 @@ static void add_bpf_clients_evidence(struct json_object *root,
 			       json_object_new_int64((int64_t)approx_udp_tuples));
 	json_object_object_add(evidence, "bpf_approx_tuple_semantics",
 			       json_object_new_string("diagnostic_only_not_conntrack_current_table"));
-	if (nss_daed_should_prefer_bpf(probe)) {
+	if (dae_runtime_should_prefer_bpf(probe)) {
 		struct json_object *warnings = json_object_new_array();
-		json_object_array_add(warnings, json_object_new_string("nss_daed_prefers_bpf"));
+		json_object_array_add(warnings, json_object_new_string("dae_runtime_prefers_bpf"));
 		json_object_object_add(evidence, "warnings", warnings);
 	}
 	if (status) {
@@ -4348,7 +4392,7 @@ static int clients_method(struct ubus_context *ubus, struct ubus_object *obj,
 			    collect_bpf_clients(root, clients, &probe)) {
 				merge_conntrack_conn_counts(root, clients);
 			}
-		} else if (nss_daed_should_prefer_bpf(&probe)) {
+		} else if (dae_runtime_should_prefer_bpf(&probe)) {
 			if (collect_bpf_clients(root, clients, &probe))
 				merge_conntrack_conn_counts(root, clients);
 		} else if (nss_conntrack_sync_preferred(&probe)) {
@@ -4420,6 +4464,27 @@ static int health_method(struct ubus_context *ubus, struct ubus_object *obj,
 	return send_json_reply(ubus, req, root);
 }
 
+static const char *const sysdevice_auto_ignored_prefixes[] = {
+	"dae", "miireg", "tun",
+	"erspan", "gretap", "gre",
+	"ip6gre", "ip6tnl", "sit",
+	"bonding_masters",
+};
+
+static bool sysdevice_is_auto_ignored(const char *name)
+{
+	size_t i;
+
+	if (!name)
+		return false;
+	for (i = 0; i < ARRAY_SIZE(sysdevice_auto_ignored_prefixes); i++) {
+		const char *prefix = sysdevice_auto_ignored_prefixes[i];
+		if (!strncmp(name, prefix, strlen(prefix)))
+			return true;
+	}
+	return false;
+}
+
 static bool sysdevice_is_candidate(const char *name)
 {
 	if (!name || !name[0])
@@ -4427,6 +4492,8 @@ static bool sysdevice_is_candidate(const char *name)
 	if (!strcmp(name, "lo"))
 		return false;
 	if (!strncmp(name, "teql", 4))
+		return false;
+	if (sysdevice_is_auto_ignored(name))
 		return false;
 	return true;
 }
@@ -4436,6 +4503,8 @@ static bool sysdevice_is_recommended_lan(const char *name)
 	uint64_t link_type;
 
 	if (!name || !name[0])
+		return false;
+	if (sysdevice_is_auto_ignored(name))
 		return false;
 	if (sysdevice_read_u64(name, "type", &link_type) && link_type != ARPHRD_ETHER)
 		return false;
@@ -4739,6 +4808,8 @@ static void add_observe_ifname(const char *name)
 
 	if (!name || !*name)
 		return;
+	if (sysdevice_is_auto_ignored(name))
+		return;
 	if (observe_ifname_count >= LANSPEED_BPF_IFACE_MAX)
 		return;
 
@@ -4868,13 +4939,15 @@ static void start_bpf_runtime(void)
 		init_runtime_probe(&probe);
 		inspect_command_capabilities(&probe);
 		inspect_tc(&probe);
+		refresh_dae_process_state(&probe);
 		runtime_probe_cache_store(&probe);
 		if (probe.tc_filter_conflict) {
 			free_runtime_probe(&probe);
 			lanspeed_bpf_shutdown();
 			return;
 		}
-		bpf_runtime_early_passthrough = dae_tc_preempts_bpf_ingress(&probe);
+		bpf_runtime_early_passthrough = dae_tc_preempts_bpf_ingress(&probe) ||
+						dae_runtime_active(&probe);
 		free_runtime_probe(&probe);
 	}
 

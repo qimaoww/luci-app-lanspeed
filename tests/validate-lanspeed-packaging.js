@@ -75,6 +75,11 @@ try {
   );
   assertMatch(
     pkgMakefile,
+    /DEFAULT:=y if PACKAGE_luci-app-lanspeed && HAS_BPF_TOOLCHAIN/,
+    'optional BPF package must default on when the LuCI app and BPF toolchain are selected'
+  );
+  assertMatch(
+    pkgMakefile,
     /DEPENDS:=\+libubox \+libubus \+libuci \+libblobmsg-json \+libjson-c \+libmnl \+kmod-nf-conntrack-netlink/,
     'base lanspeedd package must keep only non-BPF runtime dependencies'
   );

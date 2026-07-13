@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-lanspeed
-PKG_VERSION:=0.1.7
-PKG_RELEASE:=2
+PKG_VERSION:=0.1.8
+PKG_RELEASE:=1
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=

@@ -7,6 +7,28 @@
 'require lanspeed.statusIp as statusIp';
 'require lanspeed.statusCollector as statusCollector';
 
+function refreshSortHeaders(refs, prefs) {
+	Object.keys(refs.sortHeaders || {}).forEach(function(sortKey) {
+		var ref = refs.sortHeaders[sortKey];
+		var active = prefs.sortCustom && prefs.sortKey === sortKey;
+		var ascending = prefs.sortDir === 'asc';
+		var title;
+		if (!prefs.sortCustom && prefs.sortKey === sortKey)
+			title = _('%s：默认排序，点击开始降序排序').format(ref.label);
+		else if (active && ascending)
+			title = _('%s：当前升序，点击恢复默认排序').format(ref.label);
+		else if (active)
+			title = _('%s：当前降序，点击切换为升序').format(ref.label);
+		else
+			title = _('按%s降序排序').format(ref.label);
+
+		ref.th.setAttribute('aria-sort', active ? (ascending ? 'ascending' : 'descending') : 'none');
+		ref.button.setAttribute('title', title);
+		ref.button.setAttribute('aria-label', title);
+		ref.button.lastChild.textContent = active ? (ascending ? '↑' : '↓') : '';
+	});
+}
+
 function refreshLive(viewState) {
 	var refs = viewState.refs;
 	if (!refs) return;
@@ -113,7 +135,8 @@ function refreshLive(viewState) {
 		if (prefs.activeOnly && !fmt.isActiveClient(c, latestSample, activeCfg)) return false;
 		return true;
 	});
-	var sorted = fmt.sortClients(filtered, prefs.sortKey);
+	var sorted = fmt.sortClients(filtered, prefs.sortKey, prefs.sortDir);
+	refreshSortHeaders(refs, prefs);
 
 	var summaryParts = [
 		_('%d 总').format(clientsAll.length),
@@ -181,7 +204,7 @@ function refreshLive(viewState) {
 			}
 
 			return E('tr', idle ? { 'class': 'idle' } : {}, [
-				E('td', {}, [
+				E('td', { 'class': 'lanspeed-client-name' }, [
 					displayName,
 					(c.hostname && ips.length)
 						? E('span', { 'class': 'ipline', 'title': ips.join(', ') }, ips.join(', '))
@@ -190,12 +213,25 @@ function refreshLive(viewState) {
 							    ips.slice(1).join(', '))
 							: '')
 				]),
-				E('td', { 'class': 'mono' }, fmt.textOrDash(c.mac)),
-				E('td', { 'class': 'num' }, fmt.formatRate(tx, prefs.unit)),
-				E('td', { 'class': 'num' }, fmt.formatRate(rx, prefs.unit)),
-				E('td', { 'class': 'num' }, typeof c.tcp_conns === 'number' ? String(c.tcp_conns) : '-'),
 				E('td', {
-					'class': 'num',
+					'class': 'mono lanspeed-client-mac',
+					'data-label': 'MAC'
+				}, fmt.textOrDash(c.mac)),
+				E('td', {
+					'class': 'num lanspeed-client-value',
+					'data-label': _('上行')
+				}, fmt.formatRate(tx, prefs.unit)),
+				E('td', {
+					'class': 'num lanspeed-client-value',
+					'data-label': _('下行')
+				}, fmt.formatRate(rx, prefs.unit)),
+				E('td', {
+					'class': 'num lanspeed-client-value',
+					'data-label': 'TCP'
+				}, typeof c.tcp_conns === 'number' ? String(c.tcp_conns) : '-'),
+				E('td', {
+					'class': 'num lanspeed-client-value',
+					'data-label': 'UDP',
 					'title': (typeof c.udp_dns_conns === 'number' || typeof c.udp_other_conns === 'number')
 						? [
 							'DNS ' + (typeof c.udp_dns_conns === 'number' ? c.udp_dns_conns : '-'),
@@ -203,7 +239,10 @@ function refreshLive(viewState) {
 						  ].join(' · ')
 						: ''
 				}, typeof c.udp_conns === 'number' ? String(c.udp_conns) : '-'),
-				E('td', {}, E('span', { 'class': 'state' }, stateCells))
+				E('td', {
+					'class': 'lanspeed-client-state-cell',
+					'data-label': _('状态')
+				}, E('span', { 'class': 'state' }, stateCells))
 			]);
 		}));
 	}

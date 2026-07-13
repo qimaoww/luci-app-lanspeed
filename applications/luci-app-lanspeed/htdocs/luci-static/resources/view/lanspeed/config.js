@@ -20,16 +20,16 @@ return view.extend({
 
 	render: function(values) {
 		var viewState = {
-			refs: {},
-			reload: function() { return Promise.resolve(); }
+			refs: {}
 		};
 
 		var root = E('div', { 'class': 'cbi-map lanspeed-config-root' }, [
 			E('style', {}, configStyle.CSS),
-			configForm.buildDaemonSection(values || configForm.DEFAULTS),
+			configForm.buildDaemonSection(values || configForm.DEFAULTS, viewState),
 			E('div', { 'class': 'cbi-section' }, [
 				ifaceCfg.buildSection(viewState, _('接口配置'))
-			])
+			]),
+			configForm.buildSaveSection(viewState)
 		]);
 
 		lsTheme.applyRoot(root);
