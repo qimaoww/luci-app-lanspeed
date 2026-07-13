@@ -184,7 +184,7 @@ function statusNssEvidence(status) {
 
 function statusDaedEvidence(status) {
 	var evidence = status && status.evidence || {};
-	return Object.assign({}, evidence.dae || {}, evidence.proxy || {});
+	return Object.assign({}, evidence.proxy || {}, evidence.dae || {});
 }
 
 function isNssDevice(status) {
@@ -214,6 +214,8 @@ function isNssDevice(status) {
 
 function daeRuntimeActive(status) {
 	var dae = statusDaedEvidence(status);
+	if (typeof dae.runtime_active === 'boolean')
+		return dae.runtime_active;
 	return !!(dae.dae_running || dae.daed_running || dae.dae_process || dae.daed_process);
 }
 

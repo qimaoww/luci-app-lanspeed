@@ -30,7 +30,10 @@ use crate::{
         },
         nss::{self, ParseLimits},
     },
-    config::{ConnectionCollectorMode, InterfaceEligibility, LegacyNameEligibility, RuntimeConfig},
+    config::{
+        is_sysdevice_candidate, ConnectionCollectorMode, InterfaceEligibility,
+        LegacyNameEligibility, RuntimeConfig,
+    },
     daemon::{
         abort_reload_after_timer_failure, abort_reload_candidate, activate_runtime,
         collect_and_reschedule, commit_reload, install_control_or_shutdown, reconnect_and_register,
@@ -60,6 +63,10 @@ use crate::{
     policy::{self, RateCollector},
     probe::{
         collector::{self, ProbeMethod, SystemProbeCollector},
+        process::{
+            run_dae_mode_tick, DaeModeReloadLatch, DaeModeTickOutcome, DaeModeTickSignals,
+            DaeProcessTracker,
+        },
         Confidence as ProbeConfidence, Mode as ProbeMode, ProbeCapabilities, ProbeReport,
         RuntimeHealth,
     },
@@ -81,6 +88,7 @@ struct ProductionRuntime {
     nss_error: Option<String>,
     bpf_collector: BpfSnapshotCollector,
     probe: SystemProbeCollector,
+    process_tracker: DaeProcessTracker,
     probe_report: ProbeReport,
     next_probe_ms: u64,
     overview: OverviewRing,
@@ -113,15 +121,25 @@ impl ProductionRuntime {
     }
 
     fn prepare(config: RuntimeConfig) -> Result<Self, DaemonError> {
+        Self::prepare_with_process_tracker(config, DaeProcessTracker::default())
+    }
+
+    fn prepare_with_process_tracker(
+        config: RuntimeConfig,
+        mut process_tracker: DaeProcessTracker,
+    ) -> Result<Self, DaemonError> {
         let mut probe = collector::system_collector()
             .map_err(|error| DaemonError::platform(error.to_string()))?;
-        let preflight = probe.collect(&config, &RuntimeHealth::default(), ProbeMethod::Health);
+        process_tracker.refresh("/proc");
+        let mut preflight = probe.collect(&config, &RuntimeHealth::default(), ProbeMethod::Health);
+        process_tracker.overlay_report(&mut preflight);
         Ok(Self {
             bpf_collector: BpfSnapshotCollector::new(
                 config.max_clients,
                 config.active_client_window_ms,
             ),
             probe,
+            process_tracker,
             probe_report: preflight,
             next_probe_ms: 0,
             nss_rates: RateBook::new(config.max_clients, config.active_client_window_ms),
@@ -140,11 +158,26 @@ impl ProductionRuntime {
     }
 
     fn desired_attach_mode(&self) -> AttachMode {
-        if self.probe_report.facts.tc.dae_preempts_lan_ingress {
+        if self.probe_report.facts.tc.dae_preempts_lan_ingress
+            || self.probe_report.facts.proxy.runtime_active
+        {
             AttachMode::EarlyPassthrough
         } else {
             AttachMode::Normal
         }
+    }
+
+    fn refresh_dae_process_state(&mut self) -> bool {
+        let activity_changed = self.process_tracker.refresh("/proc");
+        self.process_tracker.overlay_report(&mut self.probe_report);
+        activity_changed
+    }
+
+    fn bpf_attach_mode_mismatch(&self) -> bool {
+        self.bpf
+            .as_ref()
+            .and_then(BpfRuntime::attach_mode)
+            .is_some_and(|mode| mode != self.desired_attach_mode())
     }
 
     fn activate_new_bpf(&mut self) -> Result<(), DaemonError> {
@@ -323,7 +356,9 @@ impl ProductionRuntime {
         }
         runtime_health.nss_sync_read_ok = Some(conntrack.is_some());
         if should_refresh_probe(self.next_probe_ms, method) {
-            self.probe_report = self.probe.collect(&self.config, &runtime_health, method);
+            let mut report = self.probe.collect(&self.config, &runtime_health, method);
+            self.process_tracker.overlay_report(&mut report);
+            self.probe_report = report;
             self.next_probe_ms = u64::MAX;
         }
         let report = self.probe_report.clone();
@@ -808,6 +843,7 @@ struct App {
     collection_timer: Option<Timer>,
     reconnect_timer: Option<Timer>,
     reconnect_pending: Cell<bool>,
+    mode_reload: DaeModeReloadLatch,
     last_error: Option<String>,
 }
 
@@ -818,6 +854,62 @@ struct PreparedBpfReload {
 
 impl App {
     fn collection_tick(&mut self) {
+        let (has_bpf, process_activity_changed, attach_mode_mismatch) = {
+            let runtime = self
+                .runtime
+                .as_mut()
+                .expect("collection timer requires a staged runtime");
+            let process_activity_changed = runtime.refresh_dae_process_state();
+            (
+                runtime.bpf.is_some(),
+                process_activity_changed,
+                runtime.bpf_attach_mode_mismatch(),
+            )
+        };
+        let signals =
+            DaeModeTickSignals::new(has_bpf, process_activity_changed, attach_mode_mismatch);
+        let retry_delay = self.state.config().refresh_interval_ms;
+        let mut mode_reload = std::mem::take(&mut self.mode_reload);
+        let outcome = run_dae_mode_tick(
+            &mut mode_reload,
+            self,
+            signals,
+            |app| app.reload_inner().map_err(|error| error.to_string()),
+            |app| app.state.fatal_error().is_some(),
+            |app| {
+                app.collection_timer
+                    .as_ref()
+                    .unwrap()
+                    .schedule(retry_delay)
+                    .map_err(|error| error.to_string())
+            },
+            Self::collect_current_tick,
+        );
+        self.mode_reload = mode_reload;
+        match outcome {
+            DaeModeTickOutcome::Collected | DaeModeTickOutcome::Reloaded => {}
+            DaeModeTickOutcome::RetryScheduled { reload_error } => {
+                self.last_error = Some(reload_error);
+            }
+            DaeModeTickOutcome::FatalReload { reload_error } => {
+                self.last_error = Some(reload_error);
+                UloopGuard::request_stop();
+            }
+            DaeModeTickOutcome::RetryScheduleFailed {
+                reload_error,
+                timer_error,
+            } => {
+                let message = format!(
+                    "dynamic BPF mode reload failed: {reload_error}; collection timer rearm failed: {timer_error}"
+                );
+                self.last_error = Some(message.clone());
+                *self.state.fatal_cell().borrow_mut() = Some(message);
+                UloopGuard::request_stop();
+            }
+        }
+    }
+
+    fn collect_current_tick(&mut self) {
         let timer = self.collection_timer.as_ref().unwrap();
         let runtime = self
             .runtime
@@ -836,6 +928,7 @@ impl App {
             self.last_error = Some(error.to_string());
         }
     }
+
     fn schedule_reconnect(&self) {
         if !self.reconnect_pending.replace(true)
             && self
@@ -879,7 +972,11 @@ impl App {
         }
     }
     fn reload(&mut self) -> Result<(), DaemonError> {
-        self.reload_inner()
+        let result = self.reload_inner();
+        if result.is_ok() {
+            self.mode_reload.complete();
+        }
+        result
     }
 
     fn reload_inner(&mut self) -> Result<(), DaemonError> {
@@ -887,7 +984,9 @@ impl App {
             return Err(DaemonError::reload("runtime is not started"));
         }
         let config = load_config()?;
-        let mut candidate = ProductionRuntime::prepare(config.clone())?;
+        let process_tracker = self.runtime.as_ref().unwrap().process_tracker.clone();
+        let mut candidate =
+            ProductionRuntime::prepare_with_process_tracker(config.clone(), process_tracker)?;
         let wants_bpf = config.enable_bpf && candidate.probe_report.facts.tc.safe_attach;
         let desired_mode = candidate.desired_attach_mode();
         let current_has_bpf = self
@@ -1264,6 +1363,7 @@ pub fn run() -> Result<(), DaemonError> {
         collection_timer: None,
         reconnect_timer: None,
         reconnect_pending: Cell::new(false),
+        mode_reload: DaeModeReloadLatch::default(),
         last_error: None,
     }));
     let weak = Rc::downgrade(&app);
@@ -1624,6 +1724,21 @@ fn evidence(report: &ProbeReport, method: &str) -> Evidence {
         "primary_source":report.evidence.collector.effective_rate_collector,"mode":report.evidence.collector.mode,"confidence":report.evidence.collector.confidence}));
     details.insert("nss".into(), json!({"present":report.evidence.nss.present,"ecm_active":report.evidence.nss.ecm_active,"ppe_active":report.evidence.nss.ppe_active,
         "direct_state_readable":report.evidence.nss.direct_state_readable}));
+    details.insert(
+        "dae".into(),
+        json!({
+            "running": report.evidence.proxy.dae.dae_running
+                || report.evidence.proxy.dae.daed_running,
+            "process": report.evidence.proxy.dae.dae_process
+                || report.evidence.proxy.dae.daed_process,
+            "runtime_active": report.evidence.proxy.dae.runtime_active,
+            "process_probe_error": report.evidence.proxy.dae.process_probe_error,
+            "dae_running": report.evidence.proxy.dae.dae_running,
+            "daed_running": report.evidence.proxy.dae.daed_running,
+            "dae_process": report.evidence.proxy.dae.dae_process,
+            "daed_process": report.evidence.proxy.dae.daed_process,
+        }),
+    );
     Evidence { details }
 }
 
@@ -1754,7 +1869,7 @@ fn sysdevices(config: &RuntimeConfig) -> Result<SysdevicesResponse, DaemonError>
             .file_name()
             .to_string_lossy()
             .into_owned();
-        if name == "lo" || name.starts_with("teql") {
+        if !is_sysdevice_candidate(&name) {
             continue;
         }
         let root = Path::new("/sys/class/net").join(&name);

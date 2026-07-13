@@ -676,6 +676,13 @@ function assertConfigCompatibility(src) {
 	    !mod.daeRuntimeActive({ evidence: { proxy: { daed_process: true } } })) {
 		fail('configForm.js must detect running dae/daed processes from new Rust and old C evidence');
 	}
+	if (!mod.daeRuntimeActive({ evidence: { dae: { runtime_active: true } } }) ||
+	    mod.daeRuntimeActive({ evidence: {
+		proxy: { runtime_active: true, daed_running: true },
+		dae: { runtime_active: false }
+	    } })) {
+		fail('configForm.js must prefer the fresh Rust runtime_active boolean over stale legacy process fields');
+	}
 	if (mod.daeRuntimeActive({ evidence: { collector: { rate_reason: 'dae_runtime_prefers_bpf' } } }) ||
 	    mod.daeRuntimeActive({ warnings: [ 'nss_dae_bpf_fallback_may_be_inaccurate' ] }) ||
 	    mod.daeRuntimeActive({ evidence: { dae: { dae_service: true, dae0: true } } })) {
@@ -841,6 +848,10 @@ function assertWarningAliases(src) {
 	    vocab.normalizeWarningId('dae_runtime_prefers_bpf') !== 'dae_runtime_prefers_bpf' ||
 	    vocab.warningText('nss_daed_prefers_bpf') !== vocab.warningText('dae_runtime_prefers_bpf')) {
 		fail('vocab.js must accept legacy dae warning IDs while normalizing rendered keys to the new Rust IDs');
+	}
+	if (vocab.warningText('dae_process_probe_failed') === 'dae process probe failed' ||
+	    vocab.warningClass('dae_process_probe_failed') !== 'label label-danger') {
+		fail('vocab.js must render the Rust /proc dae scan failure as a critical localized warning');
 	}
 }
 
@@ -1032,13 +1043,13 @@ function assertConfigView(src) {
 		fail('view/lanspeed/config.js must also detect NSS from runtime capabilities and NSS offload evidence');
 	}
 	if (!src.includes('function daeRuntimeActive(') ||
+	    !src.includes("typeof dae.runtime_active === 'boolean'") ||
 	    !src.includes('dae.dae_running') ||
 	    !src.includes('dae.daed_running')) {
-		fail('view/lanspeed/config.js must distinguish running dae/daed from installed config');
+		fail('view/lanspeed/config.js must prefer fresh Rust dae runtime state and retain legacy process fallback');
 	}
 	if (src.includes('dae.dae0 || dae.dae0peer') ||
-	    src.includes('dae.dae_service || dae.daed_service') ||
-	    src.includes('dae.runtime_active')) {
+	    src.includes('dae.dae_service || dae.daed_service')) {
 		fail('view/lanspeed/config.js must not treat stopped daed service or leftover dae0 as runtime-active daed');
 	}
 	if (!src.includes('NSS-direct') ||
@@ -1196,6 +1207,10 @@ function assertIfaceConfigThemeLayout(src) {
 	    ignoredPrefixes.some(function(prefix) { return !src.includes("'" + prefix + "'"); }) ||
 	    !src.includes('visibleDevices(viewState.sysdevices || {})')) {
 		fail('resources/lanspeed/ifaceConfig.js must hide every configured tunnel/proxy interface prefix defensively');
+	}
+	if (src.includes('WAN / WireGuard / TUN / nssifb') ||
+	    src.includes('WireGuard/TUN/VPN')) {
+		fail('resources/lanspeed/ifaceConfig.js must not recommend auto-hidden TUN interfaces as visible observe candidates');
 	}
 	if (src.includes('ifcfgSaveBtn') || src.includes("lsRpc.uciCommit('lanspeed')") ||
 	    src.includes('lsRpc.reload()')) {

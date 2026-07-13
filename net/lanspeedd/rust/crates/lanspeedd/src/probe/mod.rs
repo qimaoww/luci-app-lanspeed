@@ -1,6 +1,7 @@
 pub mod collector;
 pub mod commands;
 pub mod files;
+pub mod process;
 pub mod proxy;
 pub mod tc;
 
@@ -423,6 +424,7 @@ pub struct DaeEvidence {
     pub dae_process: bool,
     pub daed_process: bool,
     pub runtime_active: bool,
+    pub process_probe_error: Option<String>,
     pub dae0: bool,
     pub dae0peer: bool,
     pub tc_filters: Vec<TcFilter>,

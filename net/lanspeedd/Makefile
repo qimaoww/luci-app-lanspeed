@@ -31,6 +31,7 @@ define Package/lanspeedd-bpf
   SECTION:=net
   CATEGORY:=Network
   TITLE:=Optional BPF assets for lanspeedd
+  DEFAULT:=y if PACKAGE_luci-app-lanspeed && HAS_BPF_TOOLCHAIN
   DEPENDS:=+lanspeedd +libbpf +tc-tiny @HAS_BPF_TOOLCHAIN +@NEED_BPF_TOOLCHAIN
 endef
 

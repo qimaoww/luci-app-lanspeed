@@ -49,16 +49,17 @@ fn forced_and_auto_rate_modes_preserve_task10_selection_contract() {
     assert!(auto_nss.warnings.contains(&"nss_prefers_conntrack_sync"));
 
     facts.proxy.daed_running = true;
+    facts.proxy.runtime_active = true;
     let daed_auto = select_collectors(&config, &facts, &healthy());
     assert_eq!(daed_auto.rate, RateCollector::Bpf);
-    assert!(daed_auto.warnings.contains(&"nss_daed_prefers_bpf"));
+    assert!(daed_auto.warnings.contains(&"dae_runtime_prefers_bpf"));
 
     config.rate_collector_mode = RateCollectorMode::NssEcmDirect;
     let forced_direct = select_collectors(&config, &facts, &healthy());
     assert_eq!(forced_direct.rate, RateCollector::NssEcmDirect);
     assert!(!forced_direct.nss_direct_overlay);
     assert!(forced_direct.nss_sync_secondary);
-    assert!(!forced_direct.warnings.contains(&"nss_daed_prefers_bpf"));
+    assert!(!forced_direct.warnings.contains(&"dae_runtime_prefers_bpf"));
 
     facts.nss.direct_state_readable = false;
     let direct_fallback = select_collectors(&config, &facts, &healthy());
@@ -78,6 +79,40 @@ fn forced_and_auto_rate_modes_preserve_task10_selection_contract() {
         select_collectors(&config, &facts, &healthy()).rate,
         RateCollector::Bpf
     );
+}
+
+#[test]
+fn only_fresh_runtime_active_state_controls_dae_collector_policy() {
+    let mut config = RuntimeConfig::default();
+    config.enable_bpf = true;
+    config.enable_conntrack_fallback = true;
+    let mut facts = bpf_facts();
+    facts.nss.present = true;
+    facts.nss.ecm_active = true;
+    facts.nss.direct_state_readable = true;
+    facts.proxy.dae_running = true;
+    facts.proxy.daed_running = true;
+    facts.proxy.dae_process = true;
+    facts.proxy.daed_process = true;
+    facts.proxy.runtime_active = false;
+
+    let stale = select_collectors(&config, &facts, &healthy());
+    assert_eq!(stale.rate, RateCollector::NssConntrackSync);
+    assert!(!stale.warnings.contains(&"dae_runtime_prefers_bpf"));
+    assert!(!stale
+        .warnings
+        .contains(&"nss_dae_bpf_fallback_may_be_inaccurate"));
+
+    facts.proxy.runtime_active = true;
+    let fresh = select_collectors(&config, &facts, &healthy());
+    assert_eq!(fresh.rate, RateCollector::Bpf);
+    assert_eq!(fresh.evidence.rate_reason, "dae_runtime_prefers_bpf");
+    assert!(fresh.warnings.contains(&"dae_runtime_prefers_bpf"));
+
+    config.rate_collector_mode = RateCollectorMode::NssEcmDirect;
+    let forced = select_collectors(&config, &facts, &healthy());
+    assert_eq!(forced.rate, RateCollector::NssEcmDirect);
+    assert!(!forced.warnings.contains(&"dae_runtime_prefers_bpf"));
 }
 
 #[test]
@@ -111,6 +146,49 @@ fn auto_uses_readable_nss_direct_when_accounting_disables_sync() {
         select_collectors(&config, &facts, &no_bpf).rate,
         RateCollector::NssEcmDirect
     );
+}
+
+#[test]
+fn dae_runtime_prefers_early_bpf_in_auto_mode_on_non_nss_devices() {
+    let mut config = RuntimeConfig::default();
+    config.enable_bpf = true;
+    config.enable_conntrack_fallback = true;
+    let mut facts = bpf_facts();
+    facts.proxy.dae_process = true;
+    facts.proxy.runtime_active = true;
+    let mut runtime = healthy();
+    runtime.dae_early_bpf = true;
+
+    let decision = select_collectors(&config, &facts, &runtime);
+    assert_eq!(decision.rate, RateCollector::Bpf);
+    assert_eq!(decision.evidence.rate_reason, "dae_runtime_prefers_bpf");
+    assert!(decision.warnings.contains(&"dae_runtime_prefers_bpf"));
+    assert!(decision.evidence.dae_early_bpf);
+}
+
+#[test]
+fn nss_fallback_uses_the_dae_runtime_warning_when_bpf_is_unavailable() {
+    let mut config = RuntimeConfig::default();
+    config.enable_bpf = true;
+    config.enable_conntrack_fallback = true;
+    let mut facts = bpf_facts();
+    facts.proxy.daed_process = true;
+    facts.proxy.runtime_active = true;
+    facts.nss.present = true;
+    facts.nss.ecm_active = true;
+    let mut runtime = healthy();
+    runtime.bpf_attached = false;
+    runtime.bpf_map_read_ok = false;
+    runtime.nss_sync_read_ok = Some(true);
+
+    let decision = select_collectors(&config, &facts, &runtime);
+    assert_eq!(decision.rate, RateCollector::NssConntrackSync);
+    assert!(decision
+        .warnings
+        .contains(&"nss_dae_bpf_fallback_may_be_inaccurate"));
+    assert!(!decision
+        .warnings
+        .contains(&"nss_daed_nss_fallback_may_be_inaccurate"));
 }
 
 #[test]

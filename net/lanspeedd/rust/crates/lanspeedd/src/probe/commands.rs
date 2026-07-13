@@ -47,7 +47,6 @@ pub enum ReadOnlyCommand {
     UbusNetworkLanStatus,
     UbusServiceDae,
     UbusServiceDaed,
-    Pidof,
 }
 
 impl ReadOnlyCommand {
@@ -59,7 +58,6 @@ impl ReadOnlyCommand {
             Self::NftListFlowtables | Self::NftDaeDnsUdp53 => "nft",
             Self::IpRuleShow | Self::IpRouteShow => "ip",
             Self::UbusNetworkLanStatus | Self::UbusServiceDae | Self::UbusServiceDaed => "ubus",
-            Self::Pidof => "pidof",
         }
     }
 
@@ -76,7 +74,7 @@ impl ReadOnlyCommand {
             Self::UbusNetworkLanStatus => &["call", "network.interface.lan", "status"],
             Self::UbusServiceDae => &["call", "service", "list", "{\"name\":\"dae\"}"],
             Self::UbusServiceDaed => &["call", "service", "list", "{\"name\":\"daed\"}"],
-            Self::IpRouteShow | Self::Pidof => &[],
+            Self::IpRouteShow => &[],
         }
     }
 
@@ -112,9 +110,6 @@ impl ReadOnlyCommand {
             Self::UbusNetworkLanStatus => "ubus_network_lan_status".into(),
             Self::UbusServiceDae => "ubus_service_dae".into(),
             Self::UbusServiceDaed => "ubus_service_daed".into(),
-            Self::Pidof if args.first() == Some(&"dae") => "pidof_dae".into(),
-            Self::Pidof if args.first() == Some(&"daed") => "pidof_daed".into(),
-            Self::Pidof => "pidof".into(),
         }
     }
 }
@@ -378,7 +373,6 @@ pub fn validate_read_only_args(command: ReadOnlyCommand, args: &[&str]) -> io::R
         ReadOnlyCommand::UbusNetworkLanStatus
         | ReadOnlyCommand::UbusServiceDae
         | ReadOnlyCommand::UbusServiceDaed => args.is_empty(),
-        ReadOnlyCommand::Pidof => args.len() == 1 && matches!(args[0], "dae" | "daed"),
         _ => args.is_empty(),
     };
     if valid {

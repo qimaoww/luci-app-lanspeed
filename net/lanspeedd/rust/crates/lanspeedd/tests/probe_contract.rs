@@ -827,6 +827,7 @@ fn nss_presence_does_not_invent_the_firewall_hardware_offload_flag() {
     observations.nss.present = true;
     observations.nss.ecm_active = true;
     observations.proxy.daed_running = true;
+    observations.proxy.daed_process = true;
     let runtime = ProbeRuntimeHealth {
         bpf_object_loaded: true,
         bpf_attached: true,
@@ -840,7 +841,7 @@ fn nss_presence_does_not_invent_the_firewall_hardware_offload_flag() {
     assert!(!report
         .warnings
         .contains(&"hardware_flow_offload_unsupported"));
-    assert!(report.warnings.contains(&"nss_daed_prefers_bpf"));
+    assert!(report.warnings.contains(&"dae_runtime_prefers_bpf"));
 }
 
 #[test]
@@ -870,7 +871,8 @@ struct FakeCommands {
 impl CommandRunner for FakeCommands {
     type Error = String;
     fn available(&mut self, command: ReadOnlyCommand) -> Result<bool, Self::Error> {
-        Ok(!matches!(command, ReadOnlyCommand::Pidof))
+        let _ = command;
+        Ok(true)
     }
     fn run(
         &mut self,

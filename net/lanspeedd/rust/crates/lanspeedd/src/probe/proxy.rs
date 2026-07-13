@@ -43,10 +43,7 @@ pub fn evaluate(
         || observation.dae_route_table
         || observation.dae_dns_udp53
         || dae_filter;
-    let runtime_active = observation.dae_running
-        || observation.daed_running
-        || observation.dae_process
-        || observation.daed_process;
+    let runtime_active = observation.dae_process || observation.daed_process;
     let facts = ProxyFacts {
         openclash: observation.openclash_installed,
         openclash_fake_ip: fake_ip,
@@ -95,6 +92,7 @@ pub fn evaluate(
             dae_process: observation.dae_process,
             daed_process: observation.daed_process,
             runtime_active,
+            process_probe_error: None,
             dae0: observation.dae_iface,
             dae0peer: observation.dae_peer_iface,
             tc_filters: filters.iter().filter(|filter| filter.owner == "dae").cloned().collect(),

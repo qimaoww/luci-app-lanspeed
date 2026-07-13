@@ -406,22 +406,6 @@ where
                     && (result.stdout.contains("dae") || result.stdout.contains("0x8000000"));
             }
         }
-        for process in ["dae", "daed"] {
-            if let Some(result) = self.command(
-                ReadOnlyCommand::Pidof,
-                &[process],
-                &format!("pidof {process}"),
-                &mut evidence,
-                &mut observations.probe_error,
-            ) {
-                let running = result.exit_code == Some(0) && !result.stdout.trim().is_empty();
-                if process == "dae" {
-                    observations.proxy.dae_process = running;
-                } else {
-                    observations.proxy.daed_process = running;
-                }
-            }
-        }
         if let Some(result) = self.command(
             ReadOnlyCommand::IpRuleShow,
             &[],
@@ -495,10 +479,7 @@ where
     ) -> Option<CommandResult> {
         match self.commands.run(command, args) {
             Ok(result) => {
-                let nonzero_is_error = !matches!(
-                    command,
-                    ReadOnlyCommand::Pidof | ReadOnlyCommand::TcFilterShow
-                );
+                let nonzero_is_error = command != ReadOnlyCommand::TcFilterShow;
                 let optional_truncation =
                     command == ReadOnlyCommand::NftDaeDnsUdp53 && result.output_truncated;
                 let failed = (nonzero_is_error && result.exit_code != Some(0))

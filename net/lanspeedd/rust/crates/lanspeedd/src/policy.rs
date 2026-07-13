@@ -116,14 +116,9 @@ pub fn select_collectors(
         && facts.nss.ecm_active
         && facts.nss.direct_state_readable
         && runtime.nss_direct_read_ok.unwrap_or(true);
-    let daed_active = facts.proxy.dae_running
-        || facts.proxy.daed_running
-        || facts.proxy.dae_process
-        || facts.proxy.daed_process;
-    let daed_prefers_bpf = config.rate_collector_mode == RateCollectorMode::Auto
-        && facts.nss.present
-        && daed_active
-        && bpf_full;
+    let dae_active = facts.proxy.runtime_active;
+    let dae_prefers_bpf =
+        config.rate_collector_mode == RateCollectorMode::Auto && dae_active && bpf_full;
 
     let (rate, rate_reason) = match config.rate_collector_mode {
         RateCollectorMode::Bpf => {
@@ -159,8 +154,8 @@ pub fn select_collectors(
             }
         }
         RateCollectorMode::Auto => {
-            if daed_prefers_bpf {
-                (RateCollector::Bpf, "nss_daed_prefers_bpf")
+            if dae_prefers_bpf {
+                (RateCollector::Bpf, "dae_runtime_prefers_bpf")
             } else if nss_sync {
                 (RateCollector::NssConntrackSync, "nss_sync_preferred")
             } else if nss_direct {
@@ -175,7 +170,7 @@ pub fn select_collectors(
     let nss_direct_overlay = nss_direct
         && rate == RateCollector::NssConntrackSync
         && config.rate_collector_mode == RateCollectorMode::Auto
-        && !daed_prefers_bpf;
+        && !dae_prefers_bpf;
     let nss_sync_secondary = rate == RateCollector::NssEcmDirect && nss_sync;
 
     match rate {
@@ -185,12 +180,12 @@ pub fn select_collectors(
             if bpf_full {
                 push_unique(&mut warnings, "nss_prefers_conntrack_sync");
             }
-            if facts.nss.present && daed_active && !bpf_full {
-                push_unique(&mut warnings, "nss_daed_nss_fallback_may_be_inaccurate");
+            if facts.nss.present && dae_active && !bpf_full {
+                push_unique(&mut warnings, "nss_dae_bpf_fallback_may_be_inaccurate");
             }
         }
-        RateCollector::Bpf if daed_prefers_bpf => {
-            push_unique(&mut warnings, "nss_daed_prefers_bpf")
+        RateCollector::Bpf if dae_prefers_bpf => {
+            push_unique(&mut warnings, "dae_runtime_prefers_bpf")
         }
         _ => {}
     }
@@ -279,7 +274,8 @@ pub fn select_collectors(
         evidence: PolicyEvidence {
             rate_reason,
             connection_reason,
-            dae_early_bpf: facts.tc.dae_preempts_lan_ingress && runtime.dae_early_bpf,
+            dae_early_bpf: (facts.tc.dae_preempts_lan_ingress || dae_active)
+                && runtime.dae_early_bpf,
             runtime_error: runtime.runtime_error.clone(),
             retained_fresh_snapshot,
             bpf_snapshot_clients: runtime.bpf_snapshot_clients,

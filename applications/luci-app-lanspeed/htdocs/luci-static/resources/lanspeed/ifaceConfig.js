@@ -81,10 +81,10 @@ function renderIfaceConfig(viewState) {
 		}
 		var modes = [
 			{ k: 'off',     t: _('关闭'), title: _('不挂载、不显示') },
-			{ k: 'observe', t: _('观察'), title: _('只读接口计数，不 attach BPF；适合 WAN / WireGuard / TUN / nssifb') },
+			{ k: 'observe', t: _('观察'), title: _('只读接口计数，不 attach BPF；适合 WAN / WireGuard / nssifb') },
 			{ k: 'collect', t: _('采集'),
 			  title: !isCollectable
-			    ? _('该接口不是推荐的 LAN 二层采集点；WireGuard/TUN/VPN 请改为“观察”。')
+			    ? _('该接口不是推荐的 LAN 二层采集点；WireGuard/VPN 请改为“观察”。')
 			    : _('挂 BPF filter，按客户端拆速率') }
 		];
 		modes.forEach(function(m) {

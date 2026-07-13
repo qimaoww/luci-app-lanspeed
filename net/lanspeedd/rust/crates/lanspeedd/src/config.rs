@@ -14,6 +14,32 @@ pub const MAX_INTERFACE_NAME_LEN: usize = 32;
 
 const CONFIG_PREFIX: &str = "lanspeed.main.";
 
+pub const AUTO_IGNORED_INTERFACE_PREFIXES: [&str; 10] = [
+    "dae",
+    "miireg",
+    "tun",
+    "erspan",
+    "gretap",
+    "gre",
+    "ip6gre",
+    "ip6tnl",
+    "sit",
+    "bonding_masters",
+];
+
+pub fn is_auto_ignored_interface(name: &str) -> bool {
+    AUTO_IGNORED_INTERFACE_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
+
+pub fn is_sysdevice_candidate(name: &str) -> bool {
+    valid_interface_name(name)
+        && name != "lo"
+        && !name.starts_with("teql")
+        && !is_auto_ignored_interface(name)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RateCollectorMode {
     Auto,
@@ -113,10 +139,8 @@ pub struct LegacyNameEligibility;
 
 impl InterfaceEligibility for LegacyNameEligibility {
     fn is_collect_eligible(&self, name: &str) -> bool {
-        name != "dae0"
-            && name != "dae0peer"
+        !is_auto_ignored_interface(name)
             && name != "nssifb"
-            && !name.starts_with("tun")
             && !name.starts_with("ppp")
             && !name.starts_with("wg")
             && !name.starts_with("wan")
@@ -288,7 +312,10 @@ impl RuntimeConfig {
             push_unique_bounded(&mut config.interface_exclude, value);
         }
         for value in list(source, "observe")? {
-            if config.ifnames.contains(&value) || config.interface_include.contains(&value) {
+            if is_auto_ignored_interface(&value)
+                || config.ifnames.contains(&value)
+                || config.interface_include.contains(&value)
+            {
                 continue;
             }
             push_unique_bounded(&mut config.observe_ifnames, value);
