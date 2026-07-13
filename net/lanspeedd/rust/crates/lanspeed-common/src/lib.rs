@@ -1,5 +1,6 @@
 #![no_std]
 
+pub mod accounting;
 pub mod packet;
 
 pub const CLIENTS_MAP_NAME: &str = "lanspeed_clients";

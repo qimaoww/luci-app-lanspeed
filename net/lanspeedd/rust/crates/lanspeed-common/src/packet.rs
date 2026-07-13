@@ -8,8 +8,18 @@ const UDP_HEADER_LEN: usize = 8;
 
 const ETHERTYPE_IPV4: u16 = 0x0800;
 const ETHERTYPE_IPV6: u16 = 0x86dd;
+const ETHERTYPE_VLAN: u16 = 0x8100;
+const ETHERTYPE_VLAN_AD: u16 = 0x88a8;
+const IPPROTO_HOPOPTS: u8 = 0;
 const IPPROTO_TCP: u8 = 6;
 const IPPROTO_UDP: u8 = 17;
+const IPPROTO_ROUTING: u8 = 43;
+const IPPROTO_FRAGMENT: u8 = 44;
+const IPPROTO_ESP: u8 = 50;
+const IPPROTO_AH: u8 = 51;
+const IPPROTO_NONE: u8 = 59;
+const IPPROTO_DSTOPTS: u8 = 60;
+const MAX_IPV6_EXTENSION_HEADERS: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -60,6 +70,143 @@ pub fn vlan_zone(tci: u16) -> u16 {
 
 pub fn is_valid_client_mac(mac: [u8; 6]) -> bool {
     mac[0] & 1 == 0 && mac != [0; 6] && mac != [0xff; 6]
+}
+
+/// Returns the L2+L3+L4 bytes repeated for each segment represented by a GRO skb.
+///
+/// The caller supplies a bounded packet prefix. Unsupported or truncated
+/// layouts return `None` so accounting can retain the legacy one-skb delta.
+pub fn gro_repeated_header_len(frame: &[u8]) -> Option<u16> {
+    if frame.len() < ETHERNET_HEADER_LEN {
+        return None;
+    }
+
+    let mut network_offset = ETHERNET_HEADER_LEN;
+    let mut ethertype = read_u16(frame, 12)?;
+    if is_vlan_ethertype(ethertype) {
+        ethertype = vlan_inner_ethertype(frame, network_offset)?;
+        network_offset += 4;
+        if is_vlan_ethertype(ethertype) {
+            ethertype = vlan_inner_ethertype(frame, network_offset)?;
+            network_offset += 4;
+            if is_vlan_ethertype(ethertype) {
+                return None;
+            }
+        }
+    }
+
+    let header_len = match ethertype {
+        ETHERTYPE_IPV4 => gro_ipv4_header_len(frame, network_offset)?,
+        ETHERTYPE_IPV6 => gro_ipv6_header_len(frame, network_offset)?,
+        _ => return None,
+    };
+    u16::try_from(header_len).ok()
+}
+
+fn is_vlan_ethertype(ethertype: u16) -> bool {
+    ethertype == ETHERTYPE_VLAN || ethertype == ETHERTYPE_VLAN_AD
+}
+
+fn vlan_inner_ethertype(frame: &[u8], offset: usize) -> Option<u16> {
+    checked_end(frame, offset, 4)?;
+    read_u16(frame, offset + 2)
+}
+
+fn gro_ipv4_header_len(frame: &[u8], offset: usize) -> Option<usize> {
+    checked_end(frame, offset, IPV4_MIN_HEADER_LEN)?;
+    let version_ihl = frame[offset];
+    if version_ihl >> 4 != 4 {
+        return None;
+    }
+    let ihl_words = version_ihl & 0x0f;
+    if ihl_words < 5 {
+        return None;
+    }
+    let transport_offset = offset.checked_add(usize::from(ihl_words) * 4)?;
+    if transport_offset > frame.len() {
+        return None;
+    }
+    if read_u16(frame, offset + 6)? & 0x1fff != 0 {
+        return None;
+    }
+    gro_transport_header_end(frame, transport_offset, frame[offset + 9])
+}
+
+fn gro_ipv6_header_len(frame: &[u8], offset: usize) -> Option<usize> {
+    let mut transport_offset = checked_end(frame, offset, IPV6_HEADER_LEN)?;
+    if frame[offset] >> 4 != 6 {
+        return None;
+    }
+    let mut next_header = frame[offset + 6];
+
+    for extension_count in 0..=MAX_IPV6_EXTENSION_HEADERS {
+        match next_header {
+            IPPROTO_TCP | IPPROTO_UDP => {
+                return gro_transport_header_end(frame, transport_offset, next_header);
+            }
+            IPPROTO_HOPOPTS | IPPROTO_ROUTING | IPPROTO_DSTOPTS => {
+                if extension_count == MAX_IPV6_EXTENSION_HEADERS {
+                    return None;
+                }
+                checked_end(frame, transport_offset, 2)?;
+                next_header = frame[transport_offset];
+                let extension_len = (usize::from(frame[transport_offset + 1]) + 1) * 8;
+                transport_offset = checked_end(frame, transport_offset, extension_len)?;
+            }
+            IPPROTO_FRAGMENT => {
+                if extension_count == MAX_IPV6_EXTENSION_HEADERS {
+                    return None;
+                }
+                checked_end(frame, transport_offset, 8)?;
+                if read_u16(frame, transport_offset + 2)? & 0xfff8 != 0 {
+                    return None;
+                }
+                next_header = frame[transport_offset];
+                transport_offset += 8;
+            }
+            IPPROTO_AH => {
+                if extension_count == MAX_IPV6_EXTENSION_HEADERS {
+                    return None;
+                }
+                checked_end(frame, transport_offset, 2)?;
+                next_header = frame[transport_offset];
+                let extension_len = (usize::from(frame[transport_offset + 1]) + 2) * 4;
+                transport_offset = checked_end(frame, transport_offset, extension_len)?;
+            }
+            IPPROTO_ESP | IPPROTO_NONE => return None,
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn gro_transport_header_end(frame: &[u8], offset: usize, protocol: u8) -> Option<usize> {
+    match protocol {
+        IPPROTO_TCP => {
+            checked_end(frame, offset, TCP_MIN_HEADER_LEN)?;
+            let data_offset_words = frame[offset + 12] >> 4;
+            if data_offset_words < 5 {
+                return None;
+            }
+            checked_end(frame, offset, usize::from(data_offset_words) * 4)
+        }
+        IPPROTO_UDP => checked_end(frame, offset, UDP_HEADER_LEN),
+        _ => None,
+    }
+}
+
+fn read_u16(frame: &[u8], offset: usize) -> Option<u16> {
+    checked_end(frame, offset, 2)?;
+    Some(u16::from_be_bytes([frame[offset], frame[offset + 1]]))
+}
+
+fn checked_end(frame: &[u8], offset: usize, len: usize) -> Option<usize> {
+    let end = offset.checked_add(len)?;
+    if end <= frame.len() {
+        Some(end)
+    } else {
+        None
+    }
 }
 
 pub fn parse_packet(frame: &[u8]) -> Result<PacketIdentity, ParseError> {

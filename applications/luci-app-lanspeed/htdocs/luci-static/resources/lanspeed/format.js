@@ -131,13 +131,18 @@ function sumTotals(clients, config) {
 	return { tx: tx, rx: rx, active: active };
 }
 
-function sortClients(clients, sortKey, sortDir) {
+function sortClients(clients, sortKey, sortDir, nowMs, config) {
 	var sorted = clients.slice();
+	var latestSample = Number(nowMs) || latestClientSampleMs(sorted);
 	var direction = sortDir === 'asc' || sortDir === 'desc'
 		? sortDir
 		: defaultSortDirection(sortKey);
 	sorted.sort(function(a, b) {
+		var aActive = isActiveClient(a, latestSample, config);
+		var bActive = isActiveClient(b, latestSample, config);
 		var r, av, bv;
+		if (aActive !== bActive)
+			return aActive ? -1 : 1;
 		if (sortKey === 'hostname')       r = compareText(clientDisplayName(a), clientDisplayName(b));
 		else if (sortKey === 'mac')       r = compareText(a.mac, b.mac);
 		else if (sortKey === 'tx')        r = (Number(a.tx_bps) || 0) - (Number(b.tx_bps) || 0);

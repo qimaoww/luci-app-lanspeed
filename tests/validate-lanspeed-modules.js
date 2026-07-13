@@ -432,6 +432,126 @@ function assertFormatSorting(src) {
 		fail('format.js must sort client names in both directions');
 	}
 
+	const activeIds = {
+		a: 'active-a@lan', b: 'active-b@lan', c: 'active-c@lan',
+		d: 'active-d@lan', missing: 'active-missing@lan'
+	};
+	const inactiveIds = {
+		a: 'inactive-a@lan', b: 'inactive-b@lan', low: 'inactive-low@lan',
+		high: 'inactive-high@lan', missing: 'inactive-missing@lan'
+	};
+	const mixedActivity = [
+		{
+			identity_key: inactiveIds.high, hostname: 'zzzz', mac: '00:00:00:00:00:ff',
+			sample_ms: 20000, last_seen: 9000, tx_bps: 100, rx_bps: 1000,
+			tcp_conns: 9, udp_conns: 9
+		},
+		{
+			identity_key: activeIds.b, hostname: 'Mike', mac: '00:00:00:00:00:30',
+			sample_ms: 20000, last_seen: 19000, tx_bps: 30, rx_bps: 200,
+			tcp_conns: 3, udp_conns: 1
+		},
+		{
+			identity_key: inactiveIds.low, hostname: 'Aardvark', mac: '00:00:00:00:00:00',
+			sample_ms: 20000, last_seen: 9000, tx_bps: 1, rx_bps: 1,
+			tcp_conns: 0, udp_conns: 0
+		},
+		{
+			identity_key: activeIds.missing, hostname: 'Tango', mac: '00:00:00:00:00:20',
+			sample_ms: 20000, last_seen: 19000, tx_bps: 10, rx_bps: 400
+		},
+		{
+			identity_key: inactiveIds.b, hostname: 'November', mac: '00:00:00:00:00:70',
+			sample_ms: 20000, last_seen: 9000, tx_bps: 70, rx_bps: 700,
+			tcp_conns: 7, udp_conns: 7
+		},
+		{
+			identity_key: activeIds.c, hostname: 'Alpha', mac: '00:00:00:00:00:40',
+			sample_ms: 20000, last_seen: 19000, tx_bps: 20, rx_bps: 300,
+			tcp_conns: 1, udp_conns: 3
+		},
+		{
+			identity_key: inactiveIds.missing, hostname: 'Oscar', mac: '00:00:00:00:00:80',
+			sample_ms: 20000, last_seen: 9000, tx_bps: 80, rx_bps: 800
+		},
+		{
+			identity_key: activeIds.a, hostname: 'Mike', mac: '00:00:00:00:00:30',
+			sample_ms: 20000, last_seen: 19000, tx_bps: 30, rx_bps: 200,
+			tcp_conns: 3, udp_conns: 1
+		},
+		{
+			identity_key: inactiveIds.a, hostname: 'November', mac: '00:00:00:00:00:70',
+			sample_ms: 20000, last_seen: 9000, tx_bps: 70, rx_bps: 700,
+			tcp_conns: 7, udp_conns: 7
+		},
+		{
+			identity_key: activeIds.d, hostname: 'Zulu', mac: '00:00:00:00:00:10',
+			sample_ms: 20000, last_seen: 19000, tx_bps: 40, rx_bps: 100,
+			tcp_conns: 2, udp_conns: 2
+		}
+	];
+	const activeCfg = { activeWindowMs: 10000, activeMinBps: 1 };
+	const activeOrders = {
+		hostname: {
+			asc: [ activeIds.c, activeIds.a, activeIds.b, activeIds.missing, activeIds.d ],
+			desc: [ activeIds.d, activeIds.missing, activeIds.a, activeIds.b, activeIds.c ]
+		},
+		mac: {
+			asc: [ activeIds.d, activeIds.missing, activeIds.a, activeIds.b, activeIds.c ],
+			desc: [ activeIds.c, activeIds.a, activeIds.b, activeIds.missing, activeIds.d ]
+		},
+		tx: {
+			asc: [ activeIds.missing, activeIds.c, activeIds.a, activeIds.b, activeIds.d ],
+			desc: [ activeIds.d, activeIds.a, activeIds.b, activeIds.c, activeIds.missing ]
+		},
+		rx: {
+			asc: [ activeIds.d, activeIds.a, activeIds.b, activeIds.c, activeIds.missing ],
+			desc: [ activeIds.missing, activeIds.c, activeIds.a, activeIds.b, activeIds.d ]
+		},
+		tcp_conns: {
+			asc: [ activeIds.c, activeIds.d, activeIds.a, activeIds.b, activeIds.missing ],
+			desc: [ activeIds.a, activeIds.b, activeIds.d, activeIds.c, activeIds.missing ]
+		},
+		udp_conns: {
+			asc: [ activeIds.a, activeIds.b, activeIds.d, activeIds.c, activeIds.missing ],
+			desc: [ activeIds.c, activeIds.d, activeIds.a, activeIds.b, activeIds.missing ]
+		}
+	};
+	const inactiveOrders = {
+		known: {
+			asc: [ inactiveIds.low, inactiveIds.a, inactiveIds.b, inactiveIds.missing, inactiveIds.high ],
+			desc: [ inactiveIds.high, inactiveIds.missing, inactiveIds.a, inactiveIds.b, inactiveIds.low ]
+		},
+		connections: {
+			asc: [ inactiveIds.low, inactiveIds.a, inactiveIds.b, inactiveIds.high, inactiveIds.missing ],
+			desc: [ inactiveIds.high, inactiveIds.a, inactiveIds.b, inactiveIds.low, inactiveIds.missing ]
+		}
+	};
+
+	Object.keys(activeOrders).forEach(function(sortKey) {
+		[ 'asc', 'desc' ].forEach(function(sortDir) {
+			const sorted = fmt.sortClients(mixedActivity, sortKey, sortDir, 20000, activeCfg);
+			const connectionSort = sortKey === 'tcp_conns' || sortKey === 'udp_conns';
+			const expected = activeOrders[sortKey][sortDir].concat(
+				inactiveOrders[connectionSort ? 'connections' : 'known'][sortDir]);
+			let sawInactive = false;
+			let activeAfterInactive = false;
+			sorted.forEach(function(client) {
+				if (fmt.isActiveClient(client, 20000, activeCfg)) {
+					if (sawInactive) activeAfterInactive = true;
+				} else {
+					sawInactive = true;
+				}
+			});
+			if (activeAfterInactive) {
+				fail(`format.js must keep every active client before inactive clients for ${sortKey} ${sortDir}`);
+			}
+			if (identities(sorted) !== expected.join(',')) {
+				fail(`format.js must sort ${sortKey} ${sortDir} inside activity groups with identity_key tie-breaking`);
+			}
+		});
+	});
+
 	const withMissingConnections = clients.concat([
 		{ identity_key: 'missing@lan', hostname: 'Missing', mac: '00:00:00:00:00:03', tx_bps: 10, rx_bps: 10 }
 	]);
@@ -1607,7 +1727,7 @@ function assertStatusRefreshModule(src) {
 	    !src.includes('nssPanel.render(refs, status)')) {
 		fail('lanspeed/statusRefresh.js must own status page live refresh rendering');
 	}
-	if (!src.includes('fmt.sortClients(filtered, prefs.sortKey, prefs.sortDir)') ||
+	if (!src.includes('fmt.sortClients(filtered, prefs.sortKey, prefs.sortDir, latestSample, activeCfg)') ||
 	    !src.includes('var active = prefs.sortCustom && prefs.sortKey === sortKey;') ||
 	    !src.includes("setAttribute('aria-sort'") ||
 	    !src.includes("ascending ? '↑' : '↓'")) {

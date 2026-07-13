@@ -150,7 +150,7 @@ function refreshLive(viewState) {
 		if (prefs.activeOnly && !fmt.isActiveClient(c, latestSample, activeCfg)) return false;
 		return true;
 	});
-	var sorted = fmt.sortClients(filtered, prefs.sortKey, prefs.sortDir);
+	var sorted = fmt.sortClients(filtered, prefs.sortKey, prefs.sortDir, latestSample, activeCfg);
 	refreshSortHeaders(refs, prefs);
 
 	var summaryParts = [
