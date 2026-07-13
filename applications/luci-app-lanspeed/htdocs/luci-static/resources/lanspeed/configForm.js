@@ -2,6 +2,7 @@
 'require baseclass';
 'require uci';
 'require lanspeed.rpc as lsRpc';
+'require lanspeed.ifaceConfig as ifaceCfg';
 
 var DEFAULTS = {
 	rate_collector_mode: 'auto',
@@ -197,7 +198,7 @@ function isNssDevice(status) {
 	return false;
 }
 
-function daedRuntimeActive(status) {
+function daeRuntimeActive(status) {
 	var dae = statusDaedEvidence(status);
 	return !!(dae.dae_running || dae.daed_running ||
 		dae.dae_process || dae.daed_process);
@@ -245,26 +246,21 @@ function currentRateSourceText(status) {
 function nssRateHint(status) {
 	if (!isNssDevice(status))
 		return _('非 NSS 实时测速只使用 BPF。');
-	if (daedRuntimeActive(status))
+	if (daeRuntimeActive(status))
 		return _('自动：BPF 优先，NSS 备用。');
 	return _('自动：NSS sync 稳定来源，NSS-direct 有速率时补充。');
 }
 
 function applyRuntimeInfo(refs, status) {
-	var nss = isNssDevice(status);
 	var sourceText = currentRateSourceText(status);
 	var rateModeLabel = rateCollectorModesForStatus(status, refs.rateCollectorMode ? refs.rateCollectorMode.value : null);
 	var i;
 
 	refs.rateHint.textContent = nssRateHint(status);
 	refs.currentRateSource.textContent = sourceText;
-	refs.currentRateHint.textContent = daedRuntimeActive(status)
-		? _('daed 运行中，BPF 优先。')
+	refs.currentRateSourceWrap.title = daeRuntimeActive(status)
+		? _('dae/daed 运行中，BPF 优先。')
 		: _('daemon 当前选择。');
-	if (refs.nssRows) {
-		for (i = 0; i < refs.nssRows.length; i++)
-			refs.nssRows[i].style.display = nss ? '' : 'none';
-	}
 
 	if (refs.rateCollectorMode) {
 		for (i = 0; i < rateModeLabel.length; i++) {
@@ -278,15 +274,18 @@ function applyRuntimeInfo(refs, status) {
 		refs.rateCollectorMode.value = rateCollectorModeValue(refs.rateCollectorMode.value);
 	}
 
-	if (refs.rateBadge) {
-		refs.rateBadge.style.display = nss ? 'inline-flex' : 'none';
-		refs.rateBadge.textContent = daedRuntimeActive(status) ? _('NSS + daed') : 'NSS';
-	}
 }
 
-function setBusy(refs, busy) {
-	refs.saveBtn.disabled = busy;
-	refs.resetBtn.disabled = busy;
+function setBusy(viewState, busy) {
+	var daemonRefs = viewState.daemonRefs;
+	var saveRefs = viewState.saveRefs;
+
+	viewState.configSaving = busy;
+	if (saveRefs)
+		saveRefs.saveBtn.disabled = busy;
+	if (daemonRefs)
+		daemonRefs.resetBtn.disabled = busy;
+	ifaceCfg.setBusy(viewState, busy);
 }
 
 function readForm(refs) {
@@ -314,7 +313,8 @@ function fillForm(refs, values) {
 	refs.hideIpv6RangeInput.value = '';
 }
 
-function saveDaemonSettings(refs) {
+function prepareDaemonSave(viewState) {
+	var refs = viewState.daemonRefs;
 	var values = readForm(refs);
 	var uciValues = {
 		rate_collector_mode: values.rate_collector_mode,
@@ -327,36 +327,78 @@ function saveDaemonSettings(refs) {
 		hide_ipv6_ranges: values.hide_ipv6_ranges
 	};
 
-	setBusy(refs, true);
-	refs.status.textContent = _('保存中…');
+	return {
+		refs: refs,
+		values: values,
+		uciValues: uciValues
+	};
+}
 
-	return lsRpc.uciSet('lanspeed', 'main', uciValues)
+function applyDaemonSave(plan) {
+	return lsRpc.uciSet('lanspeed', 'main', plan.uciValues);
+}
+
+function saveAllSettings(viewState) {
+	var saveRefs = viewState.saveRefs;
+	var daemonPlan;
+	var ifacePlan;
+
+	if (viewState.configSaving)
+		return Promise.resolve(false);
+
+	try {
+		daemonPlan = prepareDaemonSave(viewState);
+		ifacePlan = ifaceCfg.prepareSave(viewState);
+	} catch (err) {
+		saveRefs.status.textContent = err && err.message || err;
+		return Promise.resolve(false);
+	}
+
+	setBusy(viewState, true);
+	saveRefs.status.textContent = _('保存中…');
+
+	return applyDaemonSave(daemonPlan)
+		.then(function() { return ifaceCfg.applySave(ifacePlan); })
 		.then(function() { return lsRpc.uciCommit('lanspeed'); })
 		.then(function() {
-			refs.status.textContent = _('重载 daemon…');
+			saveRefs.status.textContent = _('重载 daemon…');
 			return lsRpc.reload();
 		})
 		.then(function() {
-			fillForm(refs, values);
-			refs.status.textContent = _('已应用');
-			window.setTimeout(function() {
-				if (refs.status.textContent === _('已应用'))
-					refs.status.textContent = '';
-			}, 3000);
-		})
-		.catch(function(err) {
-			refs.status.textContent = _('保存失败: ') + (err && err.message || err);
+			return new Promise(function(resolve) { window.setTimeout(resolve, 1000); });
 		})
 		.then(function() {
-			setBusy(refs, false);
+			return Promise.all([
+				ifaceCfg.load(viewState),
+				lsRpc.status().catch(function() { return null; })
+			]);
+		})
+		.then(function(results) {
+			fillForm(daemonPlan.refs, daemonPlan.values);
+			if (results[1])
+				applyRuntimeInfo(daemonPlan.refs, results[1]);
+			saveRefs.status.textContent = _('已应用');
+			window.setTimeout(function() {
+				if (saveRefs.status.textContent === _('已应用'))
+					saveRefs.status.textContent = '';
+			}, 3000);
+			return true;
+		})
+		.catch(function(err) {
+			saveRefs.status.textContent = _('保存失败: ') + (err && err.message || err);
+			return false;
+		})
+		.then(function(result) {
+			setBusy(viewState, false);
+			return result;
 		});
 }
 
-function buildDaemonSection(values) {
+function buildDaemonSection(values, viewState) {
 	var refs = {};
+	viewState = viewState || {};
 
 	refs.rateCollectorMode = selectRateCollectorMode(values.rate_collector_mode, values.status || {});
-	refs.rateBadge = E('span', { 'class': 'lanspeed-rate-badge' }, 'NSS');
 	refs.connCollectorMode = selectConnCollectorMode(values.conn_collector_mode);
 	refs.activeWindow = inputNumber(values.active_client_window_ms, 1000, 0, 1000);
 	refs.activeMin = inputNumber(values.active_client_min_bps, 1, 0, 1);
@@ -392,22 +434,17 @@ function buildDaemonSection(values) {
 		])
 	]);
 	buildRangeList(refs, stringValue(values.hide_ipv6_ranges, DEFAULTS.hide_ipv6_ranges));
-	refs.status = E('span', { 'class': 'status' }, '');
 	refs.rateHint = E('td', { 'class': 'hint' }, '');
 	refs.currentRateSource = E('span', { 'class': 'key' }, '-');
-	refs.currentRateHint = E('td', { 'class': 'hint' }, '');
-	refs.saveBtn = E('button', {
-		'class': 'cbi-button cbi-button-apply',
-		'type': 'button'
-	}, _('保存并重载'));
+	refs.currentRateSourceWrap = E('span', { 'class': 'lanspeed-current-rate-source' }, [
+		E('span', { 'class': 'label' }, _('当前：')),
+		refs.currentRateSource
+	]);
 	refs.resetBtn = E('button', {
 		'class': 'cbi-button',
 		'type': 'button'
 	}, _('恢复默认值'));
 
-	refs.saveBtn.addEventListener('click', function() {
-		saveDaemonSettings(refs);
-	});
 	refs.resetBtn.addEventListener('click', function() {
 		fillForm(refs, DEFAULTS);
 	});
@@ -421,13 +458,7 @@ function buildDaemonSection(values) {
 		}
 	});
 
-	refs.nssRows = [
-		E('tr', { 'class': 'lanspeed-nss-config-only' }, [
-			E('td', {}, _('当前采集方式')),
-			E('td', { 'class': 'value' }, refs.currentRateSource),
-			refs.currentRateHint
-		])
-	];
+	viewState.daemonRefs = refs;
 	applyRuntimeInfo(refs, values.status || {});
 
 	return E('div', { 'class': 'cbi-section' }, [
@@ -446,11 +477,10 @@ function buildDaemonSection(values) {
 						E('td', {}, _('速率采集')),
 						E('td', { 'class': 'value rate' }, E('div', { 'class': 'lanspeed-rate-control' }, [
 							refs.rateCollectorMode,
-							refs.rateBadge
+							refs.currentRateSourceWrap
 						])),
 						refs.rateHint
 					]),
-					refs.nssRows[0],
 					E('tr', {}, [
 						E('td', {}, _('连接数采集')),
 						E('td', { 'class': 'value' }, refs.connCollectorMode),
@@ -484,12 +514,29 @@ function buildDaemonSection(values) {
 				])
 			]),
 			E('div', { 'class': 'lanspeed-config-actions' }, [
-				refs.saveBtn,
-				refs.resetBtn,
-				E('span', { 'class': 'spacer' }),
-				refs.status
+				refs.resetBtn
 			])
 		])
+		]);
+}
+
+function buildSaveSection(viewState) {
+	var refs = {};
+
+	refs.saveBtn = E('button', {
+		'class': 'cbi-button cbi-button-apply',
+		'type': 'button'
+	}, _('保存并重载'));
+	refs.status = E('span', { 'class': 'status' }, '');
+	refs.saveBtn.addEventListener('click', function() {
+		saveAllSettings(viewState);
+	});
+	viewState.saveRefs = refs;
+
+	return E('div', { 'class': 'lanspeed-page-actions' }, [
+		refs.status,
+		E('span', { 'class': 'spacer' }),
+		refs.saveBtn
 	]);
 }
 
@@ -526,7 +573,15 @@ return baseclass.extend({
 		return loadValues();
 	},
 
-	buildDaemonSection: function(values) {
-		return buildDaemonSection(values);
+	buildDaemonSection: function(values, viewState) {
+		return buildDaemonSection(values, viewState);
+	},
+
+	buildSaveSection: function(viewState) {
+		return buildSaveSection(viewState);
+	},
+
+	saveAll: function(viewState) {
+		return saveAllSettings(viewState);
 	}
 });

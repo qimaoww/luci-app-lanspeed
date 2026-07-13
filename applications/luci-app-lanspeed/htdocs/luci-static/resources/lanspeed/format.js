@@ -26,11 +26,15 @@ var REFRESH_CHOICES = [
 	{ value: 10000, label: '10s' }
 ];
 
+var SORT_KEYS = [ 'hostname', 'mac', 'tx', 'rx', 'tcp_conns', 'udp_conns' ];
+
 var DEFAULT_PREFS = {
 	refreshMs: 3000,
 	unit: 'bit',
 	activeOnly: false,
 	sortKey: 'rx',
+	sortDir: 'desc',
+	sortCustom: false,
 	paused: false,
 	ifaceExcluded: []
 };
@@ -42,6 +46,24 @@ function clientDisplayName(c) { return c.hostname || c.mac || identityOf(c); }
 
 function compareText(a, b) {
 	return String(a || '').localeCompare(String(b || ''), undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function defaultSortDirection(sortKey) {
+	return 'desc';
+}
+
+function nextSort(prefs, sortKey) {
+	if (!prefs.sortCustom || prefs.sortKey !== sortKey) {
+		return { sortKey: sortKey, sortDir: 'desc', sortCustom: true };
+	}
+	if (prefs.sortDir === 'desc') {
+		return { sortKey: sortKey, sortDir: 'asc', sortCustom: true };
+	}
+	return {
+		sortKey: DEFAULT_PREFS.sortKey,
+		sortDir: DEFAULT_PREFS.sortDir,
+		sortCustom: false
+	};
 }
 
 function formatRate(valueBps, unit) {
@@ -111,19 +133,25 @@ function sumTotals(clients, config) {
 	return { tx: tx, rx: rx, active: active };
 }
 
-function sortClients(clients, sortKey) {
+function sortClients(clients, sortKey, sortDir) {
 	var sorted = clients.slice();
+	var direction = sortDir === 'asc' || sortDir === 'desc'
+		? sortDir
+		: defaultSortDirection(sortKey);
 	sorted.sort(function(a, b) {
 		var r;
 		if (sortKey === 'hostname')       r = compareText(clientDisplayName(a), clientDisplayName(b));
 		else if (sortKey === 'mac')       r = compareText(a.mac, b.mac);
-		else if (sortKey === 'tx')        r = (Number(b.tx_bps) || 0) - (Number(a.tx_bps) || 0);
-		else if (sortKey === 'rx')        r = (Number(b.rx_bps) || 0) - (Number(a.rx_bps) || 0);
-		else if (sortKey === 'tcp_conns') r = (Number(b.tcp_conns) || -1) - (Number(a.tcp_conns) || -1);
-		else if (sortKey === 'udp_conns') r = (Number(b.udp_conns) || -1) - (Number(a.udp_conns) || -1);
-		else                              r = ((Number(b.tx_bps) || 0) + (Number(b.rx_bps) || 0)) -
-		                                      ((Number(a.tx_bps) || 0) + (Number(a.rx_bps) || 0));
-		return r || compareText(identityOf(a), identityOf(b));
+		else if (sortKey === 'tx')        r = (Number(a.tx_bps) || 0) - (Number(b.tx_bps) || 0);
+		else if (sortKey === 'rx')        r = (Number(a.rx_bps) || 0) - (Number(b.rx_bps) || 0);
+		else if (sortKey === 'tcp_conns') r = (typeof a.tcp_conns === 'number' ? a.tcp_conns : -1) -
+		                                      (typeof b.tcp_conns === 'number' ? b.tcp_conns : -1);
+		else if (sortKey === 'udp_conns') r = (typeof a.udp_conns === 'number' ? a.udp_conns : -1) -
+		                                      (typeof b.udp_conns === 'number' ? b.udp_conns : -1);
+		else                              r = ((Number(a.tx_bps) || 0) + (Number(a.rx_bps) || 0)) -
+		                                      ((Number(b.tx_bps) || 0) + (Number(b.rx_bps) || 0));
+		if (r) return direction === 'desc' ? -r : r;
+		return compareText(identityOf(a), identityOf(b));
 	});
 	return sorted;
 }
@@ -159,7 +187,20 @@ function loadPrefs() {
 	try {
 		var raw = window.localStorage.getItem(PREF_KEY);
 		if (!raw) return Object.assign({}, DEFAULT_PREFS);
-		return Object.assign({}, DEFAULT_PREFS, JSON.parse(raw));
+		var stored = JSON.parse(raw);
+		var prefs = Object.assign({}, DEFAULT_PREFS, stored);
+		if (SORT_KEYS.indexOf(prefs.sortKey) === -1)
+			prefs.sortKey = DEFAULT_PREFS.sortKey;
+		if (stored.sortDir !== 'asc' && stored.sortDir !== 'desc')
+			prefs.sortDir = defaultSortDirection(prefs.sortKey);
+		if (typeof stored.sortCustom !== 'boolean')
+			prefs.sortCustom = prefs.sortKey !== DEFAULT_PREFS.sortKey ||
+				prefs.sortDir !== DEFAULT_PREFS.sortDir;
+		if (!prefs.sortCustom) {
+			prefs.sortKey = DEFAULT_PREFS.sortKey;
+			prefs.sortDir = DEFAULT_PREFS.sortDir;
+		}
+		return prefs;
 	} catch (e) { return Object.assign({}, DEFAULT_PREFS); }
 }
 
@@ -175,6 +216,7 @@ return baseclass.extend({
 	DELTA_SIGNIFICANT_RATIO:   DELTA_SIGNIFICANT_RATIO,
 	DELTA_SIGNIFICANT_MIN_BPS: DELTA_SIGNIFICANT_MIN_BPS,
 	REFRESH_CHOICES:           REFRESH_CHOICES,
+	SORT_KEYS:                 SORT_KEYS,
 	DEFAULT_PREFS:             DEFAULT_PREFS,
 
 	asArray:           asArray,
@@ -182,6 +224,8 @@ return baseclass.extend({
 	identityOf:        identityOf,
 	clientDisplayName: clientDisplayName,
 	compareText:       compareText,
+	defaultSortDirection: defaultSortDirection,
+	nextSort:          nextSort,
 	formatRate:        formatRate,
 	clientSampleMs:    clientSampleMs,
 	latestClientSampleMs: latestClientSampleMs,

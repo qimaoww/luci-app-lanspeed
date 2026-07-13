@@ -6,19 +6,43 @@
 /*
  * LAN Speed interface configuration sub-panel.
  *
- * Owns the "scan sysdevices - render segmented toggles - save UCI + reload
- * daemon" flow.  Expects viewState.refs to contain the ifcfg* refs
- * populated by the shell builder or by buildSection(), and viewState.reload()
- * to be wired. The render/save flow owns the contents of refs.ifcfgGrid and
- * status/button state changes.
+ * Owns scanning sysdevices, rendering segmented toggles and staging interface
+ * UCI changes. The configuration form commits these changes together with the
+ * runtime settings and reloads the daemon once.
  */
+
+var AUTO_IGNORED_INTERFACE_PREFIXES = [
+	'dae', 'miireg', 'tun',
+	'erspan', 'gretap', 'gre',
+	'ip6gre', 'ip6tnl', 'sit',
+	'bonding_masters'
+];
+
+function isAutoIgnoredInterface(name) {
+	name = String(name || '');
+	for (var i = 0; i < AUTO_IGNORED_INTERFACE_PREFIXES.length; i++) {
+		if (name.indexOf(AUTO_IGNORED_INTERFACE_PREFIXES[i]) === 0)
+			return true;
+	}
+	return false;
+}
+
+function visibleDevices(data) {
+	return fmt.asArray(data && data.devices).filter(function(dev) {
+		return dev && !isAutoIgnoredInterface(dev.name);
+	});
+}
 
 function renderIfaceConfig(viewState) {
 	var refs = viewState.refs;
 	var data = viewState.sysdevices || { devices: [] };
-	var devs = fmt.asArray(data.devices);
-	var attachNow = fmt.asArray(data.current_ifnames);
-	var observeNow = fmt.asArray(data.current_observed);
+	var devs = visibleDevices(data);
+	var attachNow = fmt.asArray(data.current_ifnames).filter(function(name) {
+		return !isAutoIgnoredInterface(name);
+	});
+	var observeNow = fmt.asArray(data.current_observed).filter(function(name) {
+		return !isAutoIgnoredInterface(name);
+	});
 	var useTable = refs.ifcfgBody;
 
 	devs.sort(function(a, b) {
@@ -47,7 +71,7 @@ function renderIfaceConfig(viewState) {
 	function makeSeg(name) {
 		var wrap = E('div', { 'class': 'lanspeed-ifcfg-seg', 'data-name': name });
 		var isCollectable = false;
-		var scan = fmt.asArray((viewState.sysdevices || {}).devices);
+		var scan = visibleDevices(viewState.sysdevices || {});
 		for (var i = 0; i < scan.length; i++) {
 			if (scan[i].name === name) {
 				isCollectable = isCollectAllowed(scan[i]);
@@ -56,7 +80,7 @@ function renderIfaceConfig(viewState) {
 		}
 		var modes = [
 			{ k: 'off',     t: _('关闭'), title: _('不挂载、不显示') },
-			{ k: 'observe', t: _('观察'), title: _('只读接口计数，不 attach BPF；适合 WAN / WireGuard / TUN / nssifb') },
+			{ k: 'observe', t: _('观察'), title: _('只读接口计数，不 attach BPF；适合 WAN / WireGuard / nssifb') },
 			{ k: 'collect', t: _('采集'),
 			  title: !isCollectable
 			    ? _('该接口不是推荐的 LAN 二层采集点；WireGuard/TUN/VPN 请改为“观察”。')
@@ -134,9 +158,9 @@ function renderIfaceConfig(viewState) {
 
 function loadIfaceConfig(viewState) {
 	var refs = viewState.refs;
-	if (!refs || (!refs.ifcfgGrid && !refs.ifcfgBody)) return;
+	if (!refs || (!refs.ifcfgGrid && !refs.ifcfgBody)) return Promise.resolve();
 	refs.ifcfgStatus.textContent = _('读取中…');
-	lsRpc.sysdevices().then(function(data) {
+	return lsRpc.sysdevices().then(function(data) {
 		viewState.sysdevices = data || { devices: [], current_ifnames: [], current_observed: [] };
 		renderIfaceConfig(viewState);
 		refs.ifcfgStatus.textContent = '';
@@ -147,7 +171,7 @@ function loadIfaceConfig(viewState) {
 
 function collectIfaceSelections(viewState) {
 	var attach = [], observe = [];
-	var data = fmt.asArray((viewState.sysdevices || {}).devices);
+	var data = visibleDevices(viewState.sysdevices || {});
 	var state = viewState.ifcfgState || {};
 	var deviceByName = {};
 	var i;
@@ -164,14 +188,11 @@ function collectIfaceSelections(viewState) {
 	return { attach: attach, observe: observe };
 }
 
-function saveIfaceConfig(viewState) {
-	var refs = viewState.refs;
-	if (!refs || viewState.ifcfgSaving) return;
+function prepareIfaceSave(viewState) {
 	var sel = collectIfaceSelections(viewState);
 	var values = {};
 	if (!sel.attach.length && !sel.observe.length) {
-		refs.ifcfgStatus.textContent = _('请至少选择一个设备');
-		return;
+		throw new Error(_('请至少选择一个设备'));
 	}
 	if (sel.attach.length) {
 		values.ifname = sel.attach;
@@ -180,44 +201,25 @@ function saveIfaceConfig(viewState) {
 	if (sel.observe.length)
 		values.observe = sel.observe;
 
-	viewState.ifcfgSaving = true;
-	refs.ifcfgSaveBtn.disabled = true;
-	refs.ifcfgReloadBtn.disabled = true;
-	refs.ifcfgStatus.textContent = _('保存中…');
+	return { values: values };
+}
 
-	/* delete old lists (tolerate missing options), then set new ones, commit, reload daemon */
-	Promise.resolve()
+function applyIfaceSave(plan) {
+	/* Delete old lists first so moving every device between modes is atomic at commit. */
+	return Promise.resolve()
 		.then(function() {
 			return lsRpc.uciDelete('lanspeed', 'main',
 				['ifname','interface_include','observe']).catch(function(){});
 		})
 		.then(function() {
-			return lsRpc.uciSet('lanspeed', 'main', values);
-		})
-		.then(function() { return lsRpc.uciCommit('lanspeed'); })
-		.then(function() {
-			refs.ifcfgStatus.textContent = _('重载 daemon…');
-			return lsRpc.reload();
-		})
-		.then(function() {
-			return new Promise(function(resolve) { window.setTimeout(resolve, 1000); });
-		})
-		.then(function() {
-			refs.ifcfgStatus.textContent = _('已应用');
-			return Promise.all([viewState.reload(true), loadIfaceConfig(viewState)]);
-		})
-		.catch(function(err) {
-			refs.ifcfgStatus.textContent = _('保存失败: ') + (err && err.message || err);
-		})
-		.then(function() {
-			refs.ifcfgSaveBtn.disabled = false;
-			refs.ifcfgReloadBtn.disabled = false;
-			viewState.ifcfgSaving = false;
-			window.setTimeout(function() {
-				if (refs.ifcfgStatus.textContent === _('已应用'))
-					refs.ifcfgStatus.textContent = '';
-			}, 3000);
+			return lsRpc.uciSet('lanspeed', 'main', plan.values);
 		});
+}
+
+function setBusy(viewState, busy) {
+	var refs = viewState.refs;
+	if (refs && refs.ifcfgReloadBtn)
+		refs.ifcfgReloadBtn.disabled = busy;
 }
 
 function buildSection(viewState, title) {
@@ -226,19 +228,12 @@ function buildSection(viewState, title) {
 	refs.ifcfgSummary = E('span', { 'class': 'sum' }, _('读取中…'));
 	refs.ifcfgBody = E('tbody', {});
 	refs.ifcfgStatus = E('span', { 'class': 'status' }, '');
-	refs.ifcfgSaveBtn = E('button', {
-		'class': 'cbi-button cbi-button-apply',
-		'type': 'button'
-	}, _('保存并重载'));
 	refs.ifcfgReloadBtn = E('button', {
 		'class': 'cbi-button',
 		'type': 'button'
 	}, _('扫描设备'));
 	refs.ifcfgHint = E('p', { 'class': 'lanspeed-hint' }, '');
 
-	refs.ifcfgSaveBtn.addEventListener('click', function() {
-		saveIfaceConfig(viewState);
-	});
 	refs.ifcfgReloadBtn.addEventListener('click', function() {
 		loadIfaceConfig(viewState);
 	});
@@ -261,7 +256,6 @@ function buildSection(viewState, title) {
 				refs.ifcfgBody
 			]),
 			E('div', { 'class': 'lanspeed-ifcfg-actions' }, [
-				refs.ifcfgSaveBtn,
 				refs.ifcfgReloadBtn,
 				E('span', { 'class': 'spacer' }),
 				refs.ifcfgStatus
@@ -276,5 +270,8 @@ return baseclass.extend({
 	load:              loadIfaceConfig,
 	render:            renderIfaceConfig,
 	collectSelections: collectIfaceSelections,
-	save:              saveIfaceConfig
+	prepareSave:       prepareIfaceSave,
+	applySave:         applyIfaceSave,
+	setBusy:           setBusy,
+	isAutoIgnored:     isAutoIgnoredInterface
 });
