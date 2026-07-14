@@ -1764,6 +1764,11 @@ function assertStatusRefreshModule(src) {
 	    !src.includes('vocab.normalizeWarningId(w)')) {
 		fail('statusRefresh.js must render new Rust NSS evidence and warning IDs with old C aliases');
 	}
+	if (!src.includes("covQuality === 'low_traffic'") ||
+	    !src.includes('LAN 流量较低，暂不计算覆盖率') ||
+	    !src.includes('LAN 无活动流量')) {
+		fail('statusRefresh.js must distinguish low traffic from a truly idle LAN');
+	}
 }
 
 function assertConfigStyleModule(src) {

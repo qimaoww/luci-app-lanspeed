@@ -136,6 +136,9 @@ function refreshLive(viewState) {
 	} else if (covQuality === 'idle') {
 		refs.mCoverage.textContent = '-';
 		refs.mCoverageSub.textContent = _('LAN 无活动流量');
+	} else if (covQuality === 'low_traffic') {
+		refs.mCoverage.textContent = '-';
+		refs.mCoverageSub.textContent = _('LAN 流量较低，暂不计算覆盖率');
 	} else if (covQuality === 'warmup' || covQuality === 'counter_reset') {
 		refs.mCoverage.textContent = '…';
 		refs.mCoverageSub.textContent = _('采样中');

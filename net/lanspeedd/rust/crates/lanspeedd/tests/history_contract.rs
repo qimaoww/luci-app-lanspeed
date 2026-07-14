@@ -4,13 +4,19 @@ use lanspeedd::{
         DEFAULT_MAX_CLIENTS, DEFAULT_REFRESH_INTERVAL_MS, MIN_REFRESH_INTERVAL_MS,
     },
     history::{
-        coverage::{ByteTotals, CoverageQuality, CoverageRing, CoverageSample, COVERAGE_WINDOW},
+        coverage::{
+            ByteTotals, CoverageQuality, CoverageRateAccumulator, CoverageRing, CoverageSample,
+            COVERAGE_WINDOW,
+        },
         overview::{
             ConnectionTotals, ConnectionTotalsOverride, OverviewClient, OverviewConfig,
             OverviewRing, OVERVIEW_WINDOW,
         },
     },
-    rate::{ClientCounters, RateBook, RateWarning, RATE_WINDOW_COUNT, STALE_CLIENT_MS},
+    rate::{
+        ClientCounters, RateBook, RateWarning, RATE_BASELINE_RETENTION_MS, RATE_WINDOW_COUNT,
+        STALE_CLIENT_MS,
+    },
 };
 use serde_json::Value;
 use std::fs;
@@ -271,11 +277,74 @@ fn stale_limit_and_map_failure_semantics_match_the_resource_fixture() {
     );
     assert_eq!(boundary_update.clients.len(), 1);
     assert!(boundary.contains("boundary@lan"));
-    assert!(!boundary.contains("expired@lan"));
+    assert!(
+        boundary.contains("expired@lan"),
+        "first-seen stale counters should seed a hidden return baseline"
+    );
 }
 
 #[test]
-fn coverage_ring_is_fixed_and_emits_warmup_idle_and_ok_quality() {
+fn inactive_clients_keep_a_hidden_baseline_for_an_accurate_first_return_sample() {
+    let mut rates = RateBook::new(2, STALE_CLIENT_MS);
+    rates.update(1_000, [counters("returning@lan", 1_000, 2_000, 1_000)]);
+
+    let hidden = rates.update(20_000, [counters("returning@lan", 1_000, 2_000, 1_000)]);
+    assert!(hidden.clients.is_empty());
+    assert!(rates.contains("returning@lan"));
+
+    let returned = rates.update(21_000, [counters("returning@lan", 2_000, 4_000, 21_000)]);
+    assert_eq!(returned.clients.len(), 1);
+    assert_eq!(returned.clients[0].tx_bps, 8_000);
+    assert_eq!(returned.clients[0].rx_bps, 16_000);
+
+    rates.update(
+        21_000 + RATE_BASELINE_RETENTION_MS + 1,
+        std::iter::empty::<ClientCounters>(),
+    );
+    assert!(!rates.contains("returning@lan"));
+}
+
+#[test]
+fn stale_baselines_are_evicted_before_rejecting_a_new_active_client() {
+    let mut rates = RateBook::new(1, STALE_CLIENT_MS);
+    rates.update(1_000, [counters("old@lan", 1_000, 0, 1_000)]);
+    rates.update(20_000, [counters("old@lan", 1_000, 0, 1_000)]);
+
+    let replacement = rates.update(21_000, [counters("new@lan", 1_000, 0, 21_000)]);
+    assert_eq!(replacement.clients.len(), 1);
+    assert!(replacement.rejected_clients.is_empty());
+    assert!(!rates.contains("old@lan"));
+    assert!(rates.contains("new@lan"));
+}
+
+#[test]
+fn coverage_rate_accumulator_is_monotonic_precise_and_pauses_gaps() {
+    let mut accumulator = CoverageRateAccumulator::default();
+    assert_eq!(
+        accumulator.update(1_000, 8_004, 16_004),
+        ByteTotals::new(0, 0)
+    );
+    assert_eq!(
+        accumulator.update(2_000, 8_004, 16_004),
+        ByteTotals::new(1_000, 2_000)
+    );
+    assert_eq!(
+        accumulator.update(3_000, 8_004, 16_004),
+        ByteTotals::new(2_001, 4_001),
+        "fractional byte remainders must carry across samples"
+    );
+
+    accumulator.pause();
+    assert_eq!(
+        accumulator.update(30_000, 8_000_000, 8_000_000),
+        ByteTotals::new(2_001, 4_001),
+        "unsupported gaps must not integrate a stale rate"
+    );
+    assert_eq!(accumulator.totals(), ByteTotals::new(2_001, 4_001));
+}
+
+#[test]
+fn coverage_ring_is_fixed_and_distinguishes_idle_low_traffic_and_ok_quality() {
     let mut ring = CoverageRing::new();
     assert_eq!(ring.capacity(), COVERAGE_WINDOW);
     ring.push(CoverageSample::valid(
@@ -295,7 +364,20 @@ fn coverage_ring_is_fixed_and_emits_warmup_idle_and_ok_quality() {
         ByteTotals::new(200_000, 200_000),
         ByteTotals::new(100_000, 100_000),
     ));
-    assert_eq!(ring.report(true).quality, CoverageQuality::Idle);
+    assert_eq!(ring.report(true).quality, CoverageQuality::LowTraffic);
+
+    let mut idle = CoverageRing::new();
+    idle.push(CoverageSample::valid(
+        0,
+        ByteTotals::new(100, 200),
+        ByteTotals::new(50, 100),
+    ));
+    idle.push(CoverageSample::valid(
+        3_000,
+        ByteTotals::new(100, 200),
+        ByteTotals::new(50, 100),
+    ));
+    assert_eq!(idle.report(true).quality, CoverageQuality::Idle);
 
     let mut ring = CoverageRing::new();
     ring.push(CoverageSample::valid(

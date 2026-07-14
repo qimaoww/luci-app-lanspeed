@@ -46,7 +46,7 @@ use crate::{
     },
     error::DaemonError,
     history::{
-        coverage::{ByteTotals, CoverageRing, CoverageSample},
+        coverage::{ByteTotals, CoverageRateAccumulator, CoverageRing, CoverageSample},
         overview::{
             ConnectionTotals, ConnectionTotalsOverride, OverviewClient, OverviewConfig,
             OverviewRing,
@@ -109,6 +109,7 @@ struct ProductionRuntime {
     next_probe_ms: u64,
     overview: OverviewRing,
     coverage: CoverageRing,
+    coverage_clients: CoverageRateAccumulator,
     interface_rates: InterfaceRateBook,
     nss_rates: RateBook,
     hostnames: HostnameCache,
@@ -119,6 +120,7 @@ struct RuntimeCheckpoint {
     bpf: Option<BpfCollectionCheckpoint>,
     overview: OverviewRing,
     coverage: CoverageRing,
+    coverage_clients: CoverageRateAccumulator,
     interface_rates: InterfaceRateBook,
     nss_rates: RateBook,
     hostnames: HostnameCache,
@@ -170,6 +172,7 @@ impl ProductionRuntime {
             nss_error: None,
             overview: OverviewRing::new(),
             coverage: CoverageRing::new(),
+            coverage_clients: CoverageRateAccumulator::default(),
             interface_rates: InterfaceRateBook::default(),
             shutdown_complete: false,
         })
@@ -235,6 +238,7 @@ impl ProductionRuntime {
                 .map(|runtime| runtime.collection_checkpoint(&self.bpf_collector)),
             overview: self.overview.clone(),
             coverage: self.coverage.clone(),
+            coverage_clients: self.coverage_clients.clone(),
             interface_rates: self.interface_rates.clone(),
             nss_rates: self.nss_rates.clone(),
             hostnames: self.hostnames.clone(),
@@ -253,6 +257,7 @@ impl ProductionRuntime {
         }
         self.overview = checkpoint.overview;
         self.coverage = checkpoint.coverage;
+        self.coverage_clients = checkpoint.coverage_clients;
         self.interface_rates = checkpoint.interface_rates;
         self.nss_rates = checkpoint.nss_rates;
         self.hostnames = checkpoint.hostnames;
@@ -401,9 +406,9 @@ impl ProductionRuntime {
         let mut conntrack = self.conntrack_snapshot.clone();
         let overlay = connection_overlay(conntrack.as_ref());
         let freshness_ms = u64::from(self.config.refresh_interval_ms) * 3;
-        let (bpf_snapshot, mut runtime_health) = match external_bpf {
+        let (bpf_snapshot, mut runtime_health, bpf_snapshot_fresh) = match external_bpf {
             Some((runtime, adapter)) => {
-                let snapshot = match runtime.collect_snapshot_self_healing(
+                let (snapshot, fresh) = match runtime.collect_snapshot_self_healing(
                     adapter,
                     &mut self.bpf_collector,
                     &identities,
@@ -413,11 +418,11 @@ impl ProductionRuntime {
                 ) {
                     Ok(snapshot) => {
                         self.bpf_error = None;
-                        Some(snapshot)
+                        (Some(snapshot), true)
                     }
                     Err(error) => {
                         self.bpf_error = Some(error.to_string());
-                        self.bpf_collector.last_complete().cloned()
+                        (self.bpf_collector.last_complete().cloned(), false)
                     }
                 };
                 let health_now_ms = snapshot
@@ -426,11 +431,12 @@ impl ProductionRuntime {
                 (
                     snapshot,
                     runtime.runtime_health(health_now_ms, freshness_ms),
+                    fresh,
                 )
             }
             None => match self.bpf.as_mut() {
                 Some(runtime) => {
-                    let snapshot = match runtime.collect_snapshot_self_healing(
+                    let (snapshot, fresh) = match runtime.collect_snapshot_self_healing(
                         &mut self.adapter,
                         &mut self.bpf_collector,
                         &identities,
@@ -440,11 +446,11 @@ impl ProductionRuntime {
                     ) {
                         Ok(snapshot) => {
                             self.bpf_error = None;
-                            Some(snapshot)
+                            (Some(snapshot), true)
                         }
                         Err(error) => {
                             self.bpf_error = Some(error.to_string());
-                            self.bpf_collector.last_complete().cloned()
+                            (self.bpf_collector.last_complete().cloned(), false)
                         }
                     };
                     let health_now_ms = snapshot
@@ -453,9 +459,10 @@ impl ProductionRuntime {
                     (
                         snapshot,
                         runtime.runtime_health(health_now_ms, freshness_ms),
+                        fresh,
                     )
                 }
-                None => (None, RuntimeHealth::default()),
+                None => (None, RuntimeHealth::default(), false),
             },
         };
         if let Some(snapshot) = bpf_snapshot.as_ref() {
@@ -512,76 +519,83 @@ impl ProductionRuntime {
         self.apply_conntrack_health(&mut runtime_health);
         decision = policy::select_collectors(&self.config, &report.facts, &runtime_health);
         let effective = decision.rate.as_str();
-        let (mut clients, actual_live, actual_degraded) = if decision.rate == RateCollector::Bpf {
-            (
-                clients_response(
-                    bpf_snapshot
-                        .as_ref()
-                        .map(|snapshot| snapshot.clients.as_slice()),
-                    None,
-                    &identities,
-                    decision.confidence,
-                ),
-                bpf_snapshot.is_some(),
-                bpf_snapshot.is_none(),
-            )
-        } else if decision.rate == RateCollector::NssEcmDirect {
-            match direct.as_ref() {
-                Some(snapshot) => (
-                    rate_clients(
-                        &mut self.nss_rates,
-                        &snapshot.clients,
-                        now_ms,
+        let (mut clients, actual_live, actual_degraded, coverage_fresh) =
+            if decision.rate == RateCollector::Bpf {
+                (
+                    clients_response(
+                        bpf_snapshot
+                            .as_ref()
+                            .map(|snapshot| snapshot.clients.as_slice()),
+                        None,
                         &identities,
                         decision.confidence,
-                        "nss_ecm_direct",
                     ),
-                    true,
-                    false,
-                ),
-                None => (
-                    ClientsResponse::empty(evidence(&report, "clients")),
-                    false,
-                    true,
-                ),
-            }
-        } else if decision.rate == RateCollector::NssConntrackSync {
-            match conntrack.as_ref() {
-                Some(snapshot) => {
-                    let (samples, source) = if let Some(direct) = direct.as_ref() {
-                        (
-                            overlay_counter_clients(&snapshot.clients, &direct.clients),
-                            "nss_ecm_direct+conntrack_ecm_sync",
-                        )
-                    } else {
-                        (snapshot.clients.clone(), "conntrack_ecm_sync")
-                    };
-                    (
+                    bpf_snapshot.is_some(),
+                    bpf_snapshot.is_none(),
+                    bpf_snapshot_fresh,
+                )
+            } else if decision.rate == RateCollector::NssEcmDirect {
+                match direct.as_ref() {
+                    Some(snapshot) => (
                         rate_clients(
                             &mut self.nss_rates,
-                            &samples,
+                            &snapshot.clients,
                             now_ms,
                             &identities,
                             decision.confidence,
-                            source,
+                            "nss_ecm_direct",
                         ),
                         true,
+                        false,
                         true,
-                    )
+                    ),
+                    None => (
+                        ClientsResponse::empty(evidence(&report, "clients")),
+                        false,
+                        true,
+                        false,
+                    ),
                 }
-                None => (
+            } else if decision.rate == RateCollector::NssConntrackSync {
+                match conntrack.as_ref() {
+                    Some(snapshot) => {
+                        let (samples, source) = if let Some(direct) = direct.as_ref() {
+                            (
+                                overlay_counter_clients(&snapshot.clients, &direct.clients),
+                                "nss_ecm_direct+conntrack_ecm_sync",
+                            )
+                        } else {
+                            (snapshot.clients.clone(), "conntrack_ecm_sync")
+                        };
+                        (
+                            rate_clients(
+                                &mut self.nss_rates,
+                                &samples,
+                                now_ms,
+                                &identities,
+                                decision.confidence,
+                                source,
+                            ),
+                            true,
+                            true,
+                            true,
+                        )
+                    }
+                    None => (
+                        ClientsResponse::empty(evidence(&report, "clients")),
+                        false,
+                        true,
+                        false,
+                    ),
+                }
+            } else {
+                (
                     ClientsResponse::empty(evidence(&report, "clients")),
                     false,
                     true,
-                ),
-            }
-        } else {
-            (
-                ClientsResponse::empty(evidence(&report, "clients")),
-                false,
-                true,
-            )
-        };
+                    false,
+                )
+            };
         self.hostnames.refresh_from_paths(
             &HostnamePaths::default(),
             now_ms,
@@ -618,7 +632,7 @@ impl ProductionRuntime {
         }
         let overview = self.update_overview(now_ms, &clients);
         let interfaces = self.interfaces(now_ms);
-        let coverage = self.update_coverage(now_ms, &clients, &interfaces, actual_live);
+        let coverage = self.update_coverage(now_ms, &clients, &interfaces, coverage_fresh);
         let sysdevices = sysdevices(&self.config)?;
         let mut capabilities = capabilities(&report.capabilities, &report);
         capabilities.live_metrics = actual_live;
@@ -878,18 +892,23 @@ impl ProductionRuntime {
     ) -> Coverage {
         if supported {
             let interface = lan_coverage_totals(&interfaces.interfaces);
-            let client = clients
+            let rates = clients
                 .clients
                 .iter()
                 .fold(ByteTotals::new(0, 0), |total, value| {
                     ByteTotals::new(
-                        total.rx_bytes.saturating_add(value.rx_bytes.unwrap_or(0)),
-                        total.tx_bytes.saturating_add(value.tx_bytes.unwrap_or(0)),
+                        total.rx_bytes.saturating_add(value.rx_bps),
+                        total.tx_bytes.saturating_add(value.tx_bps),
                     )
                 });
+            let client = self
+                .coverage_clients
+                .update(now_ms, rates.rx_bytes, rates.tx_bytes);
             self.coverage
                 .push(CoverageSample::valid(now_ms, interface, client));
         } else {
+            self.coverage_clients.pause();
+            self.coverage.reset();
             self.coverage.push(CoverageSample::invalid(now_ms));
         }
         let report = self.coverage.report(supported);

@@ -118,6 +118,8 @@ require_phrase "map_full"
 require_phrase "所有设备（包括 NSS ECM/PPE）优先使用 BPF"
 require_phrase "显式选择 NSS 模式或 BPF 运行时不可用时"
 require_phrase '强制依赖 `lanspeedd-bpf`'
+require_phrase "低流量与真正无流量分开显示"
+require_phrase "恢复流量时首个样本不再固定显示为 0"
 require_phrase "SDK 缺失"
 require_phrase "缺少 BPF 包或对象"
 require_phrase '缺少 `tc`'

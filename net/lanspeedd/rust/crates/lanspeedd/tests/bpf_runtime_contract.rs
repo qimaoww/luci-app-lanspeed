@@ -1130,6 +1130,9 @@ fn production_bpf_sampling_paths_use_stable_self_heal_reasons() {
         .contains("const INTERNAL_BPF_SELF_HEAL_REASON: &str = \"production.collect.internal\";"));
     assert!(source
         .contains("const EXTERNAL_BPF_SELF_HEAL_REASON: &str = \"production.collect.external\";"));
+    assert!(source.contains("bpf_snapshot_fresh"));
+    assert!(source.contains("(self.bpf_collector.last_complete().cloned(), false)"));
+    assert!(source.contains("update_coverage(now_ms, &clients, &interfaces, coverage_fresh)"));
 }
 
 #[test]

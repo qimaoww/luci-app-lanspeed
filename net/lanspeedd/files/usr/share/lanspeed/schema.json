@@ -245,11 +245,11 @@
     "coverage": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Sliding-window coverage computed by the daemon. Direction semantics: tx = client upload (client→router), rx = client download (router→client).",
+      "description": "Sliding-window coverage computed by the daemon from monotonic interface counters and integrated per-client rates. Direction semantics: tx = client upload (client→router), rx = client download (router→client).",
       "properties": {
         "quality": {
           "type": "string",
-          "enum": ["warmup", "idle", "counter_reset", "ok", "unsupported"]
+          "enum": ["warmup", "idle", "low_traffic", "counter_reset", "ok", "unsupported"]
         },
         "samples": {
           "type": "integer",
@@ -778,7 +778,7 @@
         "sample_ms": {
           "type": "integer",
           "minimum": 0,
-          "description": "Monotonic timestamp (ms) of the rx_bytes/tx_bytes sample. Pair with client.sample_ms to compute coverage over a common time window."
+          "description": "Monotonic timestamp (ms) of the rx_bytes/tx_bytes interface sample. Coverage uses this common daemon sampling window together with integrated client rates."
         },
         "source": {
           "type": "string"

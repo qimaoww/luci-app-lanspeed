@@ -3,6 +3,7 @@ use serde_json::{Map, Value};
 
 pub const RATE_WINDOW_COUNT: usize = 3;
 pub const STALE_CLIENT_MS: u64 = 5_000;
+pub const RATE_BASELINE_RETENTION_MS: u64 = 60_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RateWarning {
@@ -184,10 +185,11 @@ impl RateBook {
         now_ms: u64,
         samples: impl IntoIterator<Item = ClientCounters>,
     ) -> RateUpdate {
+        let retention_ms = self.stale_client_ms.max(RATE_BASELINE_RETENTION_MS);
         self.clients.retain(|client| {
             client
                 .latest()
-                .is_some_and(|point| !is_stale(now_ms, point.last_seen_ms, self.stale_client_ms))
+                .is_some_and(|point| !is_stale(now_ms, point.sample_ms, retention_ms))
         });
 
         let time_rollback = self
@@ -199,31 +201,45 @@ impl RateBook {
         }
 
         for sample in samples {
-            if is_stale(now_ms, sample.last_seen_ms, self.stale_client_ms) {
-                if let Some(index) = self
-                    .clients
-                    .iter()
-                    .position(|client| client.identity_key == sample.identity_key)
-                {
-                    self.clients.remove(index);
-                }
+            let stale_for_output = is_stale(now_ms, sample.last_seen_ms, self.stale_client_ms);
+            let existing_index = self
+                .clients
+                .iter()
+                .position(|client| client.identity_key == sample.identity_key);
+            if stale_for_output
+                && existing_index.is_none()
+                && self.clients.len() == self.max_clients
+            {
                 continue;
             }
 
-            let state_index = if let Some(index) = self
-                .clients
-                .iter()
-                .position(|client| client.identity_key == sample.identity_key)
-            {
+            let state_index = if let Some(index) = existing_index {
                 index
-            } else if self.clients.len() < self.max_clients {
+            } else {
+                if self.clients.len() == self.max_clients {
+                    let evict = self
+                        .clients
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, client)| {
+                            let point = client.latest()?;
+                            is_stale(now_ms, point.last_seen_ms, self.stale_client_ms)
+                                .then_some((index, point.last_seen_ms))
+                        })
+                        .min_by_key(|(_, last_seen_ms)| *last_seen_ms)
+                        .map(|(index, _)| index);
+                    if let Some(index) = evict {
+                        self.clients.remove(index);
+                    }
+                }
+                if self.clients.len() == self.max_clients {
+                    update.rejected_clients.push(sample.identity_key);
+                    push_unique(&mut update.warnings, RateWarning::ClientLimitExceeded);
+                    continue;
+                }
                 self.clients
                     .push(ClientState::new(sample.identity_key.clone()));
                 self.clients.len() - 1
-            } else {
-                update.rejected_clients.push(sample.identity_key);
-                push_unique(&mut update.warnings, RateWarning::ClientLimitExceeded);
-                continue;
             };
 
             let state = &mut self.clients[state_index];
@@ -235,6 +251,16 @@ impl RateBook {
                     point.tx_bytes == sample.tx_bytes && point.rx_bytes == sample.rx_bytes
                 })
                 .map_or(sample.last_seen_ms, |point| point.last_seen_ms);
+            let point = CounterPoint {
+                sample_ms: now_ms,
+                tx_bytes: sample.tx_bytes,
+                rx_bytes: sample.rx_bytes,
+                last_seen_ms: effective_last_seen,
+            };
+            if stale_for_output {
+                state.push(point);
+                continue;
+            }
             let mut client = ClientRate {
                 identity_key: sample.identity_key,
                 tx_bps: 0,
@@ -264,12 +290,7 @@ impl RateBook {
                     push_unique(&mut update.warnings, warning);
                 }
             }
-            state.push(CounterPoint {
-                sample_ms: now_ms,
-                tx_bytes: sample.tx_bytes,
-                rx_bytes: sample.rx_bytes,
-                last_seen_ms: effective_last_seen,
-            });
+            state.push(point);
             update.clients.push(client);
         }
 

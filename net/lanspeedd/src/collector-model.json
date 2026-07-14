@@ -56,6 +56,8 @@
     "minimum_refresh_interval_ms": 500,
     "window_count": 3,
     "stale_client_ms": 5000,
+    "minimum_rate_baseline_retention_ms": 60000,
+    "stale_baseline_policy": "retain_hidden_baseline_for_accurate_first_sample_then_evict_before_active_clients",
     "delta_formula": "max(0, current_bytes - previous_bytes) * 8 * 1000 / delta_ms",
     "negative_rate_policy": "clamp_to_zero_per_client",
     "counter_wrap_policy": "counter_anomaly_and_zero_delta",
@@ -69,6 +71,16 @@
     "minimum_active_client_window_ms": 1000,
     "default_active_client_min_bps": 1,
     "default_overview_window_samples": 240
+  },
+  "coverage_model": {
+    "window_samples": 32,
+    "minimum_window_ms": 3000,
+    "minimum_stable_denominator_bytes": 524288,
+    "numerator_source": "monotonic_integral_of_per_client_rates",
+    "membership_change_policy": "never_sum_current_absolute_client_counters",
+    "idle_policy": "only_when_interface_delta_bytes_equal_zero",
+    "low_traffic_quality": "low_traffic",
+    "unsupported_gap_policy": "reset_window_and_pause_client_rate_integrator"
   },
   "lifecycle_model": {
     "procd": {

@@ -1570,8 +1570,14 @@ assert(collectorModel.rate_model.default_active_client_window_ms === 10000, 'act
 assert(collectorModel.rate_model.default_active_client_min_bps === 1, 'active client minimum must default to 1bps');
 assert(collectorModel.rate_model.default_overview_window_samples === 240, 'overview trend history must default to 240 samples');
 assert(collectorModel.rate_model.window_count === 3, 'rate model must keep three deterministic windows');
+assert(collectorModel.rate_model.minimum_rate_baseline_retention_ms === 60000, 'inactive client rate baselines must be retained for accurate first-return samples');
+assert(collectorModel.rate_model.stale_baseline_policy.includes('retain_hidden_baseline'), 'rate model must keep stale baselines hidden rather than reporting them as active');
 assert(collectorModel.rate_model.anomaly_warnings.includes('counter_anomaly'), 'rate model must expose counter_anomaly warning');
 assert(collectorModel.rate_model.refresh_interval_warning === 'refresh_interval_below_minimum', 'rate model must expose refresh interval warning');
+assert(collectorModel.coverage_model.window_samples === 32, 'coverage must use a wider smoothing window');
+assert(collectorModel.coverage_model.numerator_source === 'monotonic_integral_of_per_client_rates', 'coverage numerator must remain monotonic across client membership changes');
+assert(collectorModel.coverage_model.idle_policy === 'only_when_interface_delta_bytes_equal_zero', 'low LAN traffic must not be mislabeled as idle');
+assert(collectorModel.coverage_model.low_traffic_quality === 'low_traffic', 'coverage model must expose low_traffic separately');
 assert(collectorModel.dedupe_model.visibility_unknown_mode === 'Degraded', 'uncertain LAN-to-LAN visibility must degrade mode');
 assert(collectorModel.dedupe_model.visibility_unknown_warning === 'lan_to_lan_visibility_unknown', 'uncertain topology warning is required');
 assert(collectorModel.dedupe_model.visibility_limited_warning === 'lan_to_lan_visibility_limited', 'hardware-switch LAN-to-LAN visibility warning is required');

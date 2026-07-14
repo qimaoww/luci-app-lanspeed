@@ -1,14 +1,51 @@
 use crate::rate::json_u64;
 use serde_json::{Map, Value};
 
-pub const COVERAGE_WINDOW: usize = 16;
+pub const COVERAGE_WINDOW: usize = 32;
 pub const COVERAGE_MIN_WINDOW_MS: u64 = 3_000;
 pub const COVERAGE_MIN_DENOM_BYTES: u64 = 524_288;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ByteTotals {
     pub rx_bytes: u64,
     pub tx_bytes: u64,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CoverageRateAccumulator {
+    totals: ByteTotals,
+    last_sample_ms: Option<u64>,
+    rx_remainder: u64,
+    tx_remainder: u64,
+}
+
+impl CoverageRateAccumulator {
+    pub fn update(&mut self, now_ms: u64, rx_bps: u64, tx_bps: u64) -> ByteTotals {
+        if let Some(delta_ms) = self
+            .last_sample_ms
+            .and_then(|previous_ms| now_ms.checked_sub(previous_ms))
+            .filter(|delta_ms| *delta_ms > 0)
+        {
+            let (rx_bytes, rx_remainder) = rate_bytes(rx_bps, delta_ms, self.rx_remainder);
+            let (tx_bytes, tx_remainder) = rate_bytes(tx_bps, delta_ms, self.tx_remainder);
+            self.totals.rx_bytes = self.totals.rx_bytes.saturating_add(rx_bytes);
+            self.totals.tx_bytes = self.totals.tx_bytes.saturating_add(tx_bytes);
+            self.rx_remainder = rx_remainder;
+            self.tx_remainder = tx_remainder;
+        }
+        self.last_sample_ms = Some(now_ms);
+        self.totals
+    }
+
+    pub fn pause(&mut self) {
+        self.last_sample_ms = None;
+        self.rx_remainder = 0;
+        self.tx_remainder = 0;
+    }
+
+    pub const fn totals(&self) -> ByteTotals {
+        self.totals
+    }
 }
 
 impl ByteTotals {
@@ -50,6 +87,7 @@ impl CoverageSample {
 pub enum CoverageQuality {
     Warmup,
     Idle,
+    LowTraffic,
     CounterReset,
     Ok,
     Unsupported,
@@ -60,6 +98,7 @@ impl CoverageQuality {
         match self {
             Self::Warmup => "warmup",
             Self::Idle => "idle",
+            Self::LowTraffic => "low_traffic",
             Self::CounterReset => "counter_reset",
             Self::Ok => "ok",
             Self::Unsupported => "unsupported",
@@ -217,8 +256,13 @@ impl CoverageRing {
         if report.window_ms < COVERAGE_MIN_WINDOW_MS {
             return report;
         }
-        if di_rx.checked_add(di_tx).unwrap_or(u64::MAX) < COVERAGE_MIN_DENOM_BYTES {
+        let denominator = di_rx.checked_add(di_tx).unwrap_or(u64::MAX);
+        if denominator == 0 {
             report.quality = CoverageQuality::Idle;
+            return report;
+        }
+        if denominator < COVERAGE_MIN_DENOM_BYTES {
+            report.quality = CoverageQuality::LowTraffic;
             return report;
         }
 
@@ -249,4 +293,16 @@ fn percentage(numerator: u64, denominator: u64) -> Option<u8> {
     let value =
         u128::from(numerator).checked_mul(100).unwrap_or(u128::MAX) / u128::from(denominator);
     Some(value.min(100) as u8)
+}
+
+fn rate_bytes(bps: u64, delta_ms: u64, remainder: u64) -> (u64, u64) {
+    let scaled = u128::from(bps)
+        .saturating_mul(u128::from(delta_ms))
+        .saturating_add(u128::from(remainder));
+    let bytes = scaled / 8_000;
+    let remainder = scaled % 8_000;
+    (
+        u64::try_from(bytes).unwrap_or(u64::MAX),
+        u64::try_from(remainder).unwrap_or(0),
+    )
 }
