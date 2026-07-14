@@ -8,8 +8,8 @@ use lanspeedd::{
         NETLINK_SOURCE_PATH, PROCFS_COUNTER_SOURCE,
     },
     connection_details::{
-        ClientConnectionDetail, ConnectionDirection, ConnectionProtocol, ConnectionState,
-        MAX_CLIENT_CONNECTION_DETAILS, MAX_STORED_CONNECTION_DETAILS,
+        ClientConnectionDetail, ConnectionDetailsIndex, ConnectionDirection, ConnectionProtocol,
+        ConnectionState, MAX_CLIENT_CONNECTION_DETAILS, MAX_STORED_CONNECTION_DETAILS,
     },
     identity::{IdentityObservation, IdentityTable, ObservationSource},
 };
@@ -90,6 +90,77 @@ fn detail(
         state,
         direction,
     }
+}
+
+#[test]
+fn details_index_owns_totals_caps_truncation_and_stable_sorting() {
+    let mut index = ConnectionDetailsIndex::default();
+    for offset in 0..=MAX_CLIENT_CONNECTION_DETAILS {
+        let remote_ip = match offset {
+            0 => "10.0.0.10",
+            1 => "10.0.0.2",
+            _ => "203.0.113.1",
+        };
+        index.record(
+            IDENTITY_KEY,
+            detail(
+                CLIENT_IP,
+                u16::try_from(offset + 1).unwrap(),
+                remote_ip,
+                443,
+                ConnectionProtocol::Tcp,
+                ConnectionState::Established,
+                ConnectionDirection::Outbound,
+            ),
+        );
+    }
+    let stable_key = "02:00:00:00:00:02@lan";
+    index.record(
+        stable_key,
+        detail(
+            CLIENT_IP,
+            50_123,
+            "198.51.100.1",
+            443,
+            ConnectionProtocol::Tcp,
+            ConnectionState::Assured,
+            ConnectionDirection::Outbound,
+        ),
+    );
+    index.record(
+        stable_key,
+        detail(
+            CLIENT_IP,
+            50_123,
+            "198.51.100.1",
+            443,
+            ConnectionProtocol::Tcp,
+            ConnectionState::Established,
+            ConnectionDirection::Outbound,
+        ),
+    );
+
+    let sets = index.finish();
+    let set = &sets[IDENTITY_KEY];
+    assert_eq!(set.total_connections, 513);
+    assert_eq!(set.connections.len(), MAX_CLIENT_CONNECTION_DETAILS);
+    assert!(set.truncated);
+    assert_eq!(
+        set.connections[0].remote_ip,
+        "10.0.0.2".parse::<IpAddr>().unwrap()
+    );
+    assert_eq!(
+        set.connections[1].remote_ip,
+        "10.0.0.10".parse::<IpAddr>().unwrap()
+    );
+    assert_eq!(
+        sets[stable_key]
+            .connections
+            .iter()
+            .map(|detail| detail.state)
+            .collect::<Vec<_>>(),
+        [ConnectionState::Assured, ConnectionState::Established]
+    );
 }
 
 #[test]

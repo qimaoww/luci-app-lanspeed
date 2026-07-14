@@ -3,7 +3,7 @@ use crate::{
     identity::{ClientIdentity, IdentityTable},
 };
 use serde::Serialize;
-use std::{cmp::Ordering, net::IpAddr};
+use std::{cmp::Ordering, collections::BTreeMap, net::IpAddr};
 
 pub const MAX_STORED_CONNECTION_DETAILS: usize = 16_384;
 pub const MAX_CLIENT_CONNECTION_DETAILS: usize = 512;
@@ -45,6 +45,37 @@ pub struct ClientConnectionSet {
     pub total_connections: u64,
     pub connections: Vec<ClientConnectionDetail>,
     pub truncated: bool,
+}
+
+pub type ConnectionDetailsSnapshot = BTreeMap<String, ClientConnectionSet>;
+
+#[derive(Debug, Default)]
+pub struct ConnectionDetailsIndex {
+    sets: ConnectionDetailsSnapshot,
+    stored_connections: usize,
+}
+
+impl ConnectionDetailsIndex {
+    pub fn record(&mut self, identity_key: &str, detail: ClientConnectionDetail) {
+        let set = self.sets.entry(identity_key.to_owned()).or_default();
+        set.total_connections = set.total_connections.saturating_add(1);
+        if set.connections.len() < MAX_CLIENT_CONNECTION_DETAILS
+            && self.stored_connections < MAX_STORED_CONNECTION_DETAILS
+        {
+            set.connections.push(detail);
+            self.stored_connections = self.stored_connections.saturating_add(1);
+        } else {
+            set.truncated = true;
+        }
+    }
+
+    pub fn finish(mut self) -> ConnectionDetailsSnapshot {
+        for set in self.sets.values_mut() {
+            sort_connection_details(&mut set.connections);
+            set.truncated |= set.connections.len() as u64 != set.total_connections;
+        }
+        self.sets
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -167,7 +198,7 @@ pub fn classify_connection(flow: &FlowSample) -> Option<(ConnectionProtocol, Con
     }
 }
 
-pub fn sort_connection_details(details: &mut [ClientConnectionDetail]) {
+fn sort_connection_details(details: &mut [ClientConnectionDetail]) {
     details.sort_by(compare_connection_details);
 }
 

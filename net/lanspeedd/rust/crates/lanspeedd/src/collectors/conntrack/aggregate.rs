@@ -1,9 +1,8 @@
 use super::FlowSample;
 use crate::{
     connection_details::{
-        classify_connection, classify_flow_ownership, sort_connection_details,
-        ClientConnectionDetail, ClientConnectionSet, ConnectionProtocol, FlowOwnership,
-        MAX_CLIENT_CONNECTION_DETAILS, MAX_STORED_CONNECTION_DETAILS,
+        classify_connection, classify_flow_ownership, ConnectionDetailsIndex,
+        ConnectionDetailsSnapshot, ConnectionProtocol, FlowOwnership,
     },
     identity::IdentityTable,
 };
@@ -44,14 +43,13 @@ pub struct AggregateSnapshot {
     pub clients: Vec<ClientSample>,
     pub stats: AggregateStats,
     pub sample_ms: u64,
-    pub connection_details: BTreeMap<String, ClientConnectionSet>,
+    pub connection_details: ConnectionDetailsSnapshot,
 }
 
 pub struct AggregateState<'a> {
     identities: &'a IdentityTable,
     clients: BTreeMap<String, ClientSample>,
-    connection_details: BTreeMap<String, ClientConnectionSet>,
-    stored_connection_details: usize,
+    connection_details: ConnectionDetailsIndex,
     stats: AggregateStats,
     now_ms: u64,
     max_clients: usize,
@@ -62,8 +60,7 @@ impl<'a> AggregateState<'a> {
         Self {
             identities,
             clients: BTreeMap::new(),
-            connection_details: BTreeMap::new(),
-            stored_connection_details: 0,
+            connection_details: ConnectionDetailsIndex::default(),
             stats: AggregateStats::default(),
             now_ms,
             max_clients,
@@ -133,34 +130,17 @@ impl<'a> AggregateState<'a> {
         }
         if let Some((protocol, state)) = qualification {
             if let Some(detail) = owned.detail(protocol, state) {
-                self.record_connection_detail(&key, detail);
+                self.connection_details.record(&key, detail);
             }
         }
     }
 
-    fn record_connection_detail(&mut self, key: &str, detail: ClientConnectionDetail) {
-        let set = self.connection_details.entry(key.to_owned()).or_default();
-        set.total_connections = set.total_connections.saturating_add(1);
-        if set.connections.len() < MAX_CLIENT_CONNECTION_DETAILS
-            && self.stored_connection_details < MAX_STORED_CONNECTION_DETAILS
-        {
-            set.connections.push(detail);
-            self.stored_connection_details = self.stored_connection_details.saturating_add(1);
-        } else {
-            set.truncated = true;
-        }
-    }
-
-    pub fn finish(mut self) -> AggregateSnapshot {
-        for set in self.connection_details.values_mut() {
-            sort_connection_details(&mut set.connections);
-            set.truncated |= set.connections.len() as u64 != set.total_connections;
-        }
+    pub fn finish(self) -> AggregateSnapshot {
         AggregateSnapshot {
             clients: self.clients.into_values().collect(),
             stats: self.stats,
             sample_ms: self.now_ms,
-            connection_details: self.connection_details,
+            connection_details: self.connection_details.finish(),
         }
     }
 }
