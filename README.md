@@ -76,6 +76,8 @@ NSS ECM/PPE sync 是显式选择 `nss_conntrack_sync`、NSS-direct 的补齐来�
 
 连接数语义为 `conntrack_current_tcp_established_assured_udp_assured_dns_split`：TCP 统计已建立/确认连接，UDP 只统计已确认（ASSURED）的 conntrack 项，并把 DNS UDP 单独拆分。
 
+顶部汇总和 overview 使用完整的当前 conntrack 客户端快照，不受 `active_client_window_ms` 对速率客户端列表的裁剪影响；客户端表中的 TCP/UDP 列只对应当前仍由速率侧上报的客户端。
+
 ## 包组成
 
 | 包 | 说明 |

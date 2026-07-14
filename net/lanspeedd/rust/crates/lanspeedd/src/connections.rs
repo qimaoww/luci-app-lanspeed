@@ -17,7 +17,9 @@ pub enum PeriodicConntrackPlan {
     Read,
 }
 
-pub const CLIENT_CONNTRACK_CACHE_TTL_MS: u64 = 5_000;
+// Reuse concurrent requests, but do not carry a conntrack snapshot across the
+// minimum LuCI refresh interval.
+pub const CLIENT_CONNTRACK_CACHE_TTL_MS: u64 = 1_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClientConntrackPlan {
@@ -158,7 +160,10 @@ pub fn apply_conntrack_success(
         client.udp_other_conns = Some(counts.map_or(0, |sample| u64::from(sample.udp_other_conns)));
     }
 
-    let totals = connection_totals(&overlaid.clients);
+    // The rate response is intentionally limited by the active-client window.
+    // Totals must cover every client in the current conntrack snapshot instead
+    // of changing when an idle client drops out of the rate response.
+    let totals = collected_connection_totals(collected);
     overlaid.clients.tcp_conns_total = Some(totals.0);
     overlaid.clients.udp_conns_total = Some(totals.1);
     overlaid.clients.udp_dns_conns_total = Some(totals.2);
@@ -200,15 +205,18 @@ pub fn apply_conntrack_failure(snapshot: &ResponseSnapshot, error: &str) -> Resp
     overlaid
 }
 
-fn connection_totals(clients: &ClientsResponse) -> (u64, u64, u64, u64) {
-    clients.clients.iter().fold((0, 0, 0, 0), |totals, client| {
-        (
-            totals.0.saturating_add(client.tcp_conns.unwrap_or(0)),
-            totals.1.saturating_add(client.udp_conns.unwrap_or(0)),
-            totals.2.saturating_add(client.udp_dns_conns.unwrap_or(0)),
-            totals.3.saturating_add(client.udp_other_conns.unwrap_or(0)),
-        )
-    })
+fn collected_connection_totals(collected: &CollectedSnapshot) -> (u64, u64, u64, u64) {
+    collected
+        .clients
+        .iter()
+        .fold((0, 0, 0, 0), |totals, client| {
+            (
+                totals.0.saturating_add(u64::from(client.tcp_conns)),
+                totals.1.saturating_add(u64::from(client.udp_conns)),
+                totals.2.saturating_add(u64::from(client.udp_dns_conns)),
+                totals.3.saturating_add(u64::from(client.udp_other_conns)),
+            )
+        })
 }
 
 fn clear_connection_fields(clients: &mut ClientsResponse) {

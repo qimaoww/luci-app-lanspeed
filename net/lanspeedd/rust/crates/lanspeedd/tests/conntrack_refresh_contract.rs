@@ -118,17 +118,17 @@ fn periodic_conntrack_is_only_required_by_sync_rate_source() {
 
 #[test]
 fn client_conntrack_cache_reuses_only_a_fresh_available_snapshot() {
-    assert_eq!(CLIENT_CONNTRACK_CACHE_TTL_MS, 5_000);
+    assert_eq!(CLIENT_CONNTRACK_CACHE_TTL_MS, 1_000);
     assert_eq!(
-        client_conntrack_plan(14_999, Some(10_000), true),
+        client_conntrack_plan(10_999, Some(10_000), true),
         ClientConntrackPlan::ReuseCached
     );
     assert_eq!(
-        client_conntrack_plan(15_000, Some(10_000), true),
+        client_conntrack_plan(11_000, Some(10_000), true),
         ClientConntrackPlan::Read
     );
     assert_eq!(
-        client_conntrack_plan(14_999, Some(10_000), false),
+        client_conntrack_plan(10_999, Some(10_000), false),
         ClientConntrackPlan::Read
     );
     assert_eq!(
@@ -196,6 +196,38 @@ fn successful_overlay_matches_identity_and_clears_unmatched_stale_counts() {
     assert_eq!(after.overview.samples[0].tx_bps, 300);
     assert_eq!(after.overview.samples[0].tcp_conns, Some(2));
     assert_eq!(after.overview.samples[0].udp_conns, Some(3));
+}
+
+#[test]
+fn successful_overlay_totals_include_clients_missing_from_the_rate_snapshot() {
+    let before = base_snapshot();
+    let mut conntrack = collected();
+    conntrack.clients.push(ClientSample {
+        mac: "aa:bb:cc:dd:ee:03".into(),
+        identity_key: "aa:bb:cc:dd:ee:03@lan".into(),
+        zone: "lan".into(),
+        interface: "br-lan".into(),
+        ips: vec!["192.0.2.30".into()],
+        tx_bytes: 0,
+        rx_bytes: 0,
+        last_seen_ms: 100,
+        tcp_conns: 4,
+        udp_conns: 5,
+        udp_dns_conns: 2,
+        udp_other_conns: 3,
+    });
+
+    let after = apply_conntrack_success(&before, &conntrack, "auto");
+
+    assert_eq!(after.clients.clients.len(), 2);
+    assert_eq!(after.clients.clients[0].tcp_conns, Some(2));
+    assert_eq!(after.clients.clients[1].tcp_conns, Some(0));
+    assert_eq!(after.clients.tcp_conns_total, Some(6));
+    assert_eq!(after.clients.udp_conns_total, Some(8));
+    assert_eq!(after.clients.udp_dns_conns_total, Some(3));
+    assert_eq!(after.clients.udp_other_conns_total, Some(5));
+    assert_eq!(after.overview.samples[0].tcp_conns, Some(6));
+    assert_eq!(after.overview.samples[0].udp_conns, Some(8));
 }
 
 #[test]
