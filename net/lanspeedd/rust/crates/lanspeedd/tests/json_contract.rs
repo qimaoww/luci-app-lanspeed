@@ -1,6 +1,12 @@
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{collections::BTreeMap, fs, net::IpAddr, path::PathBuf, sync::Arc};
 
 use lanspeedd::{
+    collectors::conntrack::{CollectStats, CollectedSnapshot},
+    connection_details::{
+        ClientConnectionDetail, ClientConnectionSet, ConnectionDirection, ConnectionProtocol,
+        ConnectionState,
+    },
+    connections::apply_conntrack_success,
     model::{
         Capabilities, Client, ClientsResponse, Confidence, Conflict, Coverage, Evidence,
         HealthResponse, Interface, InterfaceRole, InterfaceStatus, InterfacesResponse, Mode,
@@ -131,8 +137,8 @@ fn fixture_snapshot() -> ResponseSnapshot {
             "conntrack_current_tcp_established_assured_udp_assured_dns_split".into(),
         ),
     };
-    ResponseSnapshot {
-        status: StatusResponse {
+    ResponseSnapshot::from_responses(
+        StatusResponse {
             mode: Mode::Full,
             confidence: Confidence::High,
             warnings: vec!["dae_detected".into()],
@@ -159,7 +165,7 @@ fn fixture_snapshot() -> ResponseSnapshot {
             }),
         },
         clients,
-        overview: OverviewResponse {
+        OverviewResponse {
             samples: vec![OverviewSample {
                 sample_ms: 10_000,
                 tx_bps: 1_000,
@@ -179,7 +185,7 @@ fn fixture_snapshot() -> ResponseSnapshot {
             conn_semantics:
                 "conntrack_current_tcp_established_assured_udp_assured_dns_split".into(),
         },
-        health: HealthResponse {
+        HealthResponse {
             mode: Mode::Degraded,
             confidence: Confidence::Medium,
             capabilities,
@@ -192,14 +198,14 @@ fn fixture_snapshot() -> ResponseSnapshot {
             warnings: vec!["tc_filter_conflict".into()],
             evidence: evidence("health"),
         },
-        reload: ReloadResponse {
+        ReloadResponse {
             ok: true,
             mode: Mode::Full,
             warnings: vec![],
             evidence: evidence("reload"),
             version: "1.0.0-r1".into(),
         },
-        interfaces: InterfacesResponse {
+        InterfacesResponse {
             interfaces: vec![Interface {
                 name: "br-lan".into(),
                 role: InterfaceRole::Lan,
@@ -218,7 +224,7 @@ fn fixture_snapshot() -> ResponseSnapshot {
             note: Some("Per-interface totals from kernel net device counters; reflect hardware-offloaded and hardware-switched traffic too.".into()),
             evidence: Some(evidence("interfaces")),
         },
-        sysdevices: SysdevicesResponse {
+        SysdevicesResponse {
             devices: vec![Sysdevice {
                 name: "br-lan".into(),
                 selected: true,
@@ -232,7 +238,7 @@ fn fixture_snapshot() -> ResponseSnapshot {
             current_ifnames: vec!["br-lan".into()],
             current_observed: vec![],
         },
-    }
+    )
 }
 
 fn minimal_optional_snapshot() -> ResponseSnapshot {
@@ -285,6 +291,148 @@ fn minimal_optional_snapshot() -> ResponseSnapshot {
 
     snapshot.sysdevices.devices[0].speed_mbps = None;
     snapshot
+}
+
+fn detail() -> ClientConnectionDetail {
+    ClientConnectionDetail {
+        client_ip: "192.0.2.10".parse::<IpAddr>().unwrap(),
+        client_port: 42_001,
+        remote_ip: "198.51.100.20".parse::<IpAddr>().unwrap(),
+        remote_port: 443,
+        protocol: ConnectionProtocol::Tcp,
+        state: ConnectionState::Established,
+        direction: ConnectionDirection::Outbound,
+    }
+}
+
+fn publish_details(
+    snapshot: &ResponseSnapshot,
+    details: BTreeMap<String, ClientConnectionSet>,
+) -> ResponseSnapshot {
+    apply_conntrack_success(
+        snapshot,
+        &CollectedSnapshot {
+            clients: Vec::new(),
+            sample_ms: 12_345,
+            connection_details: Arc::new(details),
+            counter_source: "ctnetlink_conntrack_acct_orig_reply_bytes",
+            stats: CollectStats {
+                netlink_read: true,
+                ..CollectStats::default()
+            },
+        },
+        "auto",
+    )
+}
+
+#[test]
+fn client_connections_keeps_exact_envelope_summary_and_detail_key_sets() {
+    let key = "02:00:00:00:00:01@lan";
+    let snapshot = publish_details(
+        &fixture_snapshot(),
+        BTreeMap::from([(
+            key.to_owned(),
+            ClientConnectionSet {
+                total_connections: 1,
+                connections: vec![detail()],
+                truncated: false,
+            },
+        )]),
+    );
+    let value = serde_json::to_value(snapshot.client_connections(key)).unwrap();
+
+    assert_exact_keys(
+        &value,
+        &[
+            "available",
+            "sample_ms",
+            "client",
+            "total_connections",
+            "returned_connections",
+            "truncated",
+            "limit",
+            "conn_source",
+            "conn_semantics",
+            "connections",
+            "warnings",
+        ],
+        "client_connections",
+    );
+    assert_exact_keys(
+        &value["client"],
+        &[
+            "identity_key",
+            "hostname",
+            "mac",
+            "ips",
+            "interface",
+            "zone",
+        ],
+        "client_connections.client",
+    );
+    assert_exact_keys(
+        &value["connections"][0],
+        &[
+            "client_ip",
+            "client_port",
+            "remote_ip",
+            "remote_port",
+            "protocol",
+            "state",
+            "direction",
+        ],
+        "client_connections.connections[]",
+    );
+    assert_eq!(value["available"], true);
+    assert_eq!(value["sample_ms"], 12_345);
+    assert_eq!(value["client"]["hostname"], "fixture-client");
+    assert_eq!(value["conn_source"], "conntrack_netlink");
+    assert_eq!(value["connections"][0]["remote_ip"], "198.51.100.20");
+}
+
+#[test]
+fn client_connections_serializes_missing_options_as_null_without_skipping_keys() {
+    let unavailable =
+        serde_json::to_value(fixture_snapshot().client_connections("02:00:00:00:00:99@lan"))
+            .unwrap();
+    assert_exact_keys(
+        &unavailable,
+        &[
+            "available",
+            "sample_ms",
+            "client",
+            "total_connections",
+            "returned_connections",
+            "truncated",
+            "limit",
+            "conn_source",
+            "conn_semantics",
+            "connections",
+            "warnings",
+        ],
+        "unavailable client_connections",
+    );
+    assert_eq!(unavailable["available"], false);
+    assert!(unavailable["sample_ms"].is_null());
+    assert!(unavailable["client"].is_null());
+    assert!(unavailable["conn_source"].is_null());
+
+    let available = publish_details(&minimal_optional_snapshot(), BTreeMap::new());
+    let known =
+        serde_json::to_value(available.client_connections("02:00:00:00:00:01@lan")).unwrap();
+    assert_exact_keys(
+        &known["client"],
+        &[
+            "identity_key",
+            "hostname",
+            "mac",
+            "ips",
+            "interface",
+            "zone",
+        ],
+        "client_connections.client without hostname",
+    );
+    assert!(known["client"]["hostname"].is_null());
 }
 
 #[test]

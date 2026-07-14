@@ -8,6 +8,31 @@ use std::{cmp::Ordering, collections::BTreeMap, net::IpAddr, sync::Arc};
 pub const MAX_STORED_CONNECTION_DETAILS: usize = 16_384;
 pub const MAX_CLIENT_CONNECTION_DETAILS: usize = 512;
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ClientConnectionSummary {
+    pub identity_key: String,
+    pub hostname: Option<String>,
+    pub mac: String,
+    pub ips: Vec<String>,
+    pub interface: String,
+    pub zone: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ClientConnectionsResponse {
+    pub available: bool,
+    pub sample_ms: Option<u64>,
+    pub client: Option<ClientConnectionSummary>,
+    pub total_connections: u64,
+    pub returned_connections: usize,
+    pub truncated: bool,
+    pub limit: usize,
+    pub conn_source: Option<String>,
+    pub conn_semantics: String,
+    pub connections: Vec<ClientConnectionDetail>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnectionProtocol {
@@ -48,6 +73,16 @@ pub struct ClientConnectionSet {
 }
 
 pub type ConnectionDetailsSnapshot = Arc<BTreeMap<String, ClientConnectionSet>>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum PublishedConnectionDetails {
+    Unavailable,
+    Available {
+        sample_ms: u64,
+        conn_source: String,
+        by_identity: ConnectionDetailsSnapshot,
+    },
+}
 
 #[derive(Debug, Default)]
 pub struct ConnectionDetailsIndex {

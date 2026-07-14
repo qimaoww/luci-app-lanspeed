@@ -1,5 +1,11 @@
+use std::{collections::BTreeMap, net::IpAddr, sync::Arc};
+
 use lanspeedd::{
     collectors::conntrack::{aggregate::ClientSample, CollectStats, CollectedSnapshot},
+    connection_details::{
+        ClientConnectionDetail, ClientConnectionSet, ConnectionDirection, ConnectionProtocol,
+        ConnectionState, MAX_CLIENT_CONNECTION_DETAILS,
+    },
     connections::{
         apply_conntrack_failure, apply_conntrack_success, before_reply_action,
         client_conntrack_plan, periodic_conntrack_plan, BeforeReplyAction, ClientConntrackPlan,
@@ -96,6 +102,32 @@ fn collected() -> CollectedSnapshot {
         counter_source: "ctnetlink_conntrack_acct_orig_reply_bytes",
         stats,
     }
+}
+
+fn connection_detail(remote_ip: &str, remote_port: u16) -> ClientConnectionDetail {
+    ClientConnectionDetail {
+        client_ip: "192.0.2.10".parse::<IpAddr>().unwrap(),
+        client_port: 41_000,
+        remote_ip: remote_ip.parse::<IpAddr>().unwrap(),
+        remote_port,
+        protocol: ConnectionProtocol::Tcp,
+        state: ConnectionState::Established,
+        direction: ConnectionDirection::Outbound,
+    }
+}
+
+fn collected_with_details(
+    sample_ms: u64,
+    netlink_read: bool,
+    identity_key: &str,
+    set: ClientConnectionSet,
+) -> CollectedSnapshot {
+    let mut snapshot = collected();
+    snapshot.sample_ms = sample_ms;
+    snapshot.stats.netlink_read = netlink_read;
+    snapshot.stats.procfs_read = !netlink_read;
+    snapshot.connection_details = Arc::new(BTreeMap::from([(identity_key.to_owned(), set)]));
+    snapshot
 }
 
 #[test]
@@ -195,6 +227,231 @@ fn production_periodic_skip_reuses_the_existing_local_conntrack_snapshot() {
         !skip.contains("self.conntrack_snapshot.clone()"),
         "Skip must retain the local snapshot cloned once at collect_inner entry"
     );
+}
+
+#[test]
+fn successful_overlay_publishes_known_client_details_and_final_client_metadata() {
+    let key = "aa:bb:cc:dd:ee:01@lan";
+    let mut before = base_snapshot();
+    before.clients.clients[0].hostname = Some("alpha".into());
+    let detail = connection_detail("198.51.100.7", 443);
+    let collected = collected_with_details(
+        7_777,
+        true,
+        key,
+        ClientConnectionSet {
+            total_connections: 1,
+            connections: vec![detail.clone()],
+            truncated: false,
+        },
+    );
+
+    let after = apply_conntrack_success(&before, &collected, "auto");
+    let response = after.client_connections(key);
+
+    assert!(response.available);
+    assert_eq!(response.sample_ms, Some(7_777));
+    assert_eq!(response.conn_source.as_deref(), Some("conntrack_netlink"));
+    assert_eq!(
+        response.conn_semantics,
+        lanspeedd::state::CONNECTION_SEMANTICS
+    );
+    assert_eq!(response.total_connections, 1);
+    assert_eq!(response.returned_connections, 1);
+    assert!(!response.truncated);
+    assert_eq!(response.limit, MAX_CLIENT_CONNECTION_DETAILS);
+    assert_eq!(response.connections, [detail]);
+    assert!(response.warnings.is_empty());
+
+    let client = response.client.expect("known client metadata");
+    assert_eq!(client.identity_key, key);
+    assert_eq!(client.hostname.as_deref(), Some("alpha"));
+    assert_eq!(client.mac, "aa:bb:cc:dd:ee:01");
+    assert_eq!(client.ips, ["192.0.2.10"]);
+    assert_eq!(client.interface, "br-lan");
+    assert_eq!(client.zone, "lan");
+}
+
+#[test]
+fn successful_empty_overlay_replaces_the_entire_previous_detail_generation() {
+    let key = "aa:bb:cc:dd:ee:01@lan";
+    let first = collected_with_details(
+        111,
+        true,
+        key,
+        ClientConnectionSet {
+            total_connections: 1,
+            connections: vec![connection_detail("198.51.100.1", 443)],
+            truncated: false,
+        },
+    );
+    let with_details = apply_conntrack_success(&base_snapshot(), &first, "auto");
+
+    let mut empty = collected();
+    empty.sample_ms = 222;
+    empty.stats.netlink_read = false;
+    empty.stats.procfs_read = true;
+    empty.connection_details = Arc::new(BTreeMap::new());
+    let refreshed = apply_conntrack_success(&with_details, &empty, "auto");
+    let response = refreshed.client_connections(key);
+
+    assert!(response.available);
+    assert_eq!(response.sample_ms, Some(222));
+    assert_eq!(response.conn_source.as_deref(), Some("conntrack_procfs"));
+    assert!(response.client.is_some());
+    assert_eq!(response.total_connections, 0);
+    assert_eq!(response.returned_connections, 0);
+    assert!(!response.truncated);
+    assert!(response.connections.is_empty());
+    assert!(response.warnings.is_empty());
+}
+
+#[test]
+fn available_snapshot_never_leaks_an_orphan_detail_bucket() {
+    let missing_key = "aa:bb:cc:dd:ee:99@lan";
+    let collected = collected_with_details(
+        333,
+        true,
+        missing_key,
+        ClientConnectionSet {
+            total_connections: 1,
+            connections: vec![connection_detail("203.0.113.9", 80)],
+            truncated: false,
+        },
+    );
+
+    let after = apply_conntrack_success(&base_snapshot(), &collected, "auto");
+    let response = after.client_connections(missing_key);
+
+    assert!(response.available);
+    assert_eq!(response.sample_ms, Some(333));
+    assert_eq!(response.conn_source.as_deref(), Some("conntrack_netlink"));
+    assert!(response.client.is_none());
+    assert_eq!(response.total_connections, 0);
+    assert_eq!(response.returned_connections, 0);
+    assert!(!response.truncated);
+    assert!(response.connections.is_empty());
+    assert_eq!(response.warnings, ["client_not_found"]);
+}
+
+#[test]
+fn failed_overlay_clears_published_details_instead_of_serving_stale_data() {
+    let key = "aa:bb:cc:dd:ee:01@lan";
+    let collected = collected_with_details(
+        444,
+        true,
+        key,
+        ClientConnectionSet {
+            total_connections: 1,
+            connections: vec![connection_detail("203.0.113.10", 443)],
+            truncated: false,
+        },
+    );
+    let after = apply_conntrack_success(&base_snapshot(), &collected, "auto");
+
+    let failed = apply_conntrack_failure(&after, "netlink denied");
+    let response = failed.client_connections(key);
+
+    assert!(!response.available);
+    assert_eq!(response.sample_ms, None);
+    assert_eq!(response.conn_source, None);
+    assert!(response.client.is_some());
+    assert_eq!(response.total_connections, 0);
+    assert_eq!(response.returned_connections, 0);
+    assert!(!response.truncated);
+    assert!(response.connections.is_empty());
+    assert_eq!(response.warnings, ["conntrack_unavailable"]);
+
+    let missing = failed.client_connections("aa:bb:cc:dd:ee:99@lan");
+    assert_eq!(
+        missing.warnings,
+        ["client_not_found", "conntrack_unavailable"]
+    );
+}
+
+#[test]
+fn truncated_snapshot_reports_total_limit_and_the_exact_sorted_vector() {
+    let key = "aa:bb:cc:dd:ee:01@lan";
+    let expected = vec![
+        connection_detail("198.51.100.1", 80),
+        connection_detail("198.51.100.2", 443),
+    ];
+    let collected = collected_with_details(
+        555,
+        true,
+        key,
+        ClientConnectionSet {
+            total_connections: 9,
+            connections: expected.clone(),
+            truncated: true,
+        },
+    );
+
+    let after = apply_conntrack_success(&base_snapshot(), &collected, "auto");
+    let response = after.client_connections(key);
+
+    assert_eq!(response.total_connections, 9);
+    assert_eq!(response.returned_connections, expected.len());
+    assert!(response.truncated);
+    assert_eq!(response.limit, 512);
+    assert_eq!(response.connections, expected);
+}
+
+#[test]
+fn response_snapshot_clones_share_the_published_arc_map() {
+    let key = "aa:bb:cc:dd:ee:01@lan";
+    let details = Arc::new(BTreeMap::from([(
+        key.to_owned(),
+        ClientConnectionSet {
+            total_connections: 1,
+            connections: vec![connection_detail("198.51.100.8", 443)],
+            truncated: false,
+        },
+    )]));
+    let mut collected = collected();
+    collected.connection_details = Arc::clone(&details);
+    assert_eq!(Arc::strong_count(&details), 2);
+
+    let after = apply_conntrack_success(&base_snapshot(), &collected, "auto");
+    assert_eq!(Arc::strong_count(&details), 3);
+    drop(collected);
+    assert_eq!(Arc::strong_count(&details), 2);
+
+    let cloned = after.clone();
+    assert_eq!(Arc::strong_count(&details), 3);
+    assert_eq!(
+        cloned.client_connections(key),
+        after.client_connections(key)
+    );
+}
+
+#[test]
+fn production_periodic_response_publishes_the_final_local_conntrack_generation() {
+    let source = include_str!("../src/production.rs");
+    let collect_inner = source
+        .split("fn collect_inner(")
+        .nth(1)
+        .unwrap()
+        .split("fn update_overview(")
+        .next()
+        .unwrap();
+    let policy = collect_inner
+        .find("match periodic_conntrack_plan(decision.rate) {")
+        .expect("periodic conntrack policy");
+    let response = collect_inner
+        .find("let mut response = ResponseSnapshot::from_responses(")
+        .expect("response construction");
+    let publish = collect_inner[response..]
+        .find("if let Some(snapshot) = conntrack.as_ref() {")
+        .map(|offset| response + offset)
+        .expect("final local conntrack publication after response construction");
+
+    assert!(policy < response && response < publish);
+    let publication = &collect_inner[publish..];
+    assert!(publication.contains("response.replace_connection_details("));
+    assert!(publication.contains("snapshot.sample_ms"));
+    assert!(publication.contains("conntrack_source(snapshot)"));
+    assert!(publication.contains("Arc::clone(&snapshot.connection_details)"));
 }
 
 #[test]

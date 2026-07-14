@@ -759,15 +759,17 @@ impl ProductionRuntime {
             evidence: reload_evidence,
             version,
         };
-        Ok(ResponseSnapshot {
-            status,
-            clients,
-            overview,
-            health,
-            reload,
-            interfaces,
-            sysdevices,
-        })
+        let mut response = ResponseSnapshot::from_responses(
+            status, clients, overview, health, reload, interfaces, sysdevices,
+        );
+        if let Some(snapshot) = conntrack.as_ref() {
+            response.replace_connection_details(
+                snapshot.sample_ms,
+                conntrack_source(snapshot).to_owned(),
+                Arc::clone(&snapshot.connection_details),
+            );
+        }
+        Ok(response)
     }
 
     fn update_overview(&mut self, now_ms: u64, response: &ClientsResponse) -> OverviewResponse {

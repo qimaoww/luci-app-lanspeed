@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use serde_json::Value;
 
@@ -148,6 +148,11 @@ pub fn apply_conntrack_success(
     collector_mode: &str,
 ) -> ResponseSnapshot {
     let mut overlaid = snapshot.clone();
+    overlaid.replace_connection_details(
+        collected.sample_ms,
+        conntrack_source(collected).to_owned(),
+        Arc::clone(&collected.connection_details),
+    );
     let by_identity = collected
         .clients
         .iter()
@@ -234,6 +239,7 @@ pub fn apply_conntrack_success(
 
 pub fn apply_conntrack_failure(snapshot: &ResponseSnapshot, error: &str) -> ResponseSnapshot {
     let mut overlaid = snapshot.clone();
+    overlaid.clear_connection_details();
     remove_connection_only_clients(&mut overlaid.clients);
     for client in &mut overlaid.clients.clients {
         client.tcp_conns = None;
