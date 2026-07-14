@@ -10,7 +10,10 @@ use semver::Version;
 use thiserror::Error;
 
 pub const MINIMUM_RUSTC: &str = "1.94.0";
-pub const EXPECTED_BPF_LINKER: &str = "0.10.3";
+/// Version pinned by the reproducible OpenWrt package download.
+pub const PINNED_BPF_LINKER: &str = "0.10.3";
+pub const MINIMUM_BPF_LINKER: &str = PINNED_BPF_LINKER;
+pub const MAXIMUM_BPF_LINKER_EXCLUSIVE: &str = "0.11.0";
 pub const BPF_LINKER_ARCHIVE_URL: &str = "https://github.com/aya-rs/bpf-linker/releases/download/v0.10.3/bpf-linker-x86_64-unknown-linux-musl.tar.gz";
 pub const BPF_LINKER_ARCHIVE_SHA256: &str =
     "0fa4645d2dfbb5cafe6231b0aa9fad4f1430bd0871e3bd7319e82d827bf6262c";
@@ -31,7 +34,12 @@ impl ToolVersions {
 
     pub fn validate(&self) -> Result<(), BuildError> {
         validate_minimum_version("rustc", &self.rustc, MINIMUM_RUSTC)?;
-        validate_exact_version("bpf-linker", &self.bpf_linker, EXPECTED_BPF_LINKER)
+        validate_version_range(
+            "bpf-linker",
+            &self.bpf_linker,
+            MINIMUM_BPF_LINKER,
+            MAXIMUM_BPF_LINKER_EXCLUSIVE,
+        )
     }
 }
 
@@ -170,19 +178,41 @@ fn validate_minimum_version(
     }
 }
 
-fn validate_exact_version(
+fn validate_version_range(
     name: &'static str,
     actual: &str,
-    expected: &'static str,
+    minimum: &'static str,
+    maximum_exclusive: &'static str,
 ) -> Result<(), BuildError> {
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(BuildError::VersionMismatch {
+    let actual_version = Version::parse(actual).map_err(|source| BuildError::InvalidVersion {
+        name,
+        actual: actual.to_owned(),
+        source,
+    })?;
+    if !actual_version.pre.is_empty() {
+        return Err(BuildError::PrereleaseVersion {
             name,
-            expected,
+            actual: actual.to_owned(),
+        });
+    }
+    let minimum_version =
+        Version::parse(minimum).expect("the minimum tool version constant must be valid semver");
+    let maximum_version = Version::parse(maximum_exclusive)
+        .expect("the maximum tool version constant must be valid semver");
+    if actual_version < minimum_version {
+        Err(BuildError::VersionTooOld {
+            name,
+            minimum,
             actual: actual.to_owned(),
         })
+    } else if actual_version >= maximum_version {
+        Err(BuildError::VersionTooNew {
+            name,
+            maximum_exclusive,
+            actual: actual.to_owned(),
+        })
+    } else {
+        Ok(())
     }
 }
 
@@ -218,6 +248,12 @@ pub enum BuildError {
         minimum: &'static str,
         actual: String,
     },
+    #[error("{name} must be earlier than {maximum_exclusive}, found {actual}")]
+    VersionTooNew {
+        name: &'static str,
+        maximum_exclusive: &'static str,
+        actual: String,
+    },
     #[error("{name} prerelease versions are not supported, found {actual}")]
     PrereleaseVersion { name: &'static str, actual: String },
     #[error("invalid {name} version {actual}: {source}")]
@@ -225,12 +261,6 @@ pub enum BuildError {
         name: &'static str,
         actual: String,
         source: semver::Error,
-    },
-    #[error("{name} must be {expected}, found {actual}")]
-    VersionMismatch {
-        name: &'static str,
-        expected: &'static str,
-        actual: String,
     },
     #[error("invalid version output from {0}")]
     InvalidVersionOutput(&'static str),
@@ -255,19 +285,66 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_an_unpinned_version() {
-        let versions = ToolVersions {
-            rustc: MINIMUM_RUSTC.into(),
-            bpf_linker: "0.10.2".into(),
-        };
+    fn accepts_supported_stable_bpf_linker_versions() {
+        for bpf_linker in ["0.10.3", "0.10.4", "0.10.99", "0.10.3+distribution.1"] {
+            let versions = ToolVersions {
+                rustc: MINIMUM_RUSTC.into(),
+                bpf_linker: bpf_linker.into(),
+            };
 
-        assert!(matches!(
-            versions.validate(),
-            Err(BuildError::VersionMismatch {
-                name: "bpf-linker",
-                ..
-            })
-        ));
+            assert!(
+                versions.validate().is_ok(),
+                "bpf-linker {bpf_linker} must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_bpf_linker_outside_the_supported_series() {
+        for bpf_linker in ["0.10.2", "0.9.99"] {
+            let versions = ToolVersions {
+                rustc: MINIMUM_RUSTC.into(),
+                bpf_linker: bpf_linker.into(),
+            };
+            assert!(matches!(
+                versions.validate(),
+                Err(BuildError::VersionTooOld {
+                    name: "bpf-linker",
+                    ..
+                })
+            ));
+        }
+
+        for bpf_linker in ["0.11.0", "0.11.1", "1.0.0"] {
+            let versions = ToolVersions {
+                rustc: MINIMUM_RUSTC.into(),
+                bpf_linker: bpf_linker.into(),
+            };
+            assert!(matches!(
+                versions.validate(),
+                Err(BuildError::VersionTooNew {
+                    name: "bpf-linker",
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_prerelease_bpf_linker_versions() {
+        for bpf_linker in ["0.10.3-rc.1", "0.10.4-alpha.1", "0.11.0-beta.1"] {
+            let versions = ToolVersions {
+                rustc: MINIMUM_RUSTC.into(),
+                bpf_linker: bpf_linker.into(),
+            };
+            assert!(matches!(
+                versions.validate(),
+                Err(BuildError::PrereleaseVersion {
+                    name: "bpf-linker",
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]

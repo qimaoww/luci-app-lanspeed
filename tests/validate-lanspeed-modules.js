@@ -766,6 +766,24 @@ function assertStatusRefreshSortingInteraction(src) {
 			fail('statusRefresh.js must let explicit Rust false values override stale old C NSS aliases');
 		}
 	}
+	if (typeof mod.splitClientWarnings !== 'function') {
+		fail('statusRefresh.js must expose client warning classification for validation');
+	} else {
+		const connectionOnlyState = mod.splitClientWarnings([
+			'conntrack_connection_only'
+		], {});
+		const warningState = mod.splitClientWarnings([
+			'conntrack_connection_only',
+			'counter_anomaly',
+			'global_warning'
+		], { global_warning: true });
+		if (JSON.stringify(Array.from(connectionOnlyState.info)) !== JSON.stringify([ 'conntrack_connection_only' ]) ||
+		    connectionOnlyState.warnings.length !== 0 ||
+		    JSON.stringify(Array.from(warningState.info)) !== JSON.stringify([ 'conntrack_connection_only' ]) ||
+		    JSON.stringify(Array.from(warningState.warnings)) !== JSON.stringify([ 'counter_anomaly' ])) {
+			fail('statusRefresh.js must render connection-only rows as information without hiding real client warnings');
+		}
+	}
 
 	function makeRef(label, description) {
 		return {
@@ -1958,6 +1976,11 @@ function assertStatusRefreshModule(src) {
 	    !src.includes('ev.ppe_offload_active') ||
 	    !src.includes('vocab.normalizeWarningId(w)')) {
 		fail('statusRefresh.js must render new Rust NSS evidence and warning IDs with old C aliases');
+	}
+	if (!src.includes('splitClientWarnings(rawWarnings, globalWarnings)') ||
+	    !src.includes("_('仅连接')") ||
+	    !src.includes("_('%d 告警').format(specificWarnings.length)")) {
+		fail('statusRefresh.js must present connection-only rows as neutral information and count only real warnings');
 	}
 	if (!src.includes("covQuality === 'low_traffic'") ||
 	    !src.includes('LAN 流量较低，暂不计算覆盖率') ||

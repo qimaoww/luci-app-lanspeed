@@ -186,10 +186,14 @@ fn parse_line(bytes: &[u8]) -> Option<FlowSample> {
         "udp" => Protocol::Udp,
         _ => Protocol::Other(tokens.get(3)?.parse().ok()?),
     };
+    let tcp_state = (protocol == Protocol::Tcp
+        && tokens
+            .get(4)
+            .is_some_and(|value| value.parse::<u64>().is_ok()))
+    .then(|| parse_tcp_state(tokens.get(5).copied().unwrap_or("")));
     let mut flow = FlowSample {
         protocol,
-        tcp_state: (protocol == Protocol::Tcp)
-            .then(|| parse_tcp_state(tokens.get(5).copied().unwrap_or(""))),
+        tcp_state,
         ..FlowSample::default()
     };
     let mut src = 0usize;
@@ -198,6 +202,8 @@ fn parse_line(bytes: &[u8]) -> Option<FlowSample> {
     let mut dport = 0usize;
     let mut bytes_seen = 0usize;
     let mut has_orig_bytes = false;
+    let mut offloaded = false;
+    let mut unreplied = false;
     for token in tokens {
         if let Some(value) = token.strip_prefix("src=") {
             if let Ok(value) = value.parse() {
@@ -247,7 +253,21 @@ fn parse_line(bytes: &[u8]) -> Option<FlowSample> {
             bytes_seen = bytes_seen.saturating_add(1);
         } else if token == "[ASSURED]" {
             flow.assured = true;
+        } else if token == "[UNREPLIED]" {
+            unreplied = true;
+        } else if matches!(token, "[OFFLOAD]" | "[HW_OFFLOAD]") {
+            // For replied flow-offloaded entries, the kernel prints this
+            // marker instead of ASSURED and suppresses the TCP state.
+            offloaded = true;
         }
+    }
+    if unreplied {
+        flow.assured = false;
+    } else if offloaded {
+        flow.assured = true;
+    }
+    if offloaded && !unreplied && protocol == Protocol::Tcp && flow.tcp_state.is_none() {
+        flow.tcp_state = Some(TcpState::Established);
     }
     (flow.orig_src.is_some() && has_orig_bytes).then_some(flow)
 }

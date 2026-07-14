@@ -67,7 +67,10 @@ function buildShell(viewState) {
 	refs.mTcpConns    = E('div', { 'class': 'big' }, '-');
 	refs.mUdpConns    = E('div', { 'class': 'big' }, '-');
 	refs.mUdpConnsSub = E('div', { 'class': 'hint' }, '-');
-	refs.mConnsWrap   = E('div', { 'class': 'lanspeed-metric' }, [
+	refs.mConnsWrap   = E('div', {
+		'class': 'lanspeed-metric',
+		'title': _('当前 conntrack 项：TCP 仅统计 ESTABLISHED + ASSURED，UDP 仅统计 ASSURED；每条连接只归属一个 LAN 客户端。')
+	}, [
 		E('div', { 'class': 'caption' }, _('连接数')),
 		refs.mTcpConns,
 		refs.mUdpConns,

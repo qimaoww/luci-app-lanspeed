@@ -169,6 +169,49 @@ fn procfs_parser_preserves_orig_reply_nat_state_and_unknown_tokens() {
 }
 
 #[test]
+fn procfs_recovers_assured_state_hidden_by_flow_offload_markers() {
+    let text = concat!(
+        "ipv4 2 tcp 6 src=192.168.1.42 dst=8.8.8.8 sport=40000 dport=443 ",
+        "packets=10 bytes=1000 src=8.8.8.8 dst=192.168.1.42 sport=443 dport=40000 ",
+        "packets=20 bytes=2000 [OFFLOAD] mark=0 zone=0 use=3\n",
+        "ipv4 2 tcp 6 src=192.168.1.42 dst=1.1.1.1 sport=40001 dport=443 ",
+        "packets=10 bytes=1000 src=1.1.1.1 dst=192.168.1.42 sport=443 dport=40001 ",
+        "packets=20 bytes=2000 [HW_OFFLOAD] mark=0 zone=0 use=3\n",
+        "ipv4 2 udp 17 src=192.168.1.42 dst=8.8.8.8 sport=53000 dport=53 ",
+        "packets=2 bytes=300 src=8.8.8.8 dst=192.168.1.42 sport=53 dport=53000 ",
+        "packets=2 bytes=400 [OFFLOAD] mark=0 zone=0 use=3\n",
+        "ipv4 2 udp 17 src=192.168.1.42 dst=192.0.2.1 sport=53001 dport=123 ",
+        "packets=2 bytes=300 src=192.0.2.1 dst=192.168.1.42 sport=123 dport=53001 ",
+        "packets=2 bytes=400 [HW_OFFLOAD] mark=0 zone=0 use=3\n",
+        "ipv4 2 udp 17 src=192.168.1.42 dst=192.0.2.2 sport=53002 dport=123 ",
+        "packets=1 bytes=100 [UNREPLIED] src=192.0.2.2 dst=192.168.1.42 sport=123 dport=53002 ",
+        "packets=0 bytes=0 [OFFLOAD] mark=0 zone=0 use=3\n",
+        "ipv4 2 tcp 6 10 TIME_WAIT src=192.168.1.42 dst=192.0.2.3 sport=40002 dport=443 ",
+        "packets=10 bytes=1000 src=192.0.2.3 dst=192.168.1.42 sport=443 dport=40002 ",
+        "packets=20 bytes=2000 [OFFLOAD] mark=0 zone=0 use=3\n",
+    );
+    let parsed = parse_reader(Cursor::new(text), "/proc/net/nf_conntrack").unwrap();
+    assert_eq!(parsed.flows.len(), 6);
+    assert!(parsed.flows[..4].iter().all(|flow| flow.assured));
+    assert_eq!(parsed.flows[0].tcp_state, Some(TcpState::Established));
+    assert_eq!(parsed.flows[1].tcp_state, Some(TcpState::Established));
+    assert!(!parsed.flows[4].assured);
+    assert_eq!(parsed.flows[5].tcp_state, Some(TcpState::TimeWait));
+
+    let snapshot = aggregate_flows(&identities(), parsed.flows.iter(), 10, 8);
+    let client = &snapshot.clients[0];
+    assert_eq!(client.tcp_conns, 2);
+    assert_eq!(
+        (
+            client.udp_conns,
+            client.udp_dns_conns,
+            client.udp_other_conns
+        ),
+        (2, 1, 1)
+    );
+}
+
+#[test]
 fn procfs_requires_orig_accounting_accepts_missing_reply_and_strict_numbers() {
     let text = concat!(
         "ipv4 2 udp 17 20 src=192.168.1.42 dst=8.8.8.8 sport=12x dport=53 packets=2 bytes=100 [ASSURED]\n",
@@ -306,12 +349,27 @@ fn data_message_with_tuples(
     reply: Option<Vec<u8>>,
     counter32: bool,
 ) -> Vec<u8> {
+    data_message_with_tuples_and_state(seq, orig, reply, counter32, 1 << 2, None)
+}
+
+fn data_message_with_tuples_and_state(
+    seq: u32,
+    orig: Vec<u8>,
+    reply: Option<Vec<u8>>,
+    counter32: bool,
+    status: u32,
+    tcp_protoinfo: Option<Option<u8>>,
+) -> Vec<u8> {
     let mut attrs = orig;
     if let Some(mut reply) = reply {
         reply[2..4].copy_from_slice(&(2u16 | 0x8000).to_ne_bytes());
         attrs.extend(reply);
     }
-    attrs.extend(attr(3, &4u32.to_be_bytes()));
+    attrs.extend(attr(3, &status.to_be_bytes()));
+    if let Some(tcp_state) = tcp_protoinfo {
+        let tcp = tcp_state.map_or_else(Vec::new, |state| vec![nested(1, &[attr(1, &[state])])]);
+        attrs.extend(nested(4, &tcp));
+    }
     let counter = if counter32 {
         attr(4, &1234u32.to_be_bytes())
     } else {
@@ -340,6 +398,49 @@ fn netlink_parses_v4_v6_unaligned_attrs_and_be32_be64_counters() {
     assert_eq!((flows[0].orig_bytes, flows[0].reply_bytes), (1234, 5678));
     assert_eq!(flows[1].orig_src.unwrap().to_string(), "fd00::42");
     assert!(flows.iter().all(|flow| flow.assured && flow.is_dns()));
+}
+
+#[test]
+fn netlink_infers_established_only_for_offloaded_tcp_without_protoinfo() {
+    const IPS_ASSURED: u32 = 1 << 2;
+    const IPS_OFFLOAD: u32 = 1 << 14;
+    const IPS_HW_OFFLOAD: u32 = 1 << 15;
+    const TCP_CONNTRACK_TIME_WAIT: u8 = 7;
+
+    let seq = 78;
+    let src = [192, 168, 1, 42];
+    let dst = [8, 8, 8, 8];
+    let make = |status, tcp_protoinfo| {
+        data_message_with_tuples_and_state(
+            seq,
+            tuple(false, &src, &dst, 6, 40_000, 443),
+            Some(tuple(false, &dst, &src, 6, 443, 40_000)),
+            false,
+            status,
+            tcp_protoinfo,
+        )
+    };
+    let mut bytes = make(IPS_ASSURED, None);
+    bytes.extend(make(IPS_ASSURED | IPS_OFFLOAD, None));
+    bytes.extend(make(IPS_ASSURED | IPS_HW_OFFLOAD, None));
+    bytes.extend(make(
+        IPS_ASSURED | IPS_OFFLOAD,
+        Some(Some(TCP_CONNTRACK_TIME_WAIT)),
+    ));
+    bytes.extend(make(IPS_ASSURED | IPS_OFFLOAD, Some(None)));
+    bytes.extend(done(seq, NLM_F_MULTI, 0));
+
+    let flows = parse_dump(&[Datagram::kernel(bytes)], seq).unwrap();
+    assert_eq!(flows.len(), 5);
+    assert_eq!(flows[0].tcp_state, None);
+    assert_eq!(flows[1].tcp_state, Some(TcpState::Established));
+    assert_eq!(flows[2].tcp_state, Some(TcpState::Established));
+    assert_eq!(flows[3].tcp_state, Some(TcpState::TimeWait));
+    assert_eq!(flows[4].tcp_state, None);
+    assert!(flows.iter().all(|flow| flow.assured));
+
+    let snapshot = aggregate_flows(&identities(), flows.iter(), 10, 8);
+    assert_eq!(snapshot.clients[0].tcp_conns, 2);
 }
 
 #[test]

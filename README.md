@@ -74,9 +74,9 @@ NSS ECM/PPE sync 是显式选择 `nss_conntrack_sync`、NSS-direct 的补齐来�
 | `conntrack_netlink` | 强制使用 CT-Netlink。 |
 | `conntrack_procfs` | 强制使用 `/proc/net/nf_conntrack`。 |
 
-连接数语义为 `conntrack_current_tcp_established_assured_udp_assured_dns_split`：TCP 统计已建立/确认连接，UDP 只统计已确认（ASSURED）的 conntrack 项，并把 DNS UDP 单独拆分。
+连接数语义为 `conntrack_current_tcp_established_assured_udp_assured_dns_split`：TCP 统计已建立/确认连接，UDP 只统计已确认（ASSURED）的 conntrack 项，并把 DNS UDP 单独拆分。内核对 flow-offload 项会隐藏普通 TCP 状态或 `[ASSURED]` 文本，CT-Netlink 和 CT-Procfs 会按 offload 状态恢复等价语义，避免后备路径漏计。
 
-顶部汇总和 overview 使用完整的当前 conntrack 客户端快照，不受 `active_client_window_ms` 对速率客户端列表的裁剪影响；客户端表中的 TCP/UDP 列只对应当前仍由速率侧上报的客户端。
+顶部汇总、overview 和客户端表使用同一份完整的当前连接快照。已退出 `active_client_window_ms` 速率窗口但仍有连接的客户端会保留为 `CT-Netlink` / `CT-Procfs` 行，速率显示为 0 并提示 `conntrack_connection_only`；因此未启用搜索或“仅活跃”过滤时，表格 TCP/UDP 行合计与顶部严格一致，活跃客户端数仍只由实时速率判断。
 
 ## 包组成
 
@@ -96,12 +96,12 @@ NSS ECM/PPE sync 是显式选择 `nss_conntrack_sync`、NSS-direct 的补齐来�
 | OpenWrt 23.05 | 不支持。官方 SDK 的 Rust 版本和 libubox ABI 不满足当前完整 Rust 后端。 |
 | OpenWrt 21.02 及更早版本 | 不支持。BPF/BTF、Rust 工具链、OpenWrt ABI 和 LuCI 运行时差异过大。 |
 
-构建驱动要求稳定版 `Rust >= 1.94.0`，并精确校验 `bpf-linker 0.10.3`。Rust 1.94.0、1.95.0 和 1.96.0 已验证可离线构建；更高稳定版不再被版本门禁先行拒绝，但若 eBPF `build-std` 的标准库锁定依赖发生变化，仍需同步 `vendor`。预发布工具链仍会被拒绝。不要用较旧 SDK 的 `rust/host` 绕过最低版本检查；即使能编译，ubus/uloop/UCI 的目标 ABI 也可能不兼容。
+构建驱动要求稳定版 `Rust >= 1.94.0`，外部提供的 `BPF_LINKER` 接受稳定版 `bpf-linker >= 0.10.3, < 0.11.0`。OpenWrt 包构建仍下载并校验固定的 `bpf-linker 0.10.3` 发布归档及 SHA256，以保证离线构建可复现。Rust 1.94.0、1.95.0 和 1.96.0 已验证可离线构建；更高稳定版不再被版本门禁先行拒绝，但若 eBPF `build-std` 的标准库锁定依赖发生变化，仍需同步 `vendor`。Rust 与 `bpf-linker` 的预发布版本仍会被拒绝。不要用较旧 SDK 的 `rust/host` 绕过最低版本检查；即使能编译，ubus/uloop/UCI 的目标 ABI 也可能不兼容。
 
 ### 用户态与 BPF 必选包
 
 - `luci-app-lanspeed` 必须依赖 `lanspeedd-bpf`，`lanspeedd-bpf` 再依赖用户态 daemon `lanspeedd`；在 menuconfig 中选择 LuCI 应用会自动选中完整依赖链。
-- `lanspeedd-bpf` 使用固定版本的 `bpf-linker` 构建两套 Rust eBPF 对象；目标机必须提供 `tc-tiny` 和 `kmod-sched-bpf`。
+- `lanspeedd-bpf` 的标准 OpenWrt 包构建使用固定的 `bpf-linker 0.10.3` 构建两套 Rust eBPF 对象；显式传入兼容版本的 `BPF_LINKER` 时，构建驱动按上述版本范围校验。目标机必须提供 `tc-tiny` 和 `kmod-sched-bpf`。
 - 当前固定的 `bpf-linker` 发布包要求 x86_64 编译主机，目标路由器架构仍由 OpenWrt SDK 决定。
 - NSS-direct 与 NSS sync 保留为显式模式和 BPF 运行时不可用时的后备来源，但不能替代 LuCI 应用对 `lanspeedd-bpf` 的安装依赖。
 

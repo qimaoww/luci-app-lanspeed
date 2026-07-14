@@ -496,7 +496,7 @@ fn overview_active_rules_and_connection_overrides_are_exact() {
 }
 
 #[test]
-fn on_demand_connections_replace_only_the_latest_overview_counts() {
+fn on_demand_connections_replace_the_latest_overview_population() {
     let config = OverviewConfig {
         window_samples: 240,
         active_client_window_ms: 10_000,
@@ -517,14 +517,14 @@ fn on_demand_connections_replace_only_the_latest_overview_counts() {
     );
     let before = *ring.latest().unwrap();
 
-    assert!(ring.replace_latest_connections(ConnectionTotals::new(2, 3, 1, 2)));
+    assert!(ring.replace_latest_connections_and_client_count(ConnectionTotals::new(2, 3, 1, 2), 7,));
 
     let after = *ring.latest().unwrap();
     assert_eq!(ring.len(), 1);
     assert_eq!(after.sample_ms, before.sample_ms);
     assert_eq!(after.tx_bps, before.tx_bps);
     assert_eq!(after.rx_bps, before.rx_bps);
-    assert_eq!(after.client_count, before.client_count);
+    assert_eq!(after.client_count, 7);
     assert_eq!(after.active_clients, before.active_clients);
     assert_eq!(after.tcp_conns, 2);
     assert_eq!(after.udp_conns, 3);

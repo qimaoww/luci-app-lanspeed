@@ -36,8 +36,9 @@ use crate::{
     },
     connections::{
         apply_conntrack_failure, apply_conntrack_success, before_reply_action,
-        client_conntrack_plan, periodic_conntrack_plan, BeforeReplyAction, ClientConntrackPlan,
-        ConntrackObservation, PeriodicConntrackPlan,
+        client_conntrack_plan, conntrack_source, has_counted_connections, periodic_conntrack_plan,
+        BeforeReplyAction, ClientConntrackPlan, ConntrackObservation, PeriodicConntrackPlan,
+        CONNECTION_ONLY_WARNING,
     },
     daemon::{
         abort_reload_after_timer_failure, abort_reload_candidate, activate_runtime,
@@ -349,7 +350,8 @@ impl ProductionRuntime {
             snapshot.clients.udp_dns_conns_total.unwrap_or(0),
             snapshot.clients.udp_other_conns_total.unwrap_or(0),
         );
-        self.overview.replace_latest_connections(totals);
+        self.overview
+            .replace_latest_connections_and_client_count(totals, snapshot.clients.clients.len());
         Ok(snapshot)
     }
 
@@ -526,7 +528,7 @@ impl ProductionRuntime {
                         bpf_snapshot
                             .as_ref()
                             .map(|snapshot| snapshot.clients.as_slice()),
-                        None,
+                        conntrack.as_ref(),
                         &identities,
                         decision.confidence,
                     ),
@@ -1676,6 +1678,7 @@ fn clients_response(
     identities: &IdentityTable,
     client_confidence: ProbeConfidence,
 ) -> ClientsResponse {
+    let bpf_available = bpf.is_some();
     let mut clients = if let Some(bpf) = bpf {
         bpf.iter()
             .map(|sample| Client {
@@ -1705,35 +1708,42 @@ fn clients_response(
     } else {
         Vec::new()
     };
-    if clients.is_empty() {
-        if let Some(snapshot) = conntrack {
-            clients = snapshot
-                .clients
-                .iter()
-                .map(|sample| Client {
-                    mac: sample.mac.clone(),
-                    identity_key: sample.identity_key.clone(),
-                    zone: sample.zone.clone(),
-                    interface: sample.interface.clone(),
-                    ips: sample.ips.clone(),
-                    hostname: identities
-                        .by_mac_zone(&sample.mac, &sample.zone)
-                        .and_then(|identity| identity.hostname.clone()),
-                    rx_bps: 0,
-                    tx_bps: 0,
-                    last_seen: sample.last_seen_ms,
-                    sample_ms: Some(sample.last_seen_ms),
-                    rx_bytes: Some(sample.rx_bytes),
-                    tx_bytes: Some(sample.tx_bytes),
-                    collector_mode: snapshot.counter_source.into(),
-                    confidence: confidence(client_confidence),
-                    warnings: vec!["conntrack_routed_nat_only".into()],
-                    tcp_conns: Some(u64::from(sample.tcp_conns)),
-                    udp_conns: Some(u64::from(sample.udp_conns)),
-                    udp_dns_conns: Some(u64::from(sample.udp_dns_conns)),
-                    udp_other_conns: Some(u64::from(sample.udp_other_conns)),
-                })
-                .collect();
+    if let Some(snapshot) = conntrack {
+        for sample in &snapshot.clients {
+            if !has_counted_connections(sample)
+                || clients
+                    .iter()
+                    .any(|client| client.identity_key == sample.identity_key)
+            {
+                continue;
+            }
+            let mut warnings = vec![CONNECTION_ONLY_WARNING.to_owned()];
+            if !bpf_available {
+                warnings.push("conntrack_routed_nat_only".into());
+            }
+            clients.push(Client {
+                mac: sample.mac.clone(),
+                identity_key: sample.identity_key.clone(),
+                zone: sample.zone.clone(),
+                interface: sample.interface.clone(),
+                ips: sample.ips.clone(),
+                hostname: identities
+                    .by_mac_zone(&sample.mac, &sample.zone)
+                    .and_then(|identity| identity.hostname.clone()),
+                rx_bps: 0,
+                tx_bps: 0,
+                last_seen: sample.last_seen_ms,
+                sample_ms: Some(sample.last_seen_ms),
+                rx_bytes: None,
+                tx_bytes: None,
+                collector_mode: conntrack_source(snapshot).into(),
+                confidence: confidence(client_confidence),
+                warnings,
+                tcp_conns: Some(u64::from(sample.tcp_conns)),
+                udp_conns: Some(u64::from(sample.udp_conns)),
+                udp_dns_conns: Some(u64::from(sample.udp_dns_conns)),
+                udp_other_conns: Some(u64::from(sample.udp_other_conns)),
+            });
         }
     }
     clients.sort_by(|left, right| left.identity_key.cmp(&right.identity_key));

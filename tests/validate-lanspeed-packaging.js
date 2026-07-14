@@ -95,7 +95,11 @@ try {
     'BPF Build/Prepare must reject unsupported build hosts without breaking package metadata expansion'
   );
   assertMatch(pkgMakefile, /BPF_LINKER="\$\(BPF_LINKER\)"/, 'eBPF build must use the extracted pinned linker');
-  assert(buildDriver.includes('EXPECTED_BPF_LINKER: &str = "0.10.3"'), 'build driver must enforce bpf-linker 0.10.3');
+	assert(buildDriver.includes('PINNED_BPF_LINKER: &str = "0.10.3"'), 'build driver must retain the packaged bpf-linker version');
+	assert(buildDriver.includes('MINIMUM_BPF_LINKER: &str = PINNED_BPF_LINKER') &&
+		buildDriver.includes('MAXIMUM_BPF_LINKER_EXCLUSIVE: &str = "0.11.0"') &&
+		buildDriver.includes('validate_version_range('),
+		'build driver must accept the compatible stable bpf-linker 0.10.x range');
   assert(buildDriver.includes('"--locked"') && buildDriver.includes('"--offline"'), 'build driver must use locked offline Cargo');
   assert(cargoConfig.includes('replace-with = "vendored-sources"'), 'Cargo must use vendored sources');
   assert(cargoConfig.includes('offline = true'), 'Cargo config must forbid network dependency resolution');

@@ -219,15 +219,127 @@ fn successful_overlay_totals_include_clients_missing_from_the_rate_snapshot() {
 
     let after = apply_conntrack_success(&before, &conntrack, "auto");
 
-    assert_eq!(after.clients.clients.len(), 2);
+    assert_eq!(after.clients.clients.len(), 3);
     assert_eq!(after.clients.clients[0].tcp_conns, Some(2));
     assert_eq!(after.clients.clients[1].tcp_conns, Some(0));
+    assert_eq!(
+        after.clients.clients[2].identity_key,
+        "aa:bb:cc:dd:ee:03@lan"
+    );
+    assert_eq!(after.clients.clients[2].tx_bps, 0);
+    assert_eq!(after.clients.clients[2].rx_bps, 0);
+    assert_eq!(after.clients.clients[2].tcp_conns, Some(4));
+    assert_eq!(after.clients.clients[2].udp_conns, Some(5));
+    assert_eq!(after.clients.clients[2].collector_mode, "conntrack_netlink");
+    assert_eq!(
+        after.clients.clients[2].warnings,
+        ["conntrack_connection_only"]
+    );
     assert_eq!(after.clients.tcp_conns_total, Some(6));
     assert_eq!(after.clients.udp_conns_total, Some(8));
     assert_eq!(after.clients.udp_dns_conns_total, Some(3));
     assert_eq!(after.clients.udp_other_conns_total, Some(5));
+    assert_eq!(after.overview.samples[0].client_count, 3);
     assert_eq!(after.overview.samples[0].tcp_conns, Some(6));
     assert_eq!(after.overview.samples[0].udp_conns, Some(8));
+
+    let row_totals = after.clients.clients.iter().fold((0, 0), |totals, client| {
+        (
+            totals.0 + client.tcp_conns.unwrap_or(0),
+            totals.1 + client.udp_conns.unwrap_or(0),
+        )
+    });
+    assert_eq!(row_totals, (6, 8));
+}
+
+#[test]
+fn refreshed_overlay_replaces_stale_connection_only_clients() {
+    let before = base_snapshot();
+    let mut first = collected();
+    first.clients.push(ClientSample {
+        mac: "aa:bb:cc:dd:ee:03".into(),
+        identity_key: "aa:bb:cc:dd:ee:03@lan".into(),
+        zone: "lan".into(),
+        interface: "br-lan".into(),
+        ips: vec!["192.0.2.30".into()],
+        tx_bytes: 0,
+        rx_bytes: 0,
+        last_seen_ms: 100,
+        tcp_conns: 4,
+        udp_conns: 0,
+        udp_dns_conns: 0,
+        udp_other_conns: 0,
+    });
+    let with_connection_only = apply_conntrack_success(&before, &first, "auto");
+
+    let refreshed = apply_conntrack_success(&with_connection_only, &collected(), "auto");
+
+    assert_eq!(refreshed.clients.clients.len(), 2);
+    assert!(refreshed
+        .clients
+        .clients
+        .iter()
+        .all(|client| client.identity_key != "aa:bb:cc:dd:ee:03@lan"));
+    assert_eq!(refreshed.clients.tcp_conns_total, Some(2));
+    assert_eq!(refreshed.overview.samples[0].client_count, 2);
+}
+
+#[test]
+fn refreshed_overlay_preserves_current_connection_only_metadata() {
+    let before = base_snapshot();
+    let mut conntrack = collected();
+    conntrack.clients.push(ClientSample {
+        mac: "aa:bb:cc:dd:ee:03".into(),
+        identity_key: "aa:bb:cc:dd:ee:03@lan".into(),
+        zone: "lan".into(),
+        interface: "br-lan".into(),
+        ips: vec!["192.0.2.30".into()],
+        tx_bytes: 0,
+        rx_bytes: 0,
+        last_seen_ms: 100,
+        tcp_conns: 4,
+        udp_conns: 0,
+        udp_dns_conns: 0,
+        udp_other_conns: 0,
+    });
+    let mut with_connection_only = apply_conntrack_success(&before, &conntrack, "auto");
+    with_connection_only.clients.clients[2].hostname = Some("lease-name".into());
+
+    let refreshed = apply_conntrack_success(&with_connection_only, &conntrack, "auto");
+
+    assert_eq!(refreshed.clients.clients.len(), 3);
+    assert_eq!(
+        refreshed.clients.clients[2].hostname.as_deref(),
+        Some("lease-name")
+    );
+    assert_eq!(refreshed.clients.clients[2].tcp_conns, Some(4));
+}
+
+#[test]
+fn overlay_does_not_append_conntrack_only_clients_without_counted_connections() {
+    let before = base_snapshot();
+    let mut conntrack = collected();
+    conntrack.clients.push(ClientSample {
+        mac: "aa:bb:cc:dd:ee:03".into(),
+        identity_key: "aa:bb:cc:dd:ee:03@lan".into(),
+        zone: "lan".into(),
+        interface: "br-lan".into(),
+        ips: vec!["192.0.2.30".into()],
+        tx_bytes: 0,
+        rx_bytes: 0,
+        last_seen_ms: 100,
+        tcp_conns: 0,
+        udp_conns: 0,
+        udp_dns_conns: 0,
+        udp_other_conns: 0,
+    });
+
+    let after = apply_conntrack_success(&before, &conntrack, "auto");
+
+    assert_eq!(after.clients.clients.len(), 2);
+    assert_eq!(after.clients.tcp_conns_total, Some(2));
+    assert_eq!(after.clients.udp_conns_total, Some(3));
+    assert_eq!(after.overview.samples[0].client_count, 2);
 }
 
 #[test]
@@ -262,6 +374,37 @@ fn failed_overlay_never_returns_stale_connection_counts() {
         evidence.details["conntrack_error"],
         "netlink: permission denied"
     );
+}
+
+#[test]
+fn failed_overlay_removes_stale_connection_only_clients() {
+    let before = base_snapshot();
+    let mut conntrack = collected();
+    conntrack.clients.push(ClientSample {
+        mac: "aa:bb:cc:dd:ee:03".into(),
+        identity_key: "aa:bb:cc:dd:ee:03@lan".into(),
+        zone: "lan".into(),
+        interface: "br-lan".into(),
+        ips: vec!["192.0.2.30".into()],
+        tx_bytes: 0,
+        rx_bytes: 0,
+        last_seen_ms: 100,
+        tcp_conns: 4,
+        udp_conns: 0,
+        udp_dns_conns: 0,
+        udp_other_conns: 0,
+    });
+    let with_connection_only = apply_conntrack_success(&before, &conntrack, "auto");
+
+    let failed = apply_conntrack_failure(&with_connection_only, "dump failed");
+
+    assert_eq!(failed.clients.clients.len(), 2);
+    assert!(failed
+        .clients
+        .clients
+        .iter()
+        .all(|client| client.identity_key != "aa:bb:cc:dd:ee:03@lan"));
+    assert_eq!(failed.overview.samples[0].client_count, 2);
 }
 
 #[test]

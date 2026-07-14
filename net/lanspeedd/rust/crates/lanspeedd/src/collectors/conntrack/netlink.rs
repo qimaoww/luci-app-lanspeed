@@ -18,6 +18,8 @@ const CTA_PROTOINFO: usize = 4;
 const CTA_COUNTERS_ORIG: usize = 9;
 const CTA_COUNTERS_REPLY: usize = 10;
 const IPS_ASSURED: u32 = 1 << 2;
+const IPS_OFFLOAD: u32 = 1 << 14;
+const IPS_HW_OFFLOAD: u32 = 1 << 15;
 const TCP_CONNTRACK_ESTABLISHED: u8 = 3;
 const IPCTNL_MSG_CT_NEW: u16 = 1 << 8;
 const NETLINK_NETFILTER: i32 = 12;
@@ -311,13 +313,19 @@ fn parse_flow(payload: &[u8]) -> Result<FlowSample, DumpError> {
     if let Some(reply) = attrs[CTA_COUNTERS_REPLY] {
         flow.reply_bytes = parse_counters(reply.payload)?;
     }
-    if let Some(status) = attrs[CTA_STATUS] {
-        flow.assured = be_u32(status.payload)? & IPS_ASSURED != 0;
-    }
-    if let Some(protoinfo) = attrs[CTA_PROTOINFO] {
+    let status = attrs[CTA_STATUS]
+        .map(|status| be_u32(status.payload))
+        .transpose()?
+        .unwrap_or(0);
+    flow.assured = status & IPS_ASSURED != 0;
+    let protoinfo = attrs[CTA_PROTOINFO];
+    if let Some(protoinfo) = protoinfo {
         parse_protoinfo(protoinfo.payload, &mut flow)?;
     }
-    if flow.protocol == Protocol::Tcp && flow.tcp_state.is_none() {
+    if flow.protocol == Protocol::Tcp
+        && protoinfo.is_none()
+        && status & (IPS_OFFLOAD | IPS_HW_OFFLOAD) != 0
+    {
         flow.tcp_state = Some(TcpState::Established);
     }
     if flow.orig_src.is_none() {
