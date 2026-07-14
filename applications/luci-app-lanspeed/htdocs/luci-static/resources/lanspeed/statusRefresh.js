@@ -202,7 +202,7 @@ function refreshLive(viewState) {
 				return vocab.normalizeWarningId(w);
 			});
 			var clientWarningState = splitClientWarnings(rawWarnings, globalWarnings);
-			var infoWarnings = clientWarningState.info;
+			var connectionOnly = clientWarningState.info.indexOf('conntrack_connection_only') !== -1;
 			var specificWarnings = clientWarningState.warnings;
 			var critClient = specificWarnings.some(function(w) { return vocab.CRITICAL_WARNINGS[w]; });
 
@@ -225,15 +225,12 @@ function refreshLive(viewState) {
 			} else {
 				modeTitle = _('未知采集方式');
 			}
+			if (connectionOnly)
+				modeTitle += '\n' + vocab.warningText('conntrack_connection_only');
 
 			var stateCells = [
 				E('span', { 'class': 'label', 'title': modeTitle }, modeLabel)
 			];
-			if (infoWarnings.indexOf('conntrack_connection_only') !== -1)
-				stateCells.push(E('span', {
-					'class': 'label',
-					'title': vocab.warningText('conntrack_connection_only')
-				}, _('仅连接')));
 			if (specificWarnings.length)
 				stateCells.push(E('span', {
 					'class': critClient ? 'label danger' : 'label warning',

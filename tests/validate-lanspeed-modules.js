@@ -1183,8 +1183,8 @@ function assertWarningAliases(src) {
 	const connectionOnlyText = vocab.warningText('conntrack_connection_only');
 	if (!connectionOnlyText.includes('用于补全当前连接数') ||
 	    !connectionOnlyText.includes('不代表异常') ||
-	    !connectionOnlyText.includes('\n')) {
-		fail('vocab.js must explain connection-only rows as neutral two-line connection supplements');
+	    connectionOnlyText.includes('仅连接')) {
+		fail('vocab.js must explain connection-only rows without rendering a separate connection-only label');
 	}
 }
 
@@ -1984,9 +1984,10 @@ function assertStatusRefreshModule(src) {
 		fail('statusRefresh.js must render new Rust NSS evidence and warning IDs with old C aliases');
 	}
 	if (!src.includes('splitClientWarnings(rawWarnings, globalWarnings)') ||
-	    !src.includes("_('仅连接')") ||
+	    !src.includes("modeTitle += '\\n' + vocab.warningText('conntrack_connection_only');") ||
+	    src.includes("_('仅连接')") ||
 	    !src.includes("_('%d 告警').format(specificWarnings.length)")) {
-		fail('statusRefresh.js must present connection-only rows as neutral information and count only real warnings');
+		fail('statusRefresh.js must fold connection-only details into the collector tooltip without rendering another label');
 	}
 	if (!src.includes("covQuality === 'low_traffic'") ||
 	    !src.includes('LAN 流量较低，暂不计算覆盖率') ||
