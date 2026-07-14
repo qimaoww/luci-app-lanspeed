@@ -13,6 +13,7 @@ use std::{
 mod clock;
 pub mod collectors;
 pub mod config;
+pub mod connection_details;
 pub mod connections;
 pub mod daemon;
 pub mod error;

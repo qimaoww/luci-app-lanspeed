@@ -347,6 +347,8 @@ mod tests {
         snapshot.clients.nss_ecm_direct_parse_errors = Some(1);
         let collected = CollectedSnapshot {
             clients: Vec::new(),
+            sample_ms: 0,
+            connection_details: BTreeMap::new(),
             counter_source: "ctnetlink_conntrack_acct_orig_reply_bytes",
             stats: CollectStats {
                 netlink_read: true,

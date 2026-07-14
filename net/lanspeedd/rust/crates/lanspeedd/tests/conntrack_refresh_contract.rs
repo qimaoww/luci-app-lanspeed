@@ -91,6 +91,8 @@ fn collected() -> CollectedSnapshot {
             udp_dns_conns: 1,
             udp_other_conns: 2,
         }],
+        sample_ms: 100,
+        connection_details: std::collections::BTreeMap::new(),
         counter_source: "ctnetlink_conntrack_acct_orig_reply_bytes",
         stats,
     }

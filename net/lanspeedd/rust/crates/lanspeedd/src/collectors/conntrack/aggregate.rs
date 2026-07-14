@@ -1,6 +1,13 @@
-use super::{FlowSample, Protocol, TcpState};
-use crate::identity::{ClientIdentity, IdentityTable};
-use std::{collections::BTreeMap, net::IpAddr};
+use super::FlowSample;
+use crate::{
+    connection_details::{
+        classify_connection, classify_flow_ownership, sort_connection_details,
+        ClientConnectionDetail, ClientConnectionSet, ConnectionProtocol, FlowOwnership,
+        MAX_CLIENT_CONNECTION_DETAILS, MAX_STORED_CONNECTION_DETAILS,
+    },
+    identity::IdentityTable,
+};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClientSample {
@@ -36,11 +43,15 @@ pub struct AggregateStats {
 pub struct AggregateSnapshot {
     pub clients: Vec<ClientSample>,
     pub stats: AggregateStats,
+    pub sample_ms: u64,
+    pub connection_details: BTreeMap<String, ClientConnectionSet>,
 }
 
 pub struct AggregateState<'a> {
     identities: &'a IdentityTable,
     clients: BTreeMap<String, ClientSample>,
+    connection_details: BTreeMap<String, ClientConnectionSet>,
+    stored_connection_details: usize,
     stats: AggregateStats,
     now_ms: u64,
     max_clients: usize,
@@ -51,6 +62,8 @@ impl<'a> AggregateState<'a> {
         Self {
             identities,
             clients: BTreeMap::new(),
+            connection_details: BTreeMap::new(),
+            stored_connection_details: 0,
             stats: AggregateStats::default(),
             now_ms,
             max_clients,
@@ -59,78 +72,95 @@ impl<'a> AggregateState<'a> {
 
     pub fn push(&mut self, flow: &FlowSample) {
         self.stats.entries_seen = self.stats.entries_seen.saturating_add(1);
-        let orig_src = owner(self.identities, flow.orig_src);
-        let orig_dst = owner(self.identities, flow.orig_dst);
-        let reply_src = owner(self.identities, flow.reply_src);
-        let reply_dst = owner(self.identities, flow.reply_dst);
-        if (orig_src.is_some() && orig_dst.is_some())
-            || (reply_src.is_some() && reply_dst.is_some())
-        {
-            self.stats.both_lan_flows = self.stats.both_lan_flows.saturating_add(1);
-            return;
-        }
-        let endpoint = if let Some(identity) = orig_src {
-            Some((identity, true, flow.orig_src))
-        } else if let Some(identity) = orig_dst {
-            Some((identity, false, flow.orig_dst))
-        } else if let Some(identity) = reply_src {
-            Some((identity, false, flow.reply_src))
-        } else {
-            reply_dst.map(|identity| (identity, true, flow.reply_dst))
+        let owned = match classify_flow_ownership(self.identities, flow) {
+            FlowOwnership::BothLan => {
+                self.stats.both_lan_flows = self.stats.both_lan_flows.saturating_add(1);
+                return;
+            }
+            FlowOwnership::NoLan => {
+                self.stats.skipped_no_arp = self.stats.skipped_no_arp.saturating_add(1);
+                self.stats.no_lan_flows = self.stats.no_lan_flows.saturating_add(1);
+                return;
+            }
+            FlowOwnership::Owned(owned) => owned,
         };
-        let Some((identity, source_side, endpoint_ip)) = endpoint else {
-            self.stats.skipped_no_arp = self.stats.skipped_no_arp.saturating_add(1);
-            self.stats.no_lan_flows = self.stats.no_lan_flows.saturating_add(1);
-            return;
-        };
-        let key = identity.key.to_string();
+        let key = owned.identity.key.to_string();
         if !self.clients.contains_key(&key) && self.clients.len() >= self.max_clients {
             self.stats.clients_dropped = self.stats.clients_dropped.saturating_add(1);
             return;
         }
-        let sample = self
-            .clients
-            .entry(key.clone())
-            .or_insert_with(|| ClientSample {
-                mac: identity.key.mac.to_string(),
-                identity_key: key,
-                zone: identity.key.zone.clone(),
-                interface: identity.interface.clone(),
-                ips: identity.ips.clone(),
-                tx_bytes: 0,
-                rx_bytes: 0,
-                last_seen_ms: self.now_ms,
-                tcp_conns: 0,
-                udp_conns: 0,
-                udp_dns_conns: 0,
-                udp_other_conns: 0,
-            });
-        let (tx, rx) = if source_side {
+        let qualification = classify_connection(flow);
+        let (tx, rx) = if owned.source_side {
             (flow.orig_bytes, flow.reply_bytes)
         } else {
             (flow.reply_bytes, flow.orig_bytes)
         };
-        sample.tx_bytes = sample.tx_bytes.saturating_add(tx);
-        sample.rx_bytes = sample.rx_bytes.saturating_add(rx);
-        sample.last_seen_ms = self.now_ms;
-        add_connection_count(sample, flow);
+        {
+            let sample = self
+                .clients
+                .entry(key.clone())
+                .or_insert_with(|| ClientSample {
+                    mac: owned.identity.key.mac.to_string(),
+                    identity_key: key.clone(),
+                    zone: owned.identity.key.zone.clone(),
+                    interface: owned.identity.interface.clone(),
+                    ips: owned.identity.ips.clone(),
+                    tx_bytes: 0,
+                    rx_bytes: 0,
+                    last_seen_ms: self.now_ms,
+                    tcp_conns: 0,
+                    udp_conns: 0,
+                    udp_dns_conns: 0,
+                    udp_other_conns: 0,
+                });
+            sample.tx_bytes = sample.tx_bytes.saturating_add(tx);
+            sample.rx_bytes = sample.rx_bytes.saturating_add(rx);
+            sample.last_seen_ms = self.now_ms;
+            if let Some((protocol, _)) = qualification {
+                add_connection_count(sample, flow, protocol);
+            }
+        }
         self.stats.entries_matched = self.stats.entries_matched.saturating_add(1);
-        if source_side {
+        if owned.source_side {
             self.stats.src_lan_flows = self.stats.src_lan_flows.saturating_add(1);
         } else {
             self.stats.dst_lan_flows = self.stats.dst_lan_flows.saturating_add(1);
         }
-        if endpoint_ip.is_some_and(|ip| ip.is_ipv6()) {
+        if owned.endpoints.client_ip.is_ipv6() {
             self.stats.ipv6_lan_flows = self.stats.ipv6_lan_flows.saturating_add(1);
         } else {
             self.stats.ipv4_lan_flows = self.stats.ipv4_lan_flows.saturating_add(1);
         }
+        if let Some((protocol, state)) = qualification {
+            if let Some(detail) = owned.detail(protocol, state) {
+                self.record_connection_detail(&key, detail);
+            }
+        }
     }
 
-    pub fn finish(self) -> AggregateSnapshot {
+    fn record_connection_detail(&mut self, key: &str, detail: ClientConnectionDetail) {
+        let set = self.connection_details.entry(key.to_owned()).or_default();
+        set.total_connections = set.total_connections.saturating_add(1);
+        if set.connections.len() < MAX_CLIENT_CONNECTION_DETAILS
+            && self.stored_connection_details < MAX_STORED_CONNECTION_DETAILS
+        {
+            set.connections.push(detail);
+            self.stored_connection_details = self.stored_connection_details.saturating_add(1);
+        } else {
+            set.truncated = true;
+        }
+    }
+
+    pub fn finish(mut self) -> AggregateSnapshot {
+        for set in self.connection_details.values_mut() {
+            sort_connection_details(&mut set.connections);
+            set.truncated |= set.connections.len() as u64 != set.total_connections;
+        }
         AggregateSnapshot {
             clients: self.clients.into_values().collect(),
             stats: self.stats,
+            sample_ms: self.now_ms,
+            connection_details: self.connection_details,
         }
     }
 }
@@ -148,22 +178,22 @@ pub fn aggregate_flows<'a>(
     state.finish()
 }
 
-fn owner(table: &IdentityTable, address: Option<IpAddr>) -> Option<&ClientIdentity> {
-    table.by_ip(&address?.to_string())
-}
-
-fn add_connection_count(sample: &mut ClientSample, flow: &FlowSample) {
-    if flow.protocol == Protocol::Tcp
-        && flow.tcp_state == Some(TcpState::Established)
-        && flow.assured
-    {
-        sample.tcp_conns = sample.tcp_conns.saturating_add(1);
-    } else if flow.protocol == Protocol::Udp && flow.assured {
-        sample.udp_conns = sample.udp_conns.saturating_add(1);
-        if flow.is_dns() {
-            sample.udp_dns_conns = sample.udp_dns_conns.saturating_add(1);
-        } else {
-            sample.udp_other_conns = sample.udp_other_conns.saturating_add(1);
+fn add_connection_count(
+    sample: &mut ClientSample,
+    flow: &FlowSample,
+    protocol: ConnectionProtocol,
+) {
+    match protocol {
+        ConnectionProtocol::Tcp => {
+            sample.tcp_conns = sample.tcp_conns.saturating_add(1);
+        }
+        ConnectionProtocol::Udp => {
+            sample.udp_conns = sample.udp_conns.saturating_add(1);
+            if flow.is_dns() {
+                sample.udp_dns_conns = sample.udp_dns_conns.saturating_add(1);
+            } else {
+                sample.udp_other_conns = sample.udp_other_conns.saturating_add(1);
+            }
         }
     }
 }

@@ -1,7 +1,8 @@
+use crate::connection_details::ClientConnectionSet;
 use aggregate::{aggregate_flows, ClientSample};
 use netlink::{DumpError, NetlinkSnapshot};
 use procfs::{ProcfsError, ProcfsSnapshot};
-use std::net::IpAddr;
+use std::{collections::BTreeMap, net::IpAddr};
 
 pub mod aggregate;
 pub mod netlink;
@@ -131,6 +132,8 @@ pub struct CollectStats {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CollectedSnapshot {
     pub clients: Vec<ClientSample>,
+    pub sample_ms: u64,
+    pub connection_details: BTreeMap<String, ClientConnectionSet>,
     pub counter_source: &'static str,
     pub stats: CollectStats,
 }
@@ -217,11 +220,11 @@ fn finish_procfs_aggregate(
         snapshot.malformed_lines,
         snapshot.entries_seen,
     );
-    Ok(CollectedSnapshot {
-        clients: snapshot.aggregate.clients,
-        counter_source: snapshot.counter_source,
+    Ok(finish_aggregate(
+        snapshot.aggregate,
+        snapshot.counter_source,
         stats,
-    })
+    ))
 }
 
 fn finish_netlink(
@@ -245,11 +248,7 @@ fn finish_netlink(
         snapshot.malformed_entries,
         entries_seen,
     );
-    Ok(CollectedSnapshot {
-        clients: aggregate.clients,
-        counter_source: snapshot.counter_source,
-        stats,
-    })
+    Ok(finish_aggregate(aggregate, snapshot.counter_source, stats))
 }
 
 fn finish_procfs(
@@ -271,11 +270,21 @@ fn finish_procfs(
         snapshot.malformed_lines,
         snapshot.entries_seen,
     );
-    Ok(CollectedSnapshot {
+    Ok(finish_aggregate(aggregate, snapshot.counter_source, stats))
+}
+
+fn finish_aggregate(
+    aggregate: aggregate::AggregateSnapshot,
+    counter_source: &'static str,
+    stats: CollectStats,
+) -> CollectedSnapshot {
+    CollectedSnapshot {
         clients: aggregate.clients,
-        counter_source: snapshot.counter_source,
+        sample_ms: aggregate.sample_ms,
+        connection_details: aggregate.connection_details,
+        counter_source,
         stats,
-    })
+    }
 }
 
 fn stats_from_aggregate(
