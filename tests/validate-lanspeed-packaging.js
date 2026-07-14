@@ -160,9 +160,23 @@ try {
   assertNoMatch(pkgMakefile, /\$\(error\s+[^)]*lanspeedd-bpf/s, 'BPF package metadata must remain expandable');
 
   [
+    'configStyle.js',
+    'configStyleArgon.js',
+    'configStyleAurora.js',
+    'configStyleBase.js',
+    'configStyleBootstrap.js',
+    'configStyleResponsive.js',
+    'configStyleShared.js',
+    'statusStyle.js',
+    'statusStyleArgon.js',
+    'statusStyleAurora.js',
+    'statusStyleBase.js',
+    'statusStyleBootstrap.js',
+    'statusStyleCompat.js',
     'statusStyleCompatLive.js',
     'statusStyleCompatLive2.js',
     'statusStyleCompatLive3.js',
+    'statusStyleResponsive.js',
     'statusViewLive.js',
     'statusViewLive2.js',
     'statusViewLive3.js'

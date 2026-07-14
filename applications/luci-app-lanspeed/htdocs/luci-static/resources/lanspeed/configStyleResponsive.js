@@ -1,0 +1,83 @@
+'use strict';
+'require baseclass';
+
+/* Shared compact-screen structure for the explicitly supported themes. */
+var ROOT_SCOPE = ':is(.lanspeed-config-root.lanspeed-theme-aurora,' +
+	'.lanspeed-config-root.lanspeed-theme-argon,' +
+	'.lanspeed-config-root.lanspeed-theme-bootstrap)';
+
+var RESPONSIVE_CSS = [
+	'@media (max-width:800px){' + ROOT_SCOPE + '{width:100%;min-width:0;max-width:100%;',
+	'  box-sizing:border-box;overflow-x:hidden}',
+	ROOT_SCOPE + '>.cbi-section{min-width:0;max-width:100%;box-sizing:border-box}',
+	ROOT_SCOPE + ' .lanspeed-header{min-width:0;max-width:100%;box-sizing:border-box}',
+	ROOT_SCOPE + ' .lanspeed-header>.sum{min-width:0;max-width:100%;white-space:normal;',
+	'  overflow-wrap:anywhere;text-align:right}',
+	ROOT_SCOPE + ' .lanspeed-config-body,',
+	ROOT_SCOPE + ' .lanspeed-ifcfg-body{width:100%;min-width:0;max-width:100%;',
+	'  box-sizing:border-box;overflow-x:hidden}',
+	ROOT_SCOPE + ' .lanspeed-config-table,',
+	ROOT_SCOPE + ' .lanspeed-config-table tbody,',
+	ROOT_SCOPE + ' .lanspeed-ifcfg-table,',
+	ROOT_SCOPE + ' .lanspeed-ifcfg-table tbody{display:block;width:100%;min-width:0;',
+	'  max-width:100%;box-sizing:border-box}',
+	ROOT_SCOPE + ' .lanspeed-config-table thead,',
+	ROOT_SCOPE + ' .lanspeed-ifcfg-table thead{display:none}',
+	ROOT_SCOPE + ' .lanspeed-config-table tbody tr{display:grid;',
+	'  grid-template-columns:minmax(0,1fr);gap:.2rem;width:100%;min-width:0;',
+	'  box-sizing:border-box;padding:var(--lanspeed-mobile-config-row-padding,.7rem 0);',
+	'  border-bottom:1px solid var(--border,rgba(128,128,128,.18))}',
+	ROOT_SCOPE + ' .lanspeed-config-table tbody tr:last-child,',
+	ROOT_SCOPE + ' .lanspeed-ifcfg-table tbody tr:last-child{border-bottom:0}',
+	ROOT_SCOPE + ' .lanspeed-config-table tbody td{display:block;width:auto;min-width:0;',
+	'  max-width:100%;box-sizing:border-box;padding:.2rem 0;border-bottom:0;text-align:left;',
+	'  overflow-wrap:anywhere}',
+	ROOT_SCOPE + ' .lanspeed-config-table .value{width:100%;max-width:100%}',
+	ROOT_SCOPE + ' .lanspeed-config-table .value input:not([type="checkbox"]),',
+	ROOT_SCOPE + ' .lanspeed-config-table .value select{width:100%;min-width:0;max-width:none;',
+	'  box-sizing:border-box}',
+	ROOT_SCOPE + ' .lanspeed-config-table .value input[type="checkbox"]{width:auto;max-width:none}',
+	ROOT_SCOPE + ' .lanspeed-rate-control{display:grid;grid-template-columns:minmax(0,1fr);',
+	'  align-items:start;min-width:0}',
+	ROOT_SCOPE + ' .lanspeed-current-rate-source{min-width:0;white-space:normal;overflow-wrap:anywhere}',
+	ROOT_SCOPE + ' .lanspeed-range-stack,',
+	ROOT_SCOPE + ' .lanspeed-range-list,',
+	ROOT_SCOPE + ' .lanspeed-range-pill,',
+	ROOT_SCOPE + ' .lanspeed-range-add{width:100%;min-width:0;max-width:100%;box-sizing:border-box}',
+	ROOT_SCOPE + ' .lanspeed-range-pill,',
+	ROOT_SCOPE + ' .lanspeed-range-add{display:grid;grid-template-columns:minmax(0,1fr) auto;',
+	'  align-items:center}',
+	ROOT_SCOPE + ' .lanspeed-range-text,',
+	ROOT_SCOPE + ' .lanspeed-range-add input{width:100%;min-width:0;max-width:none;box-sizing:border-box}',
+	ROOT_SCOPE + ' .lanspeed-ifcfg-table tbody tr{display:grid;',
+	'  grid-template-columns:minmax(0,1fr) auto;',
+	'  grid-template-areas:"iface badge" "action action";',
+	'  gap:.4rem .75rem;width:100%;min-width:0;box-sizing:border-box;',
+	'  padding:var(--lanspeed-mobile-ifcfg-row-padding,.75rem 0);',
+	'  border-bottom:1px solid var(--border,rgba(128,128,128,.18))}',
+	ROOT_SCOPE + ' .lanspeed-ifcfg-table tbody td{display:block;width:auto;min-width:0;',
+	'  max-width:100%;box-sizing:border-box;padding:.15rem 0;border-bottom:0}',
+	ROOT_SCOPE + ' .lanspeed-ifcfg-table tbody td:nth-child(1){grid-area:iface;',
+	'  align-self:center;white-space:normal;overflow-wrap:anywhere}',
+	ROOT_SCOPE + ' .lanspeed-ifcfg-table tbody td:nth-child(2){grid-area:badge;',
+	'  align-self:center;justify-self:end;text-align:right}',
+	ROOT_SCOPE + ' .lanspeed-ifcfg-table .devtags{max-width:100%;justify-content:flex-end}',
+	ROOT_SCOPE + ' .lanspeed-ifcfg-table tbody td.action{grid-area:action;width:auto;',
+	'  max-width:100%;text-align:left}',
+	ROOT_SCOPE + ' .lanspeed-ifcfg-seg{display:grid;',
+	'  grid-template-columns:repeat(3,minmax(0,1fr));width:100%;min-width:0;max-width:100%;',
+	'  box-sizing:border-box}',
+	ROOT_SCOPE + ' .lanspeed-ifcfg-seg>button{width:100%;min-width:0;max-width:100%;',
+	'  min-height:2.5rem;box-sizing:border-box;padding:var(--lanspeed-mobile-seg-padding,.5rem .35rem);',
+	'  line-height:1.2;white-space:normal;overflow-wrap:anywhere}',
+	ROOT_SCOPE + ' .lanspeed-config-actions,',
+	ROOT_SCOPE + ' .lanspeed-ifcfg-actions,',
+	ROOT_SCOPE + ' .lanspeed-page-actions{min-width:0;max-width:100%;box-sizing:border-box;flex-wrap:wrap}',
+	ROOT_SCOPE + ' .lanspeed-config-actions .status,',
+	ROOT_SCOPE + ' .lanspeed-ifcfg-actions .status,',
+	ROOT_SCOPE + ' .lanspeed-page-actions>.status{min-width:0;max-width:100%;overflow-wrap:anywhere}}'
+].join('\n');
+
+return baseclass.extend({
+	CSS: RESPONSIVE_CSS
+});

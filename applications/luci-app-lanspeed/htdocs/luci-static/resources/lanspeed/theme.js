@@ -4,6 +4,7 @@
 var AURORA_CLASS = 'lanspeed-theme-aurora';
 var AURORA_META = 'LuCI Aurora';
 var ARGON_CLASS = 'lanspeed-theme-argon';
+var BOOTSTRAP_CLASS = 'lanspeed-theme-bootstrap';
 
 function docOrGlobal(doc) {
 	if (doc)
@@ -28,6 +29,12 @@ function hasAuroraAsset(doc) {
 function hasArgonAsset(doc) {
 	return hasSelector(doc, 'link[href*="/luci-static/argon/"]') ||
 		hasSelector(doc, 'script[src*="menu-argon.js"]');
+}
+
+function hasBootstrapAsset(doc) {
+	return hasSelector(doc, 'link[href*="/luci-static/bootstrap/"]') ||
+		hasSelector(doc, 'link[href*="/luci-static/bootstrap-dark/"]') ||
+		hasSelector(doc, 'link[href*="/luci-static/bootstrap-light/"]');
 }
 
 function hasAuroraMeta(doc) {
@@ -71,12 +78,19 @@ function isArgon(doc) {
 	return !!(doc && (hasArgonAsset(doc) || hasArgonShell(doc)));
 }
 
+function isBootstrap(doc) {
+	doc = docOrGlobal(doc);
+	return !!(doc && hasBootstrapAsset(doc));
+}
+
 return baseclass.extend({
 	detect: function(doc) {
 		if (isAurora(doc))
 			return 'aurora';
 		if (isArgon(doc))
 			return 'argon';
+		if (isBootstrap(doc))
+			return 'bootstrap';
 		return '';
 	},
 
@@ -86,6 +100,8 @@ return baseclass.extend({
 			return AURORA_CLASS;
 		if (theme === 'argon')
 			return ARGON_CLASS;
+		if (theme === 'bootstrap')
+			return BOOTSTRAP_CLASS;
 		return '';
 	},
 

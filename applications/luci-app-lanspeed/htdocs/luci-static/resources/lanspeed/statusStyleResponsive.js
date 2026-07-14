@@ -1,0 +1,66 @@
+'use strict';
+'require baseclass';
+
+/* Shared tablet and mobile layout rules kept after theme overrides for cascade compatibility. */
+var RESPONSIVE_CSS = [
+	'@media (min-width:701px) and (max-width:900px){',
+	'.lanspeed-clients-card .lanspeed-table{table-layout:fixed;min-width:0}',
+	'.lanspeed-clients-card .lanspeed-table th,.lanspeed-clients-card .lanspeed-table td{padding:.48rem .3rem}',
+	'.lanspeed-clients-card .lanspeed-table th:nth-child(1),.lanspeed-clients-card .lanspeed-table td:nth-child(1){width:18%}',
+	'.lanspeed-clients-card .lanspeed-table th:nth-child(2),.lanspeed-clients-card .lanspeed-table td:nth-child(2){width:26%;font-size:.84rem}',
+	'.lanspeed-clients-card .lanspeed-table th:nth-child(3),.lanspeed-clients-card .lanspeed-table td:nth-child(3),',
+	'.lanspeed-clients-card .lanspeed-table th:nth-child(4),.lanspeed-clients-card .lanspeed-table td:nth-child(4){width:13%;font-size:.9em}',
+	'.lanspeed-clients-card .lanspeed-table th:nth-child(5),.lanspeed-clients-card .lanspeed-table td:nth-child(5),',
+	'.lanspeed-clients-card .lanspeed-table th:nth-child(6),.lanspeed-clients-card .lanspeed-table td:nth-child(6){width:7%}',
+	'.lanspeed-clients-card .lanspeed-table th:nth-child(7),.lanspeed-clients-card .lanspeed-table td:nth-child(7){width:16%}',
+	'.lanspeed-clients-card .lanspeed-table td{overflow:hidden;text-overflow:ellipsis}',
+	'.lanspeed-clients-card .lanspeed-client-name{white-space:nowrap}',
+	'.lanspeed-clients-card .lanspeed-client-name .ipline{max-width:100%}}',
+
+	'@media (max-width:700px){.lanspeed-header,.lanspeed-details>summary{align-items:center}',
+	'.lanspeed-details-body{max-width:100%;overflow-x:auto}',
+	'.lanspeed-clients-card .lanspeed-body{overflow-x:hidden}',
+	'.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-body,',
+	'.lanspeed-theme-argon .lanspeed-clients-card .lanspeed-body,',
+	'.lanspeed-theme-bootstrap .lanspeed-clients-card .lanspeed-body{overflow-x:hidden}',
+	'.lanspeed-clients-card .lanspeed-table,.lanspeed-clients-card .lanspeed-table thead,',
+	'.lanspeed-clients-card .lanspeed-table tbody{display:block;width:100%;min-width:0}',
+	'.lanspeed-clients-card .lanspeed-table thead>tr{display:grid;',
+	'  grid-template-columns:repeat(6,minmax(0,1fr));gap:.25em;',
+	'  padding:0 0 .6em;border-bottom:1px solid var(--border,rgba(128,128,128,.18))}',
+	'.lanspeed-clients-card .lanspeed-table thead th{display:block;min-width:0;',
+	'  padding:.25em .15em!important;border:0}',
+	'.lanspeed-clients-card .lanspeed-table thead th:last-child{display:none}',
+	'.lanspeed-clients-card .lanspeed-sort-button{width:100%;max-width:100%;justify-content:center}',
+	'.lanspeed-clients-card .lanspeed-sort-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+	'.lanspeed-clients-card .lanspeed-table tbody>tr{display:grid;',
+	'  grid-template-columns:repeat(2,minmax(0,1fr));gap:.45em .75em;',
+	'  padding:.65em 0;border-bottom:1px solid var(--border,rgba(128,128,128,.18))}',
+	'.lanspeed-clients-card .lanspeed-table tbody>tr:last-child{border-bottom:0}',
+	'.lanspeed-clients-card .lanspeed-table tbody td{display:block;min-width:0;',
+	'  padding:0!important;border:0!important}',
+	'.lanspeed-clients-card .lanspeed-client-name,',
+	'.lanspeed-clients-card .lanspeed-client-mac,',
+	'.lanspeed-clients-card .lanspeed-client-state-cell{grid-column:1/-1}',
+	'.lanspeed-clients-card .lanspeed-client-name{font-size:1.05em;font-weight:600;overflow-wrap:anywhere}',
+	'.lanspeed-clients-card .lanspeed-client-name .ipline{max-width:100%;font-weight:400}',
+	'.lanspeed-clients-card .lanspeed-client-mac{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+	'.lanspeed-clients-card .lanspeed-table td[data-label]::before{content:attr(data-label);',
+	'  display:block;margin:0 0 .15em;font-size:.72em;font-family:inherit;font-weight:600;',
+	'  line-height:1.2;opacity:.62;text-transform:uppercase}',
+	'.lanspeed-clients-card .lanspeed-client-mac::before{display:inline-block!important;margin:0 .55em 0 0!important}',
+	'.lanspeed-clients-card .lanspeed-client-state-cell .state{min-width:0}}',
+	'@media (max-width:480px){.lanspeed-details>summary{display:grid;',
+	'  grid-template-columns:1em max-content minmax(0,1fr);column-gap:.6em;row-gap:.25em}',
+	'.lanspeed-details>summary::before{grid-column:1;grid-row:1}',
+	'.lanspeed-details>summary>h3{grid-column:2;grid-row:1}',
+	'.lanspeed-details>summary>.spacer{display:none}',
+	'.lanspeed-details>summary .sum{grid-column:3;grid-row:1;min-width:0;',
+	'  text-align:right;white-space:normal;overflow-wrap:anywhere}',
+	'.lanspeed-clients-card .lanspeed-table thead>tr{',
+	'  grid-template-columns:repeat(3,minmax(0,1fr));row-gap:.35em}}'
+].join('\n');
+
+return baseclass.extend({
+	CSS: RESPONSIVE_CSS
+});

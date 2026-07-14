@@ -137,6 +137,12 @@ try {
   [
     'configForm.js',
     'configStyle.js',
+    'configStyleArgon.js',
+    'configStyleAurora.js',
+    'configStyleBase.js',
+    'configStyleBootstrap.js',
+    'configStyleResponsive.js',
+    'configStyleShared.js',
     'format.js',
     'ifaceConfig.js',
     'nssPanel.js',
@@ -146,6 +152,15 @@ try {
     'statusRefresh.js',
     'statusShell.js',
     'statusStyle.js',
+    'statusStyleArgon.js',
+    'statusStyleAurora.js',
+    'statusStyleBase.js',
+    'statusStyleBootstrap.js',
+    'statusStyleCompat.js',
+    'statusStyleCompatLive.js',
+    'statusStyleCompatLive2.js',
+    'statusStyleCompatLive3.js',
+    'statusStyleResponsive.js',
     'theme.js',
     'vocab.js'
   ].forEach((name) => {

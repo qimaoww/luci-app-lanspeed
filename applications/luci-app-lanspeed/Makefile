@@ -46,6 +46,12 @@ define Package/luci-app-lanspeed/install
 	$(INSTALL_DATA) \
 		./htdocs/luci-static/resources/lanspeed/configForm.js \
 		./htdocs/luci-static/resources/lanspeed/configStyle.js \
+		./htdocs/luci-static/resources/lanspeed/configStyleArgon.js \
+		./htdocs/luci-static/resources/lanspeed/configStyleAurora.js \
+		./htdocs/luci-static/resources/lanspeed/configStyleBase.js \
+		./htdocs/luci-static/resources/lanspeed/configStyleBootstrap.js \
+		./htdocs/luci-static/resources/lanspeed/configStyleResponsive.js \
+		./htdocs/luci-static/resources/lanspeed/configStyleShared.js \
 		./htdocs/luci-static/resources/lanspeed/format.js \
 		./htdocs/luci-static/resources/lanspeed/ifaceConfig.js \
 		./htdocs/luci-static/resources/lanspeed/nssPanel.js \
@@ -55,10 +61,15 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/statusRefresh.js \
 		./htdocs/luci-static/resources/lanspeed/statusShell.js \
 		./htdocs/luci-static/resources/lanspeed/statusStyle.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyleArgon.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyleAurora.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyleBase.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyleBootstrap.js \
 		./htdocs/luci-static/resources/lanspeed/statusStyleCompat.js \
 		./htdocs/luci-static/resources/lanspeed/statusStyleCompatLive.js \
 		./htdocs/luci-static/resources/lanspeed/statusStyleCompatLive2.js \
 		./htdocs/luci-static/resources/lanspeed/statusStyleCompatLive3.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyleResponsive.js \
 		./htdocs/luci-static/resources/lanspeed/statusView.js \
 		./htdocs/luci-static/resources/lanspeed/statusViewLive.js \
 		./htdocs/luci-static/resources/lanspeed/statusViewLive2.js \

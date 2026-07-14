@@ -1,0 +1,37 @@
+'use strict';
+'require baseclass';
+
+/* Argon-only configuration layout overrides. */
+var ARGON_CSS = [
+	'.lanspeed-theme-argon{font-size:1rem}',
+	'.lanspeed-theme-argon .lanspeed-header{padding:.95rem 1.25rem .8rem}',
+	'.lanspeed-theme-argon .lanspeed-config-body,',
+	'.lanspeed-theme-argon .lanspeed-ifcfg-body{padding:1rem 1.25rem}',
+	'.lanspeed-theme-argon .lanspeed-header>h3{font-size:1.35rem}',
+	'.lanspeed-theme-argon .lanspeed-config-table th,.lanspeed-theme-argon .lanspeed-config-table td,.lanspeed-theme-argon .lanspeed-ifcfg-table th,.lanspeed-theme-argon .lanspeed-ifcfg-table td{padding:.68rem .75rem;font-size:1rem;line-height:1.45}',
+	'.lanspeed-theme-argon .lanspeed-config-table .hint,.lanspeed-theme-argon .lanspeed-ifcfg-table .muted{font-size:.88rem;line-height:1.45}',
+	'.lanspeed-theme-argon .lanspeed-config-table input,',
+	'.lanspeed-theme-argon .lanspeed-config-table select{font-size:1rem}',
+	'.lanspeed-theme-argon .lanspeed-config-table th:first-child,.lanspeed-theme-argon .lanspeed-config-table td:first-child,.lanspeed-theme-argon .lanspeed-ifcfg-table th:first-child,.lanspeed-theme-argon .lanspeed-ifcfg-table td:first-child{padding-left:.35rem}',
+	'.lanspeed-theme-argon .lanspeed-config-table th:last-child,',
+	'.lanspeed-theme-argon .lanspeed-config-table td:last-child,',
+	'.lanspeed-theme-argon .lanspeed-ifcfg-table th:last-child,',
+	'.lanspeed-theme-argon .lanspeed-ifcfg-table td:last-child{padding-right:0}',
+	'.lanspeed-theme-argon .lanspeed-range-stack{gap:.55rem}',
+	'.lanspeed-theme-argon .lanspeed-config-actions,',
+	'.lanspeed-theme-argon .lanspeed-ifcfg-actions{margin:.85rem 0 0 0}',
+	'.lanspeed-theme-argon .lanspeed-ifcfg-seg>button{padding:.55rem .8rem;border-radius:.25rem;font-size:.98rem}',
+	'@media (min-width:801px){.lanspeed-theme-argon .lanspeed-ifcfg-table{table-layout:fixed}',
+	'.lanspeed-theme-argon .lanspeed-ifcfg-table th:nth-child(1),.lanspeed-theme-argon .lanspeed-ifcfg-table td:nth-child(1){width:16rem}',
+	'.lanspeed-theme-argon .lanspeed-ifcfg-table th:nth-child(3),.lanspeed-theme-argon .lanspeed-ifcfg-table td:nth-child(3){width:21rem}}',
+	'@media (max-width:800px){.lanspeed-theme-argon{',
+	'  --lanspeed-mobile-config-row-padding:.75rem 0;',
+	'  --lanspeed-mobile-ifcfg-row-padding:.75rem 0}',
+	'.lanspeed-theme-argon .lanspeed-header{padding:.85rem 1rem .7rem}',
+	'.lanspeed-theme-argon .lanspeed-config-body,',
+	'.lanspeed-theme-argon .lanspeed-ifcfg-body{padding:.85rem 1rem}}'
+].join('\n');
+
+return baseclass.extend({
+	CSS: ARGON_CSS
+});

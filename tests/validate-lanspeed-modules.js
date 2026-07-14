@@ -28,6 +28,7 @@
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const crypto = require('crypto');
 
 const root = path.resolve(__dirname, '..');
 const resDir = path.join(root,
@@ -49,6 +50,12 @@ const EXPECTED_MODULES = [
 	'theme.js',
 	'version.js',
 	'statusStyle.js',
+	'statusStyleBase.js',
+	'statusStyleAurora.js',
+	'statusStyleArgon.js',
+	'statusStyleBootstrap.js',
+	'statusStyleResponsive.js',
+	'statusStyleCompat.js',
 	'statusStyleCompatLive.js',
 	'statusStyleCompatLive2.js',
 	'statusStyleCompatLive3.js',
@@ -60,6 +67,12 @@ const EXPECTED_MODULES = [
 	'statusShell.js',
 	'statusRefresh.js',
 	'configStyle.js',
+	'configStyleBase.js',
+	'configStyleAurora.js',
+	'configStyleArgon.js',
+	'configStyleBootstrap.js',
+	'configStyleShared.js',
+	'configStyleResponsive.js',
 	'configForm.js'
 ];
 
@@ -80,6 +93,26 @@ const EXPECTED_CONFIG_VIEW_REQUIRES = [
 	'lanspeed.configForm'
 ];
 
+const STATUS_STYLE_PARTS = [
+	'statusStyleBase.js',
+	'statusStyleAurora.js',
+	'statusStyleArgon.js',
+	'statusStyleBootstrap.js',
+	'statusStyleResponsive.js'
+];
+
+const CONFIG_STYLE_PARTS = [
+	'configStyleBase.js',
+	'configStyleAurora.js',
+	'configStyleArgon.js',
+	'configStyleBootstrap.js',
+	'configStyleShared.js',
+	'configStyleResponsive.js'
+];
+
+const EXPECTED_STATUS_STYLE_SHA256 = 'f445282ce283e20e629d0c629731a10f05d4a3cec721f27cd1863657e0ded788';
+const EXPECTED_CONFIG_STYLE_SHA256 = 'd16d845e2babf4b638bcc4e78ccfa44729e80b432fed9ead19dd51da9a3bb4d8';
+
 function readMakeVar(source, name, fileLabel) {
 	const match = source.match(new RegExp(`^${name}:=(.+)$`, 'm'));
 	if (!match) {
@@ -97,10 +130,23 @@ const MODULE_REQUIRES = {
 	'nssPanel.js':    [ 'baseclass', 'lanspeed.vocab', 'lanspeed.format' ],
 	'theme.js':       [ 'baseclass' ],
 	'version.js':     [ 'baseclass' ],
-	'statusStyle.js': [ 'baseclass' ],
-	'statusStyleCompatLive.js': [ 'baseclass' ],
-	'statusStyleCompatLive2.js': [ 'baseclass' ],
-	'statusStyleCompatLive3.js': [ 'baseclass' ],
+	'statusStyle.js': [
+		'baseclass',
+		'lanspeed.statusStyleBase',
+		'lanspeed.statusStyleAurora',
+		'lanspeed.statusStyleArgon',
+		'lanspeed.statusStyleBootstrap',
+		'lanspeed.statusStyleResponsive'
+	],
+	'statusStyleBase.js': [ 'baseclass' ],
+	'statusStyleAurora.js': [ 'baseclass' ],
+	'statusStyleArgon.js': [ 'baseclass' ],
+	'statusStyleBootstrap.js': [ 'baseclass' ],
+	'statusStyleResponsive.js': [ 'baseclass' ],
+	'statusStyleCompat.js': [ 'baseclass', 'lanspeed.statusStyleArgon' ],
+	'statusStyleCompatLive.js': [ 'baseclass', 'lanspeed.statusStyleArgon' ],
+	'statusStyleCompatLive2.js': [ 'baseclass', 'lanspeed.statusStyleArgon' ],
+	'statusStyleCompatLive3.js': [ 'baseclass', 'lanspeed.statusStyleArgon' ],
 	'statusViewLive.js': [
 		'baseclass',
 		'lanspeed.format',
@@ -138,7 +184,21 @@ const MODULE_REQUIRES = {
 		'lanspeed.statusIp',
 		'lanspeed.statusCollector'
 	],
-	'configStyle.js': [ 'baseclass' ],
+	'configStyle.js': [
+		'baseclass',
+		'lanspeed.configStyleBase',
+		'lanspeed.configStyleAurora',
+		'lanspeed.configStyleArgon',
+		'lanspeed.configStyleBootstrap',
+		'lanspeed.configStyleShared',
+		'lanspeed.configStyleResponsive'
+	],
+	'configStyleBase.js': [ 'baseclass' ],
+	'configStyleAurora.js': [ 'baseclass' ],
+	'configStyleArgon.js': [ 'baseclass' ],
+	'configStyleBootstrap.js': [ 'baseclass' ],
+	'configStyleShared.js': [ 'baseclass' ],
+	'configStyleResponsive.js': [ 'baseclass' ],
 	'configForm.js': [ 'baseclass', 'uci', 'lanspeed.rpc', 'lanspeed.ifaceConfig' ]
 };
 
@@ -149,6 +209,12 @@ const RPC_FREE_MODULES = [
 	'format.js',
 	'nssPanel.js',
 	'statusStyle.js',
+	'statusStyleBase.js',
+	'statusStyleAurora.js',
+	'statusStyleArgon.js',
+	'statusStyleBootstrap.js',
+	'statusStyleResponsive.js',
+	'statusStyleCompat.js',
 	'statusStyleCompatLive.js',
 	'statusStyleCompatLive2.js',
 	'statusStyleCompatLive3.js',
@@ -158,7 +224,13 @@ const RPC_FREE_MODULES = [
 	'statusIp.js',
 	'statusCollector.js',
 	'statusRefresh.js',
-	'configStyle.js'
+	'configStyle.js',
+	'configStyleBase.js',
+	'configStyleAurora.js',
+	'configStyleArgon.js',
+	'configStyleBootstrap.js',
+	'configStyleShared.js',
+	'configStyleResponsive.js'
 ];
 
 const errors = [];
@@ -180,6 +252,109 @@ function readModule(absPath) {
 function readModuleByName(name) {
 	const p = path.join(modDir, name);
 	return fs.existsSync(p) ? readModule(p) : '';
+}
+
+function styleSources(entryName, parts) {
+	return [ readModuleByName(entryName) ]
+		.concat(parts.map(readModuleByName))
+		.join('\n');
+}
+
+function loadStyleLeaf(name) {
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	return vm.compileFunction(readModuleByName(name), [ 'baseclass' ], {
+		filename: `resources/lanspeed/${name}`
+	})(fakeBaseclass);
+}
+
+function styleHash(css) {
+	return crypto.createHash('sha256').update(css).digest('hex');
+}
+
+function assertStyleModuleIsolation(name, src) {
+	if (/StyleBase\.js$/.test(name) &&
+	    (src.includes('lanspeed-theme-aurora') ||
+	     src.includes('lanspeed-theme-argon') ||
+	     src.includes('lanspeed-theme-bootstrap'))) {
+		fail(`${name} must remain theme-neutral`);
+	}
+	if (/StyleAurora\.js$/.test(name) &&
+	    (!src.includes('lanspeed-theme-aurora') ||
+	     src.includes('lanspeed-theme-argon') ||
+	     src.includes('lanspeed-theme-bootstrap'))) {
+		fail(`${name} must contain Aurora selectors only`);
+	}
+	if (/StyleArgon\.js$/.test(name) &&
+	    (!src.includes('lanspeed-theme-argon') ||
+	     src.includes('lanspeed-theme-aurora') ||
+	     src.includes('lanspeed-theme-bootstrap'))) {
+		fail(`${name} must contain Argon selectors only`);
+	}
+	if (/StyleBootstrap\.js$/.test(name) &&
+	    (!src.includes('lanspeed-theme-bootstrap') ||
+	     src.includes('lanspeed-theme-aurora') ||
+	     src.includes('lanspeed-theme-argon'))) {
+		fail(`${name} must contain Bootstrap selectors only`);
+	}
+	if ((name === 'statusStyleResponsive.js' || name === 'configStyleResponsive.js') &&
+	    (!src.includes('lanspeed-theme-aurora') ||
+	     !src.includes('lanspeed-theme-argon') ||
+	     !src.includes('lanspeed-theme-bootstrap'))) {
+		fail(`${name} must retain shared responsive selectors for Aurora, Argon and Bootstrap`);
+	}
+	if (name === 'configStyleShared.js' &&
+	    (!src.includes('lanspeed-theme-aurora') ||
+	     !src.includes('lanspeed-theme-argon') ||
+	     src.includes('lanspeed-theme-bootstrap'))) {
+		fail('configStyleShared.js must remain the explicitly shared Aurora/Argon desktop layer');
+	}
+}
+
+function assertStyleAggregation() {
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	const statusBase = loadStyleLeaf('statusStyleBase.js');
+	const statusAurora = loadStyleLeaf('statusStyleAurora.js');
+	const statusArgon = loadStyleLeaf('statusStyleArgon.js');
+	const statusBootstrap = loadStyleLeaf('statusStyleBootstrap.js');
+	const statusResponsive = loadStyleLeaf('statusStyleResponsive.js');
+	const status = vm.compileFunction(readModuleByName('statusStyle.js'), [
+		'baseclass', 'statusStyleBase', 'statusStyleAurora',
+		'statusStyleArgon', 'statusStyleBootstrap', 'statusStyleResponsive'
+	], { filename: 'resources/lanspeed/statusStyle.js' })(
+		fakeBaseclass, statusBase, statusAurora, statusArgon,
+		statusBootstrap, statusResponsive
+	);
+	const expectedStatus = [
+		statusBase.CSS, statusAurora.CSS, statusArgon.CSS,
+		statusBootstrap.CSS, statusResponsive.CSS
+	].join('\n');
+	if (status.CSS !== expectedStatus)
+		fail('statusStyle.js must aggregate Base, Aurora, Argon, Bootstrap and Responsive CSS in cascade order');
+	if (styleHash(status.CSS) !== EXPECTED_STATUS_STYLE_SHA256)
+		fail('modular status CSS must match the reviewed stylesheet snapshot');
+
+	const configBase = loadStyleLeaf('configStyleBase.js');
+	const configAurora = loadStyleLeaf('configStyleAurora.js');
+	const configArgon = loadStyleLeaf('configStyleArgon.js');
+	const configBootstrap = loadStyleLeaf('configStyleBootstrap.js');
+	const configShared = loadStyleLeaf('configStyleShared.js');
+	const configResponsive = loadStyleLeaf('configStyleResponsive.js');
+	const config = vm.compileFunction(readModuleByName('configStyle.js'), [
+		'baseclass', 'configStyleBase', 'configStyleAurora',
+		'configStyleArgon', 'configStyleBootstrap', 'configStyleShared',
+		'configStyleResponsive'
+	], { filename: 'resources/lanspeed/configStyle.js' })(
+		fakeBaseclass, configBase, configAurora, configArgon,
+		configBootstrap, configShared, configResponsive
+	);
+	const expectedConfig = [
+		configBase.CSS, configAurora.CSS, configArgon.CSS,
+		configBootstrap.CSS, configShared.CSS, configResponsive.CSS
+	].join('\n');
+	if (config.CSS !== expectedConfig)
+		fail('configStyle.js must aggregate Base, Aurora, Argon, Bootstrap, Shared and Responsive CSS in cascade order');
+	if (styleHash(config.CSS) !== EXPECTED_CONFIG_STYLE_SHA256)
+		fail('modular config CSS must match the reviewed stylesheet snapshot');
 }
 
 function stripComments(src) {
@@ -1571,6 +1746,13 @@ function assertThemeModule(src) {
 	    !src.includes('lanspeed-theme-argon')) {
 		fail('resources/lanspeed/theme.js must detect Argon from theme assets and shell markers before applying the scoped class');
 	}
+	if (!src.includes('function isBootstrap') ||
+	    !src.includes('/luci-static/bootstrap/') ||
+	    !src.includes('/luci-static/bootstrap-dark/') ||
+	    !src.includes('/luci-static/bootstrap-light/') ||
+	    !src.includes('lanspeed-theme-bootstrap')) {
+		fail('resources/lanspeed/theme.js must detect Bootstrap and its dark/light asset variants before applying the scoped class');
+	}
 }
 
 function assertThemeWiring(src, label) {
@@ -1604,6 +1786,7 @@ function assertStatusStyleModule(src) {
 	if (!src.includes('CSS: LAYOUT_CSS') ||
 	    !src.includes('.lanspeed-theme-aurora ') ||
 	    !src.includes('.lanspeed-theme-argon ') ||
+	    !src.includes('.lanspeed-theme-bootstrap') ||
 	    !src.includes('.lanspeed-theme-argon .lanspeed-metrics{grid-template-columns:repeat(auto-fit,minmax(10.5em,12.5em));') ||
 	    !src.includes('.lanspeed-theme-argon .lanspeed-details-body{padding:.85rem 1rem;overflow-x:auto}')) {
 		fail('lanspeed/statusStyle.js must own status view CSS, including Aurora/Argon theme rules');
@@ -1626,15 +1809,17 @@ function assertStatusStyleModule(src) {
 	    !src.includes('.lanspeed-sort-indicator{')) {
 		fail('lanspeed/statusStyle.js must render accessible sortable headers without theme button chrome');
 	}
-	if (!src.includes('@media (max-width:700px){.lanspeed-clients-card .lanspeed-body{overflow-x:hidden}') ||
+	if (!src.includes('.lanspeed-clients-card .lanspeed-body{overflow-x:hidden}') ||
 	    !src.includes('grid-template-columns:repeat(6,minmax(0,1fr));gap:.25em;') ||
 	    !src.includes('.lanspeed-clients-card .lanspeed-table tbody>tr{display:grid;') ||
-	    !src.includes('grid-template-columns:repeat(2,minmax(0,1fr));gap:.7em 1em;') ||
+	    !src.includes('grid-template-columns:repeat(2,minmax(0,1fr));gap:.45em .75em;') ||
+	    !src.includes('.lanspeed-header,.lanspeed-details>summary{align-items:center}') ||
+	    !src.includes('.lanspeed-details-body{max-width:100%;overflow-x:auto}') ||
 	    !src.includes('.lanspeed-clients-card .lanspeed-table td[data-label]::before{content:attr(data-label);') ||
 	    !src.includes('@media (min-width:701px) and (max-width:900px){') ||
 	    !src.includes('.lanspeed-clients-card .lanspeed-table{table-layout:fixed;min-width:0}') ||
 	    !src.includes('.lanspeed-clients-card .lanspeed-table th:nth-child(7),.lanspeed-clients-card .lanspeed-table td:nth-child(7){width:16%}') ||
-	    !src.includes('@media (max-width:480px){.lanspeed-clients-card .lanspeed-table thead>tr{') ||
+	    !src.includes('.lanspeed-clients-card .lanspeed-table thead>tr{') ||
 	    !src.includes('grid-template-columns:repeat(3,minmax(0,1fr));row-gap:.35em}') ||
 	    !src.includes('.lanspeed-theme-aurora .lanspeed-toolbar input[type=search]{min-width:0;width:100%;max-width:none}') ||
 	    !src.includes('.lanspeed-theme-argon .lanspeed-toolbar input[type=search]{min-width:0;width:100%;max-width:none}')) {
@@ -1673,19 +1858,29 @@ function assertStatusStyleModule(src) {
 	    !src.includes('  align-items:center;column-gap:.45rem;min-width:0;padding:.18rem 0}') ||
 	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}') ||
 	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap>span:last-child{justify-self:start;min-width:2.25rem;text-align:center}') ||
-	    !src.includes('@media (max-width:700px){.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:1fr;max-width:none}') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap{grid-template-columns:minmax(0,9.65rem) 2.55rem;max-width:12.95rem}}')) {
-		fail('lanspeed/statusStyle.js must align Argon capability badges with fixed label/pill slots');
+	    !src.includes('@media (max-width:900px){.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:repeat(2,minmax(0,1fr));max-width:none;margin:.2rem 0 1rem}') ||
+	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap{grid-template-columns:minmax(0,1fr) 2.55rem;max-width:none}}') ||
+	    !src.includes('@media (max-width:700px){.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:minmax(0,1fr)}}')) {
+		fail('lanspeed/statusStyle.js must keep Argon capability badges aligned while using the full mobile width');
 	}
 }
 
-function assertStatusStyleCompatModule(src) {
+function assertStatusStyleCompatModule(name, src) {
 	if (!src.includes('lanspeed-style-argon-caps-compat') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:repeat(4,12.95rem);max-width:56rem;justify-content:start;align-items:center;gap:.5rem 1rem;margin:.2rem 0 1rem 1.25rem}') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-caps .cap{display:grid;grid-template-columns:minmax(0,9.65rem) 2.55rem;') ||
-	    !src.includes('@media (max-width:700px){.lanspeed-theme-argon .lanspeed-caps{grid-template-columns:1fr;max-width:none}') ||
+	    !src.includes('var ARGON_CAPS_CSS = statusStyleArgon.CAPS_CSS;') ||
+	    !src.includes('CSS: ARGON_CAPS_CSS') ||
 	    !src.includes('install: install')) {
-		fail('lanspeed/statusStyleCompatLive.js must install the Argon capability-grid override from a fresh module path');
+		fail(`lanspeed/${name} must install the shared Argon capability-grid CSS from statusStyleArgon`);
+		return;
+	}
+
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	const statusArgon = loadStyleLeaf('statusStyleArgon.js');
+	const compat = vm.compileFunction(src, [ 'baseclass', 'statusStyleArgon' ], {
+		filename: `resources/lanspeed/${name}`
+	})(fakeBaseclass, statusArgon);
+	if (compat.CSS !== statusArgon.CAPS_CSS) {
+		fail(`lanspeed/${name} must reuse statusStyleArgon.CAPS_CSS byte-for-byte`);
 	}
 }
 
@@ -1775,15 +1970,20 @@ function assertConfigStyleModule(src) {
 	if (!src.includes('CSS: CONFIG_CSS') ||
 	    !src.includes('.lanspeed-theme-aurora ') ||
 	    !src.includes('.lanspeed-theme-argon ') ||
+	    !src.includes('.lanspeed-theme-bootstrap') ||
 	    !src.includes('.lanspeed-config-table')) {
-		fail('lanspeed/configStyle.js must own config view CSS, including Aurora/Argon theme rules');
+		fail('lanspeed/configStyle.js must own config view CSS, including Aurora, Argon and Bootstrap theme rules');
 	}
-	if (!src.includes('.lanspeed-theme-aurora .lanspeed-ifcfg-body{overflow-x:auto}') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-ifcfg-body{overflow-x:auto}')) {
-		fail('lanspeed/configStyle.js must keep mobile interface tables horizontally scrollable inside Aurora/Argon cards');
+	if (!src.includes("var ROOT_SCOPE = ':is(.lanspeed-config-root.lanspeed-theme-aurora,'") ||
+	    !src.includes("'.lanspeed-config-root.lanspeed-theme-bootstrap)'") ||
+	    !src.includes("ROOT_SCOPE + ' .lanspeed-ifcfg-table tbody tr{display:grid;'") ||
+	    !src.includes('grid-template-areas:"iface badge" "action action";') ||
+	    !src.includes('grid-template-columns:repeat(3,minmax(0,1fr));width:100%;min-width:0;max-width:100%;') ||
+	    !src.includes('min-height:2.5rem;box-sizing:border-box;')) {
+		fail('lanspeed/configStyle.js must render mobile interface rows and three-state controls within every supported theme width');
 	}
-	if (!src.includes('.lanspeed-theme-aurora .lanspeed-config-table td:nth-child(2){width:18rem}') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-config-table td:nth-child(2){width:18rem}')) {
+	if (!src.includes("'.lanspeed-theme-aurora .lanspeed-config-table td:nth-child(2),'") ||
+	    !src.includes("'.lanspeed-theme-argon .lanspeed-config-table td:nth-child(2){width:18rem}'")) {
 		fail('lanspeed/configStyle.js must size the runtime settings value column after hiding the UCI column');
 	}
 	if (src.includes('.lanspeed-theme-aurora .lanspeed-config-table td:nth-child(3){width:18rem}') ||
@@ -1798,7 +1998,8 @@ function assertConfigStyleModule(src) {
 	if (!src.includes('.lanspeed-theme-aurora .lanspeed-range-add button,.lanspeed-theme-argon .lanspeed-range-add button{min-width:4rem;height:2.25rem}')) {
 		fail('lanspeed/configStyle.js must keep IPv6 range add controls compact in themed config layouts');
 	}
-	if (!src.includes('.lanspeed-theme-argon{display:flex;flex-direction:column;gap:1rem;margin:0;font-size:1rem}') ||
+	if (!src.includes("'.lanspeed-theme-argon{display:flex;flex-direction:column;gap:1rem;margin:0}'") ||
+	    !src.includes("'.lanspeed-theme-argon{font-size:1rem}'") ||
 	    !src.includes('.lanspeed-theme-argon .lanspeed-config-table th,.lanspeed-theme-argon .lanspeed-config-table td,.lanspeed-theme-argon .lanspeed-ifcfg-table th,.lanspeed-theme-argon .lanspeed-ifcfg-table td{padding:.68rem .75rem;font-size:1rem;line-height:1.45}') ||
 	    !src.includes('.lanspeed-theme-argon .lanspeed-config-table .hint,.lanspeed-theme-argon .lanspeed-ifcfg-table .muted{font-size:.88rem;line-height:1.45}')) {
 		fail('lanspeed/configStyle.js must enlarge Argon config page typography without changing other themes');
@@ -1942,10 +2143,13 @@ EXPECTED_MODULES.forEach(function(name) {
 		assertVersionModule(src);
 	}
 	if (name === 'statusStyle.js') {
-		assertStatusStyleModule(src);
+		assertStatusStyleModule(styleSources(name, STATUS_STYLE_PARTS));
 	}
-	if (name === 'statusStyleCompatLive.js' || name === 'statusStyleCompatLive2.js' || name === 'statusStyleCompatLive3.js') {
-		assertStatusStyleCompatModule(src);
+	if (STATUS_STYLE_PARTS.includes(name) || CONFIG_STYLE_PARTS.includes(name))
+		assertStyleModuleIsolation(name, src);
+	if (name === 'statusStyleCompat.js' || name === 'statusStyleCompatLive.js' ||
+	    name === 'statusStyleCompatLive2.js' || name === 'statusStyleCompatLive3.js') {
+		assertStatusStyleCompatModule(name, src);
 	}
 	if (name === 'statusViewLive.js') {
 		assertStatusViewEntryIsThin(src);
@@ -1965,13 +2169,15 @@ EXPECTED_MODULES.forEach(function(name) {
 		assertStatusRefreshSortingInteraction(src);
 	}
 	if (name === 'configStyle.js') {
-		assertConfigStyleModule(src);
+		assertConfigStyleModule(styleSources(name, CONFIG_STYLE_PARTS));
 	}
 	if (name === 'configForm.js') {
 		assertConfigFormModule(src);
 		assertConfigCompatibility(src);
 	}
 });
+
+assertStyleAggregation();
 
 assertConfigSaveBehavior(
 	readModuleByName('configForm.js'),
@@ -2009,6 +2215,8 @@ if (fs.existsSync(statusViewFile)) {
 	const statusSrc = [
 		vsrc,
 		readModuleByName('statusStyle.js'),
+		...STATUS_STYLE_PARTS.map(readModuleByName),
+		readModuleByName('statusStyleCompat.js'),
 		readModuleByName('statusStyleCompatLive.js'),
 		readModuleByName('statusStyleCompatLive2.js'),
 		readModuleByName('statusStyleCompatLive3.js'),
@@ -2031,6 +2239,7 @@ if (fs.existsSync(configViewFile)) {
 		const configSrc = [
 			csrc,
 			readModuleByName('configStyle.js'),
+			...CONFIG_STYLE_PARTS.map(readModuleByName),
 			readModuleByName('configForm.js'),
 			readModuleByName('ifaceConfig.js')
 		].join('\n');
