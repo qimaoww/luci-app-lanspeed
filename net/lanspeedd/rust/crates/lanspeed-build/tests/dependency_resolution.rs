@@ -31,6 +31,26 @@ fn custom_aya_and_vendor_resolution_do_not_depend_on_the_current_directory() {
     assert!(root_config.contains("[target.bpfel-unknown-none]"));
     assert!(root_config.contains("[target.x86_64-unknown-linux-musl]"));
 
+    let bpf_config = root_config
+        .split("[target.bpfel-unknown-none]")
+        .nth(1)
+        .unwrap()
+        .split("[target.")
+        .next()
+        .unwrap();
+    let bpf_rustflags = bpf_config
+        .lines()
+        .find(|line| line.trim_start().starts_with("rustflags ="))
+        .unwrap();
+    assert!(
+        bpf_rustflags.contains("\"debuginfo=2\""),
+        "bpfel rustflags must retain debuginfo=2 so release objects include BTF"
+    );
+    assert!(
+        !bpf_rustflags.contains("\"link-arg=--btf\""),
+        "Rust 1.96 already passes --btf when debuginfo is enabled; an explicit link-arg=--btf sends the argument to bpf-linker twice"
+    );
+
     let nested_config = fs::read_to_string(workspace.join(".cargo/config.toml")).unwrap();
     assert!(nested_config.contains("directory = \"vendor\""));
     assert!(!nested_config.contains("[target."));
