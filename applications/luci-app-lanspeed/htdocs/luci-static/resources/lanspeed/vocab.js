@@ -109,7 +109,7 @@ var WARNING_LABELS = {
 	fullcone_detected: _('检测到 Fullcone NAT，NAT 辅助路径会作为置信度告警展示。'),
 	fullcone_nat_enabled: _('Fullcone NAT 已启用，NAT 辅助路径会作为置信度告警展示。'),
 	conntrack_routed_nat_only: _('conntrack 诊断仅覆盖路由 / NAT 流量；非 NSS 不用于客户端测速。'),
-	conntrack_connection_only: _('该客户端仍有当前连接，但已退出实时速率窗口；速率显示为 0。'),
+	conntrack_connection_only: _('仅连接：用于补全当前连接数，不代表异常。\n近期无实时速率样本，上下行显示为 0。'),
 	conntrack_acct_disabled: _('conntrack 计数未启用，连接数诊断和 NSS ECM 同步测速不可用。'),
 	nf_conntrack_acct_disabled: _('nf_conntrack_acct 未启用，连接数诊断和 NSS ECM 同步测速不可用。'),
 	flowtable_counter_missing: _('未检测到 flowtable 计数，conntrack 诊断置信度会降低。'),

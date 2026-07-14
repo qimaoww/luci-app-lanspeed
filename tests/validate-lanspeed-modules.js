@@ -1180,6 +1180,12 @@ function assertWarningAliases(src) {
 	if (!vocab.warningText('nss_prefers_conntrack_sync').includes('当前 NSS 模式选择或回退到了 NSS sync')) {
 		fail('vocab.js must describe NSS sync overriding BPF as an explicit mode choice');
 	}
+	const connectionOnlyText = vocab.warningText('conntrack_connection_only');
+	if (!connectionOnlyText.includes('用于补全当前连接数') ||
+	    !connectionOnlyText.includes('不代表异常') ||
+	    !connectionOnlyText.includes('\n')) {
+		fail('vocab.js must explain connection-only rows as neutral two-line connection supplements');
+	}
 }
 
 function assertStatusShellInteraction(src) {
