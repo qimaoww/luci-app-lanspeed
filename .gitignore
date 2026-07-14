@@ -1,5 +1,6 @@
 # local agent / plan scratch
 .sisyphus/
+docs/superpowers/
 
 # build artifacts
 *.o
