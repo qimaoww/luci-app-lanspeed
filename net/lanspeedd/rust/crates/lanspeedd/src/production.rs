@@ -515,7 +515,6 @@ impl ProductionRuntime {
             }
             PeriodicConntrackPlan::Skip => {
                 self.conntrack_observation.record_skipped();
-                conntrack = self.conntrack_snapshot.clone();
             }
         }
         self.apply_conntrack_health(&mut runtime_health);

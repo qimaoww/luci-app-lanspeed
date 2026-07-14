@@ -348,7 +348,7 @@ mod tests {
         let collected = CollectedSnapshot {
             clients: Vec::new(),
             sample_ms: 0,
-            connection_details: BTreeMap::new(),
+            connection_details: Default::default(),
             counter_source: "ctnetlink_conntrack_acct_orig_reply_bytes",
             stats: CollectStats {
                 netlink_read: true,

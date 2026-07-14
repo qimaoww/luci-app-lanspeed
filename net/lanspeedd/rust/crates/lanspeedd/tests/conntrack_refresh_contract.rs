@@ -92,7 +92,7 @@ fn collected() -> CollectedSnapshot {
             udp_other_conns: 2,
         }],
         sample_ms: 100,
-        connection_details: std::collections::BTreeMap::new(),
+        connection_details: Default::default(),
         counter_source: "ctnetlink_conntrack_acct_orig_reply_bytes",
         stats,
     }
@@ -166,6 +166,35 @@ fn production_checks_the_client_cache_before_reading_identities() {
     );
     assert!(refresh.contains("ClientConntrackPlan::ReuseCached"));
     assert!(refresh.contains("self.conntrack_snapshot.as_ref()"));
+}
+
+#[test]
+fn production_periodic_skip_reuses_the_existing_local_conntrack_snapshot() {
+    let source = include_str!("../src/production.rs");
+    let collect_inner = source
+        .split("fn collect_inner(")
+        .nth(1)
+        .unwrap()
+        .split("fn refresh_connections(")
+        .next()
+        .unwrap();
+    let periodic = collect_inner
+        .split("match periodic_conntrack_plan(decision.rate) {")
+        .nth(1)
+        .unwrap()
+        .split("self.apply_conntrack_health")
+        .next()
+        .unwrap();
+    let skip = periodic
+        .split("PeriodicConntrackPlan::Skip =>")
+        .nth(1)
+        .unwrap();
+
+    assert!(skip.contains("self.conntrack_observation.record_skipped();"));
+    assert!(
+        !skip.contains("self.conntrack_snapshot.clone()"),
+        "Skip must retain the local snapshot cloned once at collect_inner entry"
+    );
 }
 
 #[test]

@@ -3,7 +3,7 @@ use crate::{
     identity::{ClientIdentity, IdentityTable},
 };
 use serde::Serialize;
-use std::{cmp::Ordering, collections::BTreeMap, net::IpAddr};
+use std::{cmp::Ordering, collections::BTreeMap, net::IpAddr, sync::Arc};
 
 pub const MAX_STORED_CONNECTION_DETAILS: usize = 16_384;
 pub const MAX_CLIENT_CONNECTION_DETAILS: usize = 512;
@@ -47,11 +47,11 @@ pub struct ClientConnectionSet {
     pub truncated: bool,
 }
 
-pub type ConnectionDetailsSnapshot = BTreeMap<String, ClientConnectionSet>;
+pub type ConnectionDetailsSnapshot = Arc<BTreeMap<String, ClientConnectionSet>>;
 
 #[derive(Debug, Default)]
 pub struct ConnectionDetailsIndex {
-    sets: ConnectionDetailsSnapshot,
+    sets: BTreeMap<String, ClientConnectionSet>,
     stored_connections: usize,
 }
 
@@ -69,12 +69,18 @@ impl ConnectionDetailsIndex {
         }
     }
 
+    pub fn record_omitted(&mut self, identity_key: &str) {
+        let set = self.sets.entry(identity_key.to_owned()).or_default();
+        set.total_connections = set.total_connections.saturating_add(1);
+        set.truncated = true;
+    }
+
     pub fn finish(mut self) -> ConnectionDetailsSnapshot {
         for set in self.sets.values_mut() {
             sort_connection_details(&mut set.connections);
             set.truncated |= set.connections.len() as u64 != set.total_connections;
         }
-        self.sets
+        Arc::new(self.sets)
     }
 }
 

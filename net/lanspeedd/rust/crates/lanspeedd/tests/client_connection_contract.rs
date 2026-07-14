@@ -13,7 +13,7 @@ use lanspeedd::{
     },
     identity::{IdentityObservation, IdentityTable, ObservationSource},
 };
-use std::{collections::BTreeMap, io::Cursor, net::IpAddr};
+use std::{io::Cursor, net::IpAddr, sync::Arc};
 
 const IDENTITY_KEY: &str = "02:00:00:00:00:01@lan";
 const CLIENT_IP: &str = "192.0.2.10";
@@ -188,6 +188,40 @@ fn outbound_established_assured_tcp_populates_detail_and_legacy_count() {
             ConnectionDirection::Outbound,
         )
     );
+}
+
+#[test]
+fn cloned_aggregate_and_collected_snapshots_share_immutable_details() {
+    let table = identities();
+    let flow = outbound_tcp(CLIENT_IP, "1.1.1.1");
+    let aggregate = aggregate_flows(&table, [&flow], 7_002, 8);
+    let aggregate_clone = aggregate.clone();
+    assert!(Arc::ptr_eq(
+        &aggregate.connection_details,
+        &aggregate_clone.connection_details
+    ));
+
+    let collected = collect_with(
+        CollectorMode::Netlink,
+        &table,
+        7_002,
+        8,
+        || {
+            Ok(NetlinkSnapshot {
+                flows: vec![flow],
+                source_path: NETLINK_SOURCE_PATH,
+                counter_source: NETLINK_COUNTER_SOURCE,
+                malformed_entries: 0,
+            })
+        },
+        || -> Result<ProcfsSnapshot, CollectorReadError> { unreachable!() },
+    )
+    .unwrap();
+    let collected_clone = collected.clone();
+    assert!(Arc::ptr_eq(
+        &collected.connection_details,
+        &collected_clone.connection_details
+    ));
 }
 
 #[test]
@@ -424,13 +458,17 @@ fn incomplete_remote_endpoint_keeps_legacy_accounting_without_fabricating_detail
         (100, 250)
     );
     assert_eq!(snapshot.stats.entries_matched, 1);
-    assert!(!snapshot.connection_details.contains_key(IDENTITY_KEY));
+    let set = &snapshot.connection_details[IDENTITY_KEY];
+    assert_eq!(set.total_connections, 1);
+    assert!(set.connections.is_empty());
+    assert!(set.truncated);
 }
 
 #[test]
 fn per_client_limit_preserves_true_total_and_legacy_count() {
+    assert_eq!(MAX_CLIENT_CONNECTION_DETAILS, 512);
     let mut flows = Vec::new();
-    for port in 1..=MAX_CLIENT_CONNECTION_DETAILS + 1 {
+    for port in 1..=513 {
         let mut flow = outbound_tcp(CLIENT_IP, "198.51.100.1");
         flow.orig_sport = u16::try_from(port).unwrap();
         flow.reply_dport = flow.orig_sport;
@@ -442,13 +480,15 @@ fn per_client_limit_preserves_true_total_and_legacy_count() {
 
     assert_eq!(snapshot.clients[0].tcp_conns, 513);
     assert_eq!(set.total_connections, 513);
-    assert_eq!(set.connections.len(), MAX_CLIENT_CONNECTION_DETAILS);
+    assert_eq!(set.connections.len(), 512);
     assert!(set.truncated);
 }
 
 #[test]
 fn global_limit_counts_stored_details_without_losing_any_client_total() {
     const CLIENTS: usize = 33;
+    assert_eq!(MAX_CLIENT_CONNECTION_DETAILS, 512);
+    assert_eq!(MAX_STORED_CONNECTION_DETAILS, 16_384);
     let observations = (1..=CLIENTS)
         .map(|index| {
             (
@@ -464,7 +504,7 @@ fn global_limit_counts_stored_details_without_losing_any_client_total() {
     let table = identity_table(&borrowed);
     let mut flows = Vec::new();
     for (_, client_ip) in &observations {
-        for port in 1..=MAX_CLIENT_CONNECTION_DETAILS {
+        for port in 1..=512 {
             let mut flow = outbound_tcp(client_ip, "203.0.113.1");
             flow.orig_sport = u16::try_from(port).unwrap();
             flow.reply_dport = flow.orig_sport;
@@ -485,19 +525,23 @@ fn global_limit_counts_stored_details_without_losing_any_client_total() {
         .sum::<u64>();
 
     assert_eq!(snapshot.connection_details.len(), CLIENTS);
-    assert_eq!(stored, MAX_STORED_CONNECTION_DETAILS);
-    assert_eq!(total, (CLIENTS * MAX_CLIENT_CONNECTION_DETAILS) as u64);
-    assert!(snapshot
-        .connection_details
-        .values()
-        .any(|set| set.truncated));
-    for client in &snapshot.clients {
-        assert_eq!(client.tcp_conns as usize, MAX_CLIENT_CONNECTION_DETAILS);
-        assert_eq!(
-            snapshot.connection_details[&client.identity_key].total_connections,
-            MAX_CLIENT_CONNECTION_DETAILS as u64
-        );
+    assert_eq!(stored, 16_384);
+    assert_eq!(total, 16_896);
+    for index in 1..=32 {
+        let key = format!("02:00:00:00:00:{index:02x}@lan");
+        let set = &snapshot.connection_details[&key];
+        assert_eq!(set.total_connections, 512, "{key}");
+        assert_eq!(set.connections.len(), 512, "{key}");
+        assert!(!set.truncated, "{key}");
     }
+    let final_set = &snapshot.connection_details["02:00:00:00:00:21@lan"];
+    assert_eq!(final_set.total_connections, 512);
+    assert!(final_set.connections.is_empty());
+    assert!(final_set.truncated);
+    assert!(snapshot
+        .clients
+        .iter()
+        .all(|client| client.tcp_conns == 512));
 }
 
 #[test]
@@ -641,6 +685,26 @@ fn finish_sorts_details_by_numeric_endpoints_and_explicit_enum_ranks() {
 }
 
 #[test]
+fn finish_sorts_remote_port_before_protocol_and_client_keys() {
+    let mut port_443 = outbound_tcp(CLIENT_IP, "198.51.100.1");
+    port_443.orig_dport = 443;
+    port_443.reply_sport = 443;
+    let mut port_53 = outbound_tcp(CLIENT_IP, "198.51.100.1");
+    port_53.orig_dport = 53;
+    port_53.reply_sport = 53;
+
+    let snapshot = aggregate_flows(&identities(), [&port_443, &port_53], 81, 8);
+    assert_eq!(
+        snapshot.connection_details[IDENTITY_KEY]
+            .connections
+            .iter()
+            .map(|detail| detail.remote_port)
+            .collect::<Vec<_>>(),
+        [53, 443]
+    );
+}
+
+#[test]
 fn netlink_procfs_vec_and_streaming_paths_propagate_the_same_snapshot() {
     let table = identities();
     let flow = outbound_tcp(CLIENT_IP, "1.1.1.1");
@@ -702,7 +766,7 @@ fn netlink_procfs_vec_and_streaming_paths_propagate_the_same_snapshot() {
 
 #[test]
 fn connection_detail_json_uses_lowercase_protocol_state_and_direction() {
-    let value = serde_json::to_value(detail(
+    let tcp = serde_json::to_value(detail(
         CLIENT_IP,
         50_123,
         "1.1.1.1",
@@ -712,15 +776,46 @@ fn connection_detail_json_uses_lowercase_protocol_state_and_direction() {
         ConnectionDirection::Outbound,
     ))
     .unwrap();
+    assert_eq!(
+        tcp,
+        serde_json::json!({
+            "client_ip": "192.0.2.10",
+            "client_port": 50_123,
+            "remote_ip": "1.1.1.1",
+            "remote_port": 443,
+            "protocol": "tcp",
+            "state": "established",
+            "direction": "outbound"
+        })
+    );
 
-    assert_eq!(value["protocol"], "tcp");
-    assert_eq!(value["state"], "established");
-    assert_eq!(value["direction"], "outbound");
+    let udp = serde_json::to_value(detail(
+        "2001:db8::10",
+        53,
+        "2001:db8::53",
+        60_000,
+        ConnectionProtocol::Udp,
+        ConnectionState::Assured,
+        ConnectionDirection::Inbound,
+    ))
+    .unwrap();
+    assert_eq!(
+        udp,
+        serde_json::json!({
+            "client_ip": "2001:db8::10",
+            "client_port": 53,
+            "remote_ip": "2001:db8::53",
+            "remote_port": 60_000,
+            "protocol": "udp",
+            "state": "assured",
+            "direction": "inbound"
+        })
+    );
 }
 
 #[test]
 fn empty_aggregate_still_records_sample_time_and_no_detail_buckets() {
     let snapshot = aggregate_flows(&identities(), std::iter::empty(), 123_456, 8);
     assert_eq!(snapshot.sample_ms, 123_456);
-    assert_eq!(snapshot.connection_details, BTreeMap::new());
+    assert!(snapshot.connection_details.is_empty());
 }

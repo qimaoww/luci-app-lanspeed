@@ -129,8 +129,9 @@ impl<'a> AggregateState<'a> {
             self.stats.ipv4_lan_flows = self.stats.ipv4_lan_flows.saturating_add(1);
         }
         if let Some((protocol, state)) = qualification {
-            if let Some(detail) = owned.detail(protocol, state) {
-                self.connection_details.record(&key, detail);
+            match owned.detail(protocol, state) {
+                Some(detail) => self.connection_details.record(&key, detail),
+                None => self.connection_details.record_omitted(&key),
             }
         }
     }
