@@ -96,7 +96,7 @@ NSS ECM/PPE sync 是显式选择 `nss_conntrack_sync`、NSS-direct 的补齐来�
 | OpenWrt 23.05 | 不支持。官方 SDK 的 Rust 版本和 libubox ABI 不满足当前完整 Rust 后端。 |
 | OpenWrt 21.02 及更早版本 | 不支持。BPF/BTF、Rust 工具链、OpenWrt ABI 和 LuCI 运行时差异过大。 |
 
-构建驱动固定要求 `Rust 1.94.0`，并校验 `bpf-linker 0.10.3`。不要用较旧 SDK 的 `rust/host` 绕过版本检查；即使能编译，ubus/uloop/UCI 的目标 ABI 也可能不兼容。
+构建驱动要求稳定版 `Rust >= 1.94.0`，并精确校验 `bpf-linker 0.10.3`。Rust 1.94.0、1.95.0 和 1.96.0 已验证可离线构建；更高稳定版不再被版本门禁先行拒绝，但若 eBPF `build-std` 的标准库锁定依赖发生变化，仍需同步 `vendor`。预发布工具链仍会被拒绝。不要用较旧 SDK 的 `rust/host` 绕过最低版本检查；即使能编译，ubus/uloop/UCI 的目标 ABI 也可能不兼容。
 
 ### 用户态与 BPF 必选包
 
@@ -304,7 +304,7 @@ tests/                             本地回归测试
 
 ## 测试
 
-本地环境可以运行确定性检查脚本和不依赖目标 ABI 的 Rust 单元/合约测试；`./tests/run.sh unit` 覆盖 `lanspeedd`、共享 ABI、构建驱动和 fixtures。`lanspeed-openwrt-sys` 直接链接目标端 ubus/uloop/UCI，不在 glibc host 上执行，其绑定通过可重复生成检查，并由真实 SDK 编译（ImmortalWrt 25.12）和目标设备（路由器）测试覆盖。构建使用固定的 Rust 1.94.0。
+本地环境可以运行确定性检查脚本和不依赖目标 ABI 的 Rust 单元/合约测试；`./tests/run.sh unit` 覆盖 `lanspeedd`、共享 ABI、构建驱动和 fixtures。`lanspeed-openwrt-sys` 直接链接目标端 ubus/uloop/UCI，不在 glibc host 上执行，其绑定通过可重复生成检查，并由真实 SDK 编译（ImmortalWrt 25.12）和目标设备（路由器）测试覆盖。构建要求稳定版 `Rust >= 1.94.0`。
 
 ```sh
 ./tests/run.sh unit

@@ -12,4 +12,5 @@ name = "lanspeed-build"
 path = "src/main.rs"
 
 [dependencies]
+semver.workspace = true
 thiserror.workspace = true

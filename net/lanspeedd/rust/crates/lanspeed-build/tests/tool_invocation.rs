@@ -103,7 +103,7 @@ fn userspace_build_does_not_invoke_bpf_linker() {
     let workspace = tools.path().join("workspace");
     fs::create_dir_all(&workspace).unwrap();
 
-    write_executable(&rustc, "#!/bin/sh\nprintf 'rustc 1.94.0 (fake)\\n'\n");
+    write_executable(&rustc, "#!/bin/sh\nprintf 'rustc 1.96.0 (fake)\\n'\n");
     write_executable(
         &bpf_linker,
         "#!/bin/sh\nprintf invoked > \"$MARKER\"\nexit 99\n",
@@ -144,6 +144,33 @@ fn userspace_build_does_not_invoke_bpf_linker() {
         })
     ));
     assert!(marker.exists());
+}
+
+#[test]
+fn userspace_build_rejects_an_old_rustc_before_invoking_cargo() {
+    let _lock = environment_lock();
+    let tools = TempDir::new("old-rustc");
+    let rustc = tools.path().join("rustc");
+    let cargo = tools.path().join("cargo");
+    let marker = tools.path().join("cargo-invoked");
+    let workspace = tools.path().join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+
+    write_executable(&rustc, "#!/bin/sh\nprintf 'rustc 1.93.99 (fake)\\n'\n");
+    write_executable(&cargo, "#!/bin/sh\nprintf invoked > \"$MARKER\"\nexit 0\n");
+
+    let mut variables = Environment::new();
+    variables.set("RUSTC", &rustc);
+    variables.set("CARGO", &cargo);
+    variables.set("MARKER", &marker);
+    variables.set("LANSPEED_BUILD_WORKSPACE", &workspace);
+    variables.set("LANSPEED_USERSPACE_TARGET", "aarch64-unknown-linux-musl");
+
+    assert!(matches!(
+        build(BuildTarget::Userspace),
+        Err(BuildError::VersionTooOld { name: "rustc", .. })
+    ));
+    assert!(!marker.exists());
 }
 
 #[derive(Debug)]
@@ -203,7 +230,7 @@ fn ebpf_build_invokes_both_variants_and_copies_all_objects() {
     let workspace = tools.path().join("workspace");
     fs::create_dir_all(&workspace).unwrap();
 
-    write_executable(&rustc, "#!/bin/sh\nprintf 'rustc 1.94.0 (fake)\\n'\n");
+    write_executable(&rustc, "#!/bin/sh\nprintf 'rustc 1.100.0 (fake)\\n'\n");
     write_executable(
         &bpf_linker,
         "#!/bin/sh\nprintf 'bpf-linker 0.10.3 (fake)\\n'\n",

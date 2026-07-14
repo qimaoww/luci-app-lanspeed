@@ -35,3 +35,53 @@ fn custom_aya_and_vendor_resolution_do_not_depend_on_the_current_directory() {
     assert!(nested_config.contains("directory = \"vendor\""));
     assert!(!nested_config.contains("[target."));
 }
+
+#[test]
+fn vendors_build_std_dependencies_for_supported_rust_releases() {
+    let workspace = workspace_root();
+    for (directory, name, version) in [
+        ("libc-0.2.178", "libc", "0.2.178"),
+        ("rustc-demangle", "rustc-demangle", "0.1.26"),
+        ("libc-0.2.183", "libc", "0.2.183"),
+        ("rustc-demangle-0.1.27", "rustc-demangle", "0.1.27"),
+    ] {
+        let manifest =
+            fs::read_to_string(workspace.join("vendor").join(directory).join("Cargo.toml"))
+                .unwrap_or_else(|error| panic!("missing vendored {name} {version}: {error}"));
+        let package = manifest
+            .split_once("[package]")
+            .map(|(_, package)| package)
+            .unwrap_or_else(|| panic!("vendored {name} {version} has no package section"));
+        assert!(
+            package.contains(&format!("name = \"{name}\"")),
+            "vendored directory {directory} must contain {name}"
+        );
+        assert!(
+            package.contains(&format!("version = \"{version}\"")),
+            "vendored directory {directory} must contain version {version}"
+        );
+    }
+
+    for (directory, checksum) in [
+        (
+            "libc-0.2.183",
+            "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d",
+        ),
+        (
+            "rustc-demangle-0.1.27",
+            "b50b8869d9fc858ce7266cce0194bd74df58b9d0e3f6df3a9fc8eb470d95c09d",
+        ),
+    ] {
+        let checksums = fs::read_to_string(
+            workspace
+                .join("vendor")
+                .join(directory)
+                .join(".cargo-checksum.json"),
+        )
+        .unwrap();
+        assert!(
+            checksums.contains(&format!("\"package\":\"{checksum}\"")),
+            "vendored directory {directory} must retain its crates.io checksum"
+        );
+    }
+}

@@ -6,9 +6,10 @@ use std::{
     process::{Command, ExitStatus},
 };
 
+use semver::Version;
 use thiserror::Error;
 
-pub const EXPECTED_RUSTC: &str = "1.94.0";
+pub const MINIMUM_RUSTC: &str = "1.94.0";
 pub const EXPECTED_BPF_LINKER: &str = "0.10.3";
 pub const BPF_LINKER_ARCHIVE_URL: &str = "https://github.com/aya-rs/bpf-linker/releases/download/v0.10.3/bpf-linker-x86_64-unknown-linux-musl.tar.gz";
 pub const BPF_LINKER_ARCHIVE_SHA256: &str =
@@ -29,8 +30,8 @@ impl ToolVersions {
     }
 
     pub fn validate(&self) -> Result<(), BuildError> {
-        validate_version("rustc", &self.rustc, EXPECTED_RUSTC)?;
-        validate_version("bpf-linker", &self.bpf_linker, EXPECTED_BPF_LINKER)
+        validate_minimum_version("rustc", &self.rustc, MINIMUM_RUSTC)?;
+        validate_exact_version("bpf-linker", &self.bpf_linker, EXPECTED_BPF_LINKER)
     }
 }
 
@@ -55,7 +56,7 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
     let workspace = workspace_root();
     match target {
         BuildTarget::Userspace => {
-            validate_version("rustc", &detect_rustc()?, EXPECTED_RUSTC)?;
+            validate_minimum_version("rustc", &detect_rustc()?, MINIMUM_RUSTC)?;
             let userspace_target = env::var_os("LANSPEED_USERSPACE_TARGET")
                 .ok_or(BuildError::MissingUserspaceTarget)?;
             let mut command = Command::new(&cargo);
@@ -140,7 +141,36 @@ fn command_version(command: &OsStr, name: &'static str) -> Result<String, BuildE
         .ok_or(BuildError::InvalidVersionOutput(name))
 }
 
-fn validate_version(
+fn validate_minimum_version(
+    name: &'static str,
+    actual: &str,
+    minimum: &'static str,
+) -> Result<(), BuildError> {
+    let actual_version = Version::parse(actual).map_err(|source| BuildError::InvalidVersion {
+        name,
+        actual: actual.to_owned(),
+        source,
+    })?;
+    if !actual_version.pre.is_empty() {
+        return Err(BuildError::PrereleaseVersion {
+            name,
+            actual: actual.to_owned(),
+        });
+    }
+    let minimum_version =
+        Version::parse(minimum).expect("the minimum Rust version constant must be valid semver");
+    if actual_version >= minimum_version {
+        Ok(())
+    } else {
+        Err(BuildError::VersionTooOld {
+            name,
+            minimum,
+            actual: actual.to_owned(),
+        })
+    }
+}
+
+fn validate_exact_version(
     name: &'static str,
     actual: &str,
     expected: &'static str,
@@ -182,6 +212,20 @@ pub enum BuildError {
     Usage,
     #[error("LANSPEED_USERSPACE_TARGET is required for userspace builds")]
     MissingUserspaceTarget,
+    #[error("{name} must be at least {minimum}, found {actual}")]
+    VersionTooOld {
+        name: &'static str,
+        minimum: &'static str,
+        actual: String,
+    },
+    #[error("{name} prerelease versions are not supported, found {actual}")]
+    PrereleaseVersion { name: &'static str, actual: String },
+    #[error("invalid {name} version {actual}: {source}")]
+    InvalidVersion {
+        name: &'static str,
+        actual: String,
+        source: semver::Error,
+    },
     #[error("{name} must be {expected}, found {actual}")]
     VersionMismatch {
         name: &'static str,
@@ -213,7 +257,7 @@ mod tests {
     #[test]
     fn rejects_an_unpinned_version() {
         let versions = ToolVersions {
-            rustc: EXPECTED_RUSTC.into(),
+            rustc: MINIMUM_RUSTC.into(),
             bpf_linker: "0.10.2".into(),
         };
 
