@@ -261,9 +261,7 @@ function currentRateSourceText(status) {
 function nssRateHint(status) {
 	if (!isNssDevice(status))
 		return _('非 NSS 实时测速只使用 BPF。');
-	if (daeRuntimeActive(status))
-		return _('自动：BPF 优先，NSS 备用。');
-	return _('自动：NSS sync 稳定来源，NSS-direct 有速率时补充。');
+	return _('自动：NSS 设备同样优先使用 BPF；BPF 不可用时回退 NSS sync / NSS-direct。');
 }
 
 function applyRuntimeInfo(refs, status) {
@@ -274,8 +272,8 @@ function applyRuntimeInfo(refs, status) {
 	refs.rateHint.textContent = nssRateHint(status);
 	refs.currentRateSource.textContent = sourceText;
 	refs.currentRateSourceWrap.title = daeRuntimeActive(status)
-		? _('dae/daed 运行中，BPF 优先。')
-		: _('daemon 当前选择。');
+		? _('dae/daed 运行中，BPF 使用前置 passthrough 挂载。')
+		: _('daemon 当前选择；自动模式默认优先 BPF。');
 
 	if (refs.rateCollectorMode) {
 		for (i = 0; i < rateModeLabel.length; i++) {

@@ -82,18 +82,19 @@ jobs:
             sdk_dir=$2
             enable_bpf=$3
             sdk_release=$4
+            target=$5
             log_file="$RUNNER_TEMP/${name}.log"
             (
-              ENABLE_BPF="$enable_bpf" SDK_RELEASE="$sdk_release" SDK_DIR="$sdk_dir" ./scripts/build-sdk.sh all
+              ENABLE_BPF="$enable_bpf" SDK_RELEASE="$sdk_release" SDK_DIR="$sdk_dir" ./scripts/build-sdk.sh "$target"
             ) > "$log_file" 2>&1 &
             printf '%s %s %s\n' "$!" "$name" "$log_file" >> "$RUNNER_TEMP/build-pids.txt"
           }
 
           : > "$RUNNER_TEMP/build-pids.txt"
-          run_build apk-base "$RUNNER_TEMP/sdk-apk-base" 0 25.12
-          run_build apk-bpf "$RUNNER_TEMP/sdk-apk-bpf" 1 25.12
-          run_build apk-aarch64-base "$RUNNER_TEMP/sdk-apk-aarch64-base" 0 25.12
-          run_build apk-aarch64-bpf "$RUNNER_TEMP/sdk-apk-aarch64-bpf" 1 25.12
+          run_build apk-base "$RUNNER_TEMP/sdk-apk-base" 0 25.12 lanspeedd
+          run_build apk-bpf "$RUNNER_TEMP/sdk-apk-bpf" 1 25.12 all
+          run_build apk-aarch64-base "$RUNNER_TEMP/sdk-apk-aarch64-base" 0 25.12 lanspeedd
+          run_build apk-aarch64-bpf "$RUNNER_TEMP/sdk-apk-aarch64-bpf" 1 25.12 all
 
           status=0
           while read -r pid name log_file; do
@@ -141,10 +142,10 @@ jobs:
 
           collect_one "$RUNNER_TEMP/sdk-apk-base" "lanspeedd-${code_version}.apk"
           collect_one "$RUNNER_TEMP/sdk-apk-bpf" "lanspeedd-bpf-${code_version}.apk"
-          collect_one "$RUNNER_TEMP/sdk-apk-base" "luci-app-lanspeed-${code_version}.apk"
+          collect_one "$RUNNER_TEMP/sdk-apk-bpf" "luci-app-lanspeed-${code_version}.apk"
           collect_one "$RUNNER_TEMP/sdk-apk-aarch64-base" "lanspeedd-${code_version}.apk" "lanspeedd-${code_version}-aarch64.apk"
           collect_one "$RUNNER_TEMP/sdk-apk-aarch64-bpf" "lanspeedd-bpf-${code_version}.apk" "lanspeedd-bpf-${code_version}-aarch64.apk"
-          collect_one "$RUNNER_TEMP/sdk-apk-aarch64-base" "luci-app-lanspeed-${code_version}.apk" "luci-app-lanspeed-${code_version}-aarch64.apk"
+          collect_one "$RUNNER_TEMP/sdk-apk-aarch64-bpf" "luci-app-lanspeed-${code_version}.apk" "luci-app-lanspeed-${code_version}-aarch64.apk"
 
           if [ ! -s "$file_list" ]; then
             printf '%s\n' "error: no release files were collected" >&2

@@ -43,10 +43,11 @@ fn forced_and_auto_rate_modes_preserve_task10_selection_contract() {
     facts.nss.ecm_active = true;
     facts.nss.direct_state_readable = true;
     let auto_nss = select_collectors(&config, &facts, &healthy());
-    assert_eq!(auto_nss.rate, RateCollector::NssConntrackSync);
-    assert!(auto_nss.nss_direct_overlay);
+    assert_eq!(auto_nss.rate, RateCollector::Bpf);
+    assert!(!auto_nss.nss_direct_overlay);
     assert!(!auto_nss.nss_sync_secondary);
-    assert!(auto_nss.warnings.contains(&"nss_prefers_conntrack_sync"));
+    assert_eq!(auto_nss.evidence.rate_reason, "bpf_available");
+    assert!(!auto_nss.warnings.contains(&"nss_prefers_conntrack_sync"));
 
     facts.proxy.daed_running = true;
     facts.proxy.runtime_active = true;
@@ -97,7 +98,8 @@ fn only_fresh_runtime_active_state_controls_dae_collector_policy() {
     facts.proxy.runtime_active = false;
 
     let stale = select_collectors(&config, &facts, &healthy());
-    assert_eq!(stale.rate, RateCollector::NssConntrackSync);
+    assert_eq!(stale.rate, RateCollector::Bpf);
+    assert_eq!(stale.evidence.rate_reason, "bpf_available");
     assert!(!stale.warnings.contains(&"dae_runtime_prefers_bpf"));
     assert!(!stale
         .warnings
@@ -116,7 +118,7 @@ fn only_fresh_runtime_active_state_controls_dae_collector_policy() {
 }
 
 #[test]
-fn auto_uses_readable_nss_direct_when_accounting_disables_sync() {
+fn auto_keeps_bpf_first_and_uses_readable_nss_direct_only_when_bpf_is_unavailable() {
     let mut config = RuntimeConfig::default();
     config.enable_bpf = true;
     config.enable_conntrack_fallback = true;
@@ -129,15 +131,11 @@ fn auto_uses_readable_nss_direct_when_accounting_disables_sync() {
     facts.nss.direct_state_readable = true;
 
     let with_bpf = select_collectors(&config, &facts, &healthy());
-    assert_eq!(with_bpf.rate, RateCollector::NssEcmDirect);
+    assert_eq!(with_bpf.rate, RateCollector::Bpf);
     assert!(!with_bpf.nss_direct_overlay);
     assert_eq!(
         with_bpf.warnings,
-        vec![
-            "nf_conntrack_acct_disabled",
-            "conntrack_acct_disabled",
-            "nss_ecm_direct_active"
-        ]
+        vec!["nf_conntrack_acct_disabled", "conntrack_acct_disabled"]
     );
 
     let mut no_bpf = healthy();
@@ -332,7 +330,7 @@ fn ppe_and_dae_early_bpf_policy_remain_explicit() {
     facts.nss.ppe_active = true;
     assert_eq!(
         select_collectors(&config, &facts, &healthy()).rate,
-        RateCollector::NssConntrackSync
+        RateCollector::Bpf
     );
 
     facts.nss = Default::default();

@@ -17,7 +17,7 @@ define Package/luci-app-lanspeed
   SUBMENU:=3. Applications
   TITLE:=LuCI support for LAN speed monitor
   PKGARCH:=all
-  DEPENDS:=+lanspeedd +luci-base
+  DEPENDS:=+lanspeedd +lanspeedd-bpf +luci-base
 endef
 
 define Package/luci-app-lanspeed/description

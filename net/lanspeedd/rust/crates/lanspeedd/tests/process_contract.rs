@@ -167,6 +167,7 @@ fn process_overlay_removes_cached_policy_warnings_before_current_cycle_reselecti
     let mut config = RuntimeConfig::default();
     config.enable_bpf = true;
     config.enable_conntrack_fallback = true;
+    config.rate_collector_mode = lanspeedd::config::RateCollectorMode::NssConntrackSync;
     let mut observations = ProbeObservations::default();
     observations.commands.tc = true;
     observations.tc.clsact = true;

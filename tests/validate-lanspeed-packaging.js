@@ -70,7 +70,7 @@ try {
   assertMatch(pkgMakefile, /build-userspace/, 'base package pass must invoke the userspace build driver');
   assertMatch(pkgMakefile, /build-ebpf/, 'BPF package pass must invoke the eBPF build driver');
   assert(userspaceBuild >= 0 && bpfConditional >= 0 && userspaceBuild < bpfConditional,
-    'userspace must always build before the optional eBPF step');
+    'userspace must always build before the separate eBPF package step');
   assert(ebpfBuild > bpfConditional, 'eBPF build must be conditional and additive');
   assertMatch(pkgMakefile, /^\s*FILE:=bpf-linker-0\.10\.3-x86_64-unknown-linux-musl\.tar\.gz$/m, 'bpf-linker cache name must include its pinned version');
   assertMatch(pkgMakefile, /^\s*URL_FILE:=bpf-linker-x86_64-unknown-linux-musl\.tar\.gz$/m, 'bpf-linker remote archive name must remain official');
@@ -124,12 +124,14 @@ try {
     /DEPENDS:=\$\(RUST_ARCH_DEPENDS\)/,
     'base daemon must not advertise unverified 32-bit Rust targets'
   );
-  assertMatch(pkgMakefile, /define Package\/lanspeedd-bpf[\s\S]*DEPENDS:=@!BIG_ENDIAN \+lanspeedd \+tc-tiny \+kmod-sched-bpf/, 'optional BPF package must depend on the base daemon, tc inspection, and TC BPF kernel support');
+  assertMatch(pkgMakefile, /define Package\/lanspeedd-bpf[\s\S]*DEPENDS:=@!BIG_ENDIAN \+lanspeedd \+tc-tiny \+kmod-sched-bpf/, 'BPF package must depend on the base daemon, tc inspection, and TC BPF kernel support');
   assertMatch(
-    pkgMakefile,
-    /DEFAULT:=y if PACKAGE_luci-app-lanspeed && HAS_BPF_TOOLCHAIN/,
-    'optional BPF package must default on when the LuCI app and BPF toolchain are selected'
+    luciMakefile,
+    /DEPENDS:=\+lanspeedd \+lanspeedd-bpf \+luci-base/,
+    'LuCI package must require the daemon and BPF runtime package'
   );
+  assertNoMatch(pkgMakefile, /TITLE:=Optional BPF assets/, 'BPF package must not be described as optional');
+  assertNoMatch(pkgMakefile, /DEFAULT:=y if PACKAGE_luci-app-lanspeed/, 'hard LuCI dependency makes the old conditional BPF default obsolete');
   for (const resource of [
     './files/etc/init.d/lanspeedd',
     './files/etc/hotplug.d/iface/90-lanspeedd',
@@ -155,7 +157,7 @@ try {
   ]) {
     assert(!pkgMakefile.includes(legacy), `Rust packaging must not retain ${legacy}`);
   }
-  assertNoMatch(pkgMakefile, /\$\(error\s+[^)]*lanspeedd-bpf/s, 'optional package metadata must remain expandable');
+  assertNoMatch(pkgMakefile, /\$\(error\s+[^)]*lanspeedd-bpf/s, 'BPF package metadata must remain expandable');
 
   [
     'statusStyleCompatLive.js',

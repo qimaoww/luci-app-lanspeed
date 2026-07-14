@@ -7,7 +7,7 @@ REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
 FEED_NAME=lanspeed
 TARGET=${1:-all}
 DRY_RUN=${DRY_RUN:-0}
-ENABLE_BPF=${ENABLE_BPF:-0}
+ENABLE_BPF=${ENABLE_BPF:-1}
 TARGET_ARCH=${TARGET_ARCH:-}
 SDK_RELEASE=${SDK_RELEASE:-25.12}
 SDK_BASE_FEED_REF=${SDK_BASE_FEED_REF:-}
@@ -36,6 +36,8 @@ Targets:
 
 This helper requires an existing ImmortalWrt/OpenWrt SDK matching SDK_RELEASE for real builds.
 It never downloads SDKs or toolchains.
+ENABLE_BPF defaults to 1. ENABLE_BPF=0 is only supported with the lanspeedd target
+for the release workflow's split base-package pass.
 EOF
 }
 
@@ -64,6 +66,12 @@ validate_target() {
 			die "unsupported package target '$TARGET'"
 			;;
 	esac
+}
+
+validate_bpf_target() {
+	if [ "$ENABLE_BPF" = 0 ] && [ "$TARGET" != lanspeedd ]; then
+		die "ENABLE_BPF=0 is only supported with the lanspeedd target; LuCI builds require lanspeedd-bpf"
+	fi
 }
 
 validate_sdk_release() {
@@ -357,6 +365,7 @@ main() {
 	validate_sdk_release
 	validate_optional_sha SDK_BASE_FEED_REF "$SDK_BASE_FEED_REF"
 	validate_target
+	validate_bpf_target
 	select_packages
 	resolve_sdk_path
 	check_release_guardrails

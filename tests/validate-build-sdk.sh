@@ -35,8 +35,14 @@ fi
 grep -F "local feed repository" "$MISSING_EVIDENCE" >/dev/null
 grep -F "ImmortalWrt/OpenWrt 25.12 SDK" "$MISSING_EVIDENCE" >/dev/null
 
-SDK_DIR=/tmp/fake-sdk DRY_RUN=1 "$ROOT/scripts/build-sdk.sh" all > "$DRY_RUN_EVIDENCE" 2>&1
-SDK_DIR=/tmp/fake-sdk DRY_RUN=1 ENABLE_BPF=1 "$ROOT/scripts/build-sdk.sh" all >> "$DRY_RUN_EVIDENCE" 2>&1
+if SDK_DIR=/tmp/fake-sdk DRY_RUN=1 ENABLE_BPF=0 "$ROOT/scripts/build-sdk.sh" all > "$DRY_RUN_EVIDENCE" 2>&1; then
+	printf '%s\n' "expected LuCI build without mandatory BPF to fail" >&2
+	exit 1
+fi
+grep -F "ENABLE_BPF=0 is only supported with the lanspeedd target" "$DRY_RUN_EVIDENCE" >/dev/null
+
+SDK_DIR=/tmp/fake-sdk DRY_RUN=1 ENABLE_BPF=0 "$ROOT/scripts/build-sdk.sh" lanspeedd > "$DRY_RUN_EVIDENCE" 2>&1
+SDK_DIR=/tmp/fake-sdk DRY_RUN=1 "$ROOT/scripts/build-sdk.sh" all >> "$DRY_RUN_EVIDENCE" 2>&1
 SDK_DIR=/tmp/fake-sdk DRY_RUN=1 SDK_RELEASE=23.05 "$ROOT/scripts/build-sdk.sh" all >> "$DRY_RUN_EVIDENCE" 2>&1
 SDK_DIR=/tmp/fake-sdk DRY_RUN=1 SDK_RELEASE=23.05 SDK_BASE_FEED_REF=5804844cf812c07b2d66d513bec2e36e7a8270ee "$ROOT/scripts/build-sdk.sh" all >> "$DRY_RUN_EVIDENCE" 2>&1
 
@@ -57,11 +63,11 @@ grep -F "select CONFIG_PACKAGE_lanspeedd=m before compiling package/lanspeedd/co
 grep -F "disable CONFIG_PACKAGE_lanspeedd-bpf before compiling package/lanspeedd/compile" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "select CONFIG_PACKAGE_lanspeedd-bpf=m before compiling package/lanspeedd/compile" "$DRY_RUN_EVIDENCE" >/dev/null
 if [ "$(grep -Fc "disable CONFIG_PACKAGE_lanspeedd-bpf before compiling package/lanspeedd/compile" "$DRY_RUN_EVIDENCE")" -lt 2 ]; then
-	printf '%s\n' "base dry-run must disable lanspeedd-bpf before feeds update and before defconfig" >&2
+	printf '%s\n' "explicit base-only dry-run must disable lanspeedd-bpf before feeds update and before defconfig" >&2
 	exit 1
 fi
 if [ "$(grep -Fc "select CONFIG_PACKAGE_lanspeedd-bpf=m before compiling package/lanspeedd/compile" "$DRY_RUN_EVIDENCE")" -lt 2 ]; then
-	printf '%s\n' "BPF dry-run must select lanspeedd-bpf before feeds update and before defconfig" >&2
+	printf '%s\n' "default dry-run must select lanspeedd-bpf before feeds update and before defconfig" >&2
 	exit 1
 fi
 grep -F "make package/lanspeedd/compile V=s LANSPEED_BUILD_BPF=0 CONFIG_PACKAGE_lanspeedd=m CONFIG_PACKAGE_lanspeedd-bpf=" "$DRY_RUN_EVIDENCE" >/dev/null
@@ -88,10 +94,13 @@ printf '%s\n' "$*" >> make.log
 EOF
 chmod +x "$TMP_SDK/bin/make"
 
-PATH="$TMP_SDK/bin:$PATH" SDK_DIR="$TMP_SDK" "$ROOT/scripts/build-sdk.sh" all > "$FAKE_SDK_EVIDENCE" 2>&1
+PATH="$TMP_SDK/bin:$PATH" SDK_DIR="$TMP_SDK" ENABLE_BPF=0 "$ROOT/scripts/build-sdk.sh" lanspeedd > "$FAKE_SDK_EVIDENCE" 2>&1
 grep -F "defconfig" "$TMP_SDK/make.log" >/dev/null
 grep -F "package/lanspeedd/compile V=s LANSPEED_BUILD_BPF=0 CONFIG_PACKAGE_lanspeedd=m CONFIG_PACKAGE_lanspeedd-bpf=" "$TMP_SDK/make.log" >/dev/null
-grep -F "package/luci-app-lanspeed/compile V=s" "$TMP_SDK/make.log" >/dev/null
+if grep -F "package/luci-app-lanspeed/compile V=s" "$TMP_SDK/make.log" >/dev/null; then
+	printf '%s\n' "base-only daemon pass must not build the LuCI package" >&2
+	exit 1
+fi
 grep -F "CONFIG_PACKAGE_lanspeedd=m" "$TMP_SDK/.config" >/dev/null
 grep -F "# CONFIG_PACKAGE_lanspeedd-bpf is not set" "$TMP_SDK/.config" >/dev/null
 if grep -F "CONFIG_PACKAGE_lanspeedd-bpf=m" "$TMP_SDK/.config" >/dev/null 2>&1; then
@@ -100,7 +109,7 @@ if grep -F "CONFIG_PACKAGE_lanspeedd-bpf=m" "$TMP_SDK/.config" >/dev/null 2>&1; 
 fi
 rm -f "$TMP_SDK/.config" "$TMP_SDK/make.log" "$TMP_SDK/feeds.log"
 
-PATH="$TMP_SDK/bin:$PATH" SDK_DIR="$TMP_SDK" ENABLE_BPF=1 "$ROOT/scripts/build-sdk.sh" all > "$FAKE_SDK_EVIDENCE" 2>&1
+PATH="$TMP_SDK/bin:$PATH" SDK_DIR="$TMP_SDK" "$ROOT/scripts/build-sdk.sh" all > "$FAKE_SDK_EVIDENCE" 2>&1
 grep -F "CONFIG_PACKAGE_lanspeedd=m" "$TMP_SDK/.config" >/dev/null
 grep -F "CONFIG_PACKAGE_lanspeedd-bpf=m" "$TMP_SDK/.config" >/dev/null
 grep -F "update -a" "$TMP_SDK/feeds.log" >/dev/null

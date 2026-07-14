@@ -20,8 +20,8 @@ echo "src-git lanspeed https://github.com/qimaoww/luci-app-lanspeed.git" >> feed
 ./scripts/feeds update lanspeed
 ./scripts/feeds install -a -p lanspeed
 
-# 在 menuconfig 中选中 Network -> lanspeedd、Network -> lanspeedd-bpf（可选）
-# 和 LuCI -> Applications -> luci-app-lanspeed
+# 在 menuconfig 中选中 LuCI -> Applications -> luci-app-lanspeed
+# BPF 是必选依赖，会自动选择 Network -> lanspeedd-bpf 和 lanspeedd
 make menuconfig
 
 # 多线程编译
@@ -29,13 +29,13 @@ make -j"$(nproc)" package/lanspeedd/compile
 make -j"$(nproc)" package/luci-app-lanspeed/compile
 ```
 
-选中 `lanspeedd-bpf` 后会随 `lanspeedd` 一起编译，不需要单独执行 `package/lanspeedd-bpf/compile`。
+`luci-app-lanspeed` 强制依赖 `lanspeedd-bpf`，后者会带上 `lanspeedd`；BPF 对象随 `lanspeedd` 源包一起编译，不需要单独执行 `package/lanspeedd-bpf/compile`。
 
 ## 特性
 
-- **实时速率**：BPF tc 按 MAC + zone/VLAN 直接计数，字段为 `tx_bps` / `rx_bps`；非 NSS / x86 场景测速只使用 BPF；`auto` 模式检测到 dae/daed 进程后立即优先使用 BPF。
+- **实时速率**：BPF tc 按 MAC + zone/VLAN 直接计数，字段为 `tx_bps` / `rx_bps`；BPF 是所有设备（包括 NSS）的默认实时速率来源，`auto` 模式会首先选择 BPF。
 - **连接数统计**：优先 CT-Netlink 读取 conntrack accounting，失败自动回退 CT-Procfs；TCP、UDP、DNS UDP 分开统计。
-- **NSS 兼容**：Qualcomm NSS 设备自动展示 ECM/PPE 状态；NSS 设备默认以 NSS sync / CT-Netlink 作为稳定来源，NSS-direct 只在读到有效 ECM state flow 时补充；IPv4 通过 ARP、IPv6 通过 neighbor 表匹配客户端，并兼容 ECM NAT 端点。
+- **NSS 兼容**：Qualcomm NSS 设备自动展示 ECM/PPE 状态，默认仍使用 LAN 边缘 BPF；显式选择 NSS 模式或 BPF 运行时不可用时，才使用 NSS sync / CT-Netlink 或 NSS-direct。NSS 硬件加速流量可能绕过 CPU，因此 BPF 只能看到慢路径；IPv4 通过 ARP、IPv6 通过 neighbor 表匹配客户端，并兼容 ECM NAT 端点。
 - **活跃客户端**：默认只把 10 秒内仍有有效速率的客户端计为 active，可通过 UCI 调整。
 - **覆盖率**：daemon 侧滑动窗口计算上下行覆盖率，避免前端采样窗口错位。
 - **配置页面**：LuCI 内置“实时状态”和“LAN Speed 配置”两个页签，速率采集、连接数采集、活跃客户端阈值和接口配置可分开调整，并由页面底部的统一按钮一次保存、提交和重载；NSS 设备会显示 NSS 专属说明。
@@ -51,18 +51,18 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 
 | 值 | 行为 |
 |---|---|
-| `auto` | 默认模式。普通设备优先 BPF；NSS ECM/PPE 设备使用 NSS sync / CT-Netlink 作为稳定来源，NSS-direct 有有效 flow 时补充；检测到 dae/daed 正在运行且 BPF 可用时优先使用 BPF。 |
-| `bpf` | 只使用 BPF 测速；非 NSS / x86 / dae/daed 推荐保持此模式或 auto。 |
+| `auto` | 默认模式。所有设备（包括 NSS ECM/PPE）优先使用 BPF；BPF 运行时不可用时，NSS 设备才按可用性回退 NSS sync / CT-Netlink 或 NSS-direct。 |
+| `bpf` | 强制只使用 BPF 测速；BPF 不可用时不回退 NSS，适合确认 LAN 边缘 BPF 路径。 |
 | `nss_ecm_direct` | 手动尝试 NSS-direct；direct 没有有效速率时仍使用 NSS sync 后备，避免显示 0。 |
 | `nss_conntrack_sync` | 强制使用 NSS sync；只适合 NSS ECM/PPE 设备排查或 direct 不可用时使用。 |
 
 非 NSS 设备不会把 CT 当作实时测速来源。CT 只能用于连接数、诊断和 NSS ECM/PPE sync 这类明确标注的 fallback。
 
-daemon 每个采样周期都由 Rust 直接扫描 `/proc/<pid>/comm`，只把精确名称为 `dae` 或 `daed` 的进程视为运行态，不依赖 `pidof` 或慢速环境探测缓存。检测到运行态后会把 LAN BPF 从 Normal（pref `49152`）事务切换到 Early passthrough（pref `1`），进程停止后切回 Normal；切换复用 reload 的 suspend/attach/rollback 流程并保留外部 tc filter。自动模式选择 BPF 时显示 `dae_runtime_prefers_bpf`；NSS 设备在 BPF 不可用时回退 NSS sync，并显示 `nss_dae_bpf_fallback_may_be_inaccurate`。
+daemon 每个采样周期都由 Rust 直接扫描 `/proc/<pid>/comm`，只把精确名称为 `dae` 或 `daed` 的进程视为运行态，不依赖 `pidof` 或慢速环境探测缓存。自动模式在所有设备上都优先选择 BPF；检测到 dae/daed 运行后，还会把 LAN BPF 从 Normal（pref `49152`）事务切换到 Early passthrough（pref `1`），进程停止后切回 Normal。切换复用 reload 的 suspend/attach/rollback 流程并保留外部 tc filter，同时显示 `dae_runtime_prefers_bpf`；NSS 设备只有在 BPF 不可用时才回退 NSS sync，并显示 `nss_dae_bpf_fallback_may_be_inaccurate`。
 
-NSS-direct 指 daemon 只读 qca-nss-ecm 的 state 设备（`/dev/ecm_state` 或 debugfs major 在 `/dev` 下创建的临时只读节点），解析 ECM flow 的 `adv_stats.from_data_total` / `adv_stats.to_data_total`，再按两端 IP、NAT IP 和 node MAC 匹配 LAN 客户端。它不写 `defunct_all`、`flush`、`decelerate`，也不修改 NSS 状态。部分固件的 ECM state 可能没有活跃 flow、计数为 0 或覆盖不完整，此时会显示 `nss_direct_no_data` / `nss_direct_partial`，并用 NSS sync 补齐。
+NSS-direct 是显式选择 `nss_ecm_direct` 或 BPF 不可用时的后备来源。daemon 只读 qca-nss-ecm 的 state 设备（`/dev/ecm_state` 或 debugfs major 在 `/dev` 下创建的临时只读节点），解析 ECM flow 的 `adv_stats.from_data_total` / `adv_stats.to_data_total`，再按两端 IP、NAT IP 和 node MAC 匹配 LAN 客户端。它不写 `defunct_all`、`flush`、`decelerate`，也不修改 NSS 状态。部分固件的 ECM state 可能没有活跃 flow、计数为 0 或覆盖不完整，此时会显示 `nss_direct_no_data` / `nss_direct_partial`，并用 NSS sync 补齐。
 
-NSS ECM/PPE sync 指 NSS 硬件加速 flow 的字节计数同步回 conntrack 后，daemon 再读取 CT-Netlink / CT-Procfs 的 accounting 计数。这个路径会匹配 conntrack 原始方向和回复方向的源/目的端点，按 LAN 客户端视角换算上下行；只在 NSS ECM/PPE 场景作为实时速率来源，非 NSS 设备不会把 conntrack 当作实时测速来源。
+NSS ECM/PPE sync 是显式选择 `nss_conntrack_sync`、NSS-direct 的补齐来源或 BPF 不可用时的后备来源。NSS 硬件加速 flow 的字节计数同步回 conntrack 后，daemon 再读取 CT-Netlink / CT-Procfs 的 accounting 计数。这个路径会匹配 conntrack 原始方向和回复方向的源/目的端点，按 LAN 客户端视角换算上下行；只在 NSS ECM/PPE 场景作为实时速率来源，非 NSS 设备不会把 conntrack 当作实时测速来源。
 
 ### 连接数采集
 
@@ -80,9 +80,9 @@ NSS ECM/PPE sync 指 NSS 硬件加速 flow 的字节计数同步回 conntrack �
 
 | 包 | 说明 |
 |---|---|
-| `lanspeedd` | Rust/Aya daemon，暴露 ubus 方法（status / clients / overview / health / interfaces / sysdevices / reload）；不选 BPF 包时也会完整编译用户态后端 |
-| `lanspeedd-bpf` | 可选，安装 Rust 编译的 kfunc 与 fallback 两套 tc/eBPF 对象（含 ct_lookup + seen_tuples 去重 map）；选择 LuCI 应用且构建配置提供 `HAS_BPF_TOOLCHAIN` 时默认选中 |
-| `luci-app-lanspeed` | LuCI 状态页和配置页，模块化前端（vocab / format / rpc / ifaceConfig / nssPanel / version） |
+| `lanspeedd` | Rust/Aya daemon，暴露 ubus 方法（status / clients / overview / health / interfaces / sysdevices / reload） |
+| `lanspeedd-bpf` | LuCI 应用的必选依赖，安装 Rust 编译的 kfunc 与 fallback 两套 tc/eBPF 对象（含 ct_lookup + seen_tuples 去重 map），并依赖 `lanspeedd` |
+| `luci-app-lanspeed` | LuCI 状态页和配置页，强制依赖 `lanspeedd-bpf`，模块化前端（vocab / format / rpc / ifaceConfig / nssPanel / version） |
 
 ## 编译要求与高级用法
 
@@ -96,14 +96,14 @@ NSS ECM/PPE sync 指 NSS 硬件加速 flow 的字节计数同步回 conntrack �
 
 构建驱动固定要求 `Rust 1.94.0`，并校验 `bpf-linker 0.10.3`。不要用较旧 SDK 的 `rust/host` 绕过版本检查；即使能编译，ubus/uloop/UCI 的目标 ABI 也可能不兼容。
 
-### 基础包与 BPF 可选包
+### 用户态与 BPF 必选包
 
-- `lanspeedd` 基础包始终编译 Rust 用户态 daemon，不要求 BPF 对象、`bpf-linker` 或 `libbpf` 运行时，适合 NSS-direct / 只看 conntrack 的路由器。
-- 只有选中 `lanspeedd-bpf` 时，才会使用固定版本的 `bpf-linker` 构建两套 Rust eBPF 对象；目标机需要 `tc-tiny` 和 `kmod-sched-bpf`。
+- `luci-app-lanspeed` 必须依赖 `lanspeedd-bpf`，`lanspeedd-bpf` 再依赖用户态 daemon `lanspeedd`；在 menuconfig 中选择 LuCI 应用会自动选中完整依赖链。
+- `lanspeedd-bpf` 使用固定版本的 `bpf-linker` 构建两套 Rust eBPF 对象；目标机必须提供 `tc-tiny` 和 `kmod-sched-bpf`。
 - 当前固定的 `bpf-linker` 发布包要求 x86_64 编译主机，目标路由器架构仍由 OpenWrt SDK 决定。
-- 非 NSS / x86 / dae/daed 场景如果要实时测速，仍然需要 `lanspeedd-bpf`；否则只保留连接数、环境检查和 NSS/conntrack 诊断能力。
+- NSS-direct 与 NSS sync 保留为显式模式和 BPF 运行时不可用时的后备来源，但不能替代 LuCI 应用对 `lanspeedd-bpf` 的安装依赖。
 
-### 内核与包配置要求（仅 `lanspeedd-bpf`）
+### 内核与包配置要求
 
 ```
 CONFIG_DEVEL=y
@@ -116,7 +116,7 @@ CONFIG_PACKAGE_kmod-sched-bpf=y
 CONFIG_PACKAGE_tc-tiny=y
 ```
 
-不启用 `lanspeedd-bpf` 时，daemon 仍可显示连接数与环境诊断；NSS 设备仍可走 NSS-direct / ECM/PPE sync 相关路径，但普通非 NSS 设备不会把 conntrack 当成实时客户端测速。
+缺少 `lanspeedd-bpf`、tc 或内核 BPF 支持时属于不完整安装，默认实时速率不可用。daemon 仍可能显示连接数与环境诊断；NSS 设备也可能在 BPF 运行失败后使用 NSS-direct / ECM/PPE sync 后备，但这不取代必选 BPF 依赖。
 
 ### 运行时依赖
 
@@ -128,21 +128,22 @@ CONFIG_PACKAGE_tc-tiny=y
 | `libblobmsg-json` | yes | Rust JSON 与 ubus blobmsg 的桥接 |
 | `kmod-nf-conntrack` | yes | conntrack 表访问 |
 | `kmod-nf-conntrack-netlink` | yes | CT-Netlink 连接数读取 |
-| `tc-tiny` (iproute2) | `lanspeedd-bpf` | tc clsact 挂载 |
-| `kmod-sched-bpf` | `lanspeedd-bpf` | 内核 tc BPF classifier 支持 |
+| `tc-tiny` (iproute2) | yes | `lanspeedd-bpf` 的 tc clsact 挂载依赖 |
+| `kmod-sched-bpf` | yes | `lanspeedd-bpf` 的内核 tc BPF classifier 依赖 |
 | `luci-base` | LuCI 页面 | LuCI 框架 |
 
-用户态 JSON 使用 `serde_json`，CT-Netlink 使用 Rust 原始 netlink 实现，eBPF 对象由 Aya 加载，不直接依赖 `libjson-c`、`libmnl` 或 `libbpf`。NSS-direct 不额外依赖用户态库，但需要内核侧 qca-nss-ecm 暴露 ECM state 设备；不可用或没有可匹配 flow 时会使用 NSS sync。IPv6 客户端匹配依赖内核 neighbor 表；前端隐藏 IPv6 只影响显示，不影响采集匹配。
+用户态 JSON 使用 `serde_json`，CT-Netlink 使用 Rust 原始 netlink 实现，eBPF 对象由 Aya 加载，不直接依赖 `libjson-c`、`libmnl` 或 `libbpf`。NSS 默认仍使用 BPF；NSS-direct 仅在显式模式或 BPF 不可用时启用，不额外依赖用户态库，但需要内核侧 qca-nss-ecm 暴露 ECM state 设备；不可用或没有可匹配 flow 时会使用 NSS sync。IPv6 客户端匹配依赖内核 neighbor 表；前端隐藏 IPv6 只影响显示，不影响采集匹配。
 
 ### 本地 checkout / SDK 辅助脚本
 
 仓库内的 `scripts/build-sdk.sh` 适合贡献者在本地 checkout 上重复验证。它使用 `src-link` 临时接入现有 SDK，自动选择包并执行相同的 `package/lanspeedd/compile` 和 `package/luci-app-lanspeed/compile` 目标：
 
 ```sh
-SDK_DIR=/openwrt/immortalwrt ENABLE_BPF=0 DRY_RUN=1 scripts/build-sdk.sh
-SDK_DIR=/openwrt/immortalwrt ENABLE_BPF=0 scripts/build-sdk.sh
+SDK_DIR=/openwrt/immortalwrt ENABLE_BPF=1 DRY_RUN=1 scripts/build-sdk.sh
 SDK_DIR=/openwrt/immortalwrt ENABLE_BPF=1 scripts/build-sdk.sh
 ```
+
+辅助脚本的 `ENABLE_BPF` 默认值为 `1`，正常 LuCI 应用构建应保持启用。
 
 普通用户从 GitHub 构建时优先使用前面的 `src-git lanspeed` feed 流程；辅助脚本不会下载 SDK 或工具链。
 
@@ -204,13 +205,13 @@ uci commit lanspeed
 | `active_client_window_ms` | `10000` | 活跃客户端最近可见窗口，低于 1000 会被钳制。 |
 | `active_client_min_bps` | `1` | 活跃客户端最低当前速率，低于 1 会被钳制。 |
 | `overview_window_samples` | `240` | 趋势/概览样本窗口。 |
-| `rate_collector_mode` | `auto` | 速率采集：`auto` / `bpf` / `nss_ecm_direct` / `nss_conntrack_sync`。 |
+| `rate_collector_mode` | `auto` | 速率采集：`auto` 默认在所有设备上优先 BPF；也可显式选择 `bpf` / `nss_ecm_direct` / `nss_conntrack_sync`。 |
 | `conn_collector_mode` | `auto` | 连接数采集：`auto` / `conntrack_netlink` / `conntrack_procfs`。 |
 | `show_ipv6` | `1` | 客户端列表是否显示 IPv6 地址。 |
 | `hide_private_ipv6` | `0` | 是否隐藏 `fc00::/7` 私有 IPv6 地址和 `fe80::/10` 链路本地地址；公网 IPv6 不受影响。 |
 | `hide_ipv6_ranges` | `fc00::/7 fe80::/10` | 自定义隐藏 IPv6 CIDR，空格或逗号分隔；仅在 `hide_private_ipv6=1` 时生效。 |
 | `collector_mode` | `auto` | 旧配置兼容字段，新配置页会同步到速率模式。 |
-| `enable_bpf` | `1` | 是否启用 BPF 速率采集。 |
+| `enable_bpf` | `1` | 旧配置兼容字段；BPF 是必选组件，受支持配置必须保持 `1`。 |
 | `enable_conntrack_fallback` | `1` | 是否允许 conntrack 连接数和 NSS sync fallback。 |
 
 ## ubus 调试
@@ -247,12 +248,12 @@ ubus call lanspeed sysdevices   # 系统网络设备列表
 | OpenClash fake-ip | 远端地址置信度降低，可能出现 `openclash_fake_ip_low_remote_confidence`。 |
 | OpenClash TUN/mix | TUN/mix 会改变 hook 顺序，可能出现 `openclash_tun_conntrack_low_confidence`。 |
 | OpenClash DNS 链 | DNS 重定向链不完整时会提示 `openclash_dns_chain_incomplete`。 |
-| dae/daed | 代理接口不作为客户端身份，探测到时提示 `dae_detected`；运行态每个采样周期由 `/proc/<pid>/comm` 刷新，自动模式在 BPF 可用时提示 `dae_runtime_prefers_bpf` 并切到 Early passthrough，BPF 不可用时提示 `nss_dae_bpf_fallback_may_be_inaccurate`。 |
+| dae/daed | 代理接口不作为客户端身份，探测到时提示 `dae_detected`；运行态每个采样周期由 `/proc/<pid>/comm` 刷新，自动模式继续优先 BPF，并提示 `dae_runtime_prefers_bpf`、切到 Early passthrough；NSS 设备只有在 BPF 不可用时才提示 `nss_dae_bpf_fallback_may_be_inaccurate` 并回退 NSS。 |
 | SQM/qosify/ifb | 可能影响方向判断或覆盖范围，对应 `sqm_detected`、`qosify_detected`、`ifb_detected`。 |
 | hardware flow offload | 硬件转发绕过 CPU，BPF 不可见，提示 `hardware_flow_offload_unsupported`。 |
 | software flow offload | 告警但不阻止采集，提示 `software_flow_offload_enabled`。 |
 | fullcone NAT | 连接语义可能受影响，提示 `fullcone_nat_enabled`。 |
-| NSS ECM / PPE | NSS sync / CT-Netlink 是稳定来源；NSS-direct 有有效 ECM state flow 时补充；PPE direct 第一版只探测状态，不写 NSS 状态。 |
+| NSS ECM / PPE | 默认优先使用 BPF，但硬件加速流量可能绕过 CPU，BPF 只能看到慢路径；显式 NSS 模式或 BPF 不可用时可使用 NSS sync / CT-Netlink、NSS-direct，PPE direct 第一版只探测状态且不写 NSS 状态。 |
 | nssifb | 只能观察，不允许作为 BPF 采集接口，避免镜像接口重复计数。 |
 | same-subnet side-router direct | 同网段旁路由直连可能绕过主路由，提示 `same-subnet side-router direct` 相关风险。 |
 | router-local | 路由器本机进程流量不会自然映射成 LAN 客户端。 |
@@ -270,12 +271,12 @@ ubus call lanspeed sysdevices   # 系统网络设备列表
 | 现象 | 检查 |
 |---|---|
 | SDK 缺失 | 确认 `SDK_DIR` 指向真实 SDK，例如 `/openwrt/immortalwrt`。 |
-| 缺少 BPF 包或对象 | 安装 `lanspeedd-bpf`，检查 `/usr/lib/bpf/lanspeed-ebpf-kfunc` 和 `/usr/lib/bpf/lanspeed-ebpf-fallback`。 |
+| 缺少 BPF 包或对象 | `lanspeedd-bpf` 是 LuCI 应用的必选依赖；检查包依赖和 `/usr/lib/bpf/lanspeed-ebpf-kfunc`、`/usr/lib/bpf/lanspeed-ebpf-fallback`。 |
 | 缺少 `tc` | 安装 `tc-tiny` 或完整 iproute2。 |
 | 连接数全 0 | 检查 `nf_conntrack_acct`、`kmod-nf-conntrack-netlink`、`conn_collector_mode`。 |
 | 没有客户端 | 检查 LAN 接口配置、桥设备、BPF 是否 attach 成功。 |
-| 速率长时间为 0 | 检查 `rate_collector_mode`、BPF 包、tc filter、硬件 flow offload；NSS 设备还要看 `nss_ecm_direct_unavailable` / `nss_ecm_direct_snapshot_pending`；IPv6 场景同时检查客户端是否出现在 neighbor 表。 |
-| OpenClash 或 dae/daed 共存 | 优先确认 BPF attach 在 LAN 边缘，观察 health 里的 warning；NSS+daed 回退 NSS 时会提示速率可能不准。 |
+| 速率长时间为 0 | 所有设备先检查 `rate_collector_mode`、BPF 包、tc filter、硬件 flow offload；NSS 设备仅在显式 NSS 模式或 BPF 后备生效时再看 `nss_ecm_direct_unavailable` / `nss_ecm_direct_snapshot_pending`；IPv6 场景同时检查客户端是否出现在 neighbor 表。 |
+| OpenClash 或 dae/daed 共存 | 优先确认 BPF attach 在 LAN 边缘，观察 health 里的 warning；NSS+daed 只有在 BPF 不可用而回退 NSS 时才会提示速率可能不准。 |
 | 覆盖率低 | 检查硬件 offload、旁路网关、LAN-to-LAN、IFB/TUN 等 CPU 不可见路径。 |
 
 ## 项目结构

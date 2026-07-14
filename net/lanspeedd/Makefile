@@ -48,14 +48,13 @@ endef
 define Package/lanspeedd-bpf
   SECTION:=net
   CATEGORY:=Network
-  TITLE:=Optional BPF assets for lanspeedd
-  DEFAULT:=y if PACKAGE_luci-app-lanspeed && HAS_BPF_TOOLCHAIN
+  TITLE:=BPF assets for lanspeedd
   DEPENDS:=@!BIG_ENDIAN +lanspeedd +tc-tiny +kmod-sched-bpf
 endef
 
 define Package/lanspeedd-bpf/description
- Optional Aya eBPF programs for Full mode support. The base daemon runs
- without this package and degrades when runtime BPF assets are absent.
+ Required Aya eBPF programs for luci-app-lanspeed Full mode support.
+ The package installs the kfunc and fallback tc/eBPF runtime objects.
 endef
 
 define Build/Prepare

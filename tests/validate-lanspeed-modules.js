@@ -980,6 +980,13 @@ function assertWarningAliases(src) {
 	    vocab.warningClass('dae_process_probe_failed') !== 'label label-danger') {
 		fail('vocab.js must render the Rust /proc dae scan failure as a critical localized warning');
 	}
+	if (!vocab.warningText('bpf_optional_package_missing').includes('必选 BPF 软件包') ||
+	    vocab.warningText('bpf_optional_package_missing').includes('可选 BPF 软件包')) {
+		fail('vocab.js must keep the legacy BPF warning ID but describe the package as mandatory');
+	}
+	if (!vocab.warningText('nss_prefers_conntrack_sync').includes('当前 NSS 模式选择或回退到了 NSS sync')) {
+		fail('vocab.js must describe NSS sync overriding BPF as an explicit mode choice');
+	}
 }
 
 function assertStatusShellInteraction(src) {
@@ -1235,6 +1242,13 @@ function assertConfigView(src) {
 	}
 	if (!src.includes('dae/daed 运行中') || !src.includes('BPF')) {
 		fail('view/lanspeed/config.js must explain the dae/daed BPF preference');
+	}
+	if (!src.includes('NSS 设备同样优先使用 BPF') ||
+	    !src.includes('BPF 不可用时回退 NSS sync / NSS-direct')) {
+		fail('view/lanspeed/config.js must explain the NSS auto BPF-first policy and fallback');
+	}
+	if (!src.includes('前置 passthrough 挂载')) {
+		fail('view/lanspeed/config.js must explain the dae/daed early BPF attach behavior');
 	}
 	if (src.includes('lanspeed-rate-badge') || src.includes('rateBadge')) {
 		fail('view/lanspeed/config.js must not render the removed rate badge');

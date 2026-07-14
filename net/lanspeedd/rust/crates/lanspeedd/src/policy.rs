@@ -156,12 +156,12 @@ pub fn select_collectors(
         RateCollectorMode::Auto => {
             if dae_prefers_bpf {
                 (RateCollector::Bpf, "dae_runtime_prefers_bpf")
-            } else if nss_sync {
-                (RateCollector::NssConntrackSync, "nss_sync_preferred")
-            } else if nss_direct {
-                (RateCollector::NssEcmDirect, "nss_direct_fallback")
             } else if bpf_full {
                 (RateCollector::Bpf, "bpf_available")
+            } else if nss_sync {
+                (RateCollector::NssConntrackSync, "bpf_unavailable_nss_sync_fallback")
+            } else if nss_direct {
+                (RateCollector::NssEcmDirect, "bpf_unavailable_nss_direct_fallback")
             } else {
                 (RateCollector::Unsupported, "no_live_rate_collector")
             }

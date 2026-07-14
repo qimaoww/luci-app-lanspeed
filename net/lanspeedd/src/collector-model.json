@@ -173,18 +173,20 @@
       "nss_conntrack_sync"
     ],
     "non_nss_live_rate_policy": "bpf_only",
+    "nss_auto_live_rate_policy": "bpf_first_then_nss_sync_or_direct_fallback",
     "non_nss_conntrack_policy": "connection_counts_and_diagnostics_only",
     "mode": "Degraded",
     "active_only_when": [
-      "nss_ecm_or_ppe_sync_preferred",
-      "nss_ecm_sync_preferred",
+      "rate_collector_mode=nss_conntrack_sync",
+      "forced_nss_direct_falls_back_to_sync",
+      "auto_bpf_full_unavailable_and_nss_ecm_or_ppe_sync_available",
       "enable_conntrack_fallback=1",
       "nf_conntrack_acct=1"
     ],
     "inactive_when": [
       "non_nss_device",
+      "auto_bpf_full_available",
       "bpf_full_unavailable_without_nss_ecm_sync",
-      "bpf_full_available_without_nss_ecm_sync",
       "enable_conntrack_fallback=0",
       "conntrack_acct_disabled"
     ],

@@ -195,10 +195,10 @@ try {
   assert(workflow.includes('run_build apk-aarch64-base'), 'workflow must build APK aarch64 base packages');
   assert(workflow.includes('run_build apk-aarch64-bpf'), 'workflow must build APK aarch64 BPF packages');
   assert(!workflow.includes('run_build ipk-'), 'workflow must not run unsupported IPK builds');
-  assert(workflow.includes('run_build apk-base "$RUNNER_TEMP/sdk-apk-base" 0 25.12'), 'APK base builds must use the 25.12 SDK release guard');
-  assert(workflow.includes('run_build apk-bpf "$RUNNER_TEMP/sdk-apk-bpf" 1 25.12'), 'APK BPF builds must use the 25.12 SDK release guard');
-  assert(workflow.includes('run_build apk-aarch64-base "$RUNNER_TEMP/sdk-apk-aarch64-base" 0 25.12'), 'APK aarch64 base builds must use the 25.12 SDK release guard');
-  assert(workflow.includes('run_build apk-aarch64-bpf "$RUNNER_TEMP/sdk-apk-aarch64-bpf" 1 25.12'), 'APK aarch64 BPF builds must use the 25.12 SDK release guard');
+  assert(workflow.includes('run_build apk-base "$RUNNER_TEMP/sdk-apk-base" 0 25.12 lanspeedd'), 'APK base builds must use the 25.12 SDK release guard and daemon-only target');
+  assert(workflow.includes('run_build apk-bpf "$RUNNER_TEMP/sdk-apk-bpf" 1 25.12 all'), 'APK BPF builds must use the 25.12 SDK release guard and full target');
+  assert(workflow.includes('run_build apk-aarch64-base "$RUNNER_TEMP/sdk-apk-aarch64-base" 0 25.12 lanspeedd'), 'APK aarch64 base builds must use the 25.12 SDK release guard and daemon-only target');
+  assert(workflow.includes('run_build apk-aarch64-bpf "$RUNNER_TEMP/sdk-apk-aarch64-bpf" 1 25.12 all'), 'APK aarch64 BPF builds must use the 25.12 SDK release guard and full target');
   assert(!/-name '\*\.apk'/.test(workflow), 'workflow must not collect every APK from the SDK output');
   assert(!/-name '\*\.ipk'/.test(workflow), 'workflow must not collect every IPK from the SDK output');
   assert(workflow.includes("lanspeedd-${code_version}.apk"), 'workflow must collect only the matching lanspeedd APK package');
@@ -216,7 +216,8 @@ try {
   assert(!workflow.includes('rockchip'), 'workflow must not split aarch64 into Rockchip SDK targets');
   assertBefore(workflow, 'file_list="$RUNNER_TEMP/release/files.txt"', 'collect_one "$RUNNER_TEMP/sdk-apk-base" "lanspeedd-${code_version}.apk"', 'workflow must create the release file list before collecting files');
   assertBefore(workflow, 'collect_one "$RUNNER_TEMP/sdk-apk-base" "lanspeedd-${code_version}.apk"', 'collect_one "$RUNNER_TEMP/sdk-apk-bpf" "lanspeedd-bpf-${code_version}.apk"', 'APK base package must be listed before APK BPF package');
-  assertBefore(workflow, 'collect_one "$RUNNER_TEMP/sdk-apk-bpf" "lanspeedd-bpf-${code_version}.apk"', 'collect_one "$RUNNER_TEMP/sdk-apk-base" "luci-app-lanspeed-${code_version}.apk"', 'APK BPF package must be listed before APK LuCI package');
+  assertBefore(workflow, 'collect_one "$RUNNER_TEMP/sdk-apk-bpf" "lanspeedd-bpf-${code_version}.apk"', 'collect_one "$RUNNER_TEMP/sdk-apk-bpf" "luci-app-lanspeed-${code_version}.apk"', 'APK BPF package must be listed before its mandatory-BPF LuCI package');
+  assert(workflow.includes('collect_one "$RUNNER_TEMP/sdk-apk-aarch64-bpf" "luci-app-lanspeed-${code_version}.apk" "luci-app-lanspeed-${code_version}-aarch64.apk"'), 'aarch64 LuCI package must come from the mandatory-BPF build');
   assert(!workflow.includes('find "$release_dir" -type f | sort > "$file_list"'), 'workflow must not reorder release files by temporary paths');
 
   console.log('validate-release-version: PASS');
