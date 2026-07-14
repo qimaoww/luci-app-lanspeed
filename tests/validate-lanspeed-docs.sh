@@ -4,7 +4,6 @@ set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 README="$ROOT_DIR/README.md"
-DAEMON_MAKEFILE="$ROOT_DIR/net/lanspeedd/Makefile"
 EVIDENCE_DIR="$ROOT_DIR/.sisyphus/evidence"
 EVIDENCE="$EVIDENCE_DIR/task-14-doc-check.txt"
 
@@ -17,7 +16,7 @@ log() {
 
 require_phrase() {
 	phrase="$1"
-	if grep -Fq "$phrase" "$README"; then
+	if grep -Fq -- "$phrase" "$README"; then
 		log "ok: $phrase"
 	else
 		log "missing: $phrase"
@@ -26,20 +25,9 @@ require_phrase() {
 	fi
 }
 
-require_block() {
-	block="$1"
-	if BLOCK="$block" awk 'BEGIN { block = ENVIRON["BLOCK"] } { text = text $0 ORS } END { exit(index(text, block) == 0) }' "$README"; then
-		log "ok: required block"
-	else
-		log "missing: required block"
-		printf '%s\n' 'missing required README block' >&2
-		exit 1
-	fi
-}
-
 reject_phrase() {
 	phrase="$1"
-	if grep -Fq "$phrase" "$README"; then
+	if grep -Fq -- "$phrase" "$README"; then
 		log "forbidden: $phrase"
 		printf 'forbidden README phrase present: %s\n' "$phrase" >&2
 		exit 1
@@ -47,27 +35,6 @@ reject_phrase() {
 		log "absent: $phrase"
 	fi
 }
-
-read_make_var() {
-	name="$1"
-	value="$(awk -v name="$name" '
-		index($0, name ":=") == 1 {
-			value = substr($0, length(name) + 3)
-			gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
-			print value
-			exit
-		}
-	' "$DAEMON_MAKEFILE")"
-	if [ -z "$value" ]; then
-		printf 'missing required Makefile variable: %s\n' "$name" >&2
-		exit 1
-	fi
-	printf '%s\n' "$value"
-}
-
-package_version="$(read_make_var PKG_VERSION)"
-package_release="$(read_make_var PKG_RELEASE)"
-current_full_version="${package_version}-r${package_release}"
 
 log "README documentation checklist"
 log "file: $README"
@@ -78,6 +45,19 @@ require_phrase "不声明全流量绝对准确"
 require_phrase "luci-app-lanspeed"
 require_phrase "lanspeedd"
 require_phrase "lanspeedd-bpf"
+require_phrase "## 安装与编译"
+require_phrase "# 在 feeds.conf 中添加 lanspeed feed"
+require_phrase "src-git lanspeed https://github.com/qimaoww/luci-app-lanspeed.git"
+require_phrase "# 更新并安装"
+require_phrase "./scripts/feeds update lanspeed"
+require_phrase "./scripts/feeds install -a -p lanspeed"
+require_phrase "# 在 menuconfig 中选中 Network -> lanspeedd、Network -> lanspeedd-bpf（可选）"
+require_phrase "LuCI -> Applications -> luci-app-lanspeed"
+require_phrase "make menuconfig"
+require_phrase "# 多线程编译"
+require_phrase 'make -j"$(nproc)"'
+require_phrase "package/lanspeedd/compile"
+require_phrase "package/luci-app-lanspeed/compile"
 require_phrase "ImmortalWrt 25.12"
 require_phrase "23.05"
 require_phrase "OpenWrt 23.05 | 不支持"
@@ -99,7 +79,6 @@ require_phrase "SDK_DIR"
 require_phrase "ENABLE_BPF"
 require_phrase "DRY_RUN"
 require_phrase "ABI"
-require_phrase "/etc/init.d/lanspeedd enable"
 require_phrase "ubus call lanspeed status"
 require_phrase "ubus call lanspeed clients"
 require_phrase "ubus call lanspeed health"
@@ -147,29 +126,13 @@ require_phrase "真实 SDK 编译"
 require_phrase "目标设备"
 require_phrase "/openwrt/immortalwrt"
 reject_phrase "/openwrt/25"".12"
-require_block "apk add --force-reinstall --allow-untrusted \\
-	/tmp/lanspeedd-${current_full_version}.apk \\
-	/tmp/lanspeedd-bpf-${current_full_version}.apk \\
-	/tmp/luci-app-lanspeed-${current_full_version}.apk"
-require_block "apk add --force-reinstall --allow-untrusted \\
-	/tmp/legacy/lanspeedd-0.1.7-r1.apk \\
-	/tmp/legacy/lanspeedd-bpf-0.1.7-r1.apk \\
-	/tmp/legacy/luci-app-lanspeed-0.1.6-r1.apk
-cp /tmp/legacy/lanspeed /etc/config/lanspeed
-/etc/init.d/lanspeedd restart"
-require_phrase "同一个 APK 事务"
-require_phrase "同版本包不替换"
-require_phrase "人为分步安装造成短暂混合版本"
-require_phrase "以升级前保存的文件名为准"
-require_phrase "目标机当前已安装的 lanspeed APK"
-require_phrase "若使用 BPF"
-require_phrase "三个匹配包放在同一次"
-require_phrase "不使用 BPF 时"
-require_phrase "不应安装 BPF 包"
-require_phrase "本次 x86_64 实测示例"
-require_phrase 'aarch64 Release 文件名带 `-aarch64`'
-require_phrase "按实际产物替换路径"
-require_phrase "本次 x86_64 实测设备备份"
+reject_phrase "git clone https://github.com/qimaoww/luci-app-lanspeed.git package/lanspeed"
+reject_phrase "package/lanspeed/lanspeedd/compile"
+reject_phrase "package/lanspeed/luci-app-lanspeed/compile"
+reject_phrase "make package/lanspeedd-bpf/compile"
+reject_phrase "## 安装、启动与回滚"
+reject_phrase "--force-reinstall"
+reject_phrase "/tmp/legacy/lanspeedd"
 
 log "result: pass"
 printf 'documentation checklist passed: %s\n' "$EVIDENCE"

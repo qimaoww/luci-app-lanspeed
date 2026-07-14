@@ -1,4 +1,4 @@
-# luci-lanspeed
+# luci-app-lanspeed
 
 > 本仓库所有代码及文档（包括本 README）均由 AI 生成。
 
@@ -7,6 +7,29 @@ LAN 侧按客户端实时吞吐监控 + TCP/UDP 连接数统计，当前面向 I
 后端用户态 daemon 与 tc/eBPF 程序均使用 Rust 实现；OpenWrt 的 ubus、uloop 和 UCI 通过 Rust FFI 调用系统 ABI，仓库不再保留项目自有 C 后端。
 
 本项目的定位是观察 CPU 可见 LAN 边缘流量：它不是完整流量审计系统，不声明全流量绝对准确。硬件加速、旁路网关、同网段直连、桥内转发、驱动 offload、代理 TUN/IFB 等路径可能让部分流量绕过 CPU 或改变可见方向。
+
+## 安装与编译
+
+在 ImmortalWrt / OpenWrt 源码根目录执行：
+
+```sh
+# 在 feeds.conf 中添加 lanspeed feed
+echo "src-git lanspeed https://github.com/qimaoww/luci-app-lanspeed.git" >> feeds.conf
+
+# 更新并安装
+./scripts/feeds update lanspeed
+./scripts/feeds install -a -p lanspeed
+
+# 在 menuconfig 中选中 Network -> lanspeedd、Network -> lanspeedd-bpf（可选）
+# 和 LuCI -> Applications -> luci-app-lanspeed
+make menuconfig
+
+# 多线程编译
+make -j"$(nproc)" package/lanspeedd/compile
+make -j"$(nproc)" package/luci-app-lanspeed/compile
+```
+
+选中 `lanspeedd-bpf` 后会随 `lanspeedd` 一起编译，不需要单独执行 `package/lanspeedd-bpf/compile`。
 
 ## 特性
 
@@ -61,13 +84,7 @@ NSS ECM/PPE sync 指 NSS 硬件加速 flow 的字节计数同步回 conntrack �
 | `lanspeedd-bpf` | 可选，安装 Rust 编译的 kfunc 与 fallback 两套 tc/eBPF 对象（含 ct_lookup + seen_tuples 去重 map）；选择 LuCI 应用且构建配置提供 `HAS_BPF_TOOLCHAIN` 时默认选中 |
 | `luci-app-lanspeed` | LuCI 状态页和配置页，模块化前端（vocab / format / rpc / ifaceConfig / nssPanel / version） |
 
-## 编译
-
-### 获取源码
-
-```sh
-git clone https://github.com/qimaoww/luci-app-lanspeed.git package/lanspeed
-```
+## 编译要求与高级用法
 
 ### 版本支持
 
@@ -117,19 +134,9 @@ CONFIG_PACKAGE_tc-tiny=y
 
 用户态 JSON 使用 `serde_json`，CT-Netlink 使用 Rust 原始 netlink 实现，eBPF 对象由 Aya 加载，不直接依赖 `libjson-c`、`libmnl` 或 `libbpf`。NSS-direct 不额外依赖用户态库，但需要内核侧 qca-nss-ecm 暴露 ECM state 设备；不可用或没有可匹配 flow 时会使用 NSS sync。IPv6 客户端匹配依赖内核 neighbor 表；前端隐藏 IPv6 只影响显示，不影响采集匹配。
 
-### 编译命令
+### 本地 checkout / SDK 辅助脚本
 
-```sh
-make menuconfig
-# Network -> lanspeedd
-# Network -> lanspeedd-bpf   # LuCI + HAS_BPF_TOOLCHAIN 时默认选中，也可按需关闭
-# LuCI -> Applications -> luci-app-lanspeed
-
-make package/lanspeed/lanspeedd/compile V=s   # 选中 lanspeedd-bpf 时会一并产出 BPF 对象
-make package/lanspeed/luci-app-lanspeed/compile V=s
-```
-
-也可以使用仓库脚本：
+仓库内的 `scripts/build-sdk.sh` 适合贡献者在本地 checkout 上重复验证。它使用 `src-link` 临时接入现有 SDK，自动选择包并执行相同的 `package/lanspeedd/compile` 和 `package/luci-app-lanspeed/compile` 目标：
 
 ```sh
 SDK_DIR=/openwrt/immortalwrt ENABLE_BPF=0 DRY_RUN=1 scripts/build-sdk.sh
@@ -137,43 +144,18 @@ SDK_DIR=/openwrt/immortalwrt ENABLE_BPF=0 scripts/build-sdk.sh
 SDK_DIR=/openwrt/immortalwrt ENABLE_BPF=1 scripts/build-sdk.sh
 ```
 
+普通用户从 GitHub 构建时优先使用前面的 `src-git lanspeed` feed 流程；辅助脚本不会下载 SDK 或工具链。
+
 ABI 注意点：包必须用目标固件对应的 25.12 SDK 编译，不能混用其他分支的 libubox/libubus/libuci 或 kernel ABI，也不能把 `lanspeedd-bpf` 安装到不同内核构建上。
 
 当前只声明支持并验证 x86_64 和 aarch64 两类 LP64 目标；32 位 ARM、i386 和 MIPS 不在支持范围内。GitHub Actions 在 `v*` tag 发布时会编译这两类产物，aarch64 产物使用官方 `armsr/armv8` SDK 编译，Release 文件名带 `aarch64` 后缀。
 
-## 安装、启动与回滚
-
-升级前保存目标机当前已安装的 lanspeed APK 与 `/etc/config/lanspeed`；本地测试包未被目标机信任时需要 `--allow-untrusted`。若使用 BPF，把 daemon、BPF、LuCI 三个匹配包放在同一次 `apk add` 中；不使用 BPF 时，只把本次需要升级的匹配包放在同一事务中，不应安装 BPF 包。`--force-reinstall` 避免同版本包不替换，单事务避免人为分步安装造成短暂混合版本。下列无架构后缀的文件名是本次 x86_64 实测示例；aarch64 Release 文件名带 `-aarch64`，应按实际产物替换路径。
-
-```sh
-apk add --force-reinstall --allow-untrusted \
-	/tmp/lanspeedd-1.0.0-r1.apk \
-	/tmp/lanspeedd-bpf-1.0.0-r1.apk \
-	/tmp/luci-app-lanspeed-1.0.0-r1.apk
-```
-
-```sh
-/etc/init.d/lanspeedd enable
-/etc/init.d/lanspeedd restart
-```
-
-回滚时也要在同一个 APK 事务中强制重新安装已保存的匹配 legacy APK，然后恢复配置并重启服务；不要只回滚 daemon 而保留不匹配的 BPF 包。下列三个文件名对应本次 x86_64 实测设备备份的已安装旧包，不代表它们属于同一 release；实际回滚应以升级前保存的文件名为准。例如旧包和配置分别保存在 `/tmp/legacy` 下：
-
-```sh
-apk add --force-reinstall --allow-untrusted \
-	/tmp/legacy/lanspeedd-0.1.7-r1.apk \
-	/tmp/legacy/lanspeedd-bpf-0.1.7-r1.apk \
-	/tmp/legacy/luci-app-lanspeed-0.1.6-r1.apk
-cp /tmp/legacy/lanspeed /etc/config/lanspeed
-/etc/init.d/lanspeedd restart
-```
+## 配置
 
 LuCI 入口：
 
 - `状态 -> 客户端网速 -> 实时状态`
 - `状态 -> 客户端网速 -> LAN Speed 配置`
-
-## 配置
 
 `/etc/config/lanspeed`：
 
