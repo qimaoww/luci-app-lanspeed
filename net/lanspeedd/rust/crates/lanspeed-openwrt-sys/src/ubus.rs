@@ -8,8 +8,187 @@ use std::ptr;
 use std::rc::{Rc, Weak};
 
 pub const STATUS_OK: libc::c_int = raw::ubus_msg_status_UBUS_STATUS_OK.0 as libc::c_int;
+pub const STATUS_INVALID_ARGUMENT: libc::c_int =
+    raw::ubus_msg_status_UBUS_STATUS_INVALID_ARGUMENT.0 as libc::c_int;
 pub const STATUS_UNKNOWN_ERROR: libc::c_int =
     raw::ubus_msg_status_UBUS_STATUS_UNKNOWN_ERROR.0 as libc::c_int;
+
+const BLOB_ATTR_HEADER_LEN: usize = std::mem::size_of::<raw::blob_attr>();
+const BLOB_ATTR_LEN_MASK: u32 = 0x00ff_ffff;
+const BLOB_ATTR_ID_MASK: u32 = 0x7f00_0000;
+const BLOB_ATTR_ID_SHIFT: u32 = 24;
+const BLOB_ATTR_EXTENDED: u32 = 0x8000_0000;
+const BLOB_ALIGNMENT: usize = 4;
+const BLOBMSG_HEADER_LEN: usize = std::mem::size_of::<u16>();
+const INVALID_BLOBMSG_FIELD: Error = Error::InvalidData("invalid blobmsg field");
+
+#[derive(Clone, Copy)]
+struct BlobMessagePayload {
+    data: *mut libc::c_void,
+    length: libc::c_uint,
+    start: usize,
+    end: usize,
+}
+
+fn blob_raw_length(encoded: u32) -> usize {
+    (encoded & BLOB_ATTR_LEN_MASK) as usize
+}
+
+fn blob_type(encoded: u32) -> u32 {
+    (encoded & BLOB_ATTR_ID_MASK) >> BLOB_ATTR_ID_SHIFT
+}
+
+fn blob_padded_length(raw_length: usize) -> Result<usize> {
+    raw_length
+        .checked_add(BLOB_ALIGNMENT - 1)
+        .map(|length| length & !(BLOB_ALIGNMENT - 1))
+        .ok_or(INVALID_BLOBMSG_FIELD)
+}
+
+unsafe fn read_be_u16(pointer: *const u8) -> u16 {
+    u16::from_be(unsafe { ptr::read_unaligned(pointer.cast::<u16>()) })
+}
+
+unsafe fn read_be_u32(pointer: *const u8) -> u32 {
+    u32::from_be(unsafe { ptr::read_unaligned(pointer.cast::<u32>()) })
+}
+
+fn blobmsg_extended_header_length(attribute: *const u8, payload_length: usize) -> Result<usize> {
+    if payload_length < BLOBMSG_HEADER_LEN {
+        return Err(INVALID_BLOBMSG_FIELD);
+    }
+    let header = unsafe { attribute.add(BLOB_ATTR_HEADER_LEN) };
+    // The caller has already proved that the complete attribute payload is
+    // readable, including the two-byte packed blobmsg header.
+    let name_length = usize::from(unsafe { read_be_u16(header) });
+    let unpadded_length = BLOBMSG_HEADER_LEN
+        .checked_add(name_length)
+        .and_then(|length| length.checked_add(1))
+        .ok_or(INVALID_BLOBMSG_FIELD)?;
+    let header_length = blob_padded_length(unpadded_length)?;
+    if header_length > payload_length {
+        return Err(INVALID_BLOBMSG_FIELD);
+    }
+    // `unpadded_length <= header_length <= payload_length`, so the name's
+    // terminating byte is within the already validated attribute.
+    let terminator = unsafe { header.add(BLOBMSG_HEADER_LEN + name_length) };
+    if unsafe { terminator.read() } != 0 {
+        return Err(INVALID_BLOBMSG_FIELD);
+    }
+    Ok(header_length)
+}
+
+fn validate_blobmsg_attributes(data: *mut u8, length: usize) -> Result<()> {
+    let mut offset = 0usize;
+    while offset < length {
+        let remaining = length - offset;
+        if remaining < BLOB_ATTR_HEADER_LEN {
+            return Err(INVALID_BLOBMSG_FIELD);
+        }
+        let attribute = unsafe { data.add(offset) };
+        // The remaining message contains a complete blob header at this
+        // offset, so an unaligned four-byte read is valid.
+        let encoded = unsafe { read_be_u32(attribute) };
+        let raw_length = blob_raw_length(encoded);
+        if raw_length < BLOB_ATTR_HEADER_LEN || raw_length > remaining {
+            return Err(INVALID_BLOBMSG_FIELD);
+        }
+        let padded_length = blob_padded_length(raw_length)?;
+        if padded_length > remaining {
+            return Err(INVALID_BLOBMSG_FIELD);
+        }
+        if blob_type(encoded) > raw::blobmsg_type_BLOBMSG_TYPE_LAST.0 {
+            return Err(INVALID_BLOBMSG_FIELD);
+        }
+        if encoded & BLOB_ATTR_EXTENDED != 0 {
+            blobmsg_extended_header_length(attribute, raw_length - BLOB_ATTR_HEADER_LEN)?;
+        }
+        offset += padded_length;
+    }
+    Ok(())
+}
+
+fn blobmsg_payload(message: *mut raw::blob_attr) -> Result<BlobMessagePayload> {
+    if message.is_null() {
+        return Err(INVALID_BLOBMSG_FIELD);
+    }
+    // libubus guarantees that a callback message points to a readable blob
+    // header and to the complete span encoded by that header. All subsequent
+    // reads are bounded against that encoded outer span before they occur.
+    let encoded = unsafe { read_be_u32(message.cast::<u8>()) };
+    let raw_length = blob_raw_length(encoded);
+    if raw_length < BLOB_ATTR_HEADER_LEN || encoded & BLOB_ATTR_EXTENDED != 0 {
+        return Err(INVALID_BLOBMSG_FIELD);
+    }
+    let length = raw_length - BLOB_ATTR_HEADER_LEN;
+    let data = unsafe { message.cast::<u8>().add(BLOB_ATTR_HEADER_LEN) };
+    let start = data as usize;
+    let end = start.checked_add(length).ok_or(INVALID_BLOBMSG_FIELD)?;
+    validate_blobmsg_attributes(data, length)?;
+    Ok(BlobMessagePayload {
+        data: data.cast(),
+        length: libc::c_uint::try_from(length).map_err(|_| INVALID_BLOBMSG_FIELD)?,
+        start,
+        end,
+    })
+}
+
+fn parse_blobmsg_field(
+    policy: &raw::blobmsg_policy,
+    payload: BlobMessagePayload,
+) -> Result<*mut raw::blob_attr> {
+    let mut field = ptr::null_mut();
+    let result = unsafe { raw::blobmsg_parse(policy, 1, &mut field, payload.data, payload.length) };
+    if result == 0 {
+        Ok(field)
+    } else {
+        Err(INVALID_BLOBMSG_FIELD)
+    }
+}
+
+fn read_blobmsg_string(field: *mut raw::blob_attr, payload: BlobMessagePayload) -> Result<String> {
+    let field_start = field as usize;
+    if field.is_null()
+        || field_start < payload.start
+        || field_start
+            .checked_add(BLOB_ATTR_HEADER_LEN)
+            .is_none_or(|end| end > payload.end)
+    {
+        return Err(INVALID_BLOBMSG_FIELD);
+    }
+    // The field header is entirely inside the validated outer payload.
+    let encoded = unsafe { read_be_u32(field.cast::<u8>()) };
+    let raw_length = blob_raw_length(encoded);
+    let field_end = field_start
+        .checked_add(raw_length)
+        .ok_or(INVALID_BLOBMSG_FIELD)?;
+    if raw_length < BLOB_ATTR_HEADER_LEN
+        || field_end > payload.end
+        || encoded & BLOB_ATTR_EXTENDED == 0
+        || blob_type(encoded) != raw::blobmsg_type_BLOBMSG_TYPE_STRING.0
+    {
+        return Err(INVALID_BLOBMSG_FIELD);
+    }
+    let payload_length = raw_length - BLOB_ATTR_HEADER_LEN;
+    let header_length = blobmsg_extended_header_length(field.cast::<u8>(), payload_length)?;
+    let data_length = payload_length
+        .checked_sub(header_length)
+        .filter(|length| *length > 0)
+        .ok_or(INVALID_BLOBMSG_FIELD)?;
+    let data = unsafe { field.cast::<u8>().add(BLOB_ATTR_HEADER_LEN + header_length) };
+    // Header and raw-length checks above prove this complete data range lies
+    // inside the outer message; only now is it exposed as a Rust slice.
+    let bytes = unsafe { std::slice::from_raw_parts(data, data_length) };
+    if bytes.last() != Some(&0) {
+        return Err(INVALID_BLOBMSG_FIELD);
+    }
+    let terminator = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .ok_or(INVALID_BLOBMSG_FIELD)?;
+    let value = std::str::from_utf8(&bytes[..terminator]).map_err(|_| INVALID_BLOBMSG_FIELD)?;
+    Ok(value.to_owned())
+}
 
 type Handler = dyn for<'request> FnMut(UbusRequest<'request>) -> libc::c_int;
 
@@ -66,6 +245,7 @@ const REAL_OPS: UbusOps = UbusOps {
 
 pub struct UbusMethod {
     name: CString,
+    policies: Vec<(CString, raw::blobmsg_type)>,
     handler: Box<Handler>,
 }
 
@@ -76,14 +256,31 @@ impl UbusMethod {
     ) -> Result<Self> {
         Ok(Self {
             name: CString::new(name)?,
+            policies: Vec::new(),
             handler: Box::new(handler),
         })
+    }
+
+    pub fn with_string_policy(mut self, name: &str) -> Result<Self> {
+        let policy_count = self
+            .policies
+            .len()
+            .checked_add(1)
+            .ok_or(Error::InvalidData("too many ubus policies"))?;
+        libc::c_int::try_from(policy_count)
+            .map_err(|_| Error::InvalidData("too many ubus policies"))?;
+        self.policies
+            .push((CString::new(name)?, raw::blobmsg_type_BLOBMSG_TYPE_STRING));
+        Ok(self)
     }
 }
 
 pub struct UbusRequest<'request> {
     connection: Rc<ConnectionInner>,
     request: *mut raw::ubus_request_data,
+    message: *mut raw::blob_attr,
+    policy_names: &'request [CString],
+    policies: &'request [raw::blobmsg_policy],
     _lifetime: PhantomData<&'request mut raw::ubus_request_data>,
 }
 
@@ -101,6 +298,41 @@ impl UbusRequest<'_> {
                 code: result,
             })
         }
+    }
+
+    pub fn string(&self, name: &str) -> Result<Option<String>> {
+        let Some(index) = self
+            .policy_names
+            .iter()
+            .position(|policy_name| policy_name.as_bytes() == name.as_bytes())
+        else {
+            return Err(INVALID_BLOBMSG_FIELD);
+        };
+        let policy = self.policies.get(index).ok_or(INVALID_BLOBMSG_FIELD)?;
+        if policy.type_ != raw::blobmsg_type_BLOBMSG_TYPE_STRING {
+            return Err(INVALID_BLOBMSG_FIELD);
+        }
+        let payload = blobmsg_payload(self.message)?;
+        if payload.length == 0 {
+            return Ok(None);
+        }
+        let typed_field = parse_blobmsg_field(policy, payload)?;
+        let untyped_policy = raw::blobmsg_policy {
+            name: policy.name,
+            type_: raw::blobmsg_type_BLOBMSG_TYPE_UNSPEC,
+        };
+        let named_field = parse_blobmsg_field(&untyped_policy, payload)?;
+        if named_field.is_null() {
+            return if typed_field.is_null() {
+                Ok(None)
+            } else {
+                Err(INVALID_BLOBMSG_FIELD)
+            };
+        }
+        if typed_field != named_field {
+            return Err(INVALID_BLOBMSG_FIELD);
+        }
+        read_blobmsg_string(typed_field, payload).map(Some)
     }
 }
 
@@ -124,6 +356,8 @@ impl UbusObject {
 
 struct MethodCell {
     name: CString,
+    policy_names: Vec<CString>,
+    policies: Box<[raw::blobmsg_policy]>,
     handler: RefCell<Option<Box<Handler>>>,
 }
 
@@ -145,9 +379,24 @@ impl ObjectInner {
         let methods = object
             .methods
             .into_iter()
-            .map(|method| MethodCell {
-                name: method.name,
-                handler: RefCell::new(Some(method.handler)),
+            .map(|method| {
+                let (policy_names, policy_types): (Vec<_>, Vec<_>) =
+                    method.policies.into_iter().unzip();
+                let policies = policy_names
+                    .iter()
+                    .zip(policy_types)
+                    .map(|(name, type_)| raw::blobmsg_policy {
+                        name: name.as_ptr(),
+                        type_,
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice();
+                MethodCell {
+                    name: method.name,
+                    policy_names,
+                    policies,
+                    handler: RefCell::new(Some(method.handler)),
+                }
             })
             .collect::<Vec<_>>();
         let raw_methods = methods
@@ -157,8 +406,12 @@ impl ObjectInner {
                 handler: Some(method_trampoline),
                 mask: 0,
                 tags: 0,
-                policy: ptr::null(),
-                n_policy: 0,
+                policy: if method.policies.is_empty() {
+                    ptr::null()
+                } else {
+                    method.policies.as_ptr()
+                },
+                n_policy: method.policies.len() as libc::c_int,
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
@@ -196,7 +449,7 @@ unsafe extern "C" fn method_trampoline(
     object: *mut raw::ubus_object,
     request: *mut raw::ubus_request_data,
     method: *const libc::c_char,
-    _message: *mut raw::blob_attr,
+    message: *mut raw::blob_attr,
 ) -> libc::c_int {
     if object.is_null() || request.is_null() || method.is_null() {
         return STATUS_UNKNOWN_ERROR;
@@ -236,6 +489,9 @@ unsafe extern "C" fn method_trampoline(
     let ubus_request = UbusRequest {
         connection: Rc::clone(&connection),
         request,
+        message,
+        policy_names: &method.policy_names,
+        policies: &method.policies,
         _lifetime: PhantomData,
     };
     let status =
@@ -419,8 +675,9 @@ impl UbusConnection {
         object: *mut raw::ubus_object,
         method: *const libc::c_char,
         request: *mut raw::ubus_request_data,
+        message: *mut raw::blob_attr,
     ) -> libc::c_int {
-        unsafe { method_trampoline(ptr::null_mut(), object, request, method, ptr::null_mut()) }
+        unsafe { method_trampoline(ptr::null_mut(), object, request, method, message) }
     }
 
     #[cfg(test)]
@@ -617,6 +874,253 @@ mod tests {
         }
     }
 
+    unsafe fn first_blobmsg_field_for_test(message: *mut raw::blob_attr) -> *mut u8 {
+        unsafe {
+            message
+                .cast::<u8>()
+                .add(std::mem::size_of::<raw::blob_attr>())
+        }
+    }
+
+    unsafe fn blobmsg_field_data_for_test(field: *mut u8) -> *mut u8 {
+        let header = unsafe { field.add(std::mem::size_of::<raw::blob_attr>()) };
+        let name_length = u16::from_be(unsafe { ptr::read_unaligned(header.cast::<u16>()) });
+        let header_length = (std::mem::size_of::<u16>() + usize::from(name_length) + 1 + 3) & !3;
+        unsafe { header.add(header_length) }
+    }
+
+    #[test]
+    fn string_policy_reads_identity_key() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        let seen = Rc::new(RefCell::new(None));
+        let callback_seen = Rc::clone(&seen);
+        let method = UbusMethod::new("client_connections", move |request| {
+            *callback_seen.borrow_mut() = request.string("identity_key").unwrap();
+            STATUS_OK
+        })
+        .unwrap()
+        .with_string_policy("identity_key")
+        .unwrap();
+        let object = UbusObject::new("lanspeed", vec![method]).unwrap();
+        let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
+        connection.register_object(object).unwrap();
+        let message = BlobBuf::from_json(r#"{"identity_key":"30:c5:99:a7:bb:2d@eth1"}"#).unwrap();
+        let mut request = crate::raw::ubus_request_data::default();
+        let method_name = CString::new("client_connections").unwrap();
+
+        assert_eq!(
+            unsafe {
+                UbusConnection::invoke_raw_for_test(
+                    connection.object_ptr_for_test(0),
+                    method_name.as_ptr(),
+                    &mut request,
+                    message.head(),
+                )
+            },
+            STATUS_OK
+        );
+        assert_eq!(seen.borrow().as_deref(), Some("30:c5:99:a7:bb:2d@eth1"));
+    }
+
+    #[test]
+    fn missing_string_policy_value_returns_none() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        let seen = Rc::new(RefCell::new(None));
+        let callback_seen = Rc::clone(&seen);
+        let method = UbusMethod::new("client_connections", move |request| {
+            *callback_seen.borrow_mut() = Some(request.string("identity_key"));
+            STATUS_OK
+        })
+        .unwrap()
+        .with_string_policy("identity_key")
+        .unwrap();
+        let object = UbusObject::new("lanspeed", vec![method]).unwrap();
+        let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
+        connection.register_object(object).unwrap();
+        let message = BlobBuf::from_json("{}").unwrap();
+        let mut request = crate::raw::ubus_request_data::default();
+        let method_name = CString::new("client_connections").unwrap();
+
+        assert_eq!(
+            unsafe {
+                UbusConnection::invoke_raw_for_test(
+                    connection.object_ptr_for_test(0),
+                    method_name.as_ptr(),
+                    &mut request,
+                    message.head(),
+                )
+            },
+            STATUS_OK
+        );
+        assert_eq!(*seen.borrow(), Some(Ok(None)));
+    }
+
+    #[test]
+    fn wrong_string_policy_type_returns_invalid_data() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        let saw_invalid_data = Rc::new(Cell::new(false));
+        let callback_saw_invalid_data = Rc::clone(&saw_invalid_data);
+        let method = UbusMethod::new("client_connections", move |request| {
+            callback_saw_invalid_data.set(matches!(
+                request.string("identity_key"),
+                Err(Error::InvalidData("invalid blobmsg field"))
+            ));
+            STATUS_OK
+        })
+        .unwrap()
+        .with_string_policy("identity_key")
+        .unwrap();
+        let object = UbusObject::new("lanspeed", vec![method]).unwrap();
+        let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
+        connection.register_object(object).unwrap();
+        let message = BlobBuf::from_json(r#"{"identity_key":7}"#).unwrap();
+        let mut request = crate::raw::ubus_request_data::default();
+        let method_name = CString::new("client_connections").unwrap();
+
+        assert_eq!(
+            unsafe {
+                UbusConnection::invoke_raw_for_test(
+                    connection.object_ptr_for_test(0),
+                    method_name.as_ptr(),
+                    &mut request,
+                    message.head(),
+                )
+            },
+            STATUS_OK
+        );
+        assert!(saw_invalid_data.get());
+    }
+
+    #[test]
+    fn undeclared_string_policy_returns_invalid_data() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        let saw_invalid_data = Rc::new(Cell::new(false));
+        let callback_saw_invalid_data = Rc::clone(&saw_invalid_data);
+        let method = UbusMethod::new("client_connections", move |request| {
+            callback_saw_invalid_data.set(matches!(
+                request.string("other_key"),
+                Err(Error::InvalidData("invalid blobmsg field"))
+            ));
+            STATUS_OK
+        })
+        .unwrap()
+        .with_string_policy("identity_key")
+        .unwrap();
+        let object = UbusObject::new("lanspeed", vec![method]).unwrap();
+        let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
+        connection.register_object(object).unwrap();
+        let message = BlobBuf::from_json("{}").unwrap();
+        let mut request = crate::raw::ubus_request_data::default();
+        let method_name = CString::new("client_connections").unwrap();
+
+        assert_eq!(
+            unsafe {
+                UbusConnection::invoke_raw_for_test(
+                    connection.object_ptr_for_test(0),
+                    method_name.as_ptr(),
+                    &mut request,
+                    message.head(),
+                )
+            },
+            STATUS_OK
+        );
+        assert!(saw_invalid_data.get());
+    }
+
+    #[test]
+    fn interior_nul_string_policy_name_is_rejected() {
+        let method = UbusMethod::new("client_connections", |_request| STATUS_OK).unwrap();
+
+        let result = method.with_string_policy("identity\0key");
+
+        assert!(matches!(result, Err(Error::InteriorNul)));
+    }
+
+    #[test]
+    fn malformed_blobmsg_extension_header_returns_invalid_data() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        let saw_invalid_data = Rc::new(Cell::new(false));
+        let callback_saw_invalid_data = Rc::clone(&saw_invalid_data);
+        let method = UbusMethod::new("client_connections", move |request| {
+            callback_saw_invalid_data.set(matches!(
+                request.string("identity_key"),
+                Err(Error::InvalidData("invalid blobmsg field"))
+            ));
+            STATUS_OK
+        })
+        .unwrap()
+        .with_string_policy("identity_key")
+        .unwrap();
+        let object = UbusObject::new("lanspeed", vec![method]).unwrap();
+        let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
+        connection.register_object(object).unwrap();
+        let message = BlobBuf::from_json(r#"{"identity_key":"client"}"#).unwrap();
+        let field = unsafe { first_blobmsg_field_for_test(message.head()) };
+        let extension_header = unsafe { field.add(std::mem::size_of::<raw::blob_attr>()) };
+        let name_length =
+            u16::from_be(unsafe { ptr::read_unaligned(extension_header.cast::<u16>()) });
+        let terminator = unsafe {
+            extension_header
+                .add(std::mem::size_of::<u16>())
+                .add(usize::from(name_length))
+        };
+        unsafe { terminator.write(b'x') };
+        let mut request = crate::raw::ubus_request_data::default();
+        let method_name = CString::new("client_connections").unwrap();
+
+        assert_eq!(
+            unsafe {
+                UbusConnection::invoke_raw_for_test(
+                    connection.object_ptr_for_test(0),
+                    method_name.as_ptr(),
+                    &mut request,
+                    message.head(),
+                )
+            },
+            STATUS_OK
+        );
+        assert!(saw_invalid_data.get());
+    }
+
+    #[test]
+    fn invalid_utf8_string_policy_value_returns_invalid_data() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        let saw_invalid_data = Rc::new(Cell::new(false));
+        let callback_saw_invalid_data = Rc::clone(&saw_invalid_data);
+        let method = UbusMethod::new("client_connections", move |request| {
+            callback_saw_invalid_data.set(matches!(
+                request.string("identity_key"),
+                Err(Error::InvalidData("invalid blobmsg field"))
+            ));
+            STATUS_OK
+        })
+        .unwrap()
+        .with_string_policy("identity_key")
+        .unwrap();
+        let object = UbusObject::new("lanspeed", vec![method]).unwrap();
+        let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
+        connection.register_object(object).unwrap();
+        let message = BlobBuf::from_json(r#"{"identity_key":"client"}"#).unwrap();
+        let field = unsafe { first_blobmsg_field_for_test(message.head()) };
+        let value = unsafe { blobmsg_field_data_for_test(field) };
+        unsafe { value.write(0xff) };
+        let mut request = crate::raw::ubus_request_data::default();
+        let method_name = CString::new("client_connections").unwrap();
+
+        assert_eq!(
+            unsafe {
+                UbusConnection::invoke_raw_for_test(
+                    connection.object_ptr_for_test(0),
+                    method_name.as_ptr(),
+                    &mut request,
+                    message.head(),
+                )
+            },
+            STATUS_OK
+        );
+        assert!(saw_invalid_data.get());
+    }
+
     #[test]
     fn handler_drop_keeps_context_alive_until_the_next_event_loop_tick() {
         let _lock = TEST_LOCK.lock().unwrap();
@@ -649,6 +1153,7 @@ mod tests {
                     object_pointer,
                     method_name.as_ptr(),
                     &mut request,
+                    ptr::null_mut(),
                 )
             },
             STATUS_OK
@@ -705,6 +1210,7 @@ mod tests {
                         callback_object.get(),
                         callback_name.as_ptr(),
                         &mut nested_request,
+                        ptr::null_mut(),
                     )
                 },
                 STATUS_UNKNOWN_ERROR
@@ -723,6 +1229,7 @@ mod tests {
                 raw_object.get(),
                 method_name.as_ptr(),
                 &mut request,
+                ptr::null_mut(),
             )
         };
 
@@ -741,7 +1248,12 @@ mod tests {
         let mut request = crate::raw::ubus_request_data::default();
 
         let status = unsafe {
-            UbusConnection::invoke_raw_for_test(object, method_name.as_ptr(), &mut request)
+            UbusConnection::invoke_raw_for_test(
+                object,
+                method_name.as_ptr(),
+                &mut request,
+                ptr::null_mut(),
+            )
         };
 
         assert_eq!(status, STATUS_UNKNOWN_ERROR);

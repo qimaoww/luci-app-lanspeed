@@ -17,7 +17,8 @@ mod uloop;
 pub use blob::BlobBuf;
 pub use error::{Error, Result};
 pub use ubus::{
-    UbusConnection, UbusMethod, UbusObject, UbusRequest, STATUS_OK, STATUS_UNKNOWN_ERROR,
+    UbusConnection, UbusMethod, UbusObject, UbusRequest, STATUS_INVALID_ARGUMENT, STATUS_OK,
+    STATUS_UNKNOWN_ERROR,
 };
 pub use uci::{UciContext, UciOption, UciPackage, UciSection, UciValue};
 pub use uloop::{Signal, Timer, UloopGuard};

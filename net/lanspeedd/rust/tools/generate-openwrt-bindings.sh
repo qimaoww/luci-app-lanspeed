@@ -58,8 +58,8 @@ mkdir -p "$(dirname "$output")"
 	--default-enum-style newtype_global \
 	--with-derive-default \
 	--allowlist-type '^(blob_attr|blob_buf|blobmsg_policy|uloop_fd|uloop_timeout|uloop_signal|ubus_context|ubus_method|ubus_msg_status|ubus_object|ubus_object_type|ubus_request_data|uci_context|uci_element|uci_list|uci_option|uci_option_type|uci_package|uci_section|uci_type)$' \
-	--allowlist-function '^(blob_buf_init|blob_buf_free|blobmsg_add_json_from_string|uloop_init|uloop_run_timeout|uloop_done|uloop_fd_add|uloop_fd_delete|uloop_timeout_set|uloop_timeout_cancel|uloop_signal_add|uloop_signal_delete|ubus_connect|ubus_reconnect|ubus_free|ubus_add_object|ubus_remove_object|ubus_lookup_id|ubus_send_reply|uci_alloc_context|uci_free_context|uci_set_confdir|uci_load|uci_unload|uci_lookup_ptr|uci_lookup_next)$' \
-	--allowlist-var '^(uloop_cancelled|ULOOP_READ|ULOOP_BLOCKING|UBUS_STATUS_OK|UBUS_STATUS_UNKNOWN_ERROR)$' \
+	--allowlist-function '^(blob_buf_init|blob_buf_free|blobmsg_add_json_from_string|blobmsg_parse|uloop_init|uloop_run_timeout|uloop_done|uloop_fd_add|uloop_fd_delete|uloop_timeout_set|uloop_timeout_cancel|uloop_signal_add|uloop_signal_delete|ubus_connect|ubus_reconnect|ubus_free|ubus_add_object|ubus_remove_object|ubus_lookup_id|ubus_send_reply|uci_alloc_context|uci_free_context|uci_set_confdir|uci_load|uci_unload|uci_lookup_ptr|uci_lookup_next)$' \
+	--allowlist-var '^(uloop_cancelled|ULOOP_READ|ULOOP_BLOCKING|UBUS_STATUS_OK|UBUS_STATUS_INVALID_ARGUMENT|UBUS_STATUS_UNKNOWN_ERROR)$' \
 	--opaque-type '^uci_context$' \
 	-- \
 	--target=x86_64-openwrt-linux-musl \

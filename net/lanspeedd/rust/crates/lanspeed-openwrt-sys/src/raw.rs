@@ -158,6 +158,15 @@ impl Default for blobmsg_policy {
     }
 }
 unsafe extern "C" {
+    pub fn blobmsg_parse(
+        policy: *const blobmsg_policy,
+        policy_len: libc::c_int,
+        tb: *mut *mut blob_attr,
+        data: *mut libc::c_void,
+        len: libc::c_uint,
+    ) -> libc::c_int;
+}
+unsafe extern "C" {
     pub fn blobmsg_add_json_from_string(b: *mut blob_buf, str_: *const libc::c_char) -> bool;
 }
 #[repr(C)]
