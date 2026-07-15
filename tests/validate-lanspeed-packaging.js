@@ -29,6 +29,8 @@ const clientDetailResources = [
   'clientDetailRefresh.js',
   'clientDetailView.js'
 ];
+const clientConnectionsConntrackSemantics =
+  'TCP 仅统计 ESTABLISHED + ASSURED，UDP 仅统计 ASSURED';
 
 function assert(condition, message) {
   if (!condition) {
@@ -46,6 +48,22 @@ function assertNoMatch(source, pattern, message) {
 
 function countLiteral(source, value) {
   return source.split(value).length - 1;
+}
+
+function hasExactClientConnectionsSemantics(source) {
+  const paragraph = /^`client_connections`[^\n]*$/m.exec(source);
+  return Boolean(paragraph && paragraph[0].includes(clientConnectionsConntrackSemantics));
+}
+
+function validateReadmeSemanticsSelfTest() {
+  const valid = `\`client_connections\` 返回当前连接；${clientConnectionsConntrackSemantics}。`;
+  assert(hasExactClientConnectionsSemantics(valid),
+    'README semantics validator self-test must accept the complete conntrack contract');
+  const missingTcpAssured = valid.replace('ESTABLISHED + ASSURED', 'ESTABLISHED');
+  assert(missingTcpAssured !== valid,
+    'README semantics validator mutation must remove TCP ASSURED');
+  assert(!hasExactClientConnectionsSemantics(missingTcpAssured),
+    'README semantics validator must reject a mutation that removes TCP ASSURED');
 }
 
 function writeExecutable(file, source) {
@@ -208,6 +226,7 @@ exit 0
 }
 
 try {
+  validateReadmeSemanticsSelfTest();
   validateQaDeviceContract();
   const compileMatch = /^define Build\/Compile\n([\s\S]*?)^endef$/m.exec(pkgMakefile);
   assert(compileMatch, 'net/lanspeedd/Makefile must define Build/Compile');
@@ -417,9 +436,12 @@ try {
     'README must provide the copyable client_connections identity_key command'
   );
   assert(
-    /client_connections[\s\S]*(?:当前连接|当前 conntrack)/.test(readme) &&
-      /(?:详情页|连接详情)/.test(readme),
-    'README must explain current-connection semantics and the client detail page entry'
+    hasExactClientConnectionsSemantics(readme),
+    'README client_connections paragraph must state: TCP only ESTABLISHED + ASSURED, UDP only ASSURED'
+  );
+  assert(
+    /(?:详情页|连接详情)/.test(readme),
+    'README must explain the client detail page entry'
   );
 
   console.log('validate-lanspeed-packaging: PASS');

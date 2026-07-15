@@ -231,7 +231,7 @@ ubus call lanspeed client_connections \
   '{"identity_key":"30:c5:99:a7:bb:2d@eth1"}'
 ```
 
-`client_connections` 的 `identity_key` 来自 `clients` 响应。它返回该客户端当前 conntrack 快照中的 TCP 已建立连接和 UDP ASSURED 连接，不是历史连接记录；响应中的 `limit`、`returned_connections` 和 `truncated` 用于说明截断情况。LuCI 实时状态表中点击客户端名称即可进入连接详情页。
+`client_connections` 的 `identity_key` 来自 `clients` 响应。它返回该客户端当前 conntrack 快照：TCP 仅统计 ESTABLISHED + ASSURED，UDP 仅统计 ASSURED；这不是历史连接记录。响应中的 `limit`、`returned_connections` 和 `truncated` 用于说明截断情况。LuCI 实时状态表中点击客户端名称即可进入连接详情页。
 
 关键字段：
 
