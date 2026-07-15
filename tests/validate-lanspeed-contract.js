@@ -226,7 +226,16 @@ function validateValue(schema, definition, value, pathName) {
 
   if (definition.type === 'boolean') {
     assert(typeof value === 'boolean', `${pathName} must be a boolean`);
+    return;
   }
+
+  if (definition.type === 'null') {
+    assert(value === null, `${pathName} must be null`);
+    return;
+  }
+
+  const schemaType = definition.type === undefined ? 'missing' : definition.type;
+  throw new Error(`${pathName} uses unsupported schema type ${String(schemaType)}`);
 }
 
 function validateValidatorSelfTests() {
@@ -238,6 +247,43 @@ function validateValidatorSelfTests() {
   }
   assert(maximumError?.message === 'integer maximum self-test must be <= 100',
     'validator must reject integers above schema maximum');
+
+  const nullableObject = {
+    anyOf: [
+      { type: 'object', additionalProperties: false, properties: {}, required: [] },
+      { type: 'null' }
+    ]
+  };
+  validateValue({}, nullableObject, null, 'nullable object self-test');
+
+  const failures = [];
+  for (const [label, value] of [
+    ['number', 7],
+    ['string', 'wrong'],
+    ['array', []],
+    ['boolean', false]
+  ]) {
+    let error;
+    try {
+      validateValue({}, nullableObject, value, `nullable object ${label} self-test`);
+    } catch (caught) {
+      error = caught;
+    }
+    if (!error) {
+      failures.push(`nullable object schema accepted ${label}`);
+    }
+  }
+
+  let unsupportedTypeError;
+  try {
+    validateValue({}, { type: 'unsupported' }, 'value', 'unsupported type self-test');
+  } catch (error) {
+    unsupportedTypeError = error;
+  }
+  if (!unsupportedTypeError) {
+    failures.push('unknown schema type was accepted');
+  }
+  assert(failures.length === 0, `validator self-tests failed:\n- ${failures.join('\n- ')}`);
 }
 
 function validateRootSchema(schema) {
