@@ -10,59 +10,16 @@ LAN 侧按客户端实时吞吐监控 + TCP/UDP 连接数统计，当前面向 I
 
 ## 界面预览
 
-以下截图分别使用 **Aurora** 与 **Argon** 主题；客户端名称、MAC、IP 和连接数据均已替换为脱敏示例。
+以下截图分别使用 **Aurora** 与 **Argon** 主题；客户端名称、MAC、IP 和连接数据均已替换为脱敏示例。点击链接可查看完整原图。
 
-<details>
-<summary><strong>Aurora 主题（3 张）</strong></summary>
-
-<details>
-<summary>实时状态</summary>
-
-![LAN Speed 实时状态（Aurora）](docs/screenshots/lanspeed-overview-desktop.png)
-
-</details>
-
-<details>
-<summary>客户端连接详情（桌面端）</summary>
-
-![客户端连接详情桌面版（Aurora）](docs/screenshots/client-connections-desktop.png)
-
-</details>
-
-<details>
-<summary>客户端连接详情（移动端）</summary>
-
-![客户端连接详情移动版（Aurora）](docs/screenshots/client-connections-mobile.png)
-
-</details>
-
-</details>
-
-<details>
-<summary><strong>Argon 主题（3 张）</strong></summary>
-
-<details>
-<summary>实时状态</summary>
-
-![LAN Speed 实时状态（Argon）](docs/screenshots/lanspeed-overview-desktop-argon.png)
-
-</details>
-
-<details>
-<summary>客户端连接详情（桌面端）</summary>
-
-![客户端连接详情桌面版（Argon）](docs/screenshots/client-connections-desktop-argon.png)
-
-</details>
-
-<details>
-<summary>客户端连接详情（移动端）</summary>
-
-![客户端连接详情移动版（Argon）](docs/screenshots/client-connections-mobile-argon.png)
-
-</details>
-
-</details>
+- **Aurora**
+  - [实时状态](docs/screenshots/lanspeed-overview-desktop.png)
+  - [连接详情（桌面端）](docs/screenshots/client-connections-desktop.png)
+  - [连接详情（移动端）](docs/screenshots/client-connections-mobile.png)
+- **Argon**
+  - [实时状态](docs/screenshots/lanspeed-overview-desktop-argon.png)
+  - [连接详情（桌面端）](docs/screenshots/client-connections-desktop-argon.png)
+  - [连接详情（移动端）](docs/screenshots/client-connections-mobile-argon.png)
 
 ## 安装与编译
 
