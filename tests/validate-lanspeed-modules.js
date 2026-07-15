@@ -1774,6 +1774,24 @@ function assertClientDetailRefreshBehavior(src) {
 
 	state.error = null;
 	state.response = Object.assign({}, fixture, {
+		available: false,
+		total_connections: 0,
+		returned_connections: 0,
+		connections: [],
+		warnings: [ 'conntrack_snapshot_incomplete' ]
+	});
+	refresh.render(state);
+	const incompleteFooter = fakeElementText(refs.footer);
+	if (refs.summaryTargets.textContent !== '—' ||
+	    refs.summaryConnections.textContent !== '—' ||
+	    fakeElementText(refs.empty) !== '连接快照不完整，无法确认当前连接数量，请稍后重试。' ||
+	    !incompleteFooter.includes('告警：连接快照不完整') ||
+	    incompleteFooter.includes('返回 0') || incompleteFooter.includes('总计 0')) {
+		fail('clientDetailRefresh.js incomplete snapshots must render unknown counts, dedicated Chinese guidance, and no definitive zero-count footer');
+	}
+
+	state.error = null;
+	state.response = Object.assign({}, fixture, {
 		client: null, total_connections: 0, returned_connections: 0,
 		connections: [], warnings: [ 'client_not_found' ]
 	});

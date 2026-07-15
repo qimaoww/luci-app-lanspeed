@@ -81,7 +81,7 @@ fn collected() -> CollectedSnapshot {
     stats.netlink_read = true;
     stats.entries_seen = 7;
     stats.entries_matched = 3;
-    stats.malformed_lines = 1;
+    stats.malformed_lines = 0;
     CollectedSnapshot {
         clients: vec![ClientSample {
             mac: "aa:bb:cc:dd:ee:01".into(),
@@ -272,6 +272,62 @@ fn successful_overlay_publishes_known_client_details_and_final_client_metadata()
     assert_eq!(client.zone, "lan");
 }
 
+fn assert_incomplete_connection_details(collected: CollectedSnapshot) {
+    let key = "aa:bb:cc:dd:ee:01@lan";
+    let sample_ms = collected.sample_ms;
+    let after = apply_conntrack_success(&base_snapshot(), &collected, "auto");
+    let response = after.client_connections(key);
+
+    assert!(!response.available);
+    assert_eq!(response.sample_ms, Some(sample_ms));
+    assert_eq!(response.conn_source.as_deref(), Some("conntrack_netlink"));
+    assert!(response.client.is_some());
+    assert_eq!(response.total_connections, 0);
+    assert_eq!(response.returned_connections, 0);
+    assert!(!response.truncated);
+    assert_eq!(response.limit, MAX_CLIENT_CONNECTION_DETAILS);
+    assert!(response.connections.is_empty());
+    assert_eq!(response.warnings, ["conntrack_snapshot_incomplete"]);
+    assert_eq!(after.clients.tcp_conns_total, Some(2));
+    assert_eq!(after.clients.udp_conns_total, Some(3));
+}
+
+#[test]
+fn malformed_conntrack_snapshot_does_not_publish_definitive_connection_details() {
+    let key = "aa:bb:cc:dd:ee:01@lan";
+    let mut collected = collected_with_details(
+        7_778,
+        true,
+        key,
+        ClientConnectionSet {
+            total_connections: 1,
+            connections: vec![connection_detail("198.51.100.8", 443)],
+            truncated: false,
+        },
+    );
+    collected.stats.malformed_lines = 1;
+
+    assert_incomplete_connection_details(collected);
+}
+
+#[test]
+fn conntrack_snapshot_with_dropped_clients_does_not_publish_definitive_details() {
+    let key = "aa:bb:cc:dd:ee:01@lan";
+    let mut collected = collected_with_details(
+        7_779,
+        true,
+        key,
+        ClientConnectionSet {
+            total_connections: 1,
+            connections: vec![connection_detail("198.51.100.9", 443)],
+            truncated: false,
+        },
+    );
+    collected.stats.clients_dropped = 1;
+
+    assert_incomplete_connection_details(collected);
+}
+
 #[test]
 fn successful_empty_overlay_replaces_the_entire_previous_detail_generation() {
     let key = "aa:bb:cc:dd:ee:01@lan";
@@ -428,7 +484,9 @@ fn response_snapshot_clones_share_the_published_arc_map() {
 #[test]
 fn successful_overlay_matches_identity_and_clears_unmatched_stale_counts() {
     let before = base_snapshot();
-    let after = apply_conntrack_success(&before, &collected(), "auto");
+    let mut collected = collected();
+    collected.stats.malformed_lines = 1;
+    let after = apply_conntrack_success(&before, &collected, "auto");
 
     assert_eq!(after.clients.clients[0].tcp_conns, Some(2));
     assert_eq!(after.clients.clients[0].udp_conns, Some(3));

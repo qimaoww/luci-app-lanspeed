@@ -77,6 +77,10 @@ pub type ConnectionDetailsSnapshot = Arc<BTreeMap<String, ClientConnectionSet>>;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PublishedConnectionDetails {
     Unavailable,
+    Incomplete {
+        sample_ms: u64,
+        conn_source: String,
+    },
     Available {
         sample_ms: u64,
         conn_source: String,

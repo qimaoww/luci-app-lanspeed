@@ -147,11 +147,21 @@ pub(crate) fn publish_connection_details(
     collected: Option<&CollectedSnapshot>,
 ) {
     match collected {
-        Some(collected) => snapshot.replace_connection_details(
-            collected.sample_ms,
-            conntrack_source(collected).to_owned(),
-            Arc::clone(&collected.connection_details),
-        ),
+        Some(collected)
+            if collected.stats.malformed_lines != 0 || collected.stats.clients_dropped != 0 =>
+        {
+            snapshot.replace_incomplete_connection_details(
+                collected.sample_ms,
+                conntrack_source(collected).to_owned(),
+            );
+        }
+        Some(collected) => {
+            snapshot.replace_connection_details(
+                collected.sample_ms,
+                conntrack_source(collected).to_owned(),
+                Arc::clone(&collected.connection_details),
+            );
+        }
         None => snapshot.clear_connection_details(),
     }
 }

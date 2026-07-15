@@ -26,6 +26,7 @@ function replaceRows(tbody, rows) {
 function warningLabel(warning) {
 	if (warning === 'client_not_found') return _('客户端不存在');
 	if (warning === 'conntrack_unavailable') return _('连接跟踪不可用');
+	if (warning === 'conntrack_snapshot_incomplete') return _('连接快照不完整');
 	return String(warning || '');
 }
 
@@ -162,6 +163,8 @@ function render(viewState) {
 	var notFound = Boolean(response) &&
 		(!response.client || warnings.indexOf('client_not_found') !== -1);
 	var usable = Boolean(response && response.available === true && !notFound);
+	var incomplete = Boolean(response && response.available === false &&
+		warnings.indexOf('conntrack_snapshot_incomplete') !== -1);
 	var client = response && response.client;
 	var ips = fmt.asArray(client && client.ips);
 	var displayName = client && client.hostname || ips[0] ||
@@ -199,8 +202,8 @@ function render(viewState) {
 
 	refs.summaryTargets.textContent = usable
 		? (response.truncated ? _('至少 ') : '') + String(allGroups.length)
-		: '0';
-	refs.summaryConnections.textContent = response
+		: '—';
+	refs.summaryConnections.textContent = usable
 		? String(Number(response.total_connections) || 0) : '—';
 	refs.summaryUpdated.textContent = updatedAtLabel(viewState.updatedAt);
 
@@ -215,6 +218,8 @@ function render(viewState) {
 		emptyText = _('首次加载连接详情失败，请稍后重试。');
 	else if (notFound)
 		emptyText = _('未找到该客户端，可能已离开 LAN。');
+	else if (incomplete)
+		emptyText = _('连接快照不完整，无法确认当前连接数量，请稍后重试。');
 	else if (response && response.available === false)
 		emptyText = _('连接采集当前不可用，请稍后重试。');
 	else if (usable && Number(response.total_connections) === 0)
@@ -241,10 +246,12 @@ function render(viewState) {
 	var footer = [];
 	if (response) {
 		footer.push(_('数据源：') + sourceLabel(response.conn_source));
-		footer.push(_('返回 ') + (Number(response.returned_connections) || 0) +
-			_(' / 总计 ') + (Number(response.total_connections) || 0) +
-			_(' / 上限 ') + (Number(response.limit) || 0));
-		if (response.truncated) footer.push(_('结果已截断'));
+		if (usable) {
+			footer.push(_('返回 ') + (Number(response.returned_connections) || 0) +
+				_(' / 总计 ') + (Number(response.total_connections) || 0) +
+				_(' / 上限 ') + (Number(response.limit) || 0));
+			if (response.truncated) footer.push(_('结果已截断'));
+		}
 		if (warnings.length)
 			footer.push(_('告警：') + warnings.map(warningLabel).join('，'));
 	}

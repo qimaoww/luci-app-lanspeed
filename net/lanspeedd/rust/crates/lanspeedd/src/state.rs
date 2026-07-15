@@ -156,6 +156,25 @@ impl ResponseSnapshot {
                     warnings,
                 }
             }
+            PublishedConnectionDetails::Incomplete {
+                sample_ms,
+                conn_source,
+            } => {
+                warnings.push("conntrack_snapshot_incomplete".to_owned());
+                ClientConnectionsResponse {
+                    available: false,
+                    sample_ms: Some(*sample_ms),
+                    client,
+                    total_connections: 0,
+                    returned_connections: 0,
+                    truncated: false,
+                    limit: MAX_CLIENT_CONNECTION_DETAILS,
+                    conn_source: Some(conn_source.clone()),
+                    conn_semantics: CONNECTION_SEMANTICS.to_owned(),
+                    connections: Vec::new(),
+                    warnings,
+                }
+            }
             PublishedConnectionDetails::Available {
                 sample_ms,
                 conn_source,
@@ -192,6 +211,17 @@ impl ResponseSnapshot {
             sample_ms,
             conn_source,
             by_identity,
+        };
+    }
+
+    pub(crate) fn replace_incomplete_connection_details(
+        &mut self,
+        sample_ms: u64,
+        conn_source: String,
+    ) {
+        self.connection_details = PublishedConnectionDetails::Incomplete {
+            sample_ms,
+            conn_source,
         };
     }
 

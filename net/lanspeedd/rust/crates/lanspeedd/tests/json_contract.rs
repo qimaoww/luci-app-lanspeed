@@ -391,6 +391,71 @@ fn client_connections_keeps_exact_envelope_summary_and_detail_key_sets() {
 }
 
 #[test]
+fn incomplete_client_connections_keeps_the_existing_envelope_key_set() {
+    let key = "02:00:00:00:00:01@lan";
+    let snapshot = apply_conntrack_success(
+        &fixture_snapshot(),
+        &CollectedSnapshot {
+            clients: Vec::new(),
+            sample_ms: 12_346,
+            connection_details: Arc::new(BTreeMap::from([(
+                key.to_owned(),
+                ClientConnectionSet {
+                    total_connections: 1,
+                    connections: vec![detail()],
+                    truncated: false,
+                },
+            )])),
+            counter_source: "ctnetlink_conntrack_acct_orig_reply_bytes",
+            stats: CollectStats {
+                netlink_read: true,
+                malformed_lines: 1,
+                ..CollectStats::default()
+            },
+        },
+        "auto",
+    );
+    let value = serde_json::to_value(snapshot.client_connections(key)).unwrap();
+
+    assert_exact_keys(
+        &value,
+        &[
+            "available",
+            "sample_ms",
+            "client",
+            "total_connections",
+            "returned_connections",
+            "truncated",
+            "limit",
+            "conn_source",
+            "conn_semantics",
+            "connections",
+            "warnings",
+        ],
+        "incomplete client_connections",
+    );
+    assert_exact_keys(
+        &value["client"],
+        &[
+            "identity_key",
+            "hostname",
+            "mac",
+            "ips",
+            "interface",
+            "zone",
+        ],
+        "incomplete client_connections.client",
+    );
+    assert_eq!(value["available"], false);
+    assert_eq!(value["sample_ms"], 12_346);
+    assert_eq!(value["conn_source"], "conntrack_netlink");
+    assert_eq!(value["total_connections"], 0);
+    assert_eq!(value["returned_connections"], 0);
+    assert_eq!(value["connections"], json!([]));
+    assert_eq!(value["warnings"], json!(["conntrack_snapshot_incomplete"]));
+}
+
+#[test]
 fn client_connections_serializes_missing_options_as_null_without_skipping_keys() {
     let unavailable =
         serde_json::to_value(fixture_snapshot().client_connections("02:00:00:00:00:99@lan"))
