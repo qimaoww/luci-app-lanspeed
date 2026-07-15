@@ -305,6 +305,15 @@ fn conntrack_prefix_load_uses_the_guarded_nonzero_frame_length() {
 }
 
 #[test]
+fn conntrack_accounting_is_forced_into_the_classifier_stack_frame() {
+    let source = include_str!("../../lanspeed-ebpf/src/conntrack.rs");
+    assert!(
+        source.contains("#[inline(always)]\npub fn try_count_connection("),
+        "try_count_connection must be inlined so its verifier stack is not added to account_frame"
+    );
+}
+
+#[test]
 fn packet_prefix_covers_maximum_ipv4_and_tcp_headers() {
     let source = include_str!("../../lanspeed-ebpf/src/account.rs");
     assert!(
