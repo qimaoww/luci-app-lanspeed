@@ -40,6 +40,7 @@ unsafe extern "C" {
     fn bpf_ct_release(conn: *mut NfConn);
 }
 
+#[inline(always)]
 pub fn try_count_connection(
     ctx: &TcContext,
     counters: *mut LanspeedCounters,
