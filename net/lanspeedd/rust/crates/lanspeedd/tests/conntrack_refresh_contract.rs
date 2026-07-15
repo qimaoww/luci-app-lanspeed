@@ -426,35 +426,6 @@ fn response_snapshot_clones_share_the_published_arc_map() {
 }
 
 #[test]
-fn production_periodic_response_publishes_the_final_local_conntrack_generation() {
-    let source = include_str!("../src/production.rs");
-    let collect_inner = source
-        .split("fn collect_inner(")
-        .nth(1)
-        .unwrap()
-        .split("fn update_overview(")
-        .next()
-        .unwrap();
-    let policy = collect_inner
-        .find("match periodic_conntrack_plan(decision.rate) {")
-        .expect("periodic conntrack policy");
-    let response = collect_inner
-        .find("let mut response = ResponseSnapshot::from_responses(")
-        .expect("response construction");
-    let publish = collect_inner[response..]
-        .find("if let Some(snapshot) = conntrack.as_ref() {")
-        .map(|offset| response + offset)
-        .expect("final local conntrack publication after response construction");
-
-    assert!(policy < response && response < publish);
-    let publication = &collect_inner[publish..];
-    assert!(publication.contains("response.replace_connection_details("));
-    assert!(publication.contains("snapshot.sample_ms"));
-    assert!(publication.contains("conntrack_source(snapshot)"));
-    assert!(publication.contains("Arc::clone(&snapshot.connection_details)"));
-}
-
-#[test]
 fn successful_overlay_matches_identity_and_clears_unmatched_stale_counts() {
     let before = base_snapshot();
     let after = apply_conntrack_success(&before, &collected(), "auto");

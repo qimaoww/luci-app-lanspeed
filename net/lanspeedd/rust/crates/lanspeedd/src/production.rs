@@ -37,8 +37,8 @@ use crate::{
     connections::{
         apply_conntrack_failure, apply_conntrack_success, before_reply_action,
         client_conntrack_plan, conntrack_source, has_counted_connections, periodic_conntrack_plan,
-        BeforeReplyAction, ClientConntrackPlan, ConntrackObservation, PeriodicConntrackPlan,
-        CONNECTION_ONLY_WARNING,
+        publish_connection_details, BeforeReplyAction, ClientConntrackPlan, ConntrackObservation,
+        PeriodicConntrackPlan, CONNECTION_ONLY_WARNING,
     },
     daemon::{
         abort_reload_after_timer_failure, abort_reload_candidate, activate_runtime,
@@ -762,13 +762,7 @@ impl ProductionRuntime {
         let mut response = ResponseSnapshot::from_responses(
             status, clients, overview, health, reload, interfaces, sysdevices,
         );
-        if let Some(snapshot) = conntrack.as_ref() {
-            response.replace_connection_details(
-                snapshot.sample_ms,
-                conntrack_source(snapshot).to_owned(),
-                Arc::clone(&snapshot.connection_details),
-            );
-        }
+        publish_connection_details(&mut response, conntrack.as_ref());
         Ok(response)
     }
 

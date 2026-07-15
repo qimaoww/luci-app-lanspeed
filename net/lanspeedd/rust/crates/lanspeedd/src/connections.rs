@@ -142,17 +142,27 @@ pub const fn before_reply_action(method: Method) -> BeforeReplyAction {
     }
 }
 
+pub(crate) fn publish_connection_details(
+    snapshot: &mut ResponseSnapshot,
+    collected: Option<&CollectedSnapshot>,
+) {
+    match collected {
+        Some(collected) => snapshot.replace_connection_details(
+            collected.sample_ms,
+            conntrack_source(collected).to_owned(),
+            Arc::clone(&collected.connection_details),
+        ),
+        None => snapshot.clear_connection_details(),
+    }
+}
+
 pub fn apply_conntrack_success(
     snapshot: &ResponseSnapshot,
     collected: &CollectedSnapshot,
     collector_mode: &str,
 ) -> ResponseSnapshot {
     let mut overlaid = snapshot.clone();
-    overlaid.replace_connection_details(
-        collected.sample_ms,
-        conntrack_source(collected).to_owned(),
-        Arc::clone(&collected.connection_details),
-    );
+    publish_connection_details(&mut overlaid, Some(collected));
     let by_identity = collected
         .clients
         .iter()
@@ -239,7 +249,7 @@ pub fn apply_conntrack_success(
 
 pub fn apply_conntrack_failure(snapshot: &ResponseSnapshot, error: &str) -> ResponseSnapshot {
     let mut overlaid = snapshot.clone();
-    overlaid.clear_connection_details();
+    publish_connection_details(&mut overlaid, None);
     remove_connection_only_clients(&mut overlaid.clients);
     for client in &mut overlaid.clients.clients {
         client.tcp_conns = None;
@@ -343,7 +353,122 @@ fn saturating_u32(value: u64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collectors::conntrack::CollectStats;
+    use crate::{
+        collectors::conntrack::CollectStats,
+        connection_details::{
+            ClientConnectionDetail, ClientConnectionSet, ConnectionDirection, ConnectionProtocol,
+            ConnectionState,
+        },
+        model::Confidence,
+    };
+    use std::{collections::BTreeMap, net::IpAddr, sync::Arc};
+
+    const DETAIL_KEY: &str = "aa:bb:cc:dd:ee:01@lan";
+
+    fn snapshot_with_detail_client() -> ResponseSnapshot {
+        let mut snapshot = ResponseSnapshot::unsupported("test");
+        snapshot.clients.clients.push(Client {
+            mac: "aa:bb:cc:dd:ee:01".into(),
+            identity_key: DETAIL_KEY.into(),
+            zone: "lan".into(),
+            interface: "br-lan".into(),
+            ips: vec!["192.0.2.10".into()],
+            hostname: Some("alpha".into()),
+            rx_bps: 0,
+            tx_bps: 0,
+            last_seen: 0,
+            sample_ms: Some(0),
+            rx_bytes: None,
+            tx_bytes: None,
+            collector_mode: "bpf".into(),
+            confidence: Confidence::High,
+            warnings: Vec::new(),
+            tcp_conns: None,
+            udp_conns: None,
+            udp_dns_conns: None,
+            udp_other_conns: None,
+        });
+        snapshot
+    }
+
+    fn collected_with_detail() -> (
+        CollectedSnapshot,
+        Arc<BTreeMap<String, ClientConnectionSet>>,
+    ) {
+        let detail = ClientConnectionDetail {
+            client_ip: "192.0.2.10".parse::<IpAddr>().unwrap(),
+            client_port: 42_000,
+            remote_ip: "198.51.100.10".parse::<IpAddr>().unwrap(),
+            remote_port: 443,
+            protocol: ConnectionProtocol::Tcp,
+            state: ConnectionState::Established,
+            direction: ConnectionDirection::Outbound,
+        };
+        let details = Arc::new(BTreeMap::from([(
+            DETAIL_KEY.to_owned(),
+            ClientConnectionSet {
+                total_connections: 1,
+                connections: vec![detail],
+                truncated: false,
+            },
+        )]));
+        (
+            CollectedSnapshot {
+                clients: Vec::new(),
+                sample_ms: 4_321,
+                connection_details: Arc::clone(&details),
+                counter_source: "ctnetlink_conntrack_acct_orig_reply_bytes",
+                stats: CollectStats {
+                    netlink_read: true,
+                    ..CollectStats::default()
+                },
+            },
+            details,
+        )
+    }
+
+    #[test]
+    fn shared_detail_publisher_replaces_some_generation_and_clears_none() {
+        let mut snapshot = snapshot_with_detail_client();
+        let (collected, details) = collected_with_detail();
+        assert_eq!(Arc::strong_count(&details), 2);
+
+        publish_connection_details(&mut snapshot, Some(&collected));
+
+        assert_eq!(Arc::strong_count(&details), 3);
+        let published = snapshot.client_connections(DETAIL_KEY);
+        assert!(published.available);
+        assert_eq!(published.sample_ms, Some(4_321));
+        assert_eq!(published.conn_source.as_deref(), Some("conntrack_netlink"));
+        assert_eq!(published.total_connections, 1);
+        assert_eq!(published.connections.len(), 1);
+
+        publish_connection_details(&mut snapshot, None);
+
+        assert_eq!(Arc::strong_count(&details), 2);
+        let cleared = snapshot.client_connections(DETAIL_KEY);
+        assert!(!cleared.available);
+        assert_eq!(cleared.sample_ms, None);
+        assert_eq!(cleared.conn_source, None);
+        assert_eq!(cleared.total_connections, 0);
+        assert!(cleared.connections.is_empty());
+        assert_eq!(cleared.warnings, ["conntrack_unavailable"]);
+    }
+
+    #[test]
+    fn cached_and_fresh_callers_publish_the_same_collected_generation_identically() {
+        let (collected, _) = collected_with_detail();
+        let mut cached = snapshot_with_detail_client();
+        let mut fresh = snapshot_with_detail_client();
+
+        publish_connection_details(&mut cached, Some(&collected));
+        publish_connection_details(&mut fresh, Some(&collected));
+
+        assert_eq!(
+            cached.client_connections(DETAIL_KEY),
+            fresh.client_connections(DETAIL_KEY)
+        );
+    }
 
     #[test]
     fn successful_overlay_preserves_independent_nss_diagnostics() {
