@@ -208,7 +208,28 @@ impl ResponseSnapshot {
             Method::Reload => serde_json::to_value(&self.reload)?,
             Method::Interfaces => serde_json::to_value(&self.interfaces)?,
             Method::Sysdevices => serde_json::to_value(&self.sysdevices)?,
+            Method::ClientConnections => {
+                return Err(DaemonError::transport(
+                    "client_connections requires an identity_key request parameter",
+                ));
+            }
         })
+    }
+
+    pub fn response_for_request(
+        &self,
+        method: Method,
+        identity_key: &str,
+    ) -> Result<Value, DaemonError> {
+        match method {
+            Method::ClientConnections => {
+                Ok(serde_json::to_value(self.client_connections(identity_key))?)
+            }
+            _ => Err(DaemonError::transport(format!(
+                "{} does not accept request parameters",
+                method.name()
+            ))),
+        }
     }
 }
 

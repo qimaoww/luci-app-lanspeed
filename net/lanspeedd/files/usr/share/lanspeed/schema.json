@@ -25,6 +25,9 @@
     },
     {
       "$ref": "#/$defs/sysdevices"
+    },
+    {
+      "$ref": "#/$defs/client_connections"
     }
   ],
   "$defs": {
@@ -550,6 +553,186 @@
         "last_seen",
         "collector_mode",
         "confidence",
+        "warnings"
+      ]
+    },
+    "clientConnectionDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "client_ip": {
+          "type": "string",
+          "minLength": 1
+        },
+        "client_port": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "remote_ip": {
+          "type": "string",
+          "minLength": 1
+        },
+        "remote_port": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "tcp",
+            "udp"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "established",
+            "assured"
+          ]
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "outbound",
+            "inbound"
+          ]
+        }
+      },
+      "required": [
+        "client_ip",
+        "client_port",
+        "remote_ip",
+        "remote_port",
+        "protocol",
+        "state",
+        "direction"
+      ]
+    },
+    "clientConnectionSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "identity_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hostname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mac": {
+          "type": "string",
+          "pattern": "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"
+        },
+        "ips": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "interface": {
+          "type": "string",
+          "minLength": 1
+        },
+        "zone": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "identity_key",
+        "hostname",
+        "mac",
+        "ips",
+        "interface",
+        "zone"
+      ]
+    },
+    "client_connections": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "sample_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "client": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/clientConnectionSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "total_connections": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "returned_connections": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 512
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 512,
+          "maximum": 512
+        },
+        "conn_source": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "conntrack_netlink",
+            "conntrack_procfs",
+            null
+          ]
+        },
+        "conn_semantics": {
+          "type": "string",
+          "minLength": 1
+        },
+        "connections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/clientConnectionDetail"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/warning"
+          }
+        }
+      },
+      "required": [
+        "available",
+        "sample_ms",
+        "client",
+        "total_connections",
+        "returned_connections",
+        "truncated",
+        "limit",
+        "conn_source",
+        "conn_semantics",
+        "connections",
         "warnings"
       ]
     },

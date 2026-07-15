@@ -12,9 +12,9 @@ use lanspeedd::{
         ProductionCoordinator, Runtime, RuntimeFactory, SignalBridge, Transport,
     },
     error::DaemonError,
-    model::StatusResponse,
-    state::ResponseSnapshot,
-    ubus::Method,
+    model::{Client, Confidence, StatusResponse},
+    state::{ResponseSnapshot, SnapshotStore},
+    ubus::{client_connections_response, Method},
 };
 
 #[derive(Clone, Default)]
@@ -278,7 +278,7 @@ fn daemon(events: Events) -> ProductionCoordinator<FakeTransport, FakeFactory> {
 }
 
 fn snapshot_content(snapshot: &Arc<ResponseSnapshot>) -> Vec<serde_json::Value> {
-    Method::ALL
+    Method::FIXED
         .into_iter()
         .map(|method| snapshot.response(method).unwrap())
         .collect()
@@ -293,12 +293,56 @@ fn startup_connects_and_registers_before_stage_collect_publish_and_timer() {
         events.values(),
         [
             "connect",
-            "register:7",
+            "register:8",
             "stage:1",
             "collect:1",
             "collection_timer:1000"
         ]
     );
+}
+
+#[test]
+fn client_connections_refreshes_before_loading_the_latest_snapshot() {
+    const IDENTITY_KEY: &str = "02:00:00:00:00:01@lan";
+    let snapshots = SnapshotStore::new(Arc::new(ResponseSnapshot::unsupported("stale")));
+    let mut refreshed = ResponseSnapshot::unsupported("refreshed");
+    refreshed.clients.clients.push(Client {
+        mac: "02:00:00:00:00:01".into(),
+        identity_key: IDENTITY_KEY.into(),
+        zone: "lan".into(),
+        interface: "br-lan".into(),
+        ips: vec!["192.0.2.10".into()],
+        hostname: Some("refreshed-client".into()),
+        rx_bps: 0,
+        tx_bps: 0,
+        last_seen: 0,
+        sample_ms: None,
+        rx_bytes: None,
+        tx_bytes: None,
+        collector_mode: "stub".into(),
+        confidence: Confidence::Unsupported,
+        warnings: Vec::new(),
+        tcp_conns: None,
+        udp_conns: None,
+        udp_dns_conns: None,
+        udp_other_conns: None,
+    });
+    let refreshed = Arc::new(refreshed);
+    let callback_snapshots = snapshots.clone();
+    let events = Events::default();
+    let callback_events = events.clone();
+
+    let response = client_connections_response(&snapshots, IDENTITY_KEY, move |method| {
+        assert_eq!(method, Method::ClientConnections);
+        callback_events.push("before_reply:client_connections");
+        callback_snapshots.publish(Arc::clone(&refreshed));
+        Ok(())
+    })
+    .unwrap();
+
+    assert_eq!(events.values(), ["before_reply:client_connections"]);
+    assert_eq!(response["client"]["identity_key"], IDENTITY_KEY);
+    assert_eq!(response["client"]["hostname"], "refreshed-client");
 }
 
 #[test]
@@ -385,7 +429,7 @@ fn startup_register_or_stage_failure_cleans_transport_in_reverse_order() {
     assert!(coordinator.start().is_err());
     assert_eq!(
         events.values(),
-        ["connect", "register:7", "transport_shutdown"]
+        ["connect", "register:8", "transport_shutdown"]
     );
 
     let events = Events::default();
@@ -394,7 +438,7 @@ fn startup_register_or_stage_failure_cleans_transport_in_reverse_order() {
     assert!(daemon.start().is_err());
     assert_eq!(
         events.values(),
-        ["connect", "register:7", "stage:1", "transport_shutdown"]
+        ["connect", "register:8", "stage:1", "transport_shutdown"]
     );
 }
 
@@ -510,7 +554,7 @@ fn disconnect_reconnects_after_one_second_and_reregisters_all_methods() {
     daemon.on_reconnect_tick().unwrap();
     assert!(events
         .values()
-        .ends_with(&["reconnect".into(), "register:7".into()]));
+        .ends_with(&["reconnect".into(), "register:8".into()]));
 }
 
 #[test]

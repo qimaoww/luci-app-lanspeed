@@ -6,7 +6,7 @@ use lanspeedd::{
         ClientConnectionDetail, ClientConnectionSet, ConnectionDirection, ConnectionProtocol,
         ConnectionState,
     },
-    connections::apply_conntrack_success,
+    connections::{apply_conntrack_success, before_reply_action, BeforeReplyAction},
     model::{
         Capabilities, Client, ClientsResponse, Confidence, Conflict, Coverage, Evidence,
         HealthResponse, Interface, InterfaceRole, InterfaceStatus, InterfacesResponse, Mode,
@@ -14,7 +14,7 @@ use lanspeedd::{
         SysdevicesResponse,
     },
     state::ResponseSnapshot,
-    ubus::Method,
+    ubus::{validated_identity_key, Method},
 };
 use serde_json::{json, Value};
 
@@ -436,7 +436,7 @@ fn client_connections_serializes_missing_options_as_null_without_skipping_keys()
 }
 
 #[test]
-fn all_seven_methods_serialize_typed_complete_json() {
+fn fixed_snapshot_methods_and_all_registered_methods_stay_distinct() {
     let snapshot = fixture_snapshot();
     let expected = [
         (Method::Status, "mode"),
@@ -447,11 +447,58 @@ fn all_seven_methods_serialize_typed_complete_json() {
         (Method::Interfaces, "interfaces"),
         (Method::Sysdevices, "devices"),
     ];
-    assert_eq!(Method::ALL.len(), 7);
+    assert_eq!(Method::FIXED.len(), 7);
+    assert_eq!(Method::ALL.len(), 8);
+    assert_eq!(Method::ALL[..Method::FIXED.len()], Method::FIXED);
+    assert_eq!(Method::ALL[7], Method::ClientConnections);
+    assert_eq!(Method::ClientConnections.name(), "client_connections");
+    assert_eq!(
+        before_reply_action(Method::ClientConnections),
+        BeforeReplyAction::RefreshConnections
+    );
+    assert_eq!(Method::FIXED, expected.map(|(method, _required)| method));
     for (method, required) in expected {
         let value = snapshot.response(method).expect("typed response");
         assert!(value.get(required).is_some(), "{method:?}.{required}");
     }
+    assert!(snapshot.response(Method::ClientConnections).is_err());
+}
+
+#[test]
+fn client_connections_requires_bounded_identity_and_parameterized_dispatch() {
+    assert_eq!(validated_identity_key(None), None);
+    assert_eq!(validated_identity_key(Some(String::new())), None);
+    assert_eq!(
+        validated_identity_key(Some("a".repeat(255))),
+        Some("a".repeat(255))
+    );
+    assert_eq!(validated_identity_key(Some("a".repeat(256))), None);
+    assert_eq!(
+        validated_identity_key(Some("界".repeat(85))),
+        Some("界".repeat(85))
+    );
+    assert_eq!(
+        validated_identity_key(Some(format!("{}a", "界".repeat(85)))),
+        None
+    );
+
+    let key = "02:00:00:00:00:01@lan";
+    let snapshot = publish_details(
+        &fixture_snapshot(),
+        BTreeMap::from([(
+            key.to_owned(),
+            ClientConnectionSet {
+                total_connections: 1,
+                connections: vec![detail()],
+                truncated: false,
+            },
+        )]),
+    );
+    let value = snapshot
+        .response_for_request(Method::ClientConnections, key)
+        .expect("parameterized client connections response");
+    assert_eq!(value["client"]["identity_key"], key);
+    assert_eq!(value["connections"][0]["remote_ip"], "198.51.100.20");
 }
 
 #[test]

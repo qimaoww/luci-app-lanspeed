@@ -20,6 +20,12 @@ var callClients = rpc.declare({
 	method: 'clients',
 	expect: { '': {} }
 });
+var callClientConnections = rpc.declare({
+	object: 'lanspeed',
+	method: 'client_connections',
+	params: [ 'identity_key' ],
+	expect: { '': {} }
+});
 var callOverview = rpc.declare({
 	object: 'lanspeed',
 	method: 'overview',
@@ -70,6 +76,7 @@ var callUciRevert = rpc.declare({
 return baseclass.extend({
 	status:     callStatus,
 	clients:    callClients,
+	clientConnections: callClientConnections,
 	overview:   callOverview,
 	interfaces: callInterfaces,
 	sysdevices: callSysdevices,

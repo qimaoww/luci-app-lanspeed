@@ -9,7 +9,8 @@
           "overview",
           "health",
           "interfaces",
-          "sysdevices"
+          "sysdevices",
+          "client_connections"
         ],
         "uci": [
           "get"

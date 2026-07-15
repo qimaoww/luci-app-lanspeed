@@ -1,0 +1,42 @@
+{
+  "available": true,
+  "sample_ms": 12345,
+  "client": {
+    "identity_key": "02:00:00:00:00:01@lan",
+    "hostname": "fixture-client",
+    "mac": "02:00:00:00:00:01",
+    "ips": [
+      "192.0.2.10",
+      "2001:db8:1::10"
+    ],
+    "interface": "br-lan",
+    "zone": "lan"
+  },
+  "total_connections": 2,
+  "returned_connections": 2,
+  "truncated": false,
+  "limit": 512,
+  "conn_source": "conntrack_netlink",
+  "conn_semantics": "conntrack_current_tcp_established_assured_udp_assured_dns_split",
+  "connections": [
+    {
+      "client_ip": "192.0.2.10",
+      "client_port": 53000,
+      "remote_ip": "198.51.100.53",
+      "remote_port": 53,
+      "protocol": "udp",
+      "state": "assured",
+      "direction": "outbound"
+    },
+    {
+      "client_ip": "2001:db8:1::10",
+      "client_port": 443,
+      "remote_ip": "2001:db8:ffff::20",
+      "remote_port": 54001,
+      "protocol": "tcp",
+      "state": "established",
+      "direction": "inbound"
+    }
+  ],
+  "warnings": []
+}

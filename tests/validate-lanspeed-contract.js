@@ -11,7 +11,8 @@ const UBUS_METHODS = Object.freeze([
   'health',
   'reload',
   'interfaces',
-  'sysdevices'
+  'sysdevices',
+  'client_connections'
 ]);
 
 function readJson(relativePath) {
@@ -47,6 +48,19 @@ function assertSchemaRequired(schema, defName, fields) {
   for (const field of fields) {
     assert(definition.required.includes(field), `schema $defs.${defName} must require ${field}`);
   }
+}
+
+function assertSchemaExactObject(schema, defName, fields) {
+  const definition = schema.$defs && schema.$defs[defName];
+  assertObject(definition, `$defs.${defName}`);
+  assert(definition.type === 'object', `schema $defs.${defName} must be an object schema`);
+  assert(definition.additionalProperties === false,
+    `schema $defs.${defName} must reject additional properties`);
+  assert(sameStringSet(Object.keys(definition.properties || {}), fields),
+    `schema $defs.${defName} properties must be exactly ${fields.join(', ')}`);
+  assertArray(definition.required, `$defs.${defName}.required`);
+  assert(sameStringSet(definition.required, fields),
+    `schema $defs.${defName}.required must be exactly ${fields.join(', ')}`);
 }
 
 function sameStringSet(actual, expected) {
@@ -124,6 +138,18 @@ function resolveSchema(schema, fragment) {
 }
 
 function validateValue(schema, definition, value, pathName) {
+  if (Array.isArray(definition.anyOf)) {
+    for (const candidate of definition.anyOf) {
+      try {
+        validateValue(schema, candidate, value, pathName);
+        return;
+      } catch (error) {
+        // Try the next allowed shape before reporting the union failure.
+      }
+    }
+    throw new Error(`${pathName} must match one of its allowed schemas`);
+  }
+
   if (definition.$ref) {
     validateValue(schema, resolveSchema(schema, definition.$ref), value, pathName);
     return;
@@ -314,6 +340,72 @@ function validateFixture(fixture) {
       'is_nss_ifb'
     ], `sysdevices.devices[${index}]`);
   }
+
+  validateClientConnectionsFixture(fixture.client_connections, 'client_connections response');
+}
+
+function validateClientConnectionsFixture(response, pathName) {
+  const envelopeFields = [
+    'available',
+    'sample_ms',
+    'client',
+    'total_connections',
+    'returned_connections',
+    'truncated',
+    'limit',
+    'conn_source',
+    'conn_semantics',
+    'connections',
+    'warnings'
+  ];
+  const summaryFields = ['identity_key', 'hostname', 'mac', 'ips', 'interface', 'zone'];
+  const detailFields = [
+    'client_ip',
+    'client_port',
+    'remote_ip',
+    'remote_port',
+    'protocol',
+    'state',
+    'direction'
+  ];
+
+  assertRequired(response, envelopeFields, pathName);
+  assert(sameStringSet(Object.keys(response), envelopeFields),
+    `${pathName} must keep the exact Rust envelope key set`);
+  assertRequired(response.client, summaryFields, `${pathName}.client`);
+  assert(sameStringSet(Object.keys(response.client), summaryFields),
+    `${pathName}.client must keep the exact Rust summary key set`);
+  assertArray(response.client.ips, `${pathName}.client.ips`);
+  assertArray(response.connections, `${pathName}.connections`);
+  assertArray(response.warnings, `${pathName}.warnings`);
+  assert(response.connections.length >= 2,
+    `${pathName}.connections must include IPv4 UDP and IPv6 TCP examples`);
+  for (const [index, connection] of response.connections.entries()) {
+    assertRequired(connection, detailFields, `${pathName}.connections[${index}]`);
+    assert(sameStringSet(Object.keys(connection), detailFields),
+      `${pathName}.connections[${index}] must keep the exact Rust detail key set`);
+  }
+
+  const ipv4Udp = response.connections.find((connection) =>
+    connection.protocol === 'udp' &&
+    !connection.client_ip.includes(':') &&
+    !connection.remote_ip.includes(':')
+  );
+  const ipv6Tcp = response.connections.find((connection) =>
+    connection.protocol === 'tcp' &&
+    connection.client_ip.includes(':') &&
+    connection.remote_ip.includes(':')
+  );
+  assert(ipv4Udp && ipv4Udp.state === 'assured' && ipv4Udp.direction === 'outbound',
+    `${pathName} must include an outbound assured IPv4 UDP example`);
+  assert(ipv6Tcp && ipv6Tcp.state === 'established' && ipv6Tcp.direction === 'inbound',
+    `${pathName} must include an inbound established IPv6 TCP example`);
+  assert(response.total_connections === response.connections.length,
+    `${pathName}.total_connections must match the complete fixture`);
+  assert(response.returned_connections === response.connections.length,
+    `${pathName}.returned_connections must match connections.length`);
+  assert(response.truncated === false && response.limit === 512,
+    `${pathName} must demonstrate an untruncated response with the Rust limit`);
 }
 
 function validateMethodFixtures(schema, fixtures) {
@@ -365,6 +457,33 @@ function validateAcl(acl) {
     assert(app.write.uci.length === 1 && app.write.uci[0] === 'lanspeed',
       'ACL write.uci must only grant the lanspeed config');
   }
+}
+
+function validateRpc(rpcSource) {
+  const declarations = [];
+  const exported = Function('baseclass', 'rpc', rpcSource)(
+    { extend: (value) => value },
+    {
+      declare: (specification) => {
+        const callable = function declaredRpcCall() {};
+        declarations.push({ specification, callable });
+        return callable;
+      }
+    }
+  );
+  const matches = declarations.filter(({ specification }) =>
+    specification.object === 'lanspeed' && specification.method === 'client_connections'
+  );
+  assert(matches.length === 1, 'rpc.js must declare client_connections exactly once');
+  const declaration = matches[0];
+  assert(sameStringSet(Object.keys(declaration.specification), ['object', 'method', 'params', 'expect']),
+    'client_connections RPC declaration must contain only object, method, params and expect');
+  assert(JSON.stringify(declaration.specification.params) === JSON.stringify(['identity_key']),
+    'client_connections RPC declaration must pass identity_key');
+  assert(JSON.stringify(declaration.specification.expect) === JSON.stringify({ '': {} }),
+    'client_connections RPC declaration must keep the empty-object response contract');
+  assert(exported.clientConnections === declaration.callable,
+    'rpc.js must export client_connections as clientConnections');
 }
 
 function validateMenu(menu) {
@@ -427,9 +546,13 @@ const packageVersion = readPackageVersion();
 const fixture = readJson('tests/fixtures/lanspeed-api.json');
 const methodFixtures = Object.fromEntries(UBUS_METHODS.map((method) => [
   method,
-  readJson(`tests/fixtures/lanspeed-${method}.json`)
+  readJson(`tests/fixtures/lanspeed-${method.replaceAll('_', '-')}.json`)
 ]));
 const acl = readJson('applications/luci-app-lanspeed/root/usr/share/rpcd/acl.d/luci-app-lanspeed.json');
+const rpcSource = fs.readFileSync(
+  path.join(root, 'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/rpc.js'),
+  'utf8'
+);
 const menu = readJson('applications/luci-app-lanspeed/root/usr/share/luci/menu.d/luci-app-lanspeed.json');
 const uciConfig = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/config/lanspeed'), 'utf8');
 
@@ -446,6 +569,41 @@ assertSchemaRequired(schema, 'reload', ['ok', 'mode', 'warnings', 'evidence', 'v
 assertSchemaRequired(schema, 'interface', ['name', 'role', 'status']);
 assertSchemaRequired(schema, 'sysdevice', ['name', 'selected', 'observed', 'recommended_lan', 'is_bridge', 'is_bridge_port', 'is_nss_ifb']);
 assertSchemaRequired(schema, 'sysdevices', ['devices', 'current_ifnames', 'current_observed']);
+assertSchemaExactObject(schema, 'clientConnectionDetail', [
+  'client_ip',
+  'client_port',
+  'remote_ip',
+  'remote_port',
+  'protocol',
+  'state',
+  'direction'
+]);
+assertSchemaExactObject(schema, 'clientConnectionSummary', [
+  'identity_key',
+  'hostname',
+  'mac',
+  'ips',
+  'interface',
+  'zone'
+]);
+assertSchemaExactObject(schema, 'client_connections', [
+  'available',
+  'sample_ms',
+  'client',
+  'total_connections',
+  'returned_connections',
+  'truncated',
+  'limit',
+  'conn_source',
+  'conn_semantics',
+  'connections',
+  'warnings'
+]);
+assert(Array.isArray(schema.$defs.client_connections.properties.client.anyOf) &&
+  sameStringSet(
+    schema.$defs.client_connections.properties.client.anyOf.map((entry) => entry.$ref || entry.type),
+    ['#/$defs/clientConnectionSummary', 'null']
+  ), 'schema client_connections.client must allow exactly a summary object or null');
 validateRootSchema(schema);
 assert(schema.$defs.status.properties.refresh_interval_ms.minimum === 500, 'schema must reject/clamp refresh_interval_ms below 500ms');
 assert(schema.$defs.status.properties.active_client_window_ms.minimum === 1000, 'schema must reject/clamp active_client_window_ms below 1000ms');
@@ -474,6 +632,8 @@ assert(schema.$defs.clients.properties.conn_source.enum.includes('nss_ecm_direct
 assert(schema.$defs.clients.properties.conn_collector_mode.$ref === '#/$defs/connCollectorMode', 'schema clients.conn_collector_mode must reuse connCollectorMode enum');
 validateFixture(fixture);
 validateMethodFixtures(schema, methodFixtures);
+validateClientConnectionsFixture(methodFixtures.client_connections, 'client_connections method fixture');
+validateRpc(rpcSource);
 validateAcl(acl);
 validateMenu(menu);
 validateUci(uciConfig);

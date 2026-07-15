@@ -508,7 +508,7 @@ impl<T: Transport, F: RuntimeFactory> ProductionCoordinator<T, F> {
 }
 
 fn validate_snapshot(snapshot: &ResponseSnapshot) -> Result<(), DaemonError> {
-    for method in Method::ALL {
+    for method in Method::FIXED {
         snapshot.response(method)?;
     }
     Ok(())

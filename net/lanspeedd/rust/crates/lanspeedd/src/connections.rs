@@ -132,7 +132,7 @@ pub enum BeforeReplyAction {
 
 pub const fn before_reply_action(method: Method) -> BeforeReplyAction {
     match method {
-        Method::Clients => BeforeReplyAction::RefreshConnections,
+        Method::Clients | Method::ClientConnections => BeforeReplyAction::RefreshConnections,
         Method::Reload => BeforeReplyAction::Reload,
         Method::Status
         | Method::Overview

@@ -358,7 +358,7 @@ impl ProductionRuntime {
     fn collect(&mut self, method: ProbeMethod) -> Result<ResponseSnapshot, DaemonError> {
         let checkpoint = self.checkpoint();
         let result = self.collect_inner(method, None).and_then(|snapshot| {
-            for method in ubus::Method::ALL {
+            for method in ubus::Method::FIXED {
                 snapshot.response(method)?;
             }
             Ok(snapshot)
@@ -383,7 +383,7 @@ impl ProductionRuntime {
         let result = self
             .collect_inner(method, Some((&mut *runtime, &mut *adapter)))
             .and_then(|snapshot| {
-                for method in ubus::Method::ALL {
+                for method in ubus::Method::FIXED {
                     snapshot.response(method)?;
                 }
                 Ok(snapshot)
@@ -1074,7 +1074,7 @@ impl App {
                 return Err(error);
             }
         };
-        if let Err(error) = ubus::Method::ALL
+        if let Err(error) = ubus::Method::FIXED
             .into_iter()
             .try_for_each(|method| snapshot.response(method).map(|_| ()))
         {
