@@ -8,6 +8,34 @@ LAN 侧按客户端实时吞吐监控 + TCP/UDP 连接数统计，当前面向 I
 
 本项目的定位是观察 CPU 可见 LAN 边缘流量：它不是完整流量审计系统，不声明全流量绝对准确。硬件加速、旁路网关、同网段直连、桥内转发、驱动 offload、代理 TUN/IFB 等路径可能让部分流量绕过 CPU 或改变可见方向。
 
+## 界面预览
+
+以下截图分别使用 **Aurora** 与 **Argon** 主题；客户端名称、MAC、IP 和连接数据均已替换为脱敏示例。
+
+### 实时状态（Aurora）
+
+![LAN Speed 实时状态](docs/screenshots/lanspeed-overview-desktop.png)
+
+### 客户端连接详情（Aurora）
+
+![客户端连接详情桌面版](docs/screenshots/client-connections-desktop.png)
+
+### 移动端连接详情（Aurora）
+
+![客户端连接详情移动版](docs/screenshots/client-connections-mobile.png)
+
+### 实时状态（Argon）
+
+![LAN Speed 实时状态（Argon）](docs/screenshots/lanspeed-overview-desktop-argon.png)
+
+### 客户端连接详情（Argon）
+
+![客户端连接详情桌面版（Argon）](docs/screenshots/client-connections-desktop-argon.png)
+
+### 移动端连接详情（Argon）
+
+![客户端连接详情移动版（Argon）](docs/screenshots/client-connections-mobile-argon.png)
+
 ## 安装与编译
 
 在 ImmortalWrt / OpenWrt 源码根目录执行：
