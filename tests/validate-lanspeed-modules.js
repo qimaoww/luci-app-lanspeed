@@ -45,7 +45,9 @@ const EXPECTED_MODULES = [
 	'vocab.js',
 	'format.js',
 	'clientConnections.js',
+	'clientDetailRefresh.js',
 	'clientDetailShell.js',
+	'clientDetailView.js',
 	'clientDetailStyle.js',
 	'clientDetailStyleBase.js',
 	'clientDetailStyleAurora.js',
@@ -85,12 +87,9 @@ const EXPECTED_MODULES = [
 ];
 
 const EXPECTED_VIEW_REQUIRES = [
-	'lanspeed.format',
-	'lanspeed.rpc',
-	'lanspeed.statusIp',
-	'lanspeed.statusShell',
-	'lanspeed.statusRefresh',
-	'lanspeed.statusStyleCompatLive'
+	'lanspeed.clientConnections',
+	'lanspeed.clientDetailView',
+	'lanspeed.statusView'
 ];
 
 const EXPECTED_CONFIG_VIEW_REQUIRES = [
@@ -142,10 +141,22 @@ const MODULE_REQUIRES = {
 	'vocab.js':       [ 'baseclass' ],
 	'format.js':      [ 'baseclass' ],
 	'clientConnections.js': [ 'baseclass', 'lanspeed.format' ],
+	'clientDetailRefresh.js': [
+		'baseclass',
+		'lanspeed.format',
+		'lanspeed.clientConnections'
+	],
 	'clientDetailShell.js': [
 		'baseclass',
 		'lanspeed.theme',
 		'lanspeed.clientDetailStyle'
+	],
+	'clientDetailView.js': [
+		'baseclass',
+		'lanspeed.format',
+		'lanspeed.rpc',
+		'lanspeed.clientDetailShell',
+		'lanspeed.clientDetailRefresh'
 	],
 	'clientDetailStyle.js': [
 		'baseclass',
@@ -185,12 +196,9 @@ const MODULE_REQUIRES = {
 	'statusStyleCompatLive3.js': [ 'baseclass', 'lanspeed.statusStyleArgon' ],
 	'statusViewLive.js': [
 		'baseclass',
-		'lanspeed.format',
-		'lanspeed.rpc',
-		'lanspeed.statusIp',
-		'lanspeed.statusShell',
-		'lanspeed.statusRefresh',
-		'lanspeed.statusStyleCompatLive'
+		'lanspeed.clientConnections',
+		'lanspeed.clientDetailView',
+		'lanspeed.statusView'
 	],
 	'statusViewLive2.js': [
 		'baseclass',
@@ -215,6 +223,7 @@ const MODULE_REQUIRES = {
 		'baseclass',
 		'lanspeed.vocab',
 		'lanspeed.format',
+		'lanspeed.clientConnections',
 		'lanspeed.version',
 		'lanspeed.nssPanel',
 		'lanspeed.statusIp',
@@ -244,7 +253,9 @@ const RPC_FREE_MODULES = [
 	'vocab.js',
 	'format.js',
 	'clientConnections.js',
+	'clientDetailRefresh.js',
 	'clientDetailShell.js',
+	'clientDetailView.js',
 	'clientDetailStyle.js',
 	'clientDetailStyleBase.js',
 	'clientDetailStyleAurora.js',
@@ -658,6 +669,79 @@ function loadClientConnectionsModule(src) {
 	})(fakeBaseclass, loadFormatModule(readModuleByName('format.js')));
 }
 
+function loadStatusViewRouter(src, fakeWindow, clientDetailView, statusView) {
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	return vm.compileFunction(src, [
+		'baseclass', 'clientConnections', 'clientDetailView', 'statusView', 'window'
+	], { filename: 'resources/lanspeed/statusViewLive.js' })(
+		fakeBaseclass,
+		loadClientConnectionsModule(readModuleByName('clientConnections.js')),
+		clientDetailView,
+		statusView,
+		fakeWindow
+	);
+}
+
+function assertStatusViewRouterBehavior(src) {
+	const fakeWindow = { location: { search: '' } };
+	const calls = {
+		status: 0, clients: 0, interfaces: 0, uci: 0,
+		overviewRender: 0, detailLoad: [], detailRender: 0
+	};
+	const statusView = {
+		load: function() {
+			calls.status++; calls.clients++; calls.interfaces++; calls.uci++;
+			return Promise.resolve({ kind: 'overview-data' });
+		},
+		render: function(data) {
+			calls.overviewRender++;
+			return { kind: 'overview-root', data: data };
+		}
+	};
+	const clientDetailView = {
+		load: function(identityKey) {
+			calls.detailLoad.push(identityKey);
+			return Promise.resolve({ identityKey: identityKey, response: { available: true } });
+		},
+		render: function(data) {
+			calls.detailRender++;
+			return { kind: 'detail-root', data: data };
+		}
+	};
+
+	asyncChecks.push(Promise.resolve().then(async function() {
+		const router = loadStatusViewRouter(src, fakeWindow, clientDetailView, statusView);
+		fakeWindow.location.search = '';
+		const overview = await router.load();
+		fakeWindow.location.search = '?client=30%3Ac5%3A0a%40eth1';
+		const overviewRoot = router.render(overview);
+		if (!overview || overview.route !== 'overview' ||
+		    calls.status !== 1 || calls.clients !== 1 || calls.interfaces !== 1 || calls.uci !== 1 ||
+		    calls.detailLoad.length !== 0 || overviewRoot.kind !== 'overview-root' ||
+		    calls.overviewRender !== 1 || calls.detailRender !== 0) {
+			fail('statusViewLive.js overview route must preserve the existing four-call load and render from its load-time marker');
+		}
+
+		fakeWindow.location.search = '?client=30%3Ac5%3A0a%40eth1';
+		const detail = await router.load();
+		fakeWindow.location.search = '';
+		const detailRoot = router.render(detail);
+		if (!detail || detail.route !== 'detail' ||
+		    JSON.stringify(calls.detailLoad) !== JSON.stringify([ '30:c5:0a@eth1' ]) ||
+		    calls.status !== 1 || calls.clients !== 1 || calls.interfaces !== 1 || calls.uci !== 1 ||
+		    detailRoot.kind !== 'detail-root' || calls.detailRender !== 1 || calls.overviewRender !== 1) {
+			fail('statusViewLive.js detail route must decode identity, avoid overview RPC work, and render from its load-time marker');
+		}
+
+		fakeWindow.location.search = '?client=';
+		const empty = await router.load();
+		if (!empty || empty.route !== 'overview')
+			fail('statusViewLive.js must treat a missing or empty client identity as the overview route');
+	}).catch(function(err) {
+		fail('statusViewLive.js router behavior could not execute: ' + (err && err.message || err));
+	}));
+}
+
 function assertClientConnectionsSource(src) {
 	const cleaned = stripComments(src);
 	const requires = [];
@@ -907,19 +991,29 @@ function loadNssPanelModule(src) {
 	})(fakeBaseclass, {}, {}, fakeElement, function(value) { return value; });
 }
 
-function loadStatusRefreshModule(src) {
+function fakeTranslate(value) {
+	return {
+		format: function() {
+			const args = Array.from(arguments);
+			let index = 0;
+			return String(value).replace(/%[sd]/g, function() {
+				return index < args.length ? String(args[index++]) : '';
+			});
+		},
+		toString: function() { return String(value); }
+	};
+}
+
+function loadStatusRefreshModule(src, fakeWindow) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	return vm.compileFunction(src,
-		[ 'baseclass', 'vocab', 'fmt', 'lsVersion', 'nssPanel', 'statusIp',
-		  'statusCollector', '_' ],
+		[ 'baseclass', 'vocab', 'fmt', 'clientConnections', 'lsVersion',
+		  'nssPanel', 'statusIp', 'statusCollector', 'E', '_', 'window' ],
 		{ filename: 'resources/lanspeed/statusRefresh.js' })(
-			fakeBaseclass, {}, {}, { FULL_VERSION: 'test' }, {}, {}, {},
-			function(value) {
-				return {
-					format: function(arg) { return value.replace('%s', arg); },
-					toString: function() { return value; }
-				};
-			}
+			fakeBaseclass, {}, {},
+			loadClientConnectionsModule(readModuleByName('clientConnections.js')),
+			{ FULL_VERSION: 'test' }, {}, {}, {}, fakeElement, fakeTranslate,
+			fakeWindow || { location: { pathname: '/admin/status/lanspeed/overview' } }
 		);
 }
 
@@ -929,16 +1023,96 @@ function fakeElement(tag, attrs, children) {
 		attrs: Object.assign({}, attrs || {}),
 		children: [],
 		listeners: {},
+		parentNode: null,
+		style: {},
 		addEventListener: function(type, handler) { this.listeners[type] = handler; },
-		setAttribute: function(name, value) { this.attrs[name] = value; }
+		setAttribute: function(name, value) {
+			this.attrs[name] = String(value);
+			if (name === 'class') this._className = String(value);
+			if (name === 'hidden') this._hidden = true;
+			if (name === 'disabled') this._disabled = true;
+			if (name === 'value') this._value = String(value);
+		},
+		getAttribute: function(name) {
+			return Object.prototype.hasOwnProperty.call(this.attrs, name)
+				? this.attrs[name] : null;
+		},
+		removeAttribute: function(name) {
+			delete this.attrs[name];
+			if (name === 'hidden') this._hidden = false;
+			if (name === 'disabled') this._disabled = false;
+		},
+		appendChild: function(child) {
+			if (child === null || child === undefined || child === '') return child;
+			if (typeof child === 'object') child.parentNode = this;
+			this.children.push(child);
+			return child;
+		},
+		removeChild: function(child) {
+			const index = this.children.indexOf(child);
+			if (index !== -1) this.children.splice(index, 1);
+			if (child && typeof child === 'object') child.parentNode = null;
+			return child;
+		}
 	};
+	node._className = String(node.attrs.class || '');
+	node._hidden = Object.prototype.hasOwnProperty.call(node.attrs, 'hidden');
+	node._disabled = Object.prototype.hasOwnProperty.call(node.attrs, 'disabled');
+	node._value = Object.prototype.hasOwnProperty.call(node.attrs, 'value')
+		? String(node.attrs.value) : '';
 	const append = function(child) {
 		if (Array.isArray(child)) child.forEach(append);
-		else if (child !== null && child !== undefined && child !== '') node.children.push(child);
+		else if (child && typeof child === 'object' && !child.tagName &&
+		         typeof child.toString === 'function') node.appendChild(String(child));
+		else node.appendChild(child);
 	};
 	append(children);
+	Object.defineProperty(node, 'firstChild', {
+		get: function() { return this.children.length ? this.children[0] : null; }
+	});
 	Object.defineProperty(node, 'lastChild', {
 		get: function() { return this.children[this.children.length - 1]; }
+	});
+	Object.defineProperty(node, 'textContent', {
+		get: function() { return this.children.map(fakeElementText).join(''); },
+		set: function(value) {
+			this.children.forEach(function(child) {
+				if (child && typeof child === 'object') child.parentNode = null;
+			});
+			this.children = [];
+			if (value !== null && value !== undefined && String(value) !== '')
+				this.appendChild(String(value));
+		}
+	});
+	Object.defineProperty(node, 'className', {
+		get: function() { return this._className; },
+		set: function(value) {
+			this._className = String(value);
+			this.attrs.class = this._className;
+		}
+	});
+	Object.defineProperty(node, 'hidden', {
+		get: function() { return this._hidden; },
+		set: function(value) {
+			this._hidden = Boolean(value);
+			if (this._hidden) this.attrs.hidden = 'hidden';
+			else delete this.attrs.hidden;
+		}
+	});
+	Object.defineProperty(node, 'disabled', {
+		get: function() { return this._disabled; },
+		set: function(value) {
+			this._disabled = Boolean(value);
+			if (this._disabled) this.attrs.disabled = 'disabled';
+			else delete this.attrs.disabled;
+		}
+	});
+	Object.defineProperty(node, 'value', {
+		get: function() { return this._value; },
+		set: function(value) {
+			this._value = value === null || value === undefined ? '' : String(value);
+			this.attrs.value = this._value;
+		}
 	});
 	return node;
 }
@@ -983,6 +1157,440 @@ function fakeElementText(node) {
 	if (node === null || node === undefined) return '';
 	if (typeof node !== 'object') return String(node);
 	return (node.children || []).map(fakeElementText).join('');
+}
+
+function makeDeferred() {
+	let resolve, reject;
+	const promise = new Promise(function(onResolve, onReject) {
+		resolve = onResolve;
+		reject = onReject;
+	});
+	return { promise: promise, resolve: resolve, reject: reject };
+}
+
+function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow) {
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	return vm.compileFunction(src, [
+		'baseclass', 'fmt', 'lsRpc', 'clientDetailShell',
+		'clientDetailRefresh', 'window'
+	], { filename: 'resources/lanspeed/clientDetailView.js' })(
+		fakeBaseclass, fmt, lsRpc, shell, refresh, fakeWindow
+	);
+}
+
+function assertClientDetailViewSource(src) {
+	if (JSON.stringify(moduleRequireNames(src)) !== JSON.stringify([
+		'baseclass', 'lanspeed.format', 'lanspeed.rpc',
+		'lanspeed.clientDetailShell', 'lanspeed.clientDetailRefresh'
+	])) {
+		fail('clientDetailView.js must require only format, shared RPC, detail shell and detail refresh in dependency order');
+	}
+	const cleaned = stripComments(src);
+	if (/\brpc\s*\.\s*declare\b|innerHTML|\bCSS\b|groupsForResponse|formatEndpoint|lanspeed-connection-|E\s*\(/.test(cleaned)) {
+		fail('clientDetailView.js must own lifecycle only, without RPC declarations, DOM rows, CSS, or connection grouping logic');
+	}
+	if (!src.includes('lsRpc.clientConnections(identityKey)') ||
+	    /lsRpc\.(?:status|clients|interfaces|uciGet|overview)\s*\(/.test(cleaned)) {
+		fail('clientDetailView.js load/reload must call only the shared clientConnections RPC');
+	}
+}
+
+function assertClientDetailViewLifecycle(src) {
+	const fixture = JSON.parse(fs.readFileSync(
+		path.join(root, 'tests/fixtures/lanspeed-client-connections.json'), 'utf8'
+	));
+	const success = JSON.parse(JSON.stringify(fixture));
+	success.sample_ms = 23456;
+	const unavailable = Object.assign({}, fixture, {
+		available: false,
+		sample_ms: null,
+		total_connections: 0,
+		returned_connections: 0,
+		connections: [],
+		warnings: [ 'conntrack_unavailable' ]
+	});
+	const successDeferred = makeDeferred();
+	const rejectDeferred = makeDeferred();
+	const responses = [
+		Promise.resolve(fixture),
+		successDeferred.promise,
+		rejectDeferred.promise,
+		Promise.resolve(unavailable)
+	];
+	let rpcCount = 0;
+	const lsRpc = {
+		clientConnections: function(identityKey) {
+			rpcCount++;
+			if (identityKey !== '30:c5:0a@eth1')
+				fail('clientDetailView.js must pass the decoded identity unchanged to every RPC');
+			return responses.shift();
+		},
+		status: function() { throw new Error('unexpected status RPC'); },
+		clients: function() { throw new Error('unexpected clients RPC'); },
+		interfaces: function() { throw new Error('unexpected interfaces RPC'); },
+		uciGet: function() { throw new Error('unexpected uci RPC'); }
+	};
+	const timers = new Map();
+	const listeners = {};
+	const events = [];
+	let timerId = 0;
+	const fakeWindow = {
+		location: {
+			pathname: '/cgi-bin/luci/admin/status/lanspeed/overview',
+			search: '?client=old',
+			assigned: null,
+			assign: function(value) { this.assigned = value; }
+		},
+		setTimeout: function(handler, interval) {
+			const id = ++timerId;
+			timers.set(id, { handler: handler, interval: interval });
+			events.push('timer:' + interval);
+			return id;
+		},
+		clearTimeout: function(id) { timers.delete(id); },
+		addEventListener: function(type, handler) { listeners[type] = handler; }
+	};
+	let shellState = null;
+	const shell = {
+		buildShell: function(viewState) {
+			shellState = viewState;
+			return { root: fakeElement('div', {}), refs: { refresh: fakeElement('button', {}) } };
+		}
+	};
+	const renders = [];
+	const refresh = {
+		render: function(viewState) {
+			renders.push({
+				state: viewState,
+				loading: viewState.loading,
+				response: viewState.response,
+				error: viewState.error
+			});
+			events.push('render:' + String(viewState.loading));
+		}
+	};
+	const fmt = {
+		MIN_REFRESH_MS: 1000,
+		loadPrefs: function() { return { refreshMs: 250, paused: true }; }
+	};
+
+	asyncChecks.push(Promise.resolve().then(async function() {
+		const view = loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow);
+		const loaded = await view.load('30:c5:0a@eth1');
+		if (!loaded || loaded.identityKey !== '30:c5:0a@eth1' ||
+		    loaded.response !== fixture || loaded.error !== null || rpcCount !== 1) {
+			fail('clientDetailView.js load must make exactly one clientConnections RPC and preserve a successful initial response');
+		}
+		const rootNode = view.render(loaded);
+		const state = shellState;
+		const requiredFields = [
+			'identityKey', 'response', 'lastGood', 'protocol', 'filter', 'expanded',
+			'prefs', 'timer', 'loading', 'reload', 'schedule', 'stopTimer',
+			'setProtocol', 'setFilter', 'back'
+		];
+		if (!rootNode || !state || requiredFields.some(function(name) {
+			return !Object.prototype.hasOwnProperty.call(state, name);
+		}) || state.lastGood !== fixture || state.protocol !== 'all' ||
+		    state.filter !== '' || state.loading !== false || timers.size !== 1 ||
+		    Array.from(timers.values())[0].interval !== 1000) {
+			fail('clientDetailView.js render must initialize the fixed view state and auto-schedule at MIN_REFRESH_MS even when old prefs are paused');
+		}
+
+		const beforeReloadEvents = events.length;
+		const firstReload = state.reload();
+		const duplicateReload = state.reload();
+		if (firstReload !== duplicateReload || rpcCount !== 2 || timers.size !== 0 ||
+		    state.loading !== true || renders[renders.length - 1].loading !== true) {
+			fail('clientDetailView.js reload must stop its timer, render loading immediately, and return one identical pending Promise without overlapping RPC');
+		}
+		if (events.slice(beforeReloadEvents).some(function(event) { return event.indexOf('timer:') === 0; }))
+			fail('clientDetailView.js must never schedule the next timer while a reload Promise is pending');
+		successDeferred.resolve(success);
+		await firstReload;
+		const settledEvents = events.slice(beforeReloadEvents);
+		if (state.loading || state.response !== success || state.lastGood !== success || state.error !== null ||
+		    timers.size !== 1 || settledEvents[settledEvents.length - 2] !== 'render:false' ||
+		    settledEvents[settledEvents.length - 1] !== 'timer:1000') {
+			fail('clientDetailView.js successful reload must replace response/lastGood, render loading=false, then schedule exactly one timer');
+		}
+
+		const failedReload = state.reload();
+		if (timers.size !== 0) fail('clientDetailView.js must clear the scheduled timer before a transport-failing reload');
+		rejectDeferred.reject(new Error('network down'));
+		await failedReload;
+		if (state.loading || state.lastGood !== success || state.response !== success ||
+		    !state.error || timers.size !== 1) {
+			fail('clientDetailView.js transport rejection must keep the last good response visible, expose the error, and resume scheduling');
+		}
+
+		await state.reload();
+		if (state.response !== unavailable || state.lastGood !== success || state.error !== null ||
+		    state.loading || timers.size !== 1) {
+			fail('clientDetailView.js available:false success must replace the current response and clear errors without overwriting lastGood');
+		}
+
+		const rpcBeforeLocalControls = rpcCount;
+		const rendersBeforeLocalControls = renders.length;
+		state.setProtocol('tcp');
+		state.setFilter('443');
+		if (state.protocol !== 'tcp' || state.filter !== '443' ||
+		    rpcCount !== rpcBeforeLocalControls || renders.length !== rendersBeforeLocalControls + 2) {
+			fail('clientDetailView.js protocol/search controls must render local state only without issuing RPC');
+		}
+
+		state.schedule();
+		if (timers.size !== 1) fail('clientDetailView.js schedule must replace, not accumulate, timers');
+		listeners.beforeunload();
+		if (timers.size !== 0) fail('clientDetailView.js beforeunload must leave no detail refresh timer behind');
+		state.schedule();
+		state.back();
+		if (timers.size !== 0 || fakeWindow.location.assigned !== fakeWindow.location.pathname) {
+			fail('clientDetailView.js back must stop the timer and navigate to the current LAN pathname without a client query or hard-coded host');
+		}
+
+		let failingCalls = 0;
+		const firstFailureView = loadClientDetailViewModule(src, fmt, {
+			clientConnections: function() {
+				failingCalls++;
+				return Promise.reject(new Error('initial network down'));
+			}
+		}, shell, refresh, fakeWindow);
+		const failedInitial = await firstFailureView.load('30:c5:0a@eth1');
+		if (!failedInitial || failedInitial.identityKey !== '30:c5:0a@eth1' ||
+		    failedInitial.response !== null || !failedInitial.error || failingCalls !== 1) {
+			fail('clientDetailView.js must convert an initial transport rejection into renderable data without crashing the LuCI page');
+		}
+	}).catch(function(err) {
+		fail('clientDetailView.js lifecycle behavior could not execute: ' + (err && err.stack || err));
+	}));
+}
+
+function loadClientDetailRefreshModule(src) {
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	return vm.compileFunction(src, [
+		'baseclass', 'fmt', 'clientConnections', 'E', '_'
+	], { filename: 'resources/lanspeed/clientDetailRefresh.js' })(
+		fakeBaseclass,
+		loadFormatModule(readModuleByName('format.js')),
+		loadClientConnectionsModule(readModuleByName('clientConnections.js')),
+		fakeElement,
+		fakeTranslate
+	);
+}
+
+function buildClientDetailShellForRefresh(viewState) {
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	const shell = vm.compileFunction(readModuleByName('clientDetailShell.js'), [
+		'baseclass', 'lsTheme', 'clientDetailStyle', 'E', '_'
+	], { filename: 'resources/lanspeed/clientDetailShell.js' })(
+		fakeBaseclass, { applyRoot: function() {} }, { CSS: 'detail-css' },
+		fakeElement, function(value) { return value; }
+	);
+	return shell.buildShell(viewState);
+}
+
+function assertClientDetailRefreshSource(src) {
+	if (JSON.stringify(moduleRequireNames(src)) !== JSON.stringify([
+		'baseclass', 'lanspeed.format', 'lanspeed.clientConnections'
+	])) {
+		fail('clientDetailRefresh.js must require only baseclass, format and pure client connection helpers in dependency order');
+	}
+	const cleaned = stripComments(src);
+	if (/\brpc\b|set(?:Timeout|Interval)|clear(?:Timeout|Interval)|\bwindow\b|\blocation\b|innerHTML|\bCSS\b|clientDetailStyle/.test(cleaned)) {
+		fail('clientDetailRefresh.js must remain a refs-only renderer without RPC, timers, location, innerHTML, or CSS responsibilities');
+	}
+	if (!src.includes('clientConnections.groupsForResponse') ||
+	    !src.includes('clientConnections.formatEndpoint') ||
+	    !src.includes('.textContent') || !/\bE\s*\(/.test(src)) {
+		fail('clientDetailRefresh.js must render grouped connection detail through helpers, E(), and textContent');
+	}
+}
+
+function assertClientDetailRefreshBehavior(src) {
+	const refresh = loadClientDetailRefreshModule(src);
+	if (!refresh || JSON.stringify(Object.keys(refresh).sort()) !== JSON.stringify([ 'render' ]) ||
+	    typeof refresh.render !== 'function') {
+		fail('clientDetailRefresh.js must export one explicit render(viewState) entry');
+		return;
+	}
+	const fixture = JSON.parse(fs.readFileSync(
+		path.join(root, 'tests/fixtures/lanspeed-client-connections.json'), 'utf8'
+	));
+	const state = {
+		identityKey: fixture.client.identity_key,
+		response: fixture,
+		lastGood: fixture,
+		error: null,
+		protocol: 'all',
+		filter: '',
+		expanded: {},
+		prefs: { refreshMs: 250 },
+		loading: false,
+		back: function() {},
+		setProtocol: function(protocol) { state.protocol = protocol; refresh.render(state); },
+		setFilter: function(filter) { state.filter = filter; refresh.render(state); },
+		reload: function() {}
+	};
+	const built = buildClientDetailShellForRefresh(state);
+	state.refs = built.refs;
+	const refs = state.refs;
+	refresh.render(state);
+
+	const meta = fakeElementText(refs.clientMeta);
+	const footer = fakeElementText(refs.footer);
+	const rows = refs.tbody.children;
+	if (fakeElementText(refs.clientName) !== 'fixture-client' ||
+	    !meta.includes('192.0.2.10') || !meta.includes('02:00:00:00:00:01') ||
+	    !meta.includes('br-lan') || !meta.includes('lan') ||
+	    !fakeElementText(refs.connectionState).includes('有当前连接') ||
+	    refs.summaryTargets.textContent !== '2' || refs.summaryConnections.textContent !== '2' ||
+	    !refs.summaryUpdated.textContent.includes('12345') || rows.length !== 4 ||
+	    refs.table.hidden || !refs.empty.hidden || !refs.error.hidden) {
+		fail('clientDetailRefresh.js must render hostname-first identity/meta, unfiltered target count, real totals/sample time, and two rows per destination group');
+	}
+	if (!footer.includes('数据源') || !footer.includes('Conntrack Netlink') ||
+	    !footer.includes('返回 2') || !footer.includes('总计 2') || !footer.includes('上限 512') ||
+	    !footer.includes('自动刷新') || !footer.includes('1000')) {
+		fail('clientDetailRefresh.js footer must report source, returned/total/limit with accurate meanings, and the clamped refresh cycle in Chinese');
+	}
+	const allCells = findFakeElementsByTag(refs.tbody, 'td');
+	if (allCells.length !== 12 || allCells.some(function(cell) {
+		return !Object.prototype.hasOwnProperty.call(cell.attrs, 'data-label');
+	})) {
+		fail('clientDetailRefresh.js must give all five group cells and the colspan detail cell mobile data-label text');
+	}
+	const groupRows = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-group');
+	const detailRows = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-detail-row');
+	if (groupRows.length !== 2 || detailRows.length !== 2 || groupRows.some(function(row) {
+		return row.attrs.tabindex !== '0' || row.attrs.role !== 'button' ||
+			row.attrs['aria-expanded'] !== 'false';
+	}) || detailRows.some(function(row) {
+		return !row.hidden || findFakeElementsByTag(row, 'td')[0].attrs.colspan !== '5';
+	})) {
+		fail('clientDetailRefresh.js group/detail rows must expose button semantics, aria-expanded, colspan=5 and real hidden collapse state');
+	}
+	const detailCopy = detailRows.map(fakeElementText).join(' ');
+	if (!detailCopy.includes('出站') || !detailCopy.includes('UDP') || !detailCopy.includes('活跃') ||
+	    !detailCopy.includes('192.0.2.10:53000 → 198.51.100.53:53') ||
+	    !detailCopy.includes('入站') || !detailCopy.includes('TCP') || !detailCopy.includes('已建立') ||
+	    !detailCopy.includes('[2001:db8:ffff::20]:54001 → [2001:db8:1::10]:443')) {
+		fail('clientDetailRefresh.js detail rows must render Chinese direction/state, uppercase protocol, direction-correct endpoints, and bracketed IPv6');
+	}
+
+	let prevented = 0;
+	groupRows[0].listeners.click({ preventDefault: function() { prevented++; } });
+	let currentGroups = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-group');
+	let currentDetails = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-detail-row');
+	if (prevented !== 1 || currentGroups[0].attrs['aria-expanded'] !== 'true' ||
+	    currentDetails[0].hidden || state.expanded['198.51.100.53'] !== true) {
+		fail('clientDetailRefresh.js click must prevent default and expand the matching detail row');
+	}
+	currentGroups[0].listeners.keydown({ key: 'Enter', preventDefault: function() { prevented++; } });
+	currentGroups = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-group');
+	currentDetails = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-detail-row');
+	if (prevented !== 2 || currentGroups[0].attrs['aria-expanded'] !== 'false' ||
+	    !currentDetails[0].hidden) {
+		fail('clientDetailRefresh.js Enter must prevent default and collapse a group');
+	}
+	currentGroups[0].listeners.keydown({ key: ' ', preventDefault: function() { prevented++; } });
+	if (prevented !== 3 || state.expanded['198.51.100.53'] !== true)
+		fail('clientDetailRefresh.js Space must prevent default and toggle a group');
+
+	state.protocol = 'tcp';
+	state.filter = '54001';
+	refresh.render(state);
+	if (state.expanded['198.51.100.53'] !== true ||
+	    refs.protocolAll.attrs['aria-pressed'] !== 'false' ||
+	    refs.protocolTcp.attrs['aria-pressed'] !== 'true' ||
+	    !String(refs.protocolTcp.className).includes('active') ||
+	    refs.protocolUdp.attrs['aria-pressed'] !== 'false' || refs.filter.value !== '54001') {
+		fail('clientDetailRefresh.js must sync protocol aria/active classes and filter value without pruning temporarily filtered expanded groups');
+	}
+	state.response = Object.assign({}, fixture, { connections: [ fixture.connections[1] ] });
+	state.lastGood = state.response;
+	state.protocol = 'all';
+	state.filter = '';
+	refresh.render(state);
+	if (Object.prototype.hasOwnProperty.call(state.expanded, '198.51.100.53'))
+		fail('clientDetailRefresh.js must prune expanded destinations only when they disappear from the unfiltered response');
+
+	state.response = null;
+	state.lastGood = fixture;
+	state.error = new Error('<img src=x onerror=alert(1)> network down');
+	refresh.render(state);
+	if (refs.error.hidden || !fakeElementText(refs.error).includes('刷新连接详情失败') ||
+	    refs.tbody.children.length !== 4 || refs.table.hidden ||
+	    findFakeElementsByTag(refs.error, 'img').length !== 0) {
+		fail('clientDetailRefresh.js transport error must show safe Chinese error text while retaining last-good summary and rows');
+	}
+
+	state.error = null;
+	state.response = Object.assign({}, fixture, {
+		available: false,
+		sample_ms: null,
+		total_connections: 0,
+		returned_connections: 0,
+		warnings: [ 'conntrack_unavailable' ]
+	});
+	refresh.render(state);
+	if (refs.tbody.children.length !== 0 || !refs.table.hidden || refs.empty.hidden ||
+	    !fakeElementText(refs.empty).includes('连接采集当前不可用')) {
+		fail('clientDetailRefresh.js available:false success must clear current rows and never leak last-good connection details');
+	}
+
+	state.response = Object.assign({}, fixture, {
+		client: null, total_connections: 0, returned_connections: 0,
+		connections: [], warnings: [ 'client_not_found' ]
+	});
+	refresh.render(state);
+	if (!fakeElementText(refs.empty).includes('未找到该客户端') || refs.tbody.children.length)
+		fail('clientDetailRefresh.js must render a distinct cleared not-found state for null client/client_not_found');
+
+	state.response = Object.assign({}, fixture, {
+		total_connections: 0, returned_connections: 0, connections: [], warnings: []
+	});
+	refresh.render(state);
+	if (!fakeElementText(refs.empty).includes('当前客户端没有连接') ||
+	    !fakeElementText(refs.connectionState).includes('无当前连接')) {
+		fail('clientDetailRefresh.js must render zero connections distinctly without claiming the client is offline');
+	}
+
+	state.response = null;
+	state.lastGood = null;
+	state.error = new Error('initial down');
+	refresh.render(state);
+	if (refs.error.hidden || refs.tbody.children.length || !refs.table.hidden || refs.empty.hidden ||
+	    !fakeElementText(refs.empty).includes('首次加载连接详情失败')) {
+		fail('clientDetailRefresh.js must render an initial transport failure as a distinct safe empty state');
+	}
+
+	state.error = null;
+	state.response = Object.assign({}, fixture, {
+		total_connections: 5,
+		returned_connections: 2,
+		truncated: true,
+		limit: 2,
+		warnings: [ 'backend <warning>' ]
+	});
+	state.lastGood = state.response;
+	state.loading = true;
+	refresh.render(state);
+	const truncatedFooter = fakeElementText(refs.footer);
+	if (!truncatedFooter.includes('已截断') || !truncatedFooter.includes('返回 2') ||
+	    !truncatedFooter.includes('总计 5') || !truncatedFooter.includes('上限 2') ||
+	    !truncatedFooter.includes('backend <warning>') || !refs.refresh.disabled) {
+		fail('clientDetailRefresh.js must render accurate truncation/warning footer text and disable manual refresh while loading');
+	}
+	const hostile = JSON.parse(JSON.stringify(fixture));
+	hostile.client.hostname = '<svg onload=alert(1)>';
+	state.loading = false;
+	state.response = hostile;
+	state.lastGood = hostile;
+	refresh.render(state);
+	if (fakeElementText(refs.clientName) !== '<svg onload=alert(1)>' ||
+	    findFakeElementsByTag(built.root, 'svg').length !== 0) {
+		fail('clientDetailRefresh.js must keep every backend identity/warning/error string as text rather than markup');
+	}
 }
 
 function assertClientDetailShellSource(src) {
@@ -1455,6 +2063,42 @@ function assertStatusRefreshSortingInteraction(src) {
 	    !String(refs.sortHeaders.tcp_conns.button.attrs.title).includes('TCP 仅统计 ESTABLISHED + ASSURED') ||
 	    !String(refs.sortHeaders.tcp_conns.button.attrs['aria-label']).includes('升序')) {
 		fail('statusRefresh.js must combine TCP/UDP connection semantics with accessible sorting instructions');
+	}
+}
+
+function assertStatusRefreshClientDetailLink(src) {
+	const pathname = '/cgi-bin/luci/admin/status/lanspeed/overview';
+	const mod = loadStatusRefreshModule(src, { location: { pathname: pathname } });
+	if (!mod || typeof mod.clientNameContent !== 'function') {
+		fail('statusRefresh.js must expose its client-name cell builder for behavior validation');
+		return;
+	}
+	const identified = mod.clientNameContent({
+		identity_key: '30:c5:0a:11:22:33@eth1',
+		hostname: '工作站'
+	}, '工作站', [ '192.0.2.30', '2001:db8::30' ]);
+	const link = identified && identified[0];
+	const ipline = identified && identified[1];
+	const expectedHref = pathname + '?client=30%3Ac5%3A0a%3A11%3A22%3A33%40eth1';
+	if (!Array.isArray(identified) || !link || link.tagName !== 'a' ||
+	    link.attrs.class !== 'lanspeed-connection-link' || link.attrs.href !== expectedHref ||
+	    !String(link.attrs.title).includes('查看 工作站 的当前连接') ||
+	    !String(link.attrs['aria-label']).includes('查看 工作站 的当前连接') ||
+	    fakeElementText(link) !== '工作站' ||
+	    !ipline || ipline.parentNode === link || fakeElementText(ipline) !== '192.0.2.30, 2001:db8::30') {
+		fail('statusRefresh.js must generate an encoded accessible detail link around only the display name while preserving the IP subline');
+	}
+	const missing = mod.clientNameContent({ hostname: '无身份' }, '无身份', [ '192.0.2.31' ]);
+	if (!Array.isArray(missing) || missing[0] !== '无身份' ||
+	    findFakeElementsByTag({ children: missing }, 'a').length !== 0) {
+		fail('statusRefresh.js must safely keep clients without identity_key as plain display text');
+	}
+	const hostile = mod.clientNameContent({
+		identity_key: 'safe@lan', hostname: '<img src=x onerror=alert(1)>'
+	}, '<img src=x onerror=alert(1)>', []);
+	if (!hostile[0] || fakeElementText(hostile[0]) !== '<img src=x onerror=alert(1)>' ||
+	    findFakeElementsByTag(hostile[0], 'img').length !== 0) {
+		fail('statusRefresh.js must keep backend display names as text inside the detail link');
 	}
 }
 
@@ -2630,6 +3274,12 @@ function assertStatusRefreshModule(src) {
 	    !src.includes('LAN 无活动流量')) {
 		fail('statusRefresh.js must distinguish low traffic from a truly idle LAN');
 	}
+	if (!src.includes("'class': 'lanspeed-connection-link'") ||
+	    !src.includes('clientConnections.detailHref(window.location.pathname, c.identity_key)') ||
+	    !src.includes("'aria-label':") || !src.includes("'title':") ||
+	    !src.includes('查看') || !src.includes('当前连接')) {
+		fail('statusRefresh.js must wrap only identified client display names in an accessible encoded detail link on the current pathname');
+	}
 }
 
 function assertConfigStyleModule(src) {
@@ -2717,14 +3367,25 @@ function assertConfigFormModule(src) {
 }
 
 function assertStatusViewEntryIsThin(src) {
-	if (src.includes('var LAYOUT_CSS = [') || src.includes('function buildShell(') ||
-	    src.includes('function refreshLive(') || src.includes('function parseIpv6ToWords(')) {
-		fail('view/lanspeed/index.js must stay a thin page lifecycle entry and delegate CSS/shell/refresh/IP helpers to modules');
+	const requires = moduleRequireNames(src);
+	if (JSON.stringify(requires) !== JSON.stringify([
+		'baseclass',
+		'lanspeed.clientConnections',
+		'lanspeed.clientDetailView',
+		'lanspeed.statusView'
+	])) {
+		fail('statusViewLive.js must require only the route parser, detail view, and existing overview view in dependency order');
 	}
-	if (!src.includes('statusShell.buildShell(viewState)') ||
-	    !src.includes('statusRefresh.refreshLive(this)') ||
-	    !src.includes('statusIp.hideIpv6RangesValue')) {
-		fail('view/lanspeed/index.js must delegate shell, refresh, and IPv6 helper work to status modules');
+	const cleaned = stripComments(src);
+	if (/\blsRpc\b|\brpc\b|statusShell|statusRefresh|statusStyle|set(?:Timeout|Interval)|clear(?:Timeout|Interval)|buildShell|refreshLive|loadAll|loadUiConfig/.test(cleaned)) {
+		fail('statusViewLive.js must remain a thin router without RPC, shell, refresh, style, or timer responsibilities');
+	}
+	if (!src.includes('clientConnections.identityFromSearch(window.location.search)') ||
+	    !src.includes("route: 'overview'") || !src.includes("route: 'detail'") ||
+	    !src.includes('statusView.load()') || !src.includes('statusView.render(data.data)') ||
+	    !src.includes('clientDetailView.load(identityKey)') ||
+	    !src.includes('clientDetailView.render(data.data)')) {
+		fail('statusViewLive.js must freeze an explicit load-time route marker and delegate load/render to overview or detail');
 	}
 }
 
@@ -2792,6 +3453,14 @@ EXPECTED_MODULES.forEach(function(name) {
 	if (name === 'clientConnections.js') {
 		assertClientConnectionsModule(src);
 	}
+	if (name === 'clientDetailRefresh.js') {
+		assertClientDetailRefreshSource(src);
+		assertClientDetailRefreshBehavior(src);
+	}
+	if (name === 'clientDetailView.js') {
+		assertClientDetailViewSource(src);
+		assertClientDetailViewLifecycle(src);
+	}
 	if (name === 'clientDetailShell.js') {
 		assertClientDetailShellSource(src);
 		assertClientDetailShellInteraction(src);
@@ -2833,6 +3502,7 @@ EXPECTED_MODULES.forEach(function(name) {
 	}
 	if (name === 'statusViewLive.js') {
 		assertStatusViewEntryIsThin(src);
+		assertStatusViewRouterBehavior(src);
 	}
 	if (name === 'statusIp.js') {
 		assertStatusIpModule(src);
@@ -2847,6 +3517,7 @@ EXPECTED_MODULES.forEach(function(name) {
 	if (name === 'statusRefresh.js') {
 		assertStatusRefreshModule(src);
 		assertStatusRefreshSortingInteraction(src);
+		assertStatusRefreshClientDetailLink(src);
 	}
 	if (name === 'configStyle.js') {
 		assertConfigStyleModule(styleSources(name, CONFIG_STYLE_PARTS));
@@ -2894,6 +3565,9 @@ if (fs.existsSync(statusViewFile)) {
 	const vcleaned = stripComments(vsrc);
 	const statusSrc = [
 		vsrc,
+		readModuleByName('statusView.js'),
+		readModuleByName('clientDetailView.js'),
+		readModuleByName('clientDetailRefresh.js'),
 		readModuleByName('statusStyle.js'),
 		...STATUS_STYLE_PARTS.map(readModuleByName),
 		readModuleByName('statusStyleCompat.js'),

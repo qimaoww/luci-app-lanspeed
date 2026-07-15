@@ -2,6 +2,7 @@
 'require baseclass';
 'require lanspeed.vocab as vocab';
 'require lanspeed.format as fmt';
+'require lanspeed.clientConnections as clientConnections';
 'require lanspeed.version as lsVersion';
 'require lanspeed.nssPanel as nssPanel';
 'require lanspeed.statusIp as statusIp';
@@ -20,6 +21,29 @@ function nssEvidenceState(ev) {
 var CLIENT_INFO_WARNINGS = {
 	conntrack_connection_only: true
 };
+
+function clientNameContent(c, displayName, ips) {
+	var name = displayName;
+	if (c.identity_key) {
+		var label = _('查看 %s 的当前连接').format(displayName);
+		name = E('a', {
+			'class': 'lanspeed-connection-link',
+			'href': clientConnections.detailHref(window.location.pathname, c.identity_key),
+			'title': label,
+			'aria-label': label
+		}, displayName);
+	}
+
+	return [
+		name,
+		(c.hostname && ips.length)
+			? E('span', { 'class': 'ipline', 'title': ips.join(', ') }, ips.join(', '))
+			: (ips.length > 1
+				? E('span', { 'class': 'ipline', 'title': ips.join(', ') },
+				    ips.slice(1).join(', '))
+				: '')
+	];
+}
 
 function splitClientWarnings(rawWarnings, globalWarnings) {
 	var info = [], warnings = [];
@@ -247,15 +271,8 @@ function refreshLive(viewState) {
 			}
 
 			return E('tr', idle ? { 'class': 'idle' } : {}, [
-				E('td', { 'class': 'lanspeed-client-name' }, [
-					displayName,
-					(c.hostname && ips.length)
-						? E('span', { 'class': 'ipline', 'title': ips.join(', ') }, ips.join(', '))
-						: (ips.length > 1
-							? E('span', { 'class': 'ipline', 'title': ips.join(', ') },
-							    ips.slice(1).join(', '))
-							: '')
-				]),
+				E('td', { 'class': 'lanspeed-client-name' },
+					clientNameContent(c, displayName, ips)),
 				E('td', {
 					'class': 'mono lanspeed-client-mac',
 					'data-label': 'MAC'
@@ -415,6 +432,7 @@ function refreshLive(viewState) {
 }
 
 return baseclass.extend({
+	clientNameContent: clientNameContent,
 	refreshSortHeaders: refreshSortHeaders,
 	nssEvidenceState: nssEvidenceState,
 	splitClientWarnings: splitClientWarnings,
