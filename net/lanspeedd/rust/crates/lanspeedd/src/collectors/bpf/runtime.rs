@@ -1559,7 +1559,7 @@ impl AyaAdapter for SystemAyaAdapter {
     }
 
     fn interface_name(&mut self, ifindex: u32) -> Option<String> {
-        let mut name = [0i8; libc::IF_NAMESIZE];
+        let mut name = [0 as libc::c_char; libc::IF_NAMESIZE];
         let result = unsafe { libc::if_indextoname(ifindex, name.as_mut_ptr()) };
         if result.is_null() {
             return None;

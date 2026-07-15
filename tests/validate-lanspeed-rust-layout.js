@@ -80,7 +80,24 @@ try {
     );
   }
 
+  const bpfRuntime = fs.readFileSync(
+    path.join(lanspeeddRoot, 'rust/crates/lanspeedd/src/collectors/bpf/runtime.rs'),
+    'utf8'
+  );
+  assert(
+    !/\[0i8;\s*libc::IF_NAMESIZE\]/.test(bpfRuntime),
+    'BPF interface-name buffers must not hard-code signed i8 for target-dependent C char'
+  );
+  assert(
+    /\[0 as libc::c_char;\s*libc::IF_NAMESIZE\]/.test(bpfRuntime),
+    'BPF interface-name buffers must use libc::c_char for aarch64 and x86_64 portability'
+  );
+
   const testRunner = fs.readFileSync(path.join(root, 'tests/run.sh'), 'utf8');
+  const openwrtCompileValidator = fs.readFileSync(
+    path.join(root, 'tests/validate-lanspeed-openwrt-compile.sh'),
+    'utf8'
+  );
   const linkingValidator = fs.readFileSync(
     path.join(root, 'tests/validate-lanspeed-rust-linking.sh'),
     'utf8'
@@ -90,6 +107,11 @@ try {
   assert(
     testRunner.includes('validate-lanspeed-openwrt-compile.sh'),
     'tests/run.sh must compile the production OpenWrt/FFI feature path when the 25.12 SDK is available'
+  );
+  assert(
+    openwrtCompileValidator.includes('--target aarch64-unknown-linux-musl') &&
+      openwrtCompileValidator.includes('-Z build-std=std,panic_abort'),
+    'the OpenWrt compile validator must cross-check the aarch64 musl C ABI'
   );
   assert(
     testRunner.includes('RUST_CARGO') && testRunner.includes('rust_cargo'),

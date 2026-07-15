@@ -85,14 +85,24 @@ printf '%s\n' '25.12 fake sdk' > "$TMP_SDK/version.buildinfo"
 printf '%s\n' 'all:' > "$TMP_SDK/Makefile"
 cat > "$TMP_SDK/scripts/feeds" <<'EOF'
 #!/bin/sh
-printf '%s\n' "$*" >> feeds.log
+printf '%s|%s\n' "${TARGET_ARCH-unset}" "$*" >> feeds.log
 EOF
 chmod +x "$TMP_SDK/scripts/feeds"
 cat > "$TMP_SDK/bin/make" <<'EOF'
 #!/bin/sh
-printf '%s\n' "$*" >> make.log
+printf '%s|%s\n' "${TARGET_ARCH-unset}" "$*" >> make.log
 EOF
 chmod +x "$TMP_SDK/bin/make"
+
+PATH="$TMP_SDK/bin:$PATH" SDK_DIR="$TMP_SDK" TARGET_ARCH=aarch64 ENABLE_BPF=0 "$ROOT/scripts/build-sdk.sh" lanspeedd > "$FAKE_SDK_EVIDENCE" 2>&1
+test -s "$TMP_SDK/make.log"
+test -s "$TMP_SDK/feeds.log"
+grep -F "TARGET_ARCH: aarch64" "$FAKE_SDK_EVIDENCE" >/dev/null
+if grep -v '^unset|' "$TMP_SDK/make.log" "$TMP_SDK/feeds.log" >/dev/null; then
+	printf '%s\n' "TARGET_ARCH is metadata-only and must not leak into SDK commands" >&2
+	exit 1
+fi
+rm -f "$TMP_SDK/.config" "$TMP_SDK/make.log" "$TMP_SDK/feeds.log" "$TMP_SDK/feeds.conf"
 
 PATH="$TMP_SDK/bin:$PATH" SDK_DIR="$TMP_SDK" ENABLE_BPF=0 "$ROOT/scripts/build-sdk.sh" lanspeedd > "$FAKE_SDK_EVIDENCE" 2>&1
 grep -F "defconfig" "$TMP_SDK/make.log" >/dev/null

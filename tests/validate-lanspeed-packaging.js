@@ -560,6 +560,11 @@ try {
   assert(cargoConfig.includes('replace-with = "vendored-sources"'), 'Cargo must use vendored sources');
   assert(cargoConfig.includes('offline = true'), 'Cargo config must forbid network dependency resolution');
   assertMatch(
+    cargoConfig,
+    /\[target\.bpfel-unknown-none\][\s\S]*linker = "bpf-linker"[\s\S]*rustflags = \["-C", "debuginfo=2", "-C", "link-arg=--btf"\]/,
+    'the Cargo config copied into PKG_BUILD_DIR must make production eBPF objects retain BTF'
+  );
+  assertMatch(
     pkgMakefile,
     /\$\(INSTALL_BIN\) \$\(PKG_BUILD_DIR\)\/target\/\$\(RUSTC_TARGET_ARCH\)\/release\/lanspeedd \$\(1\)\/usr\/sbin\/lanspeedd/,
     'base package must install the Rust daemon'

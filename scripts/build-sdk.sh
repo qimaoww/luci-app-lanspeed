@@ -355,7 +355,11 @@ run_in_sdk() {
 		return 0
 	fi
 
-	(cd "$SDK_PATH" && "$@")
+	(
+		unset TARGET_ARCH
+		cd "$SDK_PATH"
+		"$@"
+	)
 }
 
 main() {

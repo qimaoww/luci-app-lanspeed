@@ -26,8 +26,20 @@ grep -Fq 'rustflags = ["-C", "target-feature=-crt-static"]' "$root_config" || {
 	printf 'validate-lanspeed-rust-bindings: FAIL\n  missing root dynamic musl rustflags\n' >&2
 	exit 1
 }
-if grep -Eq '^\[target\.' "$nested_config"; then
-	printf 'validate-lanspeed-rust-bindings: FAIL\n  nested Cargo config duplicates target settings\n' >&2
+grep -Fq '[target.bpfel-unknown-none]' "$nested_config" || {
+	printf 'validate-lanspeed-rust-bindings: FAIL\n  missing packaged BPF target config\n' >&2
+	exit 1
+}
+grep -Fq 'linker = "bpf-linker"' "$nested_config" || {
+	printf 'validate-lanspeed-rust-bindings: FAIL\n  wrong packaged BPF linker config\n' >&2
+	exit 1
+}
+grep -Fq 'rustflags = ["-C", "debuginfo=2", "-C", "link-arg=--btf"]' "$nested_config" || {
+	printf 'validate-lanspeed-rust-bindings: FAIL\n  packaged BPF build does not emit BTF\n' >&2
+	exit 1
+}
+if grep -Fq '[target.x86_64-unknown-linux-musl]' "$nested_config"; then
+	printf 'validate-lanspeed-rust-bindings: FAIL\n  packaged Cargo config must not hard-code the x86_64 OpenWrt linker\n' >&2
 	exit 1
 fi
 
