@@ -4,11 +4,23 @@
 'require lanspeed.clientConnections as clientConnections';
 
 function replaceRows(tbody, rows) {
+	var activeRow = document.activeElement;
+	var activeRemoteIp = activeRow && activeRow.parentNode === tbody
+		? activeRow.getAttribute('data-remote-ip') : null;
+
 	while (tbody.firstChild)
 		tbody.removeChild(tbody.firstChild);
 	rows.forEach(function(row) {
 		tbody.appendChild(row);
 	});
+	if (activeRemoteIp !== null) {
+		rows.some(function(row) {
+			if (row.getAttribute('data-remote-ip') !== activeRemoteIp)
+				return false;
+			row.focus();
+			return true;
+		});
+	}
 }
 
 function warningLabel(warning) {
@@ -73,6 +85,7 @@ function buildGroupRows(viewState, group) {
 	var expanded = viewState.expanded[group.remoteIp] === true;
 	var groupRow = E('tr', {
 		'class': 'lanspeed-connection-group lanspeed-connection-group-row',
+		'data-remote-ip': group.remoteIp,
 		'tabindex': '0',
 		'role': 'button',
 		'aria-expanded': expanded ? 'true' : 'false'

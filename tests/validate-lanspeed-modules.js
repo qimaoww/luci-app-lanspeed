@@ -1539,14 +1539,15 @@ function assertClientDetailIntegratedState(viewSrc) {
 function loadClientDetailRefreshModule(src, fakeDate) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	return vm.compileFunction(src, [
-		'baseclass', 'fmt', 'clientConnections', 'E', '_', 'Date'
+		'baseclass', 'fmt', 'clientConnections', 'E', '_', 'Date', 'document'
 	], { filename: 'resources/lanspeed/clientDetailRefresh.js' })(
 		fakeBaseclass,
 		loadFormatModule(readModuleByName('format.js')),
 		loadClientConnectionsModule(readModuleByName('clientConnections.js')),
 		fakeElement,
 		fakeTranslate,
-		fakeDate || Date
+		fakeDate || Date,
+		fakeDocument
 	);
 }
 
@@ -1579,6 +1580,7 @@ function assertClientDetailRefreshSource(src) {
 }
 
 function assertClientDetailRefreshBehavior(src) {
+	fakeDocument.activeElement = null;
 	const refresh = loadClientDetailRefreshModule(src);
 	if (!refresh || JSON.stringify(Object.keys(refresh).sort()) !== JSON.stringify([ 'render' ]) ||
 	    typeof refresh.render !== 'function') {
@@ -1677,6 +1679,15 @@ function assertClientDetailRefreshBehavior(src) {
 	if (prevented !== 3 || refs.tbody.children[0] !== focusedGroup || focusedDetail.hidden ||
 	    state.expanded['198.51.100.53'] !== true) {
 		fail('clientDetailRefresh.js click must also toggle the existing group/detail rows without rebuilding the table');
+	}
+	refresh.render(state);
+	currentGroups = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-group');
+	currentDetails = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-detail-row');
+	if (currentGroups[0] === focusedGroup ||
+	    currentGroups[0].attrs['data-remote-ip'] !== '198.51.100.53' ||
+	    fakeDocument.activeElement !== currentGroups[0] ||
+	    currentGroups[0].attrs['aria-expanded'] !== 'true' || currentDetails[0].hidden) {
+		fail('clientDetailRefresh.js refresh renders must restore keyboard focus to the rebuilt row for the same remote IP');
 	}
 
 	state.protocol = 'tcp';
