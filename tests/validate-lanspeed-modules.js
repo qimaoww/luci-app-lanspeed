@@ -532,6 +532,10 @@ function assertClientDetailStyleLeaf(name, src) {
 	     !css.includes('var(--label-surface'))) {
 		fail(`${name} must align detail padding and label surfaces with the Aurora status page`);
 	}
+	if (name === 'clientDetailStyleAurora.js' &&
+	    !css.includes('@media (max-width:480px){.lanspeed-theme-aurora .lanspeed-connection-toolbar{padding-right:2rem}}')) {
+		fail(`${name} must reserve a 2rem phone safe area for Aurora's floating toolbar`);
+	}
 	if (name === 'clientDetailStyleArgon.js') {
 		if (!css.includes('font-size:1rem') || !css.includes('padding:.65rem .75rem'))
 			fail(`${name} must retain the Argon status typography and table density`);
