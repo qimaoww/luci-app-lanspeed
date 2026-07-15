@@ -125,7 +125,7 @@ const CONFIG_STYLE_PARTS = [
 	'configStyleResponsive.js'
 ];
 
-const EXPECTED_STATUS_STYLE_SHA256 = 'f445282ce283e20e629d0c629731a10f05d4a3cec721f27cd1863657e0ded788';
+const EXPECTED_STATUS_STYLE_SHA256 = 'e11c09a13aadcef496bdc15dbb7806d0d3f4aec60c7c68f828fec18e134a5f3c';
 const EXPECTED_CONFIG_STYLE_SHA256 = 'd16d845e2babf4b638bcc4e78ccfa44729e80b432fed9ead19dd51da9a3bb4d8';
 
 function readMakeVar(source, name, fileLabel) {
@@ -412,6 +412,30 @@ function assertStyleAggregation() {
 		fail('modular config CSS must match the reviewed stylesheet snapshot');
 }
 
+function assertConnectionStyleOwnership() {
+	const statusBaseCss = loadStyleLeaf('statusStyleBase.js').CSS;
+	const clientDetailBaseCss = loadStyleLeaf('clientDetailStyleBase.js').CSS;
+	const selectedProtocolRule = '.lanspeed-connection-protocol[aria-pressed="true"]{' +
+		'font-weight:600;box-shadow:inset 0 0 0 2px currentColor}';
+	const sharedLinkRules = [
+		'.lanspeed-connection-link{display:inline-flex;min-width:0;color:inherit;' +
+			'text-decoration:underline;text-underline-offset:.18em}',
+		'.lanspeed-connection-link:hover{text-decoration-thickness:2px}',
+		'.lanspeed-connection-link:focus-visible{outline:2px solid currentColor;outline-offset:3px}'
+	];
+
+	if (!clientDetailBaseCss.includes(selectedProtocolRule)) {
+		fail('clientDetailStyleBase.js must visibly mark the aria-pressed connection protocol');
+	}
+	sharedLinkRules.forEach(function(rule) {
+		if (!statusBaseCss.includes(rule))
+			fail('statusStyleBase.js must own the shared connection detail link rules');
+	});
+	if (clientDetailBaseCss.includes('.lanspeed-connection-link')) {
+		fail('clientDetailStyleBase.js must not duplicate the shared connection detail link rules');
+	}
+}
+
 function moduleRequireNames(src) {
 	const names = [];
 	const re = /^\s*['"]require\s+([^\s'"]+)(?:\s+as\s+\w+)?['"]\s*;/gm;
@@ -494,7 +518,6 @@ function assertClientDetailStyleLeaf(name, src) {
 		[
 			'.lanspeed-connection-identity',
 			'.lanspeed-connection-summary',
-			'.lanspeed-connection-link',
 			'.lanspeed-connection-toolbar',
 			'.lanspeed-connection-detail-row',
 			'.lanspeed-connection-endpoint',
@@ -3741,6 +3764,7 @@ EXPECTED_MODULES.forEach(function(name) {
 });
 
 assertStyleAggregation();
+assertConnectionStyleOwnership();
 
 assertConfigSaveBehavior(
 	readModuleByName('configForm.js'),

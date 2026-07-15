@@ -75,6 +75,9 @@ var BASE_CSS = [
 	'.lanspeed-table td .ipline{display:block;font-size:.8em;opacity:.7;margin-top:.15em;',
 	'  font-family:var(--font-monospace,ui-monospace,monospace);max-width:22em;',
 	'  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+	'.lanspeed-connection-link{display:inline-flex;min-width:0;color:inherit;text-decoration:underline;text-underline-offset:.18em}',
+	'.lanspeed-connection-link:hover{text-decoration-thickness:2px}',
+	'.lanspeed-connection-link:focus-visible{outline:2px solid currentColor;outline-offset:3px}',
 	'.lanspeed-table td .state{display:inline-flex;gap:.25em;flex-wrap:wrap;align-items:center}',
 	'.lanspeed-clients-card .lanspeed-table{font-weight:500}',
 
