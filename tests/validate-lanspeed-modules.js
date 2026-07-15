@@ -45,6 +45,13 @@ const EXPECTED_MODULES = [
 	'vocab.js',
 	'format.js',
 	'clientConnections.js',
+	'clientDetailShell.js',
+	'clientDetailStyle.js',
+	'clientDetailStyleBase.js',
+	'clientDetailStyleAurora.js',
+	'clientDetailStyleArgon.js',
+	'clientDetailStyleBootstrap.js',
+	'clientDetailStyleResponsive.js',
 	'rpc.js',
 	'ifaceConfig.js',
 	'nssPanel.js',
@@ -102,6 +109,14 @@ const STATUS_STYLE_PARTS = [
 	'statusStyleResponsive.js'
 ];
 
+const CLIENT_DETAIL_STYLE_PARTS = [
+	'clientDetailStyleBase.js',
+	'clientDetailStyleAurora.js',
+	'clientDetailStyleArgon.js',
+	'clientDetailStyleBootstrap.js',
+	'clientDetailStyleResponsive.js'
+];
+
 const CONFIG_STYLE_PARTS = [
 	'configStyleBase.js',
 	'configStyleAurora.js',
@@ -127,6 +142,25 @@ const MODULE_REQUIRES = {
 	'vocab.js':       [ 'baseclass' ],
 	'format.js':      [ 'baseclass' ],
 	'clientConnections.js': [ 'baseclass', 'lanspeed.format' ],
+	'clientDetailShell.js': [
+		'baseclass',
+		'lanspeed.theme',
+		'lanspeed.clientDetailStyle'
+	],
+	'clientDetailStyle.js': [
+		'baseclass',
+		'lanspeed.statusStyle',
+		'lanspeed.clientDetailStyleBase',
+		'lanspeed.clientDetailStyleAurora',
+		'lanspeed.clientDetailStyleArgon',
+		'lanspeed.clientDetailStyleBootstrap',
+		'lanspeed.clientDetailStyleResponsive'
+	],
+	'clientDetailStyleBase.js': [ 'baseclass' ],
+	'clientDetailStyleAurora.js': [ 'baseclass' ],
+	'clientDetailStyleArgon.js': [ 'baseclass' ],
+	'clientDetailStyleBootstrap.js': [ 'baseclass' ],
+	'clientDetailStyleResponsive.js': [ 'baseclass' ],
 	'rpc.js':         [ 'baseclass', 'rpc' ],
 	'ifaceConfig.js': [ 'baseclass', 'lanspeed.format', 'lanspeed.rpc' ],
 	'nssPanel.js':    [ 'baseclass', 'lanspeed.vocab', 'lanspeed.format' ],
@@ -210,6 +244,13 @@ const RPC_FREE_MODULES = [
 	'vocab.js',
 	'format.js',
 	'clientConnections.js',
+	'clientDetailShell.js',
+	'clientDetailStyle.js',
+	'clientDetailStyleBase.js',
+	'clientDetailStyleAurora.js',
+	'clientDetailStyleArgon.js',
+	'clientDetailStyleBootstrap.js',
+	'clientDetailStyleResponsive.js',
 	'nssPanel.js',
 	'statusStyle.js',
 	'statusStyleBase.js',
@@ -358,6 +399,158 @@ function assertStyleAggregation() {
 		fail('configStyle.js must aggregate Base, Aurora, Argon, Bootstrap, Shared and Responsive CSS in cascade order');
 	if (styleHash(config.CSS) !== EXPECTED_CONFIG_STYLE_SHA256)
 		fail('modular config CSS must match the reviewed stylesheet snapshot');
+}
+
+function moduleRequireNames(src) {
+	const names = [];
+	const re = /^\s*['"]require\s+([^\s'"]+)(?:\s+as\s+\w+)?['"]\s*;/gm;
+	let match;
+	while ((match = re.exec(src)) !== null)
+		names.push(match[1]);
+	return names;
+}
+
+function cssSelectorList(css) {
+	const selectors = [];
+	const re = /([^{}]+)\{/g;
+	let match;
+	while ((match = re.exec(css)) !== null) {
+		const prelude = match[1].trim();
+		if (!prelude || prelude.charAt(0) === '@') continue;
+		prelude.split(',').forEach(function(selector) {
+			selector = selector.trim();
+			if (selector) selectors.push(selector);
+		});
+	}
+	return selectors;
+}
+
+function assertClientDetailSelectorScope(name, css, theme) {
+	const selectors = cssSelectorList(css);
+	if (!selectors.length) {
+		fail(`${name} must export non-empty connection-detail CSS`);
+		return;
+	}
+	selectors.forEach(function(selector) {
+		if (!selector.includes('.lanspeed-connection-') &&
+		    !selector.includes('.lanspeed-connections-card')) {
+			fail(`${name} selector must stay connection-detail scoped: ${selector}`);
+		}
+		if (theme && !selector.startsWith(`.lanspeed-theme-${theme}`)) {
+			fail(`${name} selector must stay under .lanspeed-theme-${theme}: ${selector}`);
+		}
+	});
+}
+
+function assertClientDetailStyleLeaf(name, src) {
+	if (JSON.stringify(moduleRequireNames(src)) !== JSON.stringify([ 'baseclass' ])) {
+		fail(`${name} must require only baseclass`);
+	}
+	const leaf = loadStyleLeaf(name);
+	if (!leaf || typeof leaf.CSS !== 'string' || !leaf.CSS.trim()) {
+		fail(`${name} must export a non-empty CSS string`);
+		return;
+	}
+	const css = leaf.CSS;
+	if (/#[0-9a-f]{3,8}\b|\b(?:rgb|hsl)a?\s*\(/i.test(css)) {
+		fail(`${name} must inherit status theme colors instead of hard-coding a separate palette`);
+	}
+	let theme = '';
+	if (name === 'clientDetailStyleAurora.js') theme = 'aurora';
+	if (name === 'clientDetailStyleArgon.js') theme = 'argon';
+	if (name === 'clientDetailStyleBootstrap.js') theme = 'bootstrap';
+	assertClientDetailSelectorScope(name, css, theme);
+
+	const themeClasses = [
+		'lanspeed-theme-aurora',
+		'lanspeed-theme-argon',
+		'lanspeed-theme-bootstrap'
+	];
+	if (!theme && themeClasses.some(function(className) { return css.includes(className); })) {
+		fail(`${name} must remain theme-neutral`);
+	}
+	if (theme && themeClasses.some(function(className) {
+		return className !== `lanspeed-theme-${theme}` && css.includes(className);
+	})) {
+		fail(`${name} must not mix selectors from another theme`);
+	}
+
+	if (name === 'clientDetailStyleBase.js') {
+		[
+			'.lanspeed-connection-identity',
+			'.lanspeed-connection-summary',
+			'.lanspeed-connection-link',
+			'.lanspeed-connection-toolbar',
+			'.lanspeed-connection-detail-row',
+			'.lanspeed-connection-endpoint',
+			'.lanspeed-connection-empty'
+		].forEach(function(token) {
+			if (!css.includes(token))
+				fail(`${name} must provide the detail-only ${token} layout hook`);
+		});
+	}
+	if (name === 'clientDetailStyleAurora.js' &&
+	    (!css.includes('padding:1rem 1.25rem .85rem') ||
+	     !css.includes('var(--label-surface'))) {
+		fail(`${name} must align detail padding and label surfaces with the Aurora status page`);
+	}
+	if (name === 'clientDetailStyleArgon.js' &&
+	    (!css.includes('font-size:1rem') || !css.includes('padding:.65rem .75rem'))) {
+		fail(`${name} must retain the Argon status typography and table density`);
+	}
+	if (name === 'clientDetailStyleBootstrap.js' &&
+	    !css.includes('padding:.4em .55em')) {
+		fail(`${name} must keep the Bootstrap detail table compact`);
+	}
+	if (name === 'clientDetailStyleResponsive.js') {
+		const media = Array.from(css.matchAll(/@media\s*\(([^)]+)\)/g), function(match) {
+			return match[1].replace(/\s+/g, '');
+		});
+		if (JSON.stringify(media) !== JSON.stringify([ 'max-width:700px', 'max-width:480px' ]) ||
+		    !css.includes('content:attr(data-label)') ||
+		    !css.includes('overflow-wrap:anywhere') ||
+		    !css.includes('.lanspeed-connection-refresh{width:100%')) {
+			fail(`${name} must provide only the 700px card-table and 480px full-width toolbar breakpoints`);
+		}
+	}
+}
+
+function assertClientDetailStyleComposer(src) {
+	const expectedRequires = [
+		'baseclass',
+		'lanspeed.statusStyle',
+		'lanspeed.clientDetailStyleBase',
+		'lanspeed.clientDetailStyleAurora',
+		'lanspeed.clientDetailStyleArgon',
+		'lanspeed.clientDetailStyleBootstrap',
+		'lanspeed.clientDetailStyleResponsive'
+	];
+	if (JSON.stringify(moduleRequireNames(src)) !== JSON.stringify(expectedRequires)) {
+		fail('clientDetailStyle.js must require status and detail style leaves in cascade order');
+	}
+	const cleaned = stripComments(src);
+	if (/@media|\.lanspeed-connection-|\.lanspeed-connections-card|['"][^'"\n]*\{/.test(cleaned)) {
+		fail('clientDetailStyle.js must only compose CSS and must not define its own rules');
+	}
+	if (!CLIENT_DETAIL_STYLE_PARTS.every(function(name) {
+		return fs.existsSync(path.join(modDir, name));
+	})) return;
+
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	const statusStyle = { CSS: 'status' };
+	const Base = { CSS: 'base' };
+	const Aurora = { CSS: 'aurora' };
+	const Argon = { CSS: 'argon' };
+	const Bootstrap = { CSS: 'bootstrap' };
+	const Responsive = { CSS: 'responsive' };
+	const detail = vm.compileFunction(src, [
+		'baseclass', 'statusStyle', 'Base', 'Aurora', 'Argon', 'Bootstrap', 'Responsive'
+	], { filename: 'resources/lanspeed/clientDetailStyle.js' })(
+		fakeBaseclass, statusStyle, Base, Aurora, Argon, Bootstrap, Responsive
+	);
+	if (!detail || detail.CSS !== 'status\nbase\naurora\nargon\nbootstrap\nresponsive') {
+		fail('clientDetailStyle.js must compose status, Base, Aurora, Argon, Bootstrap and Responsive CSS in exact order');
+	}
 }
 
 function stripComments(src) {
@@ -717,6 +910,180 @@ function findFakeElement(node, className) {
 		if (found) return found;
 	}
 	return null;
+}
+
+function walkFakeElements(node, visit) {
+	if (!node || typeof node !== 'object') return;
+	visit(node);
+	(node.children || []).forEach(function(child) {
+		walkFakeElements(child, visit);
+	});
+}
+
+function findFakeElementsByClass(node, className) {
+	const matches = [];
+	walkFakeElements(node, function(child) {
+		const classes = String(child.attrs && child.attrs.class || '').split(/\s+/);
+		if (classes.includes(className)) matches.push(child);
+	});
+	return matches;
+}
+
+function findFakeElementsByTag(node, tagName) {
+	const matches = [];
+	walkFakeElements(node, function(child) {
+		if (child.tagName === tagName) matches.push(child);
+	});
+	return matches;
+}
+
+function fakeElementText(node) {
+	if (node === null || node === undefined) return '';
+	if (typeof node !== 'object') return String(node);
+	return (node.children || []).map(fakeElementText).join('');
+}
+
+function assertClientDetailShellSource(src) {
+	const cleaned = stripComments(src);
+	if (JSON.stringify(moduleRequireNames(src)) !== JSON.stringify([
+		'baseclass', 'lanspeed.theme', 'lanspeed.clientDetailStyle'
+	])) {
+		fail('clientDetailShell.js must require only baseclass, theme and clientDetailStyle');
+	}
+	if (/\brpc\b|\bset(?:Timeout|Interval)\b|\binnerHTML\b|\b(?:Promise|fetch|async|await)\b/.test(cleaned)) {
+		fail('clientDetailShell.js must remain free of RPC, timers, async work and innerHTML');
+	}
+	if (/(?:['"]style['"]\s*:|\.style\b)|@media|\b(?:var|let|const)\s+\w*CSS\b|['"][^'"\n]*[.#][\w-]+[^'"\n]*\{/.test(cleaned)) {
+		fail('clientDetailShell.js must not inline or assemble CSS');
+	}
+	const namedFunctions = Array.from(cleaned.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)/g), function(match) {
+		return match[1];
+	});
+	if (JSON.stringify(namedFunctions) !== JSON.stringify([ 'buildShell' ])) {
+		fail('clientDetailShell.js must only define buildShell, leaving filtering and summaries to the view module');
+	}
+	if (!src.includes('clientDetailStyle.CSS') || !src.includes('lsTheme.applyRoot(root)')) {
+		fail('clientDetailShell.js must inject the composed detail CSS and apply the existing theme helper');
+	}
+}
+
+function assertClientDetailShellInteraction(src) {
+	const E = fakeElement;
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	let themedRoot = null;
+	const shell = vm.compileFunction(src,
+		[ 'baseclass', 'lsTheme', 'clientDetailStyle', 'E', '_' ],
+		{ filename: 'resources/lanspeed/clientDetailShell.js' })(
+			fakeBaseclass,
+			{ applyRoot: function(root) { themedRoot = root; } },
+			{ CSS: 'detail-css' },
+			E,
+			function(value) { return value; }
+		);
+	const calls = { back: [], protocol: [], filter: [], reload: [] };
+	const viewState = {
+		back: function() { calls.back.push(Array.from(arguments)); },
+		setProtocol: function() { calls.protocol.push(Array.from(arguments)); },
+		setFilter: function() { calls.filter.push(Array.from(arguments)); },
+		reload: function() { calls.reload.push(Array.from(arguments)); }
+	};
+	const built = shell.buildShell(viewState);
+	if (!built || !built.root || !built.refs) {
+		fail('clientDetailShell.js buildShell(viewState) must return { root, refs }');
+		return;
+	}
+	const rootClasses = String(built.root.attrs.class || '').split(/\s+/);
+	if (!rootClasses.includes('cbi-map') || !rootClasses.includes('lanspeed-root') ||
+	    !rootClasses.includes('lanspeed-connection-detail') || themedRoot !== built.root) {
+		fail('clientDetailShell.js root must reuse cbi-map/lanspeed-root, add the detail class and receive theme detection');
+	}
+	const sections = findFakeElementsByClass(built.root, 'cbi-section');
+	if (sections.length !== 2 || sections.some(function(section) {
+		return !built.root.children.includes(section);
+	}) || !findFakeElement(built.root, 'lanspeed-connection-identity-card') ||
+	    !findFakeElement(built.root, 'lanspeed-connections-card')) {
+		fail('clientDetailShell.js must render exactly two main sections for identity and connections');
+	}
+	if (findFakeElementsByClass(built.root, 'lanspeed-header').length !== 2 ||
+	    findFakeElementsByClass(built.root, 'lanspeed-body').length !== 2 ||
+	    findFakeElementsByClass(built.root, 'lanspeed-toolbar').length !== 1 ||
+	    findFakeElementsByClass(built.root, 'lanspeed-table').length !== 1 ||
+	    findFakeElementsByClass(built.root, 'big').length) {
+		fail('clientDetailShell.js must reuse the compact status header/body/toolbar/table structure without metric cards');
+	}
+
+	const allowedSharedClasses = new Set([
+		'cbi-map', 'lanspeed-root', 'cbi-section', 'lanspeed-header',
+		'lanspeed-body', 'lanspeed-toolbar', 'lanspeed-toolbar-left',
+		'lanspeed-toolbar-filter', 'lanspeed-toolbar-right', 'lanspeed-table',
+		'cbi-button', 'cbi-input-text', 'alert-message', 'error', 'label', 'spacer'
+	]);
+	walkFakeElements(built.root, function(node) {
+		String(node.attrs && node.attrs.class || '').split(/\s+/).filter(Boolean).forEach(function(className) {
+			if (!allowedSharedClasses.has(className) &&
+			    !className.startsWith('lanspeed-connection-') &&
+			    className !== 'lanspeed-connections-card') {
+				fail(`clientDetailShell.js must prefix its new class ${className}`);
+			}
+		});
+	});
+
+	const refs = built.refs;
+	[
+		'error', 'back', 'clientName', 'clientMeta', 'connectionState', 'summary',
+		'summaryTargets', 'summaryConnections', 'summaryUpdated', 'protocolAll',
+		'protocolTcp', 'protocolUdp', 'filter', 'refresh', 'table', 'tbody',
+		'empty', 'footer'
+	].forEach(function(name) {
+		if (!refs[name]) fail(`clientDetailShell.js refs must expose ${name}`);
+	});
+	if (!refs.table || !refs.tbody) return;
+
+	const copy = fakeElementText(built.root);
+	[
+		'返回客户端列表', 'LAN Speed 状态 / 客户端连接详情', '无法加载连接详情',
+		'客户端身份', '正在加载客户端身份…', 'MAC 与 IP 信息将在加载后显示',
+		'连接状态：等待加载', '连接摘要', '目标数', '连接数', '更新时间',
+		'当前连接', '全部', 'TCP', 'UDP', '立即刷新', '目标 IP', '目标端口',
+		'协议', '状态', '暂无连接', '连接数据将在加载后显示。'
+	].forEach(function(text) {
+		if (!copy.includes(text)) fail(`clientDetailShell.js must render Chinese copy: ${text}`);
+	});
+	const headers = findFakeElementsByTag(refs.table, 'th').map(fakeElementText);
+	if (JSON.stringify(headers) !== JSON.stringify([
+		'目标 IP', '目标端口', '协议', '状态', '连接数'
+	]) || findFakeElementsByTag(refs.table, 'th').some(function(th) {
+		return th.attrs.scope !== 'col';
+	})) {
+		fail('clientDetailShell.js must render the fixed accessible connection table headers');
+	}
+	if (refs.table.attrs['aria-label'] !== '客户端连接列表' ||
+	    refs.filter.attrs['aria-label'] !== '搜索连接' ||
+	    refs.filter.attrs.placeholder !== '搜索目标 IP、端口或状态' ||
+	    refs.error.attrs.role !== 'alert' || refs.error.attrs['aria-live'] !== 'assertive' ||
+	    refs.empty.attrs.role !== 'status' || refs.empty.attrs['aria-live'] !== 'polite' ||
+	    refs.footer.attrs['aria-live'] !== 'polite') {
+		fail('clientDetailShell.js must label the table/search and expose live error, empty and footer states');
+	}
+	[ refs.back, refs.protocolAll, refs.protocolTcp, refs.protocolUdp, refs.refresh ].forEach(function(button) {
+		if (!String(button.attrs.class || '').split(/\s+/).includes('cbi-button'))
+			fail('clientDetailShell.js action buttons must use cbi-button');
+	});
+	if (Object.values(calls).some(function(entries) { return entries.length; })) {
+		fail('clientDetailShell.js must not call viewState actions while constructing the shell');
+	}
+	refs.back.listeners.click({ target: refs.back });
+	refs.protocolAll.listeners.click({ target: refs.protocolAll });
+	refs.protocolTcp.listeners.click({ target: refs.protocolTcp });
+	refs.protocolUdp.listeners.click({ target: refs.protocolUdp });
+	refs.filter.listeners.input({ target: { value: '443' } });
+	refs.refresh.listeners.click({ target: refs.refresh });
+	if (JSON.stringify(calls.back) !== JSON.stringify([ [] ]) ||
+	    JSON.stringify(calls.protocol) !== JSON.stringify([ [ 'all' ], [ 'tcp' ], [ 'udp' ] ]) ||
+	    JSON.stringify(calls.filter) !== JSON.stringify([ [ '443' ] ]) ||
+	    JSON.stringify(calls.reload) !== JSON.stringify([ [] ])) {
+		fail('clientDetailShell.js events must delegate back/protocol/filter/reload directly to viewState');
+	}
 }
 
 function assertFormatActiveWindow(src) {
@@ -2375,6 +2742,16 @@ EXPECTED_MODULES.forEach(function(name) {
 	if (name === 'clientConnections.js') {
 		assertClientConnectionsModule(src);
 	}
+	if (name === 'clientDetailShell.js') {
+		assertClientDetailShellSource(src);
+		assertClientDetailShellInteraction(src);
+	}
+	if (name === 'clientDetailStyle.js') {
+		assertClientDetailStyleComposer(src);
+	}
+	if (CLIENT_DETAIL_STYLE_PARTS.includes(name)) {
+		assertClientDetailStyleLeaf(name, src);
+	}
 	if (name === 'ifaceConfig.js') {
 		assertIfaceConfigThemeLayout(src);
 		assertIfaceSaveBehavior(src);
@@ -2397,7 +2774,8 @@ EXPECTED_MODULES.forEach(function(name) {
 	if (name === 'statusStyle.js') {
 		assertStatusStyleModule(styleSources(name, STATUS_STYLE_PARTS));
 	}
-	if (STATUS_STYLE_PARTS.includes(name) || CONFIG_STYLE_PARTS.includes(name))
+	if (STATUS_STYLE_PARTS.includes(name) || CLIENT_DETAIL_STYLE_PARTS.includes(name) ||
+	    CONFIG_STYLE_PARTS.includes(name))
 		assertStyleModuleIsolation(name, src);
 	if (name === 'statusStyleCompat.js' || name === 'statusStyleCompatLive.js' ||
 	    name === 'statusStyleCompatLive2.js' || name === 'statusStyleCompatLive3.js') {
