@@ -573,6 +573,7 @@ function assertClientConnectionsModule(src) {
 	if (tcpSearchedGroups.length !== 1 || tcpSearchedGroups[0].remoteIp !== '1.1.1.1' ||
 	    tcpSearchedGroups[0].count !== 2 ||
 	    JSON.stringify(Array.from(tcpSearchedGroups[0].ports)) !== JSON.stringify([ 443 ]) ||
+	    tcpSearchedGroups[0].portLabel !== '443' ||
 	    JSON.stringify(Array.from(tcpSearchedGroups[0].connections, function(conn) { return conn.client_port; })) !==
 		JSON.stringify([ 50001, 50004 ]) ||
 	    tcpSearchedGroups[0].protocolLabel !== 'TCP' ||
@@ -583,6 +584,7 @@ function assertClientConnectionsModule(src) {
 	if (udpSearchedGroups.length !== 1 || udpSearchedGroups[0].remoteIp !== '1.1.1.1' ||
 	    udpSearchedGroups[0].count !== 1 ||
 	    JSON.stringify(Array.from(udpSearchedGroups[0].ports)) !== JSON.stringify([ 80 ]) ||
+	    udpSearchedGroups[0].portLabel !== '80' ||
 	    JSON.stringify(Array.from(udpSearchedGroups[0].connections, function(conn) { return conn.client_port; })) !==
 		JSON.stringify([ 50003 ]) ||
 	    udpSearchedGroups[0].protocolLabel !== 'UDP' ||
