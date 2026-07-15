@@ -44,6 +44,7 @@ const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lans
 const EXPECTED_MODULES = [
 	'vocab.js',
 	'format.js',
+	'clientConnections.js',
 	'rpc.js',
 	'ifaceConfig.js',
 	'nssPanel.js',
@@ -125,6 +126,7 @@ function readMakeVar(source, name, fileLabel) {
 const MODULE_REQUIRES = {
 	'vocab.js':       [ 'baseclass' ],
 	'format.js':      [ 'baseclass' ],
+	'clientConnections.js': [ 'baseclass', 'lanspeed.format' ],
 	'rpc.js':         [ 'baseclass', 'rpc' ],
 	'ifaceConfig.js': [ 'baseclass', 'lanspeed.format', 'lanspeed.rpc' ],
 	'nssPanel.js':    [ 'baseclass', 'lanspeed.vocab', 'lanspeed.format' ],
@@ -207,6 +209,7 @@ const MODULE_REQUIRES = {
 const RPC_FREE_MODULES = [
 	'vocab.js',
 	'format.js',
+	'clientConnections.js',
 	'nssPanel.js',
 	'statusStyle.js',
 	'statusStyleBase.js',
@@ -411,6 +414,183 @@ function loadFormatModule(src) {
 	return vm.compileFunction(src, [ 'baseclass' ], {
 		filename: 'resources/lanspeed/format.js'
 	})(fakeBaseclass);
+}
+
+function loadClientConnectionsModule(src) {
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	return vm.compileFunction(src, [ 'baseclass', 'fmt' ], {
+		filename: 'resources/lanspeed/clientConnections.js'
+	})(fakeBaseclass, loadFormatModule(readModuleByName('format.js')));
+}
+
+function assertClientConnectionsSource(src) {
+	const cleaned = stripComments(src);
+	const requires = [];
+	const requireRe = /^\s*['"]require\s+([^\s'"]+)(?:\s+as\s+\w+)?['"]\s*;/gm;
+	let match;
+	while ((match = requireRe.exec(cleaned)) !== null)
+		requires.push(match[1]);
+	if (JSON.stringify(requires) !== JSON.stringify([ 'baseclass', 'lanspeed.format' ])) {
+		fail('clientConnections.js must require only baseclass and lanspeed.format');
+	}
+	if (/\b(?:document|window|Node|HTMLElement|setTimeout|setInterval|requestAnimationFrame|rpc)\b|\bE\s*\(|\.(?:innerHTML|textContent|appendChild|createElement)\b/.test(cleaned)) {
+		fail('clientConnections.js must remain free of DOM, RPC, and timer APIs');
+	}
+	if (/\bCSS\b|@media|['"]\s*[.#][A-Za-z][^'"]*\{/.test(cleaned)) {
+		fail('clientConnections.js must not embed CSS strings');
+	}
+}
+
+function assertClientConnectionsModule(src) {
+	assertClientConnectionsSource(src);
+	const mod = loadClientConnectionsModule(src);
+	const methods = [
+		'identityFromSearch',
+		'detailHref',
+		'formatEndpoint',
+		'groupsForResponse',
+		'portSummary',
+		'stateLabel'
+	];
+	if (!mod || methods.some(function(name) { return typeof mod[name] !== 'function'; })) {
+		fail('clientConnections.js must expose every pure connection-detail helper');
+		return;
+	}
+
+	if (mod.identityFromSearch('?client=aa%3Abb%40lan') !== 'aa:bb@lan' ||
+	    mod.identityFromSearch('?x=1&client=02%3A00%3A00%3A00%3A00%3A01%40lan&z=2') !==
+		'02:00:00:00:00:01@lan' ||
+	    mod.identityFromSearch('?x=1') !== '') {
+		fail('clientConnections.js must safely read and decode the client query parameter');
+	}
+	try {
+		if (mod.identityFromSearch('?client=%E0%A4%A') !== '')
+			fail('clientConnections.js must return an empty identity for malformed percent encoding');
+	} catch (err) {
+		fail('clientConnections.js must not throw for malformed percent encoding');
+	}
+
+	if (mod.detailHref('/admin/status/lanspeed/overview', 'aa:bb@lan') !==
+		'/admin/status/lanspeed/overview?client=aa%3Abb%40lan' ||
+	    mod.detailHref('/admin/status/lanspeed/overview?tab=clients#connections', 'aa:bb@lan') !==
+		'/admin/status/lanspeed/overview?tab=clients&client=aa%3Abb%40lan#connections') {
+		fail('clientConnections.js must append an encoded client query without dropping existing query or hash text');
+	}
+
+	if (mod.formatEndpoint('240e::1', 443) !== '[240e::1]:443' ||
+	    mod.formatEndpoint('[240e::1]', 0) !== '[240e::1]:0' ||
+	    mod.formatEndpoint('1.1.1.1', 53) !== '1.1.1.1:53' ||
+	    mod.formatEndpoint('1.1.1.1') !== '1.1.1.1') {
+		fail('clientConnections.js must format IPv4/IPv6 endpoints and preserve port zero');
+	}
+
+	const response = {
+		connections: [
+			{
+				client_ip: '192.0.2.10', client_port: 50001,
+				remote_ip: '1.1.1.1', remote_port: 443,
+				protocol: 'tcp', state: 'established'
+			},
+			{
+				client_ip: '192.0.2.10', client_port: 50002,
+				remote_ip: '8.8.8.8', remote_port: 53,
+				protocol: 'udp', state: 'assured'
+			},
+			{
+				client_ip: '192.0.2.11', client_port: 50003,
+				remote_ip: '1.1.1.1', remote_port: 80,
+				protocol: 'udp', state: 'assured'
+			},
+			{
+				client_ip: '192.0.2.12', client_port: 50004,
+				remote_ip: '1.1.1.1', remote_port: 443,
+				protocol: 'tcp', state: 'established'
+			},
+			{
+				client_ip: '192.0.2.13', client_port: 50005,
+				remote_ip: '9.9.9.9', remote_port: 853,
+				protocol: 'tcp', state: 'established'
+			},
+			{
+				client_ip: '2001:DB8::10', client_port: 50006,
+				remote_ip: '2001:DB8::BEEF', remote_port: 123,
+				protocol: 'udp', state: 'assured'
+			}
+		]
+	};
+	const originalResponse = JSON.stringify(response);
+	const groups = mod.groupsForResponse(response, 'all', '');
+	if (!Array.isArray(groups) || groups.length !== 4 ||
+	    Object.prototype.toString.call(groups[0]) !== '[object Object]' ||
+	    !Array.isArray(groups[0].ports) || !Array.isArray(groups[0].connections)) {
+		fail('clientConnections.js must return ordinary group objects and arrays');
+		return;
+	}
+	if (groups[0].remoteIp !== '1.1.1.1' ||
+	    JSON.stringify(Array.from(groups[0].ports)) !== JSON.stringify([ 80, 443 ]) ||
+	    groups[0].portLabel !== '80, 443' ||
+	    groups[0].protocolLabel !== 'TCP/UDP' ||
+	    groups[0].stateLabel !== '混合' ||
+	    groups[0].count !== 3 ||
+	    JSON.stringify(Array.from(groups[0].connections, function(conn) { return conn.client_port; })) !==
+		JSON.stringify([ 50001, 50003, 50004 ])) {
+		fail('clientConnections.js must aggregate duplicate destinations without reordering their connections');
+	}
+	if (groups[1].remoteIp !== '8.8.8.8' || groups[1].protocolLabel !== 'UDP' ||
+	    groups[1].stateLabel !== '活跃' || groups[2].remoteIp !== '9.9.9.9' ||
+	    groups[2].protocolLabel !== 'TCP' || groups[2].stateLabel !== '已建立') {
+		fail('clientConnections.js must preserve first-seen group order and label uniform protocol/state groups');
+	}
+
+	const tcpGroups = mod.groupsForResponse(response, 'tcp', '');
+	if (JSON.stringify(Array.from(tcpGroups, function(group) { return group.remoteIp; })) !==
+		JSON.stringify([ '1.1.1.1', '9.9.9.9' ]) ||
+	    tcpGroups[0].count !== 2 ||
+	    JSON.stringify(Array.from(tcpGroups[0].ports)) !== JSON.stringify([ 443 ]) ||
+	    tcpGroups[0].protocolLabel !== 'TCP' || tcpGroups[0].stateLabel !== '已建立') {
+		fail('clientConnections.js must filter TCP before building group counts and summaries');
+	}
+	const udpGroups = mod.groupsForResponse(response, 'udp', '');
+	if (JSON.stringify(Array.from(udpGroups, function(group) { return group.remoteIp; })) !==
+		JSON.stringify([ '8.8.8.8', '1.1.1.1', '2001:DB8::BEEF' ]) ||
+	    udpGroups[1].count !== 1 || udpGroups[1].portLabel !== '80' ||
+	    udpGroups[1].protocolLabel !== 'UDP' || udpGroups[1].stateLabel !== '活跃') {
+		fail('clientConnections.js must filter UDP before preserving first-seen group order');
+	}
+	if (mod.groupsForResponse(response, 'unexpected', '').length !== groups.length) {
+		fail('clientConnections.js must safely normalize unknown protocol filters to all');
+	}
+
+	const remoteSearch = mod.groupsForResponse(response, 'all', '1.1.1.1');
+	const clientSearch = mod.groupsForResponse(response, 'all', '192.0.2.11');
+	const remotePortSearch = mod.groupsForResponse(response, 'all', '853');
+	const clientPortSearch = mod.groupsForResponse(response, 'all', '50002');
+	const caseSearch = mod.groupsForResponse(response, 'all', '  db8::beef  ');
+	const narrowedSearch = mod.groupsForResponse(response, 'all', '443');
+	if (remoteSearch.length !== 1 || remoteSearch[0].count !== 3 ||
+	    clientSearch.length !== 1 || clientSearch[0].count !== 1 ||
+	    clientSearch[0].portLabel !== '80' || clientSearch[0].protocolLabel !== 'UDP' ||
+	    remotePortSearch.length !== 1 || remotePortSearch[0].remoteIp !== '9.9.9.9' ||
+	    clientPortSearch.length !== 1 || clientPortSearch[0].remoteIp !== '8.8.8.8' ||
+	    caseSearch.length !== 1 || caseSearch[0].remoteIp !== '2001:DB8::BEEF' ||
+	    narrowedSearch.length !== 1 || narrowedSearch[0].count !== 2 ||
+	    narrowedSearch[0].portLabel !== '443' || narrowedSearch[0].protocolLabel !== 'TCP') {
+		fail('clientConnections.js search must cover every endpoint field before recomputing group summaries');
+	}
+
+	const ports = [ 53, 80, 443, 853, 5353 ];
+	const originalPorts = JSON.stringify(ports);
+	if (mod.portSummary(ports.slice(0, 3)) !== '53, 80, 443' ||
+	    mod.portSummary(ports) !== '53, 80, 443，另有 2 个' ||
+	    mod.portSummary([]) !== '-' ||
+	    mod.stateLabel([ { state: 'established' }, { state: 'established' } ]) !== '已建立' ||
+	    mod.stateLabel([ { state: 'assured' } ]) !== '活跃' ||
+	    mod.stateLabel([ { state: 'established' }, { state: 'assured' } ]) !== '混合') {
+		fail('clientConnections.js must provide bounded port summaries and Chinese state labels');
+	}
+	if (JSON.stringify(response) !== originalResponse || JSON.stringify(ports) !== originalPorts) {
+		fail('clientConnections.js helpers must not mutate response, connections, or port inputs');
+	}
 }
 
 function loadIfaceConfigModule(src, lsRpc) {
@@ -2153,6 +2333,9 @@ EXPECTED_MODULES.forEach(function(name) {
 			assertFormatActiveWindow(src);
 			assertFormatSorting(src);
 		}
+	if (name === 'clientConnections.js') {
+		assertClientConnectionsModule(src);
+	}
 	if (name === 'ifaceConfig.js') {
 		assertIfaceConfigThemeLayout(src);
 		assertIfaceSaveBehavior(src);
