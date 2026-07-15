@@ -14,7 +14,7 @@
   "collector_mode": "auto",
   "rate_collector_mode": "auto",
   "conn_collector_mode": "auto",
-  "version": "1.0.0-r1",
+  "version": "1.0.0-r2",
   "capabilities": {
     "bpf": false,
     "bpf_package": false,

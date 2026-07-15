@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-lanspeed
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=
@@ -52,6 +52,16 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/configStyleBootstrap.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleResponsive.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleShared.js \
+		./htdocs/luci-static/resources/lanspeed/clientConnections.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailShell.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailStyle.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailStyleBase.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailStyleBootstrap.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailStyleArgon.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailStyleAurora.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailStyleResponsive.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailRefresh.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailView.js \
 		./htdocs/luci-static/resources/lanspeed/format.js \
 		./htdocs/luci-static/resources/lanspeed/ifaceConfig.js \
 		./htdocs/luci-static/resources/lanspeed/nssPanel.js \

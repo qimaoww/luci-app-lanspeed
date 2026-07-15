@@ -118,6 +118,10 @@ try {
   ], { cwd: rustRoot, encoding: 'utf8' }));
   runWorkspaceMetadataSelfTest(daemonVersion);
 
+  assert(daemonVersion === '1.0.0', 'daemon PKG_VERSION must remain exactly 1.0.0 for this release');
+  assert(luciVersion === '1.0.0', 'LuCI PKG_VERSION must remain exactly 1.0.0 for this release');
+  assert(daemonRelease === '2', 'daemon PKG_RELEASE must be exactly 2 for the client connection detail release');
+  assert(luciRelease === '2', 'LuCI PKG_RELEASE must be exactly 2 for the client connection detail release');
   assert(daemonVersion === luciVersion, 'daemon and LuCI PKG_VERSION must match for releases');
   assert(daemonRelease === luciRelease, 'daemon and LuCI PKG_RELEASE must match for releases');
   assert(workspaceVersion, 'Cargo workspace must define package.version');

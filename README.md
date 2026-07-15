@@ -41,7 +41,7 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 - **配置页面**：LuCI 内置“实时状态”和“LAN Speed 配置”两个页签，速率采集、连接数采集、活跃客户端阈值和接口配置可分开调整，并由页面底部的统一按钮一次保存、提交和重载；NSS 设备会显示 NSS 专属说明。
 - **接口配置**：采集 / 观察 / 关闭 三态切换，默认采集 `br-lan`、观察 `wan`；自动忽略 `dae*`、`miireg*`、`tun*`、`erspan*`、`gretap*`、`gre*`、`ip6gre*`、`ip6tnl*`、`sit*`、`bonding_masters*`，拒绝 nssifb 采集并可观察 WAN / ifb 计数。
 - **告警体系**：OpenClash / dae/daed / SQM/qosify/ifb / flow offload / fullcone NAT 等场景自动识别并提示。
-- **版本显示**：LuCI 状态页显示完整版本，例如 `1.0.0-r1`。
+- **版本显示**：LuCI 状态页显示完整版本，例如 `1.0.0-r2`。
 
 ## 采集策略
 
@@ -82,7 +82,7 @@ NSS ECM/PPE sync 是显式选择 `nss_conntrack_sync`、NSS-direct 的补齐来�
 
 | 包 | 说明 |
 |---|---|
-| `lanspeedd` | Rust/Aya daemon，暴露 ubus 方法（status / clients / overview / health / interfaces / sysdevices / reload） |
+| `lanspeedd` | Rust/Aya daemon，暴露八个 ubus 方法（status / clients / overview / health / reload / interfaces / sysdevices / client_connections） |
 | `lanspeedd-bpf` | LuCI 应用的必选依赖，安装 Rust 编译的 kfunc 与 fallback 两套 tc/eBPF 对象（含 ct_lookup + seen_tuples 去重 map），并依赖 `lanspeedd` |
 | `luci-app-lanspeed` | LuCI 状态页和配置页，强制依赖 `lanspeedd-bpf`，模块化前端（vocab / format / rpc / ifaceConfig / nssPanel / version） |
 
@@ -158,6 +158,7 @@ ABI 注意点：包必须用目标固件对应的 25.12 SDK 编译，不能混�
 LuCI 入口：
 
 - `状态 -> 客户端网速 -> 实时状态`
+- `状态 -> 客户端网速 -> 实时状态 -> 点击客户端名称进入连接详情页`
 - `状态 -> 客户端网速 -> LAN Speed 配置`
 
 `/etc/config/lanspeed`：
@@ -223,9 +224,14 @@ ubus call lanspeed status       # Full / Degraded / Unsupported、high / medium 
 ubus call lanspeed clients      # 客户端 tx_bps/rx_bps + TCP/UDP/DNS 连接数
 ubus call lanspeed overview     # 总速率、客户端数、active_clients、连接数窗口
 ubus call lanspeed health       # 健康检查 + 冲突检测
+ubus call lanspeed reload       # 刷新 lanspeedd 运行状态，不写持久 UCI 配置
 ubus call lanspeed interfaces   # 接口吞吐 + 覆盖率
 ubus call lanspeed sysdevices   # 系统网络设备列表
+ubus call lanspeed client_connections \
+  '{"identity_key":"30:c5:99:a7:bb:2d@eth1"}'
 ```
+
+`client_connections` 的 `identity_key` 来自 `clients` 响应。它返回该客户端当前 conntrack 快照中的 TCP 已建立连接和 UDP ASSURED 连接，不是历史连接记录；响应中的 `limit`、`returned_connections` 和 `truncated` 用于说明截断情况。LuCI 实时状态表中点击客户端名称即可进入连接详情页。
 
 关键字段：
 
@@ -309,6 +315,12 @@ tests/                             本地回归测试
 ```sh
 ./tests/run.sh unit
 sh tests/validate-lanspeed-docs.sh
+```
+
+后续设备验证可先运行 dry-run 审阅八个 ubus 方法及动态详情命令模板；确认目标设备和 SSH 参数后，再采集真实 evidence。`collect` 中的 `reload` 只刷新 lanspeedd 运行状态，不修改持久 UCI、网络、防火墙或代理配置。
+
+```sh
+DRY_RUN=1 TARGET=root@router OUT_DIR="$(mktemp -d)" sh tests/qa-device.sh collect
 ```
 
 ## License

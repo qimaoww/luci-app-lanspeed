@@ -31,7 +31,7 @@ Environment:
   IPERF_CLIENT_OPTS='-t 10 -P 1'  Optional iperf client flags.
 
 Subcommands:
-  collect        Collect read-only ubus/tc/nft/uci/service/process evidence or dry-run plan.
+  collect        Collect ubus/tc/nft/uci/service/process evidence or a dry-run plan.
   iperf          Record iperf command plan/output with ubus snapshots; no screenshots needed.
   matrix         Write machine-readable high-risk QA matrix results.
   openclash-dae  Write mock/dry-run OpenClash + dae conflict evidence JSON.
@@ -76,7 +76,11 @@ remote_shell() {
 		return 0
 	fi
 
-	ssh $SSH_OPTS "$TARGET" "$remote_command"
+	if [ -n "${SSHPASS:-}" ]; then
+		sshpass -e ssh $SSH_OPTS "$TARGET" "$remote_command"
+	else
+		ssh $SSH_OPTS "$TARGET" "$remote_command"
+	fi
 }
 
 append_section() {
@@ -92,9 +96,11 @@ append_section() {
 collect_commands() {
 	cat <<'EOF'
 ubus call lanspeed status
-ubus call lanspeed clients
+ubus call lanspeed overview
 ubus call lanspeed health
+ubus call lanspeed reload
 ubus call lanspeed interfaces
+ubus call lanspeed sysdevices
 tc filter show dev br-lan ingress
 tc filter show dev br-lan egress
 tc qdisc show dev br-lan
@@ -114,6 +120,36 @@ ps w | grep -E 'lanspeedd|openclash|clash|dae|daed' | grep -v grep
 EOF
 }
 
+client_connections_command() {
+	cat <<'EOF'
+clients_json=$(ubus call lanspeed clients)
+clients_status=$?
+printf '%s\n' "$clients_json"
+if [ "$clients_status" -ne 0 ]; then
+	exit "$clients_status"
+fi
+identity_key=$(printf '%s\n' "$clients_json" | jsonfilter -e '@.clients[0].identity_key')
+if [ -z "$identity_key" ]; then
+	printf '%s\n' 'client_connections skipped: no client identity_key'
+	exit 0
+fi
+. /usr/share/libubox/jshn.sh
+json_init
+json_add_string identity_key "$identity_key"
+client_payload=$(json_dump)
+ubus call lanspeed client_connections "$client_payload"
+EOF
+}
+
+collect_client_connections() {
+	append_section "$DRY_RUN_EVIDENCE" "dynamic client connection detail"
+	client_command=$(client_connections_command)
+	remote_shell "$client_command" >> "$DRY_RUN_EVIDENCE" 2>&1 || {
+		status=$?
+		printf 'command_exit=%s\n' "$status" >> "$DRY_RUN_EVIDENCE"
+	}
+}
+
 run_collect() {
 	require_target_for_real_remote
 	{
@@ -121,8 +157,8 @@ run_collect() {
 		printf 'started=%s\n' "$(timestamp)"
 		printf 'target=%s\n' "${TARGET:-not_provided}"
 		printf 'dry_run=%s\n' "$DRY_RUN"
-		printf '%s\n' "safety=collect is read-only; it does not alter OpenClash, dae, firewall, network, tc, nft, or UCI configuration"
-		printf '%s\n' "coverage=ubus status/clients/health/interfaces, tc filters/qdisc, nft ruleset summary input, relevant uci show, service status, process checks"
+		printf '%s\n' "safety=collect 包含 reload；reload 只刷新 lanspeedd 运行状态，不修改持久 UCI、网络、防火墙或代理配置；其余命令采集诊断证据"
+		printf '%s\n' "coverage=ubus 八个方法: status, clients, overview, health, reload, interfaces, sysdevices, client_connections"
 	} > "$DRY_RUN_EVIDENCE"
 
 	collect_commands | while IFS= read -r command; do
@@ -132,6 +168,8 @@ run_collect() {
 			printf 'command_exit=%s\n' "$status" >> "$DRY_RUN_EVIDENCE"
 		}
 	done
+
+	collect_client_connections
 
 	printf '%s\n' "collect evidence: $DRY_RUN_EVIDENCE"
 }
@@ -161,7 +199,7 @@ run_iperf() {
 		printf 'iperf_command=%s\n' "$IPERF_COMMAND"
 		printf 'iperf_server=%s\n' "${IPERF_SERVER:-not_provided}"
 		printf 'iperf_client_opts=%s\n' "$IPERF_CLIENT_OPTS"
-		printf '%s\n' "safety=iperf only runs when explicitly invoked; collect/status/client snapshots remain read-only and no proxy/firewall/network configuration is changed"
+		printf '%s\n' "safety=iperf only runs when explicitly invoked; its status/client snapshots are read-only; collect reload only refreshes lanspeedd runtime state and does not change persistent UCI, proxy, firewall, or network configuration"
 	} > "$IPERF_EVIDENCE"
 
 	iperf_commands | while IFS= read -r command; do
@@ -191,7 +229,7 @@ run_matrix() {
 		printf '  "generated_at": "%s",\n' "$(timestamp)"
 		printf '  "target": "%s",\n' "$(printf '%s' "${TARGET:-not_provided}" | json_escape)"
 		printf '  "dry_run": %s,\n' "$(if [ "$DRY_RUN" = "1" ]; then printf true; else printf false; fi)"
-		printf '  "safety": "collect and matrix dry-run are read-only and do not alter proxy, firewall, network, tc, nft, or UCI configuration",\n'
+		printf '  "safety": "matrix writes local evidence only; collect reload refreshes lanspeedd runtime state and does not change persistent UCI, proxy, firewall, or network configuration",\n'
 		printf '  "real_device_pass_claimed": false,\n'
 		printf '  "result_values": ["pass", "degraded", "unsupported", "not_run"],\n'
 		printf '  "scenarios": [\n'

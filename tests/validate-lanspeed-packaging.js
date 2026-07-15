@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 const fs = require('fs');
+const childProcess = require('child_process');
+const os = require('os');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
@@ -11,6 +13,22 @@ const buildDriver = fs.readFileSync(
 );
 const cargoConfig = fs.readFileSync(path.join(root, 'net/lanspeedd/rust/.cargo/config.toml'), 'utf8');
 const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/Makefile'), 'utf8');
+const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+const qaDevicePath = path.join(root, 'tests/qa-device.sh');
+const qaDevice = fs.readFileSync(qaDevicePath, 'utf8');
+
+const clientDetailResources = [
+  'clientConnections.js',
+  'clientDetailShell.js',
+  'clientDetailStyle.js',
+  'clientDetailStyleBase.js',
+  'clientDetailStyleBootstrap.js',
+  'clientDetailStyleArgon.js',
+  'clientDetailStyleAurora.js',
+  'clientDetailStyleResponsive.js',
+  'clientDetailRefresh.js',
+  'clientDetailView.js'
+];
 
 function assert(condition, message) {
   if (!condition) {
@@ -26,7 +44,171 @@ function assertNoMatch(source, pattern, message) {
   assert(!pattern.test(source), message);
 }
 
+function countLiteral(source, value) {
+  return source.split(value).length - 1;
+}
+
+function writeExecutable(file, source) {
+  fs.writeFileSync(file, source, { mode: 0o755 });
+}
+
+function readIfPresent(file) {
+  return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+}
+
+function validateQaDeviceContract() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lanspeed-qa-contract-'));
+  const fakeBin = path.join(tempRoot, 'bin');
+  const dryOutput = path.join(tempRoot, 'dry-output');
+  const realOutput = path.join(tempRoot, 'real-output');
+  const forbiddenLog = path.join(tempRoot, 'dry-forbidden.log');
+  const sshpassLog = path.join(tempRoot, 'sshpass.log');
+  const ubusLog = path.join(tempRoot, 'ubus.log');
+  fs.mkdirSync(fakeBin);
+
+  try {
+    for (const command of ['ssh', 'sshpass', 'ubus']) {
+      writeExecutable(path.join(fakeBin, command), `#!/bin/sh\nprintf '%s\\n' '${command}' >> "$QA_FORBIDDEN_LOG"\nexit 97\n`);
+    }
+
+    const dryPlaceholder = 'dry-run-placeholder';
+    childProcess.execFileSync('sh', [qaDevicePath, 'collect'], {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        TARGET: 'root@192.0.2.1',
+        DRY_RUN: '1',
+        OUT_DIR: dryOutput,
+        SSHPASS: dryPlaceholder,
+        QA_FORBIDDEN_LOG: forbiddenLog
+      }
+    });
+
+    assert(readIfPresent(forbiddenLog) === '', 'DRY_RUN=1 must not execute ssh, sshpass, or ubus');
+    const dryEvidencePath = path.join(dryOutput, 'task-16-device-dry-run.txt');
+    assert(fs.existsSync(dryEvidencePath), 'qa-device dry-run must write task-16-device-dry-run.txt');
+    const dryEvidence = fs.readFileSync(dryEvidencePath, 'utf8');
+    assert(!dryEvidence.includes(dryPlaceholder), 'qa-device dry-run evidence must never expose SSHPASS');
+    assert(
+      dryEvidence.includes('coverage=ubus 八个方法: status, clients, overview, health, reload, interfaces, sysdevices, client_connections'),
+      'qa-device evidence header must state all eight ubus methods'
+    );
+    for (const method of [
+      'status',
+      'clients',
+      'overview',
+      'health',
+      'reload',
+      'interfaces',
+      'sysdevices',
+      'client_connections'
+    ]) {
+      assert(
+        dryEvidence.includes(`ubus call lanspeed ${method}`),
+        `qa-device dry-run evidence must include the ${method} command template`
+      );
+    }
+    assert(
+      countLiteral(dryEvidence, 'ubus call lanspeed clients') === 1,
+      'qa-device dry-run must capture the clients response exactly once'
+    );
+    assert(
+      dryEvidence.includes("jsonfilter -e '@.clients[0].identity_key'"),
+      'qa-device dry-run must extract the first client identity_key with jsonfilter'
+    );
+    assert(
+      dryEvidence.includes('json_add_string identity_key "$identity_key"') &&
+        dryEvidence.includes('client_payload=$(json_dump)'),
+      'qa-device dry-run must show jshn payload construction for client_connections'
+    );
+    assert(
+      /safety=.*reload.*(?:不修改|不会修改|不改).*UCI.*(?:网络|防火墙|代理)/.test(dryEvidence),
+      'qa-device safety header must explain reload without claiming that collect is entirely read-only'
+    );
+
+    assertMatch(
+      qaDevice,
+      /if \[ -n "\$\{SSHPASS:-\}" \]; then\s+sshpass -e ssh \$SSH_OPTS "\$TARGET" "\$remote_command"\s+else\s+ssh \$SSH_OPTS "\$TARGET" "\$remote_command"\s+fi/,
+      'qa-device remote_shell must use sshpass -e only when SSHPASS is non-empty and preserve plain ssh otherwise'
+    );
+    assertNoMatch(qaDevice, /sshpass\s+-p/, 'qa-device must never pass a password on the sshpass command line');
+    assertNoMatch(qaDevice, /\beval\b/, 'qa-device must not eval remote commands or JSON payloads');
+    assertNoMatch(qaDevice, /\{["']identity_key["']\s*:/, 'qa-device must not build client_connections JSON with a raw string literal');
+    assert(qaDevice.includes('. /usr/share/libubox/jshn.sh'), 'qa-device must load the remote jshn helper');
+    assert(qaDevice.includes('json_init'), 'qa-device must initialize the remote jshn payload');
+    assert(qaDevice.includes('json_add_string identity_key "$identity_key"'), 'qa-device must add identity_key through jshn');
+    assert(qaDevice.includes('client_payload=$(json_dump)'), 'qa-device must serialize the detail payload through jshn');
+
+    writeExecutable(path.join(fakeBin, 'sshpass'), `#!/bin/sh
+printf '%s|%s|%s\\n' "$1" "$2" "$3" >> "$QA_SSHPASS_LOG"
+[ "$1" = '-e' ] || exit 96
+shift
+exec "$@"
+`);
+    writeExecutable(path.join(fakeBin, 'ssh'), `#!/bin/sh
+for remote_command do :; done
+case "$remote_command" in
+  *'clients_json=$(ubus call lanspeed clients)'*)
+    PATH="$QA_FAKE_BIN:$PATH" sh -c "$remote_command"
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`);
+    writeExecutable(path.join(fakeBin, 'ubus'), `#!/bin/sh
+printf '%s %s %s\\n' "\${1:-}" "\${2:-}" "\${3:-}" >> "$QA_UBUS_LOG"
+if [ "\${3:-}" = 'clients' ]; then
+  printf '%s\\n' '{"clients":[]}'
+else
+  printf '%s\\n' '{}'
+fi
+`);
+    writeExecutable(path.join(fakeBin, 'jsonfilter'), `#!/bin/sh
+cat >/dev/null
+exit 0
+`);
+
+    childProcess.execFileSync('sh', [qaDevicePath, 'collect'], {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        TARGET: 'root@192.0.2.1',
+        DRY_RUN: '0',
+        OUT_DIR: realOutput,
+        SSHPASS: 'non-empty-placeholder',
+        QA_FAKE_BIN: fakeBin,
+        QA_SSHPASS_LOG: sshpassLog,
+        QA_UBUS_LOG: ubusLog
+      }
+    });
+
+    const realEvidence = fs.readFileSync(path.join(realOutput, 'task-16-device-dry-run.txt'), 'utf8');
+    assert(
+      readIfPresent(ubusLog).trim() === 'call lanspeed clients',
+      'qa-device collect must safely skip client_connections when clients has no identity_key'
+    );
+    assert(
+      realEvidence.includes('client_connections skipped: no client identity_key'),
+      'qa-device collect evidence must record the no-client detail skip'
+    );
+    const sshpassInvocations = readIfPresent(sshpassLog).trim().split('\n').filter(Boolean);
+    assert(sshpassInvocations.length > 0, 'non-empty SSHPASS must invoke sshpass');
+    assert(
+      sshpassInvocations.every((line) => line === '-e|ssh|root@192.0.2.1'),
+      'every non-empty SSHPASS remote call must use sshpass -e ssh before the target'
+    );
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
 try {
+  validateQaDeviceContract();
   const compileMatch = /^define Build\/Compile\n([\s\S]*?)^endef$/m.exec(pkgMakefile);
   assert(compileMatch, 'net/lanspeedd/Makefile must define Build/Compile');
   const compileBody = compileMatch[1];
@@ -190,6 +372,55 @@ try {
       `luci-app-lanspeed/Makefile must install resources/lanspeed/${name}`
     );
   });
+
+  const resourceInstall = /\t\$\(INSTALL_DATA\) \\\n([\s\S]*?)\n\t\t\$\(1\)\/www\/luci-static\/resources\/lanspeed\/\n/.exec(luciMakefile);
+  assert(resourceInstall, 'LuCI package must keep an explicit INSTALL_DATA block for resources/lanspeed');
+  assertNoMatch(
+    resourceInstall[1],
+    /[?*\[]/,
+    'LuCI resources/lanspeed INSTALL_DATA block must not use wildcard or glob entries'
+  );
+  const installedClientDetailResources = [...resourceInstall[1].matchAll(
+    /\.\/htdocs\/luci-static\/resources\/lanspeed\/(client(?:Connections|Detail)[^\s\\/]*\.js)/g
+  )].map((match) => match[1]);
+  assert(
+    installedClientDetailResources.length === clientDetailResources.length &&
+      clientDetailResources.every((name) => installedClientDetailResources.includes(name)),
+    'LuCI package must install exactly the ten client connection detail resources by explicit filename'
+  );
+  clientDetailResources.forEach((name) => {
+    const installPath = `./htdocs/luci-static/resources/lanspeed/${name}`;
+    assert(
+      countLiteral(resourceInstall[1], installPath) === 1,
+      `LuCI package must install ${name} exactly once into resources/lanspeed`
+    );
+  });
+
+  const documentedMethods = [
+    'status',
+    'clients',
+    'overview',
+    'health',
+    'reload',
+    'interfaces',
+    'sysdevices',
+    'client_connections'
+  ];
+  documentedMethods.forEach((method) => {
+    assert(
+      readme.includes(`ubus call lanspeed ${method}`),
+      `README must document the lanspeed ${method} ubus method`
+    );
+  });
+  assert(
+    readme.includes("ubus call lanspeed client_connections \\\n  '{\"identity_key\":\"30:c5:99:a7:bb:2d@eth1\"}'"),
+    'README must provide the copyable client_connections identity_key command'
+  );
+  assert(
+    /client_connections[\s\S]*(?:当前连接|当前 conntrack)/.test(readme) &&
+      /(?:详情页|连接详情)/.test(readme),
+    'README must explain current-connection semantics and the client detail page entry'
+  );
 
   console.log('validate-lanspeed-packaging: PASS');
 } catch (error) {
