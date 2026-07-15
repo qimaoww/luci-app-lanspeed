@@ -57,7 +57,7 @@ function buildShell(viewState) {
 	}, [
 		E('h4', { 'class': 'lanspeed-connection-summary-title' }, _('连接摘要')),
 		E('div', { 'class': 'lanspeed-connection-summary-item' }, [
-			E('span', { 'class': 'lanspeed-connection-summary-label' }, _('目标数')),
+			E('span', { 'class': 'lanspeed-connection-summary-label' }, _('目标 IP 数')),
 			refs.summaryTargets
 		]),
 		E('div', { 'class': 'lanspeed-connection-summary-item' }, [
@@ -118,7 +118,7 @@ function buildShell(viewState) {
 		'type': 'search',
 		'class': 'cbi-input-text lanspeed-connection-filter-input',
 		'aria-label': _('搜索连接'),
-		'placeholder': _('搜索目标 IP、端口或状态')
+		'placeholder': _('搜索目标 IP 或端口')
 	});
 	refs.filter.addEventListener('input', function(ev) {
 		viewState.setFilter(ev.target.value);

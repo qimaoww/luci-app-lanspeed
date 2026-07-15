@@ -452,7 +452,11 @@ function assertClientDetailStyleLeaf(name, src) {
 		return;
 	}
 	const css = leaf.CSS;
-	if (/#[0-9a-f]{3,8}\b|\b(?:rgb|hsl)a?\s*\(/i.test(css)) {
+	const paletteCss = css.replace(
+		/var\(--border,rgba\(128,128,128,\.18\)\)/g,
+		'var(--border)'
+	);
+	if (/#[0-9a-f]{3,8}\b|\b(?:rgb|hsl)a?\s*\(/i.test(paletteCss)) {
 		fail(`${name} must inherit status theme colors instead of hard-coding a separate palette`);
 	}
 	let theme = '';
@@ -498,19 +502,57 @@ function assertClientDetailStyleLeaf(name, src) {
 	    (!css.includes('font-size:1rem') || !css.includes('padding:.65rem .75rem'))) {
 		fail(`${name} must retain the Argon status typography and table density`);
 	}
-	if (name === 'clientDetailStyleBootstrap.js' &&
-	    !css.includes('padding:.4em .55em')) {
-		fail(`${name} must keep the Bootstrap detail table compact`);
+	if (name === 'clientDetailStyleBootstrap.js') {
+		/* lsTheme.applyRoot() adds both classes to the same root; there is no
+		 * descendant .lanspeed-connection-detail node for a spaced selector. */
+		const rootClasses = new Set([
+			'lanspeed-theme-bootstrap',
+			'lanspeed-connection-detail'
+		]);
+		const expectedRootSelector = '.lanspeed-theme-bootstrap.lanspeed-connection-detail';
+		const rootRule = css.match(/([^{}]+)\{gap:\.85em\}/);
+		const rootSelector = rootRule && rootRule[1].trim();
+		const selectorClasses = rootSelector && !/\s/.test(rootSelector)
+			? rootSelector.split('.').filter(Boolean)
+			: [];
+		const matchesSameRoot = selectorClasses.length === rootClasses.size &&
+			selectorClasses.every(function(className) {
+				return rootClasses.has(className);
+			});
+		if (!matchesSameRoot ||
+		    rootSelector !== expectedRootSelector ||
+		    css.includes('.lanspeed-theme-bootstrap .lanspeed-connection-detail{gap:.85em}') ||
+		    !css.includes('padding:.4em .55em')) {
+			fail(`${name} must match the Bootstrap and detail classes on the same root while keeping the table compact`);
+		}
 	}
 	if (name === 'clientDetailStyleResponsive.js') {
 		const media = Array.from(css.matchAll(/@media\s*\(([^)]+)\)/g), function(match) {
 			return match[1].replace(/\s+/g, '');
 		});
+		const narrowStart = css.indexOf('@media (max-width:700px){');
+		const phoneStart = css.indexOf('@media (max-width:480px){');
+		const narrowCss = narrowStart >= 0 && phoneStart > narrowStart
+			? css.slice(narrowStart, phoneStart)
+			: '';
+		const forcedRows = narrowCss.indexOf(
+			'.lanspeed-connections-card .lanspeed-table tbody>tr{display:grid;'
+		);
+		const hiddenRows = narrowCss.indexOf(
+			'.lanspeed-connections-card .lanspeed-table tbody>tr[hidden]{display:none!important}'
+		);
 		if (JSON.stringify(media) !== JSON.stringify([ 'max-width:700px', 'max-width:480px' ]) ||
 		    !css.includes('content:attr(data-label)') ||
 		    !css.includes('overflow-wrap:anywhere') ||
 		    !css.includes('.lanspeed-connection-refresh{width:100%')) {
 			fail(`${name} must provide only the 700px card-table and 480px full-width toolbar breakpoints`);
+		}
+		if (forcedRows < 0 || hiddenRows <= forcedRows) {
+			fail(`${name} must restore display:none!important for hidden group/detail rows after the forced mobile row display`);
+		}
+		if (!narrowCss.includes('border-bottom:1px solid var(--border,rgba(128,128,128,.18))') ||
+		    narrowCss.includes('var(--border,currentColor)')) {
+			fail(`${name} must reuse the translucent status table divider fallback on mobile`);
 		}
 	}
 }
@@ -1043,12 +1085,20 @@ function assertClientDetailShellInteraction(src) {
 	[
 		'返回客户端列表', 'LAN Speed 状态 / 客户端连接详情', '无法加载连接详情',
 		'客户端身份', '正在加载客户端身份…', 'MAC 与 IP 信息将在加载后显示',
-		'连接状态：等待加载', '连接摘要', '目标数', '连接数', '更新时间',
+		'连接状态：等待加载', '连接摘要', '目标 IP 数', '连接数', '更新时间',
 		'当前连接', '全部', 'TCP', 'UDP', '立即刷新', '目标 IP', '目标端口',
 		'协议', '状态', '暂无连接', '连接数据将在加载后显示。'
 	].forEach(function(text) {
 		if (!copy.includes(text)) fail(`clientDetailShell.js must render Chinese copy: ${text}`);
 	});
+	const summaryLabels = findFakeElementsByClass(
+		built.root, 'lanspeed-connection-summary-label'
+	).map(fakeElementText);
+	if (JSON.stringify(summaryLabels) !== JSON.stringify([
+		'目标 IP 数', '连接数', '更新时间'
+	])) {
+		fail('clientDetailShell.js must label the grouped destination summary as target IP count');
+	}
 	const headers = findFakeElementsByTag(refs.table, 'th').map(fakeElementText);
 	if (JSON.stringify(headers) !== JSON.stringify([
 		'目标 IP', '目标端口', '协议', '状态', '连接数'
@@ -1059,7 +1109,7 @@ function assertClientDetailShellInteraction(src) {
 	}
 	if (refs.table.attrs['aria-label'] !== '客户端连接列表' ||
 	    refs.filter.attrs['aria-label'] !== '搜索连接' ||
-	    refs.filter.attrs.placeholder !== '搜索目标 IP、端口或状态' ||
+	    refs.filter.attrs.placeholder !== '搜索目标 IP 或端口' ||
 	    refs.error.attrs.role !== 'alert' || refs.error.attrs['aria-live'] !== 'assertive' ||
 	    refs.empty.attrs.role !== 'status' || refs.empty.attrs['aria-live'] !== 'polite' ||
 	    refs.footer.attrs['aria-live'] !== 'polite') {
