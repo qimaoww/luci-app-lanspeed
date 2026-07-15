@@ -335,6 +335,19 @@ function validateQaDeviceContract() {
       /if \[ -n "\$\{SSHPASS:-\}" \]; then\s+sshpass -e ssh \$SSH_OPTS "\$TARGET" "\$remote_command"\s+else\s+ssh \$SSH_OPTS "\$TARGET" "\$remote_command"\s+fi/,
       'qa-device remote_shell must use sshpass -e only when SSHPASS is non-empty and preserve plain ssh otherwise'
     );
+    assert(
+      countLiteral(qaDevice, 'remote_shell "$command" < /dev/null') === 2,
+      'qa-device collect and iperf loops must detach remote ssh stdin so every planned command runs'
+    );
+    assert(
+      countLiteral(qaDevice, 'for dev in $(uci -q get lanspeed.main.ifname)') === 3,
+      'qa-device tc evidence must follow the configured LAN collection interfaces'
+    );
+    assertNoMatch(
+      qaDevice,
+      /tc (?:filter|qdisc) show dev br-lan/,
+      'qa-device must not hard-code br-lan for real-device tc evidence'
+    );
     assertNoMatch(qaDevice, /sshpass\s+-p/, 'qa-device must never pass a password on the sshpass command line');
     assertNoMatch(qaDevice, /\beval\b/, 'qa-device must not eval remote commands or JSON payloads');
     assertNoMatch(qaDevice, /\{["']identity_key["']\s*:/, 'qa-device must not build client_connections JSON with a raw string literal');

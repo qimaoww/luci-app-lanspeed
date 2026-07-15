@@ -101,21 +101,21 @@ ubus call lanspeed health
 ubus call lanspeed reload
 ubus call lanspeed interfaces
 ubus call lanspeed sysdevices
-tc filter show dev br-lan ingress
-tc filter show dev br-lan egress
-tc qdisc show dev br-lan
+for dev in $(uci -q get lanspeed.main.ifname); do [ -d "/sys/class/net/$dev" ] || continue; tc filter show dev "$dev" ingress; done
+for dev in $(uci -q get lanspeed.main.ifname); do [ -d "/sys/class/net/$dev" ] || continue; tc filter show dev "$dev" egress; done
+for dev in $(uci -q get lanspeed.main.ifname); do [ -d "/sys/class/net/$dev" ] || continue; tc qdisc show dev "$dev"; done
 nft list ruleset
 uci show firewall
-uci show openclash
-uci show dae
-uci show daed
-uci show sqm
-uci show qosify
+uci -q show openclash || printf '%s\n' 'openclash: not installed'
+uci -q show dae || printf '%s\n' 'dae: not installed'
+uci -q show daed || printf '%s\n' 'daed: not installed'
+uci -q show sqm || printf '%s\n' 'sqm: not installed'
+uci -q show qosify || printf '%s\n' 'qosify: not installed'
 uci show network
 /etc/init.d/lanspeedd status
-/etc/init.d/openclash status
-/etc/init.d/dae status
-/etc/init.d/daed status
+if [ -x /etc/init.d/openclash ]; then /etc/init.d/openclash status || true; else printf '%s\n' 'openclash: not installed'; fi
+if [ -x /etc/init.d/dae ]; then /etc/init.d/dae status || true; else printf '%s\n' 'dae: not installed'; fi
+if [ -x /etc/init.d/daed ]; then /etc/init.d/daed status || true; else printf '%s\n' 'daed: not installed'; fi
 ps w | grep -E 'lanspeedd|openclash|clash|dae|daed' | grep -v grep
 EOF
 }
@@ -187,7 +187,7 @@ run_collect() {
 
 	collect_commands | while IFS= read -r command; do
 		append_section "$DRY_RUN_EVIDENCE" "$command"
-		remote_shell "$command" >> "$DRY_RUN_EVIDENCE" 2>&1 || {
+		remote_shell "$command" < /dev/null >> "$DRY_RUN_EVIDENCE" 2>&1 || {
 			status=$?
 			printf 'command_exit=%s\n' "$status" >> "$DRY_RUN_EVIDENCE"
 		}
@@ -228,7 +228,7 @@ run_iperf() {
 
 	iperf_commands | while IFS= read -r command; do
 		append_section "$IPERF_EVIDENCE" "$command"
-		remote_shell "$command" >> "$IPERF_EVIDENCE" 2>&1 || {
+		remote_shell "$command" < /dev/null >> "$IPERF_EVIDENCE" 2>&1 || {
 			status=$?
 			printf 'command_exit=%s\n' "$status" >> "$IPERF_EVIDENCE"
 		}
