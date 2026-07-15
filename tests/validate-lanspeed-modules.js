@@ -443,23 +443,30 @@ function assertClientConnectionsSource(src) {
 
 function assertClientConnectionsModule(src) {
 	assertClientConnectionsSource(src);
-	const mod = loadClientConnectionsModule(src);
+	const clientConnections = loadClientConnectionsModule(src);
 	const methods = [
-		'identityFromSearch',
 		'detailHref',
 		'formatEndpoint',
 		'groupsForResponse',
+		'identityFromSearch',
 		'portSummary',
 		'stateLabel'
 	];
-	if (!mod || methods.some(function(name) { return typeof mod[name] !== 'function'; })) {
-		fail('clientConnections.js must expose every pure connection-detail helper');
+	if (!clientConnections) {
+		fail('clientConnections.js must return its pure connection-detail helpers');
 		return;
 	}
+	if (JSON.stringify(Object.keys(clientConnections).sort()) !== JSON.stringify(methods) ||
+	    methods.some(function(name) { return typeof clientConnections[name] !== 'function'; })) {
+		fail('clientConnections.js must expose exactly its six pure connection-detail helpers');
+		return;
+	}
+	const mod = clientConnections;
 
 	if (mod.identityFromSearch('?client=aa%3Abb%40lan') !== 'aa:bb@lan' ||
 	    mod.identityFromSearch('?x=1&client=02%3A00%3A00%3A00%3A00%3A01%40lan&z=2') !==
 		'02:00:00:00:00:01@lan' ||
+	    mod.identityFromSearch('?client=') !== '' ||
 	    mod.identityFromSearch('?x=1') !== '') {
 		fail('clientConnections.js must safely read and decode the client query parameter');
 	}
@@ -557,8 +564,30 @@ function assertClientConnectionsModule(src) {
 	    udpGroups[1].protocolLabel !== 'UDP' || udpGroups[1].stateLabel !== '活跃') {
 		fail('clientConnections.js must filter UDP before preserving first-seen group order');
 	}
-	if (mod.groupsForResponse(response, 'unexpected', '').length !== groups.length) {
-		fail('clientConnections.js must safely normalize unknown protocol filters to all');
+	const unknownGroups = mod.groupsForResponse(response, 'unexpected', '');
+	if (JSON.stringify(unknownGroups) !== JSON.stringify(groups)) {
+		fail('clientConnections.js must normalize unknown protocol filters to the complete all result');
+	}
+
+	const tcpSearchedGroups = mod.groupsForResponse(response, 'tcp', '1.1.1.1');
+	if (tcpSearchedGroups.length !== 1 || tcpSearchedGroups[0].remoteIp !== '1.1.1.1' ||
+	    tcpSearchedGroups[0].count !== 2 ||
+	    JSON.stringify(Array.from(tcpSearchedGroups[0].ports)) !== JSON.stringify([ 443 ]) ||
+	    JSON.stringify(Array.from(tcpSearchedGroups[0].connections, function(conn) { return conn.client_port; })) !==
+		JSON.stringify([ 50001, 50004 ]) ||
+	    tcpSearchedGroups[0].protocolLabel !== 'TCP' ||
+	    tcpSearchedGroups[0].stateLabel !== '已建立') {
+		fail('clientConnections.js must keep TCP filtering active while applying a non-empty search');
+	}
+	const udpSearchedGroups = mod.groupsForResponse(response, 'udp', '1.1.1.1');
+	if (udpSearchedGroups.length !== 1 || udpSearchedGroups[0].remoteIp !== '1.1.1.1' ||
+	    udpSearchedGroups[0].count !== 1 ||
+	    JSON.stringify(Array.from(udpSearchedGroups[0].ports)) !== JSON.stringify([ 80 ]) ||
+	    JSON.stringify(Array.from(udpSearchedGroups[0].connections, function(conn) { return conn.client_port; })) !==
+		JSON.stringify([ 50003 ]) ||
+	    udpSearchedGroups[0].protocolLabel !== 'UDP' ||
+	    udpSearchedGroups[0].stateLabel !== '活跃') {
+		fail('clientConnections.js must keep UDP filtering active while applying a non-empty search');
 	}
 
 	const remoteSearch = mod.groupsForResponse(response, 'all', '1.1.1.1');
@@ -590,6 +619,14 @@ function assertClientConnectionsModule(src) {
 	}
 	if (JSON.stringify(response) !== originalResponse || JSON.stringify(ports) !== originalPorts) {
 		fail('clientConnections.js helpers must not mutate response, connections, or port inputs');
+	}
+
+	const emptyResponses = [ undefined, {}, { connections: null }, { connections: {} } ];
+	if (emptyResponses.some(function(emptyResponse) {
+		const emptyGroups = mod.groupsForResponse(emptyResponse, 'all', '');
+		return !Array.isArray(emptyGroups) || emptyGroups.length !== 0;
+	})) {
+		fail('clientConnections.js must return an empty array for missing, null, or non-array connections');
 	}
 }
 
