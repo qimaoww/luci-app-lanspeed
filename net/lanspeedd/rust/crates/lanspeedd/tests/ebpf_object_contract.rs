@@ -11,6 +11,9 @@ use lanspeed_common::{
 };
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _, RelocationTarget, SectionKind};
 
+const PACKET_SCRATCH_MAP_NAME: &str = "lanspeed_packet_prefix";
+const CONNTRACK_SCRATCH_MAP_NAME: &str = "lanspeed_conntrack_scratch";
+
 fn object_path() -> PathBuf {
     env::var_os("LANSPEED_EBPF_OBJECT")
         .map(PathBuf::from)
@@ -58,6 +61,7 @@ fn objects_are_fresh_for_the_accounting_sources() {
         workspace.join("crates/lanspeed-common/src/accounting.rs"),
         workspace.join("crates/lanspeed-common/src/packet.rs"),
         workspace.join("crates/lanspeed-ebpf/src/account.rs"),
+        workspace.join("crates/lanspeed-ebpf/src/conntrack.rs"),
     ];
 
     for object in [object_path(), fallback_object_path()] {
@@ -145,7 +149,12 @@ fn production_object_has_exact_maps_programs_and_license() {
         .collect::<BTreeSet<_>>();
     assert_eq!(
         map_names,
-        BTreeSet::from([CLIENTS_MAP_NAME, SEEN_CONNS_MAP_NAME])
+        BTreeSet::from([
+            CLIENTS_MAP_NAME,
+            CONNTRACK_SCRATCH_MAP_NAME,
+            PACKET_SCRATCH_MAP_NAME,
+            SEEN_CONNS_MAP_NAME,
+        ])
     );
 
     let clients = &object.maps[CLIENTS_MAP_NAME];
@@ -162,6 +171,28 @@ fn production_object_has_exact_maps_programs_and_license() {
     assert_eq!(seen.key_size(), 28);
     assert_eq!(seen.value_size(), 1);
     assert_eq!(seen.max_entries(), MAX_CONN_TUPLES);
+
+    let packet_scratch = &object.maps[PACKET_SCRATCH_MAP_NAME];
+    assert_eq!(
+        packet_scratch.map_type(),
+        bpf_map_type::BPF_MAP_TYPE_PERCPU_ARRAY as u32
+    );
+    assert_eq!(
+        (packet_scratch.key_size(), packet_scratch.value_size()),
+        (4, 160)
+    );
+    assert_eq!(packet_scratch.max_entries(), 1);
+
+    let conntrack_scratch = &object.maps[CONNTRACK_SCRATCH_MAP_NAME];
+    assert_eq!(
+        conntrack_scratch.map_type(),
+        bpf_map_type::BPF_MAP_TYPE_PERCPU_ARRAY as u32
+    );
+    assert_eq!(
+        (conntrack_scratch.key_size(), conntrack_scratch.value_size()),
+        (4, 128)
+    );
+    assert_eq!(conntrack_scratch.max_entries(), 1);
 
     let expected = BTreeSet::from([
         INGRESS_PROGRAM_NAME,
@@ -233,7 +264,11 @@ fn fallback_object_preserves_abi_without_kfunc_relocations() {
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from([CLIENTS_MAP_NAME, SEEN_CONNS_MAP_NAME])
+        BTreeSet::from([
+            CLIENTS_MAP_NAME,
+            PACKET_SCRATCH_MAP_NAME,
+            SEEN_CONNS_MAP_NAME,
+        ])
     );
     assert_eq!(
         parsed
@@ -259,6 +294,17 @@ fn fallback_object_preserves_abi_without_kfunc_relocations() {
     assert_eq!(seen.map_type(), bpf_map_type::BPF_MAP_TYPE_LRU_HASH as u32);
     assert_eq!((seen.key_size(), seen.value_size()), (28, 1));
     assert_eq!(seen.max_entries(), MAX_CONN_TUPLES);
+    let packet_scratch = &parsed.maps[PACKET_SCRATCH_MAP_NAME];
+    assert_eq!(
+        packet_scratch.map_type(),
+        bpf_map_type::BPF_MAP_TYPE_PERCPU_ARRAY as u32
+    );
+    assert_eq!(
+        (packet_scratch.key_size(), packet_scratch.value_size()),
+        (4, 160)
+    );
+    assert_eq!(packet_scratch.max_entries(), 1);
+    assert!(!parsed.maps.contains_key(CONNTRACK_SCRATCH_MAP_NAME));
     for program in parsed.programs.values() {
         assert!(matches!(program.section, ProgramSection::SchedClassifier));
     }
@@ -304,12 +350,34 @@ fn conntrack_prefix_load_uses_the_guarded_nonzero_frame_length() {
     assert!(source.contains("bpf_skb_load_bytes("));
 }
 
+fn maximum_direct_stack_offset(bytes: &[u8]) -> usize {
+    let elf = object::File::parse(bytes).expect("object crate must parse eBPF ELF");
+    elf.sections()
+        .filter(|section| section.kind() == SectionKind::Text)
+        .flat_map(|section| {
+            section
+                .data()
+                .expect("eBPF text section must be readable")
+                .chunks_exact(8)
+        })
+        .filter_map(|instruction| {
+            let registers = instruction[1];
+            let destination = registers & 0x0f;
+            let source = registers >> 4;
+            let offset = i16::from_le_bytes([instruction[2], instruction[3]]);
+            (offset < 0 && (destination == 10 || source == 10))
+                .then_some(usize::from(offset.unsigned_abs()))
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 #[test]
-fn conntrack_accounting_is_forced_into_the_classifier_stack_frame() {
-    let source = include_str!("../../lanspeed-ebpf/src/conntrack.rs");
+fn production_object_stays_within_kernel_stack_budget() {
+    let stack = maximum_direct_stack_offset(&object_bytes());
     assert!(
-        source.contains("#[inline(always)]\npub fn try_count_connection("),
-        "try_count_connection must be inlined so its verifier stack is not added to account_frame"
+        stack <= 288,
+        "kfunc object uses {stack} bytes of direct stack; the router adds a 224-byte frame so the object budget is 288"
     );
 }
 
