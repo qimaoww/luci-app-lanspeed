@@ -129,14 +129,38 @@ if [ "$clients_status" -ne 0 ]; then
 	exit "$clients_status"
 fi
 identity_key=$(printf '%s\n' "$clients_json" | jsonfilter -e '@.clients[0].identity_key')
+jsonfilter_status=$?
+if [ "$jsonfilter_status" -eq 1 ]; then
+	printf '%s\n' 'client_connections skipped: no client identity_key'
+	exit 0
+fi
+if [ "$jsonfilter_status" -ne 0 ]; then
+	exit "$jsonfilter_status"
+fi
 if [ -z "$identity_key" ]; then
 	printf '%s\n' 'client_connections skipped: no client identity_key'
 	exit 0
 fi
 . /usr/share/libubox/jshn.sh
+jshn_status=$?
+if [ "$jshn_status" -ne 0 ]; then
+	exit "$jshn_status"
+fi
 json_init
+json_init_status=$?
+if [ "$json_init_status" -ne 0 ]; then
+	exit "$json_init_status"
+fi
 json_add_string identity_key "$identity_key"
+json_add_status=$?
+if [ "$json_add_status" -ne 0 ]; then
+	exit "$json_add_status"
+fi
 client_payload=$(json_dump)
+json_dump_status=$?
+if [ "$json_dump_status" -ne 0 ]; then
+	exit "$json_dump_status"
+fi
 ubus call lanspeed client_connections "$client_payload"
 EOF
 }

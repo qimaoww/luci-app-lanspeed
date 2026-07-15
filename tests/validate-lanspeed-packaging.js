@@ -74,14 +74,198 @@ function readIfPresent(file) {
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
 }
 
+function nonEmptyLines(source) {
+  return source.trim().split('\n').filter(Boolean);
+}
+
+function writeQaScenarioTools(fakeBin, jshnFixture, includeJsonfilter) {
+  fs.mkdirSync(fakeBin);
+
+  writeExecutable(path.join(fakeBin, 'sshpass'), `#!/bin/sh
+printf '%s|%s|%s\\n' "$1" "$2" "$3" >> "$QA_SSHPASS_LOG"
+[ "$1" = '-e' ] || exit 96
+shift
+exec "$@"
+`);
+  writeExecutable(path.join(fakeBin, 'ssh'), `#!/bin/sh
+for remote_command do :; done
+case "$remote_command" in
+  *'clients_json=$(ubus call lanspeed clients)'*)
+    replacement=". '$QA_JSHN_FIXTURE'"
+    remote_command=$(printf '%s\\n' "$remote_command" | /usr/bin/sed "s#\\. /usr/share/libubox/jshn.sh#$replacement#")
+    PATH="$QA_FAKE_BIN" /bin/sh -c "$remote_command"
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`);
+  writeExecutable(path.join(fakeBin, 'ubus'), `#!/bin/sh
+printf '%s|%s|%s|%s\\n' "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$QA_UBUS_LOG"
+case "\${3:-}" in
+  clients)
+    printf '%s\\n' "$QA_CLIENTS_JSON"
+    exit "\${QA_CLIENTS_STATUS:-0}"
+    ;;
+  client_connections)
+    printf '%s\\n' '{}'
+    exit "\${QA_DETAIL_STATUS:-0}"
+    ;;
+  *)
+    printf '%s\\n' '{}'
+    ;;
+esac
+`);
+  if (includeJsonfilter) {
+    writeExecutable(path.join(fakeBin, 'jsonfilter'), `#!/bin/sh
+/bin/cat >/dev/null
+printf '%s\\n' 'jsonfilter' >> "$QA_JSONFILTER_LOG"
+if [ "\${QA_JSONFILTER_STATUS:-0}" -eq 0 ] && [ -n "\${QA_IDENTITY:-}" ]; then
+  printf '%s\\n' "$QA_IDENTITY"
+fi
+exit "\${QA_JSONFILTER_STATUS:-0}"
+`);
+  }
+
+  writeExecutable(jshnFixture, `#!/bin/sh
+printf '%s\\n' 'source' >> "$QA_JSHN_LOG"
+if [ "\${QA_JSHN_SOURCE_STATUS:-0}" -ne 0 ]; then
+  return "$QA_JSHN_SOURCE_STATUS"
+fi
+
+json_init() {
+  printf '%s\\n' 'json_init' >> "$QA_JSHN_LOG"
+  if [ "\${QA_JSON_INIT_STATUS:-0}" -ne 0 ]; then
+    return "$QA_JSON_INIT_STATUS"
+  fi
+  QA_JSHN_IDENTITY=
+}
+
+json_add_string() {
+  printf 'json_add_string|%s|%s\\n' "$1" "$2" >> "$QA_JSHN_LOG"
+  if [ "\${QA_JSON_ADD_STATUS:-0}" -ne 0 ]; then
+    return "$QA_JSON_ADD_STATUS"
+  fi
+  QA_JSHN_IDENTITY=$2
+}
+
+json_dump() {
+  printf '%s\\n' 'json_dump' >> "$QA_JSHN_LOG"
+  if [ "\${QA_JSON_DUMP_STATUS:-0}" -ne 0 ]; then
+    return "$QA_JSON_DUMP_STATUS"
+  fi
+  [ "$QA_JSHN_IDENTITY" = "$QA_EXPECTED_IDENTITY" ] || return 34
+  printf '%s\\n' "$QA_EXPECTED_PAYLOAD"
+}
+`);
+}
+
+function runQaDeviceScenario(tempRoot, scenario) {
+  const scenarioRoot = path.join(tempRoot, 'scenarios', scenario.id);
+  const fakeBin = path.join(scenarioRoot, 'bin');
+  const output = path.join(scenarioRoot, 'output');
+  const sshpassLog = path.join(scenarioRoot, 'sshpass.log');
+  const ubusLog = path.join(scenarioRoot, 'ubus.log');
+  const jsonfilterLog = path.join(scenarioRoot, 'jsonfilter.log');
+  const jshnLog = path.join(scenarioRoot, 'jshn.log');
+  const jshnFixture = path.join(scenarioRoot, 'jshn.sh');
+  const secret = `scenario-secret-${scenario.id}`;
+  const identity = scenario.identity || '';
+  const expectedPayload = scenario.expectedPayload || JSON.stringify({ identity_key: identity });
+  const clientsJson = scenario.clientsJson !== undefined
+    ? scenario.clientsJson
+    : JSON.stringify({ clients: identity ? [{ identity_key: identity }] : [] });
+
+  fs.mkdirSync(scenarioRoot, { recursive: true });
+  writeQaScenarioTools(fakeBin, jshnFixture, scenario.includeJsonfilter !== false);
+
+  const stdout = childProcess.execFileSync('sh', [qaDevicePath, 'collect'], {
+    cwd: root,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH}`,
+      TARGET: 'root@192.0.2.1',
+      DRY_RUN: '0',
+      OUT_DIR: output,
+      SSHPASS: secret,
+      QA_FAKE_BIN: fakeBin,
+      QA_SSHPASS_LOG: sshpassLog,
+      QA_UBUS_LOG: ubusLog,
+      QA_JSONFILTER_LOG: jsonfilterLog,
+      QA_JSHN_LOG: jshnLog,
+      QA_JSHN_FIXTURE: jshnFixture,
+      QA_CLIENTS_JSON: clientsJson,
+      QA_CLIENTS_STATUS: String(scenario.clientsStatus || 0),
+      QA_JSONFILTER_STATUS: String(scenario.jsonfilterStatus || 0),
+      QA_IDENTITY: identity,
+      QA_JSHN_SOURCE_STATUS: String(scenario.jshnSourceStatus || 0),
+      QA_JSON_INIT_STATUS: String(scenario.jsonInitStatus || 0),
+      QA_JSON_ADD_STATUS: String(scenario.jsonAddStatus || 0),
+      QA_JSON_DUMP_STATUS: String(scenario.jsonDumpStatus || 0),
+      QA_EXPECTED_IDENTITY: identity,
+      QA_EXPECTED_PAYLOAD: expectedPayload,
+      QA_DETAIL_STATUS: String(scenario.detailStatus || 0)
+    }
+  });
+
+  const evidence = fs.readFileSync(path.join(output, 'task-16-device-dry-run.txt'), 'utf8');
+  const ubusLines = nonEmptyLines(readIfPresent(ubusLog));
+  const clientCalls = ubusLines.filter((line) => line.startsWith('call|lanspeed|clients|'));
+  const detailCalls = ubusLines.filter((line) => line.startsWith('call|lanspeed|client_connections|'));
+  const commandExits = [...evidence.matchAll(/^command_exit=(\d+)$/gm)].map((match) => Number(match[1]));
+  const jsonfilterCalls = nonEmptyLines(readIfPresent(jsonfilterLog));
+  const jshnCalls = nonEmptyLines(readIfPresent(jshnLog));
+  const sshpassCalls = nonEmptyLines(readIfPresent(sshpassLog));
+  const artifacts = [
+    stdout,
+    evidence,
+    readIfPresent(ubusLog),
+    readIfPresent(jsonfilterLog),
+    readIfPresent(jshnLog),
+    readIfPresent(sshpassLog)
+  ].join('\n');
+
+  assert(clientCalls.length === 1, `${scenario.id}: clients must be called exactly once`);
+  assert(
+    detailCalls.length === scenario.expectedDetailCalls,
+    `${scenario.id}: expected ${scenario.expectedDetailCalls} client_connections calls, got ${detailCalls.length}`
+  );
+  assert(
+    jsonfilterCalls.length === scenario.expectedJsonfilterCalls,
+    `${scenario.id}: expected ${scenario.expectedJsonfilterCalls} jsonfilter calls, got ${jsonfilterCalls.length}`
+  );
+  assert(
+    JSON.stringify(commandExits) === JSON.stringify(scenario.expectedCommandExits),
+    `${scenario.id}: expected command_exit ${JSON.stringify(scenario.expectedCommandExits)}, got ${JSON.stringify(commandExits)}`
+  );
+  assert(
+    JSON.stringify(jshnCalls) === JSON.stringify(scenario.expectedJshnCalls),
+    `${scenario.id}: unexpected jshn call sequence ${JSON.stringify(jshnCalls)}`
+  );
+  assert(
+    evidence.includes('client_connections skipped: no client identity_key') === Boolean(scenario.expectedSkip),
+    `${scenario.id}: skip evidence did not match expectation`
+  );
+  if (scenario.expectedDetailCalls === 1) {
+    assert(
+      detailCalls[0] === `call|lanspeed|client_connections|${expectedPayload}`,
+      `${scenario.id}: detail payload must be the exact json_dump output`
+    );
+  }
+  assert(sshpassCalls.length > 0, `${scenario.id}: non-empty SSHPASS must invoke sshpass`);
+  assert(
+    sshpassCalls.every((line) => line === '-e|ssh|root@192.0.2.1'),
+    `${scenario.id}: every remote call must use sshpass -e ssh before the target`
+  );
+  assert(!artifacts.includes(secret), `${scenario.id}: SSHPASS must not leak into output or logs`);
+}
+
 function validateQaDeviceContract() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lanspeed-qa-contract-'));
-  const fakeBin = path.join(tempRoot, 'bin');
+  const fakeBin = path.join(tempRoot, 'dry-bin');
   const dryOutput = path.join(tempRoot, 'dry-output');
-  const realOutput = path.join(tempRoot, 'real-output');
   const forbiddenLog = path.join(tempRoot, 'dry-forbidden.log');
-  const sshpassLog = path.join(tempRoot, 'sshpass.log');
-  const ubusLog = path.join(tempRoot, 'ubus.log');
   fs.mkdirSync(fakeBin);
 
   try {
@@ -159,67 +343,125 @@ function validateQaDeviceContract() {
     assert(qaDevice.includes('json_add_string identity_key "$identity_key"'), 'qa-device must add identity_key through jshn');
     assert(qaDevice.includes('client_payload=$(json_dump)'), 'qa-device must serialize the detail payload through jshn');
 
-    writeExecutable(path.join(fakeBin, 'sshpass'), `#!/bin/sh
-printf '%s|%s|%s\\n' "$1" "$2" "$3" >> "$QA_SSHPASS_LOG"
-[ "$1" = '-e' ] || exit 96
-shift
-exec "$@"
-`);
-    writeExecutable(path.join(fakeBin, 'ssh'), `#!/bin/sh
-for remote_command do :; done
-case "$remote_command" in
-  *'clients_json=$(ubus call lanspeed clients)'*)
-    PATH="$QA_FAKE_BIN:$PATH" sh -c "$remote_command"
-    ;;
-  *)
-    exit 0
-    ;;
-esac
-`);
-    writeExecutable(path.join(fakeBin, 'ubus'), `#!/bin/sh
-printf '%s %s %s\\n' "\${1:-}" "\${2:-}" "\${3:-}" >> "$QA_UBUS_LOG"
-if [ "\${3:-}" = 'clients' ]; then
-  printf '%s\\n' '{"clients":[]}'
-else
-  printf '%s\\n' '{}'
-fi
-`);
-    writeExecutable(path.join(fakeBin, 'jsonfilter'), `#!/bin/sh
-cat >/dev/null
-exit 0
-`);
-
-    childProcess.execFileSync('sh', [qaDevicePath, 'collect'], {
-      cwd: root,
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        PATH: `${fakeBin}:${process.env.PATH}`,
-        TARGET: 'root@192.0.2.1',
-        DRY_RUN: '0',
-        OUT_DIR: realOutput,
-        SSHPASS: 'non-empty-placeholder',
-        QA_FAKE_BIN: fakeBin,
-        QA_SSHPASS_LOG: sshpassLog,
-        QA_UBUS_LOG: ubusLog
+    const plainIdentity = '30:c5:99:a7:bb:2d@eth1';
+    const specialIdentity = 'client"quoted\\path@br-lan';
+    const successfulJshnCalls = (identity) => [
+      'source',
+      'json_init',
+      `json_add_string|identity_key|${identity}`,
+      'json_dump'
+    ];
+    const scenarios = [
+      {
+        id: 'clients-ubus-failure-41',
+        clientsStatus: 41,
+        identity: plainIdentity,
+        expectedDetailCalls: 0,
+        expectedJsonfilterCalls: 0,
+        expectedCommandExits: [41],
+        expectedJshnCalls: []
+      },
+      {
+        id: 'empty-clients-jsonfilter-no-match-1',
+        clientsJson: '{"clients":[]}',
+        jsonfilterStatus: 1,
+        expectedDetailCalls: 0,
+        expectedJsonfilterCalls: 1,
+        expectedCommandExits: [],
+        expectedJshnCalls: [],
+        expectedSkip: true
+      },
+      {
+        id: 'empty-output-jsonfilter-success-0',
+        clientsJson: '{"clients":[]}',
+        expectedDetailCalls: 0,
+        expectedJsonfilterCalls: 1,
+        expectedCommandExits: [],
+        expectedJshnCalls: [],
+        expectedSkip: true
+      },
+      {
+        id: 'malformed-clients-jsonfilter-126',
+        clientsJson: '{malformed',
+        jsonfilterStatus: 126,
+        expectedDetailCalls: 0,
+        expectedJsonfilterCalls: 1,
+        expectedCommandExits: [126],
+        expectedJshnCalls: []
+      },
+      {
+        id: 'jsonfilter-tool-failure-41',
+        jsonfilterStatus: 41,
+        expectedDetailCalls: 0,
+        expectedJsonfilterCalls: 1,
+        expectedCommandExits: [41],
+        expectedJshnCalls: []
+      },
+      {
+        id: 'jsonfilter-tool-missing-127',
+        includeJsonfilter: false,
+        expectedDetailCalls: 0,
+        expectedJsonfilterCalls: 0,
+        expectedCommandExits: [127],
+        expectedJshnCalls: []
+      },
+      {
+        id: 'jshn-source-failure-30',
+        identity: plainIdentity,
+        jshnSourceStatus: 30,
+        expectedDetailCalls: 0,
+        expectedJsonfilterCalls: 1,
+        expectedCommandExits: [30],
+        expectedJshnCalls: ['source']
+      },
+      {
+        id: 'json-init-failure-31',
+        identity: plainIdentity,
+        jsonInitStatus: 31,
+        expectedDetailCalls: 0,
+        expectedJsonfilterCalls: 1,
+        expectedCommandExits: [31],
+        expectedJshnCalls: ['source', 'json_init']
+      },
+      {
+        id: 'json-add-string-failure-32',
+        identity: plainIdentity,
+        jsonAddStatus: 32,
+        expectedDetailCalls: 0,
+        expectedJsonfilterCalls: 1,
+        expectedCommandExits: [32],
+        expectedJshnCalls: ['source', 'json_init', `json_add_string|identity_key|${plainIdentity}`]
+      },
+      {
+        id: 'json-dump-failure-33',
+        identity: plainIdentity,
+        jsonDumpStatus: 33,
+        expectedDetailCalls: 0,
+        expectedJsonfilterCalls: 1,
+        expectedCommandExits: [33],
+        expectedJshnCalls: successfulJshnCalls(plainIdentity)
+      },
+      {
+        id: 'quoted-backslash-identity-success',
+        identity: specialIdentity,
+        expectedPayload: JSON.stringify({ identity_key: specialIdentity }),
+        expectedDetailCalls: 1,
+        expectedJsonfilterCalls: 1,
+        expectedCommandExits: [],
+        expectedJshnCalls: successfulJshnCalls(specialIdentity)
+      },
+      {
+        id: 'detail-ubus-failure-42',
+        identity: plainIdentity,
+        detailStatus: 42,
+        expectedDetailCalls: 1,
+        expectedJsonfilterCalls: 1,
+        expectedCommandExits: [42],
+        expectedJshnCalls: successfulJshnCalls(plainIdentity)
       }
-    });
+    ];
 
-    const realEvidence = fs.readFileSync(path.join(realOutput, 'task-16-device-dry-run.txt'), 'utf8');
-    assert(
-      readIfPresent(ubusLog).trim() === 'call lanspeed clients',
-      'qa-device collect must safely skip client_connections when clients has no identity_key'
-    );
-    assert(
-      realEvidence.includes('client_connections skipped: no client identity_key'),
-      'qa-device collect evidence must record the no-client detail skip'
-    );
-    const sshpassInvocations = readIfPresent(sshpassLog).trim().split('\n').filter(Boolean);
-    assert(sshpassInvocations.length > 0, 'non-empty SSHPASS must invoke sshpass');
-    assert(
-      sshpassInvocations.every((line) => line === '-e|ssh|root@192.0.2.1'),
-      'every non-empty SSHPASS remote call must use sshpass -e ssh before the target'
-    );
+    scenarios.forEach((scenario) => runQaDeviceScenario(tempRoot, scenario));
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
