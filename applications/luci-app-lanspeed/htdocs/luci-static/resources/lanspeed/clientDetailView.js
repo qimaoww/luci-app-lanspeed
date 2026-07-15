@@ -10,15 +10,30 @@ function loadClient(identityKey) {
 		return {
 			identityKey: identityKey,
 			response: response,
+			updatedAt: Date.now(),
 			error: null
 		};
 	}, function(error) {
 		return {
 			identityKey: identityKey,
 			response: null,
+			updatedAt: null,
 			error: error
 		};
 	});
+}
+
+function normalizedPrefs() {
+	var prefs = Object.assign({}, fmt.loadPrefs() || {});
+	var fallback = fmt.DEFAULT_PREFS && fmt.DEFAULT_PREFS.refreshMs;
+	if (typeof fallback !== 'number' || !isFinite(fallback) || fallback <= 0)
+		fallback = 3000;
+	if (typeof prefs.refreshMs !== 'number' ||
+	    !isFinite(prefs.refreshMs) || prefs.refreshMs <= 0) {
+		prefs.refreshMs = fallback;
+	}
+	prefs.refreshMs = Math.max(fmt.MIN_REFRESH_MS, prefs.refreshMs);
+	return prefs;
 }
 
 return baseclass.extend({
@@ -28,17 +43,23 @@ return baseclass.extend({
 
 	render: function(data) {
 		var initialResponse = data && data.response || null;
+		var initialUpdatedAt = data && data.updatedAt;
+		if (initialResponse && (typeof initialUpdatedAt !== 'number' ||
+		    !isFinite(initialUpdatedAt))) {
+			initialUpdatedAt = Date.now();
+		}
 		var pending = null;
 		var viewState = {
 			identityKey: data && data.identityKey || '',
 			response: initialResponse,
 			lastGood: initialResponse && initialResponse.available
 				? initialResponse : null,
+			updatedAt: initialUpdatedAt || null,
 			error: data && data.error || null,
 			protocol: 'all',
 			filter: '',
 			expanded: {},
-			prefs: fmt.loadPrefs(),
+			prefs: normalizedPrefs(),
 			timer: null,
 			loading: false,
 			refs: null,
@@ -53,8 +74,7 @@ return baseclass.extend({
 			schedule: function() {
 				var self = this;
 				this.stopTimer();
-				var interval = Math.max(fmt.MIN_REFRESH_MS,
-					Number(this.prefs && this.prefs.refreshMs) || 0);
+				var interval = this.prefs.refreshMs;
 				this.timer = window.setTimeout(function() {
 					self.timer = null;
 					self.reload();
@@ -77,11 +97,11 @@ return baseclass.extend({
 
 				pending = Promise.resolve(request).then(function(response) {
 					self.response = response;
-					if (response && response.available)
-						self.lastGood = response;
+					self.lastGood = response && response.available
+						? response : null;
+					self.updatedAt = Date.now();
 					self.error = null;
 				}, function(error) {
-					self.response = self.lastGood;
 					self.error = error;
 				}).then(function() {
 					self.loading = false;

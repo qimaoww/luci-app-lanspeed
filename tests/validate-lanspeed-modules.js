@@ -1017,6 +1017,8 @@ function loadStatusRefreshModule(src, fakeWindow) {
 		);
 }
 
+const fakeDocument = { activeElement: null };
+
 function fakeElement(tag, attrs, children) {
 	const node = {
 		tagName: tag,
@@ -1025,6 +1027,7 @@ function fakeElement(tag, attrs, children) {
 		listeners: {},
 		parentNode: null,
 		style: {},
+		focus: function() { fakeDocument.activeElement = this; },
 		addEventListener: function(type, handler) { this.listeners[type] = handler; },
 		setAttribute: function(name, value) {
 			this.attrs[name] = String(value);
@@ -1051,6 +1054,8 @@ function fakeElement(tag, attrs, children) {
 		removeChild: function(child) {
 			const index = this.children.indexOf(child);
 			if (index !== -1) this.children.splice(index, 1);
+			if (fakeDocument.activeElement === child)
+				fakeDocument.activeElement = null;
 			if (child && typeof child === 'object') child.parentNode = null;
 			return child;
 		}
@@ -1168,13 +1173,13 @@ function makeDeferred() {
 	return { promise: promise, resolve: resolve, reject: reject };
 }
 
-function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow) {
+function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow, fakeDate) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	return vm.compileFunction(src, [
 		'baseclass', 'fmt', 'lsRpc', 'clientDetailShell',
-		'clientDetailRefresh', 'window'
+		'clientDetailRefresh', 'window', 'Date'
 	], { filename: 'resources/lanspeed/clientDetailView.js' })(
-		fakeBaseclass, fmt, lsRpc, shell, refresh, fakeWindow
+		fakeBaseclass, fmt, lsRpc, shell, refresh, fakeWindow, fakeDate || Date
 	);
 }
 
@@ -1201,6 +1206,11 @@ function assertClientDetailViewLifecycle(src) {
 	));
 	const success = JSON.parse(JSON.stringify(fixture));
 	success.sample_ms = 23456;
+	const goodB = JSON.parse(JSON.stringify(fixture));
+	goodB.connections[0].remote_ip = '2.2.2.2';
+	goodB.connections = [ goodB.connections[0] ];
+	goodB.total_connections = 1;
+	goodB.returned_connections = 1;
 	const unavailable = Object.assign({}, fixture, {
 		available: false,
 		sample_ms: null,
@@ -1211,11 +1221,14 @@ function assertClientDetailViewLifecycle(src) {
 	});
 	const successDeferred = makeDeferred();
 	const rejectDeferred = makeDeferred();
+	const unavailableRejectDeferred = makeDeferred();
 	const responses = [
 		Promise.resolve(fixture),
 		successDeferred.promise,
 		rejectDeferred.promise,
-		Promise.resolve(unavailable)
+		Promise.resolve(unavailable),
+		unavailableRejectDeferred.promise,
+		Promise.resolve(goodB)
 	];
 	let rpcCount = 0;
 	const lsRpc = {
@@ -1234,6 +1247,8 @@ function assertClientDetailViewLifecycle(src) {
 	const listeners = {};
 	const events = [];
 	let timerId = 0;
+	let now = new Date(2026, 0, 2, 3, 4, 5).getTime();
+	const fakeDate = { now: function() { return now; } };
 	const fakeWindow = {
 		location: {
 			pathname: '/cgi-bin/luci/admin/status/lanspeed/overview',
@@ -1271,20 +1286,22 @@ function assertClientDetailViewLifecycle(src) {
 	};
 	const fmt = {
 		MIN_REFRESH_MS: 1000,
+		DEFAULT_PREFS: { refreshMs: 3000 },
 		loadPrefs: function() { return { refreshMs: 250, paused: true }; }
 	};
 
 	asyncChecks.push(Promise.resolve().then(async function() {
-		const view = loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow);
+		const view = loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow, fakeDate);
 		const loaded = await view.load('30:c5:0a@eth1');
 		if (!loaded || loaded.identityKey !== '30:c5:0a@eth1' ||
-		    loaded.response !== fixture || loaded.error !== null || rpcCount !== 1) {
-			fail('clientDetailView.js load must make exactly one clientConnections RPC and preserve a successful initial response');
+		    loaded.response !== fixture || loaded.updatedAt !== now ||
+		    loaded.error !== null || rpcCount !== 1) {
+			fail('clientDetailView.js load must make exactly one clientConnections RPC and stamp a successful initial response with the browser receive time');
 		}
 		const rootNode = view.render(loaded);
 		const state = shellState;
 		const requiredFields = [
-			'identityKey', 'response', 'lastGood', 'protocol', 'filter', 'expanded',
+			'identityKey', 'response', 'lastGood', 'updatedAt', 'protocol', 'filter', 'expanded',
 			'prefs', 'timer', 'loading', 'reload', 'schedule', 'stopTimer',
 			'setProtocol', 'setFilter', 'back'
 		];
@@ -1305,10 +1322,13 @@ function assertClientDetailViewLifecycle(src) {
 		}
 		if (events.slice(beforeReloadEvents).some(function(event) { return event.indexOf('timer:') === 0; }))
 			fail('clientDetailView.js must never schedule the next timer while a reload Promise is pending');
+		now = new Date(2026, 0, 2, 3, 5, 6).getTime();
+		const successUpdatedAt = now;
 		successDeferred.resolve(success);
 		await firstReload;
 		const settledEvents = events.slice(beforeReloadEvents);
-		if (state.loading || state.response !== success || state.lastGood !== success || state.error !== null ||
+		if (state.loading || state.response !== success || state.lastGood !== success ||
+		    state.updatedAt !== successUpdatedAt || state.error !== null ||
 		    timers.size !== 1 || settledEvents[settledEvents.length - 2] !== 'render:false' ||
 		    settledEvents[settledEvents.length - 1] !== 'timer:1000') {
 			fail('clientDetailView.js successful reload must replace response/lastGood, render loading=false, then schedule exactly one timer');
@@ -1319,14 +1339,33 @@ function assertClientDetailViewLifecycle(src) {
 		rejectDeferred.reject(new Error('network down'));
 		await failedReload;
 		if (state.loading || state.lastGood !== success || state.response !== success ||
-		    !state.error || timers.size !== 1) {
+		    state.updatedAt !== successUpdatedAt || !state.error || timers.size !== 1) {
 			fail('clientDetailView.js transport rejection must keep the last good response visible, expose the error, and resume scheduling');
 		}
 
+		now = new Date(2026, 0, 2, 3, 6, 7).getTime();
+		const unavailableUpdatedAt = now;
 		await state.reload();
-		if (state.response !== unavailable || state.lastGood !== success || state.error !== null ||
+		if (state.response !== unavailable || state.lastGood !== null ||
+		    state.updatedAt !== unavailableUpdatedAt || state.error !== null ||
 		    state.loading || timers.size !== 1) {
-			fail('clientDetailView.js available:false success must replace the current response and clear errors without overwriting lastGood');
+			fail('clientDetailView.js available:false success must become the current successful response, clear stale lastGood, and update receive time');
+		}
+
+		const unavailableFailure = state.reload();
+		unavailableRejectDeferred.reject(new Error('still down'));
+		await unavailableFailure;
+		if (state.response !== unavailable || state.lastGood !== null ||
+		    state.updatedAt !== unavailableUpdatedAt || !state.error || timers.size !== 1) {
+			fail('clientDetailView.js reject after available:false must retain the unavailable empty response without resurrecting older good rows or changing receive time');
+		}
+
+		now = new Date(2026, 0, 2, 3, 7, 8).getTime();
+		const goodBUpdatedAt = now;
+		await state.reload();
+		if (state.response !== goodB || state.lastGood !== goodB ||
+		    state.updatedAt !== goodBUpdatedAt || state.error !== null || timers.size !== 1) {
+			fail('clientDetailView.js next successful available response must replace the unavailable state with only the new data and receive time');
 		}
 
 		const rpcBeforeLocalControls = rpcCount;
@@ -1354,10 +1393,11 @@ function assertClientDetailViewLifecycle(src) {
 				failingCalls++;
 				return Promise.reject(new Error('initial network down'));
 			}
-		}, shell, refresh, fakeWindow);
+		}, shell, refresh, fakeWindow, fakeDate);
 		const failedInitial = await firstFailureView.load('30:c5:0a@eth1');
 		if (!failedInitial || failedInitial.identityKey !== '30:c5:0a@eth1' ||
-		    failedInitial.response !== null || !failedInitial.error || failingCalls !== 1) {
+		    failedInitial.response !== null || failedInitial.updatedAt !== null ||
+		    !failedInitial.error || failingCalls !== 1) {
 			fail('clientDetailView.js must convert an initial transport rejection into renderable data without crashing the LuCI page');
 		}
 	}).catch(function(err) {
@@ -1365,16 +1405,144 @@ function assertClientDetailViewLifecycle(src) {
 	}));
 }
 
-function loadClientDetailRefreshModule(src) {
+function assertClientDetailIntegratedState(viewSrc) {
+	const fixture = JSON.parse(fs.readFileSync(
+		path.join(root, 'tests/fixtures/lanspeed-client-connections.json'), 'utf8'
+	));
+	const goodA = JSON.parse(JSON.stringify(fixture));
+	goodA.connections = [ Object.assign({}, goodA.connections[0], { remote_ip: '1.1.1.1' }) ];
+	goodA.total_connections = 1;
+	goodA.returned_connections = 1;
+	const unavailable = Object.assign({}, fixture, {
+		available: false,
+		sample_ms: null,
+		total_connections: 0,
+		returned_connections: 0,
+		connections: [],
+		warnings: [ 'conntrack_unavailable' ]
+	});
+	const goodB = JSON.parse(JSON.stringify(fixture));
+	goodB.connections = [ Object.assign({}, goodB.connections[0], { remote_ip: '2.2.2.2' }) ];
+	goodB.total_connections = 1;
+	goodB.returned_connections = 1;
+	const refresh = loadClientDetailRefreshModule(readModuleByName('clientDetailRefresh.js'));
+	let now = new Date(2026, 0, 2, 3, 4, 5).getTime();
+	const fakeDate = { now: function() { return now; } };
+
+	function harness(prefs, rpcResponses) {
+		const timers = new Map();
+		let timerId = 0;
+		let state = null;
+		let built = null;
+		const fakeWindow = {
+			location: { pathname: '/admin/status/lanspeed/overview', assign: function() {} },
+			setTimeout: function(handler, interval) {
+				const id = ++timerId;
+				timers.set(id, { handler: handler, interval: interval });
+				return id;
+			},
+			clearTimeout: function(id) { timers.delete(id); },
+			addEventListener: function() {}
+		};
+		const shell = { buildShell: function(viewState) {
+			state = viewState;
+			built = buildClientDetailShellForRefresh(viewState);
+			return built;
+		} };
+		const queue = rpcResponses.slice();
+		const view = loadClientDetailViewModule(viewSrc, {
+			MIN_REFRESH_MS: 1000,
+			DEFAULT_PREFS: { refreshMs: 3000 },
+			loadPrefs: function() { return Object.assign({}, prefs); }
+		}, {
+			clientConnections: function() { return queue.shift(); }
+		}, shell, refresh, fakeWindow, fakeDate);
+		return {
+			view: view,
+			timers: timers,
+			state: function() { return state; },
+			built: function() { return built; }
+		};
+	}
+
+	asyncChecks.push(Promise.resolve().then(async function() {
+		const sequence = harness({ refreshMs: 1000, paused: true }, [
+			Promise.resolve(goodA),
+			Promise.resolve(unavailable),
+			Promise.reject(new Error('transport still down')),
+			Promise.resolve(goodB)
+		]);
+		const initial = await sequence.view.load('fixture@lan');
+		sequence.view.render(initial);
+		let tbody = sequence.built().refs.tbody;
+		if (!fakeElementText(tbody).includes('1.1.1.1') || fakeElementText(tbody).includes('2.2.2.2'))
+			fail('client detail integration must initially render only good response A');
+
+		now = new Date(2026, 0, 2, 3, 5, 6).getTime();
+		await sequence.state().reload();
+		if (tbody.children.length !== 0 || sequence.state().lastGood !== null)
+			fail('client detail integration must clear table rows and stale lastGood after available:false success');
+		const unavailableTime = sequence.built().refs.summaryUpdated.textContent;
+		await sequence.state().reload();
+		if (tbody.children.length !== 0 || fakeElementText(tbody).includes('1.1.1.1') ||
+		    sequence.state().response !== unavailable ||
+		    sequence.built().refs.summaryUpdated.textContent !== unavailableTime ||
+		    !fakeElementText(sequence.built().refs.error).includes('连接数据仍不可用')) {
+			fail('client detail integration must keep unavailable rows empty and receive time unchanged after the following transport rejection');
+		}
+
+		now = new Date(2026, 0, 2, 3, 6, 7).getTime();
+		await sequence.state().reload();
+		if (!fakeElementText(tbody).includes('2.2.2.2') || fakeElementText(tbody).includes('1.1.1.1') ||
+		    sequence.built().refs.summaryUpdated.textContent !== '03:06:07') {
+			fail('client detail integration must replace unavailable state with only good response B and its new browser receive time');
+		}
+
+		const recovery = harness({ refreshMs: 1000, paused: true }, [
+			Promise.reject(new Error('initial down')),
+			Promise.resolve(goodB)
+		]);
+		const failedInitial = await recovery.view.load('fixture@lan');
+		recovery.view.render(failedInitial);
+		if (!fakeElementText(recovery.built().refs.empty).includes('首次加载连接详情失败'))
+			fail('client detail integration must render an initial transport rejection without stale rows');
+		now = new Date(2026, 0, 2, 3, 7, 8).getTime();
+		await recovery.state().reload();
+		if (!fakeElementText(recovery.built().refs.tbody).includes('2.2.2.2') ||
+		    !recovery.built().refs.error.hidden ||
+		    recovery.built().refs.summaryUpdated.textContent !== '03:07:08') {
+			fail('client detail integration must recover from initial rejection on the next successful response');
+		}
+
+		for (const invalid of [ null, 'not-a-number', Infinity, -1 ]) {
+			now = new Date(2026, 0, 2, 3, 8, 9).getTime();
+			const invalidPrefs = harness({ refreshMs: invalid, paused: true }, []);
+			invalidPrefs.view.render({
+				identityKey: 'fixture@lan', response: fixture, error: null
+			});
+			const interval = Array.from(invalidPrefs.timers.values())[0].interval;
+			if (invalidPrefs.state().prefs.refreshMs !== 3000 || interval !== 3000 ||
+			    !fakeElementText(invalidPrefs.built().refs.footer).includes('自动刷新：3000 ms') ||
+			    invalidPrefs.state().updatedAt !== now) {
+				fail('clientDetailView.js must normalize invalid refreshMs to 3000ms once, schedule despite paused=true, and stamp direct initial responses');
+			}
+		}
+	}).catch(function(err) {
+		fail('integrated client detail state behavior could not execute: ' + (err && err.stack || err));
+	}));
+}
+
+function loadClientDetailRefreshModule(src, fakeDate) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	return vm.compileFunction(src, [
-		'baseclass', 'fmt', 'clientConnections', 'E', '_'
+		'baseclass', 'fmt', 'clientConnections', 'E', '_', 'Date'
 	], { filename: 'resources/lanspeed/clientDetailRefresh.js' })(
 		fakeBaseclass,
 		loadFormatModule(readModuleByName('format.js')),
 		loadClientConnectionsModule(readModuleByName('clientConnections.js')),
 		fakeElement,
-		fakeTranslate
+		fakeTranslate,
+		fakeDate || Date
 	);
 }
 
@@ -1420,11 +1588,12 @@ function assertClientDetailRefreshBehavior(src) {
 		identityKey: fixture.client.identity_key,
 		response: fixture,
 		lastGood: fixture,
+		updatedAt: new Date(2026, 0, 2, 3, 4, 5).getTime(),
 		error: null,
 		protocol: 'all',
 		filter: '',
 		expanded: {},
-		prefs: { refreshMs: 250 },
+		prefs: { refreshMs: 1000 },
 		loading: false,
 		back: function() {},
 		setProtocol: function(protocol) { state.protocol = protocol; refresh.render(state); },
@@ -1444,9 +1613,10 @@ function assertClientDetailRefreshBehavior(src) {
 	    !meta.includes('br-lan') || !meta.includes('lan') ||
 	    !fakeElementText(refs.connectionState).includes('有当前连接') ||
 	    refs.summaryTargets.textContent !== '2' || refs.summaryConnections.textContent !== '2' ||
-	    !refs.summaryUpdated.textContent.includes('12345') || rows.length !== 4 ||
+	    refs.summaryUpdated.textContent !== '03:04:05' ||
+	    refs.summaryUpdated.textContent.includes('12345') || rows.length !== 4 ||
 	    refs.table.hidden || !refs.empty.hidden || !refs.error.hidden) {
-		fail('clientDetailRefresh.js must render hostname-first identity/meta, unfiltered target count, real totals/sample time, and two rows per destination group');
+		fail('clientDetailRefresh.js must render hostname-first identity/meta, unfiltered target count, real totals, browser receive wall clock, and two rows per destination group');
 	}
 	if (!footer.includes('数据源') || !footer.includes('Conntrack Netlink') ||
 	    !footer.includes('返回 2') || !footer.includes('总计 2') || !footer.includes('上限 512') ||
@@ -1478,23 +1648,32 @@ function assertClientDetailRefreshBehavior(src) {
 	}
 
 	let prevented = 0;
-	groupRows[0].listeners.click({ preventDefault: function() { prevented++; } });
+	const focusedGroup = groupRows[0];
+	const focusedDetail = detailRows[0];
+	focusedGroup.focus();
+	focusedGroup.listeners.keydown({ key: 'Enter', preventDefault: function() { prevented++; } });
 	let currentGroups = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-group');
 	let currentDetails = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-detail-row');
-	if (prevented !== 1 || currentGroups[0].attrs['aria-expanded'] !== 'true' ||
-	    currentDetails[0].hidden || state.expanded['198.51.100.53'] !== true) {
-		fail('clientDetailRefresh.js click must prevent default and expand the matching detail row');
+	if (prevented !== 1 || currentGroups[0] !== focusedGroup || currentDetails[0] !== focusedDetail ||
+	    fakeDocument.activeElement !== focusedGroup ||
+	    focusedGroup.attrs['aria-expanded'] !== 'true' || focusedDetail.hidden ||
+	    state.expanded['198.51.100.53'] !== true) {
+		fail('clientDetailRefresh.js Enter must toggle the existing row in place, prevent default, and preserve keyboard focus while expanding');
 	}
-	currentGroups[0].listeners.keydown({ key: 'Enter', preventDefault: function() { prevented++; } });
+	focusedGroup.listeners.keydown({ key: ' ', preventDefault: function() { prevented++; } });
 	currentGroups = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-group');
 	currentDetails = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-detail-row');
-	if (prevented !== 2 || currentGroups[0].attrs['aria-expanded'] !== 'false' ||
-	    !currentDetails[0].hidden) {
-		fail('clientDetailRefresh.js Enter must prevent default and collapse a group');
+	if (prevented !== 2 || currentGroups[0] !== focusedGroup || currentDetails[0] !== focusedDetail ||
+	    fakeDocument.activeElement !== focusedGroup ||
+	    focusedGroup.attrs['aria-expanded'] !== 'false' || !focusedDetail.hidden ||
+	    state.expanded['198.51.100.53'] !== false) {
+		fail('clientDetailRefresh.js Space must toggle the existing row in place, prevent default, and preserve keyboard focus while collapsing');
 	}
-	currentGroups[0].listeners.keydown({ key: ' ', preventDefault: function() { prevented++; } });
-	if (prevented !== 3 || state.expanded['198.51.100.53'] !== true)
-		fail('clientDetailRefresh.js Space must prevent default and toggle a group');
+	focusedGroup.listeners.click({ preventDefault: function() { prevented++; } });
+	if (prevented !== 3 || refs.tbody.children[0] !== focusedGroup || focusedDetail.hidden ||
+	    state.expanded['198.51.100.53'] !== true) {
+		fail('clientDetailRefresh.js click must also toggle the existing group/detail rows without rebuilding the table');
+	}
 
 	state.protocol = 'tcp';
 	state.filter = '54001';
@@ -1514,14 +1693,16 @@ function assertClientDetailRefreshBehavior(src) {
 	if (Object.prototype.hasOwnProperty.call(state.expanded, '198.51.100.53'))
 		fail('clientDetailRefresh.js must prune expanded destinations only when they disappear from the unfiltered response');
 
-	state.response = null;
+	state.response = fixture;
 	state.lastGood = fixture;
+	state.updatedAt = new Date(2026, 0, 2, 3, 4, 5).getTime();
 	state.error = new Error('<img src=x onerror=alert(1)> network down');
 	refresh.render(state);
 	if (refs.error.hidden || !fakeElementText(refs.error).includes('刷新连接详情失败') ||
 	    refs.tbody.children.length !== 4 || refs.table.hidden ||
+	    refs.summaryUpdated.textContent !== '03:04:05' ||
 	    findFakeElementsByTag(refs.error, 'img').length !== 0) {
-		fail('clientDetailRefresh.js transport error must show safe Chinese error text while retaining last-good summary and rows');
+		fail('clientDetailRefresh.js transport error must render the current successful response with safe Chinese error text and unchanged receive time');
 	}
 
 	state.error = null;
@@ -1532,12 +1713,24 @@ function assertClientDetailRefreshBehavior(src) {
 		returned_connections: 0,
 		warnings: [ 'conntrack_unavailable' ]
 	});
+	state.lastGood = null;
+	state.updatedAt = new Date(2026, 0, 2, 3, 5, 6).getTime();
 	refresh.render(state);
 	if (refs.tbody.children.length !== 0 || !refs.table.hidden || refs.empty.hidden ||
-	    !fakeElementText(refs.empty).includes('连接采集当前不可用')) {
+	    !fakeElementText(refs.empty).includes('连接采集当前不可用') ||
+	    refs.summaryUpdated.textContent !== '03:05:06') {
 		fail('clientDetailRefresh.js available:false success must clear current rows and never leak last-good connection details');
 	}
+	state.error = new Error('still down');
+	refresh.render(state);
+	if (refs.tbody.children.length !== 0 || !refs.table.hidden ||
+	    !fakeElementText(refs.error).includes('连接数据仍不可用') ||
+	    fakeElementText(refs.tbody).includes('198.51.100.53') ||
+	    refs.summaryUpdated.textContent !== '03:05:06') {
+		fail('clientDetailRefresh.js reject after unavailable must keep the table empty, retain its receive time, and explain that connection data remains unavailable');
+	}
 
+	state.error = null;
 	state.response = Object.assign({}, fixture, {
 		client: null, total_connections: 0, returned_connections: 0,
 		connections: [], warnings: [ 'client_not_found' ]
@@ -1557,6 +1750,7 @@ function assertClientDetailRefreshBehavior(src) {
 
 	state.response = null;
 	state.lastGood = null;
+	state.updatedAt = null;
 	state.error = new Error('initial down');
 	refresh.render(state);
 	if (refs.error.hidden || refs.tbody.children.length || !refs.table.hidden || refs.empty.hidden ||
@@ -1573,13 +1767,15 @@ function assertClientDetailRefreshBehavior(src) {
 		warnings: [ 'backend <warning>' ]
 	});
 	state.lastGood = state.response;
+	state.updatedAt = new Date(2026, 0, 2, 3, 6, 7).getTime();
 	state.loading = true;
 	refresh.render(state);
 	const truncatedFooter = fakeElementText(refs.footer);
-	if (!truncatedFooter.includes('已截断') || !truncatedFooter.includes('返回 2') ||
+	if (refs.summaryTargets.textContent !== '至少 2' ||
+	    !truncatedFooter.includes('已截断') || !truncatedFooter.includes('返回 2') ||
 	    !truncatedFooter.includes('总计 5') || !truncatedFooter.includes('上限 2') ||
 	    !truncatedFooter.includes('backend <warning>') || !refs.refresh.disabled) {
-		fail('clientDetailRefresh.js must render accurate truncation/warning footer text and disable manual refresh while loading');
+		fail('clientDetailRefresh.js must mark truncated target counts as a lower bound, render accurate footer text, and disable manual refresh while loading');
 	}
 	const hostile = JSON.parse(JSON.stringify(fixture));
 	hostile.client.hostname = '<svg onload=alert(1)>';
@@ -3460,6 +3656,7 @@ EXPECTED_MODULES.forEach(function(name) {
 	if (name === 'clientDetailView.js') {
 		assertClientDetailViewSource(src);
 		assertClientDetailViewLifecycle(src);
+		assertClientDetailIntegratedState(src);
 	}
 	if (name === 'clientDetailShell.js') {
 		assertClientDetailShellSource(src);

@@ -56,6 +56,19 @@ function protocolButton(ref, active) {
 		(active ? ' active' : '');
 }
 
+function twoDigits(value) {
+	return value < 10 ? '0' + value : String(value);
+}
+
+function updatedAtLabel(updatedAt) {
+	if (typeof updatedAt !== 'number' || !isFinite(updatedAt)) return '—';
+	var received = new Date(updatedAt);
+	if (!isFinite(received.getTime())) return '—';
+	return twoDigits(received.getHours()) + ':' +
+		twoDigits(received.getMinutes()) + ':' +
+		twoDigits(received.getSeconds());
+}
+
 function buildGroupRows(viewState, group) {
 	var expanded = viewState.expanded[group.remoteIp] === true;
 	var groupRow = E('tr', {
@@ -76,9 +89,10 @@ function buildGroupRows(viewState, group) {
 
 	function toggle(event) {
 		if (event && event.preventDefault) event.preventDefault();
-		viewState.expanded[group.remoteIp] =
-			viewState.expanded[group.remoteIp] !== true;
-		render(viewState);
+		expanded = !expanded;
+		viewState.expanded[group.remoteIp] = expanded;
+		groupRow.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+		detailRow.hidden = !expanded;
 	}
 
 	groupRow.addEventListener('click', toggle);
@@ -86,6 +100,7 @@ function buildGroupRows(viewState, group) {
 		if (!event || (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar'))
 			return;
 		toggle(event);
+		groupRow.focus();
 	});
 
 	var details = group.connections.map(function(connection) {
@@ -113,11 +128,15 @@ function buildGroupRows(viewState, group) {
 	return [ groupRow, detailRow ];
 }
 
-function errorText(error, initial) {
+function errorText(error, response) {
 	var detail = error && error.message ? error.message : String(error || '');
-	var prefix = initial
-		? _('首次加载连接详情失败，请稍后重试')
-		: _('刷新连接详情失败，正在显示上次成功的数据');
+	var prefix;
+	if (!response)
+		prefix = _('首次加载连接详情失败，请稍后重试');
+	else if (response.available === false)
+		prefix = _('刷新连接详情失败，连接数据仍不可用');
+	else
+		prefix = _('刷新连接详情失败，正在显示上次成功的数据');
 	return detail ? prefix + '：' + detail : prefix;
 }
 
@@ -125,9 +144,7 @@ function render(viewState) {
 	var refs = viewState && viewState.refs;
 	if (!refs) return;
 
-	var current = viewState.response || null;
-	var response = viewState.error && viewState.lastGood
-		? viewState.lastGood : current;
+	var response = viewState.response || null;
 	var warnings = fmt.asArray(response && response.warnings);
 	var notFound = Boolean(response) &&
 		(!response.client || warnings.indexOf('client_not_found') !== -1);
@@ -167,12 +184,12 @@ function render(viewState) {
 		? clientConnections.groupsForResponse(response, viewState.protocol, viewState.filter)
 		: [];
 
-	refs.summaryTargets.textContent = usable ? String(allGroups.length) : '0';
+	refs.summaryTargets.textContent = usable
+		? (response.truncated ? _('至少 ') : '') + String(allGroups.length)
+		: '0';
 	refs.summaryConnections.textContent = response
 		? String(Number(response.total_connections) || 0) : '—';
-	refs.summaryUpdated.textContent = response && response.sample_ms !== null &&
-		response.sample_ms !== undefined
-		? String(response.sample_ms) + ' ms' : '—';
+	refs.summaryUpdated.textContent = updatedAtLabel(viewState.updatedAt);
 
 	var rows = [];
 	groups.forEach(function(group) {
@@ -181,7 +198,7 @@ function render(viewState) {
 	replaceRows(refs.tbody, rows);
 
 	var emptyText = '';
-	if (viewState.error && !viewState.lastGood)
+	if (viewState.error && !response)
 		emptyText = _('首次加载连接详情失败，请稍后重试。');
 	else if (notFound)
 		emptyText = _('未找到该客户端，可能已离开 LAN。');
@@ -199,7 +216,7 @@ function render(viewState) {
 	refs.empty.textContent = emptyText;
 	refs.error.hidden = !viewState.error;
 	if (viewState.error)
-		refs.error.lastChild.textContent = errorText(viewState.error, !viewState.lastGood);
+		refs.error.lastChild.textContent = errorText(viewState.error, response);
 
 	protocolButton(refs.protocolAll, viewState.protocol === 'all');
 	protocolButton(refs.protocolTcp, viewState.protocol === 'tcp');
@@ -207,8 +224,7 @@ function render(viewState) {
 	refs.filter.value = viewState.filter || '';
 	refs.refresh.disabled = viewState.loading === true;
 
-	var interval = Math.max(fmt.MIN_REFRESH_MS,
-		Number(viewState.prefs && viewState.prefs.refreshMs) || 0);
+	var interval = viewState.prefs && viewState.prefs.refreshMs;
 	var footer = [];
 	if (response) {
 		footer.push(_('数据源：') + sourceLabel(response.conn_source));
