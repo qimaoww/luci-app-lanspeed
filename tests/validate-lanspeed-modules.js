@@ -509,9 +509,13 @@ function assertClientDetailStyleLeaf(name, src) {
 	     !css.includes('var(--label-surface'))) {
 		fail(`${name} must align detail padding and label surfaces with the Aurora status page`);
 	}
-	if (name === 'clientDetailStyleArgon.js' &&
-	    (!css.includes('font-size:1rem') || !css.includes('padding:.65rem .75rem'))) {
-		fail(`${name} must retain the Argon status typography and table density`);
+	if (name === 'clientDetailStyleArgon.js') {
+		if (!css.includes('font-size:1rem') || !css.includes('padding:.65rem .75rem'))
+			fail(`${name} must retain the Argon status typography and table density`);
+		if (!css.includes('@media (max-width:480px){') ||
+		    !css.includes('.lanspeed-theme-argon .lanspeed-connection-refresh{width:100%!important}')) {
+			fail(`${name} must override Argon's width:auto!important so the phone refresh action fills its toolbar`);
+		}
 	}
 	if (name === 'clientDetailStyleBootstrap.js') {
 		/* lsTheme.applyRoot() adds both classes to the same root; there is no
