@@ -5,10 +5,12 @@ use aya_ebpf::{
         bpf_sock_tuple, bpf_sock_tuple__bindgen_ty_1__bindgen_ty_1 as BpfIpv4Tuple,
         bpf_sock_tuple__bindgen_ty_1__bindgen_ty_2 as BpfIpv6Tuple, BPF_NOEXIST,
     },
+    macros::map,
+    maps::PerCpuArray,
     programs::TcContext,
 };
 use lanspeed_common::{
-    packet::{AddressFamily, PacketIdentity, TransportProtocol},
+    packet::{parse_packet_prefix, AddressFamily, PacketIdentity, TransportProtocol},
     LanspeedConnKey, LanspeedCounters,
 };
 
@@ -28,6 +30,20 @@ struct NfConn {
     _private: [u8; 0],
 }
 
+#[repr(C)]
+struct ConntrackScratch {
+    // PacketIdentity contains enums, so keep the zero-initialized map slot in
+    // MaybeUninit until the bounded parser has produced a complete value.
+    packet: MaybeUninit<PacketIdentity>,
+    conn_key: LanspeedConnKey,
+    tuple: bpf_sock_tuple,
+    opts: BpfCtOpts,
+}
+
+#[map(name = "lanspeed_conntrack_scratch")]
+static LANSPEED_CONNTRACK_SCRATCH: PerCpuArray<ConntrackScratch> =
+    PerCpuArray::with_max_entries(1, 0);
+
 #[allow(dead_code)]
 unsafe extern "C" {
     fn bpf_skb_ct_lookup(
@@ -40,14 +56,23 @@ unsafe extern "C" {
     fn bpf_ct_release(conn: *mut NfConn);
 }
 
-#[inline(always)]
 pub fn try_count_connection(
     ctx: &TcContext,
     counters: *mut LanspeedCounters,
     mac: [u8; 6],
-    packet: PacketIdentity,
+    prefix: &[u8],
+    frame_len: usize,
 ) {
-    let conn_key = LanspeedConnKey::new(
+    let Some(scratch) = LANSPEED_CONNTRACK_SCRATCH.get_ptr_mut(0) else {
+        return;
+    };
+    let scratch = unsafe { &mut *scratch };
+    let Ok(packet) = parse_packet_prefix(prefix, frame_len) else {
+        return;
+    };
+    scratch.packet.write(packet);
+    let packet = unsafe { scratch.packet.assume_init_ref() };
+    scratch.conn_key = LanspeedConnKey::new(
         mac,
         packet.protocol as u8,
         packet.family as u8,
@@ -55,14 +80,13 @@ pub fn try_count_connection(
         packet.dst_port,
         packet.dst_addr,
     );
-    if LANSPEED_SEEN_CONNS.get_ptr(&conn_key).is_some() {
+    if LANSPEED_SEEN_CONNS.get_ptr(&scratch.conn_key).is_some() {
         return;
     }
 
-    let mut tuple = unsafe { MaybeUninit::<bpf_sock_tuple>::zeroed().assume_init() };
     let tuple_size = match packet.family {
         AddressFamily::Ipv4 => {
-            tuple.__bindgen_anon_1.ipv4 = BpfIpv4Tuple {
+            scratch.tuple.__bindgen_anon_1.ipv4 = BpfIpv4Tuple {
                 saddr: u32::from_ne_bytes([
                     packet.src_addr[0],
                     packet.src_addr[1],
@@ -81,7 +105,7 @@ pub fn try_count_connection(
             size_of::<BpfIpv4Tuple>() as u32
         }
         AddressFamily::Ipv6 => {
-            tuple.__bindgen_anon_1.ipv6 = BpfIpv6Tuple {
+            scratch.tuple.__bindgen_anon_1.ipv6 = BpfIpv6Tuple {
                 saddr: ipv6_words(packet.src_addr),
                 daddr: ipv6_words(packet.dst_addr),
                 sport: packet.src_port.to_be(),
@@ -90,7 +114,7 @@ pub fn try_count_connection(
             size_of::<BpfIpv6Tuple>() as u32
         }
     };
-    let mut opts = BpfCtOpts {
+    scratch.opts = BpfCtOpts {
         netns_id: -1,
         error: 0,
         l4proto: packet.protocol as u8,
@@ -101,9 +125,9 @@ pub fn try_count_connection(
     let conn = unsafe {
         call_bpf_skb_ct_lookup(
             ctx.skb.skb,
-            &mut tuple,
+            &mut scratch.tuple,
             tuple_size,
-            &mut opts,
+            &mut scratch.opts,
             size_of::<BpfCtOpts>() as u32,
         )
     };
@@ -114,7 +138,7 @@ pub fn try_count_connection(
 
     let seen = 1u8;
     if LANSPEED_SEEN_CONNS
-        .insert(&conn_key, &seen, BPF_NOEXIST as u64)
+        .insert(&scratch.conn_key, &seen, BPF_NOEXIST as u64)
         .is_err()
     {
         return;

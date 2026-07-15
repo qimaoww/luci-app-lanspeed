@@ -1,8 +1,11 @@
-use core::{mem::MaybeUninit, ptr::addr_of_mut, slice};
+use core::{ptr::addr_of_mut, slice};
 
 use aya_ebpf::helpers::generated::bpf_skb_load_bytes;
 use aya_ebpf::{
-    bindings::BPF_NOEXIST, helpers::bpf_ktime_get_ns, macros::map, maps::LruHashMap,
+    bindings::BPF_NOEXIST,
+    helpers::bpf_ktime_get_ns,
+    macros::map,
+    maps::{LruHashMap, PerCpuArray},
     programs::TcContext,
 };
 use lanspeed_common::{
@@ -13,11 +16,17 @@ use lanspeed_common::{
 
 #[cfg(feature = "conntrack-kfunc")]
 use crate::conntrack::try_count_connection;
-#[cfg(feature = "conntrack-kfunc")]
-use lanspeed_common::packet::parse_packet_prefix;
 
 const ETHERNET_HEADER_LEN: usize = 14;
 const PACKET_PREFIX_LEN: usize = 142;
+// The parser only receives PACKET_PREFIX_LEN bytes. The extra physical space
+// keeps verifier range widening for variable transport offsets inside the map.
+const PACKET_SCRATCH_LEN: usize = 160;
+
+#[repr(C)]
+struct PacketPrefix {
+    bytes: [u8; PACKET_SCRATCH_LEN],
+}
 
 #[map(name = "lanspeed_clients")]
 pub static LANSPEED_CLIENTS: LruHashMap<LanspeedKey, LanspeedCounters> =
@@ -27,17 +36,23 @@ pub static LANSPEED_CLIENTS: LruHashMap<LanspeedKey, LanspeedCounters> =
 pub static LANSPEED_SEEN_CONNS: LruHashMap<LanspeedConnKey, u8> =
     LruHashMap::with_max_entries(MAX_CONN_TUPLES, 0);
 
+#[map(name = "lanspeed_packet_prefix")]
+static LANSPEED_PACKET_PREFIX: PerCpuArray<PacketPrefix> = PerCpuArray::with_max_entries(1, 0);
+
 pub fn account_frame(ctx: TcContext, direction: u8, action: i32) -> i32 {
     let frame_len = ctx.len();
     if frame_len < ETHERNET_HEADER_LEN as u32 {
         return action;
     }
-    let mut prefix = MaybeUninit::<[u8; PACKET_PREFIX_LEN]>::uninit();
-    let prefix_ptr = prefix.as_mut_ptr().cast::<u8>();
+    let Some(prefix) = LANSPEED_PACKET_PREFIX.get_ptr_mut(0) else {
+        return action;
+    };
+    let prefix = unsafe { &mut *prefix };
+    let prefix_ptr = prefix.bytes.as_mut_ptr();
     if !load_packet_prefix(&ctx, prefix_ptr, ETHERNET_HEADER_LEN as u32) {
         return action;
     }
-    let ethernet = unsafe { loaded_packet_prefix(&prefix, ETHERNET_HEADER_LEN as u32) };
+    let ethernet = unsafe { loaded_packet_prefix(prefix, ETHERNET_HEADER_LEN as u32) };
 
     let mac = if direction == DIR_TX {
         [
@@ -69,7 +84,7 @@ pub fn account_frame(ctx: TcContext, direction: u8, action: i32) -> i32 {
     let gro_prefix_loaded =
         direction == DIR_TX && gso_segs > 1 && load_packet_prefix(&ctx, prefix_ptr, prefix_len);
     let ingress_header_len = if gro_prefix_loaded {
-        gro_repeated_header_len(unsafe { loaded_packet_prefix(&prefix, prefix_len) })
+        gro_repeated_header_len(unsafe { loaded_packet_prefix(prefix, prefix_len) })
     } else {
         None
     };
@@ -121,10 +136,8 @@ pub fn account_frame(ctx: TcContext, direction: u8, action: i32) -> i32 {
             prefix_loaded = load_packet_prefix(&ctx, prefix_ptr, prefix_len);
         }
         if prefix_loaded {
-            let loaded_prefix = unsafe { loaded_packet_prefix(&prefix, prefix_len) };
-            if let Ok(packet) = parse_packet_prefix(loaded_prefix, frame_len as usize) {
-                try_count_connection(&ctx, counters, mac, packet);
-            }
+            let loaded_prefix = unsafe { loaded_packet_prefix(prefix, prefix_len) };
+            try_count_connection(&ctx, counters, mac, loaded_prefix, frame_len as usize);
         }
     }
 
@@ -137,13 +150,10 @@ fn load_packet_prefix(ctx: &TcContext, prefix: *mut u8, prefix_len: u32) -> bool
 }
 
 #[inline(always)]
-unsafe fn loaded_packet_prefix(
-    prefix: &MaybeUninit<[u8; PACKET_PREFIX_LEN]>,
-    prefix_len: u32,
-) -> &[u8] {
+unsafe fn loaded_packet_prefix(prefix: &PacketPrefix, prefix_len: u32) -> &[u8] {
     // SAFETY: callers only reach this helper after bpf_skb_load_bytes has
     // successfully initialized exactly the returned prefix range.
-    unsafe { slice::from_raw_parts(prefix.as_ptr().cast::<u8>(), prefix_len as usize) }
+    unsafe { slice::from_raw_parts(prefix.bytes.as_ptr(), prefix_len as usize) }
 }
 
 unsafe fn add_packet(counters: *mut LanspeedCounters, bytes: u64, packets: u64, now: u64) {
