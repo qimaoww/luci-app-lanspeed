@@ -125,7 +125,7 @@ const CONFIG_STYLE_PARTS = [
 	'configStyleResponsive.js'
 ];
 
-const EXPECTED_STATUS_STYLE_SHA256 = 'e11c09a13aadcef496bdc15dbb7806d0d3f4aec60c7c68f828fec18e134a5f3c';
+const EXPECTED_STATUS_STYLE_SHA256 = 'fccac6625c6988a867c7a9fc8a3438deee75500fddb0f2bb2e74a2221b5ece3d';
 const EXPECTED_CONFIG_STYLE_SHA256 = 'd16d845e2babf4b638bcc4e78ccfa44729e80b432fed9ead19dd51da9a3bb4d8';
 
 function readMakeVar(source, name, fileLabel) {
@@ -419,9 +419,10 @@ function assertConnectionStyleOwnership() {
 		'font-weight:600;box-shadow:inset 0 0 0 2px currentColor}';
 	const sharedLinkRules = [
 		'.lanspeed-connection-link{display:inline-flex;min-width:0;color:inherit;' +
-			'text-decoration:underline;text-underline-offset:.18em}',
-		'.lanspeed-connection-link:hover{text-decoration-thickness:2px}',
-		'.lanspeed-connection-link:focus-visible{outline:2px solid currentColor;outline-offset:3px}'
+			'text-decoration:none!important}',
+		'.lanspeed-connection-link:hover{opacity:.78;text-decoration:none!important}',
+		'.lanspeed-connection-link:focus-visible{outline:2px solid currentColor;outline-offset:3px;' +
+			'text-decoration:none!important}'
 	];
 
 	if (!clientDetailBaseCss.includes(selectedProtocolRule)) {
@@ -430,6 +431,10 @@ function assertConnectionStyleOwnership() {
 	sharedLinkRules.forEach(function(rule) {
 		if (!statusBaseCss.includes(rule))
 			fail('statusStyleBase.js must own the shared connection detail link rules');
+	});
+	[ 'text-decoration:underline', 'text-underline-offset' ].forEach(function(forbiddenRule) {
+		if (statusBaseCss.includes(forbiddenRule))
+			fail('statusStyleBase.js must not underline the shared connection detail links');
 	});
 	if (clientDetailBaseCss.includes('.lanspeed-connection-link')) {
 		fail('clientDetailStyleBase.js must not duplicate the shared connection detail link rules');
