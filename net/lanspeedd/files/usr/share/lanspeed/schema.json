@@ -711,6 +711,7 @@
         },
         "connections": {
           "type": "array",
+          "maxItems": 512,
           "items": {
             "$ref": "#/$defs/clientConnectionDetail"
           }

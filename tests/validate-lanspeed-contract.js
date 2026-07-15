@@ -191,6 +191,10 @@ function validateValue(schema, definition, value, pathName) {
 
   if (definition.type === 'array') {
     assertArray(value, pathName);
+    if (definition.maxItems !== undefined) {
+      assert(value.length <= definition.maxItems,
+        `${pathName} must contain <= ${definition.maxItems} items`);
+    }
     if (definition.items) {
       for (const [index, item] of value.entries()) {
         validateValue(schema, definition.items, item, `${pathName}[${index}]`);
@@ -247,6 +251,15 @@ function validateValidatorSelfTests() {
   }
   assert(maximumError?.message === 'integer maximum self-test must be <= 100',
     'validator must reject integers above schema maximum');
+
+  let maxItemsError;
+  try {
+    validateValue({}, { type: 'array', maxItems: 512 }, Array(513).fill(null), 'array maxItems self-test');
+  } catch (error) {
+    maxItemsError = error;
+  }
+  assert(maxItemsError?.message === 'array maxItems self-test must contain <= 512 items',
+    'validator must reject arrays above schema maxItems');
 
   const nullableObject = {
     anyOf: [
@@ -454,6 +467,37 @@ function validateClientConnectionsFixture(response, pathName) {
     `${pathName} must demonstrate an untruncated response with the Rust limit`);
 }
 
+function validateClientConnectionsArrayLimit(schema, response) {
+  const detail = response.connections[0];
+  const atLimit = {
+    ...response,
+    total_connections: 512,
+    returned_connections: 512,
+    truncated: false,
+    connections: Array.from({ length: 512 }, () => ({ ...detail }))
+  };
+  validateValue(schema, schema.$defs.client_connections, atLimit,
+    'client_connections 512-item response');
+
+  const aboveLimit = {
+    ...atLimit,
+    total_connections: 513,
+    returned_connections: 512,
+    truncated: true,
+    connections: [...atLimit.connections, { ...detail }]
+  };
+  let maxItemsError;
+  try {
+    validateValue(schema, schema.$defs.client_connections, aboveLimit,
+      'client_connections 513-item response');
+  } catch (error) {
+    maxItemsError = error;
+  }
+  assert(maxItemsError?.message ===
+    'client_connections 513-item response.connections must contain <= 512 items',
+    'schema must reject client_connections connections above 512 items via maxItems');
+}
+
 function validateMethodFixtures(schema, fixtures) {
   for (const method of UBUS_METHODS) {
     validateValue(schema, schema.$defs[method], fixtures[method], `${method} method response`);
@@ -650,6 +694,8 @@ assert(Array.isArray(schema.$defs.client_connections.properties.client.anyOf) &&
     schema.$defs.client_connections.properties.client.anyOf.map((entry) => entry.$ref || entry.type),
     ['#/$defs/clientConnectionSummary', 'null']
   ), 'schema client_connections.client must allow exactly a summary object or null');
+assert(schema.$defs.client_connections.properties.connections.maxItems === 512,
+  'schema client_connections.connections must cap arrays at 512 items');
 validateRootSchema(schema);
 assert(schema.$defs.status.properties.refresh_interval_ms.minimum === 500, 'schema must reject/clamp refresh_interval_ms below 500ms');
 assert(schema.$defs.status.properties.active_client_window_ms.minimum === 1000, 'schema must reject/clamp active_client_window_ms below 1000ms');
@@ -679,6 +725,7 @@ assert(schema.$defs.clients.properties.conn_collector_mode.$ref === '#/$defs/con
 validateFixture(fixture);
 validateMethodFixtures(schema, methodFixtures);
 validateClientConnectionsFixture(methodFixtures.client_connections, 'client_connections method fixture');
+validateClientConnectionsArrayLimit(schema, methodFixtures.client_connections);
 validateRpc(rpcSource);
 validateAcl(acl);
 validateMenu(menu);
