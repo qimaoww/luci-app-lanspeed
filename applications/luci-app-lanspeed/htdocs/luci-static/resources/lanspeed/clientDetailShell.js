@@ -59,7 +59,7 @@ function buildShell(viewState) {
 	}, _('MAC 与 IP 信息将在加载后显示')));
 	refs.connectionState = E('span', {
 		'class': 'label lanspeed-connection-state'
-	}, _('连接状态：等待加载'));
+	}, _('等待数据'));
 
 	refs.summaryTargets = E('span', {
 		'class': 'lanspeed-connection-summary-value'
@@ -198,7 +198,7 @@ function buildShell(viewState) {
 	refs.footer = E('p', {
 		'class': 'lanspeed-connection-footer',
 		'aria-live': 'polite'
-	}, _('连接数据将在加载后显示。'));
+	}, _('连接数据加载后会显示来源和刷新间隔。'));
 
 	var connectionsCard = E('div', {
 		'class': 'cbi-section lanspeed-connections-card'

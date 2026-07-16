@@ -252,14 +252,14 @@ function render(viewState) {
 
 	if (usable) {
 		refs.connectionState.textContent = Number(response.total_connections) > 0
-			? _('连接状态：有当前连接') : _('连接状态：无当前连接');
+			? _('有当前连接') : _('暂无连接');
 		refs.connectionState.setAttribute('data-state',
 			Number(response.total_connections) > 0 ? 'active' : 'idle');
 	} else if (response && response.available === false) {
-		refs.connectionState.textContent = _('连接状态：数据不可用');
+		refs.connectionState.textContent = _('数据不可用');
 		refs.connectionState.setAttribute('data-state', 'unavailable');
 	} else {
-		refs.connectionState.textContent = _('连接状态：等待数据');
+		refs.connectionState.textContent = _('等待数据');
 		refs.connectionState.setAttribute('data-state', 'pending');
 	}
 
@@ -319,17 +319,18 @@ function render(viewState) {
 	var interval = viewState.prefs && viewState.prefs.refreshMs;
 	var footer = [];
 	if (response) {
-		footer.push(_('数据源：') + sourceLabel(response.conn_source));
+		footer.push(_('连接数据：') + sourceLabel(response.conn_source));
 		if (usable) {
-			footer.push(_('返回 ') + (Number(response.returned_connections) || 0) +
-				_(' / 总计 ') + (Number(response.total_connections) || 0) +
-				_(' / 上限 ') + (Number(response.limit) || 0));
-			if (response.truncated) footer.push(_('结果已截断'));
+			footer.push(_('显示 %d / 共 %d 条').format(
+				Number(response.returned_connections) || 0,
+				Number(response.total_connections) || 0));
+			if (response.truncated)
+				footer.push(_('连接较多，仅显示前 %d 条').format(Number(response.limit) || 0));
 		}
 		if (warnings.length)
 			footer.push(_('告警：') + warnings.map(warningLabel).join('，'));
 	}
-	footer.push(_('自动刷新：') + interval + ' ms');
+	footer.push(_('每 %s 秒自动刷新').format(String(Math.round(Number(interval) / 100) / 10)));
 	refs.footer.textContent = footer.join(' · ');
 }
 

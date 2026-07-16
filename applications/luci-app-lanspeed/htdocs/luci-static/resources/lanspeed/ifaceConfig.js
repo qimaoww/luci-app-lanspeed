@@ -80,12 +80,12 @@ function renderIfaceConfig(viewState) {
 			}
 		}
 		var modes = [
-			{ k: 'off',     t: _('关闭'), title: _('不挂载、不显示') },
-			{ k: 'observe', t: _('观察'), title: _('只读接口计数，不 attach BPF；适合 WAN / WireGuard / nssifb') },
+			{ k: 'off',     t: _('关闭'), title: _('不采集，也不在接口吞吐中显示。') },
+			{ k: 'observe', t: _('观察'), title: _('只显示接口总吞吐，不统计客户端；适合 WAN、VPN 和 nssifb。') },
 			{ k: 'collect', t: _('采集'),
 			  title: !isCollectable
-			    ? _('该接口不是推荐的 LAN 二层采集点；WireGuard/VPN 请改为“观察”。')
-			    : _('挂 BPF filter，按客户端拆速率') }
+			    ? _('只能在推荐的 LAN 接口上采集客户端速率；此接口可改为“观察”。')
+			    : _('在 LAN 接口启用 BPF，按客户端统计实时速率。') }
 		];
 		modes.forEach(function(m) {
 			var btn = E('button', {
@@ -159,9 +159,9 @@ function renderIfaceConfig(viewState) {
 	}
 
 	if (!devs.length) {
-		refs.ifcfgHint.textContent = _('没有可选设备，请检查 /sys/class/net。');
+		refs.ifcfgHint.textContent = _('没有发现可配置的网络接口，请确认系统网络设备已经正常创建。');
 	} else {
-		refs.ifcfgHint.textContent = _('采集 = 挂 BPF 按客户端拆速率。观察 = 只读接口吞吐数字，用于 WAN 展示或对账。');
+		refs.ifcfgHint.textContent = _('“采集”用于 LAN 客户端测速；“观察”只显示接口总吞吐。WAN、VPN 和 nssifb 建议使用“观察”。');
 	}
 	viewState.ifcfgLoaded = true;
 	viewState.ifcfgDirty = false;
@@ -185,7 +185,7 @@ function loadIfaceConfig(viewState) {
 	}).catch(function(err) {
 		if (!viewState.sysdevices)
 			viewState.ifcfgLoaded = false;
-		refs.ifcfgStatus.textContent = _('读取失败: ') + (err && err.message || err);
+		refs.ifcfgStatus.textContent = _('接口读取失败：') + (err && err.message || err);
 		return false;
 	});
 }

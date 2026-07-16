@@ -27,7 +27,7 @@ return view.extend({
 			E('style', {}, configStyle.CSS),
 			configForm.buildDaemonSection(values || configForm.DEFAULTS, viewState),
 			E('div', { 'class': 'cbi-section' }, [
-				ifaceCfg.buildSection(viewState, _('接口配置'))
+				ifaceCfg.buildSection(viewState, _('接口分配'))
 			]),
 			configForm.buildSaveSection(viewState)
 		]);

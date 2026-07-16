@@ -1,6 +1,6 @@
 {
   "luci-app-lanspeed": {
-    "description": "Grant read access to lanspeed ubus data and write access to reload / configure interfaces",
+    "description": "Read LAN Speed status and update collector interface settings",
     "read": {
       "ubus": {
         "lanspeed": [

@@ -4,18 +4,128 @@
 'require lanspeed.format as fmt';
 'require lanspeed.clientConnections as clientConnections';
 'require lanspeed.version as lsVersion';
-'require lanspeed.nssPanel as nssPanel';
 'require lanspeed.statusIp as statusIp';
 'require lanspeed.statusCollector as statusCollector';
 
-function nssEvidenceState(ev) {
-	ev = ev || {};
-	return {
-		ecmActive: typeof ev.ecm_active === 'boolean'
-			? ev.ecm_active : Boolean(ev.ecm_offload_active),
-		ppeActive: typeof ev.ppe_active === 'boolean'
-			? ev.ppe_active : Boolean(ev.ppe_offload_active)
-	};
+function setDiagnosticCard(refs, key, state, badge, value, description, meta) {
+	refs[key + 'Card'].setAttribute('data-state', state);
+	refs[key + 'Badge'].className = 'label lanspeed-diagnostic-badge ' +
+		(state === 'good' ? 'label-success' :
+		 state === 'warning' ? 'label-warning' :
+		 state === 'bad' ? 'label-danger' : '');
+	refs[key + 'Badge'].textContent = badge;
+	refs[key + 'Value'].textContent = value;
+	refs[key + 'Description'].textContent = description;
+	refs[key + 'Meta'].textContent = meta;
+}
+
+function refreshIntervalText(value) {
+	value = Number(value);
+	if (!isFinite(value) || value <= 0)
+		return _('刷新间隔未知');
+	if (value < 1000)
+		return _('%d 毫秒更新').format(Math.round(value));
+	return _('每 %s 秒更新').format(String(Math.round(value / 100) / 10));
+}
+
+function refreshDiagnostics(refs, status, error, collector) {
+	var caps = status.capabilities || {};
+	var backendState = 'good';
+	var bpfState = 'good';
+	var backendMode = String(status.mode || '');
+	var confidence = String(status.confidence || '').toLowerCase();
+	var attention = 0;
+
+	setDiagnosticCard(
+		refs, 'plugin', 'good', _('正常'), _('界面已加载'),
+		_('LuCI 页面与前端模块运行正常。'),
+		'luci-app-lanspeed ' + lsVersion.FULL_VERSION
+	);
+
+	if (error) {
+		backendState = 'bad';
+		setDiagnosticCard(
+			refs, 'backend', backendState, _('异常'), _('无法连接后端'),
+			_('未能读取 lanspeedd 状态，请确认服务正在运行。'),
+			_('状态请求失败')
+		);
+	} else if (!status.version) {
+		backendState = 'bad';
+		setDiagnosticCard(
+			refs, 'backend', backendState, _('异常'), _('后端未响应'),
+			_('页面已加载，但后端没有返回有效的运行信息。'),
+			'lanspeedd -'
+		);
+	} else if (collector === 'unsupported' || backendMode === 'Unsupported') {
+		backendState = 'bad';
+		setDiagnosticCard(
+			refs, 'backend', backendState, _('不可用'), _('实时采集不可用'),
+			_('后端正在运行，但当前没有可用的实时速率数据源。'),
+			'lanspeedd ' + status.version + ' · ' + refreshIntervalText(status.refresh_interval_ms)
+		);
+	} else if (backendMode === 'Degraded' || confidence === 'low') {
+		backendState = 'warning';
+		setDiagnosticCard(
+			refs, 'backend', backendState, _('降级'), _('后端降级运行'),
+			_('后端仍可响应，但部分实时数据可能不完整。'),
+			'lanspeedd ' + status.version + ' · ' + refreshIntervalText(status.refresh_interval_ms)
+		);
+	} else {
+		setDiagnosticCard(
+			refs, 'backend', backendState, _('正常'), _('服务运行中'),
+			_('后端正在持续提供客户端、接口和连接数据。'),
+			'lanspeedd ' + status.version + ' · ' + refreshIntervalText(status.refresh_interval_ms)
+		);
+	}
+
+	var hasBpfStatus = [ 'bpf', 'bpf_package', 'bpf_object', 'bpf_runtime_metrics' ].some(function(key) {
+		return Object.prototype.hasOwnProperty.call(caps, key);
+	});
+	var packageOk = caps.bpf_package === true;
+	var objectOk = caps.bpf_object === true;
+	var runtimeOk = caps.bpf_runtime_metrics === true ||
+		(collector === 'bpf' && caps.bpf === true && caps.live_metrics === true);
+	var bpfAvailable = caps.bpf === true && packageOk && objectOk;
+
+	if (!hasBpfStatus) {
+		bpfState = 'warning';
+		setDiagnosticCard(
+			refs, 'bpf', bpfState, _('未知'), _('未上报 BPF 状态'),
+			_('当前后端版本没有提供完整的 BPF 运行信息。'),
+			_('建议更新后端组件')
+		);
+	} else if (runtimeOk && collector === 'bpf') {
+		setDiagnosticCard(
+			refs, 'bpf', bpfState, _('采集中'), _('BPF 正常运行'),
+			_('正在按客户端统计实时上下行速率。'),
+			_('软件包、对象文件与运行时均正常')
+		);
+	} else if (runtimeOk || bpfAvailable) {
+		setDiagnosticCard(
+			refs, 'bpf', bpfState, _('已就绪'), _('BPF 可以使用'),
+			_('BPF 组件正常，当前实时速率由 %s 提供。').format(
+				statusCollector.collectorLabel(collector)),
+			_('当前数据源：%s').format(statusCollector.collectorLabel(collector))
+		);
+	} else {
+		var missing = [];
+		bpfState = 'bad';
+		if (!packageOk) missing.push(_('BPF 软件包'));
+		if (!objectOk) missing.push(_('BPF 对象文件'));
+		if (caps.tc === false) missing.push('tc');
+		if (caps.lan_edge === false) missing.push(_('LAN 采集接口'));
+		setDiagnosticCard(
+			refs, 'bpf', bpfState, _('不可用'), _('BPF 未能运行'),
+			missing.length
+				? _('缺少或未就绪：%s。').format(missing.join('、'))
+				: _('BPF 组件已安装，但运行时没有提供实时指标。'),
+			_('当前数据源：%s').format(statusCollector.collectorLabel(collector))
+		);
+	}
+
+	if (backendState !== 'good') attention++;
+	if (bpfState !== 'good') attention++;
+	return attention;
 }
 
 var CLIENT_INFO_WARNINGS = {
@@ -50,7 +160,7 @@ function splitClientWarnings(rawWarnings, globalWarnings) {
 	(rawWarnings || []).forEach(function(w) {
 		if (CLIENT_INFO_WARNINGS[w])
 			info.push(w);
-		else if (!(globalWarnings || {})[w])
+		else if (!(globalWarnings || {})[w] && vocab.isImportantWarning(w))
 			warnings.push(w);
 	});
 	return { info: info, warnings: warnings };
@@ -104,10 +214,10 @@ function refreshLive(viewState) {
 	var collector = statusCollector.effectiveCollector(status, viewState.clients);
 	refs.collectorPill.className = statusCollector.collectorClass(collector);
 	refs.collectorPill.textContent = statusCollector.collectorLabel(collector);
-	refs.collectorPill.title = _('当前采集方式');
+	refs.collectorPill.title = _('当前实时速率数据源');
 
 	var metaParts = [];
-	if (status.version) metaParts.push('daemon ' + status.version);
+	if (status.version) metaParts.push(_('后端 ') + status.version);
 	metaParts.push('luci ' + lsVersion.FULL_VERSION);
 	if (prefs.paused) metaParts.push(_('已暂停'));
 	refs.meta.textContent = metaParts.join(' · ');
@@ -140,9 +250,9 @@ function refreshLive(viewState) {
 	var subParts = [ _('%d 个活跃').format(totals.active) ];
 	if (nssEv && typeof nssEv.host_count === 'number' &&
 	    nssEv.host_count > clientsAll.length) {
-		subParts.push(_('ECM 知 %d').format(nssEv.host_count));
+		subParts.push(_('NSS 发现 %d 个').format(nssEv.host_count));
 	}
-	subParts.push(_('活跃窗 %d 秒').format(Math.round(activeCfg.activeWindowMs / 1000)));
+	subParts.push(_('活跃判定 %d 秒').format(Math.round(activeCfg.activeWindowMs / 1000)));
 	if (activeCfg.activeMinBps > 1)
 		subParts.push(_('≥ ') + fmt.formatRate(activeCfg.activeMinBps, prefs.unit));
 	refs.mClientsSub.textContent = subParts.join(' · ');
@@ -208,7 +318,7 @@ function refreshLive(viewState) {
 		refs.empty.style.display = '';
 		refs.empty.textContent = (viewState.filter || prefs.activeOnly)
 			? _('没有匹配的客户端。')
-			: _('lanspeedd 当前未上报 LAN 客户端。请确认 /etc/config/lanspeed 的 ifname 指向实际 LAN 边缘接口。');
+			: _('暂未发现 LAN 客户端。请在“LAN Speed 配置”中选择实际 LAN 接口并设为“采集”。');
 	} else {
 		refs.clientsTable.style.display = '';
 		refs.empty.style.display = 'none';
@@ -233,19 +343,19 @@ function refreshLive(viewState) {
 			var mode = String(c.collector_mode || '-');
 			var modeLabel = statusCollector.collectorLabel(mode), modeTitle;
 			if (mode === 'bpf') {
-				modeTitle = _('采集方式 BPF：tc clsact 挂载的 eBPF 程序按 MAC 直接计数。');
+				modeTitle = _('BPF 在 LAN 接口按 MAC 统计客户端实时速率。');
 			} else if (mode === 'nss_ecm_direct') {
-				modeTitle = _('采集方式 NSS-direct：只读 qca-nss-ecm state 设备，直接按 ECM flow 字节计数聚合到 LAN 客户端，不等待 ECM 同步回 conntrack。');
+				modeTitle = _('NSS-direct 直接读取 ECM 流量计数，并归属到对应 LAN 客户端。');
 			} else if (mode === 'nss_ecm_direct+conntrack_ecm_sync') {
-				modeTitle = _('采集方式 NSS-direct / NSS sync：NSS sync 提供稳定来源，NSS-direct 覆盖有有效速率的 ECM flow。');
+				modeTitle = _('NSS-direct 提供实时数据，NSS sync 补齐未覆盖的客户端。');
 			} else if (mode === 'conntrack_ecm_sync' || mode === 'nss_conntrack_sync') {
-				modeTitle = _('采集方式 NSS 同步：NSS 硬件加速流的字节计数以秒级节拍同步回 conntrack，再由 lanspeedd 读取。桥接流也覆盖，精度等于同步间隔 (≈1-2 秒)。');
+				modeTitle = _('NSS sync 从 conntrack 读取硬件加速流量，更新精度约为 1–2 秒。');
 			} else if (mode === 'conntrack_netlink') {
-				modeTitle = _('采集方式 Netlink Conntrack：非 NSS 仅用于连接数与诊断，不作为客户端实时测速来源。');
+				modeTitle = _('CT-Netlink 仅补充当前连接数，不参与非 NSS 设备的实时速率统计。');
 			} else if (mode === 'conntrack_procfs') {
-				modeTitle = _('采集方式 Procfs Conntrack：作为 Netlink 的后备连接数来源，不作为客户端实时测速来源。');
+				modeTitle = _('CT-Procfs 是连接数的备用来源，不参与非 NSS 设备的实时速率统计。');
 			} else if (mode === 'conntrack') {
-				modeTitle = _('采集方式 Conntrack：非 NSS 仅用于连接数与诊断，不作为客户端实时测速来源。');
+				modeTitle = _('Conntrack 仅补充当前连接数，不参与非 NSS 设备的实时速率统计。');
 			} else {
 				modeTitle = _('未知采集方式');
 			}
@@ -349,93 +459,54 @@ function refreshLive(viewState) {
 			var hintTx = typeof covHint.tx_pct === 'number' ? covHint.tx_pct : 100;
 			var hintRx = typeof covHint.rx_pct === 'number' ? covHint.rx_pct : 100;
 			refs.ifacesHint.textContent = (hintTx < 85 || hintRx < 85)
-				? _('覆盖率偏低：可能有硬件流量卸载、硬件桥接 LAN-to-LAN、广播/多播或未归属 MAC。')
+				? _('部分接口流量未能归属到客户端，常见原因是硬件卸载、交换芯片内转发或广播流量。')
 				: '';
 		} else {
 			refs.ifacesHint.textContent = '';
 		}
 	}
 
-	nssPanel.render(refs, status);
-
-	var capabilities = status.capabilities || {};
-	var capKeys = vocab.CAPABILITY_ORDER.filter(function(k) {
-		return Object.prototype.hasOwnProperty.call(capabilities, k);
-	});
-	if (capKeys.length) {
-		fmt.replaceChildren(refs.capsGrid, capKeys.map(function(k) {
-			var enabled = Boolean(capabilities[k]);
-			return E('div', { 'class': 'cap' }, [
-				E('span', {}, vocab.CAPABILITY_LABELS[k] || k),
-				E('span', { 'class': vocab.capabilityClass(k, enabled), 'title': k },
-					enabled ? _('是') : _('否'))
-			]);
-		}));
-	} else {
-		fmt.replaceChildren(refs.capsGrid, [E('p', {}, _('后端未上报任何能力。'))]);
-	}
-
-	var warnings = fmt.asArray(status.warnings).map(function(w) {
-		return vocab.normalizeWarningId(w);
-	});
+	var diagnosticAttention = refreshDiagnostics(refs, status, viewState.error, collector);
+	var warnings = vocab.importantWarnings(status.warnings, status);
 	if (warnings.length) {
-		fmt.replaceChildren(refs.allWarnings, warnings.map(function(w) {
-			return E('li', {}, [
-				E('span', { 'class': vocab.warningClass(w) + ' key' }, w),
-				vocab.warningText(w)
+		refs.diagnosticAlertsTitle.textContent = _('重要告警');
+		fmt.replaceChildren(refs.importantWarnings, warnings.map(function(w) {
+			var dangerous = vocab.warningClass(w).indexOf('danger') !== -1;
+			return E('li', {
+				'class': 'lanspeed-diagnostic-alert',
+				'data-level': dangerous ? 'danger' : 'warning'
+			}, [
+				E('span', { 'class': 'lanspeed-diagnostic-alert-icon', 'aria-hidden': 'true' }, '!'),
+				E('span', { 'class': 'lanspeed-diagnostic-alert-text' }, vocab.warningText(w))
 			]);
 		}));
 	} else {
-		fmt.replaceChildren(refs.allWarnings, [E('li', {}, _('当前没有上报告警。'))]);
+		refs.diagnosticAlertsTitle.textContent = _('运行检查');
+		fmt.replaceChildren(refs.importantWarnings, [E('li', {
+			'class': 'lanspeed-diagnostic-alert-empty'
+		}, [
+			E('span', { 'class': 'lanspeed-diagnostic-alert-icon', 'aria-hidden': 'true' }, '✓'),
+			E('span', {}, _('未发现影响实时测速的异常。'))
+		])]);
 	}
 
-	var versionParts = [
-		_('lanspeedd %s').format(fmt.textOrDash(status.version)),
-		_('luci-app-lanspeed %s').format(lsVersion.FULL_VERSION),
-		_('后端刷新 %s ms').format(fmt.textOrDash(status.refresh_interval_ms))
-	];
-	var nssEvidence = status.evidence && status.evidence.nss;
-	var nssState = nssEvidenceState(nssEvidence);
-	var nssEcmActive = nssState.ecmActive;
-	var nssPpeActive = nssState.ppeActive;
-	if (nssEvidence && (nssEcmActive || nssPpeActive)) {
-		var engine = nssPpeActive ? 'PPE' : 'ECM';
-		var connBits = [];
-		if (typeof nssEvidence.accelerated_connections === 'number')
-			connBits.push(_('总 %d').format(nssEvidence.accelerated_connections));
-		if (typeof nssEvidence.accelerated_tcp === 'number')
-			connBits.push('TCP ' + nssEvidence.accelerated_tcp);
-		if (typeof nssEvidence.accelerated_udp === 'number')
-			connBits.push('UDP ' + nssEvidence.accelerated_udp);
-		if (typeof nssEvidence.accelerated_other === 'number' && nssEvidence.accelerated_other > 0)
-			connBits.push(_('其它 %d').format(nssEvidence.accelerated_other));
-		if (connBits.length)
-			versionParts.push(_('NSS %s 加速连接').format(engine) + ' (' + connBits.join(' / ') + ')');
-		else
-			versionParts.push(_('NSS %s 活跃').format(engine));
-
-		var objectBits = [];
-		if (typeof nssEvidence.host_count === 'number')
-			objectBits.push(_('host %d').format(nssEvidence.host_count));
-		if (typeof nssEvidence.mapping_count === 'number')
-			objectBits.push(_('NAT 映射 %d').format(nssEvidence.mapping_count));
-		if (objectBits.length)
-			versionParts.push(_('ECM 数据库: ') + objectBits.join(' · '));
+	if (warnings.length || diagnosticAttention) {
+		var summary = [];
+		if (diagnosticAttention)
+			summary.push(_('%d 项状态需关注').format(diagnosticAttention));
+		if (warnings.length)
+			summary.push(_('%d 条重要告警').format(warnings.length));
+		refs.diagnosticsSummary.textContent = summary.join(' · ');
+	} else {
+		refs.diagnosticsSummary.textContent = _('插件、后端与 BPF 均正常');
 	}
-	if (nssEvidence && Array.isArray(nssEvidence.subsystems) && nssEvidence.subsystems.length)
-		versionParts.push(_('NSS 子系统: ') + nssEvidence.subsystems.join(', '));
-	refs.versionLine.textContent = versionParts.join(' · ');
-
-	refs.diagnosticsSummary.textContent = warnings.length
-		? _('%d 项告警 · %d 项能力').format(warnings.length, capKeys.length)
-		: _('无告警 · %d 项能力').format(capKeys.length);
 }
 
 return baseclass.extend({
 	clientNameContent: clientNameContent,
 	refreshSortHeaders: refreshSortHeaders,
-	nssEvidenceState: nssEvidenceState,
 	splitClientWarnings: splitClientWarnings,
+	refreshDiagnostics: refreshDiagnostics,
 
 	refreshLive: function(viewState) {
 		return refreshLive(viewState);

@@ -125,7 +125,7 @@ const CONFIG_STYLE_PARTS = [
 	'configStyleResponsive.js'
 ];
 
-const EXPECTED_STATUS_STYLE_SHA256 = 'fccac6625c6988a867c7a9fc8a3438deee75500fddb0f2bb2e74a2221b5ece3d';
+const EXPECTED_STATUS_STYLE_SHA256 = 'c1711b9f7340a74631e0ee1884af8013f58c5eb4537e20b753184a4fa465b137';
 const EXPECTED_CONFIG_STYLE_SHA256 = 'd16d845e2babf4b638bcc4e78ccfa44729e80b432fed9ead19dd51da9a3bb4d8';
 
 function readMakeVar(source, name, fileLabel) {
@@ -215,7 +215,6 @@ const MODULE_REQUIRES = {
 	'statusShell.js': [
 		'baseclass',
 		'lanspeed.format',
-		'lanspeed.nssPanel',
 		'lanspeed.theme',
 		'lanspeed.statusStyle'
 	],
@@ -225,7 +224,6 @@ const MODULE_REQUIRES = {
 		'lanspeed.format',
 		'lanspeed.clientConnections',
 		'lanspeed.version',
-		'lanspeed.nssPanel',
 		'lanspeed.statusIp',
 		'lanspeed.statusCollector'
 	],
@@ -1044,13 +1042,14 @@ function fakeTranslate(value) {
 
 function loadStatusRefreshModule(src, fakeWindow) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
+	const vocab = loadVocabModule(readModuleByName('vocab.js'));
 	return vm.compileFunction(src,
 		[ 'baseclass', 'vocab', 'fmt', 'clientConnections', 'lsVersion',
-		  'nssPanel', 'statusIp', 'statusCollector', 'E', '_', 'window' ],
+		  'statusIp', 'statusCollector', 'E', '_', 'window' ],
 		{ filename: 'resources/lanspeed/statusRefresh.js' })(
-			fakeBaseclass, {}, {},
+			fakeBaseclass, vocab, {},
 			loadClientConnectionsModule(readModuleByName('clientConnections.js')),
-			{ FULL_VERSION: 'test' }, {}, {}, {}, fakeElement, fakeTranslate,
+			{ FULL_VERSION: 'test' }, {}, {}, fakeElement, fakeTranslate,
 			fakeWindow || { location: { pathname: '/admin/status/lanspeed/overview' } }
 		);
 }
@@ -1560,7 +1559,7 @@ function assertClientDetailIntegratedState(viewSrc) {
 			});
 			const interval = Array.from(invalidPrefs.timers.values())[0].interval;
 			if (invalidPrefs.state().prefs.refreshMs !== 3000 || interval !== 3000 ||
-			    !fakeElementText(invalidPrefs.built().refs.footer).includes('自动刷新：3000 ms') ||
+			    !fakeElementText(invalidPrefs.built().refs.footer).includes('每 3 秒自动刷新') ||
 			    invalidPrefs.state().updatedAt !== now) {
 				fail('clientDetailView.js must normalize invalid refreshMs to 3000ms once, schedule despite paused=true, and stamp direct initial responses');
 			}
@@ -1672,9 +1671,9 @@ function assertClientDetailRefreshBehavior(src) {
 	    refs.table.hidden || !refs.empty.hidden || !refs.error.hidden) {
 		fail('clientDetailRefresh.js must render hostname-first identity/meta, unfiltered target count, real totals, browser receive wall clock, and two rows per destination group');
 	}
-	if (!footer.includes('数据源') || !footer.includes('Conntrack Netlink') ||
-	    !footer.includes('返回 2') || !footer.includes('总计 2') || !footer.includes('上限 512') ||
-	    !footer.includes('自动刷新') || !footer.includes('1000')) {
+	if (!footer.includes('连接数据') || !footer.includes('Conntrack Netlink') ||
+	    !footer.includes('显示 2 / 共 2 条') ||
+	    !footer.includes('每 1 秒自动刷新')) {
 		fail('clientDetailRefresh.js footer must report source, returned/total/limit with accurate meanings, and the clamped refresh cycle in Chinese');
 	}
 	const unorderedIpsResponse = JSON.parse(JSON.stringify(fixture));
@@ -1822,7 +1821,7 @@ function assertClientDetailRefreshBehavior(src) {
 	    refs.summaryConnections.textContent !== '—' ||
 	    fakeElementText(refs.empty) !== '连接快照不完整，无法确认当前连接数量，请稍后重试。' ||
 	    !incompleteFooter.includes('告警：连接快照不完整') ||
-	    incompleteFooter.includes('返回 0') || incompleteFooter.includes('总计 0')) {
+	    incompleteFooter.includes('显示 0') || incompleteFooter.includes('共 0')) {
 		fail('clientDetailRefresh.js incomplete snapshots must render unknown counts, dedicated Chinese guidance, and no definitive zero-count footer');
 	}
 
@@ -1840,7 +1839,7 @@ function assertClientDetailRefreshBehavior(src) {
 	});
 	refresh.render(state);
 	if (!fakeElementText(refs.empty).includes('当前客户端没有连接') ||
-	    !fakeElementText(refs.connectionState).includes('无当前连接')) {
+	    !fakeElementText(refs.connectionState).includes('暂无连接')) {
 		fail('clientDetailRefresh.js must render zero connections distinctly without claiming the client is offline');
 	}
 
@@ -1868,8 +1867,8 @@ function assertClientDetailRefreshBehavior(src) {
 	refresh.render(state);
 	const truncatedFooter = fakeElementText(refs.footer);
 	if (refs.summaryTargets.textContent !== '至少 2' ||
-	    !truncatedFooter.includes('已截断') || !truncatedFooter.includes('返回 2') ||
-	    !truncatedFooter.includes('总计 5') || !truncatedFooter.includes('上限 2') ||
+	    !truncatedFooter.includes('显示 2 / 共 5 条') ||
+	    !truncatedFooter.includes('连接较多，仅显示前 2 条') ||
 	    !truncatedFooter.includes('backend <warning>') || !refs.refresh.disabled) {
 		fail('clientDetailRefresh.js must mark truncated target counts as a lower bound, render accurate footer text, and disable manual refresh while loading');
 	}
@@ -1985,9 +1984,9 @@ function assertClientDetailShellInteraction(src) {
 	[
 		'返回客户端列表', 'LAN Speed 状态 / 客户端连接详情', '无法加载连接详情',
 		'客户端身份', '正在加载客户端身份…', 'MAC 与 IP 信息将在加载后显示',
-		'连接状态：等待加载', '连接摘要', '目标 IP 数', '连接数', '更新时间',
+		'等待数据', '连接摘要', '目标 IP 数', '连接数', '更新时间',
 		'当前连接', '全部', 'TCP', 'UDP', '立即刷新', '目标 IP', '目标端口',
-		'协议', '状态', '暂无连接', '连接数据将在加载后显示。'
+		'协议', '状态', '暂无连接', '连接数据加载后会显示来源和刷新间隔。'
 	].forEach(function(text) {
 		if (!copy.includes(text)) fail(`clientDetailShell.js must render Chinese copy: ${text}`);
 	});
@@ -2285,24 +2284,6 @@ function assertStatusRefreshSortingInteraction(src) {
 		fail('statusRefresh.js must expose its sort-header refresh behavior for validation');
 		return;
 	}
-	if (typeof mod.nssEvidenceState !== 'function') {
-		fail('statusRefresh.js must expose Rust-first NSS evidence normalization for validation');
-	} else {
-		const rustWins = mod.nssEvidenceState({
-			ecm_active: false,
-			ecm_offload_active: true,
-			ppe_active: false,
-			ppe_offload_active: true
-		});
-		const legacyFallback = mod.nssEvidenceState({
-			ecm_offload_active: true,
-			ppe_offload_active: true
-		});
-		if (rustWins.ecmActive || rustWins.ppeActive ||
-		    !legacyFallback.ecmActive || !legacyFallback.ppeActive) {
-			fail('statusRefresh.js must let explicit Rust false values override stale old C NSS aliases');
-		}
-	}
 	if (typeof mod.splitClientWarnings !== 'function') {
 		fail('statusRefresh.js must expose client warning classification for validation');
 	} else {
@@ -2311,14 +2292,15 @@ function assertStatusRefreshSortingInteraction(src) {
 		], {});
 		const warningState = mod.splitClientWarnings([
 			'conntrack_connection_only',
+			'map_read_failed',
 			'counter_anomaly',
 			'global_warning'
 		], { global_warning: true });
 		if (JSON.stringify(Array.from(connectionOnlyState.info)) !== JSON.stringify([ 'conntrack_connection_only' ]) ||
 		    connectionOnlyState.warnings.length !== 0 ||
 		    JSON.stringify(Array.from(warningState.info)) !== JSON.stringify([ 'conntrack_connection_only' ]) ||
-		    JSON.stringify(Array.from(warningState.warnings)) !== JSON.stringify([ 'counter_anomaly' ])) {
-			fail('statusRefresh.js must render connection-only rows as information without hiding real client warnings');
+		    JSON.stringify(Array.from(warningState.warnings)) !== JSON.stringify([ 'map_read_failed' ])) {
+			fail('statusRefresh.js must render connection-only rows as information and keep only actionable client warnings');
 		}
 	}
 
@@ -2659,7 +2641,7 @@ function assertConfigSaveBehavior(configSrc, ifaceSrc) {
 	});
 	asyncChecks.push(reloadFailure.form.saveAll(reloadFailure.state).then(function(result) {
 		if (result !== false ||
-		    !reloadFailure.state.saveRefs.status.textContent.includes('配置已保存，但 daemon 重载失败') ||
+		    !reloadFailure.state.saveRefs.status.textContent.includes('配置已保存，但后端服务重载失败') ||
 		    reloadFailure.calls.indexOf('commit') === -1 ||
 		    reloadFailure.calls.indexOf('unload:lanspeed') === -1) {
 			fail('configForm.js must distinguish a committed configuration from a later daemon reload failure');
@@ -2746,18 +2728,42 @@ function assertWarningAliases(src) {
 	    vocab.warningClass('dae_process_probe_failed') !== 'label label-danger') {
 		fail('vocab.js must render the Rust /proc dae scan failure as a critical localized warning');
 	}
-	if (!vocab.warningText('bpf_optional_package_missing').includes('必选 BPF 软件包') ||
+	if (!vocab.warningText('bpf_optional_package_missing').includes('必需的 BPF 软件包') ||
 	    vocab.warningText('bpf_optional_package_missing').includes('可选 BPF 软件包')) {
 		fail('vocab.js must keep the legacy BPF warning ID but describe the package as mandatory');
 	}
-	if (!vocab.warningText('nss_prefers_conntrack_sync').includes('当前 NSS 模式选择或回退到了 NSS sync')) {
-		fail('vocab.js must describe NSS sync overriding BPF as an explicit mode choice');
+	if (!vocab.warningText('nss_prefers_conntrack_sync').includes('当前设备使用 NSS sync')) {
+		fail('vocab.js must describe the active NSS sync source in current user-facing language');
 	}
 	const connectionOnlyText = vocab.warningText('conntrack_connection_only');
-	if (!connectionOnlyText.includes('用于补全当前连接数') ||
-	    !connectionOnlyText.includes('不代表异常') ||
+	if (!connectionOnlyText.includes('只有连接记录') ||
+	    !connectionOnlyText.includes('不是异常') ||
 	    connectionOnlyText.includes('仅连接')) {
 		fail('vocab.js must explain connection-only rows without rendering a separate connection-only label');
+	}
+	if (typeof vocab.importantWarnings !== 'function' ||
+	    typeof vocab.isImportantWarning !== 'function') {
+		fail('vocab.js must expose important-warning filtering for the simplified diagnostics view');
+		return;
+	}
+	const healthyStatus = {
+		mode: 'Full',
+		capabilities: { live_metrics: true, bpf_runtime_metrics: true },
+		evidence: { effective_collector: 'bpf' }
+	};
+	const filtered = vocab.importantWarnings([
+		'existing_tc_filters_detected',
+		'software_flow_offload_enabled',
+		'fullcone_detected',
+		'openclash_detected',
+		'probe_error',
+		'map_read_failed',
+		'map_read_failed'
+	], healthyStatus);
+	if (JSON.stringify(Array.from(filtered)) !== JSON.stringify([ 'map_read_failed' ]) ||
+	    vocab.isImportantWarning('software_flow_offload_enabled') ||
+	    !vocab.isImportantWarning('bpf_runtime_loader_unavailable')) {
+		fail('vocab.js must hide environment notices, suppress healthy probe noise, and retain actionable failures');
 	}
 }
 
@@ -2784,11 +2790,10 @@ function assertStatusShellInteraction(src) {
 	};
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	const shell = vm.compileFunction(src,
-		[ 'baseclass', 'fmt', 'nssPanel', 'lsTheme', 'statusStyle', 'E', '_' ],
+		[ 'baseclass', 'fmt', 'lsTheme', 'statusStyle', 'E', '_' ],
 		{ filename: 'resources/lanspeed/statusShell.js' })(
 			fakeBaseclass,
 			fmt,
-			{ build: function() { return E('div', { class: 'nss-test' }); } },
 			{ applyRoot: function() {} },
 			{ CSS: '' },
 			E,
@@ -2820,9 +2825,9 @@ function assertStatusShellInteraction(src) {
 		return;
 	}
 	if (!refs.sortHeaders.tcp_conns ||
-	    refs.sortHeaders.tcp_conns.description !== 'TCP 仅统计 ESTABLISHED + ASSURED' ||
+	    refs.sortHeaders.tcp_conns.description !== '当前已建立并确认的 TCP 连接' ||
 	    !refs.sortHeaders.udp_conns ||
-	    refs.sortHeaders.udp_conns.description !== 'UDP 仅统计 ASSURED conntrack 条目') {
+	    refs.sortHeaders.udp_conns.description !== '当前已确认的 UDP 连接') {
 		fail('statusShell.js sortable TCP/UDP headers must retain their connection-statistics semantics');
 	}
 	refs.sortHeaders.rx.button.listeners.click();
@@ -3012,15 +3017,12 @@ function assertConfigView(src) {
 	    !src.includes("[ 'conntrack_procfs', 'CT-Procfs' ]")) {
 		fail('view/lanspeed/config.js connection collector options must use plain labels');
 	}
-	if (!src.includes('dae/daed 运行中') || !src.includes('BPF')) {
-		fail('view/lanspeed/config.js must explain the dae/daed BPF preference');
-	}
-	if (!src.includes('NSS 设备同样优先使用 BPF') ||
-	    !src.includes('BPF 不可用时回退 NSS sync / NSS-direct')) {
+	if (!src.includes('自动模式优先使用 BPF') ||
+	    !src.includes('后端会选择可用的 NSS 数据源')) {
 		fail('view/lanspeed/config.js must explain the NSS auto BPF-first policy and fallback');
 	}
-	if (!src.includes('前置 passthrough 挂载')) {
-		fail('view/lanspeed/config.js must explain the dae/daed early BPF attach behavior');
+	if (!src.includes('当前实际生效的数据源，由后端根据设备能力与运行环境选择')) {
+		fail('view/lanspeed/config.js must explain the effective collector without exposing stale attach internals');
 	}
 	if (src.includes('lanspeed-rate-badge') || src.includes('rateBadge')) {
 		fail('view/lanspeed/config.js must not render the removed rate badge');
@@ -3056,7 +3058,7 @@ function assertConfigView(src) {
 		fail('view/lanspeed/config.js must expose hide_private_ipv6 for client IP display');
 	}
 	if (!src.includes('隐藏私有 IPv6 地址') ||
-	    !src.includes('fc00::/7 私有 IPv6 地址和 fe80::/10 链路本地地址')) {
+	    !src.includes('fc00::/7 私有地址和 fe80::/10 链路本地地址')) {
 		fail('view/lanspeed/config.js must explain the private IPv6 display toggle');
 	}
 	if (!src.includes('hide_ipv6_ranges')) {
@@ -3064,7 +3066,7 @@ function assertConfigView(src) {
 	}
 	if (!src.includes('隐藏 IPv6 范围') ||
 	    !src.includes('fc00::/7 fe80::/10') ||
-	    !src.includes('用空格或逗号分隔')) {
+	    !src.includes('可添加一个或多个 IPv6 网段')) {
 		fail('view/lanspeed/config.js must explain custom hidden IPv6 ranges');
 	}
 	if (!src.includes('lanspeed-range-list') ||
@@ -3089,7 +3091,8 @@ function assertConfigView(src) {
 	if (!src.includes('速率采集') || !src.includes('连接数采集')) {
 		fail('view/lanspeed/config.js must split speed and connection collector settings');
 	}
-	if (!src.includes('非 NSS 实时测速只使用 BPF') || !src.includes('CT 只用于连接数和诊断')) {
+	if (!src.includes('自动模式使用 BPF 统计客户端实时速率') ||
+	    !src.includes('仅统计当前 TCP/UDP 连接，不参与非 NSS 设备的实时测速')) {
 		fail('view/lanspeed/config.js must make the non-NSS BPF-only live-rate policy explicit');
 	}
 	if (!src.includes('ifaceCfg.load(viewState)')) {
@@ -3502,8 +3505,14 @@ function assertStatusShellModule(src) {
 	if (!src.includes('buildShell: function(viewState)') ||
 	    !src.includes('statusStyle.CSS') ||
 	    !src.includes('lsTheme.applyRoot(root)') ||
-	    !src.includes('nssPanel.build(refs)')) {
+	    !src.includes("diagnosticStatusCard(refs, 'plugin'") ||
+	    !src.includes("diagnosticStatusCard(refs, 'backend'") ||
+	    !src.includes("diagnosticStatusCard(refs, 'bpf'")) {
 		fail('lanspeed/statusShell.js must own status page DOM shell construction');
+	}
+	if (src.includes('能力矩阵') || src.includes('全部告警') ||
+	    src.includes('说明与元数据') || src.includes('nssPanel.build(refs)')) {
+		fail('lanspeed/statusShell.js must remove the obsolete capability, metadata, and standalone NSS diagnostics');
 	}
 	if (!/refs\.diagnostics\s*=\s*E\('details',\s*\{\s*'class':\s*'lanspeed-details'\s*\}/.test(src) ||
 	    /refs\.diagnostics\s*=\s*E\('details',[\s\S]{0,120}['"]open['"]/.test(src)) {
@@ -3530,7 +3539,8 @@ function assertStatusRefreshModule(src) {
 	    !src.includes('statusIp.displayIpsForClient') ||
 	    !src.includes('statusCollector.collectorLabel') ||
 	    !src.includes('lsVersion.FULL_VERSION') ||
-	    !src.includes('nssPanel.render(refs, status)')) {
+	    !src.includes('refreshDiagnostics(refs, status, viewState.error, collector)') ||
+	    !src.includes('vocab.importantWarnings(status.warnings, status)')) {
 		fail('lanspeed/statusRefresh.js must own status page live refresh rendering');
 	}
 	if (!src.includes('fmt.sortClients(filtered, prefs.sortKey, prefs.sortDir, latestSample, activeCfg)') ||
@@ -3548,13 +3558,12 @@ function assertStatusRefreshModule(src) {
 	    !src.includes("'data-label': _('状态')")) {
 		fail('lanspeed/statusRefresh.js must label client fields for the narrow stacked layout');
 	}
-	if (!src.includes('function nssEvidenceState(') ||
-	    !src.includes('ev.ecm_active') ||
-	    !src.includes('ev.ecm_offload_active') ||
-	    !src.includes('ev.ppe_active') ||
-	    !src.includes('ev.ppe_offload_active') ||
-	    !src.includes('vocab.normalizeWarningId(w)')) {
-		fail('statusRefresh.js must render new Rust NSS evidence and warning IDs with old C aliases');
+	if (!src.includes('function refreshDiagnostics(') ||
+	    !src.includes("refs, 'plugin', 'good'") ||
+	    !src.includes("refs, 'backend'") ||
+	    !src.includes("refs, 'bpf'") ||
+	    !src.includes('未发现影响实时测速的异常')) {
+		fail('statusRefresh.js must render plugin, backend, and BPF health with a concise empty-alert state');
 	}
 	if (!src.includes('splitClientWarnings(rawWarnings, globalWarnings)') ||
 	    !src.includes("modeTitle += '\\n' + vocab.warningText('conntrack_connection_only');") ||

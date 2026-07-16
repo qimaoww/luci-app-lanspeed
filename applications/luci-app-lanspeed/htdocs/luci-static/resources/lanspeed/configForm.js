@@ -260,8 +260,8 @@ function currentRateSourceText(status) {
 
 function nssRateHint(status) {
 	if (!isNssDevice(status))
-		return _('非 NSS 实时测速只使用 BPF。');
-	return _('自动：NSS 设备同样优先使用 BPF；BPF 不可用时回退 NSS sync / NSS-direct。');
+		return _('自动模式使用 BPF 统计客户端实时速率。');
+	return _('自动模式优先使用 BPF；BPF 不可用时，后端会选择可用的 NSS 数据源。');
 }
 
 function applyRuntimeInfo(refs, status) {
@@ -271,9 +271,7 @@ function applyRuntimeInfo(refs, status) {
 
 	refs.rateHint.textContent = nssRateHint(status);
 	refs.currentRateSource.textContent = sourceText;
-	refs.currentRateSourceWrap.title = daeRuntimeActive(status)
-		? _('dae/daed 运行中，BPF 使用前置 passthrough 挂载。')
-		: _('daemon 当前选择；自动模式默认优先 BPF。');
+	refs.currentRateSourceWrap.title = _('当前实际生效的数据源，由后端根据设备能力与运行环境选择。');
 
 	if (refs.rateCollectorMode) {
 		for (i = 0; i < rateModeLabel.length; i++) {
@@ -405,14 +403,14 @@ function saveAllSettings(viewState) {
 			return reloadUciCache().catch(function(err) {
 				cacheError = err;
 			}).then(function() {
-				saveRefs.status.textContent = _('重载 daemon…');
+				saveRefs.status.textContent = _('正在重载后端服务…');
 				return lsRpc.reload().then(function() {
 					return Promise.all([
 						ifaceCfg.load(viewState),
 						lsRpc.status().catch(function() { return null; })
 					]);
 				}, function(err) {
-					saveRefs.status.textContent = _('配置已保存，但 daemon 重载失败: ') + errorText(err);
+					saveRefs.status.textContent = _('配置已保存，但后端服务重载失败：') + errorText(err);
 					return null;
 				});
 			}).then(function(results) {
@@ -422,7 +420,7 @@ function saveAllSettings(viewState) {
 				if (results[1])
 					applyRuntimeInfo(daemonPlan.refs, results[1]);
 				saveRefs.status.textContent = cacheError
-					? _('已应用，但 UCI 缓存刷新失败: ') + errorText(cacheError)
+					? _('配置已应用，但页面缓存刷新失败：') + errorText(cacheError)
 					: _('已应用');
 				window.setTimeout(function() {
 					if (saveRefs.status.textContent === _('已应用'))
@@ -432,11 +430,11 @@ function saveAllSettings(viewState) {
 			});
 		}, function(writeError) {
 			return lsRpc.uciRevert('lanspeed').then(function() {
-				saveRefs.status.textContent = _('配置写入失败: ') + errorText(writeError);
+				saveRefs.status.textContent = _('配置写入失败：') + errorText(writeError);
 				return false;
 			}, function(revertError) {
-				saveRefs.status.textContent = _('配置写入失败: ') + errorText(writeError) +
-					_('；暂存回滚失败: ') + errorText(revertError);
+				saveRefs.status.textContent = _('配置写入失败：') + errorText(writeError) +
+					_('；暂存回滚失败：') + errorText(revertError);
 				return false;
 			});
 		}).then(function(result) {
@@ -445,8 +443,8 @@ function saveAllSettings(viewState) {
 		}, function(error) {
 			setBusy(viewState, false);
 			saveRefs.status.textContent = (committed
-				? _('配置已保存，但后续处理失败: ')
-				: _('保存失败: ')) + errorText(error);
+				? _('配置已保存，但后续处理失败：')
+				: _('保存失败：')) + errorText(error);
 			return false;
 		});
 }
@@ -530,7 +528,7 @@ function buildDaemonSection(values, viewState) {
 				E('thead', {}, E('tr', {}, [
 					E('th', {}, _('项目')),
 					E('th', { 'class': 'value' }, _('值')),
-					E('th', {}, _('范围'))
+					E('th', {}, _('说明'))
 				])),
 				E('tbody', {}, [
 					E('tr', {}, [
@@ -544,17 +542,17 @@ function buildDaemonSection(values, viewState) {
 					E('tr', {}, [
 						E('td', {}, _('连接数采集')),
 						E('td', { 'class': 'value' }, refs.connCollectorMode),
-						E('td', { 'class': 'hint' }, _('CT 只用于连接数和诊断。'))
+						E('td', { 'class': 'hint' }, _('仅统计当前 TCP/UDP 连接，不参与非 NSS 设备的实时测速。'))
 					]),
 					E('tr', {}, [
 						E('td', {}, _('活跃客户端窗口')),
 						E('td', { 'class': 'value' }, refs.activeWindow),
-						E('td', { 'class': 'hint' }, _('1000 ms 以上'))
+						E('td', { 'class': 'hint' }, _('最后一次活动后继续标记为“活跃”的时长，建议保持 10000 ms。'))
 					]),
 					E('tr', {}, [
 						E('td', {}, _('活跃最小速率')),
 						E('td', { 'class': 'value' }, refs.activeMin),
-						E('td', { 'class': 'hint' }, _('1 bps 以上'))
+						E('td', { 'class': 'hint' }, _('达到此速率才算活跃；保持 1 bps 可避免漏掉低速设备。'))
 					]),
 					E('tr', {}, [
 						E('td', {}, _('显示 IPv6 地址')),
@@ -564,12 +562,12 @@ function buildDaemonSection(values, viewState) {
 					E('tr', {}, [
 						E('td', {}, _('隐藏私有 IPv6 地址')),
 						E('td', { 'class': 'value' }, refs.hidePrivateIpv6),
-						E('td', { 'class': 'hint' }, _('开启后客户端列表隐藏 fc00::/7 私有 IPv6 地址和 fe80::/10 链路本地地址；公网 IPv6 仍显示。'))
+						E('td', { 'class': 'hint' }, _('隐藏 fc00::/7 私有地址和 fe80::/10 链路本地地址，公网 IPv6 仍会显示。'))
 					]),
 					E('tr', {}, [
 						E('td', {}, _('隐藏 IPv6 范围')),
 						E('td', { 'class': 'value range' }, refs.rangeEditor),
-						E('td', { 'class': 'hint' }, _('仅在隐藏私有 IPv6 地址开启时生效；用空格或逗号分隔，例如 fc00::/7 fe80::/10。'))
+						E('td', { 'class': 'hint' }, _('仅在上项开启时生效；可添加一个或多个 IPv6 网段，例如 fc00::/7、fe80::/10。'))
 					])
 				])
 			]),
