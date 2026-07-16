@@ -588,11 +588,13 @@ function assertClientDetailStyleLeaf(name, src) {
 		const hiddenRows = narrowCss.indexOf(
 			'.lanspeed-connections-card .lanspeed-table tbody>tr[hidden]{display:none!important}'
 		);
-		if (JSON.stringify(media) !== JSON.stringify([ 'max-width:700px', 'max-width:480px' ]) ||
+		if (JSON.stringify(media) !== JSON.stringify([
+			'max-width:1100px', 'max-width:700px', 'max-width:480px'
+		]) ||
 		    !css.includes('content:attr(data-label)') ||
 		    !css.includes('overflow-wrap:anywhere') ||
 		    !css.includes('.lanspeed-connection-refresh{width:100%')) {
-			fail(`${name} must provide only the 700px card-table and 480px full-width toolbar breakpoints`);
+			fail(`${name} must provide the 1100px identity, 700px card-table and 480px toolbar breakpoints`);
 		}
 		if (forcedRows < 0 || hiddenRows <= forcedRows) {
 			fail(`${name} must restore display:none!important for hidden group/detail rows after the forced mobile row display`);
@@ -1644,11 +1646,25 @@ function assertClientDetailRefreshBehavior(src) {
 	refresh.render(state);
 
 	const meta = fakeElementText(refs.clientMeta);
+	const metaIps = findFakeElementsByClass(
+		refs.clientMeta, 'lanspeed-connection-meta-ip'
+	).map(fakeElementText);
+	const metaFacts = findFakeElementsByClass(
+		refs.clientMeta, 'lanspeed-connection-meta-fact'
+	).map(fakeElementText);
+	const metaCounts = findFakeElementsByClass(
+		refs.clientMeta, 'lanspeed-connection-meta-count'
+	).map(fakeElementText);
 	const footer = fakeElementText(refs.footer);
 	const rows = refs.tbody.children;
 	if (fakeElementText(refs.clientName) !== 'fixture-client' ||
 	    !meta.includes('192.0.2.10') || !meta.includes('02:00:00:00:00:01') ||
-	    !meta.includes('br-lan') || !meta.includes('lan') ||
+	    !meta.includes('br-lan') || meta.includes('区域') ||
+	    JSON.stringify(metaIps) !== JSON.stringify([ '192.0.2.10', '2001:db8:1::10' ]) ||
+	    JSON.stringify(metaFacts) !== JSON.stringify([
+		    'MAC 地址02:00:00:00:00:01', '接口br-lan'
+	    ]) ||
+	    JSON.stringify(metaCounts) !== JSON.stringify([ '2' ]) ||
 	    !fakeElementText(refs.connectionState).includes('有当前连接') ||
 	    refs.summaryTargets.textContent !== '2' || refs.summaryConnections.textContent !== '2' ||
 	    refs.summaryUpdated.textContent !== '03:04:05' ||
@@ -1661,6 +1677,21 @@ function assertClientDetailRefreshBehavior(src) {
 	    !footer.includes('自动刷新') || !footer.includes('1000')) {
 		fail('clientDetailRefresh.js footer must report source, returned/total/limit with accurate meanings, and the clamped refresh cycle in Chinese');
 	}
+	const unorderedIpsResponse = JSON.parse(JSON.stringify(fixture));
+	unorderedIpsResponse.client.ips = [
+		'192.0.2.10', '2001:db8:1::10', 'fe80::1'
+	];
+	state.response = unorderedIpsResponse;
+	refresh.render(state);
+	if (JSON.stringify(findFakeElementsByClass(
+		refs.clientMeta, 'lanspeed-connection-meta-ip'
+	).map(fakeElementText)) !== JSON.stringify([
+		'192.0.2.10', 'fe80::1', '2001:db8:1::10'
+	])) {
+		fail('clientDetailRefresh.js must place link-local IPv6 before public IPv6 while preserving IPv4 first');
+	}
+	state.response = fixture;
+	refresh.render(state);
 	const allCells = findFakeElementsByTag(refs.tbody, 'td');
 	if (allCells.length !== 12 || allCells.some(function(cell) {
 		return !Object.prototype.hasOwnProperty.call(cell.attrs, 'data-label');
@@ -1979,6 +2010,7 @@ function assertClientDetailShellInteraction(src) {
 	if (refs.table.attrs['aria-label'] !== '客户端连接列表' ||
 	    refs.filter.attrs['aria-label'] !== '搜索连接' ||
 	    refs.filter.attrs.placeholder !== '搜索目标 IP 或端口' ||
+	    refs.clientMeta.attrs['aria-label'] !== '客户端网络身份' ||
 	    refs.error.attrs.role !== 'alert' || refs.error.attrs['aria-live'] !== 'assertive' ||
 	    refs.empty.attrs.role !== 'status' || refs.empty.attrs['aria-live'] !== 'polite' ||
 	    refs.footer.attrs['aria-live'] !== 'polite') {

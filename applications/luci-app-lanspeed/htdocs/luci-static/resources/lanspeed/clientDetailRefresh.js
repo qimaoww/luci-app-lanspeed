@@ -82,6 +82,83 @@ function updatedAtLabel(updatedAt) {
 		twoDigits(received.getSeconds());
 }
 
+function ipDisplayRank(value) {
+	var address = String(value || '').toLowerCase();
+	if (address.indexOf(':') === -1)
+		return 0;
+	address = address.replace(/^\[/, '').split('%')[0];
+	var first = parseInt(address.split(':')[0], 16);
+	if (isFinite(first) && first >= 0xfe80 && first <= 0xfebf)
+		return 1;
+	return 2;
+}
+
+function orderedClientIps(values) {
+	return fmt.asArray(values).map(function(value, index) {
+		return { value: value, index: index, rank: ipDisplayRank(value) };
+	}).sort(function(left, right) {
+		return left.rank - right.rank || left.index - right.index;
+	}).map(function(entry) {
+		return entry.value;
+	});
+}
+
+function clearElement(node) {
+	while (node.firstChild)
+		node.removeChild(node.firstChild);
+}
+
+function metaFact(label, value) {
+	return E('span', { 'class': 'lanspeed-connection-meta-fact' }, [
+		E('span', { 'class': 'lanspeed-connection-meta-label' }, label),
+		E('span', { 'class': 'lanspeed-connection-meta-value' }, value)
+	]);
+}
+
+function renderClientMeta(ref, client, ips, identityKey) {
+	clearElement(ref);
+
+	if (ips.length) {
+		ref.appendChild(E('div', {
+			'class': 'lanspeed-connection-meta-group lanspeed-connection-meta-addresses'
+		}, [
+			E('div', { 'class': 'lanspeed-connection-meta-heading' }, [
+				E('span', { 'class': 'lanspeed-connection-meta-heading-label' },
+					_('IP 地址')),
+				E('span', { 'class': 'lanspeed-connection-meta-count' },
+					String(ips.length))
+			]),
+			E('div', { 'class': 'lanspeed-connection-meta-values' },
+				ips.map(function(ip) {
+					return E('span', {
+						'class': 'lanspeed-connection-meta-ip'
+					}, ip);
+				}))
+		]));
+	}
+
+	var facts = [];
+	if (client && client.mac)
+		facts.push(metaFact(_('MAC 地址'), client.mac));
+	if (client && client.interface)
+		facts.push(metaFact(_('接口'), client.interface));
+	if (!ips.length && !facts.length && identityKey)
+		facts.push(metaFact(_('身份标识'), identityKey));
+
+	if (facts.length) {
+		ref.appendChild(E('div', {
+			'class': 'lanspeed-connection-meta-facts',
+			'data-count': String(facts.length)
+		}, facts));
+	}
+
+	if (!ref.firstChild) {
+		ref.appendChild(E('span', {
+			'class': 'lanspeed-connection-meta-empty'
+		}, _('客户端身份不可用')));
+	}
+}
+
 function buildGroupRows(viewState, group) {
 	var expanded = viewState.expanded[group.remoteIp] === true;
 	var groupRow = E('tr', {
@@ -166,27 +243,24 @@ function render(viewState) {
 	var incomplete = Boolean(response && response.available === false &&
 		warnings.indexOf('conntrack_snapshot_incomplete') !== -1);
 	var client = response && response.client;
-	var ips = fmt.asArray(client && client.ips);
+	var ips = orderedClientIps(client && client.ips);
 	var displayName = client && client.hostname || ips[0] ||
 		client && client.mac || viewState.identityKey || '-';
 
 	refs.clientName.textContent = displayName;
-	var meta = [];
-	if (ips.length) meta.push(_('IP：') + ips.join(', '));
-	if (client && client.mac) meta.push(_('MAC：') + client.mac);
-	if (client && client.interface) meta.push(_('接口：') + client.interface);
-	if (client && client.zone) meta.push(_('区域：') + client.zone);
-	if (!meta.length && viewState.identityKey)
-		meta.push(_('身份标识：') + viewState.identityKey);
-	refs.clientMeta.textContent = meta.length ? meta.join(' · ') : _('客户端身份不可用');
+	renderClientMeta(refs.clientMeta, client, ips, viewState.identityKey);
 
 	if (usable) {
 		refs.connectionState.textContent = Number(response.total_connections) > 0
 			? _('连接状态：有当前连接') : _('连接状态：无当前连接');
+		refs.connectionState.setAttribute('data-state',
+			Number(response.total_connections) > 0 ? 'active' : 'idle');
 	} else if (response && response.available === false) {
 		refs.connectionState.textContent = _('连接状态：数据不可用');
+		refs.connectionState.setAttribute('data-state', 'unavailable');
 	} else {
 		refs.connectionState.textContent = _('连接状态：等待数据');
+		refs.connectionState.setAttribute('data-state', 'pending');
 	}
 
 	var allGroups = usable

@@ -2,8 +2,11 @@
 'require baseclass';
 
 var CSS = [
-	'@media (max-width:700px){',
+	'@media (max-width:1100px){',
 	'.lanspeed-connection-identity{grid-template-columns:minmax(0,1fr)}',
+	'.lanspeed-connection-summary{padding:1.25em 0 0;border-left:0;border-top:1px solid var(--border,rgba(128,128,128,.18))}',
+	'}',
+	'@media (max-width:700px){',
 	'.lanspeed-connections-card .lanspeed-body{overflow-x:hidden}',
 	'.lanspeed-connections-card .lanspeed-table,.lanspeed-connections-card .lanspeed-table tbody,.lanspeed-connections-card .lanspeed-table tr{display:block;width:100%;min-width:0}',
 	'.lanspeed-connections-card .lanspeed-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}',
@@ -17,6 +20,7 @@ var CSS = [
 	'.lanspeed-connection-detail-row{display:block!important}',
 	'.lanspeed-connection-detail-cell{display:block!important;width:100%;max-width:100%}',
 	'.lanspeed-connection-detail-item{grid-template-columns:minmax(0,1fr)}',
+	'.lanspeed-connection-meta-facts{grid-template-columns:minmax(0,1.6fr) minmax(0,1fr)}',
 	'}',
 	'@media (max-width:480px){',
 	'.lanspeed-connection-toolbar{align-items:stretch}',
@@ -27,6 +31,8 @@ var CSS = [
 	'.lanspeed-connection-filter input[type=search]{width:100%;max-width:none;min-width:0;box-sizing:border-box}',
 	'.lanspeed-connection-refresh{width:100%;box-sizing:border-box}',
 	'.lanspeed-connection-summary{grid-template-columns:minmax(0,1fr)}',
+	'.lanspeed-connection-meta-facts{grid-template-columns:minmax(0,1fr)}',
+	'.lanspeed-connection-client-avatar{width:3em;height:3em;flex-basis:3em;border-radius:.85em}',
 	'}'
 ].join('\n');
 
