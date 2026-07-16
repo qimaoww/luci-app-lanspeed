@@ -25,9 +25,6 @@ var BASE_CSS = [
 	'  line-height:1.2;margin:.1em 0}',
 	'.lanspeed-metric .hint{font-size:.8em;opacity:.7;margin:0}',
 
-	'.lanspeed-strip{display:flex;flex-wrap:wrap;gap:.3em;margin:1em 0 0 0}',
-	'.lanspeed-strip:empty{display:none;margin:0}',
-
 	'.lanspeed-toolbar{display:flex;flex-wrap:wrap;gap:.7em 1em;',
 	'  align-items:center;justify-content:space-between;margin:0 0 1em 0}',
 	'.lanspeed-toolbar-left{display:grid;grid-template-columns:auto minmax(14em,1fr);',
@@ -121,18 +118,6 @@ var BASE_CSS = [
 	'.lanspeed-diagnostic-card:last-child{padding-bottom:0;border-bottom:0}',
 	'.lanspeed-diagnostic-description{min-height:0}}',
 
-	'.lanspeed-caps{display:grid;grid-template-columns:repeat(auto-fill,minmax(15em,1fr));',
-	'  gap:.3em .8em;margin:.2em 0 1em 0}',
-	'.lanspeed-caps .cap{display:flex;justify-content:space-between;align-items:center;',
-	'  gap:.5em;padding:.15em 0}',
-
-	'.lanspeed-warnings{margin:.2em 0 1em 0;padding-left:1.2em}',
-	'.lanspeed-warnings li{margin:.2em 0;font-size:.9em}',
-	'.lanspeed-warnings li .key{margin-right:.4em}',
-
-	'.lanspeed-subhead{margin:.2em 0 .4em 0;font-size:1em;font-weight:600;opacity:.85}',
-	'.lanspeed-subhead:first-child{margin-top:0}',
-
 	'.lanspeed-details{margin:0}',
 	'.lanspeed-details>summary{cursor:pointer;list-style:none;padding:0;margin:0;',
 	'  display:flex;flex-wrap:wrap;gap:.4em 1em;align-items:baseline;',
@@ -149,7 +134,6 @@ var BASE_CSS = [
 	'.lanspeed-details>summary>.spacer{flex:1 1 auto}',
 	'.lanspeed-details>summary .sum{font-size:.85em;opacity:.75;',
 	'  font-family:var(--font-monospace,ui-monospace,monospace)}',
-	'.lanspeed-details>summary .label{margin-left:0}',
 	'.lanspeed-details-body{margin:0;padding:1em 1.25em}',
 
 	'.lanspeed-empty{padding:1.2em 0;text-align:center;opacity:.7}',

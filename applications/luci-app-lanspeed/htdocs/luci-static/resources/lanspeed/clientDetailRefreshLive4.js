@@ -1,7 +1,7 @@
 'use strict';
 'require baseclass';
 'require lanspeed.format as fmt';
-'require lanspeed.clientConnections as clientConnections';
+'require lanspeed.clientConnectionsLive4 as clientConnections';
 
 function replaceRows(tbody, rows) {
 	var activeRow = document.activeElement;

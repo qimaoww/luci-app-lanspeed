@@ -129,5 +129,5 @@ return baseclass.extend({
 
 	displayIpsForClient: function(ips, showIpv6, hidePrivateIpv6, hideIpv6Ranges) {
 		return displayIpsForClient(ips, showIpv6, hidePrivateIpv6, hideIpv6Ranges);
-	}
+		}
 });

@@ -18,16 +18,16 @@ const qaDevicePath = path.join(root, 'tests/qa-device.sh');
 const qaDevice = fs.readFileSync(qaDevicePath, 'utf8');
 
 const clientDetailResources = [
-  'clientConnections.js',
-  'clientDetailShell.js',
-  'clientDetailStyle.js',
-  'clientDetailStyleBase.js',
-  'clientDetailStyleBootstrap.js',
-  'clientDetailStyleArgon.js',
-  'clientDetailStyleAurora.js',
-  'clientDetailStyleResponsive.js',
-  'clientDetailRefresh.js',
-  'clientDetailView.js'
+  'clientConnectionsLive4.js',
+  'clientDetailShellLive6.js',
+  'clientDetailStyleLive6.js',
+  'clientDetailStyleBaseLive4.js',
+  'clientDetailStyleBootstrapLive4.js',
+  'clientDetailStyleArgonLive4.js',
+  'clientDetailStyleAuroraLive4.js',
+  'clientDetailStyleResponsiveLive4.js',
+  'clientDetailRefreshLive4.js',
+  'clientDetailViewLive6.js'
 ];
 const clientConnectionsConntrackSemantics =
   'TCP 仅统计 ESTABLISHED + ASSURED，UDP 仅统计 ASSURED';
@@ -632,23 +632,121 @@ try {
     'configStyleBootstrap.js',
     'configStyleResponsive.js',
     'configStyleShared.js',
-    'statusStyle.js',
-    'statusStyleArgon.js',
-    'statusStyleAurora.js',
-    'statusStyleBase.js',
-    'statusStyleBootstrap.js',
-    'statusStyleCompat.js',
-    'statusStyleCompatLive.js',
-    'statusStyleCompatLive2.js',
-    'statusStyleCompatLive3.js',
-    'statusStyleResponsive.js',
-    'statusViewLive.js',
-    'statusViewLive2.js',
-    'statusViewLive3.js'
+    'clientConnectionsLive4.js',
+    'clientDetailRefreshLive4.js',
+    'clientDetailShellLive6.js',
+    'clientDetailStyleLive6.js',
+    'clientDetailStyleBaseLive4.js',
+    'clientDetailStyleAuroraLive4.js',
+    'clientDetailStyleArgonLive4.js',
+    'clientDetailStyleBootstrapLive4.js',
+    'clientDetailStyleResponsiveLive4.js',
+    'clientDetailViewLive6.js',
+    'rpcLive6.js',
+    'statusIpLive4.js',
+    'statusOverviewLive6.js',
+    'statusRefreshLive6.js',
+    'statusShellLive6.js',
+    'statusStyleLive6.js',
+    'statusStyleBaseLive6.js',
+    'statusStyleAuroraLive5.js',
+    'statusStyleArgonLive5.js',
+    'statusStyleBootstrapLive5.js',
+    'statusStyleResponsiveLive5.js',
+    'statusViewLive6.js',
+    'vocabLive5.js'
   ].forEach((name) => {
     assert(
       luciMakefile.includes(`htdocs/luci-static/resources/lanspeed/${name}`),
       `luci-app-lanspeed/Makefile must install resources/lanspeed/${name}`
+    );
+  });
+
+  [
+    'clientDetailShellLive5.js',
+    'clientDetailStyleLive5.js',
+    'clientDetailViewLive5.js',
+    'statusOverviewLive5.js',
+    'statusRefreshLive5.js',
+    'statusShellLive5.js',
+    'statusStyleLive5.js',
+    'statusStyleBaseLive5.js',
+    'statusViewLive5.js',
+    'clientDetailShellLive4.js',
+    'clientDetailStyleLive4.js',
+    'clientDetailViewLive4.js',
+    'statusOverviewLive4.js',
+    'statusRefreshLive4.js',
+    'statusShellLive4.js',
+    'statusStyleLive4.js',
+    'statusStyleBaseLive4.js',
+    'statusStyleAuroraLive4.js',
+    'statusStyleArgonLive4.js',
+    'statusStyleBootstrapLive4.js',
+    'statusStyleResponsiveLive4.js',
+    'statusStyleCompatLive5.js',
+    'vocabLive4.js',
+    'statusStyleCompatLive.js',
+    'statusStyleCompatLive2.js',
+    'statusStyleCompatLive3.js',
+    'statusStyleCompatLive4.js',
+    'statusViewLive2.js',
+    'statusViewLive3.js',
+    'statusViewLive4.js',
+    'vocab.js',
+    'clientConnections.js',
+    'clientDetailRefresh.js',
+    'clientDetailShell.js',
+    'clientDetailStyle.js',
+    'clientDetailStyleBase.js',
+    'clientDetailStyleAurora.js',
+    'clientDetailStyleArgon.js',
+    'clientDetailStyleBootstrap.js',
+    'clientDetailStyleResponsive.js',
+    'clientDetailView.js',
+    'nssPanel.js',
+    'statusIp.js',
+    'statusRefresh.js',
+    'statusShell.js',
+    'statusStyle.js',
+    'statusStyleBase.js',
+    'statusStyleAurora.js',
+    'statusStyleArgon.js',
+    'statusStyleBootstrap.js',
+    'statusStyleResponsive.js',
+    'statusStyleCompat.js',
+    'statusView.js',
+    'statusViewLive.js'
+  ].forEach((name) => {
+    assert(
+      !luciMakefile.includes(`htdocs/luci-static/resources/lanspeed/${name}`),
+      `luci-app-lanspeed/Makefile must not retain obsolete cache resource ${name}`
+    );
+    assert(
+      !fs.existsSync(path.join(root,
+        'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed', name)),
+      `obsolete cache resource ${name} must be deleted`
+    );
+  });
+
+  [ 'index_live.js', 'index_live2.js', 'index_live3.js', 'index_live4.js',
+    'index_live5.js', 'index_live6.js' ].forEach((name) => {
+    assert(
+      !fs.existsSync(path.join(root,
+        'applications/luci-app-lanspeed/htdocs/luci-static/resources/view/lanspeed', name)),
+      `obsolete view cache entry ${name} must be deleted`
+    );
+  });
+
+  assertNoMatch(
+    luciMakefile,
+    /htdocs\/luci-static\/resources\/view\/lanspeed\/\*\.js/,
+    'LuCI package must install view entries by explicit filename'
+  );
+  [ 'config.js', 'index.js', 'index_live7.js' ].forEach((name) => {
+    assert(
+      luciMakefile.includes(`./htdocs/luci-static/resources/view/lanspeed/${name}`),
+      `LuCI package must explicitly install view/lanspeed/${name}`
     );
   });
 
@@ -665,7 +763,7 @@ try {
   assert(
     installedClientDetailResources.length === clientDetailResources.length &&
       clientDetailResources.every((name) => installedClientDetailResources.includes(name)),
-    'LuCI package must install exactly the ten client connection detail resources by explicit filename'
+    'LuCI package must install only the Live4 client detail resources by explicit filename'
   );
   clientDetailResources.forEach((name) => {
     const installPath = `./htdocs/luci-static/resources/lanspeed/${name}`;

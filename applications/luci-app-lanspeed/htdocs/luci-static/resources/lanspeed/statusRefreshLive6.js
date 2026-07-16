@@ -1,10 +1,10 @@
 'use strict';
 'require baseclass';
-'require lanspeed.vocab as vocab';
+'require lanspeed.vocabLive5 as vocab';
 'require lanspeed.format as fmt';
-'require lanspeed.clientConnections as clientConnections';
+'require lanspeed.clientConnectionsLive4 as clientConnections';
 'require lanspeed.version as lsVersion';
-'require lanspeed.statusIp as statusIp';
+'require lanspeed.statusIpLive4 as statusIp';
 'require lanspeed.statusCollector as statusCollector';
 
 function setDiagnosticCard(refs, key, state, badge, value, description, meta) {

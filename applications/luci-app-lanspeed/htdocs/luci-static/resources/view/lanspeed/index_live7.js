@@ -1,14 +1,14 @@
 'use strict';
 'require view';
-'require lanspeed.statusViewLive3 as statusViewLive3';
+'require lanspeed.statusViewLive6 as statusViewLive6';
 
 return view.extend({
 	load: function() {
-		return statusViewLive3.load();
+		return statusViewLive6.load();
 	},
 
 	render: function(data) {
-		return statusViewLive3.render(data);
+		return statusViewLive6.render(data);
 	},
 
 	handleSave: null,

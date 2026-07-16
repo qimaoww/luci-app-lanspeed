@@ -2,7 +2,7 @@
 'require baseclass';
 'require lanspeed.format as fmt';
 'require lanspeed.theme as lsTheme';
-'require lanspeed.statusStyle as statusStyle';
+'require lanspeed.statusStyleLive6 as statusStyle';
 
 function diagnosticStatusCard(refs, key, title, initialText) {
 	refs[key + 'Card'] = E('div', {
@@ -84,8 +84,6 @@ function buildShell(viewState) {
 	refs.mRx          = E('div', { 'class': 'big' }, '0');
 	refs.mClients     = E('div', { 'class': 'big' }, '0');
 	refs.mClientsSub  = E('div', { 'class': 'hint' }, '-');
-	refs.mCovTx       = null;
-	refs.mCovRx       = null;
 	refs.mCoverage    = E('div', { 'class': 'big' }, '-');
 	refs.mCoverageSub = E('div', { 'class': 'hint' }, '-');
 	refs.mTcpConns    = E('div', { 'class': 'big' }, '-');

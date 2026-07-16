@@ -2,8 +2,8 @@
 'require baseclass';
 'require lanspeed.format as fmt';
 'require lanspeed.rpc as lsRpc';
-'require lanspeed.clientDetailShell as clientDetailShell';
-'require lanspeed.clientDetailRefresh as clientDetailRefresh';
+'require lanspeed.clientDetailShellLive6 as clientDetailShell';
+'require lanspeed.clientDetailRefreshLive4 as clientDetailRefresh';
 
 function loadClient(identityKey) {
 	return lsRpc.clientConnections(identityKey).then(function(response) {

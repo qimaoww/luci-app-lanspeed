@@ -564,7 +564,7 @@ function validateRpc(rpcSource) {
   const matches = declarations.filter(({ specification }) =>
     specification.object === 'lanspeed' && specification.method === 'client_connections'
   );
-  assert(matches.length === 1, 'rpc.js must declare client_connections exactly once');
+  assert(matches.length === 1, 'rpcLive6.js must declare client_connections exactly once');
   const declaration = matches[0];
   assert(sameStringSet(Object.keys(declaration.specification), ['object', 'method', 'params', 'expect']),
     'client_connections RPC declaration must contain only object, method, params and expect');
@@ -573,7 +573,7 @@ function validateRpc(rpcSource) {
   assert(JSON.stringify(declaration.specification.expect) === JSON.stringify({ '': {} }),
     'client_connections RPC declaration must keep the empty-object response contract');
   assert(exported.clientConnections === declaration.callable,
-    'rpc.js must export client_connections as clientConnections');
+    'rpcLive6.js must export client_connections as clientConnections');
 }
 
 function validateMenu(menu) {
@@ -581,8 +581,8 @@ function validateMenu(menu) {
   assert(menu['admin/status/lanspeed'].action.type === 'firstchild',
     'status menu parent must route to its first child so config can navigate back');
   assertObject(menu['admin/status/lanspeed/overview'], 'status overview menu entry');
-  assert(menu['admin/status/lanspeed/overview'].action.path === 'lanspeed/index_live4',
-    'status overview menu must point to the cache-busting lanspeed/index_live4 entry');
+  assert(menu['admin/status/lanspeed/overview'].action.path === 'lanspeed/index_live7',
+    'status overview menu must point to the cache-busting lanspeed/index_live7 entry');
   assert(menu['admin/status/lanspeed/overview'].depends.acl.includes('luci-app-lanspeed'),
     'status overview menu must require luci-app-lanspeed ACL');
   assertObject(menu['admin/status/lanspeed/config'], 'config menu entry');
@@ -640,7 +640,7 @@ const methodFixtures = Object.fromEntries(UBUS_METHODS.map((method) => [
 ]));
 const acl = readJson('applications/luci-app-lanspeed/root/usr/share/rpcd/acl.d/luci-app-lanspeed.json');
 const rpcSource = fs.readFileSync(
-  path.join(root, 'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/rpc.js'),
+  path.join(root, 'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/rpcLive6.js'),
   'utf8'
 );
 const menu = readJson('applications/luci-app-lanspeed/root/usr/share/luci/menu.d/luci-app-lanspeed.json');
