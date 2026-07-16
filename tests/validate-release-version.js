@@ -290,6 +290,8 @@ try {
   const setupNodeAction = 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020';
   const uploadArtifactAction = 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a';
   const downloadArtifactAction = 'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c';
+  const cacheRestoreAction = 'actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9';
+  const cacheSaveAction = 'actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9';
   assert((workflow.match(new RegExp(checkoutAction, 'g')) || []).length === 4,
     'each release job must use the SHA-pinned checkout v7 action exactly once');
   assert((workflow.match(/persist-credentials: false/g) || []).length === 4,
@@ -298,6 +300,10 @@ try {
     'release validation must use the SHA-pinned setup-node v7 action once');
   assert((buildJob.match(new RegExp(uploadArtifactAction, 'g')) || []).length === 1,
     'build job must use the SHA-pinned upload-artifact v7.0.1 action once');
+  assert((buildJob.match(new RegExp(cacheRestoreAction, 'g')) || []).length === 1,
+    'build job must restore the SHA-pinned SDK Rust cache once');
+  assert((buildJob.match(new RegExp(cacheSaveAction, 'g')) || []).length === 1,
+    'build job must save the SHA-pinned SDK Rust cache once');
   assert((publishJob.match(new RegExp(downloadArtifactAction, 'g')) || []).length === 2,
     'publish job must use the SHA-pinned download-artifact v8.0.1 action twice');
   assert(!workflow.includes('softprops/action-gh-release'),
@@ -383,6 +389,8 @@ try {
   assert(!workflow.includes('ipk_version='), 'Rust release workflow must not prepare unsupported IPK version names');
   assert(!/^      [A-Z_]+:\s*\$\{\{\s*env\./m.test(workflow), 'workflow job env must not reference the env context');
   assert(!/inputs\./.test(workflow), 'workflow must not depend on manual workflow inputs');
+  assert(/^    timeout-minutes: 360$/m.test(buildJob),
+    'SDK builds must use the GitHub-hosted runner maximum timeout');
   assert(/^      fail-fast: false$/m.test(buildJob), 'build matrix must keep fail-fast disabled');
   const matrixIds = [...buildJob.matchAll(/^          - id: ([a-z0-9_]+)$/gm)].map((match) => match[1]);
   assertExactList(matrixIds, ['x86_64', 'aarch64'], 'build matrix include must contain exactly x86_64 and aarch64');
@@ -413,45 +421,71 @@ try {
     'the exact SDK checksum verification must precede the SDK extraction');
   assert(!sdkDownloadStep.includes('sdk_source='), 'matrix build must not retain a third full SDK source tree');
   assert(sdkDownloadStep.includes('base_sdk="$RUNNER_TEMP/sdk-base-${{ matrix.id }}"'), 'matrix build must use a dedicated base SDK directory');
-  assert(sdkDownloadStep.includes('bpf_sdk="$RUNNER_TEMP/sdk-bpf-${{ matrix.id }}"'), 'matrix build must use a dedicated BPF SDK directory');
-  assert(sdkDownloadStep.includes('mkdir -p "$base_sdk" "$bpf_sdk"'), 'matrix build must create only base and BPF SDK trees');
+  assert(!sdkDownloadStep.includes('bpf_sdk='), 'SDK download must not clone an unprepared tree for BPF');
+  assert(sdkDownloadStep.includes('mkdir -p "$base_sdk"'), 'matrix build must create the base SDK tree');
   assert(sdkDownloadStep.includes(sdkTarMarker), 'matrix build must extract the SDK directly into the base tree');
   assert(sdkDownloadStep.includes('rm -f "$sdk_archive"'), 'matrix build must delete the verified SDK archive after extraction');
-  assert((sdkDownloadStep.match(/cp -a /g) || []).length === 1 &&
-    sdkDownloadStep.includes('cp -a "$base_sdk/." "$bpf_sdk/"'),
-  'matrix build must copy the extracted base SDK exactly once into the BPF tree');
-  const concurrentBuildStep = extractNamedStep(buildJob, 'Build base and BPF packages concurrently');
-  const baseLaunch = `          (
-            set -o pipefail
-            ENABLE_BPF=0 SDK_RELEASE=25.12 SDK_DIR="$base_sdk" ./scripts/build-sdk.sh lanspeedd 2>&1 | sed -u 's/^/[base] /'
-          ) &
-          base_pid=$!`;
-  const bpfLaunch = `          (
-            set -o pipefail
-            ENABLE_BPF=1 SDK_RELEASE=25.12 SDK_DIR="$bpf_sdk" ./scripts/build-sdk.sh all 2>&1 | sed -u 's/^/[bpf] /'
-          ) &
-          bpf_pid=$!`;
-  const baseWait = `          if ! wait "$base_pid"; then
-            printf '%s\\n' 'error: base SDK build failed' >&2
-            status=1
-          fi`;
-  const bpfWait = `          if ! wait "$bpf_pid"; then
-            printf '%s\\n' 'error: BPF SDK build failed' >&2
-            status=1
-          fi`;
-  assert(concurrentBuildStep.includes(baseLaunch), 'base build must use its own pipefail background pipeline and PID');
-  assert(concurrentBuildStep.includes(bpfLaunch), 'BPF build must use its own pipefail background pipeline and PID');
-  assert((concurrentBuildStep.match(/set -o pipefail/g) || []).length === 2,
-    'the two build pipelines must each enable pipefail');
-  assert((concurrentBuildStep.match(/^\s+\) &$/gm) || []).length === 2,
-    'both build pipelines must start in the background');
-  assert(concurrentBuildStep.includes(baseWait), 'base build PID must be waited and aggregate failures');
-  assert(concurrentBuildStep.includes(bpfWait), 'BPF build PID must be waited and aggregate failures');
-  assert((concurrentBuildStep.match(/status=1/g) || []).length === 2,
-    'either build failure must set the aggregate status');
-  assertBefore(concurrentBuildStep, 'status=0', baseWait, 'aggregate status must be initialized before waiting for base');
-  assertBefore(concurrentBuildStep, baseWait, bpfWait, 'base and BPF PIDs must both be waited');
-  assertBefore(concurrentBuildStep, bpfWait, 'exit "$status"', 'workflow must exit with aggregate build status after both waits');
+  const rustCacheRestoreStep = extractNamedStep(buildJob, 'Restore SDK Rust host cache');
+  const rustCacheSaveStep = extractNamedStep(buildJob, 'Save SDK Rust host cache');
+  const rustCacheKey = 'lanspeed-sdk-rust-${{ runner.os }}-${{ matrix.id }}-${{ matrix.sdk_sha256 }}-v1';
+  assert(rustCacheRestoreStep.includes(`key: ${rustCacheKey}`),
+    'Rust cache restore must be isolated by runner, architecture, and exact SDK checksum');
+  assert(rustCacheSaveStep.includes(`key: ${rustCacheKey}`),
+    'Rust cache save must use the exact restore key');
+  assert(!rustCacheRestoreStep.includes('restore-keys:'),
+    'Rust cache must not fall back across incompatible SDK checksums');
+  [
+    '/dl/cargo',
+    '/dl/rustc',
+    '/dl/rustc-*.tar.xz',
+    '/staging_dir/hostpkg/stamp/.rust_installed',
+    '/staging_dir/target-*/host',
+    '/build_dir/target-*/host/rustc-*/.built*',
+    '/build_dir/target-*/host/rustc-*/.configured',
+    '/build_dir/target-*/host/rustc-*/.prepared*'
+  ].forEach((cachePath) => {
+    assert(rustCacheRestoreStep.includes(cachePath), `Rust cache restore must include ${cachePath}`);
+    assert(rustCacheSaveStep.includes(cachePath), `Rust cache save must include ${cachePath}`);
+  });
+  assert(rustCacheSaveStep.includes("if: steps.sdk-rust-cache.outputs.cache-hit != 'true'"),
+    'Rust cache save must run only after a cache miss');
+
+  const baseBuildStep = extractNamedStep(buildJob, 'Build base package');
+  assert(baseBuildStep.includes('ENABLE_BPF=0 SDK_RELEASE=25.12 SDK_DIR="$base_sdk"'),
+    'base SDK must build the non-BPF daemon first');
+  assert(baseBuildStep.includes('./scripts/build-sdk.sh lanspeedd'),
+    'base SDK must build only the daemon target');
+  const pruneRustStep = extractNamedStep(buildJob, 'Prune SDK Rust build tree');
+  assert(pruneRustStep.includes("-path '*/host/bin/rustc'"),
+    'Rust pruning must first verify the installed rustc');
+  assert(pruneRustStep.includes("-path '*/host/bin/cargo'"),
+    'Rust pruning must first verify the installed cargo');
+  assert(pruneRustStep.includes('! -name \'.built\''), 'Rust pruning must retain the built stamp');
+  assert(pruneRustStep.includes('! -name \'.configured\''), 'Rust pruning must retain the configured stamp');
+  assert(pruneRustStep.includes('! -name \'.prepared*\''), 'Rust pruning must retain prepared stamps');
+  assert(pruneRustStep.includes('-exec rm -rf {} +'),
+    'Rust pruning must remove the large compiler source and build products');
+
+  const clonePreparedStep = extractNamedStep(buildJob, 'Clone prepared SDK for BPF build');
+  assert(clonePreparedStep.includes('cp -a "$base_sdk/." "$bpf_sdk/"'),
+    'BPF SDK must be cloned only after the base Rust toolchain is prepared');
+  const bpfBuildStep = extractNamedStep(buildJob, 'Build BPF packages');
+  assert(bpfBuildStep.includes('ENABLE_BPF=1 SDK_RELEASE=25.12 SDK_DIR="$bpf_sdk"'),
+    'BPF SDK must reuse the prepared clone with BPF enabled');
+  assert(bpfBuildStep.includes('./scripts/build-sdk.sh all'),
+    'BPF SDK must build both daemon and LuCI targets');
+  assert(!buildJob.includes('Build base and BPF packages concurrently'),
+    'base and BPF builds must not compile the Rust host toolchain concurrently');
+  assertBefore(buildJob, 'name: Restore SDK Rust host cache', 'name: Build base package',
+    'cache restore must precede the base build');
+  assertBefore(buildJob, 'name: Build base package', 'name: Prune SDK Rust build tree',
+    'base build must finish before pruning');
+  assertBefore(buildJob, 'name: Prune SDK Rust build tree', 'name: Save SDK Rust host cache',
+    'pruning must precede cache save');
+  assertBefore(buildJob, 'name: Save SDK Rust host cache', 'name: Clone prepared SDK for BPF build',
+    'the first successful base build must save its cache before the BPF phase');
+  assertBefore(buildJob, 'name: Clone prepared SDK for BPF build', 'name: Build BPF packages',
+    'the prepared SDK clone must precede the BPF build');
   assert(!/-name '\*\.apk'/.test(workflow), 'workflow must not collect every APK from the SDK output');
   assert(!/-name '\*\.ipk'/.test(workflow), 'workflow must not collect every IPK from the SDK output');
   assert(workflow.includes("lanspeedd-${code_version}.apk"), 'workflow must collect only the matching lanspeedd APK package');
@@ -546,6 +580,10 @@ try {
     readme.includes('`applications/luci-app-lanspeed/Makefile`'),
   'README must name both version-bearing Makefiles');
   assert(readme.includes('完整版本发生变化'), 'README must explain that the complete version change triggers the workflow');
+  assert(readme.includes('按操作系统、架构和 SDK SHA256 缓存'),
+    'README must document the isolated Rust host toolchain cache');
+  assert(readme.includes('后续相同 SDK 不再从头编译 Rust'),
+    'README must explain the cache benefit');
   assert(readme.includes('草稿 Release'), 'README must describe draft-first publication');
   assert(readme.includes('`workflow_dispatch` 自动重建'), 'README must document automatic draft recovery');
   assert(readme.includes('手动运行也可补发'), 'README must document missing-release recovery');

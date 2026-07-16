@@ -159,7 +159,7 @@ jobs:
       - validate
     if: needs.detect.outputs.changed == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
@@ -195,46 +195,101 @@ jobs:
 
           sdk_archive="$RUNNER_TEMP/sdk-${{ matrix.id }}.tar.zst"
           base_sdk="$RUNNER_TEMP/sdk-base-${{ matrix.id }}"
-          bpf_sdk="$RUNNER_TEMP/sdk-bpf-${{ matrix.id }}"
 
           curl --fail --location --retry 3 --retry-all-errors "$SDK_URL" --output "$sdk_archive"
           printf '%s  %s\n' "$SDK_SHA256" "$sdk_archive" | sha256sum -c -
 
-          mkdir -p "$base_sdk" "$bpf_sdk"
+          mkdir -p "$base_sdk"
           tar --zstd -xf "$sdk_archive" -C "$base_sdk" --strip-components=1
           rm -f "$sdk_archive"
-          cp -a "$base_sdk/." "$bpf_sdk/"
 
-      - name: Build base and BPF packages concurrently
+      - name: Restore SDK Rust host cache
+        id: sdk-rust-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/dl/cargo
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/dl/rustc
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/dl/rustc-*.tar.xz
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/staging_dir/hostpkg/stamp/.rust_installed
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/staging_dir/target-*/host
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.built*
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.configured
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.prepared*
+          key: lanspeed-sdk-rust-${{ runner.os }}-${{ matrix.id }}-${{ matrix.sdk_sha256 }}-v1
+
+      - name: Build base package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          base_sdk="$RUNNER_TEMP/sdk-base-${{ matrix.id }}"
+
+          set -o pipefail
+          ENABLE_BPF=0 SDK_RELEASE=25.12 SDK_DIR="$base_sdk" \
+            ./scripts/build-sdk.sh lanspeedd 2>&1 | sed -u 's/^/[base] /'
+
+      - name: Prune SDK Rust build tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          base_sdk="$RUNNER_TEMP/sdk-base-${{ matrix.id }}"
+          rustc_path="$(find "$base_sdk/staging_dir" -path '*/host/bin/rustc' -type f -perm -u+x -print -quit)"
+          cargo_path="$(find "$base_sdk/staging_dir" -path '*/host/bin/cargo' -type f -perm -u+x -print -quit)"
+          if [ -z "$rustc_path" ] || [ -z "$cargo_path" ]; then
+            printf '%s\n' 'error: base SDK build did not install the Rust host toolchain' >&2
+            exit 1
+          fi
+
+          shopt -s nullglob
+          rust_builds=("$base_sdk"/build_dir/target-*/host/rustc-*)
+          shopt -u nullglob
+          if [ "${#rust_builds[@]}" -ne 1 ]; then
+            printf '%s\n' "error: expected one Rust host build tree, found ${#rust_builds[@]}" >&2
+            exit 1
+          fi
+          find "${rust_builds[0]}" -mindepth 1 -maxdepth 1 \
+            ! -name '.built' \
+            ! -name '.built_check' \
+            ! -name '.configured' \
+            ! -name '.prepared*' \
+            -exec rm -rf {} +
+
+      - name: Save SDK Rust host cache
+        if: steps.sdk-rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/dl/cargo
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/dl/rustc
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/dl/rustc-*.tar.xz
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/staging_dir/hostpkg/stamp/.rust_installed
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/staging_dir/target-*/host
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.built*
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.configured
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.prepared*
+          key: lanspeed-sdk-rust-${{ runner.os }}-${{ matrix.id }}-${{ matrix.sdk_sha256 }}-v1
+
+      - name: Clone prepared SDK for BPF build
         shell: bash
         run: |
           set -euo pipefail
 
           base_sdk="$RUNNER_TEMP/sdk-base-${{ matrix.id }}"
           bpf_sdk="$RUNNER_TEMP/sdk-bpf-${{ matrix.id }}"
+          mkdir -p "$bpf_sdk"
+          cp -a "$base_sdk/." "$bpf_sdk/"
 
-          (
-            set -o pipefail
-            ENABLE_BPF=0 SDK_RELEASE=25.12 SDK_DIR="$base_sdk" ./scripts/build-sdk.sh lanspeedd 2>&1 | sed -u 's/^/[base] /'
-          ) &
-          base_pid=$!
+      - name: Build BPF packages
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          (
-            set -o pipefail
-            ENABLE_BPF=1 SDK_RELEASE=25.12 SDK_DIR="$bpf_sdk" ./scripts/build-sdk.sh all 2>&1 | sed -u 's/^/[bpf] /'
-          ) &
-          bpf_pid=$!
-
-          status=0
-          if ! wait "$base_pid"; then
-            printf '%s\n' 'error: base SDK build failed' >&2
-            status=1
-          fi
-          if ! wait "$bpf_pid"; then
-            printf '%s\n' 'error: BPF SDK build failed' >&2
-            status=1
-          fi
-          exit "$status"
+          bpf_sdk="$RUNNER_TEMP/sdk-bpf-${{ matrix.id }}"
+          set -o pipefail
+          ENABLE_BPF=1 SDK_RELEASE=25.12 SDK_DIR="$bpf_sdk" \
+            ./scripts/build-sdk.sh all 2>&1 | sed -u 's/^/[bpf] /'
 
       - name: Collect architecture artifact
         shell: bash
