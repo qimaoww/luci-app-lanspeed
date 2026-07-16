@@ -187,6 +187,10 @@ function buildShell(viewState) {
 	]);
 
 	refs.tbody = E('tbody', {});
+	refs.statusHeader = E('th', {
+		'class': 'lanspeed-client-status-header'
+	}, _('状态'));
+	refs.statusHeader.hidden = viewState.showClientStatus !== true;
 	refs.clientsTable = E('table', { 'class': 'lanspeed-table' }, [
 		E('thead', {}, E('tr', {}, [
 			sortableHeader(viewState, refs, 'hostname', _('客户端')),
@@ -199,7 +203,7 @@ function buildShell(viewState) {
 			sortableHeader(viewState, refs, 'udp_conns', 'UDP', {
 				'class': 'num', 'title': _('当前已确认的 UDP 连接')
 			}),
-			E('th', {}, _('状态'))
+			refs.statusHeader
 		])),
 		refs.tbody
 	]);

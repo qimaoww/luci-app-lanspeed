@@ -1396,6 +1396,7 @@ function assertLifecycleInit(initScript, hotplugScript, packageMakefile, default
   assert(defaultConfig.includes("option refresh_interval_ms '1000'"), 'default config must keep refresh_interval_ms=1000');
   assert(defaultConfig.includes("option active_client_window_ms '10000'"), 'default config must keep active window at 10s');
   assert(defaultConfig.includes("option active_client_min_bps '1'"), 'default config must keep active speed threshold at nonzero');
+  assert(defaultConfig.includes("option show_client_status '0'"), 'default config must hide the LAN client status column');
   assert(defaultConfig.includes("option show_ipv6 '1'"), 'default config must show IPv6 client addresses');
   assert(defaultConfig.includes("option hide_private_ipv6 '0'"), 'default config must not hide private IPv6 client addresses by default');
   assert(defaultConfig.includes("option hide_ipv6_ranges 'fc00::/7 fe80::/10'"), 'default config must provide hidden IPv6 ranges');

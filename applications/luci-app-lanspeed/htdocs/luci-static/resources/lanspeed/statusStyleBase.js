@@ -63,6 +63,8 @@ var BASE_CSS = [
 	'.lanspeed-sort-button:focus-visible{outline:2px solid currentColor;outline-offset:3px}',
 	'.lanspeed-sort-indicator{display:inline-block;min-width:.75em;opacity:.85}',
 	'.lanspeed-table tbody tr:last-child td{border-bottom:0}',
+	'.lanspeed-clients-card .lanspeed-table th[hidden],',
+	'.lanspeed-clients-card .lanspeed-table td[hidden]{display:none!important}',
 	'.lanspeed-table th:first-child,.lanspeed-table td:first-child{padding-left:0}',
 	'.lanspeed-table th:last-child,.lanspeed-table td:last-child{padding-right:0}',
 	'.lanspeed-table .num{text-align:left;font-variant-numeric:tabular-nums;white-space:nowrap}',

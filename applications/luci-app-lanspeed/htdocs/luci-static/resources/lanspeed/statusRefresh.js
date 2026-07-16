@@ -45,6 +45,20 @@ function splitClientWarnings(rawWarnings, globalWarnings) {
 	return { info: info, warnings: warnings };
 }
 
+function setClientStatusVisibility(refs, visible) {
+	if (refs && refs.statusHeader)
+		refs.statusHeader.hidden = !visible;
+}
+
+function clientStateCell(stateCells, visible) {
+	var cell = E('td', {
+		'class': 'lanspeed-client-state-cell',
+		'data-label': _('状态')
+	}, E('span', { 'class': 'state' }, stateCells));
+	cell.hidden = !visible;
+	return cell;
+}
+
 function refreshSortHeaders(refs, prefs) {
 	Object.keys(refs.sortHeaders || {}).forEach(function(sortKey) {
 		var ref = refs.sortHeaders[sortKey];
@@ -79,9 +93,11 @@ function refreshLive(viewState) {
 	var clientsAll = fmt.asArray(viewState.clients && viewState.clients.clients);
 	var prefs = viewState.prefs;
 	var activeCfg = fmt.activeConfig(status);
+	var showClientStatus = viewState.showClientStatus === true;
 	var showIpv6 = viewState.showIpv6 !== false;
 	var hidePrivateIpv6 = viewState.hidePrivateIpv6 === true;
 	var hideIpv6Ranges = statusIp.hideIpv6RangesValue(viewState.hideIpv6Ranges);
+	setClientStatusVisibility(refs, showClientStatus);
 
 	if (viewState.error) {
 		refs.errorBox.style.display = '';
@@ -249,6 +265,7 @@ function refreshLive(viewState) {
 					'class': critClient ? 'label danger' : 'label warning',
 					'title': specificWarnings.map(vocab.warningText.bind(vocab)).join('\n')
 				}, _('%d 告警').format(specificWarnings.length)));
+			var stateCell = clientStateCell(stateCells, showClientStatus);
 
 			var displayName;
 			if (c.hostname) {
@@ -288,10 +305,7 @@ function refreshLive(viewState) {
 						  ].join(' · ')
 						: ''
 				}, typeof c.udp_conns === 'number' ? String(c.udp_conns) : '-'),
-				E('td', {
-					'class': 'lanspeed-client-state-cell',
-					'data-label': _('状态')
-				}, E('span', { 'class': 'state' }, stateCells))
+				stateCell
 			]);
 		}));
 	}
@@ -351,6 +365,8 @@ return baseclass.extend({
 	clientNameContent: clientNameContent,
 	refreshSortHeaders: refreshSortHeaders,
 	splitClientWarnings: splitClientWarnings,
+	setClientStatusVisibility: setClientStatusVisibility,
+	clientStateCell: clientStateCell,
 
 	refreshLive: function(viewState) {
 		return refreshLive(viewState);

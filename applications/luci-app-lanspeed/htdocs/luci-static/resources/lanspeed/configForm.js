@@ -9,6 +9,7 @@ var DEFAULTS = {
 	conn_collector_mode: 'auto',
 	active_client_window_ms: 10000,
 	active_client_min_bps: 1,
+	show_client_status: '0',
 	show_ipv6: '1',
 	hide_private_ipv6: '0',
 	hide_ipv6_ranges: 'fc00::/7 fe80::/10'
@@ -301,6 +302,7 @@ function setBusy(viewState, busy) {
 			daemonRefs.connCollectorMode,
 			daemonRefs.activeWindow,
 			daemonRefs.activeMin,
+			daemonRefs.showClientStatus,
 			daemonRefs.showIpv6,
 			daemonRefs.hidePrivateIpv6,
 			daemonRefs.hideIpv6RangeInput,
@@ -323,6 +325,7 @@ function readForm(refs) {
 			DEFAULTS.active_client_window_ms, 1000, 0),
 		active_client_min_bps: intValue(refs.activeMin.value,
 			DEFAULTS.active_client_min_bps, 1, 0),
+		show_client_status: refs.showClientStatus.checked ? '1' : '0',
 		show_ipv6: refs.showIpv6.checked ? '1' : '0',
 		hide_private_ipv6: refs.hidePrivateIpv6.checked ? '1' : '0',
 		hide_ipv6_ranges: rangeListValue(refs)
@@ -334,6 +337,8 @@ function fillForm(refs, values) {
 	refs.connCollectorMode.value = connCollectorModeValue(values.conn_collector_mode);
 	refs.activeWindow.value = String(values.active_client_window_ms);
 	refs.activeMin.value = String(values.active_client_min_bps);
+	refs.showClientStatus.checked = boolValue(values.show_client_status,
+		DEFAULTS.show_client_status) !== '0';
 	refs.showIpv6.checked = boolValue(values.show_ipv6, DEFAULTS.show_ipv6) !== '0';
 	refs.hidePrivateIpv6.checked = boolValue(values.hide_private_ipv6, DEFAULTS.hide_private_ipv6) !== '0';
 	buildRangeList(refs, stringValue(values.hide_ipv6_ranges, DEFAULTS.hide_ipv6_ranges));
@@ -350,6 +355,7 @@ function prepareDaemonSave(viewState) {
 		collector_mode: values.rate_collector_mode,
 		active_client_window_ms: String(values.active_client_window_ms),
 		active_client_min_bps: String(values.active_client_min_bps),
+		show_client_status: values.show_client_status,
 		show_ipv6: values.show_ipv6,
 		hide_private_ipv6: values.hide_private_ipv6,
 		hide_ipv6_ranges: values.hide_ipv6_ranges
@@ -460,6 +466,12 @@ function buildDaemonSection(values, viewState) {
 	refs.connCollectorMode = selectConnCollectorMode(values.conn_collector_mode);
 	refs.activeWindow = inputNumber(values.active_client_window_ms, 1000, 0, 1000);
 	refs.activeMin = inputNumber(values.active_client_min_bps, 1, 0, 1);
+	refs.showClientStatus = E('input', {
+		'type': 'checkbox',
+		'class': 'cbi-input-checkbox'
+	});
+	if (boolValue(values.show_client_status, DEFAULTS.show_client_status) !== '0')
+		refs.showClientStatus.checked = 'checked';
 	refs.showIpv6 = E('input', {
 		'type': 'checkbox',
 		'class': 'cbi-input-checkbox'
@@ -555,6 +567,11 @@ function buildDaemonSection(values, viewState) {
 						E('td', { 'class': 'hint' }, _('达到此速率才算活跃；保持 1 bps 可避免漏掉低速设备。'))
 					]),
 					E('tr', {}, [
+						E('td', {}, _('显示客户端状态')),
+						E('td', { 'class': 'value' }, refs.showClientStatus),
+						E('td', { 'class': 'hint' }, _('开启后在实时状态的 LAN 客户端列表中显示采集来源和告警状态；默认隐藏。'))
+					]),
+					E('tr', {}, [
 						E('td', {}, _('显示 IPv6 地址')),
 						E('td', { 'class': 'value' }, refs.showIpv6),
 						E('td', { 'class': 'hint' }, _('关闭后客户端列表只显示 IPv4。'))
@@ -612,6 +629,8 @@ function loadValues() {
 			conn_collector_mode: connCollectorModeValue(connMode || legacyConnCollectorMode(legacy)),
 			active_client_window_ms: uciInt('active_client_window_ms'),
 			active_client_min_bps: uciInt('active_client_min_bps'),
+			show_client_status: boolValue(uci.get('lanspeed', 'main', 'show_client_status'),
+				DEFAULTS.show_client_status),
 			show_ipv6: boolValue(uci.get('lanspeed', 'main', 'show_ipv6'), DEFAULTS.show_ipv6),
 			hide_private_ipv6: boolValue(uci.get('lanspeed', 'main', 'hide_private_ipv6'), DEFAULTS.hide_private_ipv6),
 			hide_ipv6_ranges: stringValue(uci.get('lanspeed', 'main', 'hide_ipv6_ranges'), DEFAULTS.hide_ipv6_ranges),

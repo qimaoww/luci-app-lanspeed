@@ -55,7 +55,8 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 - **配置页面**：速率采集、连接数采集、活跃客户端阈值和接口配置可分开调整，并由页面底部的统一按钮一次保存、提交和重载；NSS 设备会显示 NSS 专属说明。
 - **接口配置**：采集 / 观察 / 关闭 三态切换，默认采集 `br-lan`、观察 `wan`；自动忽略 `dae*`、`miireg*`、`tun*`、`erspan*`、`gretap*`、`gre*`、`ip6gre*`、`ip6tnl*`、`sit*`、`bonding_masters*`，拒绝 nssifb 采集并可观察 WAN / ifb 计数。
 - **告警体系**：OpenClash / dae/daed / SQM/qosify/ifb / flow offload / fullcone NAT 等场景自动识别并提示。
-- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.0-r1`。
+- **客户端状态列**：默认隐藏 LAN 客户端的采集来源与告警状态，可在“LAN Speed 配置”中开启。
+- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.0-r2`。
 
 ## 采集策略
 
@@ -225,6 +226,7 @@ uci commit lanspeed
 | `overview_window_samples` | `240` | 趋势/概览样本窗口。 |
 | `rate_collector_mode` | `auto` | 速率采集：`auto` 默认在所有设备上优先 BPF；也可显式选择 `bpf` / `nss_ecm_direct` / `nss_conntrack_sync`。 |
 | `conn_collector_mode` | `auto` | 连接数采集：`auto` / `conntrack_netlink` / `conntrack_procfs`。 |
+| `show_client_status` | `0` | 是否在 LAN 客户端列表中显示采集来源和告警状态。 |
 | `show_ipv6` | `1` | 客户端列表是否显示 IPv6 地址。 |
 | `hide_private_ipv6` | `0` | 是否隐藏 `fc00::/7` 私有 IPv6 地址和 `fe80::/10` 链路本地地址；公网 IPv6 不受影响。 |
 | `hide_ipv6_ranges` | `fc00::/7 fe80::/10` | 自定义隐藏 IPv6 CIDR，空格或逗号分隔；仅在 `hide_private_ipv6=1` 时生效。 |

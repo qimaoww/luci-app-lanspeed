@@ -26,6 +26,7 @@ function normalizeData(data) {
 		status: data[0] || {},
 		clients: data[1] || {},
 		interfaces: data[2] || { interfaces: [] },
+		showClientStatus: uciMain.show_client_status === '1',
 		showIpv6: uciMain.show_ipv6 !== '0',
 		hidePrivateIpv6: uciMain.hide_private_ipv6 === '1',
 		hideIpv6Ranges: statusIp.hideIpv6RangesValue(uciMain.hide_ipv6_ranges),
@@ -49,6 +50,7 @@ return baseclass.extend({
 				status: {},
 				clients: { clients: [] },
 				interfaces: { interfaces: [] },
+				showClientStatus: false,
 				showIpv6: true,
 				hidePrivateIpv6: false,
 				hideIpv6Ranges: statusIp.DEFAULT_HIDE_IPV6_RANGES,
@@ -62,6 +64,7 @@ return baseclass.extend({
 			status: data.status || {},
 			clients: data.clients || { clients: [] },
 			interfaces: data.interfaces || { interfaces: [] },
+			showClientStatus: data.showClientStatus === true,
 			showIpv6: data.showIpv6 !== false,
 			hidePrivateIpv6: data.hidePrivateIpv6 === true,
 			hideIpv6Ranges: statusIp.hideIpv6RangesValue(data.hideIpv6Ranges),
@@ -95,6 +98,7 @@ return baseclass.extend({
 					self.status = next.status;
 					self.clients = next.clients;
 					self.interfaces = next.interfaces;
+					self.showClientStatus = next.showClientStatus;
 					self.showIpv6 = next.showIpv6;
 					self.hidePrivateIpv6 = next.hidePrivateIpv6;
 					self.hideIpv6Ranges = next.hideIpv6Ranges;
