@@ -1456,11 +1456,11 @@ const hotplugScript = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/h
 const defaultConfig = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/config/lanspeed'), 'utf8');
 const statusResourceDir = path.join(root, 'applications/luci-app-lanspeed/htdocs/luci-static/resources');
 const indexSource = [
-  'view/lanspeed/index_live7.js',
-  'lanspeed/statusViewLive6.js',
-  'lanspeed/statusOverviewLive6.js',
+  'view/lanspeed/overview.js',
+  'lanspeed/statusView.js',
+  'lanspeed/statusOverview.js',
   'lanspeed/statusCollector.js',
-  'lanspeed/statusRefreshLive6.js'
+  'lanspeed/statusRefresh.js'
 ].map((relativePath) => fs.readFileSync(path.join(statusResourceDir, relativePath), 'utf8')).join('\n');
 const collectorModel = readJson('net/lanspeedd/src/collector-model.json');
 const bpfAttachedFixture = readJson('tests/fixtures/lanspeed-bpf-attached.json');

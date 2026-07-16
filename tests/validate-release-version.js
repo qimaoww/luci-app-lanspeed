@@ -7,6 +7,10 @@ const childProcess = require('child_process');
 const root = path.resolve(__dirname, '..');
 const daemonMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
 const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/Makefile'), 'utf8');
+const luciMenuSource = fs.readFileSync(path.join(
+  root,
+  'applications/luci-app-lanspeed/root/usr/share/luci/menu.d/luci-app-lanspeed.json'
+), 'utf8');
 const versionJs = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/version.js'), 'utf8');
 const workflow = fs.readFileSync(path.join(root, '.github/workflows/build-sdk.yml'), 'utf8');
 const ciWorkflow = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
@@ -23,6 +27,54 @@ const projectCrates = new Map([
   ['lanspeed-openwrt-sys', path.join(rustRoot, 'crates/lanspeed-openwrt-sys/Cargo.toml')],
   ['lanspeed-build', path.join(rustRoot, 'crates/lanspeed-build/Cargo.toml')]
 ]);
+const luciResources = [
+  'configForm.js',
+  'configStyle.js',
+  'configStyleArgon.js',
+  'configStyleAurora.js',
+  'configStyleBase.js',
+  'configStyleBootstrap.js',
+  'configStyleResponsive.js',
+  'configStyleShared.js',
+  'diagnosticsRefresh.js',
+  'diagnosticsShell.js',
+  'diagnosticsStyle.js',
+  'diagnosticsStyleArgon.js',
+  'diagnosticsStyleAurora.js',
+  'diagnosticsStyleBase.js',
+  'diagnosticsStyleBootstrap.js',
+  'diagnosticsStyleResponsive.js',
+  'diagnosticsView.js',
+  'clientConnections.js',
+  'clientDetailShell.js',
+  'clientDetailStyle.js',
+  'clientDetailStyleBase.js',
+  'clientDetailStyleBootstrap.js',
+  'clientDetailStyleArgon.js',
+  'clientDetailStyleAurora.js',
+  'clientDetailStyleResponsive.js',
+  'clientDetailRefresh.js',
+  'clientDetailView.js',
+  'format.js',
+  'ifaceConfig.js',
+  'rpc.js',
+  'statusCollector.js',
+  'statusIp.js',
+  'statusRefresh.js',
+  'statusShell.js',
+  'statusStyle.js',
+  'statusStyleArgon.js',
+  'statusStyleAurora.js',
+  'statusStyleBase.js',
+  'statusStyleBootstrap.js',
+  'statusStyleResponsive.js',
+  'statusOverview.js',
+  'statusView.js',
+  'theme.js',
+  'vocab.js'
+];
+const luciViews = [ 'config.js', 'diagnostics.js', 'overview.js' ];
+const versionedCachePattern = /(?:Live\d+|_live\d+)/;
 
 function assert(condition, message) {
   if (!condition) {
@@ -187,8 +239,8 @@ try {
   ], { cwd: rustRoot, encoding: 'utf8' }));
   runWorkspaceMetadataSelfTest(daemonVersion);
 
-  assert(daemonVersion === '1.0.0', 'daemon PKG_VERSION must remain exactly 1.0.0 for this release');
-  assert(luciVersion === '1.0.0', 'LuCI PKG_VERSION must remain exactly 1.0.0 for this release');
+  assert(daemonVersion === '1.1.0', 'daemon PKG_VERSION must remain exactly 1.1.0 for this release');
+  assert(luciVersion === '1.1.0', 'LuCI PKG_VERSION must remain exactly 1.1.0 for this release');
   assert(daemonVersion === luciVersion, 'daemon and LuCI PKG_VERSION must match for releases');
   assert(daemonRelease === luciRelease, 'daemon and LuCI PKG_RELEASE must match for releases');
   assert(workspaceVersion, 'Cargo workspace must define package.version');
@@ -205,47 +257,37 @@ try {
   assert(luciMakefile.includes("PACKAGE_VERSION: '$(PKG_VERSION)'"), 'LuCI package must generate version.js from PKG_VERSION during install');
   assert(luciMakefile.includes("PACKAGE_RELEASE: '$(PKG_RELEASE)'"), 'LuCI package must generate version.js from PKG_RELEASE during install');
   assert(luciMakefile.includes("FULL_VERSION: '$(PKG_VERSION)-r$(PKG_RELEASE)'"), 'LuCI package must generate full version.js from package metadata');
-  [
-    'configForm.js',
-    'configStyle.js',
-    'configStyleArgon.js',
-    'configStyleAurora.js',
-    'configStyleBase.js',
-    'configStyleBootstrap.js',
-    'configStyleResponsive.js',
-    'configStyleShared.js',
-    'format.js',
-	'ifaceConfig.js',
-	'rpc.js',
-	'rpcLive6.js',
-	'statusCollector.js',
-	'theme.js',
-	'clientConnectionsLive4.js',
-	'clientDetailRefreshLive4.js',
-	'clientDetailShellLive6.js',
-	'clientDetailStyleLive6.js',
-	'clientDetailStyleBaseLive4.js',
-	'clientDetailStyleAuroraLive4.js',
-	'clientDetailStyleArgonLive4.js',
-	'clientDetailStyleBootstrapLive4.js',
-	'clientDetailStyleResponsiveLive4.js',
-	'clientDetailViewLive6.js',
-	'statusIpLive4.js',
-	'statusOverviewLive6.js',
-	'statusRefreshLive6.js',
-	'statusShellLive6.js',
-	'statusStyleLive6.js',
-	'statusStyleBaseLive6.js',
-	'statusStyleAuroraLive5.js',
-	'statusStyleArgonLive5.js',
-	'statusStyleBootstrapLive5.js',
-	'statusStyleResponsiveLive5.js',
-	'statusViewLive6.js',
-	'vocabLive5.js'
-  ].forEach((name) => {
-    assert(luciMakefile.includes(`./htdocs/luci-static/resources/lanspeed/${name}`),
-           `LuCI package must install resources/lanspeed/${name}`);
-  });
+  const resourceInstall = /\t\$\(INSTALL_DIR\) \$\(1\)\/www\/luci-static\/resources\/lanspeed\n\t\$\(INSTALL_DATA\) \\\n([\s\S]*?)\n\t\t\$\(1\)\/www\/luci-static\/resources\/lanspeed\/\n/.exec(luciMakefile);
+  assert(resourceInstall, 'LuCI package must keep an explicit resources/lanspeed install block');
+  assert(!/[?*\[]/.test(resourceInstall[1]),
+    'LuCI resources/lanspeed install block must not use wildcards');
+  const installedResources = [...resourceInstall[1].matchAll(
+    /\.\/htdocs\/luci-static\/resources\/lanspeed\/([^\s\\/]+\.js)/g
+  )].map((match) => match[1]);
+  assertExactList(installedResources, luciResources,
+    'LuCI release must install the exact ordered semantic resource list');
+
+  const viewInstall = /\t\$\(INSTALL_DIR\) \$\(1\)\/www\/luci-static\/resources\/view\/lanspeed\n\t\$\(INSTALL_DATA\) \\\n([\s\S]*?)\n\t\t\$\(1\)\/www\/luci-static\/resources\/view\/lanspeed\/\n/.exec(luciMakefile);
+  assert(viewInstall, 'LuCI package must keep an explicit view/lanspeed install block');
+  assert(!/[?*\[]/.test(viewInstall[1]),
+    'LuCI view/lanspeed install block must not use wildcards');
+  const installedViews = [...viewInstall[1].matchAll(
+    /\.\/htdocs\/luci-static\/resources\/view\/lanspeed\/([^\s\\/]+\.js)/g
+  )].map((match) => match[1]);
+  assertExactList(installedViews, luciViews,
+    'LuCI release views must be exactly config.js, diagnostics.js and overview.js');
+
+  assert(!versionedCachePattern.test(luciMakefile),
+    'LuCI release Makefile must not contain LiveN or _liveN cache names');
+  assert(!versionedCachePattern.test(luciMenuSource),
+    'LuCI release menu must not contain LiveN or _liveN cache names');
+  const luciMenu = JSON.parse(luciMenuSource);
+  const menuViewPaths = Object.values(luciMenu)
+    .filter((entry) => entry.action && entry.action.type === 'view')
+    .map((entry) => entry.action.path)
+    .sort();
+  assertExactList(menuViewPaths, [ 'lanspeed/config', 'lanspeed/diagnostics', 'lanspeed/overview' ],
+    'LuCI release menu must use the semantic config, diagnostics and overview views');
   assert(releaseScript.includes('printf \'%s\\n\' "${daemon_version}-r${daemon_release}"'), 'scripts/release-version.sh must print the full code version');
   assert(releaseScript.includes('[ "$daemon_version" = "$luci_version" ]'), 'scripts/release-version.sh must verify daemon and LuCI PKG_VERSION match');
   assert(releaseScript.includes('[ "$daemon_release" = "$luci_release" ]'), 'scripts/release-version.sh must verify daemon and LuCI PKG_RELEASE match');
@@ -597,11 +639,11 @@ try {
   assert(readme.includes('手动运行也可补发'), 'README must document missing-release recovery');
   assert(readme.includes('不得预先创建 `v*` tag'), 'README must forbid maintainers from pre-creating release tags');
   assert(!readme.includes('GitHub Actions 在 `v*` tag 发布时'), 'README must not retain the obsolete tag-trigger description');
-  assert(readme.includes('`1.0.0-r3`'), 'README full-version example must remain r3');
-  assert(!/1\.0\.0-r[45]/.test(readme), 'README must not advance the release beyond r3');
+  assert(readme.includes('`1.1.0-r1`'), 'README full-version example must match the 1.1.0 release');
+  assert(!/1\.1\.0-r[2-9]/.test(readme), 'README must not advance the 1.1.0 release beyond r1');
 
-  assert(daemonRelease === '3', 'daemon PKG_RELEASE must be exactly 3 for the automatic release workflow');
-  assert(luciRelease === '3', 'LuCI PKG_RELEASE must be exactly 3 for the automatic release workflow');
+  assert(daemonRelease === '1', 'daemon PKG_RELEASE must be exactly 1 for the automatic release workflow');
+  assert(luciRelease === '1', 'LuCI PKG_RELEASE must be exactly 1 for the automatic release workflow');
 
   console.log('validate-release-version: PASS');
 } catch (error) {

@@ -51,10 +51,11 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 - **NSS 兼容**：Qualcomm NSS 设备自动展示 ECM/PPE 状态，默认仍使用 LAN 边缘 BPF；显式选择 NSS 模式或 BPF 运行时不可用时，才使用 NSS sync / CT-Netlink 或 NSS-direct。NSS 硬件加速流量可能绕过 CPU，因此 BPF 只能看到慢路径；IPv4 通过 ARP、IPv6 通过 neighbor 表匹配客户端，并兼容 ECM NAT 端点。
 - **活跃客户端**：默认只把 10 秒内仍有有效速率的客户端计为 active，可通过 UCI 调整。
 - **覆盖率**：daemon 侧使用 32 个样本的滑动窗口，并按客户端实时速率生成单调累计分子，避免客户端离线/重新出现导致覆盖率跳回“采样中”；低流量与真正无流量分开显示。
-- **配置页面**：LuCI 内置“实时状态”和“LAN Speed 配置”两个页签，速率采集、连接数采集、活跃客户端阈值和接口配置可分开调整，并由页面底部的统一按钮一次保存、提交和重载；NSS 设备会显示 NSS 专属说明。
+- **独立诊断**：LuCI 内置“实时状态”“运行诊断”和“LAN Speed 配置”三个页签；诊断页集中检查插件、后端与 BPF，只展示会影响实时测速的重要告警，实时状态页不再混入旧诊断面板。
+- **配置页面**：速率采集、连接数采集、活跃客户端阈值和接口配置可分开调整，并由页面底部的统一按钮一次保存、提交和重载；NSS 设备会显示 NSS 专属说明。
 - **接口配置**：采集 / 观察 / 关闭 三态切换，默认采集 `br-lan`、观察 `wan`；自动忽略 `dae*`、`miireg*`、`tun*`、`erspan*`、`gretap*`、`gre*`、`ip6gre*`、`ip6tnl*`、`sit*`、`bonding_masters*`，拒绝 nssifb 采集并可观察 WAN / ifb 计数。
 - **告警体系**：OpenClash / dae/daed / SQM/qosify/ifb / flow offload / fullcone NAT 等场景自动识别并提示。
-- **版本显示**：LuCI 状态页显示完整版本，例如 `1.0.0-r3`。
+- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.0-r1`。
 
 ## 采集策略
 
@@ -97,7 +98,7 @@ NSS ECM/PPE sync 是显式选择 `nss_conntrack_sync`、NSS-direct 的补齐来�
 |---|---|
 | `lanspeedd` | Rust/Aya daemon，暴露八个 ubus 方法（status / clients / overview / health / reload / interfaces / sysdevices / client_connections） |
 | `lanspeedd-bpf` | LuCI 应用的必选依赖，安装 Rust 编译的 kfunc 与 fallback 两套 tc/eBPF 对象（含 ct_lookup + seen_tuples 去重 map），并依赖 `lanspeedd` |
-| `luci-app-lanspeed` | LuCI 状态页和配置页，强制依赖 `lanspeedd-bpf`，模块化前端（vocab / format / rpc / ifaceConfig / nssPanel / version） |
+| `luci-app-lanspeed` | LuCI 实时状态、独立诊断和配置页，强制依赖 `lanspeedd-bpf`，模块化前端（status / diagnostics / config / client detail） |
 
 ## 编译要求与高级用法
 
@@ -172,6 +173,7 @@ LuCI 入口：
 
 - `状态 -> 客户端网速 -> 实时状态`
 - `状态 -> 客户端网速 -> 实时状态 -> 点击客户端名称进入连接详情页`
+- `状态 -> 客户端网速 -> 运行诊断`
 - `状态 -> 客户端网速 -> LAN Speed 配置`
 
 `/etc/config/lanspeed`：
@@ -305,8 +307,9 @@ ubus call lanspeed client_connections \
 ```
 applications/luci-app-lanspeed/
   htdocs/luci-static/resources/
-    lanspeed/                      模块 (vocab/format/rpc/ifaceConfig/nssPanel/version)
-    view/lanspeed/index.js         实时状态入口
+    lanspeed/                      状态、诊断、配置与客户端详情模块
+    view/lanspeed/overview.js      实时状态入口
+    view/lanspeed/diagnostics.js   独立运行诊断入口
     view/lanspeed/config.js        LAN Speed 配置页面
 net/lanspeedd/
   rust/crates/lanspeedd/           Rust daemon、采集器、状态机和 ubus 逻辑

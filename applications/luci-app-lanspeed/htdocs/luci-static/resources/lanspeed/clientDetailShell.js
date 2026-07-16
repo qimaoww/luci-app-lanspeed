@@ -1,7 +1,7 @@
 'use strict';
 'require baseclass';
 'require lanspeed.theme as lsTheme';
-'require lanspeed.clientDetailStyleLive6 as clientDetailStyle';
+'require lanspeed.clientDetailStyle as clientDetailStyle';
 
 function buildShell(viewState) {
 	var refs = {};

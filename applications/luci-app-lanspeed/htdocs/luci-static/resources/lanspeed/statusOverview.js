@@ -1,10 +1,10 @@
 'use strict';
 'require baseclass';
 'require lanspeed.format as fmt';
-'require lanspeed.rpcLive6 as lsRpc';
-'require lanspeed.statusIpLive4 as statusIp';
-'require lanspeed.statusShellLive6 as statusShell';
-'require lanspeed.statusRefreshLive6 as statusRefresh';
+'require lanspeed.rpc as lsRpc';
+'require lanspeed.statusIp as statusIp';
+'require lanspeed.statusShell as statusShell';
+'require lanspeed.statusRefresh as statusRefresh';
 
 /*
  * Shared LuCI status view implementation.

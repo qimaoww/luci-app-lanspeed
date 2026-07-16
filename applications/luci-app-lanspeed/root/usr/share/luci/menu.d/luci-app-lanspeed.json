@@ -14,7 +14,18 @@
     "order": 1,
     "action": {
       "type": "view",
-      "path": "lanspeed/index_live7"
+      "path": "lanspeed/overview"
+    },
+    "depends": {
+      "acl": [ "luci-app-lanspeed" ]
+    }
+  },
+  "admin/status/lanspeed/diagnostics": {
+    "title": "运行诊断",
+    "order": 2,
+    "action": {
+      "type": "view",
+      "path": "lanspeed/diagnostics"
     },
     "depends": {
       "acl": [ "luci-app-lanspeed" ]
@@ -22,7 +33,7 @@
   },
   "admin/status/lanspeed/config": {
     "title": "LAN Speed 配置",
-    "order": 2,
+    "order": 3,
     "action": {
       "type": "view",
       "path": "lanspeed/config"

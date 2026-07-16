@@ -10,7 +10,7 @@
  * Thin LuCI configuration view entry.
  *
  * Runtime daemon form logic lives in configForm.js, layout CSS lives in
- * configStyle.js, and interface assignment controls stay in ifaceConfig.js.
+ * configStyle.js, and interface controls stay in ifaceConfig.js.
  */
 
 return view.extend({

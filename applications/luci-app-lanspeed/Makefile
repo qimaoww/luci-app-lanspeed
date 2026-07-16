@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-lanspeed
-PKG_VERSION:=1.0.0
-PKG_RELEASE:=3
+PKG_VERSION:=1.1.0
+PKG_RELEASE:=1
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=
@@ -23,8 +23,8 @@ endef
 define Package/luci-app-lanspeed/description
  LuCI real-time status and settings page for lanspeedd. Displays per-client
  upload, download and current TCP / UDP connections, configures interfaces as
- collect / observe / off, and reports concise plugin, backend and BPF health
- with only actionable alerts.
+ collect / observe / off, and provides a dedicated diagnostics page for
+ concise plugin, backend and BPF health with only actionable alerts.
 endef
 
 define Build/Prepare
@@ -41,8 +41,8 @@ define Package/luci-app-lanspeed/install
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/lanspeed
 	$(INSTALL_DATA) \
 		./htdocs/luci-static/resources/view/lanspeed/config.js \
-		./htdocs/luci-static/resources/view/lanspeed/index.js \
-		./htdocs/luci-static/resources/view/lanspeed/index_live7.js \
+		./htdocs/luci-static/resources/view/lanspeed/diagnostics.js \
+		./htdocs/luci-static/resources/view/lanspeed/overview.js \
 		$(1)/www/luci-static/resources/view/lanspeed/
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/lanspeed
 	$(INSTALL_DATA) \
@@ -54,34 +54,42 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/configStyleBootstrap.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleResponsive.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleShared.js \
-		./htdocs/luci-static/resources/lanspeed/clientConnectionsLive4.js \
-		./htdocs/luci-static/resources/lanspeed/clientDetailShellLive6.js \
-		./htdocs/luci-static/resources/lanspeed/clientDetailStyleLive6.js \
-		./htdocs/luci-static/resources/lanspeed/clientDetailStyleBaseLive4.js \
-		./htdocs/luci-static/resources/lanspeed/clientDetailStyleBootstrapLive4.js \
-		./htdocs/luci-static/resources/lanspeed/clientDetailStyleArgonLive4.js \
-		./htdocs/luci-static/resources/lanspeed/clientDetailStyleAuroraLive4.js \
-		./htdocs/luci-static/resources/lanspeed/clientDetailStyleResponsiveLive4.js \
-		./htdocs/luci-static/resources/lanspeed/clientDetailRefreshLive4.js \
-		./htdocs/luci-static/resources/lanspeed/clientDetailViewLive6.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsRefresh.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsShell.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsStyle.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleArgon.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleAurora.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleBase.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleBootstrap.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleResponsive.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsView.js \
+		./htdocs/luci-static/resources/lanspeed/clientConnections.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailShell.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailStyle.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailStyleBase.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailStyleBootstrap.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailStyleArgon.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailStyleAurora.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailStyleResponsive.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailRefresh.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailView.js \
 		./htdocs/luci-static/resources/lanspeed/format.js \
 		./htdocs/luci-static/resources/lanspeed/ifaceConfig.js \
 		./htdocs/luci-static/resources/lanspeed/rpc.js \
-		./htdocs/luci-static/resources/lanspeed/rpcLive6.js \
 		./htdocs/luci-static/resources/lanspeed/statusCollector.js \
-		./htdocs/luci-static/resources/lanspeed/statusIpLive4.js \
-		./htdocs/luci-static/resources/lanspeed/statusRefreshLive6.js \
-		./htdocs/luci-static/resources/lanspeed/statusShellLive6.js \
-		./htdocs/luci-static/resources/lanspeed/statusStyleLive6.js \
-		./htdocs/luci-static/resources/lanspeed/statusStyleArgonLive5.js \
-		./htdocs/luci-static/resources/lanspeed/statusStyleAuroraLive5.js \
-		./htdocs/luci-static/resources/lanspeed/statusStyleBaseLive6.js \
-		./htdocs/luci-static/resources/lanspeed/statusStyleBootstrapLive5.js \
-		./htdocs/luci-static/resources/lanspeed/statusStyleResponsiveLive5.js \
-		./htdocs/luci-static/resources/lanspeed/statusOverviewLive6.js \
-		./htdocs/luci-static/resources/lanspeed/statusViewLive6.js \
+		./htdocs/luci-static/resources/lanspeed/statusIp.js \
+		./htdocs/luci-static/resources/lanspeed/statusRefresh.js \
+		./htdocs/luci-static/resources/lanspeed/statusShell.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyle.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyleArgon.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyleAurora.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyleBase.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyleBootstrap.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyleResponsive.js \
+		./htdocs/luci-static/resources/lanspeed/statusOverview.js \
+		./htdocs/luci-static/resources/lanspeed/statusView.js \
 		./htdocs/luci-static/resources/lanspeed/theme.js \
-		./htdocs/luci-static/resources/lanspeed/vocabLive5.js \
+		./htdocs/luci-static/resources/lanspeed/vocab.js \
 		$(1)/www/luci-static/resources/lanspeed/
 	printf "%s\n" \
 		"'use strict';" \

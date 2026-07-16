@@ -1,8 +1,8 @@
 'use strict';
 'require baseclass';
-'require lanspeed.clientConnectionsLive4 as clientConnections';
-'require lanspeed.clientDetailViewLive6 as clientDetailView';
-'require lanspeed.statusOverviewLive6 as statusView';
+'require lanspeed.clientConnections as clientConnections';
+'require lanspeed.clientDetailView as clientDetailView';
+'require lanspeed.statusOverview as statusView';
 
 return baseclass.extend({
 	load: function() {

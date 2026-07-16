@@ -13,24 +13,83 @@ const buildDriver = fs.readFileSync(
 );
 const cargoConfig = fs.readFileSync(path.join(root, 'net/lanspeedd/rust/.cargo/config.toml'), 'utf8');
 const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/Makefile'), 'utf8');
+const luciStaticRoot = path.join(
+  root,
+  'applications/luci-app-lanspeed/htdocs/luci-static/resources'
+);
+const luciResourceRoot = path.join(luciStaticRoot, 'lanspeed');
+const luciViewRoot = path.join(luciStaticRoot, 'view/lanspeed');
+const luciMenuPath = path.join(
+  root,
+  'applications/luci-app-lanspeed/root/usr/share/luci/menu.d/luci-app-lanspeed.json'
+);
+const luciMenuSource = fs.readFileSync(luciMenuPath, 'utf8');
 const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
 const qaDevicePath = path.join(root, 'tests/qa-device.sh');
 const qaDevice = fs.readFileSync(qaDevicePath, 'utf8');
 
+const luciResources = [
+  'configForm.js',
+  'configStyle.js',
+  'configStyleArgon.js',
+  'configStyleAurora.js',
+  'configStyleBase.js',
+  'configStyleBootstrap.js',
+  'configStyleResponsive.js',
+  'configStyleShared.js',
+  'diagnosticsRefresh.js',
+  'diagnosticsShell.js',
+  'diagnosticsStyle.js',
+  'diagnosticsStyleArgon.js',
+  'diagnosticsStyleAurora.js',
+  'diagnosticsStyleBase.js',
+  'diagnosticsStyleBootstrap.js',
+  'diagnosticsStyleResponsive.js',
+  'diagnosticsView.js',
+  'clientConnections.js',
+  'clientDetailShell.js',
+  'clientDetailStyle.js',
+  'clientDetailStyleBase.js',
+  'clientDetailStyleBootstrap.js',
+  'clientDetailStyleArgon.js',
+  'clientDetailStyleAurora.js',
+  'clientDetailStyleResponsive.js',
+  'clientDetailRefresh.js',
+  'clientDetailView.js',
+  'format.js',
+  'ifaceConfig.js',
+  'rpc.js',
+  'statusCollector.js',
+  'statusIp.js',
+  'statusRefresh.js',
+  'statusShell.js',
+  'statusStyle.js',
+  'statusStyleArgon.js',
+  'statusStyleAurora.js',
+  'statusStyleBase.js',
+  'statusStyleBootstrap.js',
+  'statusStyleResponsive.js',
+  'statusOverview.js',
+  'statusView.js',
+  'theme.js',
+  'vocab.js'
+];
+const luciViews = [ 'config.js', 'diagnostics.js', 'overview.js' ];
 const clientDetailResources = [
-  'clientConnectionsLive4.js',
-  'clientDetailShellLive6.js',
-  'clientDetailStyleLive6.js',
-  'clientDetailStyleBaseLive4.js',
-  'clientDetailStyleBootstrapLive4.js',
-  'clientDetailStyleArgonLive4.js',
-  'clientDetailStyleAuroraLive4.js',
-  'clientDetailStyleResponsiveLive4.js',
-  'clientDetailRefreshLive4.js',
-  'clientDetailViewLive6.js'
+  'clientConnections.js',
+  'clientDetailShell.js',
+  'clientDetailStyle.js',
+  'clientDetailStyleBase.js',
+  'clientDetailStyleBootstrap.js',
+  'clientDetailStyleArgon.js',
+  'clientDetailStyleAurora.js',
+  'clientDetailStyleResponsive.js',
+  'clientDetailRefresh.js',
+  'clientDetailView.js'
 ];
 const clientConnectionsConntrackSemantics =
   'TCP 仅统计 ESTABLISHED + ASSURED，UDP 仅统计 ASSURED';
+const versionedCachePattern = /(?:Live\d+|_live\d+)/;
 
 function assert(condition, message) {
   if (!condition) {
@@ -48,6 +107,87 @@ function assertNoMatch(source, pattern, message) {
 
 function countLiteral(source, value) {
   return source.split(value).length - 1;
+}
+
+function assertExactNames(actual, expected, message) {
+  const actualSorted = [...actual].sort();
+  const expectedSorted = [...expected].sort();
+  assert(JSON.stringify(actualSorted) === JSON.stringify(expectedSorted), message);
+  assert(new Set(actual).size === actual.length, `${message}: entries must be unique`);
+}
+
+function walkFiles(directory) {
+  const files = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...walkFiles(entryPath));
+    } else if (entry.isFile()) {
+      files.push(entryPath);
+    }
+  }
+  return files;
+}
+
+function assertNoVersionedCacheRequire(file, source) {
+  const requires = [...source.matchAll(
+    /(?:['"]require\s+([^'"]+)['"]|\brequire\s*\(\s*['"]([^'"]+)['"]\s*\))/g
+  )].map((match) => match[1] || match[2]);
+  requires.forEach((dependency) => {
+    assertNoMatch(
+      dependency,
+      versionedCachePattern,
+      `${path.relative(root, file)} must not require a numbered cache module: ${dependency}`
+    );
+  });
+}
+
+function assertNoVersionedCacheFiles(directory, label) {
+  walkFiles(directory).forEach((file) => {
+    const relative = path.relative(directory, file);
+    assertNoMatch(relative, versionedCachePattern,
+      `${label} must not contain numbered cache file ${relative}`);
+    if (path.extname(file) === '.js') {
+      assertNoVersionedCacheRequire(file, fs.readFileSync(file, 'utf8'));
+    }
+  });
+}
+
+function validateBuiltLuciApk() {
+  const apkPath = process.env.LANSPEED_LUCI_APK;
+  if (!apkPath) {
+    return;
+  }
+
+  assert(fs.existsSync(apkPath), `LANSPEED_LUCI_APK does not exist: ${apkPath}`);
+  const immortalwrtRoot = process.env.IMMORTALWRT_ROOT || '/openwrt/immortalwrt';
+  const apkTool = process.env.LANSPEED_APK_TOOL ||
+    path.join(immortalwrtRoot, 'staging_dir/host/bin/apk');
+  try {
+    fs.accessSync(apkTool, fs.constants.X_OK);
+  } catch (_error) {
+    throw new Error(`APK content validation requires an executable apk tool: ${apkTool}`);
+  }
+
+  const extractRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lanspeed-luci-apk-'));
+  try {
+    childProcess.execFileSync(apkTool, [
+      '--allow-untrusted',
+      'extract',
+      '--no-chown',
+      '--destination', extractRoot,
+      apkPath
+    ], { encoding: 'utf8', stdio: [ 'ignore', 'pipe', 'pipe' ] });
+    walkFiles(extractRoot).forEach((file) => {
+      const relative = path.relative(extractRoot, file);
+      assertNoMatch(relative, versionedCachePattern,
+        `APK must not contain numbered cache file ${relative}`);
+      assertNoMatch(fs.readFileSync(file).toString('utf8'), versionedCachePattern,
+        `APK file ${relative} must not contain numbered cache references`);
+    });
+  } finally {
+    fs.rmSync(extractRoot, { recursive: true, force: true });
+  }
 }
 
 function hasExactClientConnectionsSemantics(source) {
@@ -481,6 +621,7 @@ function validateQaDeviceContract() {
 }
 
 try {
+  validateBuiltLuciApk();
   validateReadmeSemanticsSelfTest();
   validateQaDeviceContract();
   const compileMatch = /^define Build\/Compile\n([\s\S]*?)^endef$/m.exec(pkgMakefile);
@@ -624,154 +765,75 @@ try {
   }
   assertNoMatch(pkgMakefile, /\$\(error\s+[^)]*lanspeedd-bpf/s, 'BPF package metadata must remain expandable');
 
-  [
-    'configStyle.js',
-    'configStyleArgon.js',
-    'configStyleAurora.js',
-    'configStyleBase.js',
-    'configStyleBootstrap.js',
-    'configStyleResponsive.js',
-    'configStyleShared.js',
-    'clientConnectionsLive4.js',
-    'clientDetailRefreshLive4.js',
-    'clientDetailShellLive6.js',
-    'clientDetailStyleLive6.js',
-    'clientDetailStyleBaseLive4.js',
-    'clientDetailStyleAuroraLive4.js',
-    'clientDetailStyleArgonLive4.js',
-    'clientDetailStyleBootstrapLive4.js',
-    'clientDetailStyleResponsiveLive4.js',
-    'clientDetailViewLive6.js',
-    'rpcLive6.js',
-    'statusIpLive4.js',
-    'statusOverviewLive6.js',
-    'statusRefreshLive6.js',
-    'statusShellLive6.js',
-    'statusStyleLive6.js',
-    'statusStyleBaseLive6.js',
-    'statusStyleAuroraLive5.js',
-    'statusStyleArgonLive5.js',
-    'statusStyleBootstrapLive5.js',
-    'statusStyleResponsiveLive5.js',
-    'statusViewLive6.js',
-    'vocabLive5.js'
-  ].forEach((name) => {
+  luciResources.forEach((name) => {
     assert(
       luciMakefile.includes(`htdocs/luci-static/resources/lanspeed/${name}`),
       `luci-app-lanspeed/Makefile must install resources/lanspeed/${name}`
     );
   });
 
-  [
-    'clientDetailShellLive5.js',
-    'clientDetailStyleLive5.js',
-    'clientDetailViewLive5.js',
-    'statusOverviewLive5.js',
-    'statusRefreshLive5.js',
-    'statusShellLive5.js',
-    'statusStyleLive5.js',
-    'statusStyleBaseLive5.js',
-    'statusViewLive5.js',
-    'clientDetailShellLive4.js',
-    'clientDetailStyleLive4.js',
-    'clientDetailViewLive4.js',
-    'statusOverviewLive4.js',
-    'statusRefreshLive4.js',
-    'statusShellLive4.js',
-    'statusStyleLive4.js',
-    'statusStyleBaseLive4.js',
-    'statusStyleAuroraLive4.js',
-    'statusStyleArgonLive4.js',
-    'statusStyleBootstrapLive4.js',
-    'statusStyleResponsiveLive4.js',
-    'statusStyleCompatLive5.js',
-    'vocabLive4.js',
-    'statusStyleCompatLive.js',
-    'statusStyleCompatLive2.js',
-    'statusStyleCompatLive3.js',
-    'statusStyleCompatLive4.js',
-    'statusViewLive2.js',
-    'statusViewLive3.js',
-    'statusViewLive4.js',
-    'vocab.js',
-    'clientConnections.js',
-    'clientDetailRefresh.js',
-    'clientDetailShell.js',
-    'clientDetailStyle.js',
-    'clientDetailStyleBase.js',
-    'clientDetailStyleAurora.js',
-    'clientDetailStyleArgon.js',
-    'clientDetailStyleBootstrap.js',
-    'clientDetailStyleResponsive.js',
-    'clientDetailView.js',
-    'nssPanel.js',
-    'statusIp.js',
-    'statusRefresh.js',
-    'statusShell.js',
-    'statusStyle.js',
-    'statusStyleBase.js',
-    'statusStyleAurora.js',
-    'statusStyleArgon.js',
-    'statusStyleBootstrap.js',
-    'statusStyleResponsive.js',
-    'statusStyleCompat.js',
-    'statusView.js',
-    'statusViewLive.js'
-  ].forEach((name) => {
-    assert(
-      !luciMakefile.includes(`htdocs/luci-static/resources/lanspeed/${name}`),
-      `luci-app-lanspeed/Makefile must not retain obsolete cache resource ${name}`
-    );
-    assert(
-      !fs.existsSync(path.join(root,
-        'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed', name)),
-      `obsolete cache resource ${name} must be deleted`
-    );
-  });
-
-  [ 'index_live.js', 'index_live2.js', 'index_live3.js', 'index_live4.js',
-    'index_live5.js', 'index_live6.js' ].forEach((name) => {
-    assert(
-      !fs.existsSync(path.join(root,
-        'applications/luci-app-lanspeed/htdocs/luci-static/resources/view/lanspeed', name)),
-      `obsolete view cache entry ${name} must be deleted`
-    );
-  });
-
-  assertNoMatch(
-    luciMakefile,
-    /htdocs\/luci-static\/resources\/view\/lanspeed\/\*\.js/,
-    'LuCI package must install view entries by explicit filename'
-  );
-  [ 'config.js', 'index.js', 'index_live7.js' ].forEach((name) => {
-    assert(
-      luciMakefile.includes(`./htdocs/luci-static/resources/view/lanspeed/${name}`),
-      `LuCI package must explicitly install view/lanspeed/${name}`
-    );
-  });
-
-  const resourceInstall = /\t\$\(INSTALL_DATA\) \\\n([\s\S]*?)\n\t\t\$\(1\)\/www\/luci-static\/resources\/lanspeed\/\n/.exec(luciMakefile);
+  const resourceInstall = /\t\$\(INSTALL_DIR\) \$\(1\)\/www\/luci-static\/resources\/lanspeed\n\t\$\(INSTALL_DATA\) \\\n([\s\S]*?)\n\t\t\$\(1\)\/www\/luci-static\/resources\/lanspeed\/\n/.exec(luciMakefile);
   assert(resourceInstall, 'LuCI package must keep an explicit INSTALL_DATA block for resources/lanspeed');
-  assertNoMatch(
-    resourceInstall[1],
-    /[?*\[]/,
-    'LuCI resources/lanspeed INSTALL_DATA block must not use wildcard or glob entries'
-  );
-  const installedClientDetailResources = [...resourceInstall[1].matchAll(
-    /\.\/htdocs\/luci-static\/resources\/lanspeed\/(client(?:Connections|Detail)[^\s\\/]*\.js)/g
+  assertNoMatch(resourceInstall[1], /[?*\[]/,
+    'LuCI resources/lanspeed INSTALL_DATA block must not use wildcard or glob entries');
+  const installedResources = [...resourceInstall[1].matchAll(
+    /\.\/htdocs\/luci-static\/resources\/lanspeed\/([^\s\\/]+\.js)/g
   )].map((match) => match[1]);
-  assert(
-    installedClientDetailResources.length === clientDetailResources.length &&
-      clientDetailResources.every((name) => installedClientDetailResources.includes(name)),
-    'LuCI package must install only the Live4 client detail resources by explicit filename'
-  );
-  clientDetailResources.forEach((name) => {
-    const installPath = `./htdocs/luci-static/resources/lanspeed/${name}`;
-    assert(
-      countLiteral(resourceInstall[1], installPath) === 1,
-      `LuCI package must install ${name} exactly once into resources/lanspeed`
-    );
+  assertExactNames(installedResources, luciResources,
+    'LuCI package resources/lanspeed install list must exactly match active semantic resources');
+  luciResources.forEach((name) => {
+    assert(countLiteral(resourceInstall[1],
+      `./htdocs/luci-static/resources/lanspeed/${name}`) === 1,
+    `LuCI package must install resources/lanspeed/${name} exactly once`);
   });
+
+  const viewInstall = /\t\$\(INSTALL_DIR\) \$\(1\)\/www\/luci-static\/resources\/view\/lanspeed\n\t\$\(INSTALL_DATA\) \\\n([\s\S]*?)\n\t\t\$\(1\)\/www\/luci-static\/resources\/view\/lanspeed\/\n/.exec(luciMakefile);
+  assert(viewInstall, 'LuCI package must keep an explicit INSTALL_DATA block for view/lanspeed');
+  assertNoMatch(viewInstall[1], /[?*\[]/,
+    'LuCI view/lanspeed INSTALL_DATA block must not use wildcard or glob entries');
+  const installedViews = [...viewInstall[1].matchAll(
+    /\.\/htdocs\/luci-static\/resources\/view\/lanspeed\/([^\s\\/]+\.js)/g
+  )].map((match) => match[1]);
+  assertExactNames(installedViews, luciViews,
+    'LuCI package view/lanspeed install list must be exactly config.js, diagnostics.js and overview.js');
+
+  assertExactNames(
+    fs.readdirSync(luciResourceRoot, { withFileTypes: true })
+      .filter((entry) => entry.isFile()).map((entry) => entry.name),
+    [ ...luciResources, 'version.js' ],
+    'resources/lanspeed source directory must contain only active semantic modules'
+  );
+  assertExactNames(
+    fs.readdirSync(luciViewRoot, { withFileTypes: true })
+      .filter((entry) => entry.isFile()).map((entry) => entry.name),
+    luciViews,
+    'view/lanspeed source directory must contain only config.js, diagnostics.js and overview.js'
+  );
+
+  assertNoMatch(luciMakefile, versionedCachePattern,
+    'LuCI Makefile must not contain numbered cache resource names');
+  assertNoMatch(luciMenuSource, versionedCachePattern,
+    'LuCI menu must not contain numbered cache view names');
+  assertNoVersionedCacheFiles(luciResourceRoot, 'resources/lanspeed');
+  assertNoVersionedCacheFiles(luciViewRoot, 'view/lanspeed');
+
+  const luciMenu = JSON.parse(luciMenuSource);
+  const menuViewPaths = Object.values(luciMenu)
+    .filter((entry) => entry.action && entry.action.type === 'view')
+    .map((entry) => entry.action.path);
+  assertExactNames(menuViewPaths, [ 'lanspeed/config', 'lanspeed/diagnostics', 'lanspeed/overview' ],
+    'LuCI menu view actions must use config, diagnostics and overview views');
+  assert(luciMenu['admin/status/lanspeed/overview'].action.path === 'lanspeed/overview',
+    'LuCI overview menu must use the semantic overview view');
+  assert(luciMenu['admin/status/lanspeed/diagnostics'].action.path === 'lanspeed/diagnostics',
+    'LuCI diagnostics menu must use the dedicated diagnostics view');
+  assert(luciMenu['admin/status/lanspeed/config'].action.path === 'lanspeed/config',
+    'LuCI config menu must use the semantic config view');
+
+  const installedClientDetailResources = installedResources.filter((name) =>
+    /^(?:clientConnections|clientDetail)/.test(name));
+  assertExactNames(installedClientDetailResources, clientDetailResources,
+    'LuCI package must install exactly the active client detail resources');
 
   const documentedMethods = [
     'status',
