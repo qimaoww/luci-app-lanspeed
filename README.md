@@ -164,7 +164,7 @@ SDK_DIR=/openwrt/immortalwrt ENABLE_BPF=1 scripts/build-sdk.sh
 
 ABI 注意点：包必须用目标固件对应的 25.12 SDK 编译，不能混用其他分支的 libubox/libubus/libuci 或 kernel ABI，也不能把 `lanspeedd-bpf` 安装到不同内核构建上。
 
-当前只声明支持并验证 x86_64 和 aarch64 两类 LP64 目标；32 位 ARM、i386 和 MIPS 不在支持范围内。当 `main` 分支上的 `net/lanspeedd/Makefile` 或 `applications/luci-app-lanspeed/Makefile` 改动导致完整版本发生变化时，GitHub Actions 会自动编译这两类产物；aarch64 产物使用官方 `armsr/armv8` SDK 编译，Release 文件名带 `aarch64` 后缀。workflow 校验六个 APK 后会自动创建对应的 `v*` tag 和 GitHub Release，维护者不得预先创建 `v*` tag。构建或发布失败后，应先清理任何不完整的 tag/Release 状态（若尚未创建则无需清理），再从同一版本提交使用 `workflow_dispatch` 重试。
+当前只声明支持并验证 x86_64 和 aarch64 两类 LP64 目标；32 位 ARM、i386 和 MIPS 不在支持范围内。普通代码 push 和 pull request 由独立 CI workflow 执行完整单元校验。当 `main` 分支上的 `net/lanspeedd/Makefile` 或 `applications/luci-app-lanspeed/Makefile` 改动导致完整版本发生变化时，发布 workflow 会自动编译这两类产物；aarch64 产物使用官方 `armsr/armv8` SDK 编译，Release 文件名带 `aarch64` 后缀。workflow 会先创建草稿 Release，上传并校验六个 APK 的名称、状态和 SHA256，再发布对应的 `v*` tag 和 GitHub Release，维护者不得预先创建 `v*` tag。构建或上传失败时保留的草稿 Release 可由同一版本提交使用 `workflow_dispatch` 自动重建；手动运行也可补发没有 tag/Release 的当前版本，无需通过 `HEAD^1` 制造新的版本变化。
 
 ## 配置
 
@@ -317,6 +317,7 @@ net/lanspeedd/
   src/collector-model.json         采集模型说明
   files/                           设备端文件 (init.d / UCI config / schema)
 scripts/build-sdk.sh               SDK 编译辅助脚本
+.github/workflows/ci.yml           普通 push / pull request 单元校验
 .github/workflows/build-sdk.yml    GitHub Actions 自动编译
 tests/                             本地回归测试
 ```

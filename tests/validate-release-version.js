@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
 
@@ -10,6 +9,7 @@ const daemonMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile')
 const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/Makefile'), 'utf8');
 const versionJs = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/version.js'), 'utf8');
 const workflow = fs.readFileSync(path.join(root, '.github/workflows/build-sdk.yml'), 'utf8');
+const ciWorkflow = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
 const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
 const releaseScriptPath = path.join(root, 'scripts/release-version.sh');
 const releaseScript = fs.readFileSync(releaseScriptPath, 'utf8');
@@ -164,93 +164,6 @@ function assertExactList(actual, expected, message) {
   assert(JSON.stringify(actual) === JSON.stringify(expected), message);
 }
 
-function runGit(cwd, args) {
-  return childProcess.execFileSync('git', args, {
-    cwd,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe']
-  }).trim();
-}
-
-function writeVersionFixture(fixtureRoot, release) {
-  const daemonDir = path.join(fixtureRoot, 'net/lanspeedd');
-  const luciDir = path.join(fixtureRoot, 'applications/luci-app-lanspeed');
-  const scriptsDir = path.join(fixtureRoot, 'scripts');
-  fs.mkdirSync(daemonDir, { recursive: true });
-  fs.mkdirSync(luciDir, { recursive: true });
-  fs.mkdirSync(scriptsDir, { recursive: true });
-  const makefile = `PKG_VERSION:=1.0.0\nPKG_RELEASE:=${release}\n`;
-  fs.writeFileSync(path.join(daemonDir, 'Makefile'), makefile);
-  fs.writeFileSync(path.join(luciDir, 'Makefile'), makefile);
-  fs.writeFileSync(path.join(scriptsDir, 'release-version.sh'), `#!/bin/sh
-set -eu
-daemon_version="$(sed -n 's/^PKG_VERSION:=//p' net/lanspeedd/Makefile)"
-daemon_release="$(sed -n 's/^PKG_RELEASE:=//p' net/lanspeedd/Makefile)"
-luci_version="$(sed -n 's/^PKG_VERSION:=//p' applications/luci-app-lanspeed/Makefile)"
-luci_release="$(sed -n 's/^PKG_RELEASE:=//p' applications/luci-app-lanspeed/Makefile)"
-[ "$daemon_version" = "$luci_version" ]
-[ "$daemon_release" = "$luci_release" ]
-printf '%s\\n' "\${daemon_version}-r\${daemon_release}"
-`);
-}
-
-function runForcePushBeforeFetchSelfTest() {
-  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lanspeed-before-fetch-'));
-  try {
-    const source = path.join(fixtureRoot, 'source');
-    const origin = path.join(fixtureRoot, 'origin.git');
-    const checkout = path.join(fixtureRoot, 'checkout');
-    const beforeDir = path.join(fixtureRoot, 'before');
-    fs.mkdirSync(source);
-    runGit(source, ['init', '-q', '-b', 'main']);
-    runGit(source, ['config', 'user.name', 'Lanspeed Test']);
-    runGit(source, ['config', 'user.email', 'lanspeed@example.invalid']);
-    writeVersionFixture(source, 2);
-    runGit(source, ['add', '.']);
-    runGit(source, ['commit', '-q', '-m', 'fixture r2']);
-    const beforeSha = runGit(source, ['rev-parse', 'HEAD']);
-
-    runGit(fixtureRoot, ['clone', '-q', '--bare', source, origin]);
-    runGit(origin, ['config', 'uploadpack.allowAnySHA1InWant', 'true']);
-    writeVersionFixture(source, 3);
-    runGit(source, ['add', '.']);
-    runGit(source, ['commit', '-q', '--amend', '--no-edit']);
-    runGit(origin, ['fetch', '-q', '--no-tags', `file://${source}`, 'HEAD']);
-    const replacementSha = runGit(origin, ['rev-parse', 'FETCH_HEAD']);
-    runGit(origin, ['update-ref', 'refs/heads/main', replacementSha]);
-
-    runGit(fixtureRoot, ['clone', '-q', '--depth=1', '--branch', 'main', `file://${origin}`, checkout]);
-    const beforeMissing = childProcess.spawnSync('git', ['cat-file', '-e', `${beforeSha}^{commit}`], {
-      cwd: checkout,
-      stdio: 'ignore'
-    });
-    assert(beforeMissing.status !== 0, 'force-push fixture must begin without the old before object');
-
-    runGit(checkout, ['fetch', '-q', '--no-tags', '--depth=1', 'origin', beforeSha]);
-    runGit(checkout, ['cat-file', '-e', `${beforeSha}^{commit}`]);
-    fs.mkdirSync(beforeDir);
-    const archivePath = path.join(fixtureRoot, 'before.tar');
-    runGit(checkout, [
-      'archive', '--format=tar', `--output=${archivePath}`, beforeSha, '--',
-      'scripts/release-version.sh', 'net/lanspeedd/Makefile',
-      'applications/luci-app-lanspeed/Makefile'
-    ]);
-    childProcess.execFileSync('tar', ['-xf', archivePath, '-C', beforeDir]);
-    const beforeVersion = childProcess.execFileSync('sh', ['scripts/release-version.sh'], {
-      cwd: beforeDir,
-      encoding: 'utf8'
-    }).trim();
-    const currentVersion = childProcess.execFileSync('sh', ['scripts/release-version.sh'], {
-      cwd: checkout,
-      encoding: 'utf8'
-    }).trim();
-    assert(beforeVersion === '1.0.0-r2', 'raw before fetch must recover the old complete version');
-    assert(currentVersion === '1.0.0-r3', 'force-push fixture HEAD must retain the new complete version');
-  } finally {
-    fs.rmSync(fixtureRoot, { recursive: true, force: true });
-  }
-}
-
 try {
   const daemonVersion = readMakeVar(daemonMakefile, 'PKG_VERSION', 'net/lanspeedd/Makefile');
   const daemonRelease = readMakeVar(daemonMakefile, 'PKG_RELEASE', 'net/lanspeedd/Makefile');
@@ -273,7 +186,6 @@ try {
     'metadata', '--format-version=1', '--locked', '--offline'
   ], { cwd: rustRoot, encoding: 'utf8' }));
   runWorkspaceMetadataSelfTest(daemonVersion);
-  runForcePushBeforeFetchSelfTest();
 
   assert(daemonVersion === '1.0.0', 'daemon PKG_VERSION must remain exactly 1.0.0 for this release');
   assert(luciVersion === '1.0.0', 'LuCI PKG_VERSION must remain exactly 1.0.0 for this release');
@@ -334,10 +246,21 @@ try {
     encoding: 'utf8'
   }).trim();
   assert(releaseVersion === fullVersion, 'scripts/release-version.sh output must match daemon package version and release');
-  assert(/on:\n  push:\n    branches:\n      - main\n    paths:\n      - net\/lanspeedd\/Makefile\n      - applications\/luci-app-lanspeed\/Makefile\n  workflow_dispatch:/.test(workflow),
-    'workflow must run for main pushes changing either package Makefile and expose workflow_dispatch');
+  assert(/on:\n  push:\n    branches:\n      - main\n    paths:/.test(workflow),
+    'release workflow must run from selected main-branch paths');
+  [
+    'net/lanspeedd/Makefile',
+    'applications/luci-app-lanspeed/Makefile',
+    'scripts/release-version.sh',
+    '.github/workflows/build-sdk.yml'
+  ].forEach((triggerPath) => {
+    assert(workflow.includes(`      - ${triggerPath}`), `release workflow must watch ${triggerPath}`);
+  });
+  assert(workflow.includes('  workflow_dispatch:'), 'release workflow must expose workflow_dispatch recovery');
   assert(!/tags:/.test(workflow), 'workflow must not run from tag pushes');
   assert(!/pull_request:/.test(workflow), 'workflow must not run from pull requests');
+  assert(workflow.includes('concurrency:\n  group: lanspeed-release\n  cancel-in-progress: false'),
+    'release workflow must serialize releases without cancelling an active publish');
   const jobsBlock = extractYamlBlock(workflow, 'jobs', 0);
   const jobNames = [...jobsBlock.matchAll(/^  ([a-z0-9_-]+):$/gm)].map((match) => match[1]);
   assertExactList(jobNames, ['detect', 'validate', 'build', 'publish'],
@@ -363,56 +286,47 @@ try {
     'publish job alone must grant contents write');
   assert((workflow.match(/^\s+contents: read$/gm) || []).length === 1, 'workflow must have exactly one contents read grant');
   assert((workflow.match(/^\s+contents: write$/gm) || []).length === 1, 'workflow must have exactly one contents write grant');
-  assert((workflow.match(/uses: actions\/checkout@v7/g) || []).length === 4, 'each job must use actions/checkout v7 exactly once');
-  assert((validateJob.match(/uses: actions\/setup-node@v7/g) || []).length === 1, 'validate job must use actions/setup-node v7 once');
-  assert((buildJob.match(/uses: actions\/upload-artifact@v7\.0\.1/g) || []).length === 1,
-    'build job must use actions/upload-artifact v7.0.1 once');
-  assert((publishJob.match(/uses: actions\/download-artifact@v8\.0\.1/g) || []).length === 2,
-    'publish job must download both architecture artifacts with actions/download-artifact v8.0.1');
-  assert((publishJob.match(/uses: softprops\/action-gh-release@v3\.0\.2/g) || []).length === 1,
-    'publish job must pin action-gh-release v3.0.2 once');
-  const detectStep = extractNamedStep(detectJob, 'Detect version change and release state');
+  const checkoutAction = 'actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0';
+  const setupNodeAction = 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020';
+  const uploadArtifactAction = 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a';
+  const downloadArtifactAction = 'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c';
+  assert((workflow.match(new RegExp(checkoutAction, 'g')) || []).length === 4,
+    'each release job must use the SHA-pinned checkout v7 action exactly once');
+  assert((workflow.match(/persist-credentials: false/g) || []).length === 4,
+    'release jobs must not persist the workflow token in Git credentials');
+  assert((validateJob.match(new RegExp(setupNodeAction, 'g')) || []).length === 1,
+    'release validation must use the SHA-pinned setup-node v7 action once');
+  assert((buildJob.match(new RegExp(uploadArtifactAction, 'g')) || []).length === 1,
+    'build job must use the SHA-pinned upload-artifact v7.0.1 action once');
+  assert((publishJob.match(new RegExp(downloadArtifactAction, 'g')) || []).length === 2,
+    'publish job must use the SHA-pinned download-artifact v8.0.1 action twice');
+  assert(!workflow.includes('softprops/action-gh-release'),
+    'release publishing must not depend on a third-party mutable release action');
+  const detectStep = extractNamedStep(detectJob, 'Detect release state');
   assert(detectStep.includes('code_version="$(sh ./scripts/release-version.sh)"'), 'workflow must read the code version through sh scripts/release-version.sh');
   assert(detectStep.includes("grep -Eq '^[0-9]+\\.[0-9]+\\.[0-9]+-r[0-9]+$'"), 'detect job must validate the complete code version format');
-  assert(detectStep.includes('EVENT_NAME: ${{ github.event_name }}'), 'detect job must receive the event name');
-  assert(detectStep.includes('BEFORE_SHA: ${{ github.event.before }}'), 'detect job must receive github.event.before for push comparisons');
-  assert(detectStep.includes('before="${GITHUB_SHA}^1"'), 'workflow_dispatch must compare HEAD^1 with HEAD');
-  assert(detectStep.includes('before="$BEFORE_SHA"'), 'push detection must compare github.event.before with HEAD');
-  assert(detectStep.includes('0000000000000000000000000000000000000000'), 'detect job must handle a zero push base SHA');
-  const beforeObjectCheck = '            if ! git cat-file -e "${before}^{commit}" 2>/dev/null; then';
-  const dispatchMissingGuard = '              if [ "$EVENT_NAME" != push ]; then';
-  const beforeFetch = '              git fetch --no-tags --depth=1 origin "$before"';
-  const postFetchCheck = '            git cat-file -e "${before}^{commit}"';
-  const beforeArchive = '            git archive "$before" -- scripts/release-version.sh net/lanspeedd/Makefile applications/luci-app-lanspeed/Makefile | tar -x -C "$before_dir"';
-  assert(detectStep.includes(beforeObjectCheck), 'nonzero before must be checked for a commit object before archive');
-  assert(detectStep.includes(dispatchMissingGuard), 'a missing dispatch parent must fail instead of fetching');
-  assert(detectStep.includes('error: comparison commit ${before} is unavailable for ${EVENT_NAME}'),
-    'missing non-push comparison commits must emit a clear error');
-  assert((detectStep.match(/git fetch --no-tags --depth=1 origin "\$before"/g) || []).length === 1,
-    'detect job must fetch a missing push before SHA exactly once');
-  assert(detectStep.includes(beforeFetch), 'detect job must fetch the raw missing before SHA');
-  assert((detectStep.split('git cat-file -e "${before}^{commit}"').length - 1) === 2,
-    'detect job must verify the before object before and after a possible fetch');
-  assert(detectStep.includes(postFetchCheck), 'detect job must verify the fetched before commit');
-  assertBefore(detectStep, beforeObjectCheck, dispatchMissingGuard, 'before object check must precede the event guard');
-  assertBefore(detectStep, dispatchMissingGuard, beforeFetch, 'dispatch failure guard must precede push-only fetch');
-  assertBefore(detectStep, beforeFetch, postFetchCheck, 'raw before fetch must precede post-fetch verification');
-  assertBefore(detectStep, postFetchCheck, beforeArchive, 'before commit verification must precede archive');
-  assert(detectStep.includes(beforeArchive),
-    'detect job must read the complete previous version from an archived base commit');
-  assert(detectStep.includes('before_version="$(sh "$before_dir/scripts/release-version.sh")"'), 'detect job must calculate the previous complete version');
+  assert(!detectStep.includes('github.event.before'),
+    'release reconciliation must not depend on a possibly unavailable push predecessor');
+  assert(!detectStep.includes('version_changed'),
+    'release reconciliation must use current remote state instead of commit-diff heuristics');
+  assert(!detectStep.includes('git archive'),
+    'release detection must not archive and execute scripts from an old commit');
   assert(detectStep.includes('release_tag="v${code_version}"'), 'detect job must derive the v-prefixed release tag');
   assert(!detectStep.includes('&& tag_exists=true'), 'detect job must not treat every git ls-remote failure as a missing tag');
   assert(detectStep.includes('tag_query_status=0'), 'detect job must capture the git ls-remote status');
-  assert(detectStep.includes('git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null || tag_query_status=$?'),
-    'detect job must preserve the git ls-remote exit status');
+  assert(detectStep.includes('git ls-remote --exit-code --tags origin'),
+    'detect job must query the remote release tag');
+  assert(detectStep.includes('"refs/tags/${release_tag}" "refs/tags/${release_tag}^{}"'),
+    'detect job must resolve lightweight and annotated release tags');
   assert(detectStep.includes('case "$tag_query_status" in'), 'detect job must branch on the git ls-remote exit status');
-  assert(detectStep.includes('0) tag_exists=true ;;'), 'git ls-remote status 0 must mean the tag exists');
+  assert(detectStep.includes('tag_exists=true'), 'git ls-remote status 0 must mean the tag exists');
   assert(detectStep.includes('2) tag_exists=false ;;'), 'git ls-remote status 2 must mean the tag is absent');
   assert(detectStep.includes('*)'), 'unexpected git ls-remote statuses must use a catch-all branch');
   assert(detectStep.includes('error: failed to query remote tag ${release_tag}: git ls-remote exit ${tag_query_status}'),
     'unexpected git ls-remote statuses must emit a diagnostic');
   assert(detectStep.includes('exit "$tag_query_status"'), 'unexpected git ls-remote failures must fail closed');
+  assert(detectStep.includes('elif [ "$tag_exists" = true ] && [ "$tag_target" != "$GITHUB_SHA" ]; then'),
+    'detect job must reject an incomplete release tag pointing at another commit');
   assert(detectStep.includes('gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100"'), 'detect job must inspect all GitHub Releases');
   const completeReleaseAssets = [
     'lanspeedd-\\($version).apk',
@@ -436,12 +350,22 @@ try {
   assert(detectStep.includes('select(all(.assets[]; ((.digest // "") | test("^sha256:[0-9a-f]{64}$"))))'),
     'detect job must require every Release asset to have a lowercase SHA256 digest');
   assert(detectStep.includes('complete_count='), 'detect job must count only complete Releases');
-  assert(detectStep.includes('[ "$tag_exists" = false ] && [ "$release_count" -eq 0 ]'), 'missing tag and Release state must use the version change gate');
+  assert(detectStep.includes('[ "$release_count" -eq 0 ]'), 'a missing Release must request publication');
+  assert(detectStep.includes('[ "$tag_exists" = true ] && [ "$release_count" -eq 0 ]'),
+    'a current orphan tag must be recoverable without another version change');
   assert(detectStep.includes('[ "$tag_exists" = true ] && [ "$release_count" -eq 1 ] && [ "$complete_count" -eq 1 ]'),
     'only one tag plus one complete published non-prerelease Release may skip rebuilding');
+  assertBefore(detectStep,
+    '[ "$tag_exists" = true ] && [ "$release_count" -eq 1 ] && [ "$complete_count" -eq 1 ]',
+    '[ "$tag_exists" = true ] && [ "$tag_target" != "$GITHUB_SHA" ]',
+    'an already complete version must remain valid after later non-version commits');
+  assert(detectStep.includes('[ "$draft_count" -eq 1 ]'),
+    'one draft Release must be recognized as a recoverable retry state');
+  assert((detectStep.match(/changed=true/g) || []).length >= 3,
+    'missing, orphan-tag, and draft states must all request a rebuild');
   assert(!detectStep.includes('ready_count='), 'published flags alone must not mark a partial Release complete');
-  assert(detectStep.includes('error: incomplete or inconsistent release state for ${release_tag}'),
-    'partial, missing, extra, digest-less, draft, prerelease, or duplicate release state must fail clearly');
+  assert(detectStep.includes('error: unrecoverable release state for ${release_tag}'),
+    'duplicate or incomplete published release state must fail clearly');
   assert((workflow.match(/if: needs\.detect\.outputs\.changed == 'true'/g) || []).length === 3,
     'validate, build, and publish must all run only for changed == true');
   assert(workflow.includes('Acquire::Retries=3'), 'APT network operations must retry transient failures');
@@ -566,28 +490,65 @@ try {
   assert(workflow.includes('find "$release_dir" -maxdepth 1 -type f -printf \'%f\\n\' | sort > "$actual_files"'),
     'publish job must enumerate only the six downloaded release files');
   assert(workflow.includes('diff -u "$expected_files" "$actual_files"'), 'publish job must reject missing or extra release files');
-  assertBefore(workflow, 'diff -u "$expected_files" "$actual_files"', 'git tag "$release_tag" "$GITHUB_SHA"',
-    'publish job must validate all six files before creating the tag');
-  assert(workflow.includes('git tag "$release_tag" "$GITHUB_SHA"'), 'publish job must create a lightweight tag at GITHUB_SHA');
-  assert(workflow.includes('git push origin "refs/tags/${release_tag}"'), 'publish job must push only the new release tag');
-  assert(!workflow.includes('git tag -a'), 'publish job must not create an annotated tag');
+  assertBefore(workflow, 'diff -u "$expected_files" "$actual_files"', 'name: Publish recoverable GitHub Release',
+    'publish job must validate all six files before creating a draft Release');
+  const recoverablePublishStep = extractNamedStep(publishJob, 'Publish recoverable GitHub Release');
+  assert(recoverablePublishStep.includes('RELEASE_TAG: ${{ needs.detect.outputs.release_tag }}'),
+    'publish step must use the exact tag emitted by detection');
+  assert(recoverablePublishStep.includes('target_commitish: $sha'),
+    'draft Release creation must target the workflow commit');
+  assert(recoverablePublishStep.includes('draft: true'),
+    'assets must be uploaded to a draft Release');
+  assert(recoverablePublishStep.includes('gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${existing_id}"'),
+    'a failed draft must be deleted before a clean retry');
+  assert(recoverablePublishStep.includes('if [ "$existing_draft" != true ]; then'),
+    'an incomplete published Release must never be replaced');
+  assert(recoverablePublishStep.includes('gh release upload "$RELEASE_TAG" "${files[@]}"'),
+    'all exact APK files must be uploaded without clobbering existing assets');
+  assert(recoverablePublishStep.includes('for attempt in $(seq 1 12); do'),
+    'publish must wait for GitHub to expose asset digests');
+  assert(recoverablePublishStep.includes("jq -nc '{draft: false}'"),
+    'the Release must only be published after asset validation');
+  assert(recoverablePublishStep.includes('published_complete='),
+    'the published Release must receive a final exact validation');
+  assert(recoverablePublishStep.includes('final_tag_target='),
+    'the final published tag must be verified against the workflow commit');
+  assert(!workflow.includes('git push origin "refs/tags/'),
+    'release creation must let the GitHub Release API create or reuse the tag');
   assert(!workflow.includes('--force'), 'workflow must never force a tag or release operation');
-  assert(workflow.includes('name: ${{ needs.detect.outputs.code_version }}'), 'GitHub Release name must match the complete code version');
-  assert(workflow.includes('tag_name: v${{ needs.detect.outputs.code_version }}'), 'GitHub Release must use the detected v-prefixed tag');
-  assert(workflow.includes('draft: false'), 'GitHub Release must be published, not drafted');
-  assert(workflow.includes('prerelease: false'), 'GitHub Release must not be marked prerelease');
-  assert(workflow.includes('fail_on_unmatched_files: true'), 'GitHub Release must fail on missing files');
-  assert(workflow.includes('overwrite_files: false'), 'GitHub Release must never overwrite existing assets');
-  assert(!workflow.includes('gh release delete-asset'), 'workflow must never delete existing release assets');
+  assert(!workflow.includes('--clobber'), 'workflow must never overwrite an existing release asset');
+  assert(!workflow.includes('gh release delete-asset'), 'workflow must never edit individual existing release assets');
+
+  assert(ciWorkflow.includes('name: Continuous Integration'), 'repository must define a separate CI workflow');
+  assert(ciWorkflow.includes('  pull_request:'), 'CI must validate pull requests');
+  assert(ciWorkflow.includes('  push:\n    branches:\n      - main'), 'CI must validate main-branch pushes');
+  [
+    '.github/workflows/**',
+    'applications/**',
+    'net/**',
+    'scripts/**',
+    'tests/**'
+  ].forEach((triggerPath) => {
+    assert(ciWorkflow.includes(`      - ${triggerPath}`), `CI workflow must watch ${triggerPath}`);
+  });
+  assert(ciWorkflow.includes('cancel-in-progress: true'), 'CI must cancel superseded runs for the same ref');
+  assert((ciWorkflow.match(new RegExp(checkoutAction, 'g')) || []).length === 1,
+    'CI must use the SHA-pinned checkout v7 action once');
+  assert((ciWorkflow.match(/persist-credentials: false/g) || []).length === 1,
+    'CI must not persist its workflow token in Git credentials');
+  assert((ciWorkflow.match(new RegExp(setupNodeAction, 'g')) || []).length === 1,
+    'CI must use the SHA-pinned setup-node v7 action once');
+  assert(ciWorkflow.includes('./tests/run.sh unit'), 'CI must run the complete unit suite');
+  assert(ciWorkflow.includes('timeout-minutes: 45'), 'CI must have a finite validation timeout');
 
   assert(readme.includes('`main` 分支'), 'README must describe the main-branch automatic release trigger');
   assert(readme.includes('`net/lanspeedd/Makefile`') &&
     readme.includes('`applications/luci-app-lanspeed/Makefile`'),
   'README must name both version-bearing Makefiles');
   assert(readme.includes('完整版本发生变化'), 'README must explain that the complete version change triggers the workflow');
-  assert(readme.includes('自动创建对应的 `v*` tag 和 GitHub Release'), 'README must state that the workflow creates the tag and Release');
-  assert(readme.includes('`workflow_dispatch` 重试'), 'README must document the manual retry trigger');
-  assert(readme.includes('清理任何不完整的 tag/Release 状态'), 'README must require cleanup of partial remote state before retry');
+  assert(readme.includes('草稿 Release'), 'README must describe draft-first publication');
+  assert(readme.includes('`workflow_dispatch` 自动重建'), 'README must document automatic draft recovery');
+  assert(readme.includes('手动运行也可补发'), 'README must document missing-release recovery');
   assert(readme.includes('不得预先创建 `v*` tag'), 'README must forbid maintainers from pre-creating release tags');
   assert(!readme.includes('GitHub Actions 在 `v*` tag 发布时'), 'README must not retain the obsolete tag-trigger description');
   assert(readme.includes('`1.0.0-r3`'), 'README full-version example must remain r3');

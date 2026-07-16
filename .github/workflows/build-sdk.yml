@@ -7,7 +7,13 @@ on:
     paths:
       - net/lanspeedd/Makefile
       - applications/luci-app-lanspeed/Makefile
+      - scripts/release-version.sh
+      - .github/workflows/build-sdk.yml
   workflow_dispatch:
+
+concurrency:
+  group: lanspeed-release
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -15,22 +21,21 @@ permissions:
 jobs:
   detect:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
       changed: ${{ steps.release.outputs.changed }}
       code_version: ${{ steps.release.outputs.code_version }}
       release_tag: ${{ steps.release.outputs.release_tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Detect version change and release state
+      - name: Detect release state
         id: release
         shell: bash
         env:
-          BEFORE_SHA: ${{ github.event.before }}
-          EVENT_NAME: ${{ github.event_name }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -38,40 +43,24 @@ jobs:
           code_version="$(sh ./scripts/release-version.sh)"
           printf '%s\n' "$code_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$'
 
-          if [ "$EVENT_NAME" = workflow_dispatch ]; then
-            before="${GITHUB_SHA}^1"
-          else
-            before="$BEFORE_SHA"
-          fi
-
-          if [ "$before" = 0000000000000000000000000000000000000000 ]; then
-            version_changed=true
-          else
-            if ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
-              if [ "$EVENT_NAME" != push ]; then
-                printf '%s\n' "error: comparison commit ${before} is unavailable for ${EVENT_NAME}" >&2
-                exit 1
-              fi
-              git fetch --no-tags --depth=1 origin "$before"
-            fi
-            git cat-file -e "${before}^{commit}"
-            before_dir="$(mktemp -d)"
-            trap 'rm -rf "$before_dir"' EXIT
-            git archive "$before" -- scripts/release-version.sh net/lanspeedd/Makefile applications/luci-app-lanspeed/Makefile | tar -x -C "$before_dir"
-            before_version="$(sh "$before_dir/scripts/release-version.sh")"
-            if [ "$before_version" = "$code_version" ]; then
-              version_changed=false
-            else
-              version_changed=true
-            fi
-          fi
-
           release_tag="v${code_version}"
           tag_exists=false
+          tag_target=
+          tag_refs=
           tag_query_status=0
-          git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null || tag_query_status=$?
+          tag_refs="$(git ls-remote --exit-code --tags origin \
+            "refs/tags/${release_tag}" "refs/tags/${release_tag}^{}")" || tag_query_status=$?
           case "$tag_query_status" in
-            0) tag_exists=true ;;
+            0)
+              tag_exists=true
+              tag_target="$(printf '%s\n' "$tag_refs" | awk -v peeled="refs/tags/${release_tag}^{}" \
+                '$2 == peeled { print $1; found=1 } END { if (!found) exit 1 }' 2>/dev/null || true)"
+              if [ -z "$tag_target" ]; then
+                tag_target="$(printf '%s\n' "$tag_refs" | awk -v direct="refs/tags/${release_tag}" \
+                  '$2 == direct { print $1; exit }')"
+              fi
+              [ -n "$tag_target" ]
+              ;;
             2) tag_exists=false ;;
             *)
               printf '%s\n' "error: failed to query remote tag ${release_tag}: git ls-remote exit ${tag_query_status}" >&2
@@ -80,6 +69,9 @@ jobs:
           esac
           releases_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" | jq -s 'add')"
           release_count="$(printf '%s' "$releases_json" | jq --arg tag "$release_tag" '[.[] | select(.tag_name == $tag)] | length')"
+          draft_count="$(printf '%s' "$releases_json" | jq --arg tag "$release_tag" '[.[] | select(.tag_name == $tag and .draft == true)] | length')"
+          draft_target_count="$(printf '%s' "$releases_json" | jq --arg tag "$release_tag" --arg sha "$GITHUB_SHA" \
+            '[.[] | select(.tag_name == $tag and .draft == true and .target_commitish == $sha)] | length')"
           expected_assets_json="$(jq -nc --arg version "$code_version" '[
             "lanspeedd-\($version).apk",
             "lanspeedd-bpf-\($version).apk",
@@ -99,12 +91,20 @@ jobs:
               | select(all(.assets[]; ((.digest // "") | test("^sha256:[0-9a-f]{64}$"))))
             ] | length')"
 
-          if [ "$tag_exists" = false ] && [ "$release_count" -eq 0 ]; then
-            changed="$version_changed"
-          elif [ "$tag_exists" = true ] && [ "$release_count" -eq 1 ] && [ "$complete_count" -eq 1 ]; then
+          if [ "$tag_exists" = true ] && [ "$release_count" -eq 1 ] && [ "$complete_count" -eq 1 ]; then
             changed=false
+          elif [ "$tag_exists" = true ] && [ "$tag_target" != "$GITHUB_SHA" ]; then
+            printf '%s\n' "error: incomplete release tag ${release_tag} points to ${tag_target}, expected ${GITHUB_SHA}" >&2
+            exit 1
+          elif [ "$tag_exists" = true ] && [ "$release_count" -eq 0 ]; then
+            changed=true
+          elif [ "$release_count" -eq 0 ]; then
+            changed=true
+          elif [ "$release_count" -eq 1 ] && [ "$draft_count" -eq 1 ] && \
+            { [ "$tag_exists" = true ] || [ "$draft_target_count" -eq 1 ]; }; then
+            changed=true
           else
-            printf '%s\n' "error: incomplete or inconsistent release state for ${release_tag}: tag_exists=${tag_exists} release_count=${release_count} complete_count=${complete_count}; expected exactly one published non-prerelease Release with six uploaded SHA256 assets" >&2
+            printf '%s\n' "error: unrecoverable release state for ${release_tag}: tag_exists=${tag_exists} tag_target=${tag_target:-none} release_count=${release_count} draft_count=${draft_count} complete_count=${complete_count}" >&2
             exit 1
           fi
 
@@ -116,12 +116,15 @@ jobs:
     needs: detect
     if: needs.detect.outputs.changed == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
 
@@ -156,6 +159,7 @@ jobs:
       - validate
     if: needs.detect.outputs.changed == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -175,7 +179,9 @@ jobs:
       SDK_URL: ${{ matrix.sdk_url }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Install build prerequisites
         run: |
@@ -282,7 +288,7 @@ jobs:
           fi
 
       - name: Upload architecture artifact
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.artifact }}
           path: ${{ runner.temp }}/artifact-${{ matrix.id }}/*.apk
@@ -296,22 +302,24 @@ jobs:
       - build
     if: needs.detect.outputs.changed == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Download x86_64 artifact
-        uses: actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: lanspeed-apk-x86_64
           path: ${{ runner.temp }}/release
 
       - name: Download aarch64 artifact
-        uses: actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: lanspeed-apk-aarch64
           path: ${{ runner.temp }}/release
@@ -342,30 +350,146 @@ jobs:
             exit 1
           fi
 
-      - name: Create and push release tag
+      - name: Publish recoverable GitHub Release
         shell: bash
         env:
           CODE_VERSION: ${{ needs.detect.outputs.code_version }}
+          RELEASE_TAG: ${{ needs.detect.outputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          release_tag="v${CODE_VERSION}"
-          git tag "$release_tag" "$GITHUB_SHA"
-          git push origin "refs/tags/${release_tag}"
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v3.0.2
-        with:
-          name: ${{ needs.detect.outputs.code_version }}
-          tag_name: v${{ needs.detect.outputs.code_version }}
-          generate_release_notes: true
-          draft: false
-          prerelease: false
-          fail_on_unmatched_files: true
-          overwrite_files: false
-          files: |
-            ${{ runner.temp }}/release/lanspeedd-${{ needs.detect.outputs.code_version }}.apk
-            ${{ runner.temp }}/release/lanspeedd-bpf-${{ needs.detect.outputs.code_version }}.apk
-            ${{ runner.temp }}/release/luci-app-lanspeed-${{ needs.detect.outputs.code_version }}.apk
-            ${{ runner.temp }}/release/lanspeedd-${{ needs.detect.outputs.code_version }}-aarch64.apk
-            ${{ runner.temp }}/release/lanspeedd-bpf-${{ needs.detect.outputs.code_version }}-aarch64.apk
-            ${{ runner.temp }}/release/luci-app-lanspeed-${{ needs.detect.outputs.code_version }}-aarch64.apk
+          release_dir="$RUNNER_TEMP/release"
+          expected_assets_json="$(jq -nc --arg version "$CODE_VERSION" '[
+            "lanspeedd-\($version).apk",
+            "lanspeedd-bpf-\($version).apk",
+            "luci-app-lanspeed-\($version).apk",
+            "lanspeedd-\($version)-aarch64.apk",
+            "lanspeedd-bpf-\($version)-aarch64.apk",
+            "luci-app-lanspeed-\($version)-aarch64.apk"
+          ] | sort')"
+
+          tag_exists=false
+          tag_refs=
+          tag_query_status=0
+          tag_refs="$(git ls-remote --exit-code --tags origin \
+            "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}")" || tag_query_status=$?
+          case "$tag_query_status" in
+            0)
+              tag_exists=true
+              tag_target="$(printf '%s\n' "$tag_refs" | awk -v peeled="refs/tags/${RELEASE_TAG}^{}" \
+                '$2 == peeled { print $1; found=1 } END { if (!found) exit 1 }' 2>/dev/null || true)"
+              if [ -z "$tag_target" ]; then
+                tag_target="$(printf '%s\n' "$tag_refs" | awk -v direct="refs/tags/${RELEASE_TAG}" \
+                  '$2 == direct { print $1; exit }')"
+              fi
+              if [ "$tag_target" != "$GITHUB_SHA" ]; then
+                printf '%s\n' "error: release tag ${RELEASE_TAG} points to ${tag_target}, expected ${GITHUB_SHA}" >&2
+                exit 1
+              fi
+              ;;
+            2) ;;
+            *)
+              printf '%s\n' "error: failed to query remote tag ${RELEASE_TAG}: git ls-remote exit ${tag_query_status}" >&2
+              exit "$tag_query_status"
+              ;;
+          esac
+
+          releases_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" | jq -s 'add')"
+          existing_json="$(printf '%s' "$releases_json" | jq -c --arg tag "$RELEASE_TAG" '[.[] | select(.tag_name == $tag)]')"
+          existing_count="$(printf '%s' "$existing_json" | jq 'length')"
+          if [ "$existing_count" -gt 1 ]; then
+            printf '%s\n' "error: multiple GitHub Releases use ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          if [ "$existing_count" -eq 1 ]; then
+            existing_release="$(printf '%s' "$existing_json" | jq -c '.[0]')"
+            existing_id="$(printf '%s' "$existing_release" | jq -r '.id')"
+            existing_draft="$(printf '%s' "$existing_release" | jq -r '.draft')"
+            existing_complete="$(printf '%s' "$existing_release" | jq --argjson expected "$expected_assets_json" '
+              .draft == false and
+              .prerelease == false and
+              ([.assets[].name] | sort) == $expected and
+              all(.assets[]; .state == "uploaded") and
+              all(.assets[]; ((.digest // "") | test("^sha256:[0-9a-f]{64}$")))')"
+            if [ "$existing_complete" = true ]; then
+              if [ "$tag_exists" != true ]; then
+                printf '%s\n' "error: complete release ${RELEASE_TAG} is missing its tag" >&2
+                exit 1
+              fi
+              printf '%s\n' "release ${RELEASE_TAG} is already complete"
+              exit 0
+            fi
+            if [ "$existing_draft" != true ]; then
+              printf '%s\n' "error: refusing to replace incomplete published release ${RELEASE_TAG}" >&2
+              exit 1
+            fi
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${existing_id}"
+          fi
+
+          release_json="$(jq -nc \
+            --arg tag "$RELEASE_TAG" \
+            --arg sha "$GITHUB_SHA" \
+            --arg name "$CODE_VERSION" \
+            '{tag_name: $tag, target_commitish: $sha, name: $name, draft: true, prerelease: false, generate_release_notes: true}' \
+            | gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" --input -)"
+          release_id="$(printf '%s' "$release_json" | jq -r '.id')"
+          if ! printf '%s' "$release_id" | grep -Eq '^[0-9]+$'; then
+            printf '%s\n' "error: GitHub returned an invalid release ID for ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
+          files=(
+            "$release_dir/lanspeedd-${CODE_VERSION}.apk"
+            "$release_dir/lanspeedd-bpf-${CODE_VERSION}.apk"
+            "$release_dir/luci-app-lanspeed-${CODE_VERSION}.apk"
+            "$release_dir/lanspeedd-${CODE_VERSION}-aarch64.apk"
+            "$release_dir/lanspeedd-bpf-${CODE_VERSION}-aarch64.apk"
+            "$release_dir/luci-app-lanspeed-${CODE_VERSION}-aarch64.apk"
+          )
+          gh release upload "$RELEASE_TAG" "${files[@]}"
+
+          assets_complete=false
+          for attempt in $(seq 1 12); do
+            release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}")"
+            assets_complete="$(printf '%s' "$release_json" | jq --argjson expected "$expected_assets_json" '
+              .draft == true and
+              .prerelease == false and
+              ([.assets[].name] | sort) == $expected and
+              all(.assets[]; .state == "uploaded") and
+              all(.assets[]; ((.digest // "") | test("^sha256:[0-9a-f]{64}$")))')"
+            [ "$assets_complete" = true ] && break
+            sleep 5
+          done
+          if [ "$assets_complete" != true ]; then
+            printf '%s\n' "error: draft release ${RELEASE_TAG} assets did not become complete" >&2
+            exit 1
+          fi
+
+          jq -nc '{draft: false}' \
+            | gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" --input - >/dev/null
+
+          published_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}")"
+          published_complete="$(printf '%s' "$published_json" | jq --argjson expected "$expected_assets_json" '
+            .draft == false and
+            .prerelease == false and
+            ([.assets[].name] | sort) == $expected and
+            all(.assets[]; .state == "uploaded") and
+            all(.assets[]; ((.digest // "") | test("^sha256:[0-9a-f]{64}$")))')"
+          if [ "$published_complete" != true ]; then
+            printf '%s\n' "error: published release ${RELEASE_TAG} failed final validation" >&2
+            exit 1
+          fi
+
+          final_tag_refs="$(git ls-remote --exit-code --tags origin \
+            "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}")"
+          final_tag_target="$(printf '%s\n' "$final_tag_refs" | awk -v peeled="refs/tags/${RELEASE_TAG}^{}" \
+            '$2 == peeled { print $1; found=1 } END { if (!found) exit 1 }' 2>/dev/null || true)"
+          if [ -z "$final_tag_target" ]; then
+            final_tag_target="$(printf '%s\n' "$final_tag_refs" | awk -v direct="refs/tags/${RELEASE_TAG}" \
+              '$2 == direct { print $1; exit }')"
+          fi
+          if [ "$final_tag_target" != "$GITHUB_SHA" ]; then
+            printf '%s\n' "error: published tag ${RELEASE_TAG} points to ${final_tag_target:-none}, expected ${GITHUB_SHA}" >&2
+            exit 1
+          fi
