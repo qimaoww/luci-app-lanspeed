@@ -48,6 +48,8 @@ function splitClientWarnings(rawWarnings, globalWarnings) {
 function setClientStatusVisibility(refs, visible) {
 	if (refs && refs.statusHeader)
 		refs.statusHeader.hidden = !visible;
+	if (refs && refs.clientsTable)
+		refs.clientsTable.setAttribute('data-client-status', visible ? 'shown' : 'hidden');
 }
 
 function clientStateCell(stateCells, visible) {

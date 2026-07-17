@@ -138,7 +138,7 @@ const CONFIG_STYLE_PARTS = [
 	'configStyleResponsive.js'
 ];
 
-const EXPECTED_STATUS_STYLE_SHA256 = '25faec2f272831a0c758af83716538cae768171d2c07c971151ff9e4773ed4b7';
+const EXPECTED_STATUS_STYLE_SHA256 = '7efc85957caddd7dbea15cae2776551a7089d204a71d4eefa9883795a110e5ec';
 const EXPECTED_DIAGNOSTICS_STYLE_SHA256 = 'f8e8015359f4e3e7aa2870c3d7c334dc527093af3c38ca41c5ad06a4a9372648';
 const EXPECTED_CONFIG_STYLE_SHA256 = '7ce8a26813864aecc56ba2fa630436ecaca9a261b709561d3e51becd7971ca48';
 
@@ -2455,17 +2455,23 @@ function assertStatusRefreshSortingInteraction(src) {
 	    typeof mod.clientStateCell !== 'function') {
 		fail('statusRefresh.js must expose configured client-status column visibility behavior');
 	} else {
-		const visibilityRefs = { statusHeader: fakeElement('th', {}) };
+		const visibilityRefs = {
+			statusHeader: fakeElement('th', {}),
+			clientsTable: fakeElement('table', {})
+		};
 		mod.setClientStatusVisibility(visibilityRefs, false);
 		const headerHiddenByDefault = visibilityRefs.statusHeader.hidden;
+		const hiddenLayout = visibilityRefs.clientsTable.attrs['data-client-status'];
 		const hiddenCell = mod.clientStateCell([ fakeElement('span', {}, 'BPF') ], false);
 		mod.setClientStatusVisibility(visibilityRefs, true);
+		const shownLayout = visibilityRefs.clientsTable.attrs['data-client-status'];
 		const visibleCell = mod.clientStateCell([ fakeElement('span', {}, 'BPF') ], true);
 		if (!headerHiddenByDefault || visibilityRefs.statusHeader.hidden ||
+		    hiddenLayout !== 'hidden' || shownLayout !== 'shown' ||
 		    !hiddenCell.hidden || visibleCell.hidden ||
 		    hiddenCell.attrs.class !== 'lanspeed-client-state-cell' ||
 		    fakeElementText(visibleCell) !== 'BPF') {
-			fail('statusRefresh.js must hide both status header and cells when disabled and restore them when enabled');
+			fail('statusRefresh.js must switch the hidden six-column layout with the status header and cells');
 		}
 	}
 
@@ -3094,16 +3100,19 @@ function assertStatusShellInteraction(src) {
 	    right.children[2] !== refs.btnPause || refs.sortSel) {
 		fail('statusShell.js toolbar DOM must keep unit/filter left and refresh actions right without a sort select');
 	}
-	if (!refs.statusHeader || !refs.statusHeader.hidden || refs.showClientStatus) {
-		fail('statusShell.js must hide the client status header by default without rendering a realtime-page toggle');
+	if (!refs.statusHeader || !refs.statusHeader.hidden || refs.showClientStatus ||
+	    !refs.clientsTable || refs.clientsTable.attrs['data-client-status'] !== 'hidden') {
+		fail('statusShell.js must initialize the hidden six-column layout without a realtime-page toggle');
 	}
 	const visibleState = Object.assign({}, viewState, {
 		showClientStatus: true,
 		prefs: Object.assign({}, viewState.prefs)
 	});
 	const visibleBuilt = shell.buildShell(visibleState);
-	if (!visibleBuilt.refs.statusHeader || visibleBuilt.refs.statusHeader.hidden) {
-		fail('statusShell.js must show the client status header when configuration enables it');
+	if (!visibleBuilt.refs.statusHeader || visibleBuilt.refs.statusHeader.hidden ||
+	    !visibleBuilt.refs.clientsTable ||
+	    visibleBuilt.refs.clientsTable.attrs['data-client-status'] !== 'shown') {
+		fail('statusShell.js must retain the original shown-status layout when configuration enables it');
 	}
 	if (!refs.sortHeaders || !refs.sortHeaders.rx || !refs.sortHeaders.hostname ||
 	    !refs.sortHeaders.rx.button || !refs.sortHeaders.rx.button.listeners.click ||
@@ -3719,6 +3728,17 @@ function assertStatusStyleModule(src) {
 	}
 	if (src.includes('.lanspeed-clients-card .lanspeed-table thead{display:none}')) {
 		fail('lanspeed/statusStyle.js must keep direct header sorting available on narrow screens');
+	}
+	if (!src.includes('.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"]{table-layout:fixed}') ||
+	    !src.includes('.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(7){width:0}') ||
+	    !src.includes('.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(1){width:22%}') ||
+	    !src.includes('.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(2){width:26%}') ||
+	    !src.includes('.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(6){width:13%}') ||
+	    !src.includes('.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(1){width:24%}') ||
+	    !src.includes('.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(2){width:20%}') ||
+	    !src.includes('.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(6){width:14%}') ||
+	    src.includes('[data-client-status="shown"]')) {
+		fail('lanspeed/statusStyle.js must spread all six visible columns only while client status is hidden');
 	}
 	if (!src.includes('.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-table td:nth-child(2).mono{font-size:.95rem}')) {
 		fail('lanspeed/statusStyle.js must keep Aurora client MAC text readable without changing other themes');

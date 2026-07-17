@@ -191,7 +191,10 @@ function buildShell(viewState) {
 		'class': 'lanspeed-client-status-header'
 	}, _('状态'));
 	refs.statusHeader.hidden = viewState.showClientStatus !== true;
-	refs.clientsTable = E('table', { 'class': 'lanspeed-table' }, [
+	refs.clientsTable = E('table', {
+		'class': 'lanspeed-table',
+		'data-client-status': viewState.showClientStatus === true ? 'shown' : 'hidden'
+	}, [
 		E('thead', {}, E('tr', {}, [
 			sortableHeader(viewState, refs, 'hostname', _('客户端')),
 			sortableHeader(viewState, refs, 'mac', 'MAC'),

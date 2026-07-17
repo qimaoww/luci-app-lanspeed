@@ -58,7 +58,41 @@ var RESPONSIVE_CSS = [
 	'.lanspeed-details>summary .sum{grid-column:3;grid-row:1;min-width:0;',
 	'  text-align:right;white-space:normal;overflow-wrap:anywhere}',
 	'.lanspeed-clients-card .lanspeed-table thead>tr{',
-	'  grid-template-columns:repeat(3,minmax(0,1fr));row-gap:.35em}}'
+	'  grid-template-columns:repeat(3,minmax(0,1fr));row-gap:.35em}}',
+
+	/* Keep all six data columns spread across the full table when the optional
+	 * status column is disabled. These rules load after every theme override;
+	 * the enabled seven-column layouts therefore remain untouched. */
+	'@media (min-width:701px){',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"]{table-layout:fixed}',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(7),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(7){width:0}}',
+	'@media (min-width:701px) and (max-width:900px){',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(1),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(1){width:22%}',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(2),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(2){width:26%}',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(3),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(3),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(4),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(4),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(5),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(5),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(6),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(6){width:13%}}',
+	'@media (min-width:901px){',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(1),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(1){width:24%}',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(2),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(2){width:20%}',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(3),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(3),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(4),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(4),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(5),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(5),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(6),',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(6){width:14%}}'
 ].join('\n');
 
 return baseclass.extend({
