@@ -102,6 +102,11 @@ function rangeListValue(refs) {
 	return refs.hideIpv6RangesItems.join(' ');
 }
 
+function markDirty(viewState) {
+	if (viewState && typeof viewState.markDirty === 'function')
+		viewState.markDirty();
+}
+
 function buildRangePill(refs, value) {
 	var text = E('input', {
 		'type': 'text',
@@ -125,6 +130,7 @@ function buildRangePill(refs, value) {
 		}
 		refs.hideIpv6RangesItems = items;
 		buildRangeList(refs, rangeListValue(refs));
+		markDirty(refs.viewState);
 	});
 
 	return E('div', { 'class': 'lanspeed-range-pill' }, [ text, remove ]);
@@ -143,6 +149,7 @@ function buildRangeList(refs, value) {
 function addRangeItem(refs) {
 	var values = splitRanges(refs.hideIpv6RangeInput.value);
 	var map = {};
+	var changed = false;
 	var i;
 
 	for (i = 0; i < refs.hideIpv6RangesItems.length; i++)
@@ -152,11 +159,14 @@ function addRangeItem(refs) {
 		if (!map[values[i]]) {
 			refs.hideIpv6RangesItems.push(values[i]);
 			map[values[i]] = true;
+			changed = true;
 		}
 	}
 
 	refs.hideIpv6RangeInput.value = '';
 	buildRangeList(refs, rangeListValue(refs));
+	if (changed)
+		markDirty(refs.viewState);
 }
 
 function legacyRateCollectorMode(value) {
@@ -290,12 +300,9 @@ function applyRuntimeInfo(refs, status) {
 
 function setBusy(viewState, busy) {
 	var daemonRefs = viewState.daemonRefs;
-	var saveRefs = viewState.saveRefs;
 	var controls;
 
 	viewState.configSaving = busy;
-	if (saveRefs)
-		saveRefs.saveBtn.disabled = busy;
 	if (daemonRefs) {
 		controls = [
 			daemonRefs.rateCollectorMode,
@@ -374,90 +381,88 @@ function errorText(err) {
 function reloadUciCache() {
 	try {
 		uci.unload('lanspeed');
+		return Promise.resolve(uci.load('lanspeed'));
 	} catch (err) {
 		return Promise.reject(err);
 	}
-	return uci.load('lanspeed');
 }
 
 function saveAllSettings(viewState) {
-	var saveRefs = viewState.saveRefs;
 	var daemonPlan;
 	var ifacePlan;
-	var committed = false;
 
+	if (!viewState || !viewState.daemonRefs)
+		return Promise.reject(new Error(_('配置页面尚未准备完成')));
 	if (viewState.configSaving)
-		return Promise.resolve(false);
+		return Promise.reject(new Error(_('配置保存正在进行中')));
 	try {
 		daemonPlan = prepareDaemonSave(viewState);
 		ifacePlan = ifaceCfg.prepareSave(viewState);
 	} catch (err) {
-		saveRefs.status.textContent = errorText(err);
-		return Promise.resolve(false);
+		return Promise.reject(err);
 	}
 
 	setBusy(viewState, true);
-	saveRefs.status.textContent = _('保存中…');
 
 	return ifaceCfg.applySave(ifacePlan)
 		.then(function() { return applyDaemonSave(daemonPlan); })
-		.then(function() { return lsRpc.uciCommit('lanspeed'); })
+		.then(function() { return reloadUciCache(); })
 		.then(function() {
-			committed = true;
 			ifaceCfg.markSaved(ifacePlan);
-			var cacheError = null;
-			return reloadUciCache().catch(function(err) {
-				cacheError = err;
-			}).then(function() {
-				saveRefs.status.textContent = _('正在重载后端服务…');
-				return lsRpc.reload().then(function() {
-					return Promise.all([
-						ifaceCfg.load(viewState),
-						lsRpc.status().catch(function() { return null; })
-					]);
-				}, function(err) {
-					saveRefs.status.textContent = _('配置已保存，但后端服务重载失败：') + errorText(err);
-					return null;
-				});
-			}).then(function(results) {
-				if (!results)
-					return false;
-				fillForm(daemonPlan.refs, daemonPlan.values);
-				if (results[1])
-					applyRuntimeInfo(daemonPlan.refs, results[1]);
-				saveRefs.status.textContent = cacheError
-					? _('配置已应用，但页面缓存刷新失败：') + errorText(cacheError)
-					: _('已应用');
-				window.setTimeout(function() {
-					if (saveRefs.status.textContent === _('已应用'))
-						saveRefs.status.textContent = '';
-				}, 3000);
-				return true;
-			});
-		}, function(writeError) {
+			fillForm(daemonPlan.refs, daemonPlan.values);
+			return true;
+		})
+		.catch(function(writeError) {
 			return lsRpc.uciRevert('lanspeed').then(function() {
-				saveRefs.status.textContent = _('配置写入失败：') + errorText(writeError);
-				return false;
+				return reloadUciCache().then(function() {
+					throw new Error(_('配置写入失败：') + errorText(writeError));
+				}, function(cacheError) {
+					throw new Error(_('配置写入失败：') + errorText(writeError) +
+						_('；页面缓存刷新失败：') + errorText(cacheError));
+				});
 			}, function(revertError) {
-				saveRefs.status.textContent = _('配置写入失败：') + errorText(writeError) +
-					_('；暂存回滚失败：') + errorText(revertError);
-				return false;
+				throw new Error(_('配置写入失败：') + errorText(writeError) +
+					_('；暂存回滚失败：') + errorText(revertError));
 			});
 		}).then(function(result) {
 			setBusy(viewState, false);
 			return result;
 		}, function(error) {
 			setBusy(viewState, false);
-			saveRefs.status.textContent = (committed
-				? _('配置已保存，但后续处理失败：')
-				: _('保存失败：')) + errorText(error);
-			return false;
+			throw error;
+		});
+}
+
+function resetAllSettings(viewState) {
+	if (!viewState || !viewState.daemonRefs)
+		return Promise.reject(new Error(_('配置页面尚未准备完成')));
+	if (viewState.configSaving)
+		return Promise.reject(new Error(_('配置保存正在进行中')));
+
+	setBusy(viewState, true);
+	return lsRpc.uciRevert('lanspeed')
+		.then(function() { return reloadUciCache(); })
+		.then(function() { return loadValues(); })
+		.then(function(values) {
+			viewState.ifaceOriginal = values.interfaceConfig;
+			viewState.ifcfgDirty = false;
+			fillForm(viewState.daemonRefs, values);
+			applyRuntimeInfo(viewState.daemonRefs, values.status || {});
+			return ifaceCfg.load(viewState).then(function() { return true; });
+		})
+		.then(function(result) {
+			setBusy(viewState, false);
+			return result;
+		}, function(error) {
+			setBusy(viewState, false);
+			throw new Error(_('重置失败：') + errorText(error));
 		});
 }
 
 function buildDaemonSection(values, viewState) {
 	var refs = {};
 	viewState = viewState || {};
+	refs.viewState = viewState;
 	viewState.ifaceOriginal = values.interfaceConfig || {
 		ifname: [], interface_include: [], observe: [], present: {}
 	};
@@ -517,6 +522,7 @@ function buildDaemonSection(values, viewState) {
 
 	refs.resetBtn.addEventListener('click', function() {
 		fillForm(refs, DEFAULTS);
+		markDirty(viewState);
 	});
 	refs.addRangeBtn.addEventListener('click', function() {
 		addRangeItem(refs);
@@ -526,6 +532,19 @@ function buildDaemonSection(values, viewState) {
 			ev.preventDefault();
 			addRangeItem(refs);
 		}
+	});
+	[
+		refs.rateCollectorMode,
+		refs.connCollectorMode,
+		refs.activeWindow,
+		refs.activeMin,
+		refs.showClientStatus,
+		refs.showIpv6,
+		refs.hidePrivateIpv6
+	].forEach(function(control) {
+		control.addEventListener('change', function() {
+			markDirty(viewState);
+		});
 	});
 
 	viewState.daemonRefs = refs;
@@ -595,26 +614,6 @@ function buildDaemonSection(values, viewState) {
 	]);
 }
 
-function buildSaveSection(viewState) {
-	var refs = {};
-
-	refs.saveBtn = E('button', {
-		'class': 'cbi-button cbi-button-apply',
-		'type': 'button'
-	}, _('保存并重载'));
-	refs.status = E('span', { 'class': 'status' }, '');
-	refs.saveBtn.addEventListener('click', function() {
-		saveAllSettings(viewState);
-	});
-	viewState.saveRefs = refs;
-
-	return E('div', { 'class': 'lanspeed-page-actions' }, [
-		refs.status,
-		E('span', { 'class': 'spacer' }),
-		refs.saveBtn
-	]);
-}
-
 function loadValues() {
 	return uci.load('lanspeed').then(function() {
 		var legacy = uci.get('lanspeed', 'main', 'collector_mode');
@@ -667,12 +666,12 @@ return baseclass.extend({
 		return buildDaemonSection(values, viewState);
 	},
 
-	buildSaveSection: function(viewState) {
-		return buildSaveSection(viewState);
-	},
-
 	saveAll: function(viewState) {
 		return saveAllSettings(viewState);
+	},
+
+	resetAll: function(viewState) {
+		return resetAllSettings(viewState);
 	},
 
 	isNssDevice: isNssDevice,

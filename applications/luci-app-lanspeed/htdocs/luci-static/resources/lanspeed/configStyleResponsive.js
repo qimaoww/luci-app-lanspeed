@@ -71,11 +71,9 @@ var RESPONSIVE_CSS = [
 	'  min-height:2.5rem;box-sizing:border-box;padding:var(--lanspeed-mobile-seg-padding,.5rem .35rem);',
 	'  line-height:1.2;white-space:normal;overflow-wrap:anywhere}',
 	ROOT_SCOPE + ' .lanspeed-config-actions,',
-	ROOT_SCOPE + ' .lanspeed-ifcfg-actions,',
-	ROOT_SCOPE + ' .lanspeed-page-actions{min-width:0;max-width:100%;box-sizing:border-box;flex-wrap:wrap}',
+	ROOT_SCOPE + ' .lanspeed-ifcfg-actions{min-width:0;max-width:100%;box-sizing:border-box;flex-wrap:wrap}',
 	ROOT_SCOPE + ' .lanspeed-config-actions .status,',
-	ROOT_SCOPE + ' .lanspeed-ifcfg-actions .status,',
-	ROOT_SCOPE + ' .lanspeed-page-actions>.status{min-width:0;max-width:100%;overflow-wrap:anywhere}}'
+	ROOT_SCOPE + ' .lanspeed-ifcfg-actions .status{min-width:0;max-width:100%;overflow-wrap:anywhere}}'
 ].join('\n');
 
 return baseclass.extend({

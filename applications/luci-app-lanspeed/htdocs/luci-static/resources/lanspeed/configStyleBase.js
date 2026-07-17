@@ -73,12 +73,6 @@ var BASE_CSS = [
 	'.lanspeed-ifcfg-actions .status{font-size:.85em;opacity:.75;',
 	'  font-family:var(--font-monospace,ui-monospace,monospace)}',
 	'.lanspeed-hint{margin:.8em 0 0 0;font-size:.85em;opacity:.75}',
-	'.lanspeed-page-actions{display:flex;align-items:center;gap:.75em;min-height:2.5em;',
-	'  padding:.25em 0 1em}',
-	'.lanspeed-page-actions>.spacer{flex:1 1 auto}',
-	'.lanspeed-page-actions>.status{font-size:.85em;opacity:.75;',
-	'  font-family:var(--font-monospace,ui-monospace,monospace)}',
-	'.lanspeed-page-actions>.cbi-button{flex:0 0 auto}',
 
 ].join('\n');
 

@@ -7,8 +7,8 @@
  * LAN Speed interface configuration sub-panel.
  *
  * Owns sysdevices scanning, segmented toggles and interface UCI staging.
- * The configuration form commits staged runtime/interface changes together
- * and reloads the daemon once.
+ * The configuration view hands the shared staged transaction to LuCI's
+ * native Save & Apply lifecycle.
  */
 
 var AUTO_IGNORED_INTERFACE_PREFIXES = [
@@ -17,6 +17,11 @@ var AUTO_IGNORED_INTERFACE_PREFIXES = [
 	'ip6gre', 'ip6tnl', 'sit',
 	'bonding_masters'
 ];
+
+function markDirty(viewState) {
+	if (viewState && typeof viewState.markDirty === 'function')
+		viewState.markDirty();
+}
 
 function isAutoIgnoredInterface(name) {
 	name = String(name || '');
@@ -106,9 +111,10 @@ function renderIfaceConfig(viewState) {
 					return;
 				viewState.ifcfgState[name] = m.k;
 				viewState.ifcfgDirty = true;
+				markDirty(viewState);
 				if (refs.ifcfgReloadBtn)
 					refs.ifcfgReloadBtn.disabled = true;
-				refs.ifcfgStatus.textContent = _('有未保存的接口修改');
+				refs.ifcfgStatus.textContent = '';
 				buttons = wrap.querySelectorAll('button');
 				for (i = 0; i < buttons.length; i++)
 					buttons[i].className = (buttons[i].getAttribute('data-mode') === m.k) ? 'active' : '';
@@ -172,10 +178,8 @@ function renderIfaceConfig(viewState) {
 function loadIfaceConfig(viewState) {
 	var refs = viewState.refs;
 	if (!refs || (!refs.ifcfgGrid && !refs.ifcfgBody)) return Promise.resolve(false);
-	if (viewState.ifcfgDirty) {
-		refs.ifcfgStatus.textContent = _('存在未保存的接口修改，请先保存再扫描');
+	if (viewState.ifcfgDirty)
 		return Promise.resolve(false);
-	}
 	refs.ifcfgStatus.textContent = _('读取中…');
 	return lsRpc.sysdevices().then(function(data) {
 		viewState.sysdevices = data || { devices: [], current_ifnames: [], current_observed: [] };
@@ -318,7 +322,11 @@ function applyIfaceSave(plan) {
 }
 
 function markIfaceSaved(plan) {
-	if (!plan || !plan.changed || !plan.viewState) return;
+	if (!plan || !plan.viewState) return;
+	plan.viewState.ifcfgDirty = false;
+	if (plan.viewState.refs && plan.viewState.refs.ifcfgStatus)
+		plan.viewState.refs.ifcfgStatus.textContent = '';
+	if (!plan.changed) return;
 	plan.viewState.ifaceOriginal = {
 		ifname: plan.desired.ifname.slice(),
 		interface_include: plan.desired.interface_include.slice(),
@@ -329,7 +337,6 @@ function markIfaceSaved(plan) {
 			observe: plan.desired.observe.length > 0
 		}
 	};
-	plan.viewState.ifcfgDirty = false;
 }
 
 function setBusy(viewState, busy) {

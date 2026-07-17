@@ -98,7 +98,7 @@ const EXPECTED_VIEW_REQUIRES = [
 ];
 
 const EXPECTED_CONFIG_VIEW_REQUIRES = [
-	'form',
+	'ui',
 	'lanspeed.ifaceConfig',
 	'lanspeed.theme',
 	'lanspeed.configStyle',
@@ -140,7 +140,7 @@ const CONFIG_STYLE_PARTS = [
 
 const EXPECTED_STATUS_STYLE_SHA256 = '25faec2f272831a0c758af83716538cae768171d2c07c971151ff9e4773ed4b7';
 const EXPECTED_DIAGNOSTICS_STYLE_SHA256 = 'f8e8015359f4e3e7aa2870c3d7c334dc527093af3c38ca41c5ad06a4a9372648';
-const EXPECTED_CONFIG_STYLE_SHA256 = '041fdf928e6bbf4e0b405b6f6b9b1860e94f9add57d44266ec41a1e48c33c43f';
+const EXPECTED_CONFIG_STYLE_SHA256 = '7ce8a26813864aecc56ba2fa630436ecaca9a261b709561d3e51becd7971ca48';
 
 function readMakeVar(source, name, fileLabel) {
 	const match = source.match(new RegExp(`^${name}:=(.+)$`, 'm'));
@@ -1151,6 +1151,20 @@ function loadConfigFormModule(src, uci, lsRpc, ifaceCfg) {
 			fakeBaseclass, uci, lsRpc, ifaceCfg, fakeElement,
 			function(value) { return value; },
 			{ setTimeout: function(handler) { handler(); } }
+		);
+}
+
+function loadConfigViewModule(src, configForm, ui, ifaceCfg) {
+	const fakeView = { extend: function(value) { return value; } };
+	ifaceCfg = ifaceCfg || {
+		buildSection: function() { return fakeElement('div', {}); },
+		load: function() { return Promise.resolve(true); }
+	};
+	return vm.compileFunction(src,
+		[ 'view', 'ui', 'ifaceCfg', 'lsTheme', 'configStyle', 'configForm', 'E', '_' ],
+		{ filename: 'resources/view/lanspeed/config.js' })(
+			fakeView, ui, ifaceCfg, { applyRoot: function() {} },
+			{ CSS: '' }, configForm, fakeElement, function(value) { return value; }
 		);
 }
 
@@ -2593,8 +2607,8 @@ function assertIfaceSaveBehavior(src) {
 		.then(function() { return mod.load(dirtyScanState); })
 		.then(function(result) {
 			if (result !== false || sysdevicesCalls !== 0 ||
-			    !dirtyScanState.refs.ifcfgStatus.textContent.includes('未保存')) {
-				fail('ifaceConfig.js must refuse to rescan while unsaved interface edits exist');
+			    dirtyScanState.refs.ifcfgStatus.textContent !== '') {
+				fail('ifaceConfig.js must refuse to rescan dirty interface state without rendering a custom unsaved warning');
 			}
 		}));
 
@@ -2660,7 +2674,11 @@ function assertIfaceSaveBehavior(src) {
 
 function daemonRefsForSave() {
 	return {
-		rateCollectorMode: { value: 'auto' },
+		rateCollectorMode: {
+			value: 'auto',
+			options: [],
+			appendChild: function(option) { this.options.push(option); }
+		},
 		connCollectorMode: { value: 'auto' },
 		activeWindow: { value: '10000' },
 		activeMin: { value: '1' },
@@ -2675,7 +2693,10 @@ function daemonRefsForSave() {
 		hideIpv6RangeInput: { value: '', disabled: false },
 		addRangeBtn: { disabled: false },
 		rangeRemoveButtons: [ { disabled: false } ],
-		resetBtn: { disabled: false }
+		resetBtn: { disabled: false },
+		rateHint: { textContent: '' },
+		currentRateSource: { textContent: '' },
+		currentRateSourceWrap: { title: '' }
 	};
 }
 
@@ -2749,9 +2770,7 @@ function makeSaveHarness(configSrc, ifaceSrc, overrides) {
 			return Promise.resolve();
 		},
 		uciDelete: overrides.uciDelete || function() { calls.push('delete'); return Promise.resolve(); },
-		uciCommit: overrides.uciCommit || function() { calls.push('commit'); return Promise.resolve(); },
 		uciRevert: overrides.uciRevert || function() { calls.push('revert'); return Promise.resolve(); },
-		reload: overrides.reload || function() { calls.push('reload'); return Promise.resolve(); },
 		status: function() { calls.push('status'); return Promise.resolve(null); },
 		sysdevices: function() { calls.push('sysdevices'); return Promise.reject(new Error('scan unavailable')); }
 	};
@@ -2765,7 +2784,6 @@ function makeSaveHarness(configSrc, ifaceSrc, overrides) {
 	const viewState = {
 		refs: {},
 		daemonRefs: daemonRefsForSave(),
-		saveRefs: { saveBtn: { disabled: false }, status: { textContent: '' } },
 		ifaceOriginal: { ifname: [], interface_include: [], observe: [] },
 		ifcfgButtons: [ { disabled: false }, { disabled: false } ]
 	};
@@ -2779,39 +2797,21 @@ function makeSaveHarness(configSrc, ifaceSrc, overrides) {
 
 function assertConfigSaveBehavior(configSrc, ifaceSrc) {
 	const probe = makeSaveHarness(configSrc, ifaceSrc);
-	if (!probe.form || typeof probe.form.saveAll !== 'function') {
-		fail('configForm.js must expose the shared save transaction');
+	if (!probe.form || typeof probe.form.saveAll !== 'function' ||
+	    typeof probe.form.resetAll !== 'function') {
+		fail('configForm.js must expose native-footer save and reset transactions');
 		return;
 	}
 
 	asyncChecks.push(probe.form.saveAll(probe.state).then(function(result) {
 		if (result !== true || probe.calls.filter(function(v) { return v === 'set'; }).length !== 1 ||
-		    probe.calls.filter(function(v) { return v === 'commit'; }).length !== 1 ||
-		    probe.calls.filter(function(v) { return v === 'reload'; }).length !== 1 ||
 		    probe.calls.indexOf('unload:lanspeed') === -1 ||
 		    probe.calls.indexOf('load:lanspeed') === -1 ||
 		    !probe.savedDaemonValues() || probe.savedDaemonValues().show_client_status !== '0') {
-			fail('configForm.js must save daemon settings when sysdevices is unavailable, commit/reload once, and refresh the LuCI UCI cache');
+			fail('configForm.js must stage daemon settings for LuCI native apply and refresh the LuCI UCI cache');
 		}
 	}).catch(function(err) {
 		fail('configForm.js sysdevices-isolated save unexpectedly rejected: ' + (err && err.message || err));
-	}));
-
-	const reloadFailure = makeSaveHarness(configSrc, ifaceSrc, {
-		reload: function() {
-			reloadFailure.calls.push('reload');
-			return Promise.reject(new Error('reload failed'));
-		}
-	});
-	asyncChecks.push(reloadFailure.form.saveAll(reloadFailure.state).then(function(result) {
-		if (result !== false ||
-		    !reloadFailure.state.saveRefs.status.textContent.includes('配置已保存，但后端服务重载失败') ||
-		    reloadFailure.calls.indexOf('commit') === -1 ||
-		    reloadFailure.calls.indexOf('unload:lanspeed') === -1) {
-			fail('configForm.js must distinguish a committed configuration from a later daemon reload failure');
-		}
-	}).catch(function(err) {
-		fail('configForm.js reload-failure path unexpectedly rejected: ' + (err && err.message || err));
 	}));
 
 	const writeFailure = makeSaveHarness(configSrc, ifaceSrc, {
@@ -2820,16 +2820,13 @@ function assertConfigSaveBehavior(configSrc, ifaceSrc) {
 			return Promise.reject(new Error('write failed'));
 		}
 	});
-	asyncChecks.push(writeFailure.form.saveAll(writeFailure.state).then(function(result) {
-		if (result !== false ||
-		    !writeFailure.state.saveRefs.status.textContent.includes('配置写入失败') ||
-		    writeFailure.calls.indexOf('revert') === -1 ||
-		    writeFailure.calls.indexOf('commit') !== -1 ||
-		    writeFailure.calls.indexOf('reload') !== -1) {
-			fail('configForm.js must revert staged UCI changes and avoid reload after a configuration write failure');
+	asyncChecks.push(writeFailure.form.saveAll(writeFailure.state).then(function() {
+		fail('configForm.js must reject a failed native UCI staging transaction');
+	}, function(err) {
+		if (!String(err && err.message || err).includes('配置写入失败') ||
+		    writeFailure.calls.indexOf('revert') === -1 || writeFailure.state.configSaving) {
+			fail('configForm.js must revert failed staged UCI changes, unlock controls and reject before native apply');
 		}
-	}).catch(function(err) {
-		fail('configForm.js write-failure path unexpectedly rejected: ' + (err && err.message || err));
 	}));
 
 	let releaseWrite;
@@ -2854,8 +2851,7 @@ function assertConfigSaveBehavior(configSrc, ifaceSrc) {
 		releaseWrite();
 		return busySave;
 	}).then(function() {
-		if (busy.state.configSaving || busy.state.saveRefs.saveBtn.disabled ||
-		    busy.state.daemonRefs.rateCollectorMode.disabled ||
+		if (busy.state.configSaving || busy.state.daemonRefs.rateCollectorMode.disabled ||
 		    busy.state.ifcfgButtons[0].disabled) {
 			fail('configForm.js must unlock every control after the save transaction settles');
 		}
@@ -2864,14 +2860,130 @@ function assertConfigSaveBehavior(configSrc, ifaceSrc) {
 	const unexpected = makeSaveHarness(configSrc, ifaceSrc, {
 		uciLoad: function() { throw new Error('cache load exploded'); }
 	});
-	asyncChecks.push(unexpected.form.saveAll(unexpected.state).then(function(result) {
-		if (result !== false || unexpected.state.configSaving ||
-		    unexpected.state.saveRefs.saveBtn.disabled ||
-		    !unexpected.state.saveRefs.status.textContent.includes('配置已保存，但后续处理失败')) {
-			fail('configForm.js must release busy state and report unexpected post-commit failures');
-		}
+	asyncChecks.push(unexpected.form.saveAll(unexpected.state).then(function() {
+		fail('configForm.js must reject when staged values cannot be resynchronized');
 	}, function(err) {
-		fail('configForm.js unexpected post-commit error escaped the transaction: ' + (err && err.message || err));
+		if (unexpected.state.configSaving || unexpected.calls.indexOf('revert') === -1 ||
+		    !String(err && err.message || err).includes('页面缓存刷新失败')) {
+			fail('configForm.js must revert staged values, unlock controls and report cache refresh failures');
+		}
+	}));
+
+	const reset = makeSaveHarness(configSrc, ifaceSrc);
+	asyncChecks.push(reset.form.resetAll(reset.state).then(function(result) {
+		if (result !== true || reset.calls.indexOf('revert') === -1 ||
+		    reset.calls.indexOf('unload:lanspeed') === -1 ||
+		    reset.calls.indexOf('load:lanspeed') === -1 || reset.state.configSaving) {
+			fail('configForm.js native Reset handler must revert staged UCI values and reload the page state');
+		}
+	}).catch(function(err) {
+		fail('configForm.js native reset unexpectedly rejected: ' + (err && err.message || err));
+	}));
+}
+
+function assertConfigViewNativeActions(src) {
+	const calls = [];
+	const ui = {
+		changes: {
+			changes: {},
+			init: function() { calls.push('init'); return Promise.resolve(); },
+			apply: function(checked) { calls.push('apply:' + checked); }
+		},
+		hideIndicator: function(id) { calls.push('hide:' + id); },
+		showIndicator: function() {},
+		addNotification: function(title, body, level) {
+			calls.push('notify:' + level + ':' + fakeElementText(body));
+		}
+	};
+	const configForm = {
+		saveAll: function() { calls.push('save'); return Promise.resolve(true); },
+		resetAll: function() { calls.push('reset'); return Promise.resolve(true); }
+	};
+	const mod = loadConfigViewModule(src, configForm, ui);
+	mod.viewState = {};
+	asyncChecks.push(mod.handleSave().then(function(result) {
+		if (result !== true || calls.join(',') !== 'save,hide:uci-changes,init')
+			fail('config view native Save handler must stage without applying');
+		return mod.handleSaveApply(null, '0');
+	}).then(function() {
+		if (calls.join(',') !== 'save,hide:uci-changes,init,save,hide:uci-changes,init,apply:true')
+			fail('config view native Save & Apply handler must stage once and invoke checked LuCI apply');
+		return mod.handleReset();
+	}).then(function(result) {
+		if (result !== true || calls.join(',') !==
+		    'save,hide:uci-changes,init,save,hide:uci-changes,init,apply:true,reset,hide:uci-changes,init')
+			fail('config view native Reset handler must delegate to the shared reset transaction');
+	}).catch(function(err) {
+		fail('config view native action flow unexpectedly rejected: ' + (err && err.message || err));
+	}));
+
+	const failedCalls = [];
+	const failed = loadConfigViewModule(src, {
+		saveAll: function() { return Promise.reject(new Error('stage failed')); },
+		resetAll: function() { return Promise.resolve(true); }
+	}, {
+		changes: {
+			changes: {},
+			init: function() { failedCalls.push('init'); return Promise.resolve(); },
+			apply: function() { failedCalls.push('apply'); }
+		},
+		hideIndicator: function() { failedCalls.push('hide'); },
+		showIndicator: function() {},
+		addNotification: function(title, body, level) {
+			failedCalls.push('notify:' + level + ':' + fakeElementText(body));
+		}
+	});
+	failed.viewState = {};
+	asyncChecks.push(failed.handleSaveApply(null, '0').then(function(result) {
+		if (result !== false || failedCalls.length !== 1 ||
+		    failedCalls[0] !== 'notify:error:stage failed') {
+			fail('config view must stop native apply and show an error notification when staging fails');
+		}
+	}).catch(function(err) {
+		fail('config view failed-save notification path unexpectedly rejected: ' + (err && err.message || err));
+	}));
+
+	const dirtyCalls = [];
+	let dirtyHandler = null;
+	const dirtyForm = {
+		DEFAULTS: {},
+		buildDaemonSection: function(values, state) {
+			state.daemonRefs = {};
+			return fakeElement('div', {});
+		},
+		saveAll: function() { dirtyCalls.push('save'); return Promise.resolve(true); },
+		resetAll: function() { return Promise.resolve(true); }
+	};
+	const dirty = loadConfigViewModule(src, dirtyForm, {
+		changes: {
+			changes: { network: [ [ 'set', 'lan', 'proto', 'static' ] ] },
+			init: function() { dirtyCalls.push('init'); return Promise.resolve(); },
+			displayChanges: function() { dirtyCalls.push('display'); }
+		},
+		hideIndicator: function(id) { dirtyCalls.push('hide:' + id); },
+		showIndicator: function(id, label, handler) {
+			dirtyCalls.push('show:' + id + ':' + label);
+			dirtyHandler = handler;
+		},
+		addNotification: function() { dirtyCalls.push('notify'); }
+	});
+	dirty.render({});
+	dirty.viewState.markDirty();
+	dirty.viewState.markDirty();
+	if (dirtyCalls.join(',') !== 'hide:uci-changes,show:uci-changes:Unsaved Changes: 2' ||
+	    typeof dirtyHandler !== 'function' || !dirty.viewState.localDirty) {
+		fail('config view must show one immediate LuCI native unsaved indicator for local form edits');
+	}
+	asyncChecks.push(Promise.resolve().then(function() {
+		return dirtyHandler();
+	}).then(function() {
+		if (dirtyCalls.join(',') !==
+		    'hide:uci-changes,show:uci-changes:Unsaved Changes: 2,save,hide:uci-changes,init,display' ||
+		    dirty.viewState.localDirty) {
+			fail('clicking the local LuCI indicator must stage edits, restore the native change indicator and open its change list');
+		}
+	}).catch(function(err) {
+		fail('config view local dirty indicator flow unexpectedly rejected: ' + (err && err.message || err));
 	}));
 }
 
@@ -3029,6 +3141,10 @@ function assertRpcModule(src) {
 	    !src.includes('callUciRevert')) {
 		fail('lanspeed/rpc.js must expose uci.revert so failed raw writes can clear server-side staged deltas');
 	}
+	if (src.includes('callUciCommit') || src.includes('uciCommit:') ||
+	    src.includes('callReload') || src.includes('reload:     callReload')) {
+		fail('lanspeed/rpc.js must not retain direct commit or daemon reload calls after adopting native LuCI apply');
+	}
 	if (!src.includes("method: 'interfaces'") || !src.includes('interfaces: callInterfaces')) {
 		fail('lanspeed/rpc.js must expose interface throughput data');
 	}
@@ -3054,7 +3170,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.0-r2';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.0-r4';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
@@ -3240,16 +3356,32 @@ function assertConfigView(src) {
 	if (!src.includes('ifaceCfg.load(viewState)')) {
 		fail('view/lanspeed/config.js must reuse ifaceConfig for interface assignments');
 	}
-	if (!src.includes('lsRpc.reload()')) {
-		fail('view/lanspeed/config.js must call the lanspeed reload ubus method after saving daemon settings');
+	if (!src.includes('this.viewState = viewState') ||
+	    !src.includes('viewState.markDirty = function()') ||
+	    !src.includes("ui.showIndicator('uci-changes'") ||
+	    !src.includes("ui.hideIndicator('uci-changes')") ||
+	    !src.includes('ui.changes.displayChanges()') ||
+	    !src.includes('handleSave: function()') ||
+	    !src.includes('return stageSettings(this.viewState)') ||
+	    !src.includes('handleSaveApply: function(ev, mode)') ||
+	    !src.includes("return ui.changes.apply(mode == '0')") ||
+	    !src.includes('handleReset: function()') ||
+	    !src.includes('return configForm.resetAll(viewState)') ||
+	    src.includes('handleSaveApply: null')) {
+		fail('view/lanspeed/config.js must use the LuCI native footer, immediate native dirty indicator, apply dialog, and Save/Reset staging handlers');
 	}
-	const saveLabels = src.match(/_\('保存并重载'\)/g) || [];
-	const commits = src.match(/lsRpc\.uciCommit\('lanspeed'\)/g) || [];
-	const reloads = src.match(/lsRpc\.reload\(\)/g) || [];
-	if (saveLabels.length !== 1 || commits.length !== 1 || reloads.length !== 1 ||
-	    !src.includes('configForm.buildSaveSection(viewState)') ||
-	    !src.includes('ifaceCfg.prepareSave(viewState)')) {
-		fail('view/lanspeed/config.js must use one bottom save button, one commit and one daemon reload for all settings');
+	if (!src.includes('ui.addNotification') || !src.includes('.catch(notifyError)')) {
+		fail('view/lanspeed/config.js must surface native footer transaction failures without applying rejected changes');
+	}
+	if (src.includes("_('保存并重载')") || src.includes('buildSaveSection') ||
+	    src.includes('lanspeed-page-actions') || src.includes("lsRpc.uciCommit('lanspeed')") ||
+	    src.includes('lsRpc.reload()')) {
+		fail('view/lanspeed/config.js must remove the old custom save bar, direct commit and direct daemon reload flow');
+	}
+	if (!src.includes('ifaceCfg.prepareSave(viewState)') ||
+	    !src.includes("lsRpc.uciRevert('lanspeed')") ||
+	    !src.includes("uci.load('lanspeed')")) {
+		fail('view/lanspeed/config.js must stage one UCI transaction for LuCI native apply and support native reset');
 	}
 	if (src.includes('lsRpc.init(\'lanspeedd\', \'reload\')')) {
 		fail('view/lanspeed/config.js must not reload through rc init');
@@ -3260,6 +3392,14 @@ function assertConfigView(src) {
 }
 
 function assertIfaceConfigThemeLayout(src) {
+	if (src.includes('有未保存的接口修改') ||
+	    src.includes('存在未保存的接口修改，请先保存再扫描')) {
+		fail('ifaceConfig.js must use LuCI native unsaved-change indication instead of custom inline warnings');
+	}
+	if (!src.includes('function markDirty(viewState)') ||
+	    !src.includes('markDirty(viewState);')) {
+		fail('ifaceConfig.js must notify the configuration view immediately when an interface mode changes');
+	}
 	if (!src.includes('lanspeed-ifcfg-body')) {
 		fail('resources/lanspeed/ifaceConfig.js must wrap the interface table in a padded body for theme compatibility');
 	}
@@ -3791,6 +3931,9 @@ function assertConfigStyleModule(src) {
 	    !src.includes('.lanspeed-config-table')) {
 		fail('lanspeed/configStyle.js must own config view CSS, including Aurora, Argon and Bootstrap theme rules');
 	}
+	if (src.includes('.lanspeed-page-actions')) {
+		fail('lanspeed/configStyle.js must not retain styles for the removed custom save bar');
+	}
 	if (!src.includes("var ROOT_SCOPE = ':is(.lanspeed-config-root.lanspeed-theme-aurora,'") ||
 	    !src.includes("'.lanspeed-config-root.lanspeed-theme-bootstrap)'") ||
 	    !src.includes("ROOT_SCOPE + ' .lanspeed-ifcfg-table tbody tr{display:grid;'") ||
@@ -3842,10 +3985,15 @@ function assertConfigFormModule(src) {
 	if (!src.includes('DEFAULTS: DEFAULTS') ||
 	    !src.includes('loadValues: function()') ||
 	    !src.includes('buildDaemonSection: function(values, viewState)') ||
-	    !src.includes('buildSaveSection: function(viewState)') ||
 	    !src.includes('saveAll: function(viewState)') ||
+	    !src.includes('resetAll: function(viewState)') ||
 	    !src.includes('applyRuntimeInfo(refs, values.status || {})')) {
-		fail('lanspeed/configForm.js must own config defaults, rendering and the shared save flow');
+		fail('lanspeed/configForm.js must own config defaults, rendering and native-footer save/reset flows');
+	}
+	if (src.includes('function buildSaveSection(') || src.includes("_('保存并重载')") ||
+	    src.includes('lanspeed-page-actions') || src.includes("lsRpc.uciCommit('lanspeed')") ||
+	    src.includes('lsRpc.reload()')) {
+		fail('lanspeed/configForm.js must not retain the removed custom save bar or direct apply implementation');
 	}
 	if (src.includes("E('span', { 'class': 'sum' }, _('UCI'))")) {
 		fail('lanspeed/configForm.js must not show a redundant UCI badge in the runtime settings header');
@@ -3858,6 +4006,11 @@ function assertConfigFormModule(src) {
 	    !src.includes("uci.load('lanspeed')") ||
 	    !src.includes("lsRpc.uciRevert('lanspeed')")) {
 		fail('configForm.js must retain the raw interface baseline, refresh LuCI UCI cache, and revert failed raw writes');
+	}
+	if (!src.includes('function markDirty(viewState)') ||
+	    !src.includes("control.addEventListener('change'") ||
+	    !src.includes('markDirty(refs.viewState)')) {
+		fail('configForm.js must report daemon, range and default-value edits to the native unsaved indicator');
 	}
 	[
 		'rate_collector_mode',
@@ -3906,8 +4059,10 @@ function assertConfigViewEntryIsThin(src) {
 	if (!src.includes('configStyle.CSS') ||
 	    !src.includes('configForm.loadValues()') ||
 	    !src.includes('configForm.buildDaemonSection(values || configForm.DEFAULTS, viewState)') ||
-	    !src.includes('configForm.buildSaveSection(viewState)')) {
-		fail('view/lanspeed/config.js must delegate CSS, loading, and form rendering to config modules');
+	    !src.includes('stageSettings(this.viewState)') ||
+	    !src.includes("ui.changes.apply(mode == '0')") ||
+	    !src.includes('configForm.resetAll(viewState)')) {
+		fail('view/lanspeed/config.js must delegate CSS, loading, rendering and native footer actions to config modules');
 	}
 }
 
@@ -4119,6 +4274,7 @@ if (fs.existsSync(configViewFile)) {
 	assertThemeWiring(csrc, 'view/lanspeed/config.js');
 	assertConfigViewEntryIsThin(csrc);
 	assertConfigView(configSrc);
+	assertConfigViewNativeActions(csrc);
 	assertNoInlineNavigation(configSrc, 'view/lanspeed/config.js');
 	assertSyntax(csrc, 'view/lanspeed/config.js');
 	assertNoRpcDeclare(ccleaned, 'view/lanspeed/config.js');

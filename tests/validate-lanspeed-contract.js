@@ -523,25 +523,28 @@ function validateAcl(acl) {
   }
   assert(app.read.uci.length === 1 && app.read.uci[0] === 'lanspeed', 'ACL must only grant read UCI access to lanspeed');
 
-  /* The write side is intentionally narrow: the LuCI page writes the lanspeed
-   * UCI config (to persist interface assignments), commits it via uci.*, and
-   * triggers lanspeed.reload.  Routing this through rc.init is both broader
-   * than needed and rejected by some rpcd rc implementations. */
-  if (Object.prototype.hasOwnProperty.call(app, 'write')) {
-    assertObject(app.write, 'ACL write');
-    assertObject(app.write.ubus, 'ACL write.ubus');
+	/* The write side stages only the lanspeed UCI config. LuCI's native
+	 * Save & Apply flow commits the pending changes and procd reload triggers
+	 * notify lanspeedd, so the page needs no direct service reload permission. */
+	if (Object.prototype.hasOwnProperty.call(app, 'write')) {
+		assertObject(app.write, 'ACL write');
+		assertObject(app.write.ubus, 'ACL write.ubus');
 
-    assertArray(app.write.ubus.lanspeed, 'ACL write.ubus.lanspeed');
-    assert(app.write.ubus.lanspeed.length === 1 && app.write.ubus.lanspeed[0] === 'reload',
-      'ACL write.ubus.lanspeed must grant only the reload method');
-    assert(!Object.prototype.hasOwnProperty.call(app.write.ubus, 'rc'),
-      'ACL write.ubus must not grant rc methods');
+		assert(!Object.prototype.hasOwnProperty.call(app.write.ubus, 'lanspeed'),
+		  'ACL write.ubus must not grant direct lanspeed reload after adopting native apply');
+		assert(!Object.prototype.hasOwnProperty.call(app.write.ubus, 'rc'),
+		  'ACL write.ubus must not grant rc methods');
 
-    assertArray(app.write.ubus.uci, 'ACL write.ubus.uci');
-    const allowedUciMethods = ['set', 'delete', 'add', 'commit', 'apply'];
-    for (const method of app.write.ubus.uci) {
-      assert(allowedUciMethods.includes(method), `ACL write.ubus.uci must only include ${allowedUciMethods.join(', ')}, got ${method}`);
-    }
+		assertArray(app.write.ubus.uci, 'ACL write.ubus.uci');
+		const allowedUciMethods = ['set', 'delete', 'add', 'apply', 'revert'];
+		assert(app.write.ubus.uci.length === allowedUciMethods.length,
+		  'ACL write.ubus.uci must grant exactly the native staging, apply and reset methods');
+		for (const method of app.write.ubus.uci) {
+		  assert(allowedUciMethods.includes(method), `ACL write.ubus.uci must only include ${allowedUciMethods.join(', ')}, got ${method}`);
+		}
+		for (const method of allowedUciMethods) {
+		  assert(app.write.ubus.uci.includes(method), `ACL write.ubus.uci must grant ${method}`);
+		}
 
     assertArray(app.write.uci, 'ACL write.uci');
     assert(app.write.uci.length === 1 && app.write.uci[0] === 'lanspeed',
