@@ -598,6 +598,14 @@
             "outbound",
             "inbound"
           ]
+        },
+        "tx_bps": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rx_bps": {
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [
@@ -607,7 +615,9 @@
         "remote_port",
         "protocol",
         "state",
-        "direction"
+        "direction",
+        "tx_bps",
+        "rx_bps"
       ]
     },
     "clientConnectionSummary": {
@@ -684,15 +694,15 @@
         "returned_connections": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 512
+          "maximum": 2048
         },
         "truncated": {
           "type": "boolean"
         },
         "limit": {
           "type": "integer",
-          "minimum": 512,
-          "maximum": 512
+          "minimum": 2048,
+          "maximum": 2048
         },
         "conn_source": {
           "type": [
@@ -711,7 +721,7 @@
         },
         "connections": {
           "type": "array",
-          "maxItems": 512,
+          "maxItems": 2048,
           "items": {
             "$ref": "#/$defs/clientConnectionDetail"
           }

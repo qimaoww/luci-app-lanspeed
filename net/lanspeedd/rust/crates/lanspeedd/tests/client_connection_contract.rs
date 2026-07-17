@@ -9,7 +9,8 @@ use lanspeedd::{
     },
     connection_details::{
         ClientConnectionDetail, ConnectionDetailsIndex, ConnectionDirection, ConnectionProtocol,
-        ConnectionState, MAX_CLIENT_CONNECTION_DETAILS, MAX_STORED_CONNECTION_DETAILS,
+        ConnectionRateBook, ConnectionState, MAX_CLIENT_CONNECTION_DETAILS,
+        MAX_STORED_CONNECTION_DETAILS,
     },
     identity::{IdentityObservation, IdentityTable, ObservationSource},
 };
@@ -89,6 +90,8 @@ fn detail(
         protocol,
         state,
         direction,
+        tx_bps: 0,
+        rx_bps: 0,
     }
 }
 
@@ -142,7 +145,7 @@ fn details_index_owns_totals_caps_truncation_and_stable_sorting() {
 
     let sets = index.finish();
     let set = &sets[IDENTITY_KEY];
-    assert_eq!(set.total_connections, 513);
+    assert_eq!(set.total_connections, (MAX_CLIENT_CONNECTION_DETAILS + 1) as u64);
     assert_eq!(set.connections.len(), MAX_CLIENT_CONNECTION_DETAILS);
     assert!(set.truncated);
     assert_eq!(
@@ -188,6 +191,141 @@ fn outbound_established_assured_tcp_populates_detail_and_legacy_count() {
             ConnectionDirection::Outbound,
         )
     );
+}
+
+#[test]
+fn per_connection_rates_use_adjacent_counters_in_the_client_direction() {
+    let table = identities();
+    let outbound_first = outbound_tcp(CLIENT_IP, "198.51.100.10");
+    let inbound_first = tcp_flow(
+        Some("198.51.100.20"),
+        Some(CLIENT_IP),
+        Some(CLIENT_IP),
+        Some("198.51.100.20"),
+    );
+    let mut first = aggregate_flows(&table, [&outbound_first, &inbound_first], 1_000, 8);
+    let mut rates = ConnectionRateBook::default();
+
+    rates.update(
+        first.sample_ms,
+        &first.connection_counters,
+        &mut first.connection_details,
+    );
+
+    assert!(first.connection_details[IDENTITY_KEY]
+        .connections
+        .iter()
+        .all(|detail| detail.tx_bps == 0 && detail.rx_bps == 0));
+
+    let mut outbound_second = outbound_first.clone();
+    outbound_second.orig_bytes += 300;
+    outbound_second.reply_bytes += 700;
+    let mut inbound_second = inbound_first.clone();
+    inbound_second.orig_bytes += 900;
+    inbound_second.reply_bytes += 200;
+    let mut second = aggregate_flows(&table, [&outbound_second, &inbound_second], 2_000, 8);
+
+    rates.update(
+        second.sample_ms,
+        &second.connection_counters,
+        &mut second.connection_details,
+    );
+
+    let details = &second.connection_details[IDENTITY_KEY].connections;
+    let outbound = details
+        .iter()
+        .find(|detail| detail.direction == ConnectionDirection::Outbound)
+        .unwrap();
+    assert_eq!((outbound.tx_bps, outbound.rx_bps), (2_400, 5_600));
+    let inbound = details
+        .iter()
+        .find(|detail| detail.direction == ConnectionDirection::Inbound)
+        .unwrap();
+    assert_eq!((inbound.tx_bps, inbound.rx_bps), (1_600, 7_200));
+}
+
+#[test]
+fn connection_rate_baselines_reset_on_rollback_absence_and_clear() {
+    let table = identities();
+    let first_flow = outbound_tcp(CLIENT_IP, "198.51.100.30");
+    let mut rates = ConnectionRateBook::default();
+    let mut first = aggregate_flows(&table, [&first_flow], 1_000, 8);
+    rates.update(
+        first.sample_ms,
+        &first.connection_counters,
+        &mut first.connection_details,
+    );
+
+    let mut rollback_flow = first_flow.clone();
+    rollback_flow.orig_bytes = first_flow.orig_bytes.saturating_sub(1);
+    rollback_flow.reply_bytes += 500;
+    let mut rollback = aggregate_flows(&table, [&rollback_flow], 2_000, 8);
+    rates.update(
+        rollback.sample_ms,
+        &rollback.connection_counters,
+        &mut rollback.connection_details,
+    );
+    let rollback_detail = &rollback.connection_details[IDENTITY_KEY].connections[0];
+    assert_eq!((rollback_detail.tx_bps, rollback_detail.rx_bps), (0, 4_000));
+
+    let mut absent = aggregate_flows(&table, std::iter::empty(), 3_000, 8);
+    rates.update(
+        absent.sample_ms,
+        &absent.connection_counters,
+        &mut absent.connection_details,
+    );
+    let mut reappeared = aggregate_flows(&table, [&rollback_flow], 4_000, 8);
+    rates.update(
+        reappeared.sample_ms,
+        &reappeared.connection_counters,
+        &mut reappeared.connection_details,
+    );
+    let detail = &reappeared.connection_details[IDENTITY_KEY].connections[0];
+    assert_eq!((detail.tx_bps, detail.rx_bps), (0, 0));
+
+    rates.clear();
+    let mut after_clear = aggregate_flows(&table, [&rollback_flow], 5_000, 8);
+    rates.update(
+        after_clear.sample_ms,
+        &after_clear.connection_counters,
+        &mut after_clear.connection_details,
+    );
+    let detail = &after_clear.connection_details[IDENTITY_KEY].connections[0];
+    assert_eq!((detail.tx_bps, detail.rx_bps), (0, 0));
+}
+
+#[test]
+fn reusing_the_same_snapshot_generation_preserves_computed_rates() {
+    let table = identities();
+    let first_flow = outbound_tcp(CLIENT_IP, "198.51.100.40");
+    let mut second_flow = first_flow.clone();
+    second_flow.orig_bytes += 1_000;
+    second_flow.reply_bytes += 2_000;
+    let mut rates = ConnectionRateBook::default();
+    let mut first = aggregate_flows(&table, [&first_flow], 1_000, 8);
+    rates.update(
+        first.sample_ms,
+        &first.connection_counters,
+        &mut first.connection_details,
+    );
+    let mut second = aggregate_flows(&table, [&second_flow], 2_000, 8);
+    rates.update(
+        second.sample_ms,
+        &second.connection_counters,
+        &mut second.connection_details,
+    );
+    let expected = second.connection_details[IDENTITY_KEY].connections[0].clone();
+    let mut cached_details = Arc::clone(&second.connection_details);
+
+    rates.update(
+        second.sample_ms,
+        &second.connection_counters,
+        &mut cached_details,
+    );
+
+    assert!(Arc::ptr_eq(&cached_details, &second.connection_details));
+    assert_eq!(cached_details[IDENTITY_KEY].connections[0], expected);
+    assert_eq!((expected.tx_bps, expected.rx_bps), (8_000, 16_000));
 }
 
 #[test]
@@ -466,9 +604,9 @@ fn incomplete_remote_endpoint_keeps_legacy_accounting_without_fabricating_detail
 
 #[test]
 fn per_client_limit_preserves_true_total_and_legacy_count() {
-    assert_eq!(MAX_CLIENT_CONNECTION_DETAILS, 512);
+    assert_eq!(MAX_CLIENT_CONNECTION_DETAILS, 2_048);
     let mut flows = Vec::new();
-    for port in 1..=513 {
+    for port in 1..=MAX_CLIENT_CONNECTION_DETAILS + 1 {
         let mut flow = outbound_tcp(CLIENT_IP, "198.51.100.1");
         flow.orig_sport = u16::try_from(port).unwrap();
         flow.reply_dport = flow.orig_sport;
@@ -478,16 +616,16 @@ fn per_client_limit_preserves_true_total_and_legacy_count() {
     let snapshot = aggregate_flows(&identities(), flows.iter(), 50, 8);
     let set = &snapshot.connection_details[IDENTITY_KEY];
 
-    assert_eq!(snapshot.clients[0].tcp_conns, 513);
-    assert_eq!(set.total_connections, 513);
-    assert_eq!(set.connections.len(), 512);
+    assert_eq!(snapshot.clients[0].tcp_conns, (MAX_CLIENT_CONNECTION_DETAILS + 1) as u32);
+    assert_eq!(set.total_connections, (MAX_CLIENT_CONNECTION_DETAILS + 1) as u64);
+    assert_eq!(set.connections.len(), MAX_CLIENT_CONNECTION_DETAILS);
     assert!(set.truncated);
 }
 
 #[test]
 fn global_limit_counts_stored_details_without_losing_any_client_total() {
     const CLIENTS: usize = 33;
-    assert_eq!(MAX_CLIENT_CONNECTION_DETAILS, 512);
+    assert_eq!(MAX_CLIENT_CONNECTION_DETAILS, 2_048);
     assert_eq!(MAX_STORED_CONNECTION_DETAILS, 16_384);
     let observations = (1..=CLIENTS)
         .map(|index| {
@@ -785,7 +923,9 @@ fn connection_detail_json_uses_lowercase_protocol_state_and_direction() {
             "remote_port": 443,
             "protocol": "tcp",
             "state": "established",
-            "direction": "outbound"
+            "direction": "outbound",
+            "tx_bps": 0,
+            "rx_bps": 0
         })
     );
 
@@ -808,7 +948,9 @@ fn connection_detail_json_uses_lowercase_protocol_state_and_direction() {
             "remote_port": 60_000,
             "protocol": "udp",
             "state": "assured",
-            "direction": "inbound"
+            "direction": "inbound",
+            "tx_bps": 0,
+            "rx_bps": 0
         })
     );
 }

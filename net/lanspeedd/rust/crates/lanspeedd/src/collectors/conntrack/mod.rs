@@ -1,4 +1,4 @@
-use crate::connection_details::ConnectionDetailsSnapshot;
+use crate::connection_details::{ConnectionCountersSnapshot, ConnectionDetailsSnapshot};
 use aggregate::{aggregate_flows, ClientSample};
 use netlink::{DumpError, NetlinkSnapshot};
 use procfs::{ProcfsError, ProcfsSnapshot};
@@ -134,6 +134,7 @@ pub struct CollectedSnapshot {
     pub clients: Vec<ClientSample>,
     pub sample_ms: u64,
     pub connection_details: ConnectionDetailsSnapshot,
+    pub connection_counters: ConnectionCountersSnapshot,
     pub counter_source: &'static str,
     pub stats: CollectStats,
 }
@@ -282,6 +283,7 @@ fn finish_aggregate(
         clients: aggregate.clients,
         sample_ms: aggregate.sample_ms,
         connection_details: aggregate.connection_details,
+        connection_counters: aggregate.connection_counters,
         counter_source,
         stats,
     }
@@ -352,6 +354,8 @@ mod tests {
                 protocol: ConnectionProtocol::Tcp,
                 state: ConnectionState::Established,
                 direction: ConnectionDirection::Outbound,
+                tx_bps: 0,
+                rx_bps: 0,
             },
         );
         let details = details.finish();
@@ -381,6 +385,7 @@ mod tests {
                 },
                 sample_ms: 91_337,
                 connection_details: details,
+                connection_counters: Default::default(),
             },
             source_path: "/proc/net/nf_conntrack".into(),
             counter_source: PROCFS_COUNTER_SOURCE,

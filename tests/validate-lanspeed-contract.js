@@ -14,6 +14,7 @@ const UBUS_METHODS = Object.freeze([
   'sysdevices',
   'client_connections'
 ]);
+const CLIENT_CONNECTION_LIMIT = 2048;
 
 function readJson(relativePath) {
   const absolutePath = path.join(root, relativePath);
@@ -425,7 +426,9 @@ function validateClientConnectionsFixture(response, pathName) {
     'remote_port',
     'protocol',
     'state',
-    'direction'
+    'direction',
+    'tx_bps',
+    'rx_bps'
   ];
 
   assertRequired(response, envelopeFields, pathName);
@@ -443,7 +446,14 @@ function validateClientConnectionsFixture(response, pathName) {
     assertRequired(connection, detailFields, `${pathName}.connections[${index}]`);
     assert(sameStringSet(Object.keys(connection), detailFields),
       `${pathName}.connections[${index}] must keep the exact Rust detail key set`);
+    assert(Number.isInteger(connection.tx_bps) && connection.tx_bps >= 0,
+      `${pathName}.connections[${index}].tx_bps must be a non-negative integer`);
+    assert(Number.isInteger(connection.rx_bps) && connection.rx_bps >= 0,
+      `${pathName}.connections[${index}].rx_bps must be a non-negative integer`);
   }
+  assert(response.connections.some((connection) =>
+    connection.tx_bps > 0 || connection.rx_bps > 0),
+  `${pathName}.connections must demonstrate a non-zero per-connection rate`);
 
   const ipv4Udp = response.connections.find((connection) =>
     connection.protocol === 'udp' &&
@@ -463,7 +473,7 @@ function validateClientConnectionsFixture(response, pathName) {
     `${pathName}.total_connections must match the complete fixture`);
   assert(response.returned_connections === response.connections.length,
     `${pathName}.returned_connections must match connections.length`);
-  assert(response.truncated === false && response.limit === 512,
+  assert(response.truncated === false && response.limit === CLIENT_CONNECTION_LIMIT,
     `${pathName} must demonstrate an untruncated response with the Rust limit`);
 }
 
@@ -471,31 +481,31 @@ function validateClientConnectionsArrayLimit(schema, response) {
   const detail = response.connections[0];
   const atLimit = {
     ...response,
-    total_connections: 512,
-    returned_connections: 512,
+    total_connections: CLIENT_CONNECTION_LIMIT,
+    returned_connections: CLIENT_CONNECTION_LIMIT,
     truncated: false,
-    connections: Array.from({ length: 512 }, () => ({ ...detail }))
+    connections: Array.from({ length: CLIENT_CONNECTION_LIMIT }, () => ({ ...detail }))
   };
   validateValue(schema, schema.$defs.client_connections, atLimit,
-    'client_connections 512-item response');
+    `client_connections ${CLIENT_CONNECTION_LIMIT}-item response`);
 
   const aboveLimit = {
     ...atLimit,
-    total_connections: 513,
-    returned_connections: 512,
+    total_connections: CLIENT_CONNECTION_LIMIT + 1,
+    returned_connections: CLIENT_CONNECTION_LIMIT,
     truncated: true,
     connections: [...atLimit.connections, { ...detail }]
   };
   let maxItemsError;
   try {
     validateValue(schema, schema.$defs.client_connections, aboveLimit,
-      'client_connections 513-item response');
+      `client_connections ${CLIENT_CONNECTION_LIMIT + 1}-item response`);
   } catch (error) {
     maxItemsError = error;
   }
   assert(maxItemsError?.message ===
-    'client_connections 513-item response.connections must contain <= 512 items',
-    'schema must reject client_connections connections above 512 items via maxItems');
+    `client_connections ${CLIENT_CONNECTION_LIMIT + 1}-item response.connections must contain <= ${CLIENT_CONNECTION_LIMIT} items`,
+    `schema must reject client_connections connections above ${CLIENT_CONNECTION_LIMIT} items via maxItems`);
 }
 
 function validateMethodFixtures(schema, fixtures) {
@@ -675,7 +685,9 @@ assertSchemaExactObject(schema, 'clientConnectionDetail', [
   'remote_port',
   'protocol',
   'state',
-  'direction'
+  'direction',
+  'tx_bps',
+  'rx_bps'
 ]);
 assertSchemaExactObject(schema, 'clientConnectionSummary', [
   'identity_key',
@@ -703,8 +715,8 @@ assert(Array.isArray(schema.$defs.client_connections.properties.client.anyOf) &&
     schema.$defs.client_connections.properties.client.anyOf.map((entry) => entry.$ref || entry.type),
     ['#/$defs/clientConnectionSummary', 'null']
   ), 'schema client_connections.client must allow exactly a summary object or null');
-assert(schema.$defs.client_connections.properties.connections.maxItems === 512,
-  'schema client_connections.connections must cap arrays at 512 items');
+assert(schema.$defs.client_connections.properties.connections.maxItems === CLIENT_CONNECTION_LIMIT,
+  `schema client_connections.connections must cap arrays at ${CLIENT_CONNECTION_LIMIT} items`);
 validateRootSchema(schema);
 assert(schema.$defs.status.properties.refresh_interval_ms.minimum === 500, 'schema must reject/clamp refresh_interval_ms below 500ms');
 assert(schema.$defs.status.properties.active_client_window_ms.minimum === 1000, 'schema must reject/clamp active_client_window_ms below 1000ms');

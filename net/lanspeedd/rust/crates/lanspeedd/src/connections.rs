@@ -413,6 +413,8 @@ mod tests {
             protocol: ConnectionProtocol::Tcp,
             state: ConnectionState::Established,
             direction: ConnectionDirection::Outbound,
+            tx_bps: 0,
+            rx_bps: 0,
         };
         let details = Arc::new(BTreeMap::from([(
             DETAIL_KEY.to_owned(),
@@ -427,6 +429,7 @@ mod tests {
                 clients: Vec::new(),
                 sample_ms: 4_321,
                 connection_details: Arc::clone(&details),
+                connection_counters: Default::default(),
                 counter_source: "ctnetlink_conntrack_acct_orig_reply_bytes",
                 stats: CollectStats {
                     netlink_read: true,
@@ -490,6 +493,7 @@ mod tests {
             clients: Vec::new(),
             sample_ms: 0,
             connection_details: Default::default(),
+            connection_counters: Default::default(),
             counter_source: "ctnetlink_conntrack_acct_orig_reply_bytes",
             stats: CollectStats {
                 netlink_read: true,

@@ -302,6 +302,8 @@ fn detail() -> ClientConnectionDetail {
         protocol: ConnectionProtocol::Tcp,
         state: ConnectionState::Established,
         direction: ConnectionDirection::Outbound,
+        tx_bps: 0,
+        rx_bps: 0,
     }
 }
 
@@ -315,6 +317,7 @@ fn publish_details(
             clients: Vec::new(),
             sample_ms: 12_345,
             connection_details: Arc::new(details),
+            connection_counters: Default::default(),
             counter_source: "ctnetlink_conntrack_acct_orig_reply_bytes",
             stats: CollectStats {
                 netlink_read: true,
@@ -380,6 +383,8 @@ fn client_connections_keeps_exact_envelope_summary_and_detail_key_sets() {
             "protocol",
             "state",
             "direction",
+            "tx_bps",
+            "rx_bps",
         ],
         "client_connections.connections[]",
     );
@@ -406,6 +411,7 @@ fn incomplete_client_connections_keeps_the_existing_envelope_key_set() {
                     truncated: false,
                 },
             )])),
+            connection_counters: Default::default(),
             counter_source: "ctnetlink_conntrack_acct_orig_reply_bytes",
             stats: CollectStats {
                 netlink_read: true,

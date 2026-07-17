@@ -834,8 +834,23 @@ function loadFormatModule(src) {
 			return value;
 		}
 	};
+	const context = vm.createContext({});
+	vm.runInContext(`
+		String.prototype.format = function() {
+			var args = Array.prototype.slice.call(arguments);
+			var index = 0;
+			return String(this).replace(/%(?:\\.(\\d+))?([dfs])/g,
+				function(_match, precision, type) {
+					var value = args[index++];
+					if (type === 's') return String(value);
+					if (type === 'd') return String(Math.trunc(Number(value)));
+					return Number(value).toFixed(precision === undefined ? 6 : Number(precision));
+				});
+		};
+	`, context);
 	return vm.compileFunction(src, [ 'baseclass' ], {
-		filename: 'resources/lanspeed/format.js'
+		filename: 'resources/lanspeed/format.js',
+		parsingContext: context
 	})(fakeBaseclass);
 }
 
@@ -946,6 +961,7 @@ function assertClientConnectionsModule(src) {
 		'groupsForResponse',
 		'identityFromSearch',
 		'portSummary',
+		'sortGroups',
 		'stateLabel'
 	];
 	if (!clientConnections) {
@@ -954,7 +970,7 @@ function assertClientConnectionsModule(src) {
 	}
 	if (JSON.stringify(Object.keys(clientConnections).sort()) !== JSON.stringify(methods) ||
 	    methods.some(function(name) { return typeof clientConnections[name] !== 'function'; })) {
-		fail('clientConnections.js must expose exactly its six pure connection-detail helpers');
+		fail('clientConnections.js must expose exactly its seven pure connection-detail helpers');
 		return;
 	}
 	const mod = clientConnections;
@@ -992,32 +1008,32 @@ function assertClientConnectionsModule(src) {
 			{
 				client_ip: '192.0.2.10', client_port: 50001,
 				remote_ip: '1.1.1.1', remote_port: 443,
-				protocol: 'tcp', state: 'established'
+				protocol: 'tcp', state: 'established', tx_bps: 1000, rx_bps: 2000
 			},
 			{
 				client_ip: '192.0.2.10', client_port: 50002,
 				remote_ip: '8.8.8.8', remote_port: 53,
-				protocol: 'udp', state: 'assured'
+				protocol: 'udp', state: 'assured', tx_bps: 3000, rx_bps: 4000
 			},
 			{
 				client_ip: '192.0.2.11', client_port: 50003,
 				remote_ip: '1.1.1.1', remote_port: 80,
-				protocol: 'udp', state: 'assured'
+				protocol: 'udp', state: 'assured', tx_bps: 5000, rx_bps: 6000
 			},
 			{
 				client_ip: '192.0.2.12', client_port: 50004,
 				remote_ip: '1.1.1.1', remote_port: 443,
-				protocol: 'tcp', state: 'established'
+				protocol: 'tcp', state: 'established', tx_bps: 7000, rx_bps: 8000
 			},
 			{
 				client_ip: '192.0.2.13', client_port: 50005,
 				remote_ip: '9.9.9.9', remote_port: 853,
-				protocol: 'tcp', state: 'established'
+				protocol: 'tcp', state: 'established', tx_bps: 9000, rx_bps: 10000
 			},
 			{
 				client_ip: '2001:DB8::10', client_port: 50006,
 				remote_ip: '2001:DB8::BEEF', remote_port: 123,
-				protocol: 'udp', state: 'assured'
+				protocol: 'udp', state: 'assured', tx_bps: 'invalid', rx_bps: -1
 			}
 		]
 	};
@@ -1034,6 +1050,7 @@ function assertClientConnectionsModule(src) {
 	    groups[0].portLabel !== '80, 443' ||
 	    groups[0].protocolLabel !== 'TCP/UDP' ||
 	    groups[0].stateLabel !== '混合' ||
+	    groups[0].txBps !== 13000 || groups[0].rxBps !== 16000 ||
 	    groups[0].count !== 3 ||
 	    JSON.stringify(Array.from(groups[0].connections, function(conn) { return conn.client_port; })) !==
 		JSON.stringify([ 50001, 50003, 50004 ])) {
@@ -1050,19 +1067,68 @@ function assertClientConnectionsModule(src) {
 		JSON.stringify([ '1.1.1.1', '9.9.9.9' ]) ||
 	    tcpGroups[0].count !== 2 ||
 	    JSON.stringify(Array.from(tcpGroups[0].ports)) !== JSON.stringify([ 443 ]) ||
-	    tcpGroups[0].protocolLabel !== 'TCP' || tcpGroups[0].stateLabel !== '已建立') {
+	    tcpGroups[0].protocolLabel !== 'TCP' || tcpGroups[0].stateLabel !== '已建立' ||
+	    tcpGroups[0].txBps !== 8000 || tcpGroups[0].rxBps !== 10000) {
 		fail('clientConnections.js must filter TCP before building group counts and summaries');
 	}
 	const udpGroups = mod.groupsForResponse(response, 'udp', '');
 	if (JSON.stringify(Array.from(udpGroups, function(group) { return group.remoteIp; })) !==
 		JSON.stringify([ '8.8.8.8', '1.1.1.1', '2001:DB8::BEEF' ]) ||
 	    udpGroups[1].count !== 1 || udpGroups[1].portLabel !== '80' ||
-	    udpGroups[1].protocolLabel !== 'UDP' || udpGroups[1].stateLabel !== '活跃') {
+	    udpGroups[1].protocolLabel !== 'UDP' || udpGroups[1].stateLabel !== '活跃' ||
+	    udpGroups[1].txBps !== 5000 || udpGroups[1].rxBps !== 6000 ||
+	    udpGroups[2].txBps !== 0 || udpGroups[2].rxBps !== 0) {
 		fail('clientConnections.js must filter UDP before preserving first-seen group order');
 	}
 	const unknownGroups = mod.groupsForResponse(response, 'unexpected', '');
 	if (JSON.stringify(unknownGroups) !== JSON.stringify(groups)) {
 		fail('clientConnections.js must normalize unknown protocol filters to the complete all result');
+	}
+
+	const sortableGroups = [
+		{
+			remoteIp: '10.0.0.1', ports: [ 443 ], portLabel: '443',
+			protocolLabel: 'UDP', stateLabel: 'Zulu', txBps: 10, rxBps: 30,
+			count: 2, connections: [ { marker: 'a' } ]
+		},
+		{
+			remoteIp: '10.0.0.2', ports: [ 53 ], portLabel: '53',
+			protocolLabel: 'TCP', stateLabel: 'Alpha', txBps: 30, rxBps: 10,
+			count: 1, connections: [ { marker: 'b' } ]
+		},
+		{
+			remoteIp: '10.0.0.3', ports: [ 80 ], portLabel: '80',
+			protocolLabel: 'TCP/UDP', stateLabel: 'Mike', txBps: 20, rxBps: 20,
+			count: 3, connections: [ { marker: 'c' } ]
+		}
+	];
+	const sortableSnapshot = JSON.stringify(sortableGroups);
+	const sortOrders = {
+		remote_ip: [ '10.0.0.1', '10.0.0.2', '10.0.0.3' ],
+		remote_port: [ '10.0.0.2', '10.0.0.3', '10.0.0.1' ],
+		protocol: [ '10.0.0.2', '10.0.0.3', '10.0.0.1' ],
+		state: [ '10.0.0.2', '10.0.0.3', '10.0.0.1' ],
+		tx: [ '10.0.0.1', '10.0.0.3', '10.0.0.2' ],
+		rx: [ '10.0.0.2', '10.0.0.3', '10.0.0.1' ],
+		count: [ '10.0.0.2', '10.0.0.1', '10.0.0.3' ]
+	};
+	Object.keys(sortOrders).forEach(function(sortKey) {
+		const ascending = mod.sortGroups(sortableGroups, sortKey, 'asc');
+		const descending = mod.sortGroups(sortableGroups, sortKey, 'desc');
+		const ascIps = Array.from(ascending, function(group) { return group.remoteIp; });
+		const descIps = Array.from(descending, function(group) { return group.remoteIp; });
+		if (JSON.stringify(ascIps) !== JSON.stringify(sortOrders[sortKey]) ||
+		    JSON.stringify(descIps) !== JSON.stringify(sortOrders[sortKey].slice().reverse())) {
+			fail(`clientConnections.js must sort grouped destinations by ${sortKey} in both directions`);
+		}
+		if (ascending === sortableGroups || descending === sortableGroups ||
+		    ascending.some(function(group) { return sortableGroups.indexOf(group) === -1; })) {
+			fail('clientConnections.js sortGroups must return a new array containing the original group objects');
+		}
+	});
+	if (JSON.stringify(sortableGroups) !== sortableSnapshot ||
+	    JSON.stringify(response) !== originalResponse) {
+		fail('clientConnections.js sorting must not mutate source groups, nested connections, or the RPC response');
 	}
 
 	const tcpSearchedGroups = mod.groupsForResponse(response, 'tcp', '1.1.1.1');
@@ -1073,7 +1139,8 @@ function assertClientConnectionsModule(src) {
 	    JSON.stringify(Array.from(tcpSearchedGroups[0].connections, function(conn) { return conn.client_port; })) !==
 		JSON.stringify([ 50001, 50004 ]) ||
 	    tcpSearchedGroups[0].protocolLabel !== 'TCP' ||
-	    tcpSearchedGroups[0].stateLabel !== '已建立') {
+	    tcpSearchedGroups[0].stateLabel !== '已建立' ||
+	    tcpSearchedGroups[0].txBps !== 8000 || tcpSearchedGroups[0].rxBps !== 10000) {
 		fail('clientConnections.js must keep TCP filtering active while applying a non-empty search');
 	}
 	const udpSearchedGroups = mod.groupsForResponse(response, 'udp', '1.1.1.1');
@@ -1084,7 +1151,8 @@ function assertClientConnectionsModule(src) {
 	    JSON.stringify(Array.from(udpSearchedGroups[0].connections, function(conn) { return conn.client_port; })) !==
 		JSON.stringify([ 50003 ]) ||
 	    udpSearchedGroups[0].protocolLabel !== 'UDP' ||
-	    udpSearchedGroups[0].stateLabel !== '活跃') {
+	    udpSearchedGroups[0].stateLabel !== '活跃' ||
+	    udpSearchedGroups[0].txBps !== 5000 || udpSearchedGroups[0].rxBps !== 6000) {
 		fail('clientConnections.js must keep UDP filtering active while applying a non-empty search');
 	}
 
@@ -1100,8 +1168,10 @@ function assertClientConnectionsModule(src) {
 	    remotePortSearch.length !== 1 || remotePortSearch[0].remoteIp !== '9.9.9.9' ||
 	    clientPortSearch.length !== 1 || clientPortSearch[0].remoteIp !== '8.8.8.8' ||
 	    caseSearch.length !== 1 || caseSearch[0].remoteIp !== '2001:DB8::BEEF' ||
+	    caseSearch[0].txBps !== 0 || caseSearch[0].rxBps !== 0 ||
 	    narrowedSearch.length !== 1 || narrowedSearch[0].count !== 2 ||
-	    narrowedSearch[0].portLabel !== '443' || narrowedSearch[0].protocolLabel !== 'TCP') {
+	    narrowedSearch[0].portLabel !== '443' || narrowedSearch[0].protocolLabel !== 'TCP' ||
+	    narrowedSearch[0].txBps !== 8000 || narrowedSearch[0].rxBps !== 10000) {
 		fail('clientConnections.js search must cover every endpoint field before recomputing group summaries');
 	}
 
@@ -1186,6 +1256,14 @@ function fakeTranslate(value) {
 		},
 		toString: function() { return String(value); }
 	};
+}
+
+function nextDetailSort(state, sortKey) {
+	if (!state.sortCustom || state.sortKey !== sortKey)
+		return { sortKey: sortKey, sortDir: 'desc', sortCustom: true };
+	if (state.sortDir === 'desc')
+		return { sortKey: sortKey, sortDir: 'asc', sortCustom: true };
+	return { sortKey: 'rx', sortDir: 'desc', sortCustom: false };
 }
 
 function loadStatusRefreshModule(src, fakeWindow) {
@@ -1472,6 +1550,7 @@ function assertClientDetailViewLifecycle(src) {
 	const fmt = {
 		MIN_REFRESH_MS: 1000,
 		DEFAULT_PREFS: { refreshMs: 3000 },
+		nextSort: nextDetailSort,
 		loadPrefs: function() { return { refreshMs: 250, paused: true }; }
 	};
 
@@ -1487,23 +1566,36 @@ function assertClientDetailViewLifecycle(src) {
 		const state = shellState;
 		const requiredFields = [
 			'identityKey', 'response', 'lastGood', 'updatedAt', 'protocol', 'filter', 'expanded',
+			'sortKey', 'sortDir', 'sortCustom',
 			'prefs', 'timer', 'loading', 'reload', 'schedule', 'stopTimer',
-			'setProtocol', 'setFilter', 'back'
+			'setProtocol', 'setFilter', 'setSort', 'back'
 		];
 		if (!rootNode || !state || requiredFields.some(function(name) {
 			return !Object.prototype.hasOwnProperty.call(state, name);
 		}) || state.lastGood !== fixture || state.protocol !== 'all' ||
-		    state.filter !== '' || state.loading !== false || timers.size !== 1 ||
+		    state.filter !== '' || state.sortKey !== 'rx' || state.sortDir !== 'desc' ||
+		    state.sortCustom !== false || state.loading !== false || timers.size !== 1 ||
 		    Array.from(timers.values())[0].interval !== 1000) {
-			fail('clientDetailView.js render must initialize the fixed view state and auto-schedule at MIN_REFRESH_MS even when old prefs are paused');
+			fail('clientDetailView.js render must initialize RX-descending detail sort state and auto-schedule at MIN_REFRESH_MS even when old prefs are paused');
+		}
+
+		const rendersBeforeInitialSort = renders.length;
+		state.setSort('remote_ip');
+		if (state.sortKey !== 'remote_ip' || state.sortDir !== 'desc' ||
+		    state.sortCustom !== true || renders.length !== rendersBeforeInitialSort + 1 ||
+		    rpcCount !== 1 || timers.size !== 1) {
+			fail('clientDetailView.js must start a clicked detail column at descending without RPC or timer changes');
 		}
 
 		const beforeReloadEvents = events.length;
+		const scheduledEntry = Array.from(timers.entries())[0];
+		timers.delete(scheduledEntry[0]);
+		scheduledEntry[1].handler();
 		const firstReload = state.reload();
 		const duplicateReload = state.reload();
 		if (firstReload !== duplicateReload || rpcCount !== 2 || timers.size !== 0 ||
 		    state.loading !== true || renders[renders.length - 1].loading !== true) {
-			fail('clientDetailView.js reload must stop its timer, render loading immediately, and return one identical pending Promise without overlapping RPC');
+			fail('clientDetailView.js automatic reload must stop its elapsed timer, render loading immediately, and share one pending Promise with duplicate reload calls');
 		}
 		if (events.slice(beforeReloadEvents).some(function(event) { return event.indexOf('timer:') === 0; }))
 			fail('clientDetailView.js must never schedule the next timer while a reload Promise is pending');
@@ -1514,9 +1606,10 @@ function assertClientDetailViewLifecycle(src) {
 		const settledEvents = events.slice(beforeReloadEvents);
 		if (state.loading || state.response !== success || state.lastGood !== success ||
 		    state.updatedAt !== successUpdatedAt || state.error !== null ||
+		    state.sortKey !== 'remote_ip' || state.sortDir !== 'desc' || !state.sortCustom ||
 		    timers.size !== 1 || settledEvents[settledEvents.length - 2] !== 'render:false' ||
 		    settledEvents[settledEvents.length - 1] !== 'timer:1000') {
-			fail('clientDetailView.js successful reload must replace response/lastGood, render loading=false, then schedule exactly one timer');
+			fail('clientDetailView.js successful automatic reload must retain sorting, replace response/lastGood, render loading=false, then schedule exactly one timer');
 		}
 
 		const failedReload = state.reload();
@@ -1558,9 +1651,27 @@ function assertClientDetailViewLifecycle(src) {
 		state.setProtocol('tcp');
 		state.setFilter('443');
 		if (state.protocol !== 'tcp' || state.filter !== '443' ||
+		    state.sortKey !== 'remote_ip' || state.sortDir !== 'desc' || !state.sortCustom ||
 		    rpcCount !== rpcBeforeLocalControls || renders.length !== rendersBeforeLocalControls + 2) {
-			fail('clientDetailView.js protocol/search controls must render local state only without issuing RPC');
+			fail('clientDetailView.js protocol/search controls must retain detail sorting and render local state only without issuing RPC');
 		}
+		state.setSort('remote_ip');
+		if (state.sortKey !== 'remote_ip' || state.sortDir !== 'asc' || !state.sortCustom)
+			fail('clientDetailView.js must switch an explicit descending detail sort to ascending');
+		state.setSort('remote_ip');
+		if (state.sortKey !== 'rx' || state.sortDir !== 'desc' || state.sortCustom)
+			fail('clientDetailView.js must restore default RX descending after the ascending detail sort');
+		state.setSort('rx');
+		if (state.sortKey !== 'rx' || state.sortDir !== 'desc' || !state.sortCustom)
+			fail('clientDetailView.js must distinguish an explicit RX descending click from default sorting');
+		state.setSort('rx');
+		if (state.sortKey !== 'rx' || state.sortDir !== 'asc' || !state.sortCustom)
+			fail('clientDetailView.js must let the default RX header advance to explicit ascending');
+		state.setSort('rx');
+		if (state.sortKey !== 'rx' || state.sortDir !== 'desc' || state.sortCustom)
+			fail('clientDetailView.js detail header clicks must cycle descending, ascending, then default RX descending');
+		if (rpcCount !== rpcBeforeLocalControls)
+			fail('clientDetailView.js detail sorting must stay local and issue no RPC');
 
 		state.schedule();
 		if (timers.size !== 1) fail('clientDetailView.js schedule must replace, not accumulate, timers');
@@ -1638,6 +1749,7 @@ function assertClientDetailIntegratedState(viewSrc) {
 		const view = loadClientDetailViewModule(viewSrc, {
 			MIN_REFRESH_MS: 1000,
 			DEFAULT_PREFS: { refreshMs: 3000 },
+			nextSort: nextDetailSort,
 			loadPrefs: function() { return Object.assign({}, prefs); }
 		}, {
 			clientConnections: function() { return queue.shift(); }
@@ -1712,6 +1824,53 @@ function assertClientDetailIntegratedState(viewSrc) {
 				fail('clientDetailView.js must normalize invalid refreshMs to 3000ms once, schedule despite paused=true, and stamp direct initial responses');
 			}
 		}
+
+		const sortA = JSON.parse(JSON.stringify(fixture));
+		const sortB = JSON.parse(JSON.stringify(fixture));
+		sortB.connections.reverse();
+		const sortASnapshot = JSON.stringify(sortA);
+		const sortBSnapshot = JSON.stringify(sortB);
+		const sortedRefresh = harness({ refreshMs: 1000, paused: true }, [
+			Promise.resolve(sortA), Promise.resolve(sortB)
+		]);
+		const sortedInitial = await sortedRefresh.view.load('fixture@lan');
+		sortedRefresh.view.render(sortedInitial);
+		sortedRefresh.state().setSort('remote_ip');
+		sortedRefresh.state().setSort('remote_ip');
+		let sortedIps = findFakeElementsByClass(
+			sortedRefresh.built().refs.tbody, 'lanspeed-connection-group'
+		).map(function(row) { return row.attrs['data-remote-ip']; });
+		if (sortedRefresh.state().sortKey !== 'remote_ip' ||
+		    sortedRefresh.state().sortDir !== 'asc' ||
+		    !sortedRefresh.state().sortCustom ||
+		    JSON.stringify(sortedIps) !== JSON.stringify([
+			    '198.51.100.53', '2001:db8:ffff::20'
+		    ])) {
+			fail('client detail integration must apply an explicit sort before automatic refresh');
+		}
+		const timerEntry = Array.from(sortedRefresh.timers.entries())[0];
+		sortedRefresh.timers.delete(timerEntry[0]);
+		const originalReload = sortedRefresh.state().reload;
+		let automaticReload = null;
+		sortedRefresh.state().reload = function() {
+			automaticReload = originalReload.apply(this, arguments);
+			return automaticReload;
+		};
+		timerEntry[1].handler();
+		await automaticReload;
+		sortedIps = findFakeElementsByClass(
+			sortedRefresh.built().refs.tbody, 'lanspeed-connection-group'
+		).map(function(row) { return row.attrs['data-remote-ip']; });
+		if (sortedRefresh.state().response !== sortB ||
+		    sortedRefresh.state().sortKey !== 'remote_ip' ||
+		    sortedRefresh.state().sortDir !== 'asc' ||
+		    !sortedRefresh.state().sortCustom ||
+		    JSON.stringify(sortedIps) !== JSON.stringify([
+			    '198.51.100.53', '2001:db8:ffff::20'
+		    ]) || JSON.stringify(sortA) !== sortASnapshot ||
+		    JSON.stringify(sortB) !== sortBSnapshot) {
+			fail('client detail automatic refresh must retain and reapply sorting without mutating either RPC response');
+		}
 	}).catch(function(err) {
 		fail('integrated client detail state behavior could not execute: ' + (err && err.stack || err));
 	}));
@@ -1754,9 +1913,12 @@ function assertClientDetailRefreshSource(src) {
 		fail('clientDetailRefresh.js must remain a refs-only renderer without RPC, timers, location, innerHTML, or CSS responsibilities');
 	}
 	if (!src.includes('clientConnections.groupsForResponse') ||
+	    !src.includes('clientConnections.sortGroups') ||
 	    !src.includes('clientConnections.formatEndpoint') ||
+	    !src.includes("setAttribute('aria-sort'") ||
+	    !src.includes("ascending ? '↑' : '↓'") ||
 	    !src.includes('.textContent') || !/\bE\s*\(/.test(src)) {
-		fail('clientDetailRefresh.js must render grouped connection detail through helpers, E(), and textContent');
+		fail('clientDetailRefresh.js must sort grouped connection detail and refresh accessible sort headers through helpers, E(), and textContent');
 	}
 }
 
@@ -1771,6 +1933,7 @@ function assertClientDetailRefreshBehavior(src) {
 	const fixture = JSON.parse(fs.readFileSync(
 		path.join(root, 'tests/fixtures/lanspeed-client-connections.json'), 'utf8'
 	));
+	const fixtureSnapshot = JSON.stringify(fixture);
 	const state = {
 		identityKey: fixture.client.identity_key,
 		response: fixture,
@@ -1780,11 +1943,28 @@ function assertClientDetailRefreshBehavior(src) {
 		protocol: 'all',
 		filter: '',
 		expanded: {},
-		prefs: { refreshMs: 1000 },
+		sortKey: 'rx',
+		sortDir: 'desc',
+		sortCustom: false,
+		prefs: { refreshMs: 1000, unit: 'bit' },
 		loading: false,
 		back: function() {},
 		setProtocol: function(protocol) { state.protocol = protocol; refresh.render(state); },
 		setFilter: function(filter) { state.filter = filter; refresh.render(state); },
+		setSort: function(sortKey) {
+			if (!state.sortCustom || state.sortKey !== sortKey) {
+				state.sortKey = sortKey;
+				state.sortDir = 'desc';
+				state.sortCustom = true;
+			} else if (state.sortDir === 'desc') {
+				state.sortDir = 'asc';
+			} else {
+				state.sortKey = 'rx';
+				state.sortDir = 'desc';
+				state.sortCustom = false;
+			}
+			refresh.render(state);
+		},
 		reload: function() {}
 	};
 	const built = buildClientDetailShellForRefresh(state);
@@ -1804,6 +1984,9 @@ function assertClientDetailRefreshBehavior(src) {
 	).map(fakeElementText);
 	const footer = fakeElementText(refs.footer);
 	const rows = refs.tbody.children;
+	const initialGroupOrder = findFakeElementsByClass(
+		refs.tbody, 'lanspeed-connection-group'
+	).map(function(row) { return row.attrs['data-remote-ip']; });
 	if (fakeElementText(refs.clientName) !== 'fixture-client' ||
 	    !meta.includes('192.0.2.10') || !meta.includes('02:00:00:00:00:01') ||
 	    !meta.includes('br-lan') || meta.includes('区域') ||
@@ -1816,13 +1999,96 @@ function assertClientDetailRefreshBehavior(src) {
 	    refs.summaryTargets.textContent !== '2' || refs.summaryConnections.textContent !== '2' ||
 	    refs.summaryUpdated.textContent !== '03:04:05' ||
 	    refs.summaryUpdated.textContent.includes('12345') || rows.length !== 4 ||
+	    JSON.stringify(initialGroupOrder) !== JSON.stringify([
+		    '2001:db8:ffff::20', '198.51.100.53'
+	    ]) ||
 	    refs.table.hidden || !refs.empty.hidden || !refs.error.hidden) {
-		fail('clientDetailRefresh.js must render hostname-first identity/meta, unfiltered target count, real totals, browser receive wall clock, and two rows per destination group');
+		fail('clientDetailRefresh.js must render identity/meta, real summaries, and destination groups with highest download speed first by default');
 	}
 	if (!footer.includes('连接数据') || !footer.includes('Conntrack Netlink') ||
 	    !footer.includes('显示 2 / 共 2 条') ||
 	    !footer.includes('每 1 秒自动刷新')) {
 		fail('clientDetailRefresh.js footer must report source, returned/total/limit with accurate meanings, and the clamped refresh cycle in Chinese');
+	}
+
+	const sortHeaders = refs.sortHeaders;
+	const sortKeys = [
+		'remote_ip', 'remote_port', 'protocol', 'state', 'tx', 'rx', 'count'
+	];
+	if (!sortHeaders || sortKeys.some(function(sortKey) { return !sortHeaders[sortKey]; })) {
+		fail('clientDetailRefresh.js requires refs for all seven sortable detail headers');
+	} else {
+		const indicator = function(sortKey) {
+			return sortHeaders[sortKey].button.lastChild.textContent;
+		};
+		const initialRxTitle = '下行：默认排序，点击开始降序排序';
+		if (sortHeaders.rx.th.attrs['aria-sort'] !== 'descending' ||
+		    sortHeaders.remote_ip.th.attrs['aria-sort'] !== 'none' ||
+		    sortHeaders.rx.button.attrs.title !== initialRxTitle ||
+		    sortHeaders.rx.button.attrs['aria-label'] !== initialRxTitle ||
+		    indicator('rx') !== '' || indicator('remote_ip') !== '') {
+			fail('clientDetailRefresh.js must expose default RX descending to assistive technology without a visual arrow');
+		}
+
+		sortHeaders.remote_ip.button.listeners.click();
+		let remoteTitle = '目标 IP：当前降序，点击切换为升序';
+		let sortedOrder = findFakeElementsByClass(
+			refs.tbody, 'lanspeed-connection-group'
+		).map(function(row) { return row.attrs['data-remote-ip']; });
+		if (state.sortKey !== 'remote_ip' || state.sortDir !== 'desc' || !state.sortCustom ||
+		    sortHeaders.remote_ip.th.attrs['aria-sort'] !== 'descending' ||
+		    sortHeaders.rx.th.attrs['aria-sort'] !== 'none' || indicator('remote_ip') !== '↓' ||
+		    sortHeaders.remote_ip.button.attrs.title !== remoteTitle ||
+		    sortHeaders.remote_ip.button.attrs['aria-label'] !== remoteTitle ||
+		    JSON.stringify(sortedOrder) !== JSON.stringify([
+			    '2001:db8:ffff::20', '198.51.100.53'
+		    ])) {
+			fail('clientDetailRefresh.js must render an explicit descending detail sort with matching row order, aria-sort, title and indicator');
+		}
+
+		sortHeaders.remote_ip.button.listeners.click();
+		remoteTitle = '目标 IP：当前升序，点击恢复默认排序';
+		sortedOrder = findFakeElementsByClass(
+			refs.tbody, 'lanspeed-connection-group'
+		).map(function(row) { return row.attrs['data-remote-ip']; });
+		if (state.sortDir !== 'asc' || !state.sortCustom ||
+		    sortHeaders.remote_ip.th.attrs['aria-sort'] !== 'ascending' ||
+		    indicator('remote_ip') !== '↑' ||
+		    sortHeaders.remote_ip.button.attrs.title !== remoteTitle ||
+		    sortHeaders.remote_ip.button.attrs['aria-label'] !== remoteTitle ||
+		    JSON.stringify(sortedOrder) !== JSON.stringify([
+			    '198.51.100.53', '2001:db8:ffff::20'
+		    ])) {
+			fail('clientDetailRefresh.js must render an explicit ascending detail sort with matching row order, aria-sort, title and indicator');
+		}
+
+		state.setProtocol('udp');
+		if (state.sortKey !== 'remote_ip' || state.sortDir !== 'asc' || !state.sortCustom ||
+		    findFakeElementsByClass(refs.tbody, 'lanspeed-connection-group').length !== 1) {
+			fail('client detail protocol filtering must retain the selected sorting state');
+		}
+		state.setProtocol('all');
+		state.setFilter('0');
+		sortedOrder = findFakeElementsByClass(
+			refs.tbody, 'lanspeed-connection-group'
+		).map(function(row) { return row.attrs['data-remote-ip']; });
+		if (state.sortKey !== 'remote_ip' || state.sortDir !== 'asc' || !state.sortCustom ||
+		    JSON.stringify(sortedOrder) !== JSON.stringify([
+			    '198.51.100.53', '2001:db8:ffff::20'
+		    ])) {
+			fail('client detail search must retain and apply the selected sorting state after filtering');
+		}
+		state.setFilter('');
+		sortHeaders.remote_ip.button.listeners.click();
+		if (state.sortKey !== 'rx' || state.sortDir !== 'desc' || state.sortCustom ||
+		    sortHeaders.rx.th.attrs['aria-sort'] !== 'descending' || indicator('rx') !== '' ||
+		    sortHeaders.remote_ip.th.attrs['aria-sort'] !== 'none' ||
+		    indicator('remote_ip') !== '') {
+			fail('clientDetailRefresh.js must restore the arrowless default RX-descending header after the third click');
+		}
+	}
+	if (JSON.stringify(fixture) !== fixtureSnapshot) {
+		fail('client detail rendering, sorting, protocol filtering and search must not mutate the RPC response');
 	}
 	const unorderedIpsResponse = JSON.parse(JSON.stringify(fixture));
 	unorderedIpsResponse.client.ips = [
@@ -1840,10 +2106,10 @@ function assertClientDetailRefreshBehavior(src) {
 	state.response = fixture;
 	refresh.render(state);
 	const allCells = findFakeElementsByTag(refs.tbody, 'td');
-	if (allCells.length !== 12 || allCells.some(function(cell) {
+	if (allCells.length !== 16 || allCells.some(function(cell) {
 		return !Object.prototype.hasOwnProperty.call(cell.attrs, 'data-label');
 	})) {
-		fail('clientDetailRefresh.js must give all five group cells and the colspan detail cell mobile data-label text');
+		fail('clientDetailRefresh.js must give all seven group cells and the colspan detail cell mobile data-label text');
 	}
 	const groupRows = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-group');
 	const detailRows = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-detail-row');
@@ -1851,26 +2117,49 @@ function assertClientDetailRefreshBehavior(src) {
 		return row.attrs.tabindex !== '0' || row.attrs.role !== 'button' ||
 			row.attrs['aria-expanded'] !== 'false';
 	}) || detailRows.some(function(row) {
-		return !row.hidden || findFakeElementsByTag(row, 'td')[0].attrs.colspan !== '5';
+		return !row.hidden || findFakeElementsByTag(row, 'td')[0].attrs.colspan !== '7';
 	})) {
-		fail('clientDetailRefresh.js group/detail rows must expose button semantics, aria-expanded, colspan=5 and real hidden collapse state');
+		fail('clientDetailRefresh.js group/detail rows must expose button semantics, aria-expanded, colspan=7 and real hidden collapse state');
 	}
 	const detailCopy = detailRows.map(fakeElementText).join(' ');
 	if (!detailCopy.includes('出站') || !detailCopy.includes('UDP') || !detailCopy.includes('活跃') ||
 	    !detailCopy.includes('192.0.2.10:53000 → 198.51.100.53:53') ||
 	    !detailCopy.includes('入站') || !detailCopy.includes('TCP') || !detailCopy.includes('已建立') ||
-	    !detailCopy.includes('[2001:db8:ffff::20]:54001 → [2001:db8:1::10]:443')) {
-		fail('clientDetailRefresh.js detail rows must render Chinese direction/state, uppercase protocol, direction-correct endpoints, and bracketed IPv6');
+	    !detailCopy.includes('[2001:db8:ffff::20]:54001 → [2001:db8:1::10]:443') ||
+	    !detailCopy.includes('↑ 上行 8.00 Kbps') || !detailCopy.includes('↓ 下行 16.00 Kbps') ||
+	    !detailCopy.includes('↑ 上行 32.00 Kbps') || !detailCopy.includes('↓ 下行 64.00 Kbps')) {
+		fail('clientDetailRefresh.js detail rows must render direction/state, endpoints, and each connection upload/download rate');
+	}
+	const groupCopy = groupRows.map(fakeElementText).join(' ');
+	if (!groupCopy.includes('8.00 Kbps') || !groupCopy.includes('16.00 Kbps') ||
+	    !groupCopy.includes('32.00 Kbps') || !groupCopy.includes('64.00 Kbps')) {
+		fail('clientDetailRefresh.js group rows must render destination upload/download rate totals');
+	}
+	const rateCopy = findFakeElementsByClass(
+		refs.tbody, 'lanspeed-connection-detail-rate'
+	).map(fakeElementText);
+	if (JSON.stringify(rateCopy) !== JSON.stringify([
+		'↑ 上行 32.00 Kbps', '↓ 下行 64.00 Kbps',
+		'↑ 上行 8.00 Kbps', '↓ 下行 16.00 Kbps'
+	])) {
+		fail('clientDetailRefresh.js must expose visible direction labels in default descending-download group order');
+	}
+	if (findFakeElementsByClass(refs.tbody, 'lanspeed-connection-detail-rate').some(function(rate) {
+		var spans = findFakeElementsByTag(rate, 'span');
+		return spans.length !== 2 || spans[1].attrs['aria-hidden'] !== 'true';
+	})) {
+		fail('clientDetailRefresh.js must hide decorative rate arrows from assistive technology');
 	}
 
 	let prevented = 0;
-	const focusedGroup = groupRows[0];
-	const focusedDetail = detailRows[0];
+	const focusedGroup = groupRows[1];
+	const focusedDetail = detailRows[1];
+	const focusedChildIndex = refs.tbody.children.indexOf(focusedGroup);
 	focusedGroup.focus();
 	focusedGroup.listeners.keydown({ key: 'Enter', preventDefault: function() { prevented++; } });
 	let currentGroups = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-group');
 	let currentDetails = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-detail-row');
-	if (prevented !== 1 || currentGroups[0] !== focusedGroup || currentDetails[0] !== focusedDetail ||
+	if (prevented !== 1 || currentGroups[1] !== focusedGroup || currentDetails[1] !== focusedDetail ||
 	    fakeDocument.activeElement !== focusedGroup ||
 	    focusedGroup.attrs['aria-expanded'] !== 'true' || focusedDetail.hidden ||
 	    state.expanded['198.51.100.53'] !== true) {
@@ -1879,24 +2168,24 @@ function assertClientDetailRefreshBehavior(src) {
 	focusedGroup.listeners.keydown({ key: ' ', preventDefault: function() { prevented++; } });
 	currentGroups = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-group');
 	currentDetails = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-detail-row');
-	if (prevented !== 2 || currentGroups[0] !== focusedGroup || currentDetails[0] !== focusedDetail ||
+	if (prevented !== 2 || currentGroups[1] !== focusedGroup || currentDetails[1] !== focusedDetail ||
 	    fakeDocument.activeElement !== focusedGroup ||
 	    focusedGroup.attrs['aria-expanded'] !== 'false' || !focusedDetail.hidden ||
 	    state.expanded['198.51.100.53'] !== false) {
 		fail('clientDetailRefresh.js Space must toggle the existing row in place, prevent default, and preserve keyboard focus while collapsing');
 	}
 	focusedGroup.listeners.click({ preventDefault: function() { prevented++; } });
-	if (prevented !== 3 || refs.tbody.children[0] !== focusedGroup || focusedDetail.hidden ||
+	if (prevented !== 3 || refs.tbody.children[focusedChildIndex] !== focusedGroup || focusedDetail.hidden ||
 	    state.expanded['198.51.100.53'] !== true) {
 		fail('clientDetailRefresh.js click must also toggle the existing group/detail rows without rebuilding the table');
 	}
 	refresh.render(state);
 	currentGroups = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-group');
 	currentDetails = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-detail-row');
-	if (currentGroups[0] === focusedGroup ||
-	    currentGroups[0].attrs['data-remote-ip'] !== '198.51.100.53' ||
-	    fakeDocument.activeElement !== currentGroups[0] ||
-	    currentGroups[0].attrs['aria-expanded'] !== 'true' || currentDetails[0].hidden) {
+	if (currentGroups[1] === focusedGroup ||
+	    currentGroups[1].attrs['data-remote-ip'] !== '198.51.100.53' ||
+	    fakeDocument.activeElement !== currentGroups[1] ||
+	    currentGroups[1].attrs['aria-expanded'] !== 'true' || currentDetails[1].hidden) {
 		fail('clientDetailRefresh.js refresh renders must restore keyboard focus to the rebuilt row for the same remote IP');
 	}
 
@@ -2014,11 +2303,18 @@ function assertClientDetailRefreshBehavior(src) {
 	state.loading = true;
 	refresh.render(state);
 	const truncatedFooter = fakeElementText(refs.footer);
+	const truncatedRates = findFakeElementsByClass(
+		refs.tbody, 'lanspeed-connection-rate-cell'
+	).map(fakeElementText);
 	if (refs.summaryTargets.textContent !== '至少 2' ||
 	    !truncatedFooter.includes('显示 2 / 共 5 条') ||
 	    !truncatedFooter.includes('连接较多，仅显示前 2 条') ||
+	    !truncatedFooter.includes('分组速率仅汇总已显示连接') ||
+	    truncatedRates.length !== 4 || truncatedRates.some(function(rate) {
+		return rate.startsWith('≥ ');
+	    }) ||
 	    !truncatedFooter.includes('backend <warning>') || !refs.refresh.disabled) {
-		fail('clientDetailRefresh.js must mark truncated target counts as a lower bound, render accurate footer text, and disable manual refresh while loading');
+		fail('clientDetailRefresh.js must keep truncated rates visually numeric, explain their partial aggregation in the footer, and disable refresh while loading');
 	}
 	const hostile = JSON.parse(JSON.stringify(fixture));
 	hostile.client.hostname = '<svg onload=alert(1)>';
@@ -2049,7 +2345,16 @@ function assertClientDetailShellSource(src) {
 		return match[1];
 	});
 	if (JSON.stringify(namedFunctions) !== JSON.stringify([ 'buildShell' ])) {
-		fail('clientDetailShell.js must only define buildShell, leaving filtering and summaries to the view module');
+		fail('clientDetailShell.js must keep its sortable-header builder local to buildShell and leave sorting state and row ordering outside the shell');
+	}
+	const sortableKeys = [
+		'remote_ip', 'remote_port', 'protocol', 'state', 'tx', 'rx', 'count'
+	];
+	if (!src.includes('var sortableHeader = function(sortKey, label, attrs)') ||
+	    sortableKeys.some(function(key) {
+		return !src.includes(`sortableHeader('${key}'`);
+	    })) {
+		fail('clientDetailShell.js must construct all seven client-detail headers through one local sortableHeader helper');
 	}
 	if (!src.includes('clientDetailStyle.CSS') || !src.includes('lsTheme.applyRoot(root)')) {
 		fail('clientDetailShell.js must inject the composed detail CSS and apply the existing theme helper');
@@ -2069,11 +2374,12 @@ function assertClientDetailShellInteraction(src) {
 			E,
 			function(value) { return value; }
 		);
-	const calls = { back: [], protocol: [], filter: [], reload: [] };
+	const calls = { back: [], protocol: [], filter: [], sort: [], reload: [] };
 	const viewState = {
 		back: function() { calls.back.push(Array.from(arguments)); },
 		setProtocol: function() { calls.protocol.push(Array.from(arguments)); },
 		setFilter: function() { calls.filter.push(Array.from(arguments)); },
+		setSort: function() { calls.sort.push(Array.from(arguments)); },
 		reload: function() { calls.reload.push(Array.from(arguments)); }
 	};
 	const built = shell.buildShell(viewState);
@@ -2105,7 +2411,8 @@ function assertClientDetailShellInteraction(src) {
 		'cbi-map', 'lanspeed-root', 'cbi-section', 'lanspeed-header',
 		'lanspeed-body', 'lanspeed-toolbar', 'lanspeed-toolbar-left',
 		'lanspeed-toolbar-filter', 'lanspeed-toolbar-right', 'lanspeed-table',
-		'cbi-button', 'cbi-input-text', 'alert-message', 'error', 'label', 'spacer'
+		'cbi-button', 'cbi-input-text', 'alert-message', 'error', 'label', 'spacer',
+		'num', 'lanspeed-sort-button', 'lanspeed-sort-label', 'lanspeed-sort-indicator'
 	]);
 	walkFakeElements(built.root, function(node) {
 		String(node.attrs && node.attrs.class || '').split(/\s+/).filter(Boolean).forEach(function(className) {
@@ -2121,7 +2428,7 @@ function assertClientDetailShellInteraction(src) {
 	[
 		'error', 'back', 'clientName', 'clientMeta', 'connectionState', 'summary',
 		'summaryTargets', 'summaryConnections', 'summaryUpdated', 'protocolAll',
-		'protocolTcp', 'protocolUdp', 'filter', 'refresh', 'table', 'tbody',
+		'protocolTcp', 'protocolUdp', 'filter', 'refresh', 'sortHeaders', 'table', 'tbody',
 		'empty', 'footer'
 	].forEach(function(name) {
 		if (!refs[name]) fail(`clientDetailShell.js refs must expose ${name}`);
@@ -2134,7 +2441,7 @@ function assertClientDetailShellInteraction(src) {
 		'客户端身份', '正在加载客户端身份…', 'MAC 与 IP 信息将在加载后显示',
 		'等待数据', '连接摘要', '目标 IP 数', '连接数', '更新时间',
 		'当前连接', '全部', 'TCP', 'UDP', '立即刷新', '目标 IP', '目标端口',
-		'协议', '状态', '暂无连接', '连接数据加载后会显示来源和刷新间隔。'
+		'协议', '状态', '上行', '下行', '暂无连接', '连接数据加载后会显示来源和刷新间隔。'
 	].forEach(function(text) {
 		if (!copy.includes(text)) fail(`clientDetailShell.js must render Chinese copy: ${text}`);
 	});
@@ -2147,12 +2454,28 @@ function assertClientDetailShellInteraction(src) {
 		fail('clientDetailShell.js must label the grouped destination summary as target IP count');
 	}
 	const headers = findFakeElementsByTag(refs.table, 'th').map(fakeElementText);
+	const headerNodes = findFakeElementsByTag(refs.table, 'th');
 	if (JSON.stringify(headers) !== JSON.stringify([
-		'目标 IP', '目标端口', '协议', '状态', '连接数'
-	]) || findFakeElementsByTag(refs.table, 'th').some(function(th) {
-		return th.attrs.scope !== 'col';
+		'目标 IP', '目标端口', '协议', '状态', '上行', '下行', '连接数'
+	]) || headerNodes.some(function(th) {
+		return th.attrs.scope !== 'col' || th.attrs['aria-sort'] !== 'none';
 	})) {
-		fail('clientDetailShell.js must render the fixed accessible connection table headers');
+		fail('clientDetailShell.js must render seven initially-unsorted accessible connection table headers');
+	}
+	const sortKeys = [
+		'remote_ip', 'remote_port', 'protocol', 'state', 'tx', 'rx', 'count'
+	];
+	if (!refs.sortHeaders || sortKeys.some(function(sortKey) {
+		const ref = refs.sortHeaders[sortKey];
+		if (!ref || !ref.th || !ref.button || !ref.button.listeners.click ||
+		    ref.button.attrs.type !== 'button' ||
+		    !String(ref.button.attrs.class || '').split(/\s+/).includes('lanspeed-sort-button')) {
+			return true;
+		}
+		const indicators = findFakeElementsByClass(ref.button, 'lanspeed-sort-indicator');
+		return indicators.length !== 1 || indicators[0].attrs['aria-hidden'] !== 'true';
+	})) {
+		fail('clientDetailShell.js must expose all seven detail headers as keyboard-clickable sort buttons with decorative indicators');
 	}
 	if (refs.table.attrs['aria-label'] !== '客户端连接列表' ||
 	    refs.filter.attrs['aria-label'] !== '搜索连接' ||
@@ -2175,12 +2498,20 @@ function assertClientDetailShellInteraction(src) {
 	refs.protocolTcp.listeners.click({ target: refs.protocolTcp });
 	refs.protocolUdp.listeners.click({ target: refs.protocolUdp });
 	refs.filter.listeners.input({ target: { value: '443' } });
+	sortKeys.forEach(function(sortKey) {
+		refs.sortHeaders[sortKey].button.listeners.click({
+			target: refs.sortHeaders[sortKey].button
+		});
+	});
 	refs.refresh.listeners.click({ target: refs.refresh });
 	if (JSON.stringify(calls.back) !== JSON.stringify([ [] ]) ||
 	    JSON.stringify(calls.protocol) !== JSON.stringify([ [ 'all' ], [ 'tcp' ], [ 'udp' ] ]) ||
 	    JSON.stringify(calls.filter) !== JSON.stringify([ [ '443' ] ]) ||
+	    JSON.stringify(calls.sort) !== JSON.stringify(sortKeys.map(function(sortKey) {
+		return [ sortKey ];
+	    })) ||
 	    JSON.stringify(calls.reload) !== JSON.stringify([ [] ])) {
-		fail('clientDetailShell.js events must delegate back/protocol/filter/reload directly to viewState');
+		fail('clientDetailShell.js events must delegate back/protocol/filter/sort/reload directly to viewState');
 	}
 }
 
@@ -3179,7 +3510,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.0-r4';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.0-r7';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||

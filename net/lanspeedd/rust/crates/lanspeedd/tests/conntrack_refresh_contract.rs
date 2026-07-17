@@ -99,6 +99,7 @@ fn collected() -> CollectedSnapshot {
         }],
         sample_ms: 100,
         connection_details: Default::default(),
+        connection_counters: Default::default(),
         counter_source: "ctnetlink_conntrack_acct_orig_reply_bytes",
         stats,
     }
@@ -113,6 +114,8 @@ fn connection_detail(remote_ip: &str, remote_port: u16) -> ClientConnectionDetai
         protocol: ConnectionProtocol::Tcp,
         state: ConnectionState::Established,
         direction: ConnectionDirection::Outbound,
+        tx_bps: 0,
+        rx_bps: 0,
     }
 }
 
@@ -449,7 +452,7 @@ fn truncated_snapshot_reports_total_limit_and_the_exact_sorted_vector() {
     assert_eq!(response.total_connections, 9);
     assert_eq!(response.returned_connections, expected.len());
     assert!(response.truncated);
-    assert_eq!(response.limit, 512);
+    assert_eq!(response.limit, MAX_CLIENT_CONNECTION_DETAILS);
     assert_eq!(response.connections, expected);
 }
 

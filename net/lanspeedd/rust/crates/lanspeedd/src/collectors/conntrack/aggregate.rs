@@ -1,8 +1,9 @@
 use super::FlowSample;
 use crate::{
     connection_details::{
-        classify_connection, classify_flow_ownership, ConnectionDetailsIndex,
-        ConnectionDetailsSnapshot, ConnectionProtocol, FlowOwnership,
+        classify_connection, classify_flow_ownership, ConnectionCounters,
+        ConnectionCountersSnapshot, ConnectionDetailsIndex, ConnectionDetailsSnapshot,
+        ConnectionProtocol, FlowOwnership,
     },
     identity::IdentityTable,
 };
@@ -44,6 +45,7 @@ pub struct AggregateSnapshot {
     pub stats: AggregateStats,
     pub sample_ms: u64,
     pub connection_details: ConnectionDetailsSnapshot,
+    pub connection_counters: ConnectionCountersSnapshot,
 }
 
 pub struct AggregateState<'a> {
@@ -130,18 +132,28 @@ impl<'a> AggregateState<'a> {
         }
         if let Some((protocol, state)) = qualification {
             match owned.detail(protocol, state) {
-                Some(detail) => self.connection_details.record(&key, detail),
+                Some(detail) => self.connection_details.record_with_counters(
+                    &key,
+                    detail,
+                    ConnectionCounters {
+                        tx_bytes: tx,
+                        rx_bytes: rx,
+                    },
+                ),
                 None => self.connection_details.record_omitted(&key),
             }
         }
     }
 
     pub fn finish(self) -> AggregateSnapshot {
+        let (connection_details, connection_counters) =
+            self.connection_details.finish_with_counters();
         AggregateSnapshot {
             clients: self.clients.into_values().collect(),
             stats: self.stats,
             sample_ms: self.now_ms,
-            connection_details: self.connection_details.finish(),
+            connection_details,
+            connection_counters,
         }
     }
 }

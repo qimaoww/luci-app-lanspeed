@@ -34,6 +34,7 @@ use crate::{
         is_sysdevice_candidate, ConnectionCollectorMode, InterfaceEligibility, RuntimeConfig,
         SysfsInterfaceEligibility,
     },
+    connection_details::ConnectionRateBook,
     connections::{
         apply_conntrack_failure, apply_conntrack_success, before_reply_action,
         client_conntrack_plan, conntrack_source, has_counted_connections, periodic_conntrack_plan,
@@ -103,6 +104,7 @@ struct ProductionRuntime {
     nss_error: Option<String>,
     bpf_collector: BpfSnapshotCollector,
     conntrack_snapshot: Option<CollectedSnapshot>,
+    connection_rates: ConnectionRateBook,
     conntrack_observation: ConntrackObservation,
     probe: SystemProbeCollector,
     process_tracker: DaeProcessTracker,
@@ -126,6 +128,7 @@ struct RuntimeCheckpoint {
     nss_rates: RateBook,
     hostnames: HostnameCache,
     conntrack_snapshot: Option<CollectedSnapshot>,
+    connection_rates: ConnectionRateBook,
     conntrack_observation: ConntrackObservation,
     probe_report: ProbeReport,
     next_probe_ms: u64,
@@ -159,6 +162,7 @@ impl ProductionRuntime {
                 config.active_client_window_ms,
             ),
             conntrack_snapshot: None,
+            connection_rates: ConnectionRateBook::default(),
             conntrack_observation: ConntrackObservation::default(),
             probe,
             process_tracker,
@@ -244,6 +248,7 @@ impl ProductionRuntime {
             nss_rates: self.nss_rates.clone(),
             hostnames: self.hostnames.clone(),
             conntrack_snapshot: self.conntrack_snapshot.clone(),
+            connection_rates: self.connection_rates.clone(),
             conntrack_observation: self.conntrack_observation.clone(),
             probe_report: self.probe_report.clone(),
             next_probe_ms: self.next_probe_ms,
@@ -263,6 +268,7 @@ impl ProductionRuntime {
         self.nss_rates = checkpoint.nss_rates;
         self.hostnames = checkpoint.hostnames;
         self.conntrack_snapshot = checkpoint.conntrack_snapshot;
+        self.connection_rates = checkpoint.connection_rates;
         self.conntrack_observation = checkpoint.conntrack_observation;
         self.probe_report = checkpoint.probe_report;
         self.next_probe_ms = checkpoint.next_probe_ms;
@@ -281,7 +287,12 @@ impl ProductionRuntime {
             now_ms,
             self.config.max_clients,
         ) {
-            Ok(snapshot) => {
+            Ok(mut snapshot) => {
+                self.connection_rates.update(
+                    snapshot.sample_ms,
+                    &snapshot.connection_counters,
+                    &mut snapshot.connection_details,
+                );
                 self.conntrack_observation.record_success(
                     now_ms,
                     snapshot.stats.netlink_read,
@@ -292,6 +303,7 @@ impl ProductionRuntime {
             }
             Err(error) => {
                 let message = error.to_string();
+                self.connection_rates.clear();
                 self.conntrack_observation
                     .record_failure(now_ms, message.clone(), false, false);
                 self.conntrack_snapshot = None;

@@ -54,11 +54,16 @@ return baseclass.extend({
 			response: initialResponse,
 			lastGood: initialResponse && initialResponse.available
 				? initialResponse : null,
-			updatedAt: initialUpdatedAt || null,
-			error: data && data.error || null,
-			protocol: 'all',
-			filter: '',
-			expanded: {},
+				updatedAt: initialUpdatedAt || null,
+				error: data && data.error || null,
+				protocol: 'all',
+				filter: '',
+				expanded: {},
+				page: 0,
+				pageSize: 100,
+			sortKey: 'rx',
+			sortDir: 'desc',
+			sortCustom: false,
 			prefs: normalizedPrefs(),
 			timer: null,
 			loading: false,
@@ -116,12 +121,27 @@ return baseclass.extend({
 			setProtocol: function(protocol) {
 				this.protocol = protocol === 'tcp' || protocol === 'udp'
 					? protocol : 'all';
+				this.page = 0;
 				clientDetailRefresh.render(this);
 			},
 
 			setFilter: function(filter) {
 				this.filter = filter === null || filter === undefined
 					? '' : String(filter);
+				this.page = 0;
+				clientDetailRefresh.render(this);
+			},
+
+			setSort: function(sortKey) {
+				Object.assign(this, fmt.nextSort(this, sortKey));
+				this.page = 0;
+				clientDetailRefresh.render(this);
+			},
+
+			setPage: function(delta) {
+				var value = Number(delta);
+				if (!isFinite(value)) value = 0;
+				this.page = Math.max(0, Math.floor(Number(this.page) || 0) + Math.trunc(value));
 				clientDetailRefresh.render(this);
 			},
 
