@@ -64,8 +64,12 @@ function buildShell(viewState) {
 	refs.clientName = E('h4', {
 		'class': 'lanspeed-connection-client-name'
 	}, _('正在加载客户端身份…'));
-	var clientHeading = E('div', {
-		'class': 'lanspeed-connection-client-heading'
+	refs.clientHeading = E('div', {
+		'class': 'lanspeed-connection-client-heading',
+		'role': 'button',
+		'tabindex': '0',
+		'aria-label': _('修改客户端主机名'),
+		'title': _('点击修改主机名')
 	}, [
 		E('span', {
 			'class': 'lanspeed-connection-client-avatar',
@@ -77,9 +81,28 @@ function buildShell(viewState) {
 			E('span', {
 				'class': 'lanspeed-connection-client-kicker'
 			}, _('LAN 客户端')),
-			refs.clientName
+			E('span', { 'class': 'lanspeed-connection-client-name-row' }, [
+				refs.clientName,
+				E('span', {
+					'class': 'lanspeed-connection-client-edit',
+					'aria-hidden': 'true'
+				}, '✎')
+			])
 		])
 	]);
+	refs.clientHeading.addEventListener('click', function() {
+		if (refs.clientHeading.getAttribute('aria-disabled') === 'true')
+			return;
+		viewState.openHostnameDialog().catch(function() {});
+	});
+	refs.clientHeading.addEventListener('keydown', function(event) {
+		if (event.key !== 'Enter' && event.key !== ' ')
+			return;
+		event.preventDefault();
+		if (refs.clientHeading.getAttribute('aria-disabled') === 'true')
+			return;
+		viewState.openHostnameDialog().catch(function() {});
+	});
 	refs.clientMeta = E('div', {
 		'class': 'lanspeed-connection-client-meta',
 		'aria-label': _('客户端网络身份')
@@ -129,7 +152,7 @@ function buildShell(viewState) {
 		E('div', { 'class': 'lanspeed-body' }, [
 			E('div', { 'class': 'lanspeed-connection-identity' }, [
 				E('div', { 'class': 'lanspeed-connection-client' }, [
-					clientHeading,
+					refs.clientHeading,
 					refs.clientMeta
 				]),
 				refs.summary

@@ -198,7 +198,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "lanspeed-build"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "semver",
  "thiserror",
@@ -206,11 +206,11 @@ dependencies = [
 
 [[package]]
 name = "lanspeed-common"
-version = "1.1.0"
+version = "1.1.1"
 
 [[package]]
 name = "lanspeed-ebpf"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "aya-ebpf",
  "lanspeed-common",
@@ -218,14 +218,14 @@ dependencies = [
 
 [[package]]
 name = "lanspeed-openwrt-sys"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "lanspeedd"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "aya",
  "aya-obj",

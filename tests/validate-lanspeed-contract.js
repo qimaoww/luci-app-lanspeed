@@ -531,7 +531,8 @@ function validateAcl(acl) {
   for (const method of expectedReadMethods) {
     assert(app.read.ubus.lanspeed.includes(method), `ACL must grant read ubus method ${method}`);
   }
-  assert(app.read.uci.length === 1 && app.read.uci[0] === 'lanspeed', 'ACL must only grant read UCI access to lanspeed');
+  assert(app.read.uci.length === 2 && app.read.uci.includes('lanspeed') && app.read.uci.includes('dhcp'),
+    'ACL must grant read UCI access to lanspeed and dhcp');
 
 	/* The write side stages only the lanspeed UCI config. LuCI's native
 	 * Save & Apply flow commits the pending changes and procd reload triggers
@@ -557,8 +558,8 @@ function validateAcl(acl) {
 		}
 
     assertArray(app.write.uci, 'ACL write.uci');
-    assert(app.write.uci.length === 1 && app.write.uci[0] === 'lanspeed',
-      'ACL write.uci must only grant the lanspeed config');
+    assert(app.write.uci.length === 2 && app.write.uci.includes('lanspeed') && app.write.uci.includes('dhcp'),
+      'ACL write.uci must grant the lanspeed and dhcp configs');
   }
 }
 

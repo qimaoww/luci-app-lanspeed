@@ -17,7 +17,8 @@
         ]
       },
       "uci": [
-        "lanspeed"
+        "lanspeed",
+        "dhcp"
       ]
     },
     "write": {
@@ -31,7 +32,8 @@
         ]
       },
       "uci": [
-        "lanspeed"
+        "lanspeed",
+        "dhcp"
       ]
     }
   }

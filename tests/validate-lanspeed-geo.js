@@ -71,15 +71,18 @@ async function main() {
 			JSON.stringify([ 'classify', 'createResolver' ]),
 		'geoLocation.js must expose only classify and createResolver');
 	assert(source.includes('MAX_CACHE_ENTRIES = 4096') &&
-		source.includes("CACHE_KEY = 'lanspeed.geo-location.v3'") &&
-		source.includes("LOOKUP_ENDPOINT = 'https://ipwho.is/'") &&
+		source.includes("CACHE_KEY = 'lanspeed.geo-location.v6'") &&
+		source.includes("LOOKUP_ENDPOINT = 'https://free.freeipapi.com/api/json/'") &&
+		 source.includes("https://ipapi.co/") &&
+		source.includes("https://geolocation-db.com/json/") &&
+		source.includes("https://ipwho.is/") &&
 		source.includes("https://ipinfo.io/") &&
 		source.includes("https://api.db-ip.com/v2/free/") &&
 		source.includes('POSITIVE_TTL_MS = 7 * 24 * 60 * 60 * 1000') &&
-		source.includes('NEGATIVE_TTL_MS = 5 * 60 * 1000') &&
+		source.includes('NEGATIVE_TTL_MS = 30 * 1000') &&
 		source.includes('MAX_CONCURRENCY = 4') &&
 		source.includes('REQUEST_TIMEOUT_MS = 8000'),
-		'geoLocation.js must retain the 4096/7-day/5-minute/4-request/8-second bounds');
+		'geoLocation.js must retain the 4096/7-day/30-second/4-request/8-second bounds');
 
 	for (const ip of [
 		'10.0.0.1', '100.64.0.1', '127.0.0.1', '169.254.2.3',
@@ -115,9 +118,9 @@ async function main() {
 		storage: null,
 		fetch: (url, options) => {
 			publicFetches++;
-			assert(url === 'https://ipwho.is/8.8.8.8',
-				'lookups must use the encoded https://ipwho.is/<ip> endpoint');
-			assert(options.credentials === 'omit' && options.referrerPolicy === 'no-referrer',
+			assert(url === 'https://free.freeipapi.com/api/json/8.8.8.8',
+				'lookups must use the encoded FreeIPAPI endpoint');
+			assert(options.credentials === 'omit' && options.referrerPolicy === 'origin',
 				'lookups must omit credentials and referrer data');
 			return response({
 				success: true,
@@ -150,53 +153,80 @@ async function main() {
 		displayNames: { of: (code) => code === 'CN' ? '中国' : code }
 	});
 	assert((await chinaSingleSource.resolve('8.8.8.8')).label === '中国·浙江' &&
-		chinaCalls.length === 1 && chinaCalls[0] === 'https://ipwho.is/8.8.8.8',
-		'Chinese IPs must use only ipwho.is so province data stays single-source');
+		chinaCalls.length === 1 && chinaCalls[0] === 'https://free.freeipapi.com/api/json/8.8.8.8',
+		'Chinese IPs must use one provider that includes province data');
 	chinaSingleSource.dispose();
 
 	let foreignCalls = [];
-	const foreignMajority = geo.createResolver({
+	const foreignPrimary = geo.createResolver({
 		storage: null,
 		fetch: (url, options) => {
 			foreignCalls.push({ url, options });
-			assert(options.credentials === 'omit' && options.referrerPolicy === 'no-referrer',
-				'all foreign providers must omit credentials and referrer data');
-			if (url === 'https://ipwho.is/8.8.8.8')
-				return response({ country_code: 'US', country: 'United States', region: 'California' });
-			if (url === 'https://ipinfo.io/8.8.8.8/json')
-				return response({ country: 'US', region: 'California' });
-			if (url === 'https://api.db-ip.com/v2/free/8.8.8.8')
-				return response({ countryCode: 'CA', countryName: 'Canada', stateProvCode: 'ON' });
+			assert(options.credentials === 'omit' && options.referrerPolicy === 'origin',
+				'all providers must omit credentials and referrer data');
+			if (url === 'https://free.freeipapi.com/api/json/8.8.8.8')
+				return response({ country_code: 'US', country_name: 'United States', region: 'California' });
 			throw new Error(`unexpected provider URL: ${url}`);
 		},
-		displayNames: { of: (code) => ({ US: '美国', CA: '加拿大' })[code] || code }
+		displayNames: { of: (code) => code === 'US' ? '美国' : code }
 	});
-	assert((await foreignMajority.resolve('8.8.8.8')).label === '美国' &&
-		foreignCalls.map((item) => item.url).sort().join('|') === [
-			'https://api.db-ip.com/v2/free/8.8.8.8',
-			'https://ipinfo.io/8.8.8.8/json',
-			'https://ipwho.is/8.8.8.8'
-		].sort().join('|'),
-		'foreign IPs must use ipwho.is, ipinfo.io and DB-IP and display the majority country');
-	foreignMajority.dispose();
+	assert((await foreignPrimary.resolve('8.8.8.8')).label === '美国' &&
+		foreignCalls.length === 1 &&
+		foreignCalls[0].url === 'https://free.freeipapi.com/api/json/8.8.8.8',
+		'a successful primary lookup must not multiply provider traffic');
+	foreignPrimary.dispose();
 
 	let providerFallbackCalls = [];
 	const providerFallback = geo.createResolver({
 		storage: null,
 		fetch: (url) => {
 			providerFallbackCalls.push(url);
-			if (url === 'https://ipwho.is/9.9.9.9')
-				return response({ success: false });
-			if (url === 'https://ipinfo.io/9.9.9.9/json')
-				return response({ country: 'DE', region: 'Hesse' });
-			return response({ countryCode: 'DE', countryName: 'Germany' });
+			if (url === 'https://free.freeipapi.com/api/json/9.9.9.9')
+				return response({ error: true });
+			if (url === 'https://geolocation-db.com/json/9.9.9.9')
+				return response({ countryCode: 'DE', countryName: 'Germany', regionName: 'Hesse' });
+			throw new Error(`unexpected provider URL: ${url}`);
 		},
 		displayNames: { of: (code) => code === 'DE' ? '德国' : code }
 	});
 	assert((await providerFallback.resolve('9.9.9.9')).label === '德国' &&
-		providerFallbackCalls.length === 3,
-		'a failed primary provider must fall back to both secondary providers');
+		providerFallbackCalls.length === 2,
+		'a failed primary provider must stop after the first successful fallback');
 	providerFallback.dispose();
+
+	const geoDbProvince = geo.createResolver({
+		storage: null,
+		fetch: () => response({
+			country_code: 'CN', country_name: 'China', state: 'Guangdong'
+		}),
+		displayNames: { of: (code) => code === 'CN' ? '中国' : code }
+	});
+	assert((await geoDbProvince.resolve('9.9.9.9')).label === '中国·广东',
+		'Geolocation DB state fields must preserve China province labels');
+	geoDbProvince.dispose();
+
+	let finalFallbackCalls = [];
+	const finalFallback = geo.createResolver({
+		storage: null,
+		fetch: (url) => {
+			finalFallbackCalls.push(url);
+			if (url === 'https://ipwho.is/9.9.9.9')
+				return response({ country_code: 'DE', country: 'Germany', region: 'Hesse' });
+			throw new Error('provider unavailable');
+		},
+		displayNames: { of: (code) => code === 'DE' ? '德国' : code }
+	});
+	assert((await finalFallback.resolve('9.9.9.9')).label === '德国' &&
+		JSON.stringify(finalFallbackCalls) === JSON.stringify([
+			'https://free.freeipapi.com/api/json/9.9.9.9',
+			'https://geolocation-db.com/json/9.9.9.9',
+			'https://ipapi.co/9.9.9.9/json/',
+			'https://ipinfo.io/9.9.9.9/json',
+			'https://api.db-ip.com/v2/free/9.9.9.9',
+			'https://ipwho.is/9.9.9.9'
+		]),
+		'provider fallback must be sequential and reach the final source only after earlier failures');
+	finalFallback.dispose();
 
 	const provincePayloads = [
 		{ success: true, country_code: 'CN', country: 'China', region_code: 'BJ', region: 'Beijing' },
@@ -210,9 +240,9 @@ async function main() {
 		displayNames: { of: (code) => code === 'CN' ? '中国' : code }
 	});
 	assert((await provinces.resolve('17.0.0.1')).label === '中国·北京' &&
-		(await provinces.resolve('17.0.0.2')).label === '中国·新疆' &&
-		(await provinces.resolve('17.0.0.3')).label === '中国·广西' &&
-		(await provinces.resolve('17.0.0.4')).label === '中国',
+		(await provinces.resolve('18.0.0.2')).label === '中国·新疆' &&
+		(await provinces.resolve('19.0.0.3')).label === '中国·广西' &&
+		(await provinces.resolve('20.0.0.4')).label === '中国',
 		'China province rendering must cover municipalities, autonomous regions, name fallback and missing data');
 	provinces.dispose();
 
@@ -230,8 +260,8 @@ async function main() {
 		}
 	});
 	assert((await special.resolve('15.0.0.1')).label === '香港' &&
-		(await special.resolve('15.0.0.2')).label === '台湾' &&
-		(await special.resolve('15.0.0.3')).label === '澳门',
+		(await special.resolve('16.0.0.2')).label === '台湾' &&
+		(await special.resolve('17.0.0.3')).label === '澳门',
 		'location names for Hong Kong, Taiwan and Macao must override an ASN registration country');
 	special.dispose();
 
@@ -297,7 +327,7 @@ async function main() {
 	resolverC.dispose();
 
 	const legacyStorage = memoryStorage(JSON.stringify({
-		version: 2,
+		version: 5,
 		entries: {
 			'18.0.0.1': {
 				status: 'ok', code: 'CN', country: 'China', storedAt: now,
@@ -320,7 +350,7 @@ async function main() {
 		displayNames: { of: () => '中国' }
 	});
 	assert((await legacy.resolve('18.0.0.1')).label === '中国·广东' && legacyFetches === 1,
-		'v2 country-only cache entries must be invalidated so China can use the new provider set');
+		'v3 cache entries must be invalidated when the provider strategy changes');
 	legacy.dispose();
 
 	let failureNow = 2_000_000;
@@ -343,23 +373,23 @@ async function main() {
 	const failedB = geo.createResolver({
 		storage: failureStorage,
 		secondarySources: [],
-		now: () => failureNow + 5 * 60 * 1000 - 1,
+		now: () => failureNow + 30 * 1000 - 1,
 		fetch: () => { failureFetches++; return response({}); }
 	});
 	assert((await failedB.resolve('8.8.4.4')).label === '未知' && failureFetches === 1,
-		'negative cache entries must suppress retries for five minutes');
+		'negative cache entries must briefly suppress immediate retries');
 	failedB.dispose();
 	const failedC = geo.createResolver({
 		storage: failureStorage,
 		secondarySources: [],
-		now: () => failureNow + 5 * 60 * 1000,
+		now: () => failureNow + 30 * 1000,
 		fetch: () => {
 			failureFetches++;
 			return response({ location: { country: 'Recovered' } });
 		}
 	});
 	assert((await failedC.resolve('8.8.4.4')).label === 'Recovered' && failureFetches === 2,
-		'negative entries must be retried after five minutes');
+		'negative entries must be retried after thirty seconds');
 	failedC.dispose();
 
 	let active = 0;
@@ -384,8 +414,8 @@ async function main() {
 	});
 	const concurrentPromises = [];
 	for (let i = 1; i <= 9; i++)
-		concurrentPromises.push(concurrent.resolve(`11.0.0.${i}`));
-	const merged = concurrent.resolve('11.0.0.1');
+		concurrentPromises.push(concurrent.resolve(`11.${i}.0.1`));
+	const merged = concurrent.resolve('11.1.0.99');
 	assert(merged === concurrentPromises[0], 'simultaneous requests for the same IP must share one Promise');
 	await flushMicrotasks();
 	assert(concurrencyFetches === 4 && maxActive === 4,
@@ -426,7 +456,7 @@ async function main() {
 		}
 	});
 	const hangingRequests = [];
-	for (let i = 1; i <= 5; i++) hangingRequests.push(hanging.resolve(`16.0.0.${i}`));
+	for (let i = 1; i <= 5; i++) hangingRequests.push(hanging.resolve(`16.${i}.0.1`));
 	await flushMicrotasks();
 	assert(timeoutFetches === 4 && timeoutHandlers.size === 4,
 		'four hanging requests must occupy the initial bounded slots');
@@ -444,7 +474,7 @@ async function main() {
 		'disposal must abort hanging lookups and clear every request timeout');
 
 	const boundedNow = 3_000_000;
-	const oversized = { version: 3, entries: {} };
+	const oversized = { version: 6, entries: {} };
 	for (let i = 0; i < 4100; i++) {
 		oversized.entries[`12.0.${Math.floor(i / 256)}.${i % 256}`] = {
 			status: 'ok', code: 'US', country: 'United States', storedAt: i,

@@ -45,9 +45,10 @@ const luciResources = [
   'diagnosticsStyleBase.js',
   'diagnosticsStyleBootstrap.js',
   'diagnosticsStyleResponsive.js',
-  'diagnosticsView.js',
-  'clientConnections.js',
-  'clientDetailShell.js',
+	'diagnosticsView.js',
+	'clientConnections.js',
+	'dhcpHostnames.js',
+	'clientDetailShell.js',
   'clientDetailStyle.js',
   'clientDetailStyleBase.js',
   'clientDetailStyleBootstrap.js',
@@ -77,8 +78,9 @@ const luciResources = [
 ];
 const luciViews = [ 'config.js', 'diagnostics.js', 'overview.js' ];
 const clientDetailResources = [
-  'clientConnections.js',
-  'clientDetailShell.js',
+	'clientConnections.js',
+	'dhcpHostnames.js',
+	'clientDetailShell.js',
   'clientDetailStyle.js',
   'clientDetailStyleBase.js',
   'clientDetailStyleBootstrap.js',
@@ -832,8 +834,8 @@ try {
   assert(luciMenu['admin/status/lanspeed/config'].action.path === 'lanspeed/config',
     'LuCI config menu must use the semantic config view');
 
-  const installedClientDetailResources = installedResources.filter((name) =>
-    /^(?:clientConnections|clientDetail|geoLocation)/.test(name));
+	const installedClientDetailResources = installedResources.filter((name) =>
+		/^(?:clientConnections|dhcpHostnames|clientDetail|geoLocation)/.test(name));
   assertExactNames(installedClientDetailResources, clientDetailResources,
     'LuCI package must install exactly the active client detail resources');
 

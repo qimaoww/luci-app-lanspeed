@@ -316,7 +316,7 @@ function render(viewState) {
 		warnings.indexOf('conntrack_snapshot_incomplete') !== -1);
 	var client = response && response.client;
 	var ips = orderedClientIps(client && client.ips);
-	var displayName = client && client.hostname || ips[0] ||
+	var displayName = viewState.customHostname || client && client.hostname || ips[0] ||
 		client && client.mac || viewState.identityKey || '-';
 	var locationLookup = typeof viewState.locationLabelFor === 'function'
 		? function(ip) { return viewState.locationLabelFor(ip); }
@@ -324,6 +324,21 @@ function render(viewState) {
 
 	refs.clientName.textContent = displayName;
 	renderClientMeta(refs.clientMeta, client, ips, viewState.identityKey);
+	if (refs.clientHeading) {
+		var hostnameEditable = Boolean(viewState.hostnameMac) &&
+			viewState.hostnameOpening !== true;
+		refs.clientHeading.setAttribute('aria-disabled',
+			hostnameEditable ? 'false' : 'true');
+		refs.clientHeading.setAttribute('aria-busy',
+			viewState.hostnameOpening === true ? 'true' : 'false');
+		refs.clientHeading.setAttribute('title', viewState.hostnameOpening === true
+			? _('正在读取 DHCP 主机配置…')
+			: !viewState.hostnameMac
+				? _('当前无法修改主机名')
+				: viewState.hostnameAvailable === false
+					? _('点击重试读取 DHCP 主机配置')
+					: _('点击修改主机名'));
+	}
 
 	if (usable) {
 		refs.connectionState.textContent = Number(response.total_connections) > 0

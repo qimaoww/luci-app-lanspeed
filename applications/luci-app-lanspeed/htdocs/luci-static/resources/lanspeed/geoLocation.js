@@ -1,10 +1,22 @@
 'use strict';
 'require baseclass';
 
-var CACHE_KEY = 'lanspeed.geo-location.v3';
-var CACHE_VERSION = 3;
-var LOOKUP_ENDPOINT = 'https://ipwho.is/';
+var CACHE_KEY = 'lanspeed.geo-location.v6';
+var CACHE_VERSION = 6;
+var LOOKUP_ENDPOINT = 'https://free.freeipapi.com/api/json/';
 var SECONDARY_SOURCES = [
+	{
+		name: 'geolocation-db.com',
+		url: function(ip) {
+			return 'https://geolocation-db.com/json/' + encodeURIComponent(ip);
+		}
+	},
+	{
+		name: 'ipapi.co',
+		url: function(ip) {
+			return 'https://ipapi.co/' + encodeURIComponent(ip) + '/json/';
+		}
+	},
 	{
 		name: 'ipinfo.io',
 		url: function(ip) {
@@ -16,11 +28,17 @@ var SECONDARY_SOURCES = [
 		url: function(ip) {
 			return 'https://api.db-ip.com/v2/free/' + encodeURIComponent(ip);
 		}
+	},
+	{
+		name: 'ipwho.is',
+		url: function(ip) {
+			return 'https://ipwho.is/' + encodeURIComponent(ip);
+		}
 	}
 ];
 var MAX_CACHE_ENTRIES = 4096;
 var POSITIVE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-var NEGATIVE_TTL_MS = 5 * 60 * 1000;
+var NEGATIVE_TTL_MS = 30 * 1000;
 var MAX_CONCURRENCY = 4;
 var REQUEST_TIMEOUT_MS = 8000;
 
@@ -202,6 +220,14 @@ function classify(ip) {
 	return result('reserved', '保留/未知', false);
 }
 
+function lookupKey(ip) {
+	var value = cleanIp(ip);
+	var bytes = parseIpv4(value);
+	if (bytes)
+		return bytes[0] + '.' + bytes[1] + '.0.0/16';
+	return value;
+}
+
 function safeStorage(options) {
 	if (Object.prototype.hasOwnProperty.call(options, 'storage'))
 		return options.storage;
@@ -306,13 +332,14 @@ function countryFields(payload) {
 		location.country_a2 || autonomousSystem.country ||
 		data.country_code || data.countryCode || data.country_a2 || '';
 	var country = location.country || location.country_name ||
-		location.countryName || data.country || data.country_name || '';
+		location.countryName || data.country || data.country_name ||
+		data.countryName || '';
 	var regionCode = location.region_code || location.regionCode ||
 		location.subdivision_code || data.region_code || data.regionCode ||
 		data.subdivision_code || data.state_prov_code || data.stateProvCode || '';
 	var region = location.region || location.region_name || location.regionName ||
 		location.subdivision || data.region || data.region_name || data.regionName ||
-		data.subdivision || data.state_prov || data.stateProv || '';
+		data.subdivision || data.state_prov || data.stateProv || data.state || '';
 	var normalizedCountry;
 	code = String(code || '').trim().toUpperCase();
 	country = String(country || '').trim();
@@ -431,11 +458,12 @@ function createResolver(options) {
 	}
 
 	function cached(ip) {
-		var entry = cache[ip];
+		var key = lookupKey(ip);
+		var entry = cache[key];
 		if (!entry)
 			return null;
 		if (entry.expiresAt <= now()) {
-			delete cache[ip];
+			delete cache[key];
 			persistSoon();
 			return null;
 		}
@@ -456,7 +484,8 @@ function createResolver(options) {
 
 	function storeSuccess(ip, fields) {
 		var stamp = now();
-		cache[ip] = {
+		var key = lookupKey(ip);
+		cache[key] = {
 			status: 'ok',
 			code: fields.code,
 			country: fields.country,
@@ -467,12 +496,12 @@ function createResolver(options) {
 		};
 		trimCache(cache, maxEntries);
 		persistSoon();
-		return countryResult(cache[ip], displayNames);
+		return countryResult(cache[key], displayNames);
 	}
 
 	function storeFailure(ip) {
 		var stamp = now();
-		cache[ip] = {
+		cache[lookupKey(ip)] = {
 			status: 'fail',
 			storedAt: stamp,
 			expiresAt: stamp + NEGATIVE_TTL_MS
@@ -509,59 +538,13 @@ function createResolver(options) {
 		});
 	}
 
-	function sourceKey(fields) {
-		var code = fields && String(fields.code || '').trim().toUpperCase();
-		var country = fields && String(fields.country || '').trim().toLowerCase();
-		return code || country;
-	}
-
-	function chooseMajority(primary, secondary) {
-		var candidates = [];
-		var counts = Object.create(null);
-		var winner = '';
-		var winnerCount = 0;
-		var preferredKey = sourceKey(primary);
-		var i, entry, key, count;
-
-		if (primary && primary.fields && sourceKey(primary.fields))
-			candidates.push(primary);
-		(secondary || []).forEach(function(item) {
-			if (item && item.fields && sourceKey(item.fields))
-				candidates.push(item);
-		});
-		if (!candidates.length)
-			throw new Error('country missing');
-
-		for (i = 0; i < candidates.length; i++) {
-			key = sourceKey(candidates[i].fields);
-			counts[key] = (counts[key] || 0) + 1;
-		}
-		for (i = 0; i < candidates.length; i++) {
-			key = sourceKey(candidates[i].fields);
-			count = counts[key] || 0;
-			if (count > winnerCount ||
-				(count === winnerCount && key === preferredKey)) {
-				winner = key;
-				winnerCount = count;
-			}
-		}
-
-		for (i = 0; i < candidates.length; i++) {
-			if (sourceKey(candidates[i].fields) === winner)
-				return candidates[i].fields;
-		}
-		throw new Error('country missing');
-	}
-
-	function secondaryLookup(primary, ip, requestOptions) {
-		var requests = secondarySources.map(function(source) {
-			return lookupSource(source, ip, requestOptions).catch(function() {
-				return null;
-			});
-		});
-		return Promise.all(requests).then(function(secondary) {
-			return chooseMajority(primary, secondary);
-		});
+	function fallbackLookup(ip, requestOptions, index) {
+		if (index >= secondarySources.length)
+			return Promise.reject(new Error('geolocation providers unavailable'));
+		return lookupSource(secondarySources[index], ip, requestOptions).then(
+			function(entry) { return entry.fields; },
+			function() { return fallbackLookup(ip, requestOptions, index + 1); }
+		);
 	}
 
 	function fetchOne(ip) {
@@ -569,7 +552,8 @@ function createResolver(options) {
 		var requestRecord = { controller: null, timer: null, reject: null, done: false };
 		var requestOptions = {
 			credentials: 'omit',
-			referrerPolicy: 'no-referrer',
+			/* ipapi.co varies CORS headers by Origin; no-referrer suppresses it. */
+			referrerPolicy: 'origin',
 			headers: { Accept: 'application/json' }
 		};
 		if (typeof AbortController !== 'undefined') {
@@ -611,19 +595,15 @@ function createResolver(options) {
 			}
 		});
 		var primary = {
-			name: 'ipwho.is',
+			name: 'FreeIPAPI',
 			url: function(value) {
 				return LOOKUP_ENDPOINT + encodeURIComponent(value);
 			}
 		};
 		var request = lookupSource(primary, ip, requestOptions).then(function(entry) {
-			/* ipwho.is remains the sole source for Chinese province labels. */
-			if (entry.fields.code === 'CN' || !secondarySources.length)
-				return entry.fields;
-			return secondaryLookup(entry, ip, requestOptions);
+			return entry.fields;
 		}, function() {
-			/* If the primary source is unavailable, use any secondary result. */
-			return secondaryLookup(null, ip, requestOptions);
+			return fallbackLookup(ip, requestOptions, 0);
 		});
 		return Promise.race([ request, timeout ]).then(function(fields) {
 			return disposed ? result('unknown', '未知', false) : storeSuccess(ip, fields);
@@ -652,7 +632,7 @@ function createResolver(options) {
 					task.resolve(result('unknown', '未知', false));
 				}).then(function() {
 					active--;
-					delete pending[task.ip];
+					delete pending[task.key];
 					pump();
 				});
 			})(item);
@@ -661,6 +641,7 @@ function createResolver(options) {
 
 	function resolve(ip) {
 		var value = cleanIp(ip);
+		var key = lookupKey(value);
 		var immediate = peek(value);
 		var resolvePromise;
 		var promise;
@@ -668,13 +649,13 @@ function createResolver(options) {
 			return Promise.resolve(result('unknown', '未知', false));
 		if (!immediate.queryable)
 			return Promise.resolve(immediate);
-		if (pending[value])
-			return pending[value];
+		if (pending[key])
+			return pending[key];
 		promise = new Promise(function(resolveTask) {
 			resolvePromise = resolveTask;
 		});
-		pending[value] = promise;
-		queue.push({ ip: value, resolve: resolvePromise });
+		pending[key] = promise;
+		queue.push({ ip: value, key: key, resolve: resolvePromise });
 		pump();
 		return promise;
 	}
@@ -703,7 +684,7 @@ function createResolver(options) {
 		activeRequests = [];
 		while (queue.length) {
 			item = queue.shift();
-			delete pending[item.ip];
+			delete pending[item.key];
 			item.resolve(result('unknown', '未知', false));
 		}
 	}

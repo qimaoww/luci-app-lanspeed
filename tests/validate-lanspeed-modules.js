@@ -1464,27 +1464,59 @@ function fakeGeoLocationModule() {
 	};
 }
 
+function fakeUiModule() {
+	return {
+		showModal: function() {},
+		hideModal: function() {},
+		addNotification: function() {},
+		changes: { apply: function() {} }
+	};
+}
+
+function fakeDhcpHostnamesModule() {
+	return {
+		identityMac: function(identityKey) {
+			const value = String(identityKey || '').split('@')[0];
+			return /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(value) ? value.toLowerCase() : '';
+		},
+		loadForMac: function(mac) {
+			return Promise.resolve({ available: Boolean(mac), host: null });
+		},
+		normalizeName: function(value) {
+			const name = String(value === null || value === undefined ? '' : value).trim();
+			if (name && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/.test(name))
+				throw new Error('invalid hostname');
+			return name;
+		},
+		saveForMac: function(mac, name) {
+			return Promise.resolve({ changed: true, name: name });
+		}
+	};
+}
+
 function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow, fakeDate, fakeGeo) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	return vm.compileFunction(src, [
-		'baseclass', 'fmt', 'lsRpc', 'geoLocation', 'clientDetailShell',
-		'clientDetailRefresh', 'window', 'Date'
+		'baseclass', 'ui', 'fmt', 'lsRpc', 'dhcpHostnames', 'geoLocation',
+		'clientDetailShell', 'clientDetailRefresh', 'window', 'Date', 'E', '_'
 	], { filename: 'resources/lanspeed/clientDetailView.js' })(
-		fakeBaseclass, fmt, lsRpc, fakeGeo || fakeGeoLocationModule(), shell, refresh,
-		fakeWindow, fakeDate || Date
+		fakeBaseclass, fakeUiModule(), fmt, lsRpc, fakeDhcpHostnamesModule(),
+		fakeGeo || fakeGeoLocationModule(), shell, refresh, fakeWindow,
+		fakeDate || Date, fakeElement, function(value) { return value; }
 	);
 }
 
 function assertClientDetailViewSource(src) {
 	if (JSON.stringify(moduleRequireNames(src)) !== JSON.stringify([
-		'baseclass', 'lanspeed.format', 'lanspeed.rpc',
-		'lanspeed.geoLocation', 'lanspeed.clientDetailShell', 'lanspeed.clientDetailRefresh'
+		'baseclass', 'ui', 'lanspeed.format', 'lanspeed.rpc',
+		'lanspeed.dhcpHostnames', 'lanspeed.geoLocation',
+		'lanspeed.clientDetailShell', 'lanspeed.clientDetailRefresh'
 	])) {
-		fail('clientDetailView.js must require only format, shared RPC, geolocation, detail shell and detail refresh in dependency order');
+		fail('clientDetailView.js must require UI, format, shared RPC, DHCP hostnames, geolocation, detail shell and detail refresh in dependency order');
 	}
 	const cleaned = stripComments(src);
-	if (/\brpc\s*\.\s*declare\b|innerHTML|\bCSS\b|groupsForResponse|formatEndpoint|lanspeed-connection-|E\s*\(/.test(cleaned)) {
-		fail('clientDetailView.js must own lifecycle only, without RPC declarations, DOM rows, CSS, or connection grouping logic');
+	if (/\brpc\s*\.\s*declare\b|innerHTML|\bCSS\b|groupsForResponse|formatEndpoint/.test(cleaned)) {
+		fail('clientDetailView.js must own lifecycle and hostname dialog behavior without RPC declarations, CSS, or connection grouping logic');
 	}
 	if (!src.includes('lsRpc.clientConnections(identityKey)') ||
 	    /lsRpc\.(?:status|clients|interfaces|uciGet|overview)\s*\(/.test(cleaned)) {
@@ -3762,7 +3794,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.0-r12';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.1-r6';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
@@ -3770,7 +3802,7 @@ function assertCacheAwareViewEntry(src, moduleName, label) {
 	    !src.includes('return view.extend({') ||
 	    !src.includes('return module.load();') ||
 	    !src.includes('return pageModule.render(data);')) {
-		fail(`${label} must load ${moduleName} through the 1.1.0 resource cache boundary`);
+		fail(`${label} must load ${moduleName} through the 1.1.1 resource cache boundary`);
 	}
 	if (src.includes('buildShell(') || src.includes('refreshLive(') || src.includes('loadAll()')) {
 		fail(`${label} must remain a cache-aware entry and not duplicate page logic`);

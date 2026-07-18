@@ -50,6 +50,12 @@ var callUciSet = rpc.declare({
 	method: 'set',
 	params: [ 'config', 'section', 'values' ]
 });
+var callUciAdd = rpc.declare({
+	object: 'uci',
+	method: 'add',
+	params: [ 'config', 'type', 'name' ],
+	expect: { section: '' }
+});
 var callUciGet = rpc.declare({
 	object: 'uci',
 	method: 'get',
@@ -76,6 +82,7 @@ return baseclass.extend({
 	interfaces: callInterfaces,
 	sysdevices: callSysdevices,
 	uciSet:     callUciSet,
+	uciAdd:     callUciAdd,
 	uciGet:     callUciGet,
 	uciDelete:  callUciDelete,
 	uciRevert:  callUciRevert

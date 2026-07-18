@@ -58,7 +58,7 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 - **接口配置**：采集 / 观察 / 关闭 三态切换，默认采集 `br-lan`、观察 `wan`；自动忽略 `dae*`、`miireg*`、`tun*`、`erspan*`、`gretap*`、`gre*`、`ip6gre*`、`ip6tnl*`、`sit*`、`bonding_masters*`，拒绝 nssifb 采集并可观察 WAN / ifb 计数。
 - **告警体系**：OpenClash / dae/daed / SQM/qosify/ifb / flow offload / fullcone NAT 等场景自动识别并提示。
 - **客户端状态列**：默认隐藏 LAN 客户端的采集来源与告警状态，可在“LAN Speed 配置”中开启。
-- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.0-r12`。
+- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.1-r6`。
 
 ## 采集策略
 
@@ -219,6 +219,11 @@ uci commit lanspeed
 ```
 
 配置说明：
+
+客户端详情页支持编辑主机名。编辑器按客户端 MAC 读取 `/etc/config/dhcp` 的
+`config host` 条目，保存时只写入 `option mac` 和 `option name`，不会自动写入
+`option ip`；不设置 IP 时地址仍由 DHCP 动态分配。dnsmasq 应用配置后，lanspeedd
+也会优先使用该静态 DHCP 主机名，运行时租约文件仅作为兜底来源。
 
 | 选项 | 默认 | 说明 |
 |---|---:|---|
