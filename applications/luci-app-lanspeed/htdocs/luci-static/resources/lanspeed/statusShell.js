@@ -108,11 +108,23 @@ function buildShell(viewState) {
 		])
 	]);
 
-	refs.btnRefresh = E('button', { 'class': 'cbi-button' }, _('立即刷新'));
-	refs.btnRefresh.addEventListener('click', function() { viewState.reload(true); });
+	refs.btnRefresh = E('button', {
+		'type': 'button',
+		'class': 'cbi-button'
+	}, _('立即刷新'));
+	refs.btnRefresh.addEventListener('click', function(event) {
+		if (event && event.preventDefault) event.preventDefault();
+		if (event && event.stopPropagation) event.stopPropagation();
+		viewState.reload(true);
+	});
 
-	refs.btnPause = E('button', { 'class': 'cbi-button' }, prefs.paused ? _('恢复') : _('暂停'));
-	refs.btnPause.addEventListener('click', function() {
+	refs.btnPause = E('button', {
+		'type': 'button',
+		'class': 'cbi-button'
+	}, prefs.paused ? _('恢复') : _('暂停'));
+	refs.btnPause.addEventListener('click', function(event) {
+		if (event && event.preventDefault) event.preventDefault();
+		if (event && event.stopPropagation) event.stopPropagation();
 		viewState.prefs.paused = !viewState.prefs.paused;
 		refs.btnPause.textContent = viewState.prefs.paused ? _('恢复') : _('暂停');
 		fmt.savePrefs(viewState.prefs);

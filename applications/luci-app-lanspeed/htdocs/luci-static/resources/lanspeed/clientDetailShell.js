@@ -174,7 +174,9 @@ function buildShell(viewState) {
 		'type': 'button',
 		'class': 'cbi-button lanspeed-connection-refresh'
 	}, _('立即刷新'));
-	refs.refresh.addEventListener('click', function() {
+	refs.refresh.addEventListener('click', function(event) {
+		if (event && event.preventDefault) event.preventDefault();
+		if (event && event.stopPropagation) event.stopPropagation();
 		viewState.reload();
 	});
 	refs.pagePrev = E('button', {

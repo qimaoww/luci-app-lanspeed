@@ -2657,8 +2657,10 @@ function assertClientDetailShellInteraction(src) {
 		fail('clientDetailShell.js must label the table/search and expose live error, empty and footer states');
 	}
 	[ refs.back, refs.protocolAll, refs.protocolTcp, refs.protocolUdp, refs.refresh ].forEach(function(button) {
-		if (!String(button.attrs.class || '').split(/\s+/).includes('cbi-button'))
-			fail('clientDetailShell.js action buttons must use cbi-button');
+		if (!String(button.attrs.class || '').split(/\s+/).includes('cbi-button') ||
+		    button.attrs.type !== 'button') {
+			fail('clientDetailShell.js action buttons must use cbi-button and never submit the LuCI page');
+		}
 	});
 	if (Object.values(calls).some(function(entries) { return entries.length; })) {
 		fail('clientDetailShell.js must not call viewState actions while constructing the shell');
@@ -2673,14 +2675,21 @@ function assertClientDetailShellInteraction(src) {
 			target: refs.sortHeaders[sortKey].button
 		});
 	});
-	refs.refresh.listeners.click({ target: refs.refresh });
+	let refreshPrevented = 0;
+	let refreshStopped = 0;
+	refs.refresh.listeners.click({
+		target: refs.refresh,
+		preventDefault: function() { refreshPrevented++; },
+		stopPropagation: function() { refreshStopped++; }
+	});
 	if (JSON.stringify(calls.back) !== JSON.stringify([ [] ]) ||
 	    JSON.stringify(calls.protocol) !== JSON.stringify([ [ 'all' ], [ 'tcp' ], [ 'udp' ] ]) ||
 	    JSON.stringify(calls.filter) !== JSON.stringify([ [ '443' ] ]) ||
 	    JSON.stringify(calls.sort) !== JSON.stringify(sortKeys.map(function(sortKey) {
 		return [ sortKey ];
 	    })) ||
-	    JSON.stringify(calls.reload) !== JSON.stringify([ [] ])) {
+	    JSON.stringify(calls.reload) !== JSON.stringify([ [] ]) ||
+	    refreshPrevented !== 1 || refreshStopped !== 1) {
 		fail('clientDetailShell.js events must delegate back/protocol/filter/sort/reload directly to viewState');
 	}
 }
@@ -3552,6 +3561,7 @@ function assertWarningAliases(src) {
 function assertStatusShellInteraction(src) {
 	let saved = 0;
 	let refreshed = 0;
+	let reloads = 0;
 	const E = fakeElement;
 	const fmt = {
 		REFRESH_CHOICES: [ { value: 1000, label: '1s' }, { value: 3000, label: '3s' } ],
@@ -3585,7 +3595,7 @@ function assertStatusShellInteraction(src) {
 		showClientStatus: false,
 		prefs: { refreshMs: 3000, unit: 'bit', activeOnly: false, sortKey: 'rx', sortDir: 'desc', sortCustom: false, paused: false },
 		filter: '',
-		reload: function() {},
+		reload: function(force) { if (force === true) reloads++; },
 		refreshLive: function() { refreshed++; },
 		stopTimer: function() {},
 		schedule: function() {}
@@ -3600,6 +3610,18 @@ function assertStatusShellInteraction(src) {
 	    filter.children[0] !== refs.filterInput || right.children[1] !== refs.btnRefresh ||
 	    right.children[2] !== refs.btnPause || refs.sortSel) {
 		fail('statusShell.js toolbar DOM must keep unit/filter left and refresh actions right without a sort select');
+	}
+	if (refs.btnRefresh.attrs.type !== 'button' || refs.btnPause.attrs.type !== 'button') {
+		fail('statusShell.js refresh actions must never submit or navigate away from the LuCI page');
+	}
+	let refreshPrevented = 0;
+	let refreshStopped = 0;
+	refs.btnRefresh.listeners.click({
+		preventDefault: function() { refreshPrevented++; },
+		stopPropagation: function() { refreshStopped++; }
+	});
+	if (reloads !== 1 || refreshPrevented !== 1 || refreshStopped !== 1) {
+		fail('statusShell.js immediate refresh must stay local without bubbling into client navigation');
 	}
 	if (!refs.statusHeader || !refs.statusHeader.hidden || refs.showClientStatus ||
 	    !refs.clientsTable || refs.clientsTable.attrs['data-client-status'] !== 'hidden') {
@@ -3680,7 +3702,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.0-r11';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.0-r12';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
