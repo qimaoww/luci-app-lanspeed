@@ -434,7 +434,7 @@ function render(viewState) {
 			footer.push(_('告警：') + warnings.map(warningLabel).join('，'));
 	}
 	footer.push(_('每 %s 秒自动刷新').format(String(Math.round(Number(interval) / 100) / 10)));
-	footer.push(_('国家/地区按 IP 推测，由浏览器查询并缓存，结果可能不准确'));
+	footer.push(_('国家/地区及中国省份按 IP 推测，由浏览器查询并缓存，结果可能不准确'));
 	refs.footer.textContent = footer.join(' · ');
 }
 

@@ -10,7 +10,7 @@ LAN 侧按客户端实时吞吐监控 + TCP/UDP 连接数统计，当前面向 I
 
 ## 界面预览
 
-以下截图分别使用 **Aurora** 与 **Argon** 主题；客户端名称、MAC、IP 和连接数据均已替换为脱敏示例。点击链接可查看完整原图。
+以下截图分别使用 **Aurora** 与 **Argon** 主题；六张图片均由虚构客户端、文档保留地址和示例连接数据生成，不包含真实设备、主机名、MAC、内网地址或路由器运行信息。连接详情示例同时展示八列表头，以及中国目标按省级行政区显示（如 `中国·浙江`）。点击链接可查看完整原图。
 
 - **Aurora**
   - [实时状态](docs/screenshots/lanspeed-overview-desktop.png)
@@ -49,7 +49,7 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 - **实时速率**：BPF tc 按 MAC + zone/VLAN 直接计数，字段为 `tx_bps` / `rx_bps`；生产运行默认加载只做流量统计的低开销对象，不再在每个转发包上计算未被响应使用的近似连接数；BPF 是所有设备（包括 NSS）的默认实时速率来源，`auto` 模式会首先选择 BPF；短时静默客户端会保留隐藏计数基线，恢复流量时首个样本不再固定显示为 0。
 - **连接数统计**：优先 CT-Netlink 读取 conntrack accounting，失败自动回退 CT-Procfs；TCP、UDP、DNS UDP 分开统计。
 - **逐连接实时速率**：点击客户端名称进入连接详情后，按目标 IP 汇总并显示上行/下行速率；八列表头均可排序，默认把下行速度最高的目标放在最上面；展开目标可查看每条 TCP/UDP 连接各自的客户端视角 `tx_bps` / `rx_bps`。单客户端详情最多返回 2048 条连接，仍保留全局 16384 条存储保护。
-- **国家/地区**：详情页只对当前分页中去重后的公网目标 IP 由浏览器查询 `ip.guide`，最多 4 个并发，并在浏览器本地保存有界的 7 天正缓存和 5 分钟负缓存；内网、代理 Fake-IP 与保留地址在本地直接分类，不增加 daemon CPU。显示结果是 IP 位置推测，可能受 CDN、Anycast、VPN 或代理影响。
+- **国家/地区**：详情页只对当前分页中去重后的公网目标 IP 由浏览器查询 `ipwho.is`，中国结果优先显示省级行政区（例如 `中国·浙江`）；最多 4 个并发，并在浏览器本地保存有界的 7 天正缓存和 5 分钟负缓存。内网、代理 Fake-IP 与保留地址在本地直接分类，不增加 daemon CPU。显示结果是 IP 位置推测，可能受 CDN、Anycast、VPN 或代理影响。
 - **NSS 兼容**：Qualcomm NSS 设备自动展示 ECM/PPE 状态，默认仍使用 LAN 边缘 BPF；显式选择 NSS 模式或 BPF 运行时不可用时，才使用 NSS sync / CT-Netlink 或 NSS-direct。NSS 硬件加速流量可能绕过 CPU，因此 BPF 只能看到慢路径；IPv4 通过 ARP、IPv6 通过 neighbor 表匹配客户端，并兼容 ECM NAT 端点。
 - **活跃客户端**：默认只把 10 秒内仍有有效速率的客户端计为 active，可通过 UCI 调整。
 - **覆盖率**：daemon 侧使用 32 个样本的滑动窗口，并按客户端实时速率生成单调累计分子，避免客户端离线/重新出现导致覆盖率跳回“采样中”；低流量与真正无流量分开显示。
@@ -58,7 +58,7 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 - **接口配置**：采集 / 观察 / 关闭 三态切换，默认采集 `br-lan`、观察 `wan`；自动忽略 `dae*`、`miireg*`、`tun*`、`erspan*`、`gretap*`、`gre*`、`ip6gre*`、`ip6tnl*`、`sit*`、`bonding_masters*`，拒绝 nssifb 采集并可观察 WAN / ifb 计数。
 - **告警体系**：OpenClash / dae/daed / SQM/qosify/ifb / flow offload / fullcone NAT 等场景自动识别并提示。
 - **客户端状态列**：默认隐藏 LAN 客户端的采集来源与告警状态，可在“LAN Speed 配置”中开启。
-- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.0-r9`。
+- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.0-r10`。
 
 ## 采集策略
 

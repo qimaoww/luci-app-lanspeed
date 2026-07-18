@@ -2140,7 +2140,7 @@ function assertClientDetailRefreshBehavior(src) {
 	if (!footer.includes('连接数据') || !footer.includes('Conntrack Netlink') ||
 	    !footer.includes('显示 2 / 共 2 条') ||
 	    !footer.includes('每 1 秒自动刷新') ||
-	    !footer.includes('国家/地区按 IP 推测，由浏览器查询并缓存')) {
+	    !footer.includes('国家/地区及中国省份按 IP 推测，由浏览器查询并缓存')) {
 		fail('clientDetailRefresh.js footer must report source/count/refresh meanings and disclose browser-cached IP inference');
 	}
 	if (JSON.stringify(locationRequests[0]) !== JSON.stringify([
@@ -3680,7 +3680,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.0-r9';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.0-r10';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||

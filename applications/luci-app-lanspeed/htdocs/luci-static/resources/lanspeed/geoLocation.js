@@ -1,12 +1,37 @@
 'use strict';
 'require baseclass';
 
-var CACHE_KEY = 'lanspeed.geo-location.v1';
+var CACHE_KEY = 'lanspeed.geo-location.v2';
+var CACHE_VERSION = 2;
+var LOOKUP_ENDPOINT = 'https://ipwho.is/';
 var MAX_CACHE_ENTRIES = 4096;
 var POSITIVE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 var NEGATIVE_TTL_MS = 5 * 60 * 1000;
 var MAX_CONCURRENCY = 4;
 var REQUEST_TIMEOUT_MS = 8000;
+
+var CHINA_PROVINCES = {
+	AH: '安徽', BJ: '北京', CQ: '重庆', FJ: '福建', GS: '甘肃', GD: '广东',
+	GX: '广西', GZ: '贵州', HI: '海南', HE: '河北', HL: '黑龙江', HA: '河南',
+	HB: '湖北', HN: '湖南', NM: '内蒙古', JS: '江苏', JX: '江西', JL: '吉林',
+	LN: '辽宁', NX: '宁夏', QH: '青海', SN: '陕西', SD: '山东', SH: '上海',
+	SX: '山西', SC: '四川', TJ: '天津', XJ: '新疆', XZ: '西藏', YN: '云南',
+	ZJ: '浙江'
+};
+
+var CHINA_PROVINCE_NAMES = {
+	anhui: '安徽', beijing: '北京', chongqing: '重庆', fujian: '福建',
+	gansu: '甘肃', guangdong: '广东', guangxi: '广西', guizhou: '贵州',
+	hainan: '海南', hebei: '河北', heilongjiang: '黑龙江', henan: '河南',
+	hubei: '湖北', hunan: '湖南', 'inner mongolia': '内蒙古', 'nei mongol': '内蒙古',
+	jiangsu: '江苏', jiangxi: '江西', jilin: '吉林', liaoning: '辽宁',
+	ningxia: '宁夏', qinghai: '青海', shaanxi: '陕西', shandong: '山东',
+	shanghai: '上海', shanxi: '山西', sichuan: '四川', tianjin: '天津',
+	xinjiang: '新疆', tibet: '西藏', xizang: '西藏', yunnan: '云南', zhejiang: '浙江',
+	'guangxi zhuangzu zizhiqu': '广西', 'ningxia huizu zizhiqu': '宁夏',
+	'xinjiang uygur zizhiqu': '新疆', 'xinjiang weiwuer zizhiqu': '新疆',
+	'xizang zizhiqu': '西藏'
+};
 
 function result(kind, label, queryable) {
 	return {
@@ -183,7 +208,7 @@ function readCache(storage, maxEntries, now) {
 		if (!raw || raw.length > 2 * 1024 * 1024)
 			return cache;
 		parsed = JSON.parse(raw);
-		entries = parsed && parsed.version === 1 && parsed.entries;
+		entries = parsed && parsed.version === CACHE_VERSION && parsed.entries;
 		if (!entries || typeof entries !== 'object' || Array.isArray(entries))
 			return cache;
 		keys = Object.keys(entries);
@@ -194,6 +219,9 @@ function readCache(storage, maxEntries, now) {
 				continue;
 			if (entry.status === 'ok' &&
 			    typeof entry.code !== 'string' && typeof entry.country !== 'string')
+				continue;
+			if ((entry.regionCode !== undefined && typeof entry.regionCode !== 'string') ||
+			    (entry.region !== undefined && typeof entry.region !== 'string'))
 				continue;
 			cache[keys[i]] = entry;
 		}
@@ -228,6 +256,29 @@ function createDisplayNames(options) {
 	return null;
 }
 
+function chinaProvince(regionCode, region) {
+	var code = String(regionCode || '').trim().toUpperCase();
+	var name = String(region || '').trim().toLowerCase()
+		.replace(/[_.-]+/g, ' ')
+		.replace(/\s+/g, ' ');
+	var chineseName;
+	var keys, i;
+	if (CHINA_PROVINCES[code])
+		return CHINA_PROVINCES[code];
+	if (!name)
+		return '';
+	keys = Object.keys(CHINA_PROVINCES);
+	chineseName = name.replace(/\s+/g, '');
+	for (i = 0; i < keys.length; i++) {
+		if (chineseName.indexOf(CHINA_PROVINCES[keys[i]]) === 0)
+			return CHINA_PROVINCES[keys[i]];
+	}
+	if (CHINA_PROVINCE_NAMES[name])
+		return CHINA_PROVINCE_NAMES[name];
+	name = name.replace(/\s+(?:sheng|shi)$/, '');
+	return CHINA_PROVINCE_NAMES[name] || '';
+}
+
 function countryFields(payload) {
 	var data = payload && typeof payload === 'object' ? payload : {};
 	var location = data.location && typeof data.location === 'object'
@@ -242,6 +293,12 @@ function countryFields(payload) {
 		data.country_code || data.countryCode || data.country_a2 || '';
 	var country = location.country || location.country_name ||
 		location.countryName || data.country || data.country_name || '';
+	var regionCode = location.region_code || location.regionCode ||
+		location.subdivision_code || data.region_code || data.regionCode ||
+		data.subdivision_code || '';
+	var region = location.region || location.region_name || location.regionName ||
+		location.subdivision || data.region || data.region_name || data.regionName ||
+		data.subdivision || '';
 	var normalizedCountry;
 	code = String(code || '').trim().toUpperCase();
 	country = String(country || '').trim();
@@ -258,16 +315,27 @@ function countryFields(payload) {
 		else
 			code = '';
 	}
-	return { code: code, country: country };
+	return {
+		code: code,
+		country: country,
+		regionCode: String(regionCode || '').trim().toUpperCase(),
+		region: String(region || '').trim()
+	};
 }
 
 function countryResult(entry, displayNames) {
 	var label = '';
+	var province;
 	if (entry.code && displayNames && typeof displayNames.of === 'function') {
 		try { label = displayNames.of(entry.code) || ''; } catch (e) {}
 	}
 	if (!label)
 		label = entry.country || entry.code || '';
+	if (entry.code === 'CN') {
+		province = chinaProvince(entry.regionCode, entry.region);
+		if (province)
+			label = '中国·' + province;
+	}
 	return label
 		? result('country', String(label), false)
 		: result('unknown', '未知', false);
@@ -336,7 +404,7 @@ function createResolver(options) {
 			return;
 		trimCache(cache, maxEntries);
 		try {
-			storage.setItem(CACHE_KEY, JSON.stringify({ version: 1, entries: cache }));
+			storage.setItem(CACHE_KEY, JSON.stringify({ version: CACHE_VERSION, entries: cache }));
 		} catch (e) {}
 	}
 
@@ -376,6 +444,8 @@ function createResolver(options) {
 			status: 'ok',
 			code: fields.code,
 			country: fields.country,
+			regionCode: fields.regionCode,
+			region: fields.region,
 			storedAt: stamp,
 			expiresAt: stamp + POSITIVE_TTL_MS
 		};
@@ -445,13 +515,16 @@ function createResolver(options) {
 		var request = Promise.resolve().then(function() {
 			if (typeof fetcher !== 'function')
 				throw new Error('fetch unavailable');
-			return fetcher('https://ip.guide/' + encodeURIComponent(ip), requestOptions);
+			return fetcher(LOOKUP_ENDPOINT + encodeURIComponent(ip), requestOptions);
 		}).then(function(response) {
 			if (!response || response.ok === false || typeof response.json !== 'function')
 				throw new Error('geolocation request failed');
 			return response.json();
 		}).then(function(payload) {
-			var fields = countryFields(payload);
+			var fields;
+			if (payload && payload.success === false)
+				throw new Error('geolocation request rejected');
+			fields = countryFields(payload);
 			if (!fields.code && !fields.country)
 				throw new Error('country missing');
 			return fields;

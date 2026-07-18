@@ -71,6 +71,8 @@ async function main() {
 			JSON.stringify([ 'classify', 'createResolver' ]),
 		'geoLocation.js must expose only classify and createResolver');
 	assert(source.includes('MAX_CACHE_ENTRIES = 4096') &&
+		source.includes("CACHE_KEY = 'lanspeed.geo-location.v2'") &&
+		source.includes("LOOKUP_ENDPOINT = 'https://ipwho.is/'") &&
 		source.includes('POSITIVE_TTL_MS = 7 * 24 * 60 * 60 * 1000') &&
 		source.includes('NEGATIVE_TTL_MS = 5 * 60 * 1000') &&
 		source.includes('MAX_CONCURRENCY = 4') &&
@@ -111,13 +113,16 @@ async function main() {
 		storage: null,
 		fetch: (url, options) => {
 			publicFetches++;
-			assert(url === 'https://ip.guide/8.8.8.8',
-				'lookups must use the encoded https://ip.guide/<ip> endpoint');
+			assert(url === 'https://ipwho.is/8.8.8.8',
+				'lookups must use the encoded https://ipwho.is/<ip> endpoint');
 			assert(options.credentials === 'omit' && options.referrerPolicy === 'no-referrer',
 				'lookups must omit credentials and referrer data');
 			return response({
-				network: { autonomous_system: { country: 'CN' } },
-				location: { country: 'China' }
+				success: true,
+				country_code: 'CN',
+				country: 'China',
+				region_code: 'ZJ',
+				region: 'Zhejiang Sheng'
 			});
 		},
 		displayNames: { of: (code) => code === 'CN' ? '中国' : code }
@@ -126,9 +131,27 @@ async function main() {
 		await publicOnly.resolve(ip);
 	assert(publicFetches === 0, 'non-public addresses must never reach the network');
 	const localized = await publicOnly.resolve('8.8.8.8');
-	assert(publicFetches === 1 && localized.kind === 'country' && localized.label === '中国',
-		'country codes must be localized through Intl.DisplayNames-compatible lookup');
+	assert(publicFetches === 1 && localized.kind === 'country' && localized.label === '中国·浙江',
+		'Chinese public IPs must include the localized province');
 	publicOnly.dispose();
+
+	const provincePayloads = [
+		{ success: true, country_code: 'CN', country: 'China', region_code: 'BJ', region: 'Beijing' },
+		{ success: true, country_code: 'CN', country: 'China', region_code: 'XJ', region: 'Xinjiang Uygur Zizhiqu' },
+		{ success: true, country_code: 'CN', country: 'China', region: '广西壮族自治区' },
+		{ success: true, country_code: 'CN', country: 'China' }
+	];
+	const provinces = geo.createResolver({
+		storage: null,
+		fetch: () => response(provincePayloads.shift()),
+		displayNames: { of: (code) => code === 'CN' ? '中国' : code }
+	});
+	assert((await provinces.resolve('17.0.0.1')).label === '中国·北京' &&
+		(await provinces.resolve('17.0.0.2')).label === '中国·新疆' &&
+		(await provinces.resolve('17.0.0.3')).label === '中国·广西' &&
+		(await provinces.resolve('17.0.0.4')).label === '中国',
+		'China province rendering must cover municipalities, autonomous regions, name fallback and missing data');
+	provinces.dispose();
 
 	const specialPayloads = [
 		{ network: { autonomous_system: { country: 'CN' } }, location: { country: 'Hong Kong' } },
@@ -204,6 +227,32 @@ async function main() {
 	assert((await resolverC.resolve('1.1.1.1')).label === 'Expired Refresh' && positiveFetches === 2,
 		'positive entries must expire at the seven-day boundary');
 	resolverC.dispose();
+
+	const legacyStorage = memoryStorage(JSON.stringify({
+		version: 1,
+		entries: {
+			'18.0.0.1': {
+				status: 'ok', code: 'CN', country: 'China', storedAt: now,
+				expiresAt: now + 7 * 24 * 60 * 60 * 1000
+			}
+		}
+	}));
+	let legacyFetches = 0;
+	const legacy = geo.createResolver({
+		storage: legacyStorage,
+		now: () => now,
+		fetch: () => {
+			legacyFetches++;
+			return response({
+				success: true, country_code: 'CN', country: 'China',
+				region_code: 'GD', region: 'Guangdong Sheng'
+			});
+		},
+		displayNames: { of: () => '中国' }
+	});
+	assert((await legacy.resolve('18.0.0.1')).label === '中国·广东' && legacyFetches === 1,
+		'v1 country-only cache entries must be invalidated so China can gain province data');
+	legacy.dispose();
 
 	let failureNow = 2_000_000;
 	const failureStorage = memoryStorage();
@@ -321,7 +370,7 @@ async function main() {
 		'disposal must abort hanging lookups and clear every request timeout');
 
 	const boundedNow = 3_000_000;
-	const oversized = { version: 1, entries: {} };
+	const oversized = { version: 2, entries: {} };
 	for (let i = 0; i < 4100; i++) {
 		oversized.entries[`12.0.${Math.floor(i / 256)}.${i % 256}`] = {
 			status: 'ok', code: 'US', country: 'United States', storedAt: i,
