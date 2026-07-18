@@ -71,8 +71,10 @@ async function main() {
 			JSON.stringify([ 'classify', 'createResolver' ]),
 		'geoLocation.js must expose only classify and createResolver');
 	assert(source.includes('MAX_CACHE_ENTRIES = 4096') &&
-		source.includes("CACHE_KEY = 'lanspeed.geo-location.v2'") &&
+		source.includes("CACHE_KEY = 'lanspeed.geo-location.v3'") &&
 		source.includes("LOOKUP_ENDPOINT = 'https://ipwho.is/'") &&
+		source.includes("https://ipinfo.io/") &&
+		source.includes("https://api.db-ip.com/v2/free/") &&
 		source.includes('POSITIVE_TTL_MS = 7 * 24 * 60 * 60 * 1000') &&
 		source.includes('NEGATIVE_TTL_MS = 5 * 60 * 1000') &&
 		source.includes('MAX_CONCURRENCY = 4') &&
@@ -135,6 +137,67 @@ async function main() {
 		'Chinese public IPs must include the localized province');
 	publicOnly.dispose();
 
+	let chinaCalls = [];
+	const chinaSingleSource = geo.createResolver({
+		storage: null,
+		fetch: (url) => {
+			chinaCalls.push(url);
+			return response({
+				success: true, country_code: 'CN', country: 'China',
+				region_code: 'ZJ', region: 'Zhejiang'
+			});
+		},
+		displayNames: { of: (code) => code === 'CN' ? '中国' : code }
+	});
+	assert((await chinaSingleSource.resolve('8.8.8.8')).label === '中国·浙江' &&
+		chinaCalls.length === 1 && chinaCalls[0] === 'https://ipwho.is/8.8.8.8',
+		'Chinese IPs must use only ipwho.is so province data stays single-source');
+	chinaSingleSource.dispose();
+
+	let foreignCalls = [];
+	const foreignMajority = geo.createResolver({
+		storage: null,
+		fetch: (url, options) => {
+			foreignCalls.push({ url, options });
+			assert(options.credentials === 'omit' && options.referrerPolicy === 'no-referrer',
+				'all foreign providers must omit credentials and referrer data');
+			if (url === 'https://ipwho.is/8.8.8.8')
+				return response({ country_code: 'US', country: 'United States', region: 'California' });
+			if (url === 'https://ipinfo.io/8.8.8.8/json')
+				return response({ country: 'US', region: 'California' });
+			if (url === 'https://api.db-ip.com/v2/free/8.8.8.8')
+				return response({ countryCode: 'CA', countryName: 'Canada', stateProvCode: 'ON' });
+			throw new Error(`unexpected provider URL: ${url}`);
+		},
+		displayNames: { of: (code) => ({ US: '美国', CA: '加拿大' })[code] || code }
+	});
+	assert((await foreignMajority.resolve('8.8.8.8')).label === '美国' &&
+		foreignCalls.map((item) => item.url).sort().join('|') === [
+			'https://api.db-ip.com/v2/free/8.8.8.8',
+			'https://ipinfo.io/8.8.8.8/json',
+			'https://ipwho.is/8.8.8.8'
+		].sort().join('|'),
+		'foreign IPs must use ipwho.is, ipinfo.io and DB-IP and display the majority country');
+	foreignMajority.dispose();
+
+	let providerFallbackCalls = [];
+	const providerFallback = geo.createResolver({
+		storage: null,
+		fetch: (url) => {
+			providerFallbackCalls.push(url);
+			if (url === 'https://ipwho.is/9.9.9.9')
+				return response({ success: false });
+			if (url === 'https://ipinfo.io/9.9.9.9/json')
+				return response({ country: 'DE', region: 'Hesse' });
+			return response({ countryCode: 'DE', countryName: 'Germany' });
+		},
+		displayNames: { of: (code) => code === 'DE' ? '德国' : code }
+	});
+	assert((await providerFallback.resolve('9.9.9.9')).label === '德国' &&
+		providerFallbackCalls.length === 3,
+		'a failed primary provider must fall back to both secondary providers');
+	providerFallback.dispose();
+
 	const provincePayloads = [
 		{ success: true, country_code: 'CN', country: 'China', region_code: 'BJ', region: 'Beijing' },
 		{ success: true, country_code: 'CN', country: 'China', region_code: 'XJ', region: 'Xinjiang Uygur Zizhiqu' },
@@ -160,6 +223,7 @@ async function main() {
 	];
 	const special = geo.createResolver({
 		storage: null,
+		secondarySources: [],
 		fetch: () => response(specialPayloads.shift()),
 		displayNames: {
 			of: (code) => ({ HK: '香港', TW: '台湾', MO: '澳门', CN: '中国' })[code] || code
@@ -173,6 +237,7 @@ async function main() {
 
 	const fallback = geo.createResolver({
 		storage: null,
+		secondarySources: [],
 		fetch: () => response({ location: { country: 'Fallback Country' } }),
 		displayNames: { of: () => { throw new Error('unsupported locale'); } }
 	});
@@ -186,6 +251,7 @@ async function main() {
 	let positiveFetches = 0;
 	const resolverA = geo.createResolver({
 		storage: positiveStorage,
+		secondarySources: [],
 		now: () => now,
 		schedule: positiveSchedule.schedule,
 		cancel: positiveSchedule.cancel,
@@ -203,6 +269,7 @@ async function main() {
 
 	const resolverB = geo.createResolver({
 		storage: positiveStorage,
+		secondarySources: [],
 		now: () => now + 7 * 24 * 60 * 60 * 1000 - 1,
 		fetch: () => { positiveFetches++; return response({}); },
 		displayNames: { of: () => '美国' }
@@ -215,6 +282,7 @@ async function main() {
 	const expirySchedule = scheduler();
 	const resolverC = geo.createResolver({
 		storage: positiveStorage,
+		secondarySources: [],
 		now: () => now + 7 * 24 * 60 * 60 * 1000,
 		schedule: expirySchedule.schedule,
 		cancel: expirySchedule.cancel,
@@ -229,7 +297,7 @@ async function main() {
 	resolverC.dispose();
 
 	const legacyStorage = memoryStorage(JSON.stringify({
-		version: 1,
+		version: 2,
 		entries: {
 			'18.0.0.1': {
 				status: 'ok', code: 'CN', country: 'China', storedAt: now,
@@ -240,6 +308,7 @@ async function main() {
 	let legacyFetches = 0;
 	const legacy = geo.createResolver({
 		storage: legacyStorage,
+		secondarySources: [],
 		now: () => now,
 		fetch: () => {
 			legacyFetches++;
@@ -251,7 +320,7 @@ async function main() {
 		displayNames: { of: () => '中国' }
 	});
 	assert((await legacy.resolve('18.0.0.1')).label === '中国·广东' && legacyFetches === 1,
-		'v1 country-only cache entries must be invalidated so China can gain province data');
+		'v2 country-only cache entries must be invalidated so China can use the new provider set');
 	legacy.dispose();
 
 	let failureNow = 2_000_000;
@@ -260,6 +329,7 @@ async function main() {
 	let failureFetches = 0;
 	const failedA = geo.createResolver({
 		storage: failureStorage,
+		secondarySources: [],
 		now: () => failureNow,
 		schedule: failureSchedule.schedule,
 		cancel: failureSchedule.cancel,
@@ -272,6 +342,7 @@ async function main() {
 	failedA.dispose();
 	const failedB = geo.createResolver({
 		storage: failureStorage,
+		secondarySources: [],
 		now: () => failureNow + 5 * 60 * 1000 - 1,
 		fetch: () => { failureFetches++; return response({}); }
 	});
@@ -280,6 +351,7 @@ async function main() {
 	failedB.dispose();
 	const failedC = geo.createResolver({
 		storage: failureStorage,
+		secondarySources: [],
 		now: () => failureNow + 5 * 60 * 1000,
 		fetch: () => {
 			failureFetches++;
@@ -296,6 +368,7 @@ async function main() {
 	const controls = [];
 	const concurrent = geo.createResolver({
 		storage: null,
+		secondarySources: [],
 		concurrency: 99,
 		fetch: () => {
 			active++;
@@ -338,6 +411,7 @@ async function main() {
 	const timeoutSignals = [];
 	const hanging = timeoutGeo.createResolver({
 		storage: null,
+		secondarySources: [],
 		requestSchedule: (handler, delay) => {
 			assert(delay === 8000, 'each public-IP lookup must receive an eight-second timeout');
 			const id = ++timeoutId;
@@ -370,7 +444,7 @@ async function main() {
 		'disposal must abort hanging lookups and clear every request timeout');
 
 	const boundedNow = 3_000_000;
-	const oversized = { version: 2, entries: {} };
+	const oversized = { version: 3, entries: {} };
 	for (let i = 0; i < 4100; i++) {
 		oversized.entries[`12.0.${Math.floor(i / 256)}.${i % 256}`] = {
 			status: 'ok', code: 'US', country: 'United States', storedAt: i,
@@ -381,6 +455,7 @@ async function main() {
 	const boundedSchedule = scheduler();
 	const bounded = geo.createResolver({
 		storage: boundedStorage,
+		secondarySources: [],
 		now: () => boundedNow,
 		schedule: boundedSchedule.schedule,
 		cancel: boundedSchedule.cancel,
@@ -398,6 +473,7 @@ async function main() {
 	let finishDisposed;
 	const disposed = geo.createResolver({
 		storage: disposeStorage,
+		secondarySources: [],
 		schedule: disposeSchedule.schedule,
 		cancel: disposeSchedule.cancel,
 		fetch: () => new Promise((resolve) => { finishDisposed = resolve; })

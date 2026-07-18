@@ -1,9 +1,23 @@
 'use strict';
 'require baseclass';
 
-var CACHE_KEY = 'lanspeed.geo-location.v2';
-var CACHE_VERSION = 2;
+var CACHE_KEY = 'lanspeed.geo-location.v3';
+var CACHE_VERSION = 3;
 var LOOKUP_ENDPOINT = 'https://ipwho.is/';
+var SECONDARY_SOURCES = [
+	{
+		name: 'ipinfo.io',
+		url: function(ip) {
+			return 'https://ipinfo.io/' + encodeURIComponent(ip) + '/json';
+		}
+	},
+	{
+		name: 'DB-IP',
+		url: function(ip) {
+			return 'https://api.db-ip.com/v2/free/' + encodeURIComponent(ip);
+		}
+	}
+];
 var MAX_CACHE_ENTRIES = 4096;
 var POSITIVE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 var NEGATIVE_TTL_MS = 5 * 60 * 1000;
@@ -295,10 +309,10 @@ function countryFields(payload) {
 		location.countryName || data.country || data.country_name || '';
 	var regionCode = location.region_code || location.regionCode ||
 		location.subdivision_code || data.region_code || data.regionCode ||
-		data.subdivision_code || '';
+		data.subdivision_code || data.state_prov_code || data.stateProvCode || '';
 	var region = location.region || location.region_name || location.regionName ||
 		location.subdivision || data.region || data.region_name || data.regionName ||
-		data.subdivision || '';
+		data.subdivision || data.state_prov || data.stateProv || '';
 	var normalizedCountry;
 	code = String(code || '').trim().toUpperCase();
 	country = String(country || '').trim();
@@ -355,6 +369,8 @@ function createResolver(options) {
 	var requestSchedule = options.requestSchedule;
 	var requestCancel = options.requestCancel;
 	var displayNames = createDisplayNames(options);
+	var secondarySources = Array.isArray(options.secondarySources)
+		? options.secondarySources : SECONDARY_SOURCES;
 	var cache = readCache(storage, maxEntries, now());
 	var pending = Object.create(null);
 	var queue = [];
@@ -466,6 +482,88 @@ function createResolver(options) {
 		return result('unknown', '未知', false);
 	}
 
+	function lookupSource(source, ip, requestOptions) {
+		var endpoint = source && typeof source.url === 'function'
+			? source.url(ip) : '';
+		if (!endpoint)
+			return Promise.reject(new Error('geolocation source endpoint missing'));
+		return Promise.resolve().then(function() {
+			if (typeof fetcher !== 'function')
+				throw new Error('fetch unavailable');
+			return fetcher(endpoint, requestOptions);
+		}).then(function(response) {
+			if (!response || response.ok === false || typeof response.json !== 'function')
+				throw new Error('geolocation request failed');
+			return response.json();
+		}).then(function(payload) {
+			var fields;
+			if (payload && payload.success === false)
+				throw new Error('geolocation request rejected');
+			fields = countryFields(payload);
+			if (!fields.code && !fields.country)
+				throw new Error('country missing');
+			return {
+				source: source && source.name ? String(source.name) : '',
+				fields: fields
+			};
+		});
+	}
+
+	function sourceKey(fields) {
+		var code = fields && String(fields.code || '').trim().toUpperCase();
+		var country = fields && String(fields.country || '').trim().toLowerCase();
+		return code || country;
+	}
+
+	function chooseMajority(primary, secondary) {
+		var candidates = [];
+		var counts = Object.create(null);
+		var winner = '';
+		var winnerCount = 0;
+		var preferredKey = sourceKey(primary);
+		var i, entry, key, count;
+
+		if (primary && primary.fields && sourceKey(primary.fields))
+			candidates.push(primary);
+		(secondary || []).forEach(function(item) {
+			if (item && item.fields && sourceKey(item.fields))
+				candidates.push(item);
+		});
+		if (!candidates.length)
+			throw new Error('country missing');
+
+		for (i = 0; i < candidates.length; i++) {
+			key = sourceKey(candidates[i].fields);
+			counts[key] = (counts[key] || 0) + 1;
+		}
+		for (i = 0; i < candidates.length; i++) {
+			key = sourceKey(candidates[i].fields);
+			count = counts[key] || 0;
+			if (count > winnerCount ||
+				(count === winnerCount && key === preferredKey)) {
+				winner = key;
+				winnerCount = count;
+			}
+		}
+
+		for (i = 0; i < candidates.length; i++) {
+			if (sourceKey(candidates[i].fields) === winner)
+				return candidates[i].fields;
+		}
+		throw new Error('country missing');
+	}
+
+	function secondaryLookup(primary, ip, requestOptions) {
+		var requests = secondarySources.map(function(source) {
+			return lookupSource(source, ip, requestOptions).catch(function() {
+				return null;
+			});
+		});
+		return Promise.all(requests).then(function(secondary) {
+			return chooseMajority(primary, secondary);
+		});
+	}
+
 	function fetchOne(ip) {
 		var controller = null;
 		var requestRecord = { controller: null, timer: null, reject: null, done: false };
@@ -512,22 +610,20 @@ function createResolver(options) {
 				rejectTimeout(e);
 			}
 		});
-		var request = Promise.resolve().then(function() {
-			if (typeof fetcher !== 'function')
-				throw new Error('fetch unavailable');
-			return fetcher(LOOKUP_ENDPOINT + encodeURIComponent(ip), requestOptions);
-		}).then(function(response) {
-			if (!response || response.ok === false || typeof response.json !== 'function')
-				throw new Error('geolocation request failed');
-			return response.json();
-		}).then(function(payload) {
-			var fields;
-			if (payload && payload.success === false)
-				throw new Error('geolocation request rejected');
-			fields = countryFields(payload);
-			if (!fields.code && !fields.country)
-				throw new Error('country missing');
-			return fields;
+		var primary = {
+			name: 'ipwho.is',
+			url: function(value) {
+				return LOOKUP_ENDPOINT + encodeURIComponent(value);
+			}
+		};
+		var request = lookupSource(primary, ip, requestOptions).then(function(entry) {
+			/* ipwho.is remains the sole source for Chinese province labels. */
+			if (entry.fields.code === 'CN' || !secondarySources.length)
+				return entry.fields;
+			return secondaryLookup(entry, ip, requestOptions);
+		}, function() {
+			/* If the primary source is unavailable, use any secondary result. */
+			return secondaryLookup(null, ip, requestOptions);
 		});
 		return Promise.race([ request, timeout ]).then(function(fields) {
 			return disposed ? result('unknown', '未知', false) : storeSuccess(ip, fields);
