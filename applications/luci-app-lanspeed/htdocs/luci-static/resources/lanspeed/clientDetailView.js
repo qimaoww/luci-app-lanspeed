@@ -6,6 +6,60 @@
 'require lanspeed.clientDetailShell as clientDetailShell';
 'require lanspeed.clientDetailRefresh as clientDetailRefresh';
 
+var DETAIL_PREF_KEY = 'luci-app-lanspeed.detail-prefs.v1';
+
+function detailStorage() {
+	try {
+		return typeof window !== 'undefined' ? window.localStorage : null;
+	} catch (e) {
+		return null;
+	}
+}
+
+function detailPrefs(shared) {
+	var defaults = {
+		refreshMs: 3000,
+		paused: false
+	};
+	var storage = detailStorage();
+	var raw, stored, choices, allowed;
+	if (storage && typeof storage.getItem === 'function') {
+		try {
+			raw = storage.getItem(DETAIL_PREF_KEY);
+			stored = raw ? JSON.parse(raw) : null;
+			if (stored && typeof stored === 'object')
+				defaults = Object.assign(defaults, stored);
+		} catch (e) {}
+	} else if (shared) {
+		/* Non-browser callers keep deterministic defaults without a storage API. */
+		defaults.refreshMs = shared.refreshMs;
+		defaults.paused = shared.paused === true;
+	}
+	choices = fmt.REFRESH_CHOICES || [];
+	allowed = choices.map(function(choice) { return Number(choice.value); });
+	if (allowed.length && allowed.indexOf(Number(defaults.refreshMs)) === -1)
+		defaults.refreshMs = 3000;
+	else {
+		defaults.refreshMs = Number(defaults.refreshMs);
+		if (!isFinite(defaults.refreshMs) || defaults.refreshMs <= 0)
+			defaults.refreshMs = 3000;
+	}
+	defaults.paused = defaults.paused === true;
+	return defaults;
+}
+
+function saveDetailPrefs(prefs) {
+	var storage = detailStorage();
+	if (!storage || typeof storage.setItem !== 'function')
+		return;
+	try {
+		storage.setItem(DETAIL_PREF_KEY, JSON.stringify({
+			refreshMs: Number(prefs.refreshMs) || 3000,
+			paused: prefs.paused === true
+		}));
+	} catch (e) {}
+}
+
 function loadClient(identityKey) {
 	return lsRpc.clientConnections(identityKey).then(function(response) {
 		return {
@@ -26,14 +80,9 @@ function loadClient(identityKey) {
 
 function normalizedPrefs() {
 	var prefs = Object.assign({}, fmt.loadPrefs() || {});
-	var fallback = fmt.DEFAULT_PREFS && fmt.DEFAULT_PREFS.refreshMs;
-	if (typeof fallback !== 'number' || !isFinite(fallback) || fallback <= 0)
-		fallback = 3000;
-	if (typeof prefs.refreshMs !== 'number' ||
-	    !isFinite(prefs.refreshMs) || prefs.refreshMs <= 0) {
-		prefs.refreshMs = fallback;
-	}
-	prefs.refreshMs = Math.max(fmt.MIN_REFRESH_MS, prefs.refreshMs);
+	var detail = detailPrefs(prefs);
+	prefs.refreshMs = Math.max(fmt.MIN_REFRESH_MS, detail.refreshMs);
+	prefs.paused = detail.paused;
 	return prefs;
 }
 
@@ -67,6 +116,7 @@ return baseclass.extend({
 			sortDir: 'desc',
 			sortCustom: false,
 			prefs: normalizedPrefs(),
+			refreshChoices: fmt.REFRESH_CHOICES || [],
 			timer: null,
 			loading: false,
 			refs: null,
@@ -84,7 +134,7 @@ return baseclass.extend({
 			schedule: function() {
 				var self = this;
 				this.stopTimer();
-				if (this.destroyed)
+				if (this.destroyed || this.prefs.paused)
 					return;
 				var interval = this.prefs.refreshMs;
 				this.timer = window.setTimeout(function() {
@@ -150,6 +200,31 @@ return baseclass.extend({
 				if (!isFinite(value)) value = 0;
 				this.page = Math.max(0, Math.floor(Number(this.page) || 0) + Math.trunc(value));
 				clientDetailRefresh.render(this);
+			},
+
+			setRefreshMs: function(value) {
+				var selected = Number(value);
+				var allowed = (this.refreshChoices || []).map(function(choice) {
+					return Number(choice.value);
+				});
+				if (allowed.indexOf(selected) === -1)
+					return;
+				this.prefs.refreshMs = selected;
+				saveDetailPrefs(this.prefs);
+				clientDetailRefresh.render(this);
+				if (!this.loading)
+					this.schedule();
+			},
+
+			setPaused: function(paused) {
+				this.prefs.paused = paused === undefined
+					? !this.prefs.paused : paused === true;
+				saveDetailPrefs(this.prefs);
+				if (this.prefs.paused)
+					this.stopTimer();
+				clientDetailRefresh.render(this);
+				if (!this.prefs.paused && !this.loading)
+					this.schedule();
 			},
 
 			locationLabelFor: function(ip) {

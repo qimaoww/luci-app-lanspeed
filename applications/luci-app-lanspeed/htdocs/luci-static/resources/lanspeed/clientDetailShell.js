@@ -5,6 +5,7 @@
 
 function buildShell(viewState) {
 	var refs = {};
+	var prefs = viewState.prefs || {};
 	refs.sortHeaders = {};
 
 	var sortableHeader = function(sortKey, label, attrs) {
@@ -170,6 +171,18 @@ function buildShell(viewState) {
 	refs.filter.addEventListener('input', function(ev) {
 		viewState.setFilter(ev.target.value);
 	});
+	refs.intervalSel = E('select', {
+		'class': 'cbi-input-select lanspeed-connection-interval',
+		'aria-label': _('刷新')
+	}, (viewState.refreshChoices || []).map(function(choice) {
+		var attrs = { 'value': String(choice.value) };
+		if (Number(choice.value) === Number(viewState.prefs.refreshMs))
+			attrs.selected = 'selected';
+		return E('option', attrs, choice.label);
+	}));
+	refs.intervalSel.addEventListener('change', function(ev) {
+		viewState.setRefreshMs(ev.target.value);
+	});
 	refs.refresh = E('button', {
 		'type': 'button',
 		'class': 'cbi-button lanspeed-connection-refresh'
@@ -178,6 +191,15 @@ function buildShell(viewState) {
 		if (event && event.preventDefault) event.preventDefault();
 		if (event && event.stopPropagation) event.stopPropagation();
 		viewState.reload();
+	});
+	refs.pause = E('button', {
+		'type': 'button',
+		'class': 'cbi-button lanspeed-connection-pause'
+	}, prefs.paused ? _('恢复') : _('暂停'));
+	refs.pause.addEventListener('click', function(event) {
+		if (event && event.preventDefault) event.preventDefault();
+		if (event && event.stopPropagation) event.stopPropagation();
+		viewState.setPaused();
 	});
 	refs.pagePrev = E('button', {
 		'type': 'button',
@@ -230,7 +252,13 @@ function buildShell(viewState) {
 		]),
 		E('div', {
 			'class': 'lanspeed-toolbar-right lanspeed-connection-toolbar-right'
-		}, refs.refresh)
+		}, [
+			E('label', {
+				'class': 'lanspeed-refresh-control lanspeed-connection-interval-control'
+			}, [ _('刷新'), refs.intervalSel ]),
+			refs.refresh,
+			refs.pause
+		])
 	]);
 
 	refs.tbody = E('tbody', {});

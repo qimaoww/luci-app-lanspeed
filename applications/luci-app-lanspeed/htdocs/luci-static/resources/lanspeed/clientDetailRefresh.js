@@ -351,6 +351,7 @@ function render(viewState) {
 		: [];
 	groups = clientConnections.sortGroups(groups, viewState.sortKey, viewState.sortDir);
 	var pageSize = Number(viewState.pageSize);
+	var interval = viewState.prefs && viewState.prefs.refreshMs;
 	if (!isFinite(pageSize) || pageSize < 1)
 		pageSize = CONNECTION_PAGE_SIZE;
 	pageSize = Math.max(1, Math.floor(pageSize));
@@ -408,7 +409,17 @@ function render(viewState) {
 	protocolButton(refs.protocolUdp, viewState.protocol === 'udp');
 	refreshSortHeaders(refs, viewState);
 	refs.filter.value = viewState.filter || '';
+	if (refs.intervalSel) {
+		refs.intervalSel.value = String(interval);
+		refs.intervalSel.disabled = viewState.loading === true;
+	}
 	refs.refresh.disabled = viewState.loading === true;
+	if (refs.pause) {
+		refs.pause.textContent = viewState.prefs && viewState.prefs.paused
+			? _('恢复') : _('暂停');
+		refs.pause.setAttribute('aria-pressed',
+			viewState.prefs && viewState.prefs.paused ? 'true' : 'false');
+	}
 	if (refs.pager) {
 		refs.pagePrev.disabled = page <= 0 || !usable || viewState.loading === true;
 		refs.pageNext.disabled = page >= pageCount - 1 || !usable || viewState.loading === true;
@@ -417,7 +428,6 @@ function render(viewState) {
 		refs.pager.hidden = !usable || pageCount <= 1;
 	}
 
-	var interval = viewState.prefs && viewState.prefs.refreshMs;
 	var footer = [];
 	if (response) {
 		footer.push(_('连接数据：') + sourceLabel(response.conn_source));
@@ -433,7 +443,9 @@ function render(viewState) {
 		if (warnings.length)
 			footer.push(_('告警：') + warnings.map(warningLabel).join('，'));
 	}
-	footer.push(_('每 %s 秒自动刷新').format(String(Math.round(Number(interval) / 100) / 10)));
+	footer.push(viewState.prefs && viewState.prefs.paused
+		? _('自动刷新已暂停')
+		: _('每 %s 秒自动刷新').format(String(Math.round(Number(interval) / 100) / 10)));
 	footer.push(_('国家/地区及中国省份按 IP 推测，由浏览器查询并缓存，结果可能不准确'));
 	refs.footer.textContent = footer.join(' · ');
 }

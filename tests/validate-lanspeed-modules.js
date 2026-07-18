@@ -1540,6 +1540,7 @@ function assertClientDetailViewLifecycle(src) {
 	const events = [];
 	let timerId = 0;
 	let now = new Date(2026, 0, 2, 3, 4, 5).getTime();
+	let storedDetailPrefs = JSON.stringify({ refreshMs: 1000, paused: false });
 	const fakeDate = { now: function() { return now; } };
 	const fakeWindow = {
 		location: {
@@ -1555,7 +1556,18 @@ function assertClientDetailViewLifecycle(src) {
 			return id;
 		},
 		clearTimeout: function(id) { timers.delete(id); },
-		addEventListener: function(type, handler) { listeners[type] = handler; }
+		addEventListener: function(type, handler) { listeners[type] = handler; },
+		localStorage: {
+			getItem: function(key) {
+				return key === 'luci-app-lanspeed.detail-prefs.v1'
+					? storedDetailPrefs : null;
+			},
+			setItem: function(key, value) {
+				if (key !== 'luci-app-lanspeed.detail-prefs.v1')
+					fail('clientDetailView.js must not overwrite the LAN client preference key');
+				storedDetailPrefs = value;
+			}
+		}
 	};
 	let shellState = null;
 	const shell = {
@@ -1579,8 +1591,13 @@ function assertClientDetailViewLifecycle(src) {
 	const fmt = {
 		MIN_REFRESH_MS: 1000,
 		DEFAULT_PREFS: { refreshMs: 3000 },
+		REFRESH_CHOICES: [
+			{ value: 1000, label: '1s' },
+			{ value: 3000, label: '3s' },
+			{ value: 5000, label: '5s' }
+		],
 		nextSort: nextDetailSort,
-		loadPrefs: function() { return { refreshMs: 250, paused: true }; }
+		loadPrefs: function() { return { refreshMs: 250, paused: false }; }
 	};
 
 	asyncChecks.push(Promise.resolve().then(async function() {
@@ -1597,7 +1614,8 @@ function assertClientDetailViewLifecycle(src) {
 			'identityKey', 'response', 'lastGood', 'updatedAt', 'protocol', 'filter', 'expanded',
 			'sortKey', 'sortDir', 'sortCustom',
 			'prefs', 'timer', 'loading', 'reload', 'schedule', 'stopTimer',
-			'setProtocol', 'setFilter', 'setSort', 'locationLabelFor',
+			'setProtocol', 'setFilter', 'setSort', 'setRefreshMs', 'setPaused',
+			'locationLabelFor',
 			'requestLocations', 'destroy', 'back'
 		];
 		if (!rootNode || !state || requiredFields.some(function(name) {
@@ -1606,7 +1624,20 @@ function assertClientDetailViewLifecycle(src) {
 		    state.filter !== '' || state.sortKey !== 'rx' || state.sortDir !== 'desc' ||
 		    state.sortCustom !== false || state.loading !== false || timers.size !== 1 ||
 		    Array.from(timers.values())[0].interval !== 1000) {
-			fail('clientDetailView.js render must initialize RX-descending detail sort state and auto-schedule at MIN_REFRESH_MS even when old prefs are paused');
+			fail('clientDetailView.js render must initialize RX-descending detail sort state and schedule at MIN_REFRESH_MS when detail refresh is enabled');
+		}
+		state.setRefreshMs(5000);
+		state.setPaused();
+		if (state.prefs.refreshMs !== 5000 || !state.prefs.paused || timers.size !== 0 ||
+		    JSON.stringify(JSON.parse(storedDetailPrefs)) !==
+			JSON.stringify({ refreshMs: 5000, paused: true })) {
+			fail('clientDetailView.js must persist detail refresh interval and pause state under its independent preference key');
+		}
+		state.setPaused();
+		state.setRefreshMs(1000);
+		if (state.prefs.paused || timers.size !== 1 ||
+		    Array.from(timers.values())[0].interval !== 1000) {
+			fail('clientDetailView.js must resume and reschedule only the detail refresh timer');
 		}
 
 		const rendersBeforeInitialSort = renders.length;
@@ -1887,7 +1918,7 @@ function assertClientDetailIntegratedState(viewSrc) {
 	}
 
 	asyncChecks.push(Promise.resolve().then(async function() {
-		const sequence = harness({ refreshMs: 1000, paused: true }, [
+		const sequence = harness({ refreshMs: 1000, paused: false }, [
 			Promise.resolve(goodA),
 			Promise.resolve(unavailable),
 			Promise.reject(new Error('transport still down')),
@@ -1919,7 +1950,7 @@ function assertClientDetailIntegratedState(viewSrc) {
 			fail('client detail integration must replace unavailable state with only good response B and its new browser receive time');
 		}
 
-		const recovery = harness({ refreshMs: 1000, paused: true }, [
+		const recovery = harness({ refreshMs: 1000, paused: false }, [
 			Promise.reject(new Error('initial down')),
 			Promise.resolve(goodB)
 		]);
@@ -1937,7 +1968,7 @@ function assertClientDetailIntegratedState(viewSrc) {
 
 		for (const invalid of [ null, 'not-a-number', Infinity, -1 ]) {
 			now = new Date(2026, 0, 2, 3, 8, 9).getTime();
-			const invalidPrefs = harness({ refreshMs: invalid, paused: true }, []);
+			const invalidPrefs = harness({ refreshMs: invalid, paused: false }, []);
 			invalidPrefs.view.render({
 				identityKey: 'fixture@lan', response: fixture, error: null
 			});
@@ -1945,7 +1976,7 @@ function assertClientDetailIntegratedState(viewSrc) {
 			if (invalidPrefs.state().prefs.refreshMs !== 3000 || interval !== 3000 ||
 			    !fakeElementText(invalidPrefs.built().refs.footer).includes('每 3 秒自动刷新') ||
 			    invalidPrefs.state().updatedAt !== now) {
-				fail('clientDetailView.js must normalize invalid refreshMs to 3000ms once, schedule despite paused=true, and stamp direct initial responses');
+				fail('clientDetailView.js must normalize invalid refreshMs to 3000ms, schedule when enabled, and stamp direct initial responses');
 			}
 		}
 
@@ -1954,7 +1985,7 @@ function assertClientDetailIntegratedState(viewSrc) {
 		sortB.connections.reverse();
 		const sortASnapshot = JSON.stringify(sortA);
 		const sortBSnapshot = JSON.stringify(sortB);
-		const sortedRefresh = harness({ refreshMs: 1000, paused: true }, [
+		const sortedRefresh = harness({ refreshMs: 1000, paused: false }, [
 			Promise.resolve(sortA), Promise.resolve(sortB)
 		]);
 		const sortedInitial = await sortedRefresh.view.load('fixture@lan');
@@ -2544,13 +2575,17 @@ function assertClientDetailShellInteraction(src) {
 			E,
 			function(value) { return value; }
 		);
-	const calls = { back: [], protocol: [], filter: [], sort: [], reload: [] };
+	const calls = { back: [], protocol: [], filter: [], sort: [], reload: [], interval: [], paused: [] };
 	const viewState = {
+		prefs: { refreshMs: 3000, paused: false },
+		refreshChoices: [ { value: 1000, label: '1s' }, { value: 3000, label: '3s' } ],
 		back: function() { calls.back.push(Array.from(arguments)); },
 		setProtocol: function() { calls.protocol.push(Array.from(arguments)); },
 		setFilter: function() { calls.filter.push(Array.from(arguments)); },
 		setSort: function() { calls.sort.push(Array.from(arguments)); },
-		reload: function() { calls.reload.push(Array.from(arguments)); }
+		reload: function() { calls.reload.push(Array.from(arguments)); },
+		setRefreshMs: function() { calls.interval.push(Array.from(arguments)); },
+		setPaused: function() { calls.paused.push(Array.from(arguments)); }
 	};
 	const built = shell.buildShell(viewState);
 	if (!built || !built.root || !built.refs) {
@@ -2581,7 +2616,8 @@ function assertClientDetailShellInteraction(src) {
 		'cbi-map', 'lanspeed-root', 'cbi-section', 'lanspeed-header',
 		'lanspeed-body', 'lanspeed-toolbar', 'lanspeed-toolbar-left',
 		'lanspeed-toolbar-filter', 'lanspeed-toolbar-right', 'lanspeed-table',
-		'cbi-button', 'cbi-input-text', 'alert-message', 'error', 'label', 'spacer',
+		'cbi-button', 'cbi-input-text', 'cbi-input-select', 'lanspeed-refresh-control',
+		'alert-message', 'error', 'label', 'spacer',
 		'num', 'lanspeed-sort-button', 'lanspeed-sort-label', 'lanspeed-sort-indicator'
 	]);
 	walkFakeElements(built.root, function(node) {
@@ -2598,7 +2634,8 @@ function assertClientDetailShellInteraction(src) {
 	[
 		'error', 'back', 'clientName', 'clientMeta', 'connectionState', 'summary',
 		'summaryTargets', 'summaryConnections', 'summaryUpdated', 'protocolAll',
-		'protocolTcp', 'protocolUdp', 'filter', 'refresh', 'sortHeaders', 'table', 'tbody',
+		'protocolTcp', 'protocolUdp', 'filter', 'intervalSel', 'refresh', 'pause',
+		'sortHeaders', 'table', 'tbody',
 		'empty', 'footer'
 	].forEach(function(name) {
 		if (!refs[name]) fail(`clientDetailShell.js refs must expose ${name}`);
@@ -2656,7 +2693,7 @@ function assertClientDetailShellInteraction(src) {
 	    refs.footer.attrs['aria-live'] !== 'polite') {
 		fail('clientDetailShell.js must label the table/search and expose live error, empty and footer states');
 	}
-	[ refs.back, refs.protocolAll, refs.protocolTcp, refs.protocolUdp, refs.refresh ].forEach(function(button) {
+	[ refs.back, refs.protocolAll, refs.protocolTcp, refs.protocolUdp, refs.refresh, refs.pause ].forEach(function(button) {
 		if (!String(button.attrs.class || '').split(/\s+/).includes('cbi-button') ||
 		    button.attrs.type !== 'button') {
 			fail('clientDetailShell.js action buttons must use cbi-button and never submit the LuCI page');
@@ -2670,6 +2707,7 @@ function assertClientDetailShellInteraction(src) {
 	refs.protocolTcp.listeners.click({ target: refs.protocolTcp });
 	refs.protocolUdp.listeners.click({ target: refs.protocolUdp });
 	refs.filter.listeners.input({ target: { value: '443' } });
+	refs.intervalSel.listeners.change({ target: { value: '1000' } });
 	sortKeys.forEach(function(sortKey) {
 		refs.sortHeaders[sortKey].button.listeners.click({
 			target: refs.sortHeaders[sortKey].button
@@ -2682,6 +2720,11 @@ function assertClientDetailShellInteraction(src) {
 		preventDefault: function() { refreshPrevented++; },
 		stopPropagation: function() { refreshStopped++; }
 	});
+	refs.pause.listeners.click({
+		target: refs.pause,
+		preventDefault: function() {},
+		stopPropagation: function() {}
+	});
 	if (JSON.stringify(calls.back) !== JSON.stringify([ [] ]) ||
 	    JSON.stringify(calls.protocol) !== JSON.stringify([ [ 'all' ], [ 'tcp' ], [ 'udp' ] ]) ||
 	    JSON.stringify(calls.filter) !== JSON.stringify([ [ '443' ] ]) ||
@@ -2689,6 +2732,8 @@ function assertClientDetailShellInteraction(src) {
 		return [ sortKey ];
 	    })) ||
 	    JSON.stringify(calls.reload) !== JSON.stringify([ [] ]) ||
+	    JSON.stringify(calls.interval) !== JSON.stringify([ [ '1000' ] ]) ||
+	    JSON.stringify(calls.paused) !== JSON.stringify([ [] ]) ||
 	    refreshPrevented !== 1 || refreshStopped !== 1) {
 		fail('clientDetailShell.js events must delegate back/protocol/filter/sort/reload directly to viewState');
 	}
