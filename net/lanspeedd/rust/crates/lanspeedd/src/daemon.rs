@@ -236,18 +236,22 @@ pub fn collect_and_reschedule<R: Runtime>(
     request_stop: impl FnOnce(),
 ) -> Result<(), DaemonError> {
     let checkpoint = runtime.checkpoint();
-    let result = runtime.collect().and_then(|snapshot| {
-        validate_snapshot(&snapshot)?;
-        Ok(snapshot)
-    });
-    match &result {
-        Ok(snapshot) => state.publish(Arc::new(snapshot.clone())),
-        Err(_) => runtime.restore(checkpoint),
-    }
+    // Startup and reload validate every fixed response. The hot path publishes the
+    // strongly typed snapshot directly and leaves JSON serialization to ubus replies.
+    let collection_error = match runtime.collect() {
+        Ok(snapshot) => {
+            state.publish(Arc::new(snapshot));
+            None
+        }
+        Err(error) => {
+            runtime.restore(checkpoint);
+            Some(error)
+        }
+    };
     if let Err(schedule) = schedule_collection(state.config().refresh_interval_ms) {
-        let message = match result {
-            Ok(_) => format!("collection timer failed: {schedule}"),
-            Err(collection) => {
+        let message = match collection_error {
+            None => format!("collection timer failed: {schedule}"),
+            Some(collection) => {
                 format!("{collection}; collection timer failed: {schedule}")
             }
         };
@@ -255,7 +259,10 @@ pub fn collect_and_reschedule<R: Runtime>(
         request_stop();
         return Err(DaemonError::transport(message));
     }
-    result.map(|_| ())
+    match collection_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 pub fn reconnect_and_register<C>(

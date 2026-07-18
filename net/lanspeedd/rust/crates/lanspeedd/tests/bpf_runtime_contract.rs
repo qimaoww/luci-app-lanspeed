@@ -629,6 +629,33 @@ fn only_primary_kfunc_incompatibility_selects_the_fallback_object() {
 }
 
 #[test]
+fn byte_only_loader_never_attempts_the_kfunc_object() {
+    let mut adapter = FakeAya::default();
+
+    let runtime = BpfRuntime::load_byte_only(&mut adapter, "fallback.o").unwrap();
+
+    assert_eq!(adapter.loads, [ObjectFlavor::BytePacketFallback]);
+    assert!(runtime.primary_kfunc_incompatibility().is_none());
+}
+
+#[test]
+fn production_uses_byte_only_accounting_on_the_packet_hot_path() {
+    let production = include_str!("../src/production.rs");
+    let activation = production
+        .split("fn activate_new_bpf")
+        .nth(1)
+        .unwrap()
+        .split("fn checkpoint")
+        .next()
+        .unwrap();
+
+    assert!(activation.contains("BpfRuntime::load_byte_only"));
+    assert!(activation.contains("FALLBACK_OBJECT_PATH"));
+    assert!(!activation.contains("PRIMARY_OBJECT_PATH"));
+    assert!(!activation.contains("BpfRuntime::load("));
+}
+
+#[test]
 fn fixed_normal_and_early_netlink_links_are_exact() {
     let normal = LinkSpec::pair("br-lan", AttachMode::Normal);
     assert_eq!(normal[0].direction, LinkDirection::Ingress);

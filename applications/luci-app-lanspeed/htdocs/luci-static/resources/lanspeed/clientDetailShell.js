@@ -165,7 +165,7 @@ function buildShell(viewState) {
 		'type': 'search',
 		'class': 'cbi-input-text lanspeed-connection-filter-input',
 		'aria-label': _('搜索连接'),
-		'placeholder': _('搜索目标 IP 或端口')
+		'placeholder': _('搜索目标 IP、端口或国家/地区')
 	});
 	refs.filter.addEventListener('input', function(ev) {
 		viewState.setFilter(ev.target.value);
@@ -238,6 +238,7 @@ function buildShell(viewState) {
 	}, [
 		E('thead', {}, E('tr', {}, [
 			sortableHeader('remote_ip', _('目标 IP')),
+			sortableHeader('location', _('国家/地区')),
 			sortableHeader('remote_port', _('目标端口')),
 			sortableHeader('protocol', _('协议')),
 			sortableHeader('state', _('状态')),
@@ -256,7 +257,7 @@ function buildShell(viewState) {
 	refs.footer = E('p', {
 		'class': 'lanspeed-connection-footer',
 		'aria-live': 'polite'
-	}, _('连接数据加载后会显示来源和刷新间隔。'));
+	}, _('连接数据加载后会显示来源、刷新间隔和 IP 位置说明。'));
 
 	var connectionsCard = E('div', {
 		'class': 'cbi-section lanspeed-connections-card'

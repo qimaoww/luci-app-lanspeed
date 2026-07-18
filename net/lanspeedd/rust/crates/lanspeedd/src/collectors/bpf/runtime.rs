@@ -304,6 +304,21 @@ impl<L> BpfRuntime<L> {
         Ok(Self::new_loaded(primary_error))
     }
 
+    /// Load the byte-accounting object directly.
+    ///
+    /// Production connection totals come from the conntrack snapshot overlay,
+    /// so the kfunc object's per-packet approximate connection bookkeeping is
+    /// unnecessary on the hot forwarding path. Keep [`Self::load`] for explicit
+    /// kfunc compatibility checks, while normal sampling uses this lower-cost
+    /// object.
+    pub fn load_byte_only<A: AyaAdapter<Link = L>>(
+        adapter: &mut A,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, AdapterError> {
+        adapter.load_object(path.as_ref(), ObjectFlavor::BytePacketFallback)?;
+        Ok(Self::new_loaded(None))
+    }
+
     fn new_loaded(primary_kfunc_incompatibility: Option<String>) -> Self {
         Self {
             object_loaded: true,

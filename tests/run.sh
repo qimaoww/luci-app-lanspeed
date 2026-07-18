@@ -107,6 +107,7 @@ run_node_check() {
 		"$SCRIPT_DIR/validate-lanspeed-packaging.js" \
 		"$SCRIPT_DIR/validate-lanspeed-ubus-lifecycle.js" \
 		"$SCRIPT_DIR/validate-release-version.js" \
+		"$SCRIPT_DIR/validate-lanspeed-geo.js" \
 		"$SCRIPT_DIR/validate-lanspeed-modules.js"; do
 		name=$(basename "$validator" .js)
 		run_logged "node-check-$name" node --check "$validator" || return $?
@@ -210,9 +211,10 @@ run_unit() {
 	run_logged "ubus-lifecycle" node "$SCRIPT_DIR/validate-lanspeed-ubus-lifecycle.js" || return $?
 	run_logged "release-version" env RUST_CARGO="$rust_cargo_path" \
 		node "$SCRIPT_DIR/validate-release-version.js" || return $?
+	run_logged "lanspeed-geo" node "$SCRIPT_DIR/validate-lanspeed-geo.js" || return $?
 	run_logged "lanspeed-modules" node "$SCRIPT_DIR/validate-lanspeed-modules.js" || return $?
 	run_logged "build-sdk" sh "$SCRIPT_DIR/validate-build-sdk.sh" || return $?
-	append_unit_evidence "coverage=rust_workspace openwrt_feature_ffi openwrt_sys_ubus_tests contract identity collector lifecycle probes lanspeed-modules build-sdk"
+	append_unit_evidence "coverage=rust_workspace openwrt_feature_ffi openwrt_sys_ubus_tests contract identity collector lifecycle probes lanspeed-geo lanspeed-modules build-sdk"
 	append_unit_evidence "completed=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 	append_unit_evidence "END unit run_id=$RUN_ID"
 	printf '%s\n' "unit validations passed; evidence: $UNIT_EVIDENCE"

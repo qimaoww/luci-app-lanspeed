@@ -57,6 +57,7 @@ const luciResources = [
   'clientDetailRefresh.js',
   'clientDetailView.js',
   'format.js',
+  'geoLocation.js',
   'ifaceConfig.js',
   'rpc.js',
   'statusCollector.js',
@@ -85,7 +86,8 @@ const clientDetailResources = [
   'clientDetailStyleAurora.js',
   'clientDetailStyleResponsive.js',
   'clientDetailRefresh.js',
-  'clientDetailView.js'
+  'clientDetailView.js',
+  'geoLocation.js'
 ];
 const clientConnectionsConntrackSemantics =
   'TCP 仅统计 ESTABLISHED + ASSURED，UDP 仅统计 ASSURED';
@@ -831,7 +833,7 @@ try {
     'LuCI config menu must use the semantic config view');
 
   const installedClientDetailResources = installedResources.filter((name) =>
-    /^(?:clientConnections|clientDetail)/.test(name));
+    /^(?:clientConnections|clientDetail|geoLocation)/.test(name));
   assertExactNames(installedClientDetailResources, clientDetailResources,
     'LuCI package must install exactly the active client detail resources');
 

@@ -3,6 +3,7 @@ use std::{
     fs,
     io::{self, Read},
     path::{Path, PathBuf},
+    sync::Arc,
     time::UNIX_EPOCH,
 };
 
@@ -48,8 +49,8 @@ pub struct HostnameRefreshStats {
 #[derive(Clone, Debug)]
 pub struct HostnameCache {
     capacity: usize,
-    by_mac: Vec<(String, String)>,
-    by_ip: Vec<(String, String)>,
+    by_mac: Arc<Vec<(String, String)>>,
+    by_ip: Arc<Vec<(String, String)>>,
     last_refresh_ms: u64,
     mtimes: SourceMtimes,
     last_refresh_stats: HostnameRefreshStats,
@@ -69,8 +70,8 @@ impl HostnameCache {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             capacity,
-            by_mac: Vec::new(),
-            by_ip: Vec::new(),
+            by_mac: Arc::default(),
+            by_ip: Arc::default(),
             last_refresh_ms: 0,
             mtimes: SourceMtimes::default(),
             last_refresh_stats: HostnameRefreshStats::default(),
@@ -78,21 +79,23 @@ impl HostnameCache {
     }
 
     pub fn refresh_from_paths(&mut self, paths: &HostnamePaths, now_ms: u64, force: bool) -> bool {
-        let mtimes = SourceMtimes {
-            leases: mtime(&paths.leases),
-            hosts_dir: latest_directory_mtime(&paths.hosts_dir),
-            etc_hosts: mtime(&paths.etc_hosts),
-        };
-        let changed = force || mtimes != self.mtimes;
-        if !changed
+        // Avoid walking /tmp/hosts and statting every dnsmasq host fragment on
+        // each one-second sampling tick. Hostnames are presentation metadata,
+        // so checking their mtimes at the documented refresh cadence is enough.
+        if !force
             && self.last_refresh_ms != 0
             && now_ms.wrapping_sub(self.last_refresh_ms) < HOSTNAME_REFRESH_MS
         {
             return false;
         }
+        let mtimes = SourceMtimes {
+            leases: mtime(&paths.leases),
+            hosts_dir: latest_directory_mtime(&paths.hosts_dir),
+            etc_hosts: mtime(&paths.etc_hosts),
+        };
 
-        self.by_mac.clear();
-        self.by_ip.clear();
+        self.by_mac = Arc::default();
+        self.by_ip = Arc::default();
         self.last_refresh_stats = HostnameRefreshStats::default();
         let mut lease_budget = HOSTNAME_MAX_SOURCE_BYTES;
         self.parse_leases_path(&paths.leases, &mut lease_budget);
@@ -165,15 +168,14 @@ impl HostnameCache {
         if self.by_mac.len() >= self.capacity {
             return;
         }
-        if let Some((_, existing)) = self
-            .by_mac
+        if let Some((_, existing)) = Arc::make_mut(&mut self.by_mac)
             .iter_mut()
             .find(|(candidate, _)| candidate == mac)
         {
             *existing = name.to_owned();
             return;
         }
-        self.by_mac.push((mac.to_owned(), name.to_owned()));
+        Arc::make_mut(&mut self.by_mac).push((mac.to_owned(), name.to_owned()));
     }
 
     fn add_ip(&mut self, ip: &str, name: &str) {
@@ -186,7 +188,7 @@ impl HostnameCache {
         if self.by_ip.iter().any(|(candidate, _)| candidate == ip) {
             return;
         }
-        self.by_ip.push((ip.to_owned(), name.to_owned()));
+        Arc::make_mut(&mut self.by_ip).push((ip.to_owned(), name.to_owned()));
     }
 
     fn parse_leases_path(&mut self, path: &Path, budget: &mut usize) {

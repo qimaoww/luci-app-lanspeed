@@ -20,6 +20,7 @@ var CSS = [
 	'.lanspeed-connections-card .lanspeed-table tbody td.num{text-align:left}',
 	'.lanspeed-connections-card .lanspeed-table td[data-label]::before{content:attr(data-label);display:block;margin:0 0 .15em;font-size:.72em;font-weight:600;line-height:1.2;opacity:.62}',
 	'.lanspeed-connection-target-cell{grid-column:1/-1}',
+	'.lanspeed-connection-location-cell{min-width:0;overflow-wrap:anywhere;word-break:break-word}',
 	'.lanspeed-connection-endpoint,.lanspeed-connection-target-cell{min-width:0;max-width:100%;overflow-wrap:anywhere;word-break:break-word;white-space:normal}',
 	'.lanspeed-connection-detail-row{display:block!important}',
 	'.lanspeed-connection-detail-cell{display:block!important;width:100%;max-width:100%}',

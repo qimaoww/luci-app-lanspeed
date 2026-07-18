@@ -483,6 +483,89 @@ fn collection_tick_publishes_only_a_complete_snapshot_and_reschedules() {
 }
 
 #[test]
+fn hot_collection_uses_one_outer_checkpoint_and_moves_the_unvalidated_snapshot() {
+    let daemon = include_str!("../src/daemon.rs");
+    let hot_path = daemon
+        .split("pub fn collect_and_reschedule")
+        .nth(1)
+        .unwrap()
+        .split("pub fn reconnect_and_register")
+        .next()
+        .unwrap();
+    assert_eq!(hot_path.matches("runtime.checkpoint()").count(), 1);
+    assert!(!hot_path.contains("validate_snapshot"));
+    assert!(hot_path.contains("Arc::new(snapshot)"));
+    assert!(!hot_path.contains("snapshot.clone()"));
+
+    let production = include_str!("../src/production.rs");
+    let runtime_impl = production
+        .split("impl Runtime for ProductionRuntime")
+        .nth(1)
+        .unwrap()
+        .split("struct App")
+        .next()
+        .unwrap();
+    assert!(runtime_impl.contains("self.collect_inner(ProbeMethod::Status, None)"));
+    assert!(!runtime_impl.contains("ProductionRuntime::collect("));
+}
+
+#[test]
+fn request_refresh_skips_serialization_while_startup_and_reload_still_validate() {
+    let production = include_str!("../src/production.rs");
+    let request_refresh = production
+        .split("fn refresh_clients_connections(&mut self)")
+        .nth(1)
+        .unwrap()
+        .split("fn before_reply")
+        .next()
+        .unwrap();
+    assert_eq!(request_refresh.matches("runtime.checkpoint()").count(), 1);
+    assert!(request_refresh.contains("runtime.restore(checkpoint)"));
+    assert!(request_refresh.contains("self.state.publish(Arc::new(snapshot))"));
+    assert!(!request_refresh.contains("Method::FIXED"));
+    assert!(!request_refresh.contains("snapshot.response("));
+
+    let reload_collect = production
+        .split("fn collect(&mut self, method: ProbeMethod)")
+        .nth(1)
+        .unwrap()
+        .split("fn collect_with_external_bpf")
+        .next()
+        .unwrap();
+    assert!(reload_collect.contains("ubus::Method::FIXED"));
+    assert!(reload_collect.contains("snapshot.response(method)"));
+
+    let external_reload_collect = production
+        .split("fn collect_with_external_bpf")
+        .nth(1)
+        .unwrap()
+        .split("fn collect_inner")
+        .next()
+        .unwrap();
+    assert!(external_reload_collect.contains("ubus::Method::FIXED"));
+    assert!(external_reload_collect.contains("snapshot.response(method)"));
+
+    let daemon = include_str!("../src/daemon.rs");
+    let startup = daemon
+        .split("pub fn activate_runtime")
+        .nth(1)
+        .unwrap()
+        .split("pub fn collect_and_reschedule")
+        .next()
+        .unwrap();
+    assert!(startup.contains("validate_snapshot(&snapshot)"));
+
+    let reload = daemon
+        .split("pub fn reload(&mut self, config: RuntimeConfig)")
+        .nth(1)
+        .unwrap()
+        .split("pub fn on_signal_shutdown")
+        .next()
+        .unwrap();
+    assert!(reload.contains("validate_snapshot(&snapshot)"));
+}
+
+#[test]
 fn shared_collection_path_makes_timer_failure_fatal_without_masking_collection_error() {
     let events = Events::default();
     let state = CoordinatorState::new(

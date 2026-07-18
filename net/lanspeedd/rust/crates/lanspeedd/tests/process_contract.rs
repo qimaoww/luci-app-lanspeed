@@ -5,7 +5,10 @@ use lanspeedd::{
     config::RuntimeConfig,
     probe::{
         assess,
-        process::{scan_dae_processes, DaeModeReloadLatch, DaeProcessState, DaeProcessTracker},
+        process::{
+            scan_dae_processes, DaeModeReloadLatch, DaeProcessState, DaeProcessTracker,
+            DAE_PROCESS_SCAN_INTERVAL_MS,
+        },
         ProbeObservations, RuntimeHealth,
     },
 };
@@ -154,6 +157,63 @@ fn tracker_reports_only_runtime_active_edges_for_mode_reload() {
         !tracker.refresh(&root),
         "a failed top-level scan retains state and is not a false edge"
     );
+}
+
+#[test]
+fn timed_tracker_scans_immediately_then_reuses_proc_state_for_five_seconds() {
+    let root = proc_root("cadence");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let mut tracker = DaeProcessTracker::default();
+    let start_ms = 10_000;
+
+    assert_eq!(tracker.refresh_if_due(&root, start_ms), Some(false));
+    write_comm(&root, "450", "dae");
+    assert_eq!(
+        tracker.refresh_if_due(&root, start_ms + DAE_PROCESS_SCAN_INTERVAL_MS - 1),
+        None
+    );
+    assert!(!tracker.active(), "the cached process state must be reused");
+
+    assert_eq!(
+        tracker.refresh_if_due(&root, start_ms + DAE_PROCESS_SCAN_INTERVAL_MS),
+        Some(true),
+        "the first due scan must surface the inactive-to-active reload edge"
+    );
+    assert!(tracker.active());
+
+    fs::remove_dir_all(root.join("450")).unwrap();
+    assert_eq!(
+        tracker.refresh_if_due(
+            &root,
+            start_ms + DAE_PROCESS_SCAN_INTERVAL_MS.saturating_mul(2),
+        ),
+        Some(true),
+        "a due active-to-inactive edge must still trigger transactional reload"
+    );
+    assert!(!tracker.active());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn timed_tracker_throttles_failed_proc_scans_too() {
+    let root = proc_root("failed-cadence");
+    let _ = fs::remove_dir_all(&root);
+    let mut tracker = DaeProcessTracker::default();
+
+    assert_eq!(tracker.refresh_if_due(&root, 1_000), Some(false));
+    assert!(tracker.last_error().is_some());
+    fs::create_dir_all(&root).unwrap();
+    write_comm(&root, "451", "daed");
+
+    assert_eq!(tracker.refresh_if_due(&root, 5_999), None);
+    assert!(!tracker.active());
+    assert!(tracker.last_error().is_some());
+    assert_eq!(tracker.refresh_if_due(&root, 6_000), Some(true));
+    assert!(tracker.active());
+    assert_eq!(tracker.last_error(), None);
+
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

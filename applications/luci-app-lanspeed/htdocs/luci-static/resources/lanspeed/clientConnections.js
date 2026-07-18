@@ -113,12 +113,21 @@ function portsForConnections(connections) {
 	return ports;
 }
 
-function matchesSearch(conn, term) {
+function locationLabel(remoteIp, lookup) {
+	var value;
+	if (typeof lookup !== 'function')
+		return '';
+	try { value = lookup(remoteIp); } catch (e) { value = ''; }
+	return value === null || value === undefined ? '' : String(value);
+}
+
+function matchesSearch(conn, term, lookup) {
 	return [
 		conn && conn.remote_ip,
 		conn && conn.client_ip,
 		conn && conn.remote_port,
-		conn && conn.client_port
+		conn && conn.client_port,
+		locationLabel(conn && conn.remote_ip, lookup)
 	].some(function(value) {
 		if (value === null || value === undefined)
 			return false;
@@ -131,7 +140,7 @@ function connectionRate(value) {
 	return isFinite(rate) && rate > 0 ? rate : 0;
 }
 
-function groupsForResponse(response, protocol, search) {
+function groupsForResponse(response, protocol, search, locationLookup) {
 	var wanted = protocol === null || protocol === undefined
 		? 'all'
 		: String(protocol).toLowerCase();
@@ -147,7 +156,7 @@ function groupsForResponse(response, protocol, search) {
 		: String(search).trim().toLowerCase();
 	if (term) {
 		filtered = filtered.filter(function(conn) {
-			return matchesSearch(conn, term);
+			return matchesSearch(conn, term, locationLookup);
 		});
 	}
 
@@ -161,6 +170,7 @@ function groupsForResponse(response, protocol, search) {
 		if (!group) {
 			group = {
 				remoteIp: remoteIp,
+				locationLabel: locationLabel(remoteIp, locationLookup),
 				ports: [],
 				portLabel: '',
 				protocolLabel: '',
@@ -190,7 +200,7 @@ function groupsForResponse(response, protocol, search) {
 
 function sortGroups(groups, sortKey, sortDir) {
 	var key = [
-		'remote_ip', 'remote_port', 'protocol', 'state', 'tx', 'rx', 'count'
+		'remote_ip', 'location', 'remote_port', 'protocol', 'state', 'tx', 'rx', 'count'
 	].indexOf(sortKey) !== -1 ? sortKey : 'rx';
 	var direction = sortDir === 'asc' ? 'asc' : 'desc';
 	var entries = fmt.asArray(groups).map(function(group, index) {
@@ -204,6 +214,8 @@ function sortGroups(groups, sortKey, sortDir) {
 
 		if (key === 'remote_ip') {
 			result = fmt.compareText(left.remoteIp, right.remoteIp);
+		} else if (key === 'location') {
+			result = fmt.compareText(left.locationLabel, right.locationLabel);
 		} else if (key === 'remote_port') {
 			var leftPort = left.ports && left.ports.length ? Number(left.ports[0]) : null;
 			var rightPort = right.ports && right.ports.length ? Number(right.ports[0]) : null;

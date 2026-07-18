@@ -120,7 +120,7 @@ struct ConnectionCounterPoint {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ConnectionRateBook {
     last_sample_ms: Option<u64>,
-    previous: BTreeMap<ConnectionRateKey, ConnectionCounterPoint>,
+    previous: Arc<BTreeMap<ConnectionRateKey, ConnectionCounterPoint>>,
 }
 
 impl ConnectionRateBook {
@@ -165,13 +165,13 @@ impl ConnectionRateBook {
             }
         }
 
-        self.previous = current;
+        self.previous = Arc::new(current);
         self.last_sample_ms = Some(sample_ms);
     }
 
     pub fn clear(&mut self) {
         self.last_sample_ms = None;
-        self.previous.clear();
+        self.previous = Arc::default();
     }
 }
 
@@ -431,5 +431,46 @@ const fn direction_rank(direction: ConnectionDirection) -> u8 {
     match direction {
         ConnectionDirection::Outbound => 0,
         ConnectionDirection::Inbound => 1,
+    }
+}
+
+#[cfg(test)]
+mod rate_book_tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_clone_shares_the_previous_counter_map() {
+        let key = ConnectionRateKey {
+            identity_key: "client".into(),
+            client_ip: "192.0.2.2".parse().unwrap(),
+            client_port: 12_345,
+            remote_ip: "198.51.100.2".parse().unwrap(),
+            remote_port: 443,
+            protocol: ConnectionProtocol::Tcp,
+            direction: ConnectionDirection::Outbound,
+        };
+        let mut book = ConnectionRateBook {
+            last_sample_ms: Some(1_000),
+            previous: Arc::new(BTreeMap::from([(
+                key,
+                ConnectionCounterPoint {
+                    sample_ms: 1_000,
+                    tx_bytes: 100,
+                    rx_bytes: 200,
+                },
+            )])),
+        };
+
+        let checkpoint = book.clone();
+
+        assert!(Arc::ptr_eq(&book.previous, &checkpoint.previous));
+
+        let counters = Arc::default();
+        let mut details = Arc::default();
+        book.update(2_000, &counters, &mut details);
+
+        assert!(!Arc::ptr_eq(&book.previous, &checkpoint.previous));
+        assert!(book.previous.is_empty());
+        assert_eq!(checkpoint.previous.len(), 1);
     }
 }

@@ -1,6 +1,6 @@
 use crate::connection_details::{ConnectionCountersSnapshot, ConnectionDetailsSnapshot};
 use aggregate::{aggregate_flows, ClientSample};
-use netlink::{DumpError, NetlinkSnapshot};
+use netlink::{DumpError, NetlinkAggregateSnapshot, NetlinkSnapshot};
 use procfs::{ProcfsError, ProcfsSnapshot};
 use std::net::IpAddr;
 
@@ -177,33 +177,62 @@ pub fn collect(
     now_ms: u64,
     max_clients: usize,
 ) -> Result<CollectedSnapshot, CollectorReadError> {
-    match mode {
-        CollectorMode::Netlink => finish_netlink(
-            netlink::read_snapshot().map_err(CollectorReadError::Netlink)?,
-            identities,
-            now_ms,
-            max_clients,
-        ),
-        CollectorMode::Procfs => finish_procfs_aggregate(
+    collect_aggregate_with(
+        mode,
+        || {
+            netlink::read_aggregate(identities, now_ms, max_clients)
+                .map_err(CollectorReadError::Netlink)
+        },
+        || {
             procfs::read_aggregate(identities, now_ms, max_clients)
-                .map_err(CollectorReadError::Procfs)?,
-            false,
-            None,
-        ),
-        CollectorMode::Auto => match netlink::read_snapshot() {
-            Ok(snapshot) => finish_netlink(snapshot, identities, now_ms, max_clients),
+                .map_err(CollectorReadError::Procfs)
+        },
+    )
+}
+
+fn collect_aggregate_with<N, P>(
+    mode: CollectorMode,
+    netlink: N,
+    procfs: P,
+) -> Result<CollectedSnapshot, CollectorReadError>
+where
+    N: FnOnce() -> Result<NetlinkAggregateSnapshot, CollectorReadError>,
+    P: FnOnce() -> Result<procfs::ProcfsAggregateSnapshot, CollectorReadError>,
+{
+    match mode {
+        CollectorMode::Netlink => finish_netlink_aggregate(netlink()?),
+        CollectorMode::Procfs => finish_procfs_aggregate(procfs()?, false, None),
+        CollectorMode::Auto => match netlink() {
+            Ok(snapshot) => finish_netlink_aggregate(snapshot),
             Err(netlink_error) => {
-                let errno = match &netlink_error {
-                    DumpError::Kernel(error) => error.raw_os_error(),
-                    _ => None,
-                };
-                match procfs::read_aggregate(identities, now_ms, max_clients) {
+                let errno = netlink_errno(&netlink_error);
+                match procfs() {
                     Ok(snapshot) => finish_procfs_aggregate(snapshot, true, errno),
-                    Err(_) => Err(CollectorReadError::Netlink(netlink_error)),
+                    Err(_) => Err(netlink_error),
                 }
             }
         },
     }
+}
+
+fn finish_netlink_aggregate(
+    snapshot: NetlinkAggregateSnapshot,
+) -> Result<CollectedSnapshot, CollectorReadError> {
+    let stats = stats_from_aggregate(
+        &snapshot.aggregate,
+        snapshot.source_path,
+        true,
+        true,
+        false,
+        None,
+        snapshot.malformed_entries,
+        snapshot.entries_seen,
+    );
+    Ok(finish_aggregate(
+        snapshot.aggregate,
+        snapshot.counter_source,
+        stats,
+    ))
 }
 
 fn finish_procfs_aggregate(
@@ -338,8 +367,90 @@ mod tests {
             ClientConnectionDetail, ConnectionDetailsIndex, ConnectionDirection,
             ConnectionProtocol, ConnectionState,
         },
+        identity::{IdentityObservation, IdentityTable, ObservationSource},
     };
-    use std::sync::Arc;
+    use std::{cell::Cell, sync::Arc};
+
+    #[test]
+    fn production_netlink_modes_use_streaming_aggregate_and_match_vec_helper() {
+        let mut identities = IdentityTable::new(4);
+        identities
+            .observe(IdentityObservation {
+                mac: "02:00:00:00:00:01",
+                zone: Some("lan"),
+                interface: "br-lan",
+                ip: Some("192.0.2.10"),
+                hostname: None,
+                last_seen: 1,
+                source: ObservationSource::Neighbor,
+            })
+            .unwrap();
+        let flow = FlowSample {
+            orig_src: Some("192.0.2.10".parse().unwrap()),
+            orig_dst: Some("1.1.1.1".parse().unwrap()),
+            reply_src: Some("1.1.1.1".parse().unwrap()),
+            reply_dst: Some("192.0.2.10".parse().unwrap()),
+            orig_bytes: 100,
+            reply_bytes: 250,
+            orig_sport: 50_123,
+            orig_dport: 443,
+            reply_sport: 443,
+            reply_dport: 50_123,
+            protocol: Protocol::Tcp,
+            tcp_state: Some(TcpState::Established),
+            assured: true,
+        };
+        let now_ms = 91_337;
+        let expected = finish_netlink(
+            NetlinkSnapshot {
+                flows: vec![flow.clone()],
+                source_path: NETLINK_SOURCE_PATH,
+                counter_source: NETLINK_COUNTER_SOURCE,
+                malformed_entries: 1,
+            },
+            &identities,
+            now_ms,
+            8,
+        )
+        .unwrap();
+        let aggregate = aggregate_flows(&identities, [&flow], now_ms, 8);
+        let streaming_snapshot = || NetlinkAggregateSnapshot {
+            aggregate: aggregate.clone(),
+            source_path: NETLINK_SOURCE_PATH,
+            counter_source: NETLINK_COUNTER_SOURCE,
+            malformed_entries: 1,
+            entries_seen: 2,
+        };
+
+        let procfs_called = Cell::new(false);
+        let netlink = collect_aggregate_with(
+            CollectorMode::Netlink,
+            || Ok(streaming_snapshot()),
+            || {
+                procfs_called.set(true);
+                unreachable!()
+            },
+        )
+        .unwrap();
+        assert!(!procfs_called.get());
+        assert_eq!(netlink, expected);
+
+        let procfs_called = Cell::new(false);
+        let automatic = collect_aggregate_with(
+            CollectorMode::Auto,
+            || Ok(streaming_snapshot()),
+            || {
+                procfs_called.set(true);
+                unreachable!()
+            },
+        )
+        .unwrap();
+        assert!(!procfs_called.get());
+        assert_eq!(automatic, expected);
+        assert_eq!(automatic.connection_details, expected.connection_details);
+        assert_eq!(automatic.connection_counters, expected.connection_counters);
+        assert_eq!(automatic.stats, expected.stats);
+    }
 
     #[test]
     fn streaming_procfs_finish_preserves_shared_details_timestamp_and_fallback_stats() {

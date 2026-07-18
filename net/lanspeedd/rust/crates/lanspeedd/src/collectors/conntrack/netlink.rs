@@ -1,4 +1,8 @@
-use super::{FlowSample, Protocol, TcpState, NETLINK_COUNTER_SOURCE, NETLINK_SOURCE_PATH};
+use super::{
+    aggregate::{AggregateSnapshot, AggregateState},
+    FlowSample, Protocol, TcpState, NETLINK_COUNTER_SOURCE, NETLINK_SOURCE_PATH,
+};
+use crate::identity::IdentityTable;
 use std::{
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -117,6 +121,15 @@ pub struct NetlinkSnapshot {
     pub malformed_entries: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetlinkAggregateSnapshot {
+    pub aggregate: AggregateSnapshot,
+    pub source_path: &'static str,
+    pub counter_source: &'static str,
+    pub malformed_entries: usize,
+    pub entries_seen: usize,
+}
+
 pub fn parse_dump_with_limit(
     datagrams: &[Datagram],
     expected_seq: u32,
@@ -138,6 +151,15 @@ fn parse_dump_detailed_with_limit(
     expected_port_id: u32,
     max_bytes: usize,
 ) -> Result<ParsedDump, DumpError> {
+    validate_dump_size(datagrams, max_bytes)?;
+    let mut parser = DumpParser::new(expected_seq, expected_port_id, max_bytes);
+    for datagram in datagrams {
+        parser.push_datagram(datagram.sender_pid, &datagram.bytes)?;
+    }
+    parser.finish()
+}
+
+fn validate_dump_size(datagrams: &[Datagram], max_bytes: usize) -> Result<(), DumpError> {
     let total = datagrams.iter().try_fold(0usize, |total, datagram| {
         total
             .checked_add(datagram.bytes.len())
@@ -146,17 +168,51 @@ fn parse_dump_detailed_with_limit(
     if total > max_bytes {
         return Err(DumpError::LimitExceeded);
     }
-    let mut flows = Vec::new();
-    let mut malformed_entries = 0usize;
-    let mut done = false;
-    for datagram in datagrams {
-        if datagram.sender_pid != 0 {
-            return Err(DumpError::UnexpectedSender(datagram.sender_pid));
+    Ok(())
+}
+
+struct DumpParser {
+    expected_seq: u32,
+    expected_port_id: u32,
+    max_bytes: usize,
+    total_bytes: usize,
+    flows: Vec<FlowSample>,
+    malformed_entries: usize,
+    done: bool,
+}
+
+impl DumpParser {
+    fn new(expected_seq: u32, expected_port_id: u32, max_bytes: usize) -> Self {
+        Self {
+            expected_seq,
+            expected_port_id,
+            max_bytes,
+            total_bytes: 0,
+            flows: Vec::new(),
+            malformed_entries: 0,
+            done: false,
+        }
+    }
+
+    fn push_datagram(&mut self, sender_pid: u32, bytes: &[u8]) -> Result<bool, DumpError> {
+        self.total_bytes = self
+            .total_bytes
+            .checked_add(bytes.len())
+            .ok_or(DumpError::LimitExceeded)?;
+        if self.total_bytes > self.max_bytes {
+            return Err(DumpError::LimitExceeded);
+        }
+        self.parse_datagram(sender_pid, bytes)?;
+        Ok(self.done)
+    }
+
+    fn parse_datagram(&mut self, sender_pid: u32, bytes: &[u8]) -> Result<(), DumpError> {
+        if sender_pid != 0 {
+            return Err(DumpError::UnexpectedSender(sender_pid));
         }
         let mut offset = 0usize;
-        while offset < datagram.bytes.len() {
-            let header = datagram
-                .bytes
+        while offset < bytes.len() {
+            let header = bytes
                 .get(offset..offset + 16)
                 .ok_or(DumpError::Malformed("truncated nlmsghdr"))?;
             let len = u32::from_ne_bytes(
@@ -164,11 +220,7 @@ fn parse_dump_detailed_with_limit(
                     .try_into()
                     .map_err(|_| DumpError::Malformed("invalid nlmsg length"))?,
             ) as usize;
-            if len < 16
-                || offset
-                    .checked_add(len)
-                    .is_none_or(|end| end > datagram.bytes.len())
-            {
+            if len < 16 || offset.checked_add(len).is_none_or(|end| end > bytes.len()) {
                 return Err(DumpError::Malformed("invalid nlmsg length"));
             }
             let kind = u16::from_ne_bytes(
@@ -191,23 +243,23 @@ fn parse_dump_detailed_with_limit(
                     .try_into()
                     .map_err(|_| DumpError::Malformed("invalid nlmsg pid"))?,
             );
-            if seq != expected_seq {
+            if seq != self.expected_seq {
                 return Err(DumpError::UnexpectedSequence {
-                    expected: expected_seq,
+                    expected: self.expected_seq,
                     actual: seq,
                 });
             }
-            if pid != expected_port_id {
+            if pid != self.expected_port_id {
                 return Err(DumpError::UnexpectedPortId {
-                    expected: expected_port_id,
+                    expected: self.expected_port_id,
                     actual: pid,
                 });
             }
             if flags & NLM_F_DUMP_INTR != 0 {
                 return Err(DumpError::Interrupted);
             }
-            let payload = &datagram.bytes[offset + 16..offset + len];
-            if done {
+            let payload = &bytes[offset + 16..offset + len];
+            if self.done {
                 return if kind == NLMSG_DONE {
                     Err(DumpError::Malformed("duplicate NLMSG_DONE"))
                 } else {
@@ -236,7 +288,7 @@ fn parse_dump_detailed_with_limit(
                             return Err(DumpError::Malformed("positive NLMSG_DONE status"));
                         }
                     }
-                    done = true;
+                    self.done = true;
                 }
                 NLMSG_ERROR => parse_ack(payload)?,
                 IPCTNL_MSG_CT_NEW => {
@@ -244,9 +296,9 @@ fn parse_dump_detailed_with_limit(
                         return Err(DumpError::Malformed("conntrack data is not multipart"));
                     }
                     match parse_flow(payload) {
-                        Ok(flow) => flows.push(flow),
+                        Ok(flow) => self.flows.push(flow),
                         Err(DumpError::Malformed(_)) => {
-                            malformed_entries = malformed_entries.saturating_add(1);
+                            self.malformed_entries = self.malformed_entries.saturating_add(1);
                         }
                         Err(error) => return Err(error),
                     }
@@ -257,18 +309,22 @@ fn parse_dump_detailed_with_limit(
             offset = offset
                 .checked_add(aligned)
                 .ok_or(DumpError::Malformed("nlmsg offset overflow"))?;
-            if offset > datagram.bytes.len() {
+            if offset > bytes.len() {
                 return Err(DumpError::Malformed("truncated nlmsg padding"));
             }
         }
+        Ok(())
     }
-    if !done {
-        return Err(DumpError::MissingDone);
+
+    fn finish(self) -> Result<ParsedDump, DumpError> {
+        if !self.done {
+            return Err(DumpError::MissingDone);
+        }
+        Ok(ParsedDump {
+            flows: self.flows,
+            malformed_entries: self.malformed_entries,
+        })
     }
-    Ok(ParsedDump {
-        flows,
-        malformed_entries,
-    })
 }
 
 fn parse_ack(payload: &[u8]) -> Result<(), DumpError> {
@@ -519,6 +575,49 @@ pub fn snapshot_from_datagrams(
     })
 }
 
+pub fn aggregate_dump(
+    datagrams: &[Datagram],
+    expected_seq: u32,
+    identities: &IdentityTable,
+    now_ms: u64,
+    max_clients: usize,
+) -> Result<NetlinkAggregateSnapshot, DumpError> {
+    validate_dump_size(datagrams, MAX_DUMP_BYTES)?;
+    let mut parser = DumpParser::new(expected_seq, 0, MAX_DUMP_BYTES);
+    let mut aggregate = AggregateState::new(identities, now_ms, max_clients);
+    for datagram in datagrams {
+        parser.push_datagram(datagram.sender_pid, &datagram.bytes)?;
+        drain_new_flows(&mut parser, &mut aggregate);
+    }
+    let parsed = parser.finish()?;
+    Ok(finish_aggregate_dump(aggregate, parsed))
+}
+
+fn drain_new_flows(parser: &mut DumpParser, aggregate: &mut AggregateState<'_>) {
+    for flow in parser.flows.drain(..) {
+        aggregate.push(&flow);
+    }
+}
+
+fn finish_aggregate_dump(
+    aggregate: AggregateState<'_>,
+    parsed: ParsedDump,
+) -> NetlinkAggregateSnapshot {
+    debug_assert!(parsed.flows.is_empty());
+    let aggregate = aggregate.finish();
+    let entries_seen = aggregate
+        .stats
+        .entries_seen
+        .saturating_add(parsed.malformed_entries);
+    NetlinkAggregateSnapshot {
+        aggregate,
+        source_path: NETLINK_SOURCE_PATH,
+        counter_source: NETLINK_COUNTER_SOURCE,
+        malformed_entries: parsed.malformed_entries,
+        entries_seen,
+    }
+}
+
 pub fn build_dump_request(seq: u32, port_id: u32) -> [u8; 20] {
     let mut request = [0u8; 20];
     request[0..4].copy_from_slice(&20u32.to_ne_bytes());
@@ -531,6 +630,26 @@ pub fn build_dump_request(seq: u32, port_id: u32) -> [u8; 20] {
 }
 
 pub fn read_snapshot() -> Result<NetlinkSnapshot, DumpError> {
+    let parsed = read_dump(|_| {})?;
+    Ok(NetlinkSnapshot {
+        flows: parsed.flows,
+        source_path: NETLINK_SOURCE_PATH,
+        counter_source: NETLINK_COUNTER_SOURCE,
+        malformed_entries: parsed.malformed_entries,
+    })
+}
+
+pub fn read_aggregate(
+    identities: &IdentityTable,
+    now_ms: u64,
+    max_clients: usize,
+) -> Result<NetlinkAggregateSnapshot, DumpError> {
+    let mut aggregate = AggregateState::new(identities, now_ms, max_clients);
+    let parsed = read_dump(|parser| drain_new_flows(parser, &mut aggregate))?;
+    Ok(finish_aggregate_dump(aggregate, parsed))
+}
+
+fn read_dump(mut after_datagram: impl FnMut(&mut DumpParser)) -> Result<ParsedDump, DumpError> {
     let socket = open_socket().map_err(DumpError::Kernel)?;
     let port_id = socket_port_id(&socket).map_err(DumpError::Kernel)?;
     let seq = dump_sequence();
@@ -559,10 +678,9 @@ pub fn read_snapshot() -> Result<NetlinkSnapshot, DumpError> {
             "short conntrack netlink request",
         )));
     }
-    let mut datagrams = Vec::new();
-    let mut total = 0usize;
+    let mut parser = DumpParser::new(seq, port_id, MAX_DUMP_BYTES);
+    let mut bytes = vec![0u8; MAX_DATAGRAM_BYTES];
     loop {
-        let mut bytes = vec![0u8; MAX_DATAGRAM_BYTES];
         let mut sender = unsafe { std::mem::zeroed::<libc::sockaddr_nl>() };
         let mut sender_len = std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t;
         let received = retry_eintr(|| {
@@ -590,28 +708,10 @@ pub fn read_snapshot() -> Result<NetlinkSnapshot, DumpError> {
             return Err(DumpError::Malformed("unexpected netlink sender family"));
         }
         let received = validate_received_datagram_len(received as usize, bytes.len())?;
-        bytes.truncate(received);
-        total = total
-            .checked_add(bytes.len())
-            .ok_or(DumpError::LimitExceeded)?;
-        if total > MAX_DUMP_BYTES {
-            return Err(DumpError::LimitExceeded);
-        }
-        datagrams.push(Datagram {
-            sender_pid: sender.nl_pid,
-            bytes,
-        });
-        match parse_dump_detailed_with_limit(&datagrams, seq, port_id, MAX_DUMP_BYTES) {
-            Ok(parsed) => {
-                return Ok(NetlinkSnapshot {
-                    flows: parsed.flows,
-                    source_path: NETLINK_SOURCE_PATH,
-                    counter_source: NETLINK_COUNTER_SOURCE,
-                    malformed_entries: parsed.malformed_entries,
-                })
-            }
-            Err(DumpError::MissingDone) => {}
-            Err(error) => return Err(error),
+        let done = parser.push_datagram(sender.nl_pid, &bytes[..received])?;
+        after_datagram(&mut parser);
+        if done {
+            return parser.finish();
         }
     }
 }

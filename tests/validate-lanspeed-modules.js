@@ -44,6 +44,7 @@ const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lans
 const EXPECTED_MODULES = [
 	'vocab.js',
 	'format.js',
+	'geoLocation.js',
 	'clientConnections.js',
 	'clientDetailRefresh.js',
 	'clientDetailShell.js',
@@ -154,6 +155,7 @@ function readMakeVar(source, name, fileLabel) {
 const MODULE_REQUIRES = {
 	'vocab.js': [ 'baseclass' ],
 	'format.js': [ 'baseclass' ],
+	'geoLocation.js': [ 'baseclass' ],
 	'clientConnections.js': [ 'baseclass', 'lanspeed.format' ],
 	'clientDetailRefresh.js': [
 		'baseclass',
@@ -169,6 +171,7 @@ const MODULE_REQUIRES = {
 		'baseclass',
 		'lanspeed.format',
 		'lanspeed.rpc',
+		'lanspeed.geoLocation',
 		'lanspeed.clientDetailShell',
 		'lanspeed.clientDetailRefresh'
 	],
@@ -1088,16 +1091,19 @@ function assertClientConnectionsModule(src) {
 	const sortableGroups = [
 		{
 			remoteIp: '10.0.0.1', ports: [ 443 ], portLabel: '443',
+			locationLabel: 'Zulu country',
 			protocolLabel: 'UDP', stateLabel: 'Zulu', txBps: 10, rxBps: 30,
 			count: 2, connections: [ { marker: 'a' } ]
 		},
 		{
 			remoteIp: '10.0.0.2', ports: [ 53 ], portLabel: '53',
+			locationLabel: 'Alpha country',
 			protocolLabel: 'TCP', stateLabel: 'Alpha', txBps: 30, rxBps: 10,
 			count: 1, connections: [ { marker: 'b' } ]
 		},
 		{
 			remoteIp: '10.0.0.3', ports: [ 80 ], portLabel: '80',
+			locationLabel: 'Mike country',
 			protocolLabel: 'TCP/UDP', stateLabel: 'Mike', txBps: 20, rxBps: 20,
 			count: 3, connections: [ { marker: 'c' } ]
 		}
@@ -1105,6 +1111,7 @@ function assertClientConnectionsModule(src) {
 	const sortableSnapshot = JSON.stringify(sortableGroups);
 	const sortOrders = {
 		remote_ip: [ '10.0.0.1', '10.0.0.2', '10.0.0.3' ],
+		location: [ '10.0.0.2', '10.0.0.3', '10.0.0.1' ],
 		remote_port: [ '10.0.0.2', '10.0.0.3', '10.0.0.1' ],
 		protocol: [ '10.0.0.2', '10.0.0.3', '10.0.0.1' ],
 		state: [ '10.0.0.2', '10.0.0.3', '10.0.0.1' ],
@@ -1162,6 +1169,9 @@ function assertClientConnectionsModule(src) {
 	const clientPortSearch = mod.groupsForResponse(response, 'all', '50002');
 	const caseSearch = mod.groupsForResponse(response, 'all', '  db8::beef  ');
 	const narrowedSearch = mod.groupsForResponse(response, 'all', '443');
+	const locationSearch = mod.groupsForResponse(response, 'all', '美国', function(ip) {
+		return ip === '1.1.1.1' ? '美国' : '其他地区';
+	});
 	if (remoteSearch.length !== 1 || remoteSearch[0].count !== 3 ||
 	    clientSearch.length !== 1 || clientSearch[0].count !== 1 ||
 	    clientSearch[0].portLabel !== '80' || clientSearch[0].protocolLabel !== 'UDP' ||
@@ -1171,8 +1181,10 @@ function assertClientConnectionsModule(src) {
 	    caseSearch[0].txBps !== 0 || caseSearch[0].rxBps !== 0 ||
 	    narrowedSearch.length !== 1 || narrowedSearch[0].count !== 2 ||
 	    narrowedSearch[0].portLabel !== '443' || narrowedSearch[0].protocolLabel !== 'TCP' ||
-	    narrowedSearch[0].txBps !== 8000 || narrowedSearch[0].rxBps !== 10000) {
-		fail('clientConnections.js search must cover every endpoint field before recomputing group summaries');
+	    narrowedSearch[0].txBps !== 8000 || narrowedSearch[0].rxBps !== 10000 ||
+	    locationSearch.length !== 1 || locationSearch[0].remoteIp !== '1.1.1.1' ||
+	    locationSearch[0].locationLabel !== '美国' || locationSearch[0].count !== 3) {
+		fail('clientConnections.js search must cover endpoint and country/region fields before recomputing group summaries');
 	}
 
 	const ports = [ 53, 80, 443, 853, 5353 ];
@@ -1436,22 +1448,39 @@ function makeDeferred() {
 	return { promise: promise, resolve: resolve, reject: reject };
 }
 
-function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow, fakeDate) {
+function fakeGeoLocationModule() {
+	return {
+		createResolver: function() {
+			return {
+				peek: function() {
+					return { kind: 'reserved', label: '保留/未知', queryable: false };
+				},
+				resolve: function() {
+					return Promise.resolve({ kind: 'unknown', label: '未知', queryable: false });
+				},
+				dispose: function() {}
+			};
+		}
+	};
+}
+
+function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow, fakeDate, fakeGeo) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	return vm.compileFunction(src, [
-		'baseclass', 'fmt', 'lsRpc', 'clientDetailShell',
+		'baseclass', 'fmt', 'lsRpc', 'geoLocation', 'clientDetailShell',
 		'clientDetailRefresh', 'window', 'Date'
 	], { filename: 'resources/lanspeed/clientDetailView.js' })(
-		fakeBaseclass, fmt, lsRpc, shell, refresh, fakeWindow, fakeDate || Date
+		fakeBaseclass, fmt, lsRpc, fakeGeo || fakeGeoLocationModule(), shell, refresh,
+		fakeWindow, fakeDate || Date
 	);
 }
 
 function assertClientDetailViewSource(src) {
 	if (JSON.stringify(moduleRequireNames(src)) !== JSON.stringify([
 		'baseclass', 'lanspeed.format', 'lanspeed.rpc',
-		'lanspeed.clientDetailShell', 'lanspeed.clientDetailRefresh'
+		'lanspeed.geoLocation', 'lanspeed.clientDetailShell', 'lanspeed.clientDetailRefresh'
 	])) {
-		fail('clientDetailView.js must require only format, shared RPC, detail shell and detail refresh in dependency order');
+		fail('clientDetailView.js must require only format, shared RPC, geolocation, detail shell and detail refresh in dependency order');
 	}
 	const cleaned = stripComments(src);
 	if (/\brpc\s*\.\s*declare\b|innerHTML|\bCSS\b|groupsForResponse|formatEndpoint|lanspeed-connection-|E\s*\(/.test(cleaned)) {
@@ -1568,7 +1597,8 @@ function assertClientDetailViewLifecycle(src) {
 			'identityKey', 'response', 'lastGood', 'updatedAt', 'protocol', 'filter', 'expanded',
 			'sortKey', 'sortDir', 'sortCustom',
 			'prefs', 'timer', 'loading', 'reload', 'schedule', 'stopTimer',
-			'setProtocol', 'setFilter', 'setSort', 'back'
+			'setProtocol', 'setFilter', 'setSort', 'locationLabelFor',
+			'requestLocations', 'destroy', 'back'
 		];
 		if (!rootNode || !state || requiredFields.some(function(name) {
 			return !Object.prototype.hasOwnProperty.call(state, name);
@@ -1698,6 +1728,100 @@ function assertClientDetailViewLifecycle(src) {
 		}
 	}).catch(function(err) {
 		fail('clientDetailView.js lifecycle behavior could not execute: ' + (err && err.stack || err));
+	}));
+}
+
+function assertClientDetailGeoLifecycle(src) {
+	const deferred = Object.create(null);
+	const cached = Object.create(null);
+	const resolveCalls = [];
+	let disposeCalls = 0;
+	const resolver = {
+		peek: function(ip) {
+			return cached[ip] || { kind: 'public', label: '查询中…', queryable: true };
+		},
+		resolve: function(ip) {
+			resolveCalls.push(ip);
+			deferred[ip] = makeDeferred();
+			return deferred[ip].promise.then(function(value) {
+				cached[ip] = value;
+				return value;
+			});
+		},
+		dispose: function() { disposeCalls++; }
+	};
+	const geo = { createResolver: function() { return resolver; } };
+	const listeners = {};
+	const timers = new Map();
+	let timerId = 0;
+	const fakeWindow = {
+		location: { pathname: '/admin/status/lanspeed/overview', assign: function() {} },
+		setTimeout: function(handler, interval) {
+			const id = ++timerId;
+			timers.set(id, { handler: handler, interval: interval });
+			return id;
+		},
+		clearTimeout: function(id) { timers.delete(id); },
+		addEventListener: function(type, handler) { listeners[type] = handler; }
+	};
+	let state = null;
+	const shell = { buildShell: function(viewState) {
+		state = viewState;
+		return { root: fakeElement('div', {}), refs: {} };
+	} };
+	let renders = 0;
+	const refresh = { render: function() { renders++; } };
+	const fmt = {
+		MIN_REFRESH_MS: 1000,
+		DEFAULT_PREFS: { refreshMs: 3000 },
+		nextSort: nextDetailSort,
+		loadPrefs: function() { return { refreshMs: 1000 }; }
+	};
+	const view = loadClientDetailViewModule(
+		src, fmt, { clientConnections: function() { return Promise.resolve({}); } },
+		shell, refresh, fakeWindow, Date, geo
+	);
+
+	asyncChecks.push(Promise.resolve().then(async function() {
+		view.render({ identityKey: 'geo@lan', response: { available: true } });
+		const initialRenders = renders;
+		state.requestLocations([ '8.8.8.8', '1.1.1.1', '8.8.8.8' ]);
+		state.requestLocations([ '8.8.8.8', '1.1.1.1', '8.8.8.8' ]);
+		if (JSON.stringify(resolveCalls) !== JSON.stringify([ '8.8.8.8', '1.1.1.1' ]))
+			fail('clientDetailView.js must deduplicate a current-page geolocation batch and reuse it across renders');
+		deferred['8.8.8.8'].resolve({ kind: 'country', label: '美国', queryable: false });
+		await Promise.resolve();
+		await Promise.resolve();
+		if (renders !== initialRenders)
+			fail('clientDetailView.js must not redraw once per geolocation result');
+		deferred['1.1.1.1'].resolve({ kind: 'country', label: '美国', queryable: false });
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		if (renders !== initialRenders + 1)
+			fail('clientDetailView.js must coalesce a completed current-page geolocation batch into one redraw');
+
+		state.requestLocations([ '9.9.9.9' ]);
+		state.requestLocations([]);
+		const beforeStaleCompletion = renders;
+		deferred['9.9.9.9'].resolve({ kind: 'country', label: '瑞士', queryable: false });
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		if (renders !== beforeStaleCompletion + 1)
+			fail('clientDetailView.js must redraw after cached results arrive so country/region search can reveal a match');
+
+		state.requestLocations([ '4.4.4.4' ]);
+		const beforeUnload = renders;
+		listeners.beforeunload();
+		deferred['4.4.4.4'].resolve({ kind: 'country', label: '美国', queryable: false });
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		if (disposeCalls !== 1 || renders !== beforeUnload || timers.size !== 0)
+			fail('clientDetailView.js must dispose geolocation work and suppress late redraws on unload');
+	}).catch(function(err) {
+		fail('clientDetailView.js geolocation lifecycle could not execute: ' + (err && err.stack || err));
 	}));
 }
 
@@ -1909,12 +2033,13 @@ function assertClientDetailRefreshSource(src) {
 		fail('clientDetailRefresh.js must require only baseclass, format and pure client connection helpers in dependency order');
 	}
 	const cleaned = stripComments(src);
-	if (/\brpc\b|set(?:Timeout|Interval)|clear(?:Timeout|Interval)|\bwindow\b|\blocation\b|innerHTML|\bCSS\b|clientDetailStyle/.test(cleaned)) {
+	if (/\brpc\b|set(?:Timeout|Interval)|clear(?:Timeout|Interval)|\bwindow\b|\blocation\s*\.\s*(?:href|assign|pathname|search)|innerHTML|\bCSS\b|clientDetailStyle/.test(cleaned)) {
 		fail('clientDetailRefresh.js must remain a refs-only renderer without RPC, timers, location, innerHTML, or CSS responsibilities');
 	}
 	if (!src.includes('clientConnections.groupsForResponse') ||
 	    !src.includes('clientConnections.sortGroups') ||
 	    !src.includes('clientConnections.formatEndpoint') ||
+	    !src.includes('viewState.requestLocations(pageGroups.map') ||
 	    !src.includes("setAttribute('aria-sort'") ||
 	    !src.includes("ascending ? '↑' : '↓'") ||
 	    !src.includes('.textContent') || !/\bE\s*\(/.test(src)) {
@@ -1934,6 +2059,7 @@ function assertClientDetailRefreshBehavior(src) {
 		path.join(root, 'tests/fixtures/lanspeed-client-connections.json'), 'utf8'
 	));
 	const fixtureSnapshot = JSON.stringify(fixture);
+	const locationRequests = [];
 	const state = {
 		identityKey: fixture.client.identity_key,
 		response: fixture,
@@ -1948,6 +2074,12 @@ function assertClientDetailRefreshBehavior(src) {
 		sortCustom: false,
 		prefs: { refreshMs: 1000, unit: 'bit' },
 		loading: false,
+		locationLabelFor: function(ip) {
+			return ip === '198.51.100.53' ? '美国' : '保留/未知';
+		},
+		requestLocations: function(ips) {
+			locationRequests.push(Array.from(ips));
+		},
 		back: function() {},
 		setProtocol: function(protocol) { state.protocol = protocol; refresh.render(state); },
 		setFilter: function(filter) { state.filter = filter; refresh.render(state); },
@@ -2007,16 +2139,35 @@ function assertClientDetailRefreshBehavior(src) {
 	}
 	if (!footer.includes('连接数据') || !footer.includes('Conntrack Netlink') ||
 	    !footer.includes('显示 2 / 共 2 条') ||
-	    !footer.includes('每 1 秒自动刷新')) {
-		fail('clientDetailRefresh.js footer must report source, returned/total/limit with accurate meanings, and the clamped refresh cycle in Chinese');
+	    !footer.includes('每 1 秒自动刷新') ||
+	    !footer.includes('国家/地区按 IP 推测，由浏览器查询并缓存')) {
+		fail('clientDetailRefresh.js footer must report source/count/refresh meanings and disclose browser-cached IP inference');
 	}
+	if (JSON.stringify(locationRequests[0]) !== JSON.stringify([
+		'2001:db8:ffff::20', '198.51.100.53'
+	])) {
+		fail('clientDetailRefresh.js must request geolocation only for the deduplicated groups on the rendered page');
+	}
+	state.pageSize = 1;
+	state.page = 0;
+	refresh.render(state);
+	state.page = 1;
+	refresh.render(state);
+	if (JSON.stringify(locationRequests.slice(-2)) !== JSON.stringify([
+		[ '2001:db8:ffff::20' ], [ '198.51.100.53' ]
+	])) {
+		fail('clientDetailRefresh.js must never request geolocation for groups outside the current page');
+	}
+	state.pageSize = 100;
+	state.page = 0;
+	refresh.render(state);
 
 	const sortHeaders = refs.sortHeaders;
 	const sortKeys = [
-		'remote_ip', 'remote_port', 'protocol', 'state', 'tx', 'rx', 'count'
+		'remote_ip', 'location', 'remote_port', 'protocol', 'state', 'tx', 'rx', 'count'
 	];
 	if (!sortHeaders || sortKeys.some(function(sortKey) { return !sortHeaders[sortKey]; })) {
-		fail('clientDetailRefresh.js requires refs for all seven sortable detail headers');
+		fail('clientDetailRefresh.js requires refs for all eight sortable detail headers');
 	} else {
 		const indicator = function(sortKey) {
 			return sortHeaders[sortKey].button.lastChild.textContent;
@@ -2086,6 +2237,24 @@ function assertClientDetailRefreshBehavior(src) {
 		    indicator('remote_ip') !== '') {
 			fail('clientDetailRefresh.js must restore the arrowless default RX-descending header after the third click');
 		}
+
+		sortHeaders.location.button.listeners.click();
+		state.setFilter('美国');
+		const locationGroups = findFakeElementsByClass(
+			refs.tbody, 'lanspeed-connection-group'
+		);
+		if (state.sortKey !== 'location' || state.sortDir !== 'desc' || !state.sortCustom ||
+		    sortHeaders.location.th.attrs['aria-sort'] !== 'descending' ||
+		    indicator('location') !== '↓' || locationGroups.length !== 1 ||
+		    locationGroups[0].attrs['data-remote-ip'] !== '198.51.100.53' ||
+		    !fakeElementText(locationGroups[0]).includes('美国')) {
+			fail('client detail country/region must be a sortable displayed field included in search');
+		}
+		state.setFilter('');
+		sortHeaders.location.button.listeners.click();
+		sortHeaders.location.button.listeners.click();
+		if (state.sortKey !== 'rx' || state.sortDir !== 'desc' || state.sortCustom)
+			fail('client detail country/region sort must use the shared descending/ascending/default cycle');
 	}
 	if (JSON.stringify(fixture) !== fixtureSnapshot) {
 		fail('client detail rendering, sorting, protocol filtering and search must not mutate the RPC response');
@@ -2106,10 +2275,10 @@ function assertClientDetailRefreshBehavior(src) {
 	state.response = fixture;
 	refresh.render(state);
 	const allCells = findFakeElementsByTag(refs.tbody, 'td');
-	if (allCells.length !== 16 || allCells.some(function(cell) {
+	if (allCells.length !== 18 || allCells.some(function(cell) {
 		return !Object.prototype.hasOwnProperty.call(cell.attrs, 'data-label');
 	})) {
-		fail('clientDetailRefresh.js must give all seven group cells and the colspan detail cell mobile data-label text');
+		fail('clientDetailRefresh.js must give all eight group cells and the colspan detail cell mobile data-label text');
 	}
 	const groupRows = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-group');
 	const detailRows = findFakeElementsByClass(refs.tbody, 'lanspeed-connection-detail-row');
@@ -2117,9 +2286,9 @@ function assertClientDetailRefreshBehavior(src) {
 		return row.attrs.tabindex !== '0' || row.attrs.role !== 'button' ||
 			row.attrs['aria-expanded'] !== 'false';
 	}) || detailRows.some(function(row) {
-		return !row.hidden || findFakeElementsByTag(row, 'td')[0].attrs.colspan !== '7';
+		return !row.hidden || findFakeElementsByTag(row, 'td')[0].attrs.colspan !== '8';
 	})) {
-		fail('clientDetailRefresh.js group/detail rows must expose button semantics, aria-expanded, colspan=7 and real hidden collapse state');
+		fail('clientDetailRefresh.js group/detail rows must expose button semantics, aria-expanded, colspan=8 and real hidden collapse state');
 	}
 	const detailCopy = detailRows.map(fakeElementText).join(' ');
 	if (!detailCopy.includes('出站') || !detailCopy.includes('UDP') || !detailCopy.includes('活跃') ||
@@ -2132,8 +2301,9 @@ function assertClientDetailRefreshBehavior(src) {
 	}
 	const groupCopy = groupRows.map(fakeElementText).join(' ');
 	if (!groupCopy.includes('8.00 Kbps') || !groupCopy.includes('16.00 Kbps') ||
-	    !groupCopy.includes('32.00 Kbps') || !groupCopy.includes('64.00 Kbps')) {
-		fail('clientDetailRefresh.js group rows must render destination upload/download rate totals');
+	    !groupCopy.includes('32.00 Kbps') || !groupCopy.includes('64.00 Kbps') ||
+	    !groupCopy.includes('美国') || !groupCopy.includes('保留/未知')) {
+		fail('clientDetailRefresh.js group rows must render country/region and destination rate totals');
 	}
 	const rateCopy = findFakeElementsByClass(
 		refs.tbody, 'lanspeed-connection-detail-rate'
@@ -2348,13 +2518,13 @@ function assertClientDetailShellSource(src) {
 		fail('clientDetailShell.js must keep its sortable-header builder local to buildShell and leave sorting state and row ordering outside the shell');
 	}
 	const sortableKeys = [
-		'remote_ip', 'remote_port', 'protocol', 'state', 'tx', 'rx', 'count'
+		'remote_ip', 'location', 'remote_port', 'protocol', 'state', 'tx', 'rx', 'count'
 	];
 	if (!src.includes('var sortableHeader = function(sortKey, label, attrs)') ||
 	    sortableKeys.some(function(key) {
 		return !src.includes(`sortableHeader('${key}'`);
 	    })) {
-		fail('clientDetailShell.js must construct all seven client-detail headers through one local sortableHeader helper');
+		fail('clientDetailShell.js must construct all eight client-detail headers through one local sortableHeader helper');
 	}
 	if (!src.includes('clientDetailStyle.CSS') || !src.includes('lsTheme.applyRoot(root)')) {
 		fail('clientDetailShell.js must inject the composed detail CSS and apply the existing theme helper');
@@ -2440,8 +2610,8 @@ function assertClientDetailShellInteraction(src) {
 		'返回客户端列表', 'LAN Speed 状态 / 客户端连接详情', '无法加载连接详情',
 		'客户端身份', '正在加载客户端身份…', 'MAC 与 IP 信息将在加载后显示',
 		'等待数据', '连接摘要', '目标 IP 数', '连接数', '更新时间',
-		'当前连接', '全部', 'TCP', 'UDP', '立即刷新', '目标 IP', '目标端口',
-		'协议', '状态', '上行', '下行', '暂无连接', '连接数据加载后会显示来源和刷新间隔。'
+		'当前连接', '全部', 'TCP', 'UDP', '立即刷新', '目标 IP', '国家/地区', '目标端口',
+		'协议', '状态', '上行', '下行', '暂无连接', '连接数据加载后会显示来源、刷新间隔和 IP 位置说明。'
 	].forEach(function(text) {
 		if (!copy.includes(text)) fail(`clientDetailShell.js must render Chinese copy: ${text}`);
 	});
@@ -2456,14 +2626,14 @@ function assertClientDetailShellInteraction(src) {
 	const headers = findFakeElementsByTag(refs.table, 'th').map(fakeElementText);
 	const headerNodes = findFakeElementsByTag(refs.table, 'th');
 	if (JSON.stringify(headers) !== JSON.stringify([
-		'目标 IP', '目标端口', '协议', '状态', '上行', '下行', '连接数'
+		'目标 IP', '国家/地区', '目标端口', '协议', '状态', '上行', '下行', '连接数'
 	]) || headerNodes.some(function(th) {
 		return th.attrs.scope !== 'col' || th.attrs['aria-sort'] !== 'none';
 	})) {
-		fail('clientDetailShell.js must render seven initially-unsorted accessible connection table headers');
+		fail('clientDetailShell.js must render eight initially-unsorted accessible connection table headers');
 	}
 	const sortKeys = [
-		'remote_ip', 'remote_port', 'protocol', 'state', 'tx', 'rx', 'count'
+		'remote_ip', 'location', 'remote_port', 'protocol', 'state', 'tx', 'rx', 'count'
 	];
 	if (!refs.sortHeaders || sortKeys.some(function(sortKey) {
 		const ref = refs.sortHeaders[sortKey];
@@ -2475,11 +2645,11 @@ function assertClientDetailShellInteraction(src) {
 		const indicators = findFakeElementsByClass(ref.button, 'lanspeed-sort-indicator');
 		return indicators.length !== 1 || indicators[0].attrs['aria-hidden'] !== 'true';
 	})) {
-		fail('clientDetailShell.js must expose all seven detail headers as keyboard-clickable sort buttons with decorative indicators');
+		fail('clientDetailShell.js must expose all eight detail headers as keyboard-clickable sort buttons with decorative indicators');
 	}
 	if (refs.table.attrs['aria-label'] !== '客户端连接列表' ||
 	    refs.filter.attrs['aria-label'] !== '搜索连接' ||
-	    refs.filter.attrs.placeholder !== '搜索目标 IP 或端口' ||
+	    refs.filter.attrs.placeholder !== '搜索目标 IP、端口或国家/地区' ||
 	    refs.clientMeta.attrs['aria-label'] !== '客户端网络身份' ||
 	    refs.error.attrs.role !== 'alert' || refs.error.attrs['aria-live'] !== 'assertive' ||
 	    refs.empty.attrs.role !== 'status' || refs.empty.attrs['aria-live'] !== 'polite' ||
@@ -3510,7 +3680,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.0-r7';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.0-r9';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
@@ -4477,6 +4647,7 @@ EXPECTED_MODULES.forEach(function(name) {
 	if (name === 'clientDetailView.js') {
 		assertClientDetailViewSource(src);
 		assertClientDetailViewLifecycle(src);
+		assertClientDetailGeoLifecycle(src);
 		assertClientDetailIntegratedState(src);
 	}
 	if (name === 'clientDetailShell.js') {

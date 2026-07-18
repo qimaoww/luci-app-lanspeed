@@ -269,11 +269,7 @@ fn fallback_object_preserves_abi_without_kfunc_relocations() {
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from([
-            CLIENTS_MAP_NAME,
-            PACKET_SCRATCH_MAP_NAME,
-            SEEN_CONNS_MAP_NAME,
-        ])
+        BTreeSet::from([CLIENTS_MAP_NAME, PACKET_SCRATCH_MAP_NAME])
     );
     assert_eq!(
         parsed
@@ -295,10 +291,6 @@ fn fallback_object_preserves_abi_without_kfunc_relocations() {
     );
     assert_eq!((clients.key_size(), clients.value_size()), (16, 32));
     assert_eq!(clients.max_entries(), MAX_CLIENTS);
-    let seen = &parsed.maps[SEEN_CONNS_MAP_NAME];
-    assert_eq!(seen.map_type(), bpf_map_type::BPF_MAP_TYPE_LRU_HASH as u32);
-    assert_eq!((seen.key_size(), seen.value_size()), (28, 1));
-    assert_eq!(seen.max_entries(), MAX_CONN_TUPLES);
     let packet_scratch = &parsed.maps[PACKET_SCRATCH_MAP_NAME];
     assert_eq!(
         packet_scratch.map_type(),
@@ -309,6 +301,7 @@ fn fallback_object_preserves_abi_without_kfunc_relocations() {
         (4, 160)
     );
     assert_eq!(packet_scratch.max_entries(), 1);
+    assert!(!parsed.maps.contains_key(SEEN_CONNS_MAP_NAME));
     assert!(!parsed.maps.contains_key(CONNTRACK_SCRATCH_MAP_NAME));
     for program in parsed.programs.values() {
         assert!(matches!(program.section, ProgramSection::SchedClassifier));

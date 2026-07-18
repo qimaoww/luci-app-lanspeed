@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=lanspeedd
 PKG_VERSION:=1.1.0
-PKG_RELEASE:=7
+PKG_RELEASE:=9
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=

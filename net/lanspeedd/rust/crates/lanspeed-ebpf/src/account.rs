@@ -11,11 +11,13 @@ use aya_ebpf::{
 use lanspeed_common::{
     accounting::tc_frame_accounting,
     packet::{gro_repeated_header_len, is_valid_client_mac, vlan_zone},
-    LanspeedConnKey, LanspeedCounters, LanspeedKey, DIR_TX, MAX_CLIENTS, MAX_CONN_TUPLES,
+    LanspeedCounters, LanspeedKey, DIR_TX, MAX_CLIENTS,
 };
 
 #[cfg(feature = "conntrack-kfunc")]
 use crate::conntrack::try_count_connection;
+#[cfg(feature = "conntrack-kfunc")]
+use lanspeed_common::{LanspeedConnKey, MAX_CONN_TUPLES};
 
 const ETHERNET_HEADER_LEN: usize = 14;
 const PACKET_PREFIX_LEN: usize = 142;
@@ -32,6 +34,7 @@ struct PacketPrefix {
 pub static LANSPEED_CLIENTS: LruHashMap<LanspeedKey, LanspeedCounters> =
     LruHashMap::with_max_entries(MAX_CLIENTS, 0);
 
+#[cfg(feature = "conntrack-kfunc")]
 #[map(name = "lanspeed_seen_conns")]
 pub static LANSPEED_SEEN_CONNS: LruHashMap<LanspeedConnKey, u8> =
     LruHashMap::with_max_entries(MAX_CONN_TUPLES, 0);

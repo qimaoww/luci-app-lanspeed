@@ -215,6 +215,10 @@ function buildGroupRows(viewState, group) {
 			'class': 'lanspeed-connection-target-cell lanspeed-connection-endpoint',
 			'data-label': _('目标 IP')
 		}, group.remoteIp || '-'),
+		E('td', {
+			'class': 'lanspeed-connection-location-cell',
+			'data-label': _('国家/地区')
+		}, group.locationLabel || _('未知')),
 		E('td', { 'data-label': _('目标端口') }, group.portLabel),
 		E('td', { 'data-label': _('协议') }, group.protocolLabel),
 		E('td', { 'data-label': _('状态') }, group.stateLabel),
@@ -277,7 +281,7 @@ function buildGroupRows(viewState, group) {
 		'class': 'lanspeed-connection-detail-row'
 	}, E('td', {
 		'class': 'lanspeed-connection-detail-cell',
-		'colspan': '7',
+		'colspan': '8',
 		'data-label': _('连接详情')
 	}, detailList));
 	detailRow.hidden = !expanded;
@@ -314,6 +318,9 @@ function render(viewState) {
 	var ips = orderedClientIps(client && client.ips);
 	var displayName = client && client.hostname || ips[0] ||
 		client && client.mac || viewState.identityKey || '-';
+	var locationLookup = typeof viewState.locationLabelFor === 'function'
+		? function(ip) { return viewState.locationLabelFor(ip); }
+		: null;
 
 	refs.clientName.textContent = displayName;
 	renderClientMeta(refs.clientMeta, client, ips, viewState.identityKey);
@@ -332,14 +339,15 @@ function render(viewState) {
 	}
 
 	var allGroups = usable
-		? clientConnections.groupsForResponse(response, 'all', '') : [];
+		? clientConnections.groupsForResponse(response, 'all', '', locationLookup) : [];
 	var present = Object.create(null);
 	allGroups.forEach(function(group) { present[group.remoteIp] = true; });
 	Object.keys(viewState.expanded || {}).forEach(function(remoteIp) {
 		if (!present[remoteIp]) delete viewState.expanded[remoteIp];
 	});
 	var groups = usable
-		? clientConnections.groupsForResponse(response, viewState.protocol, viewState.filter)
+		? clientConnections.groupsForResponse(
+			response, viewState.protocol, viewState.filter, locationLookup)
 		: [];
 	groups = clientConnections.sortGroups(groups, viewState.sortKey, viewState.sortDir);
 	var pageSize = Number(viewState.pageSize);
@@ -353,6 +361,11 @@ function render(viewState) {
 	page = Math.min(Math.floor(page), pageCount - 1);
 	viewState.page = page;
 	var pageGroups = groups.slice(page * pageSize, (page + 1) * pageSize);
+	if (typeof viewState.requestLocations === 'function') {
+		viewState.requestLocations(pageGroups.map(function(group) {
+			return group.remoteIp;
+		}));
+	}
 
 	refs.summaryTargets.textContent = usable
 		? (response.truncated ? _('至少 ') : '') + String(allGroups.length)
@@ -421,6 +434,7 @@ function render(viewState) {
 			footer.push(_('告警：') + warnings.map(warningLabel).join('，'));
 	}
 	footer.push(_('每 %s 秒自动刷新').format(String(Math.round(Number(interval) / 100) / 10)));
+	footer.push(_('国家/地区按 IP 推测，由浏览器查询并缓存，结果可能不准确'));
 	refs.footer.textContent = footer.join(' · ');
 }
 

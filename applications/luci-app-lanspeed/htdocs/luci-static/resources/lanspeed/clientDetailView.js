@@ -2,6 +2,7 @@
 'require baseclass';
 'require lanspeed.format as fmt';
 'require lanspeed.rpc as lsRpc';
+'require lanspeed.geoLocation as geoLocation';
 'require lanspeed.clientDetailShell as clientDetailShell';
 'require lanspeed.clientDetailRefresh as clientDetailRefresh';
 
@@ -49,6 +50,7 @@ return baseclass.extend({
 			initialUpdatedAt = Date.now();
 		}
 		var pending = null;
+		var geoResolver = geoLocation.createResolver();
 		var viewState = {
 			identityKey: data && data.identityKey || '',
 			response: initialResponse,
@@ -68,6 +70,9 @@ return baseclass.extend({
 			timer: null,
 			loading: false,
 			refs: null,
+			geoBatch: null,
+			geoPageSignature: '',
+			destroyed: false,
 
 			stopTimer: function() {
 				if (this.timer !== null) {
@@ -79,6 +84,8 @@ return baseclass.extend({
 			schedule: function() {
 				var self = this;
 				this.stopTimer();
+				if (this.destroyed)
+					return;
 				var interval = this.prefs.refreshMs;
 				this.timer = window.setTimeout(function() {
 					self.timer = null;
@@ -145,8 +152,62 @@ return baseclass.extend({
 				clientDetailRefresh.render(this);
 			},
 
-			back: function() {
+			locationLabelFor: function(ip) {
+				var location = geoResolver.peek(ip);
+				return location && location.label || '未知';
+			},
+
+			requestLocations: function(ips) {
+				var self = this;
+				var seen = Object.create(null);
+				var values = [];
+				var requests = [];
+				var signature;
+				var batch;
+				if (this.destroyed)
+					return;
+				(ips || []).forEach(function(ip) {
+					var value = String(ip === null || ip === undefined ? '' : ip).toLowerCase();
+					if (!value || seen[value])
+						return;
+					seen[value] = true;
+					values.push(value);
+				});
+				signature = values.join('\n');
+				this.geoPageSignature = signature;
+				if (this.geoBatch && this.geoBatch.signature === signature)
+					return;
+				values.forEach(function(ip) {
+					if (geoResolver.peek(ip).queryable)
+						requests.push(geoResolver.resolve(ip));
+				});
+				if (!requests.length) {
+					this.geoBatch = null;
+					return;
+				}
+				batch = { signature: signature, promise: null };
+				this.geoBatch = batch;
+				batch.promise = Promise.all(requests).then(function() {
+					if (self.destroyed)
+						return;
+					if (self.geoBatch === batch)
+						self.geoBatch = null;
+					clientDetailRefresh.render(self);
+				});
+			},
+
+			destroy: function() {
+				if (this.destroyed)
+					return;
+				this.destroyed = true;
 				this.stopTimer();
+				this.geoBatch = null;
+				this.geoPageSignature = '';
+				geoResolver.dispose();
+			},
+
+			back: function() {
+				this.destroy();
 				if (window.location && typeof window.location.assign === 'function')
 					window.location.assign(window.location.pathname);
 				else
@@ -159,7 +220,7 @@ return baseclass.extend({
 		clientDetailRefresh.render(viewState);
 		viewState.schedule();
 		window.addEventListener('beforeunload', function() {
-			viewState.stopTimer();
+			viewState.destroy();
 		});
 		return built.root;
 	},

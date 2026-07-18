@@ -7,6 +7,7 @@ use std::{
 use super::ProbeReport;
 
 const PROCESS_PROBE_FAILED_WARNING: &str = "dae_process_probe_failed";
+pub const DAE_PROCESS_SCAN_INTERVAL_MS: u64 = 5_000;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DaeProcessState {
@@ -66,6 +67,7 @@ fn scan_dae_process_entries(
 pub struct DaeProcessTracker {
     state: DaeProcessState,
     last_error: Option<String>,
+    last_scan_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -165,6 +167,18 @@ pub fn run_dae_mode_tick<C>(
 }
 
 impl DaeProcessTracker {
+    /// Scans immediately when no prior timed scan exists, then at most once per interval.
+    /// `None` means the cached state was reused; `Some` reports whether activity changed.
+    pub fn refresh_if_due(&mut self, proc_root: impl AsRef<Path>, now_ms: u64) -> Option<bool> {
+        if self.last_scan_ms.is_some_and(|last_scan_ms| {
+            now_ms.saturating_sub(last_scan_ms) < DAE_PROCESS_SCAN_INTERVAL_MS
+        }) {
+            return None;
+        }
+        self.last_scan_ms = Some(now_ms);
+        Some(self.refresh(proc_root))
+    }
+
     pub fn refresh(&mut self, proc_root: impl AsRef<Path>) -> bool {
         let proc_root = proc_root.as_ref();
         let result = scan_dae_processes(proc_root);

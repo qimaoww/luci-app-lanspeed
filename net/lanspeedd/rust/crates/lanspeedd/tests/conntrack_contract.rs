@@ -3,16 +3,17 @@ use lanspeedd::{
         aggregate::aggregate_flows,
         collect_with,
         netlink::{
-            build_dump_request, parse_dump, parse_dump_detailed, parse_dump_for_port,
-            parse_dump_with_limit, read_snapshot as read_netlink_snapshot, retry_eintr,
-            validate_received_datagram_len, Datagram, DumpError, NetlinkSnapshot,
-            MAX_DATAGRAM_BYTES,
+            aggregate_dump, build_dump_request, parse_dump, parse_dump_detailed,
+            parse_dump_for_port, parse_dump_with_limit, read_snapshot as read_netlink_snapshot,
+            retry_eintr, snapshot_from_datagrams, validate_received_datagram_len, Datagram,
+            DumpError, NetlinkSnapshot, MAX_DATAGRAM_BYTES,
         },
         procfs::{
             aggregate_reader, parse_reader, ProcfsError, ProcfsSnapshot, CONNTRACK_LINE_MAX,
             PROCFS_PARSE_FLOW_CAP,
         },
-        CollectorMode, CollectorReadError, FlowSample, Protocol, TcpState,
+        CollectorMode, CollectorReadError, FlowSample, Protocol, TcpState, NETLINK_COUNTER_SOURCE,
+        NETLINK_SOURCE_PATH,
     },
     identity::{IdentityObservation, IdentityTable, ObservationSource},
 };
@@ -503,6 +504,73 @@ fn netlink_requires_kernel_sender_matching_seq_and_clean_done() {
 }
 
 #[test]
+fn netlink_batch_parser_keeps_state_across_datagrams() {
+    let seq = 0x5a5a;
+    let datagrams = [
+        Datagram::kernel(data_message(seq, false, false)),
+        Datagram::kernel(data_message(seq, true, false)),
+        Datagram::kernel(done(seq, NLM_F_MULTI, 0)),
+    ];
+
+    let parsed = parse_dump_detailed(&datagrams, seq).unwrap();
+    assert_eq!(parsed.flows.len(), 2);
+    assert_eq!(
+        parsed.flows[0].orig_src.unwrap().to_string(),
+        "192.168.1.42"
+    );
+    assert_eq!(parsed.flows[1].orig_src.unwrap().to_string(), "fd00::42");
+    assert_eq!(parsed.malformed_entries, 0);
+}
+
+#[test]
+fn netlink_streaming_aggregate_matches_vec_snapshot_across_datagrams() {
+    let seq = 0x5a5c;
+    let mut malformed = data_message(seq, false, false);
+    malformed[22..24].copy_from_slice(&2u16.to_ne_bytes());
+    let datagrams = [
+        Datagram::kernel(data_message(seq, false, false)),
+        Datagram::kernel(malformed),
+        Datagram::kernel(data_message(seq, true, false)),
+        Datagram::kernel(done(seq, NLM_F_MULTI, 0)),
+    ];
+    let table = identities();
+    let now_ms = 91_337;
+
+    let vec_snapshot = snapshot_from_datagrams(&datagrams, seq).unwrap();
+    let expected = aggregate_flows(&table, vec_snapshot.flows.iter(), now_ms, 8);
+    let streaming = aggregate_dump(&datagrams, seq, &table, now_ms, 8).unwrap();
+
+    assert_eq!(streaming.aggregate, expected);
+    assert_eq!(streaming.source_path, NETLINK_SOURCE_PATH);
+    assert_eq!(streaming.counter_source, NETLINK_COUNTER_SOURCE);
+    assert_eq!(streaming.malformed_entries, 1);
+    assert_eq!(streaming.entries_seen, 3);
+    assert_eq!(streaming.aggregate.stats.entries_seen, 2);
+}
+
+#[test]
+fn netlink_batch_parser_rejects_duplicate_done_and_later_messages_across_datagrams() {
+    let seq = 0x5a5b;
+    let duplicate_done = [
+        Datagram::kernel(done(seq, NLM_F_MULTI, 0)),
+        Datagram::kernel(done(seq, NLM_F_MULTI, 0)),
+    ];
+    assert!(matches!(
+        parse_dump(&duplicate_done, seq),
+        Err(DumpError::Malformed("duplicate NLMSG_DONE"))
+    ));
+
+    let message_after_done = [
+        Datagram::kernel(done(seq, NLM_F_MULTI, 0)),
+        Datagram::kernel(data_message(seq, false, false)),
+    ];
+    assert!(matches!(
+        parse_dump(&message_after_done, seq),
+        Err(DumpError::Malformed("message after NLMSG_DONE"))
+    ));
+}
+
+#[test]
 fn netlink_rejects_messages_after_done_and_short_control_payloads() {
     let seq = 89;
     let mut after_done_ack = done(seq, NLM_F_MULTI, 0);
@@ -677,6 +745,36 @@ fn netlink_bounds_total_dump_and_rejects_duplicate_known_attributes() {
     let parsed = parse_dump_detailed(&[Datagram::kernel(duplicate)], seq).unwrap();
     assert!(parsed.flows.is_empty());
     assert_eq!(parsed.malformed_entries, 1);
+}
+
+#[test]
+fn netlink_byte_limit_is_cumulative_across_datagrams() {
+    let seq = 102;
+    let data = data_message(seq, false, false);
+    let done = done(seq, NLM_F_MULTI, 0);
+    let total = data.len() + done.len();
+    let datagrams = [Datagram::kernel(data), Datagram::kernel(done)];
+
+    assert_eq!(
+        parse_dump_with_limit(&datagrams, seq, total).unwrap().len(),
+        1
+    );
+    assert!(matches!(
+        parse_dump_with_limit(&datagrams, seq, total - 1),
+        Err(DumpError::LimitExceeded)
+    ));
+
+    let over_limit_with_bad_sender = [
+        Datagram {
+            sender_pid: 9,
+            bytes: vec![0; total],
+        },
+        Datagram::kernel(vec![0]),
+    ];
+    assert!(matches!(
+        parse_dump_with_limit(&over_limit_with_bad_sender, seq, total),
+        Err(DumpError::LimitExceeded)
+    ));
 }
 
 #[test]
