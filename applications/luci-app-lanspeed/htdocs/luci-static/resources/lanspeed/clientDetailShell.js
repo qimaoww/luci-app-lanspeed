@@ -190,7 +190,7 @@ function buildShell(viewState) {
 	refs.refresh.addEventListener('click', function(event) {
 		if (event && event.preventDefault) event.preventDefault();
 		if (event && event.stopPropagation) event.stopPropagation();
-		viewState.reload();
+		viewState.reload(true);
 	});
 	refs.pause = E('button', {
 		'type': 'button',

@@ -1582,6 +1582,7 @@ function assertClientDetailViewLifecycle(src) {
 			renders.push({
 				state: viewState,
 				loading: viewState.loading,
+				manualLoading: viewState.manualLoading,
 				response: viewState.response,
 				error: viewState.error
 			});
@@ -1613,7 +1614,7 @@ function assertClientDetailViewLifecycle(src) {
 		const requiredFields = [
 			'identityKey', 'response', 'lastGood', 'updatedAt', 'protocol', 'filter', 'expanded',
 			'sortKey', 'sortDir', 'sortCustom',
-			'prefs', 'timer', 'loading', 'reload', 'schedule', 'stopTimer',
+			'prefs', 'timer', 'loading', 'manualLoading', 'reload', 'schedule', 'stopTimer',
 			'setProtocol', 'setFilter', 'setSort', 'setRefreshMs', 'setPaused',
 			'locationLabelFor',
 			'requestLocations', 'destroy', 'back'
@@ -1652,11 +1653,17 @@ function assertClientDetailViewLifecycle(src) {
 		const scheduledEntry = Array.from(timers.entries())[0];
 		timers.delete(scheduledEntry[0]);
 		scheduledEntry[1].handler();
-		const firstReload = state.reload();
-		const duplicateReload = state.reload();
-		if (firstReload !== duplicateReload || rpcCount !== 2 || timers.size !== 0 ||
-		    state.loading !== true || renders[renders.length - 1].loading !== true) {
+		const firstReload = state.reload(false);
+		if (rpcCount !== 2 || timers.size !== 0 || state.loading !== true ||
+		    state.manualLoading !== false || renders[renders.length - 1].loading !== true ||
+		    renders[renders.length - 1].manualLoading !== false) {
 			fail('clientDetailView.js automatic reload must stop its elapsed timer, render loading immediately, and share one pending Promise with duplicate reload calls');
+		}
+		const manualJoin = state.reload(true);
+		const duplicateReload = state.reload(true);
+		if (firstReload !== manualJoin || firstReload !== duplicateReload || rpcCount !== 2 ||
+		    state.manualLoading !== true || renders[renders.length - 1].manualLoading !== true) {
+			fail('clientDetailView.js manual refresh during an automatic request must reuse the pending RPC and only then expose manual loading state');
 		}
 		if (events.slice(beforeReloadEvents).some(function(event) { return event.indexOf('timer:') === 0; }))
 			fail('clientDetailView.js must never schedule the next timer while a reload Promise is pending');
@@ -2502,6 +2509,13 @@ function assertClientDetailRefreshBehavior(src) {
 	state.lastGood = state.response;
 	state.updatedAt = new Date(2026, 0, 2, 3, 6, 7).getTime();
 	state.loading = true;
+	state.manualLoading = false;
+	refresh.render(state);
+	if (refs.refresh.disabled || refs.intervalSel.disabled ||
+	    refs.refresh.getAttribute('aria-busy') !== 'false') {
+		fail('clientDetailRefresh.js automatic loading must leave the immediate-refresh controls enabled and visually idle');
+	}
+	state.manualLoading = true;
 	refresh.render(state);
 	const truncatedFooter = fakeElementText(refs.footer);
 	const truncatedRates = findFakeElementsByClass(
@@ -2514,8 +2528,9 @@ function assertClientDetailRefreshBehavior(src) {
 	    truncatedRates.length !== 4 || truncatedRates.some(function(rate) {
 		return rate.startsWith('≥ ');
 	    }) ||
-	    !truncatedFooter.includes('backend <warning>') || !refs.refresh.disabled) {
-		fail('clientDetailRefresh.js must keep truncated rates visually numeric, explain their partial aggregation in the footer, and disable refresh while loading');
+	    !truncatedFooter.includes('backend <warning>') || !refs.refresh.disabled ||
+	    !refs.intervalSel.disabled || refs.refresh.getAttribute('aria-busy') !== 'true') {
+		fail('clientDetailRefresh.js must keep truncated rates visually numeric, explain their partial aggregation in the footer, and only mark immediate refresh busy during manual loading');
 	}
 	const hostile = JSON.parse(JSON.stringify(fixture));
 	hostile.client.hostname = '<svg onload=alert(1)>';
@@ -2731,7 +2746,7 @@ function assertClientDetailShellInteraction(src) {
 	    JSON.stringify(calls.sort) !== JSON.stringify(sortKeys.map(function(sortKey) {
 		return [ sortKey ];
 	    })) ||
-	    JSON.stringify(calls.reload) !== JSON.stringify([ [] ]) ||
+	    JSON.stringify(calls.reload) !== JSON.stringify([ [ true ] ]) ||
 	    JSON.stringify(calls.interval) !== JSON.stringify([ [ '1000' ] ]) ||
 	    JSON.stringify(calls.paused) !== JSON.stringify([ [] ]) ||
 	    refreshPrevented !== 1 || refreshStopped !== 1) {

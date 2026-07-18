@@ -411,9 +411,11 @@ function render(viewState) {
 	refs.filter.value = viewState.filter || '';
 	if (refs.intervalSel) {
 		refs.intervalSel.value = String(interval);
-		refs.intervalSel.disabled = viewState.loading === true;
+		refs.intervalSel.disabled = viewState.manualLoading === true;
 	}
-	refs.refresh.disabled = viewState.loading === true;
+	refs.refresh.disabled = viewState.manualLoading === true;
+	refs.refresh.setAttribute('aria-busy',
+		viewState.manualLoading === true ? 'true' : 'false');
 	if (refs.pause) {
 		refs.pause.textContent = viewState.prefs && viewState.prefs.paused
 			? _('恢复') : _('暂停');

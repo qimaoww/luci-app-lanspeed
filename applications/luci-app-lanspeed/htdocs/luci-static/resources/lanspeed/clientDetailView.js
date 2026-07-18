@@ -119,6 +119,7 @@ return baseclass.extend({
 			refreshChoices: fmt.REFRESH_CHOICES || [],
 			timer: null,
 			loading: false,
+			manualLoading: false,
 			refs: null,
 			geoBatch: null,
 			geoPageSignature: '',
@@ -139,17 +140,25 @@ return baseclass.extend({
 				var interval = this.prefs.refreshMs;
 				this.timer = window.setTimeout(function() {
 					self.timer = null;
-					self.reload();
+					self.reload(false);
 				}, interval);
 			},
 
-			reload: function() {
+			reload: function(manual) {
 				var self = this;
 				var request;
-				if (pending) return pending;
+				var requestedManually = manual === true;
+				if (pending) {
+					if (requestedManually && !this.manualLoading) {
+						this.manualLoading = true;
+						clientDetailRefresh.render(this);
+					}
+					return pending;
+				}
 
 				this.stopTimer();
 				this.loading = true;
+				this.manualLoading = requestedManually;
 				clientDetailRefresh.render(this);
 				try {
 					request = lsRpc.clientConnections(this.identityKey);
@@ -167,6 +176,7 @@ return baseclass.extend({
 					self.error = error;
 				}).then(function() {
 					self.loading = false;
+					self.manualLoading = false;
 					clientDetailRefresh.render(self);
 					self.schedule();
 					pending = null;
