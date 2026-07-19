@@ -51,6 +51,7 @@ var ARGON_CSS = [
 	'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody tr{align-items:start;align-content:start}',
 	'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody td:nth-child(1),',
 	'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody td:nth-child(2){align-self:start}',
+	'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody td:nth-child(3){padding-left:.35rem}',
 	'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody tr.lanspeed-range-row{position:relative;min-height:7rem}',
 	'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody tr.lanspeed-range-row>td.hint{',
 	'  position:absolute;grid-column:1;grid-row:1;align-self:start;',

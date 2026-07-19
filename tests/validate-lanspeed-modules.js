@@ -141,7 +141,7 @@ const CONFIG_STYLE_PARTS = [
 
 const EXPECTED_STATUS_STYLE_SHA256 = '7efc85957caddd7dbea15cae2776551a7089d204a71d4eefa9883795a110e5ec';
 const EXPECTED_DIAGNOSTICS_STYLE_SHA256 = 'f8e8015359f4e3e7aa2870c3d7c334dc527093af3c38ca41c5ad06a4a9372648';
-const EXPECTED_CONFIG_STYLE_SHA256 = '72140022b36203858a6b18a6fc1a7d2566ae40a7d5313036ba9920ee9576576b';
+const EXPECTED_CONFIG_STYLE_SHA256 = 'e969a7acddc5ed9bb59bb3493bfd9641787345b0fd57c569c78a51d054e03482';
 
 function readMakeVar(source, name, fileLabel) {
 	const match = source.match(new RegExp(`^${name}:=(.+)$`, 'm'));
@@ -487,6 +487,7 @@ function assertArgonAlignmentContracts() {
 		'display:inline-flex;align-items:center;justify-content:center',
 		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-ifcfg-table td{border-top:0}',
 		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody tr{align-items:start;align-content:start}',
+		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody td:nth-child(3){padding-left:.35rem}',
 		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody tr.lanspeed-range-row{position:relative;min-height:7rem}',
 		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody tr.lanspeed-range-row>td.hint{',
 		'margin-top:calc(1.45rem + .2rem);width:min(20rem,calc(50% - 1.125rem))',
