@@ -132,16 +132,16 @@ const DIAGNOSTICS_STYLE_PARTS = [
 
 const CONFIG_STYLE_PARTS = [
 	'configStyleBase.js',
+	'configStyleShared.js',
 	'configStyleAurora.js',
 	'configStyleArgon.js',
 	'configStyleBootstrap.js',
-	'configStyleShared.js',
 	'configStyleResponsive.js'
 ];
 
 const EXPECTED_STATUS_STYLE_SHA256 = '7efc85957caddd7dbea15cae2776551a7089d204a71d4eefa9883795a110e5ec';
 const EXPECTED_DIAGNOSTICS_STYLE_SHA256 = 'f8e8015359f4e3e7aa2870c3d7c334dc527093af3c38ca41c5ad06a4a9372648';
-const EXPECTED_CONFIG_STYLE_SHA256 = 'e969a7acddc5ed9bb59bb3493bfd9641787345b0fd57c569c78a51d054e03482';
+const EXPECTED_CONFIG_STYLE_SHA256 = '19bae3b69c3afa676564ed5eb8969c5e641bc66cb2e4d97219b27b46bf5f1657';
 
 function readMakeVar(source, name, fileLabel) {
 	const match = source.match(new RegExp(`^${name}:=(.+)$`, 'm'));
@@ -271,10 +271,10 @@ const MODULE_REQUIRES = {
 	'configStyle.js': [
 		'baseclass',
 		'lanspeed.configStyleBase',
+		'lanspeed.configStyleShared',
 		'lanspeed.configStyleAurora',
 		'lanspeed.configStyleArgon',
 		'lanspeed.configStyleBootstrap',
-		'lanspeed.configStyleShared',
 		'lanspeed.configStyleResponsive'
 	],
 	'configStyleBase.js': [ 'baseclass' ],
@@ -418,19 +418,19 @@ function assertStyleAggregation() {
 	const configShared = loadStyleLeaf('configStyleShared.js');
 	const configResponsive = loadStyleLeaf('configStyleResponsive.js');
 	const config = vm.compileFunction(readModuleByName('configStyle.js'), [
-		'baseclass', 'configStyleBase', 'configStyleAurora',
-		'configStyleArgon', 'configStyleBootstrap', 'configStyleShared',
+		'baseclass', 'configStyleBase', 'configStyleShared',
+		'configStyleAurora', 'configStyleArgon', 'configStyleBootstrap',
 		'configStyleResponsive'
 	], { filename: 'resources/lanspeed/configStyle.js' })(
-		fakeBaseclass, configBase, configAurora, configArgon,
-		configBootstrap, configShared, configResponsive
+		fakeBaseclass, configBase, configShared, configAurora,
+		configArgon, configBootstrap, configResponsive
 	);
 	const expectedConfig = [
-		configBase.CSS, configAurora.CSS, configArgon.CSS,
-		configBootstrap.CSS, configShared.CSS, configResponsive.CSS
+		configBase.CSS, configShared.CSS, configAurora.CSS,
+		configArgon.CSS, configBootstrap.CSS, configResponsive.CSS
 	].join('\n');
 	if (config.CSS !== expectedConfig)
-		fail('configStyle.js must aggregate Base, Aurora, Argon, Bootstrap, Shared and Responsive CSS in cascade order');
+		fail('configStyle.js must aggregate Base, Shared, Aurora, Argon, Bootstrap and Responsive CSS in cascade order');
 	if (styleHash(config.CSS) !== EXPECTED_CONFIG_STYLE_SHA256)
 		fail('modular config CSS must match the reviewed stylesheet snapshot');
 }
@@ -485,16 +485,22 @@ function assertArgonAlignmentContracts() {
 		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-range-remove{',
 		'height:2.5rem;min-height:2.5rem;padding-top:0;padding-bottom:0',
 		'display:inline-flex;align-items:center;justify-content:center',
-		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-ifcfg-table td{border-top:0}',
-		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody tr{align-items:start;align-content:start}',
-		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody td:nth-child(3){padding-left:.35rem}',
-		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody tr.lanspeed-range-row{position:relative;min-height:7rem}',
-		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody tr.lanspeed-range-row>td.hint{',
-		'margin-top:calc(1.45rem + .2rem);width:min(20rem,calc(50% - 1.125rem))',
+		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-ifcfg-table td{',
+		'border-top:0;font-size:1rem;line-height:1.45',
+		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody tr{display:grid;',
+		'grid-template-areas:"label control" "hint control";grid-template-rows:auto 1fr;',
+		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody td:nth-child(3){',
+		'grid-area:hint;align-self:start;padding-left:0',
+		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody tr.lanspeed-range-row{',
+		'grid-column:1/-1;grid-template-columns:minmax(14rem,1fr) minmax(18rem,25rem);',
 		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-hint:empty{display:none}'
 	].forEach(function(rule) {
 		if (!configCss.includes(rule))
 			fail(`configStyleArgon.js must retain reviewed Argon alignment rule: ${rule}`);
+	});
+	[ 'position:absolute', 'margin-top:calc(1.45rem + .2rem)' ].forEach(function(rule) {
+		if (configCss.includes(rule))
+			fail(`configStyleArgon.js must not restore the old detached range hint rule: ${rule}`);
 	});
 }
 
@@ -4565,6 +4571,19 @@ function assertDiagnosticsViewModule(src) {
 }
 
 function assertConfigStyleModule(src) {
+	const sharedCss = loadStyleLeaf('configStyleShared.js').CSS;
+	const responsiveCss = loadStyleLeaf('configStyleResponsive.js').CSS;
+	const auroraCss = loadStyleLeaf('configStyleAurora.js').CSS;
+	const argonCss = loadStyleLeaf('configStyleArgon.js').CSS;
+	const bootstrapCss = loadStyleLeaf('configStyleBootstrap.js').CSS;
+
+	function requireRules(css, name, rules) {
+		rules.forEach(function(rule) {
+			if (!css.includes(rule))
+				fail(`${name} must retain reviewed configuration style rule: ${rule}`);
+		});
+	}
+
 	if (!src.includes('CSS: CONFIG_CSS') ||
 	    !src.includes('.lanspeed-theme-aurora ') ||
 	    !src.includes('.lanspeed-theme-argon ') ||
@@ -4575,51 +4594,65 @@ function assertConfigStyleModule(src) {
 	if (src.includes('.lanspeed-page-actions')) {
 		fail('lanspeed/configStyle.js must not retain styles for the removed custom save bar');
 	}
-	if (!src.includes("var ROOT_SCOPE = ':is(.lanspeed-config-root.lanspeed-theme-aurora,'") ||
-	    !src.includes("'.lanspeed-config-root.lanspeed-theme-bootstrap)'") ||
-	    !src.includes("ROOT_SCOPE + ' .lanspeed-ifcfg-table tbody tr{display:grid;'") ||
-	    !src.includes('grid-template-areas:"iface badge" "action action";') ||
-	    !src.includes('grid-template-columns:repeat(3,minmax(0,1fr));width:100%;min-width:0;max-width:100%;') ||
-	    !src.includes('min-height:2.5rem;box-sizing:border-box;')) {
+
+	if (!responsiveCss.includes(':is(.lanspeed-config-root.lanspeed-theme-aurora,') ||
+	    !responsiveCss.includes('.lanspeed-config-root.lanspeed-theme-bootstrap)') ||
+	    !responsiveCss.includes('.lanspeed-config-table tbody,') ||
+	    !responsiveCss.includes('.lanspeed-ifcfg-table tbody{display:grid;') ||
+	    !responsiveCss.includes('.lanspeed-ifcfg-table tbody tr{display:grid;') ||
+	    !responsiveCss.includes('grid-template-areas:"iface badge" "action action";') ||
+	    !responsiveCss.includes('grid-template-columns:repeat(3,minmax(0,1fr));width:100%;min-width:0;max-width:100%;') ||
+	    !responsiveCss.includes('min-height:2.5rem;box-sizing:border-box;')) {
 		fail('lanspeed/configStyle.js must render mobile interface rows and three-state controls within every supported theme width');
 	}
-	if (!src.includes("'.lanspeed-theme-aurora .lanspeed-config-table td:nth-child(2),'") ||
-	    !src.includes("'.lanspeed-theme-argon .lanspeed-config-table td:nth-child(2){width:18rem}'")) {
-		fail('lanspeed/configStyle.js must size the runtime settings value column after hiding the UCI column');
+	if (responsiveCss.includes('border-bottom:1px'))
+		fail('configStyleResponsive.js must leave visual dividers to each theme');
+	if (sharedCss.includes('.lanspeed-config-table tbody') ||
+	    sharedCss.includes('.lanspeed-ifcfg-table tbody') ||
+	    sharedCss.includes('grid-template') || sharedCss.includes('border-radius:')) {
+		fail('configStyleShared.js must not impose one desktop visual layout on Aurora and Argon');
 	}
-	if (src.includes('.lanspeed-theme-aurora .lanspeed-config-table td:nth-child(3){width:18rem}') ||
-	    src.includes('.lanspeed-theme-argon .lanspeed-config-table td:nth-child(3){width:18rem}')) {
-		fail('lanspeed/configStyle.js must not keep the old fourth-column width rule after hiding the UCI column');
-	}
-	if (!src.includes('@media (min-width:801px){') ||
-	    !src.includes('grid-template-areas:"label control" "hint control"') ||
-	    !src.includes('.lanspeed-theme-aurora .lanspeed-config-table tbody tr,.lanspeed-theme-argon .lanspeed-config-table tbody tr{display:grid;')) {
-		fail('lanspeed/configStyle.js must compact runtime settings into a desktop two-column theme layout');
-	}
-	if (!src.includes('.lanspeed-theme-aurora .lanspeed-range-add button,.lanspeed-theme-argon .lanspeed-range-add button{min-width:4rem;height:2.25rem}')) {
-		fail('lanspeed/configStyle.js must keep IPv6 range add controls compact in themed config layouts');
-	}
-	if (!src.includes("'.lanspeed-theme-argon{display:flex;flex-direction:column;gap:1rem;margin:0}'") ||
-	    !src.includes("'.lanspeed-theme-argon{font-size:1rem}'") ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-config-table th,.lanspeed-theme-argon .lanspeed-config-table td,.lanspeed-theme-argon .lanspeed-ifcfg-table th,.lanspeed-theme-argon .lanspeed-ifcfg-table td{padding:.68rem .75rem;font-size:1rem;line-height:1.45}') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-config-table .hint,.lanspeed-theme-argon .lanspeed-ifcfg-table .muted{font-size:.88rem;line-height:1.45}')) {
-		fail('lanspeed/configStyle.js must enlarge Argon config page typography without changing other themes');
-	}
-	if (!src.includes('.lanspeed-theme-argon .lanspeed-config-table th:first-child,.lanspeed-theme-argon .lanspeed-config-table td:first-child,.lanspeed-theme-argon .lanspeed-ifcfg-table th:first-child,.lanspeed-theme-argon .lanspeed-ifcfg-table td:first-child{padding-left:.35rem}')) {
-		fail('lanspeed/configStyle.js must keep Argon config table text away from the card edge');
-	}
-	if (!src.includes('@media (min-width:801px){.lanspeed-theme-argon .lanspeed-ifcfg-table{table-layout:fixed}') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-ifcfg-table th:nth-child(1),.lanspeed-theme-argon .lanspeed-ifcfg-table td:nth-child(1){width:16rem}') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-ifcfg-table th:nth-child(3),.lanspeed-theme-argon .lanspeed-ifcfg-table td:nth-child(3){width:21rem}')) {
-		fail('lanspeed/configStyle.js must keep Argon interface configuration columns compact on desktop');
-	}
-	if (!src.includes('.lanspeed-config-root.lanspeed-theme-argon .lanspeed-range-text,') ||
-	    !src.includes('height:2.5rem;min-height:2.5rem;box-sizing:border-box') ||
-	    !src.includes('.lanspeed-config-root.lanspeed-theme-argon .cbi-button,') ||
-	    !src.includes('display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;') ||
-	    !src.includes('.lanspeed-config-root.lanspeed-theme-argon .lanspeed-hint{padding:0}')) {
-		fail('lanspeed/configStyle.js must align Argon range inputs, buttons, labels and hint text without changing other themes');
-	}
+
+	requireRules(auroraCss, 'configStyleAurora.js', [
+		'.lanspeed-theme-aurora .lanspeed-config-table tbody{display:grid;',
+		'grid-template-columns:repeat(2,minmax(0,1fr));gap:.8rem',
+		'grid-template-areas:"label control" "hint control";grid-template-rows:auto 1fr;',
+		'.lanspeed-theme-aurora .lanspeed-config-table tbody tr.lanspeed-private-ipv6-row{grid-column:1/-1;',
+		'border-radius:calc(var(--radius-base,.5rem)*1.5);',
+		'.lanspeed-theme-aurora .lanspeed-ifcfg-table tbody{display:grid;',
+		'grid-template-columns:repeat(3,minmax(0,1fr));gap:.65rem',
+		'--lanspeed-mobile-config-row-padding:.85rem .85rem;'
+	]);
+	requireRules(argonCss, 'configStyleArgon.js', [
+		'.lanspeed-theme-argon{font-size:1rem}',
+		'border-top:0;font-size:1rem;line-height:1.45',
+		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table .hint,',
+		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-ifcfg-table .muted{font-size:.88rem;line-height:1.45}',
+		'.lanspeed-theme-argon .lanspeed-config-table tbody{display:grid;',
+		'grid-template-columns:repeat(2,minmax(0,1fr));gap:.7rem',
+		'grid-template-areas:"label control" "hint control";grid-template-rows:auto 1fr;',
+		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody tr.lanspeed-private-ipv6-row{',
+		'border-radius:.35rem;background:rgba(94,113,229,.045);',
+		'.lanspeed-theme-argon .lanspeed-ifcfg-table tbody{display:grid;',
+		'grid-template-columns:repeat(2,minmax(0,1fr));gap:.55rem',
+		'height:2.5rem;min-height:2.5rem;max-width:none;box-sizing:border-box',
+		'--lanspeed-mobile-config-row-padding:.78rem .75rem;'
+	]);
+	requireRules(bootstrapCss, 'configStyleBootstrap.js', [
+		'.lanspeed-theme-bootstrap .lanspeed-config-table,',
+		'.lanspeed-theme-bootstrap .lanspeed-ifcfg-table{border-collapse:separate;border-spacing:0 .3rem}',
+		'.lanspeed-theme-bootstrap .lanspeed-config-table tbody tr:nth-child(odd)>td,',
+		'background:var(--background-color-medium,rgba(127,127,127,.055))',
+		'.lanspeed-theme-bootstrap .lanspeed-ifcfg-seg>button+button{margin-left:-1px}',
+		'.lanspeed-theme-bootstrap .lanspeed-config-table th:nth-child(1),',
+		'.lanspeed-theme-bootstrap .lanspeed-config-table td:nth-child(2){width:20%}',
+		'--lanspeed-mobile-config-row-padding:.7rem .65rem;'
+	]);
+
+	[ auroraCss, argonCss ].forEach(function(css) {
+		if (/\.lanspeed-config-table tbody tr[^{}]*\{[^{}]*border-bottom\s*:/s.test(css))
+			fail('Aurora and Argon runtime setting blocks must not restore full-width row dividers');
+	});
 }
 
 function assertConfigFormModule(src) {
@@ -4655,6 +4688,9 @@ function assertConfigFormModule(src) {
 	}
 	if (!src.includes("E('tr', { 'class': 'lanspeed-range-row' }, [")) {
 		fail('configForm.js must identify the multi-control IPv6 range row for theme-specific alignment');
+	}
+	if (!src.includes("E('tr', { 'class': 'lanspeed-private-ipv6-row' }, [")) {
+		fail('configForm.js must identify the final boolean row without relying on fragile table position selectors');
 	}
 	[
 		'rate_collector_mode',

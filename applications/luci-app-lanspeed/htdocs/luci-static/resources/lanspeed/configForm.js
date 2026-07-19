@@ -595,7 +595,7 @@ function buildDaemonSection(values, viewState) {
 						E('td', { 'class': 'value' }, refs.showIpv6),
 						E('td', { 'class': 'hint' }, _('关闭后客户端列表只显示 IPv4。'))
 					]),
-					E('tr', {}, [
+					E('tr', { 'class': 'lanspeed-private-ipv6-row' }, [
 						E('td', {}, _('隐藏私有 IPv6 地址')),
 						E('td', { 'class': 'value' }, refs.hidePrivateIpv6),
 						E('td', { 'class': 'hint' }, _('隐藏 fc00::/7 私有地址和 fe80::/10 链路本地地址，公网 IPv6 仍会显示。'))
