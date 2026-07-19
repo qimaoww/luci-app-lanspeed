@@ -134,6 +134,12 @@ try {
     'tests/run.sh must retain the workspace exclusions handled by OpenWrt-target validation'
   );
   assert(
+    normalizedTestRunner.includes(
+      '--locked --offline -- --test-threads=1'
+    ),
+    'tests/run.sh must serialize Rust workspace tests that share process-global state'
+  );
+  assert(
     (linkingValidator.match(/--no-run/g) || []).length === 2,
     'the OpenWrt linking validator must retain both --no-run link checks'
   );

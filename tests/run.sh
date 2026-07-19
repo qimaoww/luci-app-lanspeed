@@ -189,7 +189,7 @@ run_unit() {
 		"$rust_cargo_path" test \
 		--manifest-path "$ROOT/net/lanspeedd/rust/Cargo.toml" \
 		--workspace --exclude lanspeed-ebpf --exclude lanspeed-openwrt-sys \
-		--locked --offline || return $?
+		--locked --offline -- --test-threads=1 || return $?
 	if [ -x "$IMMORTALWRT_ROOT/staging_dir/target-x86_64_musl/host/bin/cargo" ]; then
 		run_logged "rust-openwrt-compile" sh \
 			"$SCRIPT_DIR/validate-lanspeed-openwrt-compile.sh" \
