@@ -14,6 +14,10 @@ pub fn has_owned_identity_collision(filters: &[TcFilter]) -> bool {
     })
 }
 
+pub fn has_foreign_filters(filters: &[TcFilter]) -> bool {
+    filters.iter().any(|filter| filter.owner != "lanspeed")
+}
+
 pub fn dae_preempts_lan_ingress(filters: &[TcFilter], attach_ifnames: &[String]) -> bool {
     filters.iter().any(|filter| {
         filter.owner == "dae"
@@ -27,10 +31,14 @@ pub fn dae_preempts_lan_ingress(filters: &[TcFilter], attach_ifnames: &[String])
 }
 
 pub fn parse_filter_lines(interface: &str, direction: &str, output: &str) -> Vec<TcFilter> {
-    output
+    let mut filters = Vec::new();
+    let mut summary = None;
+
+    for line in output
         .lines()
         .filter(|line| line.contains("filter") || line.contains(" bpf "))
-        .map(|line| TcFilter {
+    {
+        let parsed = TcFilter {
             interface: interface.into(),
             direction: direction.into(),
             pref: token_after(line, "pref ")
@@ -39,8 +47,33 @@ pub fn parse_filter_lines(interface: &str, direction: &str, output: &str) -> Vec
             handle: token_after(line, "handle ").unwrap_or("unknown").into(),
             owner: owner(line).into(),
             source: "tc_filter_show".into(),
-        })
-        .collect()
+        };
+
+        if filter_detail(line) {
+            if summary
+                .as_ref()
+                .is_some_and(|item: &TcFilter| item.pref == parsed.pref)
+            {
+                summary = None;
+            } else if let Some(item) = summary.take() {
+                filters.push(item);
+            }
+            filters.push(parsed);
+        } else if let Some(item) = summary.replace(parsed) {
+            filters.push(item);
+        }
+    }
+
+    if let Some(item) = summary {
+        filters.push(item);
+    }
+    filters
+}
+
+fn filter_detail(line: &str) -> bool {
+    token_after(line, "handle ").is_some()
+        || token_after(line, "fh ").is_some()
+        || owner(line) != "unknown"
 }
 
 fn token_after<'a>(line: &'a str, marker: &str) -> Option<&'a str> {

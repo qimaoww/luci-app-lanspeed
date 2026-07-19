@@ -1401,10 +1401,9 @@ function assertLifecycleInit(initScript, hotplugScript, packageMakefile, default
   assert(defaultConfig.includes("option hide_private_ipv6 '0'"), 'default config must not hide private IPv6 client addresses by default');
   assert(defaultConfig.includes("option hide_ipv6_ranges 'fc00::/7 fe80::/10'"), 'default config must provide hidden IPv6 ranges');
   assert(defaultConfig.includes("option overview_window_samples '240'"), 'default config must keep trend history at 240 samples');
-  assert(defaultConfig.includes("option warning_stale_client_ms '5000'"), 'default config must keep stale warning at 5000ms');
-  assert(defaultConfig.includes("option warning_map_full '1'"), 'default config must represent map_full warning guardrail');
-  assert(defaultConfig.includes("option warning_attach_failure 'unsafe_attach'"), 'default config must represent attach failure guardrail');
-  assert(defaultConfig.includes("option low_end_refresh_interval_ms '2000'"), 'default config must represent low-end device guardrail');
+  for (const removed of [ 'option enabled ', 'option warning_', 'option low_end_' ]) {
+    assert(!defaultConfig.includes(removed), `default config must not advertise unused ${removed.trim()} options`);
+  }
   assert(collectorModel.lifecycle_model.cleanup_model.delete_clsact === false, 'lifecycle model must forbid clsact deletion');
   assert(collectorModel.lifecycle_model.cleanup_model.delete_foreign_filters === false, 'lifecycle model must forbid foreign filter deletion');
   assert(collectorModel.performance_guardrails.default_max_clients === 2048, 'performance model must default to 2048 clients');
@@ -1502,7 +1501,7 @@ assert(bpfAttached.tc_filter.pref === 49152 && bpfAttached.tc_filter.handle === 
 {
   const bpfIdentity = simulateBpfIdentityFolding({
     arp_entries: [
-      { ip: '192.168.31.110', mac: '00:11:22:33:44:55', interface: 'br-lan', zone: 'lan' }
+      { ip: '10.77.0.110', mac: '00:11:22:33:44:55', interface: 'br-lan', zone: 'lan' }
     ],
     neighbor_entries: [],
     raw_bpf_samples: [
@@ -1512,7 +1511,7 @@ assert(bpfAttached.tc_filter.pref === 49152 && bpfAttached.tc_filter.handle === 
   });
   assert(bpfIdentity.clients.length === 1, 'BPF identity folding must keep only ARP/neighbor-backed LAN clients');
   assert(bpfIdentity.clients[0].identity_key === '00:11:22:33:44:55@lan', 'BPF identity folding must allow real clients whose MAC starts with 00');
-  assert(bpfIdentity.clients[0].ips.includes('192.168.31.110'), 'BPF identity folding must attach the ARP IP for a real 00-prefix client');
+  assert(bpfIdentity.clients[0].ips.includes('10.77.0.110'), 'BPF identity folding must attach the ARP IP for a real 00-prefix client');
   assert(bpfIdentity.skipped_no_identity === 1, 'BPF identity folding must skip unknown 00-prefix MAC samples without LAN identity');
 }
 
@@ -1520,11 +1519,11 @@ assert(bpfAttached.tc_filter.pref === 49152 && bpfAttached.tc_filter.handle === 
   const filteredIdentity = simulateBpfIdentityFolding({
     collect_ifnames: [ 'eth1' ],
     interface_addresses: [
-      { interface: 'eth1', address: '192.168.31.1/24' },
+      { interface: 'eth1', address: '10.77.0.1/24' },
       { interface: 'eth0', address: '192.168.2.100/24' }
     ],
     arp_entries: [
-      { ip: '192.168.31.177', mac: 'd2:4f:70:5d:5e:8d', interface: 'eth1', zone: 'eth1' },
+      { ip: '10.77.0.177', mac: 'd2:4f:70:5d:5e:8d', interface: 'eth1', zone: 'eth1' },
       { ip: '10.19.153.104', mac: 'd2:4f:70:5d:5e:8d', interface: 'eth1', zone: 'eth1' },
       { ip: '169.254.156.62', mac: 'd8:bb:c1:67:fe:bd', interface: 'eth1', zone: 'eth1' }
     ],
@@ -1536,7 +1535,7 @@ assert(bpfAttached.tc_filter.pref === 49152 && bpfAttached.tc_filter.handle === 
   });
   assert(filteredIdentity.clients.length === 1, 'collected interface subnet filter must drop clients without an IP in that interface subnet');
   assert(filteredIdentity.clients[0].identity_key === 'd2:4f:70:5d:5e:8d@eth1', 'collected interface subnet filter must keep the matching client identity');
-  assert(JSON.stringify(filteredIdentity.clients[0].ips) === JSON.stringify([ '192.168.31.177' ]),
+  assert(JSON.stringify(filteredIdentity.clients[0].ips) === JSON.stringify([ '10.77.0.177' ]),
          'collected interface subnet filter must keep only IPs inside the collected interface subnet');
   assert(filteredIdentity.skipped_no_identity === 1, 'collected interface subnet filter must skip MACs whose only IP is outside the collected interface subnet');
 }
@@ -1791,7 +1790,7 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
 {
   const noDataFixture = clone(nssEcmDirectFixture);
   noDataFixture.arp_entries = [
-    { ip: '192.168.31.100', mac: 'aa:bb:cc:00:00:01', interface: 'br-lan', zone: 'lan' }
+    { ip: '10.77.0.100', mac: 'aa:bb:cc:00:00:01', interface: 'br-lan', zone: 'lan' }
   ];
   noDataFixture.state_snapshots = [
     { t_ms: 100000, lines: [] },
@@ -1801,13 +1800,13 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
     {
       t_ms: 100000,
       lines: [
-        'ipv4 2 tcp 6 431999 ESTABLISHED src=192.168.31.100 dst=1.1.1.1 sport=41000 dport=443 packets=10 bytes=1000000 src=1.1.1.1 dst=192.168.31.100 sport=443 dport=41000 packets=20 bytes=2000000 [ASSURED] mark=0 use=1'
+        'ipv4 2 tcp 6 431999 ESTABLISHED src=10.77.0.100 dst=1.1.1.1 sport=41000 dport=443 packets=10 bytes=1000000 src=1.1.1.1 dst=10.77.0.100 sport=443 dport=41000 packets=20 bytes=2000000 [ASSURED] mark=0 use=1'
       ]
     },
     {
       t_ms: 101000,
       lines: [
-        'ipv4 2 tcp 6 431998 ESTABLISHED src=192.168.31.100 dst=1.1.1.1 sport=41000 dport=443 packets=15 bytes=1500000 src=1.1.1.1 dst=192.168.31.100 sport=443 dport=41000 packets=35 bytes=3250000 [ASSURED] mark=0 use=1'
+        'ipv4 2 tcp 6 431998 ESTABLISHED src=10.77.0.100 dst=1.1.1.1 sport=41000 dport=443 packets=15 bytes=1500000 src=1.1.1.1 dst=10.77.0.100 sport=443 dport=41000 packets=35 bytes=3250000 [ASSURED] mark=0 use=1'
       ]
     }
   ];
@@ -1823,14 +1822,14 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
 {
   const zeroDirectFixture = clone(nssEcmDirectFixture);
   zeroDirectFixture.arp_entries = [
-    { ip: '192.168.31.100', mac: 'aa:bb:cc:00:00:01', interface: 'br-lan', zone: 'lan' }
+    { ip: '10.77.0.100', mac: 'aa:bb:cc:00:00:01', interface: 'br-lan', zone: 'lan' }
   ];
   zeroDirectFixture.state_snapshots = [
     {
       t_ms: 100000,
       lines: [
         'conns.conn.11.serial=11',
-        'conns.conn.11.sip_address=192.168.31.100',
+        'conns.conn.11.sip_address=10.77.0.100',
         'conns.conn.11.dip_address=1.1.1.1',
         'conns.conn.11.snode_address=aa:bb:cc:00:00:01',
         'conns.conn.11.protocol=6',
@@ -1842,7 +1841,7 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
       t_ms: 101000,
       lines: [
         'conns.conn.11.serial=11',
-        'conns.conn.11.sip_address=192.168.31.100',
+        'conns.conn.11.sip_address=10.77.0.100',
         'conns.conn.11.dip_address=1.1.1.1',
         'conns.conn.11.snode_address=aa:bb:cc:00:00:01',
         'conns.conn.11.protocol=6',
@@ -1855,13 +1854,13 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
     {
       t_ms: 100000,
       lines: [
-        'ipv4 2 tcp 6 431999 ESTABLISHED src=192.168.31.100 dst=1.1.1.1 sport=41000 dport=443 packets=10 bytes=1000000 src=1.1.1.1 dst=192.168.31.100 sport=443 dport=41000 packets=20 bytes=2000000 [ASSURED] mark=0 use=1'
+        'ipv4 2 tcp 6 431999 ESTABLISHED src=10.77.0.100 dst=1.1.1.1 sport=41000 dport=443 packets=10 bytes=1000000 src=1.1.1.1 dst=10.77.0.100 sport=443 dport=41000 packets=20 bytes=2000000 [ASSURED] mark=0 use=1'
       ]
     },
     {
       t_ms: 101000,
       lines: [
-        'ipv4 2 tcp 6 431998 ESTABLISHED src=192.168.31.100 dst=1.1.1.1 sport=41000 dport=443 packets=15 bytes=1500000 src=1.1.1.1 dst=192.168.31.100 sport=443 dport=41000 packets=35 bytes=3000000 [ASSURED] mark=0 use=1'
+        'ipv4 2 tcp 6 431998 ESTABLISHED src=10.77.0.100 dst=1.1.1.1 sport=41000 dport=443 packets=15 bytes=1500000 src=1.1.1.1 dst=10.77.0.100 sport=443 dport=41000 packets=35 bytes=3000000 [ASSURED] mark=0 use=1'
       ]
     }
   ];
@@ -1878,15 +1877,15 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
 {
   const partialFixture = clone(nssEcmDirectFixture);
   partialFixture.arp_entries = [
-    { ip: '192.168.31.100', mac: 'aa:bb:cc:00:00:01', interface: 'br-lan', zone: 'lan' },
-    { ip: '192.168.31.101', mac: 'aa:bb:cc:00:00:02', interface: 'br-lan', zone: 'lan' }
+    { ip: '10.77.0.100', mac: 'aa:bb:cc:00:00:01', interface: 'br-lan', zone: 'lan' },
+    { ip: '10.77.0.101', mac: 'aa:bb:cc:00:00:02', interface: 'br-lan', zone: 'lan' }
   ];
   partialFixture.state_snapshots = [
     {
       t_ms: 100000,
       lines: [
         'conns.conn.10.serial=10',
-        'conns.conn.10.sip_address=192.168.31.100',
+        'conns.conn.10.sip_address=10.77.0.100',
         'conns.conn.10.dip_address=1.1.1.1',
         'conns.conn.10.snode_address=aa:bb:cc:00:00:01',
         'conns.conn.10.protocol=6',
@@ -1898,7 +1897,7 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
       t_ms: 101000,
       lines: [
         'conns.conn.10.serial=10',
-        'conns.conn.10.sip_address=192.168.31.100',
+        'conns.conn.10.sip_address=10.77.0.100',
         'conns.conn.10.dip_address=1.1.1.1',
         'conns.conn.10.snode_address=aa:bb:cc:00:00:01',
         'conns.conn.10.protocol=6',
@@ -1911,15 +1910,15 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
     {
       t_ms: 100000,
       lines: [
-        'ipv4 2 tcp 6 431999 ESTABLISHED src=192.168.31.100 dst=1.1.1.1 sport=41000 dport=443 packets=10 bytes=900000 src=1.1.1.1 dst=192.168.31.100 sport=443 dport=41000 packets=20 bytes=1900000 [ASSURED] mark=0 use=1',
-        'ipv4 2 tcp 6 431999 ESTABLISHED src=192.168.31.101 dst=8.8.8.8 sport=41001 dport=443 packets=10 bytes=100000 src=8.8.8.8 dst=192.168.31.101 sport=443 dport=41001 packets=20 bytes=500000 [ASSURED] mark=0 use=1'
+        'ipv4 2 tcp 6 431999 ESTABLISHED src=10.77.0.100 dst=1.1.1.1 sport=41000 dport=443 packets=10 bytes=900000 src=1.1.1.1 dst=10.77.0.100 sport=443 dport=41000 packets=20 bytes=1900000 [ASSURED] mark=0 use=1',
+        'ipv4 2 tcp 6 431999 ESTABLISHED src=10.77.0.101 dst=8.8.8.8 sport=41001 dport=443 packets=10 bytes=100000 src=8.8.8.8 dst=10.77.0.101 sport=443 dport=41001 packets=20 bytes=500000 [ASSURED] mark=0 use=1'
       ]
     },
     {
       t_ms: 101000,
       lines: [
-        'ipv4 2 tcp 6 431998 ESTABLISHED src=192.168.31.100 dst=1.1.1.1 sport=41000 dport=443 packets=15 bytes=1000000 src=1.1.1.1 dst=192.168.31.100 sport=443 dport=41000 packets=35 bytes=2000000 [ASSURED] mark=0 use=1',
-        'ipv4 2 tcp 6 431998 ESTABLISHED src=192.168.31.101 dst=8.8.8.8 sport=41001 dport=443 packets=15 bytes=350000 src=8.8.8.8 dst=192.168.31.101 sport=443 dport=41001 packets=35 bytes=1750000 [ASSURED] mark=0 use=1'
+        'ipv4 2 tcp 6 431998 ESTABLISHED src=10.77.0.100 dst=1.1.1.1 sport=41000 dport=443 packets=15 bytes=1000000 src=1.1.1.1 dst=10.77.0.100 sport=443 dport=41000 packets=35 bytes=2000000 [ASSURED] mark=0 use=1',
+        'ipv4 2 tcp 6 431998 ESTABLISHED src=10.77.0.101 dst=8.8.8.8 sport=41001 dport=443 packets=15 bytes=350000 src=8.8.8.8 dst=10.77.0.101 sport=443 dport=41001 packets=35 bytes=1750000 [ASSURED] mark=0 use=1'
       ]
     }
   ];
@@ -2019,7 +2018,7 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
 {
   const mismatchedNodeMacFixture = clone(nssEcmDirectFixture);
   mismatchedNodeMacFixture.arp_entries = [
-    { ip: '192.168.31.104', mac: 'aa:bb:cc:00:00:05', interface: 'br-lan', zone: 'lan' }
+    { ip: '10.77.0.104', mac: 'aa:bb:cc:00:00:05', interface: 'br-lan', zone: 'lan' }
   ];
   mismatchedNodeMacFixture.neighbor_entries = [];
   mismatchedNodeMacFixture.state_snapshots = [
@@ -2027,7 +2026,7 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
       t_ms: 100000,
       lines: [
         'conns.conn.35.serial=35',
-        'conns.conn.35.sip_address=192.168.31.104',
+        'conns.conn.35.sip_address=10.77.0.104',
         'conns.conn.35.dip_address=1.1.1.1',
         'conns.conn.35.snode_address=00:11:22:33:44:55',
         'conns.conn.35.dnode_address=00:00:00:00:00:00',
@@ -2040,7 +2039,7 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
       t_ms: 101000,
       lines: [
         'conns.conn.35.serial=35',
-        'conns.conn.35.sip_address=192.168.31.104',
+        'conns.conn.35.sip_address=10.77.0.104',
         'conns.conn.35.dip_address=1.1.1.1',
         'conns.conn.35.snode_address=00:11:22:33:44:55',
         'conns.conn.35.dnode_address=00:00:00:00:00:00',
@@ -2058,16 +2057,16 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
 {
   const bothLanFixture = clone(nssEcmDirectFixture);
   bothLanFixture.arp_entries = [
-    { ip: '192.168.31.100', mac: 'aa:bb:cc:00:00:01', interface: 'br-lan', zone: 'lan' },
-    { ip: '192.168.31.101', mac: 'aa:bb:cc:00:00:02', interface: 'br-lan', zone: 'lan' }
+    { ip: '10.77.0.100', mac: 'aa:bb:cc:00:00:01', interface: 'br-lan', zone: 'lan' },
+    { ip: '10.77.0.101', mac: 'aa:bb:cc:00:00:02', interface: 'br-lan', zone: 'lan' }
   ];
   bothLanFixture.state_snapshots = [
     {
       t_ms: 100000,
       lines: [
         'conns.conn.40.serial=40',
-        'conns.conn.40.sip_address=192.168.31.100',
-        'conns.conn.40.dip_address=192.168.31.101',
+        'conns.conn.40.sip_address=10.77.0.100',
+        'conns.conn.40.dip_address=10.77.0.101',
         'conns.conn.40.snode_address=aa:bb:cc:00:00:01',
         'conns.conn.40.dnode_address=aa:bb:cc:00:00:02',
         'conns.conn.40.protocol=6',
@@ -2079,8 +2078,8 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
       t_ms: 101000,
       lines: [
         'conns.conn.40.serial=40',
-        'conns.conn.40.sip_address=192.168.31.100',
-        'conns.conn.40.dip_address=192.168.31.101',
+        'conns.conn.40.sip_address=10.77.0.100',
+        'conns.conn.40.dip_address=10.77.0.101',
         'conns.conn.40.snode_address=aa:bb:cc:00:00:01',
         'conns.conn.40.dnode_address=aa:bb:cc:00:00:02',
         'conns.conn.40.protocol=6',
@@ -2096,7 +2095,7 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
 {
   const natEndpointFixture = clone(nssEcmDirectFixture);
   natEndpointFixture.arp_entries = [
-    { ip: '192.168.31.102', mac: 'aa:bb:cc:00:00:03', interface: 'br-lan', zone: 'lan' }
+    { ip: '10.77.0.102', mac: 'aa:bb:cc:00:00:03', interface: 'br-lan', zone: 'lan' }
   ];
   natEndpointFixture.neighbor_entries = [];
   natEndpointFixture.state_snapshots = [
@@ -2106,7 +2105,7 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
         'conns.conn.50.serial=50',
         'conns.conn.50.sip_address=198.51.100.20',
         'conns.conn.50.dip_address=203.0.113.10',
-        'conns.conn.50.sip_address_nat=192.168.31.102',
+        'conns.conn.50.sip_address_nat=10.77.0.102',
         'conns.conn.50.dip_address_nat=203.0.113.10',
         'conns.conn.50.snode_address=00:00:00:00:00:00',
         'conns.conn.50.snode_address_nat=aa:bb:cc:00:00:03',
@@ -2122,7 +2121,7 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
         'conns.conn.50.serial=50',
         'conns.conn.50.sip_address=198.51.100.20',
         'conns.conn.50.dip_address=203.0.113.10',
-        'conns.conn.50.sip_address_nat=192.168.31.102',
+        'conns.conn.50.sip_address_nat=10.77.0.102',
         'conns.conn.50.dip_address_nat=203.0.113.10',
         'conns.conn.50.snode_address=00:00:00:00:00:00',
         'conns.conn.50.snode_address_nat=aa:bb:cc:00:00:03',
@@ -2142,7 +2141,7 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
 {
   const macOnlyFixture = clone(nssEcmDirectFixture);
   macOnlyFixture.arp_entries = [
-    { ip: '192.168.31.103', mac: 'aa:bb:cc:00:00:04', interface: 'br-lan', zone: 'lan' }
+    { ip: '10.77.0.103', mac: 'aa:bb:cc:00:00:04', interface: 'br-lan', zone: 'lan' }
   ];
   macOnlyFixture.neighbor_entries = [];
   macOnlyFixture.state_snapshots = [
@@ -2175,7 +2174,7 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
   ];
   const macOnlyDirect = simulateNssEcmDirect(macOnlyFixture);
   assert(macOnlyDirect.first_snapshot.entries_matched === 1, 'NSS direct must fall back to ECM node MAC when ECM IP endpoints are post-NAT addresses');
-  assert(macOnlyDirect.clients[0].ips.includes('192.168.31.103'), 'NSS direct MAC fallback must keep the LAN identity IP from ARP or neighbor');
+  assert(macOnlyDirect.clients[0].ips.includes('10.77.0.103'), 'NSS direct MAC fallback must keep the LAN identity IP from ARP or neighbor');
   assert(macOnlyDirect.clients[0].tx_bps === 1600000, 'NSS direct MAC fallback tx_bps must follow the LAN source direction');
   assert(macOnlyDirect.clients[0].rx_bps === 4000000, 'NSS direct MAC fallback rx_bps must follow the LAN source direction');
 }

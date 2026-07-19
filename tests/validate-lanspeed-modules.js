@@ -27,7 +27,6 @@
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
-const crypto = require('crypto');
 
 const root = path.resolve(__dirname, '..');
 const resDir = path.join(root,
@@ -44,6 +43,11 @@ const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lans
 const EXPECTED_MODULES = [
 	'vocab.js',
 	'format.js',
+	'designSystem.js',
+	'designSystemBase.js',
+	'designSystemAurora.js',
+	'designSystemArgon.js',
+	'designSystemBootstrap.js',
 	'geoLocation.js',
 	'clientConnections.js',
 	'clientDetailRefresh.js',
@@ -63,6 +67,7 @@ const EXPECTED_MODULES = [
 	'diagnosticsStyleArgon.js',
 	'diagnosticsStyleBootstrap.js',
 	'diagnosticsStyleResponsive.js',
+	'diagnosticsModel.js',
 	'diagnosticsView.js',
 	'rpc.js',
 	'ifaceConfig.js',
@@ -87,7 +92,9 @@ const EXPECTED_MODULES = [
 	'configStyleBootstrap.js',
 	'configStyleShared.js',
 	'configStyleResponsive.js',
-	'configForm.js'
+	'configModel.js',
+	'configForm.js',
+	'configView.js'
 ];
 const EXPECTED_VIEW_ENTRIES = [ 'config.js', 'diagnostics.js', 'overview.js' ];
 const VERSIONED_RESOURCE_TOKEN = /(?:Live\d+|_live\d+)/;
@@ -98,12 +105,20 @@ const EXPECTED_VIEW_REQUIRES = [
 	'lanspeed.statusOverview'
 ];
 
-const EXPECTED_CONFIG_VIEW_REQUIRES = [
+const EXPECTED_CONFIG_MODULE_REQUIRES = [
+	'baseclass',
 	'ui',
 	'lanspeed.ifaceConfig',
 	'lanspeed.theme',
 	'lanspeed.configStyle',
 	'lanspeed.configForm'
+];
+
+const DESIGN_SYSTEM_PARTS = [
+	'designSystemBase.js',
+	'designSystemAurora.js',
+	'designSystemArgon.js',
+	'designSystemBootstrap.js'
 ];
 
 const STATUS_STYLE_PARTS = [
@@ -139,9 +154,14 @@ const CONFIG_STYLE_PARTS = [
 	'configStyleResponsive.js'
 ];
 
-const EXPECTED_STATUS_STYLE_SHA256 = '7efc85957caddd7dbea15cae2776551a7089d204a71d4eefa9883795a110e5ec';
-const EXPECTED_DIAGNOSTICS_STYLE_SHA256 = 'f8e8015359f4e3e7aa2870c3d7c334dc527093af3c38ca41c5ad06a4a9372648';
-const EXPECTED_CONFIG_STYLE_SHA256 = '19bae3b69c3afa676564ed5eb8969c5e641bc66cb2e4d97219b27b46bf5f1657';
+const PRODUCT_STYLE_PARTS = Array.from(new Set(
+	DESIGN_SYSTEM_PARTS.concat(
+		STATUS_STYLE_PARTS,
+		CLIENT_DETAIL_STYLE_PARTS,
+		DIAGNOSTICS_STYLE_PARTS,
+		CONFIG_STYLE_PARTS
+	)
+));
 
 function readMakeVar(source, name, fileLabel) {
 	const match = source.match(new RegExp(`^${name}:=(.+)$`, 'm'));
@@ -155,6 +175,17 @@ function readMakeVar(source, name, fileLabel) {
 const MODULE_REQUIRES = {
 	'vocab.js': [ 'baseclass' ],
 	'format.js': [ 'baseclass' ],
+	'designSystem.js': [
+		'baseclass',
+		'lanspeed.designSystemBase',
+		'lanspeed.designSystemAurora',
+		'lanspeed.designSystemArgon',
+		'lanspeed.designSystemBootstrap'
+	],
+	'designSystemBase.js': [ 'baseclass' ],
+	'designSystemAurora.js': [ 'baseclass' ],
+	'designSystemArgon.js': [ 'baseclass' ],
+	'designSystemBootstrap.js': [ 'baseclass' ],
 	'geoLocation.js': [ 'baseclass' ],
 	'clientConnections.js': [ 'baseclass', 'lanspeed.format' ],
 	'clientDetailRefresh.js': [
@@ -177,6 +208,7 @@ const MODULE_REQUIRES = {
 	],
 	'clientDetailStyle.js': [
 		'baseclass',
+		'lanspeed.designSystem',
 		'lanspeed.statusStyle',
 		'lanspeed.clientDetailStyleBase',
 		'lanspeed.clientDetailStyleAurora',
@@ -194,7 +226,8 @@ const MODULE_REQUIRES = {
 		'lanspeed.vocab',
 		'lanspeed.format',
 		'lanspeed.version',
-		'lanspeed.statusCollector'
+		'lanspeed.statusCollector',
+		'lanspeed.diagnosticsModel'
 	],
 	'diagnosticsShell.js': [
 		'baseclass',
@@ -203,6 +236,7 @@ const MODULE_REQUIRES = {
 	],
 	'diagnosticsStyle.js': [
 		'baseclass',
+		'lanspeed.designSystem',
 		'lanspeed.diagnosticsStyleBase',
 		'lanspeed.diagnosticsStyleAurora',
 		'lanspeed.diagnosticsStyleArgon',
@@ -214,18 +248,23 @@ const MODULE_REQUIRES = {
 	'diagnosticsStyleArgon.js': [ 'baseclass' ],
 	'diagnosticsStyleBootstrap.js': [ 'baseclass' ],
 	'diagnosticsStyleResponsive.js': [ 'baseclass' ],
+	'diagnosticsModel.js': [ 'baseclass', 'lanspeed.vocab', 'lanspeed.statusCollector' ],
 	'diagnosticsView.js': [
 		'baseclass',
 		'lanspeed.rpc',
+		'lanspeed.version',
+		'lanspeed.diagnosticsModel',
 		'lanspeed.diagnosticsShell',
 		'lanspeed.diagnosticsRefresh'
 	],
 	'rpc.js': [ 'baseclass', 'rpc' ],
-	'ifaceConfig.js': [ 'baseclass', 'lanspeed.format', 'lanspeed.rpc' ],
+	'ifaceConfig.js': [ 'baseclass', 'lanspeed.format', 'lanspeed.rpc', 'lanspeed.configModel' ],
+	'configModel.js': [ 'baseclass' ],
 	'theme.js': [ 'baseclass' ],
 	'version.js': [ 'baseclass' ],
 	'statusStyle.js': [
 		'baseclass',
+		'lanspeed.designSystem',
 		'lanspeed.statusStyleBase',
 		'lanspeed.statusStyleAurora',
 		'lanspeed.statusStyleArgon',
@@ -270,6 +309,7 @@ const MODULE_REQUIRES = {
 	],
 	'configStyle.js': [
 		'baseclass',
+		'lanspeed.designSystem',
 		'lanspeed.configStyleBase',
 		'lanspeed.configStyleShared',
 		'lanspeed.configStyleAurora',
@@ -283,7 +323,8 @@ const MODULE_REQUIRES = {
 	'configStyleBootstrap.js': [ 'baseclass' ],
 	'configStyleShared.js': [ 'baseclass' ],
 	'configStyleResponsive.js': [ 'baseclass' ],
-	'configForm.js': [ 'baseclass', 'uci', 'lanspeed.rpc', 'lanspeed.ifaceConfig' ]
+	'configForm.js': [ 'baseclass', 'uci', 'lanspeed.rpc', 'lanspeed.ifaceConfig', 'lanspeed.configModel' ],
+	'configView.js': EXPECTED_CONFIG_MODULE_REQUIRES
 };
 
 const RPC_FREE_MODULES = EXPECTED_MODULES.filter(function(name) {
@@ -324,12 +365,31 @@ function loadStyleLeaf(name) {
 	})(fakeBaseclass);
 }
 
-function styleHash(css) {
-	return crypto.createHash('sha256').update(css).digest('hex');
+function assertUnifiedStyleLeaf(name, src) {
+	if (JSON.stringify(moduleRequireNames(src)) !== JSON.stringify([ 'baseclass' ])) {
+		fail(`${name} must require only baseclass`);
+	}
+
+	const leaf = loadStyleLeaf(name);
+	if (!leaf || typeof leaf.CSS !== 'string' || !leaf.CSS.trim()) {
+		fail(`${name} must export a non-empty CSS string`);
+		return;
+	}
+
+	const css = leaf.CSS;
+	const fixedColor = /#[0-9a-f]{3,8}\b|\b(?:rgb|hsl)a?\s*\(|(?:^|[\s:,(])(?:black|white|red|green|blue|yellow|orange|purple|pink|brown|gray|grey)(?=[\s,;)])/i;
+	if (fixedColor.test(css)) {
+		fail(`${name} must derive color from the active theme instead of fixed color literals`);
+	}
+
+	if (!name.startsWith('designSystem') &&
+	    /var\(--(?:brand|surface|hairline|primary|dark-primary|background-color-|text-color-|border-color-|warn-color-|error-color-|on-primary-color|focus-ring|app-shadow|radius-base)/.test(css)) {
+		fail(`${name} must consume --lanspeed-* product tokens instead of theme-native variables directly`);
+	}
 }
 
 function assertStyleModuleIsolation(name, src) {
-	if (/StyleBase\.js$/.test(name) &&
+	if ((/StyleBase\.js$/.test(name) || name === 'designSystemBase.js') &&
 	    (src.includes('lanspeed-theme-aurora') ||
 	     src.includes('lanspeed-theme-argon') ||
 	     src.includes('lanspeed-theme-bootstrap'))) {
@@ -360,35 +420,411 @@ function assertStyleModuleIsolation(name, src) {
 		fail(`${name} must retain shared responsive selectors for Aurora, Argon and Bootstrap`);
 	}
 	if (name === 'configStyleShared.js' &&
-	    (!src.includes('lanspeed-theme-aurora') ||
-	     !src.includes('lanspeed-theme-argon') ||
+	    (src.includes('lanspeed-theme-aurora') ||
+	     src.includes('lanspeed-theme-argon') ||
 	     src.includes('lanspeed-theme-bootstrap'))) {
-		fail('configStyleShared.js must remain the explicitly shared Aurora/Argon desktop layer');
+		fail('configStyleShared.js must remain theme-neutral');
 	}
+}
+
+function assertProductDesignSystem() {
+	const baseCss = loadStyleLeaf('designSystemBase.js').CSS;
+	const auroraCss = loadStyleLeaf('designSystemAurora.js').CSS;
+	const argonCss = loadStyleLeaf('designSystemArgon.js').CSS;
+	const bootstrapCss = loadStyleLeaf('designSystemBootstrap.js').CSS;
+	const requiredTokens = [
+		'page-bg', 'surface', 'surface-muted', 'surface-raised',
+		'text', 'text-muted', 'text-subtle', 'border', 'border-strong',
+		'accent', 'accent-contrast', 'accent-soft', 'hover',
+		'control-bg', 'control-border', 'normal', 'normal-soft',
+		'normal-border', 'warning', 'warning-soft', 'warning-border',
+		'danger', 'danger-soft', 'danger-border', 'info', 'info-soft',
+		'focus-color', 'focus-ring', 'radius-section', 'radius-control',
+		'radius-badge', 'shadow-section', 'shadow-raised',
+		'disabled-opacity', 'page-gap', 'section-x', 'section-y',
+		'control-height'
+	];
+
+	[
+		[ 'designSystemBase.js', baseCss ],
+		[ 'designSystemAurora.js', auroraCss ],
+		[ 'designSystemArgon.js', argonCss ],
+		[ 'designSystemBootstrap.js', bootstrapCss ]
+	].forEach(function(entry) {
+		requiredTokens.forEach(function(token) {
+			if (!entry[1].includes(`--lanspeed-${token}:`))
+				fail(`${entry[0]} must define --lanspeed-${token}`);
+		});
+	});
+
+	[
+		':is(.lanspeed-root,.lanspeed-config-root,.lanspeed-diagnostics-root,.lanspeed-connection-detail)',
+		':focus-visible', ':hover:not(:disabled)', 'input[type="checkbox"]',
+		'input[type="radio"]', '.lanspeed-ifcfg-seg>button.active',
+		'.lanspeed-connection-protocol[aria-pressed="true"]',
+		'.label.label-success', '.label.label-warning', '.label.label-danger',
+		'.lanspeed-empty', '.lanspeed-connection-empty',
+		'.lanspeed-diagnostics-error', '@media (prefers-reduced-motion:reduce)',
+		'@media (forced-colors:active)', '@media (max-width:700px)'
+	].forEach(function(marker) {
+		if (!baseCss.includes(marker))
+			fail(`designSystemBase.js must cover shared product state: ${marker}`);
+	});
+	if (!baseCss.includes(':is(input[type="checkbox"],input[type="radio"]):focus-visible{') ||
+	    baseCss.includes(':is(input[type="checkbox"],input[type="radio"]):focus{')) {
+		fail('designSystemBase.js must reserve the shared checkbox outline for keyboard-visible focus');
+	}
+
+	[
+		'--lanspeed-page-bg:var(--bg)', '--lanspeed-surface:var(--surface)',
+		'--lanspeed-border:var(--hairline)', '--lanspeed-accent:var(--brand)',
+		'--lanspeed-control-bg:var(--control-bg)',
+		'--lanspeed-focus-color:var(--lanspeed-focus-color-safe,var(--focus-ring))',
+		'--lanspeed-shadow-section:var(--app-shadow-sm)'
+	].forEach(function(marker) {
+		if (!auroraCss.includes(marker))
+			fail(`designSystemAurora.js must derive from Aurora native token: ${marker}`);
+	});
+	[
+		'--lanspeed-accent:var(--primary', '--lanspeed-accent:var(--dark-primary',
+		'[data-lanspeed-color-mode="light"].lanspeed-theme-argon',
+		'[data-lanspeed-color-mode="dark"].lanspeed-theme-argon',
+		'color-mix(in srgb,var(--lanspeed-accent)', '--lanspeed-shadow-section:none',
+		'input[type="number"],select,textarea):is(:focus,:focus-visible)',
+		':is(.cbi-button,.lanspeed-ifcfg-seg>button):is(:focus,:focus-visible)'
+	].forEach(function(marker) {
+		if (!argonCss.includes(marker))
+			fail(`designSystemArgon.js must follow Argon runtime color and mode: ${marker}`);
+	});
+	if (!argonCss.includes(':is(input[type="checkbox"],input[type="radio"]):focus-visible{') ||
+	    argonCss.includes(':is(input[type="checkbox"],input[type="radio"]):is(:focus,:focus-visible){')) {
+		fail('designSystemArgon.js must reserve checkbox outlines for keyboard-visible focus');
+	}
+	if (!argonCss.includes('input::placeholder{color:var(--lanspeed-text-muted)!important;opacity:.72}'))
+		fail('designSystemArgon.js must override Argon native low-contrast placeholders with dynamic text tokens');
+	if (!auroraCss.includes('color:var(--lanspeed-text-muted)!important;opacity:1}'))
+		fail('designSystemAurora.js must keep native-token placeholders readable in both color modes');
+	if (!bootstrapCss.includes('textarea)::placeholder{color:var(--lanspeed-text-subtle);opacity:.74}'))
+		fail('designSystemBootstrap.js must keep compact native placeholders above normal-text contrast');
+	if (!auroraCss.includes('@media (max-width:700px){#floating-toolbar~#maincontent #view{') ||
+	    !auroraCss.includes('padding-right:calc(var(--spacing,.25rem)*12)}') ||
+	    !auroraCss.includes('#floating-toolbar~#maincontent ' +
+		'.lanspeed-theme-aurora{width:100%!important;max-width:none!important;margin-right:0}}')) {
+		fail('designSystemAurora.js must reserve native floating-toolbar clearance once at the mobile view level');
+	}
+	if (argonCss.indexOf(':is(.cbi-button,.lanspeed-ifcfg-seg>button):is(:focus,:focus-visible)') <
+		argonCss.indexOf(':is(.lanspeed-ifcfg-seg>button.active,.lanspeed-connection-protocol[aria-pressed="true"])')) {
+		fail('designSystemArgon.js button focus rule must follow selected-state rules so the focus ring remains visible');
+	}
+	[
+		/:is\(\.cbi-button,\.lanspeed-ifcfg-seg>button\):hover:not\(:disabled\)\{[^}]*box-shadow/,
+		/\.cbi-button\.cbi-button-action:hover:not\(:disabled\)\{[^}]*box-shadow/
+	].forEach(function(pattern) {
+		if (pattern.test(argonCss))
+			fail('designSystemArgon.js hover styles must not override the focused button shadow');
+	});
+	[
+		'--lanspeed-page-bg:var(--background-color-low)',
+		'--lanspeed-surface:var(--background-color-high)',
+		'--lanspeed-text:var(--text-color-high)',
+		'--lanspeed-text-muted:var(--text-color-high)',
+		'--lanspeed-text-subtle:var(--text-color-high)',
+		'--lanspeed-accent:var(--primary-color-high)',
+		'--lanspeed-warning:color-mix(in srgb,var(--warn-color-high)',
+		'--lanspeed-danger:color-mix(in srgb,var(--error-color-high)',
+		'--lanspeed-control-border:var(--border-color-high)'
+	].forEach(function(marker) {
+		if (!bootstrapCss.includes(marker))
+			fail(`designSystemBootstrap.js must derive from Bootstrap native token: ${marker}`);
+	});
+	if (!bootstrapCss.includes('background-color:var(--lanspeed-action-bg)!important;background-image:none!important') ||
+	    !bootstrapCss.includes('background-color:var(--lanspeed-action-hover)!important;background-image:none!important')) {
+		fail('designSystemBootstrap.js must suppress native gradients that obscure dynamic action colors');
+	}
+	if (!bootstrapCss.includes('.lanspeed-theme-bootstrap[data-lanspeed-color-mode="dark"]{') ||
+	    !bootstrapCss.includes('--lanspeed-action-hover:color-mix(in srgb,var(--primary-color-high) 92%,var(--text-color-high))')) {
+		fail('designSystemBootstrap.js must keep dark action hover colors readable and derived from native variables');
+	}
+
+	const themeBundles = [
+		[ 'Aurora', 'Aurora', 'aurora' ],
+		[ 'Argon', 'Argon', 'argon' ],
+		[ 'Bootstrap', 'Bootstrap', 'bootstrap' ]
+	].map(function(theme) {
+		const pageFiles = [
+			`statusStyle${theme[1]}.js`,
+			`diagnosticsStyle${theme[1]}.js`,
+			`configStyle${theme[1]}.js`,
+			`clientDetailStyle${theme[1]}.js`
+		];
+		const css = pageFiles.map(function(name) {
+			const pageCss = loadStyleLeaf(name).CSS;
+			if (!pageCss.includes(`lanspeed-theme-${theme[2]}`))
+				fail(`${name} must implement the ${theme[0]} page treatment`);
+			return pageCss;
+		}).join('\n');
+		return [ theme[0], css ];
+	});
+	if (new Set(themeBundles.map(function(theme) { return theme[1]; })).size !== 3) {
+		fail('Aurora, Argon and Bootstrap must retain independent page layout implementations');
+	}
+	const bootstrapDiagnosticsCss = loadStyleLeaf('diagnosticsStyleBootstrap.js').CSS;
+	if (!bootstrapDiagnosticsCss.includes(
+		'.lanspeed-diagnostics-root.lanspeed-theme-bootstrap .lanspeed-diagnostic-stage-heading>h4,') ||
+		!bootstrapDiagnosticsCss.includes('color:var(--lanspeed-text)')) {
+		fail('diagnosticsStyleBootstrap.js must protect diagnostic stage and alert text from low-contrast native inheritance');
+	}
+	const bootstrapStatusCss = loadStyleLeaf('statusStyleBootstrap.js').CSS;
+	[
+		'align-items:stretch',
+		'grid-template-columns:repeat(5,minmax(0,1fr))',
+		'grid-template-rows:.9rem 1.85rem minmax(1rem,auto)',
+		'border-top:2px solid var(--lanspeed-accent)',
+		'border-left-color:var(--lanspeed-border-strong)',
+		'box-shadow:none',
+		'.lanspeed-theme-bootstrap .lanspeed-connection-values{flex-wrap:nowrap;gap:.6rem}'
+	].forEach(function(marker) {
+		if (!bootstrapStatusCss.includes(marker))
+			fail(`statusStyleBootstrap.js must retain aligned metric treatment: ${marker}`);
+	});
+
+	[
+		[ 'statusStyleBase.js', [ '--lanspeed-page-gap', '--lanspeed-border', '--lanspeed-accent', '--lanspeed-text-muted' ] ],
+		[ 'diagnosticsStyleBase.js', [ '--lanspeed-surface', '--lanspeed-normal', '--lanspeed-warning', '--lanspeed-danger' ] ],
+		[ 'configStyleBase.js', [ '--lanspeed-control-bg', '--lanspeed-control-border', '--lanspeed-hover', '--lanspeed-text' ] ],
+		[ 'clientDetailStyleBase.js', [ '--lanspeed-accent-soft', '--lanspeed-normal-soft', '--lanspeed-danger-soft', '--lanspeed-focus-ring' ] ]
+	].forEach(function(contract) {
+		const css = loadStyleLeaf(contract[0]).CSS;
+		contract[1].forEach(function(token) {
+			if (!css.includes(`var(${token})`))
+				fail(`${contract[0]} must consume shared product token ${token}`);
+		});
+	});
+
+	[
+		[ 'statusStyleResponsive.js', [ 'max-width:900px', 'max-width:700px', 'max-width:480px', 'overflow-x:hidden' ] ],
+		[ 'diagnosticsStyleResponsive.js', [ 'max-width:1100px', 'max-width:700px', 'max-width:480px', 'minmax(0,1fr)' ] ],
+		[ 'configStyleResponsive.js', [ 'max-width:800px', 'max-width:100%', 'overflow-x:hidden', 'repeat(3,minmax(0,1fr))' ] ],
+		[ 'clientDetailStyleResponsive.js', [ 'max-width:1100px', 'max-width:700px', 'max-width:480px', 'overflow-wrap:anywhere' ] ]
+	].forEach(function(contract) {
+		const css = loadStyleLeaf(contract[0]).CSS;
+		contract[1].forEach(function(marker) {
+			if (!css.includes(marker))
+				fail(`${contract[0]} must retain responsive contract: ${marker}`);
+		});
+	});
+}
+
+function assertAuroraNativeVisualSystem() {
+	const baseCss = loadStyleLeaf('designSystemBase.js').CSS;
+	const auroraCss = loadStyleLeaf('designSystemAurora.js').CSS;
+	const statusCss = loadStyleLeaf('statusStyleAurora.js').CSS;
+	const diagnosticsCss = loadStyleLeaf('diagnosticsStyleAurora.js').CSS;
+	const diagnosticsResponsiveCss = loadStyleLeaf('diagnosticsStyleResponsive.js').CSS;
+
+	function declaration(css, name) {
+		const match = css.match(new RegExp(`--${name}:([^;}]+)`));
+		return match ? match[1].trim() : '';
+	}
+
+	function ruleBody(css, selectorMarker) {
+		const start = css.indexOf(selectorMarker);
+		const open = start < 0 ? -1 : css.indexOf('{', start);
+		const close = open < 0 ? -1 : css.indexOf('}', open);
+		return open >= 0 && close >= 0 ? css.slice(open + 1, close) : '';
+	}
+
+	function propertyValue(body, name) {
+		const match = body.match(new RegExp(`(?:^|;)\\s*${name}\\s*:([^;}]+)`));
+		return match ? match[1].trim() : '';
+	}
+
+	function normalizedPropertyValue(body, name) {
+		return propertyValue(body, name).replace(/\s*!important\s*$/, '').trim();
+	}
+
+	function mediaSlice(css, width, nextWidth) {
+		const start = css.indexOf(`@media (max-width:${width}px){`);
+		const end = start < 0 || !nextWidth ? css.length : css.indexOf(`@media (max-width:${nextWidth}px){`, start);
+		return start < 0 ? '' : css.slice(start, end < 0 ? css.length : end);
+	}
+
+	[
+		[ 'lanspeed-action-bg', 'var(--brand)' ],
+		[ 'lanspeed-action-hover', 'var(--brand-hover' ],
+		[ 'lanspeed-action-text', 'var(--on-brand)' ],
+		[ 'lanspeed-shadow-section', 'var(--app-shadow-sm)' ]
+	].forEach(function(contract) {
+		if (!declaration(auroraCss, contract[0]).includes(contract[1]))
+			fail(`designSystemAurora.js must map --${contract[0]} to Aurora ${contract[1]}`);
+	});
+
+	[
+		[ 'lanspeed-action-text', '--lanspeed-action-text-safe', 'var(--on-brand)' ],
+		[ 'lanspeed-action-hover-text', '--lanspeed-action-hover-text-safe', 'var(--lanspeed-action-text)' ],
+		[ 'lanspeed-normal-text', '--lanspeed-normal-text-safe', 'var(--brand)' ],
+		[ 'lanspeed-focus-color', '--lanspeed-focus-color-safe', 'var(--focus-ring)' ]
+	].forEach(function(contract) {
+		var value = declaration(auroraCss, contract[0]);
+		if (!value.includes(contract[1]) || !value.includes(contract[2]))
+			fail(`designSystemAurora.js must consume ${contract[1]} with native fallback ${contract[2]}`);
+	});
+	if (!baseCss.includes('color:var(--lanspeed-action-hover-text)!important'))
+		fail('designSystemBase.js must let action hover use an independently checked text token');
+
+	[
+		[ 'lanspeed-radius-section', 2 ],
+		[ 'lanspeed-radius-input', 2 ],
+		[ 'lanspeed-radius-button', 1.5 ],
+		[ 'lanspeed-radius-compact', .75 ]
+	].forEach(function(contract) {
+		const value = declaration(auroraCss, contract[0]);
+		const multiplier = String(contract[1]);
+		const compactMultiplier = multiplier.startsWith('0.') ? multiplier.slice(1) : multiplier;
+		if (!value.includes('var(--radius-base') ||
+		    (!value.includes(`*${multiplier}`) && !value.includes(`*${compactMultiplier}`))) {
+			fail(`designSystemAurora.js must derive --${contract[0]} from ${contract[1]} * Aurora --radius-base`);
+		}
+	});
+
+	[ 'lanspeed-page-gap', 'lanspeed-section-x', 'lanspeed-section-y',
+	  'lanspeed-control-height' ].forEach(function(name) {
+		if (!declaration(auroraCss, name).includes('var(--spacing'))
+			fail(`designSystemAurora.js must derive --${name} from Aurora --spacing`);
+	});
+
+	if (!baseCss.includes('border-radius:var(--lanspeed-radius-input)!important'))
+		fail('designSystemBase.js must preserve theme-specific input geometry');
+	if (!baseCss.includes('border-radius:var(--lanspeed-radius-button)'))
+		fail('designSystemBase.js must preserve theme-specific button geometry');
+	if (!baseCss.includes('background-color:var(--lanspeed-control-bg)!important'))
+		fail('designSystemBase.js must set control background-color without resetting native select artwork');
+	if (baseCss.includes('background:var(--lanspeed-control-bg)!important'))
+		fail('designSystemBase.js must not use the background shorthand on controls because it removes Aurora select arrows');
+
+	[
+		[ '.label.label-success', 'var(--brand-subtle)', 'var(--brand)' ],
+		[ '.label.label-warning', 'var(--warning-surface)', 'var(--warning)' ],
+		[ '.label.label-danger', 'var(--danger-surface)', 'var(--danger)' ]
+	].forEach(function(contract) {
+		const body = ruleBody(auroraCss, contract[0]);
+		if (!body.includes(contract[1]) || !body.includes(contract[2]) ||
+		    !body.includes('border-color:transparent')) {
+			fail(`designSystemAurora.js must render ${contract[0]} with Aurora semantic foreground, surface and a transparent border`);
+		}
+	});
+
+	if (!auroraCss.includes('var(--hover-faint)') || !auroraCss.includes('box-shadow:none'))
+		fail('designSystemAurora.js must keep ordinary Aurora button hover flat and use --hover-faint');
+	if (auroraCss.includes('box-shadow:inset'))
+		fail('Aurora top-level LAN Speed sections must not add a branded inset edge');
+
+	const pageSizeBody = ruleBody(statusCss, '.lanspeed-theme-aurora .lanspeed-page-size');
+	const pageSizeWidth = propertyValue(pageSizeBody, 'width');
+	const pageSizeMinWidth = propertyValue(pageSizeBody, 'min-width');
+	const pageSizeMaxWidth = propertyValue(pageSizeBody, 'max-width');
+	const pageSizePaddingRight = propertyValue(pageSizeBody, 'padding-right');
+	if (!pageSizeWidth || !pageSizeWidth.includes('!important') ||
+	    !pageSizeMinWidth || !pageSizeMaxWidth ||
+	    !pageSizePaddingRight) {
+		fail('statusStyleAurora.js must give the pagination select an independent width and arrow clearance');
+	}
+	if (/(?:^|;)\s*(?:appearance|background|background-image)\s*:/.test(pageSizeBody))
+		fail('statusStyleAurora.js must preserve Aurora native pagination select arrow artwork');
+
+	const headerMetaBody = ruleBody(statusCss, '.lanspeed-theme-aurora .lanspeed-header>.meta');
+	if (normalizedPropertyValue(headerMetaBody, 'background') &&
+	    ![ 'transparent', 'none' ].includes(normalizedPropertyValue(headerMetaBody, 'background')) ||
+	    normalizedPropertyValue(headerMetaBody, 'background-color') &&
+	    ![ 'transparent', 'none' ].includes(normalizedPropertyValue(headerMetaBody, 'background-color')) ||
+	    normalizedPropertyValue(headerMetaBody, 'background-image') &&
+	    ![ 'none' ].includes(normalizedPropertyValue(headerMetaBody, 'background-image')) ||
+	    normalizedPropertyValue(headerMetaBody, 'border-radius') &&
+	    ![ '0', '0px' ].includes(normalizedPropertyValue(headerMetaBody, 'border-radius')) ||
+	    normalizedPropertyValue(headerMetaBody, 'box-shadow') &&
+	    ![ 'none', '0' ].includes(normalizedPropertyValue(headerMetaBody, 'box-shadow')))
+		fail('statusStyleAurora.js must render header metadata as plain supporting text instead of a pill');
+
+	const metricsBody = ruleBody(statusCss, '.lanspeed-theme-aurora .lanspeed-metrics');
+	if (!/grid-template-columns\s*:\s*repeat\(5\s*,/.test(metricsBody))
+		fail('statusStyleAurora.js must retain five overview metric columns on wide screens');
+	const metricBody = ruleBody(statusCss, '.lanspeed-theme-aurora .lanspeed-metric{');
+	if (propertyValue(metricBody, 'display') !== 'flex' ||
+	    propertyValue(metricBody, 'flex-direction') !== 'column' ||
+	    propertyValue(metricBody, 'justify-content') !== 'center') {
+		fail('statusStyleAurora.js must vertically center each Aurora overview metric');
+	}
+
+	const diagnostic1100Css = mediaSlice(diagnosticsResponsiveCss, 1100, 900);
+	if (!diagnostic1100Css.includes('.lanspeed-diagnostics-pipeline{grid-template-columns:repeat(2,minmax(0,1fr))') ||
+	    !diagnostic1100Css.includes('.lanspeed-diagnostic-stage:nth-child(3){padding-left:0}')) {
+		fail('diagnostics responsive layout must realign the four-stage pipeline at 1100px');
+	}
+	const diagnostic900Css = mediaSlice(diagnosticsResponsiveCss, 900, 700);
+	if (!diagnostic900Css.includes('.lanspeed-diagnostic-stage-evidence{grid-template-columns:minmax(0,1fr)}')) {
+		fail('diagnostics responsive layout must stack stage evidence at 900px');
+	}
+
+	if (/\.lanspeed-diagnostics-root\.lanspeed-theme-aurora\{[^}]*font-size\s*:/s.test(diagnosticsCss))
+		fail('diagnosticsStyleAurora.js must inherit Aurora body text-sm instead of creating a second page typography scale');
 }
 
 function assertStyleAggregation() {
 	const fakeBaseclass = { extend: function(value) { return value; } };
+	const designBase = loadStyleLeaf('designSystemBase.js');
+	const designAurora = loadStyleLeaf('designSystemAurora.js');
+	const designArgon = loadStyleLeaf('designSystemArgon.js');
+	const designBootstrap = loadStyleLeaf('designSystemBootstrap.js');
+	const designSystem = vm.compileFunction(readModuleByName('designSystem.js'), [
+		'baseclass', 'designSystemBase', 'designSystemAurora',
+		'designSystemArgon', 'designSystemBootstrap'
+	], { filename: 'resources/lanspeed/designSystem.js' })(
+		fakeBaseclass, designBase, designAurora, designArgon, designBootstrap
+	);
+	const expectedDesign = [
+		designBase.CSS, designAurora.CSS, designArgon.CSS, designBootstrap.CSS
+	].join('\n');
+	if (designSystem.CSS !== expectedDesign)
+		fail('designSystem.js must aggregate Base, Aurora, Argon and Bootstrap tokens in cascade order');
+	[ 'designSystemBase.js', 'designSystemAurora.js', 'designSystemArgon.js',
+		'designSystemBootstrap.js' ].forEach(function(name) {
+		const css = loadStyleLeaf(name).CSS;
+		if (!css.includes('--lanspeed-accent') || !css.includes('--lanspeed-surface') ||
+		    !css.includes('--lanspeed-border') || !css.includes('--lanspeed-focus-ring'))
+			fail(`${name} must define the shared product token contract`);
+	});
+	if (!designAurora.CSS.includes('var(--brand)') ||
+	    !designAurora.CSS.includes('var(--surface)') ||
+	    !designAurora.CSS.includes('var(--hairline)'))
+		fail('Aurora design tokens must derive from native Aurora variables');
+	if (!designArgon.CSS.includes('var(--primary') ||
+	    !designArgon.CSS.includes('var(--dark-primary') ||
+	    !designArgon.CSS.includes('data-lanspeed-color-mode="dark"'))
+		fail('Argon design tokens must follow primary, dark-primary and color mode');
+	if (!designBootstrap.CSS.includes('var(--background-color-high)') ||
+	    !designBootstrap.CSS.includes('var(--primary-color-high)') ||
+	    !designBootstrap.CSS.includes('var(--error-color-high)'))
+		fail('Bootstrap design tokens must derive from native Bootstrap variables');
+
 	const statusBase = loadStyleLeaf('statusStyleBase.js');
 	const statusAurora = loadStyleLeaf('statusStyleAurora.js');
 	const statusArgon = loadStyleLeaf('statusStyleArgon.js');
 	const statusBootstrap = loadStyleLeaf('statusStyleBootstrap.js');
 	const statusResponsive = loadStyleLeaf('statusStyleResponsive.js');
 	const status = vm.compileFunction(readModuleByName('statusStyle.js'), [
-		'baseclass', 'statusStyleBase', 'statusStyleAurora',
+		'baseclass', 'designSystem', 'statusStyleBase', 'statusStyleAurora',
 		'statusStyleArgon', 'statusStyleBootstrap', 'statusStyleResponsive'
 	], { filename: 'resources/lanspeed/statusStyle.js' })(
-		fakeBaseclass, statusBase, statusAurora, statusArgon,
+		fakeBaseclass, designSystem, statusBase, statusAurora, statusArgon,
 		statusBootstrap, statusResponsive
 	);
 	const expectedStatus = [
 		statusBase.CSS, statusAurora.CSS, statusArgon.CSS,
 		statusBootstrap.CSS, statusResponsive.CSS
 	].join('\n');
-	if (status.CSS !== expectedStatus)
-		fail('statusStyle.js must aggregate Base, Aurora, Argon, Bootstrap and Responsive CSS in cascade order');
-	if (styleHash(status.CSS) !== EXPECTED_STATUS_STYLE_SHA256)
-		fail('modular status CSS must match the reviewed stylesheet snapshot');
+	if (status.CSS !== designSystem.CSS + '\n' + expectedStatus ||
+	    status.LAYOUT_CSS !== expectedStatus)
+		fail('statusStyle.js must prepend shared design tokens and expose layout CSS separately');
 
 	const diagnosticsBase = loadStyleLeaf('diagnosticsStyleBase.js');
 	const diagnosticsAurora = loadStyleLeaf('diagnosticsStyleAurora.js');
@@ -396,20 +832,19 @@ function assertStyleAggregation() {
 	const diagnosticsBootstrap = loadStyleLeaf('diagnosticsStyleBootstrap.js');
 	const diagnosticsResponsive = loadStyleLeaf('diagnosticsStyleResponsive.js');
 	const diagnostics = vm.compileFunction(readModuleByName('diagnosticsStyle.js'), [
-		'baseclass', 'diagnosticsStyleBase', 'diagnosticsStyleAurora',
+		'baseclass', 'designSystem', 'diagnosticsStyleBase', 'diagnosticsStyleAurora',
 		'diagnosticsStyleArgon', 'diagnosticsStyleBootstrap', 'diagnosticsStyleResponsive'
 	], { filename: 'resources/lanspeed/diagnosticsStyle.js' })(
-		fakeBaseclass, diagnosticsBase, diagnosticsAurora, diagnosticsArgon,
+		fakeBaseclass, designSystem, diagnosticsBase, diagnosticsAurora, diagnosticsArgon,
 		diagnosticsBootstrap, diagnosticsResponsive
 	);
 	const expectedDiagnostics = [
 		diagnosticsBase.CSS, diagnosticsAurora.CSS, diagnosticsArgon.CSS,
 		diagnosticsBootstrap.CSS, diagnosticsResponsive.CSS
 	].join('\n');
-	if (diagnostics.CSS !== expectedDiagnostics)
-		fail('diagnosticsStyle.js must aggregate Base, Aurora, Argon, Bootstrap and Responsive CSS in cascade order');
-	if (styleHash(diagnostics.CSS) !== EXPECTED_DIAGNOSTICS_STYLE_SHA256)
-		fail('modular diagnostics CSS must match the reviewed stylesheet snapshot');
+	if (diagnostics.CSS !== designSystem.CSS + '\n' + expectedDiagnostics ||
+	    diagnostics.LAYOUT_CSS !== expectedDiagnostics)
+		fail('diagnosticsStyle.js must prepend shared design tokens and expose layout CSS separately');
 
 	const configBase = loadStyleLeaf('configStyleBase.js');
 	const configAurora = loadStyleLeaf('configStyleAurora.js');
@@ -418,21 +853,164 @@ function assertStyleAggregation() {
 	const configShared = loadStyleLeaf('configStyleShared.js');
 	const configResponsive = loadStyleLeaf('configStyleResponsive.js');
 	const config = vm.compileFunction(readModuleByName('configStyle.js'), [
-		'baseclass', 'configStyleBase', 'configStyleShared',
+		'baseclass', 'designSystem', 'configStyleBase', 'configStyleShared',
 		'configStyleAurora', 'configStyleArgon', 'configStyleBootstrap',
 		'configStyleResponsive'
 	], { filename: 'resources/lanspeed/configStyle.js' })(
-		fakeBaseclass, configBase, configShared, configAurora,
+		fakeBaseclass, designSystem, configBase, configShared, configAurora,
 		configArgon, configBootstrap, configResponsive
 	);
 	const expectedConfig = [
 		configBase.CSS, configShared.CSS, configAurora.CSS,
 		configArgon.CSS, configBootstrap.CSS, configResponsive.CSS
 	].join('\n');
-	if (config.CSS !== expectedConfig)
-		fail('configStyle.js must aggregate Base, Shared, Aurora, Argon, Bootstrap and Responsive CSS in cascade order');
-	if (styleHash(config.CSS) !== EXPECTED_CONFIG_STYLE_SHA256)
-		fail('modular config CSS must match the reviewed stylesheet snapshot');
+	if (config.CSS !== designSystem.CSS + '\n' + expectedConfig ||
+	    config.LAYOUT_CSS !== expectedConfig)
+		fail('configStyle.js must prepend shared design tokens and expose layout CSS separately');
+}
+
+function assertDiagnosticsVisualContracts() {
+	const baseCss = loadStyleLeaf('diagnosticsStyleBase.js').CSS;
+	const auroraCss = loadStyleLeaf('diagnosticsStyleAurora.js').CSS;
+	const argonCss = loadStyleLeaf('designSystemArgon.js').CSS;
+	const bootstrapCss = loadStyleLeaf('diagnosticsStyleBootstrap.js').CSS;
+	const responsiveCss = loadStyleLeaf('diagnosticsStyleResponsive.js').CSS;
+	const semanticTokens = [
+		'surface', 'surface-muted', 'surface-strong', 'text', 'text-muted',
+		'border', 'border-strong', 'accent', 'accent-soft', 'success',
+		'success-surface', 'success-border', 'warning', 'warning-surface',
+		'warning-border', 'danger', 'danger-surface', 'danger-border',
+		'info', 'info-surface', 'shadow', 'focus', 'label-surface'
+	];
+
+	function assertDeclaration(css, selector, declaration, label) {
+		const start = css.indexOf(selector);
+		const end = start < 0 ? -1 : css.indexOf('}', start);
+		if (start < 0 || end < 0 || !css.slice(start, end).includes(declaration))
+			fail(`${label} must map ${selector} to ${declaration}`);
+	}
+
+	[
+		'.lanspeed-diagnostics-header{display:grid',
+		'.lanspeed-diagnostics-header-main{display:flex;flex-direction:column',
+		'.lanspeed-diagnostics-header-copy{min-width:0',
+		'.lanspeed-diagnostics-header-side{display:flex;flex-direction:column',
+		'.lanspeed-diagnostics-root .lanspeed-diagnostics-intro{margin:0;padding:0',
+		'.lanspeed-diagnostics-root .lanspeed-diagnostics-privacy{margin:.32em 0 0;padding:0',
+		'.lanspeed-diagnostics-meta{display:grid',
+		'.lanspeed-diagnostics-meta-item{display:flex',
+		'.lanspeed-diagnostics-overview-notice[aria-hidden="true"]{display:none}',
+		'.lanspeed-diagnostic-card{--diagnostic-accent:',
+		'.lanspeed-diagnostic-card[data-state="good"]{--diagnostic-accent:var(--lanspeed-diag-success)',
+		'.lanspeed-diagnostic-card[data-state="warning"]{--diagnostic-accent:var(--lanspeed-diag-warning)',
+		'.lanspeed-diagnostic-card[data-state="bad"]{--diagnostic-accent:var(--lanspeed-diag-danger)',
+		'.lanspeed-diagnostic-card[data-state="pending"]{--diagnostic-accent:var(--lanspeed-diag-text-muted)',
+		'background:var(--diagnostic-accent)',
+		'letter-spacing:0'
+	].forEach(function(rule) {
+		if (!baseCss.includes(rule))
+			fail(`diagnosticsStyleBase.js must retain overview contract: ${rule}`);
+	});
+
+	[
+		'.lanspeed-diagnostics-root.lanspeed-theme-aurora .lanspeed-diagnostics-overview-notice{',
+		'.lanspeed-diagnostics-root.lanspeed-theme-aurora .lanspeed-diagnostic-card{',
+		'border-radius:',
+		'box-shadow:'
+	].forEach(function(rule) {
+		if (!auroraCss.includes(rule))
+			fail(`diagnosticsStyleAurora.js must retain Aurora overview treatment: ${rule}`);
+	});
+	[
+		'--lanspeed-diag-accent:var(--primary',
+		'--lanspeed-diag-accent:var(--dark-primary',
+		'[data-lanspeed-color-mode="light"].lanspeed-diagnostics-root.lanspeed-theme-argon{',
+		'[data-lanspeed-color-mode="dark"].lanspeed-diagnostics-root.lanspeed-theme-argon{',
+		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostics-title-line>h3,',
+		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostics-section-heading>h4::before{',
+		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostic-card{',
+		'border-left:.25rem solid var(--diagnostic-accent)',
+		'border-radius:.25rem',
+		'box-shadow:none',
+		'.lanspeed-diagnostics-root.lanspeed-theme-argon .label{display:inline-flex',
+		'color:inherit!important',
+		'.lanspeed-diagnostics-root.lanspeed-theme-argon .label.label-success{border-color:var(--lanspeed-diag-success-border)',
+		'.lanspeed-diagnostics-root.lanspeed-theme-argon .label.label-warning{border-color:var(--lanspeed-diag-warning-border)',
+		'.lanspeed-diagnostics-root.lanspeed-theme-argon .label.label-danger{border-color:var(--lanspeed-diag-danger-border)'
+	].forEach(function(rule) {
+		if (!argonCss.includes(rule))
+			fail(`diagnosticsStyleArgon.js must retain Argon overview treatment: ${rule}`);
+	});
+	[
+		'--lanspeed-diag-surface:var(--background-color-high',
+		'--lanspeed-diag-success-label:var(--lanspeed-diag-success)',
+		'--lanspeed-diag-warning-label:var(--lanspeed-diag-warning)',
+		'--lanspeed-diag-danger-label:var(--lanspeed-diag-danger)',
+		'.lanspeed-diagnostics-root.lanspeed-theme-bootstrap .lanspeed-diagnostics-meta{opacity:.82}',
+		'.lanspeed-diagnostics-root.lanspeed-theme-bootstrap .lanspeed-diagnostics-privacy{color:var(--lanspeed-diag-text);opacity:.78}',
+		'.lanspeed-diagnostics-root.lanspeed-theme-bootstrap .lanspeed-diagnostic-alert-text{color:var(--lanspeed-diag-text)}',
+		'.lanspeed-diagnostics-root.lanspeed-theme-bootstrap .lanspeed-diagnostic-check-detail{color:var(--lanspeed-diag-text);opacity:.78}',
+		'color-mix(in srgb,var(--lanspeed-diag-success) 60%,var(--text-color-highest,currentColor))',
+		'[data-lanspeed-color-mode="dark"].lanspeed-diagnostics-root.lanspeed-theme-bootstrap{',
+		'--lanspeed-diag-on-success:var(--text-color-highest',
+		'.lanspeed-diagnostics-root.lanspeed-theme-bootstrap .lanspeed-diagnostics-section-heading{',
+		'.lanspeed-diagnostics-root.lanspeed-theme-bootstrap .lanspeed-diagnostic-card{',
+		'border-left:.25rem solid var(--diagnostic-accent)',
+		'.lanspeed-diagnostics-root.lanspeed-theme-bootstrap .lanspeed-diagnostic-card[data-state="good"]{',
+		'.lanspeed-diagnostics-root.lanspeed-theme-bootstrap .lanspeed-diagnostic-panel[data-state="warning"]{',
+		'.lanspeed-diagnostics-root.lanspeed-theme-bootstrap .label.label-danger{'
+	].forEach(function(rule) {
+		if (!bootstrapCss.includes(rule))
+			fail(`diagnosticsStyleBootstrap.js must retain Bootstrap overview treatment: ${rule}`);
+	});
+	[
+		[ 'Aurora', auroraCss ],
+		[ 'Argon', argonCss ],
+		[ 'Bootstrap', bootstrapCss ]
+	].forEach(function(entry) {
+		semanticTokens.forEach(function(token) {
+			if (!entry[1].includes(`--lanspeed-diag-${token}:`))
+				fail(`diagnosticsStyle${entry[0]}.js must map --lanspeed-diag-${token}`);
+		});
+	});
+	assertDeclaration(argonCss,
+		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostic-card{',
+		'border-left:.25rem solid var(--diagnostic-accent)', 'Argon diagnostics card');
+	assertDeclaration(argonCss,
+		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostic-panel{',
+		'border-radius:.25rem', 'Argon diagnostics panel');
+	assertDeclaration(argonCss,
+		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostic-check{',
+		'border-radius:.25rem', 'Argon RPC check');
+	assertDeclaration(bootstrapCss,
+		'.lanspeed-diagnostics-root.lanspeed-theme-bootstrap .lanspeed-diagnostic-card[data-state="good"]{',
+		'--diagnostic-accent:var(--lanspeed-diag-success)', 'Bootstrap good card');
+	assertDeclaration(bootstrapCss,
+		'.lanspeed-diagnostics-root.lanspeed-theme-bootstrap .lanspeed-diagnostic-panel[data-state="warning"]{',
+		'border-left-color:var(--lanspeed-diag-warning-border)', 'Bootstrap warning panel');
+	[
+		[ 'Aurora', auroraCss ],
+		[ 'Argon', argonCss ],
+		[ 'Bootstrap', bootstrapCss ]
+	].forEach(function(entry) {
+		if (/rgba?\(|#[0-9a-f]{3,8}\b|(?:^|[,(]\s*)(?:black|white|red|green|blue|yellow|orange|purple|gray|grey)(?=\s*[,;)])/i.test(entry[1]))
+			fail(`diagnosticsStyle${entry[0]}.js must use theme tokens instead of fixed color literals`);
+	});
+
+	[
+		'@media (max-width:1100px){',
+		'.lanspeed-diagnostics-root .lanspeed-diagnostic-grid{grid-template-columns:repeat(2,minmax(0,1fr))}',
+		'.lanspeed-diagnostics-root .lanspeed-diagnostic-grid>.lanspeed-diagnostic-card:last-child{grid-column:1/-1}',
+		'@media (max-width:700px){',
+		'grid-template-columns:minmax(0,1fr)',
+		'.lanspeed-diagnostics-root .lanspeed-diagnostic-grid{grid-template-columns:minmax(0,1fr)}',
+		'.lanspeed-diagnostics-root .lanspeed-diagnostic-grid>.lanspeed-diagnostic-card:last-child{grid-column:auto}',
+		'@media (max-width:480px){',
+		'.lanspeed-diagnostics-root .lanspeed-diagnostics-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))'
+	].forEach(function(rule) {
+		if (!responsiveCss.includes(rule))
+			fail(`diagnosticsStyleResponsive.js must retain responsive overview contract: ${rule}`);
+	});
 }
 
 function assertArgonAlignmentContracts() {
@@ -440,11 +1018,45 @@ function assertArgonAlignmentContracts() {
 	const diagnosticsCss = loadStyleLeaf('diagnosticsStyleArgon.js').CSS;
 	const detailCss = loadStyleLeaf('clientDetailStyleArgon.js').CSS;
 	const configCss = loadStyleLeaf('configStyleArgon.js').CSS;
+	const designArgonCss = loadStyleLeaf('designSystemArgon.js').CSS;
+	const configViewSrc = readModuleByName('configView.js');
+	if (!designArgonCss.includes('.cbi-page-actions[data-lanspeed-theme="argon"]' +
+		'[data-lanspeed-color-mode] .cbi-button.cbi-button-save{') ||
+	    !designArgonCss.includes('var(--lanspeed-footer-action,var(--primary,var(--default,currentColor)))!important') ||
+	    !designArgonCss.includes('color:var(--lanspeed-footer-action-text,currentColor)!important')) {
+		fail('designSystemArgon.js must override the native fixed save color with dynamic Argon tokens');
+	}
+	if (!designArgonCss.includes('[data-lanspeed-color-mode] .cbi-button.cbi-button-reset{') ||
+	    !designArgonCss.includes('var(--lanspeed-footer-danger,var(--danger,currentColor))!important') ||
+	    !designArgonCss.includes('background-color:color-mix(in srgb,var(--lanspeed-footer-danger') ||
+	    !configViewSrc.includes("'--lanspeed-footer-danger':") ||
+	    !configViewSrc.includes("style.getPropertyValue('--lanspeed-danger-safe').trim()")) {
+		fail('Argon native Reset must use the runtime contrast-safe danger token outside the page root');
+	}
 
 	[
-		'.lanspeed-theme-argon .lanspeed-details>summary{align-items:center}',
+		[ 'statusStyleArgon.js', statusCss ],
+		[ 'diagnosticsStyleArgon.js', diagnosticsCss ],
+		[ 'configStyleArgon.js', configCss ]
+	].forEach(function(entry) {
+		[
+			'padding:.95rem 1.25rem .8rem',
+			'padding:.85rem 1rem .7rem',
+			'font-size:1.3rem;line-height:1.25!important'
+		].forEach(function(rule) {
+			if (!entry[1].includes(rule))
+				fail(`${entry[0]} must share the reviewed Argon three-page header rhythm: ${rule}`);
+		});
+	});
+
+	[
+		'.lanspeed-theme-argon :is(.lanspeed-header,.lanspeed-details>summary){padding:.95rem 1.25rem .8rem}',
+		'.lanspeed-theme-argon .lanspeed-metrics{grid-template-columns:repeat(5,minmax(0,1fr));',
+		'@media (max-width:1100px){.lanspeed-theme-argon .lanspeed-metrics{',
+		'.lanspeed-theme-argon .lanspeed-metric:last-child{grid-column:1/-1}',
 		'.lanspeed-theme-argon .lanspeed-sort-button{height:auto!important',
-		'.lanspeed-theme-argon .lanspeed-toolbar label{font-size:1rem;line-height:1.5rem}',
+		'.lanspeed-theme-argon .lanspeed-toolbar label{font-size:.95rem;line-height:1.5rem}',
+		'.lanspeed-root.lanspeed-theme-argon .lanspeed-active-only>input[type="checkbox"]{',
 		'.lanspeed-theme-argon .lanspeed-hint:empty{display:none}'
 	].forEach(function(rule) {
 		if (!statusCss.includes(rule))
@@ -460,10 +1072,11 @@ function assertArgonAlignmentContracts() {
 	}
 
 	[
-		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostics-header>h3{font-size:1.35rem;line-height:1.25!important}',
-		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostics-intro{font-size:1rem;padding:0}',
-		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostic-description,',
-		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostic-alerts-title{padding:0!important'
+		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-header>h3{font-size:1.3rem;line-height:1.25!important}',
+		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-body{padding:1rem 1.25rem 1.1rem}',
+		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostic-stage-heading>h4{font-size:.74rem;line-height:1.3!important}',
+		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostics-health-group>h4,',
+		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostics-alert-group>h4{line-height:1.35!important}'
 	].forEach(function(rule) {
 		if (!diagnosticsCss.includes(rule))
 			fail(`diagnosticsStyleArgon.js must retain reviewed Argon alignment rule: ${rule}`);
@@ -481,18 +1094,18 @@ function assertArgonAlignmentContracts() {
 	});
 
 	[
-		'.lanspeed-theme-argon .lanspeed-header{padding:.95rem 1.25rem .8rem;align-items:center}',
+		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-header{padding:.95rem 1.25rem .8rem}',
+		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-subheader>h4{font-size:1.3rem;line-height:1.25!important}',
 		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-range-remove{',
-		'height:2.5rem;min-height:2.5rem;padding-top:0;padding-bottom:0',
+		'height:2.5rem;min-height:2.5rem',
 		'display:inline-flex;align-items:center;justify-content:center',
-		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-ifcfg-table td{',
-		'border-top:0;font-size:1rem;line-height:1.45',
+		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-ifcfg-table tbody td{width:auto;min-width:0;padding:0;border:0}',
 		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody tr{display:grid;',
 		'grid-template-areas:"label control" "hint control";grid-template-rows:auto 1fr;',
-		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody td:nth-child(3){',
-		'grid-area:hint;align-self:start;padding-left:0',
+		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody :is(th,td):nth-child(3){grid-area:hint}',
 		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody tr.lanspeed-range-row{',
-		'grid-column:1/-1;grid-template-columns:minmax(14rem,1fr) minmax(18rem,25rem);',
+		'grid-column:1/-1;grid-template-columns:minmax(14rem,1fr) minmax(18rem,25rem)',
+		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-toggle>input[type="checkbox"]{',
 		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-hint:empty{display:none}'
 	].forEach(function(rule) {
 		if (!configCss.includes(rule))
@@ -763,6 +1376,7 @@ function assertClientDetailStyleLeaf(name, src) {
 function assertClientDetailStyleComposer(src) {
 	const expectedRequires = [
 		'baseclass',
+		'lanspeed.designSystem',
 		'lanspeed.statusStyle',
 		'lanspeed.clientDetailStyleBase',
 		'lanspeed.clientDetailStyleAurora',
@@ -782,19 +1396,20 @@ function assertClientDetailStyleComposer(src) {
 	})) return;
 
 	const fakeBaseclass = { extend: function(value) { return value; } };
-	const statusStyle = { CSS: 'status' };
+	const statusStyle = { CSS: 'design\nstatus', LAYOUT_CSS: 'status' };
+	const designSystem = { CSS: 'design' };
 	const Base = { CSS: 'base' };
 	const Aurora = { CSS: 'aurora' };
 	const Argon = { CSS: 'argon' };
 	const Bootstrap = { CSS: 'bootstrap' };
 	const Responsive = { CSS: 'responsive' };
 	const detail = vm.compileFunction(src, [
-		'baseclass', 'statusStyle', 'Base', 'Aurora', 'Argon', 'Bootstrap', 'Responsive'
+		'baseclass', 'DesignSystem', 'statusStyle', 'Base', 'Aurora', 'Argon', 'Bootstrap', 'Responsive'
 	], { filename: 'resources/lanspeed/clientDetailStyle.js' })(
-		fakeBaseclass, statusStyle, Base, Aurora, Argon, Bootstrap, Responsive
+		fakeBaseclass, designSystem, statusStyle, Base, Aurora, Argon, Bootstrap, Responsive
 	);
-	if (!detail || detail.CSS !== 'status\nbase\naurora\nargon\nbootstrap\nresponsive') {
-		fail('clientDetailStyle.js must compose status, Base, Aurora, Argon, Bootstrap and Responsive CSS in exact order');
+	if (!detail || detail.CSS !== 'design\nstatus\nbase\naurora\nargon\nbootstrap\nresponsive') {
+		fail('clientDetailStyle.js must compose design tokens, status, Base, Aurora, Argon, Bootstrap and Responsive CSS in exact order');
 	}
 }
 
@@ -1222,7 +1837,14 @@ function assertClientConnectionsModule(src) {
 	}
 }
 
-function loadIfaceConfigModule(src, lsRpc) {
+function loadConfigModelModule(src) {
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	return vm.compileFunction(src, [ 'baseclass', '_' ], {
+		filename: 'resources/lanspeed/configModel.js'
+	})(fakeBaseclass, fakeTranslate);
+}
+
+function loadIfaceConfigModule(src, lsRpc, configModel) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	const fakeFormat = {
 		asArray: function(value) { return Array.isArray(value) ? value : []; },
@@ -1230,35 +1852,37 @@ function loadIfaceConfigModule(src, lsRpc) {
 		replaceChildren: function() {}
 	};
 	return vm.compileFunction(src,
-		[ 'baseclass', 'fmt', 'lsRpc', 'E', '_' ],
+		[ 'baseclass', 'fmt', 'lsRpc', 'cfgModel', 'E', '_' ],
 		{ filename: 'resources/lanspeed/ifaceConfig.js' })(
-			fakeBaseclass, fakeFormat, lsRpc || {}, fakeElement,
-			function(value) { return value; }
+			fakeBaseclass, fakeFormat, lsRpc || {}, configModel || loadConfigModelModule(readModuleByName('configModel.js')),
+			fakeElement, fakeTranslate
 		);
 }
 
-function loadConfigFormModule(src, uci, lsRpc, ifaceCfg) {
+function loadConfigFormModule(src, uci, lsRpc, ifaceCfg, configModel) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	return vm.compileFunction(src,
-		[ 'baseclass', 'uci', 'lsRpc', 'ifaceCfg', 'E', '_', 'window' ],
+		[ 'baseclass', 'uci', 'lsRpc', 'ifaceCfg', 'cfgModel', 'E', '_', 'window' ],
 		{ filename: 'resources/lanspeed/configForm.js' })(
-			fakeBaseclass, uci, lsRpc, ifaceCfg, fakeElement,
-			function(value) { return value; },
+			fakeBaseclass, uci, lsRpc, ifaceCfg,
+			configModel || loadConfigModelModule(readModuleByName('configModel.js')),
+			fakeElement, fakeTranslate,
 			{ setTimeout: function(handler) { handler(); } }
 		);
 }
 
-function loadConfigViewModule(src, configForm, ui, ifaceCfg) {
-	const fakeView = { extend: function(value) { return value; } };
+function loadConfigViewModule(src, configForm, ui, ifaceCfg, timer) {
+	const fakeBaseclass = { extend: function(value) { return value; } };
 	ifaceCfg = ifaceCfg || {
 		buildSection: function() { return fakeElement('div', {}); },
 		load: function() { return Promise.resolve(true); }
 	};
 	return vm.compileFunction(src,
-		[ 'view', 'ui', 'ifaceCfg', 'lsTheme', 'configStyle', 'configForm', 'E', '_' ],
-		{ filename: 'resources/view/lanspeed/config.js' })(
-			fakeView, ui, ifaceCfg, { applyRoot: function() {} },
-			{ CSS: '' }, configForm, fakeElement, function(value) { return value; }
+		[ 'baseclass', 'ui', 'ifaceCfg', 'lsTheme', 'configStyle', 'configForm', 'E', '_', 'window', 'setTimeout' ],
+		{ filename: 'resources/lanspeed/configView.js' })(
+			fakeBaseclass, ui, ifaceCfg, { applyRoot: function() {} },
+			{ CSS: '' }, configForm, fakeElement, function(value) { return value; },
+			{ location: { reload: function() {} } }, timer || function(handler) { handler(); }
 		);
 }
 
@@ -1270,7 +1894,7 @@ function loadVocabModule(src) {
 }
 
 function fakeTranslate(value) {
-	return {
+	const state = {
 		format: function() {
 			const args = Array.from(arguments);
 			let index = 0;
@@ -1280,6 +1904,7 @@ function fakeTranslate(value) {
 		},
 		toString: function() { return String(value); }
 	};
+	return state;
 }
 
 function nextDetailSort(state, sortKey) {
@@ -3061,7 +3686,8 @@ function assertStatusRefreshSortingInteraction(src) {
 		if (JSON.stringify(Array.from(connectionOnlyState.info)) !== JSON.stringify([ 'conntrack_connection_only' ]) ||
 		    connectionOnlyState.warnings.length !== 0 ||
 		    JSON.stringify(Array.from(warningState.info)) !== JSON.stringify([ 'conntrack_connection_only' ]) ||
-		    JSON.stringify(Array.from(warningState.warnings)) !== JSON.stringify([ 'map_read_failed' ])) {
+		    JSON.stringify(Array.from(warningState.warnings)) !==
+			JSON.stringify([ 'map_read_failed', 'counter_anomaly' ])) {
 			fail('statusRefresh.js must render connection-only rows as information and keep only actionable client warnings');
 		}
 	}
@@ -3520,7 +4146,7 @@ function assertConfigViewNativeActions(src) {
 		resetAll: function() { calls.push('reset'); return Promise.resolve(true); }
 	};
 	const mod = loadConfigViewModule(src, configForm, ui);
-	mod.viewState = {};
+	mod.viewState = { daemonRefs: {} };
 	asyncChecks.push(mod.handleSave().then(function(result) {
 		if (result !== true || calls.join(',') !== 'save,hide:uci-changes,init')
 			fail('config view native Save handler must stage without applying');
@@ -3553,7 +4179,7 @@ function assertConfigViewNativeActions(src) {
 			failedCalls.push('notify:' + level + ':' + fakeElementText(body));
 		}
 	});
-	failed.viewState = {};
+	failed.viewState = { daemonRefs: {} };
 	asyncChecks.push(failed.handleSaveApply(null, '0').then(function(result) {
 		if (result !== false || failedCalls.length !== 1 ||
 		    failedCalls[0] !== 'notify:error:stage failed') {
@@ -3616,11 +4242,14 @@ function assertWarningAliases(src) {
 	if (vocab.normalizeWarningId('nss_daed_nss_fallback_may_be_inaccurate') !==
 		'nss_dae_bpf_fallback_may_be_inaccurate' ||
 	    vocab.normalizeWarningId('nss_dae_bpf_fallback_may_be_inaccurate') !==
-		'nss_dae_bpf_fallback_may_be_inaccurate') {
+		'nss_dae_bpf_fallback_may_be_inaccurate' ||
+	    vocab.normalizeWarningId('software_flow_offload') !== 'software_flow_offload_enabled' ||
+	    vocab.normalizeWarningId('fullcone') !== 'fullcone_detected' ||
+	    vocab.normalizeWarningId('fullcone_nat_enabled') !== 'fullcone_detected') {
 		fail('vocab.js must keep the actionable legacy dae warning alias');
 	}
-	if (src.includes('nss_daed_prefers_bpf') || src.includes('dae_runtime_prefers_bpf')) {
-		fail('vocab.js must not retain obsolete non-actionable dae warning copy');
+	if (src.includes('nss_daed_prefers_bpf')) {
+		fail('vocab.js must not retain the obsolete dae warning ID');
 	}
 	if (vocab.warningText('dae_process_probe_failed') === 'dae process probe failed' ||
 	    vocab.warningClass('dae_process_probe_failed') !== 'label label-danger') {
@@ -3629,6 +4258,31 @@ function assertWarningAliases(src) {
 	if (!vocab.warningText('bpf_optional_package_missing').includes('必需的 BPF 软件包') ||
 	    vocab.warningText('bpf_optional_package_missing').includes('可选 BPF 软件包')) {
 		fail('vocab.js must keep the legacy BPF warning ID but describe the package as mandatory');
+	}
+	if (vocab.warningText('openclash_detected') === 'openclash detected' ||
+	    vocab.warningText('software_flow_offload_enabled') === 'software flow offload enabled' ||
+	    vocab.warningText('fullcone_detected') === 'fullcone detected' ||
+	    vocab.warningText('dae_detected') === 'dae detected') {
+		fail('vocab.js must localize common diagnostics environment notices');
+	}
+	const productionWarnings = [
+		'nss_ecm_direct_active', 'nss_ecm_sync_cadence', 'nss_prefers_conntrack_sync',
+		'nss_direct_no_data', 'skip_nss_ecm_direct_flow_without_lan_identity',
+		'dae_runtime_prefers_bpf', 'bpf_unsupported', 'tc_clsact_unsupported',
+		'bpf_tc_self_heal_failed', 'counter_anomaly', 'time_rollback',
+		'lan_topology_probe_error', 'flowtable_counter_probe_unavailable',
+		'flowtable_counter_missing', 'conntrack_routed_nat_only'
+	];
+	const unlocalized = productionWarnings.filter(function(warning) {
+		return vocab.warningText(warning) === warning.replace(/_/g, ' ');
+	});
+	if (unlocalized.length) {
+		fail('vocab.js must localize production diagnostics warnings: ' + unlocalized.join(', '));
+	}
+	if (!vocab.isImportantWarning('bpf_unsupported') ||
+	    !vocab.isImportantWarning('bpf_tc_self_heal_failed') ||
+	    vocab.isImportantWarning('nss_ecm_sync_cadence')) {
+		fail('vocab.js must keep core collector failures actionable and NSS cadence informational');
 	}
 	const connectionOnlyText = vocab.warningText('conntrack_connection_only');
 	if (!connectionOnlyText.includes('只有连接记录') ||
@@ -3806,7 +4460,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.1-r6';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.1-r9';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
@@ -3822,10 +4476,10 @@ function assertCacheAwareViewEntry(src, moduleName, label) {
 }
 
 function assertConfigViewRequires(src) {
-	EXPECTED_CONFIG_VIEW_REQUIRES.forEach(function(req) {
+	EXPECTED_CONFIG_MODULE_REQUIRES.forEach(function(req) {
 		const re = new RegExp("^\\s*['\"]require\\s+" + req.replace(/\./g, '\\.') + "(?:\\s+as\\s+\\w+)?['\"]\\s*;", 'm');
 		if (!re.test(src)) {
-			fail(`view/lanspeed/config.js must declare 'require ${req}'`);
+			fail(`lanspeed/configView.js must declare 'require ${req}'`);
 		}
 	});
 }
@@ -4125,58 +4779,28 @@ function assertStatusViewSourceOnlyState(src) {
 	    src.includes('.lanspeed-root button,.lanspeed-root input,.lanspeed-root select{font-size:')) {
 		fail('LAN Speed status modules must not force LAN Speed root or form control text larger than the theme');
 	}
-	if (!src.includes('grid-template-columns:repeat(5,12.5em)') ||
-	    !src.includes('row-gap:1.1em;column-gap:1.2em;align-items:center;justify-content:start;margin:0') ||
-	    !src.includes('@media (max-width:1100px){.lanspeed-metrics{grid-template-columns:repeat(auto-fit,minmax(10em,1fr))}}')) {
-		fail('LAN Speed status modules must keep overview metrics left-aligned with compact spacing on wide Argon layouts');
-	}
-	if (src.includes('.lanspeed-metric .caption{font-size:.86em') ||
-	    src.includes('.lanspeed-metric .big{font-size:1.7em') ||
-	    src.includes('.lanspeed-metric .hint{font-size:.86em') ||
-	    src.includes('.lanspeed-table .mono{font-family:var(--font-monospace,ui-monospace,monospace);') &&
-	    src.includes('font-size:.95em;white-space:nowrap') ||
-	    src.includes('.lanspeed-table td .ipline{display:block;font-size:.86em') ||
-	    src.includes('.lanspeed-table td .state .label{display:inline-flex') ||
-	    src.includes('padding:.18em .5em;font-size:.95em;line-height:1.35') ||
-	    src.includes('.lanspeed-warnings li{margin:.2em 0;font-size:1em}')) {
-		fail('LAN Speed status modules must keep previous compact text sizes');
-	}
-	if (!src.includes('align-items:baseline') || !src.includes('white-space:nowrap')) {
-		fail('LAN Speed status modules header metadata must stay aligned with the section title on Argon');
-	}
 	if (!src.includes('lanspeed-toolbar-left') || !src.includes('lanspeed-toolbar-filter') || !src.includes('lanspeed-toolbar-right')) {
-		fail('LAN Speed status modules must group toolbar controls for Argon compatibility');
+		fail('LAN Speed status modules must group filtering, units and refresh controls responsively');
 	}
 	if (!src.includes('lanspeed-active-only') ||
-	    !src.includes('position:relative;top:auto;right:auto;margin:0') ||
 	    !src.includes("E('label', { 'class': 'lanspeed-active-only cbi-checkbox', 'for': 'lanspeed-active' }") ||
 	    !src.includes("'class': 'cbi-input-checkbox'") ||
 	    !src.includes("'class': 'lanspeed-active-label'")) {
-		fail('LAN Speed status modules must align the active-only checkbox in the toolbar on Argon');
+		fail('LAN Speed status modules must expose an accessible active-client filter');
 	}
 	if (src.includes('appearance:auto') ||
 	    src.includes('-webkit-appearance:checkbox')) {
-		fail('LAN Speed status modules must let Aurora/LuCI theme draw the active-only checkbox');
-	}
-	if (!src.includes('.lanspeed-clients-card .lanspeed-table{font-weight:500}')) {
-		fail('LAN Speed status modules must make the LAN client table weight stronger without enlarging it');
-	}
-	if (src.includes('.lanspeed-clients-card .lanspeed-table{font-size:') ||
-	    src.includes('.lanspeed-clients-card .lanspeed-table>thead>tr>th,.lanspeed-clients-card .lanspeed-table>tbody>tr>td') ||
-	    src.includes('.lanspeed-table>thead>tr>th,.lanspeed-table>tbody>tr>td{padding-top:.55em')) {
-		fail('LAN Speed status modules must not enlarge the LAN client table text or row spacing');
+		fail('LAN Speed status modules must let the active theme draw the checkbox');
 	}
 	if (!src.includes('collectorLabel') || src.includes("metaParts.push(_('模式 ')")) {
 		fail('LAN Speed status modules header must show collector source instead of runtime mode');
 	}
-	if (!src.includes('function collectorClass(mode)')) {
-		fail('LAN Speed status modules must style the collector source pill without using confidence text');
-	}
-	if (!src.includes('function effectiveCollector(status, clientsData)') ||
+	if (!src.includes('collectorClass: function(') ||
+	    !src.includes('effectiveCollector: function(') ||
 	    !src.includes('evidence.effective_collector') ||
 	    !src.includes('clientEvidence.primary_source') ||
 	    !src.includes('clientEvidence.collector_mode')) {
-		fail('LAN Speed status modules must display the daemon-published collector source before rendering the header');
+		fail('LAN Speed status modules must centralize collector labels and prefer daemon-published evidence');
 	}
 	if (/for\s*\([^)]*clients\.length[\s\S]{0,260}?collector_mode/.test(src) ||
 	    /fmt\.asArray\(clientsData && clientsData\.clients\)/.test(src)) {
@@ -4194,11 +4818,6 @@ function assertStatusViewSourceOnlyState(src) {
 	}
 	if (src.includes("status.collector_mode;")) {
 		fail('LAN Speed status modules header must not show configured collector_mode as the current collector source');
-	}
-	if (!src.includes('grid-template-columns:repeat(5,12.5em)') ||
-	    !src.includes('justify-content:start') ||
-	    !src.includes('column-gap:1.2em')) {
-		fail('LAN Speed status modules overview metrics must be left-aligned with compact desktop spacing');
 	}
 	if (!src.includes("return 'NSS sync'")) {
 		fail('LAN Speed status modules must keep NSS sync as a clear collector label');
@@ -4218,11 +4837,9 @@ function assertStatusViewSourceOnlyState(src) {
 	if (!src.includes("return 'NSS-direct'")) {
 		fail('LAN Speed status modules must keep existing nss_ecm_direct label');
 	}
-	if (!src.includes('function isIpv6Address(ip)') ||
-	    !src.includes('function parseIpv6ToWords(ip)') ||
-	    !src.includes('function parseIpv6Cidr(range)') ||
-	    !src.includes('function isIpInIpv6Ranges(ip, ranges)') ||
-	    !src.includes('function displayIpsForClient(ips, showIpv6, hidePrivateIpv6, hideIpv6Ranges)')) {
+	if (!src.includes('parseIpv6Cidr') ||
+	    !src.includes('displayIpsForClient: function(') ||
+	    !src.includes('statusIp.displayIpsForClient(')) {
 		fail('LAN Speed status modules must filter IPv6 display through custom range helpers');
 	}
 	if (!src.includes("DEFAULT_HIDE_IPV6_RANGES = 'fc00::/7 fe80::/10'") ||
@@ -4231,20 +4848,23 @@ function assertStatusViewSourceOnlyState(src) {
 		fail('LAN Speed status modules must hide configurable IPv6 ranges when the private IPv6 option is enabled');
 	}
 	if (!src.includes("lsRpc.uciGet('lanspeed', 'main')") ||
+	    !src.includes("var SOURCE_KEYS = [ 'status', 'clients', 'interfaces', 'uci' ]") ||
+	    !src.includes('sourceSettled(key, loaders[key], previous, clock)') ||
 	    !src.includes('show_ipv6') ||
 	    !src.includes('hide_private_ipv6') ||
 	    !src.includes('hide_ipv6_ranges')) {
-		fail('LAN Speed status modules must read IPv6 display options before rendering client IPs');
+		fail('LAN Speed status modules must isolate UCI loading and read IPv6 display options before rendering client IPs');
 	}
 	if (!src.includes("showClientStatus: uciMain.show_client_status === '1'") ||
-	    !src.includes('showClientStatus: false') ||
-	    !src.includes('showClientStatus: data.showClientStatus === true') ||
-	    !src.includes('self.showClientStatus = next.showClientStatus')) {
+	    !src.includes('showClientStatus: normalized.showClientStatus') ||
+	    !src.includes('viewState.showClientStatus = normalized.showClientStatus') ||
+	    !src.includes('var showClientStatus = viewState.showClientStatus === true;')) {
 		fail('LAN Speed status modules must load show_client_status as a default-off UCI display option');
 	}
 	if (!src.includes('function loadUiConfig()') ||
-	    !src.includes(".catch(function() { return {}; })")) {
-		fail('LAN Speed status modules must keep show_ipv6 reads non-fatal');
+	    !src.includes('retained ? previousValue(previous, key) : emptySource(key)') ||
+	    !src.includes('degraded: failed.length > 0 && !hardFailure')) {
+		fail('LAN Speed status modules must keep UCI and data RPC failures isolated and degradable');
 	}
 	if (/\bvar ips = fmt\.asArray\(c\.ips\);/.test(src)) {
 		fail('LAN Speed status modules must not render raw client IP arrays directly');
@@ -4259,7 +4879,27 @@ function assertThemeModule(src) {
 	    !src.includes('data-nav-type') ||
 	    !src.includes('lanspeed-theme-aurora') ||
 	    !src.includes('data-lanspeed-theme') ||
-	    !src.includes('applyRoot: function(root')) {
+	    !src.includes('function colorLuminance') ||
+	    !src.includes('function detectDarkSurface') ||
+	    !src.includes('function detectColorMode') ||
+	    !src.includes('function updateColorMode') ||
+	    !src.includes('function watchColorMode') ||
+	    !src.includes('function parseCssColor') ||
+	    !src.includes('function contrastRatio') ||
+	    !src.includes('function chooseAuroraForeground') ||
+	    !src.includes('function updateAuroraContrastTokens') ||
+	    !src.includes('function contrastAdjustedColor') ||
+	    !src.includes('function updateArgonContrastTokens') ||
+	    !src.includes('--lanspeed-action-hover-text-safe') ||
+	    !src.includes('--lanspeed-normal-text-safe') ||
+	    !src.includes('--lanspeed-link-safe') ||
+	    !src.includes('--lanspeed-switch-accent-safe') ||
+	    !src.includes("matchMedia('(prefers-color-scheme: dark)')") ||
+	    !src.includes('removeEventListener') ||
+	    !src.includes('MutationObserver') ||
+	    !src.includes('data-lanspeed-color-mode') ||
+	    !src.includes('applyRoot: function(root') ||
+	    !src.includes('releaseRoot: function(root')) {
 		fail('resources/lanspeed/theme.js must detect Aurora from theme assets and shell markers before applying the scoped class');
 	}
 	if (!src.includes('function isArgon') ||
@@ -4279,6 +4919,333 @@ function assertThemeModule(src) {
 	}
 }
 
+function assertThemeBehavior(src) {
+	const theme = vm.compileFunction(src, [ 'baseclass' ], {
+		filename: 'resources/lanspeed/theme.js'
+	})({ extend: function(value) { return value; } });
+
+	function mediaController(legacy) {
+		const listeners = [];
+		const query = {
+			addEventListener: legacy ? undefined : function(type, listener) {
+				if (type === 'change') listeners.push(listener);
+			},
+			removeEventListener: legacy ? undefined : function(type, listener) {
+				const index = listeners.indexOf(listener);
+				if (type === 'change' && index >= 0) listeners.splice(index, 1);
+			},
+			addListener: legacy ? function(listener) { listeners.push(listener); } : undefined,
+			removeListener: legacy ? function(listener) {
+				const index = listeners.indexOf(listener);
+				if (index >= 0) listeners.splice(index, 1);
+			} : undefined
+		};
+		return {
+			query: query,
+			count: function() { return listeners.length; },
+			emit: function() { listeners.slice().forEach(function(listener) { listener({ matches: true }); }); }
+		};
+	}
+
+	function observerController() {
+		let callback = null;
+		let disconnected = 0;
+		let observed = false;
+		function FakeMutationObserver(listener) {
+			callback = listener;
+			this.observe = function() { observed = true; };
+			this.disconnect = function() { disconnected++; };
+		}
+		return {
+			MutationObserver: FakeMutationObserver,
+			emit: function(records) { if (callback) callback(records); },
+			isObserved: function() { return observed; },
+			disconnectCount: function() { return disconnected; }
+		};
+	}
+
+	function argonDocument(backgrounds, media, observer) {
+		const native = Object.assign({
+			'--primary': '#5e72e4', '--dark-primary': '#483d8b', '--default': '#172b4d'
+		}, backgrounds.tokens || {});
+		const body = {
+			hasAttribute: function() { return false; },
+			backgroundColor: backgrounds.body,
+			color: backgrounds.text || (String(backgrounds.body).indexOf('22, 28') >= 0
+				? '#cccccc' : '#32325d')
+		};
+		const mainRight = { backgroundColor: backgrounds.mainRight };
+		const html = {
+			hasAttribute: function() { return false; },
+			getAttribute: function() { return null; },
+			backgroundColor: backgrounds.html
+		};
+		return {
+			body: body,
+			documentElement: html,
+			defaultView: {
+				getComputedStyle: function(node) {
+					return {
+						backgroundColor: node && node.backgroundColor || 'transparent',
+						color: node && node.color || '',
+						getPropertyValue: function(name) { return native[name] || ''; }
+					};
+				},
+				matchMedia: function() { return media.query; },
+				MutationObserver: observer && observer.MutationObserver
+			},
+			querySelector: function(selector) {
+				if (selector === 'link[href*="/luci-static/argon/"]') return {};
+				if (selector === '.main-right') return mainRight;
+				return null;
+			}
+		};
+	}
+
+	function auroraDocument(media, observer) {
+		let mode = 'light';
+		const tokens = {
+			light: {
+				'--brand': '#7c9082', '--brand-hover': '#7c9082',
+				'--brand-subtle': '#e8eae6', '--on-brand': '#ffffff',
+				'--text': '#1a1f2e', '--surface': '#ffffff', '--surface-overlay': '#fdfcf9'
+			},
+			dark: {
+				'--brand': '#7c9082', '--brand-hover': '#7c9082',
+				'--brand-subtle': '#1a1c1a', '--on-brand': '#ffffff',
+				'--text': '#f5f5f5', '--surface': '#121212', '--surface-overlay': '#161616'
+			}
+		};
+		const body = {
+			hasAttribute: function(name) { return name === 'data-nav-type'; },
+			backgroundColor: '#ffffff'
+		};
+		const html = {
+			hasAttribute: function(name) { return name === 'data-darkmode'; },
+			getAttribute: function(name) {
+				return name === 'data-darkmode' ? String(mode === 'dark') : null;
+			},
+			backgroundColor: '#ffffff'
+		};
+		return {
+			body: body,
+			documentElement: html,
+			setMode: function(nextMode) {
+				mode = nextMode;
+				body.backgroundColor = mode === 'dark' ? '#121212' : '#ffffff';
+				html.backgroundColor = body.backgroundColor;
+			},
+			defaultView: {
+				getComputedStyle: function(node) {
+					return {
+						backgroundColor: node && node.backgroundColor || 'transparent',
+						getPropertyValue: function(name) { return tokens[mode][name] || ''; }
+					};
+				},
+				matchMedia: function() { return media.query; },
+				MutationObserver: observer && observer.MutationObserver
+			},
+			querySelector: function(selector) {
+				return selector === 'link[href*="/luci-static/aurora/"]' ? {} : null;
+			}
+		};
+	}
+
+	function rootNode() {
+		const classes = [];
+		const styleValues = {};
+		return {
+			attrs: {},
+			classes: classes,
+			styleValues: styleValues,
+			style: {
+				setProperty: function(name, value) { styleValues[name] = String(value); },
+				removeProperty: function(name) { delete styleValues[name]; }
+			},
+			classList: {
+				add: function(className) { if (!classes.includes(className)) classes.push(className); },
+				remove: function(className) {
+					const index = classes.indexOf(className);
+					if (index >= 0) classes.splice(index, 1);
+				}
+			},
+			setAttribute: function(name, value) { this.attrs[name] = String(value); },
+			removeAttribute: function(name) { delete this.attrs[name]; }
+		};
+	}
+
+	const auroraMedia = mediaController();
+	const auroraObserver = observerController();
+	const auroraDoc = auroraDocument(auroraMedia, auroraObserver);
+	const auroraRoot = rootNode();
+	theme.applyRoot(auroraRoot, auroraDoc);
+	if (auroraRoot.attrs['data-lanspeed-color-mode'] !== 'light' ||
+	    auroraRoot.styleValues['--lanspeed-action-text-safe'] !== 'rgb(26, 31, 46)' ||
+	    auroraRoot.styleValues['--lanspeed-action-hover-text-safe'] !== 'rgb(26, 31, 46)' ||
+	    auroraRoot.styleValues['--lanspeed-normal-text-safe'] !== 'rgb(26, 31, 46)' ||
+	    auroraRoot.styleValues['--lanspeed-focus-color-safe'] !== 'rgb(124, 144, 130)') {
+		fail('theme.js must replace low-contrast Aurora light brand text with safe native text tokens');
+	}
+	auroraDoc.setMode('dark');
+	auroraObserver.emit([{ type: 'attributes', attributeName: 'data-darkmode', removedNodes: [] }]);
+	if (auroraRoot.attrs['data-lanspeed-color-mode'] !== 'dark' ||
+	    auroraRoot.styleValues['--lanspeed-action-text-safe'] !== 'rgb(18, 18, 18)' ||
+	    auroraRoot.styleValues['--lanspeed-action-hover-text-safe'] !== 'rgb(18, 18, 18)' ||
+	    auroraRoot.styleValues['--lanspeed-normal-text-safe'] !== 'rgb(124, 144, 130)' ||
+	    auroraRoot.styleValues['--lanspeed-focus-color-safe'] !== 'rgb(124, 144, 130)') {
+		fail('theme.js must recompute Aurora contrast tokens when data-darkmode changes');
+	}
+	theme.releaseRoot(auroraRoot);
+	if (Object.keys(auroraRoot.styleValues).some(function(name) {
+		return name.indexOf('--lanspeed-') === 0;
+	})) {
+		fail('theme.js releaseRoot must remove generated Aurora contrast tokens');
+	}
+
+	const lightMedia = mediaController();
+	const lightRoot = rootNode();
+	if (theme.applyRoot(lightRoot, argonDocument({ body: 'rgb(244, 246, 248)', mainRight: 'transparent', html: 'transparent' }, lightMedia)) !== 'argon' ||
+	    !lightRoot.classes.includes('lanspeed-theme-argon') ||
+	    lightRoot.attrs['data-lanspeed-theme'] !== 'argon' ||
+	    lightRoot.attrs['data-lanspeed-color-mode'] !== 'light') {
+		fail('theme.js must apply Argon light mode from a light computed background');
+	}
+	if (!/^rgb\(/.test(lightRoot.styleValues['--lanspeed-link-safe'] || '') ||
+	    lightRoot.styleValues['--lanspeed-link-safe'] === 'rgb(94, 114, 228)' ||
+	    lightRoot.styleValues['--lanspeed-switch-accent-safe'] !== 'rgb(94, 114, 228)' ||
+	    !lightRoot.styleValues['--lanspeed-focus-color-safe']) {
+		fail('theme.js must darken only Argon light text accents that miss 4.5 contrast');
+	}
+	theme.releaseRoot(lightRoot);
+	if (Object.keys(lightRoot.styleValues).some(function(name) {
+		return name.indexOf('--lanspeed-') === 0;
+	}))
+		fail('theme.js releaseRoot must remove generated Argon contrast tokens');
+
+	const darkMedia = mediaController();
+	const darkRoot = rootNode();
+	if (theme.applyRoot(darkRoot, argonDocument({ body: 'rgb(22, 28, 35)', mainRight: 'transparent', html: 'transparent' }, darkMedia)) !== 'argon' ||
+	    !darkRoot.classes.includes('lanspeed-theme-argon') ||
+	    darkRoot.attrs['data-lanspeed-theme'] !== 'argon' ||
+	    darkRoot.attrs['data-lanspeed-color-mode'] !== 'dark') {
+		fail('theme.js must apply Argon dark mode from a dark computed background');
+	}
+	if (!/^rgb\(/.test(darkRoot.styleValues['--lanspeed-switch-accent-safe'] || '') ||
+	    darkRoot.styleValues['--lanspeed-switch-accent-safe'] === 'rgb(72, 61, 139)' ||
+	    !darkRoot.styleValues['--lanspeed-link-safe'] ||
+	    !darkRoot.styleValues['--lanspeed-focus-color-safe']) {
+		fail('theme.js must lighten Argon dark text, switch and focus accents independently');
+	}
+	theme.releaseRoot(darkRoot);
+
+	const transparentMedia = mediaController();
+	const transparentRoot = rootNode();
+	if (theme.applyRoot(transparentRoot, argonDocument({
+		body: 'rgba(0, 0, 0, 0)', mainRight: 'rgb(22, 28, 35)', html: 'transparent'
+	}, transparentMedia)) !== 'argon' ||
+	    transparentRoot.attrs['data-lanspeed-color-mode'] !== 'dark') {
+		fail('theme.js must skip transparent body backgrounds and inspect the next surface candidate');
+	}
+	theme.releaseRoot(transparentRoot);
+
+	const dynamicMedia = mediaController();
+	const dynamicDoc = argonDocument({
+		body: 'rgb(244, 246, 248)', mainRight: 'transparent', html: 'transparent'
+	}, dynamicMedia);
+	const dynamicRoot = rootNode();
+	theme.applyRoot(dynamicRoot, dynamicDoc);
+	if (dynamicMedia.count() !== 1 || dynamicRoot.attrs['data-lanspeed-color-mode'] !== 'light')
+		fail('theme.js must register one live color-scheme listener after initial detection');
+	dynamicDoc.body.backgroundColor = 'rgb(22, 28, 35)';
+	dynamicMedia.emit();
+	if (dynamicRoot.attrs['data-lanspeed-color-mode'] !== 'dark')
+		fail('theme.js must update the root mode when matchMedia changes to dark');
+	dynamicDoc.body.backgroundColor = 'rgb(244, 246, 248)';
+	dynamicMedia.emit();
+	if (dynamicRoot.attrs['data-lanspeed-color-mode'] !== 'light')
+		fail('theme.js must update the root mode when matchMedia changes back to light');
+	theme.applyRoot(dynamicRoot, dynamicDoc);
+	if (dynamicMedia.count() !== 1)
+		fail('theme.js must replace, rather than stack, color-scheme listeners on repeated applyRoot calls');
+	if (dynamicRoot.classes.filter(function(name) { return name.indexOf('lanspeed-theme-') === 0; }).length !== 1)
+		fail('theme.js must keep only the active LAN Speed theme class on repeated applyRoot calls');
+	dynamicDoc.body.backgroundColor = 'rgb(22, 28, 35)';
+	dynamicMedia.emit();
+	theme.releaseRoot(dynamicRoot);
+	if (dynamicMedia.count() !== 0)
+		fail('theme.js releaseRoot must remove the color-scheme listener');
+	dynamicDoc.body.backgroundColor = 'rgb(244, 246, 248)';
+	dynamicMedia.emit();
+	if (dynamicRoot.attrs['data-lanspeed-color-mode'] !== 'dark')
+		fail('theme.js releaseRoot must stop later color-scheme events from mutating the root');
+
+	const legacyMedia = mediaController(true);
+	const legacyRoot = rootNode();
+	const legacyDoc = argonDocument({ body: 'rgb(244, 246, 248)', mainRight: 'transparent', html: 'transparent' }, legacyMedia);
+	theme.applyRoot(legacyRoot, legacyDoc);
+	legacyDoc.body.backgroundColor = 'rgb(22, 28, 35)';
+	legacyMedia.emit();
+	if (legacyRoot.attrs['data-lanspeed-color-mode'] !== 'dark')
+		fail('theme.js must support legacy matchMedia addListener implementations');
+	theme.releaseRoot(legacyRoot);
+
+	const removalMedia = mediaController();
+	const removalObserver = observerController();
+	const removalRoot = rootNode();
+	const removalDoc = argonDocument({ body: 'rgb(244, 246, 248)', mainRight: 'transparent', html: 'transparent' }, removalMedia, removalObserver);
+	theme.applyRoot(removalRoot, removalDoc);
+	if (!removalObserver.isObserved() || removalMedia.count() !== 1)
+		fail('theme.js must observe root ownership while a color-scheme listener is active');
+	removalObserver.emit([{ type: 'childList', removedNodes: [ { contains: function(node) { return node === removalRoot; } } ] }]);
+	if (removalMedia.count() !== 0 || removalObserver.disconnectCount() !== 1)
+		fail('theme.js must clean up color-scheme listeners when the root is removed');
+
+	const argonCss = loadStyleLeaf('designSystemArgon.js').CSS;
+	function cssBlock(selector) {
+		const start = argonCss.indexOf(selector);
+		const open = start < 0 ? -1 : argonCss.indexOf('{', start);
+		const close = open < 0 ? -1 : argonCss.indexOf('}', open);
+		return open >= 0 && close >= 0 ? argonCss.slice(open + 1, close) : '';
+	}
+	function resolveCustomAccent(selector, values) {
+		const match = cssBlock(selector).match(/--lanspeed-accent:var\((--[a-z-]+)/);
+		return match ? values[match[1]] : '';
+	}
+	const customColors = { '--primary': '#0f766e', '--dark-primary': '#d97706' };
+	if (resolveCustomAccent('[data-lanspeed-color-mode="light"].lanspeed-theme-argon{', customColors) !== customColors['--primary'] ||
+	    resolveCustomAccent('[data-lanspeed-color-mode="dark"].lanspeed-theme-argon{', customColors) !== customColors['--dark-primary']) {
+		fail('Argon light/dark product accents must resolve custom primary and dark-primary tokens');
+	}
+	const customLightRoot = rootNode();
+	theme.applyRoot(customLightRoot, argonDocument({
+		body: 'rgb(244, 246, 248)', mainRight: 'transparent', html: 'transparent', tokens: customColors
+	}, mediaController()));
+	if (customLightRoot.styleValues['--lanspeed-link-safe'] !== 'rgb(15, 118, 110)' ||
+	    customLightRoot.styleValues['--lanspeed-switch-accent-safe'] !== 'rgb(15, 118, 110)') {
+		fail('theme.js must preserve a custom Argon light primary when it already meets contrast');
+	}
+	theme.releaseRoot(customLightRoot);
+	const customDarkRoot = rootNode();
+	theme.applyRoot(customDarkRoot, argonDocument({
+		body: 'rgb(22, 28, 35)', mainRight: 'transparent', html: 'transparent',
+		text: '#cccccc', tokens: customColors
+	}, mediaController()));
+	if (customDarkRoot.styleValues['--lanspeed-link-safe'] !== 'rgb(217, 119, 6)' ||
+	    customDarkRoot.styleValues['--lanspeed-switch-accent-safe'] !== 'rgb(217, 119, 6)') {
+		fail('theme.js must preserve a custom Argon dark-primary when it already meets contrast');
+	}
+	theme.releaseRoot(customDarkRoot);
+	const statusArgonCss = loadStyleLeaf('statusStyleArgon.js').CSS;
+	const baseCss = loadStyleLeaf('designSystemBase.js').CSS;
+	if (!argonCss.includes('--lanspeed-focus-color-safe') ||
+	    !argonCss.includes('--lanspeed-switch-accent-safe') ||
+	    !argonCss.includes('background-color:var(--lanspeed-switch-accent-safe') ||
+	    !statusArgonCss.includes('color:var(--lanspeed-link-safe,var(--lanspeed-accent))!important') ||
+	    !baseCss.includes('accent-color:var(--lanspeed-switch-accent-safe,var(--lanspeed-accent))')) {
+		fail('Argon safe tokens must affect only links, checked controls and focus styling');
+	}
+}
+
 function assertThemeWiring(src, label) {
 	if (!/^\s*['"]require\s+lanspeed\.theme\s+as\s+lsTheme['"]\s*;/m.test(src)) {
 		fail(`${label} must require the LAN Speed theme helper as lsTheme`);
@@ -4288,120 +5255,50 @@ function assertThemeWiring(src, label) {
 	}
 }
 
-function assertStatusThemeMetricAlignment(src) {
-	if (!src.includes('.lanspeed-theme-aurora .lanspeed-metrics{grid-template-columns:repeat(auto-fit,minmax(11em,12.5em));')) {
-		fail('LAN Speed status modules must keep Aurora overview metrics left-aligned with fixed-width columns');
-	}
-	if (!src.includes('.lanspeed-theme-argon .lanspeed-metrics{grid-template-columns:repeat(auto-fit,minmax(10.5em,12.5em));')) {
-		fail('LAN Speed status modules must keep Argon overview metrics left-aligned with fixed-width columns');
-	}
-	if (!src.includes('justify-content:start')) {
-		fail('LAN Speed status modules must keep overview metric grids left-aligned');
-	}
-}
-
-function assertStatusThemeMobileOverflow(src) {
-	if (!src.includes('.lanspeed-theme-argon .lanspeed-details-body{padding:.85rem 1rem;overflow-x:auto}')) {
-		fail('LAN Speed status modules must keep Argon mobile status tables horizontally scrollable inside clipped theme cards');
-	}
-}
-
 function assertStatusStyleModule(src) {
-	if (!src.includes('CSS: LAYOUT_CSS') ||
-	    !src.includes('.lanspeed-theme-aurora ') ||
-	    !src.includes('.lanspeed-theme-argon ') ||
-	    !src.includes('.lanspeed-theme-bootstrap') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-metrics{grid-template-columns:repeat(auto-fit,minmax(10.5em,12.5em));') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-details-body{padding:.85rem 1rem;overflow-x:auto}')) {
-		fail('lanspeed/statusStyle.js must own status view CSS, including Aurora/Argon theme rules');
-	}
-	if (!src.includes('.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-body{overflow-x:auto}') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-clients-card .lanspeed-body{overflow-x:auto}')) {
-		fail('lanspeed/statusStyle.js must keep client tables scrollable above the narrow stacked breakpoint');
-	}
-	if (!src.includes('.lanspeed-clients-card .lanspeed-table th[hidden],') ||
-	    !src.includes('.lanspeed-clients-card .lanspeed-table td[hidden]{display:none!important}')) {
-		fail('lanspeed/statusStyle.js must keep configured-hidden status headers and cells hidden in every theme and breakpoint');
-	}
-	if (!src.includes('.lanspeed-toolbar{display:flex;flex-wrap:wrap;gap:.7em 1em;') ||
-	    !src.includes('.lanspeed-toolbar-left{display:grid;grid-template-columns:auto minmax(14em,1fr);') ||
-	    !src.includes('flex:1 1 36em;gap:.5em;align-items:center;min-width:0') ||
-	    !src.includes('.lanspeed-toolbar-right{flex:0 0 auto;justify-content:flex-end;margin-left:auto;white-space:nowrap}') ||
-	    !src.includes('.lanspeed-toolbar .lanspeed-unit-control select{width:7.5em!important;') ||
-	    !src.includes('.lanspeed-toolbar .lanspeed-refresh-control select{width:6.5em!important;') ||
-	    !src.includes('@media (max-width:600px){.lanspeed-toolbar-left{grid-template-columns:1fr;flex-basis:100%}')) {
-		fail('lanspeed/statusStyle.js must wrap toolbar groups before controls overlap');
-	}
-	if (!src.includes('.lanspeed-sort-button{appearance:none;background:transparent!important;border:0!important;') ||
-	    !src.includes('.lanspeed-sort-button:focus-visible') ||
-	    !src.includes('.lanspeed-sort-indicator{')) {
-		fail('lanspeed/statusStyle.js must render accessible sortable headers without theme button chrome');
-	}
-	if (!src.includes('.lanspeed-clients-card .lanspeed-body{overflow-x:hidden}') ||
-	    !src.includes('grid-template-columns:repeat(6,minmax(0,1fr));gap:.25em;') ||
-	    !src.includes('.lanspeed-clients-card .lanspeed-table tbody>tr{display:grid;') ||
-	    !src.includes('grid-template-columns:repeat(2,minmax(0,1fr));gap:.45em .75em;') ||
-	    !src.includes('.lanspeed-header,.lanspeed-details>summary{align-items:center}') ||
-	    !src.includes('.lanspeed-details-body{max-width:100%;overflow-x:auto}') ||
-	    !src.includes('.lanspeed-clients-card .lanspeed-table td[data-label]::before{content:attr(data-label);') ||
-	    !src.includes('@media (min-width:701px) and (max-width:900px){') ||
-	    !src.includes('.lanspeed-clients-card .lanspeed-table{table-layout:fixed;min-width:0}') ||
-	    !src.includes('.lanspeed-clients-card .lanspeed-table th:nth-child(7),.lanspeed-clients-card .lanspeed-table td:nth-child(7){width:16%}') ||
-	    !src.includes('.lanspeed-clients-card .lanspeed-table thead>tr{') ||
-	    !src.includes('grid-template-columns:repeat(3,minmax(0,1fr));row-gap:.35em}') ||
-	    !src.includes('.lanspeed-theme-aurora .lanspeed-toolbar input[type=search]{min-width:0;width:100%;max-width:none}') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-toolbar input[type=search]{min-width:0;width:100%;max-width:none}')) {
-		fail('lanspeed/statusStyle.js must stack client data without horizontal scrolling on narrow screens');
-	}
-	if (src.includes('.lanspeed-clients-card .lanspeed-table thead{display:none}')) {
-		fail('lanspeed/statusStyle.js must keep direct header sorting available on narrow screens');
-	}
-	if (!src.includes('.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"]{table-layout:fixed}') ||
-	    !src.includes('.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(7){width:0}') ||
-	    !src.includes('.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(1){width:22%}') ||
-	    !src.includes('.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(2){width:26%}') ||
-	    !src.includes('.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(6){width:13%}') ||
-	    !src.includes('.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(1){width:24%}') ||
-	    !src.includes('.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(2){width:20%}') ||
-	    !src.includes('.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(6){width:14%}') ||
-	    src.includes('[data-client-status="shown"]')) {
-		fail('lanspeed/statusStyle.js must spread all six visible columns only while client status is hidden');
-	}
-	if (!src.includes('.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-table td:nth-child(2).mono{font-size:.95rem}')) {
-		fail('lanspeed/statusStyle.js must keep Aurora client MAC text readable without changing other themes');
-	}
-	if (!src.includes('@media (min-width:901px){.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-table{table-layout:fixed}') ||
-	    !src.includes('.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-table th:nth-child(1),.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-table td:nth-child(1){width:18rem}')) {
-		fail('lanspeed/statusStyle.js must keep Aurora client and MAC columns close on desktop');
-	}
-	if (!src.includes('.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-table th:nth-child(2),.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-table td:nth-child(2){width:15rem}')) {
-		fail('lanspeed/statusStyle.js must keep Aurora MAC and upload columns comfortably spaced on desktop');
-	}
-	if (!src.includes('.lanspeed-theme-argon{display:flex;flex-direction:column;gap:1rem;margin:0;font-size:1rem}') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-table th,.lanspeed-theme-argon .lanspeed-table td{padding:.65rem .75rem;font-size:1rem;line-height:1.45}')) {
-		fail('lanspeed/statusStyle.js must enlarge Argon status page typography without changing other themes');
-	}
-	if (!src.includes('.lanspeed-theme-argon .lanspeed-table .mono{font-size:.96rem}')) {
-		fail('lanspeed/statusStyle.js must keep Argon client MAC text readable without changing other themes');
-	}
-	if (!src.includes('@media (min-width:1201px){.lanspeed-theme-argon .lanspeed-clients-card .lanspeed-table{table-layout:fixed}') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-clients-card .lanspeed-table th:nth-child(1),.lanspeed-theme-argon .lanspeed-clients-card .lanspeed-table td:nth-child(1){width:17rem}') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-clients-card .lanspeed-table th:nth-child(2),.lanspeed-theme-argon .lanspeed-clients-card .lanspeed-table td:nth-child(2){width:14.5rem}')) {
-		fail('lanspeed/statusStyle.js must keep Argon client, MAC and upload columns balanced on desktop');
-	}
-	if (!src.includes('.lanspeed-theme-argon .lanspeed-header,') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-details>summary{align-items:center}') ||
-	    !src.includes('font-size:1.35rem;line-height:1.25!important') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-sort-button{height:auto!important;') ||
-	    !src.includes('.lanspeed-theme-argon .lanspeed-hint{padding:0}')) {
-		fail('lanspeed/statusStyle.js must keep Argon headings, sort controls and interface hints optically aligned');
-	}
-	if (src.includes('align-items:start;justify-content:start;gap:.9rem 1rem') ||
-	    src.includes('.lanspeed-theme-argon .lanspeed-metric{align-self:start}')) {
-		fail('lanspeed/statusStyle.js must preserve the original Argon overview metric layout');
-	}
-	if (!src.includes('.lanspeed-theme-argon .lanspeed-table th:first-child,.lanspeed-theme-argon .lanspeed-table td:first-child{padding-left:.35rem}')) {
-		fail('lanspeed/statusStyle.js must keep Argon status table text away from the card edge');
+	const baseCss = loadStyleLeaf('statusStyleBase.js').CSS;
+	const responsiveCss = loadStyleLeaf('statusStyleResponsive.js').CSS;
+	const themeCss = [
+		[ 'Aurora', 'aurora', loadStyleLeaf('statusStyleAurora.js').CSS ],
+		[ 'Argon', 'argon', loadStyleLeaf('statusStyleArgon.js').CSS ],
+		[ 'Bootstrap', 'bootstrap', loadStyleLeaf('statusStyleBootstrap.js').CSS ]
+	];
+
+	if (!src.includes('CSS: LAYOUT_CSS') || !src.includes('LAYOUT_CSS: STATUS_LAYOUT_CSS'))
+		fail('statusStyle.js must export composed design-system CSS and status-only layout CSS');
+	[
+		'.lanspeed-root{display:flex;flex-direction:column',
+		'.lanspeed-metrics{display:grid',
+		'.lanspeed-toolbar-left{display:grid',
+		'.lanspeed-toolbar-right{',
+		'.lanspeed-sort-button{',
+		'.lanspeed-pagination{display:flex',
+		'.lanspeed-details>summary{display:flex'
+	].forEach(function(marker) {
+		if (!baseCss.includes(marker))
+			fail(`statusStyleBase.js must retain status information architecture: ${marker}`);
+	});
+	[
+		'@media (max-width:900px)', '@media (max-width:700px)', '@media (max-width:480px)',
+		'.lanspeed-clients-card .lanspeed-table tbody>tr{display:grid;',
+		'.lanspeed-clients-card .lanspeed-table td[data-label]::before{content:attr(data-label);',
+		'.lanspeed-ifaces-table tbody>tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));',
+		'.lanspeed-ifaces-table tbody td[data-label]::before{content:attr(data-label);',
+		'.lanspeed-table[data-client-status="hidden"]{table-layout:fixed}'
+	].forEach(function(marker) {
+		if (!responsiveCss.includes(marker))
+			fail(`statusStyleResponsive.js must retain responsive status behavior: ${marker}`);
+	});
+	themeCss.forEach(function(theme) {
+		if (!theme[2].includes(`lanspeed-theme-${theme[1]}`) ||
+		    !theme[2].includes('.lanspeed-metrics{') ||
+		    !theme[2].includes('.lanspeed-table')) {
+			fail(`statusStyle${theme[0]}.js must independently implement metrics and table density`);
+		}
+	});
+	if (!themeCss[0][2].includes('.lanspeed-clients-card .lanspeed-body{overflow-x:auto}') ||
+	    !themeCss[1][2].includes('.lanspeed-clients-card .lanspeed-body{overflow-x:auto}')) {
+		fail('Aurora and Argon status styles must retain desktop client-table overflow containment');
 	}
 	if (/lanspeed-(?:caps|warnings|subhead|strip)/.test(src) || src.includes('CAPS_CSS')) {
 		fail('lanspeed/statusStyle.js must not retain obsolete capability or legacy warning styles');
@@ -4465,6 +5362,16 @@ function assertStatusShellModule(src) {
 	    src.includes("_('显示客户端状态')")) {
 		fail('lanspeed/statusShell.js must apply config-driven status-column visibility without an inline switch');
 	}
+	if (!src.includes("'class': 'big lanspeed-connection-values'") ||
+	    !src.includes("'class': 'lanspeed-connection-stat'") ||
+	    !src.includes("'class': 'lanspeed-connection-number'")) {
+		fail('lanspeed/statusShell.js must render connection totals with the same three-row metric structure as every other card');
+	}
+	const collectorBadges = src.match(/lanspeed-collector-status/g) || [];
+	if (collectorBadges.length !== 1 ||
+	    /(?:servicePill|freshnessPill|lanspeed-(?:service|freshness)-status)/.test(src)) {
+		fail('lanspeed/statusShell.js must render exactly one collector badge and no service or freshness badge');
+	}
 }
 
 function assertStatusRefreshModule(src) {
@@ -4520,43 +5427,130 @@ function assertStatusRefreshModule(src) {
 	    !src.includes('查看') || !src.includes('当前连接')) {
 		fail('statusRefresh.js must wrap only identified client display names in an accessible encoded detail link on the current pathname');
 	}
+	if (/(?:refs\.(?:servicePill|freshnessPill)|lanspeed-(?:service|freshness)-status)/.test(src)) {
+		fail('statusRefresh.js must report service and freshness failures through page state and the error box, not header badges');
+	}
+	if (src.includes('服务已响应') || src.includes('刚刚更新') ||
+	    src.includes('检查于') || src.includes('new Date(viewState.checkedAt).toLocaleTimeString()')) {
+		fail('statusRefresh.js must not render the refresh check time in the realtime status header');
+	}
 }
 
 function assertDiagnosticsStyleModule(src) {
+	const baseCss = loadStyleLeaf('diagnosticsStyleBase.js').CSS;
+	const responsiveCss = loadStyleLeaf('diagnosticsStyleResponsive.js').CSS;
+	const themeCss = [
+		[ 'Aurora', 'aurora', loadStyleLeaf('diagnosticsStyleAurora.js').CSS ],
+		[ 'Argon', 'argon', loadStyleLeaf('diagnosticsStyleArgon.js').CSS ],
+		[ 'Bootstrap', 'bootstrap', loadStyleLeaf('diagnosticsStyleBootstrap.js').CSS ]
+	];
+
 	if (!src.includes('CSS: DIAGNOSTICS_CSS') ||
-	    !src.includes('.lanspeed-diagnostics-root.lanspeed-theme-aurora') ||
-	    !src.includes('.lanspeed-diagnostics-root.lanspeed-theme-argon') ||
-	    !src.includes('.lanspeed-diagnostics-root.lanspeed-theme-bootstrap') ||
-	    !src.includes('.lanspeed-diagnostic-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))') ||
-	    !src.includes('@media (max-width:900px){.lanspeed-diagnostics-root .lanspeed-diagnostic-grid{grid-template-columns:minmax(0,1fr)}')) {
-		fail('lanspeed/diagnosticsStyle.js must provide dedicated Base, Aurora, Argon, Bootstrap and responsive diagnostics CSS');
+	    !src.includes('LAYOUT_CSS: DIAGNOSTICS_LAYOUT_CSS')) {
+		fail('diagnosticsStyle.js must export composed design-system CSS and diagnostics-only layout CSS');
 	}
+	[
+		'.lanspeed-diagnostics-root .lanspeed-header{display:flex',
+		'.lanspeed-diagnostics-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))',
+		'.lanspeed-diagnostics-pipeline{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))',
+		'.lanspeed-diagnostic-stage{', '.lanspeed-diagnostics-health-group{',
+		'.lanspeed-diagnostics-table-wrap{', '.lanspeed-diagnostic-alert,',
+		'.lanspeed-diagnostics-report-preview{'
+	].forEach(function(marker) {
+		if (!baseCss.includes(marker))
+			fail(`diagnosticsStyleBase.js must retain diagnostic information architecture: ${marker}`);
+	});
+	[
+		'@media (max-width:1100px)', '@media (max-width:900px)',
+		'@media (max-width:700px)', '@media (max-width:480px)',
+		'.lanspeed-diagnostic-stage-evidence{grid-template-columns:minmax(0,1fr)}',
+		'.lanspeed-diagnostics-rpc-table tbody>tr>td[data-label]::before{content:attr(data-label);'
+	].forEach(function(marker) {
+		if (!responsiveCss.includes(marker))
+			fail(`diagnosticsStyleResponsive.js must retain responsive diagnostics behavior: ${marker}`);
+	});
+	themeCss.forEach(function(theme) {
+		if (!theme[2].includes(`lanspeed-theme-${theme[1]}`) ||
+		    !theme[2].includes('.lanspeed-diagnostic-stage') ||
+		    !theme[2].includes('.lanspeed-diagnostics-report-preview')) {
+			fail(`diagnosticsStyle${theme[0]}.js must independently implement pipeline and report treatment`);
+		}
+	});
 }
 
 function assertDiagnosticsShellModule(src) {
 	if (!src.includes('buildShell: function(viewState)') ||
 	    !src.includes('diagnosticsStyle.CSS') ||
 	    !src.includes('lsTheme.applyRoot(root)') ||
-	    !src.includes("diagnosticStatusCard(refs, 'plugin'") ||
-	    !src.includes("diagnosticStatusCard(refs, 'backend'") ||
-	    !src.includes("diagnosticStatusCard(refs, 'bpf'") ||
-	    !src.includes("E('h3', {}, _('运行诊断'))")) {
+	    !src.includes('buildSummarySection(refs, viewState)') ||
+	    !src.includes('buildPipelineSection(refs)') ||
+	    !src.includes('buildHealthSection(refs)') ||
+	    !src.includes('buildSupportSection(refs, viewState)') ||
+	    !src.includes("stage(refs, 'freshness'") ||
+	    !src.includes("stage(refs, 'quality'") ||
+	    !src.includes("stage(refs, 'path'") ||
+	    !src.includes("stage(refs, 'connections'") ||
+	    !src.includes('refs.btnCopy') ||
+	    !src.includes('lanspeed-diagnostics-error-details') ||
+	    !src.includes('lanspeed-diagnostics-rpc-group') ||
+	    !src.includes('lanspeed-diagnostics-report-details') ||
+	    !src.includes('lanspeed-diagnostics-facts') ||
+	    !src.includes("sectionHeader(_('运行诊断')")) {
 		fail('lanspeed/diagnosticsShell.js must own the independent diagnostics page DOM');
 	}
-	if (src.includes("E('details'") || src.includes('refs.diagnostics')) {
-		fail('lanspeed/diagnosticsShell.js must show the new diagnostics page directly, not retain the old collapsed details panel');
+	if ((src.match(/'class': 'cbi-section/g) || []).length !== 4 ||
+	    src.includes('lanspeed-diagnostic-card')) {
+		fail('lanspeed/diagnosticsShell.js must expose four peer task sections without nested cards');
 	}
 }
 
 function assertDiagnosticsRefreshModule(src) {
 	if (!src.includes('refreshStatusCards: refreshStatusCards') ||
-	    !src.includes("refs, 'plugin', 'good'") ||
-	    !src.includes("refs, 'backend'") ||
-	    !src.includes("refs, 'bpf'") ||
-	    !src.includes('vocab.importantWarnings(runtime.warnings, runtime)') ||
-	    !src.includes('未发现影响实时测速的异常') ||
+	    !src.includes('renderRpcChecks: renderRpcChecks') ||
+	    !src.includes('diagnosticsModel.qualityState(viewState, viewState.progress)') ||
+	    !src.includes('diagnosticsModel.pathStateWithRpc(') ||
+	    !src.includes('diagnosticsModel.connectionStateWithRpc(') ||
+	    !src.includes('diagnosticsModel.interfaceStateWithRpc(viewState)') ||
+	    !src.includes('diagnosticsModel.warningGroups(status, health, rpcData, diagnostics)') ||
+	    !src.includes("refs.pageNotice.setAttribute('data-state', state)") ||
+	    !src.includes("refs.root.setAttribute('data-page-state', state)") ||
+	    !src.includes('renderPipeline(refs, viewState)') ||
+	    !src.includes('renderInterfaces(refs, viewState)') ||
+	    !src.includes('renderSubsystems(refs, viewState)') ||
+	    !src.includes('renderWarnings(refs, viewState.status') ||
+	    !src.includes("'data-label': _('结果')") ||
 	    !src.includes('lsVersion.FULL_VERSION')) {
-		fail('lanspeed/diagnosticsRefresh.js must render plugin, backend, BPF and actionable warning state');
+		fail('lanspeed/diagnosticsRefresh.js must render RPC, quality, path, interface, connection, version and graded warning state');
+	}
+}
+
+function assertDiagnosticsModelModule(src) {
+	[
+		'RPC_LABELS: RPC_LABELS',
+		'assessProgress: assessProgress',
+		'qualityState: qualityState',
+		'dataPathState: dataPathState',
+		'connectionState: connectionState',
+		'interfaceState: interfaceState',
+		'versionState: versionState',
+		'probeFailureBundle: probeFailureBundle',
+		'rpcReportErrorText: rpcReportErrorText',
+		'sanitizeReportText: sanitizeReportText',
+		'buildReport: buildReport'
+	].forEach(function(marker) {
+		if (!src.includes(marker))
+			fail(`lanspeed/diagnosticsModel.js must expose ${marker}`);
+	});
+	if (!src.includes('[0-9a-f]{2}[:-]') ||
+	    !src.includes("'[MAC]'") ||
+	    !src.includes("replace(/\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b/g, '[IP]')") ||
+	    !src.includes("'[HOST]'") ||
+	    !src.includes('function rpcReportErrorText') ||
+	    !src.includes('function probeFailureBundle') ||
+	    !src.includes('if (!progressRpcOk(rpc, key)) return;') ||
+	    !src.includes('evidence && health.evidence.probe_failures') ||
+	    !src.includes("_('隐私说明')")) {
+		fail('lanspeed/diagnosticsModel.js must parse structured probe failures and redact copied reports');
 	}
 }
 
@@ -4564,35 +5558,46 @@ function assertDiagnosticsViewModule(src) {
 	if (!src.includes('lsRpc.status()') ||
 	    !src.includes('lsRpc.health()') ||
 	    !src.includes('lsRpc.clients()') ||
+	    !src.includes('lsRpc.interfaces()') ||
+	    !src.includes('lsRpc.overview()') ||
+	    !src.includes('normalizeResults: normalizeResults') ||
+	    !src.includes('diagnosticsModel.buildReport(self, lsVersion.FULL_VERSION)') ||
 	    !src.includes('diagnosticsShell.buildShell(viewState)') ||
 	    !src.includes('diagnosticsRefresh.refresh(viewState)')) {
-		fail('lanspeed/diagnosticsView.js must load health data and render the independent diagnostics page');
+		fail('lanspeed/diagnosticsView.js must isolate RPC failures, retain prior data and render/copy the independent diagnostics page');
 	}
 }
 
 function assertConfigStyleModule(src) {
+	const baseCss = loadStyleLeaf('configStyleBase.js').CSS;
 	const sharedCss = loadStyleLeaf('configStyleShared.js').CSS;
 	const responsiveCss = loadStyleLeaf('configStyleResponsive.js').CSS;
 	const auroraCss = loadStyleLeaf('configStyleAurora.js').CSS;
 	const argonCss = loadStyleLeaf('configStyleArgon.js').CSS;
 	const bootstrapCss = loadStyleLeaf('configStyleBootstrap.js').CSS;
 
-	function requireRules(css, name, rules) {
-		rules.forEach(function(rule) {
-			if (!css.includes(rule))
-				fail(`${name} must retain reviewed configuration style rule: ${rule}`);
-		});
-	}
-
-	if (!src.includes('CSS: CONFIG_CSS') ||
-	    !src.includes('.lanspeed-theme-aurora ') ||
-	    !src.includes('.lanspeed-theme-argon ') ||
-	    !src.includes('.lanspeed-theme-bootstrap') ||
-	    !src.includes('.lanspeed-config-table')) {
-		fail('lanspeed/configStyle.js must own config view CSS, including Aurora, Argon and Bootstrap theme rules');
-	}
+	if (!src.includes('CSS: CONFIG_CSS') || !src.includes('LAYOUT_CSS: CONFIG_LAYOUT_CSS'))
+		fail('configStyle.js must export composed design-system CSS and config-only layout CSS');
 	if (src.includes('.lanspeed-page-actions')) {
 		fail('lanspeed/configStyle.js must not retain styles for the removed custom save bar');
+	}
+	[
+		'.lanspeed-config-root{display:flex;flex-direction:column',
+		'.lanspeed-config-table,.lanspeed-ifcfg-table{width:100%',
+		'.lanspeed-range-stack{display:flex;flex-direction:column',
+		'.lanspeed-config-actions,.lanspeed-ifcfg-actions{display:flex',
+		'.lanspeed-ifcfg-seg{display:inline-flex',
+		'.lanspeed-ifcfg-seg>button.active{font-weight:600}'
+	].forEach(function(marker) {
+		if (!baseCss.includes(marker))
+			fail(`configStyleBase.js must retain configuration information architecture: ${marker}`);
+	});
+	if (!baseCss.includes('.lanspeed-config-table .value input:not([type="checkbox"]):not([type="radio"]){width:100%;max-width:12em}') ||
+	    baseCss.includes('.lanspeed-config-table .value input{width:100%;max-width:12em}') ||
+	    !baseCss.includes('.lanspeed-toggle>input{flex:0 0 auto;min-width:0;max-width:none;margin:0}') ||
+	    !responsiveCss.includes('.lanspeed-config-table .value input:not([type="checkbox"]):not([type="radio"]),') ||
+	    responsiveCss.includes('.lanspeed-config-table .value input[type="checkbox"]{width:auto')) {
+		fail('configuration checkbox controls must retain each native theme size on desktop and mobile');
 	}
 
 	if (!responsiveCss.includes(':is(.lanspeed-config-root.lanspeed-theme-aurora,') ||
@@ -4613,46 +5618,23 @@ function assertConfigStyleModule(src) {
 		fail('configStyleShared.js must not impose one desktop visual layout on Aurora and Argon');
 	}
 
-	requireRules(auroraCss, 'configStyleAurora.js', [
-		'.lanspeed-theme-aurora .lanspeed-config-table tbody{display:grid;',
-		'grid-template-columns:repeat(2,minmax(0,1fr));gap:.8rem',
-		'grid-template-areas:"label control" "hint control";grid-template-rows:auto 1fr;',
-		'.lanspeed-theme-aurora .lanspeed-config-table tbody tr.lanspeed-private-ipv6-row{grid-column:1/-1;',
-		'border-radius:calc(var(--radius-base,.5rem)*1.5);',
-		'.lanspeed-theme-aurora .lanspeed-ifcfg-table tbody{display:grid;',
-		'grid-template-columns:repeat(3,minmax(0,1fr));gap:.65rem',
-		'--lanspeed-mobile-config-row-padding:.85rem .85rem;'
-	]);
-	requireRules(argonCss, 'configStyleArgon.js', [
-		'.lanspeed-theme-argon{font-size:1rem}',
-		'border-top:0;font-size:1rem;line-height:1.45',
-		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table .hint,',
-		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-ifcfg-table .muted{font-size:.88rem;line-height:1.45}',
-		'.lanspeed-theme-argon .lanspeed-config-table tbody{display:grid;',
-		'grid-template-columns:repeat(2,minmax(0,1fr));gap:.7rem',
-		'grid-template-areas:"label control" "hint control";grid-template-rows:auto 1fr;',
-		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-config-table tbody tr.lanspeed-private-ipv6-row{',
-		'border-radius:.35rem;background:rgba(94,113,229,.045);',
-		'.lanspeed-theme-argon .lanspeed-ifcfg-table tbody{display:grid;',
-		'grid-template-columns:repeat(2,minmax(0,1fr));gap:.55rem',
-		'height:2.5rem;min-height:2.5rem;max-width:none;box-sizing:border-box',
-		'--lanspeed-mobile-config-row-padding:.78rem .75rem;'
-	]);
-	requireRules(bootstrapCss, 'configStyleBootstrap.js', [
-		'.lanspeed-theme-bootstrap .lanspeed-config-table,',
-		'.lanspeed-theme-bootstrap .lanspeed-ifcfg-table{border-collapse:separate;border-spacing:0 .3rem}',
-		'.lanspeed-theme-bootstrap .lanspeed-config-table tbody tr:nth-child(odd)>td,',
-		'background:var(--background-color-medium,rgba(127,127,127,.055))',
-		'.lanspeed-theme-bootstrap .lanspeed-ifcfg-seg>button+button{margin-left:-1px}',
-		'.lanspeed-theme-bootstrap .lanspeed-config-table th:nth-child(1),',
-		'.lanspeed-theme-bootstrap .lanspeed-config-table td:nth-child(2){width:20%}',
-		'--lanspeed-mobile-config-row-padding:.7rem .65rem;'
-	]);
-
-	[ auroraCss, argonCss ].forEach(function(css) {
-		if (/\.lanspeed-config-table tbody tr[^{}]*\{[^{}]*border-bottom\s*:/s.test(css))
-			fail('Aurora and Argon runtime setting blocks must not restore full-width row dividers');
+	[
+		[ 'Aurora', 'aurora', auroraCss ],
+		[ 'Argon', 'argon', argonCss ],
+		[ 'Bootstrap', 'bootstrap', bootstrapCss ]
+	].forEach(function(theme) {
+		if (!theme[2].includes(`lanspeed-theme-${theme[1]}`) ||
+		    !theme[2].includes('.lanspeed-config-table') ||
+		    !theme[2].includes('.lanspeed-ifcfg-table') ||
+		    !theme[2].includes('.lanspeed-ifcfg-seg')) {
+			fail(`configStyle${theme[0]}.js must independently implement settings, interfaces and segmented controls`);
+		}
 	});
+	if (!auroraCss.includes('.lanspeed-ifcfg-seg>button.active{') ||
+	    !auroraCss.includes('var(--lanspeed-surface-sunken)'))
+		fail('configStyleAurora.js must implement an Aurora-native segmented interface control');
+	if (new Set([ auroraCss, argonCss, bootstrapCss ]).size !== 3)
+		fail('Aurora, Argon and Bootstrap configuration layouts must remain independent implementations');
 }
 
 function assertConfigFormModule(src) {
@@ -4708,6 +5690,852 @@ function assertConfigFormModule(src) {
 	});
 }
 
+function assertConfigModelRewrite(src) {
+	const model = loadConfigModelModule(src);
+	const required = [
+		'refresh_interval_ms', 'active_client_window_ms', 'active_client_min_bps',
+		'overview_window_samples', 'rate_collector_mode', 'conn_collector_mode',
+		'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges',
+		'collector_mode', 'max_clients', 'ifname', 'interface_include',
+		'interface_exclude', 'observe', 'enable_bpf', 'enable_conntrack_fallback'
+	];
+	if (!model || !Array.isArray(model.FIELDS) ||
+		required.some(name => !model.FIELDS.some(field => field.name === name))) {
+		fail('configModel.js must own every persisted LAN Speed UCI field');
+		return;
+	}
+	if (model.parseInteger('1000ms', model.LIMITS.refresh_interval_ms).valid ||
+		model.parseInteger('499', model.LIMITS.refresh_interval_ms).valid ||
+		!model.parseInteger('500', model.LIMITS.refresh_interval_ms).valid) {
+		fail('configModel.js must strictly validate bounded integers without parseInt coercion');
+	}
+	if (!model.parseCidr('2001:db8::/32').valid || model.parseCidr('192.0.2.0/24').valid ||
+		model.parseCidr('2001:db8::/129').valid) {
+		fail('configModel.js must strictly validate IPv6 CIDRs and prefix lengths');
+	}
+	const invalid = model.normalize({
+		refresh_interval_ms: 'oops', hide_ipv6_ranges: 'not-a-cidr',
+		ifname: [ 'bad name' ], enable_bpf: 'maybe'
+	});
+	if (invalid.valid || !invalid.errors.refresh_interval_ms ||
+		!invalid.errors.hide_ipv6_ranges || !invalid.errors.ifname || !invalid.errors.enable_bpf) {
+		fail('configModel.js must return field-scoped errors for malformed UCI values');
+	}
+	const alias = model.normalize({ rate_collector_mode: 'conntrack_ecm_sync' });
+	if (alias.values.rate_collector_mode !== 'nss_conntrack_sync')
+		fail('configModel.js must canonicalize the supported legacy NSS sync alias');
+	const gated = model.validate({
+		rate_collector_mode: 'bpf', conn_collector_mode: 'auto', enable_bpf: '0',
+		enable_conntrack_fallback: '1'
+	}, { capabilities: { bpf: false, bpf_package: false, bpf_object: false, tc: false } });
+	if (gated.valid || gated.errors.rate_collector_mode !== 'bpf_disabled')
+		fail('configModel.js must gate collector modes with both configuration and runtime capabilities');
+	const repairing = model.validate({
+		rate_collector_mode: 'bpf', conn_collector_mode: 'auto', enable_bpf: '1',
+		enable_conntrack_fallback: '1', interface_include: [ 'eth1' ]
+	}, { capabilities: {
+		bpf: false, bpf_supported: true, bpf_package: true, bpf_object: true,
+		bpf_runtime_metrics: false, tc: true, tc_clsact: true
+	} });
+	if (!repairing.valid || repairing.capabilities.bpf.allowed !== true ||
+		!repairing.warnings.some(item => item.code === 'bpf_runtime_not_ready'))
+		fail('configModel.js must allow interface repair while the supported BPF runtime is not ready');
+	const noCollect = model.validate({
+		rate_collector_mode: 'bpf', conn_collector_mode: 'auto', enable_bpf: '1',
+		enable_conntrack_fallback: '1', ifname: [], interface_include: []
+	}, { capabilities: {
+		bpf_supported: true, bpf_package: true, bpf_object: true, tc: true, tc_clsact: true
+	} });
+	if (noCollect.valid || noCollect.errors.rate_collector_mode !== 'no_collect_interface')
+		fail('configModel.js must reject forced BPF only when the staged plan has no collect interface');
+	const absentPatch = model.buildUciPatch(Object.assign({}, model.DEFAULTS, {
+		ifname: [], interface_include: [], interface_exclude: [], observe: []
+	}), {});
+	if (absentPatch.unset.length !== 0)
+		fail('configModel.js must not unset absent list options');
+	const presentPatch = model.buildUciPatch(Object.assign({}, model.DEFAULTS, {
+		ifname: [], interface_include: [], interface_exclude: [], observe: []
+	}), { ifname: [ 'br-lan' ] });
+	if (JSON.stringify(presentPatch.unset) !== JSON.stringify([ 'ifname' ]))
+		fail('configModel.js must unset only owned list options that were actually present');
+	if (!src.includes('legacy-enum') || !src.includes('compatibility: true') ||
+		!src.includes('MAX_INTERFACE_NAMES'))
+		fail('configModel.js must explicitly identify compatibility fields and interface limits');
+}
+
+function cloneConfigValue(value) {
+	if (Array.isArray(value)) return value.slice();
+	if (value && typeof value === 'object') return Object.assign({}, value);
+	return value;
+}
+
+function cloneConfigRecord(values) {
+	const result = {};
+	Object.keys(values || {}).forEach(function(name) {
+		result[name] = cloneConfigValue(values[name]);
+	});
+	return result;
+}
+
+function configValues(model, overrides) {
+	const values = cloneConfigRecord(model.DEFAULTS);
+	Object.keys(overrides || {}).forEach(function(name) {
+		values[name] = cloneConfigValue(overrides[name]);
+	});
+	return values;
+}
+
+function makeConfigUci(model, options) {
+	options = options || {};
+	const initial = configValues(model, options.initial || {});
+	let localExists = options.sectionMissing !== true;
+	let remoteExists = localExists;
+	const local = Object.assign({ foreign_option: 'keep' }, cloneConfigRecord(initial));
+	const remote = cloneConfigRecord(local);
+	const calls = [];
+	let saveIndex = 0;
+
+	function replace(target, source) {
+		Object.keys(target).forEach(function(name) { delete target[name]; });
+		Object.keys(source).forEach(function(name) { target[name] = cloneConfigValue(source[name]); });
+	}
+
+	const api = {
+		calls: calls,
+		local: local,
+		remote: remote,
+		commit: function() {
+			remoteExists = localExists;
+			replace(remote, local);
+		},
+		load: function(config) {
+			calls.push([ 'load', config ]);
+			localExists = remoteExists;
+			replace(local, remote);
+			return Promise.resolve([ config ]);
+		},
+		unload: function(config) {
+			calls.push([ 'unload', config ]);
+			localExists = false;
+			replace(local, {});
+		},
+		get: function(config, section, option) {
+			if (!localExists) return null;
+			if (option === undefined)
+				return Object.assign({ '.name': 'main', '.type': 'lanspeed' }, cloneConfigRecord(local));
+			return cloneConfigValue(local[option]);
+		},
+		sections: function() {
+			return localExists ? [ { '.name': 'main', '.type': 'lanspeed' } ] : [];
+		},
+		add: function(config, type, section) {
+			calls.push([ 'add', config, type, section ]);
+			localExists = true;
+			return section;
+		},
+		remove: function(config, section) {
+			calls.push([ 'remove', config, section ]);
+			localExists = false;
+			replace(local, {});
+		},
+		set: function(config, section, option, value) {
+			calls.push([ 'set', option, cloneConfigValue(value) ]);
+			if (!localExists) return;
+			local[option] = cloneConfigValue(value);
+		},
+		unset: function(config, section, option) {
+			calls.push([ 'unset', option ]);
+			if (localExists) delete local[option];
+		},
+		save: function() {
+			const index = saveIndex++;
+			calls.push([ 'save', index ]);
+			if (options.saveBehaviors && options.saveBehaviors[index])
+				return options.saveBehaviors[index](api);
+			api.commit();
+			return Promise.resolve(true);
+		}
+	};
+	return api;
+}
+
+function makeConfigIfaceStub(overrides) {
+	overrides = overrides || {};
+	return {
+		prepareSave: overrides.prepareSave || function(state) {
+			return state.testInterfacePlan || { changed: false, viewState: state, errors: {} };
+		},
+		markSaved: overrides.markSaved || function(plan) {
+			if (plan && plan.viewState) plan.viewState.ifcfgDirty = false;
+		},
+		setBusy: overrides.setBusy || function(state, busy) { state.ifaceBusy = busy; },
+		load: overrides.load || function() { return Promise.resolve(true); },
+		verify: overrides.verify || function() { return Promise.resolve({ ok: true }); }
+	};
+}
+
+function makeConfigFormState(model, overrides) {
+	overrides = overrides || {};
+	const values = configValues(model, overrides.values || {});
+	const numbers = [ 'refresh_interval_ms', 'active_client_window_ms', 'active_client_min_bps',
+		'overview_window_samples', 'max_clients' ];
+	const booleans = [ 'show_client_status', 'show_ipv6', 'hide_private_ipv6',
+		'enable_bpf', 'enable_conntrack_fallback' ];
+	const editable = [ 'rate_collector_mode', 'conn_collector_mode', 'enable_bpf',
+		'enable_conntrack_fallback', 'refresh_interval_ms', 'overview_window_samples',
+		'max_clients', 'active_client_window_ms', 'active_client_min_bps',
+		'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges' ];
+	const inputs = {};
+	numbers.forEach(function(name) { inputs[name] = fakeElement('input', { value: String(values[name]) }); });
+	[ 'rate_collector_mode', 'conn_collector_mode' ].forEach(function(name) {
+		inputs[name] = fakeElement('select', { value: values[name] });
+		inputs[name].value = values[name];
+	});
+	booleans.forEach(function(name) {
+		inputs[name] = fakeElement('input', { type: 'checkbox' });
+		inputs[name].checked = values[name] === '1';
+	});
+	const fields = {};
+	editable.forEach(function(name) {
+		const input = name === 'hide_ipv6_ranges' ? fakeElement('div', {}) : inputs[name];
+		fields[name] = {
+			row: fakeElement('tr', { 'data-field': name }),
+			controlWrap: input,
+			input: input,
+			error: fakeElement('div', { hidden: 'hidden' }),
+			hint: fakeElement('div', {})
+		};
+	});
+	const refs = {
+		inputs: inputs,
+		fields: fields,
+		hideIpv6RangesItems: model.parseCidrList(values.hide_ipv6_ranges).valid,
+		hideIpv6RangesList: fakeElement('div', {}),
+		hideIpv6RangeInput: fakeElement('input', { value: '' }),
+		addRangeBtn: fakeElement('button', {}),
+		resetDefaultsBtn: fakeElement('button', {}),
+		rangeRemoveButtons: [],
+		saveState: fakeElement('span', {}),
+		runtimeInfo: fakeElement('span', {}),
+		compatValues: {
+			collector_mode: fakeElement('code', {}), ifname: fakeElement('code', {}),
+			interface_include: fakeElement('code', {}), interface_exclude: fakeElement('code', {}),
+			observe: fakeElement('code', {})
+		}
+	};
+	const ifaceOriginal = {
+		ifname: cloneConfigValue(values.ifname || []),
+		interface_include: cloneConfigValue(values.interface_include || []),
+		interface_exclude: cloneConfigValue(values.interface_exclude || []),
+		observe: cloneConfigValue(values.observe || []),
+		present: {
+			ifname: (values.ifname || []).length > 0,
+			interface_include: (values.interface_include || []).length > 0,
+			interface_exclude: (values.interface_exclude || []).length > 0,
+			observe: (values.observe || []).length > 0
+		}
+	};
+	const state = {
+		refs: { ifcfgReloadBtn: fakeElement('button', {}) },
+		daemonRefs: refs,
+		currentValues: cloneConfigRecord(values),
+		initialValues: cloneConfigRecord(values),
+		originalRaw: cloneConfigRecord(values),
+		ifaceOriginal: ifaceOriginal,
+		initialIfaceOriginal: Object.assign({}, cloneConfigRecord(ifaceOriginal), {
+			present: Object.assign({}, ifaceOriginal.present)
+		}),
+		runtimeStatus: overrides.runtimeStatus || {},
+		ifcfgLoaded: overrides.ifcfgLoaded !== false,
+		ifcfgDirty: Boolean(overrides.ifcfgDirty),
+		ifcfgState: overrides.ifcfgState || null,
+		sysdevices: overrides.sysdevices || null,
+		localDirty: Boolean(overrides.localDirty),
+		configSaving: false,
+		sectionMissing: Boolean(overrides.sectionMissing),
+		updatePageState: function() {}
+	};
+	state.onValidityChange = function(valid, busy) {
+		state.lastValidity = { valid: valid, busy: busy };
+	};
+	return state;
+}
+
+function assertIfaceConfigRewrite(src) {
+	if (!src.includes('ifcfgRequestToken') || !src.includes("'hard-error'") ||
+		!src.includes("'degraded'") || !src.includes("'empty'") ||
+		!src.includes('orphanRemovals') || !src.includes('collect_reason') ||
+		!src.includes('max_configured') || !src.includes("'class': 'lanspeed-hint'") ||
+		src.includes('lanspeed-hint lanspeed-state-message')) {
+		fail('ifaceConfig.js must implement tokenized scan states, orphan handling, and v1 capability limits');
+	}
+	if (src.includes("lsRpc.uciSet") || src.includes("lsRpc.uciDelete") ||
+		src.includes("uciRevert")) {
+		fail('ifaceConfig.js must produce a local UCI save plan instead of writing or reverting RPC state');
+	}
+	const model = loadConfigModelModule(readModuleByName('configModel.js'));
+	const iface = loadIfaceConfigModule(src, {}, model);
+	const state = {
+		refs: {}, ifcfgLoaded: true, ifcfgDirty: true,
+		sysdevices: { devices: [
+			{ name: 'br-lan', selected: true, observed: false, recommended_lan: true,
+				collect_allowed: true, collect_reason: 'eligible_bridge', is_nss_ifb: false }
+		] },
+		ifcfgState: { 'br-lan': 'off' },
+		ifaceOriginal: {
+			ifname: [ 'br-lan' ], interface_include: [], interface_exclude: [], observe: [],
+			present: { ifname: true, interface_include: false }
+		}
+	};
+	const plan = iface.prepareSave(state);
+	if (!plan.changed || plan.desired.ifname.length !== 0 ||
+		plan.desired.interface_include.length !== 0) {
+		fail('ifaceConfig.js must allow all interfaces off without duplicating ifname into interface_include');
+	}
+	const bothState = {
+		refs: { ifcfgReloadBtn: fakeElement('button', {}) }, ifcfgLoaded: true, ifcfgDirty: true,
+		sysdevices: state.sysdevices, ifcfgState: { 'br-lan': 'off' },
+		ifaceOriginal: {
+			ifname: [ 'br-lan' ], interface_include: [ 'br-lan' ], interface_exclude: [ 'wan' ], observe: [],
+			present: { ifname: true, interface_include: true, interface_exclude: true, observe: false }
+		}
+	};
+	const bothPlan = iface.prepareSave(bothState);
+	if (!bothPlan.changed || bothPlan.desired.ifname.length || bothPlan.desired.interface_include.length ||
+		JSON.stringify(bothPlan.desired.interface_exclude) !== JSON.stringify([ 'wan' ])) {
+		fail('ifaceConfig.js all-off mode must clear both active source lists while preserving compatibility exclusions');
+	}
+	const noNetState = {
+		refs: { ifcfgReloadBtn: fakeElement('button', {}) }, ifcfgLoaded: true, ifcfgDirty: true,
+		sysdevices: state.sysdevices, ifcfgState: { 'br-lan': 'collect' },
+		ifaceOriginal: state.ifaceOriginal
+	};
+	const noNetPlan = iface.prepareSave(noNetState);
+	iface.markSaved(noNetPlan);
+	if (noNetPlan.changed || noNetState.ifcfgDirty || noNetState.refs.ifcfgReloadBtn.disabled) {
+		fail('ifaceConfig.js must clear edit protection after a dirty interface selection returns to its saved value');
+	}
+	const compatibilityState = {
+		refs: { ifcfgOrphans: fakeElement('div', {}), ifcfgReloadBtn: fakeElement('button', {}) },
+		ifcfgLoaded: false, ifcfgDirty: false,
+		ifaceOriginal: {
+			ifname: [ 'br-lan' ], interface_include: [], interface_exclude: [ 'wan' ], observe: [ 'pppoe-wan' ],
+			present: { ifname: true, interface_include: false, interface_exclude: true, observe: true }
+		},
+		markDirty: function() { compatibilityState.dirtySignals = (compatibilityState.dirtySignals || 0) + 1; }
+	};
+	iface.render(compatibilityState);
+	if (compatibilityState.refs.ifcfgOrphans.children.some(function(row) {
+		return row && row.attrs && row.attrs['data-option'] === 'interface_exclude';
+	})) {
+		fail('ifaceConfig.js must never render legacy interface_exclude values as assignable or orphan interfaces');
+	}
+	const malformedLimits = iface.normalizeSysdevices({ contract_version: 1, devices: [], limits: {
+		max_configured: -1, max_name_length: 0
+	} });
+	if (malformedLimits.limits.max_configured !== model.MAX_INTERFACE_NAMES ||
+		malformedLimits.limits.max_name_length !== 31 || malformedLimits.warnings.length < 2) {
+		fail('ifaceConfig.js must degrade malformed sysdevices limits to bounded safe defaults');
+	}
+	const legacyContract = iface.normalizeSysdevices({ devices: [], limits: {
+		max_configured: 16, max_name_length: 31
+	} });
+	if (legacyContract.contract_version !== 0 || !legacyContract.warnings.some(function(warning) {
+		return warning.code === 'missing_contract_version';
+	}) || !legacyContract.warnings.some(function(warning) {
+		return warning.field === 'configured_ifnames';
+	})) {
+		fail('ifaceConfig.js must mark missing sysdevices version and v1 arrays as a degraded contract');
+	}
+	const orphanButton = fakeElement('button', {});
+	const busyState = {
+		refs: {
+			ifcfgReloadBtn: fakeElement('button', {}),
+			ifcfgOrphans: { querySelectorAll: function() { return [ orphanButton ]; } }
+		},
+		ifcfgDirty: true,
+		ifcfgButtons: [ fakeElement('button', {}), fakeElement('button', {}) ]
+	};
+	busyState.ifcfgButtons[1].ifcfgAlwaysDisabled = true;
+	iface.setBusy(busyState, true);
+	if (!busyState.ifcfgButtons.every(function(button) { return button.disabled; }) ||
+		!orphanButton.disabled || !busyState.refs.ifcfgReloadBtn.disabled) {
+		fail('ifaceConfig.js must explicitly lock mode, orphan and scan controls for the whole save transaction');
+	}
+	iface.setBusy(busyState, false);
+	if (busyState.ifcfgButtons[0].disabled || !busyState.ifcfgButtons[1].disabled ||
+		orphanButton.disabled || !busyState.refs.ifcfgReloadBtn.disabled) {
+		fail('ifaceConfig.js must unlock editable interface controls, retain intrinsic locks and keep dirty rescan blocked');
+	}
+}
+
+function assertIfaceConfigBehavior(src) {
+	const model = loadConfigModelModule(readModuleByName('configModel.js'));
+	const first = {
+		contract_version: 1,
+		devices: [
+			{ name: 'br-lan', selected: false, observed: false, recommended_lan: true,
+				collect_allowed: true, collect_reason: 'eligible_bridge', is_bridge: true,
+				is_bridge_port: false, is_nss_ifb: false },
+			{ name: 'wan', selected: false, observed: true, recommended_lan: false,
+				collect_allowed: false, collect_reason: 'unsupported_link_type', is_bridge: false,
+				is_bridge_port: false, is_nss_ifb: false }
+		],
+		current_ifnames: [], current_observed: [ 'wan' ], current_excluded: [],
+		configured_ifnames: [], configured_observed: [ 'wan' ], configured_excluded: [ 'wan' ],
+		orphaned: [], limits: { max_configured: 16, max_name_length: 31 }
+	};
+	const scanDeferred = makeDeferred();
+	let scans = 0;
+	const iface = loadIfaceConfigModule(src, {
+		sysdevices: function() {
+			scans++;
+			return scans === 1 ? Promise.resolve(first) : scanDeferred.promise;
+		}
+	}, model);
+	const state = {
+		refs: {
+			ifcfgBody: fakeElement('tbody', {}), ifcfgSummary: fakeElement('span', {}),
+			ifcfgStatus: fakeElement('span', {}), ifcfgHint: fakeElement('p', {}),
+			ifcfgLimit: fakeElement('span', {}), ifcfgReloadBtn: fakeElement('button', {}),
+			ifcfgRoot: fakeElement('section', {}), ifcfgOrphans: fakeElement('div', {})
+		},
+		ifaceOriginal: {
+			ifname: [ 'br-lan' ], interface_include: [ 'br-lan' ], interface_exclude: [ 'wan' ], observe: [ 'wan' ],
+			present: { ifname: true, interface_include: true, interface_exclude: true, observe: true }
+		},
+		markDirty: function() { state.dirtySignals = (state.dirtySignals || 0) + 1; }
+	};
+	asyncChecks.push(iface.load(state).then(function(result) {
+		if (!result || state.ifcfgState['br-lan'] !== 'collect' || state.ifcfgState.wan !== 'observe') {
+			fail('ifaceConfig.js scan must render the staged UCI selection instead of overwriting it with stale runtime flags');
+		}
+		const before = cloneConfigRecord(state.ifcfgState);
+		const pending = iface.load(state);
+		const duplicate = iface.load(state);
+		if (pending !== duplicate || !state.ifcfgButtons.length ||
+			!state.ifcfgButtons.every(function(button) { return button.disabled; }) ||
+			!state.refs.ifcfgReloadBtn.disabled) {
+			fail('ifaceConfig.js must deduplicate concurrent scans and lock every existing mode control while a scan is pending');
+		}
+		const off = state.ifcfgButtons.filter(function(button) {
+			return button.attrs['data-mode'] === 'off' && String(button.attrs['aria-label']).indexOf('br-lan') === 0;
+		})[0];
+		if (off && off.listeners.click) off.listeners.click({ preventDefault: function() {} });
+		if (JSON.stringify(state.ifcfgState) !== JSON.stringify(before) || state.ifcfgDirty) {
+			fail('ifaceConfig.js must reject interface edits while a scan response can still arrive');
+		}
+		scanDeferred.resolve(Object.assign({}, first, {
+			current_ifnames: [ 'br-lan' ], devices: first.devices.map(function(device) {
+				return Object.assign({}, device, { selected: device.name === 'br-lan' });
+			})
+		}));
+		return pending;
+	}).then(function() {
+		if (scans !== 2 || state.ifcfgState['br-lan'] !== 'collect' || state.ifcfgDirty ||
+			state.ifcfgButtons.some(function(button) { return button.disabled && !button.ifcfgAlwaysDisabled; })) {
+			fail('ifaceConfig.js must finish one pending scan without losing staged selection or leaving editable controls locked');
+		}
+	}).catch(function(error) {
+		fail('ifaceConfig.js scan/edit protection behavior failed: ' + (error && error.stack || error));
+	}));
+
+	const verifyIface = loadIfaceConfigModule(src, {
+		sysdevices: function() {
+			return Promise.resolve(Object.assign({}, first, {
+				current_ifnames: [ 'br-lan' ], current_observed: [ 'wan' ], current_excluded: []
+			}));
+		}
+	}, model);
+	const verifyState = {
+		refs: { ifcfgStatus: fakeElement('span', {}), ifcfgRoot: fakeElement('section', {}),
+			ifcfgReloadBtn: fakeElement('button', {}) },
+		ifcfgDirty: false,
+		ifaceOriginal: state.ifaceOriginal
+	};
+	asyncChecks.push(verifyIface.verify(verifyState, state.ifaceOriginal).then(function(result) {
+		if (!result.ok || JSON.stringify(result.expected.collect) !== JSON.stringify([ 'br-lan' ]) ||
+			JSON.stringify(result.expected.configuredExcluded) !== JSON.stringify([ 'wan' ]) ||
+			JSON.stringify(result.actual.excluded) !== JSON.stringify([]) || verifyState.ifcfgLoading) {
+			fail('ifaceConfig.js must verify effective interfaces separately from compatibility-only exclusions');
+		}
+	}).catch(function(error) {
+		fail('ifaceConfig.js runtime verification behavior failed: ' + (error && error.stack || error));
+	}));
+}
+
+function assertConfigFormRewrite(src) {
+	const required = [ 'uci.set(', 'uci.unset(', 'uci.save()', 'cfgModel.validate(',
+		'cfgModel.buildUciPatch(', 'verifyAll', 'lanspeed-config-field-error',
+		'lanspeed-config-save-state' ];
+	required.forEach(marker => {
+		if (!src.includes(marker)) fail(`configForm.js rewrite is missing ${marker}`);
+	});
+	if (src.includes("lsRpc.uciRevert") || src.includes("lsRpc.uciSet") ||
+		src.includes("lsRpc.uciDelete")) {
+		fail('configForm.js must never revert the whole package or bypass the LuCI UCI cache');
+	}
+	[ 'refresh_interval_ms', 'overview_window_samples', 'max_clients', 'enable_bpf',
+		'enable_conntrack_fallback', 'interface_exclude' ].forEach(name => {
+		if (!src.includes(name)) fail(`configForm.js must preserve ${name} in the owned data contract`);
+	});
+	if (src.includes('lanspeed-compatibility') || src.includes('compatibilityBlock') ||
+		src.includes('清空兼容排除项'))
+		fail('configForm.js must not expose internal compatibility fields as a second configuration workflow');
+	if (!src.includes("data-disabled") || !src.includes('hide_private_ipv6.disabled') ||
+		!src.includes('modeChoices('))
+		fail('configForm.js must implement dependent disabled states and capability-gated choices');
+}
+
+function matchingConfigStatus(values) {
+	return {
+		mode: 'Full',
+		confidence: 'high',
+		warnings: [],
+		rate_collector_mode: values.rate_collector_mode,
+		conn_collector_mode: values.conn_collector_mode,
+		refresh_interval_ms: values.refresh_interval_ms,
+		active_client_window_ms: values.active_client_window_ms,
+		active_client_min_bps: values.active_client_min_bps,
+		overview_window_samples: values.overview_window_samples,
+		max_clients: values.max_clients,
+		enable_bpf: values.enable_bpf === '1',
+		enable_conntrack_fallback: values.enable_conntrack_fallback === '1',
+		version: '1.1.1-r9',
+		capabilities: { bpf: true, conntrack_fallback: true },
+		evidence: { collector: { primary_source: 'bpf', effective_connection_collector: 'conntrack_netlink' } }
+	};
+}
+
+function assertConfigFormBehavior(src) {
+	const model = loadConfigModelModule(readModuleByName('configModel.js'));
+	const invalidLoadForm = loadConfigFormModule(src, makeConfigUci(model), {
+		status: function() { return Promise.resolve({}); }
+	}, makeConfigIfaceStub(), model);
+	asyncChecks.push(invalidLoadForm.loadValues().then(function(values) {
+		if (values.pageState !== 'degraded' || values.status && Object.keys(values.status).length ||
+			!values.rpc || !values.rpc.status || values.rpc.status.ok ||
+			values.rpc.status.phase !== 'invalid' ||
+			values.rpc.status.error.code !== 'INVALID_STATUS_RESPONSE') {
+			fail('configForm.js must degrade an object-shaped but invalid status contract');
+		}
+	}).catch(function(error) {
+		fail('configForm.js invalid-status load behavior failed: ' + (error && error.stack || error));
+	}));
+	const validLoadValues = configValues(model);
+	const validLoadForm = loadConfigFormModule(src, makeConfigUci(model), {
+		status: function() { return Promise.resolve(matchingConfigStatus(validLoadValues)); }
+	}, makeConfigIfaceStub(), model);
+	asyncChecks.push(validLoadForm.loadValues().then(function(values) {
+		if (values.pageState !== 'ready' || !values.rpc.status.ok ||
+			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.1-r9') {
+			fail('configForm.js must accept the complete status contract and retain capability evidence');
+		}
+	}).catch(function(error) {
+		fail('configForm.js valid-status load behavior failed: ' + (error && error.stack || error));
+	}));
+	const invalidUci = makeConfigUci(model);
+	const invalidIface = makeConfigIfaceStub();
+	const invalidForm = loadConfigFormModule(src, invalidUci, { status: function() { return Promise.resolve({}); } }, invalidIface, model);
+	const invalidState = makeConfigFormState(model);
+	invalidState.daemonRefs.inputs.show_ipv6.checked = false;
+	invalidState.daemonRefs.inputs.hide_private_ipv6.checked = true;
+	invalidState.daemonRefs.inputs.enable_bpf.checked = false;
+	invalidState.daemonRefs.inputs.rate_collector_mode.value = 'bpf';
+	invalidState.daemonRefs.inputs.refresh_interval_ms.value = '499';
+	const invalid = invalidForm.validate(invalidState);
+	if (invalid.valid || invalid.errors.refresh_interval_ms !== 'below_min' ||
+		invalid.errors.rate_collector_mode !== 'bpf_disabled' ||
+		!invalidState.daemonRefs.inputs.hide_private_ipv6.disabled ||
+		!invalidState.daemonRefs.hideIpv6RangeInput.disabled ||
+		!invalidState.daemonRefs.addRangeBtn.disabled ||
+		invalidState.daemonRefs.fields.refresh_interval_ms.error.hidden ||
+		invalidState.daemonRefs.fields.refresh_interval_ms.input.attrs['aria-invalid'] !== 'true' ||
+		!invalidState.lastValidity || invalidState.lastValidity.valid) {
+		fail('configForm.js must enforce numeric/mode validation and IPv6 dependency disabled states before saving');
+	}
+	asyncChecks.push(invalidForm.saveAll(invalidState).then(function() {
+		fail('configForm.js must reject an invalid form before staging UCI values');
+	}, function() {
+		if (invalidUci.calls.some(function(call) { return call[0] === 'set' || call[0] === 'unset' || call[0] === 'save'; }) ||
+			invalidState.configSaving) {
+			fail('configForm.js invalid-save path must not mutate UCI or leave controls busy');
+		}
+	}));
+
+	const stagedUci = makeConfigUci(model);
+	const stagedIface = makeConfigIfaceStub();
+	const stagedForm = loadConfigFormModule(src, stagedUci, { status: function() { return Promise.resolve({}); } }, stagedIface, model);
+	const stagedState = makeConfigFormState(model, { localDirty: true });
+	stagedState.daemonRefs.inputs.refresh_interval_ms.value = '2000';
+	asyncChecks.push(stagedForm.saveAll(stagedState).then(function(result) {
+		if (!result || !result.ok || !result.staged || !stagedState.hasStagedSave ||
+			stagedState.configSaving || stagedState.ifaceBusy ||
+			String(stagedUci.remote.refresh_interval_ms) !== '2000' ||
+			stagedState.saveState !== 'staged') {
+			fail('configForm.js Save must stage valid values, unlock controls and expose the staged state');
+		}
+		return stagedForm.resetAll(stagedState);
+	}).then(function(result) {
+		const saves = stagedUci.calls.filter(function(call) { return call[0] === 'save'; });
+		if (!result || !result.ok || !result.staged || stagedState.hasStagedSave ||
+			String(stagedUci.remote.refresh_interval_ms) !== '1000' || saves.length !== 2 ||
+			stagedState.daemonRefs.inputs.refresh_interval_ms.value !== '1000') {
+			fail('configForm.js Reset must stage an owned-field reversal after Save without applying');
+		}
+	}).catch(function(error) {
+		fail('configForm.js staged Save/Reset behavior failed: ' + (error && error.stack || error));
+	}));
+
+	const interfaceUci = makeConfigUci(model, { initial: {
+		interface_include: [ 'eth1' ], interface_exclude: [ 'wan' ],
+		observe: [ 'pppoe-wan' ]
+	} });
+	const interfaceState = makeConfigFormState(model, {
+		ifcfgDirty: true,
+		values: {
+			interface_include: [ 'eth1' ], interface_exclude: [ 'wan' ],
+			observe: [ 'pppoe-wan' ]
+		}
+	});
+	interfaceState.testInterfacePlan = {
+		changed: true,
+		viewState: interfaceState,
+		errors: {},
+		desired: {
+			ifname: [], interface_include: [ 'eth1', 'eth2' ],
+			interface_exclude: [ 'wan' ], observe: [ 'pppoe-wan', 'pppoe-wan_cmcc' ]
+		}
+	};
+	const interfaceForm = loadConfigFormModule(src, interfaceUci,
+		{ status: function() { return Promise.resolve({}); } }, makeConfigIfaceStub(), model);
+	asyncChecks.push(interfaceForm.saveAll(interfaceState).then(function(result) {
+		const saved = result && result.plan && result.plan.values;
+		const unsetNames = interfaceUci.calls.filter(function(call) { return call[0] === 'unset'; })
+			.map(function(call) { return call[1]; });
+		if (!result || !result.ok || !Array.isArray(saved.interface_include) ||
+			JSON.stringify(saved.interface_include) !== JSON.stringify([ 'eth1', 'eth2' ]) ||
+			JSON.stringify(saved.interface_exclude) !== JSON.stringify([ 'wan' ]) ||
+			JSON.stringify(saved.observe) !== JSON.stringify([ 'pppoe-wan', 'pppoe-wan_cmcc' ]) ||
+			JSON.stringify(interfaceUci.remote.interface_include) !== JSON.stringify([ 'eth1', 'eth2' ]) ||
+			JSON.stringify(interfaceUci.remote.interface_exclude) !== JSON.stringify([ 'wan' ]) ||
+			JSON.stringify(interfaceUci.remote.observe) !== JSON.stringify([ 'pppoe-wan', 'pppoe-wan_cmcc' ]) ||
+			[ 'interface_include', 'interface_exclude', 'observe' ].some(function(name) {
+				return unsetNames.indexOf(name) !== -1;
+			})) {
+			fail('configForm.js must preserve interface arrays when staging a changed collect/observe assignment');
+		}
+	}).catch(function(error) {
+		fail('configForm.js interface-array save behavior failed: ' + (error && error.stack || error));
+	}));
+
+	const rollbackUci = makeConfigUci(model, {
+		saveBehaviors: [
+			function(api) {
+				api.commit();
+				api.remote.foreign_option = 'external-after-failure';
+				return Promise.reject(new Error('partial save failed'));
+			},
+			function(api) { api.commit(); return Promise.resolve(true); }
+		]
+	});
+	const rollbackForm = loadConfigFormModule(src, rollbackUci,
+		{ status: function() { return Promise.resolve({}); } }, makeConfigIfaceStub(), model);
+	const rollbackState = makeConfigFormState(model);
+	rollbackState.daemonRefs.inputs.refresh_interval_ms.value = '3000';
+	asyncChecks.push(rollbackForm.saveAll(rollbackState).then(function() {
+		fail('configForm.js must report the original staging failure after compensating rollback');
+	}, function(error) {
+		const saves = rollbackUci.calls.filter(function(call) { return call[0] === 'save'; });
+		if (!String(error && error.message || error).includes('partial save failed') ||
+			!String(error && error.message || error).includes('本页字段已回滚') || saves.length !== 2 ||
+			String(rollbackUci.remote.refresh_interval_ms) !== '1000' ||
+			rollbackUci.remote.foreign_option !== 'external-after-failure' ||
+			rollbackState.configSaving || rollbackState.saveState !== 'error') {
+			fail('configForm.js failed Save must compensate only owned fields and preserve unrelated staged values');
+		}
+	}));
+
+	const appliedUci = makeConfigUci(model);
+	const appliedIface = makeConfigIfaceStub();
+	const appliedForm = loadConfigFormModule(src, appliedUci,
+		{ status: function() { return Promise.resolve({}); } }, appliedIface, model);
+	const appliedState = makeConfigFormState(model);
+	appliedState.daemonRefs.inputs.refresh_interval_ms.value = '2500';
+	asyncChecks.push(appliedForm.saveAll(appliedState).then(function() {
+		if (!appliedForm.markApplied(appliedState) || appliedState.hasStagedSave ||
+			Number(appliedState.initialValues.refresh_interval_ms) !== 2500) {
+			fail('configForm.js must advance the reset baseline after native Apply succeeds');
+		}
+		appliedState.daemonRefs.inputs.refresh_interval_ms.value = '3500';
+		return appliedForm.resetAll(appliedState);
+	}).then(function() {
+		const saves = appliedUci.calls.filter(function(call) { return call[0] === 'save'; });
+		if (saves.length !== 1 || appliedState.daemonRefs.inputs.refresh_interval_ms.value !== '2500') {
+			fail('configForm.js Reset after Apply must return to the newly applied baseline without staging a reverse write');
+		}
+	}).catch(function(error) {
+		fail('configForm.js applied-baseline behavior failed: ' + (error && error.stack || error));
+	}));
+
+	let statusCalls = 0;
+	let verifiedInterfaces = null;
+	const verifyValues = configValues(model, {
+		refresh_interval_ms: 1500,
+		ifname: [ 'br-lan' ], interface_include: [ 'br-lan' ],
+		interface_exclude: [ 'wan' ], observe: [ 'wan' ]
+	});
+	const verifyForm = loadConfigFormModule(src, makeConfigUci(model), {
+		status: function() { statusCalls++; return Promise.resolve(matchingConfigStatus(verifyValues)); }
+	}, makeConfigIfaceStub({
+		verify: function(state, expected) {
+			verifiedInterfaces = expected;
+			return Promise.resolve({ ok: true });
+		}
+	}), model);
+	const verifyState = makeConfigFormState(model);
+	verifyState.lastSavePlan = { values: verifyValues, interfacePlan: { changed: false } };
+	asyncChecks.push(verifyForm.verifyAll(verifyState).then(function(result) {
+		if (!result.ok || statusCalls !== 1 || verifiedInterfaces !== verifyValues ||
+			verifyState.saveState !== 'success') {
+			fail('configForm.js post-Apply verification must check both status and sysdevices against the complete saved plan');
+		}
+	}).catch(function(error) {
+		fail('configForm.js post-Apply verification behavior failed: ' + (error && error.stack || error));
+	}));
+}
+
+function assertConfigViewRewrite(src) {
+	[ "'loading'", "'ready'", "'empty'", "'degraded'", "'hard-error'",
+		'configForm.verifyAll(viewState)', 'setNativeActionState', 'setNativeActionFailureState',
+		"actions.setAttribute('data-lanspeed-state', 'hard-error')", 'aria-busy' ].forEach(marker => {
+		if (!src.includes(marker)) fail(`configView.js state machine is missing ${marker}`);
+	});
+	if (src.includes("uciRevert") || src.includes("lsRpc.uciSet"))
+		fail('configView.js must delegate local UCI transactions and avoid package-wide rollback');
+}
+
+function assertConfigViewBehavior(src) {
+	const calls = [];
+	const form = {
+		saveAll: function() { calls.push('save'); return Promise.resolve({ ok: true, staged: true }); },
+		markApplied: function(state) { calls.push('mark-applied'); state.applied = true; return true; },
+		verifyAll: function(state) {
+			calls.push('verify');
+			return Promise.resolve({ ok: Boolean(state.applied) });
+		},
+		resetAll: function() { calls.push('reset'); return Promise.resolve({ ok: true }); }
+	};
+	const ui = {
+		changes: {
+			changes: {},
+			init: function() { calls.push('changes-init'); return Promise.resolve(); },
+			apply: function(checked) { calls.push('apply:' + checked); return Promise.resolve(); }
+		},
+		hideIndicator: function() { calls.push('hide-indicator'); },
+		addNotification: function(title, body, level) { calls.push('notify:' + level); }
+	};
+	const view = loadConfigViewModule(src, form, ui);
+	const hardErrorButtons = [ 0, 1, 2 ].map(function() {
+		return {
+			disabled: false, attrs: {},
+			setAttribute: function(name, value) { this.attrs[name] = String(value); }
+		};
+	});
+	const hardErrorActions = {
+		attrs: {}, hidden: false,
+		setAttribute: function(name, value) { this.attrs[name] = String(value); },
+		getAttribute: function(name) { return this.attrs[name] || null; },
+		removeAttribute: function(name) { delete this.attrs[name]; },
+		querySelectorAll: function() { return hardErrorButtons; }
+	};
+	const hardErrorFooter = {
+		querySelector: function(selector) { return selector === '.cbi-page-actions' ? hardErrorActions : null; }
+	};
+	view.viewState = { failed: true };
+	if (view.decorateFooter(hardErrorFooter) !== hardErrorFooter || !hardErrorActions.hidden ||
+	    hardErrorActions.attrs['data-lanspeed-state'] !== 'hard-error' ||
+	    hardErrorActions.attrs['aria-hidden'] !== 'true' ||
+	    hardErrorButtons.some(function(button) {
+		return !button.disabled || button.attrs['aria-disabled'] !== 'true';
+	    })) {
+		fail('configView.js hard failure must hide and disable every native footer action');
+	}
+	view.viewState = { daemonRefs: {}, localDirty: true };
+	asyncChecks.push(view.handleSaveApply(null, '0').then(function(result) {
+		if (!result || !result.ok || calls.join(',') !==
+			'save,hide-indicator,changes-init,apply:true,mark-applied,verify') {
+			fail('configView.js Save & Apply must stage, apply, advance the baseline, then verify in order');
+		}
+		return view.handleReset();
+	}).then(function(result) {
+		if (!result || !result.ok || calls.slice(-3).join(',') !== 'reset,hide-indicator,changes-init') {
+			fail('configView.js Reset must delegate the owned-field reset and refresh native changes');
+		}
+	}).catch(function(error) {
+		fail('configView.js native staged/apply/reset behavior failed: ' + (error && error.stack || error));
+	}));
+
+	let verifyCalls = 0;
+	const retryDelays = [];
+	const retryFeedback = [];
+	const retryView = loadConfigViewModule(src, {
+		saveAll: function() { return Promise.resolve({ ok: true }); },
+		markApplied: function() { return true; },
+		verifyAll: function() {
+			verifyCalls++;
+			return Promise.resolve({ ok: verifyCalls === 6 });
+		},
+		setFeedback: function(state, status, message) {
+			retryFeedback.push([ status, String(message) ]);
+		}
+	}, {
+		changes: {
+			changes: {}, init: function() { return Promise.resolve(); },
+			apply: function() { return Promise.resolve(); }
+		},
+		hideIndicator: function() {}
+	}, null, function(handler, delay) {
+		retryDelays.push(delay);
+		handler();
+	});
+	retryView.viewState = { daemonRefs: {} };
+	asyncChecks.push(retryView.handleSaveApply(null, '0').then(function(result) {
+		if (!result || !result.ok || verifyCalls !== 6 ||
+			JSON.stringify(retryDelays) !== JSON.stringify([ 500, 750, 1000, 1500, 2000 ]) ||
+			retryFeedback.length !== 5 || retryFeedback.some(function(entry) {
+				return entry[0] !== 'verifying' || !entry[1].includes('等待守护进程与接口就绪');
+			})) {
+			fail('configView.js must keep post-Apply verification pending across the bounded daemon reload window');
+		}
+	}).catch(function(error) {
+		fail('configView.js post-Apply retry behavior failed: ' + (error && error.stack || error));
+	}));
+
+	const failedCalls = [];
+	const failedView = loadConfigViewModule(src, {
+		saveAll: function() { failedCalls.push('save'); return Promise.resolve({ ok: true }); },
+		markApplied: function() { failedCalls.push('mark-applied'); },
+		verifyAll: function() { failedCalls.push('verify'); return Promise.resolve({ ok: true }); }
+	}, {
+		changes: {
+			changes: {}, init: function() { failedCalls.push('changes-init'); return Promise.resolve(); },
+			apply: function() { failedCalls.push('apply'); return Promise.reject(new Error('apply failed')); }
+		},
+		hideIndicator: function() { failedCalls.push('hide'); },
+		addNotification: function(title, body, level) { failedCalls.push('notify:' + level); }
+	});
+	failedView.viewState = { daemonRefs: {} };
+	asyncChecks.push(failedView.handleSaveApply(null, '1').then(function(result) {
+		if (result !== false || failedCalls.includes('mark-applied') || failedCalls.includes('verify') ||
+			failedCalls[failedCalls.length - 1] !== 'notify:error') {
+			fail('configView.js must stop baseline advancement and runtime verification when native Apply fails');
+		}
+	}).catch(function(error) {
+		fail('configView.js apply-failure feedback behavior failed: ' + (error && error.stack || error));
+	}));
+}
+
 function assertStatusViewEntryIsThin(src) {
 	const requires = moduleRequireNames(src);
 	if (JSON.stringify(requires) !== JSON.stringify([
@@ -4732,18 +6560,15 @@ function assertStatusViewEntryIsThin(src) {
 }
 
 function assertConfigViewEntryIsThin(src) {
-	if (src.includes('var CONFIG_CSS = [') || src.includes('function buildDaemonSection(') ||
-	    src.includes('function saveDaemonSettings(') || src.includes('var DEFAULTS = {')) {
-		fail('view/lanspeed/config.js must stay a thin page lifecycle entry and delegate CSS/form logic to modules');
-	}
-	if (!src.includes('configStyle.CSS') ||
-	    !src.includes('configForm.loadValues()') ||
-	    !src.includes('configForm.buildDaemonSection(values || configForm.DEFAULTS, viewState)') ||
-	    !src.includes('stageSettings(this.viewState)') ||
-	    !src.includes("ui.changes.apply(mode == '0')") ||
-	    !src.includes('configForm.resetAll(viewState)')) {
-		fail('view/lanspeed/config.js must delegate CSS, loading, rendering and native footer actions to config modules');
-	}
+	const requires = moduleRequireNames(src);
+	if (JSON.stringify(requires) !== JSON.stringify([ 'view' ]) ||
+	    !src.includes("L.require('lanspeed.configView')") ||
+	    !src.includes("pageModule.decorateFooter(this.super('addFooter', []))") ||
+	    !src.includes('return pageModule.handleSave()') ||
+	    !src.includes('return pageModule.handleSaveApply(ev, mode)') ||
+	    !src.includes('return pageModule.handleReset()') ||
+	    src.includes('configStyle.CSS') || src.includes('configForm.'))
+		fail('view/lanspeed/config.js must remain a cache-aware lifecycle entry for lanspeed.configView');
 }
 
 function assertVersionModule(src) {
@@ -4816,15 +6641,11 @@ EXPECTED_MODULES.forEach(function(name) {
 	if (name === 'clientDetailStyle.js') {
 		assertClientDetailStyleComposer(src);
 	}
-	if (name === 'diagnosticsStyle.js') {
-		assertDiagnosticsStyleModule(styleSources(name, DIAGNOSTICS_STYLE_PARTS));
-	}
-	if (CLIENT_DETAIL_STYLE_PARTS.includes(name)) {
-		assertClientDetailStyleLeaf(name, src);
-	}
-	if (name === 'ifaceConfig.js') {
-		assertIfaceConfigThemeLayout(src);
-		assertIfaceSaveBehavior(src);
+	if (PRODUCT_STYLE_PARTS.includes(name))
+		assertUnifiedStyleLeaf(name, src);
+		if (name === 'ifaceConfig.js') {
+			assertIfaceConfigRewrite(src);
+			assertIfaceConfigBehavior(src);
 	}
 	if (name === 'vocab.js') {
 		assertWarningAliases(src);
@@ -4834,12 +6655,10 @@ EXPECTED_MODULES.forEach(function(name) {
 	}
 	if (name === 'theme.js') {
 		assertThemeModule(src);
+		assertThemeBehavior(src);
 	}
 	if (name === 'version.js') {
 		assertVersionModule(src);
-	}
-	if (name === 'statusStyle.js') {
-		assertStatusStyleModule(styleSources(name, STATUS_STYLE_PARTS));
 	}
 	if (STATUS_STYLE_PARTS.includes(name) || DIAGNOSTICS_STYLE_PARTS.includes(name) ||
 	    CLIENT_DETAIL_STYLE_PARTS.includes(name) ||
@@ -4850,6 +6669,9 @@ EXPECTED_MODULES.forEach(function(name) {
 	}
 	if (name === 'diagnosticsRefresh.js') {
 		assertDiagnosticsRefreshModule(src);
+	}
+	if (name === 'diagnosticsModel.js') {
+		assertDiagnosticsModelModule(src);
 	}
 	if (name === 'diagnosticsView.js') {
 		assertDiagnosticsViewModule(src);
@@ -4873,23 +6695,22 @@ EXPECTED_MODULES.forEach(function(name) {
 		assertStatusRefreshSortingInteraction(src);
 		assertStatusRefreshClientDetailLink(src);
 	}
-	if (name === 'configStyle.js') {
-		assertConfigStyleModule(styleSources(name, CONFIG_STYLE_PARTS));
-	}
-	if (name === 'configForm.js') {
-		assertConfigFormModule(src);
-		assertConfigCompatibility(src);
-	}
+		if (name === 'configForm.js') {
+			assertConfigFormRewrite(src);
+			assertConfigFormBehavior(src);
+		}
+		if (name === 'configModel.js') {
+			assertConfigModelRewrite(src);
+		}
 });
 
 assertStyleAggregation();
+assertProductDesignSystem();
+assertAuroraNativeVisualSystem();
 assertArgonAlignmentContracts();
-assertConnectionStyleOwnership();
-
-assertConfigSaveBehavior(
-	readModuleByName('configForm.js'),
-	readModuleByName('ifaceConfig.js')
-);
+assertStatusStyleModule(styleSources('statusStyle.js', STATUS_STYLE_PARTS));
+assertDiagnosticsStyleModule(styleSources('diagnosticsStyle.js', DIAGNOSTICS_STYLE_PARTS));
+assertConfigStyleModule(styleSources('configStyle.js', CONFIG_STYLE_PARTS));
 
 RPC_FREE_MODULES.forEach(function(name) {
 	const p = path.join(modDir, name);
@@ -4943,20 +6764,22 @@ if (fs.existsSync(statusViewFile)) {
 if (fs.existsSync(configViewFile)) {
 	const csrc = readModule(configViewFile);
 	const ccleaned = stripComments(csrc);
-		const configSrc = [
-			csrc,
+	const configModuleSrc = readModuleByName('configView.js');
+	const configSrc = [
+			configModuleSrc,
 			readModuleByName('configStyle.js'),
 			...CONFIG_STYLE_PARTS.map(readModuleByName),
 			readModuleByName('configForm.js'),
 			readModuleByName('ifaceConfig.js')
 		].join('\n');
 	assertStrict(csrc, 'view/lanspeed/config.js');
-	assertConfigViewRequires(csrc);
-	assertThemeWiring(csrc, 'view/lanspeed/config.js');
+	assertCacheAwareViewEntry(csrc, 'lanspeed.configView', 'view/lanspeed/config.js');
+	assertConfigViewRequires(configModuleSrc);
+	assertThemeWiring(configModuleSrc, 'lanspeed/configView.js');
 	assertConfigViewEntryIsThin(csrc);
-	assertConfigView(configSrc);
-	assertConfigViewNativeActions(csrc);
-	assertNoInlineNavigation(configSrc, 'view/lanspeed/config.js');
+		assertConfigViewRewrite(configModuleSrc);
+		assertConfigViewBehavior(configModuleSrc);
+	assertNoInlineNavigation(csrc, 'view/lanspeed/config.js');
 	assertSyntax(csrc, 'view/lanspeed/config.js');
 	assertNoRpcDeclare(ccleaned, 'view/lanspeed/config.js');
 }

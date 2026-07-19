@@ -278,10 +278,22 @@ fn daemon(events: Events) -> ProductionCoordinator<FakeTransport, FakeFactory> {
 }
 
 fn snapshot_content(snapshot: &Arc<ResponseSnapshot>) -> Vec<serde_json::Value> {
-    Method::FIXED
+    let mut content = Method::FIXED
         .into_iter()
         .map(|method| snapshot.response(method).unwrap())
-        .collect()
+        .collect::<Vec<_>>();
+    // Diagnostics deliberately recomputes freshness from CLOCK_MONOTONIC for
+    // every response. A failed reload must preserve the underlying snapshot,
+    // while this derived age may legitimately advance across two serializes.
+    if let Some(collection) = content
+        .last_mut()
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|value| value.get_mut("collection"))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        collection.remove("age_ms");
+    }
+    content
 }
 
 #[test]
@@ -293,7 +305,7 @@ fn startup_connects_and_registers_before_stage_collect_publish_and_timer() {
         events.values(),
         [
             "connect",
-            "register:8",
+            "register:9",
             "stage:1",
             "collect:1",
             "collection_timer:1000"
@@ -429,7 +441,7 @@ fn startup_register_or_stage_failure_cleans_transport_in_reverse_order() {
     assert!(coordinator.start().is_err());
     assert_eq!(
         events.values(),
-        ["connect", "register:8", "transport_shutdown"]
+        ["connect", "register:9", "transport_shutdown"]
     );
 
     let events = Events::default();
@@ -438,7 +450,7 @@ fn startup_register_or_stage_failure_cleans_transport_in_reverse_order() {
     assert!(daemon.start().is_err());
     assert_eq!(
         events.values(),
-        ["connect", "register:8", "stage:1", "transport_shutdown"]
+        ["connect", "register:9", "stage:1", "transport_shutdown"]
     );
 }
 
@@ -461,14 +473,26 @@ fn failed_startup_cleans_staged_runtime_and_partial_transport() {
 }
 
 #[test]
-fn collection_tick_publishes_only_a_complete_snapshot_and_reschedules() {
+fn collection_tick_retains_payload_and_publishes_degraded_diagnostics_on_failure() {
     let events = Events::default();
     let mut daemon = daemon(events.clone());
     daemon.start().unwrap();
     let before = daemon.snapshot();
     daemon.runtime_mut().unwrap().fail_collect = true;
     assert!(daemon.on_collection_tick().is_err());
-    assert!(Arc::ptr_eq(&before, &daemon.snapshot()));
+    let retained = daemon.snapshot();
+    assert!(!Arc::ptr_eq(&before, &retained));
+    assert_eq!(retained.status, before.status);
+    let diagnostics = retained.response(Method::Diagnostics).unwrap();
+    assert_eq!(diagnostics["collection"]["state"], "degraded");
+    assert_eq!(diagnostics["collection"]["generation"], 1);
+    assert_eq!(diagnostics["collection"]["consecutive_failures"], 1);
+    assert_eq!(diagnostics["collection"]["retained"], true);
+    assert_eq!(
+        diagnostics["collection"]["last_error"]["code"],
+        "collection_error"
+    );
+    assert!(!diagnostics.to_string().contains("incomplete cycle"));
     assert_eq!(
         daemon.runtime_mut().unwrap().cycles,
         1,
@@ -477,6 +501,12 @@ fn collection_tick_publishes_only_a_complete_snapshot_and_reschedules() {
     daemon.runtime_mut().unwrap().fail_collect = false;
     daemon.on_collection_tick().unwrap();
     assert_eq!(daemon.snapshot().status.refresh_interval_ms, 501);
+    let recovered = daemon.response(Method::Diagnostics).unwrap();
+    assert_eq!(recovered["collection"]["state"], "fresh");
+    assert_eq!(recovered["collection"]["generation"], 2);
+    assert_eq!(recovered["collection"]["consecutive_failures"], 0);
+    assert_eq!(recovered["collection"]["retained"], false);
+    assert!(recovered["collection"]["last_error"].is_null());
     assert!(events
         .values()
         .ends_with(&["collect:1".into(), "collection_timer:1000".into()]));
@@ -494,7 +524,8 @@ fn hot_collection_uses_one_outer_checkpoint_and_moves_the_unvalidated_snapshot()
         .unwrap();
     assert_eq!(hot_path.matches("runtime.checkpoint()").count(), 1);
     assert!(!hot_path.contains("validate_snapshot"));
-    assert!(hot_path.contains("Arc::new(snapshot)"));
+    assert!(hot_path.contains("state.publish_collection_success(snapshot"));
+    assert!(hot_path.contains("state.publish_collection_failure("));
     assert!(!hot_path.contains("snapshot.clone()"));
 
     let production = include_str!("../src/production.rs");
@@ -521,7 +552,7 @@ fn request_refresh_skips_serialization_while_startup_and_reload_still_validate()
         .unwrap();
     assert_eq!(request_refresh.matches("runtime.checkpoint()").count(), 1);
     assert!(request_refresh.contains("runtime.restore(checkpoint)"));
-    assert!(request_refresh.contains("self.state.publish(Arc::new(snapshot))"));
+    assert!(request_refresh.contains("self.state.publish_runtime_snapshot(snapshot)"));
     assert!(!request_refresh.contains("Method::FIXED"));
     assert!(!request_refresh.contains("snapshot.response("));
 
@@ -637,7 +668,7 @@ fn disconnect_reconnects_after_one_second_and_reregisters_all_methods() {
     daemon.on_reconnect_tick().unwrap();
     assert!(events
         .values()
-        .ends_with(&["reconnect".into(), "register:8".into()]));
+        .ends_with(&["reconnect".into(), "register:9".into()]));
 }
 
 #[test]

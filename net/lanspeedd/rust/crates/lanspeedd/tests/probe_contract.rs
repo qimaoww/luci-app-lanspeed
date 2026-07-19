@@ -1,13 +1,13 @@
 use lanspeedd::config::RuntimeConfig;
 use lanspeedd::probe::collector::{
-    probe_deadline, probe_due, CommandRunner, FilePresence, FileSource, ProbeCollector,
-    ProbeMethod, UbusProbeResult, UbusQuery, UbusSource, UciOptionSnapshot, UciPackageSnapshot,
-    UciSectionSnapshot, UciSource, PROBE_REFRESH_INTERVAL_MS,
+    probe_deadline, probe_due, CommandRunner, FilePresence, FileSource, NssStateProbe,
+    ProbeCollector, ProbeMethod, UbusProbeResult, UbusQuery, UbusSource, UciOptionSnapshot,
+    UciPackageSnapshot, UciSectionSnapshot, UciSource, PROBE_REFRESH_INTERVAL_MS,
 };
 use lanspeedd::probe::commands::{validate_read_only_args, ReadOnlyCommand};
 use lanspeedd::probe::files::BoundedFile;
 use lanspeedd::probe::tc::{
-    dae_preempts_lan_ingress, has_owned_identity_collision, parse_filter_lines,
+    dae_preempts_lan_ingress, has_foreign_filters, has_owned_identity_collision, parse_filter_lines,
 };
 use lanspeedd::probe::{
     assess, BpfObservation, CommandObservations, FileObservations, NssObservation,
@@ -128,6 +128,14 @@ fn observations(value: &Value) -> (RuntimeConfig, ProbeObservations) {
         .collect();
     config.ifnames.sort();
     config.ifnames.dedup();
+    // The legacy probe fixtures model an enabled LAN collection setup. Their
+    // empty filter list means "no pre-existing TC filter", not "no configured
+    // collection interface". Keep that distinction explicit so the fixtures
+    // continue to exercise loader/map paths; no-target policy is covered by
+    // its dedicated contract test.
+    if config.enable_bpf && config.ifnames.is_empty() {
+        config.interface_include.push("br-lan".into());
+    }
     let openclash_installed = flag(value, &["uci", "openclash"]);
     let redirect_dns = flag(value, &["openclash", "enable_redirect_dns"]);
     let dns_chain = flag(value, &["openclash", "dnsmasq_to_openclash_dns"]);
@@ -744,21 +752,72 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
     );
     assert!(ReadOnlyCommand::NftDaeDnsUdp53.output_cap() >= 64 * 1024);
     assert_eq!(ReadOnlyCommand::NftListFlowtables.output_cap(), 4_096);
+    assert!(ReadOnlyCommand::TcFilterShow.nonzero_exit_is_absence());
+    assert!(ReadOnlyCommand::IpRouteShow.nonzero_exit_is_absence());
+    assert!(!ReadOnlyCommand::IpRuleShow.nonzero_exit_is_absence());
 
     let filters = parse_filter_lines(
         "eth1",
         "ingress",
-        "filter protocol all pref 2 bpf chain 0 handle 0x20230005 dae direct-action\n\
+        "filter protocol all pref 2 bpf chain 0\n\
+         filter protocol all pref 2 bpf chain 0 handle 0x20230005 dae direct-action\n\
+         filter protocol all pref 49152 bpf chain 0\n\
          filter protocol all pref 49152 bpf chain 0 handle 0x1eed lanspeed_ingress direct-action\n",
     );
+    assert_eq!(filters.len(), 2);
     assert!(dae_preempts_lan_ingress(&filters, &["eth1".into()]));
     assert!(!dae_preempts_lan_ingress(&filters, &["br-lan".into()]));
     assert!(!has_owned_identity_collision(&filters));
+    assert!(has_foreign_filters(&filters));
+
+    let owned_only = parse_filter_lines(
+        "eth1",
+        "ingress",
+        "filter protocol all pref 49152 bpf chain 0\n\
+         filter protocol all pref 49152 bpf chain 0 handle 0x1eed lanspeed_ingress direct-action\n",
+    );
+    assert_eq!(owned_only.len(), 1);
+    assert!(!has_foreign_filters(&owned_only));
     let foreign = vec![TcFilter {
         owner: "dae".into(),
         ..filters[1].clone()
     }];
     assert!(has_owned_identity_collision(&foreign));
+}
+
+#[test]
+fn missing_optional_dae_route_table_is_not_a_probe_failure() {
+    let commands = FakeCommands {
+        ip_route_exit_code: 1,
+        ..FakeCommands::default()
+    };
+    let mut collector = ProbeCollector::new(
+        commands,
+        FakeFiles::default(),
+        FakeUci::default(),
+        FakeUbus::default(),
+    );
+
+    let report = collector.collect(
+        &RuntimeConfig::default(),
+        &ProbeRuntimeHealth::default(),
+        ProbeMethod::Health,
+    );
+
+    assert!(!report.evidence.probe_error);
+    assert!(!report.warnings.contains(&"probe_error"));
+    assert!(!report.evidence.probe_failures.iter().any(|failure| {
+        failure.source == "command:ip_route_table_2023"
+    }));
+    let route = report
+        .evidence
+        .command
+        .iter()
+        .find(|entry| entry.source == "command:ip_route_table_2023")
+        .unwrap();
+    assert_eq!(route.exit_code, Some(1));
+    assert_eq!(route.supported, Some(true));
+    assert_eq!(route.summary.as_deref(), Some("optional state not present"));
 }
 
 #[test]
@@ -831,6 +890,7 @@ fn nss_presence_does_not_invent_the_firewall_hardware_offload_flag() {
     let mut config = RuntimeConfig::default();
     config.enable_bpf = true;
     config.enable_conntrack_fallback = true;
+    config.interface_include.push("br-lan".into());
     let mut observations = ProbeObservations::default();
     observations.commands.tc = true;
     observations.tc.clsact = true;
@@ -882,6 +942,7 @@ struct FakeCommands {
     truncated: bool,
     tc_help_stderr_only: bool,
     ruleset_truncated_only: bool,
+    ip_route_exit_code: i32,
 }
 
 impl CommandRunner for FakeCommands {
@@ -911,7 +972,11 @@ impl CommandRunner for FakeCommands {
             source: format!("command:{command:?}"),
             program: command.program().into(),
             args: args.iter().map(|arg| (*arg).into()).collect(),
-            exit_code: Some(0),
+            exit_code: Some(if command == ReadOnlyCommand::IpRouteShow {
+                self.ip_route_exit_code
+            } else {
+                0
+            }),
             stdout,
             stderr: match command {
                 ReadOnlyCommand::TcFilterHelp if self.tc_help_stderr_only => {
@@ -934,6 +999,8 @@ struct FakeFiles {
     entries: BTreeMap<String, BoundedFile>,
     errors: BTreeSet<String>,
     reads: Rc<RefCell<Vec<(String, usize)>>>,
+    nss_state_error: bool,
+    nss_state: NssStateProbe,
 }
 impl FileSource for FakeFiles {
     type Error = String;
@@ -965,6 +1032,13 @@ impl FileSource for FakeFiles {
     fn dir_has_entries(&mut self, path: &str) -> Result<bool, Self::Error> {
         Ok(self.exists(path)? == FilePresence::Present)
     }
+    fn probe_nss_state(&mut self) -> Result<NssStateProbe, Self::Error> {
+        if self.nss_state_error {
+            Err("raw nss state error".into())
+        } else {
+            Ok(self.nss_state.clone())
+        }
+    }
 }
 
 #[derive(Default)]
@@ -976,9 +1050,20 @@ impl UciSource for FakeUci {
     }
 }
 
+struct FailingUci;
+impl UciSource for FailingUci {
+    type Error = String;
+    fn load(&mut self, _package: &'static str) -> Result<Option<UciPackageSnapshot>, Self::Error> {
+        Err("raw uci secret value".into())
+    }
+}
+
 #[derive(Default)]
 struct FakeUbus {
     fail: bool,
+    timed_out: bool,
+    truncated: bool,
+    exit_code: Option<i32>,
 }
 impl UbusSource for FakeUbus {
     type Error = String;
@@ -988,10 +1073,11 @@ impl UbusSource for FakeUbus {
         }
         Ok(UbusProbeResult {
             query,
-            exit_code: 0,
+            exit_code: self.exit_code.unwrap_or(0),
             summary: "status available".into(),
             output: "{}".into(),
-            truncated: false,
+            timed_out: self.timed_out,
+            truncated: self.truncated || self.timed_out,
         })
     }
 }
@@ -1150,6 +1236,16 @@ fn injectable_production_collector_records_every_read_only_source_and_error() {
     let failed_report = failed.collect(&config, &runtime, ProbeMethod::Health);
     assert!(failed_report.evidence.probe_error);
     assert!(failed_report.warnings.contains(&"probe_error"));
+    assert!(failed_report.evidence.probe_failures.iter().any(|failure| {
+        failure.kind == "command"
+            && failure.reason == "timeout"
+            && failure.source.starts_with("command:")
+    }));
+    assert!(failed_report.evidence.probe_failures.iter().any(|failure| {
+        failure.kind == "ubus"
+            && failure.reason == "query_failed"
+            && failure.source == "ubus:network.interface.lan"
+    }));
 }
 
 #[test]
@@ -1252,6 +1348,91 @@ fn file_io_errors_are_probe_errors_while_not_found_is_only_missing() {
         .any(|entry| entry.path == "/sys/class/net/ifb0"
             && entry.source == "file:/sys/class/net/ifb0"
             && !entry.present));
+    assert!(report.evidence.probe_failures.iter().any(|failure| {
+        failure.kind == "file"
+            && failure.source == format!("file:{acct}")
+            && failure.reason == "read_failed"
+            && failure.exit_code.is_none()
+    }));
+}
+
+#[test]
+fn uci_and_nss_failures_are_classified_without_storing_raw_error_text() {
+    let mut files = FakeFiles::default();
+    files.nss_state_error = true;
+    let mut collector = ProbeCollector::new(
+        FakeCommands::default(),
+        files,
+        FailingUci,
+        FakeUbus::default(),
+    );
+
+    let report = collector.collect(
+        &RuntimeConfig::default(),
+        &ProbeRuntimeHealth::default(),
+        ProbeMethod::Health,
+    );
+
+    assert!(report.evidence.probe_error);
+    assert!(report.evidence.probe_failures.iter().any(|failure| {
+        failure.kind == "uci"
+            && failure.source == "uci:firewall"
+            && failure.reason == "load_failed"
+            && failure.exit_code.is_none()
+    }));
+    assert!(report.evidence.probe_failures.iter().any(|failure| {
+        failure.kind == "nss"
+            && failure.source == "nss:ecm_state"
+            && failure.reason == "state_probe_failed"
+            && failure.exit_code.is_none()
+    }));
+    assert!(report
+        .evidence
+        .probe_failures
+        .iter()
+        .all(|failure| !failure.source.contains("raw") && !failure.source.contains("secret")));
+}
+
+#[test]
+fn ubus_timeout_and_present_unreadable_nss_state_have_distinct_reasons() {
+    let files = FakeFiles {
+        nss_state: NssStateProbe {
+            present: true,
+            readable: false,
+            errno: 13,
+            state_major: 0,
+            source_path: None,
+        },
+        ..FakeFiles::default()
+    };
+    let ubus = FakeUbus {
+        timed_out: true,
+        ..FakeUbus::default()
+    };
+    let mut collector =
+        ProbeCollector::new(FakeCommands::default(), files, FakeUci::default(), ubus);
+
+    let report = collector.collect(
+        &RuntimeConfig::default(),
+        &ProbeRuntimeHealth::default(),
+        ProbeMethod::Health,
+    );
+
+    assert!(report.evidence.probe_failures.iter().any(|failure| {
+        failure.kind == "nss"
+            && failure.source == "nss:ecm_state"
+            && failure.reason == "state_unreadable"
+    }));
+    assert!(report.evidence.probe_failures.iter().any(|failure| {
+        failure.kind == "ubus"
+            && failure.source == "ubus:network.interface.lan"
+            && failure.reason == "timeout"
+    }));
+    assert!(!report
+        .evidence
+        .probe_failures
+        .iter()
+        .any(|failure| { failure.kind == "ubus" && failure.reason == "output_truncated" }));
 }
 
 #[test]

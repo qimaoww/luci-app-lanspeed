@@ -44,6 +44,12 @@ pub struct Evidence {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct Capabilities {
+    /// Stable platform capability: the kernel/userspace TC-BPF path can be
+    /// configured. This deliberately does not mean that the current runtime
+    /// has successfully attached hooks or read a map.
+    pub bpf_supported: bool,
+    /// Legacy runtime alias retained for clients that still consume `bpf`.
+    /// Production sets it to the current BPF live-metrics state.
     pub bpf: bool,
     pub bpf_package: bool,
     pub bpf_object: bool,
@@ -431,6 +437,8 @@ pub struct Sysdevice {
     pub selected: bool,
     pub observed: bool,
     pub recommended_lan: bool,
+    pub collect_allowed: bool,
+    pub collect_reason: String,
     pub is_bridge: bool,
     pub is_bridge_port: bool,
     pub is_nss_ifb: bool,
@@ -442,8 +450,177 @@ pub struct Sysdevice {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SysdeviceLimits {
+    pub max_configured: usize,
+    pub max_name_length: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SysdevicesResponse {
+    pub contract_version: u32,
     pub devices: Vec<Sysdevice>,
     pub current_ifnames: Vec<String>,
     pub current_observed: Vec<String>,
+    pub current_excluded: Vec<String>,
+    pub configured_ifnames: Vec<String>,
+    pub configured_observed: Vec<String>,
+    pub configured_excluded: Vec<String>,
+    pub orphaned: Vec<String>,
+    pub limits: SysdeviceLimits,
+}
+
+pub const DIAGNOSTICS_CONTRACT_VERSION: u32 = 1;
+pub const DIAGNOSTICS_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiagnosticServiceState {
+    Starting,
+    Running,
+    Degraded,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiagnosticCollectionState {
+    Fresh,
+    Stale,
+    Degraded,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiagnosticHealthState {
+    Healthy,
+    Degraded,
+    Unavailable,
+    Disabled,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DiagnosticPublicError {
+    pub code: String,
+    pub category: String,
+    pub stage: String,
+    pub retriable: bool,
+    pub message_public: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DiagnosticService {
+    pub state: DiagnosticServiceState,
+    pub ubus_connected: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DiagnosticCollection {
+    pub state: DiagnosticCollectionState,
+    #[serde(serialize_with = "saturated_u64")]
+    pub generation: u64,
+    #[serde(serialize_with = "saturated_option_u64")]
+    pub last_attempt_ms: Option<u64>,
+    #[serde(serialize_with = "saturated_option_u64")]
+    pub last_success_ms: Option<u64>,
+    #[serde(serialize_with = "saturated_option_u64")]
+    pub age_ms: Option<u64>,
+    pub refresh_interval_ms: u32,
+    pub consecutive_failures: u32,
+    pub retained: bool,
+    pub last_error: Option<DiagnosticPublicError>,
+}
+
+impl DiagnosticCollection {
+    pub fn unavailable(refresh_interval_ms: u32) -> Self {
+        Self {
+            state: DiagnosticCollectionState::Unavailable,
+            generation: 0,
+            last_attempt_ms: None,
+            last_success_ms: None,
+            age_ms: None,
+            refresh_interval_ms,
+            consecutive_failures: 0,
+            retained: false,
+            last_error: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DiagnosticDataPath {
+    pub configured_rate: String,
+    pub effective_rate: String,
+    pub configured_connection: String,
+    pub effective_connection: String,
+    pub fallback_active: bool,
+    pub reason_code: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DiagnosticInterfaces {
+    pub state: DiagnosticHealthState,
+    pub total: usize,
+    pub available: usize,
+    pub missing: usize,
+    #[serde(serialize_with = "saturated_option_u64")]
+    pub sample_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DiagnosticConnection {
+    pub state: DiagnosticHealthState,
+    pub source: Option<String>,
+    #[serde(serialize_with = "saturated_option_u64")]
+    pub entries_seen: Option<u64>,
+    #[serde(serialize_with = "saturated_option_u64")]
+    pub entries_matched: Option<u64>,
+    #[serde(serialize_with = "saturated_option_u64")]
+    pub parse_errors: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DiagnosticSubsystem {
+    pub id: String,
+    pub state: DiagnosticHealthState,
+    pub code: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DiagnosticVersions {
+    pub daemon: String,
+    pub package: String,
+    pub contract_version: u32,
+    pub schema_version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DiagnosticAlert {
+    pub id: String,
+    pub severity: String,
+    pub component: String,
+    pub state: String,
+    pub message_public: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DiagnosticConfigIssue {
+    pub id: String,
+    pub severity: String,
+    pub option: String,
+    pub state: String,
+    pub message_public: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DiagnosticsResponse {
+    pub contract_version: u32,
+    pub service: DiagnosticService,
+    pub collection: DiagnosticCollection,
+    pub data_path: DiagnosticDataPath,
+    pub interfaces: DiagnosticInterfaces,
+    pub connection: DiagnosticConnection,
+    pub subsystems: Vec<DiagnosticSubsystem>,
+    pub versions: DiagnosticVersions,
+    pub alerts: Vec<DiagnosticAlert>,
+    pub config_issues: Vec<DiagnosticConfigIssue>,
 }

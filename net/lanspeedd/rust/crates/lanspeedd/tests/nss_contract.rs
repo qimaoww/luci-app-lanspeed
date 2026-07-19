@@ -120,14 +120,14 @@ fn direct_fixture_preserves_paths_identity_direction_counters_and_warnings() {
 #[test]
 fn nat_ip_then_node_mac_mapping_reuses_identity_and_keeps_lan_view_direction() {
     let entries = serde_json::json!([
-        {"ip":"192.168.31.102","mac":"02:bb:cc:00:00:03","interface":"br-lan","zone":"lan"},
-        {"ip":"192.168.31.103","mac":"02:bb:cc:00:00:04","interface":"br-lan","zone":"lan"}
+        {"ip":"10.77.0.102","mac":"02:bb:cc:00:00:03","interface":"br-lan","zone":"lan"},
+        {"ip":"10.77.0.103","mac":"02:bb:cc:00:00:04","interface":"br-lan","zone":"lan"}
     ]);
     let table = identities(&entries);
     let text = concat!(
         "conns.conn.70.serial=70\n",
         "conns.conn.70.sip_address=198.51.100.20\n",
-        "conns.conn.70.sip_address_nat=192.168.31.102\n",
+        "conns.conn.70.sip_address_nat=10.77.0.102\n",
         "conns.conn.70.dip_address=203.0.113.10\n",
         "conns.conn.70.snode_address=00:00:00:00:00:00\n",
         "conns.conn.70.snode_address_nat=02:bb:cc:00:00:03\n",
@@ -157,7 +157,7 @@ fn nat_ip_then_node_mac_mapping_reuses_identity_and_keeps_lan_view_direction() {
         (parsed.clients[0].tx_bytes, parsed.clients[0].rx_bytes),
         (1_500_000, 3_000_000)
     );
-    assert_eq!(parsed.clients[0].ips, ["192.168.31.102"]);
+    assert_eq!(parsed.clients[0].ips, ["10.77.0.102"]);
     assert_eq!(parsed.clients[1].identity_key, "02:bb:cc:00:00:04@lan");
     assert_eq!(
         (parsed.clients[1].tx_bytes, parsed.clients[1].rx_bytes),
@@ -170,19 +170,19 @@ fn nat_ip_then_node_mac_mapping_reuses_identity_and_keeps_lan_view_direction() {
 #[test]
 fn ip_owner_wins_over_disagreeing_ecm_mac_and_both_lan_is_not_attributed() {
     let entries = serde_json::json!([
-        {"ip":"192.168.31.100","mac":"02:aa:00:00:00:01","interface":"br-lan","zone":"lan"},
-        {"ip":"192.168.31.101","mac":"02:aa:00:00:00:02","interface":"br-lan","zone":"lan"}
+        {"ip":"10.77.0.100","mac":"02:aa:00:00:00:01","interface":"br-lan","zone":"lan"},
+        {"ip":"10.77.0.101","mac":"02:aa:00:00:00:02","interface":"br-lan","zone":"lan"}
     ]);
     let table = identities(&entries);
     let text = concat!(
-        "conns.conn.1.sip_address=192.168.31.100\n",
+        "conns.conn.1.sip_address=10.77.0.100\n",
         "conns.conn.1.dip_address=1.1.1.1\n",
         "conns.conn.1.snode_address=02:ff:00:00:00:09\n",
         "conns.conn.1.protocol=6\n",
         "conns.conn.1.adv_stats.from_data_total=10\n",
         "conns.conn.1.adv_stats.to_data_total=20\n",
-        "conns.conn.2.sip_address=192.168.31.100\n",
-        "conns.conn.2.dip_address=192.168.31.101\n",
+        "conns.conn.2.sip_address=10.77.0.100\n",
+        "conns.conn.2.dip_address=10.77.0.101\n",
         "conns.conn.2.adv_stats.from_data_total=30\n",
         "conns.conn.2.adv_stats.to_data_total=40\n",
     );
@@ -207,7 +207,7 @@ fn ip_owner_wins_over_disagreeing_ecm_mac_and_both_lan_is_not_attributed() {
 #[test]
 fn endpoint_family_stats_follow_the_address_that_matched_the_shared_identity() {
     let entries = serde_json::json!([
-        {"ip":"192.168.31.100","mac":"02:aa:00:00:00:01","interface":"br-lan","zone":"lan"},
+        {"ip":"10.77.0.100","mac":"02:aa:00:00:00:01","interface":"br-lan","zone":"lan"},
         {"ip":"240e:abc:1234::100","mac":"02:aa:00:00:00:01","interface":"br-lan","zone":"lan"}
     ]);
     let table = identities(&entries);

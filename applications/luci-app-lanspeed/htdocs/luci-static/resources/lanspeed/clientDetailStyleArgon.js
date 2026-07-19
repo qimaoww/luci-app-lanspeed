@@ -11,7 +11,7 @@ var CSS = [
 	'  width:auto!important;background:transparent!important;box-shadow:none!important;color:inherit!important}',
 	'.lanspeed-theme-argon .lanspeed-connection-client-name{font-size:1.28rem!important;line-height:1.25!important}',
 	'.lanspeed-theme-argon .lanspeed-connection-summary-title{font-size:.9rem!important;line-height:1.35!important}',
-	'.lanspeed-theme-argon .lanspeed-connection-state{border-radius:.45rem!important;background:color-mix(in srgb,currentColor 5%,transparent)!important;color:inherit!important}',
+	'.lanspeed-theme-argon .lanspeed-connection-state{border-radius:var(--lanspeed-radius-control)!important}',
 	'.lanspeed-theme-argon .lanspeed-connection-meta-ip,.lanspeed-theme-argon .lanspeed-connection-meta-fact{border-radius:.5rem}',
 	'.lanspeed-theme-argon .lanspeed-connection-summary{align-content:start;align-self:start;gap:.65rem}',
 	'.lanspeed-theme-argon .lanspeed-connection-summary-item{min-height:5.1rem;padding:.8rem .9rem;border-radius:.55rem}',

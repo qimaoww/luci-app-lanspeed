@@ -9,15 +9,33 @@
       "source": "lanspeedd_stub",
       "method": "status",
       "fixture_safe": true,
-      "live_metrics": false
+      "live_metrics": false,
+      "probe_failures": {
+        "items": [],
+        "total": 0,
+        "truncated": false
+      },
+      "bpf": {
+        "enabled": true,
+        "collect_target_count": 1,
+        "expected_hook_count": 2,
+        "attached_hook_count": 0,
+        "object_loaded": false,
+        "attach_state": "not_attempted",
+        "map_state": "not_attempted",
+        "last_complete_snapshot_ms": null,
+        "retained_fresh_snapshot": false,
+        "reason_code": "package_missing"
+      }
     },
     "refresh_interval_ms": 1000,
     "collector_mode": "auto",
     "rate_collector_mode": "auto",
     "conn_collector_mode": "auto",
-    "version": "1.1.1-r6",
+    "version": "1.1.1-r9",
     "capabilities": {
       "bpf": false,
+      "bpf_supported": false,
       "bpf_package": false,
       "bpf_object": false,
       "conntrack_fallback": true,
@@ -103,6 +121,7 @@
     "confidence": "unsupported",
     "capabilities": {
       "bpf": false,
+      "bpf_supported": false,
       "bpf_package": false,
       "bpf_object": false,
       "conntrack_fallback": true,
@@ -138,7 +157,24 @@
       "source": "lanspeedd_stub",
       "method": "health",
       "fixture_safe": true,
-      "live_metrics": false
+      "live_metrics": false,
+      "probe_failures": {
+        "items": [],
+        "total": 0,
+        "truncated": false
+      },
+      "bpf": {
+        "enabled": true,
+        "collect_target_count": 1,
+        "expected_hook_count": 2,
+        "attached_hook_count": 0,
+        "object_loaded": false,
+        "attach_state": "not_attempted",
+        "map_state": "not_attempted",
+        "last_complete_snapshot_ms": null,
+        "retained_fresh_snapshot": false,
+        "reason_code": "package_missing"
+      }
     }
   },
   "interfaces": {
@@ -162,12 +198,15 @@
     }
   },
   "sysdevices": {
+    "contract_version": 1,
     "devices": [
       {
         "name": "br-lan",
         "selected": true,
         "observed": false,
         "recommended_lan": true,
+        "collect_allowed": true,
+        "collect_reason": "eligible_bridge",
         "is_bridge": true,
         "is_bridge_port": false,
         "is_nss_ifb": false,
@@ -178,6 +217,8 @@
         "selected": false,
         "observed": true,
         "recommended_lan": false,
+        "collect_allowed": false,
+        "collect_reason": "nssifb_observe_only",
         "is_bridge": false,
         "is_bridge_port": false,
         "is_nss_ifb": true
@@ -188,6 +229,111 @@
     ],
     "current_observed": [
       "nssifb"
+    ],
+    "current_excluded": [],
+    "configured_ifnames": ["br-lan"],
+    "configured_observed": ["nssifb"],
+    "configured_excluded": [],
+    "orphaned": [],
+    "limits": {
+      "max_configured": 16,
+      "max_name_length": 31
+    }
+  },
+  "diagnostics": {
+    "contract_version": 1,
+    "service": {
+      "state": "running",
+      "ubus_connected": true
+    },
+    "collection": {
+      "state": "fresh",
+      "generation": 1,
+      "last_attempt_ms": 0,
+      "last_success_ms": 0,
+      "age_ms": 0,
+      "refresh_interval_ms": 1000,
+      "consecutive_failures": 0,
+      "retained": false,
+      "last_error": null
+    },
+    "data_path": {
+      "configured_rate": "auto",
+      "effective_rate": "unsupported",
+      "configured_connection": "auto",
+      "effective_connection": "unsupported",
+      "fallback_active": false,
+      "reason_code": "no_live_rate_collector"
+    },
+    "interfaces": {
+      "state": "degraded",
+      "total": 1,
+      "available": 0,
+      "missing": 0,
+      "sample_ms": 0
+    },
+    "connection": {
+      "state": "unavailable",
+      "source": null,
+      "entries_seen": null,
+      "entries_matched": null,
+      "parse_errors": null
+    },
+    "subsystems": [
+      {
+        "id": "bpf",
+        "state": "unavailable",
+        "code": "bpf_unavailable"
+      },
+      {
+        "id": "tc",
+        "state": "unavailable",
+        "code": "tc_unavailable"
+      },
+      {
+        "id": "conntrack",
+        "state": "unavailable",
+        "code": "conntrack_unavailable"
+      },
+      {
+        "id": "nss",
+        "state": "disabled",
+        "code": "nss_not_present"
+      },
+      {
+        "id": "identity",
+        "state": "healthy",
+        "code": null
+      },
+      {
+        "id": "ubus",
+        "state": "healthy",
+        "code": null
+      }
+    ],
+    "versions": {
+      "daemon": "1.1.1-r9",
+      "package": "1.1.1-r9",
+      "contract_version": 1,
+      "schema_version": 1
+    },
+    "alerts": [
+      {
+        "id": "live_metrics_unavailable",
+        "severity": "warning",
+        "component": "runtime",
+        "state": "active",
+        "message_public": "No supported live-rate collector is currently producing data."
+      }
+    ],
+    "config_issues": [
+      {
+        "id": "interface_exclude_compatibility_only",
+        "severity": "info",
+        "option": "interface_exclude",
+        "state": "compatibility_only",
+        "message_public": "interface_exclude is retained for compatibility and does not change the attach set."
+      }
     ]
   },
   "client_connections": {

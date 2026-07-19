@@ -138,7 +138,8 @@ pub const fn before_reply_action(method: Method) -> BeforeReplyAction {
         | Method::Overview
         | Method::Health
         | Method::Interfaces
-        | Method::Sysdevices => BeforeReplyAction::None,
+        | Method::Sysdevices
+        | Method::Diagnostics => BeforeReplyAction::None,
     }
 }
 

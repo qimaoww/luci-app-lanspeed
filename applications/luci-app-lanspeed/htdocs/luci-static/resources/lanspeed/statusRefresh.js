@@ -11,6 +11,125 @@ var CLIENT_INFO_WARNINGS = {
 	conntrack_connection_only: true
 };
 
+var RPC_LABELS = {
+	status: _('服务状态'),
+	clients: _('客户端数据'),
+	interfaces: _('接口吞吐'),
+	uci: _('页面配置')
+};
+
+function bpfEvidence(status) {
+	var evidence = status && status.evidence;
+	return evidence && typeof evidence.bpf === 'object' && evidence.bpf || {};
+}
+
+function emptyClientText(status) {
+	var reason = String(bpfEvidence(status).reason_code || '');
+	if (reason === 'no_collect_interface')
+		return _('没有接口设为“采集”。请在“LAN Speed 配置”的接口分配中选择实际 LAN 接口。');
+	if (reason === 'tc_conflict' || reason === 'tc_attach_failed' || reason === 'tc_unavailable' || reason === 'tc_unsupported')
+		return _('BPF 组件已安装，但 TC 挂载未完成。请打开“运行诊断”查看挂载状态。');
+	if (reason === 'map_read_failed')
+		return _('TC 已挂载，但 BPF 客户端映射表读取失败。请打开“运行诊断”查看映射状态。');
+	if (reason === 'package_missing' || reason === 'object_missing' || reason === 'object_load_failed')
+		return _('BPF 运行组件不完整或加载失败。请打开“运行诊断”查看安装与内核状态。');
+	if (reason === 'disabled')
+		return _('BPF 已关闭，客户端实时测速不会启动。');
+	if (status && status.capabilities && status.capabilities.live_metrics === false)
+		return _('客户端实时采集尚未就绪。请打开“运行诊断”查看数据路径。');
+	return _('当前采样中没有 LAN 客户端流量。');
+}
+
+function rpcErrorText(result) {
+	var error = result && result.error;
+	if (!error) return _('未知 RPC 失败');
+	var text = error.message || String(error);
+	if (error.code !== undefined && error.code !== null && String(error.code) !== '')
+		text += ' (' + String(error.code) + ')';
+	return text;
+}
+
+function refreshAvailability(viewState, refs) {
+	var rpc = viewState.rpc || {};
+	var keys = Object.keys(RPC_LABELS);
+	var failed = keys.filter(function(key) {
+		return rpc[key] && rpc[key].ok === false;
+	});
+	var hardFailure = viewState.hardFailure === true ||
+		(failed.length === keys.length && failed.every(function(key) { return !rpc[key].retained; }));
+	var status = viewState.status || {};
+	var liveUnavailable = status.capabilities && status.capabilities.live_metrics === false;
+	var runtimeUnavailable = liveUnavailable && status.mode === 'Unsupported';
+
+	if (refs.root) {
+		refs.root.setAttribute('aria-busy', viewState.loading ? 'true' : 'false');
+		refs.root.setAttribute('data-state', hardFailure || runtimeUnavailable ? 'bad' :
+			failed.length || liveUnavailable ? 'warning' : 'good');
+	}
+	if (refs.btnRefresh) {
+		refs.btnRefresh.disabled = viewState.manualBusy === true;
+		refs.btnRefresh.textContent = viewState.manualBusy ? _('刷新中…') : _('立即刷新');
+	}
+
+	if (!failed.length) {
+		refs.errorBox.style.display = 'none';
+		refs.errorBox.setAttribute('aria-hidden', 'true');
+		refs.errorPre.textContent = '';
+		fmt.replaceChildren(refs.errorList, []);
+		return { failed: failed, hardFailure: hardFailure };
+	}
+
+	refs.errorBox.style.display = '';
+	refs.errorBox.setAttribute('aria-hidden', 'false');
+	refs.errorTitle.textContent = hardFailure
+		? _('实时状态暂不可用') : _('部分实时数据暂不可用');
+	refs.errorPre.textContent = hardFailure
+		? _('所有实时请求均失败，请检查服务状态后重试。')
+		: _('其余成功数据仍会显示；标为“沿用上次”的内容可能已经过期。');
+	fmt.replaceChildren(refs.errorList, failed.map(function(key) {
+		var state = rpc[key];
+		return E('li', { 'data-state': state.retained ? 'warning' : 'bad' }, [
+			E('strong', {}, RPC_LABELS[key] + '：'),
+			E('span', {}, rpcErrorText(state)),
+			state.retained
+				? E('span', { 'class': 'label label-warning' }, _('沿用上次'))
+				: E('span', { 'class': 'label label-danger' }, _('不可用'))
+		]);
+	}));
+	return { failed: failed, hardFailure: hardFailure };
+}
+
+function refreshPagination(viewState, refs, sorted) {
+	var page = typeof fmt.paginate === 'function'
+		? fmt.paginate(sorted, viewState.page, viewState.prefs.pageSize)
+		: {
+			items: sorted,
+			page: 1,
+			pageCount: 1,
+			pageSize: sorted.length || 1,
+			total: sorted.length,
+			start: sorted.length ? 1 : 0,
+			end: sorted.length
+		};
+	viewState.page = page.page;
+	viewState.pageCount = page.pageCount;
+	if (!refs.pageNav) return page;
+	refs.pageNav.style.display = page.total ? '' : 'none';
+	var summary = page.total
+		? _('%d / %d 页 · %d–%d / %d').format(
+			page.page, page.pageCount, page.start, page.end, page.total)
+		: _('没有客户端');
+	if (refs.pageSummary.textContent !== String(summary))
+		refs.pageSummary.textContent = summary;
+	refs.pageFirst.disabled = page.page <= 1;
+	refs.pagePrev.disabled = page.page <= 1;
+	refs.pageNext.disabled = page.page >= page.pageCount;
+	refs.pageLast.disabled = page.page >= page.pageCount;
+	if (refs.pageSizeSel && String(refs.pageSizeSel.value) !== String(page.pageSize))
+		refs.pageSizeSel.value = String(page.pageSize);
+	return page;
+}
+
 function clientNameContent(c, displayName, ips) {
 	var name = displayName;
 	if (c.identity_key) {
@@ -100,18 +219,18 @@ function refreshLive(viewState) {
 	var hidePrivateIpv6 = viewState.hidePrivateIpv6 === true;
 	var hideIpv6Ranges = statusIp.hideIpv6RangesValue(viewState.hideIpv6Ranges);
 	setClientStatusVisibility(refs, showClientStatus);
-
-	if (viewState.error) {
-		refs.errorBox.style.display = '';
-		refs.errorPre.textContent = (viewState.error && (viewState.error.message || String(viewState.error))) || _('未知 RPC 失败');
-	} else {
-		refs.errorBox.style.display = 'none';
-	}
+	var availability = refreshAvailability(viewState, refs);
 
 	var collector = statusCollector.effectiveCollector(status, viewState.clients);
-	refs.collectorPill.className = statusCollector.collectorClass(collector);
+	refs.collectorPill.className = statusCollector.collectorClass(collector) +
+		' lanspeed-collector-status';
 	refs.collectorPill.textContent = statusCollector.collectorLabel(collector);
 	refs.collectorPill.title = _('当前实时速率数据源');
+	if ((viewState.rpc && viewState.rpc.status && viewState.rpc.status.ok === false) ||
+	    (viewState.rpc && viewState.rpc.clients && viewState.rpc.clients.ok === false)) {
+		refs.collectorPill.className = 'label label-warning lanspeed-collector-status';
+		refs.collectorPill.title = _('数据源信息可能来自上次成功结果');
+	}
 
 	var metaParts = [];
 	if (status.version) metaParts.push(_('后端 ') + status.version);
@@ -128,8 +247,8 @@ function refreshLive(viewState) {
 	var udpSub;
 	if (typeof clientsData.tcp_conns_total === 'number' || typeof clientsData.udp_conns_total === 'number') {
 		refs.mConnsWrap.style.display = '';
-		refs.mTcpConns.textContent = 'TCP ' + (typeof clientsData.tcp_conns_total === 'number' ? clientsData.tcp_conns_total : '-');
-		refs.mUdpConns.textContent = 'UDP ' + (typeof clientsData.udp_conns_total === 'number' ? clientsData.udp_conns_total : '-');
+		refs.mTcpConns.textContent = String(typeof clientsData.tcp_conns_total === 'number' ? clientsData.tcp_conns_total : '-');
+		refs.mUdpConns.textContent = String(typeof clientsData.udp_conns_total === 'number' ? clientsData.udp_conns_total : '-');
 		if (typeof clientsData.udp_dns_conns_total === 'number' || typeof clientsData.udp_other_conns_total === 'number') {
 			udpSub = [
 				'DNS ' + (typeof clientsData.udp_dns_conns_total === 'number' ? clientsData.udp_dns_conns_total : '-'),
@@ -200,6 +319,7 @@ function refreshLive(viewState) {
 		return true;
 	});
 	var sorted = fmt.sortClients(filtered, prefs.sortKey, prefs.sortDir, latestSample, activeCfg);
+	var page = refreshPagination(viewState, refs, sorted);
 	refreshSortHeaders(refs, prefs);
 
 	var summaryParts = [
@@ -208,14 +328,23 @@ function refreshLive(viewState) {
 	];
 	if (viewState.filter || prefs.activeOnly)
 		summaryParts.push(_('%d 显示').format(sorted.length));
+	if (page.total)
+		summaryParts.push(_('%d–%d 当前页').format(page.start, page.end));
 	refs.clientsHeaderSummary.textContent = summaryParts.join(' · ');
 
 	if (!sorted.length) {
 		refs.clientsTable.style.display = 'none';
 		refs.empty.style.display = '';
-		refs.empty.textContent = (viewState.filter || prefs.activeOnly)
-			? _('没有匹配的客户端。')
-			: _('暂未发现 LAN 客户端。请在“LAN Speed 配置”中选择实际 LAN 接口并设为“采集”。');
+		var clientsRpc = viewState.rpc && viewState.rpc.clients;
+		if (viewState.filter || prefs.activeOnly) {
+			refs.empty.textContent = _('没有匹配的客户端。');
+		} else if (availability.hardFailure || (clientsRpc && clientsRpc.ok === false && !clientsRpc.retained)) {
+			refs.empty.textContent = _('客户端数据不可用。请确认 lanspeedd 正在运行后重试。');
+			} else if (clientsRpc && clientsRpc.ok === false && clientsRpc.retained) {
+				refs.empty.textContent = _('客户端请求失败；上次成功结果中没有客户端。');
+			} else {
+				refs.empty.textContent = emptyClientText(status);
+		}
 	} else {
 		refs.clientsTable.style.display = '';
 		refs.empty.style.display = 'none';
@@ -225,7 +354,7 @@ function refreshLive(viewState) {
 			globalWarnings[vocab.normalizeWarningId(w)] = true;
 		});
 
-		fmt.replaceChildren(refs.tbody, sorted.map(function(c) {
+		fmt.replaceChildren(refs.tbody, page.items.map(function(c) {
 			var tx = Number(c.tx_bps) || 0, rx = Number(c.rx_bps) || 0;
 			var idle = !fmt.isActiveClient(c, latestSample, activeCfg);
 			var ips = statusIp.displayIpsForClient(c.ips, showIpv6, hidePrivateIpv6, hideIpv6Ranges);
@@ -313,8 +442,18 @@ function refreshLive(viewState) {
 	}
 
 	var ifaces = fmt.asArray(viewState.interfaces && viewState.interfaces.interfaces);
+	var interfacesRpc = viewState.rpc && viewState.rpc.interfaces;
 	if (!ifaces.length) {
-		refs.ifacesDetails.parentNode.style.display = 'none';
+		if (interfacesRpc && interfacesRpc.ok === false) {
+			refs.ifacesDetails.parentNode.style.display = '';
+			fmt.replaceChildren(refs.ifacesBody, []);
+			refs.ifacesSummary.textContent = interfacesRpc.retained ? _('上次结果为空') : _('接口数据不可用');
+			refs.ifacesHint.textContent = interfacesRpc.retained
+				? _('接口请求失败；上次成功结果中没有接口采样。')
+				: _('无法读取接口吞吐，请检查服务状态后重试。');
+		} else {
+			refs.ifacesDetails.parentNode.style.display = 'none';
+		}
 	} else {
 		refs.ifacesDetails.parentNode.style.display = '';
 		var clientSumByIf = {};
@@ -336,11 +475,13 @@ function refreshLive(viewState) {
 			totalIfTx += ifUp; totalIfRx += ifDn;
 
 			return E('tr', {}, [
-				E('td', {}, n),
-				E('td', { 'class': 'num' }, fmt.formatRate(ifUp, prefs.unit)),
-				E('td', { 'class': 'num' }, fmt.formatRate(ifDn, prefs.unit)),
-				E('td', { 'class': 'num' }, isLan ? fmt.formatRate(cs.tx, prefs.unit) : '-'),
-				E('td', { 'class': 'num' }, isLan ? fmt.formatRate(cs.rx, prefs.unit) : '-')
+				E('td', { 'data-label': _('接口') }, n),
+				E('td', { 'class': 'num', 'data-label': _('接口 ↑') }, fmt.formatRate(ifUp, prefs.unit)),
+				E('td', { 'class': 'num', 'data-label': _('接口 ↓') }, fmt.formatRate(ifDn, prefs.unit)),
+				E('td', { 'class': 'num', 'data-label': _('客户端 ↑') },
+					isLan ? fmt.formatRate(cs.tx, prefs.unit) : '-'),
+				E('td', { 'class': 'num', 'data-label': _('客户端 ↓') },
+					isLan ? fmt.formatRate(cs.rx, prefs.unit) : '-')
 			]);
 		}));
 
@@ -359,6 +500,12 @@ function refreshLive(viewState) {
 		} else {
 			refs.ifacesHint.textContent = '';
 		}
+		if (interfacesRpc && interfacesRpc.ok === false && interfacesRpc.retained) {
+			refs.ifacesHint.textContent = [
+				_('接口请求失败，当前显示上次成功结果。'),
+				refs.ifacesHint.textContent
+			].filter(Boolean).join(' ');
+		}
 	}
 
 }
@@ -369,6 +516,8 @@ return baseclass.extend({
 	splitClientWarnings: splitClientWarnings,
 	setClientStatusVisibility: setClientStatusVisibility,
 	clientStateCell: clientStateCell,
+	refreshAvailability: refreshAvailability,
+	refreshPagination: refreshPagination,
 
 	refreshLive: function(viewState) {
 		return refreshLive(viewState);

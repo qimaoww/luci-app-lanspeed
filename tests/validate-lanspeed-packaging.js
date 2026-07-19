@@ -30,6 +30,7 @@ const qaDevice = fs.readFileSync(qaDevicePath, 'utf8');
 
 const luciResources = [
   'configForm.js',
+  'configModel.js',
   'configStyle.js',
   'configStyleArgon.js',
   'configStyleAurora.js',
@@ -37,6 +38,12 @@ const luciResources = [
   'configStyleBootstrap.js',
   'configStyleResponsive.js',
   'configStyleShared.js',
+	'configView.js',
+	'designSystem.js',
+	'designSystemArgon.js',
+	'designSystemAurora.js',
+	'designSystemBase.js',
+	'designSystemBootstrap.js',
   'diagnosticsRefresh.js',
   'diagnosticsShell.js',
   'diagnosticsStyle.js',
@@ -45,6 +52,7 @@ const luciResources = [
   'diagnosticsStyleBase.js',
   'diagnosticsStyleBootstrap.js',
   'diagnosticsStyleResponsive.js',
+	'diagnosticsModel.js',
 	'diagnosticsView.js',
 	'clientConnections.js',
 	'dhcpHostnames.js',
@@ -438,8 +446,8 @@ function validateQaDeviceContract() {
     const dryEvidence = fs.readFileSync(dryEvidencePath, 'utf8');
     assert(!dryEvidence.includes(dryPlaceholder), 'qa-device dry-run evidence must never expose SSHPASS');
     assert(
-      dryEvidence.includes('coverage=ubus 八个方法: status, clients, overview, health, reload, interfaces, sysdevices, client_connections'),
-      'qa-device evidence header must state all eight ubus methods'
+      dryEvidence.includes('coverage=ubus 九个方法: status, clients, overview, health, diagnostics, reload, interfaces, sysdevices, client_connections'),
+      'qa-device evidence header must state all nine ubus methods'
     );
     for (const method of [
       'status',
@@ -500,7 +508,7 @@ function validateQaDeviceContract() {
     assert(qaDevice.includes('json_add_string identity_key "$identity_key"'), 'qa-device must add identity_key through jshn');
     assert(qaDevice.includes('client_payload=$(json_dump)'), 'qa-device must serialize the detail payload through jshn');
 
-    const plainIdentity = '30:c5:99:a7:bb:2d@eth1';
+    const plainIdentity = '02:00:00:00:00:42@eth1';
     const specialIdentity = 'client"quoted\\path@br-lan';
     const successfulJshnCalls = (identity) => [
       'source',
@@ -856,7 +864,7 @@ try {
     );
   });
   assert(
-    readme.includes("ubus call lanspeed client_connections \\\n  '{\"identity_key\":\"30:c5:99:a7:bb:2d@eth1\"}'"),
+    readme.includes("ubus call lanspeed client_connections \\\n  '{\"identity_key\":\"02:00:00:00:00:42@eth1\"}'"),
     'README must provide the copyable client_connections identity_key command'
   );
   assert(

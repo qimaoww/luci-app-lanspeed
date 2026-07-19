@@ -31,7 +31,7 @@ use crate::{
     },
     config::{
         is_sysdevice_candidate, ConnectionCollectorMode, InterfaceEligibility, RuntimeConfig,
-        SysfsInterfaceEligibility,
+        SysfsInterfaceEligibility, MAX_INTERFACE_NAMES, MAX_INTERFACE_NAME_LEN,
     },
     connection_details::ConnectionRateBook,
     connections::{
@@ -66,7 +66,7 @@ use crate::{
         Capabilities, Client, ClientsResponse, Confidence, Conflict, Coverage, Evidence,
         HealthResponse, Interface, InterfaceRole, InterfaceStatus, InterfacesResponse, Mode,
         OverviewResponse, OverviewSample, ReloadResponse, StatusResponse, Sysdevice,
-        SysdevicesResponse,
+        SysdeviceLimits, SysdevicesResponse,
     },
     policy::{self, RateCollector},
     probe::{
@@ -90,6 +90,17 @@ const INTERFACE_NOTE: &str = "Per-interface totals from kernel net device counte
 
 type Bpf = BpfRuntime<SystemAyaLink>;
 
+fn bpf_error_stage(kind: AdapterErrorKind) -> &'static str {
+    match kind {
+        AdapterErrorKind::ObjectMissing
+        | AdapterErrorKind::KfuncIncompatible
+        | AdapterErrorKind::LoadFailed => "object_load_failed",
+        AdapterErrorKind::OwnershipConflict => "tc_conflict",
+        AdapterErrorKind::AttachFailed | AdapterErrorKind::DetachFailed => "tc_attach_failed",
+        AdapterErrorKind::MapReadFailed => "map_read_failed",
+    }
+}
+
 fn production_now_ms() -> Result<u64, DaemonError> {
     monotonic_millis()
         .map_err(|error| DaemonError::collection(format!("read CLOCK_MONOTONIC: {error}")))
@@ -100,6 +111,9 @@ struct ProductionRuntime {
     adapter: SystemAyaAdapter,
     bpf: Option<Bpf>,
     bpf_error: Option<String>,
+    /// Stable internal classification for the last BPF failure. The public
+    /// evidence exposes this code, while `bpf_error` remains private detail.
+    bpf_error_stage: Option<&'static str>,
     nss_error: Option<String>,
     bpf_collector: BpfSnapshotCollector,
     conntrack_snapshot: Option<Arc<CollectedSnapshot>>,
@@ -132,6 +146,7 @@ struct RuntimeCheckpoint {
     probe_report: Arc<ProbeReport>,
     next_probe_ms: u64,
     bpf_error: Option<String>,
+    bpf_error_stage: Option<&'static str>,
     nss_error: Option<String>,
 }
 
@@ -173,6 +188,7 @@ impl ProductionRuntime {
             adapter: SystemAyaAdapter::new(),
             bpf: None,
             bpf_error: None,
+            bpf_error_stage: None,
             nss_error: None,
             overview: OverviewRing::new(),
             coverage: CoverageRing::new(),
@@ -215,16 +231,23 @@ impl ProductionRuntime {
         if !self.config.enable_bpf || !self.probe_report.facts.tc.safe_attach {
             return Ok(());
         }
+        let interfaces = collect_ifnames(&self.config);
+        if interfaces.is_empty() {
+            self.bpf_error = None;
+            self.bpf_error_stage = None;
+            return Ok(());
+        }
         let mut loaded = match BpfRuntime::load_byte_only(&mut self.adapter, FALLBACK_OBJECT_PATH) {
             Ok(runtime) => runtime,
             Err(error) => {
+                self.bpf_error_stage = Some(bpf_error_stage(error.kind()));
                 self.bpf_error = Some(error.to_string());
                 return Ok(());
             }
         };
-        let interfaces = collect_ifnames(&self.config);
         let mode = self.desired_attach_mode();
         if let Err(error) = loaded.attach_interfaces(&mut self.adapter, &interfaces, mode) {
+            self.bpf_error_stage = Some(bpf_error_stage(error.kind()));
             if let Err(cleanup) = loaded.shutdown(&mut self.adapter) {
                 return Err(DaemonError::collection(format!(
                     "{error}; BPF cleanup failed: {cleanup}"
@@ -236,6 +259,7 @@ impl ProductionRuntime {
         }
         self.bpf = Some(loaded);
         self.bpf_error = None;
+        self.bpf_error_stage = None;
         Ok(())
     }
 
@@ -257,6 +281,7 @@ impl ProductionRuntime {
             probe_report: self.probe_report.clone(),
             next_probe_ms: self.next_probe_ms,
             bpf_error: self.bpf_error.clone(),
+            bpf_error_stage: self.bpf_error_stage,
             nss_error: self.nss_error.clone(),
         }
     }
@@ -277,6 +302,7 @@ impl ProductionRuntime {
         self.probe_report = checkpoint.probe_report;
         self.next_probe_ms = checkpoint.next_probe_ms;
         self.bpf_error = checkpoint.bpf_error;
+        self.bpf_error_stage = checkpoint.bpf_error_stage;
         self.nss_error = checkpoint.nss_error;
     }
 
@@ -437,9 +463,11 @@ impl ProductionRuntime {
                 ) {
                     Ok(snapshot) => {
                         self.bpf_error = None;
+                        self.bpf_error_stage = None;
                         (Some(snapshot), true)
                     }
                     Err(error) => {
+                        self.bpf_error_stage = Some(bpf_error_stage(error.kind()));
                         self.bpf_error = Some(error.to_string());
                         (self.bpf_collector.last_complete().cloned(), false)
                     }
@@ -465,9 +493,11 @@ impl ProductionRuntime {
                     ) {
                         Ok(snapshot) => {
                             self.bpf_error = None;
+                            self.bpf_error_stage = None;
                             (Some(snapshot), true)
                         }
                         Err(error) => {
+                            self.bpf_error_stage = Some(bpf_error_stage(error.kind()));
                             self.bpf_error = Some(error.to_string());
                             (self.bpf_collector.last_complete().cloned(), false)
                         }
@@ -641,6 +671,10 @@ impl ProductionRuntime {
             clients.nss_ecm_direct_flows_seen = Some(snapshot.stats.entries_seen as u64);
             clients.nss_ecm_direct_flows_matched = Some(snapshot.stats.entries_matched as u64);
             clients.nss_ecm_direct_parse_errors = Some(snapshot.stats.malformed_lines as u64);
+            if decision.rate == RateCollector::NssEcmDirect && clients.conn_source.is_none() {
+                clients.conn_source = Some("nss_ecm_direct".into());
+                clients.conn_collector_mode = Some(self.config.conn_collector_mode.as_str().into());
+            }
         }
         if clients.evidence.is_none() {
             clients.evidence = Some(evidence(&report, "clients"));
@@ -689,11 +723,15 @@ impl ProductionRuntime {
                 }
             }
         }
-        if let Some(error) = &self.bpf_error {
-            status_evidence
-                .details
-                .insert("runtime_error".into(), json!(error));
-        }
+        status_evidence.details.insert(
+            "bpf".into(),
+            crate::production_evidence::bpf_details(
+                &self.config,
+                &report,
+                &runtime_health,
+                self.bpf_error_stage,
+            ),
+        );
         if let Some(error) = &self.nss_error {
             status_evidence
                 .details
@@ -716,6 +754,10 @@ impl ProductionRuntime {
                 .details
                 .insert("identity_errors".into(), json!(identity_errors));
         }
+        status_evidence.details.insert(
+            "probe_failures".into(),
+            crate::production_evidence::probe_failure_details(&report.evidence.probe_failures),
+        );
         let version = version();
         let status = StatusResponse {
             mode,
@@ -735,11 +777,15 @@ impl ProductionRuntime {
         };
         let mut health_evidence = evidence(&report, "health");
         apply_decision_evidence(&mut health_evidence, &decision, &self.config, &report);
-        if let Some(error) = &self.bpf_error {
-            health_evidence
-                .details
-                .insert("runtime_error".into(), json!(error));
-        }
+        health_evidence.details.insert(
+            "bpf".into(),
+            crate::production_evidence::bpf_details(
+                &self.config,
+                &report,
+                &runtime_health,
+                self.bpf_error_stage,
+            ),
+        );
         if let Some(error) = &self.nss_error {
             health_evidence
                 .details
@@ -750,6 +796,10 @@ impl ProductionRuntime {
                 .details
                 .insert("identity_errors".into(), json!(identity_errors));
         }
+        health_evidence.details.insert(
+            "probe_failures".into(),
+            crate::production_evidence::probe_failure_details(&report.evidence.probe_failures),
+        );
         let health = HealthResponse {
             mode,
             confidence,
@@ -1093,7 +1143,7 @@ impl App {
                 return Err(error);
             }
         };
-        self.state.publish(Arc::new(snapshot));
+        self.state.publish_runtime_snapshot(snapshot);
         Ok(())
     }
     fn before_reply(&mut self, method: ubus::Method) -> Result<(), DaemonError> {
@@ -1191,6 +1241,7 @@ impl App {
                 candidate.bpf_collector = current.bpf_collector.clone();
             }
             candidate.bpf_error = current.bpf_error.clone();
+            candidate.bpf_error_stage = current.bpf_error_stage;
             let runtime = current.bpf.as_mut().unwrap();
             let transaction = match runtime.prepare_reconfigure(
                 &mut current.adapter,
@@ -1250,6 +1301,7 @@ impl App {
                     candidate.bpf_collector = current.bpf_collector.clone();
                 }
                 candidate.bpf_error = current.bpf_error.clone();
+                candidate.bpf_error_stage = current.bpf_error_stage;
                 mode_switch_checkpoint = Some(candidate.checkpoint());
             } else if wants_bpf {
                 if let Err(error) = candidate.activate_new_bpf() {
@@ -1936,6 +1988,10 @@ fn apply_decision_evidence(
         .and_then(Value::as_object_mut)
     {
         collector.insert("primary_source".into(), json!(effective));
+        collector.insert(
+            "effective_connection_collector".into(),
+            json!(decision.connection.as_str()),
+        );
         collector.insert("rate_reason".into(), json!(decision.evidence.rate_reason));
         collector.insert(
             "connection_reason".into(),
@@ -1953,6 +2009,9 @@ fn apply_decision_evidence(
 
 fn capabilities(value: &ProbeCapabilities, report: &ProbeReport) -> Capabilities {
     Capabilities {
+        // `bpf_supported` is a platform/configuration capability. Keep it
+        // independent from `bpf`, which remains the legacy runtime alias.
+        bpf_supported: value.tc && value.tc_clsact && report.facts.tc.bpf,
         bpf: value.bpf,
         bpf_package: value.bpf_package,
         bpf_object: value.bpf_object,
@@ -2041,6 +2100,27 @@ fn collect_ifnames_with_roles(config: &RuntimeConfig) -> Vec<(String, InterfaceR
 fn sysdevices(config: &RuntimeConfig) -> Result<SysdevicesResponse, DaemonError> {
     let selected = collect_ifnames(config);
     let observed = config.runtime_observe_ifnames();
+    let configured_ifnames = if config.configured_ifnames.is_empty() {
+        let mut names = Vec::new();
+        for name in config.ifnames.iter().chain(config.interface_include.iter()) {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+        names
+    } else {
+        config.configured_ifnames.clone()
+    };
+    let configured_observed = if config.configured_observed.is_empty() {
+        config.observe_ifnames.clone()
+    } else {
+        config.configured_observed.clone()
+    };
+    let configured_excluded = if config.configured_excluded.is_empty() {
+        config.interface_exclude.clone()
+    } else {
+        config.configured_excluded.clone()
+    };
     let eligibility = SysfsInterfaceEligibility::default();
     let mut devices = Vec::new();
     for entry in fs::read_dir("/sys/class/net")
@@ -2060,21 +2140,64 @@ fn sysdevices(config: &RuntimeConfig) -> Result<SysdevicesResponse, DaemonError>
             .and_then(|v| v.trim().parse::<u64>().ok())
             .filter(|v| *v > 0 && *v < (1 << 31));
         let recommended = eligibility.is_collect_eligible(&name);
+        let is_bridge = root.join("bridge").is_dir();
+        let is_bridge_port = root.join("brport").is_dir();
+        let is_nss_ifb = name == "nssifb";
+        let collect_allowed = recommended && !is_nss_ifb;
+        let collect_reason = if collect_allowed && is_bridge {
+            "eligible_bridge"
+        } else if collect_allowed && is_bridge_port {
+            "eligible_bridge_port"
+        } else if collect_allowed {
+            "eligible_ethernet"
+        } else if is_nss_ifb {
+            "nssifb_observe_only"
+        } else {
+            "unsupported_link_type"
+        };
         devices.push(Sysdevice {
             name: name.clone(),
             selected: selected.contains(&name),
             observed: observed.contains(&name),
             recommended_lan: recommended,
-            is_bridge: root.join("bridge").is_dir(),
-            is_bridge_port: root.join("brport").is_dir(),
-            is_nss_ifb: name == "nssifb",
+            collect_allowed,
+            collect_reason: collect_reason.into(),
+            is_bridge,
+            is_bridge_port,
+            is_nss_ifb,
             speed_mbps: speed,
         });
     }
+    let discovered = devices
+        .iter()
+        .map(|device| device.name.as_str())
+        .collect::<Vec<_>>();
+    let mut orphaned = Vec::new();
+    for name in configured_ifnames
+        .iter()
+        .chain(configured_observed.iter())
+        .chain(configured_excluded.iter())
+    {
+        if !discovered.contains(&name.as_str()) && !orphaned.contains(name) {
+            orphaned.push(name.clone());
+        }
+    }
     Ok(SysdevicesResponse {
+        contract_version: 1,
         devices,
         current_ifnames: selected,
         current_observed: observed,
+        // `interface_exclude` is compatibility-only and does not alter the
+        // runtime attach set, so no exclusion is currently effective.
+        current_excluded: Vec::new(),
+        configured_ifnames,
+        configured_observed,
+        configured_excluded,
+        orphaned,
+        limits: SysdeviceLimits {
+            max_configured: MAX_INTERFACE_NAMES,
+            max_name_length: MAX_INTERFACE_NAME_LEN.saturating_sub(1),
+        },
     })
 }
 

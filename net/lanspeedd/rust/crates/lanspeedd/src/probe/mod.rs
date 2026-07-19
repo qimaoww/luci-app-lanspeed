@@ -45,6 +45,8 @@ impl Confidence {
 pub struct RuntimeHealth {
     pub bpf_object_loaded: bool,
     pub bpf_attached: bool,
+    pub bpf_expected_hook_count: usize,
+    pub bpf_attached_hook_count: usize,
     pub bpf_map_read_attempted: bool,
     pub bpf_map_read_ok: bool,
     pub bpf_last_complete_snapshot_ms: Option<u64>,
@@ -67,6 +69,8 @@ impl Default for RuntimeHealth {
         Self {
             bpf_object_loaded: false,
             bpf_attached: false,
+            bpf_expected_hook_count: 0,
+            bpf_attached_hook_count: 0,
             bpf_map_read_attempted: false,
             bpf_map_read_ok: false,
             bpf_last_complete_snapshot_ms: None,
@@ -372,6 +376,13 @@ pub struct UbusEvidence {
     pub exit_code: i32,
     pub summary: String,
 }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProbeFailure {
+    pub kind: &'static str,
+    pub source: String,
+    pub reason: &'static str,
+    pub exit_code: Option<i32>,
+}
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProbeSources {
     pub command: Vec<String>,
@@ -385,6 +396,7 @@ pub struct CollectedEvidence {
     pub file: Vec<FileEvidence>,
     pub uci: Vec<UciEvidence>,
     pub ubus: Vec<UbusEvidence>,
+    pub failures: Vec<ProbeFailure>,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TcEvidence {
@@ -519,6 +531,7 @@ pub struct ProbeEvidence {
     pub probe_sources: ProbeSources,
     pub probe_error: bool,
     pub lan_probe_error: bool,
+    pub probe_failures: Vec<ProbeFailure>,
     pub tc: TcEvidence,
     pub proxy: ProxyEvidence,
     pub offload: OffloadEvidence,
@@ -1161,6 +1174,7 @@ fn build_evidence(
         probe_sources,
         probe_error: facts.probe_error,
         lan_probe_error: facts.lan_probe_error,
+        probe_failures: o.collected_evidence.failures.clone(),
         tc: TcEvidence {
             filters: facts.tc.filters.clone(),
             conflict: facts.tc.conflict,

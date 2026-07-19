@@ -69,8 +69,12 @@ pub fn select_collectors(
     runtime: &RuntimeHealth,
 ) -> PolicyDecision {
     let mut warnings = Vec::new();
+    let has_collect_target = !config.runtime_collect_ifnames().is_empty();
     if !config.enable_bpf {
         push_unique(&mut warnings, "bpf_disabled");
+    }
+    if config.enable_bpf && !has_collect_target {
+        push_unique(&mut warnings, "no_collect_interface");
     }
     if !facts.bpf.package {
         push_unique(&mut warnings, "bpf_optional_package_missing");
@@ -78,7 +82,7 @@ pub fn select_collectors(
     if !facts.bpf.object {
         push_unique(&mut warnings, "bpf_object_missing");
     }
-    if config.enable_bpf && !facts.tc.safe_attach {
+    if config.enable_bpf && has_collect_target && !facts.tc.safe_attach {
         push_unique(&mut warnings, "unsafe_attach");
     }
     if !facts.files.nf_conntrack_acct
@@ -93,6 +97,7 @@ pub fn select_collectors(
     }
 
     let bpf_prerequisites = config.enable_bpf
+        && has_collect_target
         && facts.tc.safe_attach
         && facts.bpf.package
         && facts.bpf.object
@@ -124,6 +129,8 @@ pub fn select_collectors(
         RateCollectorMode::Bpf => {
             if bpf_full {
                 (RateCollector::Bpf, "forced_bpf")
+            } else if !has_collect_target {
+                (RateCollector::Unsupported, "no_collect_interface")
             } else {
                 (RateCollector::Unsupported, "forced_bpf_unavailable")
             }
@@ -159,9 +166,15 @@ pub fn select_collectors(
             } else if bpf_full {
                 (RateCollector::Bpf, "bpf_available")
             } else if nss_sync {
-                (RateCollector::NssConntrackSync, "bpf_unavailable_nss_sync_fallback")
+                (
+                    RateCollector::NssConntrackSync,
+                    "bpf_unavailable_nss_sync_fallback",
+                )
             } else if nss_direct {
-                (RateCollector::NssEcmDirect, "bpf_unavailable_nss_direct_fallback")
+                (
+                    RateCollector::NssEcmDirect,
+                    "bpf_unavailable_nss_direct_fallback",
+                )
             } else {
                 (RateCollector::Unsupported, "no_live_rate_collector")
             }
@@ -205,6 +218,7 @@ pub fn select_collectors(
     if rate == RateCollector::Unsupported
         && bpf_mode_allowed
         && config.enable_bpf
+        && has_collect_target
         && facts.tc.safe_attach
         && bpf_runtime_failed
     {
@@ -253,7 +267,7 @@ pub fn select_collectors(
         _ if !facts.tc.available && !nss_sync => Mode::Unsupported,
         _ => Mode::Degraded,
     };
-    if mode != Mode::Full {
+    if rate == RateCollector::Unsupported {
         push_unique(&mut warnings, "live_metrics_unavailable");
     }
     let confidence = match (mode, rate) {

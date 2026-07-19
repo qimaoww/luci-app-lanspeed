@@ -45,6 +45,11 @@ var callSysdevices = rpc.declare({
 	method: 'sysdevices',
 	expect: { '': {} }
 });
+var callDiagnostics = rpc.declare({
+	object: 'lanspeed',
+	method: 'diagnostics',
+	expect: { '': {} }
+});
 var callUciSet = rpc.declare({
 	object: 'uci',
 	method: 'set',
@@ -81,6 +86,7 @@ return baseclass.extend({
 	health:     callHealth,
 	interfaces: callInterfaces,
 	sysdevices: callSysdevices,
+	diagnostics: callDiagnostics,
 	uciSet:     callUciSet,
 	uciAdd:     callUciAdd,
 	uciGet:     callUciGet,

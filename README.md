@@ -53,12 +53,12 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 - **NSS 兼容**：Qualcomm NSS 设备自动展示 ECM/PPE 状态，默认仍使用 LAN 边缘 BPF；显式选择 NSS 模式或 BPF 运行时不可用时，才使用 NSS sync / CT-Netlink 或 NSS-direct。NSS 硬件加速流量可能绕过 CPU，因此 BPF 只能看到慢路径；IPv4 通过 ARP、IPv6 通过 neighbor 表匹配客户端，并兼容 ECM NAT 端点。
 - **活跃客户端**：默认只把 10 秒内仍有有效速率的客户端计为 active，可通过 UCI 调整。
 - **覆盖率**：daemon 侧使用 32 个样本的滑动窗口，并按客户端实时速率生成单调累计分子，避免客户端离线/重新出现导致覆盖率跳回“采样中”；低流量与真正无流量分开显示。
-- **独立诊断**：LuCI 内置“实时状态”“运行诊断”和“LAN Speed 配置”三个页签；诊断页集中检查插件、后端与 BPF，只展示会影响实时测速的重要告警，实时状态页不再混入旧诊断面板。
+- **独立诊断**：LuCI 内置“实时状态”“运行诊断”和“LAN Speed 配置”三个页签；诊断页分项显示五个 RPC 请求、采集覆盖率与样本新鲜度、速率/连接数据路径、接口与连接健康、分级告警及 LuCI/后端版本一致性，并可复制不含客户端 MAC、IP、主机名或身份标识的脱敏报告。Aurora、Argon 与 Bootstrap 分别使用独立主题布局，实时状态页不再混入旧诊断面板。
 - **配置页面**：速率采集、连接数采集、活跃客户端阈值和接口配置可分开调整，并使用 LuCI 原生“保存并应用 / 保存 / 重置”页脚；修改后会立即显示原生未保存配置指示，点击可进入原生变更列表，应用配置时由 procd 触发后端重载，NSS 设备会显示 NSS 专属说明。
 - **接口配置**：采集 / 观察 / 关闭 三态切换，默认采集 `br-lan`、观察 `wan`；自动忽略 `dae*`、`miireg*`、`tun*`、`erspan*`、`gretap*`、`gre*`、`ip6gre*`、`ip6tnl*`、`sit*`、`bonding_masters*`，拒绝 nssifb 采集并可观察 WAN / ifb 计数。
 - **告警体系**：OpenClash / dae/daed / SQM/qosify/ifb / flow offload / fullcone NAT 等场景自动识别并提示。
 - **客户端状态列**：默认隐藏 LAN 客户端的采集来源与告警状态，可在“LAN Speed 配置”中开启。
-- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.1-r6`。
+- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.1-r9`。
 
 ## 采集策略
 
@@ -183,13 +183,13 @@ LuCI 入口：
 
 ```uci
 config lanspeed 'main'
-    option enabled '1'
     option refresh_interval_ms '1000'
     option active_client_window_ms '10000'
     option active_client_min_bps '1'
     option overview_window_samples '240'
     option rate_collector_mode 'auto'
     option conn_collector_mode 'auto'
+    option show_client_status '0'
     option show_ipv6 '1'
     option hide_private_ipv6 '0'
     option hide_ipv6_ranges 'fc00::/7 fe80::/10'
@@ -206,7 +206,6 @@ config lanspeed 'main'
 常用 UCI：
 
 ```sh
-uci set lanspeed.main.enabled='1'
 uci set lanspeed.main.rate_collector_mode='auto'
 uci set lanspeed.main.conn_collector_mode='auto'
 uci set lanspeed.main.active_client_window_ms='10000'
@@ -248,11 +247,12 @@ ubus call lanspeed status       # Full / Degraded / Unsupported、high / medium 
 ubus call lanspeed clients      # 客户端 tx_bps/rx_bps + TCP/UDP/DNS 连接数
 ubus call lanspeed overview     # 总速率、客户端数、active_clients、连接数窗口
 ubus call lanspeed health       # 健康检查 + 冲突检测
+ubus call lanspeed diagnostics  # 结构化采集新鲜度、数据路径、接口/连接健康、版本与脱敏告警
 ubus call lanspeed reload       # 刷新 lanspeedd 运行状态，不写持久 UCI 配置
 ubus call lanspeed interfaces   # 接口吞吐 + 覆盖率
 ubus call lanspeed sysdevices   # 系统网络设备列表
 ubus call lanspeed client_connections \
-  '{"identity_key":"30:c5:99:a7:bb:2d@eth1"}'
+  '{"identity_key":"02:00:00:00:00:42@eth1"}'
 ```
 
 `client_connections` 的 `identity_key` 来自 `clients` 响应。它返回该客户端当前 conntrack 快照：TCP 仅统计 ESTABLISHED + ASSURED，UDP 仅统计 ASSURED；这不是历史连接记录。每条连接的 `tx_bps` / `rx_bps` 由相邻 conntrack 累计字节快照计算，方向始终以客户端为准；新连接首个样本为 0，计数器回退时对应方向为 0，时间回退时本次速率为 0。响应中的 `limit`、`returned_connections` 和 `truncated` 用于说明截断情况。LuCI 实时状态表中点击客户端名称即可进入连接详情页，目标行显示聚合速率，展开后显示每条实际连接的速率；发生截断时，速率仍直接显示数值，页脚会说明分组速率仅汇总已返回的连接子集。
@@ -337,7 +337,7 @@ tests/                             本地回归测试
 
 ## 测试
 
-本地环境可以运行确定性检查脚本和不依赖目标 ABI 的 Rust 单元/合约测试；`./tests/run.sh unit` 覆盖 `lanspeedd`、共享 ABI、构建驱动和 fixtures。`lanspeed-openwrt-sys` 直接链接目标端 ubus/uloop/UCI，不在 glibc host 上执行，其绑定通过可重复生成检查，并由真实 SDK 编译（ImmortalWrt 25.12）和目标设备（路由器）测试覆盖。构建要求稳定版 `Rust >= 1.94.0`。
+本地环境可以运行确定性检查脚本和不依赖目标 ABI 的 Rust 单元/合约测试；`./tests/run.sh unit` 覆盖 `lanspeedd`、共享 ABI、构建驱动、诊断模型和 fixtures。`lanspeed-openwrt-sys` 直接链接目标端 ubus/uloop/UCI，不在 glibc host 上执行，其绑定通过可重复生成检查，并由真实 SDK 编译（ImmortalWrt 25.12）和目标设备（路由器）测试覆盖。构建要求稳定版 `Rust >= 1.94.0`。
 
 ```sh
 ./tests/run.sh unit

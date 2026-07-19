@@ -28,9 +28,15 @@ fn bpf_facts() -> ProbeFacts {
     facts
 }
 
+fn bpf_config() -> RuntimeConfig {
+    let mut config = RuntimeConfig::default();
+    config.interface_include.push("eth1".into());
+    config
+}
+
 #[test]
 fn forced_and_auto_rate_modes_preserve_task10_selection_contract() {
-    let mut config = RuntimeConfig::default();
+    let mut config = bpf_config();
     config.enable_bpf = true;
     config.enable_conntrack_fallback = true;
     let mut facts = bpf_facts();
@@ -84,7 +90,7 @@ fn forced_and_auto_rate_modes_preserve_task10_selection_contract() {
 
 #[test]
 fn only_fresh_runtime_active_state_controls_dae_collector_policy() {
-    let mut config = RuntimeConfig::default();
+    let mut config = bpf_config();
     config.enable_bpf = true;
     config.enable_conntrack_fallback = true;
     let mut facts = bpf_facts();
@@ -119,7 +125,7 @@ fn only_fresh_runtime_active_state_controls_dae_collector_policy() {
 
 #[test]
 fn auto_keeps_bpf_first_and_uses_readable_nss_direct_only_when_bpf_is_unavailable() {
-    let mut config = RuntimeConfig::default();
+    let mut config = bpf_config();
     config.enable_bpf = true;
     config.enable_conntrack_fallback = true;
     let mut facts = bpf_facts();
@@ -148,7 +154,7 @@ fn auto_keeps_bpf_first_and_uses_readable_nss_direct_only_when_bpf_is_unavailabl
 
 #[test]
 fn dae_runtime_prefers_early_bpf_in_auto_mode_on_non_nss_devices() {
-    let mut config = RuntimeConfig::default();
+    let mut config = bpf_config();
     config.enable_bpf = true;
     config.enable_conntrack_fallback = true;
     let mut facts = bpf_facts();
@@ -166,7 +172,7 @@ fn dae_runtime_prefers_early_bpf_in_auto_mode_on_non_nss_devices() {
 
 #[test]
 fn nss_fallback_uses_the_dae_runtime_warning_when_bpf_is_unavailable() {
-    let mut config = RuntimeConfig::default();
+    let mut config = bpf_config();
     config.enable_bpf = true;
     config.enable_conntrack_fallback = true;
     let mut facts = bpf_facts();
@@ -191,7 +197,7 @@ fn nss_fallback_uses_the_dae_runtime_warning_when_bpf_is_unavailable() {
 
 #[test]
 fn unsafe_attach_missing_object_map_failure_and_recovery_are_honest() {
-    let mut config = RuntimeConfig::default();
+    let mut config = bpf_config();
     config.enable_bpf = true;
     config.enable_conntrack_fallback = true;
     let mut facts = bpf_facts();
@@ -231,7 +237,7 @@ fn unsafe_attach_missing_object_map_failure_and_recovery_are_honest() {
 
 #[test]
 fn map_failure_keeps_a_fresh_complete_snapshot_then_expires_and_recovers() {
-    let mut config = RuntimeConfig::default();
+    let mut config = bpf_config();
     config.enable_bpf = true;
     let facts = bpf_facts();
     let mut runtime = healthy();
@@ -274,7 +280,7 @@ fn map_failure_keeps_a_fresh_complete_snapshot_then_expires_and_recovers() {
 
 #[test]
 fn forced_nss_does_not_report_a_bpf_runtime_failure() {
-    let mut config = RuntimeConfig::default();
+    let mut config = bpf_config();
     config.enable_bpf = true;
     config.rate_collector_mode = RateCollectorMode::NssEcmDirect;
     let facts = bpf_facts();
@@ -286,8 +292,41 @@ fn forced_nss_does_not_report_a_bpf_runtime_failure() {
 }
 
 #[test]
-fn conntrack_accounting_and_connection_collector_are_independent_of_rate_policy() {
+fn empty_collect_plan_is_not_misreported_as_an_attach_or_map_failure() {
     let mut config = RuntimeConfig::default();
+    config.enable_bpf = true;
+    config.rate_collector_mode = RateCollectorMode::Bpf;
+    config.ifnames.clear();
+    config.interface_include.clear();
+    let decision = select_collectors(&config, &bpf_facts(), &RuntimeHealth::default());
+    assert_eq!(decision.rate, RateCollector::Unsupported);
+    assert_eq!(decision.evidence.rate_reason, "no_collect_interface");
+    assert!(decision.warnings.contains(&"no_collect_interface"));
+    assert!(!decision.warnings.contains(&"unsafe_attach"));
+    assert!(!decision
+        .warnings
+        .contains(&"bpf_runtime_loader_unavailable"));
+    assert!(!decision.warnings.contains(&"map_read_failed"));
+}
+
+#[test]
+fn live_nss_fallback_is_degraded_but_not_reported_as_missing_live_metrics() {
+    let mut config = bpf_config();
+    config.enable_bpf = true;
+    config.enable_conntrack_fallback = true;
+    let mut facts = bpf_facts();
+    facts.nss.present = true;
+    facts.nss.ecm_active = true;
+    facts.files.nf_conntrack_acct = true;
+    let decision = select_collectors(&config, &facts, &RuntimeHealth::default());
+    assert_eq!(decision.rate, RateCollector::NssConntrackSync);
+    assert_eq!(decision.mode, Mode::Degraded);
+    assert!(!decision.warnings.contains(&"live_metrics_unavailable"));
+}
+
+#[test]
+fn conntrack_accounting_and_connection_collector_are_independent_of_rate_policy() {
+    let mut config = bpf_config();
     config.enable_bpf = true;
     config.enable_conntrack_fallback = true;
     let mut facts = bpf_facts();
@@ -322,7 +361,7 @@ fn conntrack_accounting_and_connection_collector_are_independent_of_rate_policy(
 
 #[test]
 fn ppe_and_dae_early_bpf_policy_remain_explicit() {
-    let mut config = RuntimeConfig::default();
+    let mut config = bpf_config();
     config.enable_bpf = true;
     config.enable_conntrack_fallback = true;
     let mut facts = bpf_facts();

@@ -12,6 +12,7 @@ const UBUS_METHODS = Object.freeze([
   'reload',
   'interfaces',
   'sysdevices',
+  'diagnostics',
   'client_connections'
 ]);
 const CLIENT_CONNECTION_LIMIT = 2048;
@@ -384,7 +385,13 @@ function validateFixture(fixture) {
     assertObject(iface.evidence, `interfaces.interfaces[${index}].evidence`);
   }
 
-  assertRequired(fixture.sysdevices, ['devices', 'current_ifnames', 'current_observed'], 'sysdevices response');
+  assertRequired(fixture.sysdevices, [
+    'contract_version', 'devices', 'current_ifnames', 'current_observed',
+    'current_excluded', 'configured_ifnames', 'configured_observed',
+    'configured_excluded', 'orphaned', 'limits'
+  ], 'sysdevices response');
+  assert(fixture.sysdevices.contract_version === 1,
+    'sysdevices.contract_version must be 1');
   assertArray(fixture.sysdevices.devices, 'sysdevices.devices');
   assertArray(fixture.sysdevices.current_ifnames, 'sysdevices.current_ifnames');
   assertArray(fixture.sysdevices.current_observed, 'sysdevices.current_observed');
@@ -395,13 +402,64 @@ function validateFixture(fixture) {
       'selected',
       'observed',
       'recommended_lan',
+      'collect_allowed',
+      'collect_reason',
       'is_bridge',
       'is_bridge_port',
       'is_nss_ifb'
     ], `sysdevices.devices[${index}]`);
   }
 
+  validateDiagnosticsFixture(fixture.diagnostics, 'diagnostics response');
+
   validateClientConnectionsFixture(fixture.client_connections, 'client_connections response');
+}
+
+function validateDiagnosticsFixture(response, pathName) {
+  assertRequired(response, [
+    'contract_version',
+    'service',
+    'collection',
+    'data_path',
+    'interfaces',
+    'connection',
+    'subsystems',
+    'versions',
+    'alerts',
+    'config_issues'
+  ], pathName);
+  assert(response.contract_version === 1, `${pathName}.contract_version must be 1`);
+  assertRequired(response.service, ['state', 'ubus_connected'], `${pathName}.service`);
+  assertRequired(response.collection, [
+    'state',
+    'generation',
+    'last_attempt_ms',
+    'last_success_ms',
+    'age_ms',
+    'refresh_interval_ms',
+    'consecutive_failures',
+    'retained',
+    'last_error'
+  ], `${pathName}.collection`);
+  assertRequired(response.data_path, [
+    'configured_rate',
+    'effective_rate',
+    'configured_connection',
+    'effective_connection',
+    'fallback_active',
+    'reason_code'
+  ], `${pathName}.data_path`);
+  assertArray(response.subsystems, `${pathName}.subsystems`);
+  assertArray(response.alerts, `${pathName}.alerts`);
+  assertArray(response.config_issues, `${pathName}.config_issues`);
+  assertRequired(response.versions, [
+    'daemon',
+    'package',
+    'contract_version',
+    'schema_version'
+  ], `${pathName}.versions`);
+  assert(response.versions.contract_version === 1 && response.versions.schema_version === 1,
+    `${pathName}.versions must expose contract and schema version 1`);
 }
 
 function validateClientConnectionsFixture(response, pathName) {
@@ -588,6 +646,15 @@ function validateRpc(rpcSource) {
     'client_connections RPC declaration must keep the empty-object response contract');
   assert(exported.clientConnections === declaration.callable,
     'rpc.js must export client_connections as clientConnections');
+
+  const diagnostics = declarations.filter(({ specification }) =>
+    specification.object === 'lanspeed' && specification.method === 'diagnostics'
+  );
+  assert(diagnostics.length === 1, 'rpc.js must declare diagnostics exactly once');
+  assert(JSON.stringify(diagnostics[0].specification.expect) === JSON.stringify({ '': {} }),
+    'diagnostics RPC declaration must keep the empty-object response contract');
+  assert(exported.diagnostics === diagnostics[0].callable,
+    'rpc.js must export diagnostics');
 }
 
 function validateMenu(menu) {
@@ -613,7 +680,6 @@ function validateMenu(menu) {
 
 function validateUci(config) {
   for (const required of [
-    "option enabled '1'",
     "option refresh_interval_ms '1000'",
     "option active_client_window_ms '10000'",
     "option active_client_min_bps '1'",
@@ -631,11 +697,7 @@ function validateUci(config) {
     "list interface_exclude 'wan'",
     "list observe 'wan'",
     "option enable_bpf '1'",
-    "option enable_conntrack_fallback '1'",
-    "option warning_confidence_below 'medium'",
-    "option warning_stale_client_ms '5000'",
-    "option warning_high_client_count '1536'",
-    "option warning_collector_lag_ms '3000'"
+    "option enable_conntrack_fallback '1'"
   ]) {
     assert(config.includes(required), `UCI config missing ${required}`);
   }
@@ -648,6 +710,14 @@ function validateUci(config) {
     defaultAssignments.includes("list interface_include 'br-lan'") &&
     defaultAssignments.includes("list observe 'wan'"),
   'default interfaces must collect br-lan, observe wan and leave every other interface off');
+
+  for (const removed of [
+    'option enabled ',
+    'option warning_',
+    'option low_end_'
+  ]) {
+    assert(!config.includes(removed), `UCI config must not advertise unused ${removed.trim()} options`);
+  }
 }
 
 const schema = readJson('net/lanspeedd/files/usr/share/lanspeed/schema.json');
@@ -677,8 +747,27 @@ assertSchemaRequired(schema, 'client', ['mac', 'identity_key', 'zone', 'interfac
 assertSchemaRequired(schema, 'health', ['mode', 'confidence', 'capabilities', 'conflicts', 'warnings', 'evidence']);
 assertSchemaRequired(schema, 'reload', ['ok', 'mode', 'warnings', 'evidence', 'version']);
 assertSchemaRequired(schema, 'interface', ['name', 'role', 'status']);
-assertSchemaRequired(schema, 'sysdevice', ['name', 'selected', 'observed', 'recommended_lan', 'is_bridge', 'is_bridge_port', 'is_nss_ifb']);
-assertSchemaRequired(schema, 'sysdevices', ['devices', 'current_ifnames', 'current_observed']);
+assertSchemaRequired(schema, 'sysdevice', [
+  'name', 'selected', 'observed', 'recommended_lan', 'collect_allowed',
+  'collect_reason', 'is_bridge', 'is_bridge_port', 'is_nss_ifb'
+]);
+assertSchemaRequired(schema, 'sysdevices', [
+  'contract_version', 'devices', 'current_ifnames', 'current_observed',
+  'current_excluded', 'configured_ifnames', 'configured_observed',
+  'configured_excluded', 'orphaned', 'limits'
+]);
+assertSchemaRequired(schema, 'diagnostics', [
+  'contract_version',
+  'service',
+  'collection',
+  'data_path',
+  'interfaces',
+  'connection',
+  'subsystems',
+  'versions',
+  'alerts',
+  'config_issues'
+]);
 assertSchemaExactObject(schema, 'clientConnectionDetail', [
   'client_ip',
   'client_port',
@@ -746,6 +835,7 @@ assert(schema.$defs.clients.properties.conn_source.enum.includes('nss_ecm_direct
 assert(schema.$defs.clients.properties.conn_collector_mode.$ref === '#/$defs/connCollectorMode', 'schema clients.conn_collector_mode must reuse connCollectorMode enum');
 validateFixture(fixture);
 validateMethodFixtures(schema, methodFixtures);
+validateDiagnosticsFixture(methodFixtures.diagnostics, 'diagnostics method fixture');
 validateClientConnectionsFixture(methodFixtures.client_connections, 'client_connections method fixture');
 validateClientConnectionsArrayLimit(schema, methodFixtures.client_connections);
 validateRpc(rpcSource);

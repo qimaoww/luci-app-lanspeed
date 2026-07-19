@@ -11,15 +11,15 @@
     "nss_ecm_direct_state": true
   },
   "arp_entries": [
-    { "ip": "192.168.31.100", "mac": "aa:bb:cc:00:00:01", "interface": "br-lan", "zone": "lan" },
-    { "ip": "192.168.31.101", "mac": "aa:bb:cc:00:00:02", "interface": "br-lan", "zone": "lan" }
+    { "ip": "10.77.0.100", "mac": "aa:bb:cc:00:00:01", "interface": "br-lan", "zone": "lan" },
+    { "ip": "10.77.0.101", "mac": "aa:bb:cc:00:00:02", "interface": "br-lan", "zone": "lan" }
   ],
   "state_snapshots": [
     {
       "t_ms": 100000,
       "lines": [
         "conns.conn.10.serial=10",
-        "conns.conn.10.sip_address=192.168.31.100",
+        "conns.conn.10.sip_address=10.77.0.100",
         "conns.conn.10.dip_address=1.1.1.1",
         "conns.conn.10.snode_address=aa:bb:cc:00:00:01",
         "conns.conn.10.dnode_address=00:11:22:33:44:55",
@@ -28,7 +28,7 @@
         "conns.conn.10.adv_stats.from_data_total=1000000",
         "conns.conn.10.adv_stats.to_data_total=2000000",
         "conns.conn.11.serial=11",
-        "conns.conn.11.sip_address=192.168.31.101",
+        "conns.conn.11.sip_address=10.77.0.101",
         "conns.conn.11.dip_address=8.8.8.8",
         "conns.conn.11.snode_address=aa:bb:cc:00:00:02",
         "conns.conn.11.protocol=17",
@@ -45,7 +45,7 @@
       "t_ms": 101000,
       "lines": [
         "conns.conn.10.serial=10",
-        "conns.conn.10.sip_address=192.168.31.100",
+        "conns.conn.10.sip_address=10.77.0.100",
         "conns.conn.10.dip_address=1.1.1.1",
         "conns.conn.10.snode_address=aa:bb:cc:00:00:01",
         "conns.conn.10.dnode_address=00:11:22:33:44:55",
@@ -54,7 +54,7 @@
         "conns.conn.10.adv_stats.from_data_total=1250000",
         "conns.conn.10.adv_stats.to_data_total=2500000",
         "conns.conn.11.serial=11",
-        "conns.conn.11.sip_address=192.168.31.101",
+        "conns.conn.11.sip_address=10.77.0.101",
         "conns.conn.11.dip_address=8.8.8.8",
         "conns.conn.11.snode_address=aa:bb:cc:00:00:02",
         "conns.conn.11.protocol=17",

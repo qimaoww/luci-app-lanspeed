@@ -26,6 +26,8 @@ var REFRESH_CHOICES = [
 	{ value: 10000, label: '10s' }
 ];
 
+var PAGE_SIZE_CHOICES = [ 10, 25, 50, 100 ];
+
 var SORT_KEYS = [ 'hostname', 'mac', 'tx', 'rx', 'tcp_conns', 'udp_conns' ];
 
 var DEFAULT_PREFS = {
@@ -36,6 +38,7 @@ var DEFAULT_PREFS = {
 	sortDir: 'desc',
 	sortCustom: false,
 	paused: false,
+	pageSize: 25,
 	ifaceExcluded: []
 };
 
@@ -172,6 +175,32 @@ function matchesFilter(c, term) {
 	return hay.indexOf(term.toLowerCase()) !== -1;
 }
 
+function normalizePageSize(value) {
+	var size = parseInt(value, 10);
+	return PAGE_SIZE_CHOICES.indexOf(size) !== -1 ? size : DEFAULT_PREFS.pageSize;
+}
+
+function paginate(items, page, pageSize) {
+	var values = asArray(items);
+	var size = normalizePageSize(pageSize);
+	var pageCount = Math.max(1, Math.ceil(values.length / size));
+	var current = parseInt(page, 10);
+	if (!isFinite(current)) current = 1;
+	current = Math.max(1, Math.min(pageCount, current));
+	var startIndex = (current - 1) * size;
+	var endIndex = Math.min(values.length, startIndex + size);
+
+	return {
+		items: values.slice(startIndex, endIndex),
+		page: current,
+		pageCount: pageCount,
+		pageSize: size,
+		total: values.length,
+		start: values.length ? startIndex + 1 : 0,
+		end: endIndex
+	};
+}
+
 function replaceChildren(node, children) {
 	while (node.firstChild) node.removeChild(node.firstChild);
 	asArray(children).forEach(function(c) {
@@ -209,6 +238,7 @@ function loadPrefs() {
 			prefs.sortKey = DEFAULT_PREFS.sortKey;
 			prefs.sortDir = DEFAULT_PREFS.sortDir;
 		}
+		prefs.pageSize = normalizePageSize(prefs.pageSize);
 		return prefs;
 	} catch (e) { return Object.assign({}, DEFAULT_PREFS); }
 }
@@ -225,6 +255,7 @@ return baseclass.extend({
 	DELTA_SIGNIFICANT_RATIO:   DELTA_SIGNIFICANT_RATIO,
 	DELTA_SIGNIFICANT_MIN_BPS: DELTA_SIGNIFICANT_MIN_BPS,
 	REFRESH_CHOICES:           REFRESH_CHOICES,
+	PAGE_SIZE_CHOICES:         PAGE_SIZE_CHOICES,
 	SORT_KEYS:                 SORT_KEYS,
 	DEFAULT_PREFS:             DEFAULT_PREFS,
 
@@ -243,6 +274,8 @@ return baseclass.extend({
 	sumTotals:         sumTotals,
 	sortClients:       sortClients,
 	matchesFilter:     matchesFilter,
+	normalizePageSize: normalizePageSize,
+	paginate:          paginate,
 	replaceChildren:   replaceChildren,
 	opt:               opt,
 	loadPrefs:         loadPrefs,

@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-lanspeed
 PKG_VERSION:=1.1.1
-PKG_RELEASE:=6
+PKG_RELEASE:=9
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=
@@ -47,6 +47,7 @@ define Package/luci-app-lanspeed/install
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/lanspeed
 	$(INSTALL_DATA) \
 		./htdocs/luci-static/resources/lanspeed/configForm.js \
+		./htdocs/luci-static/resources/lanspeed/configModel.js \
 		./htdocs/luci-static/resources/lanspeed/configStyle.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleArgon.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleAurora.js \
@@ -54,6 +55,12 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/configStyleBootstrap.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleResponsive.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleShared.js \
+		./htdocs/luci-static/resources/lanspeed/configView.js \
+		./htdocs/luci-static/resources/lanspeed/designSystem.js \
+		./htdocs/luci-static/resources/lanspeed/designSystemArgon.js \
+		./htdocs/luci-static/resources/lanspeed/designSystemAurora.js \
+		./htdocs/luci-static/resources/lanspeed/designSystemBase.js \
+		./htdocs/luci-static/resources/lanspeed/designSystemBootstrap.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsRefresh.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsShell.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyle.js \
@@ -62,6 +69,7 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleBase.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleBootstrap.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleResponsive.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsModel.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsView.js \
 		./htdocs/luci-static/resources/lanspeed/clientConnections.js \
 		./htdocs/luci-static/resources/lanspeed/dhcpHostnames.js \

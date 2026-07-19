@@ -3,6 +3,8 @@ use std::{fmt, fs, path::PathBuf};
 pub const DEFAULT_REFRESH_INTERVAL_MS: u32 = 1_000;
 pub const MIN_REFRESH_INTERVAL_MS: u32 = 500;
 pub const DEFAULT_MAX_CLIENTS: usize = 2_048;
+pub const MIN_MAX_CLIENTS: usize = 64;
+pub const MAX_MAX_CLIENTS: usize = 16_384;
 pub const DEFAULT_ACTIVE_CLIENT_WINDOW_MS: u64 = 10_000;
 pub const MIN_ACTIVE_CLIENT_WINDOW_MS: u64 = 1_000;
 pub const DEFAULT_ACTIVE_CLIENT_MIN_BPS: u64 = 1;
@@ -208,14 +210,22 @@ pub struct RuntimeConfig {
     pub active_client_window_clamped: bool,
     pub active_client_min_bps_clamped: bool,
     pub overview_window_samples_clamped: bool,
+    pub max_clients_clamped: bool,
     pub rate_collector_mode: RateCollectorMode,
     pub conn_collector_mode: ConnectionCollectorMode,
     pub ifnames: Vec<String>,
     pub interface_include: Vec<String>,
+    /// Safe, de-duplicated names exactly as configured across `ifname` and
+    /// `interface_include`, before runtime eligibility filtering.
+    pub configured_ifnames: Vec<String>,
     /// Retained for the LuCI/UCI contract. The legacy daemon does not use it
     /// to alter its attach set.
     pub interface_exclude: Vec<String>,
     pub observe_ifnames: Vec<String>,
+    /// Safe configured values retained for sysdevices/config diagnostics even
+    /// when runtime policy filters or bounds the effective lists.
+    pub configured_excluded: Vec<String>,
+    pub configured_observed: Vec<String>,
     pub rejected_nssifb_collect: bool,
 }
 
@@ -233,12 +243,16 @@ impl Default for RuntimeConfig {
             active_client_window_clamped: false,
             active_client_min_bps_clamped: false,
             overview_window_samples_clamped: false,
+            max_clients_clamped: false,
             rate_collector_mode: RateCollectorMode::Auto,
             conn_collector_mode: ConnectionCollectorMode::Auto,
             ifnames: Vec::new(),
             interface_include: Vec::new(),
+            configured_ifnames: Vec::new(),
             interface_exclude: Vec::new(),
             observe_ifnames: Vec::new(),
+            configured_excluded: Vec::new(),
+            configured_observed: Vec::new(),
             rejected_nssifb_collect: false,
         }
     }
@@ -329,9 +343,10 @@ impl RuntimeConfig {
 
         if let Some(value) = scalar(source, "max_clients")? {
             let parsed = parse_c_signed(&value);
-            if parsed >= 0 {
-                config.max_clients = parsed.min(usize::MAX as i128) as usize;
-            }
+            config.max_clients =
+                parsed.clamp(MIN_MAX_CLIENTS as i128, MAX_MAX_CLIENTS as i128) as usize;
+            config.max_clients_clamped =
+                parsed < MIN_MAX_CLIENTS as i128 || parsed > MAX_MAX_CLIENTS as i128;
         }
 
         if let Some(value) = scalar(source, "collector_mode")? {
@@ -359,6 +374,9 @@ impl RuntimeConfig {
         for option in ["ifname", "interface_include"] {
             let values = list(source, option)?;
             for value in values {
+                if is_valid_interface_name(&value) && !config.configured_ifnames.contains(&value) {
+                    config.configured_ifnames.push(value.clone());
+                }
                 if value == "nssifb" {
                     config.rejected_nssifb_collect = true;
                     continue;
@@ -384,9 +402,15 @@ impl RuntimeConfig {
         }
 
         for value in list(source, "interface_exclude")? {
+            if is_valid_interface_name(&value) && !config.configured_excluded.contains(&value) {
+                config.configured_excluded.push(value.clone());
+            }
             push_unique_bounded(&mut config.interface_exclude, value);
         }
         for value in list(source, "observe")? {
+            if is_valid_interface_name(&value) && !config.configured_observed.contains(&value) {
+                config.configured_observed.push(value.clone());
+            }
             if !is_valid_interface_name(&value)
                 || is_auto_ignored_interface(&value)
                 || config.ifnames.contains(&value)

@@ -9,7 +9,7 @@ use std::{
 use crate::{
     config::RuntimeConfig,
     error::DaemonError,
-    state::{ResponseSnapshot, SnapshotStore},
+    state::{diagnostic_now_ms, ResponseSnapshot, SnapshotStore},
     ubus::Method,
 };
 
@@ -128,9 +128,36 @@ impl CoordinatorState {
         self.snapshots.publish(snapshot);
     }
 
-    pub fn commit(&mut self, config: RuntimeConfig, snapshot: Arc<ResponseSnapshot>) {
+    pub fn publish_collection_success(&self, mut snapshot: ResponseSnapshot, now_ms: u64) {
+        let generation = self.snapshot().diagnostic_generation().saturating_add(1);
+        snapshot.mark_collection_success(generation, now_ms, self.config.refresh_interval_ms);
+        snapshot.set_config_issues(&self.config);
+        self.publish(Arc::new(snapshot));
+    }
+
+    pub fn publish_collection_failure(&self, now_ms: u64, error: &DaemonError) {
+        let mut retained = self.snapshot().as_ref().clone();
+        retained.mark_collection_failure(now_ms, self.config.refresh_interval_ms, error);
+        retained.set_config_issues(&self.config);
+        self.publish(Arc::new(retained));
+    }
+
+    pub fn publish_runtime_snapshot(&self, mut snapshot: ResponseSnapshot) {
+        snapshot.set_config_issues(&self.config);
+        self.publish(Arc::new(snapshot));
+    }
+
+    pub fn commit_collection(
+        &mut self,
+        config: RuntimeConfig,
+        mut snapshot: ResponseSnapshot,
+        now_ms: u64,
+    ) {
+        let generation = self.snapshot().diagnostic_generation().saturating_add(1);
+        snapshot.mark_collection_success(generation, now_ms, config.refresh_interval_ms);
+        snapshot.set_config_issues(&config);
         self.config = config;
-        self.snapshots.publish(snapshot);
+        self.snapshots.publish(Arc::new(snapshot));
     }
 
     pub fn fatal_error(&self) -> Option<String> {
@@ -201,7 +228,8 @@ pub fn activate_runtime<R: Runtime>(
     match startup {
         Ok(snapshot) => {
             let previous = state.snapshot();
-            state.publish(Arc::new(snapshot));
+            let now_ms = diagnostic_now_ms(snapshot.interfaces.monotonic_ms.unwrap_or(0));
+            state.publish_collection_success(snapshot, now_ms);
             if let Err(error) = schedule_collection(state.config().refresh_interval_ms) {
                 state.publish(previous);
                 return match runtime.shutdown() {
@@ -240,11 +268,14 @@ pub fn collect_and_reschedule<R: Runtime>(
     // strongly typed snapshot directly and leaves JSON serialization to ubus replies.
     let collection_error = match runtime.collect() {
         Ok(snapshot) => {
-            state.publish(Arc::new(snapshot));
+            let now_ms = diagnostic_now_ms(snapshot.interfaces.monotonic_ms.unwrap_or(0));
+            state.publish_collection_success(snapshot, now_ms);
             None
         }
         Err(error) => {
             runtime.restore(checkpoint);
+            let fallback = state.snapshot().interfaces.monotonic_ms.unwrap_or(0);
+            state.publish_collection_failure(diagnostic_now_ms(fallback), &error);
             Some(error)
         }
     };
@@ -327,7 +358,8 @@ pub fn commit_reload<R: Runtime>(
         .take()
         .expect("runtime checked before reload staging");
     *runtime = Some(candidate);
-    state.commit(config, Arc::new(snapshot));
+    let now_ms = diagnostic_now_ms(snapshot.interfaces.monotonic_ms.unwrap_or(0));
+    state.commit_collection(config, snapshot, now_ms);
     if let Err(cleanup) = old.shutdown() {
         let message = format!("reload committed; postcommit old runtime cleanup failed: {cleanup}");
         state.record_fatal(message.clone());

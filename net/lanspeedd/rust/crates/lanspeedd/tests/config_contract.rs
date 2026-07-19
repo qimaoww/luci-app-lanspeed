@@ -2,9 +2,9 @@ use lanspeedd::config::{
     ConfigError, ConfigSource, ConfigValue, ConnectionCollectorMode, InterfaceEligibility,
     LegacyNameEligibility, RateCollectorMode, RuntimeConfig, DEFAULT_ACTIVE_CLIENT_MIN_BPS,
     DEFAULT_ACTIVE_CLIENT_WINDOW_MS, DEFAULT_MAX_CLIENTS, DEFAULT_OVERVIEW_WINDOW_SAMPLES,
-    DEFAULT_REFRESH_INTERVAL_MS, MAX_INTERFACE_NAMES, MAX_INTERFACE_NAME_LEN,
-    MAX_OVERVIEW_WINDOW_SAMPLES, MIN_ACTIVE_CLIENT_WINDOW_MS, MIN_OVERVIEW_WINDOW_SAMPLES,
-    MIN_REFRESH_INTERVAL_MS,
+    DEFAULT_REFRESH_INTERVAL_MS, MAX_INTERFACE_NAMES, MAX_INTERFACE_NAME_LEN, MAX_MAX_CLIENTS,
+    MAX_OVERVIEW_WINDOW_SAMPLES, MIN_ACTIVE_CLIENT_WINDOW_MS, MIN_MAX_CLIENTS,
+    MIN_OVERVIEW_WINDOW_SAMPLES, MIN_REFRESH_INTERVAL_MS,
 };
 use std::collections::HashMap;
 
@@ -98,8 +98,11 @@ fn defaults_and_limits_match_the_legacy_c_contract() {
     assert!(!config.overview_window_samples_clamped);
     assert!(config.ifnames.is_empty());
     assert!(config.interface_include.is_empty());
+    assert!(config.configured_ifnames.is_empty());
     assert!(config.interface_exclude.is_empty());
     assert!(config.observe_ifnames.is_empty());
+    assert!(config.configured_excluded.is_empty());
+    assert!(config.configured_observed.is_empty());
     assert!(!config.rejected_nssifb_collect);
 }
 
@@ -203,7 +206,7 @@ fn legacy_collector_mode_maps_one_dimension_and_split_options_override_it() {
 }
 
 #[test]
-fn scalar_options_preserve_legacy_boolean_and_zero_semantics() {
+fn scalar_options_preserve_legacy_boole_and_clamp_client_limits() {
     let config = load(
         MemorySource::default()
             .with("refresh_interval_ms", "2500")
@@ -216,7 +219,8 @@ fn scalar_options_preserve_legacy_boolean_and_zero_semantics() {
     );
 
     assert_eq!(config.refresh_interval_ms, 2_500);
-    assert_eq!(config.max_clients, 0);
+    assert_eq!(config.max_clients, MIN_MAX_CLIENTS);
+    assert!(config.max_clients_clamped);
     assert_eq!(config.active_client_window_ms, 30_000);
     assert_eq!(config.active_client_min_bps, 128);
     assert_eq!(config.overview_window_samples, 42);
@@ -240,7 +244,8 @@ fn scalar_options_preserve_legacy_boolean_and_zero_semantics() {
     assert_eq!(c_style_numbers.refresh_interval_ms, 500);
     assert!(c_style_numbers.refresh_interval_clamped);
     assert_eq!(c_style_numbers.active_client_window_ms, 1_500);
-    assert_eq!(c_style_numbers.max_clients, 0);
+    assert_eq!(c_style_numbers.max_clients, MIN_MAX_CLIENTS);
+    assert!(c_style_numbers.max_clients_clamped);
 
     let negative_signed_values = load(
         MemorySource::default()
@@ -252,7 +257,12 @@ fn scalar_options_preserve_legacy_boolean_and_zero_semantics() {
         DEFAULT_REFRESH_INTERVAL_MS
     );
     assert!(!negative_signed_values.refresh_interval_clamped);
-    assert_eq!(negative_signed_values.max_clients, DEFAULT_MAX_CLIENTS);
+    assert_eq!(negative_signed_values.max_clients, MIN_MAX_CLIENTS);
+    assert!(negative_signed_values.max_clients_clamped);
+
+    let too_large = load(MemorySource::default().with("max_clients", usize::MAX.to_string()));
+    assert_eq!(too_large.max_clients, MAX_MAX_CLIENTS);
+    assert!(too_large.max_clients_clamped);
 
     for overflow in ["18446744073709551616", "-18446744073709551616"] {
         let overflowed = load(
@@ -333,8 +343,19 @@ fn list_options_are_preserved_deduplicated_and_bounded() {
     assert_eq!(config.interface_include.len(), MAX_INTERFACE_NAMES - 2);
     assert_eq!(config.interface_include.first().unwrap(), "lan0");
     assert_eq!(config.interface_include.last().unwrap(), "lan13");
+    assert_eq!(config.configured_ifnames.len(), 42);
+    assert_eq!(
+        config.configured_ifnames.first().map(String::as_str),
+        Some("br-lan")
+    );
+    assert_eq!(
+        config.configured_ifnames.last().map(String::as_str),
+        Some("lan39")
+    );
     assert_eq!(config.interface_exclude, ["wan", "pppoe-wan"]);
     assert_eq!(config.observe_ifnames, ["nssifb", "eth0"]);
+    assert_eq!(config.configured_excluded, ["wan", "pppoe-wan"]);
+    assert_eq!(config.configured_observed, ["nssifb", "eth0"]);
 
     let single_string = load(
         MemorySource::default()
@@ -532,6 +553,7 @@ fn ineligible_collect_names_do_not_consume_capacity() {
     let mut injected = MemorySource::default().with_list("ifname", &["nonether0", "br-lan"]);
     let config = RuntimeConfig::load(&mut injected, &RejectNamed("nonether0")).unwrap();
     assert_eq!(config.ifnames, ["br-lan"]);
+    assert_eq!(config.configured_ifnames, ["nonether0", "br-lan"]);
 }
 
 #[cfg(feature = "openwrt")]

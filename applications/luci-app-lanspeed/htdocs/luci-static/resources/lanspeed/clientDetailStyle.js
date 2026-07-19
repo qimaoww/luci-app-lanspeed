@@ -1,5 +1,6 @@
 'use strict';
 'require baseclass';
+'require lanspeed.designSystem as DesignSystem';
 'require lanspeed.statusStyle as statusStyle';
 'require lanspeed.clientDetailStyleBase as Base';
 'require lanspeed.clientDetailStyleAurora as Aurora';
@@ -8,7 +9,8 @@
 'require lanspeed.clientDetailStyleResponsive as Responsive';
 
 var CSS = [
-	statusStyle.CSS,
+	DesignSystem.CSS,
+	statusStyle.LAYOUT_CSS,
 	Base.CSS,
 	Aurora.CSS,
 	Argon.CSS,

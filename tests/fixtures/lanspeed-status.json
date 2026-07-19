@@ -8,15 +8,33 @@
     "source": "lanspeedd_stub",
     "method": "status",
     "fixture_safe": true,
-    "live_metrics": false
+    "live_metrics": false,
+    "probe_failures": {
+      "items": [],
+      "total": 0,
+      "truncated": false
+    },
+    "bpf": {
+      "enabled": true,
+      "collect_target_count": 1,
+      "expected_hook_count": 2,
+      "attached_hook_count": 0,
+      "object_loaded": false,
+      "attach_state": "not_attempted",
+      "map_state": "not_attempted",
+      "last_complete_snapshot_ms": null,
+      "retained_fresh_snapshot": false,
+      "reason_code": "package_missing"
+    }
   },
   "refresh_interval_ms": 1000,
   "collector_mode": "auto",
   "rate_collector_mode": "auto",
   "conn_collector_mode": "auto",
-  "version": "1.1.1-r6",
+  "version": "1.1.1-r9",
   "capabilities": {
     "bpf": false,
+    "bpf_supported": false,
     "bpf_package": false,
     "bpf_object": false,
     "bpf_runtime_metrics": false,

@@ -27,6 +27,9 @@
       "$ref": "#/$defs/sysdevices"
     },
     {
+      "$ref": "#/$defs/diagnostics"
+    },
+    {
       "$ref": "#/$defs/client_connections"
     }
   ],
@@ -49,6 +52,73 @@
       "additionalProperties": true,
       "description": "Machine-readable facts used to explain mode, confidence, conflicts, and warnings. Values may be strings, numbers, booleans, arrays, objects, or null."
     },
+    "probeFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["command", "file", "uci", "ubus", "nss", "probe"]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^(command|file|uci|ubus|nss|probe):[A-Za-z0-9_./<>-]+$"
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "availability_failed",
+            "execution_failed",
+            "nonzero_exit",
+            "timeout",
+            "output_truncated",
+            "read_failed",
+            "load_failed",
+            "query_failed",
+            "state_probe_failed",
+            "state_unreadable",
+            "failed"
+          ]
+        },
+        "exit_code": {
+          "type": "integer"
+        }
+      },
+      "required": ["kind", "source", "reason"]
+    },
+    "probeFailures": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/probeFailure"
+          }
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": ["items", "total", "truncated"]
+    },
+    "healthEvidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "probe_failures": {
+          "$ref": "#/$defs/probeFailures"
+        }
+      },
+      "required": ["probe_failures"]
+    },
     "collectorMode": {
       "type": "string",
       "enum": ["auto", "bpf", "nss_ecm_direct", "nss_conntrack_sync", "conntrack_netlink", "conntrack_procfs"]
@@ -66,6 +136,9 @@
       "additionalProperties": false,
       "properties": {
         "bpf": {
+          "type": "boolean"
+        },
+        "bpf_supported": {
           "type": "boolean"
         },
         "bpf_package": {
@@ -200,6 +273,7 @@
       },
       "required": [
         "bpf",
+        "bpf_supported",
         "bpf_package",
         "bpf_object",
         "bpf_runtime_metrics",
@@ -291,6 +365,445 @@
       },
       "required": ["quality", "samples"]
     },
+    "diagnosticHealthState": {
+      "type": "string",
+      "enum": [
+        "healthy",
+        "degraded",
+        "unavailable",
+        "disabled"
+      ]
+    },
+    "diagnosticPublicError": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "transport",
+            "collection",
+            "reload",
+            "serialization",
+            "platform"
+          ]
+        },
+        "stage": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "retriable": {
+          "type": "boolean"
+        },
+        "message_public": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        }
+      },
+      "required": [
+        "code",
+        "category",
+        "stage",
+        "retriable",
+        "message_public"
+      ]
+    },
+    "diagnosticCollection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "fresh",
+            "stale",
+            "degraded",
+            "unavailable"
+          ]
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "last_attempt_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "last_success_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "age_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "refresh_interval_ms": {
+          "type": "integer",
+          "minimum": 500
+        },
+        "consecutive_failures": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retained": {
+          "type": "boolean"
+        },
+        "last_error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/diagnosticPublicError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "generation",
+        "last_attempt_ms",
+        "last_success_ms",
+        "age_ms",
+        "refresh_interval_ms",
+        "consecutive_failures",
+        "retained",
+        "last_error"
+      ]
+    },
+    "diagnosticAlert": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "info",
+            "warning",
+            "critical"
+          ]
+        },
+        "component": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "state": {
+          "type": "string",
+          "const": "active"
+        },
+        "message_public": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        }
+      },
+      "required": [
+        "id",
+        "severity",
+        "component",
+        "state",
+        "message_public"
+      ]
+    },
+    "diagnosticConfigIssue": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "info",
+            "warning",
+            "critical"
+          ]
+        },
+        "option": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "adjusted",
+            "compatibility_only"
+          ]
+        },
+        "message_public": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        }
+      },
+      "required": [
+        "id",
+        "severity",
+        "option",
+        "state",
+        "message_public"
+      ]
+    },
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "starting",
+                "running",
+                "degraded"
+              ]
+            },
+            "ubus_connected": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "state",
+            "ubus_connected"
+          ]
+        },
+        "collection": {
+          "$ref": "#/$defs/diagnosticCollection"
+        },
+        "data_path": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "configured_rate": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "effective_rate": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            },
+            "configured_connection": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "effective_connection": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            },
+            "fallback_active": {
+              "type": "boolean"
+            },
+            "reason_code": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            }
+          },
+          "required": [
+            "configured_rate",
+            "effective_rate",
+            "configured_connection",
+            "effective_connection",
+            "fallback_active",
+            "reason_code"
+          ]
+        },
+        "interfaces": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/diagnosticHealthState"
+            },
+            "total": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "available": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "missing": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sample_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          "required": [
+            "state",
+            "total",
+            "available",
+            "missing",
+            "sample_ms"
+          ]
+        },
+        "connection": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/diagnosticHealthState"
+            },
+            "source": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            },
+            "entries_seen": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "entries_matched": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "parse_errors": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          "required": [
+            "state",
+            "source",
+            "entries_seen",
+            "entries_matched",
+            "parse_errors"
+          ]
+        },
+        "subsystems": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,64}$"
+              },
+              "state": {
+                "$ref": "#/$defs/diagnosticHealthState"
+              },
+              "code": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^[A-Za-z0-9_-]{1,64}$"
+              }
+            },
+            "required": [
+              "id",
+              "state",
+              "code"
+            ]
+          }
+        },
+        "versions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "daemon": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "package": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "contract_version": {
+              "type": "integer",
+              "const": 1
+            },
+            "schema_version": {
+              "type": "integer",
+              "const": 1
+            }
+          },
+          "required": [
+            "daemon",
+            "package",
+            "contract_version",
+            "schema_version"
+          ]
+        },
+        "alerts": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/diagnosticAlert"
+          }
+        },
+        "config_issues": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/diagnosticConfigIssue"
+          }
+        }
+      },
+      "required": [
+        "contract_version",
+        "service",
+        "collection",
+        "data_path",
+        "interfaces",
+        "connection",
+        "subsystems",
+        "versions",
+        "alerts",
+        "config_issues"
+      ]
+    },
     "status": {
       "type": "object",
       "additionalProperties": false,
@@ -313,7 +826,7 @@
           }
         },
         "evidence": {
-          "$ref": "#/$defs/evidence"
+          "$ref": "#/$defs/healthEvidence"
         },
         "refresh_interval_ms": {
           "type": "integer",
@@ -871,7 +1384,7 @@
           }
         },
         "evidence": {
-          "$ref": "#/$defs/evidence"
+          "$ref": "#/$defs/healthEvidence"
         }
       },
       "required": [
@@ -1032,6 +1545,13 @@
         "recommended_lan": {
           "type": "boolean"
         },
+        "collect_allowed": {
+          "type": "boolean"
+        },
+        "collect_reason": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
         "is_bridge": {
           "type": "boolean"
         },
@@ -1051,6 +1571,8 @@
         "selected",
         "observed",
         "recommended_lan",
+        "collect_allowed",
+        "collect_reason",
         "is_bridge",
         "is_bridge_port",
         "is_nss_ifb"
@@ -1060,6 +1582,10 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "contract_version": {
+          "type": "integer",
+          "const": 1
+        },
         "devices": {
           "type": "array",
           "items": {
@@ -1068,6 +1594,7 @@
         },
         "current_ifnames": {
           "type": "array",
+          "description": "Interfaces currently active in the runtime collection attach set after validation and policy filtering.",
           "items": {
             "type": "string",
             "minLength": 1
@@ -1075,16 +1602,79 @@
         },
         "current_observed": {
           "type": "array",
+          "description": "Interfaces currently active in the runtime observe-only set after validation and policy filtering.",
           "items": {
             "type": "string",
             "minLength": 1
           }
+        },
+        "current_excluded": {
+          "type": "array",
+          "description": "Exclusions currently enforced by the runtime. Empty while interface_exclude remains compatibility-only.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "configured_ifnames": {
+          "type": "array",
+          "description": "Safe, de-duplicated UCI ifname and interface_include values before runtime eligibility filtering.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "configured_observed": {
+          "type": "array",
+          "description": "Safe, de-duplicated UCI observe values before runtime policy filtering.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "configured_excluded": {
+          "type": "array",
+          "description": "Safe, de-duplicated UCI interface_exclude values retained for compatibility.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "orphaned": {
+          "type": "array",
+          "description": "Configured interface names that are absent from the current sysdevice discovery result.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_configured": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_name_length": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": ["max_configured", "max_name_length"]
         }
       },
       "required": [
+        "contract_version",
         "devices",
         "current_ifnames",
-        "current_observed"
+        "current_observed",
+        "current_excluded",
+        "configured_ifnames",
+        "configured_observed",
+        "configured_excluded",
+        "orphaned",
+        "limits"
       ]
     }
   }

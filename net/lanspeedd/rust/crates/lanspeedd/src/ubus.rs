@@ -10,11 +10,12 @@ pub enum Method {
     Reload,
     Interfaces,
     Sysdevices,
+    Diagnostics,
     ClientConnections,
 }
 
 impl Method {
-    pub const FIXED: [Self; 7] = [
+    pub const FIXED: [Self; 8] = [
         Self::Status,
         Self::Clients,
         Self::Overview,
@@ -22,8 +23,9 @@ impl Method {
         Self::Reload,
         Self::Interfaces,
         Self::Sysdevices,
+        Self::Diagnostics,
     ];
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Status,
         Self::Clients,
         Self::Overview,
@@ -31,6 +33,7 @@ impl Method {
         Self::Reload,
         Self::Interfaces,
         Self::Sysdevices,
+        Self::Diagnostics,
         Self::ClientConnections,
     ];
     pub const fn name(self) -> &'static str {
@@ -42,6 +45,7 @@ impl Method {
             Self::Reload => "reload",
             Self::Interfaces => "interfaces",
             Self::Sysdevices => "sysdevices",
+            Self::Diagnostics => "diagnostics",
             Self::ClientConnections => "client_connections",
         }
     }

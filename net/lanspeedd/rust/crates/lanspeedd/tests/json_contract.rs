@@ -11,15 +11,16 @@ use lanspeedd::{
         Capabilities, Client, ClientsResponse, Confidence, Conflict, Coverage, Evidence,
         HealthResponse, Interface, InterfaceRole, InterfaceStatus, InterfacesResponse, Mode,
         OverviewResponse, OverviewSample, ReloadResponse, StatusResponse, Sysdevice,
-        SysdevicesResponse,
+        SysdeviceLimits, SysdevicesResponse,
     },
     state::ResponseSnapshot,
     ubus::{validated_identity_key, Method},
 };
 use serde_json::{json, Value};
 
-const CAPABILITY_KEYS: [&str; 44] = [
+const CAPABILITY_KEYS: [&str; 45] = [
     "bpf",
+    "bpf_supported",
     "bpf_package",
     "bpf_object",
     "bpf_runtime_metrics",
@@ -83,12 +84,19 @@ fn evidence(method: &str) -> Evidence {
     details.insert("source".into(), json!("rust_test"));
     details.insert("method".into(), json!(method));
     details.insert("read_only".into(), json!(true));
+    if matches!(method, "health" | "status") {
+        details.insert(
+            "probe_failures".into(),
+            json!({"items": [], "total": 0, "truncated": false}),
+        );
+    }
     Evidence { details }
 }
 
 fn fixture_snapshot() -> ResponseSnapshot {
     let capabilities = Capabilities {
         bpf: true,
+        bpf_supported: true,
         bpf_package: true,
         bpf_object: true,
         conntrack_fallback: true,
@@ -225,11 +233,14 @@ fn fixture_snapshot() -> ResponseSnapshot {
             evidence: Some(evidence("interfaces")),
         },
         SysdevicesResponse {
+            contract_version: 1,
             devices: vec![Sysdevice {
                 name: "br-lan".into(),
                 selected: true,
                 observed: false,
                 recommended_lan: true,
+                collect_allowed: true,
+                collect_reason: "eligible_bridge".into(),
                 is_bridge: true,
                 is_bridge_port: false,
                 is_nss_ifb: false,
@@ -237,6 +248,12 @@ fn fixture_snapshot() -> ResponseSnapshot {
             }],
             current_ifnames: vec!["br-lan".into()],
             current_observed: vec![],
+            current_excluded: vec![],
+            configured_ifnames: vec!["br-lan".into()],
+            configured_observed: vec![],
+            configured_excluded: vec![],
+            orphaned: vec![],
+            limits: SysdeviceLimits { max_configured: 16, max_name_length: 31 },
         },
     )
 }
@@ -517,11 +534,13 @@ fn fixed_snapshot_methods_and_all_registered_methods_stay_distinct() {
         (Method::Reload, "ok"),
         (Method::Interfaces, "interfaces"),
         (Method::Sysdevices, "devices"),
+        (Method::Diagnostics, "contract_version"),
     ];
-    assert_eq!(Method::FIXED.len(), 7);
-    assert_eq!(Method::ALL.len(), 8);
+    assert_eq!(Method::FIXED.len(), 8);
+    assert_eq!(Method::ALL.len(), 9);
     assert_eq!(Method::ALL[..Method::FIXED.len()], Method::FIXED);
-    assert_eq!(Method::ALL[7], Method::ClientConnections);
+    assert_eq!(Method::ALL[8], Method::ClientConnections);
+    assert_eq!(Method::Diagnostics.name(), "diagnostics");
     assert_eq!(Method::ClientConnections.name(), "client_connections");
     assert_eq!(
         before_reply_action(Method::ClientConnections),
@@ -573,7 +592,7 @@ fn client_connections_requires_bounded_identity_and_parameterized_dispatch() {
 }
 
 #[test]
-fn all_seven_methods_and_nested_models_keep_exact_maximal_key_sets() {
+fn all_eight_fixed_methods_and_nested_models_keep_exact_maximal_key_sets() {
     let snapshot = fixture_snapshot();
     let status = snapshot.response(Method::Status).unwrap();
     let clients = snapshot.response(Method::Clients).unwrap();
@@ -582,6 +601,7 @@ fn all_seven_methods_and_nested_models_keep_exact_maximal_key_sets() {
     let reload = snapshot.response(Method::Reload).unwrap();
     let interfaces = snapshot.response(Method::Interfaces).unwrap();
     let sysdevices = snapshot.response(Method::Sysdevices).unwrap();
+    let diagnostics = snapshot.response(Method::Diagnostics).unwrap();
 
     assert_exact_keys(
         &status,
@@ -715,6 +735,14 @@ fn all_seven_methods_and_nested_models_keep_exact_maximal_key_sets() {
         "health.capabilities",
     );
     assert_exact_keys(
+        &health["evidence"]["probe_failures"],
+        &["items", "total", "truncated"],
+        "health.evidence.probe_failures",
+    );
+    assert_eq!(health["evidence"]["probe_failures"]["items"], json!([]));
+    assert_eq!(health["evidence"]["probe_failures"]["total"], 0);
+    assert_eq!(health["evidence"]["probe_failures"]["truncated"], false);
+    assert_exact_keys(
         &health["conflicts"][0],
         &["id", "severity", "message"],
         "health.conflicts[]",
@@ -749,7 +777,18 @@ fn all_seven_methods_and_nested_models_keep_exact_maximal_key_sets() {
     );
     assert_exact_keys(
         &sysdevices,
-        &["devices", "current_ifnames", "current_observed"],
+        &[
+            "contract_version",
+            "devices",
+            "current_ifnames",
+            "current_observed",
+            "current_excluded",
+            "configured_ifnames",
+            "configured_observed",
+            "configured_excluded",
+            "orphaned",
+            "limits",
+        ],
         "sysdevices",
     );
     assert_exact_keys(
@@ -759,6 +798,8 @@ fn all_seven_methods_and_nested_models_keep_exact_maximal_key_sets() {
             "selected",
             "observed",
             "recommended_lan",
+            "collect_allowed",
+            "collect_reason",
             "is_bridge",
             "is_bridge_port",
             "is_nss_ifb",
@@ -766,6 +807,45 @@ fn all_seven_methods_and_nested_models_keep_exact_maximal_key_sets() {
         ],
         "sysdevices.devices[]",
     );
+    assert_exact_keys(
+        &diagnostics,
+        &[
+            "contract_version",
+            "service",
+            "collection",
+            "data_path",
+            "interfaces",
+            "connection",
+            "subsystems",
+            "versions",
+            "alerts",
+            "config_issues",
+        ],
+        "diagnostics",
+    );
+    assert_exact_keys(
+        &diagnostics["collection"],
+        &[
+            "state",
+            "generation",
+            "last_attempt_ms",
+            "last_success_ms",
+            "age_ms",
+            "refresh_interval_ms",
+            "consecutive_failures",
+            "retained",
+            "last_error",
+        ],
+        "diagnostics.collection",
+    );
+    assert_exact_keys(
+        &diagnostics["versions"],
+        &["daemon", "package", "contract_version", "schema_version"],
+        "diagnostics.versions",
+    );
+    assert_eq!(diagnostics["contract_version"], 1);
+    assert_eq!(diagnostics["versions"]["contract_version"], 1);
+    assert_eq!(diagnostics["versions"]["schema_version"], 1);
 }
 
 #[test]
@@ -840,6 +920,8 @@ fn optional_fields_are_omitted_without_changing_required_key_sets() {
             "selected",
             "observed",
             "recommended_lan",
+            "collect_allowed",
+            "collect_reason",
             "is_bridge",
             "is_bridge_port",
             "is_nss_ifb",
@@ -857,7 +939,12 @@ fn json_names_enums_warnings_evidence_version_and_directions_are_stable() {
     assert_eq!(status["warnings"], json!(["dae_detected"]));
     assert_eq!(
         status["evidence"],
-        json!({"source":"rust_test","method":"status","read_only":true})
+        json!({
+            "source": "rust_test",
+            "method": "status",
+            "read_only": true,
+            "probe_failures": {"items": [], "total": 0, "truncated": false}
+        })
     );
     assert_eq!(status["version"], "1.0.0-r1");
     let mut capability_keys = status["capabilities"]
@@ -869,6 +956,7 @@ fn json_names_enums_warnings_evidence_version_and_directions_are_stable() {
     capability_keys.sort();
     let mut expected_capability_keys = vec![
         "bpf",
+        "bpf_supported",
         "bpf_package",
         "bpf_object",
         "bpf_runtime_metrics",
@@ -964,6 +1052,87 @@ fn overview_keeps_history_metadata_and_old_fixture_schema_names() {
     assert_eq!(overview["sample_source"], "clients_refresh_daemon_ring");
     assert_eq!(overview["samples"][0]["tx_bps"], 1_000);
     assert_eq!(overview["samples"][0]["rx_bps"], 2_000);
+}
+
+#[test]
+fn status_and_health_probe_failure_objects_match_schema_and_fallback_snapshot() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../..");
+    let schema: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("net/lanspeedd/files/usr/share/lanspeed/schema.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    let snapshot = ResponseSnapshot::unsupported("test");
+    let status = snapshot.response(Method::Status).unwrap();
+    let health = snapshot.response(Method::Health).unwrap();
+    let failures = &health["evidence"]["probe_failures"];
+
+    assert_exact_keys(
+        failures,
+        &["items", "total", "truncated"],
+        "fallback health.evidence.probe_failures",
+    );
+    assert_eq!(
+        failures,
+        &json!({"items": [], "total": 0, "truncated": false})
+    );
+    assert_eq!(&status["evidence"]["probe_failures"], failures);
+    assert!(snapshot.response(Method::Clients).unwrap()["evidence"]
+        .get("probe_failures")
+        .is_none());
+    assert!(snapshot.response(Method::Reload).unwrap()["evidence"]
+        .get("probe_failures")
+        .is_none());
+    assert_eq!(
+        schema["$defs"]["health"]["properties"]["evidence"]["$ref"],
+        "#/$defs/healthEvidence"
+    );
+    assert_eq!(
+        schema["$defs"]["status"]["properties"]["evidence"]["$ref"],
+        "#/$defs/healthEvidence"
+    );
+    assert_eq!(
+        schema["$defs"]["healthEvidence"]["properties"]["probe_failures"]["$ref"],
+        "#/$defs/probeFailures"
+    );
+    assert_eq!(
+        schema["$defs"]["probeFailures"]["properties"]["items"]["maxItems"],
+        32
+    );
+    assert_eq!(
+        schema["$defs"]["probeFailures"]["required"],
+        json!(["items", "total", "truncated"])
+    );
+}
+
+#[test]
+fn diagnostics_omit_client_identity_and_untrusted_evidence_text() {
+    let mut snapshot = fixture_snapshot();
+    snapshot.clients.conn_source = Some("/proc/private/path token=secret".into());
+    snapshot.status.evidence.details.insert(
+        "effective_collector".into(),
+        json!("/private/collector/path"),
+    );
+    snapshot
+        .status
+        .evidence
+        .details
+        .insert("runtime_error".into(), json!("token=secret"));
+
+    let diagnostics = snapshot.response(Method::Diagnostics).unwrap();
+    let serialized = diagnostics.to_string();
+    for private in [
+        "fixture-client",
+        "02:00:00:00:00:01",
+        "192.0.2.10",
+        "/proc/private/path",
+        "/private/collector/path",
+        "token=secret",
+    ] {
+        assert!(!serialized.contains(private), "leaked {private}");
+    }
+    assert!(diagnostics["connection"]["source"].is_null());
+    assert_eq!(diagnostics["data_path"]["effective_rate"], "unsupported");
 }
 
 #[test]

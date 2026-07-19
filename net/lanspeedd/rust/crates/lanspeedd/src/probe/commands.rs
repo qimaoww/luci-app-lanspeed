@@ -85,6 +85,10 @@ impl ReadOnlyCommand {
         }
     }
 
+    pub const fn nonzero_exit_is_absence(self) -> bool {
+        matches!(self, Self::TcFilterShow | Self::IpRouteShow)
+    }
+
     pub fn evidence_key(self, args: &[&str]) -> String {
         match self {
             Self::Fw4 => "fw4".into(),

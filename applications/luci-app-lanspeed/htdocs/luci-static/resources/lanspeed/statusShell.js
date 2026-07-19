@@ -23,6 +23,7 @@ function sortableHeader(viewState, refs, sortKey, label, attrs) {
 	};
 	button.addEventListener('click', function() {
 		Object.assign(viewState.prefs, fmt.nextSort(viewState.prefs, sortKey));
+		viewState.page = 1;
 		fmt.savePrefs(viewState.prefs);
 		viewState.refreshLive();
 	});
@@ -35,7 +36,7 @@ function buildShell(viewState) {
 	var prefs = viewState.prefs;
 	refs.sortHeaders = {};
 
-	refs.collectorPill = E('span', { 'class': 'label' }, '-');
+	refs.collectorPill = E('span', { 'class': 'label lanspeed-collector-status' }, '-');
 	refs.meta     = E('span', { 'class': 'meta' }, '');
 	var overviewHeader = E('div', { 'class': 'lanspeed-header' }, [
 		E('h3', {}, _('LAN Speed')),
@@ -44,15 +45,20 @@ function buildShell(viewState) {
 		refs.meta
 	]);
 
-	refs.errorPre = E('pre', {
-		'style': 'white-space:pre-wrap;margin:.4em 0 0 0;font-size:.85em'
-	}, '');
+	refs.errorTitle = E('strong', {}, _('部分实时数据暂不可用'));
+	refs.errorPre = E('p', { 'class': 'lanspeed-status-error-summary' }, '');
+	refs.errorList = E('ul', { 'class': 'lanspeed-status-error-list' });
 	refs.errorBox = E('div', {
-		'class': 'alert-message error',
-		'style': 'display:none;margin:0 0 1em 0'
+		'class': 'alert-message error lanspeed-status-error',
+		'role': 'alert',
+		'aria-live': 'assertive',
+		'aria-atomic': 'true',
+		'aria-hidden': 'true',
+		'style': 'display:none'
 	}, [
-		E('strong', {}, _('无法加载 LAN Speed 状态')),
-		refs.errorPre
+		refs.errorTitle,
+		refs.errorPre,
+		refs.errorList
 	]);
 
 	refs.mTx          = E('div', { 'class': 'big' }, '0');
@@ -61,16 +67,25 @@ function buildShell(viewState) {
 	refs.mClientsSub  = E('div', { 'class': 'hint' }, '-');
 	refs.mCoverage    = E('div', { 'class': 'big' }, '-');
 	refs.mCoverageSub = E('div', { 'class': 'hint' }, '-');
-	refs.mTcpConns    = E('div', { 'class': 'big' }, '-');
-	refs.mUdpConns    = E('div', { 'class': 'big' }, '-');
+	refs.mTcpConns    = E('span', { 'class': 'lanspeed-connection-number' }, '-');
+	refs.mUdpConns    = E('span', { 'class': 'lanspeed-connection-number' }, '-');
 	refs.mUdpConnsSub = E('div', { 'class': 'hint' }, '-');
+	refs.mConnsValue  = E('div', { 'class': 'big lanspeed-connection-values' }, [
+		E('span', { 'class': 'lanspeed-connection-stat' }, [
+			E('span', { 'class': 'lanspeed-connection-label' }, 'TCP'),
+			refs.mTcpConns
+		]),
+		E('span', { 'class': 'lanspeed-connection-stat' }, [
+			E('span', { 'class': 'lanspeed-connection-label' }, 'UDP'),
+			refs.mUdpConns
+		])
+	]);
 	refs.mConnsWrap   = E('div', {
 		'class': 'lanspeed-metric',
 		'title': _('当前连接来自 conntrack：TCP 统计已建立且确认的连接，UDP 统计已确认的连接。')
 	}, [
 		E('div', { 'class': 'caption' }, _('连接数')),
-		refs.mTcpConns,
-		refs.mUdpConns,
+		refs.mConnsValue,
 		refs.mUdpConnsSub
 	]);
 	var metrics = E('div', { 'class': 'lanspeed-metrics' }, [
@@ -110,7 +125,8 @@ function buildShell(viewState) {
 
 	refs.btnRefresh = E('button', {
 		'type': 'button',
-		'class': 'cbi-button'
+		'class': 'cbi-button cbi-button-action lanspeed-status-refresh',
+		'aria-label': _('立即刷新实时状态')
 	}, _('立即刷新'));
 	refs.btnRefresh.addEventListener('click', function(event) {
 		if (event && event.preventDefault) event.preventDefault();
@@ -134,11 +150,13 @@ function buildShell(viewState) {
 	refs.filterInput = E('input', {
 		'type': 'search',
 		'class': 'cbi-input-text',
+		'aria-label': _('过滤客户端'),
 		'placeholder': _('过滤 MAC / 主机名 / IP'),
 		'value': viewState.filter || ''
 	});
 	refs.filterInput.addEventListener('input', function(ev) {
 		viewState.filter = ev.target.value;
+		viewState.page = 1;
 		viewState.refreshLive();
 	});
 
@@ -147,6 +165,7 @@ function buildShell(viewState) {
 	refs.activeChk = E('input', activeAttrs);
 	refs.activeChk.addEventListener('change', function(ev) {
 		viewState.prefs.activeOnly = ev.target.checked;
+		viewState.page = 1;
 		fmt.savePrefs(viewState.prefs);
 		viewState.refreshLive();
 	});
@@ -170,6 +189,86 @@ function buildShell(viewState) {
 	refs.unitSel.addEventListener('change', function(ev) {
 		viewState.prefs.unit = ev.target.value;
 		fmt.savePrefs(viewState.prefs);
+		viewState.refreshLive();
+	});
+
+	var pageSizeChoices = fmt.PAGE_SIZE_CHOICES || [ 10, 25, 50, 100 ];
+	var initialPageSize = pageSizeChoices.indexOf(Number(prefs.pageSize)) !== -1
+		? Number(prefs.pageSize) : 25;
+	prefs.pageSize = initialPageSize;
+	refs.pageSizeSel = E('select', {
+		'class': 'cbi-input-select lanspeed-page-size',
+		'aria-label': _('每页客户端数'),
+		'aria-controls': 'lanspeed-clients-table'
+	}, pageSizeChoices.map(function(size) {
+		return fmt.opt(size, String(size), initialPageSize === size);
+	}));
+	refs.pageSizeSel.addEventListener('change', function(ev) {
+		var size = parseInt(ev.target.value, 10);
+		if (pageSizeChoices.indexOf(size) === -1) return;
+		viewState.prefs.pageSize = size;
+		viewState.page = 1;
+		fmt.savePrefs(viewState.prefs);
+		viewState.refreshLive();
+	});
+
+	function pageButton(label, text, target) {
+		var button = E('button', {
+			'type': 'button',
+			'class': 'cbi-button lanspeed-page-button',
+			'title': label,
+			'aria-label': label,
+			'aria-controls': 'lanspeed-clients-table'
+		}, text);
+		button.addEventListener('click', function(event) {
+			if (event && event.preventDefault) event.preventDefault();
+			viewState.page = target(viewState.page || 1, viewState.pageCount || 1);
+			viewState.refreshLive();
+		});
+		return button;
+	}
+
+	refs.pageFirst = pageButton(_('第一页'), '«', function() { return 1; });
+	refs.pagePrev = pageButton(_('上一页'), '‹', function(page) { return Math.max(1, page - 1); });
+	refs.pageSummary = E('span', {
+		'class': 'lanspeed-page-summary',
+		'role': 'status',
+		'aria-live': 'polite',
+		'aria-atomic': 'true'
+	}, '-');
+	refs.pageNext = pageButton(_('下一页'), '›', function(page, count) {
+		return Math.min(count, page + 1);
+	});
+	refs.pageLast = pageButton(_('最后一页'), '»', function(page, count) { return count; });
+	refs.pageNav = E('nav', {
+		'class': 'lanspeed-pagination',
+		'aria-label': _('客户端分页'),
+		'tabindex': '0'
+	}, [
+		E('label', { 'class': 'lanspeed-page-size-control' }, [
+			_('每页'), refs.pageSizeSel
+		]),
+		E('div', { 'class': 'lanspeed-page-actions' }, [
+			refs.pageFirst,
+			refs.pagePrev,
+			refs.pageSummary,
+			refs.pageNext,
+			refs.pageLast
+		])
+	]);
+	refs.pageNav.addEventListener('keydown', function(event) {
+		if (!event) return;
+		var tag = event.target && String(event.target.tagName || '').toLowerCase();
+		if (tag === 'select') return;
+		var page = viewState.page || 1;
+		var count = viewState.pageCount || 1;
+		if (event.key === 'ArrowLeft') page = Math.max(1, page - 1);
+		else if (event.key === 'ArrowRight') page = Math.min(count, page + 1);
+		else if (event.key === 'Home') page = 1;
+		else if (event.key === 'End') page = count;
+		else return;
+		if (event.preventDefault) event.preventDefault();
+		viewState.page = page;
 		viewState.refreshLive();
 	});
 
@@ -204,6 +303,7 @@ function buildShell(viewState) {
 	}, _('状态'));
 	refs.statusHeader.hidden = viewState.showClientStatus !== true;
 	refs.clientsTable = E('table', {
+		'id': 'lanspeed-clients-table',
 		'class': 'lanspeed-table',
 		'data-client-status': viewState.showClientStatus === true ? 'shown' : 'hidden'
 	}, [
@@ -229,7 +329,8 @@ function buildShell(viewState) {
 		E('div', { 'class': 'lanspeed-body' }, [
 			toolbar,
 			refs.clientsTable,
-			refs.empty
+			refs.empty,
+			refs.pageNav
 		])
 	]);
 
@@ -237,7 +338,7 @@ function buildShell(viewState) {
 	refs.ifacesBody    = E('tbody', {});
 	refs.ifacesHint    = E('p', { 'class': 'lanspeed-hint' }, '');
 	refs.ifacesPicker  = E('div', { 'class': 'lanspeed-iface-picker' });
-	var ifacesTable = E('table', { 'class': 'lanspeed-table' }, [
+	var ifacesTable = E('table', { 'class': 'lanspeed-table lanspeed-ifaces-table' }, [
 		E('thead', {}, E('tr', {}, [
 			E('th', {}, _('接口')),
 			E('th', { 'class': 'num' }, _('接口 ↑')),
@@ -261,13 +362,17 @@ function buildShell(viewState) {
 	]);
 	var ifacesCard = E('div', { 'class': 'cbi-section' }, [ refs.ifacesDetails ]);
 
-	var root = E('div', { 'class': 'cbi-map lanspeed-root' }, [
+	var root = E('div', {
+		'class': 'cbi-map lanspeed-root lanspeed-status-root',
+		'aria-busy': 'false'
+	}, [
 		E('style', {}, statusStyle.CSS),
 		overviewCard,
 		clientsCard,
 		ifacesCard
 	]);
 
+	refs.root = root;
 	lsTheme.applyRoot(root);
 
 	return { root: root, refs: refs };

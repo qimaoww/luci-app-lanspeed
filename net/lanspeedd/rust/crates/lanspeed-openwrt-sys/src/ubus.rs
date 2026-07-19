@@ -972,7 +972,7 @@ mod tests {
         let object = UbusObject::new("lanspeed", vec![method]).unwrap();
         let mut connection = UbusConnection::connect_with(None, fake_ops()).unwrap();
         connection.register_object(object).unwrap();
-        let message = BlobBuf::from_json(r#"{"identity_key":"30:c5:99:a7:bb:2d@eth1"}"#).unwrap();
+        let message = BlobBuf::from_json(r#"{"identity_key":"02:00:00:00:00:42@eth1"}"#).unwrap();
         let mut request = crate::raw::ubus_request_data::default();
         let method_name = CString::new("client_connections").unwrap();
 
@@ -987,7 +987,7 @@ mod tests {
             },
             STATUS_OK
         );
-        assert_eq!(seen.borrow().as_deref(), Some("30:c5:99:a7:bb:2d@eth1"));
+        assert_eq!(seen.borrow().as_deref(), Some("02:00:00:00:00:42@eth1"));
     }
 
     #[test]

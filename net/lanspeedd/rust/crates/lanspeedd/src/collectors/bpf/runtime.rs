@@ -209,6 +209,8 @@ pub struct BpfSuspendedTopology {
 pub struct BpfHealth {
     pub object_loaded: bool,
     pub all_expected_hooks_attached: bool,
+    pub expected_hook_count: usize,
+    pub attached_hook_count: usize,
     pub map_read_attempted: bool,
     pub map_read_ok: bool,
     pub fresh_snapshot: bool,
@@ -1141,6 +1143,12 @@ impl<L> BpfRuntime<L> {
         BpfHealth {
             object_loaded: self.object_loaded,
             all_expected_hooks_attached: self.is_attached(),
+            expected_hook_count: self.expected_specs.len(),
+            attached_hook_count: self
+                .expected_specs
+                .iter()
+                .filter(|expected| self.links.iter().any(|owned| owned.spec == **expected))
+                .count(),
             map_read_attempted: self.map_read_attempted,
             map_read_ok: self.last_map_read_ok && fresh_snapshot,
             fresh_snapshot,
@@ -1159,6 +1167,8 @@ impl<L> BpfRuntime<L> {
         crate::probe::RuntimeHealth {
             bpf_object_loaded: health.object_loaded,
             bpf_attached: health.all_expected_hooks_attached,
+            bpf_expected_hook_count: health.expected_hook_count,
+            bpf_attached_hook_count: health.attached_hook_count,
             bpf_map_read_attempted: health.map_read_attempted,
             bpf_map_read_ok: health.map_read_ok,
             bpf_last_complete_snapshot_ms: health.last_complete_snapshot_ms,

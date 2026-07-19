@@ -1,6 +1,7 @@
 use super::{
     assess, commands::CommandResult, files::BoundedFile, CollectedEvidence, CommandEvidence,
-    FileEvidence, ProbeObservations, ProbeReport, RuntimeHealth, UbusEvidence, UciEvidence,
+    FileEvidence, ProbeFailure, ProbeObservations, ProbeReport, RuntimeHealth, UbusEvidence,
+    UciEvidence,
 };
 use super::{commands::ReadOnlyCommand, tc};
 use crate::config::RuntimeConfig;
@@ -90,6 +91,7 @@ pub struct UbusProbeResult {
     pub exit_code: i32,
     pub summary: String,
     pub output: String,
+    pub timed_out: bool,
     pub truncated: bool,
 }
 
@@ -227,6 +229,7 @@ impl UbusSource for SystemUbusSource {
             }
             .into(),
             output: result.stdout,
+            timed_out: result.timed_out,
             truncated: result.output_truncated || result.timed_out,
         })
     }
@@ -394,7 +397,7 @@ where
                         &mut observations.probe_error,
                     ) {
                         let filters = tc::parse_filter_lines(ifname, direction, &result.stdout);
-                        observations.tc.existing_filters |= !filters.is_empty();
+                        observations.tc.existing_filters |= tc::has_foreign_filters(&filters);
                         observations.tc.filters.extend(filters);
                     }
                 }
@@ -473,6 +476,13 @@ where
             }
             Err(_) => {
                 *error = true;
+                record_failure(
+                    evidence,
+                    "command",
+                    format!("command:{name}"),
+                    "availability_failed",
+                    None,
+                );
                 evidence.command.push(CommandEvidence {
                     source: format!("command:{name}"),
                     command: name.into(),
@@ -496,15 +506,37 @@ where
     ) -> Option<CommandResult> {
         match self.commands.run(command, args) {
             Ok(result) => {
-                let nonzero_is_error = command != ReadOnlyCommand::TcFilterShow;
+                let source = canonical_command_source(command, args);
+                let absent = command.nonzero_exit_is_absence()
+                    && result.exit_code.is_some_and(|code| code != 0)
+                    && !result.timed_out
+                    && !result.output_truncated;
                 let optional_truncation =
                     command == ReadOnlyCommand::NftDaeDnsUdp53 && result.output_truncated;
-                let failed = (nonzero_is_error && result.exit_code != Some(0))
+                let failed = (result.exit_code != Some(0) && !absent)
                     || result.timed_out
                     || (result.output_truncated && !optional_truncation);
                 *error |= failed;
+                if failed {
+                    let reason = if result.timed_out {
+                        "timeout"
+                    } else if result.output_truncated {
+                        "output_truncated"
+                    } else if result.exit_code.is_some() {
+                        "nonzero_exit"
+                    } else {
+                        "execution_failed"
+                    };
+                    record_failure(
+                        evidence,
+                        "command",
+                        source.clone(),
+                        reason,
+                        result.exit_code,
+                    );
+                }
                 evidence.command.push(CommandEvidence {
-                    source: canonical_command_source(command, args),
+                    source,
                     command: display.into(),
                     available: true,
                     exit_code: result.exit_code,
@@ -512,6 +544,8 @@ where
                     summary: Some(
                         if optional_truncation {
                             "optional ruleset scan truncated"
+                        } else if absent {
+                            "optional state not present"
                         } else if result.timed_out {
                             "probe timed out"
                         } else if result.output_truncated {
@@ -528,8 +562,16 @@ where
             }
             Err(_) => {
                 *error = true;
+                let source = canonical_command_source(command, args);
+                record_failure(
+                    evidence,
+                    "command",
+                    source.clone(),
+                    "execution_failed",
+                    None,
+                );
                 evidence.command.push(CommandEvidence {
-                    source: canonical_command_source(command, args),
+                    source,
                     command: display.into(),
                     available: true,
                     exit_code: None,
@@ -553,10 +595,26 @@ where
                 o.files.nf_conntrack_acct_present = entry.present;
                 o.files.nf_conntrack_acct_value = entry.value.clone();
                 o.probe_error |= entry.truncated;
+                if entry.truncated {
+                    record_failure(
+                        evidence,
+                        "file",
+                        entry.source.clone(),
+                        "output_truncated",
+                        None,
+                    );
+                }
                 evidence.file.push(to_file_evidence(entry));
             }
             Err(error) => {
                 o.probe_error = true;
+                record_failure(
+                    evidence,
+                    "file",
+                    format!("file:{acct}"),
+                    "read_failed",
+                    None,
+                );
                 evidence.file.push(file_error(acct, error.to_string()));
             }
         }
@@ -670,8 +728,15 @@ where
                 o.nss.direct_state_errno = state.errno;
                 o.nss.direct_state_major = state.state_major;
                 o.nss.direct_source_path = state.source_path;
+                if state.present && !state.readable {
+                    o.probe_error = true;
+                    record_failure(evidence, "nss", "nss:ecm_state", "state_unreadable", None);
+                }
             }
-            Err(_) => o.probe_error = true,
+            Err(_) => {
+                o.probe_error = true;
+                record_failure(evidence, "nss", "nss:ecm_state", "state_probe_failed", None);
+            }
         }
         self.collect_nss_counts(o, evidence);
     }
@@ -708,10 +773,14 @@ where
         match self.files.read(path, FILE_CAP) {
             Ok(entry) => {
                 let truncated = entry.truncated;
+                let source = entry.source.clone();
                 let value = (!truncated && entry.present)
                     .then(|| entry.value.clone())
                     .flatten();
                 *error |= truncated;
+                if truncated {
+                    record_failure(evidence, "file", source, "output_truncated", None);
+                }
                 let mut file_evidence = to_file_evidence(entry);
                 if truncated {
                     file_evidence.status = "truncated";
@@ -722,6 +791,13 @@ where
             }
             Err(error_value) => {
                 *error = true;
+                record_failure(
+                    evidence,
+                    "file",
+                    format!("file:{path}"),
+                    "read_failed",
+                    None,
+                );
                 evidence
                     .file
                     .push(file_error(path, error_value.to_string()));
@@ -746,6 +822,13 @@ where
             }
             Err(error_value) => {
                 *error = true;
+                record_failure(
+                    evidence,
+                    "file",
+                    format!("file:{path}"),
+                    "read_failed",
+                    None,
+                );
                 evidence
                     .file
                     .push(file_error(path, error_value.to_string()));
@@ -785,6 +868,13 @@ where
             }
             Err(error_value) => {
                 *error = true;
+                record_failure(
+                    evidence,
+                    "file",
+                    format!("file:{path}"),
+                    "read_failed",
+                    None,
+                );
                 evidence
                     .file
                     .push(file_error(path, error_value.to_string()));
@@ -825,6 +915,13 @@ where
                 }
                 Err(_) => {
                     o.probe_error = true;
+                    record_failure(
+                        evidence,
+                        "uci",
+                        format!("uci:{package}"),
+                        "load_failed",
+                        None,
+                    );
                     evidence.uci.push(UciEvidence {
                         source: format!("uci:{package}"),
                         package: package.into(),
@@ -925,8 +1022,23 @@ where
         ] {
             match self.ubus.query(query) {
                 Ok(result) => {
-                    let failed = result.exit_code != 0 || result.truncated;
+                    let failed = result.exit_code != 0 || result.timed_out || result.truncated;
                     o.probe_error |= failed;
+                    if failed {
+                        record_failure(
+                            evidence,
+                            "ubus",
+                            format!("ubus:{}", query.object()),
+                            if result.timed_out {
+                                "timeout"
+                            } else if result.truncated {
+                                "output_truncated"
+                            } else {
+                                "nonzero_exit"
+                            },
+                            Some(result.exit_code),
+                        );
+                    }
                     if query == UbusQuery::NetworkLanStatus {
                         o.ubus.network_lan_attempted = true;
                         o.ubus.network_lan_exit_code = result.exit_code;
@@ -959,6 +1071,13 @@ where
                 Err(_) => {
                     o.probe_error = true;
                     o.lan_probe_error |= query == UbusQuery::NetworkLanStatus;
+                    record_failure(
+                        evidence,
+                        "ubus",
+                        format!("ubus:{}", query.object()),
+                        "query_failed",
+                        None,
+                    );
                     evidence.ubus.push(UbusEvidence {
                         source: format!("ubus:{}", query.object()),
                         object: query.object().into(),
@@ -974,6 +1093,23 @@ where
 
 fn canonical_command_source(command: ReadOnlyCommand, args: &[&str]) -> String {
     format!("command:{}", command.evidence_key(args))
+}
+fn record_failure(
+    evidence: &mut CollectedEvidence,
+    kind: &'static str,
+    source: impl Into<String>,
+    reason: &'static str,
+    exit_code: Option<i32>,
+) {
+    let failure = ProbeFailure {
+        kind,
+        source: source.into(),
+        reason,
+        exit_code,
+    };
+    if !evidence.failures.contains(&failure) {
+        evidence.failures.push(failure);
+    }
 }
 fn to_file_evidence(entry: BoundedFile) -> FileEvidence {
     FileEvidence {

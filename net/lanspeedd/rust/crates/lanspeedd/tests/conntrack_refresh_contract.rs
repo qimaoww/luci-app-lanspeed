@@ -815,6 +815,7 @@ fn before_reply_policy_refreshes_only_clients_and_reload() {
         Method::Health,
         Method::Interfaces,
         Method::Sysdevices,
+        Method::Diagnostics,
     ] {
         assert_eq!(before_reply_action(method), BeforeReplyAction::None);
     }

@@ -1,0 +1,101 @@
+{
+  "contract_version": 1,
+  "service": {
+    "state": "running",
+    "ubus_connected": true
+  },
+  "collection": {
+    "state": "fresh",
+    "generation": 1,
+    "last_attempt_ms": 0,
+    "last_success_ms": 0,
+    "age_ms": 0,
+    "refresh_interval_ms": 1000,
+    "consecutive_failures": 0,
+    "retained": false,
+    "last_error": null
+  },
+  "data_path": {
+    "configured_rate": "auto",
+    "effective_rate": "unsupported",
+    "configured_connection": "auto",
+    "effective_connection": "unsupported",
+    "fallback_active": false,
+    "reason_code": "no_live_rate_collector"
+  },
+  "interfaces": {
+    "state": "degraded",
+    "total": 1,
+    "available": 0,
+    "missing": 0,
+    "sample_ms": 0
+  },
+  "connection": {
+    "state": "unavailable",
+    "source": null,
+    "entries_seen": null,
+    "entries_matched": null,
+    "parse_errors": null
+  },
+  "subsystems": [
+    {
+      "id": "bpf",
+      "state": "unavailable",
+      "code": "bpf_unavailable"
+    },
+    {
+      "id": "tc",
+      "state": "unavailable",
+      "code": "tc_unavailable"
+    },
+    {
+      "id": "bpf_map",
+      "state": "unavailable",
+      "code": "map_not_started"
+    },
+    {
+      "id": "conntrack",
+      "state": "unavailable",
+      "code": "conntrack_unavailable"
+    },
+    {
+      "id": "nss",
+      "state": "disabled",
+      "code": "nss_not_present"
+    },
+    {
+      "id": "identity",
+      "state": "healthy",
+      "code": null
+    },
+    {
+      "id": "ubus",
+      "state": "healthy",
+      "code": null
+    }
+  ],
+  "versions": {
+    "daemon": "1.1.1-r9",
+    "package": "1.1.1-r9",
+    "contract_version": 1,
+    "schema_version": 1
+  },
+  "alerts": [
+    {
+      "id": "live_metrics_unavailable",
+      "severity": "warning",
+      "component": "runtime",
+      "state": "active",
+      "message_public": "No supported live-rate collector is currently producing data."
+    }
+  ],
+  "config_issues": [
+    {
+      "id": "interface_exclude_compatibility_only",
+      "severity": "info",
+      "option": "interface_exclude",
+      "state": "compatibility_only",
+      "message_public": "interface_exclude is retained for compatibility and does not change the attach set."
+    }
+  ]
+}
