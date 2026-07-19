@@ -141,7 +141,7 @@ const CONFIG_STYLE_PARTS = [
 
 const EXPECTED_STATUS_STYLE_SHA256 = '7efc85957caddd7dbea15cae2776551a7089d204a71d4eefa9883795a110e5ec';
 const EXPECTED_DIAGNOSTICS_STYLE_SHA256 = 'f8e8015359f4e3e7aa2870c3d7c334dc527093af3c38ca41c5ad06a4a9372648';
-const EXPECTED_CONFIG_STYLE_SHA256 = '7ce8a26813864aecc56ba2fa630436ecaca9a261b709561d3e51becd7971ca48';
+const EXPECTED_CONFIG_STYLE_SHA256 = '21a27686e352ebbd1a9fbdbad8fd053bbaa851da7c3f01fbda4c84385adaf4a0';
 
 function readMakeVar(source, name, fileLabel) {
 	const match = source.match(new RegExp(`^${name}:=(.+)$`, 'm'));
@@ -485,6 +485,7 @@ function assertArgonAlignmentContracts() {
 		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-range-remove{',
 		'height:2.5rem;min-height:2.5rem;padding-top:0;padding-bottom:0',
 		'display:inline-flex;align-items:center;justify-content:center',
+		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-ifcfg-table td{border-top:0}',
 		'.lanspeed-config-root.lanspeed-theme-argon .lanspeed-hint:empty{display:none}'
 	].forEach(function(rule) {
 		if (!configCss.includes(rule))
