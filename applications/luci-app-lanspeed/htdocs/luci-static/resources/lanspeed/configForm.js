@@ -600,7 +600,7 @@ function buildDaemonSection(values, viewState) {
 						E('td', { 'class': 'value' }, refs.hidePrivateIpv6),
 						E('td', { 'class': 'hint' }, _('隐藏 fc00::/7 私有地址和 fe80::/10 链路本地地址，公网 IPv6 仍会显示。'))
 					]),
-					E('tr', {}, [
+					E('tr', { 'class': 'lanspeed-range-row' }, [
 						E('td', {}, _('隐藏 IPv6 范围')),
 						E('td', { 'class': 'value range' }, refs.rangeEditor),
 						E('td', { 'class': 'hint' }, _('仅在上项开启时生效；可添加一个或多个 IPv6 网段，例如 fc00::/7、fe80::/10。'))
