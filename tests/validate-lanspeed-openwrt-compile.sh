@@ -32,6 +32,7 @@ fi
 PATH="$TARGET_ROOT/host/bin:$PATH" \
 RUSTC="$RUSTC" \
 "$CARGO" check \
+	--release \
 	--manifest-path "$ROOT/net/lanspeedd/rust/Cargo.toml" \
 	-p lanspeedd \
 	--features openwrt \
@@ -43,8 +44,9 @@ PATH="$TARGET_ROOT/host/bin:$PATH" \
 RUSTC="$RUSTC" \
 RUSTC_BOOTSTRAP=1 \
 "$CARGO" check \
+	--release \
 	-j "${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')}" \
-	-Z build-std=std,panic_abort \
+	-Z build-std=std,panic_unwind \
 	--manifest-path "$ROOT/net/lanspeedd/rust/Cargo.toml" \
 	-p lanspeedd \
 	--lib \

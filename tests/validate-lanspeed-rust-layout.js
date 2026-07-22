@@ -76,12 +76,21 @@ try {
   );
 
   const packageMakefile = fs.readFileSync(path.join(lanspeeddRoot, 'Makefile'), 'utf8');
+  const workspaceCargo = fs.readFileSync(path.join(lanspeeddRoot, 'rust/Cargo.toml'), 'utf8');
   for (const legacyBuildRule of ['lanspeed_bpf_plugin.so', 'CompileBPF', 'lanspeed_tc.bpf.c']) {
     assert(
       !packageMakefile.includes(legacyBuildRule),
       `net/lanspeedd/Makefile must not reference ${legacyBuildRule}`
     );
   }
+  assert(
+    /\[profile\.release\][\s\S]*?panic\s*=\s*"unwind"/.test(workspaceCargo),
+    'production userspace must retain unwinding so callback panic guards remain effective'
+  );
+  assert(
+    packageMakefile.includes('CARGO_PROFILE_RELEASE_PANIC=abort'),
+    'the no_std eBPF build must override the userspace unwind profile with panic=abort'
+  );
 
   const bpfRuntime = fs.readFileSync(
     path.join(lanspeeddRoot, 'rust/crates/lanspeedd/src/collectors/bpf/runtime.rs'),
@@ -108,6 +117,10 @@ try {
     path.join(lanspeeddRoot, 'rust/crates/lanspeed-openwrt-sys/src/pure_uloop.rs'),
     'utf8'
   );
+  const uciSource = fs.readFileSync(
+    path.join(lanspeeddRoot, 'rust/crates/lanspeed-openwrt-sys/src/pure_uci.rs'),
+    'utf8'
+  );
   assert(
     codecSource.includes('json_encoding_matches_libubox_golden_fixture') &&
       codecSource.includes('integer_boundaries_match_signed_blobmsg_json_semantics'),
@@ -118,7 +131,14 @@ try {
     'backpressure_rejects_frame_without_queuing_or_leaking_pending_request',
     'disconnected_enqueue_does_not_leave_pending_request',
     'request_timeout_removes_pending_request',
-    'malformed_wire_frame_closes_connection_and_notifies_loss_once'
+    'malformed_wire_frame_closes_connection_and_notifies_loss_once',
+    'invoke_without_data_returns_invalid_argument_without_dropping_connection',
+    'fragmented_frame_is_retained_until_complete',
+    'large_frame_crosses_read_byte_budget_without_disconnect',
+    'frame_budget_yields_and_buffered_work_runs_without_new_readiness',
+    'continuous_small_frames_exceed_receive_limit_without_false_disconnect',
+    'receive_limit_ignores_consumed_prefix',
+    'hup_after_frame_budget_drains_buffer_before_notifying_loss'
   ]) {
     assert(
       ubusSource.includes(requiredUbusTest),
@@ -142,6 +162,18 @@ try {
       `pure Rust event loop must retain ${requiredUloopTest}`
     );
   }
+  assert(
+    uciSource.includes('DEFAULT_CONF2DIR: &str = "/var/run/uci"') &&
+      uciSource.includes('DEFAULT_SAVEDIR: &str = "/tmp/.uci"') &&
+      uciSource.includes('conf2_override_and_saved_delta_match_libuci_read_semantics') &&
+      uciSource.includes('non_utf8_values_match_the_former_libuci_lossy_string_contract') &&
+      uciSource.includes('command_abbreviations_and_empty_arguments_match_libuci') &&
+      uciSource.includes('bounded_reader_rejects_fifos_and_files_over_the_limit') &&
+      uciSource.includes('multiline_delta_and_strict_single_argument_rules_match_libuci') &&
+      uciSource.includes('delta_rename_allows_duplicates_and_makes_sections_named') &&
+      uciSource.includes('delta_list_index_removal_matches_sscanf_prefix_semantics'),
+    'pure Rust UCI must retain libuci syntax, overlay, bounded-read, delta, and legacy byte compatibility tests'
+  );
 
   const testRunner = fs.readFileSync(path.join(root, 'tests/run.sh'), 'utf8');
   const openwrtCompileValidator = fs.readFileSync(
@@ -160,8 +192,9 @@ try {
   );
   assert(
     openwrtCompileValidator.includes('--target aarch64-unknown-linux-musl') &&
-      openwrtCompileValidator.includes('-Z build-std=std,panic_abort'),
-    'the OpenWrt compile validator must cross-check the aarch64 musl target'
+      openwrtCompileValidator.includes('-Z build-std=std,panic_unwind') &&
+      openwrtCompileValidator.includes('--release'),
+    'the OpenWrt compile validator must cross-check the production aarch64 unwind target'
   );
   assert(
     testRunner.includes('RUST_CARGO') && testRunner.includes('rust_cargo'),
