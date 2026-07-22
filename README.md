@@ -10,16 +10,13 @@ LAN 侧按客户端实时吞吐监控 + TCP/UDP 连接数统计，当前面向 I
 
 ## 界面预览
 
-以下截图分别使用 **Aurora** 与 **Argon** 主题；六张图片均由虚构客户端、文档保留地址和示例连接数据生成，不包含真实设备、主机名、MAC、内网地址或路由器运行信息。连接详情示例同时展示八列表头，以及中国目标按省级行政区显示（如 `中国·浙江`）。点击链接可查看完整原图。
+以下截图由真实 Chromium 分别在 **Aurora**、**Argon** 与 **Bootstrap** 主题中渲染最终页面，桌面端使用 `1920×1080` 视口，实时状态另附 `390×844` 移动端截图。页面 RPC 与 UCI 响应均为确定性合成数据，客户端只使用文档保留地址、虚构主机名和本地管理 MAC，不包含真实设备或路由器状态；图片已移除固件页脚及 PNG 元数据。点击预览可查看完整桌面原图。
 
-- **Aurora**
-  - [实时状态](docs/screenshots/lanspeed-overview-desktop.png)
-  - [连接详情（桌面端）](docs/screenshots/client-connections-desktop.png)
-  - [连接详情（移动端）](docs/screenshots/client-connections-mobile.png)
-- **Argon**
-  - [实时状态](docs/screenshots/lanspeed-overview-desktop-argon.png)
-  - [连接详情（桌面端）](docs/screenshots/client-connections-desktop-argon.png)
-  - [连接详情（移动端）](docs/screenshots/client-connections-mobile-argon.png)
+| 主题 | 实时状态 | 运行诊断 | LAN Speed 配置 |
+|---|---|---|---|
+| **Aurora** | [![Aurora 实时状态桌面端](docs/screenshots/lanspeed-overview-aurora-desktop.png)](docs/screenshots/lanspeed-overview-aurora-desktop.png)<br>[移动端原图](docs/screenshots/lanspeed-overview-aurora-mobile.png) | [![Aurora 运行诊断桌面端](docs/screenshots/lanspeed-diagnostics-aurora-desktop.png)](docs/screenshots/lanspeed-diagnostics-aurora-desktop.png) | [![Aurora LAN Speed 配置桌面端](docs/screenshots/lanspeed-config-aurora-desktop.png)](docs/screenshots/lanspeed-config-aurora-desktop.png) |
+| **Argon** | [![Argon 实时状态桌面端](docs/screenshots/lanspeed-overview-argon-desktop.png)](docs/screenshots/lanspeed-overview-argon-desktop.png)<br>[移动端原图](docs/screenshots/lanspeed-overview-argon-mobile.png) | [![Argon 运行诊断桌面端](docs/screenshots/lanspeed-diagnostics-argon-desktop.png)](docs/screenshots/lanspeed-diagnostics-argon-desktop.png) | [![Argon LAN Speed 配置桌面端](docs/screenshots/lanspeed-config-argon-desktop.png)](docs/screenshots/lanspeed-config-argon-desktop.png) |
+| **Bootstrap** | [![Bootstrap 实时状态桌面端](docs/screenshots/lanspeed-overview-bootstrap-desktop.png)](docs/screenshots/lanspeed-overview-bootstrap-desktop.png)<br>[移动端原图](docs/screenshots/lanspeed-overview-bootstrap-mobile.png) | [![Bootstrap 运行诊断桌面端](docs/screenshots/lanspeed-diagnostics-bootstrap-desktop.png)](docs/screenshots/lanspeed-diagnostics-bootstrap-desktop.png) | [![Bootstrap LAN Speed 配置桌面端](docs/screenshots/lanspeed-config-bootstrap-desktop.png)](docs/screenshots/lanspeed-config-bootstrap-desktop.png) |
 
 ## 安装与编译
 
@@ -53,9 +50,9 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 - **NSS 兼容**：Qualcomm NSS 设备自动展示 ECM/PPE 状态，默认仍使用 LAN 边缘 BPF；显式选择 NSS 模式或 BPF 运行时不可用时，才使用 NSS sync / CT-Netlink 或 NSS-direct。NSS 硬件加速流量可能绕过 CPU，因此 BPF 只能看到慢路径；IPv4 通过 ARP、IPv6 通过 neighbor 表匹配客户端，并兼容 ECM NAT 端点。
 - **活跃客户端**：默认只把 10 秒内仍有有效速率的客户端计为 active，可通过 UCI 调整。
 - **覆盖率**：daemon 侧使用 32 个样本的滑动窗口，并按客户端实时速率生成单调累计分子，避免客户端离线/重新出现导致覆盖率跳回“采样中”；低流量与真正无流量分开显示。
-- **独立诊断**：LuCI 内置“实时状态”“运行诊断”和“LAN Speed 配置”三个页签；诊断页分项显示五个 RPC 请求、采集覆盖率与样本新鲜度、速率/连接数据路径、接口与连接健康、分级告警及 LuCI/后端版本一致性，并可复制不含客户端 MAC、IP、主机名或身份标识的脱敏报告。Aurora、Argon 与 Bootstrap 分别使用独立主题布局，实时状态页不再混入旧诊断面板。
-- **配置页面**：速率采集、连接数采集、活跃客户端阈值和接口配置可分开调整，并使用 LuCI 原生“保存并应用 / 保存 / 重置”页脚；修改后会立即显示原生未保存配置指示，点击可进入原生变更列表，应用配置时由 procd 触发后端重载，NSS 设备会显示 NSS 专属说明。
-- **接口配置**：采集 / 观察 / 关闭 三态切换，默认采集 `br-lan`、观察 `wan`；自动忽略 `dae*`、`miireg*`、`tun*`、`erspan*`、`gretap*`、`gre*`、`ip6gre*`、`ip6tnl*`、`sit*`、`bonding_masters*`，拒绝 nssifb 采集并可观察 WAN / ifb 计数。
+- **独立诊断**：LuCI 内置“实时状态”“运行诊断”和“LAN Speed 配置”三个页签；诊断页分别校验 `diagnostics`、`status`、`health`、`clients`、`interfaces`、`overview` 六个 RPC 请求，展示采集覆盖率与样本新鲜度、速率/连接数据路径、接口与连接健康、分级告警及 LuCI/后端版本一致性。加载、空数据、部分失败、硬失败、降级、过期和异常契约均独立呈现，失败响应不会被其它接口“洗绿”；可复制报告只包含白名单状态与计数，不包含客户端地址或名称、接口名、探针源和原始后端文本。Aurora、Argon 与 Bootstrap 分别使用独立主题布局，实时状态页不再混入旧诊断面板。
+- **配置页面**：速率与连接数采集模式、BPF/conntrack 运行开关、采样周期、历史样本、客户端上限、活跃判定、客户端状态列、IPv6 显示/隐藏规则和接口分配均可调整。整数、IPv6 CIDR 和接口列表采用严格校验；字段依赖与运行能力会禁用不适用的开关或选项并显示原因。页面使用 LuCI 原生“保存并应用 / 保存 / 重置”页脚，UCI 配置加载硬失败时会同时禁用并隐藏这些操作；修改后显示原生未保存配置指示，应用时由 procd 触发后端重载，并重新校验 `status` 与 `sysdevices`，成功、失败和可恢复编辑状态都有明确反馈。
+- **接口配置**：采集 / 观察 / 关闭 三态切换，默认采集 `br-lan`、观察 `wan`；异步扫描具有代次保护，并显示缺失接口、数量限制和不可采集原因。自动忽略 `dae*`、`miireg*`、`tun*`、`erspan*`、`gretap*`、`gre*`、`ip6gre*`、`ip6tnl*`、`sit*`、`bonding_masters*`，拒绝 nssifb 采集并可观察 WAN / ifb 计数。
 - **告警体系**：OpenClash / dae/daed / SQM/qosify/ifb / flow offload / fullcone NAT 等场景自动识别并提示。
 - **客户端状态列**：默认隐藏 LAN 客户端的采集来源与告警状态，可在“LAN Speed 配置”中开启。
 - **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.1-r9`。
@@ -99,7 +96,7 @@ NSS ECM/PPE sync 是显式选择 `nss_conntrack_sync`、NSS-direct 的补齐来�
 
 | 包 | 说明 |
 |---|---|
-| `lanspeedd` | Rust/Aya daemon，暴露八个 ubus 方法（status / clients / overview / health / reload / interfaces / sysdevices / client_connections） |
+| `lanspeedd` | Rust/Aya daemon，暴露九个 ubus 方法（status / clients / overview / health / diagnostics / reload / interfaces / sysdevices / client_connections） |
 | `lanspeedd-bpf` | LuCI 应用的必选依赖，安装 Rust 编译的低开销字节统计对象与 kfunc 兼容对象；生产运行默认使用低开销对象，精确连接数统一来自 conntrack，并依赖 `lanspeedd` |
 | `luci-app-lanspeed` | LuCI 实时状态、独立诊断和配置页，强制依赖 `lanspeedd-bpf`，模块化前端（status / diagnostics / config / client detail） |
 
@@ -226,19 +223,24 @@ uci commit lanspeed
 
 | 选项 | 默认 | 说明 |
 |---|---:|---|
-| `refresh_interval_ms` | `1000` | daemon 采样间隔。 |
-| `active_client_window_ms` | `10000` | 活跃客户端最近可见窗口，低于 1000 会被钳制。 |
-| `active_client_min_bps` | `1` | 活跃客户端最低当前速率，低于 1 会被钳制。 |
-| `overview_window_samples` | `240` | 趋势/概览样本窗口。 |
+| `refresh_interval_ms` | `1000` | daemon 采样间隔；配置页允许 `500` 到 `4294967295` ms 的完整整数。 |
+| `active_client_window_ms` | `10000` | 活跃客户端最近可见窗口；配置页要求不低于 `1000` ms。 |
+| `active_client_min_bps` | `1` | 活跃客户端最低当前速率；配置页要求不低于 `1` bps。 |
+| `overview_window_samples` | `240` | 趋势/概览样本窗口；配置页允许 `2` 到 `240` 个样本。 |
 | `rate_collector_mode` | `auto` | 速率采集：`auto` 默认在所有设备上优先 BPF；也可显式选择 `bpf` / `nss_ecm_direct` / `nss_conntrack_sync`。 |
 | `conn_collector_mode` | `auto` | 连接数采集：`auto` / `conntrack_netlink` / `conntrack_procfs`。 |
 | `show_client_status` | `0` | 是否在 LAN 客户端列表中显示采集来源和告警状态。 |
-| `show_ipv6` | `1` | 客户端列表是否显示 IPv6 地址。 |
-| `hide_private_ipv6` | `0` | 是否隐藏 `fc00::/7` 私有 IPv6 地址和 `fe80::/10` 链路本地地址；公网 IPv6 不受影响。 |
-| `hide_ipv6_ranges` | `fc00::/7 fe80::/10` | 自定义隐藏 IPv6 CIDR，空格或逗号分隔；仅在 `hide_private_ipv6=1` 时生效。 |
-| `collector_mode` | `auto` | 旧配置兼容字段，新配置页会同步到速率模式。 |
-| `enable_bpf` | `1` | 旧配置兼容字段；BPF 是必选组件，受支持配置必须保持 `1`。 |
-| `enable_conntrack_fallback` | `1` | 是否允许 conntrack 连接数和 NSS sync fallback。 |
+| `show_ipv6` | `1` | 客户端列表是否显示 IPv6 地址；关闭时私有 IPv6 与范围编辑会禁用。 |
+| `hide_private_ipv6` | `0` | 是否启用 IPv6 隐藏规则；仅在 `show_ipv6=1` 时可编辑。 |
+| `hide_ipv6_ranges` | `fc00::/7 fe80::/10` | 严格校验的 IPv6 CIDR 列表；仅在 `show_ipv6=1` 且 `hide_private_ipv6=1` 时生效。 |
+| `collector_mode` | `auto` | 旧配置兼容字段，配置页会根据速率与连接数模式同步推导。 |
+| `max_clients` | `2048` | 客户端与连接聚合容量；配置页允许 `64` 到 `16384`。 |
+| `ifname` | `br-lan` | 旧版采集接口兼容列表；配置页在接口三态流程中透明保留并同步。 |
+| `interface_include` | `br-lan` | 按客户端采集实时速率的接口列表。 |
+| `interface_exclude` | `wan` | 旧版兼容排除列表；不会形成第二套可分配接口模式。 |
+| `observe` | `wan` | 只显示接口总吞吐、不按客户端归属流量的观察接口列表。 |
+| `enable_bpf` | `1` | BPF 运行时开关；`lanspeedd-bpf` 仍是安装必选依赖，关闭后 BPF 模式不可选。 |
+| `enable_conntrack_fallback` | `1` | 是否允许 conntrack 连接数与 NSS sync 回退路径。 |
 
 ## ubus 调试
 
@@ -252,7 +254,7 @@ ubus call lanspeed reload       # 刷新 lanspeedd 运行状态，不写持久 U
 ubus call lanspeed interfaces   # 接口吞吐 + 覆盖率
 ubus call lanspeed sysdevices   # 系统网络设备列表
 ubus call lanspeed client_connections \
-  '{"identity_key":"02:00:00:00:00:42@eth1"}'
+  '{"identity_key":"02:00:00:00:00:42@br-lan"}'
 ```
 
 `client_connections` 的 `identity_key` 来自 `clients` 响应。它返回该客户端当前 conntrack 快照：TCP 仅统计 ESTABLISHED + ASSURED，UDP 仅统计 ASSURED；这不是历史连接记录。每条连接的 `tx_bps` / `rx_bps` 由相邻 conntrack 累计字节快照计算，方向始终以客户端为准；新连接首个样本为 0，计数器回退时对应方向为 0，时间回退时本次速率为 0。响应中的 `limit`、`returned_connections` 和 `truncated` 用于说明截断情况。LuCI 实时状态表中点击客户端名称即可进入连接详情页，目标行显示聚合速率，展开后显示每条实际连接的速率；发生截断时，速率仍直接显示数值，页脚会说明分组速率仅汇总已返回的连接子集。
@@ -344,7 +346,7 @@ tests/                             本地回归测试
 sh tests/validate-lanspeed-docs.sh
 ```
 
-后续设备验证可先运行 dry-run 审阅八个 ubus 方法及动态详情命令模板；确认目标设备和 SSH 参数后，再采集真实 evidence。`collect` 中的 `reload` 只刷新 lanspeedd 运行状态，不修改持久 UCI、网络、防火墙或代理配置。
+后续设备验证可先运行 dry-run 审阅九个 ubus 方法及动态详情命令模板；确认目标设备和 SSH 参数后，再采集真实 evidence。`collect` 中的 `reload` 只刷新 lanspeedd 运行状态，不修改持久 UCI、网络、防火墙或代理配置。
 
 ```sh
 DRY_RUN=1 TARGET=root@router OUT_DIR="$(mktemp -d)" sh tests/qa-device.sh collect

@@ -2,6 +2,8 @@
 .sisyphus/
 .worktrees/
 docs/superpowers/
+.playwright-cli/
+output/
 
 # build artifacts
 *.o

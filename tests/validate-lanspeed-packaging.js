@@ -852,6 +852,7 @@ try {
     'clients',
     'overview',
     'health',
+    'diagnostics',
     'reload',
     'interfaces',
     'sysdevices',
@@ -864,7 +865,7 @@ try {
     );
   });
   assert(
-    readme.includes("ubus call lanspeed client_connections \\\n  '{\"identity_key\":\"02:00:00:00:00:42@eth1\"}'"),
+    readme.includes("ubus call lanspeed client_connections \\\n  '{\"identity_key\":\"02:00:00:00:00:42@br-lan\"}'"),
     'README must provide the copyable client_connections identity_key command'
   );
   assert(

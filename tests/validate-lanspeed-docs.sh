@@ -36,6 +36,45 @@ reject_phrase() {
 	fi
 }
 
+check_png() {
+	path="$1"
+	width="$2"
+	height="$3"
+	if [ ! -f "$path" ]; then
+		log "missing screenshot: $path"
+		printf 'missing README screenshot: %s\n' "$path" >&2
+		exit 1
+	fi
+	node - "$path" "$width" "$height" <<'NODE'
+const fs = require('fs');
+const [path, expectedWidth, expectedHeight] = process.argv.slice(2);
+const png = fs.readFileSync(path);
+const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+if (png.length < 33 || !png.subarray(0, 8).equals(signature))
+  throw new Error(`${path}: invalid PNG signature`);
+const width = png.readUInt32BE(16);
+const height = png.readUInt32BE(20);
+if (width !== Number(expectedWidth) || height !== Number(expectedHeight))
+  throw new Error(`${path}: expected ${expectedWidth}x${expectedHeight}, got ${width}x${height}`);
+let offset = 8;
+const chunks = [];
+while (offset < png.length) {
+  if (offset + 12 > png.length) throw new Error(`${path}: truncated PNG chunk`);
+  const length = png.readUInt32BE(offset);
+  const type = png.toString('ascii', offset + 4, offset + 8);
+  const end = offset + 12 + length;
+  if (end > png.length) throw new Error(`${path}: invalid ${type} chunk length`);
+  chunks.push(type);
+  offset = end;
+  if (type === 'IEND') break;
+}
+if (offset !== png.length || chunks[0] !== 'IHDR' || chunks[chunks.length - 1] !== 'IEND' ||
+    chunks.some((type) => !['IHDR', 'IDAT', 'IEND'].includes(type)))
+  throw new Error(`${path}: unexpected PNG chunks or trailing data: ${chunks.join(',')}`);
+NODE
+	log "ok screenshot: $path (${width}x${height}, metadata-free PNG)"
+}
+
 log "README documentation checklist"
 log "file: $README"
 
@@ -131,7 +170,29 @@ require_phrase "本地环境可以运行确定性检查脚本"
 require_phrase "真实 SDK 编译"
 require_phrase "目标设备"
 require_phrase "/openwrt/immortalwrt"
+require_phrase "六个 RPC 请求"
+require_phrase "九个 ubus 方法"
+require_phrase '02:00:00:00:00:42@br-lan'
+require_phrase "确定性合成数据"
+require_phrase "文档保留地址"
+require_phrase "本地管理 MAC"
+require_phrase "PNG 元数据"
+require_phrase "docs/screenshots/lanspeed-overview-aurora-desktop.png"
+require_phrase "docs/screenshots/lanspeed-diagnostics-aurora-desktop.png"
+require_phrase "docs/screenshots/lanspeed-config-aurora-desktop.png"
+require_phrase "docs/screenshots/lanspeed-overview-aurora-mobile.png"
+require_phrase "docs/screenshots/lanspeed-overview-argon-desktop.png"
+require_phrase "docs/screenshots/lanspeed-diagnostics-argon-desktop.png"
+require_phrase "docs/screenshots/lanspeed-config-argon-desktop.png"
+require_phrase "docs/screenshots/lanspeed-overview-argon-mobile.png"
+require_phrase "docs/screenshots/lanspeed-overview-bootstrap-desktop.png"
+require_phrase "docs/screenshots/lanspeed-diagnostics-bootstrap-desktop.png"
+require_phrase "docs/screenshots/lanspeed-config-bootstrap-desktop.png"
+require_phrase "docs/screenshots/lanspeed-overview-bootstrap-mobile.png"
 reject_phrase "/openwrt/25"".12"
+reject_phrase "五个 RPC 请求"
+reject_phrase "八个 ubus 方法"
+reject_phrase "02:00:00:00:00:42@eth1"
 reject_phrase "uci set lanspeed.main.enabled"
 reject_phrase "git clone https://github.com/qimaoww/luci-app-lanspeed.git package/lanspeed"
 reject_phrase "package/lanspeed/lanspeedd/compile"
@@ -143,6 +204,27 @@ reject_phrase "ENABLE_BPF=0"
 reject_phrase "## 安装、启动与回滚"
 reject_phrase "--force-reinstall"
 reject_phrase "/tmp/legacy/lanspeedd"
+
+for theme in aurora argon bootstrap; do
+	for page in overview diagnostics config; do
+		check_png "$ROOT_DIR/docs/screenshots/lanspeed-$page-$theme-desktop.png" 1920 1080
+	done
+	check_png "$ROOT_DIR/docs/screenshots/lanspeed-overview-$theme-mobile.png" 390 844
+done
+
+for obsolete in \
+	lanspeed-overview-desktop.png \
+	lanspeed-overview-desktop-argon.png \
+	client-connections-desktop.png \
+	client-connections-desktop-argon.png \
+	client-connections-mobile.png \
+	client-connections-mobile-argon.png; do
+	if [ -e "$ROOT_DIR/docs/screenshots/$obsolete" ]; then
+		log "obsolete screenshot remains: $obsolete"
+		printf 'obsolete README screenshot remains: %s\n' "$obsolete" >&2
+		exit 1
+	fi
+done
 
 log "result: pass"
 printf 'documentation checklist passed: %s\n' "$EVIDENCE"
