@@ -74,9 +74,9 @@ CARGO_TARGET_DIR="$target_dirs/daemon" \
 "$cargo" build \
 	--manifest-path "$repo_root/net/lanspeedd/rust/Cargo.toml" \
 	-p lanspeedd --features openwrt --target x86_64-unknown-linux-musl \
-	--locked --offline
+	--release --locked --offline
 
-daemon="$target_dirs/daemon/x86_64-unknown-linux-musl/debug/lanspeedd"
+daemon="$target_dirs/daemon/x86_64-unknown-linux-musl/release/lanspeedd"
 dynamic=$(readelf -d "$daemon")
 for forbidden in libubus libubox libblobmsg_json libuci; do
 	if printf '%s\n' "$dynamic" | grep -F "$forbidden" >/dev/null; then

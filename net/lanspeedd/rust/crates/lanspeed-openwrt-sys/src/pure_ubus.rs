@@ -35,6 +35,12 @@ const UBUS_ATTR_NO_REPLY: u8 = 10;
 const DEFAULT_SOCKET: &str = "/var/run/ubus/ubus.sock";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_QUEUED_BYTES: usize = codec::MAX_MESSAGE_LEN * 4;
+const FRAME_HEADER_LEN: usize = 8;
+const MIN_FRAME_LEN: usize = FRAME_HEADER_LEN + 4;
+const READ_CHUNK_LEN: usize = 65_536;
+// Bound one loop turn so an input flood cannot starve uloop timers or signals.
+const MAX_READ_BYTES_PER_BATCH: usize = 256 * 1_024;
+const MAX_READ_FRAMES_PER_BATCH: usize = 256;
 
 type Handler = dyn for<'request> FnMut(UbusRequest<'request>) -> libc::c_int;
 
@@ -195,6 +201,7 @@ struct PendingRequest {
 struct ConnectionState {
     stream: Option<UnixStream>,
     read_buffer: Vec<u8>,
+    read_offset: usize,
     outbound: VecDeque<Outbound>,
     queued_bytes: usize,
     objects: Vec<Rc<ObjectInner>>,
@@ -228,6 +235,7 @@ impl UbusConnection {
             state: RefCell::new(ConnectionState {
                 stream: None,
                 read_buffer: Vec::with_capacity(65_536),
+                read_offset: 0,
                 outbound: VecDeque::new(),
                 queued_bytes: 0,
                 objects: Vec::new(),
@@ -339,6 +347,7 @@ impl ConnectionInner {
         let mut state = self.state.borrow_mut();
         state.stream = Some(stream);
         state.read_buffer.clear();
+        state.read_offset = 0;
         state.outbound.clear();
         state.queued_bytes = 0;
         state.pending.clear();
@@ -510,6 +519,10 @@ impl ConnectionInner {
     }
 
     fn poll_once_inner(&self, timeout: libc::c_int) -> Result<()> {
+        if self.has_complete_frame()? {
+            self.read_frames()?;
+            return Ok(());
+        }
         let (fd, wants_write) = {
             let state = self.state.borrow();
             let fd = state
@@ -548,84 +561,115 @@ impl ConnectionInner {
         if events & libc::POLLOUT != 0 {
             self.flush_writes()?;
         }
-        if events & libc::POLLIN != 0 {
-            self.read_frames()?;
-        }
-        if events & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+        let yielded = if events & (libc::POLLIN | libc::POLLERR | libc::POLLHUP) != 0 {
+            self.read_frames()?
+        } else {
+            false
+        };
+        if events & libc::POLLNVAL != 0
+            || (events & (libc::POLLERR | libc::POLLHUP) != 0 && !yielded)
+        {
             self.mark_lost();
         }
         Ok(())
     }
 
-    fn read_frames(&self) -> Result<()> {
+    fn has_complete_frame(&self) -> Result<bool> {
+        let state = self.state.borrow();
+        buffered_frame_len(&state).map(|length| length.is_some())
+    }
+
+    fn read_frames(&self) -> Result<bool> {
         let mut eof = false;
-        {
-            let mut state = self.state.borrow_mut();
-            let ConnectionState {
-                stream,
-                read_buffer,
-                ..
-            } = &mut *state;
-            let stream = stream.as_mut().ok_or(Error::Platform {
-                operation: "ubus_receive",
-                code: STATUS_CONNECTION_FAILED,
-            })?;
-            let mut buffer = [0u8; 65_536];
-            loop {
-                match stream.read(&mut buffer) {
+        let mut yielded = false;
+        let mut bytes_read = 0usize;
+        let mut frames_read = 0usize;
+        let mut read_chunk = [0u8; READ_CHUNK_LEN];
+        let mut frame = Vec::new();
+
+        loop {
+            while frames_read < MAX_READ_FRAMES_PER_BATCH {
+                let copied = self.copy_next_frame(&mut frame)?;
+                if !copied {
+                    break;
+                }
+                self.dispatch_frame(&frame)?;
+                frames_read += 1;
+            }
+
+            if frames_read == MAX_READ_FRAMES_PER_BATCH || bytes_read == MAX_READ_BYTES_PER_BATCH {
+                yielded = true;
+                break;
+            }
+
+            let read_limit = {
+                let mut state = self.state.borrow_mut();
+                compact_read_buffer(&mut state)?;
+                let buffered = state.read_buffer.len();
+                if buffered >= MAX_QUEUED_BYTES {
+                    return Err(Error::InvalidData("ubus receive buffer exceeds limit"));
+                }
+                READ_CHUNK_LEN
+                    .min(MAX_READ_BYTES_PER_BATCH - bytes_read)
+                    .min(MAX_QUEUED_BYTES - buffered)
+            };
+
+            let read = {
+                let mut state = self.state.borrow_mut();
+                let ConnectionState {
+                    stream,
+                    read_buffer,
+                    ..
+                } = &mut *state;
+                let stream = stream.as_mut().ok_or(Error::Platform {
+                    operation: "ubus_receive",
+                    code: STATUS_CONNECTION_FAILED,
+                })?;
+                match stream.read(&mut read_chunk[..read_limit]) {
                     Ok(0) => {
                         eof = true;
-                        break;
+                        None
                     }
                     Ok(read) => {
-                        if read_buffer.len().saturating_add(read) > MAX_QUEUED_BYTES {
-                            return Err(Error::InvalidData("ubus receive buffer exceeds limit"));
-                        }
-                        read_buffer.extend_from_slice(&buffer[..read]);
+                        read_buffer.extend_from_slice(&read_chunk[..read]);
+                        Some(read)
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => None,
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(error) => return Err(io_error("ubus_receive", error)),
                 }
-            }
-        }
-        loop {
-            let frame = {
-                let mut state = self.state.borrow_mut();
-                if state.read_buffer.len() < 12 {
-                    None
-                } else {
-                    let raw_len = (u32::from_be_bytes(state.read_buffer[8..12].try_into().unwrap())
-                        & 0x00ff_ffff) as usize;
-                    if raw_len < 4 || raw_len > codec::MAX_MESSAGE_LEN {
-                        return Err(Error::InvalidData("invalid ubus frame length"));
-                    }
-                    let total = 8 + raw_len;
-                    if state.read_buffer.len() < total {
-                        None
-                    } else {
-                        Some(state.read_buffer.drain(..total).collect::<Vec<_>>())
-                    }
-                }
             };
-            let Some(frame) = frame else { break };
-            self.dispatch_frame(&frame)?;
+            let Some(read) = read else { break };
+            bytes_read += read;
         }
+
         if eof {
             self.mark_lost();
         }
-        Ok(())
+        Ok(yielded)
+    }
+
+    fn copy_next_frame(&self, frame: &mut Vec<u8>) -> Result<bool> {
+        let mut state = self.state.borrow_mut();
+        let Some(total) = buffered_frame_len(&state)? else {
+            return Ok(false);
+        };
+        let start = state.read_offset;
+        frame.clear();
+        frame.extend_from_slice(&state.read_buffer[start..start + total]);
+        state.read_offset += total;
+        Ok(true)
     }
 
     fn dispatch_frame(&self, frame: &[u8]) -> Result<()> {
-        if frame.len() < 12 || frame[0] != UBUS_VERSION {
+        if frame.len() < MIN_FRAME_LEN || frame[0] != UBUS_VERSION {
             return Err(Error::InvalidData("invalid ubus frame"));
         }
         let kind = frame[1];
         let seq = u16::from_be_bytes(frame[2..4].try_into().unwrap());
         let peer = u32::from_be_bytes(frame[4..8].try_into().unwrap());
         let root = codec::parse_attr(&frame[8..])?;
-        if root.id != 0 || root.raw_len + 8 != frame.len() {
+        if root.id != 0 || root.raw_len + FRAME_HEADER_LEN != frame.len() {
             return Err(Error::InvalidData("invalid ubus root blob"));
         }
         match kind {
@@ -668,9 +712,6 @@ impl ConnectionInner {
             .ok_or(Error::InvalidData("ubus invoke omitted object id"))?;
         let method_name = outer_string(payload, UBUS_ATTR_METHOD)?
             .ok_or(Error::InvalidData("ubus invoke omitted method"))?;
-        let data = outer_payload(payload, UBUS_ATTR_DATA)?
-            .ok_or(Error::InvalidData("ubus invoke omitted data"))?
-            .to_vec();
         let no_reply = outer_payload(payload, UBUS_ATTR_NO_REPLY)?
             .and_then(|value| value.first().copied())
             .unwrap_or(0)
@@ -683,9 +724,7 @@ impl ConnectionInner {
             .find(|object| object.id.get() == Some(object_id))
             .cloned();
         let Some(object) = object else {
-            if !no_reply {
-                self.queue_status(seq, peer, object_id, 4)?;
-            }
+            self.queue_status(seq, peer, object_id, 4)?;
             return Ok(());
         };
         let Some(method) = object
@@ -693,11 +732,16 @@ impl ConnectionInner {
             .iter()
             .find(|method| method.name == method_name)
         else {
-            if !no_reply {
-                self.queue_status(seq, peer, object_id, 3)?;
-            }
+            self.queue_status(seq, peer, object_id, 3)?;
             return Ok(());
         };
+        let Some(data) = outer_payload(payload, UBUS_ATTR_DATA)? else {
+            // ubusd forwards syntactically valid INVOKE messages without DATA.
+            // libubus treats this as a request error and keeps the connection.
+            self.queue_status(seq, peer, object_id, STATUS_INVALID_ARGUMENT)?;
+            return Ok(());
+        };
+        let data = data.to_vec();
         self.dispatch_depth.set(self.dispatch_depth.get() + 1);
         struct DepthGuard<'a>(&'a Cell<usize>);
         impl Drop for DepthGuard<'_> {
@@ -746,6 +790,7 @@ impl ConnectionInner {
             let mut state = self.state.borrow_mut();
             state.stream.take();
             state.read_buffer.clear();
+            state.read_offset = 0;
             state.outbound.clear();
             state.queued_bytes = 0;
             for pending in state.pending.values_mut() {
@@ -802,6 +847,44 @@ fn encode_frame(kind: u8, seq: u16, peer: u32, body: &[u8]) -> Result<Vec<u8>> {
     frame.extend_from_slice(&peer.to_be_bytes());
     frame.extend_from_slice(body);
     Ok(frame)
+}
+
+fn buffered_frame_len(state: &ConnectionState) -> Result<Option<usize>> {
+    if state.read_offset > state.read_buffer.len() {
+        return Err(Error::InvalidData("invalid ubus receive cursor"));
+    }
+    let available = state.read_buffer.len() - state.read_offset;
+    if available < MIN_FRAME_LEN {
+        return Ok(None);
+    }
+    let header = state.read_offset + FRAME_HEADER_LEN;
+    let raw_len = (u32::from_be_bytes(state.read_buffer[header..header + 4].try_into().unwrap())
+        & 0x00ff_ffff) as usize;
+    if raw_len < 4 || raw_len > codec::MAX_MESSAGE_LEN {
+        return Err(Error::InvalidData("invalid ubus frame length"));
+    }
+    let total = FRAME_HEADER_LEN + raw_len;
+    if available < total {
+        Ok(None)
+    } else {
+        Ok(Some(total))
+    }
+}
+
+fn compact_read_buffer(state: &mut ConnectionState) -> Result<()> {
+    if state.read_offset > state.read_buffer.len() {
+        return Err(Error::InvalidData("invalid ubus receive cursor"));
+    }
+    if state.read_offset == 0 {
+        return Ok(());
+    }
+    let unread = state.read_buffer.len() - state.read_offset;
+    if unread != 0 {
+        state.read_buffer.copy_within(state.read_offset.., 0);
+    }
+    state.read_buffer.truncate(unread);
+    state.read_offset = 0;
+    Ok(())
 }
 
 fn io_error(operation: &'static str, error: std::io::Error) -> Error {
@@ -869,6 +952,25 @@ pub(crate) fn poll_connections(timeout: libc::c_int) -> Result<()> {
             })
             .collect::<Vec<_>>()
     });
+    let mut handled_buffered = false;
+    for connection in &connections {
+        match connection.has_complete_frame() {
+            Ok(true) => {
+                handled_buffered = true;
+                if connection.read_frames().is_err() {
+                    connection.mark_lost();
+                }
+            }
+            Ok(false) => {}
+            Err(_) => {
+                handled_buffered = true;
+                connection.mark_lost();
+            }
+        }
+    }
+    if handled_buffered {
+        return Ok(());
+    }
     if connections.is_empty() {
         if timeout > 0 {
             unsafe { libc::poll(core::ptr::null_mut(), 0, timeout) };
@@ -922,6 +1024,7 @@ pub(crate) fn poll_connections(timeout: libc::c_int) -> Result<()> {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::mpsc;
 
     fn decode_hex(fixture: &str) -> Vec<u8> {
         let compact = fixture
@@ -953,6 +1056,7 @@ mod tests {
             state: RefCell::new(ConnectionState {
                 stream,
                 read_buffer: Vec::new(),
+                read_offset: 0,
                 outbound: VecDeque::new(),
                 queued_bytes: 0,
                 objects: Vec::new(),
@@ -967,6 +1071,41 @@ mod tests {
             dispatch_depth: Cell::new(0),
             _not_send_or_sync: PhantomData,
         })
+    }
+
+    fn install_counting_object(connection: &Rc<ConnectionInner>) -> Rc<Cell<usize>> {
+        let calls = Rc::new(Cell::new(0));
+        let seen = Rc::clone(&calls);
+        let object = Rc::new(ObjectInner::from(
+            UbusObject::new(
+                "lanspeed",
+                vec![UbusMethod::new("health", move |_| {
+                    seen.set(seen.get() + 1);
+                    STATUS_OK
+                })
+                .unwrap()],
+            )
+            .unwrap(),
+        ));
+        object.id.set(Some(41));
+        connection.state.borrow_mut().objects.push(object);
+        calls
+    }
+
+    fn no_reply_invoke_frame(data_len: usize) -> Vec<u8> {
+        let mut payload = codec::encode_u32_attr(UBUS_ATTR_OBJID, 41).unwrap();
+        payload.extend_from_slice(&codec::encode_string_attr(UBUS_ATTR_METHOD, "health").unwrap());
+        payload.extend_from_slice(
+            &codec::encode_attr(UBUS_ATTR_DATA, false, &vec![0; data_len]).unwrap(),
+        );
+        payload.extend_from_slice(&codec::encode_attr(UBUS_ATTR_NO_REPLY, false, &[1]).unwrap());
+        encode_frame(
+            UBUS_MSG_INVOKE,
+            7,
+            99,
+            &codec::encode_root(&payload).unwrap(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1073,5 +1212,233 @@ mod tests {
         assert_eq!(notifications.get(), 1);
         connection.mark_lost();
         assert_eq!(notifications.get(), 1);
+    }
+
+    #[test]
+    fn fragmented_frame_is_retained_until_complete() {
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let connection = test_connection(Some(stream));
+        let calls = install_counting_object(&connection);
+        let frame = no_reply_invoke_frame(0);
+        let fragments = [1, MIN_FRAME_LEN - 1, frame.len() - 1, frame.len()];
+        let mut start = 0;
+
+        for end in fragments {
+            peer.write_all(&frame[start..end]).unwrap();
+            connection.read_frames().unwrap();
+            start = end;
+
+            if end != frame.len() {
+                assert_eq!(calls.get(), 0);
+                let state = connection.state.borrow();
+                assert_eq!(state.read_offset, 0);
+                assert_eq!(state.read_buffer, frame[..end]);
+                assert!(state.stream.is_some());
+            }
+        }
+
+        assert_eq!(calls.get(), 1);
+        let state = connection.state.borrow();
+        assert_eq!(state.read_offset, 0);
+        assert!(state.read_buffer.is_empty());
+        assert!(state.stream.is_some());
+    }
+
+    #[test]
+    fn large_frame_crosses_read_byte_budget_without_disconnect() {
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let connection = test_connection(Some(stream));
+        let calls = install_counting_object(&connection);
+        let frame = no_reply_invoke_frame(MAX_READ_BYTES_PER_BATCH * 2);
+        assert!(frame.len() > MAX_READ_BYTES_PER_BATCH * 2);
+        let (written_tx, written_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            peer.write_all(&frame).unwrap();
+            written_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+
+        while connection.state.borrow().read_buffer.is_empty() {
+            assert!(Instant::now() < deadline, "large-frame read timed out");
+            connection.poll_once(100).unwrap();
+        }
+        assert_eq!(calls.get(), 0);
+        assert!(connection.state.borrow().stream.is_some());
+
+        while calls.get() == 0 {
+            assert!(Instant::now() < deadline, "large-frame dispatch timed out");
+            connection.poll_once(100).unwrap();
+        }
+
+        written_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(calls.get(), 1);
+        assert!(connection.state.borrow().stream.is_some());
+        release_tx.send(()).unwrap();
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn frame_budget_yields_and_buffered_work_runs_without_new_readiness() {
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let connection = test_connection(Some(stream));
+        let calls = install_counting_object(&connection);
+        let frame = no_reply_invoke_frame(0);
+        peer.write_all(&frame.repeat(MAX_READ_FRAMES_PER_BATCH + 1))
+            .unwrap();
+
+        connection.read_frames().unwrap();
+
+        assert_eq!(calls.get(), MAX_READ_FRAMES_PER_BATCH);
+        assert!(connection.has_complete_frame().unwrap());
+        {
+            let state = connection.state.borrow();
+            assert_eq!(state.read_buffer.len() - state.read_offset, frame.len());
+            assert_eq!(state.queued_bytes, 0);
+            assert!(state.outbound.is_empty());
+            assert!(state.stream.is_some());
+        }
+
+        connection.poll_once_inner(0).unwrap();
+
+        assert_eq!(calls.get(), MAX_READ_FRAMES_PER_BATCH + 1);
+        let state = connection.state.borrow();
+        assert_eq!(state.read_offset, 0);
+        assert!(state.read_buffer.is_empty());
+        assert!(state.stream.is_some());
+    }
+
+    #[test]
+    fn continuous_small_frames_exceed_receive_limit_without_false_disconnect() {
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let connection = test_connection(Some(stream));
+        let calls = install_counting_object(&connection);
+        let frame = no_reply_invoke_frame(192);
+        let frame_count = MAX_QUEUED_BYTES / frame.len() + MAX_READ_FRAMES_PER_BATCH;
+        let wire = frame.repeat(frame_count);
+        assert!(wire.len() > MAX_QUEUED_BYTES);
+        let (written_tx, written_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            peer.write_all(&wire).unwrap();
+            written_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+
+        while calls.get() < frame_count {
+            assert!(Instant::now() < deadline, "small-frame flood timed out");
+            connection.poll_once(100).unwrap();
+            assert!(
+                connection.state.borrow().stream.is_some(),
+                "valid traffic must not trip the receive-buffer limit"
+            );
+        }
+
+        written_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(calls.get(), frame_count);
+        {
+            let state = connection.state.borrow();
+            assert_eq!(state.read_offset, 0);
+            assert!(state.read_buffer.is_empty());
+            assert!(state.stream.is_some());
+        }
+        release_tx.send(()).unwrap();
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn receive_limit_ignores_consumed_prefix() {
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let connection = test_connection(Some(stream));
+        let calls = install_counting_object(&connection);
+        let frame = no_reply_invoke_frame(0);
+        {
+            let mut state = connection.state.borrow_mut();
+            state.read_buffer.resize(MAX_QUEUED_BYTES, 0);
+            state.read_offset = state.read_buffer.len();
+        }
+        peer.write_all(&frame).unwrap();
+
+        connection.read_frames().unwrap();
+
+        assert_eq!(calls.get(), 1);
+        let state = connection.state.borrow();
+        assert_eq!(state.read_offset, 0);
+        assert!(state.read_buffer.is_empty());
+        assert!(state.stream.is_some());
+    }
+
+    #[test]
+    fn hup_after_frame_budget_drains_buffer_before_notifying_loss() {
+        let (stream, peer) = UnixStream::pair().unwrap();
+        let connection = test_connection(Some(stream));
+        let calls = install_counting_object(&connection);
+        let notifications = Rc::new(Cell::new(0));
+        let seen = Rc::clone(&notifications);
+        *connection.connection_lost_handler.borrow_mut() = Some(Box::new(move || {
+            seen.set(seen.get() + 1);
+        }));
+        let frame = no_reply_invoke_frame(0);
+        connection.state.borrow_mut().read_buffer = frame.repeat(MAX_READ_FRAMES_PER_BATCH + 1);
+        drop(peer);
+
+        connection.handle_events(libc::POLLHUP).unwrap();
+
+        assert_eq!(calls.get(), MAX_READ_FRAMES_PER_BATCH);
+        assert_eq!(notifications.get(), 0);
+        assert!(connection.state.borrow().stream.is_some());
+
+        connection.poll_once_inner(0).unwrap();
+
+        assert_eq!(calls.get(), MAX_READ_FRAMES_PER_BATCH + 1);
+        assert_eq!(notifications.get(), 1);
+        assert!(connection.state.borrow().stream.is_none());
+    }
+
+    #[test]
+    fn invoke_without_data_returns_invalid_argument_without_dropping_connection() {
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let connection = test_connection(Some(stream));
+        let calls = Rc::new(Cell::new(0));
+        let calls_seen = Rc::clone(&calls);
+        let object = Rc::new(ObjectInner::from(
+            UbusObject::new(
+                "lanspeed",
+                vec![UbusMethod::new("health", move |_| {
+                    calls_seen.set(calls_seen.get() + 1);
+                    STATUS_OK
+                })
+                .unwrap()],
+            )
+            .unwrap(),
+        ));
+        object.id.set(Some(41));
+        connection.state.borrow_mut().objects.push(object);
+
+        let mut payload = codec::encode_u32_attr(UBUS_ATTR_OBJID, 41).unwrap();
+        payload.extend_from_slice(&codec::encode_string_attr(UBUS_ATTR_METHOD, "health").unwrap());
+        connection.handle_invoke(7, 99, &payload).unwrap();
+
+        let mut header = [0u8; 12];
+        peer.read_exact(&mut header).unwrap();
+        let raw_len =
+            (u32::from_be_bytes(header[8..12].try_into().unwrap()) & 0x00ff_ffff) as usize;
+        let mut frame = header.to_vec();
+        frame.resize(8 + raw_len, 0);
+        peer.read_exact(&mut frame[12..]).unwrap();
+        let root = codec::parse_attr(&frame[8..]).unwrap();
+
+        assert_eq!(header[1], UBUS_MSG_STATUS);
+        assert_eq!(u16::from_be_bytes(header[2..4].try_into().unwrap()), 7);
+        assert_eq!(u32::from_be_bytes(header[4..8].try_into().unwrap()), 99);
+        assert_eq!(
+            outer_u32(root.payload, UBUS_ATTR_STATUS).unwrap(),
+            Some(STATUS_INVALID_ARGUMENT as u32)
+        );
+        assert_eq!(calls.get(), 0);
+        assert!(connection.state.borrow().stream.is_some());
     }
 }

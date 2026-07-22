@@ -25,5 +25,5 @@ thiserror = "=2.0.17"
 
 [profile.release]
 lto = true
-panic = "abort"
+panic = "unwind"
 codegen-units = 1

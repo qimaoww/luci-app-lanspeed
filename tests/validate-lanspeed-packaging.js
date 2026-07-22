@@ -732,8 +732,8 @@ try {
       `lanspeedd-bpf must preserve the runtime path for ${object} through a relative symlink`
     );
   }
-  assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+kmod-nf-conntrack-netlink/,
-    'base daemon must retain verified LP64 and conntrack kernel constraints');
+  assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+libgcc \+kmod-nf-conntrack-netlink/,
+    'base daemon must retain verified LP64, libgcc_s runtime, and conntrack kernel constraints');
   assertNoMatch(pkgMakefile, /\+libubox|\+libubus|\+libuci|\+libblobmsg-json/,
     'pure Rust userspace must not retain versioned OpenWrt library dependencies');
   assertNoMatch(

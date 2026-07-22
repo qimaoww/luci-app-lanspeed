@@ -55,7 +55,7 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 - **接口配置**：采集 / 观察 / 关闭 三态切换，默认采集 `br-lan`、观察 `wan`；异步扫描具有代次保护，并显示缺失接口、数量限制和不可采集原因。自动忽略 `dae*`、`miireg*`、`tun*`、`erspan*`、`gretap*`、`gre*`、`ip6gre*`、`ip6tnl*`、`sit*`、`bonding_masters*`，拒绝 nssifb 采集并可观察 WAN / ifb 计数。
 - **告警体系**：OpenClash / dae/daed / SQM/qosify/ifb / flow offload / fullcone NAT 等场景自动识别并提示。
 - **客户端状态列**：默认隐藏 LAN 客户端的采集来源与告警状态，可在“LAN Speed 配置”中开启。
-- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.2-r2`。
+- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.2-r3`。
 
 ## 采集策略
 
@@ -107,7 +107,7 @@ NSS ECM/PPE sync 是显式选择 `nss_conntrack_sync`、NSS-direct 的补齐来�
 | OpenWrt / ImmortalWrt | 说明 |
 |---|---|
 | ImmortalWrt 25.12 | 支持。当前构建、打包和路由器实测目标。 |
-| 2025-07 及以后、满足下述内核能力的 LP64 快照 | 用户态协议设计为兼容；发布前仍须使用目标架构 SDK 验证 musl、包架构和 BPF 内核约束。 |
+| 2025-07 及以后、满足下述内核能力的 LP64 快照 | 用户态协议不再绑定日期 SONAME；每个固件组合仍须用对应 SDK 重建并核对 musl、包架构和 BPF 内核约束。2025-07 IPQ807x 真机不在本次发布验收范围。 |
 | OpenWrt 23.05 | 不支持。官方 SDK 的 Rust/BPF 工具链和 LuCI 运行时不满足当前完整后端。 |
 | OpenWrt 21.02 及更早版本 | 不支持。BPF/BTF、Rust 工具链、OpenWrt ABI 和 LuCI 运行时差异过大。 |
 
@@ -141,6 +141,7 @@ CONFIG_PACKAGE_tc-tiny=y
 |---|---|---|
 | `ubusd` | yes | 系统消息总线服务；daemon 直接连接 `/var/run/ubus/ubus.sock`，不链接其客户端库 |
 | `libubox` / `libubus` / `libuci` / `libblobmsg-json` | no | daemon 的 ELF 和 APK 元数据不依赖这些版本化用户态 ABI |
+| `libgcc`（APK 中按工具链 ABI 解析，如 `libgcc1`） | yes | Rust unwind 与目标工具链运行时提供 `libgcc_s.so.1`；包管理器自动选择匹配固件的版本 |
 | `kmod-nf-conntrack` | yes | conntrack 表访问 |
 | `kmod-nf-conntrack-netlink` | yes | CT-Netlink 连接数读取 |
 | `tc-tiny` (iproute2) | yes | `lanspeedd-bpf` 的 tc clsact 挂载依赖 |
@@ -162,7 +163,7 @@ SDK_DIR=/openwrt/immortalwrt ENABLE_BPF=1 scripts/build-sdk.sh
 
 普通用户从 GitHub 构建时优先使用前面的 `src-git lanspeed` feed 流程；辅助脚本不会下载 SDK 或工具链。
 
-ABI 注意点：纯 Rust 用户态 daemon 不再绑定 libubox/libubus/libuci 的日期 SONAME，但这不等于一个 APK 可以安装到所有版本。APK 架构、musl 基线、LuCI 运行时和 `lanspeedd-bpf` 的内核能力仍须与目标固件匹配，不能伪造架构或把 BPF 包强装到不兼容内核上。2025-07 IPQ807x 必须由对应快照 SDK 重新产出 aarch64 APK，并在该设备上验收后才算该组合已验证。
+ABI 注意点：纯 Rust 用户态 daemon 不再绑定 libubox/libubus/libuci 的日期 SONAME，但这不等于一个 APK 可以安装到所有版本。APK 架构、musl 基线、LuCI 运行时和 `lanspeedd-bpf` 的内核能力仍须与目标固件匹配，不能伪造架构或把 BPF 包强装到不兼容内核上。2025-07 IPQ807x 需要由对应快照 SDK 重新产出 aarch64 APK；本次发布不要求也不声明该组合已完成真机验收。
 
 回滚时三个包应作为同一版本集合降级，避免混用用户态协议契约和采集资产。先备份 `/etc/config/lanspeed` 与当前三包，再执行：
 
@@ -175,9 +176,11 @@ apk add --allow-untrusted \
 
 停止服务会由 init 脚本清理其 tc hook；不要只替换 BPF 对象，也不要在共享路由器上通过终止系统 `ubusd` 测试重连。`rpcd`、`uhttpd` 等其它守护进程未必能在 `ubusd` 更换后自动恢复，可能导致 LuCI 登录或 RPC 暂时失效。断线、重连与重新注册测试应使用 SDK rootfs 中的隔离 `ubusd`。
 
-2026-07-22 的参考验收使用 x86_64 ImmortalWrt 25.12-SNAPSHOT、Linux 6.12.94：设备端 daemon 的 RSS 为 3388 KiB，单线程连续完成 100 次本机 `ubus call lanspeed health` 用时 0.07 秒；九个方法与非法参数语义均通过，超过 `i32::MAX` 的接口累计字节保持正整数；真实流量下 ingress/egress 两个 BPF hook 均已 JIT，覆盖率为 RX 99% / TX 99%，探针失败数为 0，LuCI 概览与 HTTP RPC 验证通过。隔离 SDK rootfs 的断线测试验证自动重连与九方法重新注册，不在共享实机终止 `ubusd`。这些数字用于回归参考，不是对不同 CPU、负载或固件的延迟保证。
+若外部操作已经替换过共享 `ubusd`，先执行 `/etc/init.d/rpcd restart`，并以 `ubus call luci getFeatures '{}'` 确认 `luci` 对象恢复；只有该命令成功而浏览器 HTTP RPC 仍失败时才重启 `uhttpd`。正常部署和实机验收只允许重启 `lanspeedd`。
 
-当前只声明支持 x86_64 和 aarch64 两类 LP64 目标：x86_64 25.12 已完成实机运行验收，aarch64 已完成 musl 交叉编译门禁；具体 2025-07 IPQ807x 运行验收仍需对应真机。32 位 ARM、i386 和 MIPS 不在支持范围内。普通代码 push 和 pull request 由独立 CI workflow 执行完整单元校验。当 `main` 分支上的 `net/lanspeedd/Makefile` 或 `applications/luci-app-lanspeed/Makefile` 改动导致完整版本发生变化时，发布 workflow 会自动编译这两类产物；aarch64 产物使用官方 `armsr/armv8` SDK 编译，Release 文件名带 `aarch64` 后缀。每个架构先构建 base 包，再把已安装的 Rust/Cargo 主机工具链复用于 BPF 构建；该工具链按操作系统、架构和 SDK SHA256 缓存，后续相同 SDK 不再从头编译 Rust。workflow 会先创建草稿 Release，上传并校验六个 APK 的名称、状态和 SHA256，再发布对应的 `v*` tag 和 GitHub Release，维护者不得预先创建 `v*` tag。构建或上传失败时保留的草稿 Release 可由同一版本提交使用 `workflow_dispatch` 自动重建；手动运行也可补发没有 tag/Release 的当前版本，无需通过 `HEAD^1` 制造新的版本变化。
+2026-07-22 的参考验收使用 x86_64 ImmortalWrt 25.12-SNAPSHOT、Linux 6.12.94：设备端 daemon 的 RSS 为 3388 KiB；单线程连续完成 100 次本机 `ubus call lanspeed health` 用时 0.07 秒，这只是控制面 RPC microbenchmark，不能用于证明测速热路径性能。九个方法与非法参数语义均通过，超过 `i32::MAX` 的接口累计字节保持正整数；真实流量下 ingress/egress 两个 BPF hook 均已 JIT，覆盖率为 RX 99% / TX 99%，探针失败数为 0，LuCI 概览与 HTTP RPC 验证通过。隔离 SDK rootfs 的真实 wire 测试覆盖对象注册和调用，并以测试代码显式执行重连与重新注册；daemon 自动重连及同一组九方法重新注册由 lifecycle mock 回归覆盖。所有断线测试都不得在共享实机终止 `ubusd`。这些数字用于回归参考，不是对不同 CPU、负载或固件的延迟保证。
+
+当前只声明支持 x86_64 和 aarch64 两类 LP64 目标：x86_64 25.12 已完成实机运行验收，aarch64 已完成 musl 交叉编译门禁；2025-07 IPQ807x 真机验收已明确排除在本次发布范围之外，因此不得把交叉编译结果描述为该设备已验证。32 位 ARM、i386 和 MIPS 不在支持范围内。普通代码 push 和 pull request 由独立 CI workflow 执行完整单元校验。当 `main` 分支上的 `net/lanspeedd/Makefile` 或 `applications/luci-app-lanspeed/Makefile` 改动导致完整版本发生变化时，发布 workflow 会自动编译这两类产物；aarch64 产物使用官方 `armsr/armv8` SDK 编译，Release 文件名带 `aarch64` 后缀。每个架构先构建 base 包，再把已安装的 Rust/Cargo 主机工具链复用于 BPF 构建；该工具链按操作系统、架构和 SDK SHA256 缓存，后续相同 SDK 不再从头编译 Rust。workflow 会先创建草稿 Release，上传并校验六个 APK 的名称、状态和 SHA256，再发布对应的 `v*` tag 和 GitHub Release，维护者不得预先创建 `v*` tag。构建或上传失败时保留的草稿 Release 可由同一版本提交使用 `workflow_dispatch` 自动重建；手动运行也可补发没有 tag/Release 的当前版本，无需通过 `HEAD^1` 制造新的版本变化。
 
 ## 配置
 
