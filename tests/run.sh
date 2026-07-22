@@ -179,7 +179,7 @@ run_unit() {
 	reset_unit_evidence
 	append_unit_evidence "BEGIN unit run_id=$RUN_ID"
 	append_unit_evidence "command=unit"
-	append_unit_evidence "scenarios=node syntax, Rust backend contracts, OpenWrt ubus unsafe tests, fixtures, packaging, lanspeed modules, build-sdk"
+	append_unit_evidence "scenarios=node syntax, Rust backend contracts, pure Rust ubus wire tests, fixtures, packaging, lanspeed modules, build-sdk"
 	run_node_check || return $?
 	run_logged "rust-layout" node "$SCRIPT_DIR/validate-lanspeed-rust-layout.js" || return $?
 	append_unit_evidence "rust_cargo=$rust_cargo_path"
@@ -196,13 +196,13 @@ run_unit() {
 		run_logged "rust-openwrt-compile" sh \
 			"$SCRIPT_DIR/validate-lanspeed-openwrt-compile.sh" \
 			"$IMMORTALWRT_ROOT" || return $?
-		append_unit_evidence "openwrt_feature_ffi=compiled sdk=$IMMORTALWRT_ROOT"
+		append_unit_evidence "openwrt_feature_pure_rust=compiled sdk=$IMMORTALWRT_ROOT"
 		run_logged "rust-openwrt-sys-ubus" sh \
 			"$SCRIPT_DIR/validate-lanspeed-rust-linking.sh" \
 			"$IMMORTALWRT_ROOT" || return $?
 		append_unit_evidence "openwrt_sys_ubus_tests=passed sdk=$IMMORTALWRT_ROOT"
 	else
-		append_unit_evidence "openwrt_feature_ffi=SKIP sdk_unavailable=$IMMORTALWRT_ROOT"
+		append_unit_evidence "openwrt_feature_pure_rust=SKIP sdk_unavailable=$IMMORTALWRT_ROOT"
 		append_unit_evidence "openwrt_sys_ubus_tests=SKIP sdk_unavailable=$IMMORTALWRT_ROOT"
 	fi
 	run_logged "contract" node "$SCRIPT_DIR/validate-lanspeed-contract.js" || return $?
@@ -218,7 +218,7 @@ run_unit() {
 	run_logged "lanspeed-geo" node "$SCRIPT_DIR/validate-lanspeed-geo.js" || return $?
 	run_logged "lanspeed-modules" node "$SCRIPT_DIR/validate-lanspeed-modules.js" || return $?
 	run_logged "build-sdk" sh "$SCRIPT_DIR/validate-build-sdk.sh" || return $?
-	append_unit_evidence "coverage=rust_workspace openwrt_feature_ffi openwrt_sys_ubus_tests contract identity collector lifecycle probes diagnostics realtime_status lanspeed-geo lanspeed-modules build-sdk"
+	append_unit_evidence "coverage=rust_workspace openwrt_feature_pure_rust openwrt_sys_ubus_tests contract identity collector lifecycle probes diagnostics realtime_status lanspeed-geo lanspeed-modules build-sdk"
 	append_unit_evidence "completed=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 	append_unit_evidence "END unit run_id=$RUN_ID"
 	printf '%s\n' "unit validations passed; evidence: $UNIT_EVIDENCE"

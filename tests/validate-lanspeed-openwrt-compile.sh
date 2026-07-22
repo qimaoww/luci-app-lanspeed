@@ -31,7 +31,6 @@ fi
 
 PATH="$TARGET_ROOT/host/bin:$PATH" \
 RUSTC="$RUSTC" \
-OPENWRT_STAGING_LIB="$TARGET_ROOT/usr/lib" \
 "$CARGO" check \
 	--manifest-path "$ROOT/net/lanspeedd/rust/Cargo.toml" \
 	-p lanspeedd \
@@ -43,7 +42,6 @@ OPENWRT_STAGING_LIB="$TARGET_ROOT/usr/lib" \
 PATH="$TARGET_ROOT/host/bin:$PATH" \
 RUSTC="$RUSTC" \
 RUSTC_BOOTSTRAP=1 \
-OPENWRT_STAGING_LIB="$TARGET_ROOT/usr/lib" \
 "$CARGO" check \
 	-j "${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')}" \
 	-Z build-std=std,panic_abort \

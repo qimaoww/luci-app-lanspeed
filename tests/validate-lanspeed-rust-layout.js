@@ -106,12 +106,12 @@ try {
   const normalizedLinkingValidator = linkingValidator.replace(/\\\r?\n[ \t]*/g, ' ');
   assert(
     testRunner.includes('validate-lanspeed-openwrt-compile.sh'),
-    'tests/run.sh must compile the production OpenWrt/FFI feature path when the 25.12 SDK is available'
+    'tests/run.sh must compile the production pure Rust OpenWrt path when the 25.12 SDK is available'
   );
   assert(
     openwrtCompileValidator.includes('--target aarch64-unknown-linux-musl') &&
       openwrtCompileValidator.includes('-Z build-std=std,panic_abort'),
-    'the OpenWrt compile validator must cross-check the aarch64 musl C ABI'
+    'the OpenWrt compile validator must cross-check the aarch64 musl target'
   );
   assert(
     testRunner.includes('RUST_CARGO') && testRunner.includes('rust_cargo'),
@@ -144,11 +144,14 @@ try {
     'the OpenWrt linking validator must retain both --no-run link checks'
   );
   assert(
-    /CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER=[^\n]*"\$cargo" test [^\n]*--target x86_64-unknown-linux-musl [^\n]*--locked --offline ubus(?:\s|$)/.test(
+    /CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER=[^\n]*LANSPEED_OPENWRT_ROOTFS=[^\n]*"\$cargo" test [^\n]*--target x86_64-unknown-linux-musl [^\n]*--locked --offline/.test(
       normalizedLinkingValidator
     ),
-    'the OpenWrt linking validator must really run the filtered x86_64-unknown-linux-musl ubus tests'
+    'the OpenWrt linking validator must run pure Rust wire tests against a real ubusd'
   );
+  for (const forbidden of ['libubus', 'libubox', 'libblobmsg_json', 'libuci']) {
+    assert(linkingValidator.includes(forbidden), `linking validator must reject ${forbidden}`);
+  }
 
   console.log('validate-lanspeed-rust-layout: PASS');
 } catch (error) {

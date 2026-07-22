@@ -22,7 +22,7 @@ impl fmt::Display for Error {
             Self::Platform { operation, code } => {
                 write!(formatter, "{operation} failed with code {code}")
             }
-            Self::InvalidJson => formatter.write_str("libblobmsg-json rejected JSON input"),
+            Self::InvalidJson => formatter.write_str("invalid JSON/blobmsg value"),
             Self::InvalidData(detail) => write!(formatter, "invalid OpenWrt data: {detail}"),
         }
     }

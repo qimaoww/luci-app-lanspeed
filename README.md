@@ -4,7 +4,7 @@
 
 LAN 侧按客户端实时吞吐监控 + TCP/UDP 连接数统计，当前面向 ImmortalWrt 25.12。
 
-后端用户态 daemon 与 tc/eBPF 程序均使用 Rust 实现；OpenWrt 的 ubus、uloop 和 UCI 通过 Rust FFI 调用系统 ABI，仓库不再保留项目自有 C 后端。
+后端用户态 daemon 与 tc/eBPF 程序均使用 Rust 实现。daemon 内置最小 ubus/blobmsg wire codec、非阻塞 Unix Socket 事件循环和只读 UCI 解析器，不动态链接 OpenWrt 的 libubus、libubox、libblobmsg-json、libuci 或 uloop ABI；仓库不保留项目自有 C 后端。
 
 本项目的定位是观察 CPU 可见 LAN 边缘流量：它不是完整流量审计系统，不声明全流量绝对准确。硬件加速、旁路网关、同网段直连、桥内转发、驱动 offload、代理 TUN/IFB 等路径可能让部分流量绕过 CPU 或改变可见方向。
 
@@ -55,7 +55,7 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 - **接口配置**：采集 / 观察 / 关闭 三态切换，默认采集 `br-lan`、观察 `wan`；异步扫描具有代次保护，并显示缺失接口、数量限制和不可采集原因。自动忽略 `dae*`、`miireg*`、`tun*`、`erspan*`、`gretap*`、`gre*`、`ip6gre*`、`ip6tnl*`、`sit*`、`bonding_masters*`，拒绝 nssifb 采集并可观察 WAN / ifb 计数。
 - **告警体系**：OpenClash / dae/daed / SQM/qosify/ifb / flow offload / fullcone NAT 等场景自动识别并提示。
 - **客户端状态列**：默认隐藏 LAN 客户端的采集来源与告警状态，可在“LAN Speed 配置”中开启。
-- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.2-r1`。
+- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.2-r2`。
 
 ## 采集策略
 
@@ -107,10 +107,11 @@ NSS ECM/PPE sync 是显式选择 `nss_conntrack_sync`、NSS-direct 的补齐来�
 | OpenWrt / ImmortalWrt | 说明 |
 |---|---|
 | ImmortalWrt 25.12 | 支持。当前构建、打包和路由器实测目标。 |
-| OpenWrt 23.05 | 不支持。官方 SDK 的 Rust 版本和 libubox ABI 不满足当前完整 Rust 后端。 |
+| 2025-07 及以后、满足下述内核能力的 LP64 快照 | 用户态协议设计为兼容；发布前仍须使用目标架构 SDK 验证 musl、包架构和 BPF 内核约束。 |
+| OpenWrt 23.05 | 不支持。官方 SDK 的 Rust/BPF 工具链和 LuCI 运行时不满足当前完整后端。 |
 | OpenWrt 21.02 及更早版本 | 不支持。BPF/BTF、Rust 工具链、OpenWrt ABI 和 LuCI 运行时差异过大。 |
 
-构建驱动要求稳定版 `Rust >= 1.94.0`，外部提供的 `BPF_LINKER` 接受稳定版 `bpf-linker >= 0.10.3, < 0.11.0`。OpenWrt 包构建仍下载并校验固定的 `bpf-linker 0.10.3` 发布归档及 SHA256，以保证离线构建可复现。Rust 1.94.0、1.95.0 和 1.96.0 已验证可离线构建；更高稳定版不再被版本门禁先行拒绝，但若 eBPF `build-std` 的标准库锁定依赖发生变化，仍需同步 `vendor`。Rust 与 `bpf-linker` 的预发布版本仍会被拒绝。不要用较旧 SDK 的 `rust/host` 绕过最低版本检查；即使能编译，ubus/uloop/UCI 的目标 ABI 也可能不兼容。
+构建驱动要求稳定版 `Rust >= 1.94.0`，外部提供的 `BPF_LINKER` 接受稳定版 `bpf-linker >= 0.10.3, < 0.11.0`。OpenWrt 包构建仍下载并校验固定的 `bpf-linker 0.10.3` 发布归档及 SHA256，以保证离线构建可复现。Rust 1.94.0、1.95.0 和 1.96.0 已验证可离线构建；更高稳定版不再被版本门禁先行拒绝，但若 eBPF `build-std` 的标准库锁定依赖发生变化，仍需同步 `vendor`。Rust 与 `bpf-linker` 的预发布版本仍会被拒绝。较旧 SDK 可以作为目标 sysroot，但构建主机仍须提供满足最低版本的 Rust；这不会重新引入目标设备的 libubus/libubox ABI。
 
 ### 用户态与 BPF 必选包
 
@@ -138,17 +139,15 @@ CONFIG_PACKAGE_tc-tiny=y
 
 | 包 | 必需 | 说明 |
 |---|---|---|
-| `libubox` | yes | ubus / uloop 基础库 |
-| `libubus` | yes | ubus 通信 |
-| `libuci` | yes | UCI 配置读取 |
-| `libblobmsg-json` | yes | Rust JSON 与 ubus blobmsg 的桥接 |
+| `ubusd` | yes | 系统消息总线服务；daemon 直接连接 `/var/run/ubus/ubus.sock`，不链接其客户端库 |
+| `libubox` / `libubus` / `libuci` / `libblobmsg-json` | no | daemon 的 ELF 和 APK 元数据不依赖这些版本化用户态 ABI |
 | `kmod-nf-conntrack` | yes | conntrack 表访问 |
 | `kmod-nf-conntrack-netlink` | yes | CT-Netlink 连接数读取 |
 | `tc-tiny` (iproute2) | yes | `lanspeedd-bpf` 的 tc clsact 挂载依赖 |
 | `kmod-sched-bpf` | yes | `lanspeedd-bpf` 的内核 tc BPF classifier 依赖 |
 | `luci-base` | LuCI 页面 | LuCI 框架 |
 
-用户态 JSON 使用 `serde_json`，CT-Netlink 使用 Rust 原始 netlink 实现，eBPF 对象由 Aya 加载，不直接依赖 `libjson-c`、`libmnl` 或 `libbpf`。NSS 默认仍使用 BPF；NSS-direct 仅在显式模式或 BPF 不可用时启用，不额外依赖用户态库，但需要内核侧 qca-nss-ecm 暴露 ECM state 设备；不可用或没有可匹配 flow 时会使用 NSS sync。IPv6 客户端匹配依赖内核 neighbor 表；前端隐藏 IPv6 只影响显示，不影响采集匹配。
+用户态 JSON 和 blobmsg 编码使用 Rust 实现，CT-Netlink 使用 Rust 原始 netlink 实现，eBPF 对象由 Aya 加载，不直接依赖 `libjson-c`、`libmnl` 或 `libbpf`。ubus 传输限制单帧为 1 MiB、待发送队列为 4 MiB，并对长度、填充、重复字段、UTF-8、断线和超时执行失败关闭；连接恢复后重新注册同一组九个方法。NSS 默认仍使用 BPF；NSS-direct 仅在显式模式或 BPF 不可用时启用，不额外依赖用户态库，但需要内核侧 qca-nss-ecm 暴露 ECM state 设备；不可用或没有可匹配 flow 时会使用 NSS sync。IPv6 客户端匹配依赖内核 neighbor 表；前端隐藏 IPv6 只影响显示，不影响采集匹配。
 
 ### 本地 checkout / SDK 辅助脚本
 
@@ -163,7 +162,9 @@ SDK_DIR=/openwrt/immortalwrt ENABLE_BPF=1 scripts/build-sdk.sh
 
 普通用户从 GitHub 构建时优先使用前面的 `src-git lanspeed` feed 流程；辅助脚本不会下载 SDK 或工具链。
 
-ABI 注意点：包必须用目标固件对应的 25.12 SDK 编译，不能混用其他分支的 libubox/libubus/libuci 或 kernel ABI，也不能把 `lanspeedd-bpf` 安装到不同内核构建上。
+ABI 注意点：纯 Rust 用户态 daemon 不再绑定 libubox/libubus/libuci 的日期 SONAME，但 APK 架构、musl 基线和 `lanspeedd-bpf` 的内核能力仍须与目标固件匹配，不能把 BPF 包安装到不兼容内核上。回滚时三个包应作为同一版本集合降级；旧 daemon 停止并清理其 tc hook 后再替换 BPF 对象，避免混用用户态协议契约和采集资产。
+
+2026-07-22 的参考验收使用 x86_64 ImmortalWrt 25.12-SNAPSHOT、Linux 6.12.94：设备端 daemon 的 RSS 为 3408 KiB，单线程连续完成 100 次本机 `ubus call lanspeed health` 用时 0.06 秒；真实流量下 ingress/egress 两个 BPF hook 均已 JIT，覆盖率为 RX 100% / TX 99%，探针失败数为 0。终止并由 procd 拉起 `ubusd` 后，daemon PID 保持不变并在约 2 秒内完成重连与九个方法的重新注册。这些数字用于回归参考，不是对不同 CPU、负载或固件的延迟保证。
 
 当前只声明支持并验证 x86_64 和 aarch64 两类 LP64 目标；32 位 ARM、i386 和 MIPS 不在支持范围内。普通代码 push 和 pull request 由独立 CI workflow 执行完整单元校验。当 `main` 分支上的 `net/lanspeedd/Makefile` 或 `applications/luci-app-lanspeed/Makefile` 改动导致完整版本发生变化时，发布 workflow 会自动编译这两类产物；aarch64 产物使用官方 `armsr/armv8` SDK 编译，Release 文件名带 `aarch64` 后缀。每个架构先构建 base 包，再把已安装的 Rust/Cargo 主机工具链复用于 BPF 构建；该工具链按操作系统、架构和 SDK SHA256 缓存，后续相同 SDK 不再从头编译 Rust。workflow 会先创建草稿 Release，上传并校验六个 APK 的名称、状态和 SHA256，再发布对应的 `v*` tag 和 GitHub Release，维护者不得预先创建 `v*` tag。构建或上传失败时保留的草稿 Release 可由同一版本提交使用 `workflow_dispatch` 自动重建；手动运行也可补发没有 tag/Release 的当前版本，无需通过 `HEAD^1` 制造新的版本变化。
 
@@ -327,7 +328,7 @@ net/lanspeedd/
   rust/crates/lanspeedd/           Rust daemon、采集器、状态机和 ubus 逻辑
   rust/crates/lanspeed-ebpf/       Rust/Aya eBPF 程序（默认 tc 字节统计；保留 ct_lookup 兼容对象）
   rust/crates/lanspeed-common/     用户态与 eBPF 共用 ABI
-  rust/crates/lanspeed-openwrt-sys/ OpenWrt ubus/uloop/UCI FFI
+  rust/crates/lanspeed-openwrt-sys/ 纯 Rust ubus/blobmsg、事件循环与 UCI 兼容层
   rust/crates/lanspeed-build/      OpenWrt 用户态与 eBPF 构建驱动
   src/collector-model.json         采集模型说明
   files/                           设备端文件 (init.d / UCI config / schema)
@@ -339,7 +340,7 @@ tests/                             本地回归测试
 
 ## 测试
 
-本地环境可以运行确定性检查脚本和不依赖目标 ABI 的 Rust 单元/合约测试；`./tests/run.sh unit` 覆盖 `lanspeedd`、共享 ABI、构建驱动、诊断模型和 fixtures。`lanspeed-openwrt-sys` 直接链接目标端 ubus/uloop/UCI，不在 glibc host 上执行，其绑定通过可重复生成检查，并由真实 SDK 编译（ImmortalWrt 25.12）和目标设备（路由器）测试覆盖。构建要求稳定版 `Rust >= 1.94.0`。
+本地环境可以运行确定性检查脚本和不依赖目标用户态 ABI 的 Rust 单元/合约测试；`./tests/run.sh unit` 覆盖 `lanspeedd`、共享 ABI、构建驱动、诊断模型和 fixtures。纯 Rust OpenWrt 层会同时在 host 与 musl 目标运行，并启动 SDK rootfs 中的真实 `ubusd`，用系统 `ubus` 客户端验证对象注册、调用、回复、断线和重新注册；链接门禁使用 `readelf` 证明 daemon 不含四个已移除库的 `DT_NEEDED`。最终产物仍由真实 SDK 编译并在目标设备验收。构建要求稳定版 `Rust >= 1.94.0`。
 
 ```sh
 ./tests/run.sh unit

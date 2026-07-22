@@ -675,7 +675,7 @@ try {
   assertMatch(pkgMakefile, /LANSPEED_USERSPACE_TARGET="\$\(RUSTC_TARGET_ARCH\)"/, 'userspace target must come from the SDK');
   assertMatch(pkgMakefile, /LANSPEED_VERSION="\$\(PKG_VERSION\)"/, 'Cargo build must receive PKG_VERSION');
   assertMatch(pkgMakefile, /LANSPEED_RELEASE="\$\(PKG_RELEASE\)"/, 'Cargo build must receive PKG_RELEASE');
-  assertMatch(pkgMakefile, /OPENWRT_STAGING_LIB="\$\(STAGING_DIR\)\/usr\/lib"/, 'Cargo build must receive the target staging library directory');
+  assertNoMatch(pkgMakefile, /OPENWRT_STAGING_LIB/, 'pure Rust userspace must not receive a target library link directory');
   assertMatch(pkgMakefile, /build-userspace/, 'base package pass must invoke the userspace build driver');
   assertMatch(pkgMakefile, /build-ebpf/, 'BPF package pass must invoke the eBPF build driver');
   assert(userspaceBuild >= 0 && bpfConditional >= 0 && userspaceBuild < bpfConditional,
@@ -732,11 +732,10 @@ try {
       `lanspeedd-bpf must preserve the runtime path for ${object} through a relative symlink`
     );
   }
-  assertMatch(
-    pkgMakefile,
-    /DEPENDS:=@\(aarch64\|\|x86_64\).*\+libubox.*\+libubus.*\+libuci.*\+libblobmsg-json/,
-    'base daemon must restrict its generated OpenWrt FFI bindings to verified LP64 targets'
-  );
+  assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+kmod-nf-conntrack-netlink/,
+    'base daemon must retain verified LP64 and conntrack kernel constraints');
+  assertNoMatch(pkgMakefile, /\+libubox|\+libubus|\+libuci|\+libblobmsg-json/,
+    'pure Rust userspace must not retain versioned OpenWrt library dependencies');
   assertNoMatch(
     pkgMakefile,
     /DEPENDS:=\$\(RUST_ARCH_DEPENDS\)/,

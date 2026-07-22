@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=lanspeedd
 PKG_VERSION:=1.1.2
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=
@@ -38,7 +38,7 @@ define Package/lanspeedd
   SECTION:=net
   CATEGORY:=Network
   TITLE:=LAN speed monitor daemon
-  DEPENDS:=@(aarch64||x86_64) +libubox +libubus +libuci +libblobmsg-json +kmod-nf-conntrack-netlink
+  DEPENDS:=@(aarch64||x86_64) +kmod-nf-conntrack-netlink
 endef
 
 define Package/lanspeedd/description
@@ -78,7 +78,6 @@ define Build/Compile
 		LANSPEED_USERSPACE_TARGET="$(RUSTC_TARGET_ARCH)" \
 		LANSPEED_VERSION="$(PKG_VERSION)" \
 		LANSPEED_RELEASE="$(PKG_RELEASE)" \
-		OPENWRT_STAGING_LIB="$(STAGING_DIR)/usr/lib" \
 		$(PKG_BUILD_DIR)/target/$(RUSTC_HOST_ARCH)/release/lanspeed-build build-userspace
 ifneq ($(LANSPEED_BPF_ENABLED),)
 	+$(CARGO_HOST_CONFIG_VARS) \

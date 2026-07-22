@@ -1,0 +1,923 @@
+use crate::{codec, BlobBuf, Error, Result};
+use std::{
+    cell::{Cell, RefCell},
+    collections::{HashMap, VecDeque},
+    io::{Read, Write},
+    marker::PhantomData,
+    os::fd::AsRawFd,
+    os::unix::net::UnixStream,
+    panic::{catch_unwind, AssertUnwindSafe},
+    path::PathBuf,
+    rc::{Rc, Weak},
+    time::{Duration, Instant},
+};
+
+pub const STATUS_OK: libc::c_int = 0;
+pub const STATUS_INVALID_ARGUMENT: libc::c_int = 2;
+pub const STATUS_UNKNOWN_ERROR: libc::c_int = 9;
+
+const STATUS_CONNECTION_FAILED: libc::c_int = 10;
+const STATUS_TIMEOUT: libc::c_int = 7;
+const UBUS_VERSION: u8 = 0;
+const UBUS_MSG_HELLO: u8 = 0;
+const UBUS_MSG_STATUS: u8 = 1;
+const UBUS_MSG_DATA: u8 = 2;
+const UBUS_MSG_LOOKUP: u8 = 4;
+const UBUS_MSG_INVOKE: u8 = 5;
+const UBUS_MSG_ADD_OBJECT: u8 = 6;
+const UBUS_ATTR_STATUS: u8 = 1;
+const UBUS_ATTR_OBJPATH: u8 = 2;
+const UBUS_ATTR_OBJID: u8 = 3;
+const UBUS_ATTR_METHOD: u8 = 4;
+const UBUS_ATTR_SIGNATURE: u8 = 6;
+const UBUS_ATTR_DATA: u8 = 7;
+const UBUS_ATTR_NO_REPLY: u8 = 10;
+const DEFAULT_SOCKET: &str = "/var/run/ubus/ubus.sock";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_QUEUED_BYTES: usize = codec::MAX_MESSAGE_LEN * 4;
+
+type Handler = dyn for<'request> FnMut(UbusRequest<'request>) -> libc::c_int;
+
+thread_local! {
+    static CONNECTIONS: RefCell<Vec<Weak<ConnectionInner>>> = const { RefCell::new(Vec::new()) };
+}
+
+pub struct UbusMethod {
+    name: String,
+    policies: Vec<(String, u8)>,
+    handler: Box<Handler>,
+}
+
+impl UbusMethod {
+    pub fn new(
+        name: &str,
+        handler: impl for<'request> FnMut(UbusRequest<'request>) -> libc::c_int + 'static,
+    ) -> Result<Self> {
+        validate_name(name, "ubus method")?;
+        Ok(Self {
+            name: name.to_owned(),
+            policies: Vec::new(),
+            handler: Box::new(handler),
+        })
+    }
+
+    pub fn with_string_policy(mut self, name: &str) -> Result<Self> {
+        validate_name(name, "ubus policy")?;
+        if self.policies.iter().any(|(candidate, _)| candidate == name) {
+            return Err(Error::InvalidData("duplicate ubus policy"));
+        }
+        self.policies.push((name.to_owned(), codec::BLOBMSG_STRING));
+        Ok(self)
+    }
+}
+
+fn validate_name(name: &str, _kind: &'static str) -> Result<()> {
+    if name.is_empty() || name.len() > 255 || name.as_bytes().contains(&0) {
+        Err(Error::InvalidData("invalid ubus name"))
+    } else {
+        Ok(())
+    }
+}
+
+pub struct UbusObject {
+    name: String,
+    methods: Vec<UbusMethod>,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+impl UbusObject {
+    pub fn new(name: &str, methods: Vec<UbusMethod>) -> Result<Self> {
+        validate_name(name, "ubus object")?;
+        if methods.is_empty() || methods.len() > 1_024 {
+            return Err(Error::InvalidData("invalid ubus method count"));
+        }
+        for (index, method) in methods.iter().enumerate() {
+            if methods[..index]
+                .iter()
+                .any(|candidate| candidate.name == method.name)
+            {
+                return Err(Error::InvalidData("duplicate ubus method"));
+            }
+        }
+        Ok(Self {
+            name: name.to_owned(),
+            methods,
+            _not_send_or_sync: PhantomData,
+        })
+    }
+}
+
+struct MethodInner {
+    name: String,
+    policies: Vec<(String, u8)>,
+    handler: RefCell<Option<Box<Handler>>>,
+}
+
+struct ObjectInner {
+    name: String,
+    methods: Vec<MethodInner>,
+    id: Cell<Option<u32>>,
+    type_id: Cell<Option<u32>>,
+}
+
+impl From<UbusObject> for ObjectInner {
+    fn from(object: UbusObject) -> Self {
+        Self {
+            name: object.name,
+            methods: object
+                .methods
+                .into_iter()
+                .map(|method| MethodInner {
+                    name: method.name,
+                    policies: method.policies,
+                    handler: RefCell::new(Some(method.handler)),
+                })
+                .collect(),
+            id: Cell::new(None),
+            type_id: Cell::new(None),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RequestMeta {
+    seq: u16,
+    peer: u32,
+    object: u32,
+}
+
+pub struct UbusRequest<'request> {
+    connection: Rc<ConnectionInner>,
+    request: RequestMeta,
+    message: Vec<u8>,
+    policies: &'request [(String, u8)],
+    _lifetime: PhantomData<&'request mut ()>,
+}
+
+impl UbusRequest<'_> {
+    pub fn reply_json(&mut self, json: &str) -> Result<()> {
+        let message = BlobBuf::from_json(json)?;
+        let root = codec::parse_attr(message.bytes())?;
+        let mut attrs = codec::encode_u32_attr(UBUS_ATTR_OBJID, self.request.object)?;
+        attrs.extend_from_slice(&codec::encode_attr(UBUS_ATTR_DATA, false, root.payload)?);
+        let body = codec::encode_root(&attrs)?;
+        self.connection
+            .queue_frame(UBUS_MSG_DATA, self.request.seq, self.request.peer, body)
+    }
+
+    pub fn string(&self, name: &str) -> Result<Option<String>> {
+        let Some((_, kind)) = self
+            .policies
+            .iter()
+            .find(|(candidate, _)| candidate == name)
+        else {
+            return Err(Error::InvalidData("unknown ubus policy"));
+        };
+        if *kind != codec::BLOBMSG_STRING {
+            return Err(Error::InvalidData("ubus policy is not a string"));
+        }
+        codec::find_string_field(&self.message, name)
+    }
+}
+
+struct Outbound {
+    bytes: Vec<u8>,
+    offset: usize,
+}
+
+#[derive(Default)]
+struct PendingRequest {
+    object_index: Option<usize>,
+    value: Option<u32>,
+    status: Option<libc::c_int>,
+}
+
+struct ConnectionState {
+    stream: Option<UnixStream>,
+    read_buffer: Vec<u8>,
+    outbound: VecDeque<Outbound>,
+    queued_bytes: usize,
+    objects: Vec<Rc<ObjectInner>>,
+    pending: HashMap<u16, PendingRequest>,
+    next_seq: u16,
+    local_id: u32,
+    attached: bool,
+    registered_in_loop: bool,
+    connection_lost_notified: bool,
+}
+
+struct ConnectionInner {
+    path: PathBuf,
+    self_weak: Weak<ConnectionInner>,
+    state: RefCell<ConnectionState>,
+    connection_lost_handler: RefCell<Option<Box<dyn FnMut()>>>,
+    dispatch_depth: Cell<usize>,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+pub struct UbusConnection {
+    inner: Rc<ConnectionInner>,
+}
+
+impl UbusConnection {
+    pub fn connect(path: Option<&str>) -> Result<Self> {
+        let path = PathBuf::from(path.unwrap_or(DEFAULT_SOCKET));
+        let inner = Rc::new_cyclic(|self_weak| ConnectionInner {
+            path,
+            self_weak: self_weak.clone(),
+            state: RefCell::new(ConnectionState {
+                stream: None,
+                read_buffer: Vec::with_capacity(65_536),
+                outbound: VecDeque::new(),
+                queued_bytes: 0,
+                objects: Vec::new(),
+                pending: HashMap::new(),
+                next_seq: 0,
+                local_id: 0,
+                attached: false,
+                registered_in_loop: false,
+                connection_lost_notified: false,
+            }),
+            connection_lost_handler: RefCell::new(None),
+            dispatch_depth: Cell::new(0),
+            _not_send_or_sync: PhantomData,
+        });
+        inner.open()?;
+        Ok(Self { inner })
+    }
+
+    pub fn attach_uloop(&mut self) -> Result<()> {
+        let mut state = self.inner.state.borrow_mut();
+        state.attached = true;
+        if !state.registered_in_loop {
+            CONNECTIONS
+                .with(|connections| connections.borrow_mut().push(Rc::downgrade(&self.inner)));
+            state.registered_in_loop = true;
+        }
+        Ok(())
+    }
+
+    pub fn reconnect(&mut self, path: Option<&str>) -> Result<()> {
+        if path.is_some_and(|path| PathBuf::from(path) != self.inner.path) {
+            return Err(Error::InvalidData(
+                "changing the ubus socket path on reconnect is unsupported",
+            ));
+        }
+        self.inner.open()
+    }
+
+    pub fn lookup_id(&mut self, path: &str) -> Result<u32> {
+        validate_name(path, "ubus lookup")?;
+        let attrs = codec::encode_string_attr(UBUS_ATTR_OBJPATH, path)?;
+        let body = codec::encode_root(&attrs)?;
+        let seq = self.inner.next_sequence();
+        self.inner
+            .state
+            .borrow_mut()
+            .pending
+            .insert(seq, PendingRequest::default());
+        self.inner.queue_frame(UBUS_MSG_LOOKUP, seq, 0, body)?;
+        self.inner.wait_pending(seq)
+    }
+
+    pub fn register_object(&mut self, object: UbusObject) -> Result<()> {
+        let index = {
+            let mut state = self.inner.state.borrow_mut();
+            state.objects.push(Rc::new(ObjectInner::from(object)));
+            state.objects.len() - 1
+        };
+        self.inner.register_object(index)
+    }
+
+    pub fn reregister_objects(&mut self) -> Result<()> {
+        let count = self.inner.state.borrow().objects.len();
+        for index in 0..count {
+            self.inner.register_object(index)?;
+        }
+        Ok(())
+    }
+
+    pub fn set_connection_lost_handler(&mut self, handler: impl FnMut() + 'static) {
+        *self.inner.connection_lost_handler.borrow_mut() = Some(Box::new(handler));
+    }
+}
+
+impl ConnectionInner {
+    fn open(&self) -> Result<()> {
+        let mut stream =
+            UnixStream::connect(&self.path).map_err(|error| io_error("ubus_connect", error))?;
+        stream
+            .set_read_timeout(Some(REQUEST_TIMEOUT))
+            .map_err(|error| io_error("ubus_set_timeout", error))?;
+        let mut header = [0u8; 12];
+        stream
+            .read_exact(&mut header)
+            .map_err(|error| io_error("ubus_read_hello", error))?;
+        if header[0] != UBUS_VERSION || header[1] != UBUS_MSG_HELLO {
+            return Err(Error::InvalidData("invalid ubus hello header"));
+        }
+        let peer = u32::from_be_bytes(header[4..8].try_into().unwrap());
+        if peer <= 1 {
+            return Err(Error::InvalidData("invalid ubus client id"));
+        }
+        let encoded = u32::from_be_bytes(header[8..12].try_into().unwrap());
+        let raw_len = (encoded & 0x00ff_ffff) as usize;
+        if raw_len < 4 || raw_len > codec::MAX_MESSAGE_LEN {
+            return Err(Error::InvalidData("invalid ubus hello payload"));
+        }
+        let mut body = vec![0u8; raw_len];
+        body[..4].copy_from_slice(&header[8..12]);
+        stream
+            .read_exact(&mut body[4..])
+            .map_err(|error| io_error("ubus_read_hello", error))?;
+        let root = codec::parse_attr(&body)?;
+        if root.id != 0 || root.raw_len != raw_len {
+            return Err(Error::InvalidData("invalid ubus hello blob"));
+        }
+        stream
+            .set_read_timeout(None)
+            .map_err(|error| io_error("ubus_set_timeout", error))?;
+        stream
+            .set_nonblocking(true)
+            .map_err(|error| io_error("ubus_set_nonblocking", error))?;
+        let mut state = self.state.borrow_mut();
+        state.stream = Some(stream);
+        state.read_buffer.clear();
+        state.outbound.clear();
+        state.queued_bytes = 0;
+        state.pending.clear();
+        state.local_id = peer;
+        state.connection_lost_notified = false;
+        for object in &state.objects {
+            object.id.set(None);
+            object.type_id.set(None);
+        }
+        Ok(())
+    }
+
+    fn next_sequence(&self) -> u16 {
+        let mut state = self.state.borrow_mut();
+        state.next_seq = state.next_seq.wrapping_add(1);
+        if state.next_seq == 0 {
+            state.next_seq = 1;
+        }
+        state.next_seq
+    }
+
+    fn register_object(&self, index: usize) -> Result<()> {
+        let object = self
+            .state
+            .borrow()
+            .objects
+            .get(index)
+            .cloned()
+            .ok_or(Error::InvalidData("unknown ubus object"))?;
+        let mut attrs = codec::encode_string_attr(UBUS_ATTR_OBJPATH, &object.name)?;
+        let mut signature = Vec::new();
+        for method in &object.methods {
+            let mut policies = Vec::new();
+            for (name, kind) in &method.policies {
+                policies.extend_from_slice(&codec::encode_blobmsg_field(
+                    codec::BLOBMSG_INT32,
+                    name,
+                    &u32::from(*kind).to_be_bytes(),
+                )?);
+            }
+            signature.extend_from_slice(&codec::encode_blobmsg_field(
+                codec::BLOBMSG_TABLE,
+                &method.name,
+                &policies,
+            )?);
+        }
+        attrs.extend_from_slice(&codec::encode_attr(UBUS_ATTR_SIGNATURE, false, &signature)?);
+        let body = codec::encode_root(&attrs)?;
+        let seq = self.next_sequence();
+        self.state.borrow_mut().pending.insert(
+            seq,
+            PendingRequest {
+                object_index: Some(index),
+                ..PendingRequest::default()
+            },
+        );
+        self.queue_frame(UBUS_MSG_ADD_OBJECT, seq, 0, body)?;
+        self.wait_pending(seq).map(|_| ())
+    }
+
+    fn wait_pending(&self, seq: u16) -> Result<u32> {
+        let deadline = Instant::now() + REQUEST_TIMEOUT;
+        loop {
+            if let Some((status, value)) = {
+                let state = self.state.borrow();
+                state
+                    .pending
+                    .get(&seq)
+                    .and_then(|pending| pending.status.map(|status| (status, pending.value)))
+            } {
+                self.state.borrow_mut().pending.remove(&seq);
+                if status != STATUS_OK {
+                    return Err(Error::Platform {
+                        operation: "ubus_request",
+                        code: status,
+                    });
+                }
+                return value.ok_or(Error::InvalidData("ubus response omitted object id"));
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                self.state.borrow_mut().pending.remove(&seq);
+                return Err(Error::Platform {
+                    operation: "ubus_request",
+                    code: STATUS_TIMEOUT,
+                });
+            }
+            self.poll_once(deadline.duration_since(now).as_millis().min(250) as libc::c_int)?;
+        }
+    }
+
+    fn queue_frame(&self, kind: u8, seq: u16, peer: u32, body: Vec<u8>) -> Result<()> {
+        if body.len() > codec::MAX_MESSAGE_LEN {
+            return Err(Error::InvalidData("ubus message exceeds limit"));
+        }
+        let mut frame = Vec::with_capacity(8 + body.len());
+        frame.push(UBUS_VERSION);
+        frame.push(kind);
+        frame.extend_from_slice(&seq.to_be_bytes());
+        frame.extend_from_slice(&peer.to_be_bytes());
+        frame.extend_from_slice(&body);
+        let mut state = self.state.borrow_mut();
+        if state.stream.is_none() {
+            return Err(Error::Platform {
+                operation: "ubus_send",
+                code: STATUS_CONNECTION_FAILED,
+            });
+        }
+        if state.queued_bytes.saturating_add(frame.len()) > MAX_QUEUED_BYTES {
+            return Err(Error::Platform {
+                operation: "ubus_backpressure",
+                code: libc::ENOBUFS,
+            });
+        }
+        state.queued_bytes += frame.len();
+        state.outbound.push_back(Outbound {
+            bytes: frame,
+            offset: 0,
+        });
+        drop(state);
+        self.flush_writes()
+    }
+
+    fn flush_writes(&self) -> Result<()> {
+        let mut state = self.state.borrow_mut();
+        let ConnectionState {
+            stream,
+            outbound,
+            queued_bytes,
+            ..
+        } = &mut *state;
+        let stream = stream.as_mut().ok_or(Error::Platform {
+            operation: "ubus_send",
+            code: STATUS_CONNECTION_FAILED,
+        })?;
+        while let Some(front) = outbound.front_mut() {
+            match stream.write(&front.bytes[front.offset..]) {
+                Ok(0) => {
+                    return Err(Error::Platform {
+                        operation: "ubus_send",
+                        code: STATUS_CONNECTION_FAILED,
+                    })
+                }
+                Ok(written) => {
+                    front.offset += written;
+                    *queued_bytes = queued_bytes.saturating_sub(written);
+                    if front.offset == front.bytes.len() {
+                        outbound.pop_front();
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(io_error("ubus_send", error)),
+            }
+        }
+        Ok(())
+    }
+
+    fn poll_once(&self, timeout: libc::c_int) -> Result<()> {
+        let (fd, wants_write) = {
+            let state = self.state.borrow();
+            let fd = state
+                .stream
+                .as_ref()
+                .ok_or(Error::Platform {
+                    operation: "ubus_poll",
+                    code: STATUS_CONNECTION_FAILED,
+                })?
+                .as_raw_fd();
+            (fd, !state.outbound.is_empty())
+        };
+        let mut pollfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN
+                | libc::POLLERR
+                | libc::POLLHUP
+                | if wants_write { libc::POLLOUT } else { 0 },
+            revents: 0,
+        };
+        let result = unsafe { libc::poll(&mut pollfd, 1, timeout) };
+        if result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                return Ok(());
+            }
+            return Err(io_error("ubus_poll", error));
+        }
+        if result > 0 {
+            self.handle_events(pollfd.revents)?;
+        }
+        Ok(())
+    }
+
+    fn handle_events(&self, events: libc::c_short) -> Result<()> {
+        if events & libc::POLLOUT != 0 {
+            self.flush_writes()?;
+        }
+        if events & libc::POLLIN != 0 {
+            self.read_frames()?;
+        }
+        if events & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            self.mark_lost();
+        }
+        Ok(())
+    }
+
+    fn read_frames(&self) -> Result<()> {
+        let mut eof = false;
+        {
+            let mut state = self.state.borrow_mut();
+            let ConnectionState {
+                stream,
+                read_buffer,
+                ..
+            } = &mut *state;
+            let stream = stream.as_mut().ok_or(Error::Platform {
+                operation: "ubus_receive",
+                code: STATUS_CONNECTION_FAILED,
+            })?;
+            let mut buffer = [0u8; 65_536];
+            loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) => {
+                        eof = true;
+                        break;
+                    }
+                    Ok(read) => {
+                        if read_buffer.len().saturating_add(read) > MAX_QUEUED_BYTES {
+                            return Err(Error::InvalidData("ubus receive buffer exceeds limit"));
+                        }
+                        read_buffer.extend_from_slice(&buffer[..read]);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(io_error("ubus_receive", error)),
+                }
+            }
+        }
+        loop {
+            let frame = {
+                let mut state = self.state.borrow_mut();
+                if state.read_buffer.len() < 12 {
+                    None
+                } else {
+                    let raw_len = (u32::from_be_bytes(state.read_buffer[8..12].try_into().unwrap())
+                        & 0x00ff_ffff) as usize;
+                    if raw_len < 4 || raw_len > codec::MAX_MESSAGE_LEN {
+                        return Err(Error::InvalidData("invalid ubus frame length"));
+                    }
+                    let total = 8 + raw_len;
+                    if state.read_buffer.len() < total {
+                        None
+                    } else {
+                        Some(state.read_buffer.drain(..total).collect::<Vec<_>>())
+                    }
+                }
+            };
+            let Some(frame) = frame else { break };
+            self.dispatch_frame(&frame)?;
+        }
+        if eof {
+            self.mark_lost();
+        }
+        Ok(())
+    }
+
+    fn dispatch_frame(&self, frame: &[u8]) -> Result<()> {
+        if frame.len() < 12 || frame[0] != UBUS_VERSION {
+            return Err(Error::InvalidData("invalid ubus frame"));
+        }
+        let kind = frame[1];
+        let seq = u16::from_be_bytes(frame[2..4].try_into().unwrap());
+        let peer = u32::from_be_bytes(frame[4..8].try_into().unwrap());
+        let root = codec::parse_attr(&frame[8..])?;
+        if root.id != 0 || root.raw_len + 8 != frame.len() {
+            return Err(Error::InvalidData("invalid ubus root blob"));
+        }
+        match kind {
+            UBUS_MSG_DATA => self.handle_data(seq, root.payload),
+            UBUS_MSG_STATUS => self.handle_status(seq, root.payload),
+            UBUS_MSG_INVOKE => self.handle_invoke(seq, peer, root.payload),
+            _ => Ok(()),
+        }
+    }
+
+    fn handle_data(&self, seq: u16, payload: &[u8]) -> Result<()> {
+        let Some(value) = outer_u32(payload, UBUS_ATTR_OBJID)? else {
+            return Ok(());
+        };
+        let mut state = self.state.borrow_mut();
+        let Some(pending) = state.pending.get_mut(&seq) else {
+            return Ok(());
+        };
+        pending.value = Some(value);
+        if let Some(index) = pending.object_index {
+            if let Some(object) = state.objects.get(index) {
+                object.id.set(Some(value));
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_status(&self, seq: u16, payload: &[u8]) -> Result<()> {
+        let status = outer_u32(payload, UBUS_ATTR_STATUS)?
+            .ok_or(Error::InvalidData("ubus status omitted status code"))?
+            as libc::c_int;
+        if let Some(pending) = self.state.borrow_mut().pending.get_mut(&seq) {
+            pending.status = Some(status);
+        }
+        Ok(())
+    }
+
+    fn handle_invoke(&self, seq: u16, peer: u32, payload: &[u8]) -> Result<()> {
+        let object_id = outer_u32(payload, UBUS_ATTR_OBJID)?
+            .ok_or(Error::InvalidData("ubus invoke omitted object id"))?;
+        let method_name = outer_string(payload, UBUS_ATTR_METHOD)?
+            .ok_or(Error::InvalidData("ubus invoke omitted method"))?;
+        let data = outer_payload(payload, UBUS_ATTR_DATA)?
+            .ok_or(Error::InvalidData("ubus invoke omitted data"))?
+            .to_vec();
+        let no_reply = outer_payload(payload, UBUS_ATTR_NO_REPLY)?
+            .and_then(|value| value.first().copied())
+            .unwrap_or(0)
+            != 0;
+        let object = self
+            .state
+            .borrow()
+            .objects
+            .iter()
+            .find(|object| object.id.get() == Some(object_id))
+            .cloned();
+        let Some(object) = object else {
+            if !no_reply {
+                self.queue_status(seq, peer, object_id, 4)?;
+            }
+            return Ok(());
+        };
+        let Some(method) = object
+            .methods
+            .iter()
+            .find(|method| method.name == method_name)
+        else {
+            if !no_reply {
+                self.queue_status(seq, peer, object_id, 3)?;
+            }
+            return Ok(());
+        };
+        self.dispatch_depth.set(self.dispatch_depth.get() + 1);
+        struct DepthGuard<'a>(&'a Cell<usize>);
+        impl Drop for DepthGuard<'_> {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() - 1);
+            }
+        }
+        let _depth = DepthGuard(&self.dispatch_depth);
+        let Some(mut handler) = method.handler.borrow_mut().take() else {
+            if !no_reply {
+                self.queue_status(seq, peer, object_id, STATUS_UNKNOWN_ERROR)?;
+            }
+            return Ok(());
+        };
+        let request = UbusRequest {
+            connection: self
+                .self_weak
+                .upgrade()
+                .ok_or(Error::InvalidData("ubus connection was dropped"))?,
+            request: RequestMeta {
+                seq,
+                peer,
+                object: object_id,
+            },
+            message: data,
+            policies: &method.policies,
+            _lifetime: PhantomData,
+        };
+        let status =
+            catch_unwind(AssertUnwindSafe(|| handler(request))).unwrap_or(STATUS_UNKNOWN_ERROR);
+        *method.handler.borrow_mut() = Some(handler);
+        if !no_reply {
+            self.queue_status(seq, peer, object_id, status)?;
+        }
+        Ok(())
+    }
+
+    fn queue_status(&self, seq: u16, peer: u32, object: u32, status: libc::c_int) -> Result<()> {
+        let mut attrs = codec::encode_u32_attr(UBUS_ATTR_STATUS, status as u32)?;
+        attrs.extend_from_slice(&codec::encode_u32_attr(UBUS_ATTR_OBJID, object)?);
+        self.queue_frame(UBUS_MSG_STATUS, seq, peer, codec::encode_root(&attrs)?)
+    }
+
+    fn mark_lost(&self) {
+        let notify = {
+            let mut state = self.state.borrow_mut();
+            state.stream.take();
+            state.read_buffer.clear();
+            state.outbound.clear();
+            state.queued_bytes = 0;
+            for pending in state.pending.values_mut() {
+                pending.status = Some(STATUS_CONNECTION_FAILED);
+            }
+            for object in &state.objects {
+                object.id.set(None);
+                object.type_id.set(None);
+            }
+            !state.connection_lost_notified
+        };
+        if !notify {
+            return;
+        }
+        self.state.borrow_mut().connection_lost_notified = true;
+        let Some(mut handler) = self.connection_lost_handler.borrow_mut().take() else {
+            return;
+        };
+        let _ = catch_unwind(AssertUnwindSafe(|| handler()));
+        *self.connection_lost_handler.borrow_mut() = Some(handler);
+    }
+}
+
+fn io_error(operation: &'static str, error: std::io::Error) -> Error {
+    Error::Platform {
+        operation,
+        code: error.raw_os_error().unwrap_or(libc::EIO),
+    }
+}
+
+fn outer_attrs(payload: &[u8]) -> Result<Vec<codec::Attr<'_>>> {
+    codec::parse_attr_list(payload)
+}
+
+fn outer_payload<'a>(payload: &'a [u8], id: u8) -> Result<Option<&'a [u8]>> {
+    let mut found = None;
+    for attr in outer_attrs(payload)? {
+        if attr.id != id {
+            continue;
+        }
+        if found.is_some() {
+            return Err(Error::InvalidData("duplicate ubus attribute"));
+        }
+        found = Some(attr.payload);
+    }
+    Ok(found)
+}
+
+fn outer_u32(payload: &[u8], id: u8) -> Result<Option<u32>> {
+    outer_payload(payload, id)?
+        .map(|value| {
+            if value.len() != 4 {
+                return Err(Error::InvalidData("invalid ubus integer attribute"));
+            }
+            Ok(u32::from_be_bytes(value.try_into().unwrap()))
+        })
+        .transpose()
+}
+
+fn outer_string(payload: &[u8], id: u8) -> Result<Option<String>> {
+    outer_payload(payload, id)?
+        .map(|value| {
+            let value = value
+                .strip_suffix(&[0])
+                .ok_or(Error::InvalidData("unterminated ubus string"))?;
+            if value.contains(&0) {
+                return Err(Error::InvalidData("ubus string contains an interior NUL"));
+            }
+            std::str::from_utf8(value)
+                .map(str::to_owned)
+                .map_err(|_| Error::InvalidData("ubus string is not UTF-8"))
+        })
+        .transpose()
+}
+
+pub(crate) fn poll_connections(timeout: libc::c_int) -> Result<()> {
+    let connections = CONNECTIONS.with(|registry| {
+        let mut registry = registry.borrow_mut();
+        registry.retain(|connection| connection.strong_count() > 0);
+        registry
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter(|connection| {
+                let state = connection.state.borrow();
+                state.attached && state.stream.is_some()
+            })
+            .collect::<Vec<_>>()
+    });
+    if connections.is_empty() {
+        if timeout > 0 {
+            unsafe { libc::poll(core::ptr::null_mut(), 0, timeout) };
+        }
+        return Ok(());
+    }
+    let mut descriptors = connections
+        .iter()
+        .map(|connection| {
+            let state = connection.state.borrow();
+            libc::pollfd {
+                fd: state.stream.as_ref().unwrap().as_raw_fd(),
+                events: libc::POLLIN
+                    | libc::POLLERR
+                    | libc::POLLHUP
+                    | if state.outbound.is_empty() {
+                        0
+                    } else {
+                        libc::POLLOUT
+                    },
+                revents: 0,
+            }
+        })
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        libc::poll(
+            descriptors.as_mut_ptr(),
+            descriptors.len() as libc::nfds_t,
+            timeout,
+        )
+    };
+    if result < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            return Ok(());
+        }
+        return Err(io_error("ubus_poll", error));
+    }
+    for (connection, descriptor) in connections.iter().zip(descriptors) {
+        if descriptor.revents == 0 {
+            continue;
+        }
+        if connection.handle_events(descriptor.revents).is_err() {
+            connection.mark_lost();
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_object_signature_contains_all_methods_and_policy() {
+        let status = UbusMethod::new("status", |_| STATUS_OK).unwrap();
+        let clients = UbusMethod::new("client_connections", |_| STATUS_OK)
+            .unwrap()
+            .with_string_policy("identity_key")
+            .unwrap();
+        let object = ObjectInner::from(UbusObject::new("lanspeed", vec![status, clients]).unwrap());
+        let mut signature = Vec::new();
+        for method in &object.methods {
+            let mut policies = Vec::new();
+            for (name, kind) in &method.policies {
+                policies.extend_from_slice(
+                    &codec::encode_blobmsg_field(
+                        codec::BLOBMSG_INT32,
+                        name,
+                        &u32::from(*kind).to_be_bytes(),
+                    )
+                    .unwrap(),
+                );
+            }
+            signature.extend_from_slice(
+                &codec::encode_blobmsg_field(codec::BLOBMSG_TABLE, &method.name, &policies)
+                    .unwrap(),
+            );
+        }
+        let fields = codec::parse_attr_list(&signature).unwrap();
+        assert_eq!(fields.len(), 2);
+        assert_eq!(
+            codec::blobmsg_parts(fields[1]).unwrap().0,
+            "client_connections"
+        );
+    }
+
+    #[test]
+    fn outer_attribute_parser_rejects_duplicates() {
+        let field = codec::encode_u32_attr(UBUS_ATTR_OBJID, 7).unwrap();
+        let mut duplicate = field.clone();
+        duplicate.extend_from_slice(&field);
+        assert!(outer_u32(&duplicate, UBUS_ATTR_OBJID).is_err());
+    }
+}

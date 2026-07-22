@@ -1,24 +1,17 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
-mod blob;
+mod codec;
 mod error;
-#[allow(
-    dead_code,
-    non_camel_case_types,
-    non_snake_case,
-    non_upper_case_globals,
-    unsafe_op_in_unsafe_fn
-)]
-mod raw;
-mod ubus;
-mod uci;
-mod uloop;
+mod pure_blob;
+mod pure_ubus;
+mod pure_uci;
+mod pure_uloop;
 
-pub use blob::BlobBuf;
 pub use error::{Error, Result};
-pub use ubus::{
+pub use pure_blob::BlobBuf;
+pub use pure_ubus::{
     UbusConnection, UbusMethod, UbusObject, UbusRequest, STATUS_INVALID_ARGUMENT, STATUS_OK,
     STATUS_UNKNOWN_ERROR,
 };
-pub use uci::{UciContext, UciOption, UciPackage, UciSection, UciValue};
-pub use uloop::{Signal, Timer, UloopGuard};
+pub use pure_uci::{UciContext, UciOption, UciPackage, UciSection, UciValue};
+pub use pure_uloop::{Signal, Timer, UloopGuard};
