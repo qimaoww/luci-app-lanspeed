@@ -320,9 +320,12 @@ try {
   );
   assert(
     (compatWorkflow.match(/deep_ebpf: 1/g) || []).length === 12 &&
-      compatWorkflow.includes('unshare -Urn') &&
-      compatWorkflow.includes('RUST_COMPAT_LIVE_CONNTRACK=1'),
-    'Rust compatibility CI must deeply validate every version in the supported stable range in an isolated network namespace'
+      compatWorkflow.includes('sudo unshare -n -- true') &&
+      compatWorkflow.includes('sudo unshare -n -- env') &&
+      compatWorkflow.includes('RUST_COMPAT_LIVE_CONNTRACK=1') &&
+      compatWorkflow.includes('Conntrack smoke skipped') &&
+      !compatWorkflow.includes('unshare -Urn'),
+    'Rust compatibility CI must deeply validate every supported version, isolate live conntrack without user namespaces, and retain a capability-gated fallback'
   );
   for (let minor = 87; minor <= 96; minor += 1) {
     const version = `1.${minor}.0`;

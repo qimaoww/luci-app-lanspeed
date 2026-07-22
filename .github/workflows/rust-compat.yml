@@ -149,11 +149,23 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/rust-compat/${{ matrix.id }}
           RUST_COMPAT_EXPECTED: ${{ matrix.expected }}
           RUST_COMPAT_DEEP_EBPF: ${{ matrix.deep_ebpf }}
+          RUST_COMPAT_MODE: ${{ matrix.mode }}
         run: |
           set -euo pipefail
-          if [[ "${{ matrix.mode }}" == success ]]; then
-            unshare -Urn -- env RUST_COMPAT_LIVE_CONNTRACK=1 \
-              ./tests/run-rust-compat.sh "${{ matrix.mode }}"
+          if [[ "$RUST_COMPAT_MODE" == success ]] && sudo unshare -n -- true 2>/dev/null; then
+            sudo unshare -n -- env \
+              CARGO_TARGET_DIR="$CARGO_TARGET_DIR" \
+              RUST_COMPAT_BPF_LINKER="$RUST_COMPAT_BPF_LINKER" \
+              RUST_COMPAT_CARGO="$RUST_COMPAT_CARGO" \
+              RUST_COMPAT_DEEP_EBPF="$RUST_COMPAT_DEEP_EBPF" \
+              RUST_COMPAT_EXPECTED="$RUST_COMPAT_EXPECTED" \
+              RUST_COMPAT_LIVE_CONNTRACK=1 \
+              RUST_COMPAT_RUSTC="$RUST_COMPAT_RUSTC" \
+              ./tests/run-rust-compat.sh "$RUST_COMPAT_MODE"
           else
-            ./tests/run-rust-compat.sh "${{ matrix.mode }}"
+            if [[ "$RUST_COMPAT_MODE" == success ]]; then
+              printf '%s\n' \
+                '::warning title=Conntrack smoke skipped::Runner cannot create an isolated network namespace; continuing with the remaining Rust compatibility contract.'
+            fi
+            ./tests/run-rust-compat.sh "$RUST_COMPAT_MODE"
           fi

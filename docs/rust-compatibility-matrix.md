@@ -22,7 +22,7 @@ CI 对 `1.87.0` 至 `1.96.0` 以及 `1.97.1` 逐个使用精确 toolchain，并�
 | 1.96.0 | 446 passed, 0 failed, 1 remaining ignored | PASS, 181704 B, u64=4/u32=1 | PASS, 125176 B, u64=2 | 固定发布基线 |
 | 1.97.1 | 446 passed, 0 failed, 1 remaining ignored | PASS, 183960 B, u64=4/u32=1 | PASS, 127288 B, u64=2 | 本次最高已验证 |
 
-用户态测试包含 daemon、共享 ABI、构建驱动，以及纯 Rust `lanspeed-openwrt-sys` 的 host ubus/UCI/uloop 测试。普通兼容运行的原始输出为 `445 passed, 0 failed, 2 ignored`：一个 ignored 测试需要 root、veth 和新 BPF 对象，另一个是宿主 conntrack smoke。CI 随后只在隔离网络命名空间中用 `--ignored --exact` 执行 conntrack smoke，输出 `1 passed, 0 failed, 0 ignored`。因此表中的 `446 passed, 0 failed, 1 remaining ignored` 是按唯一测试合并后的汇总，不是单次 Cargo 命令的输出；宿主表超过安全字节上限不会被当成 Rust 失败。
+用户态测试包含 daemon、共享 ABI、构建驱动，以及纯 Rust `lanspeed-openwrt-sys` 的 host ubus/UCI/uloop 测试。普通兼容运行的原始输出为 `445 passed, 0 failed, 2 ignored`：一个 ignored 测试需要 root、veth 和新 BPF 对象，另一个是宿主 conntrack smoke。CI 在 runner 提供 root 网络命名空间能力时，用 `--ignored --exact` 在隔离网络命名空间中执行 conntrack smoke，输出 `1 passed, 0 failed, 0 ignored`；若 runner 拒绝创建该命名空间，则明确输出 warning 并跳过这个单项 smoke，其他编译、eBPF 和用户态门禁仍继续执行。因此表中的 `446 passed, 0 failed, 1 remaining ignored` 是按完整隔离运行的唯一测试合并后的汇总，不是单次 Cargo 命令的输出；宿主表超过安全字节上限不会被当成 Rust 失败。
 
 ## 下界证据
 
