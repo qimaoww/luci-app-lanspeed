@@ -156,7 +156,7 @@ fn userspace_build_rejects_an_old_rustc_before_invoking_cargo() {
     let workspace = tools.path().join("workspace");
     fs::create_dir_all(&workspace).unwrap();
 
-    write_executable(&rustc, "#!/bin/sh\nprintf 'rustc 1.93.99 (fake)\\n'\n");
+    write_executable(&rustc, "#!/bin/sh\nprintf 'rustc 1.86.99 (fake)\\n'\n");
     write_executable(&cargo, "#!/bin/sh\nprintf invoked > \"$MARKER\"\nexit 0\n");
 
     let mut variables = Environment::new();
@@ -260,7 +260,7 @@ do
     previous="$arg"
 done
 
-expected_prefix="${LANSPEED_BUILD_WORKSPACE%/}/target/"
+expected_prefix="${CARGO_TARGET_DIR%/}/"
 case "$target_dir" in
     "$expected_prefix"*) ;;
     *) exit 0 ;;
@@ -287,6 +287,8 @@ exit 0
     variables.set("CARGO", &cargo);
     variables.set("CARGO_LOG", &cargo_log);
     variables.set("LANSPEED_BUILD_WORKSPACE", &workspace);
+    let target_root = workspace.join("matrix-target");
+    variables.set("CARGO_TARGET_DIR", &target_root);
 
     build(BuildTarget::Ebpf).unwrap();
 
@@ -322,13 +324,13 @@ exit 0
     assert_eq!(
         target_dirs,
         vec![
-            workspace.join("target/lanspeed-ebpf-kfunc"),
-            workspace.join("target/lanspeed-ebpf-fallback"),
+            target_root.join("lanspeed-ebpf-kfunc"),
+            target_root.join("lanspeed-ebpf-fallback"),
         ]
     );
     assert_ne!(target_dirs[0], target_dirs[1]);
 
-    let output_dir = workspace.join("target/bpfel-unknown-none/release");
+    let output_dir = target_root.join("bpfel-unknown-none/release");
     let mut output_names = fs::read_dir(&output_dir)
         .unwrap()
         .map(|entry| entry.unwrap().file_name())

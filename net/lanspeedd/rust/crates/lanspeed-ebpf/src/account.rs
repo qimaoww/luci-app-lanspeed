@@ -14,6 +14,8 @@ use lanspeed_common::{
     LanspeedCounters, LanspeedKey, DIR_TX, MAX_CLIENTS,
 };
 
+use crate::atomics::add_u64;
+
 #[cfg(feature = "conntrack-kfunc")]
 use crate::conntrack::try_count_connection;
 #[cfg(feature = "conntrack-kfunc")]
@@ -163,14 +165,8 @@ unsafe fn add_packet(counters: *mut LanspeedCounters, bytes: u64, packets: u64, 
     let bytes_counter = unsafe { addr_of_mut!((*counters).bytes) };
     let packets_counter = unsafe { addr_of_mut!((*counters).packets) };
     unsafe {
-        core::intrinsics::atomic_xadd::<_, _, { core::intrinsics::AtomicOrdering::Relaxed }>(
-            bytes_counter,
-            bytes,
-        );
-        core::intrinsics::atomic_xadd::<_, _, { core::intrinsics::AtomicOrdering::Relaxed }>(
-            packets_counter,
-            packets,
-        );
+        add_u64(bytes_counter, bytes);
+        add_u64(packets_counter, packets);
         addr_of_mut!((*counters).last_seen).write_volatile(now);
     }
 }

@@ -2,6 +2,7 @@
 name = "lanspeed-ebpf"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [[bin]]
@@ -11,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 aya-ebpf.workspace = true
 lanspeed-common = { path = "../lanspeed-common" }
+rustversion.workspace = true
 
 [features]
 default = ["conntrack-kfunc"]

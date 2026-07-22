@@ -9,7 +9,7 @@ use std::{
 use semver::Version;
 use thiserror::Error;
 
-pub const MINIMUM_RUSTC: &str = "1.94.0";
+pub const MINIMUM_RUSTC: &str = env!("CARGO_PKG_RUST_VERSION");
 /// Version pinned by the reproducible OpenWrt package download.
 pub const PINNED_BPF_LINKER: &str = "0.10.3";
 pub const MINIMUM_BPF_LINKER: &str = PINNED_BPF_LINKER;
@@ -62,6 +62,7 @@ impl BuildTarget {
 pub fn build(target: BuildTarget) -> Result<(), BuildError> {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let workspace = workspace_root();
+    let target_dir = target_dir(&workspace);
     match target {
         BuildTarget::Userspace => {
             validate_minimum_version("rustc", &detect_rustc()?, MINIMUM_RUSTC)?;
@@ -77,9 +78,9 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
         }
         BuildTarget::Ebpf => {
             ToolVersions::detect()?.validate()?;
-            let kfunc = build_ebpf_variant(&cargo, &workspace, "kfunc", false)?;
-            let fallback = build_ebpf_variant(&cargo, &workspace, "fallback", true)?;
-            let output_dir = workspace.join("target/bpfel-unknown-none/release");
+            let kfunc = build_ebpf_variant(&cargo, &workspace, &target_dir, "kfunc", false)?;
+            let fallback = build_ebpf_variant(&cargo, &workspace, &target_dir, "fallback", true)?;
+            let output_dir = target_dir.join("bpfel-unknown-none/release");
             fs::create_dir_all(&output_dir)?;
             fs::copy(&kfunc, output_dir.join("lanspeed-ebpf-kfunc"))?;
             fs::copy(&fallback, output_dir.join("lanspeed-ebpf-fallback"))?;
@@ -92,12 +93,11 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
 fn build_ebpf_variant(
     cargo: &OsStr,
     workspace: &PathBuf,
+    target_root: &PathBuf,
     variant: &str,
     fallback: bool,
 ) -> Result<PathBuf, BuildError> {
-    let target_dir = workspace
-        .join("target")
-        .join(format!("lanspeed-ebpf-{variant}"));
+    let target_dir = target_root.join(format!("lanspeed-ebpf-{variant}"));
     let mut command = Command::new(cargo);
     command.current_dir(workspace).args([
         "build",
@@ -226,6 +226,14 @@ fn workspace_root() -> PathBuf {
         .and_then(|path| path.parent())
         .expect("lanspeed-build must remain below rust/crates")
         .to_owned()
+}
+
+fn target_dir(workspace: &PathBuf) -> PathBuf {
+    match env::var_os("CARGO_TARGET_DIR").map(PathBuf::from) {
+        Some(target_dir) if target_dir.is_absolute() => target_dir,
+        Some(target_dir) => workspace.join(target_dir),
+        None => workspace.join("target"),
+    }
 }
 
 fn ensure_success(status: ExitStatus, target: BuildTarget) -> Result<(), BuildError> {

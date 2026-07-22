@@ -5,6 +5,7 @@
 #![feature(asm_experimental_arch)]
 
 mod account;
+mod atomics;
 #[cfg(feature = "conntrack-kfunc")]
 mod conntrack;
 mod panic;

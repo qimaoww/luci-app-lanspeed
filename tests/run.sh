@@ -179,18 +179,25 @@ run_unit() {
 	reset_unit_evidence
 	append_unit_evidence "BEGIN unit run_id=$RUN_ID"
 	append_unit_evidence "command=unit"
-	append_unit_evidence "scenarios=node syntax, Rust backend contracts, pure Rust ubus wire tests, fixtures, packaging, lanspeed modules, build-sdk"
+	append_unit_evidence "scenarios=node syntax, Rust backend contracts, pure Rust ubus host/wire tests, fixtures, packaging, lanspeed modules, build-sdk"
 	run_node_check || return $?
 	run_logged "rust-layout" node "$SCRIPT_DIR/validate-lanspeed-rust-layout.js" || return $?
 	append_unit_evidence "rust_cargo=$rust_cargo_path"
 	append_unit_evidence "rustc=$rustc_bin"
 	run_logged "rust-ebpf-objects" build_ebpf_objects || return $?
+	run_logged "rust-openwrt-sys-host" env \
+		PATH="$rust_toolchain_bin:$PATH" \
+		RUSTC="$rustc_bin" \
+		"$rust_cargo_path" test \
+		--manifest-path "$ROOT/net/lanspeedd/rust/Cargo.toml" \
+		-p lanspeed-openwrt-sys --locked --offline -- --test-threads=1 || return $?
 	run_logged "rust-workspace" env \
 		PATH="$rust_toolchain_bin:$PATH" \
 		RUSTC="$rustc_bin" \
 		"$rust_cargo_path" test \
 		--manifest-path "$ROOT/net/lanspeedd/rust/Cargo.toml" \
 		--workspace --exclude lanspeed-ebpf --exclude lanspeed-openwrt-sys \
+		--features lanspeedd/openwrt \
 		--locked --offline -- --test-threads=1 || return $?
 	if [ -x "$IMMORTALWRT_ROOT/staging_dir/target-x86_64_musl/host/bin/cargo" ]; then
 		run_logged "rust-openwrt-compile" sh \
@@ -218,7 +225,7 @@ run_unit() {
 	run_logged "lanspeed-geo" node "$SCRIPT_DIR/validate-lanspeed-geo.js" || return $?
 	run_logged "lanspeed-modules" node "$SCRIPT_DIR/validate-lanspeed-modules.js" || return $?
 	run_logged "build-sdk" sh "$SCRIPT_DIR/validate-build-sdk.sh" || return $?
-	append_unit_evidence "coverage=rust_workspace openwrt_feature_pure_rust openwrt_sys_ubus_tests contract identity collector lifecycle probes diagnostics realtime_status lanspeed-geo lanspeed-modules build-sdk"
+	append_unit_evidence "coverage=rust_workspace openwrt_sys_host openwrt_feature_pure_rust openwrt_sys_ubus_tests contract identity collector lifecycle probes diagnostics realtime_status lanspeed-geo lanspeed-modules build-sdk"
 	append_unit_evidence "completed=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 	append_unit_evidence "END unit run_id=$RUN_ID"
 	printf '%s\n' "unit validations passed; evidence: $UNIT_EVIDENCE"

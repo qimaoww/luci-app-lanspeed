@@ -15,6 +15,7 @@ use lanspeed_common::{
 };
 
 use crate::account::LANSPEED_SEEN_CONNS;
+use crate::atomics::add_u32;
 
 #[repr(C)]
 struct BpfCtOpts {
@@ -149,9 +150,7 @@ pub fn try_count_connection(
         TransportProtocol::Udp => unsafe { addr_of_mut!((*counters).udp_conns) },
     };
     unsafe {
-        core::intrinsics::atomic_xadd::<_, _, { core::intrinsics::AtomicOrdering::Relaxed }>(
-            counter, 1u32,
-        );
+        add_u32(counter, 1);
     }
 }
 

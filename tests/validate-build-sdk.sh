@@ -7,6 +7,8 @@ EVIDENCE_DIR="$ROOT/.sisyphus/evidence"
 MISSING_EVIDENCE="$EVIDENCE_DIR/task-3-missing-sdk.txt"
 DRY_RUN_EVIDENCE="$EVIDENCE_DIR/task-3-sdk-dry-run.txt"
 FAKE_SDK_EVIDENCE="$EVIDENCE_DIR/task-3-sdk-fake-config-dir.txt"
+PREPARE_FEEDS_EVIDENCE="$EVIDENCE_DIR/task-3-sdk-prepare-feeds.txt"
+IDENTITY_TAMPER_EVIDENCE="$EVIDENCE_DIR/task-3-sdk-identity-tamper.txt"
 
 mkdir -p "$EVIDENCE_DIR"
 
@@ -45,6 +47,7 @@ SDK_DIR=/tmp/fake-sdk DRY_RUN=1 ENABLE_BPF=0 "$ROOT/scripts/build-sdk.sh" lanspe
 SDK_DIR=/tmp/fake-sdk DRY_RUN=1 "$ROOT/scripts/build-sdk.sh" all >> "$DRY_RUN_EVIDENCE" 2>&1
 SDK_DIR=/tmp/fake-sdk DRY_RUN=1 SDK_RELEASE=23.05 "$ROOT/scripts/build-sdk.sh" all >> "$DRY_RUN_EVIDENCE" 2>&1
 SDK_DIR=/tmp/fake-sdk DRY_RUN=1 SDK_RELEASE=23.05 SDK_BASE_FEED_REF=5804844cf812c07b2d66d513bec2e36e7a8270ee "$ROOT/scripts/build-sdk.sh" all >> "$DRY_RUN_EVIDENCE" 2>&1
+SDK_DIR=/tmp/fake-sdk DRY_RUN=1 ENABLE_BPF=0 "$ROOT/scripts/build-sdk.sh" prepare-feeds > "$PREPARE_FEEDS_EVIDENCE" 2>&1
 
 grep -F "ImmortalWrt/OpenWrt 25.12" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "ImmortalWrt/OpenWrt 23.05" "$DRY_RUN_EVIDENCE" >/dev/null
@@ -77,15 +80,49 @@ if grep -F "make package/lanspeedd-bpf/compile V=s" "$DRY_RUN_EVIDENCE" >/dev/nu
 	printf '%s\n' "lanspeedd-bpf must be selected, not compiled as an independent source package" >&2
 	exit 1
 fi
+grep -F "./scripts/feeds update -a" "$PREPARE_FEEDS_EVIDENCE" >/dev/null
+if grep -Eq './scripts/feeds install|make (defconfig|package/)' "$PREPARE_FEEDS_EVIDENCE"; then
+	printf '%s\n' "prepare-feeds must not install or compile packages" >&2
+	exit 1
+fi
+if SDK_DIR=/tmp/fake-sdk DRY_RUN=1 SDK_FEEDS_PREPARED=invalid "$ROOT/scripts/build-sdk.sh" all >> "$PREPARE_FEEDS_EVIDENCE" 2>&1; then
+	printf '%s\n' "expected invalid SDK_FEEDS_PREPARED flag to fail" >&2
+	exit 1
+fi
+grep -F "SDK_FEEDS_PREPARED must be 0 or 1" "$PREPARE_FEEDS_EVIDENCE" >/dev/null
 
 TMP_SDK=$(mktemp -d "${TMPDIR:-/tmp}/lanspeed-sdk.XXXXXX")
 trap 'rm -rf "$TMP_SDK"' EXIT
 mkdir -p "$TMP_SDK/bin" "$TMP_SDK/scripts/config"
 printf '%s\n' '25.12 fake sdk' > "$TMP_SDK/version.buildinfo"
 printf '%s\n' 'all:' > "$TMP_SDK/Makefile"
+cat > "$TMP_SDK/feeds.conf.default" <<'EOF'
+src-git packages https://example.invalid/packages.git;openwrt-25.12
+EOF
 cat > "$TMP_SDK/scripts/feeds" <<'EOF'
 #!/bin/sh
 printf '%s|%s\n' "${TARGET_ARCH-unset}" "$*" >> feeds.log
+if [ "$*" = "update -a" ]; then
+	mkdir -p feeds/packages/lang/rust feeds
+	printf '%s\n' 'PKG_VERSION:=1.94.0' > feeds/packages/lang/rust/Makefile
+	: > feeds/packages.index
+	: > feeds/lanspeed.index
+elif [ "$*" = "list -s -d |" ]; then
+	while read -r feed_type feed_name feed_source extra; do
+		case "$feed_type" in
+			''|'#'*) continue ;;
+			src-git|src-git-full)
+				case "$feed_source" in
+					*'^'*) feed_revision=${feed_source#*^} ;;
+					*) feed_revision=1111111111111111111111111111111111111111 ;;
+				esac
+				;;
+			src-link) feed_revision=local ;;
+			*) exit 2 ;;
+		esac
+		printf '%s|%s|%s|%s\n' "$feed_name" "$feed_type" "$feed_revision" "$feed_source"
+	done < feeds.conf
+fi
 EOF
 chmod +x "$TMP_SDK/scripts/feeds"
 cat > "$TMP_SDK/bin/make" <<'EOF'
@@ -93,6 +130,67 @@ cat > "$TMP_SDK/bin/make" <<'EOF'
 printf '%s|%s\n' "${TARGET_ARCH-unset}" "$*" >> make.log
 EOF
 chmod +x "$TMP_SDK/bin/make"
+
+PATH="$TMP_SDK/bin:$PATH" SDK_DIR="$TMP_SDK" ENABLE_BPF=0 "$ROOT/scripts/build-sdk.sh" prepare-feeds > "$PREPARE_FEEDS_EVIDENCE" 2>&1
+grep -F "update -a" "$TMP_SDK/feeds.log" >/dev/null
+grep -F "src-git packages https://example.invalid/packages.git^1111111111111111111111111111111111111111" "$TMP_SDK/feeds.conf" >/dev/null
+if grep -F ';openwrt-25.12' "$TMP_SDK/feeds.conf" >/dev/null; then
+	printf '%s\n' "prepare-feeds left a branch source instead of an actual commit pin" >&2
+	exit 1
+fi
+if grep -F "install -p" "$TMP_SDK/feeds.log" >/dev/null || [ -e "$TMP_SDK/make.log" ]; then
+	printf '%s\n' "real prepare-feeds must only update feed state" >&2
+	exit 1
+fi
+identity=$("$ROOT/scripts/sdk-rust-identity.sh" measure "$TMP_SDK")
+SDK_FEEDS_HASH=$(printf '%s\n' "$identity" | sed -n 's/^feeds_hash=//p')
+SDK_RUST_VERSION=$(printf '%s\n' "$identity" | sed -n 's/^rust_version=//p')
+SDK_RUST_RECIPE_HASH=$(printf '%s\n' "$identity" | sed -n 's/^rust_recipe_hash=//p')
+: > "$TMP_SDK/feeds.log"
+PATH="$TMP_SDK/bin:$PATH" SDK_DIR="$TMP_SDK" SDK_FEEDS_PREPARED=1 \
+	SDK_FEEDS_HASH="$SDK_FEEDS_HASH" SDK_RUST_VERSION="$SDK_RUST_VERSION" \
+	SDK_RUST_RECIPE_HASH="$SDK_RUST_RECIPE_HASH" ENABLE_BPF=0 \
+	"$ROOT/scripts/build-sdk.sh" lanspeedd > "$PREPARE_FEEDS_EVIDENCE" 2>&1
+if grep -F "update -a" "$TMP_SDK/feeds.log" >/dev/null; then
+	printf '%s\n' "SDK_FEEDS_PREPARED=1 must skip the feed update" >&2
+	exit 1
+fi
+grep -F "install -p lanspeed lanspeedd" "$TMP_SDK/feeds.log" >/dev/null
+grep -F "reusing prepared SDK feeds" "$PREPARE_FEEDS_EVIDENCE" >/dev/null
+
+cp "$TMP_SDK/feeds.conf" "$TMP_SDK/feeds.conf.verified"
+sed 's/1111111111111111111111111111111111111111/3333333333333333333333333333333333333333/' \
+	"$TMP_SDK/feeds.conf.verified" > "$TMP_SDK/feeds.conf"
+if PATH="$TMP_SDK/bin:$PATH" SDK_DIR="$TMP_SDK" SDK_FEEDS_PREPARED=1 \
+	SDK_FEEDS_HASH="$SDK_FEEDS_HASH" SDK_RUST_VERSION="$SDK_RUST_VERSION" \
+	SDK_RUST_RECIPE_HASH="$SDK_RUST_RECIPE_HASH" ENABLE_BPF=0 \
+	"$ROOT/scripts/build-sdk.sh" lanspeedd > "$IDENTITY_TAMPER_EVIDENCE" 2>&1; then
+	printf '%s\n' "expected changed prepared feed identity to be rejected" >&2
+	exit 1
+fi
+grep -F "prepared SDK feeds changed after identity measurement" "$IDENTITY_TAMPER_EVIDENCE" >/dev/null
+cp "$TMP_SDK/feeds.conf.verified" "$TMP_SDK/feeds.conf"
+
+printf '%s\n' '# recipe tamper' >> "$TMP_SDK/feeds/packages/lang/rust/Makefile"
+if PATH="$TMP_SDK/bin:$PATH" SDK_DIR="$TMP_SDK" SDK_FEEDS_PREPARED=1 \
+	SDK_FEEDS_HASH="$SDK_FEEDS_HASH" SDK_RUST_VERSION="$SDK_RUST_VERSION" \
+	SDK_RUST_RECIPE_HASH="$SDK_RUST_RECIPE_HASH" ENABLE_BPF=0 \
+	"$ROOT/scripts/build-sdk.sh" lanspeedd >> "$IDENTITY_TAMPER_EVIDENCE" 2>&1; then
+	printf '%s\n' "expected changed Rust recipe identity to be rejected" >&2
+	exit 1
+fi
+grep -F "prepared SDK Rust recipe changed after identity measurement" "$IDENTITY_TAMPER_EVIDENCE" >/dev/null
+printf '%s\n' 'PKG_VERSION:=1.94.0' > "$TMP_SDK/feeds/packages/lang/rust/Makefile"
+
+sed 's/\^1111111111111111111111111111111111111111/;1111111111111111111111111111111111111111/' \
+	"$TMP_SDK/feeds.conf.verified" > "$TMP_SDK/feeds.conf"
+if "$ROOT/scripts/sdk-rust-identity.sh" measure "$TMP_SDK" >> "$IDENTITY_TAMPER_EVIDENCE" 2>&1; then
+	printf '%s\n' "expected a semicolon revision to be rejected as a commit pin" >&2
+	exit 1
+fi
+grep -F "must use a ^commit pin; branch sources are not reusable" "$IDENTITY_TAMPER_EVIDENCE" >/dev/null
+mv "$TMP_SDK/feeds.conf.verified" "$TMP_SDK/feeds.conf"
+rm -f "$TMP_SDK/.config" "$TMP_SDK/make.log" "$TMP_SDK/feeds.log" "$TMP_SDK/feeds.conf"
 
 PATH="$TMP_SDK/bin:$PATH" SDK_DIR="$TMP_SDK" TARGET_ARCH=aarch64 ENABLE_BPF=0 "$ROOT/scripts/build-sdk.sh" lanspeedd > "$FAKE_SDK_EVIDENCE" 2>&1
 test -s "$TMP_SDK/make.log"

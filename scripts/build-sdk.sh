@@ -11,6 +11,11 @@ ENABLE_BPF=${ENABLE_BPF:-1}
 TARGET_ARCH=${TARGET_ARCH:-}
 SDK_RELEASE=${SDK_RELEASE:-25.12}
 SDK_BASE_FEED_REF=${SDK_BASE_FEED_REF:-}
+SDK_FEEDS_PREPARED=${SDK_FEEDS_PREPARED:-0}
+SDK_FEEDS_HASH=${SDK_FEEDS_HASH:-}
+SDK_RUST_VERSION=${SDK_RUST_VERSION:-}
+SDK_RUST_RECIPE_HASH=${SDK_RUST_RECIPE_HASH:-}
+SDK_RUST_IDENTITY_SCRIPT="$REPO_ROOT/scripts/sdk-rust-identity.sh"
 
 die() {
 	printf '%s\n' "error: $*" >&2
@@ -27,9 +32,10 @@ info() {
 
 usage() {
 	cat >&2 <<'EOF'
-Usage: SDK_DIR=/path/to/immortalwrt-sdk [DRY_RUN=1] [TARGET_ARCH=x86_64] [ENABLE_BPF=0|1] [SDK_RELEASE=25.12] ./scripts/build-sdk.sh <target>
+Usage: SDK_DIR=/path/to/immortalwrt-sdk [DRY_RUN=1] [TARGET_ARCH=x86_64] [ENABLE_BPF=0|1] [SDK_RELEASE=25.12] [SDK_FEEDS_PREPARED=0|1] [SDK_FEEDS_HASH=sha256] [SDK_RUST_VERSION=x.y.z] [SDK_RUST_RECIPE_HASH=sha256] ./scripts/build-sdk.sh <target>
 
 Targets:
+  prepare-feeds       inject and update feeds without installing or compiling packages
   luci-app-lanspeed  build only the LuCI package target
   lanspeedd          build only the daemon package target
   all                build both package targets
@@ -56,7 +62,7 @@ validate_flag() {
 
 validate_target() {
 	case "$TARGET" in
-		luci-app-lanspeed|lanspeedd|all) ;;
+		prepare-feeds|luci-app-lanspeed|lanspeedd|all) ;;
 		-h|--help)
 			usage
 			exit 0
@@ -69,6 +75,7 @@ validate_target() {
 }
 
 validate_bpf_target() {
+	[ "$TARGET" != prepare-feeds ] || return 0
 	if [ "$ENABLE_BPF" = 0 ] && [ "$TARGET" != lanspeedd ]; then
 		die "ENABLE_BPF=0 is only supported with the lanspeedd target; LuCI builds require lanspeedd-bpf"
 	fi
@@ -161,6 +168,9 @@ select_packages() {
 	COMPILE_PACKAGES=
 
 	case "$TARGET" in
+		prepare-feeds)
+			return 0
+			;;
 		luci-app-lanspeed)
 			FEED_PACKAGES="lanspeedd luci-app-lanspeed"
 			COMPILE_PACKAGES="luci-app-lanspeed"
@@ -214,6 +224,7 @@ print_summary() {
 	info "TARGET_ARCH: ${TARGET_ARCH:-not set}"
 	info "SDK_RELEASE: $SDK_RELEASE"
 	info "SDK_BASE_FEED_REF: ${SDK_BASE_FEED_REF:-not set}"
+	info "SDK_FEEDS_PREPARED: $SDK_FEEDS_PREPARED"
 	info "ENABLE_BPF: $ENABLE_BPF"
 	info "DRY_RUN: $DRY_RUN"
 	info "feed packages: $FEED_PACKAGES"
@@ -264,6 +275,58 @@ inject_feed() {
 	fi
 	printf '%s\n' "$line" >> "$tmp"
 	mv "$tmp" "$feeds_conf"
+}
+
+verify_prepared_feeds() {
+	if [ "$DRY_RUN" = 1 ]; then
+		info "# dry-run: would verify pinned feed indexes and the packages Rust recipe"
+		return 0
+	fi
+
+	[ -f "$SDK_PATH/feeds/packages/lang/rust/Makefile" ] || \
+		die "prepared feeds are missing feeds/packages/lang/rust/Makefile"
+	[ -e "$SDK_PATH/feeds/packages.index" ] || \
+		die "prepared feeds are missing the packages feed index"
+	[ -e "$SDK_PATH/feeds/$FEED_NAME.index" ] || \
+		die "prepared feeds are missing the $FEED_NAME feed index"
+	if [ "$SDK_FEEDS_PREPARED" = 1 ]; then
+		[ -n "$SDK_FEEDS_HASH" ] && [ -n "$SDK_RUST_VERSION" ] && [ -n "$SDK_RUST_RECIPE_HASH" ] || \
+			die "SDK_FEEDS_PREPARED=1 requires SDK_FEEDS_HASH, SDK_RUST_VERSION, and SDK_RUST_RECIPE_HASH"
+		identity=$(measure_sdk_identity) || die "could not recompute the prepared SDK Rust identity"
+		actual_feeds_hash=$(printf '%s\n' "$identity" | sed -n 's/^feeds_hash=//p')
+		actual_rust_version=$(printf '%s\n' "$identity" | sed -n 's/^rust_version=//p')
+		actual_rust_recipe_hash=$(printf '%s\n' "$identity" | sed -n 's/^rust_recipe_hash=//p')
+		[ "$actual_feeds_hash" = "$SDK_FEEDS_HASH" ] || \
+			die "prepared SDK feeds changed after identity measurement"
+		[ "$actual_rust_version" = "$SDK_RUST_VERSION" ] || \
+			die "prepared SDK Rust recipe version changed after identity measurement"
+		[ "$actual_rust_recipe_hash" = "$SDK_RUST_RECIPE_HASH" ] || \
+			die "prepared SDK Rust recipe changed after identity measurement"
+	fi
+}
+
+measure_sdk_identity() {
+	(
+		# TARGET_ARCH is a metadata label and must not alter feed probing.
+		unset TARGET_ARCH
+		"$SDK_RUST_IDENTITY_SCRIPT" measure "$SDK_PATH"
+	)
+}
+
+pin_sdk_feeds() {
+	if [ "$DRY_RUN" = 1 ]; then
+		printf '+ pin prepared SDK feeds to their actual checkout commits\n'
+		return 0
+	fi
+	(
+		unset TARGET_ARCH
+		"$SDK_RUST_IDENTITY_SCRIPT" pin "$SDK_PATH"
+	) || die "could not pin prepared SDK feeds to their actual revisions"
+}
+
+update_and_pin_sdk_feeds() {
+	run_in_sdk ./scripts/feeds update -a
+	pin_sdk_feeds
 }
 
 configure_packages() {
@@ -366,6 +429,19 @@ main() {
 	[ "$#" -le 1 ] || die "expected one package target, got $# arguments"
 	validate_flag DRY_RUN "$DRY_RUN"
 	validate_flag ENABLE_BPF "$ENABLE_BPF"
+	validate_flag SDK_FEEDS_PREPARED "$SDK_FEEDS_PREPARED"
+	if [ "$SDK_FEEDS_PREPARED" = 1 ]; then
+		case "$SDK_FEEDS_HASH" in
+			*[!0-9a-f]*|'') die "SDK_FEEDS_HASH must be a lowercase SHA256 when SDK_FEEDS_PREPARED=1" ;;
+		esac
+		[ "${#SDK_FEEDS_HASH}" -eq 64 ] || die "SDK_FEEDS_HASH must be 64 hex characters"
+		case "$SDK_RUST_RECIPE_HASH" in
+			*[!0-9a-f]*|'') die "SDK_RUST_RECIPE_HASH must be a lowercase SHA256 when SDK_FEEDS_PREPARED=1" ;;
+		esac
+		[ "${#SDK_RUST_RECIPE_HASH}" -eq 64 ] || die "SDK_RUST_RECIPE_HASH must be 64 hex characters"
+		printf '%s\n' "$SDK_RUST_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || \
+			die "SDK_RUST_VERSION must be a stable x.y.z version when SDK_FEEDS_PREPARED=1"
+	fi
 	validate_sdk_release
 	validate_optional_sha SDK_BASE_FEED_REF "$SDK_BASE_FEED_REF"
 	validate_target
@@ -377,8 +453,21 @@ main() {
 
 	info "# local feed injection preview"
 	inject_feed
+	if [ "$TARGET" = prepare-feeds ]; then
+		[ "$SDK_FEEDS_PREPARED" = 0 ] || \
+			die "prepare-feeds cannot be combined with SDK_FEEDS_PREPARED=1"
+		update_and_pin_sdk_feeds
+		verify_prepared_feeds
+		return 0
+	fi
 	configure_packages
-	run_in_sdk ./scripts/feeds update -a
+	if [ "$SDK_FEEDS_PREPARED" = 1 ]; then
+		verify_prepared_feeds
+		info "# reusing prepared SDK feeds without another network update"
+	else
+		update_and_pin_sdk_feeds
+		verify_prepared_feeds
+	fi
 	for package in $FEED_PACKAGES; do
 		run_in_sdk ./scripts/feeds install -p "$FEED_NAME" "$package"
 	done

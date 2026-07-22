@@ -64,6 +64,7 @@ fn objects_are_fresh_for_the_accounting_sources() {
         workspace.join("crates/lanspeed-common/src/accounting.rs"),
         workspace.join("crates/lanspeed-common/src/packet.rs"),
         workspace.join("crates/lanspeed-ebpf/src/account.rs"),
+        workspace.join("crates/lanspeed-ebpf/src/atomics.rs"),
         workspace.join("crates/lanspeed-ebpf/src/conntrack.rs"),
     ];
 

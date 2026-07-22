@@ -20,8 +20,8 @@ fn keeps_the_packaged_bpf_linker_archive_pinned() {
 
 #[test]
 fn accepts_the_minimum_and_newer_stable_rust_toolchains() {
-    assert_eq!(MINIMUM_RUSTC, "1.94.0");
-    for rustc in ["1.94.0", "1.96.0", "1.100.0"] {
+    assert_eq!(MINIMUM_RUSTC, "1.87.0");
+    for rustc in ["1.87.0", "1.96.0", "1.97.1", "1.100.0"] {
         let versions = ToolVersions {
             rustc: rustc.into(),
             bpf_linker: PINNED_BPF_LINKER.into(),
@@ -35,7 +35,7 @@ fn accepts_the_minimum_and_newer_stable_rust_toolchains() {
 
 #[test]
 fn rejects_old_invalid_or_prerelease_rust_toolchains() {
-    for rustc in ["1.93.99", "1.9.0"] {
+    for rustc in ["1.86.99", "1.9.0"] {
         let versions = ToolVersions {
             rustc: rustc.into(),
             bpf_linker: PINNED_BPF_LINKER.into(),

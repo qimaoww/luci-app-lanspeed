@@ -13,6 +13,7 @@ const luciMenuSource = fs.readFileSync(path.join(
 ), 'utf8');
 const versionJs = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/version.js'), 'utf8');
 const workflow = fs.readFileSync(path.join(root, '.github/workflows/build-sdk.yml'), 'utf8');
+const sdkIdentityScript = fs.readFileSync(path.join(root, 'scripts/sdk-rust-identity.sh'), 'utf8');
 const ciWorkflow = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
 const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
 const releaseScriptPath = path.join(root, 'scripts/release-version.sh');
@@ -454,12 +455,16 @@ try {
   assert(/^      fail-fast: false$/m.test(buildJob), 'build matrix must keep fail-fast disabled');
   const matrixIds = [...buildJob.matchAll(/^          - id: ([a-z0-9_]+)$/gm)].map((match) => match[1]);
   assertExactList(matrixIds, ['x86_64', 'aarch64'], 'build matrix include must contain exactly x86_64 and aarch64');
+  assert(buildJob.includes('target_arch: x86_64') && buildJob.includes('package_arch: x86_64'),
+    'x86_64 matrix entry must declare its compiler and APK architectures');
   assert(buildJob.includes('sdk_url: https://downloads.immortalwrt.org/releases/25.12.1/targets/x86/64/immortalwrt-sdk-25.12.1-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst'),
     'x86_64 matrix entry must use the exact ImmortalWrt 25.12.1 SDK URL');
   assert(buildJob.includes('sdk_sha256: 02ad8cfc775001ccae8e9282d19696de54e3ab3963f005737ad61f8698263edd'),
     'x86_64 matrix entry must pin the exact SDK checksum');
   assert(buildJob.includes("suffix: ''"), 'x86_64 matrix entry must not add an asset suffix');
   assert(buildJob.includes('artifact: lanspeed-apk-x86_64'), 'x86_64 matrix entry must use its unique artifact name');
+  assert(buildJob.includes('target_arch: aarch64') && buildJob.includes('package_arch: aarch64_generic'),
+    'aarch64 matrix entry must declare its compiler and APK architectures');
   assert(buildJob.includes('sdk_url: https://downloads.immortalwrt.org/releases/25.12.1/targets/armsr/armv8/immortalwrt-sdk-25.12.1-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst'),
     'aarch64 matrix entry must use the exact ImmortalWrt 25.12.1 SDK URL');
   assert(buildJob.includes('sdk_sha256: 1ac4a0940328ebbb71c5e2e44bd798d9acc06b99dc417178fe9868e5e91a0ef5'),
@@ -485,11 +490,39 @@ try {
   assert(sdkDownloadStep.includes('mkdir -p "$base_sdk"'), 'matrix build must create the base SDK tree');
   assert(sdkDownloadStep.includes(sdkTarMarker), 'matrix build must extract the SDK directly into the base tree');
   assert(sdkDownloadStep.includes('rm -f "$sdk_archive"'), 'matrix build must delete the verified SDK archive after extraction');
+  const sdkIdentityStep = extractNamedStep(buildJob, 'Resolve SDK feed and Rust identity');
+  assert(sdkIdentityStep.includes('./scripts/build-sdk.sh prepare-feeds'),
+    'SDK identity must be measured after one explicit pinned-feed preparation');
+  assert(sdkIdentityStep.includes('./scripts/sdk-rust-identity.sh measure "$base_sdk"'),
+    'workflow must invoke the shared SDK identity measurement script');
+  assert(workflow.includes('scripts/sdk-rust-identity.sh'),
+    'SDK identity changes must trigger the release workflow');
+  assert(sdkIdentityScript.includes("./scripts/feeds list -s -d '|'"),
+    'SDK identity must inspect actual checked-out feed revisions');
+  assert(sdkIdentityStep.includes('^${{') === false,
+    'SDK identity must derive feed and Rust values instead of substituting workflow expressions into shell checks');
+  assert(sdkIdentityScript.includes('[ "${#feed_revision}" -eq 40 ]'),
+    'SDK identity must reject branch, local, or unresolved external feed revisions');
+  assert(sdkIdentityScript.includes('must use a ^commit pin; branch sources are not reusable') &&
+    sdkIdentityScript.includes('configured_revision=${feed_source#*^}') &&
+    sdkIdentityScript.includes('[ "$configured_revision" = "$feed_revision" ]'),
+    'SDK identity must require caret pins that match each actual feed HEAD');
+  assert(sdkIdentityScript.includes('feeds/packages/lang/rust') &&
+    sdkIdentityScript.includes("sed -n 's/^PKG_VERSION:="),
+  'SDK identity must derive the host compiler version from the actual packages Rust recipe');
+  assert(sdkIdentityScript.includes('find . -type f -print0') &&
+    sdkIdentityScript.includes('rust_recipe_hash=') &&
+    sdkIdentityScript.includes('feeds_hash='),
+  'SDK identity must hash the complete Rust recipe and sorted feed manifest');
+  ['feeds_hash', 'rust_version', 'rust_recipe_hash'].forEach((output) => {
+    assert(sdkIdentityScript.includes(`printf '${output}=%s\\n'`),
+      `SDK identity must export ${output} for the cache key`);
+  });
   const rustCacheRestoreStep = extractNamedStep(buildJob, 'Restore SDK Rust host cache');
   const rustCacheSaveStep = extractNamedStep(buildJob, 'Save SDK Rust host cache');
-  const rustCacheKey = 'lanspeed-sdk-rust-${{ runner.os }}-${{ matrix.id }}-${{ matrix.sdk_sha256 }}-v1';
+  const rustCacheKey = 'lanspeed-sdk-rust-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target_arch }}-${{ matrix.sdk_sha256 }}-feeds-${{ steps.sdk-identity.outputs.feeds_hash }}-rust-${{ steps.sdk-identity.outputs.rust_version }}-recipe-${{ steps.sdk-identity.outputs.rust_recipe_hash }}';
   assert(rustCacheRestoreStep.includes(`key: ${rustCacheKey}`),
-    'Rust cache restore must be isolated by runner, architecture, and exact SDK checksum');
+    'Rust cache restore must be isolated by runner, target, SDK, feeds, and exact Rust recipe');
   assert(rustCacheSaveStep.includes(`key: ${rustCacheKey}`),
     'Rust cache save must use the exact restore key');
   assert(!rustCacheRestoreStep.includes('restore-keys:'),
@@ -515,11 +548,20 @@ try {
     'base SDK must build the non-BPF daemon first');
   assert(baseBuildStep.includes('./scripts/build-sdk.sh lanspeedd'),
     'base SDK must build only the daemon target');
+  assert(baseBuildStep.includes('SDK_FEEDS_PREPARED=1') &&
+    baseBuildStep.includes('SDK_FEEDS_HASH=') &&
+    baseBuildStep.includes('SDK_RUST_VERSION=') &&
+    baseBuildStep.includes('SDK_RUST_RECIPE_HASH=') &&
+    baseBuildStep.includes('TARGET_ARCH="${{ matrix.target_arch }}"'),
+  'base SDK build must reuse the measured feed tree for the explicit target architecture');
   const pruneRustStep = extractNamedStep(buildJob, 'Prune SDK Rust build tree');
   assert(pruneRustStep.includes("-path '*/host/bin/rustc'"),
     'Rust pruning must first verify the installed rustc');
   assert(pruneRustStep.includes("-path '*/host/bin/cargo'"),
     'Rust pruning must first verify the installed cargo');
+  assert(pruneRustStep.includes('steps.sdk-identity.outputs.rust_version') &&
+    pruneRustStep.includes('rustc release $rustc_release does not match recipe $expected_rust'),
+  'cache restore must be rejected unless the installed rustc matches the measured SDK recipe');
   assert(pruneRustStep.includes('! -name \'.built\''), 'Rust pruning must retain the built stamp');
   assert(pruneRustStep.includes('! -name \'.configured\''), 'Rust pruning must retain the configured stamp');
   assert(pruneRustStep.includes('! -name \'.prepared*\''), 'Rust pruning must retain prepared stamps');
@@ -534,10 +576,20 @@ try {
     'BPF SDK must reuse the prepared clone with BPF enabled');
   assert(bpfBuildStep.includes('./scripts/build-sdk.sh all'),
     'BPF SDK must build both daemon and LuCI targets');
+  assert(bpfBuildStep.includes('SDK_FEEDS_PREPARED=1') &&
+    bpfBuildStep.includes('SDK_FEEDS_HASH=') &&
+    bpfBuildStep.includes('SDK_RUST_VERSION=') &&
+    bpfBuildStep.includes('SDK_RUST_RECIPE_HASH=') &&
+    bpfBuildStep.includes('TARGET_ARCH="${{ matrix.target_arch }}"'),
+  'BPF SDK build must reuse the same measured feed tree and target architecture');
   assert(!buildJob.includes('Build base and BPF packages concurrently'),
     'base and BPF builds must not compile the Rust host toolchain concurrently');
   assertBefore(buildJob, 'name: Restore SDK Rust host cache', 'name: Build base package',
     'cache restore must precede the base build');
+  assertBefore(buildJob, 'name: Download and verify SDK', 'name: Resolve SDK feed and Rust identity',
+    'SDK extraction must precede feed and Rust identity measurement');
+  assertBefore(buildJob, 'name: Resolve SDK feed and Rust identity', 'name: Restore SDK Rust host cache',
+    'the complete SDK identity must be known before cache restore');
   assertBefore(buildJob, 'name: Build base package', 'name: Prune SDK Rust build tree',
     'base build must finish before pruning');
   assertBefore(buildJob, 'name: Prune SDK Rust build tree', 'name: Save SDK Rust host cache',
@@ -564,6 +616,15 @@ try {
     'matrix artifact must collect exactly the BPF daemon package');
   assert(workflow.includes('collect_one "$bpf_sdk" "luci-app-lanspeed-${code_version}.apk" "luci-app-lanspeed-${code_version}${suffix}.apk"'),
     'matrix artifact must collect the LuCI package from the mandatory-BPF tree');
+  const apkValidationStep = extractNamedStep(buildJob, 'Validate architecture APK contracts');
+  assert(apkValidationStep.includes('./tests/validate-sdk-apks.sh'),
+    'each matrix artifact must pass the shared APK contract validator');
+  assert(apkValidationStep.includes('"${{ matrix.package_arch }}"'),
+    'APK validation must use the architecture declared by the matrix');
+  assertBefore(buildJob, 'name: Collect architecture artifact', 'name: Validate architecture APK contracts',
+    'all three exact APKs must be collected before contract validation');
+  assertBefore(buildJob, 'name: Validate architecture APK contracts', 'name: Upload architecture artifact',
+    'APK metadata, dependencies, ELF, and BPF objects must pass before upload');
   assert(workflow.includes('name: ${{ matrix.artifact }}'), 'matrix upload must use the architecture-specific artifact name');
   assert(workflow.includes('retention-days: 1'), 'matrix artifacts must be retained for one day');
   assert(workflow.includes('compression-level: 0'), 'matrix APK artifacts must disable redundant compression');
@@ -640,8 +701,8 @@ try {
     readme.includes('`applications/luci-app-lanspeed/Makefile`'),
   'README must name both version-bearing Makefiles');
   assert(readme.includes('完整版本发生变化'), 'README must explain that the complete version change triggers the workflow');
-  assert(readme.includes('按操作系统、架构和 SDK SHA256 缓存'),
-    'README must document the isolated Rust host toolchain cache');
+  assert(readme.includes('按 runner 操作系统与架构、目标架构、SDK SHA256、feeds 实际 revision、Rust 配方版本和内容哈希隔离缓存'),
+    'README must document the complete Rust host toolchain cache identity');
   assert(readme.includes('后续相同 SDK 不再从头编译 Rust'),
     'README must explain the cache benefit');
   assert(readme.includes('草稿 Release'), 'README must describe draft-first publication');

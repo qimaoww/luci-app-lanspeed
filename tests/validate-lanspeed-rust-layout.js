@@ -47,8 +47,15 @@ try {
     'net/lanspeedd/rust/crates/lanspeed-openwrt-sys/tests/fixtures/ubus-add-object.hex',
     'net/lanspeedd/rust/crates/lanspeedd/Cargo.toml',
     'net/lanspeedd/rust/crates/lanspeed-build/Cargo.toml',
+    'net/lanspeedd/rust/crates/lanspeed-ebpf/src/atomics.rs',
+    'scripts/sdk-rust-identity.sh',
+    'scripts/build-sdk.sh',
     'tests/validate-lanspeed-openwrt-compile.sh',
-    'tests/validate-lanspeed-rust-linking.sh'
+    'tests/validate-lanspeed-rust-linking.sh',
+    'tests/run-rust-compat.sh',
+    'tests/validate-rust-ebpf-objects.sh',
+    'tests/validate-sdk-apks.sh',
+    '.github/workflows/rust-compat.yml'
   ];
 
   for (const file of required) {
@@ -63,6 +70,9 @@ try {
       throw error;
     }
     assert(fileStats.isFile(), `${file} must be a regular file`);
+    if (file === 'scripts/sdk-rust-identity.sh') {
+      assert((fileStats.mode & 0o111) !== 0, `${file} must be executable`);
+    }
   }
 
   const projectEntries = collectProjectEntries(lanspeeddRoot);
@@ -77,6 +87,71 @@ try {
 
   const packageMakefile = fs.readFileSync(path.join(lanspeeddRoot, 'Makefile'), 'utf8');
   const workspaceCargo = fs.readFileSync(path.join(lanspeeddRoot, 'rust/Cargo.toml'), 'utf8');
+  const cargoLock = fs.readFileSync(path.join(lanspeeddRoot, 'rust/Cargo.lock'), 'utf8');
+  const sdkIdentityScript = fs.readFileSync(path.join(root, 'scripts/sdk-rust-identity.sh'), 'utf8');
+  const sdkBuildScript = fs.readFileSync(path.join(root, 'scripts/build-sdk.sh'), 'utf8');
+  assert(
+    /\[workspace\.package\][\s\S]*?rust-version\s*=\s*"1\.87\.0"/.test(workspaceCargo),
+    'workspace rust-version must declare the measured 1.87.0 MSRV'
+  );
+  for (const crate of [
+    'lanspeed-common',
+    'lanspeed-ebpf',
+    'lanspeed-openwrt-sys',
+    'lanspeedd',
+    'lanspeed-build'
+  ]) {
+    const manifest = fs.readFileSync(
+      path.join(lanspeeddRoot, 'rust/crates', crate, 'Cargo.toml'),
+      'utf8'
+    );
+    assert(
+      manifest.includes('rust-version.workspace = true'),
+      `${crate} must inherit the workspace rust-version`
+    );
+  }
+  assert(
+    /name = "cargo-platform"[\s\S]*?version = "0\.3\.1"/.test(cargoLock),
+    'Cargo.lock must retain the audited cargo-platform 0.3.1 dependency'
+  );
+  const atomicsSource = fs.readFileSync(
+    path.join(lanspeeddRoot, 'rust/crates/lanspeed-ebpf/src/atomics.rs'),
+    'utf8'
+  );
+  for (const marker of [
+    'rustversion::before(1.89)',
+    'rustversion::before(1.91)',
+    'rustversion::since(1.91)',
+    'atomic_xadd_relaxed',
+    'AtomicOrdering::Relaxed'
+  ]) {
+    assert(atomicsSource.includes(marker), `eBPF atomic compatibility layer must retain ${marker}`);
+  }
+  assert(
+    sdkIdentityScript.includes('usage: $0 <pin|measure>') &&
+      sdkIdentityScript.includes("./scripts/feeds list -s -d '|'") &&
+      sdkIdentityScript.includes('must use a ^commit pin; branch sources are not reusable') &&
+      sdkIdentityScript.includes('[ "$configured_revision" = "$feed_revision" ]'),
+    'SDK identity must measure real feed heads and accept only matching caret commit pins'
+  );
+  const measureFunction = sdkIdentityScript.slice(
+    sdkIdentityScript.indexOf('measure_identity()'),
+    sdkIdentityScript.indexOf('pin_feeds()')
+  );
+  assert(
+    measureFunction.includes('read_feed_listing 0') && !measureFunction.includes('read_feed_listing 1'),
+    'SDK identity measurement must remain caret-only after feed preparation'
+  );
+  const verifyFunction = sdkBuildScript.slice(
+    sdkBuildScript.indexOf('verify_prepared_feeds()'),
+    sdkBuildScript.indexOf('configure_packages()')
+  );
+  assert(
+    verifyFunction.includes('measure_sdk_identity') &&
+      sdkBuildScript.includes('update_and_pin_sdk_feeds') &&
+      sdkBuildScript.indexOf('verify_prepared_feeds') < sdkBuildScript.indexOf('compile_package'),
+    'SDK builds must remeasure feed and Rust identity before compiling or reusing cached tools'
+  );
   for (const legacyBuildRule of ['lanspeed_bpf_plugin.so', 'CompileBPF', 'lanspeed_tc.bpf.c']) {
     assert(
       !packageMakefile.includes(legacyBuildRule),
@@ -184,11 +259,27 @@ try {
     path.join(root, 'tests/validate-lanspeed-rust-linking.sh'),
     'utf8'
   );
+  const sdkApkValidator = fs.readFileSync(
+    path.join(root, 'tests/validate-sdk-apks.sh'),
+    'utf8'
+  );
+  const compatRunner = fs.readFileSync(path.join(root, 'tests/run-rust-compat.sh'), 'utf8');
+  const compatWorkflow = fs.readFileSync(path.join(root, '.github/workflows/rust-compat.yml'), 'utf8');
+  const ebpfObjectValidator = fs.readFileSync(
+    path.join(root, 'tests/validate-rust-ebpf-objects.sh'),
+    'utf8'
+  );
   const normalizedTestRunner = testRunner.replace(/\\\r?\n[ \t]*/g, ' ');
   const normalizedLinkingValidator = linkingValidator.replace(/\\\r?\n[ \t]*/g, ' ');
   assert(
     testRunner.includes('validate-lanspeed-openwrt-compile.sh'),
     'tests/run.sh must compile the production pure Rust OpenWrt path when the 25.12 SDK is available'
+  );
+  assert(
+    /run_logged "rust-openwrt-sys-host" env[\s\S]*?-p lanspeed-openwrt-sys --locked --offline/.test(
+      testRunner
+    ),
+    'tests/run.sh must always run the pure Rust OpenWrt host suite'
   );
   assert(
     openwrtCompileValidator.includes('--target aarch64-unknown-linux-musl') &&
@@ -211,10 +302,9 @@ try {
     'tests/run.sh unit evidence coverage must include openwrt_sys_ubus_tests'
   );
   assert(
-    normalizedTestRunner.includes(
-      '--workspace --exclude lanspeed-ebpf --exclude lanspeed-openwrt-sys'
-    ),
-    'tests/run.sh must retain the workspace exclusions handled by OpenWrt-target validation'
+    normalizedTestRunner.includes('--workspace --exclude lanspeed-ebpf --exclude lanspeed-openwrt-sys') &&
+      normalizedTestRunner.includes('--features lanspeedd/openwrt'),
+    'tests/run.sh must retain the workspace exclusions and production feature handled by OpenWrt-target validation'
   );
   assert(
     normalizedTestRunner.includes(
@@ -222,6 +312,44 @@ try {
     ),
     'tests/run.sh must serialize Rust workspace tests that share process-global state'
   );
+  assert(
+    compatRunner.includes('--features lanspeedd/openwrt') &&
+      compatRunner.includes('--ignored --exact') &&
+      compatRunner.includes('RUST_COMPAT_LIVE_CONNTRACK'),
+    'Rust compatibility runner must cover the production feature and isolate the live smoke contract'
+  );
+  assert(
+    (compatWorkflow.match(/deep_ebpf: 1/g) || []).length === 12 &&
+      compatWorkflow.includes('unshare -Urn') &&
+      compatWorkflow.includes('RUST_COMPAT_LIVE_CONNTRACK=1'),
+    'Rust compatibility CI must deeply validate every version in the supported stable range in an isolated network namespace'
+  );
+  for (let minor = 87; minor <= 96; minor += 1) {
+    const version = `1.${minor}.0`;
+    assert(
+      compatWorkflow.includes(`toolchain: ${version}`) &&
+        compatWorkflow.includes(`expected: ${version}`),
+      `Rust compatibility CI must retain an exact matrix point for ${version}`
+    );
+  }
+  assert(
+    compatWorkflow.includes('toolchain: 1.97.1') &&
+      compatWorkflow.includes('expected: 1.97.1'),
+    'Rust compatibility CI must retain an exact matrix point for 1.97.1'
+  );
+  assert(
+    /toolchain: stable[\s\S]*?expected: stable/.test(compatWorkflow),
+    'Rust compatibility CI must retain a moving stable probe above the exact matrix'
+  );
+  for (const marker of [
+    'Class:[[:space:]]+ELF64',
+    'little endian',
+    'license_size',
+    '47504c00',
+    '\\+= r[0-9]+'
+  ]) {
+    assert(ebpfObjectValidator.includes(marker), `eBPF object validator must retain ${marker}`);
+  }
   assert(
     (linkingValidator.match(/--no-run/g) || []).length === 2,
     'the OpenWrt linking validator must retain both --no-run link checks'
@@ -234,7 +362,14 @@ try {
   );
   for (const forbidden of ['libubus', 'libubox', 'libblobmsg_json', 'libuci']) {
     assert(linkingValidator.includes(forbidden), `linking validator must reject ${forbidden}`);
+    assert(sdkApkValidator.includes(forbidden), `SDK APK validator must reject ${forbidden}`);
   }
+  assert(
+    sdkApkValidator.includes('apk_tool') &&
+      sdkApkValidator.includes('adbdump --format json') &&
+      sdkApkValidator.includes('validate-rust-ebpf-objects.sh'),
+    'SDK APK validator must inspect real APK metadata and delegate the complete BPF object contract'
+  );
 
   console.log('validate-lanspeed-rust-layout: PASS');
 } catch (error) {

@@ -1,0 +1,159 @@
+name: Rust Compatibility
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/rust-compat.yml
+      - net/lanspeedd/rust/**
+      - tests/run-rust-compat.sh
+      - tests/validate-rust-ebpf-objects.sh
+  pull_request:
+    paths:
+      - .github/workflows/rust-compat.yml
+      - net/lanspeedd/rust/**
+      - tests/run-rust-compat.sh
+      - tests/validate-rust-ebpf-objects.sh
+  workflow_dispatch:
+
+concurrency:
+  group: rust-compat-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: ${{ matrix.id }} (${{ matrix.toolchain }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: msrv
+            toolchain: 1.87.0
+            expected: 1.87.0
+            mode: success
+            deep_ebpf: 1
+          - id: rust-1-88
+            toolchain: 1.88.0
+            expected: 1.88.0
+            mode: success
+            deep_ebpf: 1
+          - id: rust-1-89
+            toolchain: 1.89.0
+            expected: 1.89.0
+            mode: success
+            deep_ebpf: 1
+          - id: rust-1-90
+            toolchain: 1.90.0
+            expected: 1.90.0
+            mode: success
+            deep_ebpf: 1
+          - id: rust-1-91
+            toolchain: 1.91.0
+            expected: 1.91.0
+            mode: success
+            deep_ebpf: 1
+          - id: rust-1-92
+            toolchain: 1.92.0
+            expected: 1.92.0
+            mode: success
+            deep_ebpf: 1
+          - id: rust-1-93
+            toolchain: 1.93.0
+            expected: 1.93.0
+            mode: success
+            deep_ebpf: 1
+          - id: rust-1-94
+            toolchain: 1.94.0
+            expected: 1.94.0
+            mode: success
+            deep_ebpf: 1
+          - id: rust-1-95
+            toolchain: 1.95.0
+            expected: 1.95.0
+            mode: success
+            deep_ebpf: 1
+          - id: rust-1-96
+            toolchain: 1.96.0
+            expected: 1.96.0
+            mode: success
+            deep_ebpf: 1
+          - id: rust-1-97
+            toolchain: 1.97.1
+            expected: 1.97.1
+            mode: success
+            deep_ebpf: 1
+          - id: stable
+            toolchain: stable
+            expected: stable
+            mode: success
+            deep_ebpf: 1
+          - id: below-msrv
+            toolchain: 1.86.0
+            expected: 1.86.0
+            mode: below-msrv
+            deep_ebpf: 0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install ELF validation tools
+        if: matrix.deep_ebpf == 1
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y binutils llvm
+
+      - name: Install Rust toolchain
+        id: toolchain
+        shell: bash
+        env:
+          TOOLCHAIN: ${{ matrix.toolchain }}
+        run: |
+          set -euo pipefail
+          export RUSTUP_MAX_RETRIES=3
+          rustup toolchain install "$TOOLCHAIN" --profile minimal --component rust-src
+          cargo_bin=$(rustup which --toolchain "$TOOLCHAIN" cargo)
+          rustc_bin=$(rustup which --toolchain "$TOOLCHAIN" rustc)
+          printf 'RUST_COMPAT_CARGO=%s\n' "$cargo_bin" >> "$GITHUB_ENV"
+          printf 'RUST_COMPAT_RUSTC=%s\n' "$rustc_bin" >> "$GITHUB_ENV"
+
+      - name: Install verified bpf-linker
+        if: matrix.mode == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bpf_linker_url=https://github.com/aya-rs/bpf-linker/releases/download/v0.10.3/bpf-linker-x86_64-unknown-linux-musl.tar.gz
+          bpf_linker_sha256=0fa4645d2dfbb5cafe6231b0aa9fad4f1430bd0871e3bd7319e82d827bf6262c
+          tool_dir="$RUNNER_TEMP/rust-compat-tools/${{ matrix.id }}"
+          archive="$tool_dir/bpf-linker-0.10.3.tar.gz"
+          mkdir -p "$tool_dir/bin"
+          curl --fail --location --retry 3 --retry-all-errors "$bpf_linker_url" --output "$archive"
+          printf '%s  %s\n' "$bpf_linker_sha256" "$archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$tool_dir/bin"
+          bpf_linker=$(find "$tool_dir/bin" -type f -name bpf-linker -perm -u+x -print -quit)
+          test -n "$bpf_linker"
+          test "$("$bpf_linker" --version)" = 'bpf-linker 0.10.3'
+          printf 'RUST_COMPAT_BPF_LINKER=%s\n' "$bpf_linker" >> "$GITHUB_ENV"
+
+      - name: Run compatibility contract
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/rust-compat/${{ matrix.id }}
+          RUST_COMPAT_EXPECTED: ${{ matrix.expected }}
+          RUST_COMPAT_DEEP_EBPF: ${{ matrix.deep_ebpf }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.mode }}" == success ]]; then
+            unshare -Urn -- env RUST_COMPAT_LIVE_CONNTRACK=1 \
+              ./tests/run-rust-compat.sh "${{ matrix.mode }}"
+          else
+            ./tests/run-rust-compat.sh "${{ matrix.mode }}"
+          fi

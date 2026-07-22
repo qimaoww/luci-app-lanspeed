@@ -110,7 +110,17 @@ NSS ECM/PPE sync 是显式选择 `nss_conntrack_sync`、NSS-direct 的补齐来�
 | `aarch64` LP64 | 支持。须用目标固件的对应 SDK 重建并核对 musl、包架构和 BPF 内核约束；交叉编译通过不等于具体设备已完成真机验证。 |
 | 32 位 ARM、i386 和 MIPS | 不支持。当前 Rust/BPF 工具链、LuCI 运行时和 LP64 数据模型不覆盖这些目标。 |
 
-构建驱动要求稳定版 `Rust >= 1.94.0`，外部提供的 `BPF_LINKER` 接受稳定版 `bpf-linker >= 0.10.3, < 0.11.0`。OpenWrt 包构建仍下载并校验固定的 `bpf-linker 0.10.3` 发布归档及 SHA256，以保证离线构建可复现。Rust 1.94.0、1.95.0 和 1.96.0 已验证可离线构建；更高稳定版不再被版本门禁先行拒绝，但若 eBPF `build-std` 的标准库锁定依赖发生变化，仍需同步 `vendor`。Rust 与 `bpf-linker` 的预发布版本仍会被拒绝。较旧 SDK 可以作为目标 sysroot，但构建主机仍须提供满足最低版本的 Rust；这不会重新引入目标设备的 libubus/libubox ABI。
+### Rust 编译器兼容
+
+| 验证路径 | 最低版本 | 本次最高已验证版本 | 证据范围 |
+|---|---:|---:|---|
+| daemon、共享 ABI、构建驱动和纯 Rust ubus/UCI/uloop host 测试 | `1.87.0` | `1.97.1` | `1.87.0` 到 `1.97.1` 的每个稳定版逐版完成编译和测试。 |
+| kfunc 与 fallback 两套 eBPF `build-std=core` 对象 | `1.87.0` | `1.97.1` | 每版独立构建目录；逐个检查 EM_BPF、BTF、classifier/maps/license section 及 32/64 位原子指令。 |
+| 低于 MSRV | 不支持 | `1.86.0` 已验证拒绝 | Cargo 明确报告 workspace 与 Aya 依赖要求 Rust 1.87，不把任意编译错误当作边界证据。 |
+
+workspace 的 `rust-version` 与构建驱动统一使用 `1.87.0`，CI 同时覆盖 MSRV、固定发布编译器、内部 atomic intrinsic 的版本转折点和浮动 stable。`1.97.1` 是本次最高实测版本，不是人为设置的上限；后续 stable 必须先通过同一矩阵才能加入已验证范围。外部提供的 `BPF_LINKER` 接受稳定版 `bpf-linker >= 0.10.3, < 0.11.0`。OpenWrt 包构建仍下载并校验固定的 `bpf-linker 0.10.3` 发布归档及 SHA256，以保证离线构建可复现。Rust 与 `bpf-linker` 的预发布版本仍会被拒绝。
+
+这个矩阵只证明源码与 Rust 工具链兼容。x86_64-musl、aarch64-musl 和 APK 仍分别使用目标 SDK 做链接、架构、动态依赖及 BPF/BTF 门禁；交叉编译结果也不等于任意固件或设备已完成真机验证。较旧 SDK 可以作为目标 sysroot，但构建主机仍须提供满足 MSRV 的 Rust；这不会重新引入目标设备的 libubus/libubox ABI。
 
 ### 用户态与 BPF 必选包
 
@@ -179,7 +189,7 @@ apk add --allow-untrusted \
 
 参考验收中，设备端 daemon 的 RSS 为 3388 KiB；单线程连续完成 100 次本机 `ubus call lanspeed health` 用时 0.07 秒，这只是控制面 RPC microbenchmark，不能用于证明测速热路径性能。九个方法与非法参数语义均通过，超过 `i32::MAX` 的接口累计字节保持正整数；真实流量下 ingress/egress 两个 BPF hook 均已 JIT，覆盖率为 RX 99% / TX 99%，探针失败数为 0，LuCI 概览与 HTTP RPC 验证通过。隔离 SDK rootfs 的真实 wire 测试覆盖对象注册和调用，并以测试代码显式执行重连与重新注册；daemon 自动重连及同一组九方法重新注册由 lifecycle mock 回归覆盖。所有断线测试都不得在共享实机终止 `ubusd`。这些数字用于回归参考，不是对不同 CPU、负载或固件的延迟保证。
 
-架构支持与验收层级以上表为准；任何交叉编译结果都不能代替具体设备的真机验证。普通代码 push 和 pull request 由独立 CI workflow 执行完整单元校验。当 `main` 分支上的 `net/lanspeedd/Makefile` 或 `applications/luci-app-lanspeed/Makefile` 改动导致完整版本发生变化时，发布 workflow 会自动编译 x86_64 和 aarch64 两类产物；aarch64 产物使用官方 `armsr/armv8` SDK 编译，Release 文件名带 `aarch64` 后缀。每个架构先构建 base 包，再把已安装的 Rust/Cargo 主机工具链复用于 BPF 构建；该工具链按操作系统、架构和 SDK SHA256 缓存，后续相同 SDK 不再从头编译 Rust。workflow 会先创建草稿 Release，上传并校验六个 APK 的名称、状态和 SHA256，再发布对应的 `v*` tag 和 GitHub Release，维护者不得预先创建 `v*` tag。构建或上传失败时保留的草稿 Release 可由同一版本提交使用 `workflow_dispatch` 自动重建；手动运行也可补发没有 tag/Release 的当前版本，无需通过 `HEAD^1` 制造新的版本变化。
+架构支持与验收层级以上表为准；任何交叉编译结果都不能代替具体设备的真机验证。普通代码 push 和 pull request 由独立 CI workflow 执行完整单元校验。当 `main` 分支上的 `net/lanspeedd/Makefile` 或 `applications/luci-app-lanspeed/Makefile` 改动导致完整版本发生变化时，发布 workflow 会自动编译 x86_64 和 aarch64 两类产物；aarch64 产物使用官方 `armsr/armv8` SDK 编译，Release 文件名带 `aarch64` 后缀。每个架构先构建 base 包，再把已安装的 Rust/Cargo 主机工具链复用于 BPF 构建；该工具链按 runner 操作系统与架构、目标架构、SDK SHA256、feeds 实际 revision、Rust 配方版本和内容哈希隔离缓存，恢复后还会核对实际 `rustc`，后续相同 SDK 不再从头编译 Rust。workflow 会先创建草稿 Release，上传并校验六个 APK 的名称、状态和 SHA256，再发布对应的 `v*` tag 和 GitHub Release，维护者不得预先创建 `v*` tag。构建或上传失败时保留的草稿 Release 可由同一版本提交使用 `workflow_dispatch` 自动重建；手动运行也可补发没有 tag/Release 的当前版本，无需通过 `HEAD^1` 制造新的版本变化。
 
 ## 配置
 
@@ -353,7 +363,7 @@ tests/                             本地回归测试
 
 ## 测试
 
-本地环境可以运行确定性检查脚本和不依赖目标用户态 ABI 的 Rust 单元/合约测试；`./tests/run.sh unit` 覆盖 `lanspeedd`、共享 ABI、构建驱动、诊断模型和 fixtures。纯 Rust OpenWrt 层会同时在 host 与 musl 目标运行，并启动 SDK rootfs 中的真实 `ubusd`，用系统 `ubus` 客户端验证对象注册、调用、回复、断线和重新注册；链接门禁使用 `readelf` 证明 daemon 不含四个已移除库的 `DT_NEEDED`。最终产物仍由真实 SDK 编译并在目标设备验收。构建要求稳定版 `Rust >= 1.94.0`。
+本地环境可以运行确定性检查脚本和不依赖目标用户态 ABI 的 Rust 单元/合约测试；`./tests/run.sh unit` 覆盖 `lanspeedd`、共享 ABI、构建驱动、诊断模型和 fixtures。纯 Rust OpenWrt 层会同时在 host 与 musl 目标运行，并启动 SDK rootfs 中的真实 `ubusd`，用系统 `ubus` 客户端验证对象注册、调用、回复、断线和重新注册；链接门禁使用 `readelf` 证明 daemon 不含四个已移除库的 `DT_NEEDED`。最终产物仍由真实 SDK 编译并在目标设备验收。构建要求稳定版 `Rust >= 1.87.0`。
 
 ```sh
 ./tests/run.sh unit

@@ -49,14 +49,14 @@ pub fn build_ebpf<'a>(
 ) -> Result<()> {
     const AYA_BUILD_SKIP: &str = "AYA_BUILD_SKIP";
     println!("cargo:rerun-if-env-changed={AYA_BUILD_SKIP}");
-    if let Some(aya_build_skip) = env::var_os(AYA_BUILD_SKIP)
-        && (aya_build_skip.eq("1") || aya_build_skip.eq_ignore_ascii_case("true"))
-    {
-        println!(
-            "cargo:warning={AYA_BUILD_SKIP}={}; skipping eBPF build",
-            aya_build_skip.display()
-        );
-        return Ok(());
+    if let Some(aya_build_skip) = env::var_os(AYA_BUILD_SKIP) {
+        if aya_build_skip.eq("1") || aya_build_skip.eq_ignore_ascii_case("true") {
+            println!(
+                "cargo:warning={AYA_BUILD_SKIP}={}; skipping eBPF build",
+                aya_build_skip.display()
+            );
+            return Ok(());
+        }
     }
 
     const OUT_DIR: &str = "OUT_DIR";

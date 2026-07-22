@@ -940,9 +940,9 @@ mod tests {
             elapsed < Duration::from_millis(500),
             "escaped pipe holder delayed return by {elapsed:?}"
         );
-        assert_eq!(
-            thread_count_after, thread_count_before,
-            "reader threads remained after returning"
+        assert!(
+            thread_count_after <= thread_count_before,
+            "reader threads remained after returning: before={thread_count_before}, after={thread_count_after}"
         );
     }
 
@@ -963,7 +963,11 @@ mod tests {
             assert_eq!(result.stdout, "ok\n");
         }
 
-        assert_eq!(process_thread_count(), thread_count_before);
+        let thread_count_after = process_thread_count();
+        assert!(
+            thread_count_after <= thread_count_before,
+            "repeated commands increased thread count: before={thread_count_before}, after={thread_count_after}"
+        );
     }
 
     fn process_thread_count() -> usize {

@@ -861,6 +861,7 @@ fn netlink_syscall_retry_retries_only_eintr() {
 }
 
 #[test]
+#[ignore = "requires an isolated, bounded live conntrack table"]
 fn live_host_conntrack_netlink_dump_uses_kernel_sender_and_local_header_pid() {
     match read_netlink_snapshot() {
         Ok(snapshot) => {

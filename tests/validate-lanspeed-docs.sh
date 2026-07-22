@@ -4,6 +4,7 @@ set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 README="$ROOT_DIR/README.md"
+MATRIX="$ROOT_DIR/docs/rust-compatibility-matrix.md"
 EVIDENCE_DIR="$ROOT_DIR/.sisyphus/evidence"
 EVIDENCE="$EVIDENCE_DIR/task-14-doc-check.txt"
 
@@ -78,6 +79,13 @@ NODE
 log "README documentation checklist"
 log "file: $README"
 
+if [ ! -f "$MATRIX" ]; then
+	log "missing compatibility matrix: $MATRIX"
+	printf 'missing Rust compatibility matrix: %s\n' "$MATRIX" >&2
+	exit 1
+fi
+log "compatibility matrix: $MATRIX"
+
 require_phrase "CPU 可见 LAN 边缘流量"
 require_phrase "不是完整流量审计系统"
 require_phrase "不声明全流量绝对准确"
@@ -103,7 +111,25 @@ require_phrase '`x86_64` LP64'
 require_phrase '`aarch64` LP64'
 require_phrase "对应 SDK 重建"
 require_phrase "交叉编译通过不等于具体设备已完成真机验证"
-require_phrase "Rust >= 1.94.0"
+require_phrase "Rust >= 1.87.0"
+require_phrase '`1.87.0` 到 `1.97.1` 的每个稳定版'
+require_phrase "低于 MSRV"
+require_phrase "内部 atomic intrinsic 的版本转折点"
+
+for matrix_phrase in \
+	"1.87.0" \
+	"1.97.1 |" \
+	"aya@0.14.0 requires rustc 1.87.0" \
+	"EM_BPF" \
+	"aarch64-musl"; do
+	if grep -Fq -- "$matrix_phrase" "$MATRIX"; then
+		log "ok matrix: $matrix_phrase"
+	else
+		log "missing matrix phrase: $matrix_phrase"
+		printf 'missing required compatibility matrix phrase: %s\n' "$matrix_phrase" >&2
+		exit 1
+	fi
+done
 require_phrase "32 位 ARM、i386 和 MIPS"
 reject_phrase "ImmortalWrt 25.12"
 reject_phrase "2025-07"

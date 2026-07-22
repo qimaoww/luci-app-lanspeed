@@ -7,7 +7,11 @@ on:
     paths:
       - net/lanspeedd/Makefile
       - applications/luci-app-lanspeed/Makefile
+      - scripts/build-sdk.sh
+      - scripts/sdk-rust-identity.sh
       - scripts/release-version.sh
+      - tests/validate-sdk-apks.sh
+      - tests/validate-rust-ebpf-objects.sh
       - .github/workflows/build-sdk.yml
   workflow_dispatch:
 
@@ -165,11 +169,15 @@ jobs:
       matrix:
         include:
           - id: x86_64
+            target_arch: x86_64
+            package_arch: x86_64
             sdk_url: https://downloads.immortalwrt.org/releases/25.12.1/targets/x86/64/immortalwrt-sdk-25.12.1-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
             sdk_sha256: 02ad8cfc775001ccae8e9282d19696de54e3ab3963f005737ad61f8698263edd
             suffix: ''
             artifact: lanspeed-apk-x86_64
           - id: aarch64
+            target_arch: aarch64
+            package_arch: aarch64_generic
             sdk_url: https://downloads.immortalwrt.org/releases/25.12.1/targets/armsr/armv8/immortalwrt-sdk-25.12.1-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst
             sdk_sha256: 1ac4a0940328ebbb71c5e2e44bd798d9acc06b99dc417178fe9868e5e91a0ef5
             suffix: -aarch64
@@ -186,7 +194,7 @@ jobs:
       - name: Install build prerequisites
         run: |
           sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y build-essential clang curl flex g++ gawk gcc-multilib gettext git jq libelf-dev libncurses5-dev libssl-dev python3 rsync unzip xz-utils zlib1g-dev zstd
+          sudo apt-get -o Acquire::Retries=3 install -y build-essential clang curl flex g++ gawk gcc-multilib gettext git jq libelf-dev libncurses5-dev libssl-dev llvm python3 rsync unzip xz-utils zlib1g-dev zstd
 
       - name: Download and verify SDK
         shell: bash
@@ -203,6 +211,26 @@ jobs:
           tar --zstd -xf "$sdk_archive" -C "$base_sdk" --strip-components=1
           rm -f "$sdk_archive"
 
+      - name: Resolve SDK feed and Rust identity
+        id: sdk-identity
+        shell: bash
+        env:
+          TARGET_ARCH: ${{ matrix.target_arch }}
+        run: |
+          set -euo pipefail
+
+          base_sdk="$RUNNER_TEMP/sdk-base-${{ matrix.id }}"
+          TARGET_ARCH="$TARGET_ARCH" SDK_RELEASE=25.12 SDK_DIR="$base_sdk" ENABLE_BPF=0 \
+            ./scripts/build-sdk.sh prepare-feeds 2>&1 | sed -u 's/^/[feeds] /'
+
+          identity="$(./scripts/sdk-rust-identity.sh measure "$base_sdk")"
+          feeds_hash="$(printf '%s\n' "$identity" | sed -n 's/^feeds_hash=//p')"
+          rust_version="$(printf '%s\n' "$identity" | sed -n 's/^rust_version=//p')"
+          rust_recipe_hash="$(printf '%s\n' "$identity" | sed -n 's/^rust_recipe_hash=//p')"
+          printf '%s\n' "$identity" >> "$GITHUB_OUTPUT"
+          printf 'SDK identity: target_arch=%s feeds_hash=%s rust_version=%s rust_recipe_hash=%s\n' \
+            "$TARGET_ARCH" "$feeds_hash" "$rust_version" "$rust_recipe_hash"
+
       - name: Restore SDK Rust host cache
         id: sdk-rust-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -216,7 +244,7 @@ jobs:
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.built*
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.configured
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.prepared*
-          key: lanspeed-sdk-rust-${{ runner.os }}-${{ matrix.id }}-${{ matrix.sdk_sha256 }}-v1
+          key: lanspeed-sdk-rust-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target_arch }}-${{ matrix.sdk_sha256 }}-feeds-${{ steps.sdk-identity.outputs.feeds_hash }}-rust-${{ steps.sdk-identity.outputs.rust_version }}-recipe-${{ steps.sdk-identity.outputs.rust_recipe_hash }}
 
       - name: Build base package
         shell: bash
@@ -226,7 +254,11 @@ jobs:
           base_sdk="$RUNNER_TEMP/sdk-base-${{ matrix.id }}"
 
           set -o pipefail
-          ENABLE_BPF=0 SDK_RELEASE=25.12 SDK_DIR="$base_sdk" \
+          ENABLE_BPF=0 SDK_RELEASE=25.12 SDK_DIR="$base_sdk" SDK_FEEDS_PREPARED=1 \
+            SDK_FEEDS_HASH="${{ steps.sdk-identity.outputs.feeds_hash }}" \
+            SDK_RUST_VERSION="${{ steps.sdk-identity.outputs.rust_version }}" \
+            SDK_RUST_RECIPE_HASH="${{ steps.sdk-identity.outputs.rust_recipe_hash }}" \
+            TARGET_ARCH="${{ matrix.target_arch }}" \
             ./scripts/build-sdk.sh lanspeedd 2>&1 | sed -u 's/^/[base] /'
 
       - name: Prune SDK Rust build tree
@@ -241,6 +273,18 @@ jobs:
             printf '%s\n' 'error: base SDK build did not install the Rust host toolchain' >&2
             exit 1
           fi
+          expected_rust="${{ steps.sdk-identity.outputs.rust_version }}"
+          rustc_release="$("$rustc_path" --version --verbose | sed -n 's/^release: //p')"
+          cargo_release="$("$cargo_path" --version | awk 'NR == 1 { print $2 }')"
+          if [ "$rustc_release" != "$expected_rust" ]; then
+            printf '%s\n' "error: SDK rustc release $rustc_release does not match recipe $expected_rust" >&2
+            exit 1
+          fi
+          printf '%s\n' "$cargo_release" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            printf '%s\n' "error: SDK cargo returned an invalid version: $cargo_release" >&2
+            exit 1
+          }
+          printf 'SDK Rust host toolchain: rustc=%s cargo=%s\n' "$rustc_release" "$cargo_release"
 
           shopt -s nullglob
           rust_builds=("$base_sdk"/build_dir/target-*/host/rustc-*)
@@ -269,7 +313,7 @@ jobs:
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.built*
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.configured
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.prepared*
-          key: lanspeed-sdk-rust-${{ runner.os }}-${{ matrix.id }}-${{ matrix.sdk_sha256 }}-v1
+          key: lanspeed-sdk-rust-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target_arch }}-${{ matrix.sdk_sha256 }}-feeds-${{ steps.sdk-identity.outputs.feeds_hash }}-rust-${{ steps.sdk-identity.outputs.rust_version }}-recipe-${{ steps.sdk-identity.outputs.rust_recipe_hash }}
 
       - name: Clone prepared SDK for BPF build
         shell: bash
@@ -288,7 +332,11 @@ jobs:
 
           bpf_sdk="$RUNNER_TEMP/sdk-bpf-${{ matrix.id }}"
           set -o pipefail
-          ENABLE_BPF=1 SDK_RELEASE=25.12 SDK_DIR="$bpf_sdk" \
+          ENABLE_BPF=1 SDK_RELEASE=25.12 SDK_DIR="$bpf_sdk" SDK_FEEDS_PREPARED=1 \
+            SDK_FEEDS_HASH="${{ steps.sdk-identity.outputs.feeds_hash }}" \
+            SDK_RUST_VERSION="${{ steps.sdk-identity.outputs.rust_version }}" \
+            SDK_RUST_RECIPE_HASH="${{ steps.sdk-identity.outputs.rust_recipe_hash }}" \
+            TARGET_ARCH="${{ matrix.target_arch }}" \
             ./scripts/build-sdk.sh all 2>&1 | sed -u 's/^/[bpf] /'
 
       - name: Collect architecture artifact
@@ -341,6 +389,22 @@ jobs:
             printf '%s\n' "error: expected exactly three APK files, found ${file_count}" >&2
             exit 1
           fi
+
+      - name: Validate architecture APK contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          code_version="${{ needs.detect.outputs.code_version }}"
+          suffix="${{ matrix.suffix }}"
+          bpf_sdk="$RUNNER_TEMP/sdk-bpf-${{ matrix.id }}"
+          artifact_dir="$RUNNER_TEMP/artifact-${{ matrix.id }}"
+          ./tests/validate-sdk-apks.sh \
+            "$bpf_sdk" \
+            "${{ matrix.package_arch }}" \
+            "$artifact_dir/lanspeedd-${code_version}${suffix}.apk" \
+            "$artifact_dir/lanspeedd-bpf-${code_version}${suffix}.apk" \
+            "$artifact_dir/luci-app-lanspeed-${code_version}${suffix}.apk"
 
       - name: Upload architecture artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
