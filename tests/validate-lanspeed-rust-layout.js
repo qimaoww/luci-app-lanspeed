@@ -42,6 +42,9 @@ try {
     'net/lanspeedd/rust/crates/lanspeed-common/Cargo.toml',
     'net/lanspeedd/rust/crates/lanspeed-ebpf/Cargo.toml',
     'net/lanspeedd/rust/crates/lanspeed-openwrt-sys/Cargo.toml',
+    'net/lanspeedd/rust/crates/lanspeed-openwrt-sys/tests/fixtures/README.md',
+    'net/lanspeedd/rust/crates/lanspeed-openwrt-sys/tests/fixtures/blobmsg-json.hex',
+    'net/lanspeedd/rust/crates/lanspeed-openwrt-sys/tests/fixtures/ubus-add-object.hex',
     'net/lanspeedd/rust/crates/lanspeedd/Cargo.toml',
     'net/lanspeedd/rust/crates/lanspeed-build/Cargo.toml',
     'tests/validate-lanspeed-openwrt-compile.sh',
@@ -92,6 +95,53 @@ try {
     /\[0 as libc::c_char;\s*libc::IF_NAMESIZE\]/.test(bpfRuntime),
     'BPF interface-name buffers must use libc::c_char for aarch64 and x86_64 portability'
   );
+
+  const codecSource = fs.readFileSync(
+    path.join(lanspeeddRoot, 'rust/crates/lanspeed-openwrt-sys/src/codec.rs'),
+    'utf8'
+  );
+  const ubusSource = fs.readFileSync(
+    path.join(lanspeeddRoot, 'rust/crates/lanspeed-openwrt-sys/src/pure_ubus.rs'),
+    'utf8'
+  );
+  const uloopSource = fs.readFileSync(
+    path.join(lanspeeddRoot, 'rust/crates/lanspeed-openwrt-sys/src/pure_uloop.rs'),
+    'utf8'
+  );
+  assert(
+    codecSource.includes('json_encoding_matches_libubox_golden_fixture') &&
+      codecSource.includes('integer_boundaries_match_signed_blobmsg_json_semantics'),
+    'pure Rust blobmsg must retain libubox golden and signed integer-boundary tests'
+  );
+  for (const requiredUbusTest of [
+    'add_object_frame_matches_libubus_golden_fixture',
+    'backpressure_rejects_frame_without_queuing_or_leaking_pending_request',
+    'disconnected_enqueue_does_not_leave_pending_request',
+    'request_timeout_removes_pending_request',
+    'malformed_wire_frame_closes_connection_and_notifies_loss_once'
+  ]) {
+    assert(
+      ubusSource.includes(requiredUbusTest),
+      `pure Rust ubus must retain ${requiredUbusTest}`
+    );
+  }
+  assert(
+    ubusSource.includes('fn encode_object_registration(') &&
+      ubusSource.includes('fn encode_frame(') &&
+      ubusSource.includes('fn wait_pending_until('),
+    'pure Rust ubus must expose deterministic registration/frame encoders and deadline testing seam'
+  );
+  for (const requiredUloopTest of [
+    'canceled_timer_stays_idle_and_can_be_rearmed',
+    'timer_panic_is_returned_as_event_loop_error_and_state_resets',
+    'sigusr1_callback_is_dispatched',
+    'signal_panic_is_returned_as_event_loop_error'
+  ]) {
+    assert(
+      uloopSource.includes(requiredUloopTest),
+      `pure Rust event loop must retain ${requiredUloopTest}`
+    );
+  }
 
   const testRunner = fs.readFileSync(path.join(root, 'tests/run.sh'), 'utf8');
   const openwrtCompileValidator = fs.readFileSync(

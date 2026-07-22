@@ -166,12 +166,12 @@ fn encode_json_field(name: &str, value: &Value) -> Result<Vec<u8>> {
                 } else {
                     encode_blobmsg_field(BLOBMSG_INT64, name, &integer.to_be_bytes())
                 }
-            } else if let Some(integer) = value.as_u64() {
-                if let Ok(integer) = u32::try_from(integer) {
-                    encode_blobmsg_field(BLOBMSG_INT32, name, &integer.to_be_bytes())
-                } else {
-                    encode_blobmsg_field(BLOBMSG_INT64, name, &integer.to_be_bytes())
-                }
+            } else if value.as_u64().is_some() {
+                // json-c's json_object_get_int64(), which blobmsg-json uses for
+                // unsigned JSON numbers, saturates values above INT64_MAX.
+                // Preserve that long-standing wire behavior instead of encoding
+                // the u64 bit pattern as a negative BLOBMSG_INT64 value.
+                encode_blobmsg_field(BLOBMSG_INT64, name, &i64::MAX.to_be_bytes())
             } else {
                 let number = value.as_f64().ok_or(Error::InvalidJson)?;
                 encode_blobmsg_field(BLOBMSG_DOUBLE, name, &number.to_bits().to_be_bytes())
@@ -277,5 +277,69 @@ mod tests {
         let mut duplicate = field.clone();
         duplicate.extend_from_slice(&field);
         assert!(find_string_field(&duplicate, "key").is_err());
+    }
+
+    fn decode_hex(fixture: &str) -> Vec<u8> {
+        let compact = fixture
+            .bytes()
+            .filter(|byte| !byte.is_ascii_whitespace())
+            .collect::<Vec<_>>();
+        assert_eq!(compact.len() % 2, 0, "hex fixture must contain byte pairs");
+        compact
+            .chunks_exact(2)
+            .map(|pair| {
+                let digit = |byte: u8| match byte {
+                    b'0'..=b'9' => byte - b'0',
+                    b'a'..=b'f' => byte - b'a' + 10,
+                    b'A'..=b'F' => byte - b'A' + 10,
+                    _ => panic!("invalid hex fixture digit"),
+                };
+                (digit(pair[0]) << 4) | digit(pair[1])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn json_encoding_matches_libubox_golden_fixture() {
+        let value: Value = serde_json::from_str(
+            r#"{"array":[1,"x",false],"bool":true,"double":1.25,"large":2147483648,"negative":-7,"null":null,"small":42,"string":"router","table":{"enabled":true,"limit":512}}"#,
+        )
+        .unwrap();
+        let expected = decode_hex(include_str!("../tests/fixtures/blobmsg-json.hex"));
+        assert_eq!(encode_json(&value).unwrap(), expected);
+    }
+
+    #[test]
+    fn integer_boundaries_match_signed_blobmsg_json_semantics() {
+        let root = encode_json(&json!({
+            "i32_max": i32::MAX,
+            "i32_over": i32::MAX as i64 + 1,
+            "u64_max": u64::MAX,
+        }))
+        .unwrap();
+        let root = parse_attr(&root).unwrap();
+        let fields = parse_attr_list(root.payload).unwrap();
+
+        let field = |wanted: &str| {
+            fields
+                .iter()
+                .copied()
+                .find(|attr| blobmsg_parts(*attr).unwrap().0 == wanted)
+                .unwrap()
+        };
+        let i32_max = field("i32_max");
+        assert_eq!(i32_max.id, BLOBMSG_INT32);
+        assert_eq!(blobmsg_parts(i32_max).unwrap().1, &i32::MAX.to_be_bytes());
+
+        let i32_over = field("i32_over");
+        assert_eq!(i32_over.id, BLOBMSG_INT64);
+        assert_eq!(
+            blobmsg_parts(i32_over).unwrap().1,
+            &(i32::MAX as i64 + 1).to_be_bytes()
+        );
+
+        let u64_max = field("u64_max");
+        assert_eq!(u64_max.id, BLOBMSG_INT64);
+        assert_eq!(blobmsg_parts(u64_max).unwrap().1, &i64::MAX.to_be_bytes());
     }
 }

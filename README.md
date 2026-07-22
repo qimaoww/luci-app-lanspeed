@@ -147,7 +147,7 @@ CONFIG_PACKAGE_tc-tiny=y
 | `kmod-sched-bpf` | yes | `lanspeedd-bpf` 的内核 tc BPF classifier 依赖 |
 | `luci-base` | LuCI 页面 | LuCI 框架 |
 
-用户态 JSON 和 blobmsg 编码使用 Rust 实现，CT-Netlink 使用 Rust 原始 netlink 实现，eBPF 对象由 Aya 加载，不直接依赖 `libjson-c`、`libmnl` 或 `libbpf`。ubus 传输限制单帧为 1 MiB、待发送队列为 4 MiB，并对长度、填充、重复字段、UTF-8、断线和超时执行失败关闭；连接恢复后重新注册同一组九个方法。NSS 默认仍使用 BPF；NSS-direct 仅在显式模式或 BPF 不可用时启用，不额外依赖用户态库，但需要内核侧 qca-nss-ecm 暴露 ECM state 设备；不可用或没有可匹配 flow 时会使用 NSS sync。IPv6 客户端匹配依赖内核 neighbor 表；前端隐藏 IPv6 只影响显示，不影响采集匹配。
+用户态 JSON 和 blobmsg 编码使用 Rust 实现，CT-Netlink 使用 Rust 原始 netlink 实现，eBPF 对象由 Aya 加载，不直接依赖 `libjson-c`、`libmnl` 或 `libbpf`。blobmsg 与对象注册编码由真实 SDK 的 `libubox` / `libubus` 独立生成 golden bytes 做逐字节回归；JSON 正整数只在 `i32` 范围内使用 INT32，更大值使用 INT64，超过 `i64::MAX` 时保持旧 json-c 的饱和语义。ubus 传输限制单帧为 1 MiB、待发送队列为 4 MiB，并对长度、填充、重复字段、UTF-8、断线和超时执行失败关闭；连接恢复后重新注册同一组九个方法。NSS 默认仍使用 BPF；NSS-direct 仅在显式模式或 BPF 不可用时启用，不额外依赖用户态库，但需要内核侧 qca-nss-ecm 暴露 ECM state 设备；不可用或没有可匹配 flow 时会使用 NSS sync。IPv6 客户端匹配依赖内核 neighbor 表；前端隐藏 IPv6 只影响显示，不影响采集匹配。
 
 ### 本地 checkout / SDK 辅助脚本
 
@@ -162,11 +162,22 @@ SDK_DIR=/openwrt/immortalwrt ENABLE_BPF=1 scripts/build-sdk.sh
 
 普通用户从 GitHub 构建时优先使用前面的 `src-git lanspeed` feed 流程；辅助脚本不会下载 SDK 或工具链。
 
-ABI 注意点：纯 Rust 用户态 daemon 不再绑定 libubox/libubus/libuci 的日期 SONAME，但 APK 架构、musl 基线和 `lanspeedd-bpf` 的内核能力仍须与目标固件匹配，不能把 BPF 包安装到不兼容内核上。回滚时三个包应作为同一版本集合降级；旧 daemon 停止并清理其 tc hook 后再替换 BPF 对象，避免混用用户态协议契约和采集资产。
+ABI 注意点：纯 Rust 用户态 daemon 不再绑定 libubox/libubus/libuci 的日期 SONAME，但这不等于一个 APK 可以安装到所有版本。APK 架构、musl 基线、LuCI 运行时和 `lanspeedd-bpf` 的内核能力仍须与目标固件匹配，不能伪造架构或把 BPF 包强装到不兼容内核上。2025-07 IPQ807x 必须由对应快照 SDK 重新产出 aarch64 APK，并在该设备上验收后才算该组合已验证。
 
-2026-07-22 的参考验收使用 x86_64 ImmortalWrt 25.12-SNAPSHOT、Linux 6.12.94：设备端 daemon 的 RSS 为 3408 KiB，单线程连续完成 100 次本机 `ubus call lanspeed health` 用时 0.06 秒；真实流量下 ingress/egress 两个 BPF hook 均已 JIT，覆盖率为 RX 100% / TX 99%，探针失败数为 0。终止并由 procd 拉起 `ubusd` 后，daemon PID 保持不变并在约 2 秒内完成重连与九个方法的重新注册。这些数字用于回归参考，不是对不同 CPU、负载或固件的延迟保证。
+回滚时三个包应作为同一版本集合降级，避免混用用户态协议契约和采集资产。先备份 `/etc/config/lanspeed` 与当前三包，再执行：
 
-当前只声明支持并验证 x86_64 和 aarch64 两类 LP64 目标；32 位 ARM、i386 和 MIPS 不在支持范围内。普通代码 push 和 pull request 由独立 CI workflow 执行完整单元校验。当 `main` 分支上的 `net/lanspeedd/Makefile` 或 `applications/luci-app-lanspeed/Makefile` 改动导致完整版本发生变化时，发布 workflow 会自动编译这两类产物；aarch64 产物使用官方 `armsr/armv8` SDK 编译，Release 文件名带 `aarch64` 后缀。每个架构先构建 base 包，再把已安装的 Rust/Cargo 主机工具链复用于 BPF 构建；该工具链按操作系统、架构和 SDK SHA256 缓存，后续相同 SDK 不再从头编译 Rust。workflow 会先创建草稿 Release，上传并校验六个 APK 的名称、状态和 SHA256，再发布对应的 `v*` tag 和 GitHub Release，维护者不得预先创建 `v*` tag。构建或上传失败时保留的草稿 Release 可由同一版本提交使用 `workflow_dispatch` 自动重建；手动运行也可补发没有 tag/Release 的当前版本，无需通过 `HEAD^1` 制造新的版本变化。
+```sh
+/etc/init.d/lanspeedd stop
+apk add --allow-untrusted \
+  ./lanspeedd-<old>.apk ./lanspeedd-bpf-<old>.apk ./luci-app-lanspeed-<old>.apk
+/etc/init.d/lanspeedd start
+```
+
+停止服务会由 init 脚本清理其 tc hook；不要只替换 BPF 对象，也不要在共享路由器上通过终止系统 `ubusd` 测试重连。`rpcd`、`uhttpd` 等其它守护进程未必能在 `ubusd` 更换后自动恢复，可能导致 LuCI 登录或 RPC 暂时失效。断线、重连与重新注册测试应使用 SDK rootfs 中的隔离 `ubusd`。
+
+2026-07-22 的参考验收使用 x86_64 ImmortalWrt 25.12-SNAPSHOT、Linux 6.12.94：设备端 daemon 的 RSS 为 3388 KiB，单线程连续完成 100 次本机 `ubus call lanspeed health` 用时 0.07 秒；九个方法与非法参数语义均通过，超过 `i32::MAX` 的接口累计字节保持正整数；真实流量下 ingress/egress 两个 BPF hook 均已 JIT，覆盖率为 RX 99% / TX 99%，探针失败数为 0，LuCI 概览与 HTTP RPC 验证通过。隔离 SDK rootfs 的断线测试验证自动重连与九方法重新注册，不在共享实机终止 `ubusd`。这些数字用于回归参考，不是对不同 CPU、负载或固件的延迟保证。
+
+当前只声明支持 x86_64 和 aarch64 两类 LP64 目标：x86_64 25.12 已完成实机运行验收，aarch64 已完成 musl 交叉编译门禁；具体 2025-07 IPQ807x 运行验收仍需对应真机。32 位 ARM、i386 和 MIPS 不在支持范围内。普通代码 push 和 pull request 由独立 CI workflow 执行完整单元校验。当 `main` 分支上的 `net/lanspeedd/Makefile` 或 `applications/luci-app-lanspeed/Makefile` 改动导致完整版本发生变化时，发布 workflow 会自动编译这两类产物；aarch64 产物使用官方 `armsr/armv8` SDK 编译，Release 文件名带 `aarch64` 后缀。每个架构先构建 base 包，再把已安装的 Rust/Cargo 主机工具链复用于 BPF 构建；该工具链按操作系统、架构和 SDK SHA256 缓存，后续相同 SDK 不再从头编译 Rust。workflow 会先创建草稿 Release，上传并校验六个 APK 的名称、状态和 SHA256，再发布对应的 `v*` tag 和 GitHub Release，维护者不得预先创建 `v*` tag。构建或上传失败时保留的草稿 Release 可由同一版本提交使用 `workflow_dispatch` 自动重建；手动运行也可补发没有 tag/Release 的当前版本，无需通过 `HEAD^1` 制造新的版本变化。
 
 ## 配置
 
