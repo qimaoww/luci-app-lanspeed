@@ -36,6 +36,7 @@ trap cleanup EXIT HUP INT TERM
 feed_listing="$work_dir/feeds.txt"
 feed_manifest="$work_dir/feed-manifest.txt"
 config_manifest="$work_dir/config-manifest.txt"
+config_flags_manifest="$work_dir/config-flags-manifest.txt"
 listing_config_manifest="$work_dir/listing-config-manifest.txt"
 normalized_conf="$work_dir/feeds.conf"
 
@@ -50,24 +51,38 @@ read_config_manifest() {
 				next
 			}
 			count = split(line, field, /[[:space:]]+/)
-			if (count != 3) {
+			if (count == 4 &&
+			    (field[1] == "src-git" || field[1] == "src-git-full") &&
+			    field[2] == "--root=package" && field[3] == "base") {
+				type = field[1]
+				flags = field[2]
+				name = field[3]
+				source = field[4]
+			} else if (count == 3) {
+				type = field[1]
+				flags = ""
+				name = field[2]
+				source = field[3]
+			} else {
 				exit 2
 			}
-			if (field[1] != "src-git" && field[1] != "src-git-full" && field[1] != "src-link") {
+			if (type != "src-git" && type != "src-git-full" && type != "src-link") {
 				exit 2
 			}
-			if (field[2] !~ /^[A-Za-z0-9_]+$/ || field[3] ~ /[|,]/) {
+			if (name !~ /^[A-Za-z0-9_]+$/ || source ~ /[|,]/) {
 				exit 2
 			}
-			if (field[1] == "src-link" && field[2] != "lanspeed") {
+			if (type == "src-link" && name != "lanspeed") {
 				exit 2
 			}
-			printf "%s|%s|%s\n", field[1], field[2], field[3]
+			printf "%s|%s|%s\n", type, name, source
+			printf "%s|%s\n", name, flags > flags_manifest
 		}
-	' "$sdk_root/feeds.conf" > "$config_manifest" ||
+	' flags_manifest="$config_flags_manifest" "$sdk_root/feeds.conf" > "$config_manifest" ||
 		fail "feeds.conf contains unsupported flags, includes, fallbacks, or malformed entries"
 	[ -s "$config_manifest" ] || fail "feeds.conf has no active feeds"
 	LC_ALL=C sort -o "$config_manifest" "$config_manifest"
+	LC_ALL=C sort -o "$config_flags_manifest" "$config_flags_manifest"
 }
 
 read_feed_listing() {
@@ -87,6 +102,7 @@ read_feed_listing() {
 			*[!A-Za-z0-9_]*) fail "feed name is invalid: $feed_name" ;;
 		esac
 		feed_source=$(printf '%s' "$feed_source" | tr -d '\r')
+		feed_flags=$(awk -F '|' -v name="$feed_name" '$1 == name { print $2; exit }' "$config_flags_manifest")
 		case "$feed_source" in
 			''|*','*|*'|'*) fail "feed $feed_name has an invalid or fallback source" ;;
 		esac
@@ -94,6 +110,14 @@ read_feed_listing() {
 		printf '%s|%s|%s\n' "$feed_type" "$feed_name" "$feed_source" >> "$listing_config_manifest"
 		case "$feed_type" in
 			src-git|src-git-full)
+				if [ "$feed_revision" = local ]; then
+					[ "$feed_name" = base ] && [ "$feed_flags" = --root=package ] ||
+						fail "unexpected local Git feed $feed_name"
+					printf '%s|%s|%s|%s|%s\n' \
+						"$feed_name" "$feed_type" "$feed_revision" "$feed_source" "$feed_flags" >> "$feed_manifest"
+					printf '%s %s %s %s\n' "$feed_type" "$feed_flags" "$feed_name" "$feed_source" >> "$normalized_conf"
+					continue
+				fi
 				case "$feed_revision" in
 					''|*[!0-9a-f]*) fail "feed $feed_name has an invalid revision: $feed_revision" ;;
 				esac
@@ -131,9 +155,13 @@ read_feed_listing() {
 					''|*';'*|*'^'*) fail "feed $feed_name has an invalid repository URL" ;;
 				esac
 				pinned_source="$feed_base^$feed_revision"
-				printf '%s|%s|%s|%s\n' \
-					"$feed_name" "$feed_type" "$feed_revision" "$pinned_source" >> "$feed_manifest"
-				printf '%s %s %s\n' "$feed_type" "$feed_name" "$pinned_source" >> "$normalized_conf"
+				printf '%s|%s|%s|%s|%s\n' \
+					"$feed_name" "$feed_type" "$feed_revision" "$pinned_source" "$feed_flags" >> "$feed_manifest"
+				if [ -n "$feed_flags" ]; then
+					printf '%s %s %s %s\n' "$feed_type" "$feed_flags" "$feed_name" "$pinned_source" >> "$normalized_conf"
+				else
+					printf '%s %s %s\n' "$feed_type" "$feed_name" "$pinned_source" >> "$normalized_conf"
+				fi
 				;;
 			src-link)
 				[ "$feed_name" = lanspeed ] && [ "$feed_revision" = local ] ||

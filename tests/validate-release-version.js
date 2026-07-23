@@ -365,8 +365,8 @@ try {
     'build job must restore the SHA-pinned SDK Rust cache once');
   assert((buildJob.match(new RegExp(cacheSaveAction, 'g')) || []).length === 1,
     'build job must save the SHA-pinned SDK Rust cache once');
-  assert((publishJob.match(new RegExp(downloadArtifactAction, 'g')) || []).length === 2,
-    'publish job must use the SHA-pinned download-artifact v8.0.1 action twice');
+  assert((publishJob.match(new RegExp(downloadArtifactAction, 'g')) || []).length === 1,
+    'publish job must use the SHA-pinned download-artifact v8.0.1 action once');
   assert(!workflow.includes('softprops/action-gh-release'),
     'release publishing must not depend on a third-party mutable release action');
   const detectStep = extractNamedStep(detectJob, 'Detect release state');
@@ -395,14 +395,59 @@ try {
   assert(detectStep.includes('elif [ "$tag_exists" = true ] && [ "$tag_target" != "$GITHUB_SHA" ]; then'),
     'detect job must reject an incomplete release tag pointing at another commit');
   assert(detectStep.includes('gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100"'), 'detect job must inspect all GitHub Releases');
-  const completeReleaseAssets = [
-    'lanspeedd-\\($version).apk',
-    'lanspeedd-bpf-\\($version).apk',
-    'luci-app-lanspeed-\\($version).apk',
-    'lanspeedd-\\($version)-aarch64.apk',
-    'lanspeedd-bpf-\\($version)-aarch64.apk',
-    'luci-app-lanspeed-\\($version)-aarch64.apk'
+  const releaseArchitectures = [
+    {
+      id: 'x86_64',
+      packageArch: 'x86_64',
+      assetArch: 'x86_64',
+      suffix: '',
+      artifact: 'lanspeed-apk-x86_64',
+      sdkPath: 'x86/64/immortalwrt-sdk-25.12.1-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst',
+      sdkSha256: '02ad8cfc775001ccae8e9282d19696de54e3ab3963f005737ad61f8698263edd'
+    },
+    {
+      id: 'aarch64_generic',
+      packageArch: 'aarch64_generic',
+      assetArch: 'aarch64_generic',
+      suffix: '-aarch64_generic',
+      artifact: 'lanspeed-apk-aarch64_generic',
+      sdkPath: 'armsr/armv8/immortalwrt-sdk-25.12.1-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst',
+      sdkSha256: '1ac4a0940328ebbb71c5e2e44bd798d9acc06b99dc417178fe9868e5e91a0ef5'
+    },
+    {
+      id: 'aarch64_cortex_a53',
+      packageArch: 'aarch64_cortex-a53',
+      assetArch: 'aarch64_cortex-a53',
+      suffix: '-aarch64_cortex-a53',
+      artifact: 'lanspeed-apk-aarch64_cortex-a53',
+      sdkPath: 'qualcommax/ipq807x/immortalwrt-sdk-25.12.1-qualcommax-ipq807x_gcc-14.3.0_musl.Linux-x86_64.tar.zst',
+      sdkSha256: '2abfafc35ab11e9291552577e1d415dbd7c306d05083feca732e3c500d03771e'
+    },
+    {
+      id: 'aarch64_cortex_a72',
+      packageArch: 'aarch64_cortex-a72',
+      assetArch: 'aarch64_cortex-a72',
+      suffix: '-aarch64_cortex-a72',
+      artifact: 'lanspeed-apk-aarch64_cortex-a72',
+      sdkPath: 'bcm27xx/bcm2711/immortalwrt-sdk-25.12.1-bcm27xx-bcm2711_gcc-14.3.0_musl.Linux-x86_64.tar.zst',
+      sdkSha256: '8af293943f9feb1d831a53d6e1b8c1367a8feb186f08f058cebf3ef530e9e68b'
+    },
+    {
+      id: 'aarch64_cortex_a76',
+      packageArch: 'aarch64_cortex-a76',
+      assetArch: 'aarch64_cortex-a76',
+      suffix: '-aarch64_cortex-a76',
+      artifact: 'lanspeed-apk-aarch64_cortex-a76',
+      sdkPath: 'bcm27xx/bcm2712/immortalwrt-sdk-25.12.1-bcm27xx-bcm2712_gcc-14.3.0_musl.Linux-x86_64.tar.zst',
+      sdkSha256: '70d0100420fc65ca7d5f10d308282749259d71f472b607392bd421ad5de1c44a'
+    }
   ];
+  const completeReleaseAssets = releaseArchitectures.flatMap(({ assetArch, suffix }) => [
+    `lanspeedd-\\($version)${suffix}.apk`,
+    `lanspeedd-bpf-\\($version)${suffix}.apk`,
+    `luci-app-lanspeed-\\($version)${suffix}.apk`,
+    `lanspeed-\\($version)-${assetArch}.tar.gz`
+  ]);
   assert(detectStep.includes('expected_assets_json="$(jq -nc --arg version "$code_version"'),
     'detect job must build the exact expected asset set from the complete code version');
   completeReleaseAssets.forEach((asset) => {
@@ -454,23 +499,20 @@ try {
     'SDK builds must use the GitHub-hosted runner maximum timeout');
   assert(/^      fail-fast: false$/m.test(buildJob), 'build matrix must keep fail-fast disabled');
   const matrixIds = [...buildJob.matchAll(/^          - id: ([a-z0-9_]+)$/gm)].map((match) => match[1]);
-  assertExactList(matrixIds, ['x86_64', 'aarch64'], 'build matrix include must contain exactly x86_64 and aarch64');
-  assert(buildJob.includes('target_arch: x86_64') && buildJob.includes('package_arch: x86_64'),
-    'x86_64 matrix entry must declare its compiler and APK architectures');
-  assert(buildJob.includes('sdk_url: https://downloads.immortalwrt.org/releases/25.12.1/targets/x86/64/immortalwrt-sdk-25.12.1-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst'),
-    'x86_64 matrix entry must use the exact ImmortalWrt 25.12.1 SDK URL');
-  assert(buildJob.includes('sdk_sha256: 02ad8cfc775001ccae8e9282d19696de54e3ab3963f005737ad61f8698263edd'),
-    'x86_64 matrix entry must pin the exact SDK checksum');
-  assert(buildJob.includes("suffix: ''"), 'x86_64 matrix entry must not add an asset suffix');
-  assert(buildJob.includes('artifact: lanspeed-apk-x86_64'), 'x86_64 matrix entry must use its unique artifact name');
-  assert(buildJob.includes('target_arch: aarch64') && buildJob.includes('package_arch: aarch64_generic'),
-    'aarch64 matrix entry must declare its compiler and APK architectures');
-  assert(buildJob.includes('sdk_url: https://downloads.immortalwrt.org/releases/25.12.1/targets/armsr/armv8/immortalwrt-sdk-25.12.1-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst'),
-    'aarch64 matrix entry must use the exact ImmortalWrt 25.12.1 SDK URL');
-  assert(buildJob.includes('sdk_sha256: 1ac4a0940328ebbb71c5e2e44bd798d9acc06b99dc417178fe9868e5e91a0ef5'),
-    'aarch64 matrix entry must pin the exact SDK checksum');
-  assert(buildJob.includes('suffix: -aarch64'), 'aarch64 matrix entry must add the release asset suffix');
-  assert(buildJob.includes('artifact: lanspeed-apk-aarch64'), 'aarch64 matrix entry must use its unique artifact name');
+  assertExactList(matrixIds, releaseArchitectures.map(({ id }) => id),
+    'build matrix include must contain x86_64 and every distinct ImmortalWrt aarch64 package architecture');
+  releaseArchitectures.forEach(({ id, packageArch, assetArch, suffix, artifact, sdkPath, sdkSha256 }) => {
+    assert(buildJob.includes(`package_arch: ${packageArch}`), `${id} matrix entry must declare APK architecture ${packageArch}`);
+    assert(buildJob.includes(`asset_arch: ${assetArch}`), `${id} matrix entry must declare asset architecture ${assetArch}`);
+    assert(buildJob.includes(`sdk_url: https://downloads.immortalwrt.org/releases/25.12.1/targets/${sdkPath}`),
+      `${id} matrix entry must use its exact ImmortalWrt 25.12.1 SDK URL`);
+    assert(buildJob.includes(`sdk_sha256: ${sdkSha256}`), `${id} matrix entry must pin its exact SDK checksum`);
+    assert(buildJob.includes(suffix === '' ? "suffix: ''" : `suffix: ${suffix}`),
+      `${id} matrix entry must declare its exact release asset suffix`);
+    assert(buildJob.includes(`artifact: ${artifact}`), `${id} matrix entry must use its unique artifact name`);
+  });
+  assert((buildJob.match(/target_arch: aarch64/g) || []).length === 4,
+    'all four ARM64 package architecture entries must use the aarch64 Rust target');
   const curlLines = workflow.split('\n').map((line) => line.trim()).filter((line) => line.startsWith('curl '));
   assert(curlLines.length === 2, 'workflow must contain exactly the bpf-linker and SDK curl downloads');
   curlLines.forEach((line) => {
@@ -499,6 +541,13 @@ try {
     'SDK identity changes must trigger the release workflow');
   assert(sdkIdentityScript.includes("./scripts/feeds list -s -d '|'"),
     'SDK identity must inspect actual checked-out feed revisions');
+  assert(sdkIdentityScript.includes('field[2] == "--root=package"') &&
+    sdkIdentityScript.includes('field[3] == "base"') &&
+    sdkIdentityScript.includes('printf \'%s %s %s %s\\n\''),
+  'SDK identity must accept and preserve only the official SDK base-feed root flag');
+  assert(sdkIdentityScript.includes('[ "$feed_revision" = local ]') &&
+    sdkIdentityScript.includes('[ "$feed_name" = base ] && [ "$feed_flags" = --root=package ]'),
+  'SDK identity must accept only the official SDK-local rooted base feed');
   assert(sdkIdentityStep.includes('^${{') === false,
     'SDK identity must derive feed and Rust values instead of substituting workflow expressions into shell checks');
   assert(sdkIdentityScript.includes('[ "${#feed_revision}" -eq 40 ]'),
@@ -607,9 +656,6 @@ try {
   assert(!workflow.includes('ramips'), 'workflow must not add non-aarch64 ramips SDK targets');
   assert(!workflow.includes('ath79'), 'workflow must not add non-aarch64 ath79 SDK targets');
   assert(!workflow.includes('ipq40xx'), 'workflow must not add non-aarch64 ipq40xx SDK targets');
-  assert(!workflow.includes('qualcommax'), 'workflow must not split aarch64 into Qualcomm SDK targets');
-  assert(!workflow.includes('mediatek'), 'workflow must not split aarch64 into MediaTek SDK targets');
-  assert(!workflow.includes('rockchip'), 'workflow must not split aarch64 into Rockchip SDK targets');
   assert(workflow.includes('collect_one "$base_sdk" "lanspeedd-${code_version}.apk" "lanspeedd-${code_version}${suffix}.apk"'),
     'matrix artifact must collect exactly the base daemon package');
   assert(workflow.includes('collect_one "$bpf_sdk" "lanspeedd-bpf-${code_version}.apk" "lanspeedd-bpf-${code_version}${suffix}.apk"'),
@@ -623,30 +669,44 @@ try {
     'APK validation must use the architecture declared by the matrix');
   assertBefore(buildJob, 'name: Collect architecture artifact', 'name: Validate architecture APK contracts',
     'all three exact APKs must be collected before contract validation');
-  assertBefore(buildJob, 'name: Validate architecture APK contracts', 'name: Upload architecture artifact',
-    'APK metadata, dependencies, ELF, and BPF objects must pass before upload');
+  const bundleStep = extractNamedStep(buildJob, 'Create architecture bundle');
+  assert(bundleStep.includes('asset_arch="${{ matrix.asset_arch }}"'),
+    'bundle name must use the exact package architecture label');
+  assert(bundleStep.includes('bundle_name="lanspeed-${code_version}-${asset_arch}.tar.gz"'),
+    'each matrix entry must create one architecture-specific tar.gz bundle');
+  assert(bundleStep.includes('tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner'),
+    'architecture bundles must use reproducible tar metadata');
+  assert(bundleStep.includes('tar -tzf "$artifact_dir/$bundle_name" | sort > "$actual_members"') &&
+    bundleStep.includes('diff -u "$expected_members" "$actual_members"'),
+  'bundle validation must require exactly the same three APK members');
+  assert(bundleStep.includes('[ "$file_count" -ne 4 ]'),
+    'each architecture artifact must contain three APKs and one bundle');
+  assertBefore(buildJob, 'name: Validate architecture APK contracts', 'name: Create architecture bundle',
+    'APK metadata, dependencies, ELF, and BPF objects must pass before bundling');
+  assertBefore(buildJob, 'name: Create architecture bundle', 'name: Upload architecture artifact',
+    'the validated bundle must exist before artifact upload');
   assert(workflow.includes('name: ${{ matrix.artifact }}'), 'matrix upload must use the architecture-specific artifact name');
+  assert(workflow.includes('path: ${{ runner.temp }}/artifact-${{ matrix.id }}/*'),
+    'matrix upload must include the three APKs and architecture bundle');
   assert(workflow.includes('retention-days: 1'), 'matrix artifacts must be retained for one day');
   assert(workflow.includes('compression-level: 0'), 'matrix APK artifacts must disable redundant compression');
   assert(workflow.includes('if-no-files-found: error'), 'matrix upload must fail if any artifact collection failed');
-  assert(workflow.includes('name: lanspeed-apk-x86_64'), 'publish job must download the x86_64 artifact separately');
-  assert(workflow.includes('name: lanspeed-apk-aarch64'), 'publish job must download the aarch64 artifact separately');
-  const expectedAssets = [
-    'lanspeedd-${CODE_VERSION}.apk',
-    'lanspeedd-bpf-${CODE_VERSION}.apk',
-    'luci-app-lanspeed-${CODE_VERSION}.apk',
-    'lanspeedd-${CODE_VERSION}-aarch64.apk',
-    'lanspeedd-bpf-${CODE_VERSION}-aarch64.apk',
-    'luci-app-lanspeed-${CODE_VERSION}-aarch64.apk'
-  ];
+  assert(publishJob.includes('pattern: lanspeed-apk-*') && publishJob.includes('merge-multiple: true'),
+    'publish job must download and merge every architecture artifact from the same run');
+  const expectedAssets = releaseArchitectures.flatMap(({ assetArch, suffix }) => [
+    `lanspeedd-${'${CODE_VERSION}'}${suffix}.apk`,
+    `lanspeedd-bpf-${'${CODE_VERSION}'}${suffix}.apk`,
+    `luci-app-lanspeed-${'${CODE_VERSION}'}${suffix}.apk`,
+    `lanspeed-${'${CODE_VERSION}'}-${assetArch}.tar.gz`
+  ]);
   expectedAssets.forEach((asset) => {
     assert(workflow.includes(asset), `publish job must require exact release asset ${asset}`);
   });
   assert(workflow.includes('find "$release_dir" -maxdepth 1 -type f -printf \'%f\\n\' | sort > "$actual_files"'),
-    'publish job must enumerate only the six downloaded release files');
+    'publish job must enumerate only the 20 downloaded release files');
   assert(workflow.includes('diff -u "$expected_files" "$actual_files"'), 'publish job must reject missing or extra release files');
   assertBefore(workflow, 'diff -u "$expected_files" "$actual_files"', 'name: Publish recoverable GitHub Release',
-    'publish job must validate all six files before creating a draft Release');
+    'publish job must validate all 20 files before creating a draft Release');
   const recoverablePublishStep = extractNamedStep(publishJob, 'Publish recoverable GitHub Release');
   assert(recoverablePublishStep.includes('RELEASE_TAG: ${{ needs.detect.outputs.release_tag }}'),
     'publish step must use the exact tag emitted by detection');
@@ -659,7 +719,10 @@ try {
   assert(recoverablePublishStep.includes('if [ "$existing_draft" != true ]; then'),
     'an incomplete published Release must never be replaced');
   assert(recoverablePublishStep.includes('gh release upload "$RELEASE_TAG" "${files[@]}"'),
-    'all exact APK files must be uploaded without clobbering existing assets');
+    'all exact APK and bundle files must be uploaded without clobbering existing assets');
+  assert(recoverablePublishStep.includes('mapfile -t files < <(find "$release_dir"') &&
+    recoverablePublishStep.includes('[ "${#files[@]}" -ne 20 ]'),
+  'publish must upload the complete validated 20-file set');
   assert(recoverablePublishStep.includes('for attempt in $(seq 1 12); do'),
     'publish must wait for GitHub to expose asset digests');
   assert(recoverablePublishStep.includes("jq -nc '{draft: false}'"),

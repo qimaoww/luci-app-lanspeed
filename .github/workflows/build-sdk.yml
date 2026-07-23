@@ -80,9 +80,23 @@ jobs:
             "lanspeedd-\($version).apk",
             "lanspeedd-bpf-\($version).apk",
             "luci-app-lanspeed-\($version).apk",
-            "lanspeedd-\($version)-aarch64.apk",
-            "lanspeedd-bpf-\($version)-aarch64.apk",
-            "luci-app-lanspeed-\($version)-aarch64.apk"
+            "lanspeed-\($version)-x86_64.tar.gz",
+            "lanspeedd-\($version)-aarch64_generic.apk",
+            "lanspeedd-bpf-\($version)-aarch64_generic.apk",
+            "luci-app-lanspeed-\($version)-aarch64_generic.apk",
+            "lanspeed-\($version)-aarch64_generic.tar.gz",
+            "lanspeedd-\($version)-aarch64_cortex-a53.apk",
+            "lanspeedd-bpf-\($version)-aarch64_cortex-a53.apk",
+            "luci-app-lanspeed-\($version)-aarch64_cortex-a53.apk",
+            "lanspeed-\($version)-aarch64_cortex-a53.tar.gz",
+            "lanspeedd-\($version)-aarch64_cortex-a72.apk",
+            "lanspeedd-bpf-\($version)-aarch64_cortex-a72.apk",
+            "luci-app-lanspeed-\($version)-aarch64_cortex-a72.apk",
+            "lanspeed-\($version)-aarch64_cortex-a72.tar.gz",
+            "lanspeedd-\($version)-aarch64_cortex-a76.apk",
+            "lanspeedd-bpf-\($version)-aarch64_cortex-a76.apk",
+            "luci-app-lanspeed-\($version)-aarch64_cortex-a76.apk",
+            "lanspeed-\($version)-aarch64_cortex-a76.tar.gz"
           ] | sort')"
           complete_count="$(printf '%s' "$releases_json" | jq \
             --arg tag "$release_tag" \
@@ -171,17 +185,43 @@ jobs:
           - id: x86_64
             target_arch: x86_64
             package_arch: x86_64
+            asset_arch: x86_64
             sdk_url: https://downloads.immortalwrt.org/releases/25.12.1/targets/x86/64/immortalwrt-sdk-25.12.1-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
             sdk_sha256: 02ad8cfc775001ccae8e9282d19696de54e3ab3963f005737ad61f8698263edd
             suffix: ''
             artifact: lanspeed-apk-x86_64
-          - id: aarch64
+          - id: aarch64_generic
             target_arch: aarch64
             package_arch: aarch64_generic
+            asset_arch: aarch64_generic
             sdk_url: https://downloads.immortalwrt.org/releases/25.12.1/targets/armsr/armv8/immortalwrt-sdk-25.12.1-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst
             sdk_sha256: 1ac4a0940328ebbb71c5e2e44bd798d9acc06b99dc417178fe9868e5e91a0ef5
-            suffix: -aarch64
-            artifact: lanspeed-apk-aarch64
+            suffix: -aarch64_generic
+            artifact: lanspeed-apk-aarch64_generic
+          - id: aarch64_cortex_a53
+            target_arch: aarch64
+            package_arch: aarch64_cortex-a53
+            asset_arch: aarch64_cortex-a53
+            sdk_url: https://downloads.immortalwrt.org/releases/25.12.1/targets/qualcommax/ipq807x/immortalwrt-sdk-25.12.1-qualcommax-ipq807x_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: 2abfafc35ab11e9291552577e1d415dbd7c306d05083feca732e3c500d03771e
+            suffix: -aarch64_cortex-a53
+            artifact: lanspeed-apk-aarch64_cortex-a53
+          - id: aarch64_cortex_a72
+            target_arch: aarch64
+            package_arch: aarch64_cortex-a72
+            asset_arch: aarch64_cortex-a72
+            sdk_url: https://downloads.immortalwrt.org/releases/25.12.1/targets/bcm27xx/bcm2711/immortalwrt-sdk-25.12.1-bcm27xx-bcm2711_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: 8af293943f9feb1d831a53d6e1b8c1367a8feb186f08f058cebf3ef530e9e68b
+            suffix: -aarch64_cortex-a72
+            artifact: lanspeed-apk-aarch64_cortex-a72
+          - id: aarch64_cortex_a76
+            target_arch: aarch64
+            package_arch: aarch64_cortex-a76
+            asset_arch: aarch64_cortex-a76
+            sdk_url: https://downloads.immortalwrt.org/releases/25.12.1/targets/bcm27xx/bcm2712/immortalwrt-sdk-25.12.1-bcm27xx-bcm2712_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: 70d0100420fc65ca7d5f10d308282749259d71f472b607392bd421ad5de1c44a
+            suffix: -aarch64_cortex-a76
+            artifact: lanspeed-apk-aarch64_cortex-a76
     env:
       SDK_SHA256: ${{ matrix.sdk_sha256 }}
       SDK_URL: ${{ matrix.sdk_url }}
@@ -406,11 +446,45 @@ jobs:
             "$artifact_dir/lanspeedd-bpf-${code_version}${suffix}.apk" \
             "$artifact_dir/luci-app-lanspeed-${code_version}${suffix}.apk"
 
+      - name: Create architecture bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          code_version="${{ needs.detect.outputs.code_version }}"
+          suffix="${{ matrix.suffix }}"
+          asset_arch="${{ matrix.asset_arch }}"
+          artifact_dir="$RUNNER_TEMP/artifact-${{ matrix.id }}"
+          bundle_name="lanspeed-${code_version}-${asset_arch}.tar.gz"
+          expected_members="$RUNNER_TEMP/expected-bundle-${{ matrix.id }}.txt"
+          actual_members="$RUNNER_TEMP/actual-bundle-${{ matrix.id }}.txt"
+
+          printf '%s\n' \
+            "lanspeedd-${code_version}${suffix}.apk" \
+            "lanspeedd-bpf-${code_version}${suffix}.apk" \
+            "luci-app-lanspeed-${code_version}${suffix}.apk" \
+            | sort > "$expected_members"
+
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+            -czf "$artifact_dir/$bundle_name" \
+            -C "$artifact_dir" \
+            "lanspeedd-${code_version}${suffix}.apk" \
+            "lanspeedd-bpf-${code_version}${suffix}.apk" \
+            "luci-app-lanspeed-${code_version}${suffix}.apk"
+          tar -tzf "$artifact_dir/$bundle_name" | sort > "$actual_members"
+          diff -u "$expected_members" "$actual_members"
+
+          file_count="$(find "$artifact_dir" -maxdepth 1 -type f | wc -l)"
+          if [ "$file_count" -ne 4 ]; then
+            printf '%s\n' "error: expected three APK files and one bundle, found ${file_count} files" >&2
+            exit 1
+          fi
+
       - name: Upload architecture artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ runner.temp }}/artifact-${{ matrix.id }}/*.apk
+          path: ${{ runner.temp }}/artifact-${{ matrix.id }}/*
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
@@ -431,18 +505,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Download x86_64 artifact
+      - name: Download architecture artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: lanspeed-apk-x86_64
+          pattern: lanspeed-apk-*
           path: ${{ runner.temp }}/release
-
-      - name: Download aarch64 artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: lanspeed-apk-aarch64
-          path: ${{ runner.temp }}/release
-
+          merge-multiple: true
       - name: Validate exact release assets
         shell: bash
         env:
@@ -458,14 +526,28 @@ jobs:
             "lanspeedd-${CODE_VERSION}.apk" \
             "lanspeedd-bpf-${CODE_VERSION}.apk" \
             "luci-app-lanspeed-${CODE_VERSION}.apk" \
-            "lanspeedd-${CODE_VERSION}-aarch64.apk" \
-            "lanspeedd-bpf-${CODE_VERSION}-aarch64.apk" \
-            "luci-app-lanspeed-${CODE_VERSION}-aarch64.apk" \
+            "lanspeed-${CODE_VERSION}-x86_64.tar.gz" \
+            "lanspeedd-${CODE_VERSION}-aarch64_generic.apk" \
+            "lanspeedd-bpf-${CODE_VERSION}-aarch64_generic.apk" \
+            "luci-app-lanspeed-${CODE_VERSION}-aarch64_generic.apk" \
+            "lanspeed-${CODE_VERSION}-aarch64_generic.tar.gz" \
+            "lanspeedd-${CODE_VERSION}-aarch64_cortex-a53.apk" \
+            "lanspeedd-bpf-${CODE_VERSION}-aarch64_cortex-a53.apk" \
+            "luci-app-lanspeed-${CODE_VERSION}-aarch64_cortex-a53.apk" \
+            "lanspeed-${CODE_VERSION}-aarch64_cortex-a53.tar.gz" \
+            "lanspeedd-${CODE_VERSION}-aarch64_cortex-a72.apk" \
+            "lanspeedd-bpf-${CODE_VERSION}-aarch64_cortex-a72.apk" \
+            "luci-app-lanspeed-${CODE_VERSION}-aarch64_cortex-a72.apk" \
+            "lanspeed-${CODE_VERSION}-aarch64_cortex-a72.tar.gz" \
+            "lanspeedd-${CODE_VERSION}-aarch64_cortex-a76.apk" \
+            "lanspeedd-bpf-${CODE_VERSION}-aarch64_cortex-a76.apk" \
+            "luci-app-lanspeed-${CODE_VERSION}-aarch64_cortex-a76.apk" \
+            "lanspeed-${CODE_VERSION}-aarch64_cortex-a76.tar.gz" \
             | sort > "$expected_files"
           find "$release_dir" -maxdepth 1 -type f -printf '%f\n' | sort > "$actual_files"
 
           if ! diff -u "$expected_files" "$actual_files"; then
-            printf '%s\n' 'error: release directory must contain exactly the six expected APK files' >&2
+            printf '%s\n' 'error: release directory must contain exactly the 20 expected APK and bundle files' >&2
             exit 1
           fi
 
@@ -483,9 +565,23 @@ jobs:
             "lanspeedd-\($version).apk",
             "lanspeedd-bpf-\($version).apk",
             "luci-app-lanspeed-\($version).apk",
-            "lanspeedd-\($version)-aarch64.apk",
-            "lanspeedd-bpf-\($version)-aarch64.apk",
-            "luci-app-lanspeed-\($version)-aarch64.apk"
+            "lanspeed-\($version)-x86_64.tar.gz",
+            "lanspeedd-\($version)-aarch64_generic.apk",
+            "lanspeedd-bpf-\($version)-aarch64_generic.apk",
+            "luci-app-lanspeed-\($version)-aarch64_generic.apk",
+            "lanspeed-\($version)-aarch64_generic.tar.gz",
+            "lanspeedd-\($version)-aarch64_cortex-a53.apk",
+            "lanspeedd-bpf-\($version)-aarch64_cortex-a53.apk",
+            "luci-app-lanspeed-\($version)-aarch64_cortex-a53.apk",
+            "lanspeed-\($version)-aarch64_cortex-a53.tar.gz",
+            "lanspeedd-\($version)-aarch64_cortex-a72.apk",
+            "lanspeedd-bpf-\($version)-aarch64_cortex-a72.apk",
+            "luci-app-lanspeed-\($version)-aarch64_cortex-a72.apk",
+            "lanspeed-\($version)-aarch64_cortex-a72.tar.gz",
+            "lanspeedd-\($version)-aarch64_cortex-a76.apk",
+            "lanspeedd-bpf-\($version)-aarch64_cortex-a76.apk",
+            "luci-app-lanspeed-\($version)-aarch64_cortex-a76.apk",
+            "lanspeed-\($version)-aarch64_cortex-a76.tar.gz"
           ] | sort')"
 
           tag_exists=false
@@ -558,14 +654,11 @@ jobs:
             exit 1
           fi
 
-          files=(
-            "$release_dir/lanspeedd-${CODE_VERSION}.apk"
-            "$release_dir/lanspeedd-bpf-${CODE_VERSION}.apk"
-            "$release_dir/luci-app-lanspeed-${CODE_VERSION}.apk"
-            "$release_dir/lanspeedd-${CODE_VERSION}-aarch64.apk"
-            "$release_dir/lanspeedd-bpf-${CODE_VERSION}-aarch64.apk"
-            "$release_dir/luci-app-lanspeed-${CODE_VERSION}-aarch64.apk"
-          )
+          mapfile -t files < <(find "$release_dir" -maxdepth 1 -type f -print | sort)
+          if [ "${#files[@]}" -ne 20 ]; then
+            printf '%s\n' "error: expected 20 validated release assets, found ${#files[@]}" >&2
+            exit 1
+          fi
           gh release upload "$RELEASE_TAG" "${files[@]}"
 
           assets_complete=false

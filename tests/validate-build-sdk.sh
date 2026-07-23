@@ -97,6 +97,7 @@ mkdir -p "$TMP_SDK/bin" "$TMP_SDK/scripts/config"
 printf '%s\n' '25.12 fake sdk' > "$TMP_SDK/version.buildinfo"
 printf '%s\n' 'all:' > "$TMP_SDK/Makefile"
 cat > "$TMP_SDK/feeds.conf.default" <<'EOF'
+src-git --root=package base https://example.invalid/base.git;openwrt-25.12
 src-git packages https://example.invalid/packages.git;openwrt-25.12
 EOF
 cat > "$TMP_SDK/scripts/feeds" <<'EOF'
@@ -108,14 +109,31 @@ if [ "$*" = "update -a" ]; then
 	: > feeds/packages.index
 	: > feeds/lanspeed.index
 elif [ "$*" = "list -s -d |" ]; then
-	while read -r feed_type feed_name feed_source extra; do
-		case "$feed_type" in
+while read -r feed_type field2 field3 field4 extra; do
+	feed_root=
+	case "$field2" in
+		--root=package)
+			feed_name=$field3
+			feed_source=$field4
+			feed_root=package
+			;;
+		*)
+			feed_name=$field2
+			feed_source=$field3
+			[ -z "${field4:-}" ] || exit 2
+			;;
+	esac
+	case "$feed_type" in
 			''|'#'*) continue ;;
 			src-git|src-git-full)
-				case "$feed_source" in
-					*'^'*) feed_revision=${feed_source#*^} ;;
-					*) feed_revision=1111111111111111111111111111111111111111 ;;
-				esac
+				if [ "$feed_root" = package ]; then
+					feed_revision=local
+				else
+					case "$feed_source" in
+						*'^'*) feed_revision=${feed_source#*^} ;;
+						*) feed_revision=1111111111111111111111111111111111111111 ;;
+					esac
+				fi
 				;;
 			src-link) feed_revision=local ;;
 			*) exit 2 ;;
@@ -133,9 +151,10 @@ chmod +x "$TMP_SDK/bin/make"
 
 PATH="$TMP_SDK/bin:$PATH" SDK_DIR="$TMP_SDK" ENABLE_BPF=0 "$ROOT/scripts/build-sdk.sh" prepare-feeds > "$PREPARE_FEEDS_EVIDENCE" 2>&1
 grep -F "update -a" "$TMP_SDK/feeds.log" >/dev/null
+grep -F "src-git --root=package base https://example.invalid/base.git;openwrt-25.12" "$TMP_SDK/feeds.conf" >/dev/null
 grep -F "src-git packages https://example.invalid/packages.git^1111111111111111111111111111111111111111" "$TMP_SDK/feeds.conf" >/dev/null
-if grep -F ';openwrt-25.12' "$TMP_SDK/feeds.conf" >/dev/null; then
-	printf '%s\n' "prepare-feeds left a branch source instead of an actual commit pin" >&2
+if grep -F 'src-git packages https://example.invalid/packages.git;openwrt-25.12' "$TMP_SDK/feeds.conf" >/dev/null; then
+	printf '%s\n' "prepare-feeds left the remote packages feed on a branch instead of an actual commit pin" >&2
 	exit 1
 fi
 if grep -F "install -p" "$TMP_SDK/feeds.log" >/dev/null || [ -e "$TMP_SDK/make.log" ]; then
@@ -189,6 +208,15 @@ if "$ROOT/scripts/sdk-rust-identity.sh" measure "$TMP_SDK" >> "$IDENTITY_TAMPER_
 	exit 1
 fi
 grep -F "must use a ^commit pin; branch sources are not reusable" "$IDENTITY_TAMPER_EVIDENCE" >/dev/null
+mv "$TMP_SDK/feeds.conf.verified" "$TMP_SDK/feeds.conf"
+
+cp "$TMP_SDK/feeds.conf" "$TMP_SDK/feeds.conf.verified"
+sed 's/--root=package/--depth=1/' "$TMP_SDK/feeds.conf.verified" > "$TMP_SDK/feeds.conf"
+if "$ROOT/scripts/sdk-rust-identity.sh" measure "$TMP_SDK" >> "$IDENTITY_TAMPER_EVIDENCE" 2>&1; then
+	printf '%s\n' "expected an unsupported feed flag to be rejected" >&2
+	exit 1
+fi
+grep -F "unsupported flags" "$IDENTITY_TAMPER_EVIDENCE" >/dev/null
 mv "$TMP_SDK/feeds.conf.verified" "$TMP_SDK/feeds.conf"
 rm -f "$TMP_SDK/.config" "$TMP_SDK/make.log" "$TMP_SDK/feeds.log" "$TMP_SDK/feeds.conf"
 

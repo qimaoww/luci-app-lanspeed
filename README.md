@@ -109,7 +109,7 @@ NSS ECM/PPE sync 是自动模式下 NSS 加速设备的首选来源，也是显�
 | 目标 | 说明 |
 |---|---|
 | `x86_64` LP64 | 支持。当前构建、打包和路由器实测目标。 |
-| `aarch64` LP64 | 支持。须用目标固件的对应 SDK 重建并核对 musl、包架构和 BPF 内核约束；交叉编译通过不等于具体设备已完成真机验证。 |
+| `aarch64` LP64 | 支持。Release 分别提供 `aarch64_generic`、`aarch64_cortex-a53`、`aarch64_cortex-a72` 和 `aarch64_cortex-a76`，必须按固件的包架构选择；交叉编译通过不等于具体设备已完成真机验证。 |
 | 32 位 ARM、i386 和 MIPS | 不支持。当前 Rust/BPF 工具链、LuCI 运行时和 LP64 数据模型不覆盖这些目标。 |
 
 ### Rust 编译器兼容
@@ -191,7 +191,7 @@ apk add --allow-untrusted \
 
 参考验收中，设备端 daemon 的 RSS 为 3388 KiB；单线程连续完成 100 次本机 `ubus call lanspeed health` 用时 0.07 秒，这只是控制面 RPC microbenchmark，不能用于证明测速热路径性能。九个方法与非法参数语义均通过，超过 `i32::MAX` 的接口累计字节保持正整数；真实流量下 ingress/egress 两个 BPF hook 均已 JIT，覆盖率为 RX 99% / TX 99%，探针失败数为 0，LuCI 概览与 HTTP RPC 验证通过。隔离 SDK rootfs 的真实 wire 测试覆盖对象注册和调用，并以测试代码显式执行重连与重新注册；daemon 自动重连及同一组九方法重新注册由 lifecycle mock 回归覆盖。所有断线测试都不得在共享实机终止 `ubusd`。这些数字用于回归参考，不是对不同 CPU、负载或固件的延迟保证。
 
-架构支持与验收层级以上表为准；任何交叉编译结果都不能代替具体设备的真机验证。普通代码 push 和 pull request 由独立 CI workflow 执行完整单元校验。当 `main` 分支上的 `net/lanspeedd/Makefile` 或 `applications/luci-app-lanspeed/Makefile` 改动导致完整版本发生变化时，发布 workflow 会自动编译 x86_64 和 aarch64 两类产物；aarch64 产物使用官方 `armsr/armv8` SDK 编译，Release 文件名带 `aarch64` 后缀。每个架构先构建 base 包，再把已安装的 Rust/Cargo 主机工具链复用于 BPF 构建；该工具链按 runner 操作系统与架构、目标架构、SDK SHA256、feeds 实际 revision、Rust 配方版本和内容哈希隔离缓存，恢复后还会核对实际 `rustc`，后续相同 SDK 不再从头编译 Rust。workflow 会先创建草稿 Release，上传并校验六个 APK 的名称、状态和 SHA256，再发布对应的 `v*` tag 和 GitHub Release，维护者不得预先创建 `v*` tag。构建或上传失败时保留的草稿 Release 可由同一版本提交使用 `workflow_dispatch` 自动重建；手动运行也可补发没有 tag/Release 的当前版本，无需通过 `HEAD^1` 制造新的版本变化。
+架构支持与验收层级以上表为准；任何交叉编译结果都不能代替具体设备的真机验证。普通代码 push 和 pull request 由独立 CI workflow 执行完整单元校验。当 `main` 分支上的 `net/lanspeedd/Makefile` 或 `applications/luci-app-lanspeed/Makefile` 改动导致完整版本发生变化时，发布 workflow 会自动编译 x86_64，以及 `aarch64_generic`、`aarch64_cortex-a53`、`aarch64_cortex-a72`、`aarch64_cortex-a76` 四种独立 ARM64 包架构。每个架构先构建 base 包，再把已安装的 Rust/Cargo 主机工具链复用于 BPF 构建；该工具链按 runner 操作系统与架构、目标架构、SDK SHA256、feeds 实际 revision、Rust 配方版本和内容哈希隔离缓存，恢复后还会核对实际 `rustc`，后续相同 SDK 不再从头编译 Rust。workflow 会先创建草稿 Release，为每个架构上传三个独立 APK 和一个包含这三个 APK 的 `.tar.gz` 压缩包，并校验全部 20 个资产的名称、状态和 SHA256，再发布对应的 `v*` tag 和 GitHub Release，维护者不得预先创建 `v*` tag。构建或上传失败时保留的草稿 Release 可由同一版本提交使用 `workflow_dispatch` 自动重建；手动运行也可补发没有 tag/Release 的当前版本，无需通过 `HEAD^1` 制造新的版本变化。
 
 ## 配置
 
