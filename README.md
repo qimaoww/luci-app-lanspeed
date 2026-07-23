@@ -43,11 +43,11 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 
 ## 特性
 
-- **实时速率**：BPF tc 按 MAC + zone/VLAN 直接计数，字段为 `tx_bps` / `rx_bps`；生产运行默认加载只做流量统计的低开销对象，不再在每个转发包上计算未被响应使用的近似连接数；BPF 是所有设备（包括 NSS）的默认实时速率来源，`auto` 模式会首先选择 BPF；短时静默客户端会保留隐藏计数基线，恢复流量时首个样本不再固定显示为 0。
+- **实时速率**：BPF tc 按 MAC + zone/VLAN 直接计数，字段为 `tx_bps` / `rx_bps`；生产运行默认加载只做流量统计的低开销对象，不再在每个转发包上计算未被响应使用的近似连接数。非 NSS 设备以 BPF 为实时来源；NSS ECM/PPE 活跃时 BPF 继续挂载观测慢路径，但客户端总速率以 NSS Conntrack 同步计数为准，绝不把两套累计值相加；短时静默客户端会保留隐藏计数基线，恢复流量时首个样本不再固定显示为 0。
 - **连接数统计**：优先 CT-Netlink 读取 conntrack accounting，失败自动回退 CT-Procfs；TCP、UDP、DNS UDP 分开统计。
 - **逐连接实时速率**：点击客户端名称进入连接详情后，按目标 IP 汇总并显示上行/下行速率；八列表头均可排序，默认把下行速度最高的目标放在最上面；展开目标可查看每条 TCP/UDP 连接各自的客户端视角 `tx_bps` / `rx_bps`。详情页提供与 LAN 客户端相同的 1/2/3/5/10 秒刷新选项和暂停按钮，但刷新设置独立保存，不影响客户端列表。单客户端详情最多返回 2048 条连接，仍保留全局 16384 条存储保护。
 - **国家/地区**：详情页只对当前分页中去重后的公网目标 IP 由浏览器查询 GeoIP 源。先查询 `ipwho.is`；中国结果直接采用其省级行政区（例如 `中国·浙江`），不再请求其他源。非中国地址再并行查询 `ipinfo.io` 与 DB-IP，并按国家代码多数票显示；主源或单个备用源失败时仍可回退到其余结果。最多 4 个 IP 查询并发，并在浏览器本地保存有界的 7 天正缓存和 5 分钟负缓存。内网、代理 Fake-IP 与保留地址在本地直接分类，不增加 daemon CPU。显示结果是 IP 位置推测，可能受 CDN、Anycast、VPN 或代理影响；各公共源也可能有额度和限流策略。
-- **NSS 兼容**：Qualcomm NSS 设备自动展示 ECM/PPE 状态，默认仍使用 LAN 边缘 BPF；显式选择 NSS 模式或 BPF 运行时不可用时，才使用 NSS sync / CT-Netlink 或 NSS-direct。NSS 硬件加速流量可能绕过 CPU，因此 BPF 只能看到慢路径；IPv4 通过 ARP、IPv6 通过 neighbor 表匹配客户端，并兼容 ECM NAT 端点。
+- **NSS 兼容**：Qualcomm NSS 设备自动展示 ECM/PPE 状态。NSS 加速流量绕过 CPU tc hook，因此 `auto` 在 ECM/PPE 活跃且 `nf_conntrack_acct=1` 时以 NSS sync 为唯一权威字节来源；BPF 仍挂在 LAN 边缘收集慢路径和解速后的流量，用于诊断但不参与 NSS 总量相加。IPv4 通过 ARP、IPv6 通过 neighbor 表匹配客户端，并兼容 ECM NAT 端点。
 - **活跃客户端**：默认只把 10 秒内仍有有效速率的客户端计为 active，可通过 UCI 调整。
 - **覆盖率**：daemon 侧使用 32 个样本的滑动窗口，并按客户端实时速率生成单调累计分子，避免客户端离线/重新出现导致覆盖率跳回“采样中”；低流量与真正无流量分开显示。
 - **独立诊断**：LuCI 内置“实时状态”“运行诊断”和“LAN Speed 配置”三个页签；诊断页分别校验 `diagnostics`、`status`、`health`、`clients`、`interfaces`、`overview` 六个 RPC 请求，展示采集覆盖率与样本新鲜度、速率/连接数据路径、接口与连接健康、分级告警及 LuCI/后端版本一致性。加载、空数据、部分失败、硬失败、降级、过期和异常契约均独立呈现，失败响应不会被其它接口“洗绿”；可复制报告只包含白名单状态与计数，不包含客户端地址或名称、接口名、探针源和原始后端文本。Aurora、Argon 与 Bootstrap 分别使用独立主题布局，实时状态页不再混入旧诊断面板。
@@ -55,7 +55,7 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 - **接口配置**：采集 / 观察 / 关闭 三态切换，默认采集 `br-lan`、观察 `wan`；异步扫描具有代次保护，并显示缺失接口、数量限制和不可采集原因。自动忽略 `dae*`、`miireg*`、`tun*`、`erspan*`、`gretap*`、`gre*`、`ip6gre*`、`ip6tnl*`、`sit*`、`bonding_masters*`，拒绝 nssifb 采集并可观察 WAN / ifb 计数。
 - **告警体系**：OpenClash / dae/daed / SQM/qosify/ifb / flow offload / fullcone NAT 等场景自动识别并提示。
 - **客户端状态列**：默认隐藏 LAN 客户端的采集来源与告警状态，可在“LAN Speed 配置”中开启。
-- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.2-r3`。
+- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.2-r5`。
 
 ## 采集策略
 
@@ -65,18 +65,20 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 
 | 值 | 行为 |
 |---|---|
-| `auto` | 默认模式。所有设备（包括 NSS ECM/PPE）优先使用 BPF；BPF 运行时不可用时，NSS 设备才按可用性回退 NSS sync / CT-Netlink 或 NSS-direct。 |
+| `auto` | 默认模式。非 NSS 设备优先使用 BPF；NSS ECM/PPE 活跃且 Conntrack accounting 可用时优先使用 NSS sync，同时保留 BPF 慢路径观测；sync 不可用才回退 NSS-direct。 |
 | `bpf` | 强制只使用 BPF 测速；BPF 不可用时不回退 NSS，适合确认 LAN 边缘 BPF 路径。 |
 | `nss_ecm_direct` | 手动尝试 NSS-direct；direct 没有有效速率时仍使用 NSS sync 后备，避免显示 0。 |
 | `nss_conntrack_sync` | 强制使用 NSS sync；只适合 NSS ECM/PPE 设备排查或 direct 不可用时使用。 |
 
 非 NSS 设备不会把 CT 当作实时测速来源。CT 只能用于连接数、诊断和 NSS ECM/PPE sync 这类明确标注的 fallback。
 
-daemon 启动时立即由 Rust 扫描 `/proc/<pid>/comm`，之后至多每 5 秒扫描一次，只把精确名称为 `dae` 或 `daed` 的进程视为运行态，不依赖 `pidof` 或慢速环境探测缓存。自动模式在所有设备上都优先选择 BPF；检测到 dae/daed 运行状态变化后，仍会立即把 LAN BPF 从 Normal（pref `49152`）事务切换到 Early passthrough（pref `1`），进程停止后切回 Normal。切换复用 reload 的 suspend/attach/rollback 流程并保留外部 tc filter，同时显示 `dae_runtime_prefers_bpf`；NSS 设备只有在 BPF 不可用时才回退 NSS sync，并显示 `nss_dae_bpf_fallback_may_be_inaccurate`。
+daemon 启动时立即由 Rust 扫描 `/proc/<pid>/comm`，之后至多每 5 秒扫描一次，只把精确名称为 `dae` 或 `daed` 的进程视为运行态，不依赖 `pidof` 或慢速环境探测缓存。非 NSS 自动模式检测到 dae/daed 运行状态变化后，会立即把 LAN BPF 从 Normal（pref `49152`）事务切换到 Early passthrough（pref `1`），进程停止后切回 Normal。NSS 设备仍以 NSS sync 作为权威速率来源，BPF 只保持慢路径观测；切换复用 reload 的 suspend/attach/rollback 流程并保留外部 tc filter。
 
-NSS-direct 是显式选择 `nss_ecm_direct` 或 BPF 不可用时的后备来源。daemon 只读 qca-nss-ecm 的 state 设备（`/dev/ecm_state` 或 debugfs major 在 `/dev` 下创建的临时只读节点），解析 ECM flow 的 `adv_stats.from_data_total` / `adv_stats.to_data_total`，再按两端 IP、NAT IP 和 node MAC 匹配 LAN 客户端。它不写 `defunct_all`、`flush`、`decelerate`，也不修改 NSS 状态。部分固件的 ECM state 可能没有活跃 flow、计数为 0 或覆盖不完整，此时会显示 `nss_direct_no_data` / `nss_direct_partial`，并用 NSS sync 补齐。
+NSS-direct 是显式选择 `nss_ecm_direct` 或 NSS sync 不可用时的后备来源。daemon 只读 qca-nss-ecm 的 state 设备（`/dev/ecm_state` 或 debugfs major 在 `/dev` 下创建的临时只读节点），解析 ECM flow 的 `adv_stats.from_data_total` / `adv_stats.to_data_total`，再按两端 IP、NAT IP 和 node MAC 匹配 LAN 客户端。它不写 `defunct_all`、`flush`、`decelerate`，也不修改 NSS 状态。direct 只描述加速流，不会覆盖同一客户端的 Conntrack sync 样本；部分固件的 ECM state 可能没有活跃 flow、计数为 0 或覆盖不完整，此时会显示 `nss_direct_no_data` / `nss_direct_partial`。
 
-NSS ECM/PPE sync 是显式选择 `nss_conntrack_sync`、NSS-direct 的补齐来源或 BPF 不可用时的后备来源。NSS 硬件加速 flow 的字节计数同步回 conntrack 后，daemon 再读取 CT-Netlink / CT-Procfs 的 accounting 计数。这个路径会匹配 conntrack 原始方向和回复方向的源/目的端点，按 LAN 客户端视角换算上下行；只在 NSS ECM/PPE 场景作为实时速率来源，非 NSS 设备不会把 conntrack 当作实时测速来源。
+NSS ECM/PPE sync 是自动模式下 NSS 加速设备的首选来源，也是显式选择 `nss_conntrack_sync` 或 direct 失败时的后备来源。NSS 硬件加速 flow 的字节计数同步回 conntrack 后，daemon 再读取 CT-Netlink / CT-Procfs 的 accounting 计数。这个路径会匹配 conntrack 原始方向和回复方向的源/目的端点，按 LAN 客户端视角换算上下行；每条 Conntrack flow 先独立计算计数增量，再按客户端汇总，某条 flow 过期或计数重置不会把同一客户端其他活跃 flow 的本周期速率归零。CT-Netlink 还使用内核 `CTA_ID + CTA_ZONE` 区分快速复用同一五元组的新旧 flow，并把已消失 flow 的基线保留 60 秒；若只能使用 procfs，则采用 `zone + tuple` 并把保留窗口缩短为 2 秒，避免跨代误算。`status`、`health` 与 `clients` 的 evidence 会返回实际 `CTA_ID` 覆盖率和基线参数。它只在 NSS ECM/PPE 场景作为实时速率来源，非 NSS 设备不会把 conntrack 当作实时测速来源。
+
+诊断页把“运行健康”和“统计准确度”分开：成功且契约有效的 `status` / `health` RPC 显示为正常；NSS 同步周期、短流可见性和实测覆盖率只进入“采集质量/速率路径”证据，不再把正常返回的运行接口误标成“降级”。
 
 ### 连接数采集
 
@@ -127,7 +129,7 @@ workspace 的 `rust-version` 与构建驱动统一使用 `1.87.0`，CI 同时覆
 - `luci-app-lanspeed` 必须依赖 `lanspeedd-bpf`，`lanspeedd-bpf` 再依赖用户态 daemon `lanspeedd`；在 menuconfig 中选择 LuCI 应用会自动选中完整依赖链。
 - `lanspeedd-bpf` 的标准 OpenWrt 包构建使用固定的 `bpf-linker 0.10.3` 构建两套 Rust eBPF 对象；显式传入兼容版本的 `BPF_LINKER` 时，构建驱动按上述版本范围校验。目标机必须提供 `tc-tiny` 和 `kmod-sched-bpf`。
 - 当前固定的 `bpf-linker` 发布包要求 x86_64 编译主机，目标路由器架构仍由 OpenWrt SDK 决定。
-- NSS-direct 与 NSS sync 保留为显式模式和 BPF 运行时不可用时的后备来源，但不能替代 LuCI 应用对 `lanspeedd-bpf` 的安装依赖。
+- NSS sync 是 ECM/PPE 加速活跃时自动模式的权威来源；NSS-direct 保留为显式模式和 sync 不可用时的后备。两者都不替代 LuCI 应用对 `lanspeedd-bpf` 的安装依赖，BPF 仍用于慢路径观测。
 
 ### 内核与包配置要求
 
@@ -157,7 +159,7 @@ CONFIG_PACKAGE_tc-tiny=y
 | `kmod-sched-bpf` | yes | `lanspeedd-bpf` 的内核 tc BPF classifier 依赖 |
 | `luci-base` | LuCI 页面 | LuCI 框架 |
 
-用户态 JSON 和 blobmsg 编码使用 Rust 实现，CT-Netlink 使用 Rust 原始 netlink 实现，eBPF 对象由 Aya 加载，不直接依赖 `libjson-c`、`libmnl` 或 `libbpf`。blobmsg 与对象注册编码由真实 SDK 的 `libubox` / `libubus` 独立生成 golden bytes 做逐字节回归；JSON 正整数只在 `i32` 范围内使用 INT32，更大值使用 INT64，超过 `i64::MAX` 时保持旧 json-c 的饱和语义。ubus 传输限制单帧为 1 MiB、待发送队列为 4 MiB，并对长度、填充、重复字段、UTF-8、断线和超时执行失败关闭；连接恢复后重新注册同一组九个方法。NSS 默认仍使用 BPF；NSS-direct 仅在显式模式或 BPF 不可用时启用，不额外依赖用户态库，但需要内核侧 qca-nss-ecm 暴露 ECM state 设备；不可用或没有可匹配 flow 时会使用 NSS sync。IPv6 客户端匹配依赖内核 neighbor 表；前端隐藏 IPv6 只影响显示，不影响采集匹配。
+用户态 JSON 和 blobmsg 编码使用 Rust 实现，CT-Netlink 使用 Rust 原始 netlink 实现，eBPF 对象由 Aya 加载，不直接依赖 `libjson-c`、`libmnl` 或 `libbpf`。blobmsg 与对象注册编码由真实 SDK 的 `libubox` / `libubus` 独立生成 golden bytes 做逐字节回归；JSON 正整数只在 `i32` 范围内使用 INT32，更大值使用 INT64，超过 `i64::MAX` 时保持旧 json-c 的饱和语义。ubus 传输限制单帧为 1 MiB、待发送队列为 4 MiB，并对长度、填充、重复字段、UTF-8、断线和超时执行失败关闭；连接恢复后重新注册同一组九个方法。NSS ECM/PPE 活跃时默认使用 NSS sync 权威计数并保留 BPF 慢路径观测；NSS-direct 仅在显式模式或 sync 不可用时启用，不额外依赖用户态库，但需要内核侧 qca-nss-ecm 暴露 ECM state 设备。IPv6 客户端匹配依赖内核 neighbor 表；前端隐藏 IPv6 只影响显示，不影响采集匹配。
 
 ### 本地 checkout / SDK 辅助脚本
 
@@ -251,7 +253,7 @@ uci commit lanspeed
 | `active_client_window_ms` | `10000` | 活跃客户端最近可见窗口；配置页要求不低于 `1000` ms。 |
 | `active_client_min_bps` | `1` | 活跃客户端最低当前速率；配置页要求不低于 `1` bps。 |
 | `overview_window_samples` | `240` | 趋势/概览样本窗口；配置页允许 `2` 到 `240` 个样本。 |
-| `rate_collector_mode` | `auto` | 速率采集：`auto` 默认在所有设备上优先 BPF；也可显式选择 `bpf` / `nss_ecm_direct` / `nss_conntrack_sync`。 |
+| `rate_collector_mode` | `auto` | 速率采集：`auto` 在非 NSS 设备使用 BPF，在 NSS ECM/PPE 活跃且 Conntrack accounting 可用时使用 NSS sync；也可显式选择 `bpf` / `nss_ecm_direct` / `nss_conntrack_sync`。 |
 | `conn_collector_mode` | `auto` | 连接数采集：`auto` / `conntrack_netlink` / `conntrack_procfs`。 |
 | `show_client_status` | `0` | 是否在 LAN 客户端列表中显示采集来源和告警状态。 |
 | `show_ipv6` | `1` | 客户端列表是否显示 IPv6 地址；关闭时私有 IPv6 与范围编辑会禁用。 |
@@ -307,12 +309,12 @@ ubus call lanspeed client_connections \
 | OpenClash fake-ip | 远端地址置信度降低，可能出现 `openclash_fake_ip_low_remote_confidence`。 |
 | OpenClash TUN/mix | TUN/mix 会改变 hook 顺序，可能出现 `openclash_tun_conntrack_low_confidence`。 |
 | OpenClash DNS 链 | DNS 重定向链不完整时会提示 `openclash_dns_chain_incomplete`。 |
-| dae/daed | 代理接口不作为客户端身份，探测到时提示 `dae_detected`；运行态启动时立即扫描、之后至多每 5 秒由 `/proc/<pid>/comm` 刷新，状态变化仍触发事务 reload；自动模式继续优先 BPF，并提示 `dae_runtime_prefers_bpf`、切到 Early passthrough；NSS 设备只有在 BPF 不可用时才提示 `nss_dae_bpf_fallback_may_be_inaccurate` 并回退 NSS。 |
+| dae/daed | 代理接口不作为客户端身份，探测到时提示 `dae_detected`；运行态启动时立即扫描、之后至多每 5 秒由 `/proc/<pid>/comm` 刷新，状态变化仍触发事务 reload；非 NSS 自动模式优先 BPF 并切到 Early passthrough，NSS 设备保持 NSS sync 权威计数与 BPF 慢路径观测。 |
 | SQM/qosify/ifb | 可能影响方向判断或覆盖范围，对应 `sqm_detected`、`qosify_detected`、`ifb_detected`。 |
 | hardware flow offload | 硬件转发绕过 CPU，BPF 不可见，提示 `hardware_flow_offload_unsupported`。 |
 | software flow offload | 告警但不阻止采集，提示 `software_flow_offload_enabled`。 |
 | fullcone NAT | 连接语义可能受影响，提示 `fullcone_nat_enabled`。 |
-| NSS ECM / PPE | 默认优先使用 BPF，但硬件加速流量可能绕过 CPU，BPF 只能看到慢路径；显式 NSS 模式或 BPF 不可用时可使用 NSS sync / CT-Netlink、NSS-direct，PPE direct 第一版只探测状态且不写 NSS 状态。 |
+| NSS ECM / PPE | 硬件加速流量绕过 CPU，默认以 NSS sync / CT-Netlink 作为客户端权威计数；BPF 保持挂载但只观察慢路径，NSS-direct 仅作显式或 sync 失败后备，PPE direct 第一版只探测状态且不写 NSS 状态。 |
 | nssifb | 只能观察，不允许作为 BPF 采集接口，避免镜像接口重复计数。 |
 | same-subnet side-router direct | 同网段旁路由直连可能绕过主路由，提示 `same-subnet side-router direct` 相关风险。 |
 | router-local | 路由器本机进程流量不会自然映射成 LAN 客户端。 |
@@ -334,8 +336,8 @@ ubus call lanspeed client_connections \
 | 缺少 `tc` | 安装 `tc-tiny` 或完整 iproute2。 |
 | 连接数全 0 | 检查 `nf_conntrack_acct`、`kmod-nf-conntrack-netlink`、`conn_collector_mode`。 |
 | 没有客户端 | 检查 LAN 接口配置、桥设备、BPF 是否 attach 成功。 |
-| 速率长时间为 0 | 所有设备先检查 `rate_collector_mode`、BPF 包、tc filter、硬件 flow offload；NSS 设备仅在显式 NSS 模式或 BPF 后备生效时再看 `nss_ecm_direct_unavailable` / `nss_ecm_direct_snapshot_pending`；IPv6 场景同时检查客户端是否出现在 neighbor 表。 |
-| OpenClash 或 dae/daed 共存 | 优先确认 BPF attach 在 LAN 边缘，观察 health 里的 warning；NSS+daed 只有在 BPF 不可用而回退 NSS 时才会提示速率可能不准。 |
+| 速率长时间为 0 | 先检查 `rate_collector_mode`、BPF 包、tc filter、硬件 flow offload；NSS 设备确认 `effective_rate=nss_conntrack_sync`、`counter_source=ecm_conntrack_sync` 和 Conntrack accounting，再看 `nss_ecm_direct_unavailable` / `nss_ecm_direct_snapshot_pending`；IPv6 场景同时检查客户端是否出现在 neighbor 表。 |
+| OpenClash 或 dae/daed 共存 | 确认 BPF attach 在 LAN 边缘并观察 health warning；NSS 设备同时确认 `effective_rate=nss_conntrack_sync`，避免把 BPF 慢路径与 NSS 计数相加。 |
 | 覆盖率低 | 检查硬件 offload、旁路网关、LAN-to-LAN、IFB/TUN 等 CPU 不可见路径。 |
 
 ## 项目结构

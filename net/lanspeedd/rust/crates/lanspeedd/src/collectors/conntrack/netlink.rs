@@ -21,6 +21,8 @@ const CTA_STATUS: usize = 3;
 const CTA_PROTOINFO: usize = 4;
 const CTA_COUNTERS_ORIG: usize = 9;
 const CTA_COUNTERS_REPLY: usize = 10;
+const CTA_ID: usize = 12;
+const CTA_ZONE: usize = 18;
 const IPS_ASSURED: u32 = 1 << 2;
 const IPS_OFFLOAD: u32 = 1 << 14;
 const IPS_HW_OFFLOAD: u32 = 1 << 15;
@@ -351,11 +353,15 @@ fn parse_flow(payload: &[u8]) -> Result<FlowSample, DumpError> {
     let attrs = payload
         .get(4..)
         .ok_or(DumpError::Malformed("short nfgenmsg"))?;
-    let attrs = attr_table(attrs, 10)?;
+    let attrs = attr_table(attrs, CTA_ZONE)?;
     let orig = attrs[CTA_TUPLE_ORIG].ok_or(DumpError::Malformed("missing original tuple"))?;
     let orig_counters =
         attrs[CTA_COUNTERS_ORIG].ok_or(DumpError::Malformed("missing original counters"))?;
     let mut flow = FlowSample::default();
+    flow.conntrack_id = attrs[CTA_ID].map(|id| be_u32(id.payload)).transpose()?;
+    flow.conntrack_zone = attrs[CTA_ZONE]
+        .map(|zone| be_u16(zone.payload))
+        .transpose()?;
     let orig_meta = parse_tuple(orig.payload, true, &mut flow)?;
     if let Some(reply) = attrs[CTA_TUPLE_REPLY] {
         let reply_meta = parse_tuple(reply.payload, false, &mut flow)?;

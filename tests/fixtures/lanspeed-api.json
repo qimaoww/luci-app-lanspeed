@@ -32,7 +32,7 @@
     "collector_mode": "auto",
     "rate_collector_mode": "auto",
     "conn_collector_mode": "auto",
-    "version": "1.1.2-r3",
+    "version": "1.1.2-r5",
     "capabilities": {
       "bpf": false,
       "bpf_supported": false,
@@ -312,8 +312,8 @@
       }
     ],
     "versions": {
-      "daemon": "1.1.2-r3",
-      "package": "1.1.2-r3",
+      "daemon": "1.1.2-r5",
+      "package": "1.1.2-r5",
       "contract_version": 1,
       "schema_version": 1
     },

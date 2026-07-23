@@ -563,7 +563,12 @@ function phaseForValue(key, value) {
 		if (collection.state === 'stale') return 'stale';
 		if (collection.state === 'degraded' || collection.state === 'unavailable') return 'degraded';
 	}
-	if ((key === 'status' || key === 'health') && value.mode !== 'Full') return 'degraded';
+	/*
+	 * `mode` describes counter visibility/accuracy, not RPC health.  A valid
+	 * status or health response is a successful RPC even when NSS acceleration
+	 * makes the authoritative counter path `Degraded`.  Accuracy is rendered
+	 * separately by the collection-quality and data-path stages.
+	 */
 	if ((key === 'clients' && !asArray(value.clients).length) ||
 		(key === 'interfaces' && !asArray(value.interfaces).length) ||
 		(key === 'overview' && !asArray(value.samples).length)) return 'empty';

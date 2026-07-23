@@ -12,7 +12,7 @@ pub const NETLINK_SOURCE_PATH: &str = "netlink:ctnetlink";
 pub const NETLINK_COUNTER_SOURCE: &str = "ctnetlink_conntrack_acct_orig_reply_bytes";
 pub const PROCFS_COUNTER_SOURCE: &str = "procfs_conntrack_acct_orig_reply_bytes";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Protocol {
     Tcp,
     Udp,
@@ -34,6 +34,12 @@ pub enum TcpState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FlowSample {
+    /// Kernel conntrack generation identifier (`CTA_ID`) when ctnetlink is
+    /// available.  Unlike a five-tuple this distinguishes rapid tuple reuse.
+    pub conntrack_id: Option<u32>,
+    /// Numeric conntrack zone (`CTA_ZONE` or procfs `zone=`), independent of
+    /// the LAN identity zone used by the UI.
+    pub conntrack_zone: Option<u16>,
     pub orig_src: Option<IpAddr>,
     pub orig_dst: Option<IpAddr>,
     pub reply_src: Option<IpAddr>,
@@ -52,6 +58,8 @@ pub struct FlowSample {
 impl Default for FlowSample {
     fn default() -> Self {
         Self {
+            conntrack_id: None,
+            conntrack_zone: None,
             orig_src: None,
             orig_dst: None,
             reply_src: None,
@@ -125,6 +133,8 @@ pub struct CollectStats {
     pub ipv6_lan_flows: usize,
     pub malformed_lines: usize,
     pub entries_seen: usize,
+    pub conntrack_ids_present: usize,
+    pub conntrack_zones_present: usize,
     pub entries_matched: usize,
     pub clients_dropped: usize,
 }
@@ -346,6 +356,8 @@ fn stats_from_aggregate(
         ipv6_lan_flows: snapshot.stats.ipv6_lan_flows,
         malformed_lines,
         entries_seen,
+        conntrack_ids_present: snapshot.stats.conntrack_ids_present,
+        conntrack_zones_present: snapshot.stats.conntrack_zones_present,
         entries_matched: snapshot.stats.entries_matched,
         clients_dropped: snapshot.stats.clients_dropped,
     }
@@ -386,6 +398,8 @@ mod tests {
             })
             .unwrap();
         let flow = FlowSample {
+            conntrack_id: Some(7),
+            conntrack_zone: Some(0),
             orig_src: Some("192.0.2.10".parse().unwrap()),
             orig_dst: Some("1.1.1.1".parse().unwrap()),
             reply_src: Some("1.1.1.1".parse().unwrap()),

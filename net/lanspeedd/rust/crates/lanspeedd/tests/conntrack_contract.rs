@@ -44,6 +44,8 @@ fn identities() -> IdentityTable {
 
 fn flow(src: &str, dst: &str, reply_src: &str, reply_dst: &str) -> FlowSample {
     FlowSample {
+        conntrack_id: None,
+        conntrack_zone: Some(0),
         orig_src: Some(src.parse().unwrap()),
         orig_dst: Some(dst.parse().unwrap()),
         reply_src: Some(reply_src.parse().unwrap()),
@@ -198,8 +200,14 @@ fn procfs_recovers_assured_state_hidden_by_flow_offload_markers() {
     assert_eq!(parsed.flows[1].tcp_state, Some(TcpState::Established));
     assert!(!parsed.flows[4].assured);
     assert_eq!(parsed.flows[5].tcp_state, Some(TcpState::TimeWait));
+    assert!(parsed
+        .flows
+        .iter()
+        .all(|flow| flow.conntrack_zone == Some(0)));
 
     let snapshot = aggregate_flows(&identities(), parsed.flows.iter(), 10, 8);
+    assert_eq!(snapshot.stats.conntrack_ids_present, 0);
+    assert_eq!(snapshot.stats.conntrack_zones_present, 6);
     let client = &snapshot.clients[0];
     assert_eq!(client.tcp_conns, 2);
     assert_eq!(
@@ -378,6 +386,8 @@ fn data_message_with_tuples_and_state(
     };
     attrs.extend(nested(9, &[counter]));
     attrs.extend(nested(10, &[attr(2, &5678u64.to_be_bytes())]));
+    attrs.extend(attr(12, &0x1234_5678u32.to_be_bytes()));
+    attrs.extend(attr(18, &7u16.to_be_bytes()));
     let mut payload = vec![0, 0, 0, 0];
     payload.extend(attrs);
     nlmsg(CT_NEW, NLM_F_MULTI, seq, &payload)
@@ -397,6 +407,8 @@ fn netlink_parses_v4_v6_unaligned_attrs_and_be32_be64_counters() {
     assert_eq!(flows.len(), 2);
     assert_eq!(flows[0].orig_src.unwrap().to_string(), "192.168.1.42");
     assert_eq!((flows[0].orig_bytes, flows[0].reply_bytes), (1234, 5678));
+    assert_eq!(flows[0].conntrack_id, Some(0x1234_5678));
+    assert_eq!(flows[0].conntrack_zone, Some(7));
     assert_eq!(flows[1].orig_src.unwrap().to_string(), "fd00::42");
     assert!(flows.iter().all(|flow| flow.assured && flow.is_dns()));
 }
@@ -546,6 +558,8 @@ fn netlink_streaming_aggregate_matches_vec_snapshot_across_datagrams() {
     assert_eq!(streaming.malformed_entries, 1);
     assert_eq!(streaming.entries_seen, 3);
     assert_eq!(streaming.aggregate.stats.entries_seen, 2);
+    assert_eq!(streaming.aggregate.stats.conntrack_ids_present, 2);
+    assert_eq!(streaming.aggregate.stats.conntrack_zones_present, 2);
 }
 
 #[test]

@@ -9,7 +9,7 @@ use lanspeedd::{
     },
     connection_details::{
         ClientConnectionDetail, ConnectionDetailsIndex, ConnectionDirection, ConnectionProtocol,
-        ConnectionRateBook, ConnectionState, MAX_CLIENT_CONNECTION_DETAILS,
+        ConntrackClientRateBook, ConnectionRateBook, ConnectionState, MAX_CLIENT_CONNECTION_DETAILS,
         MAX_STORED_CONNECTION_DETAILS,
     },
     identity::{IdentityObservation, IdentityTable, ObservationSource},
@@ -48,6 +48,8 @@ fn tcp_flow(
     reply_dst: Option<&str>,
 ) -> FlowSample {
     FlowSample {
+        conntrack_id: None,
+        conntrack_zone: Some(0),
         orig_src: orig_src.map(|ip| ip.parse().unwrap()),
         orig_dst: orig_dst.map(|ip| ip.parse().unwrap()),
         reply_src: reply_src.map(|ip| ip.parse().unwrap()),
@@ -196,13 +198,15 @@ fn outbound_established_assured_tcp_populates_detail_and_legacy_count() {
 #[test]
 fn per_connection_rates_use_adjacent_counters_in_the_client_direction() {
     let table = identities();
-    let outbound_first = outbound_tcp(CLIENT_IP, "198.51.100.10");
-    let inbound_first = tcp_flow(
+    let mut outbound_first = outbound_tcp(CLIENT_IP, "198.51.100.10");
+    outbound_first.conntrack_id = Some(10);
+    let mut inbound_first = tcp_flow(
         Some("198.51.100.20"),
         Some(CLIENT_IP),
         Some(CLIENT_IP),
         Some("198.51.100.20"),
     );
+    inbound_first.conntrack_id = Some(20);
     let mut first = aggregate_flows(&table, [&outbound_first, &inbound_first], 1_000, 8);
     let mut rates = ConnectionRateBook::default();
 
@@ -326,6 +330,171 @@ fn reusing_the_same_snapshot_generation_preserves_computed_rates() {
     assert!(Arc::ptr_eq(&cached_details, &second.connection_details));
     assert_eq!(cached_details[IDENTITY_KEY].connections[0], expected);
     assert_eq!((expected.tx_bps, expected.rx_bps), (8_000, 16_000));
+}
+
+#[test]
+fn client_rate_baseline_is_per_flow_when_another_flow_expires() {
+    let table = identities();
+    let first_flow = outbound_tcp(CLIENT_IP, "198.51.100.50");
+    let mut second_flow = first_flow.clone();
+    second_flow.orig_sport = 50_124;
+    second_flow.reply_dport = 50_124;
+    second_flow.orig_bytes = 2_000;
+    second_flow.reply_bytes = 3_000;
+
+    let first = aggregate_flows(&table, [&first_flow, &second_flow], 1_000, 8);
+    let mut book = ConntrackClientRateBook::default();
+    let initial = book.update(first.sample_ms, &first.connection_counters);
+    assert_eq!(initial[IDENTITY_KEY].tx_bytes, 0);
+    assert_eq!(initial[IDENTITY_KEY].rx_bytes, 0);
+
+    let mut surviving = first_flow.clone();
+    surviving.orig_bytes += 400;
+    surviving.reply_bytes += 600;
+    let second = aggregate_flows(&table, [&surviving], 2_000, 8);
+    let totals = book.update(second.sample_ms, &second.connection_counters);
+
+    // The expired flow contributes no negative delta, while the surviving
+    // flow contributes its own 400/600 byte increment.
+    assert_eq!(totals[IDENTITY_KEY].tx_bytes, 400);
+    assert_eq!(totals[IDENTITY_KEY].rx_bytes, 600);
+}
+
+#[test]
+fn client_rate_baseline_resets_only_the_flow_with_a_counter_rollback() {
+    let table = identities();
+    let first_flow = outbound_tcp(CLIENT_IP, "198.51.100.60");
+    let mut second_flow = first_flow.clone();
+    second_flow.orig_sport = 50_125;
+    second_flow.reply_dport = 50_125;
+
+    let first = aggregate_flows(&table, [&first_flow, &second_flow], 1_000, 8);
+    let mut book = ConntrackClientRateBook::default();
+    book.update(first.sample_ms, &first.connection_counters);
+
+    let mut next_first = first_flow.clone();
+    next_first.orig_bytes = 10;
+    next_first.reply_bytes += 200;
+    let mut next_second = second_flow.clone();
+    next_second.orig_bytes += 300;
+    next_second.reply_bytes += 500;
+    let second = aggregate_flows(&table, [&next_first, &next_second], 2_000, 8);
+    let totals = book.update(second.sample_ms, &second.connection_counters);
+
+    // The rolled-back flow is treated as a new generation, so its current
+    // 10-byte counter is counted without affecting the healthy flow.
+    assert_eq!(totals[IDENTITY_KEY].tx_bytes, 310);
+    assert_eq!(totals[IDENTITY_KEY].rx_bytes, 950);
+}
+
+#[test]
+fn client_rate_counts_new_short_flows_after_the_initial_baseline() {
+    let table = identities();
+    let first_flow = outbound_tcp(CLIENT_IP, "198.51.100.70");
+    let first = aggregate_flows(&table, [&first_flow], 1_000, 8);
+    let mut book = ConntrackClientRateBook::default();
+    book.update(first.sample_ms, &first.connection_counters);
+
+    let mut surviving = first_flow.clone();
+    surviving.orig_bytes += 100;
+    surviving.reply_bytes += 200;
+    let mut new_flow = outbound_tcp(CLIENT_IP, "198.51.100.71");
+    new_flow.orig_sport = 50_126;
+    new_flow.reply_dport = 50_126;
+    new_flow.orig_bytes = 500;
+    new_flow.reply_bytes = 700;
+    let second = aggregate_flows(&table, [&surviving, &new_flow], 2_000, 8);
+    let totals = book.update(second.sample_ms, &second.connection_counters);
+
+    assert_eq!(totals[IDENTITY_KEY].tx_bytes, 600);
+    assert_eq!(totals[IDENTITY_KEY].rx_bytes, 900);
+}
+
+#[test]
+fn client_rate_retains_cta_id_baseline_across_a_transient_missing_snapshot() {
+    let table = identities();
+    let mut flow = outbound_tcp(CLIENT_IP, "198.51.100.72");
+    flow.conntrack_id = Some(0x1000);
+    let first = aggregate_flows(&table, [&flow], 1_000, 8);
+    let mut book = ConntrackClientRateBook::default();
+    book.update(first.sample_ms, &first.connection_counters);
+
+    let missing = aggregate_flows(&table, std::iter::empty(), 2_000, 8);
+    assert!(book
+        .update(missing.sample_ms, &missing.connection_counters)
+        .is_empty());
+
+    let mut reappeared = flow.clone();
+    reappeared.orig_bytes += 300;
+    reappeared.reply_bytes += 700;
+    let third = aggregate_flows(&table, [&reappeared], 3_000, 8);
+    let totals = book.update(third.sample_ms, &third.connection_counters);
+
+    // The flow was absent for one dump, so only the actual increment is
+    // counted instead of replaying its complete lifetime counters.
+    assert_eq!(totals[IDENTITY_KEY].tx_bytes, 300);
+    assert_eq!(totals[IDENTITY_KEY].rx_bytes, 700);
+}
+
+#[test]
+fn client_rate_uses_cta_id_to_distinguish_rapid_tuple_reuse() {
+    let table = identities();
+    let mut first_flow = outbound_tcp(CLIENT_IP, "198.51.100.73");
+    first_flow.conntrack_id = Some(0x2000);
+    let first = aggregate_flows(&table, [&first_flow], 1_000, 8);
+    let mut book = ConntrackClientRateBook::default();
+    book.update(first.sample_ms, &first.connection_counters);
+
+    let mut reused_tuple = first_flow.clone();
+    reused_tuple.conntrack_id = Some(0x2001);
+    reused_tuple.orig_bytes = 1_000;
+    reused_tuple.reply_bytes = 2_000;
+    let second = aggregate_flows(&table, [&reused_tuple], 2_000, 8);
+    let totals = book.update(second.sample_ms, &second.connection_counters);
+
+    // Even though the five-tuple is identical and the new counters exceed
+    // the old values, the distinct kernel generation contributes in full.
+    assert_eq!(totals[IDENTITY_KEY].tx_bytes, 1_000);
+    assert_eq!(totals[IDENTITY_KEY].rx_bytes, 2_000);
+}
+
+#[test]
+fn client_rate_ledger_keeps_missing_remote_and_other_protocol_flows() {
+    let table = identities();
+    let mut missing_remote = outbound_tcp(CLIENT_IP, "198.51.100.80");
+    missing_remote.orig_dst = None;
+    missing_remote.reply_src = None;
+    let mut other = outbound_tcp(CLIENT_IP, "198.51.100.81");
+    other.protocol = Protocol::Other(47);
+    other.orig_sport = 0;
+    other.orig_dport = 0;
+    other.reply_sport = 0;
+    other.reply_dport = 0;
+
+    let snapshot = aggregate_flows(&table, [&missing_remote, &other], 1_000, 8);
+
+    assert_eq!(snapshot.connection_counters.len(), 2);
+    assert!(snapshot
+        .connection_counters
+        .keys()
+        .any(|key| key.remote_ip.is_none()));
+    assert!(snapshot
+        .connection_counters
+        .keys()
+        .any(|key| key.protocol == lanspeedd::connection_details::RateProtocol::Other(47)));
+
+    let mut next_missing = missing_remote.clone();
+    next_missing.orig_bytes += 10;
+    next_missing.reply_bytes += 20;
+    let mut next_other = other.clone();
+    next_other.orig_bytes += 10;
+    next_other.reply_bytes += 20;
+    let next = aggregate_flows(&table, [&next_missing, &next_other], 2_000, 8);
+    let mut book = ConntrackClientRateBook::default();
+    book.update(snapshot.sample_ms, &snapshot.connection_counters);
+    let totals = book.update(next.sample_ms, &next.connection_counters);
+    assert_eq!(totals[IDENTITY_KEY].tx_bytes, 20);
+    assert_eq!(totals[IDENTITY_KEY].rx_bytes, 40);
 }
 
 #[test]

@@ -1010,59 +1010,48 @@ function simulateNssEcmDirect(fixture) {
 function simulateNssStableCollector(fixture) {
   const sync = simulateConntrackFallback(fixture);
   const direct = simulateNssEcmDirect(fixture);
-  const clientsByIdentity = new Map();
-  const warnings = sync.warnings.slice();
-  let directOverlayClients = 0;
-  let syncFallbackClients = 0;
+  const syncReadSucceeded = Boolean(
+    sync.active &&
+    sync.first_snapshot &&
+    sync.second_snapshot &&
+    fixture.sync_read_failed !== true
+  );
+  const selected = syncReadSucceeded ? sync : direct;
+  const warnings = syncReadSucceeded ? sync.warnings.slice() : [];
+  const nssOffloadActive = Boolean(
+    fixture.probe.nss_present &&
+    (fixture.probe.nss_ecm_active || fixture.probe.nss_ppe_active)
+  );
 
-  for (const client of sync.clients) {
-    clientsByIdentity.set(client.identity_key, Object.assign({}, client));
-  }
-
-  for (const client of direct.clients) {
-    if (!client.tx_bps && !client.rx_bps)
-      continue;
-    const existing = clientsByIdentity.get(client.identity_key);
-    if (existing) {
-      directOverlayClients += 1;
-    }
-    clientsByIdentity.set(client.identity_key, Object.assign({}, existing || {}, client, {
-      collector_mode: 'nss_ecm_direct',
-      confidence: 'high'
-    }));
-  }
-
-  for (const client of clientsByIdentity.values()) {
-    if (client.collector_mode === 'conntrack_ecm_sync') {
-      syncFallbackClients += 1;
-    }
-  }
-
-  if (direct.first_snapshot.entries_matched === 0 || directOverlayClients === 0) {
-    addUnique(warnings, 'nss_direct_no_data');
-  } else if (syncFallbackClients > 0) {
-    addUnique(warnings, 'nss_direct_partial');
-  }
-  if (syncFallbackClients > 0) {
-    addUnique(warnings, 'nss_sync_fallback');
+  if (syncReadSucceeded) {
+    addUnique(warnings, 'nss_bpf_slow_path_only');
+  } else {
+    addUnique(warnings, 'nss_ecm_direct_active');
   }
 
   return {
     source: 'lanspeedd_nss_stable_fixture',
-    primary_source: sync.active ? 'nss_conntrack_sync' : 'nss_ecm_direct',
-    collector_mode: directOverlayClients > 0 && syncFallbackClients > 0
-      ? 'nss_ecm_direct+conntrack_ecm_sync'
-      : (directOverlayClients > 0 ? 'nss_ecm_direct' : 'conntrack_ecm_sync'),
-    confidence: sync.confidence,
-    coverage_client_source: directOverlayClients > 0 && syncFallbackClients > 0
-      ? 'nss_ecm_direct+conntrack_ecm_sync'
-      : (directOverlayClients > 0 ? 'nss_ecm_direct' : 'conntrack'),
+    primary_source: syncReadSucceeded ? 'nss_conntrack_sync' : 'nss_ecm_direct',
+    collector_mode: syncReadSucceeded ? 'conntrack_ecm_sync' : 'nss_ecm_direct',
+    confidence: selected.confidence,
+    coverage_client_source: syncReadSucceeded ? 'conntrack' : 'nss_ecm_direct',
+    counter_source: syncReadSucceeded ? 'ecm_conntrack_sync' : 'ecm_state_direct',
+    counter_merge_policy: syncReadSucceeded
+      ? 'conntrack_sync_authoritative_no_bpf_addition'
+      : 'single_source',
+    bpf_visibility: nssOffloadActive
+      ? 'slow_path_only_until_deceleration'
+      : 'full_when_nss_not_offloading',
+    direct_role: syncReadSucceeded ? 'same_cycle_fallback_only' : 'authoritative_fallback',
     direct_flows_seen: direct.first_snapshot.entries_seen,
     direct_flows_matched: direct.first_snapshot.entries_matched,
-    direct_overlay_clients: directOverlayClients,
-    sync_fallback_clients: syncFallbackClients,
+    direct_observed_clients: direct.clients.length,
+    direct_overlay_clients: 0,
+    sync_authoritative_clients: syncReadSucceeded ? sync.clients.length : 0,
+    direct_fallback_clients: syncReadSucceeded ? 0 : direct.clients.length,
     warnings,
-    clients: Array.from(clientsByIdentity.values()).sort((left, right) => left.identity_key.localeCompare(right.identity_key))
+    clients: selected.clients.map((client) => Object.assign({}, client))
+      .sort((left, right) => left.identity_key.localeCompare(right.identity_key))
   };
 }
 
@@ -1180,13 +1169,17 @@ function simulateConntrackFallback(fixture) {
 function simulateNssSourceSelection(fixture) {
   const probe = fixture.probe;
   const bpfFullAvailable = Boolean(fixture.config.bpf_full_available);
+  const nssOffloadActive = Boolean(
+    probe.nss_present && (probe.nss_ecm_active || probe.nss_ppe_active)
+  );
+  const bpfFullUsable = bpfFullAvailable && !nssOffloadActive;
   const daeEarlyBpf = Boolean(fixture.config.dae_early_bpf);
   const rateMode = fixture.config.rate_collector_mode || 'auto';
   const daeRuntimeActive = Boolean(probe.runtime_active);
   const forceBpf = rateMode === 'bpf';
   const forceNssDirect = rateMode === 'nss_ecm_direct';
   const forceNssSync = rateMode === 'nss_conntrack_sync';
-  const daePreferBpf = Boolean(rateMode === 'auto' && daeRuntimeActive && bpfFullAvailable);
+  const daePreferBpf = Boolean(rateMode === 'auto' && daeRuntimeActive && bpfFullUsable);
   const directReadable = probe.nss_ecm_direct_readable !== false;
   const nssSyncAvailable = Boolean(
     fixture.config.enable_conntrack_fallback &&
@@ -1206,7 +1199,7 @@ function simulateNssSourceSelection(fixture) {
   let coverageClientSource = 'unsupported';
 
   if (forceBpf) {
-    if (bpfFullAvailable) {
+    if (bpfFullUsable) {
       primarySource = collectorMode = coverageClientSource = 'bpf';
       confidence = 'high';
     }
@@ -1227,9 +1220,6 @@ function simulateNssSourceSelection(fixture) {
       coverageClientSource = 'conntrack';
       confidence = 'medium';
     }
-  } else if (bpfFullAvailable) {
-    primarySource = collectorMode = coverageClientSource = 'bpf';
-    confidence = 'high';
   } else if (nssSyncAvailable) {
     primarySource = 'nss_conntrack_sync';
     collectorMode = 'conntrack_ecm_sync';
@@ -1237,6 +1227,9 @@ function simulateNssSourceSelection(fixture) {
     confidence = 'medium';
   } else if (nssDirectAvailable) {
     primarySource = collectorMode = coverageClientSource = 'nss_ecm_direct';
+    confidence = 'high';
+  } else if (daePreferBpf || bpfFullUsable) {
+    primarySource = collectorMode = coverageClientSource = 'bpf';
     confidence = 'high';
   }
 
@@ -1247,13 +1240,14 @@ function simulateNssSourceSelection(fixture) {
 
   if (directPreferred || syncPreferred) {
     addUnique(warnings, directPreferred ? 'nss_ecm_direct_active' : 'nss_ecm_sync_cadence');
-    if (bpfFullAvailable) {
-      addUnique(warnings, directPreferred ? 'nss_prefers_direct' : 'nss_prefers_conntrack_sync');
+    if (syncPreferred && nssOffloadActive) {
+      addUnique(warnings, 'nss_prefers_conntrack_sync');
+      addUnique(warnings, 'nss_bpf_slow_path_only');
     }
   }
   if (daePreferBpf)
     addUnique(warnings, 'dae_runtime_prefers_bpf');
-  if (probe.nss_present && daeRuntimeActive && !bpfFullAvailable && preferred)
+  if (syncPreferred && nssOffloadActive && daeRuntimeActive && preferred)
     addUnique(warnings, 'nss_dae_bpf_fallback_may_be_inaccurate');
 
   return {
@@ -1594,11 +1588,11 @@ assert(collectorModel.map_model.client_limit_warning === 'client_limit_exceeded'
 assert(collectorModel.map_model.map_read_failure_warning === 'map_read_failed', 'map read failure warning is required');
 assert(collectorModel.conntrack_fallback_model.collector_mode === 'conntrack', 'conntrack fallback model must expose collector_mode=conntrack');
 assert(collectorModel.conntrack_fallback_model.nss_sync_collector_mode === 'conntrack_ecm_sync', 'NSS sync model must expose collector_mode=conntrack_ecm_sync');
-assert(collectorModel.conntrack_fallback_model.active_only_when.includes('auto_bpf_full_unavailable_and_nss_ecm_or_ppe_sync_available'), 'conntrack fallback model must document that NSS sync is an automatic BPF fallback');
+assert(collectorModel.conntrack_fallback_model.active_only_when.includes('auto_nss_ecm_or_ppe_active_and_sync_available'), 'conntrack fallback model must document that NSS sync is the automatic NSS primary');
 assert(collectorModel.conntrack_fallback_model.primary_sources.includes('nss_conntrack_sync'), 'NSS sync model must expose nss_conntrack_sync primary source');
 assert(!collectorModel.conntrack_fallback_model.primary_sources.includes('conntrack'), 'plain non-NSS conntrack must not be documented as a live speed primary source');
 assert(collectorModel.conntrack_fallback_model.non_nss_live_rate_policy === 'bpf_only', 'non-NSS live rate policy must be BPF-only');
-assert(collectorModel.conntrack_fallback_model.nss_auto_live_rate_policy === 'bpf_first_then_nss_sync_or_direct_fallback', 'NSS auto live-rate policy must be BPF-first');
+assert(collectorModel.conntrack_fallback_model.nss_auto_live_rate_policy === 'nss_sync_primary_when_offload_active_bpf_slow_path_observer', 'NSS auto live-rate policy must make sync authoritative while BPF observes slow path');
 assert(collectorModel.conntrack_fallback_model.non_nss_conntrack_policy === 'connection_counts_and_diagnostics_only', 'non-NSS conntrack policy must be counts/diagnostics only');
 assert(collectorModel.conntrack_fallback_model.mode === 'Degraded', 'conntrack fallback must stay Degraded');
 assert(collectorModel.conntrack_fallback_model.coverage === 'routed_nat_only', 'conntrack fallback must be routed/NAT-only');
@@ -1607,12 +1601,16 @@ assert(collectorModel.conntrack_fallback_model.active_only_when.includes('nf_con
 assert(collectorModel.conntrack_fallback_model.active_only_when.includes('rate_collector_mode=nss_conntrack_sync'), 'conntrack fallback model must document explicit NSS sync mode');
 assert(!collectorModel.conntrack_fallback_model.active_only_when.includes('bpf_full_unavailable'), 'BPF failure alone must not activate non-NSS conntrack speed fallback');
 assert(collectorModel.conntrack_fallback_model.inactive_when.includes('non_nss_device'), 'conntrack speed fallback must be inactive on non-NSS devices');
-assert(collectorModel.conntrack_fallback_model.inactive_when.includes('auto_bpf_full_available'), 'NSS sync must stay inactive in auto mode while BPF is available');
+assert(collectorModel.conntrack_fallback_model.inactive_when.includes('nss_ecm_and_ppe_inactive'), 'NSS sync must stay inactive when NSS offload is inactive');
 assert(collectorModel.conntrack_fallback_model.inactive_when.includes('bpf_full_unavailable_without_nss_ecm_sync'), 'non-NSS BPF failure must not become CT byte-rate fallback');
 assert(collectorModel.conntrack_fallback_model.inactive_when.includes('conntrack_acct_disabled'), 'conntrack fallback must disable when accounting is off');
 assert(collectorModel.conntrack_fallback_model.source === 'lanspeedd_ctnetlink_conntrack_acct', 'conntrack fallback model must name ctnetlink as the preferred source');
 assert(collectorModel.conntrack_fallback_model.fallback_source === 'lanspeedd_procfs_conntrack_acct', 'conntrack fallback model must honestly keep procfs as the last fallback source');
 assert(collectorModel.conntrack_fallback_model.nss_sync_coverage_warning === 'nss_ecm_sync_cadence', 'NSS sync coverage warning must document ECM cadence');
+assert(collectorModel.conntrack_fallback_model.counter_generation_key === 'ctnetlink_cta_id_with_zone_tuple_fallback', 'CT-Netlink must key flow generations by CTA_ID and zone');
+assert(collectorModel.conntrack_fallback_model.ctnetlink_generation_baseline_retention_ms === 60000, 'CTA_ID baselines must survive transient missing dumps');
+assert(collectorModel.conntrack_fallback_model.procfs_tuple_baseline_retention_ms === 2000, 'tuple-only procfs baselines must expire quickly');
+assert(collectorModel.conntrack_fallback_model.maximum_retained_flow_baselines === 32768, 'retired flow baseline memory must remain bounded');
 assert(collectorModel.conntrack_fallback_model.counter_sources.includes('ctnetlink_conntrack_acct_orig_reply_bytes'), 'conntrack fallback model must name ctnetlink accounting source');
 assert(collectorModel.conntrack_fallback_model.counter_sources.includes('procfs_conntrack_acct_orig_reply_bytes'), 'conntrack fallback model must name procfs accounting source');
 assert(collectorModel.conntrack_fallback_model.netlink_path === 'netlink:ctnetlink', 'conntrack fallback model must document raw ctnetlink as the preferred reader');
@@ -1812,12 +1810,17 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
   ];
   const noData = simulateNssStableCollector(noDataFixture);
   assert(noData.direct_flows_matched === 0, 'stable NSS collector must expose direct matched flow count when direct has no data');
-  assert(noData.sync_fallback_clients === 1, 'stable NSS collector must use sync when direct has no data');
-  assert(noData.clients.length === 1, 'stable NSS collector must still emit sync client rows when direct has no data');
-  assert(noData.clients[0].collector_mode === 'conntrack_ecm_sync', 'direct no-data rows must keep NSS sync collector mode');
-  assert(noData.clients[0].rx_bps === 10000000, 'direct no-data fallback must preserve NSS sync rx rate');
-  assert(noData.warnings.includes('nss_direct_no_data'), 'direct no-data fallback must warn with nss_direct_no_data');
-  assert(noData.warnings.includes('nss_sync_fallback'), 'direct no-data fallback must warn with nss_sync_fallback');
+  assert(noData.primary_source === 'nss_conntrack_sync', 'NSS sync must stay authoritative when direct has no data');
+  assert(noData.sync_authoritative_clients === 1, 'NSS sync must remain the authoritative source for its client row');
+  assert(noData.direct_overlay_clients === 0, 'direct no-data must never create an overlay');
+  assert(noData.clients.length === 1, 'stable NSS collector must emit the authoritative sync client row');
+  assert(noData.clients[0].collector_mode === 'conntrack_ecm_sync', 'authoritative rows must keep NSS sync collector mode');
+  assert(noData.clients[0].rx_bps === 10000000, 'authoritative NSS sync must preserve its rx rate');
+  assert(noData.counter_merge_policy === 'conntrack_sync_authoritative_no_bpf_addition', 'NSS sync must forbid adding BPF counters');
+  assert(noData.bpf_visibility === 'slow_path_only_until_deceleration', 'NSS offload must limit BPF to slow-path visibility');
+  assert(noData.direct_role === 'same_cycle_fallback_only', 'ECM direct must remain a same-cycle fallback while sync succeeds');
+  assert(!noData.warnings.includes('nss_direct_no_data'), 'unused direct diagnostics must not degrade an authoritative sync sample');
+  assert(!noData.warnings.includes('nss_sync_fallback'), 'authoritative NSS sync must not be described as a fallback');
 }
 {
   const zeroDirectFixture = clone(nssEcmDirectFixture);
@@ -1866,13 +1869,15 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
   ];
   const zeroDirect = simulateNssStableCollector(zeroDirectFixture);
   assert(zeroDirect.direct_flows_matched === 1, 'stable NSS collector must record matched direct flows even when their rate is zero');
-  assert(zeroDirect.direct_overlay_clients === 0, 'zero-rate direct rows must not replace NSS sync rows');
-  assert(zeroDirect.sync_fallback_clients === 1, 'zero-rate direct rows must leave NSS sync as the emitted source');
-  assert(zeroDirect.clients.length === 1, 'zero-rate direct fallback must still emit the sync client row');
-  assert(zeroDirect.clients[0].collector_mode === 'conntrack_ecm_sync', 'zero-rate direct fallback must keep NSS sync collector mode');
-  assert(zeroDirect.clients[0].rx_bps === 8000000, 'zero-rate direct fallback must preserve NSS sync rx rate');
-  assert(zeroDirect.warnings.includes('nss_direct_no_data'), 'zero-rate direct fallback must warn with nss_direct_no_data');
-  assert(zeroDirect.warnings.includes('nss_sync_fallback'), 'zero-rate direct fallback must warn with nss_sync_fallback');
+  assert(zeroDirect.direct_observed_clients === 1, 'zero-rate direct diagnostics must remain observable without becoming authoritative');
+  assert(zeroDirect.direct_overlay_clients === 0, 'zero-rate direct rows must never replace NSS sync rows');
+  assert(zeroDirect.sync_authoritative_clients === 1, 'zero-rate direct rows must leave NSS sync authoritative');
+  assert(zeroDirect.clients.length === 1, 'stable NSS collector must emit the sync client row');
+  assert(zeroDirect.clients[0].collector_mode === 'conntrack_ecm_sync', 'zero-rate direct diagnostics must not change sync collector mode');
+  assert(zeroDirect.clients[0].rx_bps === 8000000, 'zero-rate direct diagnostics must not change the NSS sync rx rate');
+  assert(zeroDirect.direct_fallback_clients === 0, 'ECM direct must not supply clients while sync succeeds');
+  assert(!zeroDirect.warnings.includes('nss_direct_no_data'), 'unused zero-rate direct diagnostics must not warn about live-rate coverage');
+  assert(!zeroDirect.warnings.includes('nss_sync_fallback'), 'authoritative NSS sync must not be labeled as fallback');
 }
 {
   const partialFixture = clone(nssEcmDirectFixture);
@@ -1923,16 +1928,37 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
     }
   ];
   const partial = simulateNssStableCollector(partialFixture);
-  const directClient = partial.clients.find((client) => client.identity_key === 'aa:bb:cc:00:00:01@lan');
+  const sharedClient = partial.clients.find((client) => client.identity_key === 'aa:bb:cc:00:00:01@lan');
   const syncClient = partial.clients.find((client) => client.identity_key === 'aa:bb:cc:00:00:02@lan');
-  assert(partial.direct_overlay_clients === 1, 'stable NSS collector must count direct overlay clients');
-  assert(partial.sync_fallback_clients === 1, 'stable NSS collector must count sync fallback clients');
-  assert(directClient && directClient.collector_mode === 'nss_ecm_direct', 'direct-overlaid duplicate client must keep direct collector mode');
-  assert(directClient.tx_bps === 2000000 && directClient.rx_bps === 4000000, 'direct-overlaid duplicate client must prefer direct rates over sync rates');
-  assert(syncClient && syncClient.collector_mode === 'conntrack_ecm_sync', 'client missing from direct must be filled from NSS sync');
-  assert(syncClient.tx_bps === 2000000 && syncClient.rx_bps === 10000000, 'sync fallback client must keep NSS sync rates');
-  assert(partial.warnings.includes('nss_direct_partial'), 'partial direct overlay must warn with nss_direct_partial');
-  assert(partial.warnings.includes('nss_sync_fallback'), 'partial direct overlay must warn with nss_sync_fallback');
+  assert(partial.primary_source === 'nss_conntrack_sync', 'partial ECM direct coverage must not replace NSS sync as primary');
+  assert(partial.collector_mode === 'conntrack_ecm_sync', 'partial ECM direct coverage must keep one authoritative sync collector mode');
+  assert(partial.coverage_client_source === 'conntrack', 'all emitted client rates must come from authoritative sync counters');
+  assert(partial.direct_observed_clients === 1, 'stable NSS collector must retain direct data for diagnostics');
+  assert(partial.direct_overlay_clients === 0, 'stable NSS collector must never overlay direct counters on sync clients');
+  assert(partial.sync_authoritative_clients === 2, 'all sync clients must remain authoritative regardless of direct coverage');
+  assert(partial.direct_fallback_clients === 0, 'direct clients must remain unused while the sync read succeeds');
+  assert(sharedClient && sharedClient.collector_mode === 'conntrack_ecm_sync', 'a client also visible in direct must keep sync collector mode');
+  assert(sharedClient.tx_bps === 800000 && sharedClient.rx_bps === 800000, 'a shared client must keep sync rates instead of direct rates');
+  assert(syncClient && syncClient.collector_mode === 'conntrack_ecm_sync', 'a client absent from direct must keep sync collector mode');
+  assert(syncClient.tx_bps === 2000000 && syncClient.rx_bps === 10000000, 'the second client must keep its NSS sync rates');
+  assert(partial.counter_source === 'ecm_conntrack_sync', 'NSS sync must remain the single counter source');
+  assert(partial.counter_merge_policy === 'conntrack_sync_authoritative_no_bpf_addition', 'stable NSS rates must not add BPF slow-path bytes');
+  assert(partial.bpf_visibility === 'slow_path_only_until_deceleration', 'BPF must remain explicitly limited to slow-path observation');
+  assert(partial.warnings.includes('nss_bpf_slow_path_only'), 'stable NSS evidence must explain BPF slow-path-only visibility');
+  assert(!partial.warnings.includes('nss_direct_partial'), 'diagnostic direct coverage must not create a partial-overlay warning');
+  assert(!partial.warnings.includes('nss_sync_fallback'), 'authoritative NSS sync must not be described as a fallback');
+
+  partialFixture.sync_read_failed = true;
+  const directFallback = simulateNssStableCollector(partialFixture);
+  assert(directFallback.primary_source === 'nss_ecm_direct', 'same-cycle sync read failure must select the retained direct snapshot');
+  assert(directFallback.collector_mode === 'nss_ecm_direct', 'same-cycle sync read failure must expose direct collector mode');
+  assert(directFallback.counter_merge_policy === 'single_source', 'direct fallback must remain a single source without sync or BPF addition');
+  assert(directFallback.direct_role === 'authoritative_fallback', 'direct must become authoritative only after the sync read fails');
+  assert(directFallback.direct_fallback_clients === 1, 'direct fallback must emit only clients observed by ECM state');
+  assert(directFallback.sync_authoritative_clients === 0, 'failed sync counters must not remain authoritative');
+  assert(directFallback.clients[0].tx_bps === 2000000 && directFallback.clients[0].rx_bps === 4000000, 'direct fallback must retain its own unmerged rates');
+  assert(directFallback.warnings.includes('nss_ecm_direct_active'), 'direct fallback must identify the selected source');
+  assert(!directFallback.warnings.includes('nss_prefers_conntrack_sync'), 'failed sync must not leave a stale authoritative-source warning');
 }
 {
   const ipv6Fixture = clone(nssEcmDirectFixture);
@@ -2181,20 +2207,21 @@ assert(nssEcmDirect.clients[1].rx_bps === nssEcmDirectFixture.expected.second_rx
 
 const nssEcmSync = simulateNssSourceSelection(nssEcmSyncFixture);
 assert(nssEcmSync.preferred === true, 'NSS ECM fixture must keep a usable preferred live source');
-assert(nssEcmSync.primary_source === 'bpf', 'NSS auto must prefer BPF when the BPF runtime is available');
-assert(nssEcmSync.collector_mode === 'bpf', 'NSS auto clients must use BPF collector mode by default');
-assert(nssEcmSync.coverage_client_source === 'bpf', 'NSS auto coverage must use BPF client bytes by default');
-assert(nssEcmSync.confidence === 'high', 'NSS auto BPF confidence should remain high');
-assert(!nssEcmSync.warnings.includes('nss_ecm_sync_cadence'), 'NSS auto must not claim sync cadence while BPF is selected');
-assert(!nssEcmSync.warnings.includes('nss_prefers_conntrack_sync'), 'NSS auto must not claim NSS sync overrides available BPF metrics');
+assert(nssEcmSync.primary_source === 'nss_conntrack_sync', 'NSS auto must use sync when ECM offload is active');
+assert(nssEcmSync.collector_mode === 'conntrack_ecm_sync', 'NSS auto clients must use the conntrack ECM collector mode');
+assert(nssEcmSync.coverage_client_source === 'conntrack', 'NSS auto coverage must use authoritative conntrack sync bytes');
+assert(nssEcmSync.confidence === 'medium', 'NSS auto sync confidence must remain honest and below BPF Full');
+assert(nssEcmSync.warnings.includes('nss_ecm_sync_cadence'), 'NSS auto must expose sync cadence');
+assert(nssEcmSync.warnings.includes('nss_prefers_conntrack_sync'), 'NSS auto must explain why sync is authoritative');
+assert(nssEcmSync.warnings.includes('nss_bpf_slow_path_only'), 'NSS auto must identify BPF as slow-path-only');
 
 {
   const nssAutoFallbackFixture = clone(nssEcmSyncFixture);
   nssAutoFallbackFixture.config.bpf_full_available = false;
   const nssAutoFallback = simulateNssSourceSelection(nssAutoFallbackFixture);
-  assert(nssAutoFallback.primary_source === 'nss_conntrack_sync', 'NSS auto must fall back to NSS sync when BPF is unavailable');
-  assert(nssAutoFallback.collector_mode === 'conntrack_ecm_sync', 'NSS auto sync fallback must preserve the conntrack ECM collector mode');
-  assert(nssAutoFallback.warnings.includes('nss_ecm_sync_cadence'), 'NSS auto sync fallback must explain its sampling cadence');
+  assert(nssAutoFallback.primary_source === 'nss_conntrack_sync', 'NSS auto must keep NSS sync primary regardless of BPF availability');
+  assert(nssAutoFallback.collector_mode === 'conntrack_ecm_sync', 'NSS auto sync must preserve the conntrack ECM collector mode');
+  assert(nssAutoFallback.warnings.includes('nss_ecm_sync_cadence'), 'NSS auto sync must explain its sampling cadence');
 }
 
 {
@@ -2239,17 +2266,17 @@ assert(!nssEcmSync.warnings.includes('nss_prefers_conntrack_sync'), 'NSS auto mu
 }
 
 const nssEcmSyncBpfFallback = simulateNssSourceSelection(nssEcmSyncBpfFallbackFixture);
-assert(nssEcmSyncBpfFallback.preferred === true, 'NSS without conntrack accounting must still prefer available BPF');
-assert(nssEcmSyncBpfFallback.primary_source === 'bpf', 'NSS without conntrack accounting must keep BPF when the runtime is available');
-assert(nssEcmSyncBpfFallback.collector_mode === 'bpf', 'NSS without conntrack accounting must preserve BPF collector mode');
+assert(nssEcmSyncBpfFallback.preferred === false, 'NSS without conntrack accounting must not claim complete BPF coverage');
+assert(nssEcmSyncBpfFallback.primary_source === 'unsupported', 'NSS without sync accounting must not claim an incomplete BPF source');
+assert(nssEcmSyncBpfFallback.collector_mode === 'unsupported', 'NSS without sync accounting must expose the unsupported rate mode');
 
 const nssPpeOnly = simulateNssSourceSelection({
   config: { enable_conntrack_fallback: true, bpf_full_available: true },
   probe: { nf_conntrack_acct: true, nss_present: true, nss_ecm_active: false, nss_ppe_active: true }
 });
 assert(nssPpeOnly.preferred === true, 'PPE-only NSS detection must keep an available live source');
-assert(nssPpeOnly.primary_source === 'bpf', 'PPE-only NSS detection must prefer BPF when available');
-assert(nssPpeOnly.collector_mode === 'bpf', 'PPE-only NSS auto mode must use the BPF collector');
+assert(nssPpeOnly.primary_source === 'nss_conntrack_sync', 'PPE-only NSS detection must use sync when accounting is available');
+assert(nssPpeOnly.collector_mode === 'conntrack_ecm_sync', 'PPE-only NSS auto mode must use the sync collector');
 
 const nssDirectWithoutConntrackFallback = simulateNssSourceSelection({
   config: { enable_conntrack_fallback: false, bpf_full_available: true, rate_collector_mode: 'nss_ecm_direct' },
@@ -2287,11 +2314,11 @@ const nssDaedBpf = simulateNssSourceSelection({
   }
 });
 assert(nssDaedBpf.preferred === true, 'NSS+daed should still have a usable preferred live source when BPF is available');
-assert(nssDaedBpf.primary_source === 'bpf', 'NSS+daed must prefer BPF over NSS direct when BPF is available');
-assert(nssDaedBpf.collector_mode === 'bpf', 'NSS+daed+BPF clients must use collector_mode=bpf');
-assert(nssDaedBpf.coverage_client_source === 'bpf', 'NSS+daed+BPF coverage must use BPF client bytes');
-assert(nssDaedBpf.warnings.includes('dae_runtime_prefers_bpf'), 'NSS+dae runtime+BPF must explain that BPF is preferred');
-assert(!nssDaedBpf.warnings.includes('nss_prefers_direct'), 'NSS+daed+BPF must not claim NSS direct is preferred');
+assert(nssDaedBpf.primary_source === 'nss_conntrack_sync', 'NSS+daed must keep sync authoritative over BPF slow-path data');
+assert(nssDaedBpf.collector_mode === 'conntrack_ecm_sync', 'NSS+daed clients must use collector_mode=conntrack_ecm_sync');
+assert(nssDaedBpf.coverage_client_source === 'conntrack', 'NSS+daed coverage must use sync client bytes');
+assert(!nssDaedBpf.warnings.includes('dae_runtime_prefers_bpf'), 'NSS+dae must not claim BPF is the authoritative source');
+assert(nssDaedBpf.warnings.includes('nss_bpf_slow_path_only'), 'NSS+daed must identify BPF as slow-path-only');
 
 const nssDaedNssFallback = simulateNssSourceSelection({
   config: { enable_conntrack_fallback: true, bpf_full_available: false },
@@ -2317,7 +2344,7 @@ const nssDaedConfigOnly = simulateNssSourceSelection({
     daed_config: true
   }
 });
-assert(nssDaedConfigOnly.primary_source === 'bpf', 'NSS auto must keep BPF when only daed config exists');
+assert(nssDaedConfigOnly.primary_source === 'nss_conntrack_sync', 'NSS auto must keep sync when only daed config exists');
 assert(!nssDaedConfigOnly.warnings.includes('dae_runtime_prefers_bpf'), 'daed config alone must not emit the dae runtime BPF warning');
 
 const nssDaedStoppedWithLeftovers = simulateNssSourceSelection({
@@ -2331,7 +2358,7 @@ const nssDaedStoppedWithLeftovers = simulateNssSourceSelection({
     dae_iface: true
   }
 });
-assert(nssDaedStoppedWithLeftovers.primary_source === 'bpf', 'NSS auto must keep BPF when daed service exists but has no running instance');
+assert(nssDaedStoppedWithLeftovers.primary_source === 'nss_conntrack_sync', 'NSS auto must keep sync when daed service exists but has no running instance');
 assert(!nssDaedStoppedWithLeftovers.warnings.includes('dae_runtime_prefers_bpf'), 'stopped daed leftovers must not emit the dae runtime BPF warning');
 
 const nssDaedStoppedWithStaleProbeCache = simulateNssSourceSelection({
@@ -2346,7 +2373,7 @@ const nssDaedStoppedWithStaleProbeCache = simulateNssSourceSelection({
     runtime_active: false
   }
 });
-assert(nssDaedStoppedWithStaleProbeCache.primary_source === 'bpf', 'NSS auto must keep its default BPF source after dae runtime stops');
+assert(nssDaedStoppedWithStaleProbeCache.primary_source === 'nss_conntrack_sync', 'NSS auto must keep sync after dae runtime stops');
 assert(!nssDaedStoppedWithStaleProbeCache.warnings.includes('dae_runtime_prefers_bpf'), 'stale dae process cache must not retain the dynamic runtime warning');
 
 const nssForcedDirectWithDaed = simulateNssSourceSelection({

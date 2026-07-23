@@ -301,6 +301,7 @@ fn production_rust_has_no_pidof_probe_path_and_publishes_dae_and_nss_alias_evide
         "\"mapping_count\"",
         "\"counter_source\"",
         "\"counter_cadence_seconds\"",
+        "\"counter_delta_scope\"",
         "\"bpf_visibility\"",
         "\"interface_counters_accurate\"",
         "\"nssifb_policy\"",

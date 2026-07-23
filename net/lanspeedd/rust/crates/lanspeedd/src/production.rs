@@ -33,7 +33,10 @@ use crate::{
         is_sysdevice_candidate, ConnectionCollectorMode, InterfaceEligibility, RuntimeConfig,
         SysfsInterfaceEligibility, MAX_INTERFACE_NAMES, MAX_INTERFACE_NAME_LEN,
     },
-    connection_details::ConnectionRateBook,
+    connection_details::{
+        ConnectionRateBook, ConntrackClientRateBook, CT_ID_BASELINE_RETENTION_MS,
+        MAX_RETAINED_FLOW_BASELINES, TUPLE_BASELINE_RETENTION_MS,
+    },
     connections::{
         apply_conntrack_failure, apply_conntrack_success, before_reply_action,
         client_conntrack_plan, conntrack_source, has_counted_connections, periodic_conntrack_plan,
@@ -127,7 +130,9 @@ struct ProductionRuntime {
     coverage: CoverageRing,
     coverage_clients: CoverageRateAccumulator,
     interface_rates: InterfaceRateBook,
-    nss_rates: RateBook,
+    conntrack_client_rates: ConntrackClientRateBook,
+    nss_direct_rates: RateBook,
+    nss_sync_rates: RateBook,
     hostnames: HostnameCache,
     shutdown_complete: bool,
 }
@@ -138,7 +143,9 @@ struct RuntimeCheckpoint {
     coverage: CoverageRing,
     coverage_clients: CoverageRateAccumulator,
     interface_rates: InterfaceRateBook,
-    nss_rates: RateBook,
+    conntrack_client_rates: ConntrackClientRateBook,
+    nss_direct_rates: RateBook,
+    nss_sync_rates: RateBook,
     hostnames: HostnameCache,
     conntrack_snapshot: Option<Arc<CollectedSnapshot>>,
     connection_rates: ConnectionRateBook,
@@ -178,11 +185,13 @@ impl ProductionRuntime {
             conntrack_snapshot: None,
             connection_rates: ConnectionRateBook::default(),
             conntrack_observation: ConntrackObservation::default(),
+            conntrack_client_rates: ConntrackClientRateBook::default(),
             probe,
             process_tracker,
             probe_report: Arc::new(preflight),
             next_probe_ms: 0,
-            nss_rates: RateBook::new(config.max_clients, config.active_client_window_ms),
+            nss_direct_rates: RateBook::new(config.max_clients, config.active_client_window_ms),
+            nss_sync_rates: RateBook::new(config.max_clients, config.active_client_window_ms),
             hostnames: HostnameCache::new(),
             config,
             adapter: SystemAyaAdapter::new(),
@@ -273,7 +282,9 @@ impl ProductionRuntime {
             coverage: self.coverage.clone(),
             coverage_clients: self.coverage_clients.clone(),
             interface_rates: self.interface_rates.clone(),
-            nss_rates: self.nss_rates.clone(),
+            conntrack_client_rates: self.conntrack_client_rates.clone(),
+            nss_direct_rates: self.nss_direct_rates.clone(),
+            nss_sync_rates: self.nss_sync_rates.clone(),
             hostnames: self.hostnames.clone(),
             conntrack_snapshot: self.conntrack_snapshot.clone(),
             connection_rates: self.connection_rates.clone(),
@@ -294,7 +305,9 @@ impl ProductionRuntime {
         self.coverage = checkpoint.coverage;
         self.coverage_clients = checkpoint.coverage_clients;
         self.interface_rates = checkpoint.interface_rates;
-        self.nss_rates = checkpoint.nss_rates;
+        self.conntrack_client_rates = checkpoint.conntrack_client_rates;
+        self.nss_direct_rates = checkpoint.nss_direct_rates;
+        self.nss_sync_rates = checkpoint.nss_sync_rates;
         self.hostnames = checkpoint.hostnames;
         self.conntrack_snapshot = checkpoint.conntrack_snapshot;
         self.connection_rates = checkpoint.connection_rates;
@@ -323,6 +336,19 @@ impl ProductionRuntime {
                     &snapshot.connection_counters,
                     &mut snapshot.connection_details,
                 );
+                let client_totals = self
+                    .conntrack_client_rates
+                    .update(snapshot.sample_ms, &snapshot.connection_counters);
+                // Keep the raw per-flow map for connection diagnostics, but
+                // expose monotonic client totals to the rate book. A client
+                // aggregate can otherwise fall when one of its conntrack
+                // flows expires between dumps.
+                for client in &mut snapshot.clients {
+                    if let Some(totals) = client_totals.get(&client.identity_key) {
+                        client.tx_bytes = totals.tx_bytes;
+                        client.rx_bytes = totals.rx_bytes;
+                    }
+                }
                 self.conntrack_observation.record_success(
                     now_ms,
                     snapshot.stats.netlink_read,
@@ -533,7 +559,17 @@ impl ProductionRuntime {
         }
         let report = Arc::clone(&self.probe_report);
         let mut decision = policy::select_collectors(&self.config, &report.facts, &runtime_health);
-        let direct = if decision.rate == RateCollector::NssEcmDirect || decision.nss_direct_overlay
+        // Keep a readable ECM snapshot available as a same-cycle fallback if
+        // the conntrack sync fails.  It is diagnostic/fallback data only; the
+        // sync branch below deliberately does not overlay it on conntrack
+        // counters because that would drop a client's concurrent slow-path
+        // flows.
+        let direct = if decision.rate == RateCollector::NssEcmDirect
+            || decision.nss_direct_overlay
+            || (decision.rate == RateCollector::NssConntrackSync
+                && report.facts.nss.present
+                && report.facts.nss.ecm_active
+                && report.facts.nss.direct_state_readable)
         {
             match nss::read_direct_snapshot(
                 &identities,
@@ -566,7 +602,6 @@ impl ProductionRuntime {
         }
         self.apply_conntrack_health(&mut runtime_health);
         decision = policy::select_collectors(&self.config, &report.facts, &runtime_health);
-        let effective = decision.rate.as_str();
         let (mut clients, actual_live, actual_degraded, coverage_fresh) =
             if decision.rate == RateCollector::Bpf {
                 (
@@ -584,9 +619,9 @@ impl ProductionRuntime {
                 )
             } else if decision.rate == RateCollector::NssEcmDirect {
                 match direct.as_ref() {
-                    Some(snapshot) => (
+                    Some(snapshot) if !snapshot.clients.is_empty() => (
                         rate_clients(
-                            &mut self.nss_rates,
+                            &mut self.nss_direct_rates,
                             &snapshot.clients,
                             now_ms,
                             &identities,
@@ -597,6 +632,12 @@ impl ProductionRuntime {
                         false,
                         true,
                     ),
+                    Some(_) => (
+                        ClientsResponse::empty(evidence(&report, "clients")),
+                        false,
+                        true,
+                        false,
+                    ),
                     None => (
                         ClientsResponse::empty(evidence(&report, "clients")),
                         false,
@@ -606,29 +647,19 @@ impl ProductionRuntime {
                 }
             } else if decision.rate == RateCollector::NssConntrackSync {
                 match conntrack.as_ref() {
-                    Some(snapshot) => {
-                        let (samples, source) = if let Some(direct) = direct.as_ref() {
-                            (
-                                overlay_counter_clients(&snapshot.clients, &direct.clients),
-                                "nss_ecm_direct+conntrack_ecm_sync",
-                            )
-                        } else {
-                            (snapshot.clients.clone(), "conntrack_ecm_sync")
-                        };
-                        (
-                            rate_clients(
-                                &mut self.nss_rates,
-                                &samples,
-                                now_ms,
-                                &identities,
-                                decision.confidence,
-                                source,
-                            ),
-                            true,
-                            true,
-                            true,
-                        )
-                    }
+                    Some(snapshot) => (
+                        rate_clients(
+                            &mut self.nss_sync_rates,
+                            &snapshot.clients,
+                            now_ms,
+                            &identities,
+                            decision.confidence,
+                            "conntrack_ecm_sync",
+                        ),
+                        true,
+                        true,
+                        true,
+                    ),
                     None => (
                         ClientsResponse::empty(evidence(&report, "clients")),
                         false,
@@ -681,6 +712,12 @@ impl ProductionRuntime {
         }
         if let Some(client_evidence) = clients.evidence.as_mut() {
             apply_decision_evidence(client_evidence, &decision, &self.config, &report);
+            if let Some(snapshot) = conntrack.as_deref() {
+                client_evidence.details.insert(
+                    "conntrack_generation".into(),
+                    conntrack_generation_evidence(snapshot),
+                );
+            }
         }
         let overview = self.update_overview(now_ms, &clients);
         let interfaces = self.interfaces(now_ms);
@@ -688,7 +725,15 @@ impl ProductionRuntime {
         let sysdevices = sysdevices(&self.config)?;
         let mut capabilities = capabilities(&report.capabilities, &report);
         capabilities.live_metrics = actual_live;
-        capabilities.bpf_runtime_metrics = effective == "bpf" && actual_live;
+        capabilities.conntrack_fallback =
+            decision.rate == RateCollector::NssConntrackSync && conntrack.is_some();
+        // BPF remains an active slow-path observer on NSS even when conntrack
+        // sync is the authoritative rate source.  Runtime capability must
+        // describe the healthy attachment/map, not whether BPF is primary.
+        capabilities.bpf_runtime_metrics = runtime_health.bpf_object_loaded
+            && runtime_health.bpf_attached
+            && bpf_snapshot.is_some()
+            && (runtime_health.bpf_map_read_ok || decision.evidence.retained_fresh_snapshot);
         capabilities.bpf = capabilities.bpf_runtime_metrics;
         let mode = if decision.mode == ProbeMode::Unsupported {
             Mode::Unsupported
@@ -758,6 +803,12 @@ impl ProductionRuntime {
             "probe_failures".into(),
             crate::production_evidence::probe_failure_details(&report.evidence.probe_failures),
         );
+        if let Some(snapshot) = conntrack.as_deref() {
+            status_evidence.details.insert(
+                "conntrack_generation".into(),
+                conntrack_generation_evidence(snapshot),
+            );
+        }
         let version = version();
         let status = StatusResponse {
             mode,
@@ -800,6 +851,12 @@ impl ProductionRuntime {
             "probe_failures".into(),
             crate::production_evidence::probe_failure_details(&report.evidence.probe_failures),
         );
+        if let Some(snapshot) = conntrack.as_deref() {
+            health_evidence.details.insert(
+                "conntrack_generation".into(),
+                conntrack_generation_evidence(snapshot),
+            );
+        }
         let health = HealthResponse {
             mode,
             confidence,
@@ -1926,18 +1983,6 @@ fn rate_clients(
     }
 }
 
-fn overlay_counter_clients(base: &[CounterClient], direct: &[CounterClient]) -> Vec<CounterClient> {
-    let mut merged = base
-        .iter()
-        .cloned()
-        .map(|client| (client.identity_key.clone(), client))
-        .collect::<BTreeMap<_, _>>();
-    for client in direct {
-        merged.insert(client.identity_key.clone(), client.clone());
-    }
-    merged.into_values().collect()
-}
-
 fn evidence(report: &ProbeReport, method: &str) -> Evidence {
     let mut details = BTreeMap::new();
     details.insert("source".into(), json!(report.evidence.source));
@@ -1970,6 +2015,29 @@ fn evidence(report: &ProbeReport, method: &str) -> Evidence {
         }),
     );
     Evidence { details }
+}
+
+fn conntrack_generation_evidence(snapshot: &CollectedSnapshot) -> Value {
+    let parsed_entries = snapshot
+        .stats
+        .entries_seen
+        .saturating_sub(snapshot.stats.malformed_lines);
+    let flow_id_coverage_pct = (parsed_entries > 0)
+        .then(|| snapshot.stats.conntrack_ids_present as f64 * 100.0 / parsed_entries as f64);
+    json!({
+        "counter_generation_key": if snapshot.stats.netlink_read {
+            "ctnetlink_cta_id_with_zone_tuple_fallback"
+        } else {
+            "procfs_zone_tuple_fallback"
+        },
+        "parsed_entries": parsed_entries,
+        "conntrack_ids_present": snapshot.stats.conntrack_ids_present,
+        "conntrack_zones_present": snapshot.stats.conntrack_zones_present,
+        "flow_id_coverage_pct": flow_id_coverage_pct,
+        "counter_baseline_retention_ms": CT_ID_BASELINE_RETENTION_MS,
+        "tuple_fallback_retention_ms": TUPLE_BASELINE_RETENTION_MS,
+        "max_retained_flow_baselines": MAX_RETAINED_FLOW_BASELINES,
+    })
 }
 
 fn apply_decision_evidence(
@@ -2389,6 +2457,39 @@ mod tests {
         assert_eq!(version_from(Some("1.0.0"), Some("1")), "1.0.0-r1");
         assert_eq!(version_from(Some("1.0.0"), None), "unconfigured");
         assert_eq!(version_from(None, Some("1")), "unconfigured");
+    }
+
+    #[test]
+    fn conntrack_generation_evidence_reports_real_cta_id_coverage() {
+        let snapshot = CollectedSnapshot {
+            clients: Vec::new(),
+            sample_ms: 1,
+            connection_details: Arc::default(),
+            connection_counters: Arc::default(),
+            counter_source: conntrack::NETLINK_COUNTER_SOURCE,
+            stats: conntrack::CollectStats {
+                netlink_read: true,
+                entries_seen: 5,
+                malformed_lines: 1,
+                conntrack_ids_present: 3,
+                conntrack_zones_present: 4,
+                ..conntrack::CollectStats::default()
+            },
+        };
+
+        let evidence = conntrack_generation_evidence(&snapshot);
+        assert_eq!(
+            evidence["counter_generation_key"],
+            "ctnetlink_cta_id_with_zone_tuple_fallback"
+        );
+        assert_eq!(evidence["parsed_entries"], 4);
+        assert_eq!(evidence["conntrack_ids_present"], 3);
+        assert_eq!(evidence["conntrack_zones_present"], 4);
+        assert_eq!(evidence["flow_id_coverage_pct"], 75.0);
+        assert_eq!(
+            evidence["counter_baseline_retention_ms"],
+            CT_ID_BASELINE_RETENTION_MS
+        );
     }
 
     #[test]

@@ -185,19 +185,19 @@
       "nss_conntrack_sync"
     ],
     "non_nss_live_rate_policy": "bpf_only",
-    "nss_auto_live_rate_policy": "bpf_first_then_nss_sync_or_direct_fallback",
+    "nss_auto_live_rate_policy": "nss_sync_primary_when_offload_active_bpf_slow_path_observer",
     "non_nss_conntrack_policy": "connection_counts_and_diagnostics_only",
     "mode": "Degraded",
     "active_only_when": [
       "rate_collector_mode=nss_conntrack_sync",
       "forced_nss_direct_falls_back_to_sync",
-      "auto_bpf_full_unavailable_and_nss_ecm_or_ppe_sync_available",
+      "auto_nss_ecm_or_ppe_active_and_sync_available",
       "enable_conntrack_fallback=1",
       "nf_conntrack_acct=1"
     ],
     "inactive_when": [
       "non_nss_device",
-      "auto_bpf_full_available",
+      "nss_ecm_and_ppe_inactive",
       "bpf_full_unavailable_without_nss_ecm_sync",
       "enable_conntrack_fallback=0",
       "conntrack_acct_disabled"
@@ -206,6 +206,12 @@
     "coverage_warning": "conntrack_routed_nat_only",
     "nss_sync_coverage": "nss_ecm_sync",
     "nss_sync_coverage_warning": "nss_ecm_sync_cadence",
+    "counter_delta_scope": "per_conntrack_flow_before_client_aggregation",
+    "counter_generation_key": "ctnetlink_cta_id_with_zone_tuple_fallback",
+    "ctnetlink_generation_baseline_retention_ms": 60000,
+    "procfs_tuple_baseline_retention_ms": 2000,
+    "maximum_retained_flow_baselines": 32768,
+    "flow_id_coverage_evidence": "status_health_clients_evidence.conntrack_generation.flow_id_coverage_pct",
     "confidence": {
       "maximum": "medium",
       "degrade_to_low_when": [
@@ -233,6 +239,7 @@
       "conntrack_routed_nat_only",
       "nss_ecm_sync_cadence",
       "nss_prefers_conntrack_sync",
+      "nss_bpf_slow_path_only",
       "conntrack_acct_disabled",
       "flowtable_counter_missing",
       "nlbwmon_counter_conflict"
@@ -292,7 +299,7 @@
       "first_sample_warning": "nss_ecm_direct_snapshot_pending",
       "previous_snapshot": "in_daemon_memory",
       "delta_formula": "max(0, current_bytes - previous_bytes) * 8 * 1000 / delta_ms",
-      "overlay_policy": "only overlay NSS sync when direct tx_bps or rx_bps is non-zero"
+      "overlay_policy": "never overlay direct client totals on conntrack sync; direct is fallback only"
     }
   }
 }

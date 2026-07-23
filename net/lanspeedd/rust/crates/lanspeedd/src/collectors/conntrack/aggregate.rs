@@ -3,7 +3,7 @@ use crate::{
     connection_details::{
         classify_connection, classify_flow_ownership, ConnectionCounters,
         ConnectionCountersSnapshot, ConnectionDetailsIndex, ConnectionDetailsSnapshot,
-        ConnectionProtocol, FlowOwnership,
+        ConnectionProtocol, ConnectionRateKey, FlowOwnership,
     },
     identity::IdentityTable,
 };
@@ -28,6 +28,8 @@ pub struct ClientSample {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AggregateStats {
     pub entries_seen: usize,
+    pub conntrack_ids_present: usize,
+    pub conntrack_zones_present: usize,
     pub entries_matched: usize,
     pub skipped_no_arp: usize,
     pub no_lan_flows: usize,
@@ -71,6 +73,13 @@ impl<'a> AggregateState<'a> {
 
     pub fn push(&mut self, flow: &FlowSample) {
         self.stats.entries_seen = self.stats.entries_seen.saturating_add(1);
+        if flow.conntrack_id.is_some() {
+            self.stats.conntrack_ids_present = self.stats.conntrack_ids_present.saturating_add(1);
+        }
+        if flow.conntrack_zone.is_some() {
+            self.stats.conntrack_zones_present =
+                self.stats.conntrack_zones_present.saturating_add(1);
+        }
         let owned = match classify_flow_ownership(self.identities, flow) {
             FlowOwnership::BothLan => {
                 self.stats.both_lan_flows = self.stats.both_lan_flows.saturating_add(1);
@@ -119,6 +128,23 @@ impl<'a> AggregateState<'a> {
                 add_connection_count(sample, flow, protocol);
             }
         }
+        // Keep a per-flow baseline even when the flow cannot be rendered as a
+        // connection detail (missing remote endpoint) or uses a protocol other
+        // than TCP/UDP.  The client-rate ledger needs both cases to avoid
+        // under-counting the authoritative conntrack sync source.
+        self.connection_details.record_flow_rate_counters(
+            ConnectionRateKey::from_owned_flow(
+                &key,
+                owned,
+                flow.protocol,
+                flow.conntrack_id,
+                flow.conntrack_zone,
+            ),
+            ConnectionCounters {
+                tx_bytes: tx,
+                rx_bytes: rx,
+            },
+        );
         self.stats.entries_matched = self.stats.entries_matched.saturating_add(1);
         if owned.source_side {
             self.stats.src_lan_flows = self.stats.src_lan_flows.saturating_add(1);
@@ -132,14 +158,7 @@ impl<'a> AggregateState<'a> {
         }
         if let Some((protocol, state)) = qualification {
             match owned.detail(protocol, state) {
-                Some(detail) => self.connection_details.record_with_counters(
-                    &key,
-                    detail,
-                    ConnectionCounters {
-                        tx_bytes: tx,
-                        rx_bytes: rx,
-                    },
-                ),
+                Some(detail) => self.connection_details.record(&key, detail),
                 None => self.connection_details.record_omitted(&key),
             }
         }

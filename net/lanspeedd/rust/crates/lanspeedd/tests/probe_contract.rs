@@ -806,9 +806,11 @@ fn missing_optional_dae_route_table_is_not_a_probe_failure() {
 
     assert!(!report.evidence.probe_error);
     assert!(!report.warnings.contains(&"probe_error"));
-    assert!(!report.evidence.probe_failures.iter().any(|failure| {
-        failure.source == "command:ip_route_table_2023"
-    }));
+    assert!(!report
+        .evidence
+        .probe_failures
+        .iter()
+        .any(|failure| { failure.source == "command:ip_route_table_2023" }));
     let route = report
         .evidence
         .command
@@ -862,8 +864,8 @@ fn report_mode_confidence_and_capabilities_come_from_the_single_policy_decision(
         observations.clone(),
         &ProbeRuntimeHealth::default(),
     );
-    assert_eq!(direct.mode.as_str(), "Full");
-    assert_eq!(direct.confidence.as_str(), "high");
+    assert_eq!(direct.mode.as_str(), "Degraded");
+    assert_eq!(direct.confidence.as_str(), "medium");
     assert!(direct.capabilities.live_metrics);
     assert!(!direct.capabilities.bpf);
     assert!(!direct.capabilities.conntrack_fallback);
@@ -912,12 +914,15 @@ fn nss_presence_does_not_invent_the_firewall_hardware_offload_flag() {
         ..ProbeRuntimeHealth::default()
     };
     let report = assess(&config, observations, &runtime);
-    assert!(report.capabilities.bpf);
+    assert!(!report.capabilities.bpf);
+    assert!(report.capabilities.bpf_runtime_metrics);
+    assert!(report.capabilities.conntrack_fallback);
     assert!(!report.capabilities.hardware_flow_offload);
     assert!(!report
         .warnings
         .contains(&"hardware_flow_offload_unsupported"));
-    assert!(report.warnings.contains(&"dae_runtime_prefers_bpf"));
+    assert!(!report.warnings.contains(&"dae_runtime_prefers_bpf"));
+    assert!(report.warnings.contains(&"nss_bpf_slow_path_only"));
 }
 
 #[test]

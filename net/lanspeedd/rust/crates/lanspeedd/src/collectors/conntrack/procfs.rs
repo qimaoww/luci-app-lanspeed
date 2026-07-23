@@ -251,6 +251,8 @@ fn parse_line(bytes: &[u8]) -> Option<FlowSample> {
                 }
             }
             bytes_seen = bytes_seen.saturating_add(1);
+        } else if let Some(value) = token.strip_prefix("zone=") {
+            flow.conntrack_zone = value.parse().ok();
         } else if token == "[ASSURED]" {
             flow.assured = true;
         } else if token == "[UNREPLIED]" {

@@ -333,12 +333,16 @@ pub(crate) fn nss_details(
     let direct_supported = report.evidence.nss.present
         && report.evidence.nss.ecm_active
         && report.evidence.nss.direct_state_readable;
-    let fallback_reason = nss::direct_fallback_reason(nss::DirectFallbackInput {
-        state_readable: direct_supported,
-        overlay_enabled: direct_enabled,
-        rate_mode: config.rate_collector_mode,
-        dae_runtime_prefers_bpf: decision.evidence.rate_reason == "dae_runtime_prefers_bpf",
-    });
+    let fallback_reason = if decision.rate == RateCollector::NssConntrackSync {
+        "nss_conntrack_sync_primary"
+    } else {
+        nss::direct_fallback_reason(nss::DirectFallbackInput {
+            state_readable: direct_supported,
+            overlay_enabled: direct_enabled,
+            rate_mode: config.rate_collector_mode,
+            dae_runtime_prefers_bpf: decision.evidence.rate_reason == "dae_runtime_prefers_bpf",
+        })
+    };
     let offload_active = report.evidence.nss.ecm_active || report.evidence.nss.ppe_active;
     let mut value = json!({
         "present": report.evidence.nss.present,
@@ -363,6 +367,16 @@ pub(crate) fn nss_details(
         "subsystems": report.evidence.nss.subsystems,
         "counter_source": counter_source(decision, report),
         "counter_cadence_seconds": if offload_active { 2 } else { 0 },
+        "counter_merge_policy": if decision.rate == RateCollector::NssConntrackSync {
+            "conntrack_sync_authoritative_no_bpf_addition"
+        } else {
+            "single_source"
+        },
+        "counter_delta_scope": if decision.rate == RateCollector::NssConntrackSync {
+            "per_conntrack_flow_before_client_aggregation"
+        } else {
+            "single_source_client_snapshot"
+        },
         "bpf_visibility": if offload_active {
             "slow_path_only_until_deceleration"
         } else {
@@ -724,9 +738,9 @@ mod tests {
                 "direct_state_present": true,
                 "direct_state_readable": true,
                 "direct_supported": true,
-                "direct_enabled": true,
+                "direct_enabled": false,
                 "direct_source": "nss_ecm_direct",
-                "fallback_reason": "",
+                "fallback_reason": "nss_conntrack_sync_primary",
                 "direct_state_errno": 13,
                 "direct_state_major": 241,
                 "direct_source_path": "/dev/ecm_state",
@@ -744,6 +758,8 @@ mod tests {
                 "mapping_count": 8,
                 "counter_source": "ecm_conntrack_sync",
                 "counter_cadence_seconds": 2,
+                "counter_merge_policy": "conntrack_sync_authoritative_no_bpf_addition",
+                "counter_delta_scope": "per_conntrack_flow_before_client_aggregation",
                 "bpf_visibility": "slow_path_only_until_deceleration",
                 "interface_counters_accurate": true,
                 "nssifb_policy": "mirror_of_physical_ingress_not_a_real_client_source",
