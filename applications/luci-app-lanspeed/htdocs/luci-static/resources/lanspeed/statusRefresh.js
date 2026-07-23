@@ -180,6 +180,48 @@ function clientStateCell(stateCells, visible) {
 	return cell;
 }
 
+function replaceRowContents(target, source) {
+	var children = [];
+	while (source.firstChild)
+		children.push(source.removeChild(source.firstChild));
+	while (target.firstChild)
+		target.removeChild(target.firstChild);
+	target.className = source.className;
+	children.forEach(function(child) { target.appendChild(child); });
+}
+
+/*
+ * Keep stable client <tr> nodes alive across samples. Replacing the complete
+ * tbody makes the browser drop :hover for one paint and causes the highlighted
+ * row to flash at every refresh even when its identity and position are stable.
+ */
+function reconcileClientRows(tbody, rows) {
+	var existing = Object.create(null);
+	Array.prototype.forEach.call(tbody.children, function(row) {
+		var key = row.getAttribute('data-client-key');
+		if (key !== null && !Object.prototype.hasOwnProperty.call(existing, key))
+			existing[key] = row;
+	});
+
+	var desired = rows.map(function(row) {
+		var key = row.getAttribute('data-client-key');
+		if (key === null || !Object.prototype.hasOwnProperty.call(existing, key))
+			return row;
+		var current = existing[key];
+		delete existing[key];
+		replaceRowContents(current, row);
+		return current;
+	});
+
+	desired.forEach(function(row, index) {
+		var current = tbody.children[index] || null;
+		if (current !== row)
+			tbody.insertBefore(row, current);
+	});
+	while (tbody.children.length > desired.length)
+		tbody.removeChild(tbody.lastChild);
+}
+
 function refreshSortHeaders(refs, prefs) {
 	Object.keys(refs.sortHeaders || {}).forEach(function(sortKey) {
 		var ref = refs.sortHeaders[sortKey];
@@ -354,7 +396,7 @@ function refreshLive(viewState) {
 			globalWarnings[vocab.normalizeWarningId(w)] = true;
 		});
 
-		fmt.replaceChildren(refs.tbody, page.items.map(function(c) {
+		reconcileClientRows(refs.tbody, page.items.map(function(c) {
 			var tx = Number(c.tx_bps) || 0, rx = Number(c.rx_bps) || 0;
 			var idle = !fmt.isActiveClient(c, latestSample, activeCfg);
 			var ips = statusIp.displayIpsForClient(c.ips, showIpv6, hidePrivateIpv6, hideIpv6Ranges);
@@ -407,7 +449,10 @@ function refreshLive(viewState) {
 				displayName = c.mac || '-';
 			}
 
-			return E('tr', idle ? { 'class': 'idle' } : {}, [
+			return E('tr', {
+				'class': idle ? 'idle' : '',
+				'data-client-key': String(fmt.identityOf(c))
+			}, [
 				E('td', { 'class': 'lanspeed-client-name' },
 					clientNameContent(c, displayName, ips)),
 				E('td', {
@@ -516,6 +561,7 @@ return baseclass.extend({
 	splitClientWarnings: splitClientWarnings,
 	setClientStatusVisibility: setClientStatusVisibility,
 	clientStateCell: clientStateCell,
+	reconcileClientRows: reconcileClientRows,
 	refreshAvailability: refreshAvailability,
 	refreshPagination: refreshPagination,
 

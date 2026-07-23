@@ -3691,6 +3691,42 @@ function assertStatusRefreshSortingInteraction(src) {
 			fail('statusRefresh.js must render connection-only rows as information and keep only actionable client warnings');
 		}
 	}
+	if (typeof mod.reconcileClientRows !== 'function') {
+		fail('statusRefresh.js must expose keyed client-row reconciliation for validation');
+	} else {
+		const tbody = fakeElement('tbody', {});
+		tbody.insertBefore = function(row, reference) {
+			if (row.parentNode) row.parentNode.removeChild(row);
+			const index = reference === null ? this.children.length : this.children.indexOf(reference);
+			this.children.splice(index < 0 ? this.children.length : index, 0, row);
+			row.parentNode = this;
+			return row;
+		};
+		function row(key, value, className) {
+			return fakeElement('tr', {
+				'class': className || '',
+				'data-client-key': key
+			}, fakeElement('td', {}, value));
+		}
+		const originalA = row('a@lan', 'A old', 'idle');
+		const removedB = row('b@lan', 'B old', '');
+		tbody.appendChild(originalA);
+		tbody.appendChild(removedB);
+		const addedC = row('c@lan', 'C new', '');
+		mod.reconcileClientRows(tbody, [ row('a@lan', 'A new', ''), addedC ]);
+		if (tbody.children.length !== 2 || tbody.children[0] !== originalA ||
+		    tbody.children[1] !== addedC || originalA.className !== '' ||
+		    fakeElementText(originalA) !== 'A new' || removedB.parentNode !== null) {
+			fail('statusRefresh.js must reuse stable rows while updating content and removing stale identities');
+		}
+		const retainedC = tbody.children[1];
+		mod.reconcileClientRows(tbody, [ row('c@lan', 'C newest', 'idle'), row('a@lan', 'A newest', '') ]);
+		if (tbody.children[0] !== retainedC || tbody.children[1] !== originalA ||
+		    retainedC.className !== 'idle' || fakeElementText(retainedC) !== 'C newest' ||
+		    fakeElementText(originalA) !== 'A newest') {
+			fail('statusRefresh.js must move existing keyed rows without recreating them');
+		}
+	}
 	if (typeof mod.setClientStatusVisibility !== 'function' ||
 	    typeof mod.clientStateCell !== 'function') {
 		fail('statusRefresh.js must expose configured client-status column visibility behavior');
@@ -5395,6 +5431,11 @@ function assertStatusRefreshModule(src) {
 	    !src.includes("'data-label': _('下行')") ||
 	    !src.includes("'data-label': _('状态')")) {
 		fail('lanspeed/statusRefresh.js must label client fields for the narrow stacked layout');
+	}
+	if (!src.includes('reconcileClientRows(refs.tbody') ||
+	    !src.includes("'data-client-key': String(fmt.identityOf(c))") ||
+	    src.includes('fmt.replaceChildren(refs.tbody')) {
+		fail('statusRefresh.js must preserve keyed client rows across live refreshes to keep hover stable');
 	}
 	if (!src.includes('var showClientStatus = viewState.showClientStatus === true;') ||
 	    !src.includes('setClientStatusVisibility(refs, showClientStatus);') ||
