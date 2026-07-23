@@ -367,7 +367,10 @@ function countryFields(payload) {
 function countryResult(entry, displayNames) {
 	var label = '';
 	var province;
-	if (entry.code && displayNames && typeof displayNames.of === 'function') {
+	if (entry.code === 'TW') {
+		label = '中国台湾';
+	}
+	else if (entry.code && displayNames && typeof displayNames.of === 'function') {
 		try { label = displayNames.of(entry.code) || ''; } catch (e) {}
 	}
 	if (!label)

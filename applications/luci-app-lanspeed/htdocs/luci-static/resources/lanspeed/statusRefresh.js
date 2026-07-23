@@ -189,81 +189,76 @@ function clientStateCell(stateCells, visible) {
 	return cell;
 }
 
-var CLIENT_HOVER_LOCK = 'lanspeed-client-hover-lock';
-var CLIENT_REFRESH_LOCK = 'lanspeed-client-refresh-lock';
-
-function rowHasClass(row, name) {
-	return (' ' + String(row && row.className || '') + ' ').indexOf(' ' + name + ' ') !== -1;
-}
-
-function addRowClass(row, name) {
-	if (row && !rowHasClass(row, name))
-		row.className = [ row.className, name ].filter(Boolean).join(' ');
-}
-
-function removeRowClass(row, name) {
-	if (!row) return;
-	row.className = String(row.className || '').split(/\s+/).filter(function(value) {
-		return value && value !== name;
-	}).join(' ');
-}
-
-function hoveredClientRow(tbody) {
-	if (!tbody || typeof tbody.querySelector !== 'function') return null;
-	try { return tbody.querySelector('tr:hover'); } catch (error) { return null; }
-}
-
 function captureClientViewport(refs) {
-	var tbody = refs && refs.tbody;
-	var hovered = hoveredClientRow(tbody);
-	if (hovered) {
-		addRowClass(hovered, CLIENT_HOVER_LOCK);
-		addRowClass(tbody, CLIENT_REFRESH_LOCK);
-	}
 	var host = typeof window !== 'undefined' ? window : null;
 	var scrollX = host ? Number(host.scrollX !== undefined ? host.scrollX : host.pageXOffset) || 0 : 0;
 	var scrollY = host ? Number(host.scrollY !== undefined ? host.scrollY : host.pageYOffset) || 0 : 0;
+	var scrollContainers = [];
+	var node = refs && refs.root ? refs.root.parentElement : null;
+	while (node) {
+		var style = host && typeof host.getComputedStyle === 'function' ? host.getComputedStyle(node) : null;
+		var overflowX = style ? String(style.overflowX || '') : '';
+		var overflowY = style ? String(style.overflowY || '') : '';
+		var left = Number(node.scrollLeft) || 0;
+		var top = Number(node.scrollTop) || 0;
+		var scrollsX = /^(?:auto|scroll|overlay)$/.test(overflowX) &&
+			Number(node.scrollWidth) > Number(node.clientWidth);
+		var scrollsY = /^(?:auto|scroll|overlay)$/.test(overflowY) &&
+			Number(node.scrollHeight) > Number(node.clientHeight);
+		if (left || top || scrollsX || scrollsY) {
+			scrollContainers.push({
+				node: node,
+				left: left,
+				top: top
+			});
+		}
+		node = node.parentElement;
+	}
 	return {
 		host: host,
-		tbody: tbody,
-		hovered: hovered,
 		scrollX: scrollX,
-		scrollY: scrollY
+		scrollY: scrollY,
+		scrollContainers: scrollContainers
 	};
 }
 
 function restoreClientViewport(state) {
 	if (!state) return;
 	var host = state.host;
-	if (host && typeof host.scrollTo === 'function')
+	var currentX = host ? Number(host.scrollX !== undefined ? host.scrollX : host.pageXOffset) || 0 : 0;
+	var currentY = host ? Number(host.scrollY !== undefined ? host.scrollY : host.pageYOffset) || 0 : 0;
+	if (host && typeof host.scrollTo === 'function' &&
+	    (currentX !== state.scrollX || currentY !== state.scrollY))
 		host.scrollTo(state.scrollX, state.scrollY);
-
-	var unlock = function() {
-		removeRowClass(state.hovered, CLIENT_HOVER_LOCK);
-		removeRowClass(state.tbody, CLIENT_REFRESH_LOCK);
-	};
-	if (state.hovered && host && typeof host.setTimeout === 'function')
-		host.setTimeout(unlock, 80);
-	else
-		unlock();
+	Array.prototype.forEach.call(state.scrollContainers || [], function(position) {
+		var node = position && position.node;
+		if (!node) return;
+		var left = Number(node.scrollLeft) || 0;
+		var top = Number(node.scrollTop) || 0;
+		if (left === position.left && top === position.top) return;
+		if (typeof node.scrollTo === 'function')
+			node.scrollTo(position.left, position.top);
+		else {
+			node.scrollLeft = position.left;
+			node.scrollTop = position.top;
+		}
+	});
 }
 
 function replaceRowContents(target, source) {
-	var hoverLocked = rowHasClass(target, CLIENT_HOVER_LOCK);
 	var children = [];
 	while (source.firstChild)
 		children.push(source.removeChild(source.firstChild));
 	while (target.firstChild)
 		target.removeChild(target.firstChild);
 	target.className = source.className;
-	if (hoverLocked) addRowClass(target, CLIENT_HOVER_LOCK);
 	children.forEach(function(child) { target.appendChild(child); });
 }
 
 /*
- * Keep stable client <tr> nodes alive across samples. Replacing the complete
- * tbody makes the browser drop :hover for one paint and causes the highlighted
- * row to flash at every refresh even when its identity and position are stable.
+ * Keep stable client <tr> nodes alive across samples so live sorting updates
+ * contents and order without replacing the complete tbody or losing viewport
+ * continuity.
  */
 function reconcileClientRows(tbody, rows) {
 	var existing = Object.create(null);

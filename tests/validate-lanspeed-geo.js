@@ -260,9 +260,9 @@ async function main() {
 		}
 	});
 	assert((await special.resolve('15.0.0.1')).label === '香港' &&
-		(await special.resolve('16.0.0.2')).label === '台湾' &&
+		(await special.resolve('16.0.0.2')).label === '中国台湾' &&
 		(await special.resolve('17.0.0.3')).label === '澳门',
-		'location names for Hong Kong, Taiwan and Macao must override an ASN registration country');
+		'location names for Hong Kong, China Taiwan and Macao must override an ASN registration country');
 	special.dispose();
 
 	const fallback = geo.createResolver({

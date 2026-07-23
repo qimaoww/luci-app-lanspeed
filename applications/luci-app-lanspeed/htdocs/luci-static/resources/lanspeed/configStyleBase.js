@@ -94,7 +94,7 @@ var BASE_CSS = [
 	'.lanspeed-ifcfg-seg>button{flex:1 1 0;min-width:0;min-height:var(--lanspeed-control-height);padding:.48em .65em;',
 		'border:1px solid var(--lanspeed-control-border);background-color:var(--lanspeed-control-bg);color:var(--lanspeed-text);',
 		'cursor:pointer;font-size:.88em;line-height:1.25}',
-	'.lanspeed-ifcfg-seg>button:hover:not(:disabled){background-color:var(--lanspeed-hover)}',
+	'.lanspeed-ifcfg-seg>button:hover:not(:disabled){background-color:var(--lanspeed-control-bg)}',
 	'.lanspeed-ifcfg-seg>button.active{font-weight:600}',
 	'.lanspeed-hint{margin:.8em 0 0;color:var(--lanspeed-text-muted);font-size:.84em;line-height:1.45}',
 	'.lanspeed-state-message[data-state="empty"]{color:var(--lanspeed-text-muted)}',

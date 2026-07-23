@@ -474,6 +474,54 @@ function assertProductDesignSystem() {
 	    baseCss.includes(':is(input[type="checkbox"],input[type="radio"]):focus{')) {
 		fail('designSystemBase.js must reserve the shared checkbox outline for keyboard-visible focus');
 	}
+	if (!baseCss.includes('.cbi-page-actions[data-lanspeed-theme][data-lanspeed-color-mode] ') ||
+	    !baseCss.includes(':is(.cbi-button-save,.cbi-button-apply):hover:not(:disabled){') ||
+	    !baseCss.includes('.cbi-button-reset:hover:not(:disabled){') ||
+	    !baseCss.includes('filter:none!important}')) {
+		fail('designSystemBase.js must neutralize hover darkening on native configuration actions outside the page root');
+	}
+
+	[
+		[ 'designSystemBase.js', baseCss ],
+		[ 'designSystemAurora.js', auroraCss ],
+		[ 'designSystemArgon.js', argonCss ],
+		[ 'designSystemBootstrap.js', bootstrapCss ],
+		[ 'statusStyleBase.js', loadStyleLeaf('statusStyleBase.js').CSS ],
+		[ 'clientDetailStyleBase.js', loadStyleLeaf('clientDetailStyleBase.js').CSS ],
+		[ 'diagnosticsStyleBase.js', loadStyleLeaf('diagnosticsStyleBase.js').CSS ],
+		[ 'configStyleBase.js', loadStyleLeaf('configStyleBase.js').CSS ]
+	].forEach(function(entry) {
+		const hoverRule = /:hover[^{}]*\{([^}]*)\}/g;
+		let match;
+		while ((match = hoverRule.exec(entry[1])) !== null) {
+			if (/var\(--lanspeed-(?:hover|action-hover|action-hover-text)\)|brightness\(/.test(match[1])) {
+				fail(`${entry[0]} must not darken or recolor any element on pointer hover`);
+				break;
+			}
+		}
+	});
+	const compactHoverCss = [ baseCss, auroraCss, argonCss, bootstrapCss ].map(function(css) {
+		return css.replace(/\s*\n\s*/g, '');
+	});
+	if (!compactHoverCss[0].includes('tbody tr:hover{background-color:transparent!important;background-image:none!important}') ||
+	    !compactHoverCss[1].includes('tbody tr:hover{background-color:transparent!important;background-image:none!important}') ||
+	    !compactHoverCss[2].includes('tbody tr:nth-child(odd):hover{background-color:transparent!important;background-image:none!important}') ||
+	    !compactHoverCss[2].includes('tbody tr:nth-child(even):hover{background-color:var(--lanspeed-native-row-stripe)!important;background-image:none!important}') ||
+	    !compactHoverCss[3].includes('tbody tr:nth-child(odd):hover{background-color:transparent!important;background-image:none!important}') ||
+	    !compactHoverCss[3].includes('tbody tr:nth-child(even):hover{background-color:var(--lanspeed-surface-sunken)!important;background-image:none!important}')) {
+		fail('shared design systems must neutralize table hover while preserving native zebra stripes');
+	}
+	[
+		[ 'designSystemBase.js', compactHoverCss[0] ],
+		[ 'designSystemAurora.js', compactHoverCss[1] ],
+		[ 'designSystemArgon.js', compactHoverCss[2] ],
+		[ 'designSystemBootstrap.js', compactHoverCss[3] ]
+	].forEach(function(entry) {
+		if (!entry[1].includes('.lanspeed-connection-protocol[aria-pressed="true"]:hover:not(:disabled){') ||
+		    !entry[1].includes('background-color:var(--lanspeed-accent-soft)!important')) {
+			fail(`${entry[0]} must preserve the selected protocol control while it is hovered`);
+		}
+	});
 
 	[
 		'--lanspeed-page-bg:var(--bg)', '--lanspeed-surface:var(--surface)',
@@ -537,9 +585,9 @@ function assertProductDesignSystem() {
 		if (!bootstrapCss.includes(marker))
 			fail(`designSystemBootstrap.js must derive from Bootstrap native token: ${marker}`);
 	});
-	if (!bootstrapCss.includes('background-color:var(--lanspeed-action-bg)!important;background-image:none!important') ||
-	    !bootstrapCss.includes('background-color:var(--lanspeed-action-hover)!important;background-image:none!important')) {
-		fail('designSystemBootstrap.js must suppress native gradients that obscure dynamic action colors');
+	if ((bootstrapCss.match(/background-color:var\(--lanspeed-action-bg\)!important;background-image:none!important/g) || []).length < 2 ||
+	    bootstrapCss.includes('background-color:var(--lanspeed-action-hover)!important')) {
+		fail('designSystemBootstrap.js must suppress native gradients without changing action color on hover');
 	}
 	if (!bootstrapCss.includes('.lanspeed-theme-bootstrap[data-lanspeed-color-mode="dark"]{') ||
 	    !bootstrapCss.includes('--lanspeed-action-hover:color-mix(in srgb,var(--primary-color-high) 92%,var(--text-color-high))')) {
@@ -591,7 +639,7 @@ function assertProductDesignSystem() {
 	[
 		[ 'statusStyleBase.js', [ '--lanspeed-page-gap', '--lanspeed-border', '--lanspeed-accent', '--lanspeed-text-muted' ] ],
 		[ 'diagnosticsStyleBase.js', [ '--lanspeed-surface', '--lanspeed-normal', '--lanspeed-warning', '--lanspeed-danger' ] ],
-		[ 'configStyleBase.js', [ '--lanspeed-control-bg', '--lanspeed-control-border', '--lanspeed-hover', '--lanspeed-text' ] ],
+		[ 'configStyleBase.js', [ '--lanspeed-control-bg', '--lanspeed-control-border', '--lanspeed-surface-muted', '--lanspeed-text' ] ],
 		[ 'clientDetailStyleBase.js', [ '--lanspeed-accent-soft', '--lanspeed-normal-soft', '--lanspeed-danger-soft', '--lanspeed-focus-ring' ] ]
 	].forEach(function(contract) {
 		const css = loadStyleLeaf(contract[0]).CSS;
@@ -669,8 +717,8 @@ function assertAuroraNativeVisualSystem() {
 		if (!value.includes(contract[1]) || !value.includes(contract[2]))
 			fail(`designSystemAurora.js must consume ${contract[1]} with native fallback ${contract[2]}`);
 	});
-	if (!baseCss.includes('color:var(--lanspeed-action-hover-text)!important'))
-		fail('designSystemBase.js must let action hover use an independently checked text token');
+	if (!baseCss.includes('color:var(--lanspeed-action-text)!important'))
+		fail('designSystemBase.js must keep action text unchanged on hover');
 
 	[
 		[ 'lanspeed-radius-section', 2 ],
@@ -714,8 +762,9 @@ function assertAuroraNativeVisualSystem() {
 		}
 	});
 
-	if (!auroraCss.includes('var(--hover-faint)') || !auroraCss.includes('box-shadow:none'))
-		fail('designSystemAurora.js must keep ordinary Aurora button hover flat and use --hover-faint');
+	if (!auroraCss.includes('background-color:var(--lanspeed-surface-muted)!important;box-shadow:none!important') ||
+	    auroraCss.includes('background-color:var(--lanspeed-hover)!important'))
+		fail('designSystemAurora.js must keep ordinary Aurora button visuals unchanged on hover');
 	if (auroraCss.includes('box-shadow:inset'))
 		fail('Aurora top-level LAN Speed sections must not add a branded inset edge');
 
@@ -3720,40 +3769,54 @@ function assertStatusRefreshSortingInteraction(src) {
 			fail('statusRefresh.js must reuse stable rows while updating content and removing stale identities');
 		}
 		const retainedC = tbody.children[1];
-		retainedC.className = 'lanspeed-client-hover-lock';
 		mod.reconcileClientRows(tbody, [ row('c@lan', 'C newest', 'idle'), row('a@lan', 'A newest', '') ]);
 		if (tbody.children[0] !== retainedC || tbody.children[1] !== originalA ||
-		    retainedC.className !== 'idle lanspeed-client-hover-lock' || fakeElementText(retainedC) !== 'C newest' ||
+		    retainedC.className !== 'idle' || fakeElementText(retainedC) !== 'C newest' ||
 		    fakeElementText(originalA) !== 'A newest') {
-			fail('statusRefresh.js must move existing keyed rows without recreating them or dropping the hover lock');
+			fail('statusRefresh.js must move existing keyed rows without recreating them');
 		}
 
-		const timers = [];
 		const scrolls = [];
+		const containerScrolls = [];
+		const scrollContainer = {
+			parentElement: null,
+			scrollLeft: 11,
+			scrollTop: 360,
+			scrollWidth: 1200,
+			clientWidth: 900,
+			scrollHeight: 2400,
+			clientHeight: 900,
+			scrollTo: function(x, y) {
+				containerScrolls.push([ x, y ]);
+				this.scrollLeft = x;
+				this.scrollTop = y;
+			}
+		};
+		const viewportRoot = { parentElement: scrollContainer };
 		const viewportWindow = {
 			location: { pathname: '/admin/status/lanspeed/overview' },
 			scrollX: 7,
 			scrollY: 240,
-			scrollTo: function(x, y) { scrolls.push([ x, y ]); },
-			setTimeout: function(handler, delay) { timers.push([ handler, delay ]); }
+			scrollTo: function(x, y) {
+				scrolls.push([ x, y ]);
+				this.scrollX = x;
+				this.scrollY = y;
+			},
+			getComputedStyle: function() {
+				return { overflowX: 'auto', overflowY: 'auto' };
+			}
 		};
 		const viewportMod = loadStatusRefreshModule(src, viewportWindow);
-		tbody.querySelector = function(selector) {
-			return selector === 'tr:hover' ? retainedC : null;
-		};
-		const viewport = viewportMod.captureClientViewport({ tbody: tbody });
+		const viewport = viewportMod.captureClientViewport({ root: viewportRoot, tbody: tbody });
+		viewportWindow.scrollX = 0;
+		viewportWindow.scrollY = 0;
+		scrollContainer.scrollLeft = 0;
+		scrollContainer.scrollTop = 0;
 		viewportMod.restoreClientViewport(viewport);
-		if (!retainedC.className.includes('lanspeed-client-hover-lock') ||
-		    !tbody.className.includes('lanspeed-client-refresh-lock') ||
-		    JSON.stringify(scrolls) !== JSON.stringify([ [ 7, 240 ] ]) ||
-		    timers.length !== 1 || timers[0][1] !== 80) {
-			fail('statusRefresh.js must lock hover transitions without changing the page scroll coordinates');
+		if (JSON.stringify(scrolls) !== JSON.stringify([ [ 7, 240 ] ]) ||
+		    JSON.stringify(containerScrolls) !== JSON.stringify([ [ 11, 360 ] ])) {
+			fail('statusRefresh.js must preserve window and theme scroll-container coordinates without obsolete hover locks');
 		}
-		timers[0][0]();
-		if (retainedC.className.includes('lanspeed-client-hover-lock'))
-			fail('statusRefresh.js must release the transient hover lock after the browser has repainted');
-		if (tbody.className.includes('lanspeed-client-refresh-lock'))
-			fail('statusRefresh.js must restore normal row transitions after the browser has repainted');
 	}
 	if (typeof mod.setClientStatusVisibility !== 'function' ||
 	    typeof mod.clientStateCell !== 'function') {
@@ -5352,10 +5415,11 @@ function assertStatusStyleModule(src) {
 	if (!baseCss.includes('.lanspeed-clients-card{overflow-anchor:none}') ||
 	    !baseCss.includes('.ipline.lanspeed-ipline-placeholder{visibility:hidden}') ||
 	    !baseCss.includes('line-height:1.2;white-space:nowrap') ||
-	    !baseCss.includes('tr.lanspeed-client-hover-lock') ||
-	    !baseCss.includes('tbody.lanspeed-client-refresh-lock tr') ||
-	    !baseCss.includes('transition:none!important')) {
-		fail('statusStyleBase.js must prevent scroll anchoring and suppress hover transitions during client reconciliation');
+	    !baseCss.includes('tbody tr:hover{') ||
+	    !baseCss.includes('background:transparent!important;background-image:none!important') ||
+	    baseCss.includes('lanspeed-client-hover-lock') ||
+	    baseCss.includes('lanspeed-client-refresh-lock')) {
+		fail('statusStyleBase.js must prevent scroll anchoring and neutralize client-row hover without obsolete locks');
 	}
 	[
 		'@media (max-width:900px)', '@media (max-width:700px)', '@media (max-width:480px)',
@@ -5372,10 +5436,19 @@ function assertStatusStyleModule(src) {
 		if (!theme[2].includes(`lanspeed-theme-${theme[1]}`) ||
 		    !theme[2].includes('.lanspeed-metrics{') ||
 		    !theme[2].includes('.lanspeed-table') ||
-		    !theme[2].includes('tr.lanspeed-client-hover-lock')) {
+		    !theme[2].includes('background-image:none!important') ||
+		    theme[2].includes('background:var(--lanspeed-hover)') ||
+		    theme[2].includes('lanspeed-client-hover-lock')) {
 			fail(`statusStyle${theme[0]}.js must independently implement metrics and table density`);
 		}
 	});
+	if (!themeCss[0][2].includes('background:transparent!important') ||
+	    !themeCss[1][2].includes('background:transparent!important') ||
+	    !themeCss[2][2].includes('tr:nth-child(odd):hover') ||
+	    !themeCss[2][2].includes('tr:nth-child(even):hover') ||
+	    !themeCss[2][2].includes('background:var(--lanspeed-surface-muted)!important')) {
+		fail('all status themes must neutralize client-row hover while preserving Bootstrap zebra stripes');
+	}
 	if (!themeCss[1][2].includes('.lanspeed-theme-argon .lanspeed-metric .big{font-size:1.3rem}'))
 		fail('statusStyleArgon.js must keep live rate values on one line at narrow widths');
 	if (!themeCss[0][2].includes('.lanspeed-clients-card .lanspeed-body{overflow-x:auto}') ||
@@ -5482,9 +5555,15 @@ function assertStatusRefreshModule(src) {
 	    !src.includes("'data-client-key': String(fmt.identityOf(c))") ||
 	    !src.includes('captureClientViewport(refs)') ||
 	    !src.includes('restoreClientViewport(viewport)') ||
-	    !src.includes('lanspeed-client-hover-lock') ||
+	    src.includes('lanspeed-client-hover-lock') ||
+	    src.includes('lanspeed-client-refresh-lock') ||
 	    src.includes('fmt.replaceChildren(refs.tbody')) {
-		fail('statusRefresh.js must preserve keyed rows, hover and viewport position across changing live samples');
+		fail('statusRefresh.js must preserve keyed rows and viewport position without obsolete hover locks');
+	}
+	if (!src.includes('refs.root ? refs.root.parentElement') ||
+	    !src.includes('scrollContainers: scrollContainers') ||
+	    !src.includes('state.scrollContainers || []')) {
+		fail('statusRefresh.js must preserve theme-owned scroll containers as well as the window viewport');
 	}
 	if (!src.includes('var showClientStatus = viewState.showClientStatus === true;') ||
 	    !src.includes('setClientStatusVisibility(refs, showClientStatus);') ||
