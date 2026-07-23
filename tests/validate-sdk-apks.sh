@@ -145,7 +145,7 @@ assert_no_forbidden_dependencies LuCI "$luci_metadata"
 assert_dependencies daemon "$daemon_metadata" \
 	kmod-nf-conntrack-netlink libc libgcc1
 assert_dependencies BPF "$bpf_metadata" \
-	kmod-sched-bpf lanspeedd libc tc-tiny
+	kmod-sched-bpf lanspeedd libc tc-full
 assert_dependencies LuCI "$luci_metadata" \
 	lanspeedd lanspeedd-bpf libc luci-base
 

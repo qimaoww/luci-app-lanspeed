@@ -127,7 +127,7 @@ workspace 的 `rust-version` 与构建驱动统一使用 `1.87.0`，CI 同时覆
 ### 用户态与 BPF 必选包
 
 - `luci-app-lanspeed` 必须依赖 `lanspeedd-bpf`，`lanspeedd-bpf` 再依赖用户态 daemon `lanspeedd`；在 menuconfig 中选择 LuCI 应用会自动选中完整依赖链。
-- `lanspeedd-bpf` 的标准 OpenWrt 包构建使用固定的 `bpf-linker 0.10.3` 构建两套 Rust eBPF 对象；显式传入兼容版本的 `BPF_LINKER` 时，构建驱动按上述版本范围校验。目标机必须提供 `tc-tiny` 和 `kmod-sched-bpf`。
+- `lanspeedd-bpf` 的标准 OpenWrt 包构建使用固定的 `bpf-linker 0.10.3` 构建两套 Rust eBPF 对象；显式传入兼容版本的 `BPF_LINKER` 时，构建驱动按上述版本范围校验。目标机必须提供 `tc-full` 和 `kmod-sched-bpf`。统一使用多数流控插件采用的 `tc-full`，避免与 `tc-tiny` 的包冲突。
 - 当前固定的 `bpf-linker` 发布包要求 x86_64 编译主机，目标路由器架构仍由 OpenWrt SDK 决定。
 - NSS sync 是 ECM/PPE 加速活跃时自动模式的权威来源；NSS-direct 保留为显式模式和 sync 不可用时的后备。两者都不替代 LuCI 应用对 `lanspeedd-bpf` 的安装依赖，BPF 仍用于慢路径观测。
 
@@ -141,7 +141,7 @@ CONFIG_KERNEL_BPF_EVENTS=y
 CONFIG_PACKAGE_kmod-nf-conntrack=y
 CONFIG_PACKAGE_kmod-nf-conntrack-netlink=y
 CONFIG_PACKAGE_kmod-sched-bpf=y
-CONFIG_PACKAGE_tc-tiny=y
+CONFIG_PACKAGE_tc-full=y
 ```
 
 缺少 `lanspeedd-bpf`、tc 或内核 BPF 支持时属于不完整安装，默认实时速率不可用。daemon 仍可能显示连接数与环境诊断；NSS 设备也可能在 BPF 运行失败后使用 NSS-direct / ECM/PPE sync 后备，但这不取代必选 BPF 依赖。
@@ -155,7 +155,7 @@ CONFIG_PACKAGE_tc-tiny=y
 | `libgcc`（APK 中按工具链 ABI 解析，如 `libgcc1`） | yes | Rust unwind 与目标工具链运行时提供 `libgcc_s.so.1`；包管理器自动选择匹配固件的版本 |
 | `kmod-nf-conntrack` | yes | conntrack 表访问 |
 | `kmod-nf-conntrack-netlink` | yes | CT-Netlink 连接数读取 |
-| `tc-tiny` (iproute2) | yes | `lanspeedd-bpf` 的 tc clsact 挂载依赖 |
+| `tc-full` (iproute2) | yes | `lanspeedd-bpf` 的 tc clsact 挂载依赖，并与常见流控插件保持一致 |
 | `kmod-sched-bpf` | yes | `lanspeedd-bpf` 的内核 tc BPF classifier 依赖 |
 | `luci-base` | LuCI 页面 | LuCI 框架 |
 
@@ -333,7 +333,7 @@ ubus call lanspeed client_connections \
 |---|---|
 | SDK 缺失 | 确认 `SDK_DIR` 指向真实 SDK，例如 `/openwrt/immortalwrt`。 |
 | 缺少 BPF 包或对象 | `lanspeedd-bpf` 是 LuCI 应用的必选依赖；检查包依赖和 `/usr/lib/bpf/lanspeed-ebpf-kfunc`、`/usr/lib/bpf/lanspeed-ebpf-fallback`。 |
-| 缺少 `tc` | 安装 `tc-tiny` 或完整 iproute2。 |
+| 缺少 `tc` | 安装 `tc-full`。 |
 | 连接数全 0 | 检查 `nf_conntrack_acct`、`kmod-nf-conntrack-netlink`、`conn_collector_mode`。 |
 | 没有客户端 | 检查 LAN 接口配置、桥设备、BPF 是否 attach 成功。 |
 | 速率长时间为 0 | 先检查 `rate_collector_mode`、BPF 包、tc filter、硬件 flow offload；NSS 设备确认 `effective_rate=nss_conntrack_sync`、`counter_source=ecm_conntrack_sync` 和 Conntrack accounting，再看 `nss_ecm_direct_unavailable` / `nss_ecm_direct_snapshot_pending`；IPv6 场景同时检查客户端是否出现在 neighbor 表。 |

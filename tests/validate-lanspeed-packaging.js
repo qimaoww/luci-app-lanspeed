@@ -741,7 +741,8 @@ try {
     /DEPENDS:=\$\(RUST_ARCH_DEPENDS\)/,
     'base daemon must not advertise unverified 32-bit Rust targets'
   );
-  assertMatch(pkgMakefile, /define Package\/lanspeedd-bpf[\s\S]*DEPENDS:=@!BIG_ENDIAN \+lanspeedd \+tc-tiny \+kmod-sched-bpf/, 'BPF package must depend on the base daemon, tc inspection, and TC BPF kernel support');
+  assertMatch(pkgMakefile, /define Package\/lanspeedd-bpf[\s\S]*DEPENDS:=@!BIG_ENDIAN \+lanspeedd \+tc-full \+kmod-sched-bpf/, 'BPF package must depend on the base daemon, full tc tooling, and TC BPF kernel support');
+  assertNoMatch(pkgMakefile, /\+tc-tiny/, 'BPF package must not conflict with packages that depend on tc-full');
   assertMatch(
     luciMakefile,
     /DEPENDS:=\+lanspeedd \+lanspeedd-bpf \+luci-base/,

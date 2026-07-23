@@ -49,7 +49,7 @@ define Package/lanspeedd-bpf
   SECTION:=net
   CATEGORY:=Network
   TITLE:=BPF assets for lanspeedd
-  DEPENDS:=@!BIG_ENDIAN +lanspeedd +tc-tiny +kmod-sched-bpf
+  DEPENDS:=@!BIG_ENDIAN +lanspeedd +tc-full +kmod-sched-bpf
 endef
 
 define Package/lanspeedd-bpf/description
