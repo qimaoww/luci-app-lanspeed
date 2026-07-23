@@ -67,6 +67,28 @@ function buildSummarySection(refs, viewState) {
 		if (event && event.preventDefault) event.preventDefault();
 		viewState.reload();
 	});
+	refs.btnRestart = E('button', {
+		'type': 'button',
+		'class': 'cbi-button cbi-button-action lanspeed-diagnostics-restart',
+		'disabled': 'disabled',
+		'aria-label': _('重启 LAN Speed 服务'),
+		'aria-describedby': 'lanspeed-diagnostics-restart-feedback'
+	}, _('重启服务'));
+	refs.btnRestart.addEventListener('click', function(event) {
+		if (event && event.preventDefault) event.preventDefault();
+		viewState.restartService();
+	});
+	refs.restartFeedbackTitle = E('strong', {}, '');
+	refs.restartFeedbackText = E('span', {}, '');
+	refs.restartFeedback = E('div', {
+		'id': 'lanspeed-diagnostics-restart-feedback',
+		'class': 'lanspeed-diagnostics-state lanspeed-diagnostics-restart-feedback',
+		'data-state': 'loading',
+		'role': 'status',
+		'aria-live': 'polite',
+		'aria-atomic': 'true',
+		'hidden': 'hidden'
+	}, [ refs.restartFeedbackTitle, refs.restartFeedbackText ]);
 
 	refs.pageNoticeTitle = E('strong', {}, _('正在运行诊断'));
 	refs.pageNoticeText = E('span', {}, _('正在读取服务、采集链路和数据接口。'));
@@ -96,11 +118,13 @@ function buildSummarySection(refs, viewState) {
 	return E('section', { 'class': 'cbi-section lanspeed-diagnostics-summary-section' }, [
 		sectionHeader(_('运行诊断'), refs.summary, 'lanspeed-diagnostics-primary-header', [
 			refs.checked,
+			refs.btnRestart,
 			refs.btnRefresh
 		]),
 		E('div', { 'class': 'lanspeed-body lanspeed-diagnostics-summary-body' }, [
 			E('p', { 'class': 'lanspeed-diagnostics-intro' },
 				_('按数据来源分别检查服务、采集质量、接口、连接和 RPC；失败接口不会由其它响应替代。')),
+			refs.restartFeedback,
 			refs.pageNotice,
 			refs.errorDetails,
 			refs.summaryFacts

@@ -1371,7 +1371,12 @@ function assertLifecycleInit(initScript, hotplugScript, packageMakefile, default
   assert(initScript.includes('procd_add_reload_trigger "lanspeed" "network"'), 'init script must reload on lanspeed and network config changes');
   assert(initScript.includes('procd_add_interface_trigger'), 'init script must register interface reload awareness');
   assert(!/tc\s+qdisc\s+del/i.test(initScript), 'init cleanup must never delete clsact qdisc');
-  assert(/\$TC\s+filter\s+del dev "\$dev" "\$direction" pref "\$LANSPEED_TC_PREF" handle "\$LANSPEED_TC_HANDLE"/.test(initScript), 'tc cleanup must be scoped to owned pref and handle');
+  assert(/\$TC\s+filter\s+del dev "\$dev" "\$direction" protocol all pref "\$LANSPEED_TC_PREF" handle "\$LANSPEED_TC_HANDLE" bpf/.test(initScript),
+    'tc cleanup must use the complete protocol, pref, handle, and classifier selector');
+  assert(/\$TC\s+filter\s+del dev "\$dev" "\$direction" protocol all pref "\$LANSPEED_TC_EARLY_PREF" handle "\$LANSPEED_TC_EARLY_HANDLE" bpf/.test(initScript),
+    'early tc cleanup must use the complete protocol, pref, handle, and classifier selector');
+  assert(!/\$TC\s+filter\s+del[^\n]*2>\/dev\/null[^\n]*\|\|\s*true/.test(initScript),
+    'tc cleanup failures must not be silently discarded');
   assert(initScript.includes('LANSPEED_TC_OWNER="lanspeed"'), 'init cleanup must encode lanspeed owner');
   assert(initScript.includes('LANSPEED_TC_PREF="49152"'), 'init cleanup must encode lanspeed pref');
   assert(initScript.includes('LANSPEED_TC_HANDLE="0x1eed"'), 'init cleanup must encode lanspeed handle');
@@ -1379,6 +1384,9 @@ function assertLifecycleInit(initScript, hotplugScript, packageMakefile, default
   assert(initScript.includes("grep -E -q 'lanspeed_ingres|lanspeed_egress'"), 'init cleanup must require the installed lanspeed BPF program name from tc output');
   assert(!initScript.includes('grep -F -q "$LANSPEED_TC_OBJECT"'), 'init cleanup must not require an object marker absent from tc filter show output');
   assert(!initScript.includes('$LANSPEED_TC_OWNER\\|$LANSPEED_TC_OBJECT'), 'init cleanup must not treat owner/object as alternatives');
+  assert(!/^stop_service\(\)/m.test(initScript), 'tc cleanup must not run before procd has stopped the daemon');
+  assert(/^service_stopped\(\)[ \t]*\{[\s\S]*?cleanup_lanspeed_tc_filters[\s\S]*?^\}/m.test(initScript),
+    'tc cleanup must run from service_stopped after procd has stopped the daemon');
   assert(!/service\s+network\s+reload/i.test(initScript), 'init script must not reload user network config');
   assert(!/uci\s+commit/i.test(initScript), 'init script must not commit user config');
   assert(hotplugScript.includes('/etc/init.d/lanspeedd reload'), 'hotplug hook must call lanspeedd reload');

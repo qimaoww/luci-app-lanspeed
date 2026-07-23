@@ -773,12 +773,12 @@ try {
   assert(readme.includes('手动运行也可补发'), 'README must document missing-release recovery');
   assert(readme.includes('不得预先创建 `v*` tag'), 'README must forbid maintainers from pre-creating release tags');
   assert(!readme.includes('GitHub Actions 在 `v*` tag 发布时'), 'README must not retain the obsolete tag-trigger description');
-  assert(readme.includes('`1.1.2-r5`'), 'README full-version example must match the 1.1.2 release');
-	assert(!/1\.1\.2-r(?:0|1|2|3|4|[6-9]|[1-9][0-9]+)/.test(readme),
-	  'README must keep the 1.1.2 release at r5');
+  assert(readme.includes('`1.1.2-r6`'), 'README full-version example must match the 1.1.2 release');
+	assert(!/1\.1\.2-r(?:[0-5]|[7-9]|[1-9][0-9]+)/.test(readme),
+	  'README must keep the 1.1.2 release at r6');
 
-	assert(daemonRelease === '5', 'daemon PKG_RELEASE must be exactly 5 for the automatic release workflow');
-	assert(luciRelease === '5', 'LuCI PKG_RELEASE must be exactly 5 for the automatic release workflow');
+	assert(daemonRelease === '6', 'daemon PKG_RELEASE must be exactly 6 for the automatic release workflow');
+	assert(luciRelease === '6', 'LuCI PKG_RELEASE must be exactly 6 for the automatic release workflow');
 
   console.log('validate-release-version: PASS');
 } catch (error) {

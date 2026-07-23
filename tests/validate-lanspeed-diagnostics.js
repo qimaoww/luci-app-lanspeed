@@ -164,7 +164,7 @@ function loadRefresh(vocabulary) {
   return vm.compileFunction(readModule('diagnosticsRefresh.js'),
     [ 'baseclass', 'fmt', 'vocab', 'lsVersion', 'statusCollector', 'diagnosticsModel', 'E', '_' ],
     { filename: 'diagnosticsRefresh.js', parsingContext: context })(
-      baseclass, format, vocabulary || vocab, { FULL_VERSION: '1.1.2-r5' }, statusCollector, model,
+      baseclass, format, vocabulary || vocab, { FULL_VERSION: '1.1.2-r6' }, statusCollector, model,
       fakeElement, translate
     );
 }
@@ -174,7 +174,7 @@ function loadView(rpc, shell, refresh, navigatorValue) {
     'baseclass', 'lsRpc', 'lsVersion', 'diagnosticsModel',
     'diagnosticsShell', 'diagnosticsRefresh', 'navigator', 'document', 'window', '_'
   ], { filename: 'diagnosticsView.js', parsingContext: context })(
-    baseclass, rpc, { FULL_VERSION: '1.1.2-r5' }, model,
+    baseclass, rpc, { FULL_VERSION: '1.1.2-r6' }, model,
     shell || loadShell(), refresh || loadRefresh(), navigatorValue || {},
     { body: null }, { setTimeout }, translate
   );
@@ -211,7 +211,7 @@ function healthyDiagnostics() {
   return value;
 }
 
-function healthyStatus(version = '1.1.2-r5') {
+function healthyStatus(version = '1.1.2-r6') {
   const value = clone(readFixture('lanspeed-status.json'));
   value.mode = 'Full';
   value.confidence = 'high';
@@ -418,10 +418,10 @@ async function testStrictContracts() {
   assert.strictEqual(model.validateRuntimeResponse(badOverviewRelation, 'overview').valid, false);
   assert.strictEqual(model.validateRuntimeResponse({}, 'unknown').valid, false);
 
-  const versionMismatch = payloads('1.1.2-r5');
+  const versionMismatch = payloads('1.1.2-r6');
   versionMismatch.status.version = '1.1.1-r6';
   const mismatchState = model.normalizeResults(await settled(versionMismatch), null, 9000, 1);
-  assert.strictEqual(model.versionStateWithRpc(mismatchState, mismatchState.status.version, '1.1.2-r5').state, 'warning');
+  assert.strictEqual(model.versionStateWithRpc(mismatchState, mismatchState.status.version, '1.1.2-r6').state, 'warning');
 
   const timeout = await model.runCall({ key: 'overview', call: () => new Promise(() => {}) }, 250);
   assert.strictEqual(timeout.ok, false);
@@ -583,7 +583,7 @@ async function testRequestOrdering() {
   await Promise.resolve();
   assert.strictEqual(state.refs.btnRefresh.disabled, true);
   assert.strictEqual(state.refs.btnCopy.disabled, true);
-  const secondPayload = payloads('1.1.2-r5');
+  const secondPayload = payloads('1.1.2-r6');
   model.RPC_KEYS.forEach((key) => queues[key][1](secondPayload[key]));
   const secondResult = await second;
   assert.strictEqual(secondResult.ignored, false);
@@ -594,8 +594,8 @@ async function testRequestOrdering() {
   const firstResult = await first;
   assert.strictEqual(firstResult.ignored, true);
   assert.strictEqual(state.requestId, 2);
-  assert.strictEqual(state.status.version, '1.1.2-r5');
-  assert.strictEqual(state.diagnostics.versions.daemon, '1.1.2-r5');
+  assert.strictEqual(state.status.version, '1.1.2-r6');
+  assert.strictEqual(state.diagnostics.versions.daemon, '1.1.2-r6');
   assert.strictEqual(state.refs.btnRefresh.disabled, false);
   assert.strictEqual(state.refs.root.getAttribute('aria-busy'), 'false');
 }
@@ -631,6 +631,57 @@ async function testFinallyRestoresControls() {
   assert.strictEqual(state.refs.root.getAttribute('aria-busy'), 'false');
 }
 
+async function testRestartControl() {
+  const values = payloads();
+  let restartCalls = 0;
+  let diagnosticCalls = 0;
+  const rpc = { restartService() { restartCalls++; return Promise.resolve(true); } };
+  model.RPC_KEYS.forEach((key) => {
+    rpc[key] = () => { diagnosticCalls++; return Promise.resolve(values[key]); };
+  });
+  const ready = model.normalizeResults(await settled(values), null, 18000, 1);
+  ready.autoStart = false;
+  const state = loadView(rpc).render(ready).__lanspeedDiagnosticsState;
+  state.restartDelayMs = 0;
+  const first = state.restartService();
+  const duplicate = state.restartService();
+  assert.strictEqual(first, duplicate, 'duplicate restart clicks must join the same operation');
+  assert.strictEqual(state.refs.btnRestart.disabled, true);
+  assert.strictEqual(state.refs.btnRefresh.disabled, true);
+  assert.strictEqual(state.refs.btnCopy.disabled, true);
+  assert.strictEqual(state.refs.root.getAttribute('aria-busy'), 'true');
+  assert.strictEqual(state.refs.restartFeedback.hidden, false);
+  assert(state.refs.restartFeedbackText.textContent.includes('只重启 LAN Speed 服务'));
+  const result = await first;
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.diagnosticsReady, true);
+  assert.strictEqual(restartCalls, 1);
+  assert.strictEqual(diagnosticCalls, model.RPC_KEYS.length);
+  assert.strictEqual(state.refs.btnRestart.disabled, false);
+  assert.strictEqual(state.refs.btnRestart.textContent, '重启服务');
+  assert.strictEqual(state.refs.btnRefresh.disabled, false);
+  assert.strictEqual(state.refs.btnCopy.disabled, false);
+  assert.strictEqual(state.refs.root.getAttribute('aria-busy'), 'false');
+  assert.strictEqual(state.refs.restartFeedback.getAttribute('data-state'), 'ready');
+  assert.strictEqual(state.refs.restartFeedbackTitle.textContent, '服务重启完成');
+
+  let unexpectedDiagnostics = 0;
+  const deniedRpc = { restartService() { return Promise.resolve(false); } };
+  model.RPC_KEYS.forEach((key) => {
+    deniedRpc[key] = () => { unexpectedDiagnostics++; return Promise.resolve(values[key]); };
+  });
+  ready.autoStart = false;
+  const denied = loadView(deniedRpc).render(ready).__lanspeedDiagnosticsState;
+  denied.restartDelayMs = 0;
+  const deniedResult = await denied.restartService();
+  assert.strictEqual(deniedResult.ok, false);
+  assert.strictEqual(unexpectedDiagnostics, 0,
+    'a rejected init action must not pretend to refresh a successful restart');
+  assert.strictEqual(denied.refs.btnRestart.disabled, false);
+  assert.strictEqual(denied.refs.restartFeedback.getAttribute('data-state'), 'error');
+  assert.strictEqual(denied.refs.restartFeedbackTitle.textContent, '服务重启失败');
+}
+
 async function testDomAndPresenter() {
   const shell = loadShell();
   const refresh = loadRefresh(loadVocabulary());
@@ -651,6 +702,7 @@ async function testDomAndPresenter() {
   assert.strictEqual(loadingBuilt.refs.root.getAttribute('data-page-state'), 'loading');
   assert.strictEqual(loadingBuilt.refs.root.getAttribute('aria-busy'), 'true');
   assert.strictEqual(loadingBuilt.refs.btnRefresh.disabled, true, 'initial refresh must expose a real loading lock');
+  assert.strictEqual(loadingBuilt.refs.btnRestart.disabled, true, 'restart must remain locked until diagnostics finish');
   assert.strictEqual(loadingBuilt.refs.btnCopy.disabled, true, 'report copy must be disabled before a completed check');
   assert.strictEqual(loadingBuilt.refs.rpcBody.children.length, 6);
 
@@ -661,6 +713,7 @@ async function testDomAndPresenter() {
   assert.strictEqual(goodBuilt.refs.root.getAttribute('data-page-state'), 'ready');
   assert.strictEqual(goodBuilt.refs.root.getAttribute('aria-busy'), 'false');
   assert.strictEqual(goodBuilt.refs.btnRefresh.disabled, false);
+  assert.strictEqual(goodBuilt.refs.btnRestart.disabled, false);
   assert.strictEqual(goodBuilt.refs.btnCopy.disabled, false);
   assert.strictEqual(goodBuilt.refs.pageNotice.style.display, 'none');
   assert.strictEqual(goodBuilt.refs.interfacesBody.children.length, 1);
@@ -833,11 +886,11 @@ async function testAlertsAndReport() {
   ], 'warning aliases from status, health conflicts and diagnostics must collapse to root causes');
   assert.strictEqual(new Set(Array.from(deduplicated.all, (item) => item.text)).size,
     deduplicated.all.length, 'deduplicated diagnostics must not render repeated warning text');
-  const deduplicatedReport = model.buildReport(duplicateState, '1.1.2-r5');
+  const deduplicatedReport = model.buildReport(duplicateState, '1.1.2-r6');
   assert.strictEqual((deduplicatedReport.match(/localized:software_flow_offload_enabled/g) || []).length, 1);
   assert.strictEqual((deduplicatedReport.match(/localized:fullcone_detected/g) || []).length, 1);
 
-  const report = model.buildReport(state, '1.1.2-r5');
+  const report = model.buildReport(state, '1.1.2-r6');
   [ 'router.private.example', '10.77.0.20', 'secret-lan-interface',
     'collector-secret', 'token_secret_reason', 'command:ip_route_private', 'ip_route_private' ].forEach((secret) => {
     assert(!report.includes(secret), `report leaked ${secret}`);
@@ -860,7 +913,7 @@ async function testAlertsAndReport() {
     message_public: rawBpfSecret
   } ];
   const mapFailureState = model.normalizeResults(await settled(mapFailureValues), null, 30500, 2);
-  const mapFailureReport = model.buildReport(mapFailureState, '1.1.2-r5');
+  const mapFailureReport = model.buildReport(mapFailureState, '1.1.2-r6');
   assert(mapFailureReport.includes('BPF 映射表'));
   assert(mapFailureReport.includes('localized:map_read_failed') || mapFailureReport.includes('映射表'));
   [ rawBpfSecret, '/sys/fs/bpf/private-map', 'eth1', 'bpf-secret' ].forEach((secret) => {
@@ -891,7 +944,7 @@ async function testAlertsAndReport() {
       error: model.rpcErrorInfo({ code: 'TOKEN_SECRET', message: 'token=do-not-copy router.private.example' }, 'transport') })
   });
   const secretFailure = model.normalizeResults(secretFailureResults, null, 31000, 2);
-  const failureReport = model.buildReport(secretFailure, '1.1.2-r5');
+  const failureReport = model.buildReport(secretFailure, '1.1.2-r6');
   [ 'TOKEN_SECRET', 'do-not-copy', 'router.private.example' ].forEach((secret) => {
     assert(!failureReport.includes(secret), `RPC report leaked ${secret}`);
   });
@@ -920,6 +973,7 @@ async function run() {
   await testResourceStateMachine();
   await testRequestOrdering();
   await testFinallyRestoresControls();
+  await testRestartControl();
   await testDomAndPresenter();
   await testSubsystemCodeContracts();
   await testAlertsAndReport();

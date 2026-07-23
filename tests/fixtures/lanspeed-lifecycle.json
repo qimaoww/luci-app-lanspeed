@@ -147,6 +147,7 @@
   ],
   "expected": {
     "pid_unchanged_on_healthy_reload": true,
+    "cleanup_after_daemon_exit": true,
     "foreign_filters_preserved": true,
     "lanspeed_filter_count_after_restart": 2,
     "delete_clsact": false,

@@ -144,13 +144,48 @@ function resetCopyFeedback(refs) {
 	}
 }
 
+function setRestartFeedback(refs, title, text, state) {
+	if (!refs || !refs.restartFeedback) return;
+	refs.restartFeedback.hidden = false;
+	refs.restartFeedback.setAttribute('aria-hidden', 'false');
+	refs.restartFeedback.setAttribute('data-state', state || 'loading');
+	refs.restartFeedbackTitle.textContent = title;
+	refs.restartFeedbackText.textContent = text;
+}
+
+function resetRestartFeedback(refs) {
+	if (!refs || !refs.restartFeedback) return;
+	refs.restartFeedback.hidden = true;
+	refs.restartFeedback.setAttribute('aria-hidden', 'true');
+	refs.restartFeedbackTitle.textContent = '';
+	refs.restartFeedbackText.textContent = '';
+}
+
+function waitForRestart(viewState) {
+	var delay = Math.max(0, Number(viewState.restartDelayMs) || 0);
+	if (!delay) return Promise.resolve();
+	return new Promise(function(resolve) {
+		if (typeof window !== 'undefined' && typeof window.setTimeout === 'function')
+			window.setTimeout(resolve, delay);
+		else
+			resolve();
+	});
+}
+
 function restoreControls(viewState, requestId) {
 	if (!viewState.refs || requestId !== viewState.requestId) return;
-	viewState.refs.btnRefresh.disabled = false;
+	var loading = viewState.pageState === 'loading';
+	var restarting = viewState.restartPending === true;
+	viewState.refs.btnRefresh.disabled = loading || restarting;
 	viewState.refs.btnRefresh.textContent = _('重新检查');
-	if (viewState.refs.btnCopy) viewState.refs.btnCopy.disabled = viewState.copyPending === true;
+	if (viewState.refs.btnRestart) {
+		viewState.refs.btnRestart.disabled = loading || restarting;
+		viewState.refs.btnRestart.textContent = restarting ? _('正在重启…') : _('重启服务');
+	}
+	if (viewState.refs.btnCopy)
+		viewState.refs.btnCopy.disabled = loading || restarting || viewState.copyPending === true;
 	if (viewState.refs.root)
-		viewState.refs.root.setAttribute('aria-busy', viewState.pageState === 'loading' ? 'true' : 'false');
+		viewState.refs.root.setAttribute('aria-busy', loading || restarting ? 'true' : 'false');
 }
 
 function unexpectedResults(error) {
@@ -192,6 +227,9 @@ return baseclass.extend({
 			rpcTimeoutMs: diagnosticsModel.DEFAULT_RPC_TIMEOUT_MS,
 			autoStart: data && data.autoStart === false ? false : true,
 			copyPending: false,
+			restartPending: false,
+			restartPromise: null,
+			restartDelayMs: 1000,
 
 			reload: function() {
 				var self = this;
@@ -202,6 +240,7 @@ return baseclass.extend({
 				self.requestId = requestId;
 				if (self.refs) {
 					resetCopyFeedback(self.refs);
+					if (!self.restartPending) resetRestartFeedback(self.refs);
 					self.refs.btnRefresh.disabled = true;
 					self.refs.btnRefresh.textContent = _('检查中…');
 					if (self.refs.btnCopy) self.refs.btnCopy.disabled = true;
@@ -230,9 +269,58 @@ return baseclass.extend({
 				});
 			},
 
+			restartService: function() {
+				var self = this;
+				if (self.restartPromise) return self.restartPromise;
+				if (self.pageState === 'loading') return Promise.resolve({ ok: false, busy: true });
+
+				self.restartPending = true;
+				if (self.refs) {
+					setRestartFeedback(self.refs, _('正在重启服务'),
+						_('只重启 LAN Speed 服务，完成后会自动重新运行诊断。'), 'loading');
+					self.refs.btnRestart.disabled = true;
+					self.refs.btnRestart.textContent = _('正在重启…');
+					self.refs.btnRefresh.disabled = true;
+					if (self.refs.btnCopy) self.refs.btnCopy.disabled = true;
+					self.refs.root.setAttribute('aria-busy', 'true');
+				}
+
+				var operation = Promise.resolve().then(function() {
+					return lsRpc.restartService();
+				}).then(function(ok) {
+					if (ok !== true) throw new Error('LAN Speed service restart was rejected');
+					return waitForRestart(self);
+				}).then(function() {
+					return self.reload();
+				}).then(function(result) {
+					var recovered = !result || result.state !== 'error';
+					setRestartFeedback(self.refs, _('服务重启完成'), recovered
+						? _('诊断数据已重新检查并更新。')
+						: _('服务已重启，但诊断接口暂未恢复，请稍后重新检查。'),
+						recovered ? 'ready' : 'degraded');
+					return { ok: true, diagnosticsReady: recovered, result: result };
+				}, function() {
+					setRestartFeedback(self.refs, _('服务重启失败'),
+						_('请检查当前会话权限或服务日志后重试。'), 'error');
+					return { ok: false };
+				});
+
+				self.restartPromise = operation.then(function(result) {
+					self.restartPending = false;
+					self.restartPromise = null;
+					restoreControls(self, self.requestId);
+					return result;
+				});
+				return self.restartPromise;
+			},
+
 			copyReport: function() {
 				var self = this;
 				if (self.copyPending) return Promise.resolve(false);
+				if (self.restartPending) {
+					setCopyFeedback(self.refs, _('请等待服务重启完成'), 'warning');
+					return Promise.resolve(false);
+				}
 				if (self.pageState === 'loading') {
 					setCopyFeedback(self.refs, _('请等待检查完成'), 'warning');
 					return Promise.resolve(false);

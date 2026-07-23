@@ -63,10 +63,14 @@ cleanup_lanspeed_tc_filters_on_dev() {
 			if lanspeed_tc_filter_owned "$filter"; then
 				if printf '%s\n' "$filter" | grep -q "pref $LANSPEED_TC_EARLY_PREF"; then
 					logger -t "$NAME" "removing owned tc filter dev=$dev direction=$direction pref=$LANSPEED_TC_EARLY_PREF handle=$LANSPEED_TC_EARLY_HANDLE"
-					$TC filter del dev "$dev" "$direction" pref "$LANSPEED_TC_EARLY_PREF" handle "$LANSPEED_TC_EARLY_HANDLE" 2>/dev/null || true
+					if ! $TC filter del dev "$dev" "$direction" protocol all pref "$LANSPEED_TC_EARLY_PREF" handle "$LANSPEED_TC_EARLY_HANDLE" bpf; then
+						logger -p daemon.warn -t "$NAME" "owned tc filter cleanup failed dev=$dev direction=$direction pref=$LANSPEED_TC_EARLY_PREF handle=$LANSPEED_TC_EARLY_HANDLE"
+					fi
 				else
 					logger -t "$NAME" "removing owned tc filter dev=$dev direction=$direction pref=$LANSPEED_TC_PREF handle=$LANSPEED_TC_HANDLE"
-					$TC filter del dev "$dev" "$direction" pref "$LANSPEED_TC_PREF" handle "$LANSPEED_TC_HANDLE" 2>/dev/null || true
+					if ! $TC filter del dev "$dev" "$direction" protocol all pref "$LANSPEED_TC_PREF" handle "$LANSPEED_TC_HANDLE" bpf; then
+						logger -p daemon.warn -t "$NAME" "owned tc filter cleanup failed dev=$dev direction=$direction pref=$LANSPEED_TC_PREF handle=$LANSPEED_TC_HANDLE"
+					fi
 				fi
 			fi
 		done
@@ -89,7 +93,7 @@ start_service() {
 	procd_close_instance
 }
 
-stop_service() {
+service_stopped() {
 	cleanup_lanspeed_tc_filters
 }
 

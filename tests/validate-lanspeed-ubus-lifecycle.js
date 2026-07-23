@@ -93,6 +93,9 @@ assertThrows(
 assert(initScript.includes('USE_PROCD=1'), 'lanspeedd must remain supervised by procd');
 assert(initScript.includes('procd_add_reload_trigger "lanspeed" "network"'), 'procd must trigger in-process reload for config/network changes');
 assert(validateReloadService(initScript), 'reload must immediately return after a successful ubus reload and restart only on failure');
+assert(!/^stop_service\(\)/m.test(initScript), 'owned tc cleanup must not race a daemon that has not stopped yet');
+assert(/^\s*cleanup_lanspeed_tc_filters\s*$/m.test(shellFunctionBody(initScript, 'service_stopped')),
+  'service_stopped must remove owned tc filters after procd has stopped the daemon');
 assert(hotplugScript.includes('/etc/init.d/lanspeedd reload'), 'hotplug must request reload rather than restart');
 assert(!/restart/i.test(hotplugScript), 'hotplug must not restart the daemon');
 
@@ -115,6 +118,7 @@ const ownedAttachmentCount = new Set(
 const duplicateOwnedFilters = ownedAttachmentCount !== ownedAfter.length;
 
 assert(fixture.expected.pid_unchanged_on_healthy_reload === true, 'healthy in-process reload must preserve the daemon pid');
+assert(fixture.expected.cleanup_after_daemon_exit === true, 'stop lifecycle must clean owned filters only after daemon exit');
 assert(foreignBefore.some((filter) => filter.owner === 'foreign-lanspeed-label'), 'foreign-lanspeed-label must not be classified as an owned filter');
 assert(fixture.expected.foreign_filters_preserved === true, 'reload lifecycle must preserve foreign filters');
 assert(foreignFiltersPreserved === fixture.expected.foreign_filters_preserved, 'after reload must retain every foreign filter identity');

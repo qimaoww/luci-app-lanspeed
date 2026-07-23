@@ -118,10 +118,15 @@ function renderPageState(refs, viewState) {
 	refs.root.setAttribute('data-page-state', state);
 	refs.root.setAttribute('aria-busy', state === 'loading' ? 'true' : 'false');
 	if (refs.btnRefresh) {
-		refs.btnRefresh.disabled = state === 'loading';
+		refs.btnRefresh.disabled = state === 'loading' || viewState.restartPending === true;
 		refs.btnRefresh.textContent = state === 'loading' ? _('检查中…') : _('重新检查');
 	}
-	if (refs.btnCopy) refs.btnCopy.disabled = state === 'loading' || viewState.copyPending === true;
+	if (refs.btnRestart) {
+		refs.btnRestart.disabled = state === 'loading' || viewState.restartPending === true;
+		refs.btnRestart.textContent = viewState.restartPending === true ? _('正在重启…') : _('重启服务');
+	}
+	if (refs.btnCopy) refs.btnCopy.disabled = state === 'loading' ||
+		viewState.copyPending === true || viewState.restartPending === true;
 	return state;
 }
 

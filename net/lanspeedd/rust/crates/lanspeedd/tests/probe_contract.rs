@@ -814,6 +814,34 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
     .collect::<Vec<_>>();
     assert_eq!(owned_only.len(), 1);
     assert!(!has_foreign_filters(&owned_only));
+
+    let tc_full_details = parse_filter_json(
+        "lan0",
+        "ingress",
+        r#"[
+          {"protocol":"all","pref":49152,"kind":"bpf","chain":0},
+          {"protocol":"all","pref":49152,"kind":"bpf","chain":0,
+           "options":{"handle":"0x1eed","bpf_name":"lanspeed_ingress",
+                      "direct-action":true,"not_in_hw":true,
+                      "prog":{"id":373,"name":"lanspeed_ingres","jited":1}}}
+        ]"#,
+    )
+    .unwrap();
+    assert_eq!(tc_full_details.len(), 1);
+    assert_eq!(
+        tc_full_details[0].program_name.as_deref(),
+        Some("lanspeed_ingres")
+    );
+    assert_eq!(tc_full_details[0].program_id, Some(373));
+    assert!(has_software_direct_action_semantics(&tc_full_details[0]));
+    let tc_full_filters = tc_full_details
+        .into_iter()
+        .map(|detail| detail.filter)
+        .collect::<Vec<_>>();
+    assert_eq!(tc_full_filters[0].owner, "lanspeed");
+    assert!(!has_foreign_filters(&tc_full_filters));
+    assert!(!has_owned_identity_collision(&tc_full_filters));
+
     assert!(
         qdisc_json_has_clsact(r#"[{"kind":"noqueue"},{"kind":"clsact","handle":"ffff:"}]"#)
             .unwrap()

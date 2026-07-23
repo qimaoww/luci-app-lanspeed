@@ -50,6 +50,12 @@ var callDiagnostics = rpc.declare({
 	method: 'diagnostics',
 	expect: { '': {} }
 });
+var callInitAction = rpc.declare({
+	object: 'luci',
+	method: 'setInitAction',
+	params: [ 'name', 'action' ],
+	expect: { result: false }
+});
 var callUciSet = rpc.declare({
 	object: 'uci',
 	method: 'set',
@@ -78,6 +84,10 @@ var callUciRevert = rpc.declare({
 	params: [ 'config' ]
 });
 
+function restartService() {
+	return callInitAction('lanspeedd', 'restart');
+}
+
 return baseclass.extend({
 	status:     callStatus,
 	clients:    callClients,
@@ -87,6 +97,7 @@ return baseclass.extend({
 	interfaces: callInterfaces,
 	sysdevices: callSysdevices,
 	diagnostics: callDiagnostics,
+	restartService: restartService,
 	uciSet:     callUciSet,
 	uciAdd:     callUciAdd,
 	uciGet:     callUciGet,

@@ -180,13 +180,74 @@ function clientStateCell(stateCells, visible) {
 	return cell;
 }
 
+var CLIENT_HOVER_LOCK = 'lanspeed-client-hover-lock';
+var CLIENT_REFRESH_LOCK = 'lanspeed-client-refresh-lock';
+
+function rowHasClass(row, name) {
+	return (' ' + String(row && row.className || '') + ' ').indexOf(' ' + name + ' ') !== -1;
+}
+
+function addRowClass(row, name) {
+	if (row && !rowHasClass(row, name))
+		row.className = [ row.className, name ].filter(Boolean).join(' ');
+}
+
+function removeRowClass(row, name) {
+	if (!row) return;
+	row.className = String(row.className || '').split(/\s+/).filter(function(value) {
+		return value && value !== name;
+	}).join(' ');
+}
+
+function hoveredClientRow(tbody) {
+	if (!tbody || typeof tbody.querySelector !== 'function') return null;
+	try { return tbody.querySelector('tr:hover'); } catch (error) { return null; }
+}
+
+function captureClientViewport(refs) {
+	var tbody = refs && refs.tbody;
+	var hovered = hoveredClientRow(tbody);
+	if (hovered) {
+		addRowClass(hovered, CLIENT_HOVER_LOCK);
+		addRowClass(tbody, CLIENT_REFRESH_LOCK);
+	}
+	var host = typeof window !== 'undefined' ? window : null;
+	var scrollX = host ? Number(host.scrollX !== undefined ? host.scrollX : host.pageXOffset) || 0 : 0;
+	var scrollY = host ? Number(host.scrollY !== undefined ? host.scrollY : host.pageYOffset) || 0 : 0;
+	return {
+		host: host,
+		tbody: tbody,
+		hovered: hovered,
+		scrollX: scrollX,
+		scrollY: scrollY
+	};
+}
+
+function restoreClientViewport(state) {
+	if (!state) return;
+	var host = state.host;
+	if (host && typeof host.scrollTo === 'function')
+		host.scrollTo(state.scrollX, state.scrollY);
+
+	var unlock = function() {
+		removeRowClass(state.hovered, CLIENT_HOVER_LOCK);
+		removeRowClass(state.tbody, CLIENT_REFRESH_LOCK);
+	};
+	if (state.hovered && host && typeof host.setTimeout === 'function')
+		host.setTimeout(unlock, 80);
+	else
+		unlock();
+}
+
 function replaceRowContents(target, source) {
+	var hoverLocked = rowHasClass(target, CLIENT_HOVER_LOCK);
 	var children = [];
 	while (source.firstChild)
 		children.push(source.removeChild(source.firstChild));
 	while (target.firstChild)
 		target.removeChild(target.firstChild);
 	target.className = source.className;
+	if (hoverLocked) addRowClass(target, CLIENT_HOVER_LOCK);
 	children.forEach(function(child) { target.appendChild(child); });
 }
 
@@ -252,6 +313,7 @@ function refreshSortHeaders(refs, prefs) {
 function refreshLive(viewState) {
 	var refs = viewState.refs;
 	if (!refs) return;
+	var viewport = captureClientViewport(refs);
 	var status = viewState.status || {};
 	var clientsAll = fmt.asArray(viewState.clients && viewState.clients.clients);
 	var prefs = viewState.prefs;
@@ -552,6 +614,7 @@ function refreshLive(viewState) {
 			].filter(Boolean).join(' ');
 		}
 	}
+	restoreClientViewport(viewport);
 
 }
 
@@ -561,6 +624,8 @@ return baseclass.extend({
 	splitClientWarnings: splitClientWarnings,
 	setClientStatusVisibility: setClientStatusVisibility,
 	clientStateCell: clientStateCell,
+	captureClientViewport: captureClientViewport,
+	restoreClientViewport: restoreClientViewport,
 	reconcileClientRows: reconcileClientRows,
 	refreshAvailability: refreshAvailability,
 	refreshPagination: refreshPagination,

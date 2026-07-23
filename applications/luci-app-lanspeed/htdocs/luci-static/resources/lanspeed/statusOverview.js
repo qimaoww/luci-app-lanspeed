@@ -212,8 +212,9 @@ function createController(viewState, options) {
 	var observer = null;
 	var connected = false;
 
-	function refresh() {
-		if (typeof viewState.refreshLive === 'function') viewState.refreshLive();
+	function refresh(busyOnly) {
+		if (busyOnly && typeof viewState.refreshBusy === 'function') viewState.refreshBusy();
+		else if (typeof viewState.refreshLive === 'function') viewState.refreshLive();
 	}
 
 	function stopTimer() {
@@ -257,7 +258,7 @@ function createController(viewState, options) {
 		if (pending) {
 			if (manual) {
 				viewState.manualBusy = true;
-				refresh();
+				refresh(true);
 			}
 			return pending;
 		}
@@ -266,7 +267,7 @@ function createController(viewState, options) {
 		var sequence = ++requestSeq;
 		viewState.loading = true;
 		viewState.manualBusy = manual === true;
-		refresh();
+		refresh(true);
 		var previous = snapshot(viewState);
 		var request = Promise.resolve().then(function() {
 			return loader(previous);
@@ -372,6 +373,9 @@ return baseclass.extend({
 			};
 			viewState.refreshLive = function() {
 				return statusRefresh.refreshLive(viewState);
+			};
+			viewState.refreshBusy = function() {
+				return statusRefresh.refreshAvailability(viewState, viewState.refs);
 			};
 			var controller = createController(viewState);
 			var built = statusShell.buildShell(viewState);

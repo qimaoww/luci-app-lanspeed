@@ -335,11 +335,13 @@ async function testControllerLifecycle(context, fmt) {
 		removeEventListener: function(name) { delete events[name]; }
 	};
 	let refreshes = 0;
+	let busyRefreshes = 0;
 	let calls = 0;
 	let deferred = makeDeferred();
 	const state = Object.assign(normalizedResult('initial', 100), {
 		prefs: { paused: false, refreshMs: 3000 },
 		refreshLive: function() { refreshes++; },
+		refreshBusy: function() { busyRefreshes++; },
 		loading: false,
 		manualBusy: false
 	});
@@ -360,6 +362,8 @@ async function testControllerLifecycle(context, fmt) {
 	assert.strictEqual(automatic, manual);
 	assert.strictEqual(state.loading, true);
 	assert.strictEqual(state.manualBusy, true);
+	assert.strictEqual(busyRefreshes, 2,
+		'loading and duplicate manual joins must update only busy controls without rebuilding client rows');
 	assert.strictEqual(timers.count(), 0);
 	await Promise.resolve();
 	assert.strictEqual(calls, 1);
@@ -393,7 +397,9 @@ async function testControllerLifecycle(context, fmt) {
 	assert.strictEqual(controller.isDestroyed(), true);
 	assert.strictEqual(events.pagehide, undefined);
 	assert.strictEqual(events.beforeunload, undefined);
-	assert.ok(refreshes >= 3);
+	assert.strictEqual(refreshes, 1,
+		'only the completed sample may rebuild live client rows');
+	assert.ok(busyRefreshes >= 3);
 }
 
 function testRenderWiresLiveRefresh(context, fmt) {

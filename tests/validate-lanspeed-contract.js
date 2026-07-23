@@ -592,9 +592,9 @@ function validateAcl(acl) {
   assert(app.read.uci.length === 2 && app.read.uci.includes('lanspeed') && app.read.uci.includes('dhcp'),
     'ACL must grant read UCI access to lanspeed and dhcp');
 
-	/* The write side stages only the lanspeed UCI config. LuCI's native
-	 * Save & Apply flow commits the pending changes and procd reload triggers
-	 * notify lanspeedd, so the page needs no direct service reload permission. */
+	/* The write side stages the lanspeed UCI config and allows the diagnostics
+	 * page to call LuCI's standard init action. The frontend hard-codes only
+	 * lanspeedd/restart; it never exposes a caller-controlled service name. */
 	if (Object.prototype.hasOwnProperty.call(app, 'write')) {
 		assertObject(app.write, 'ACL write');
 		assertObject(app.write.ubus, 'ACL write.ubus');
@@ -603,6 +603,9 @@ function validateAcl(acl) {
 		  'ACL write.ubus must not grant direct lanspeed reload after adopting native apply');
 		assert(!Object.prototype.hasOwnProperty.call(app.write.ubus, 'rc'),
 		  'ACL write.ubus must not grant rc methods');
+		assertArray(app.write.ubus.luci, 'ACL write.ubus.luci');
+		assert(app.write.ubus.luci.length === 1 && app.write.ubus.luci[0] === 'setInitAction',
+		  'ACL write.ubus.luci must grant exactly setInitAction for the diagnostics restart button');
 
 		assertArray(app.write.ubus.uci, 'ACL write.ubus.uci');
 		const allowedUciMethods = ['set', 'delete', 'add', 'apply', 'revert'];

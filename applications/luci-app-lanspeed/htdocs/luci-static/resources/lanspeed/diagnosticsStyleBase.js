@@ -40,6 +40,7 @@ var BASE_CSS = [
 		'border-left-color:var(--lanspeed-danger);background:var(--lanspeed-danger-soft)}',
 	'.lanspeed-diagnostics-state strong{flex:0 0 auto;font-weight:650}',
 	'.lanspeed-diagnostics-state span{min-width:0;overflow-wrap:anywhere}',
+	'.lanspeed-diagnostics-restart-feedback[hidden]{display:none!important}',
 	'.lanspeed-diagnostics-error-details{margin:0;border-top:1px solid var(--lanspeed-border);',
 		'padding-top:.7em;color:var(--lanspeed-text)}',
 	'.lanspeed-diagnostics-error-details>summary{cursor:pointer;color:var(--lanspeed-danger);font-size:.84em;font-weight:650}',

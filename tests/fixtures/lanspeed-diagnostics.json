@@ -75,8 +75,8 @@
     }
   ],
   "versions": {
-    "daemon": "1.1.2-r5",
-    "package": "1.1.2-r5",
+    "daemon": "1.1.2-r6",
+    "package": "1.1.2-r6",
     "contract_version": 1,
     "schema_version": 1
   },
