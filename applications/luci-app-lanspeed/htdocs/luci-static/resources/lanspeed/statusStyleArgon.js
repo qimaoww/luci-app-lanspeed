@@ -49,6 +49,7 @@ var ARGON_CSS = [
 	'.lanspeed-theme-argon .lanspeed-toolbar input[type="search"]{min-width:0;width:100%;max-width:none}}',
 	'@media (max-width:480px){.lanspeed-theme-argon .lanspeed-metrics{',
 		'grid-template-columns:repeat(2,minmax(0,1fr))}',
+	'.lanspeed-theme-argon .lanspeed-metric .big{font-size:1.3rem}',
 	'.lanspeed-theme-argon .lanspeed-metric:last-child{grid-column:1/-1}}'
 ].join('\n');
 

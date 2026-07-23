@@ -3838,10 +3838,12 @@ function assertStatusRefreshClientDetailLink(src) {
 	    !ipline || ipline.parentNode === link || fakeElementText(ipline) !== '192.0.2.30, 2001:db8::30') {
 		fail('statusRefresh.js must generate an encoded accessible detail link around only the display name while preserving the IP subline');
 	}
-	const missing = mod.clientNameContent({ hostname: '无身份' }, '无身份', [ '192.0.2.31' ]);
-	if (!Array.isArray(missing) || missing[0] !== '无身份' ||
+	const missing = mod.clientNameContent({}, '192.0.2.31', [ '192.0.2.31' ]);
+	if (!Array.isArray(missing) || missing[0] !== '192.0.2.31' ||
+	    !missing[1] || !String(missing[1].attrs.class).includes('lanspeed-ipline-placeholder') ||
+	    missing[1].attrs['aria-hidden'] !== 'true' || fakeElementText(missing[1]) !== '\u00a0' ||
 	    findFakeElementsByTag({ children: missing }, 'a').length !== 0) {
-		fail('statusRefresh.js must safely keep clients without identity_key as plain display text');
+		fail('statusRefresh.js must keep identity-less clients safe and reserve the second line needed for stable row height');
 	}
 	const hostile = mod.clientNameContent({
 		identity_key: 'safe@lan', hostname: '<img src=x onerror=alert(1)>'
@@ -5348,6 +5350,8 @@ function assertStatusStyleModule(src) {
 			fail(`statusStyleBase.js must retain status information architecture: ${marker}`);
 	});
 	if (!baseCss.includes('.lanspeed-clients-card{overflow-anchor:none}') ||
+	    !baseCss.includes('.ipline.lanspeed-ipline-placeholder{visibility:hidden}') ||
+	    !baseCss.includes('line-height:1.2;white-space:nowrap') ||
 	    !baseCss.includes('tr.lanspeed-client-hover-lock') ||
 	    !baseCss.includes('tbody.lanspeed-client-refresh-lock tr') ||
 	    !baseCss.includes('transition:none!important')) {
@@ -5372,6 +5376,8 @@ function assertStatusStyleModule(src) {
 			fail(`statusStyle${theme[0]}.js must independently implement metrics and table density`);
 		}
 	});
+	if (!themeCss[1][2].includes('.lanspeed-theme-argon .lanspeed-metric .big{font-size:1.3rem}'))
+		fail('statusStyleArgon.js must keep live rate values on one line at narrow widths');
 	if (!themeCss[0][2].includes('.lanspeed-clients-card .lanspeed-body{overflow-x:auto}') ||
 	    !themeCss[1][2].includes('.lanspeed-clients-card .lanspeed-body{overflow-x:auto}')) {
 		fail('Aurora and Argon status styles must retain desktop client-table overflow containment');

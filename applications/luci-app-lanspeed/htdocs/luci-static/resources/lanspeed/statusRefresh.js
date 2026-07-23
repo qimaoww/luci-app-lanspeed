@@ -132,6 +132,7 @@ function refreshPagination(viewState, refs, sorted) {
 
 function clientNameContent(c, displayName, ips) {
 	var name = displayName;
+	var ipText = '';
 	if (c.identity_key) {
 		var label = _('查看 %s 的当前连接').format(displayName);
 		name = E('a', {
@@ -142,14 +143,22 @@ function clientNameContent(c, displayName, ips) {
 		}, displayName);
 	}
 
+	if (c.hostname && ips.length)
+		ipText = ips.join(', ');
+	else if (ips.length > 1)
+		ipText = ips.slice(1).join(', ');
+
+	var ipAttrs = { 'class': 'ipline' };
+	if (ipText)
+		ipAttrs.title = ips.join(', ');
+	else {
+		ipAttrs.class += ' lanspeed-ipline-placeholder';
+		ipAttrs['aria-hidden'] = 'true';
+	}
+
 	return [
 		name,
-		(c.hostname && ips.length)
-			? E('span', { 'class': 'ipline', 'title': ips.join(', ') }, ips.join(', '))
-			: (ips.length > 1
-				? E('span', { 'class': 'ipline', 'title': ips.join(', ') },
-				    ips.slice(1).join(', '))
-				: '')
+		E('span', ipAttrs, ipText || '\u00a0')
 	];
 }
 
