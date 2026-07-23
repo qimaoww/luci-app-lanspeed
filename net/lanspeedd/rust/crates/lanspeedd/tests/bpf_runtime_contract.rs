@@ -34,6 +34,8 @@ struct FakeAya {
     fail_inspect: bool,
     fail_inspect_at: Option<usize>,
     inspect_count: usize,
+    tc_change: Option<bool>,
+    tc_change_checks: usize,
     events: Vec<String>,
     clsact: Vec<String>,
     map_read: Option<Result<MapRead, AdapterError>>,
@@ -87,6 +89,11 @@ impl AyaAdapter for FakeAya {
             ));
         }
         Ok(self.hooks.get(spec).copied().unwrap_or(HookState::Absent))
+    }
+
+    fn tc_topology_changed(&mut self, _specs: &[LinkSpec]) -> bool {
+        self.tc_change_checks += 1;
+        self.tc_change.unwrap_or(true)
     }
 
     fn attach_netlink(&mut self, spec: &LinkSpec) -> Result<Self::Link, AdapterError> {
@@ -1037,6 +1044,141 @@ fn self_healing_collection_restores_a_missing_hook_before_reading_the_map() {
         runtime.last_self_heal_reason(),
         Some("production.collect.internal")
     );
+}
+
+#[test]
+fn event_monitor_skips_redundant_tc_audits_inside_the_fallback_interval() {
+    let identities = identities();
+    let mut adapter = FakeAya {
+        tc_change: Some(false),
+        ..FakeAya::default()
+    };
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let mut collector = BpfSnapshotCollector::new(16, 5_000);
+
+    runtime
+        .collect_snapshot_self_healing(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            10_000,
+            "initial-audit",
+        )
+        .unwrap();
+    let inspections_after_initial_audit = adapter.inspect_count;
+    runtime
+        .collect_snapshot_self_healing(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            11_000,
+            "quiet-cycle",
+        )
+        .unwrap();
+
+    assert_eq!(adapter.inspect_count, inspections_after_initial_audit);
+    assert_eq!(adapter.tc_change_checks, 2);
+    assert_eq!(
+        adapter.events.last().map(String::as_str),
+        Some("read_clients")
+    );
+}
+
+#[test]
+fn tc_event_triggers_exact_audit_and_restores_a_missing_hook() {
+    let identities = identities();
+    let mut adapter = FakeAya {
+        tc_change: Some(false),
+        ..FakeAya::default()
+    };
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let mut collector = BpfSnapshotCollector::new(16, 5_000);
+    runtime
+        .collect_snapshot_self_healing(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            10_000,
+            "initial-audit",
+        )
+        .unwrap();
+
+    let missing = LinkSpec::pair("br-lan", AttachMode::Normal)[0].clone();
+    adapter.hooks.remove(&missing);
+    adapter.tc_change = Some(true);
+    runtime
+        .collect_snapshot_self_healing(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            11_000,
+            "tc-event",
+        )
+        .unwrap();
+
+    assert_eq!(adapter.hooks.get(&missing), Some(&HookState::Owned));
+    assert_eq!(runtime.last_self_heal_reason(), Some("tc-event"));
+}
+
+#[test]
+fn periodic_audit_recovers_when_an_event_source_misses_a_change() {
+    let identities = identities();
+    let mut adapter = FakeAya {
+        tc_change: Some(false),
+        ..FakeAya::default()
+    };
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let mut collector = BpfSnapshotCollector::new(16, 5_000);
+    runtime
+        .collect_snapshot_self_healing(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            10_000,
+            "initial-audit",
+        )
+        .unwrap();
+
+    let missing = LinkSpec::pair("br-lan", AttachMode::Normal)[1].clone();
+    adapter.hooks.remove(&missing);
+    runtime
+        .collect_snapshot_self_healing(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            39_999,
+            "before-deadline",
+        )
+        .unwrap();
+    assert_eq!(adapter.hooks.get(&missing), None);
+    runtime
+        .collect_snapshot_self_healing(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            40_000,
+            "periodic-audit",
+        )
+        .unwrap();
+
+    assert_eq!(adapter.hooks.get(&missing), Some(&HookState::Owned));
+    assert_eq!(runtime.last_self_heal_reason(), Some("periodic-audit"));
 }
 
 #[test]

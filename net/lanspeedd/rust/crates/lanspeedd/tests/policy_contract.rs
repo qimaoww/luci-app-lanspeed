@@ -218,15 +218,25 @@ fn unsafe_attach_missing_object_map_failure_and_recovery_are_honest() {
     let mut facts = bpf_facts();
 
     facts.tc.safe_attach = false;
-    let unsafe_decision = select_collectors(&config, &facts, &healthy());
+    let unsafe_decision = select_collectors(&config, &facts, &RuntimeHealth::default());
     assert_eq!(unsafe_decision.rate, RateCollector::Unsupported);
     assert!(unsafe_decision.warnings.contains(&"unsafe_attach"));
 
+    let runtime_proven = select_collectors(&config, &facts, &healthy());
+    assert_eq!(runtime_proven.rate, RateCollector::Bpf);
+    assert!(!runtime_proven.warnings.contains(&"unsafe_attach"));
+
     facts.tc.safe_attach = true;
     facts.bpf.object = false;
-    let missing = select_collectors(&config, &facts, &healthy());
+    let missing = select_collectors(&config, &facts, &RuntimeHealth::default());
     assert_eq!(missing.rate, RateCollector::Unsupported);
     assert!(missing.warnings.contains(&"bpf_object_missing"));
+
+    let runtime_proves_object = select_collectors(&config, &facts, &healthy());
+    assert_eq!(runtime_proves_object.rate, RateCollector::Bpf);
+    assert!(!runtime_proves_object
+        .warnings
+        .contains(&"bpf_object_missing"));
 
     facts.bpf.object = true;
     let mut failed = healthy();

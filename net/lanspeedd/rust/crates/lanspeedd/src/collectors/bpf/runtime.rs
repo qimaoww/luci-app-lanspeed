@@ -1,4 +1,4 @@
-use std::{fmt, fs, io, os::fd::OwnedFd, path::Path};
+use std::{ffi::CString, fmt, fs, io, os::fd::OwnedFd, path::Path};
 
 use aya::{
     maps::HashMap,
@@ -31,11 +31,13 @@ pub const PRIMARY_OBJECT_PATH: &str = "/usr/lib/bpf/lanspeed-ebpf-kfunc";
 pub const FALLBACK_OBJECT_PATH: &str = "/usr/lib/bpf/lanspeed-ebpf-fallback";
 
 use super::snapshot::{BpfSnapshot, BpfSnapshotCollector, ConnectionOverlay, MapRead};
+use super::tc_monitor::TcTopologyMonitor;
 
 pub const NORMAL_PRIORITY: u16 = 49_152;
 pub const NORMAL_HANDLE: u16 = 0x1eed;
 pub const EARLY_PRIORITY: u16 = 1;
 pub const EARLY_HANDLE: u16 = 0x1eee;
+pub const HOOK_AUDIT_INTERVAL_MS: u64 = 30_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectFlavor {
@@ -154,6 +156,13 @@ pub trait AyaAdapter {
     fn load_object(&mut self, path: &Path, flavor: ObjectFlavor) -> Result<(), AdapterError>;
     fn ensure_clsact(&mut self, interface: &str) -> Result<(), AdapterError>;
     fn inspect_hook(&mut self, spec: &LinkSpec) -> Result<HookState, AdapterError>;
+    /// Report whether TC topology may have changed since the previous call.
+    ///
+    /// The conservative default preserves correctness for adapters without an
+    /// event source: they continue to run the exact hook audit every cycle.
+    fn tc_topology_changed(&mut self, _specs: &[LinkSpec]) -> bool {
+        true
+    }
     fn attach_netlink(&mut self, spec: &LinkSpec) -> Result<Self::Link, AdapterError>;
     fn replace_owned_netlink_atomic(&mut self, spec: &LinkSpec)
         -> Result<Self::Link, AdapterError>;
@@ -230,6 +239,7 @@ pub struct BpfRuntime<L> {
     expected_specs: Vec<LinkSpec>,
     unresolved_specs: Vec<LinkSpec>,
     reconcile_required: bool,
+    next_hook_audit_ms: u64,
     current_mode: Option<AttachMode>,
     recovery_mode: Option<AttachMode>,
     recovery_specs: Option<Vec<LinkSpec>>,
@@ -255,6 +265,7 @@ pub struct BpfCollectionCheckpoint {
     snapshot_clients: usize,
     map_iteration_truncated_observed: bool,
     last_runtime_error: Option<String>,
+    next_hook_audit_ms: u64,
     collector: BpfSnapshotCollector,
 }
 
@@ -271,6 +282,7 @@ impl<L> BpfRuntime<L> {
             snapshot_clients: self.snapshot_clients,
             map_iteration_truncated_observed: self.map_iteration_truncated_observed,
             last_runtime_error: self.last_runtime_error.clone(),
+            next_hook_audit_ms: self.next_hook_audit_ms,
             collector: collector.clone(),
         }
     }
@@ -287,6 +299,7 @@ impl<L> BpfRuntime<L> {
         self.snapshot_clients = checkpoint.snapshot_clients;
         self.map_iteration_truncated_observed = checkpoint.map_iteration_truncated_observed;
         self.last_runtime_error = checkpoint.last_runtime_error;
+        self.next_hook_audit_ms = checkpoint.next_hook_audit_ms;
         *collector = checkpoint.collector;
     }
 
@@ -332,6 +345,7 @@ impl<L> BpfRuntime<L> {
             expected_specs: Vec::new(),
             unresolved_specs: Vec::new(),
             reconcile_required: false,
+            next_hook_audit_ms: 0,
             current_mode: None,
             recovery_mode: None,
             recovery_specs: None,
@@ -1085,9 +1099,13 @@ impl<L> BpfRuntime<L> {
         now_ms: u64,
         reason: &str,
     ) -> Result<BpfSnapshot, AdapterError> {
-        if let Err(error) = self.ensure_attached(adapter, reason) {
-            self.last_map_read_ok = false;
-            return Err(error);
+        let topology_changed = adapter.tc_topology_changed(&self.expected_specs);
+        if self.reconcile_required || topology_changed || now_ms >= self.next_hook_audit_ms {
+            if let Err(error) = self.ensure_attached(adapter, reason) {
+                self.last_map_read_ok = false;
+                return Err(error);
+            }
+            self.next_hook_audit_ms = now_ms.saturating_add(HOOK_AUDIT_INTERVAL_MS);
         }
         self.collect_snapshot(adapter, collector, identities, connections, now_ms)
     }
@@ -1307,9 +1325,18 @@ pub struct SystemAyaLink {
     id: SchedClassifierLinkId,
 }
 
-#[derive(Default)]
 pub struct SystemAyaAdapter {
     ebpf: Option<Ebpf>,
+    tc_monitor: TcTopologyMonitor,
+}
+
+impl Default for SystemAyaAdapter {
+    fn default() -> Self {
+        Self {
+            ebpf: None,
+            tc_monitor: TcTopologyMonitor::new(),
+        }
+    }
 }
 
 impl SystemAyaAdapter {
@@ -1468,14 +1495,42 @@ impl AyaAdapter for SystemAyaAdapter {
                     || filter.program_name.as_deref() == Some(spec.kernel_program_name()),
                     |program_id| program_id == expected_program_id,
                 );
-                return Ok(if filter.kind.as_deref() == Some("bpf") && program_owned {
-                    HookState::Owned
-                } else {
-                    HookState::Foreign
-                });
+                let execution_owned = tc_probe::has_software_direct_action_semantics(&filter);
+                return Ok(
+                    if filter.kind.as_deref() == Some("bpf") && program_owned && execution_owned {
+                        HookState::Owned
+                    } else {
+                        HookState::Foreign
+                    },
+                );
             }
         }
         Ok(HookState::Absent)
+    }
+
+    fn tc_topology_changed(&mut self, specs: &[LinkSpec]) -> bool {
+        let mut ifindices = Vec::new();
+        let mut interfaces = Vec::new();
+        for spec in specs {
+            if interfaces.contains(&spec.interface.as_str()) {
+                continue;
+            }
+            interfaces.push(spec.interface.as_str());
+            let Ok(interface) = CString::new(spec.interface.as_bytes()) else {
+                return true;
+            };
+            let ifindex = unsafe { libc::if_nametoindex(interface.as_ptr()) };
+            let Ok(ifindex) = i32::try_from(ifindex) else {
+                return true;
+            };
+            if ifindex == 0 {
+                return true;
+            }
+            if !ifindices.contains(&ifindex) {
+                ifindices.push(ifindex);
+            }
+        }
+        self.tc_monitor.topology_changed(&ifindices)
     }
 
     fn attach_netlink(&mut self, spec: &LinkSpec) -> Result<Self::Link, AdapterError> {

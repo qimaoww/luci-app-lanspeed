@@ -103,8 +103,6 @@ pub(crate) fn bpf_details(
             .is_some_and(|sample_ms| {
                 crate::is_fresh(runtime.now_ms, sample_ms, runtime.bpf_freshness_ms)
             });
-    let bpf_supported =
-        report.capabilities.tc && report.capabilities.tc_clsact && report.facts.tc.bpf;
     let attach_state =
         if !config.enable_bpf || collect_target_count == 0 || !runtime.bpf_object_loaded {
             "not_attempted"
@@ -118,6 +116,10 @@ pub(crate) fn bpf_details(
         } else {
             "failed"
         };
+    let runtime_tc_ready = attach_state == "ready";
+    let bpf_supported =
+        (report.capabilities.tc && report.capabilities.tc_clsact && report.facts.tc.bpf)
+            || runtime_tc_ready;
     let map_state = if attach_state != "ready" {
         "not_attempted"
     } else if runtime.bpf_map_read_ok {
@@ -133,11 +135,11 @@ pub(crate) fn bpf_details(
         "disabled"
     } else if collect_target_count == 0 {
         "no_collect_interface"
-    } else if !report.capabilities.bpf_package {
+    } else if !report.capabilities.bpf_package && !runtime.bpf_object_loaded {
         "package_missing"
-    } else if !report.capabilities.bpf_object {
+    } else if !report.capabilities.bpf_object && !runtime.bpf_object_loaded {
         "object_missing"
-    } else if !report.capabilities.tc {
+    } else if !report.capabilities.tc && !runtime_tc_ready {
         "tc_unavailable"
     } else if !bpf_supported {
         "tc_unsupported"
@@ -518,6 +520,33 @@ mod tests {
         assert_eq!(recovered["map_state"], "ready");
         assert_eq!(recovered["reason_code"], "ready");
         assert_eq!(recovered["retained_fresh_snapshot"], false);
+    }
+
+    #[test]
+    fn successful_runtime_tc_state_overrides_help_probe_wording() {
+        let config = configured_bpf();
+        let runtime = RuntimeHealth {
+            bpf_object_loaded: true,
+            bpf_attached: true,
+            bpf_expected_hook_count: 2,
+            bpf_attached_hook_count: 2,
+            bpf_map_read_attempted: true,
+            bpf_map_read_ok: true,
+            ..RuntimeHealth::default()
+        };
+        let mut observations = crate::probe::ProbeObservations::default();
+        observations.commands.tc = true;
+        observations.files.lan_bridge = true;
+        observations.bpf.package = true;
+        observations.bpf.object = true;
+        let report = crate::probe::assess(&config, observations, &runtime);
+
+        assert!(!report.facts.tc.bpf);
+        assert!(!report.facts.tc.clsact);
+        let evidence = bpf_details(&config, &report, &runtime, None);
+        assert_eq!(evidence["attach_state"], "ready");
+        assert_eq!(evidence["map_state"], "ready");
+        assert_eq!(evidence["reason_code"], "ready");
     }
 
     #[test]

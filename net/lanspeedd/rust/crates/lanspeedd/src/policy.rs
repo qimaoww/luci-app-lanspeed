@@ -76,13 +76,13 @@ pub fn select_collectors(
     if config.enable_bpf && !has_collect_target {
         push_unique(&mut warnings, "no_collect_interface");
     }
-    if !facts.bpf.package {
+    if !facts.bpf.package && !runtime.bpf_object_loaded {
         push_unique(&mut warnings, "bpf_optional_package_missing");
     }
-    if !facts.bpf.object {
+    if !facts.bpf.object && !runtime.bpf_object_loaded {
         push_unique(&mut warnings, "bpf_object_missing");
     }
-    if config.enable_bpf && has_collect_target && !facts.tc.safe_attach {
+    if config.enable_bpf && has_collect_target && !facts.tc.safe_attach && !runtime.bpf_attached {
         push_unique(&mut warnings, "unsafe_attach");
     }
     if !facts.files.nf_conntrack_acct
@@ -98,9 +98,6 @@ pub fn select_collectors(
 
     let bpf_prerequisites = config.enable_bpf
         && has_collect_target
-        && facts.tc.safe_attach
-        && facts.bpf.package
-        && facts.bpf.object
         && runtime.bpf_object_loaded
         && runtime.bpf_attached;
     // NSS ECM/PPE moves accelerated packets below the CPU tc hooks.  BPF must
@@ -228,7 +225,7 @@ pub fn select_collectors(
         && bpf_mode_allowed
         && config.enable_bpf
         && has_collect_target
-        && facts.tc.safe_attach
+        && (facts.tc.safe_attach || runtime.bpf_object_loaded)
         && bpf_runtime_failed
     {
         push_unique(&mut warnings, "bpf_runtime_loader_unavailable");

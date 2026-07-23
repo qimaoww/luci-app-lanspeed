@@ -577,8 +577,6 @@ pub fn assess(
     let map_full = config.max_clients < 1;
     let safe_attach = config.enable_bpf
         && observations.commands.tc
-        && observations.tc.clsact
-        && observations.tc.bpf
         && observations.bpf.package
         && observations.bpf.object
         && lan_edge

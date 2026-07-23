@@ -452,8 +452,6 @@ function buildHealth(fixture) {
   const safeAttach = Boolean(
     fixture.config.enable_bpf &&
     fixture.commands.tc &&
-    fixture.tc.clsact &&
-    fixture.tc.bpf &&
     fixture.files.bpf_package &&
     fixture.files.bpf_object &&
     lanEdge &&

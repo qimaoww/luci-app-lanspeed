@@ -735,6 +735,15 @@ impl ProductionRuntime {
             && bpf_snapshot.is_some()
             && (runtime_health.bpf_map_read_ok || decision.evidence.retained_fresh_snapshot);
         capabilities.bpf = capabilities.bpf_runtime_metrics;
+        if capabilities.bpf_runtime_metrics {
+            // A loaded object, attached hooks, and a readable map are stronger
+            // evidence than the wording/exit status of `tc help`.
+            capabilities.bpf_supported = true;
+            capabilities.bpf_package = true;
+            capabilities.bpf_object = true;
+            capabilities.tc = true;
+            capabilities.tc_clsact = true;
+        }
         let mode = if decision.mode == ProbeMode::Unsupported {
             Mode::Unsupported
         } else if !actual_live || actual_degraded || !identity_errors.is_empty() {
@@ -760,6 +769,19 @@ impl ProductionRuntime {
             if !warnings.iter().any(|value| value == warning) {
                 warnings.push((*warning).into());
             }
+        }
+        if capabilities.bpf_runtime_metrics {
+            warnings.retain(|warning| {
+                !matches!(
+                    warning.as_str(),
+                    "bpf_unsupported"
+                        | "tc_clsact_unsupported"
+                        | "unsafe_attach"
+                        | "bpf_runtime_loader_unavailable"
+                        | "bpf_optional_package_missing"
+                        | "bpf_object_missing"
+                )
+            });
         }
         if let Some(snapshot) = direct.as_ref() {
             for warning in &snapshot.warnings {

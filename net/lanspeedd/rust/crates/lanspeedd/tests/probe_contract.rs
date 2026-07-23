@@ -7,8 +7,8 @@ use lanspeedd::probe::collector::{
 use lanspeedd::probe::commands::{validate_read_only_args, ReadOnlyCommand};
 use lanspeedd::probe::files::BoundedFile;
 use lanspeedd::probe::tc::{
-    dae_preempts_lan_ingress, has_foreign_filters, has_owned_identity_collision, parse_filter_json,
-    qdisc_json_has_clsact,
+    dae_preempts_lan_ingress, has_foreign_filters, has_owned_identity_collision,
+    has_software_direct_action_semantics, parse_filter_json, qdisc_json_has_clsact,
 };
 use lanspeedd::probe::{
     assess, BpfObservation, CommandObservations, FileObservations, NssObservation,
@@ -776,7 +776,8 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
         "ingress",
         r#"[
           {"protocol":"all","pref":2,"kind":"bpf","chain":0,
-           "options":{"handle":"0x20230005","bpf":{"name":"dae_ingress","id":7}}},
+           "options":{"handle":"0x20230005","bpf":{"name":"dae_ingress","id":7},
+                      "direct-action":true,"not_in_hw":true}},
           {"protocol":"all","pref":49152,"kind":"bpf","chain":0,
            "options":{"handle":"0x1eed","bpf":{"name":"lanspeed_ingres","id":8}}}
         ]"#,
@@ -786,6 +787,11 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
     assert_eq!(details[0].filter.chain, 0);
     assert_eq!(details[0].program_name.as_deref(), Some("dae_ingress"));
     assert_eq!(details[0].program_id, Some(7));
+    assert_eq!(details[0].protocol.as_deref(), Some("all"));
+    assert_eq!(details[0].direct_action, Some(true));
+    assert_eq!(details[0].in_hw, None);
+    assert_eq!(details[0].not_in_hw, Some(true));
+    assert!(has_software_direct_action_semantics(&details[0]));
     let filters = details
         .into_iter()
         .map(|detail| detail.filter)
@@ -814,6 +820,30 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
     );
     assert!(!qdisc_json_has_clsact(r#"[{"kind":"noqueue"}]"#).unwrap());
     assert!(parse_filter_json("eth1", "ingress", "not-json").is_err());
+    for explicit_conflict in [
+        r#"[{"protocol":"ip","pref":49152,"kind":"bpf","options":{"handle":"0x1eed"}}]"#,
+        r#"[{"protocol":"all","pref":49152,"kind":"bpf","options":{"handle":"0x1eed","direct-action":false}}]"#,
+        r#"[{"protocol":"all","pref":49152,"kind":"bpf","options":{"handle":"0x1eed","in_hw":true}}]"#,
+        r#"[{"protocol":"all","pref":49152,"kind":"bpf","options":{"handle":"0x1eed","not_in_hw":false}}]"#,
+        r#"[{"protocol":false,"pref":49152,"kind":"bpf","options":{"handle":"0x1eed"}}]"#,
+    ] {
+        let parsed = parse_filter_json("eth1", "ingress", explicit_conflict).unwrap();
+        assert!(!has_software_direct_action_semantics(&parsed[0]));
+    }
+    let legacy = parse_filter_json(
+        "eth1",
+        "ingress",
+        r#"[{"pref":49152,"kind":"bpf","options":{"handle":"0x1eed"}}]"#,
+    )
+    .unwrap();
+    assert!(has_software_direct_action_semantics(&legacy[0]));
+    let numeric_all = parse_filter_json(
+        "eth1",
+        "ingress",
+        r#"[{"protocol":3,"pref":49152,"kind":"bpf","options":{"handle":"0x1eed"}}]"#,
+    )
+    .unwrap();
+    assert!(has_software_direct_action_semantics(&numeric_all[0]));
     let foreign = vec![TcFilter {
         owner: "dae".into(),
         ..filters[1].clone()
@@ -826,6 +856,26 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
     }];
     assert!(!has_owned_identity_collision(&chained));
     assert!(!dae_preempts_lan_ingress(&chained, &["eth1".into()]));
+}
+
+#[test]
+fn tc_help_wording_is_diagnostic_and_not_a_hard_attach_gate() {
+    let mut config = RuntimeConfig::default();
+    config.enable_bpf = true;
+    config.interface_include.push("eth1".into());
+    let mut observations = ProbeObservations::default();
+    observations.commands.tc = true;
+    observations.files.lan_bridge = true;
+    observations.bpf.package = true;
+    observations.bpf.object = true;
+
+    let report = assess(&config, observations, &ProbeRuntimeHealth::default());
+
+    assert!(report.facts.tc.safe_attach);
+    assert!(report.warnings.contains(&"bpf_unsupported"));
+    assert!(report.warnings.contains(&"tc_clsact_unsupported"));
+    assert!(report.warnings.contains(&"bpf_runtime_loader_unavailable"));
+    assert!(!report.warnings.contains(&"unsafe_attach"));
 }
 
 #[test]
