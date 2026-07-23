@@ -128,6 +128,7 @@ workspace 的 `rust-version` 与构建驱动统一使用 `1.87.0`，CI 同时覆
 
 - `luci-app-lanspeed` 必须依赖 `lanspeedd-bpf`，`lanspeedd-bpf` 再依赖用户态 daemon `lanspeedd`；在 menuconfig 中选择 LuCI 应用会自动选中完整依赖链。
 - `lanspeedd-bpf` 的标准 OpenWrt 包构建使用固定的 `bpf-linker 0.10.3` 构建两套 Rust eBPF 对象；显式传入兼容版本的 `BPF_LINKER` 时，构建驱动按上述版本范围校验。目标机必须提供 `tc-full` 和 `kmod-sched-bpf`。统一使用多数流控插件采用的 `tc-full`，避免与 `tc-tiny` 的包冲突。
+- daemon 使用 `tc-full` 的 JSON 明细核对 chain、pref、handle、BPF 类型和内核程序 ID；帮助命令只要明确报告 BPF/clsact 能力，即使按 iproute2 约定返回非零 usage 状态也不会误报健康检查降级。
 - 当前固定的 `bpf-linker` 发布包要求 x86_64 编译主机，目标路由器架构仍由 OpenWrt SDK 决定。
 - NSS sync 是 ECM/PPE 加速活跃时自动模式的权威来源；NSS-direct 保留为显式模式和 sync 不可用时的后备。两者都不替代 LuCI 应用对 `lanspeedd-bpf` 的安装依赖，BPF 仍用于慢路径观测。
 

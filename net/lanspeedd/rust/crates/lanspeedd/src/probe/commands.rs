@@ -65,9 +65,9 @@ impl ReadOnlyCommand {
         match self {
             Self::Fw4 | Self::Qosify => &[],
             Self::TcFilterHelp => &["filter", "help"],
-            Self::TcFilterShow => &["filter", "show"],
+            Self::TcFilterShow => &["-j", "-d", "filter", "show"],
             Self::TcQdiscHelp => &["qdisc", "help"],
-            Self::TcQdiscShow => &["qdisc", "show"],
+            Self::TcQdiscShow => &["-j", "qdisc", "show"],
             Self::NftListFlowtables => &["list", "flowtables"],
             Self::NftDaeDnsUdp53 => &["list", "ruleset"],
             Self::IpRuleShow => &["rule", "show"],
@@ -81,7 +81,18 @@ impl ReadOnlyCommand {
     pub const fn output_cap(self) -> usize {
         match self {
             Self::NftDaeDnsUdp53 => 128 * 1024,
+            Self::TcFilterShow => 64 * 1024,
+            Self::TcQdiscShow => 16 * 1024,
             _ => DEFAULT_OUTPUT_CAP,
+        }
+    }
+
+    pub fn recognized_capability_help(self, stdout: &str, stderr: &str) -> bool {
+        let output = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+        match self {
+            Self::TcFilterHelp => output.contains("bpf"),
+            Self::TcQdiscHelp => output.contains("clsact"),
+            _ => false,
         }
     }
 

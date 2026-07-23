@@ -427,7 +427,10 @@ function buildHealth(fixture) {
     addUnique(warnings, 'openclash_router_self_proxy_detected');
   }
 
-  const probeError = fixture.ubus.network_lan.exit_code !== 0 || nftRulesetExit !== 0 || tcFilterExit !== 0 || tcQdiscExit !== 0;
+  // tc-full help commands commonly advertise supported kinds while returning
+  // a non-zero usage status; recognized BPF/clsact help is capability evidence,
+  // not a runtime probe failure.
+  const probeError = fixture.ubus.network_lan.exit_code !== 0 || nftRulesetExit !== 0;
   if (probeError) {
     addUnique(warnings, 'probe_error');
   }

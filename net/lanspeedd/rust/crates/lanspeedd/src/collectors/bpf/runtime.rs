@@ -20,7 +20,10 @@ use lanspeed_common::{
 use crate::{
     identity::IdentityTable,
     is_known_kfunc_metadata_incompatibility, patch_conntrack_kfunc_calls,
-    probe::commands::{run_read_only, ReadOnlyCommand, DEFAULT_OUTPUT_CAP, DEFAULT_TIMEOUT},
+    probe::{
+        commands::{run_read_only, ReadOnlyCommand, DEFAULT_TIMEOUT},
+        tc as tc_probe,
+    },
     KfuncPatchError,
 };
 
@@ -1385,7 +1388,7 @@ impl AyaAdapter for SystemAyaAdapter {
                 ReadOnlyCommand::TcQdiscShow,
                 &["dev", interface],
                 DEFAULT_TIMEOUT,
-                DEFAULT_OUTPUT_CAP,
+                ReadOnlyCommand::TcQdiscShow.output_cap(),
             )
             .map_err(|error| {
                 AdapterError::new(
@@ -1399,10 +1402,12 @@ impl AyaAdapter for SystemAyaAdapter {
                     format!("tc qdisc inspection failed: {}", output.stderr.trim()),
                 ));
             }
-            Ok(output.stdout.lines().any(|line| {
-                let mut tokens = line.split_whitespace();
-                tokens.next() == Some("qdisc") && tokens.next() == Some("clsact")
-            }))
+            tc_probe::qdisc_json_has_clsact(&output.stdout).map_err(|error| {
+                AdapterError::new(
+                    AdapterErrorKind::AttachFailed,
+                    format!("tc qdisc inspection failed: {error}"),
+                )
+            })
         };
 
         if clsact_present()? {
@@ -1419,6 +1424,11 @@ impl AyaAdapter for SystemAyaAdapter {
     }
 
     fn inspect_hook(&mut self, spec: &LinkSpec) -> Result<HookState, AdapterError> {
+        let expected_program_id = self
+            .classifier(spec.program)?
+            .info()
+            .map_err(|error| AdapterError::new(AdapterErrorKind::AttachFailed, error.to_string()))?
+            .id();
         let direction = match spec.direction {
             LinkDirection::Ingress => "ingress",
             LinkDirection::Egress => "egress",
@@ -1427,7 +1437,7 @@ impl AyaAdapter for SystemAyaAdapter {
             ReadOnlyCommand::TcFilterShow,
             &["dev", &spec.interface, direction],
             DEFAULT_TIMEOUT,
-            DEFAULT_OUTPUT_CAP,
+            ReadOnlyCommand::TcFilterShow.output_cap(),
         )
         .map_err(|error| {
             AdapterError::new(
@@ -1441,21 +1451,28 @@ impl AyaAdapter for SystemAyaAdapter {
                 format!("tc filter inspection failed: {}", output.stderr.trim()),
             ));
         }
-        let expected_handle = format!("{:x}", spec.handle);
-        for line in output.stdout.lines() {
-            let pref = token_after(line, "pref").and_then(|value| value.parse::<u16>().ok());
-            let handle = token_after(line, "handle").map(|value| value.trim_start_matches("0x"));
-            if pref == Some(spec.priority) && handle == Some(expected_handle.as_str()) {
-                return Ok(
-                    if line
-                        .split_whitespace()
-                        .any(|token| token == spec.kernel_program_name())
-                    {
-                        HookState::Owned
-                    } else {
-                        HookState::Foreign
-                    },
+        let filters = tc_probe::parse_filter_json(&spec.interface, direction, &output.stdout)
+            .map_err(|error| {
+                AdapterError::new(
+                    AdapterErrorKind::AttachFailed,
+                    format!("tc filter inspection failed: {error}"),
+                )
+            })?;
+        let expected_handle = format!("0x{:x}", spec.handle);
+        for filter in filters {
+            if filter.filter.chain == 0
+                && filter.filter.pref == u32::from(spec.priority)
+                && tc_probe::handles_equal(&filter.filter.handle, &expected_handle)
+            {
+                let program_owned = filter.program_id.map_or_else(
+                    || filter.program_name.as_deref() == Some(spec.kernel_program_name()),
+                    |program_id| program_id == expected_program_id,
                 );
+                return Ok(if filter.kind.as_deref() == Some("bpf") && program_owned {
+                    HookState::Owned
+                } else {
+                    HookState::Foreign
+                });
             }
         }
         Ok(HookState::Absent)
@@ -1602,16 +1619,6 @@ fn push_unique_spec(specs: &mut Vec<LinkSpec>, spec: LinkSpec) {
     if !specs.contains(&spec) {
         specs.push(spec);
     }
-}
-
-fn token_after<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
-    let mut tokens = line.split_whitespace();
-    while let Some(token) = tokens.next() {
-        if token == marker {
-            return tokens.next();
-        }
-    }
-    None
 }
 
 fn attach_type(direction: LinkDirection) -> TcAttachType {

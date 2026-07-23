@@ -371,9 +371,8 @@ where
                 &mut observations.probe_error,
             ) {
                 observations.commands.tc_filter_help_exit_code = result.exit_code.unwrap_or(-1);
-                observations.tc.bpf = format!("{}\n{}", result.stdout, result.stderr)
-                    .to_ascii_lowercase()
-                    .contains("bpf");
+                observations.tc.bpf = ReadOnlyCommand::TcFilterHelp
+                    .recognized_capability_help(&result.stdout, &result.stderr);
             }
             if let Some(result) = self.command(
                 ReadOnlyCommand::TcQdiscHelp,
@@ -383,8 +382,8 @@ where
                 &mut observations.probe_error,
             ) {
                 observations.commands.tc_qdisc_help_exit_code = result.exit_code.unwrap_or(-1);
-                observations.tc.clsact =
-                    result.stdout.contains("clsact") || result.stderr.contains("clsact");
+                observations.tc.clsact = ReadOnlyCommand::TcQdiscHelp
+                    .recognized_capability_help(&result.stdout, &result.stderr);
             }
             for ifname in config.ifnames.iter().chain(config.interface_include.iter()) {
                 for direction in ["ingress", "egress"] {
@@ -396,9 +395,32 @@ where
                         &mut evidence,
                         &mut observations.probe_error,
                     ) {
-                        let filters = tc::parse_filter_lines(ifname, direction, &result.stdout);
-                        observations.tc.existing_filters |= tc::has_foreign_filters(&filters);
-                        observations.tc.filters.extend(filters);
+                        if result.exit_code == Some(0) {
+                            match tc::parse_filter_json(ifname, direction, &result.stdout) {
+                                Ok(details) => {
+                                    let filters = details
+                                        .into_iter()
+                                        .map(|detail| detail.filter)
+                                        .collect::<Vec<_>>();
+                                    observations.tc.existing_filters |=
+                                        tc::has_foreign_filters(&filters);
+                                    observations.tc.filters.extend(filters);
+                                }
+                                Err(_) => {
+                                    observations.probe_error = true;
+                                    record_failure(
+                                        &mut evidence,
+                                        "command",
+                                        canonical_command_source(
+                                            ReadOnlyCommand::TcFilterShow,
+                                            &args,
+                                        ),
+                                        "invalid_json",
+                                        result.exit_code,
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -513,7 +535,9 @@ where
                     && !result.output_truncated;
                 let optional_truncation =
                     command == ReadOnlyCommand::NftDaeDnsUdp53 && result.output_truncated;
-                let failed = (result.exit_code != Some(0) && !absent)
+                let recognized_help =
+                    command.recognized_capability_help(&result.stdout, &result.stderr);
+                let failed = (result.exit_code != Some(0) && !absent && !recognized_help)
                     || result.timed_out
                     || (result.output_truncated && !optional_truncation);
                 *error |= failed;
