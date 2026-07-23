@@ -82,7 +82,6 @@ var BASE_CSS = [
 	'.lanspeed-table td .ipline{display:block;max-width:22em;margin-top:.15em;overflow:hidden;',
 		'color:var(--lanspeed-text-muted);font-family:var(--font-mono,var(--font-monospace,ui-monospace,monospace));',
 		'font-size:.8em;text-overflow:ellipsis;white-space:nowrap}',
-	'.lanspeed-table td .ipline.lanspeed-ipline-placeholder{visibility:hidden}',
 	'.lanspeed-connection-link{display:inline-flex;min-width:0;color:inherit;text-decoration:none!important}',
 	'.lanspeed-connection-link:hover{color:inherit;text-decoration:none!important}',
 	'.lanspeed-table td .state{display:inline-flex;gap:.25em;flex-wrap:wrap;align-items:center}',

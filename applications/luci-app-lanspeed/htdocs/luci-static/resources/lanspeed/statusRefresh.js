@@ -148,17 +148,12 @@ function clientNameContent(c, displayName, ips) {
 	else if (ips.length > 1)
 		ipText = ips.slice(1).join(', ');
 
-	var ipAttrs = { 'class': 'ipline' };
-	if (ipText)
-		ipAttrs.title = ips.join(', ');
-	else {
-		ipAttrs.class += ' lanspeed-ipline-placeholder';
-		ipAttrs['aria-hidden'] = 'true';
-	}
+	if (!ipText)
+		return [ name ];
 
 	return [
 		name,
-		E('span', ipAttrs, ipText || '\u00a0')
+		E('span', { 'class': 'ipline', 'title': ips.join(', ') }, ipText)
 	];
 }
 

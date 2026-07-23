@@ -55,7 +55,7 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 - **接口配置**：采集 / 观察 / 关闭 三态切换，默认采集 `br-lan`、观察 `wan`；异步扫描具有代次保护，并显示缺失接口、数量限制和不可采集原因。自动忽略 `dae*`、`miireg*`、`tun*`、`erspan*`、`gretap*`、`gre*`、`ip6gre*`、`ip6tnl*`、`sit*`、`bonding_masters*`，拒绝 nssifb 采集并可观察 WAN / ifb 计数。
 - **告警体系**：OpenClash / dae/daed / SQM/qosify/ifb / flow offload / fullcone NAT 等场景自动识别并提示。
 - **客户端状态列**：默认隐藏 LAN 客户端的采集来源与告警状态，可在“LAN Speed 配置”中开启。
-- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.3-r1`。
+- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.3-r2`。
 
 ## 采集策略
 

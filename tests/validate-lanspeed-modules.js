@@ -3903,10 +3903,9 @@ function assertStatusRefreshClientDetailLink(src) {
 	}
 	const missing = mod.clientNameContent({}, '192.0.2.31', [ '192.0.2.31' ]);
 	if (!Array.isArray(missing) || missing[0] !== '192.0.2.31' ||
-	    !missing[1] || !String(missing[1].attrs.class).includes('lanspeed-ipline-placeholder') ||
-	    missing[1].attrs['aria-hidden'] !== 'true' || fakeElementText(missing[1]) !== '\u00a0' ||
+	    missing[1] ||
 	    findFakeElementsByTag({ children: missing }, 'a').length !== 0) {
-		fail('statusRefresh.js must keep identity-less clients safe and reserve the second line needed for stable row height');
+		fail('statusRefresh.js must keep identity-less clients safe without inventing an empty IP subline');
 	}
 	const hostile = mod.clientNameContent({
 		identity_key: 'safe@lan', hostname: '<img src=x onerror=alert(1)>'
@@ -4594,7 +4593,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.3-r1';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.3-r2';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
@@ -5413,7 +5412,6 @@ function assertStatusStyleModule(src) {
 			fail(`statusStyleBase.js must retain status information architecture: ${marker}`);
 	});
 	if (!baseCss.includes('.lanspeed-clients-card{overflow-anchor:none}') ||
-	    !baseCss.includes('.ipline.lanspeed-ipline-placeholder{visibility:hidden}') ||
 	    !baseCss.includes('line-height:1.2;white-space:nowrap') ||
 	    !baseCss.includes('tbody tr:hover{') ||
 	    !baseCss.includes('background:transparent!important;background-image:none!important') ||
@@ -6374,7 +6372,7 @@ function matchingConfigStatus(values) {
 		max_clients: values.max_clients,
 		enable_bpf: values.enable_bpf === '1',
 		enable_conntrack_fallback: values.enable_conntrack_fallback === '1',
-		version: '1.1.3-r1',
+		version: '1.1.3-r2',
 		capabilities: { bpf: true, conntrack_fallback: true },
 		evidence: { collector: { primary_source: 'bpf', effective_connection_collector: 'conntrack_netlink' } }
 	};
@@ -6401,7 +6399,7 @@ function assertConfigFormBehavior(src) {
 	}, makeConfigIfaceStub(), model);
 	asyncChecks.push(validLoadForm.loadValues().then(function(values) {
 		if (values.pageState !== 'ready' || !values.rpc.status.ok ||
-			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.3-r1') {
+			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.3-r2') {
 			fail('configForm.js must accept the complete status contract and retain capability evidence');
 		}
 	}).catch(function(error) {
