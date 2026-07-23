@@ -4594,7 +4594,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.2-r6';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.3-r1';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
@@ -4602,7 +4602,7 @@ function assertCacheAwareViewEntry(src, moduleName, label) {
 	    !src.includes('return view.extend({') ||
 	    !src.includes('return module.load();') ||
 	    !src.includes('return pageModule.render(data);')) {
-		fail(`${label} must load ${moduleName} through the 1.1.2 resource cache boundary`);
+		fail(`${label} must load ${moduleName} through the 1.1.3 resource cache boundary`);
 	}
 	if (src.includes('buildShell(') || src.includes('refreshLive(') || src.includes('loadAll()')) {
 		fail(`${label} must remain a cache-aware entry and not duplicate page logic`);
@@ -6374,7 +6374,7 @@ function matchingConfigStatus(values) {
 		max_clients: values.max_clients,
 		enable_bpf: values.enable_bpf === '1',
 		enable_conntrack_fallback: values.enable_conntrack_fallback === '1',
-		version: '1.1.2-r6',
+		version: '1.1.3-r1',
 		capabilities: { bpf: true, conntrack_fallback: true },
 		evidence: { collector: { primary_source: 'bpf', effective_connection_collector: 'conntrack_netlink' } }
 	};
@@ -6401,7 +6401,7 @@ function assertConfigFormBehavior(src) {
 	}, makeConfigIfaceStub(), model);
 	asyncChecks.push(validLoadForm.loadValues().then(function(values) {
 		if (values.pageState !== 'ready' || !values.rpc.status.ok ||
-			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.2-r6') {
+			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.3-r1') {
 			fail('configForm.js must accept the complete status contract and retain capability evidence');
 		}
 	}).catch(function(error) {

@@ -250,8 +250,8 @@ try {
   ], { cwd: rustRoot, encoding: 'utf8' }));
   runWorkspaceMetadataSelfTest(daemonVersion);
 
-  assert(daemonVersion === '1.1.2', 'daemon PKG_VERSION must remain exactly 1.1.2 for this release');
-  assert(luciVersion === '1.1.2', 'LuCI PKG_VERSION must remain exactly 1.1.2 for this release');
+  assert(daemonVersion === '1.1.3', 'daemon PKG_VERSION must remain exactly 1.1.3 for this release');
+  assert(luciVersion === '1.1.3', 'LuCI PKG_VERSION must remain exactly 1.1.3 for this release');
   assert(daemonVersion === luciVersion, 'daemon and LuCI PKG_VERSION must match for releases');
   assert(daemonRelease === luciRelease, 'daemon and LuCI PKG_RELEASE must match for releases');
   assert(workspaceVersion, 'Cargo workspace must define package.version');
@@ -773,12 +773,12 @@ try {
   assert(readme.includes('手动运行也可补发'), 'README must document missing-release recovery');
   assert(readme.includes('不得预先创建 `v*` tag'), 'README must forbid maintainers from pre-creating release tags');
   assert(!readme.includes('GitHub Actions 在 `v*` tag 发布时'), 'README must not retain the obsolete tag-trigger description');
-  assert(readme.includes('`1.1.2-r6`'), 'README full-version example must match the 1.1.2 release');
-	assert(!/1\.1\.2-r(?:[0-5]|[7-9]|[1-9][0-9]+)/.test(readme),
-	  'README must keep the 1.1.2 release at r6');
+  assert(readme.includes('`1.1.3-r1`'), 'README full-version example must match the 1.1.3 release');
+	assert(!/1\.1\.3-r(?:0|[2-9]|[1-9][0-9]+)/.test(readme),
+	  'README must keep the 1.1.3 release at r1');
 
-	assert(daemonRelease === '6', 'daemon PKG_RELEASE must be exactly 6 for the automatic release workflow');
-	assert(luciRelease === '6', 'LuCI PKG_RELEASE must be exactly 6 for the automatic release workflow');
+	assert(daemonRelease === '1', 'daemon PKG_RELEASE must be exactly 1 for the automatic release workflow');
+	assert(luciRelease === '1', 'LuCI PKG_RELEASE must be exactly 1 for the automatic release workflow');
 
   console.log('validate-release-version: PASS');
 } catch (error) {

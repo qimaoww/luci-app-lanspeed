@@ -237,7 +237,7 @@ function successRpc(at) {
 
 function normalizedResult(marker, at) {
 	return {
-		status: { marker: marker, version: '1.1.2-r3' },
+		status: { marker: marker, version: '1.1.3-r1' },
 		clients: { clients: [] },
 		interfaces: { interfaces: [] },
 		uci: {},
@@ -250,7 +250,7 @@ async function testIndependentRpcSettlement(context, fmt) {
 	let tick = 1000;
 	const clock = function() { tick += 10; return tick; };
 	const rpc = {
-		status: function() { return Promise.resolve({ version: '1.1.2-r3' }); },
+		status: function() { return Promise.resolve({ version: '1.1.3-r1' }); },
 		clients: function() { return Promise.reject(new Error('clients down')); },
 		interfaces: function() { return Promise.resolve({ interfaces: [ { name: 'br-lan' } ] }); },
 		uciGet: function() { return Promise.reject(new Error('uci down')); }
@@ -452,7 +452,7 @@ function loadShellAndRefresh(context, fmt) {
 		},
 		fmt,
 		{ detailHref: function(pathname, key) { return pathname + '?client=' + encodeURIComponent(key); } },
-		{ FULL_VERSION: '1.1.2-r3' },
+		{ FULL_VERSION: '1.1.3-r1' },
 		{
 			hideIpv6RangesValue: function(value) { return value || ''; },
 			displayIpsForClient: function(values) { return Array.isArray(values) ? values : []; }
@@ -504,7 +504,7 @@ function testPaginationAndUiStates(context, fmt) {
 	let refreshCount = 0;
 	const clients = Array.from({ length: 30 }, function(_value, index) { return client(index + 1); });
 	const state = {
-		status: { version: '1.1.2-r3', coverage: { quality: 'idle' } },
+		status: { version: '1.1.3-r1', coverage: { quality: 'idle' } },
 		clients: { clients: clients },
 		interfaces: { interfaces: [ { name: 'br-lan', role: 'lan', rx_bps: 100, tx_bps: 200 } ] },
 		rpc: successRpc(100000),
@@ -545,7 +545,7 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.strictEqual(findAllByClass(built.root, 'lanspeed-freshness-status').length, 0);
 	assert.strictEqual(state.refs.servicePill, undefined);
 	assert.strictEqual(state.refs.freshnessPill, undefined);
-	assert.strictEqual(state.refs.meta.textContent, '后端 1.1.2-r3 · luci 1.1.2-r3');
+	assert.strictEqual(state.refs.meta.textContent, '后端 1.1.3-r1 · luci 1.1.3-r1');
 	assert.ok(!state.refs.meta.textContent.includes('检查于'));
 	assert.strictEqual(state.pageCount, 3);
 	assert.strictEqual(state.refs.root.attrs['aria-busy'], 'false');
