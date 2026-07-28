@@ -121,11 +121,11 @@
     },
     "collectorMode": {
       "type": "string",
-      "enum": ["auto", "bpf", "nss_ecm_direct", "nss_conntrack_sync", "conntrack_netlink", "conntrack_procfs"]
+      "enum": ["auto", "bpf", "nss_ecm_node", "nss_ecm_bpf", "conntrack_netlink", "conntrack_procfs"]
     },
     "rateCollectorMode": {
       "type": "string",
-      "enum": ["auto", "bpf", "nss_ecm_direct", "nss_conntrack_sync"]
+      "enum": ["auto", "bpf", "nss_ecm_node", "nss_ecm_bpf"]
     },
     "connCollectorMode": {
       "type": "string",
@@ -177,7 +177,10 @@
         "nss_ppe_offload": {
           "type": "boolean"
         },
-        "nss_ecm_direct": {
+        "nss_ecm_node": {
+          "type": "boolean"
+        },
+        "nss_ecm_bpf": {
           "type": "boolean"
         },
         "nss_bridge_mgr": {
@@ -286,7 +289,8 @@
         "nss",
         "nss_ecm_offload",
         "nss_ppe_offload",
-        "nss_ecm_direct",
+        "nss_ecm_node",
+        "nss_ecm_bpf",
         "nss_bridge_mgr",
         "nss_ifb",
         "nss_nsm",
@@ -1303,17 +1307,17 @@
         },
         "conn_source": {
           "type": "string",
-          "enum": ["conntrack", "conntrack_netlink", "conntrack_procfs", "nss_ecm_direct"]
+          "enum": ["conntrack", "conntrack_netlink", "conntrack_procfs"]
         },
-        "nss_ecm_direct_flows_seen": {
+        "nss_ecm_nodes_seen": {
           "type": "integer",
           "minimum": 0
         },
-        "nss_ecm_direct_flows_matched": {
+        "nss_ecm_nodes_matched": {
           "type": "integer",
           "minimum": 0
         },
-        "nss_ecm_direct_parse_errors": {
+        "nss_ecm_node_parse_errors": {
           "type": "integer",
           "minimum": 0
         },

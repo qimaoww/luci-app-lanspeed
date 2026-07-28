@@ -170,6 +170,7 @@ build_ebpf_objects() {
 		RUSTC="$rustc_bin" \
 		CARGO="$rust_cargo_path" \
 		BPF_LINKER="$bpf_linker_path" \
+		LANSPEED_BPF_TARGET_ARCH=aarch64 \
 		"$rust_cargo_path" run \
 		--manifest-path "$ROOT/net/lanspeedd/rust/Cargo.toml" \
 		-p lanspeed-build --release --locked --offline -- build-ebpf

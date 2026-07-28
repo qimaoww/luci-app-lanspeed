@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=lanspeedd
-PKG_VERSION:=1.1.3
-PKG_RELEASE:=2
+PKG_VERSION:=1.1.4
+PKG_RELEASE:=1
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=
@@ -12,6 +12,7 @@ RUST_PKG_LOCKED:=1
 
 LANSPEED_BUILD_BPF ?= $(if $(CONFIG_PACKAGE_lanspeedd-bpf),1,0)
 LANSPEED_BPF_ENABLED:=$(filter 1,$(LANSPEED_BUILD_BPF))
+LANSPEED_NSS_ECM_BPF_ENABLED:=$(filter aarch64,$(ARCH))
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)$(if $(LANSPEED_BPF_ENABLED),-bpf,)
 
 BPF_LINKER_ARCHIVE:=bpf-linker-0.10.3-x86_64-unknown-linux-musl.tar.gz
@@ -54,7 +55,8 @@ endef
 
 define Package/lanspeedd-bpf/description
  Required Aya eBPF programs for luci-app-lanspeed Full mode support.
- The package installs the kfunc and fallback tc/eBPF runtime objects.
+ The package installs architecture-matched kfunc and fallback TC-BPF objects.
+ On aarch64 it additionally installs the isolated NSS ECM kprobe object.
 endef
 
 define Build/Prepare
@@ -81,10 +83,11 @@ define Build/Compile
 		$(PKG_BUILD_DIR)/target/$(RUSTC_HOST_ARCH)/release/lanspeed-build build-userspace
 ifneq ($(LANSPEED_BPF_ENABLED),)
 	+$(CARGO_HOST_CONFIG_VARS) \
-		MAKEFLAGS="$(PKG_JOBS)" \
-		CARGO_PROFILE_RELEASE_PANIC=abort \
-		BPF_LINKER="$(BPF_LINKER)" \
-		$(PKG_BUILD_DIR)/target/$(RUSTC_HOST_ARCH)/release/lanspeed-build build-ebpf
+			MAKEFLAGS="$(PKG_JOBS)" \
+			CARGO_PROFILE_RELEASE_PANIC=abort \
+			BPF_LINKER="$(BPF_LINKER)" \
+			LANSPEED_BPF_TARGET_ARCH="$(ARCH)" \
+			$(PKG_BUILD_DIR)/target/$(RUSTC_HOST_ARCH)/release/lanspeed-build build-ebpf
 endif
 endef
 
@@ -107,8 +110,12 @@ define Package/lanspeedd-bpf/install
 	$(INSTALL_DIR) $(1)/usr/lib/bpf
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/target/bpfel-unknown-none/release/lanspeed-ebpf-kfunc $(1)/usr/lib/bpf/lanspeed-ebpf-kfunc.o
 	$(LN) lanspeed-ebpf-kfunc.o $(1)/usr/lib/bpf/lanspeed-ebpf-kfunc
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/target/bpfel-unknown-none/release/lanspeed-ebpf-fallback $(1)/usr/lib/bpf/lanspeed-ebpf-fallback.o
-	$(LN) lanspeed-ebpf-fallback.o $(1)/usr/lib/bpf/lanspeed-ebpf-fallback
+		$(INSTALL_DATA) $(PKG_BUILD_DIR)/target/bpfel-unknown-none/release/lanspeed-ebpf-fallback $(1)/usr/lib/bpf/lanspeed-ebpf-fallback.o
+		$(LN) lanspeed-ebpf-fallback.o $(1)/usr/lib/bpf/lanspeed-ebpf-fallback
+		if [ -n "$(LANSPEED_NSS_ECM_BPF_ENABLED)" ]; then \
+			$(INSTALL_DATA) $(PKG_BUILD_DIR)/target/bpfel-unknown-none/release/lanspeed-ebpf-ecm $(1)/usr/lib/bpf/lanspeed-ebpf-ecm.o; \
+			$(LN) lanspeed-ebpf-ecm.o $(1)/usr/lib/bpf/lanspeed-ebpf-ecm; \
+		fi
 endef
 
 $(eval $(call BuildPackage,lanspeedd))

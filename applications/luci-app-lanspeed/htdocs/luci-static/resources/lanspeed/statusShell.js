@@ -170,10 +170,27 @@ function buildShell(viewState) {
 		viewState.refreshLive();
 	});
 
-	refs.intervalSel = E('select', { 'class': 'cbi-input-select' }, fmt.REFRESH_CHOICES.map(function(c) {
-		return fmt.opt(c.value, c.label, prefs.refreshMs === c.value);
+	var nssRefreshLocked = typeof fmt.nssRefreshLocked === 'function' &&
+		fmt.nssRefreshLocked(viewState.status);
+	var refreshValue = nssRefreshLocked ? fmt.NSS_REFRESH_MS : prefs.refreshMs;
+	var refreshChoices = nssRefreshLocked
+		? [ { value: fmt.NSS_REFRESH_MS, label: '2s' } ]
+		: fmt.REFRESH_CHOICES;
+	var refreshAttrs = {
+		'class': 'cbi-input-select',
+		'data-lock-state': nssRefreshLocked ? 'locked' : 'open',
+		'title': nssRefreshLocked ? _('NSS 计数按 2 秒真实窗口刷新') : ''
+	};
+	if (nssRefreshLocked) refreshAttrs.disabled = 'disabled';
+	refs.intervalSel = E('select', refreshAttrs, refreshChoices.map(function(c) {
+		return fmt.opt(c.value, c.label, refreshValue === c.value);
 	}));
 	refs.intervalSel.addEventListener('change', function(ev) {
+		if (typeof fmt.nssRefreshLocked === 'function' &&
+		    fmt.nssRefreshLocked(viewState.status)) {
+			ev.target.value = String(fmt.NSS_REFRESH_MS);
+			return;
+		}
 		var v = parseInt(ev.target.value, 10);
 		if (!isNaN(v) && v >= fmt.MIN_REFRESH_MS) {
 			viewState.prefs.refreshMs = v;

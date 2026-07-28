@@ -3,12 +3,7 @@ use crate::{
     identity::{ClientIdentity, IdentityTable},
 };
 use serde::Serialize;
-use std::{
-    cmp::Ordering,
-    collections::{BTreeMap, BTreeSet},
-    net::IpAddr,
-    sync::Arc,
-};
+use std::{cmp::Ordering, collections::BTreeMap, net::IpAddr, sync::Arc};
 
 pub const MAX_STORED_CONNECTION_DETAILS: usize = 16_384;
 // Keep a single response bounded for ubus/LuCI while covering high-connection clients.
@@ -248,143 +243,6 @@ impl ConnectionRateBook {
         self.last_sample_ms = None;
         self.previous = Arc::default();
     }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ClientCounterTotals {
-    pub tx_bytes: u64,
-    pub rx_bytes: u64,
-}
-
-/// Converts per-flow conntrack counters into monotonic per-client totals.
-///
-/// Conntrack snapshots contain only currently alive flows. Differencing an
-/// already-aggregated client total therefore loses traffic whenever one flow
-/// expires. Keeping the baseline per kernel flow generation makes flow removal
-/// a no-op while allowing every surviving flow to contribute its own delta.
-/// Ctnetlink generations are retained across transient snapshot/identity gaps;
-/// tuple-only procfs baselines use a much shorter retention window because a
-/// reused five-tuple cannot otherwise be distinguished safely.
-pub const CT_ID_BASELINE_RETENTION_MS: u64 = 60_000;
-pub const TUPLE_BASELINE_RETENTION_MS: u64 = 2_000;
-pub const MAX_RETAINED_FLOW_BASELINES: usize = 32_768;
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ConntrackClientRateBook {
-    initialized: bool,
-    last_sample_ms: Option<u64>,
-    previous: Arc<BTreeMap<ConnectionRateKey, ConnectionCounterPoint>>,
-    totals: BTreeMap<String, ClientCounterTotals>,
-}
-
-impl ConntrackClientRateBook {
-    pub fn update(
-        &mut self,
-        sample_ms: u64,
-        counters: &ConnectionCountersSnapshot,
-    ) -> BTreeMap<String, ClientCounterTotals> {
-        if self.last_sample_ms == Some(sample_ms) {
-            return current_client_totals(counters, &self.totals);
-        }
-
-        let time_rollback = self.last_sample_ms.is_some_and(|last| sample_ms < last);
-        let have_baseline = self.initialized && !time_rollback;
-        if time_rollback {
-            self.previous = Arc::default();
-        }
-        let previous = Arc::make_mut(&mut self.previous);
-        previous.retain(|key, point| {
-            sample_ms.checked_sub(point.sample_ms).is_none_or(|age| {
-                age <= if key.conntrack_id.is_some() {
-                    CT_ID_BASELINE_RETENTION_MS
-                } else {
-                    TUPLE_BASELINE_RETENTION_MS
-                }
-            })
-        });
-        let mut active_clients = BTreeSet::new();
-        let mut active_keys = BTreeSet::new();
-        for (key, counters) in counters.iter() {
-            active_clients.insert(key.identity_key.clone());
-            active_keys.insert(key.clone());
-            let point = ConnectionCounterPoint {
-                sample_ms,
-                tx_bytes: counters.tx_bytes,
-                rx_bytes: counters.rx_bytes,
-            };
-            if have_baseline {
-                let (tx_delta, rx_delta) =
-                    previous
-                        .get(key)
-                        .map_or((point.tx_bytes, point.rx_bytes), |previous| {
-                            if point.tx_bytes < previous.tx_bytes
-                                || point.rx_bytes < previous.rx_bytes
-                            {
-                                // A direction rollback means the conntrack entry
-                                // was reset or replaced. Treat both directions as
-                                // the new generation so counters from two flow
-                                // lifetimes are never mixed.
-                                (point.tx_bytes, point.rx_bytes)
-                            } else {
-                                (
-                                    point.tx_bytes - previous.tx_bytes,
-                                    point.rx_bytes - previous.rx_bytes,
-                                )
-                            }
-                        });
-                let totals = self.totals.entry(key.identity_key.clone()).or_default();
-                totals.tx_bytes = totals.tx_bytes.saturating_add(tx_delta);
-                totals.rx_bytes = totals.rx_bytes.saturating_add(rx_delta);
-            }
-            self.totals.entry(key.identity_key.clone()).or_default();
-            previous.insert(key.clone(), point);
-        }
-
-        if previous.len() > MAX_RETAINED_FLOW_BASELINES {
-            let mut retired = previous
-                .iter()
-                .filter(|(key, _)| !active_keys.contains(*key))
-                .map(|(key, point)| (point.sample_ms, key.clone()))
-                .collect::<Vec<_>>();
-            retired.sort_by_key(|(last_seen_ms, _)| *last_seen_ms);
-            let remove = previous.len().saturating_sub(MAX_RETAINED_FLOW_BASELINES);
-            for (_, key) in retired.into_iter().take(remove) {
-                previous.remove(&key);
-            }
-        }
-        self.last_sample_ms = Some(sample_ms);
-        self.initialized = true;
-        active_clients
-            .into_iter()
-            .filter_map(|identity_key| {
-                self.totals
-                    .get(&identity_key)
-                    .copied()
-                    .map(|totals| (identity_key, totals))
-            })
-            .collect()
-    }
-
-    pub fn clear_baseline(&mut self) {
-        self.initialized = false;
-        self.last_sample_ms = None;
-        self.previous = Arc::default();
-    }
-}
-
-fn current_client_totals(
-    counters: &ConnectionCountersSnapshot,
-    totals: &BTreeMap<String, ClientCounterTotals>,
-) -> BTreeMap<String, ClientCounterTotals> {
-    counters
-        .keys()
-        .filter_map(|key| {
-            totals
-                .get(&key.identity_key)
-                .copied()
-                .map(|value| (key.identity_key.clone(), value))
-        })
-        .collect()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -672,17 +530,6 @@ mod rate_book_tests {
         }
     }
 
-    fn counters(
-        key: ConnectionRateKey,
-        tx_bytes: u64,
-        rx_bytes: u64,
-    ) -> ConnectionCountersSnapshot {
-        Arc::new(BTreeMap::from([(
-            key,
-            ConnectionCounters { tx_bytes, rx_bytes },
-        )]))
-    }
-
     #[test]
     fn checkpoint_clone_shares_the_previous_counter_map() {
         let key = rate_key(None);
@@ -709,89 +556,5 @@ mod rate_book_tests {
         assert!(!Arc::ptr_eq(&book.previous, &checkpoint.previous));
         assert!(book.previous.is_empty());
         assert_eq!(checkpoint.previous.len(), 1);
-    }
-
-    #[test]
-    fn conntrack_checkpoint_clone_is_copy_on_write() {
-        let key = rate_key(Some(1));
-        let mut book = ConntrackClientRateBook::default();
-        book.update(1_000, &counters(key.clone(), 100, 200));
-        let checkpoint = book.clone();
-        assert!(Arc::ptr_eq(&book.previous, &checkpoint.previous));
-
-        book.update(2_000, &counters(key, 150, 275));
-
-        assert!(!Arc::ptr_eq(&book.previous, &checkpoint.previous));
-        assert_eq!(checkpoint.previous.values().next().unwrap().tx_bytes, 100);
-        assert_eq!(book.totals["client"].tx_bytes, 50);
-        assert_eq!(checkpoint.totals["client"].tx_bytes, 0);
-    }
-
-    #[test]
-    fn conntrack_time_rollback_rebuilds_the_baseline_without_replaying_bytes() {
-        let key = rate_key(Some(2));
-        let mut book = ConntrackClientRateBook::default();
-        book.update(2_000, &counters(key.clone(), 100, 200));
-        let rollback = book.update(1_000, &counters(key.clone(), 500, 700));
-        assert_eq!(rollback["client"], ClientCounterTotals::default());
-
-        let resumed = book.update(2_000, &counters(key, 550, 775));
-        assert_eq!(resumed["client"].tx_bytes, 50);
-        assert_eq!(resumed["client"].rx_bytes, 75);
-    }
-
-    #[test]
-    fn expired_cta_id_baseline_treats_reappearance_as_a_new_generation() {
-        let key = rate_key(Some(3));
-        let mut book = ConntrackClientRateBook::default();
-        book.update(1_000, &counters(key.clone(), 100, 200));
-        book.update(1_000 + CT_ID_BASELINE_RETENTION_MS + 1, &Arc::default());
-        let totals = book.update(
-            1_000 + CT_ID_BASELINE_RETENTION_MS + 2,
-            &counters(key, 500, 700),
-        );
-        assert_eq!(totals["client"].tx_bytes, 500);
-        assert_eq!(totals["client"].rx_bytes, 700);
-    }
-
-    #[test]
-    fn tuple_only_baseline_expires_quickly_to_avoid_cross_generation_deltas() {
-        let key = rate_key(None);
-        let mut book = ConntrackClientRateBook::default();
-        book.update(1_000, &counters(key.clone(), 100, 200));
-        book.update(1_000 + TUPLE_BASELINE_RETENTION_MS + 1, &Arc::default());
-        let totals = book.update(
-            1_000 + TUPLE_BASELINE_RETENTION_MS + 2,
-            &counters(key, 500, 700),
-        );
-        assert_eq!(totals["client"].tx_bytes, 500);
-        assert_eq!(totals["client"].rx_bytes, 700);
-    }
-
-    #[test]
-    fn retired_flow_baseline_count_is_bounded() {
-        let previous = (0..MAX_RETAINED_FLOW_BASELINES + 2)
-            .map(|index| {
-                let key = rate_key(Some(index as u32));
-                (
-                    key,
-                    ConnectionCounterPoint {
-                        sample_ms: 1,
-                        tx_bytes: 1,
-                        rx_bytes: 1,
-                    },
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let mut book = ConntrackClientRateBook {
-            initialized: true,
-            last_sample_ms: Some(1),
-            previous: Arc::new(previous),
-            totals: BTreeMap::new(),
-        };
-
-        book.update(2, &Arc::default());
-
-        assert_eq!(book.previous.len(), MAX_RETAINED_FLOW_BASELINES);
     }
 }

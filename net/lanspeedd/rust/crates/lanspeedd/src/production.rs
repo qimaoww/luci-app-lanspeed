@@ -14,6 +14,10 @@ use crate::{
     clock::monotonic_millis,
     collectors::{
         bpf::{
+            ecm::{
+                EcmBpfClientSample, EcmBpfCollectionCheckpoint, EcmBpfRuntime, EcmBpfSnapshot,
+                EcmBpfSnapshotCollector, ECM_BPF_OBJECT_PATH, ECM_RATE_HOLD_MS,
+            },
             runtime::{
                 AdapterError, AdapterErrorKind, AttachMode, BpfCollectionCheckpoint,
                 BpfPostCommitCleanup, BpfReconfigureTxn, BpfRuntime, ReconfigureRateBaseline,
@@ -23,20 +27,14 @@ use crate::{
                 BpfClientSample, BpfSnapshotCollector, ConnectionCounts, ConnectionOverlay,
             },
         },
-        conntrack::{
-            self, aggregate::ClientSample as CounterClient, CollectedSnapshot,
-            CollectorMode as ConntrackMode,
-        },
-        nss::{self, ParseLimits},
+        conntrack::{self, CollectedSnapshot, CollectorMode as ConntrackMode},
+        ecm_node::{self, TrafficCounters},
     },
     config::{
         is_sysdevice_candidate, ConnectionCollectorMode, InterfaceEligibility, RuntimeConfig,
         SysfsInterfaceEligibility, MAX_INTERFACE_NAMES, MAX_INTERFACE_NAME_LEN,
     },
-    connection_details::{
-        ConnectionRateBook, ConntrackClientRateBook, CT_ID_BASELINE_RETENTION_MS,
-        MAX_RETAINED_FLOW_BASELINES, TUPLE_BASELINE_RETENTION_MS,
-    },
+    connection_details::ConnectionRateBook,
     connections::{
         apply_conntrack_failure, apply_conntrack_success, before_reply_action,
         client_conntrack_plan, conntrack_source, has_counted_connections, periodic_conntrack_plan,
@@ -50,7 +48,7 @@ use crate::{
     },
     error::DaemonError,
     history::{
-        coverage::{ByteTotals, CoverageRateAccumulator, CoverageRing, CoverageSample},
+        coverage::{ByteTotals, CoverageRing, CoverageSample},
         overview::{
             ConnectionTotals, ConnectionTotalsOverride, OverviewClient, OverviewConfig,
             OverviewRing,
@@ -63,7 +61,8 @@ use crate::{
         netlink, IdentityObservation, IdentityTable, LegacyZoneResolver, ObservationSource,
     },
     interfaces::{
-        lan_coverage_totals, InterfaceCounterReader, InterfaceRateBook, SysfsInterfaceCounterReader,
+        lan_coverage_totals, InterfaceCounterReader, InterfaceCounters, InterfaceRateBook,
+        SysfsInterfaceCounterReader,
     },
     model::{
         Capabilities, Client, ClientsResponse, Confidence, Conflict, Coverage, Evidence,
@@ -71,6 +70,7 @@ use crate::{
         OverviewResponse, OverviewSample, ReloadResponse, StatusResponse, Sysdevice,
         SysdeviceLimits, SysdevicesResponse,
     },
+    nss_window::{LanClock, NssWindowBook, WindowOutput, WindowQuality},
     policy::{self, RateCollector},
     probe::{
         collector::{self, probe_deadline, probe_due, ProbeMethod, SystemProbeCollector},
@@ -81,7 +81,6 @@ use crate::{
         Confidence as ProbeConfidence, Mode as ProbeMode, ProbeCapabilities, ProbeReport,
         RuntimeHealth,
     },
-    rate::{ClientCounters, RateBook},
     state::{ResponseSnapshot, CONNECTION_SEMANTICS, OVERVIEW_SAMPLE_SOURCE},
     ubus,
 };
@@ -104,6 +103,105 @@ fn bpf_error_stage(kind: AdapterErrorKind) -> &'static str {
     }
 }
 
+fn interface_master(ifname: &str) -> Option<String> {
+    fs::read_link(Path::new("/sys/class/net").join(ifname).join("master"))
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+}
+
+fn interface_masters() -> BTreeMap<String, String> {
+    let Ok(entries) = fs::read_dir("/sys/class/net") else {
+        return BTreeMap::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter_map(|name| interface_master(&name).map(|master| (name, master)))
+        .collect()
+}
+
+fn independent_lan_boundaries(
+    roots: &[String],
+    masters: &BTreeMap<String, String>,
+) -> Option<Vec<String>> {
+    fn expand(
+        name: &str,
+        masters: &BTreeMap<String, String>,
+        visiting: &mut std::collections::BTreeSet<String>,
+        boundaries: &mut std::collections::BTreeSet<String>,
+    ) -> bool {
+        if !visiting.insert(name.to_owned()) {
+            return false;
+        }
+        let children = masters
+            .iter()
+            .filter_map(|(child, master)| (master == name).then_some(child.as_str()))
+            .collect::<Vec<_>>();
+        let valid = if children.is_empty() {
+            boundaries.insert(name.to_owned());
+            true
+        } else {
+            children
+                .into_iter()
+                .all(|child| expand(child, masters, visiting, boundaries))
+        };
+        visiting.remove(name);
+        valid
+    }
+
+    let mut boundaries = std::collections::BTreeSet::new();
+    let mut visiting = std::collections::BTreeSet::new();
+    for root in roots {
+        if !expand(root, masters, &mut visiting, &mut boundaries) {
+            return None;
+        }
+    }
+    (!boundaries.is_empty()).then(|| boundaries.into_iter().collect())
+}
+
+fn sum_interface_counters(
+    names: &[String],
+    counters: &BTreeMap<String, InterfaceCounters>,
+) -> Option<InterfaceCounters> {
+    names
+        .iter()
+        .try_fold(InterfaceCounters::default(), |mut total, name| {
+            let value = counters.get(name)?;
+            total.rx_bytes = total.rx_bytes.checked_add(value.rx_bytes)?;
+            total.tx_bytes = total.tx_bytes.checked_add(value.tx_bytes)?;
+            total.rx_packets = total.rx_packets.checked_add(value.rx_packets)?;
+            total.tx_packets = total.tx_packets.checked_add(value.tx_packets)?;
+            Some(total)
+        })
+}
+
+fn transition_rate_owner(
+    current: &mut Option<RateCollector>,
+    nss_windows: &mut NssWindowBook,
+    next: RateCollector,
+) {
+    if *current != Some(next) && next == RateCollector::NssEcmNode {
+        *nss_windows = NssWindowBook::default();
+    }
+    *current = Some(next);
+}
+
+const NSS_COLLECTION_INTERVAL_MS: u32 = 2_000;
+
+fn effective_collection_interval_ms(owner: Option<RateCollector>, configured_ms: u32) -> u32 {
+    if matches!(
+        owner,
+        Some(RateCollector::NssEcmNode | RateCollector::NssEcmBpf)
+    ) {
+        configured_ms.max(NSS_COLLECTION_INTERVAL_MS)
+    } else {
+        configured_ms
+    }
+}
+
 fn production_now_ms() -> Result<u64, DaemonError> {
     monotonic_millis()
         .map_err(|error| DaemonError::collection(format!("read CLOCK_MONOTONIC: {error}")))
@@ -117,8 +215,12 @@ struct ProductionRuntime {
     /// Stable internal classification for the last BPF failure. The public
     /// evidence exposes this code, while `bpf_error` remains private detail.
     bpf_error_stage: Option<&'static str>,
+    ecm_bpf: Option<EcmBpfRuntime>,
+    ecm_bpf_error: Option<String>,
+    ecm_bpf_error_stage: Option<&'static str>,
     nss_error: Option<String>,
     bpf_collector: BpfSnapshotCollector,
+    ecm_bpf_collector: EcmBpfSnapshotCollector,
     conntrack_snapshot: Option<Arc<CollectedSnapshot>>,
     connection_rates: ConnectionRateBook,
     conntrack_observation: ConntrackObservation,
@@ -128,24 +230,21 @@ struct ProductionRuntime {
     next_probe_ms: u64,
     overview: OverviewRing,
     coverage: CoverageRing,
-    coverage_clients: CoverageRateAccumulator,
     interface_rates: InterfaceRateBook,
-    conntrack_client_rates: ConntrackClientRateBook,
-    nss_direct_rates: RateBook,
-    nss_sync_rates: RateBook,
+    nss_windows: NssWindowBook,
+    rate_owner: Option<RateCollector>,
     hostnames: HostnameCache,
     shutdown_complete: bool,
 }
 
 struct RuntimeCheckpoint {
     bpf: Option<BpfCollectionCheckpoint>,
+    ecm_bpf: Option<EcmBpfCollectionCheckpoint>,
     overview: OverviewRing,
     coverage: CoverageRing,
-    coverage_clients: CoverageRateAccumulator,
     interface_rates: InterfaceRateBook,
-    conntrack_client_rates: ConntrackClientRateBook,
-    nss_direct_rates: RateBook,
-    nss_sync_rates: RateBook,
+    nss_windows: NssWindowBook,
+    rate_owner: Option<RateCollector>,
     hostnames: HostnameCache,
     conntrack_snapshot: Option<Arc<CollectedSnapshot>>,
     connection_rates: ConnectionRateBook,
@@ -154,6 +253,8 @@ struct RuntimeCheckpoint {
     next_probe_ms: u64,
     bpf_error: Option<String>,
     bpf_error_stage: Option<&'static str>,
+    ecm_bpf_error: Option<String>,
+    ecm_bpf_error_stage: Option<&'static str>,
     nss_error: Option<String>,
 }
 
@@ -161,6 +262,7 @@ impl ProductionRuntime {
     fn stage(config: RuntimeConfig) -> Result<Self, DaemonError> {
         let mut runtime = Self::prepare(config)?;
         runtime.activate_new_bpf()?;
+        runtime.activate_new_ecm_bpf();
         Ok(runtime)
     }
 
@@ -182,26 +284,28 @@ impl ProductionRuntime {
                 config.max_clients,
                 config.active_client_window_ms,
             ),
+            ecm_bpf_collector: EcmBpfSnapshotCollector::default(),
             conntrack_snapshot: None,
             connection_rates: ConnectionRateBook::default(),
             conntrack_observation: ConntrackObservation::default(),
-            conntrack_client_rates: ConntrackClientRateBook::default(),
             probe,
             process_tracker,
             probe_report: Arc::new(preflight),
             next_probe_ms: 0,
-            nss_direct_rates: RateBook::new(config.max_clients, config.active_client_window_ms),
-            nss_sync_rates: RateBook::new(config.max_clients, config.active_client_window_ms),
+            nss_windows: NssWindowBook::default(),
+            rate_owner: None,
             hostnames: HostnameCache::new(),
             config,
             adapter: SystemAyaAdapter::new(),
             bpf: None,
             bpf_error: None,
             bpf_error_stage: None,
+            ecm_bpf: None,
+            ecm_bpf_error: None,
+            ecm_bpf_error_stage: None,
             nss_error: None,
             overview: OverviewRing::new(),
             coverage: CoverageRing::new(),
-            coverage_clients: CoverageRateAccumulator::default(),
             interface_rates: InterfaceRateBook::default(),
             shutdown_complete: false,
         })
@@ -237,7 +341,13 @@ impl ProductionRuntime {
     }
 
     fn activate_new_bpf(&mut self) -> Result<(), DaemonError> {
-        if !self.config.enable_bpf || !self.probe_report.facts.tc.safe_attach {
+        if !self.config.enable_bpf
+            || !matches!(
+                self.config.rate_collector_mode,
+                crate::config::RateCollectorMode::Auto | crate::config::RateCollectorMode::Bpf
+            )
+            || !self.probe_report.facts.tc.safe_attach
+        {
             return Ok(());
         }
         let interfaces = collect_ifnames(&self.config);
@@ -272,19 +382,47 @@ impl ProductionRuntime {
         Ok(())
     }
 
+    fn activate_new_ecm_bpf(&mut self) {
+        if !cfg!(target_arch = "aarch64")
+            || !self.config.enable_bpf
+            || !matches!(
+                self.config.rate_collector_mode,
+                crate::config::RateCollectorMode::Auto
+                    | crate::config::RateCollectorMode::NssEcmBpf
+            )
+            || !self.probe_report.facts.nss.present
+            || !self.probe_report.facts.nss.ecm_active
+        {
+            return;
+        }
+        match EcmBpfRuntime::load_and_attach(ECM_BPF_OBJECT_PATH) {
+            Ok(runtime) => {
+                self.ecm_bpf = Some(runtime);
+                self.ecm_bpf_error = None;
+                self.ecm_bpf_error_stage = None;
+            }
+            Err(error) => {
+                self.ecm_bpf_error_stage = Some(error.stage());
+                self.ecm_bpf_error = Some(error.to_string());
+            }
+        }
+    }
+
     fn checkpoint(&self) -> RuntimeCheckpoint {
         RuntimeCheckpoint {
             bpf: self
                 .bpf
                 .as_ref()
                 .map(|runtime| runtime.collection_checkpoint(&self.bpf_collector)),
+            ecm_bpf: self
+                .ecm_bpf
+                .as_ref()
+                .map(|runtime| runtime.collection_checkpoint(&self.ecm_bpf_collector)),
             overview: self.overview.clone(),
             coverage: self.coverage.clone(),
-            coverage_clients: self.coverage_clients.clone(),
             interface_rates: self.interface_rates.clone(),
-            conntrack_client_rates: self.conntrack_client_rates.clone(),
-            nss_direct_rates: self.nss_direct_rates.clone(),
-            nss_sync_rates: self.nss_sync_rates.clone(),
+            nss_windows: self.nss_windows.clone(),
+            rate_owner: self.rate_owner,
             hostnames: self.hostnames.clone(),
             conntrack_snapshot: self.conntrack_snapshot.clone(),
             connection_rates: self.connection_rates.clone(),
@@ -293,6 +431,8 @@ impl ProductionRuntime {
             next_probe_ms: self.next_probe_ms,
             bpf_error: self.bpf_error.clone(),
             bpf_error_stage: self.bpf_error_stage,
+            ecm_bpf_error: self.ecm_bpf_error.clone(),
+            ecm_bpf_error_stage: self.ecm_bpf_error_stage,
             nss_error: self.nss_error.clone(),
         }
     }
@@ -301,13 +441,14 @@ impl ProductionRuntime {
         if let (Some(runtime), Some(checkpoint)) = (self.bpf.as_mut(), checkpoint.bpf) {
             runtime.restore_collection_checkpoint(&mut self.bpf_collector, checkpoint);
         }
+        if let (Some(runtime), Some(checkpoint)) = (self.ecm_bpf.as_mut(), checkpoint.ecm_bpf) {
+            runtime.restore_collection_checkpoint(&mut self.ecm_bpf_collector, checkpoint);
+        }
         self.overview = checkpoint.overview;
         self.coverage = checkpoint.coverage;
-        self.coverage_clients = checkpoint.coverage_clients;
         self.interface_rates = checkpoint.interface_rates;
-        self.conntrack_client_rates = checkpoint.conntrack_client_rates;
-        self.nss_direct_rates = checkpoint.nss_direct_rates;
-        self.nss_sync_rates = checkpoint.nss_sync_rates;
+        self.nss_windows = checkpoint.nss_windows;
+        self.rate_owner = checkpoint.rate_owner;
         self.hostnames = checkpoint.hostnames;
         self.conntrack_snapshot = checkpoint.conntrack_snapshot;
         self.connection_rates = checkpoint.connection_rates;
@@ -316,6 +457,8 @@ impl ProductionRuntime {
         self.next_probe_ms = checkpoint.next_probe_ms;
         self.bpf_error = checkpoint.bpf_error;
         self.bpf_error_stage = checkpoint.bpf_error_stage;
+        self.ecm_bpf_error = checkpoint.ecm_bpf_error;
+        self.ecm_bpf_error_stage = checkpoint.ecm_bpf_error_stage;
         self.nss_error = checkpoint.nss_error;
     }
 
@@ -336,19 +479,6 @@ impl ProductionRuntime {
                     &snapshot.connection_counters,
                     &mut snapshot.connection_details,
                 );
-                let client_totals = self
-                    .conntrack_client_rates
-                    .update(snapshot.sample_ms, &snapshot.connection_counters);
-                // Keep the raw per-flow map for connection diagnostics, but
-                // expose monotonic client totals to the rate book. A client
-                // aggregate can otherwise fall when one of its conntrack
-                // flows expires between dumps.
-                for client in &mut snapshot.clients {
-                    if let Some(totals) = client_totals.get(&client.identity_key) {
-                        client.tx_bytes = totals.tx_bytes;
-                        client.rx_bytes = totals.rx_bytes;
-                    }
-                }
                 self.conntrack_observation.record_success(
                     now_ms,
                     snapshot.stats.netlink_read,
@@ -543,14 +673,42 @@ impl ProductionRuntime {
         if let Some(snapshot) = bpf_snapshot.as_ref() {
             now_ms = now_ms.max(snapshot.sample_ms);
         }
+        let (ecm_bpf_snapshot, ecm_bpf_snapshot_fresh) = match self.ecm_bpf.as_mut() {
+            Some(runtime) => {
+                let (snapshot, fresh) = match runtime.collect_snapshot(
+                    &mut self.ecm_bpf_collector,
+                    &identities,
+                    now_ms,
+                ) {
+                    Ok(snapshot) => {
+                        self.ecm_bpf_error = None;
+                        self.ecm_bpf_error_stage = None;
+                        (Some(snapshot), true)
+                    }
+                    Err(error) => {
+                        self.ecm_bpf_error_stage = Some(error.stage());
+                        self.ecm_bpf_error = Some(error.to_string());
+                        (self.ecm_bpf_collector.last_complete().cloned(), false)
+                    }
+                };
+                if let Some(snapshot) = snapshot.as_ref() {
+                    now_ms = now_ms.max(snapshot.sample_ms);
+                }
+                runtime.apply_runtime_health(&mut runtime_health, now_ms, freshness_ms);
+                (snapshot, fresh)
+            }
+            None => {
+                runtime_health.ecm_bpf_freshness_ms = freshness_ms;
+                runtime_health.ecm_bpf_error_stage = self.ecm_bpf_error_stage.map(str::to_owned);
+                runtime_health.ecm_bpf_runtime_error = self.ecm_bpf_error.clone();
+                (None, false)
+            }
+        };
         runtime_health.now_ms = now_ms;
         self.apply_conntrack_health(&mut runtime_health);
         if runtime_health.runtime_error.is_none() {
             runtime_health.runtime_error = self.bpf_error.clone();
         }
-        // Treat sync availability as unknown until this cycle decides whether it
-        // needs a fresh dump. This permits recovery after an earlier read error.
-        runtime_health.nss_sync_read_ok = None;
         if probe_due(now_ms, self.next_probe_ms, method) {
             let mut report = self.probe.collect(&self.config, &runtime_health, method);
             self.process_tracker.overlay_report(&mut report);
@@ -559,32 +717,16 @@ impl ProductionRuntime {
         }
         let report = Arc::clone(&self.probe_report);
         let mut decision = policy::select_collectors(&self.config, &report.facts, &runtime_health);
-        // Keep a readable ECM snapshot available as a same-cycle fallback if
-        // the conntrack sync fails.  It is diagnostic/fallback data only; the
-        // sync branch below deliberately does not overlay it on conntrack
-        // counters because that would drop a client's concurrent slow-path
-        // flows.
-        let direct = if decision.rate == RateCollector::NssEcmDirect
-            || decision.nss_direct_overlay
-            || (decision.rate == RateCollector::NssConntrackSync
-                && report.facts.nss.present
-                && report.facts.nss.ecm_active
-                && report.facts.nss.direct_state_readable)
-        {
-            match nss::read_direct_snapshot(
-                &identities,
-                now_ms,
-                self.config.max_clients,
-                ParseLimits::default(),
-            ) {
+        let node_snapshot = if decision.rate == RateCollector::NssEcmNode {
+            match ecm_node::read(&identities, now_ms) {
                 Ok(snapshot) => {
                     self.nss_error = None;
-                    runtime_health.nss_direct_read_ok = Some(true);
+                    runtime_health.nss_node_read_ok = Some(true);
                     Some(snapshot)
                 }
                 Err(error) => {
                     self.nss_error = Some(error.to_string());
-                    runtime_health.nss_direct_read_ok = Some(false);
+                    runtime_health.nss_node_read_ok = Some(false);
                     None
                 }
             }
@@ -602,6 +744,9 @@ impl ProductionRuntime {
         }
         self.apply_conntrack_health(&mut runtime_health);
         decision = policy::select_collectors(&self.config, &report.facts, &runtime_health);
+        let (interfaces, lan_clock) = self.interfaces(now_ms);
+        transition_rate_owner(&mut self.rate_owner, &mut self.nss_windows, decision.rate);
+        let mut nss_window = None;
         let (mut clients, actual_live, actual_degraded, coverage_fresh) =
             if decision.rate == RateCollector::Bpf {
                 (
@@ -617,56 +762,51 @@ impl ProductionRuntime {
                     bpf_snapshot.is_none(),
                     bpf_snapshot_fresh,
                 )
-            } else if decision.rate == RateCollector::NssEcmDirect {
-                match direct.as_ref() {
-                    Some(snapshot) if !snapshot.clients.is_empty() => (
-                        rate_clients(
-                            &mut self.nss_direct_rates,
-                            &snapshot.clients,
-                            now_ms,
+            } else if decision.rate == RateCollector::NssEcmNode {
+                match (node_snapshot.as_ref(), lan_clock) {
+                    (Some(snapshot), Some(lan)) => {
+                        let window = self.nss_windows.update(snapshot, lan);
+                        let live = !matches!(
+                            window.quality,
+                            WindowQuality::CounterReset | WindowQuality::CounterSkew
+                        );
+                        let degraded = matches!(
+                            window.quality,
+                            WindowQuality::Warmup
+                                | WindowQuality::CounterReset
+                                | WindowQuality::CounterSkew
+                        );
+                        let response = window_clients(
+                            &window,
                             &identities,
+                            conntrack.as_deref(),
                             decision.confidence,
-                            "nss_ecm_direct",
-                        ),
-                        true,
-                        false,
-                        true,
-                    ),
-                    Some(_) => (
-                        ClientsResponse::empty(evidence(&report, "clients")),
-                        false,
-                        true,
-                        false,
-                    ),
-                    None => (
+                            &report,
+                        );
+                        nss_window = Some(window);
+                        (response, live, degraded, true)
+                    }
+                    _ => (
                         ClientsResponse::empty(evidence(&report, "clients")),
                         false,
                         true,
                         false,
                     ),
                 }
-            } else if decision.rate == RateCollector::NssConntrackSync {
-                match conntrack.as_ref() {
-                    Some(snapshot) => (
-                        rate_clients(
-                            &mut self.nss_sync_rates,
-                            &snapshot.clients,
-                            now_ms,
-                            &identities,
-                            decision.confidence,
-                            "conntrack_ecm_sync",
-                        ),
-                        true,
-                        true,
-                        true,
+            } else if decision.rate == RateCollector::NssEcmBpf {
+                (
+                    ecm_bpf_clients_response(
+                        ecm_bpf_snapshot
+                            .as_ref()
+                            .map(|snapshot| snapshot.clients.as_slice()),
+                        conntrack.as_deref(),
+                        &identities,
+                        decision.confidence,
                     ),
-                    None => (
-                        ClientsResponse::empty(evidence(&report, "clients")),
-                        false,
-                        true,
-                        false,
-                    ),
-                }
+                    ecm_bpf_snapshot.is_some(),
+                    !ecm_bpf_snapshot_fresh,
+                    ecm_bpf_snapshot_fresh,
+                )
             } else {
                 (
                     ClientsResponse::empty(evidence(&report, "clients")),
@@ -698,35 +838,39 @@ impl ProductionRuntime {
             );
             clients.conn_collector_mode = Some(self.config.conn_collector_mode.as_str().into());
         }
-        if let Some(snapshot) = direct.as_ref() {
-            clients.nss_ecm_direct_flows_seen = Some(snapshot.stats.entries_seen as u64);
-            clients.nss_ecm_direct_flows_matched = Some(snapshot.stats.entries_matched as u64);
-            clients.nss_ecm_direct_parse_errors = Some(snapshot.stats.malformed_lines as u64);
-            if decision.rate == RateCollector::NssEcmDirect && clients.conn_source.is_none() {
-                clients.conn_source = Some("nss_ecm_direct".into());
-                clients.conn_collector_mode = Some(self.config.conn_collector_mode.as_str().into());
-            }
+        if let Some(snapshot) = node_snapshot.as_ref() {
+            clients.nss_ecm_nodes_seen = Some(snapshot.stats.nodes_seen as u64);
+            clients.nss_ecm_nodes_matched = Some(snapshot.stats.nodes_matched as u64);
+            clients.nss_ecm_node_parse_errors = Some(snapshot.stats.malformed_lines as u64);
         }
         if clients.evidence.is_none() {
             clients.evidence = Some(evidence(&report, "clients"));
         }
         if let Some(client_evidence) = clients.evidence.as_mut() {
             apply_decision_evidence(client_evidence, &decision, &self.config, &report);
+            apply_nss_snapshot_evidence(client_evidence, node_snapshot.as_ref());
+            apply_ecm_bpf_evidence(client_evidence, &runtime_health, ecm_bpf_snapshot.as_ref());
             if let Some(snapshot) = conntrack.as_deref() {
                 client_evidence.details.insert(
                     "conntrack_generation".into(),
                     conntrack_generation_evidence(snapshot),
                 );
             }
+            if let Some(window) = nss_window.as_ref() {
+                client_evidence
+                    .details
+                    .insert("nss_window".into(), window_evidence(window));
+            }
         }
         let overview = self.update_overview(now_ms, &clients);
-        let interfaces = self.interfaces(now_ms);
-        let coverage = self.update_coverage(now_ms, &clients, &interfaces, coverage_fresh);
+        let coverage = nss_window.as_ref().map_or_else(
+            || self.update_coverage(now_ms, &clients, &interfaces, coverage_fresh),
+            window_coverage,
+        );
         let sysdevices = sysdevices(&self.config)?;
         let mut capabilities = capabilities(&report.capabilities, &report);
         capabilities.live_metrics = actual_live;
-        capabilities.conntrack_fallback =
-            decision.rate == RateCollector::NssConntrackSync && conntrack.is_some();
+        capabilities.conntrack_fallback = false;
         // BPF remains an active slow-path observer on NSS even when conntrack
         // sync is the authoritative rate source.  Runtime capability must
         // describe the healthy attachment/map, not whether BPF is primary.
@@ -760,6 +904,17 @@ impl ProductionRuntime {
         };
         let mut status_evidence = evidence(&report, method.as_str());
         apply_decision_evidence(&mut status_evidence, &decision, &self.config, &report);
+        apply_nss_snapshot_evidence(&mut status_evidence, node_snapshot.as_ref());
+        apply_ecm_bpf_evidence(
+            &mut status_evidence,
+            &runtime_health,
+            ecm_bpf_snapshot.as_ref(),
+        );
+        if let Some(window) = nss_window.as_ref() {
+            status_evidence
+                .details
+                .insert("nss_window".into(), window_evidence(window));
+        }
         let mut warnings = report
             .warnings
             .iter()
@@ -782,13 +937,6 @@ impl ProductionRuntime {
                         | "bpf_object_missing"
                 )
             });
-        }
-        if let Some(snapshot) = direct.as_ref() {
-            for warning in &snapshot.warnings {
-                if !warnings.iter().any(|value| value == warning) {
-                    warnings.push((*warning).into());
-                }
-            }
         }
         status_evidence.details.insert(
             "bpf".into(),
@@ -850,6 +998,17 @@ impl ProductionRuntime {
         };
         let mut health_evidence = evidence(&report, "health");
         apply_decision_evidence(&mut health_evidence, &decision, &self.config, &report);
+        apply_nss_snapshot_evidence(&mut health_evidence, node_snapshot.as_ref());
+        apply_ecm_bpf_evidence(
+            &mut health_evidence,
+            &runtime_health,
+            ecm_bpf_snapshot.as_ref(),
+        );
+        if let Some(window) = nss_window.as_ref() {
+            health_evidence
+                .details
+                .insert("nss_window".into(), window_evidence(window));
+        }
         health_evidence.details.insert(
             "bpf".into(),
             crate::production_evidence::bpf_details(
@@ -898,6 +1057,12 @@ impl ProductionRuntime {
         };
         let mut reload_evidence = evidence(&report, "reload");
         apply_decision_evidence(&mut reload_evidence, &decision, &self.config, &report);
+        apply_nss_snapshot_evidence(&mut reload_evidence, node_snapshot.as_ref());
+        apply_ecm_bpf_evidence(
+            &mut reload_evidence,
+            &runtime_health,
+            ecm_bpf_snapshot.as_ref(),
+        );
         let reload = ReloadResponse {
             ok: true,
             mode,
@@ -979,30 +1144,80 @@ impl ProductionRuntime {
         }
     }
 
-    fn interfaces(&mut self, now_ms: u64) -> InterfacesResponse {
+    fn interfaces(&mut self, now_ms: u64) -> (InterfacesResponse, Option<LanClock>) {
         let mut reader = SysfsInterfaceCounterReader;
-        let interfaces = collect_ifnames_with_roles(&self.config)
+        let roles = collect_ifnames_with_roles(&self.config);
+        let lan_roots = roles
+            .iter()
+            .filter_map(|(name, role)| (*role == InterfaceRole::Lan).then_some(name.clone()))
+            .collect::<Vec<_>>();
+        let masters = interface_masters();
+        let lan_boundaries = independent_lan_boundaries(&lan_roots, &masters);
+        let mut names_to_read = roles
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        if let Some(boundaries) = lan_boundaries.as_ref() {
+            names_to_read.extend(boundaries.iter().cloned());
+        }
+        let raw_counters = names_to_read
             .into_iter()
-            .map(|(name, role)| match reader.read(&name) {
-                Ok(counters) => {
+            .filter_map(|name| reader.read(&name).ok().map(|counters| (name, counters)))
+            .collect::<BTreeMap<_, _>>();
+        let mut interfaces = Vec::new();
+        for (name, role) in roles {
+            let boundary_names = (role == InterfaceRole::Lan)
+                .then(|| independent_lan_boundaries(std::slice::from_ref(&name), &masters))
+                .flatten();
+            let sampled = if let Some(boundaries) = boundary_names.as_ref() {
+                sum_interface_counters(boundaries, &raw_counters)
+            } else {
+                raw_counters.get(&name).copied()
+            };
+            let interface = match sampled {
+                Some(counters) => {
+                    let display = if role == InterfaceRole::Lan {
+                        InterfaceCounters {
+                            rx_bytes: counters
+                                .rx_bytes
+                                .saturating_add(counters.rx_packets.saturating_mul(4)),
+                            tx_bytes: counters
+                                .tx_bytes
+                                .saturating_add(counters.tx_packets.saturating_mul(4)),
+                            ..counters
+                        }
+                    } else {
+                        counters
+                    };
                     let (rx_bps, tx_bps, delta_ms) =
-                        self.interface_rates.update(&name, counters, now_ms);
+                        self.interface_rates.update(&name, display, now_ms);
                     Interface {
                         name,
                         role,
                         status: InterfaceStatus::Available,
-                        rx_bytes: Some(counters.rx_bytes),
-                        tx_bytes: Some(counters.tx_bytes),
+                        rx_bytes: Some(display.rx_bytes),
+                        tx_bytes: Some(display.tx_bytes),
                         rx_bps: Some(rx_bps),
                         tx_bps: Some(tx_bps),
                         delta_ms: Some(delta_ms),
                         sample_ms: Some(now_ms),
-                        source: Some("/sys/class/net/<if>/statistics".into()),
-                        coverage: Some("includes_hardware_offload_and_switch_bridge".into()),
+                        source: Some(if role == InterfaceRole::Lan {
+                            "/sys/class/net/<bridge-member>/statistics + real packets * 4-byte FCS"
+                        } else {
+                            "/sys/class/net/<if>/statistics"
+                        }.into()),
+                        coverage: Some(if role == InterfaceRole::Lan {
+                            format!(
+                                "independent_lan_boundary:{}",
+                                boundary_names.as_deref().unwrap_or_default().join("+")
+                            )
+                        } else {
+                            "kernel_netdev_statistics".into()
+                        }),
                         evidence: None,
                     }
                 }
-                Err(_) => Interface {
+                None => Interface {
                     name,
                     role,
                     status: InterfaceStatus::Missing,
@@ -1016,14 +1231,31 @@ impl ProductionRuntime {
                     coverage: Some("includes_hardware_offload_and_switch_bridge".into()),
                     evidence: None,
                 },
-            })
-            .collect();
-        InterfacesResponse {
-            interfaces,
-            monotonic_ms: Some(now_ms),
-            note: Some(INTERFACE_NOTE.into()),
-            evidence: None,
+            };
+            interfaces.push(interface);
         }
+        let lan_clock = lan_boundaries.and_then(|boundaries| {
+            let counters = sum_interface_counters(&boundaries, &raw_counters)?;
+            Some(LanClock {
+                interface: boundaries.join("+"),
+                sample_ms: now_ms,
+                counters: TrafficCounters {
+                    tx_bytes: counters.tx_bytes,
+                    rx_bytes: counters.rx_bytes,
+                    tx_packets: counters.tx_packets,
+                    rx_packets: counters.rx_packets,
+                },
+            })
+        });
+        (
+            InterfacesResponse {
+                interfaces,
+                monotonic_ms: Some(now_ms),
+                note: Some(INTERFACE_NOTE.into()),
+                evidence: None,
+            },
+            lan_clock,
+        )
     }
 
     fn update_coverage(
@@ -1035,22 +1267,18 @@ impl ProductionRuntime {
     ) -> Coverage {
         if supported {
             let interface = lan_coverage_totals(&interfaces.interfaces);
-            let rates = clients
+            let client = clients
                 .clients
                 .iter()
                 .fold(ByteTotals::new(0, 0), |total, value| {
                     ByteTotals::new(
-                        total.rx_bytes.saturating_add(value.rx_bps),
-                        total.tx_bytes.saturating_add(value.tx_bps),
+                        total.rx_bytes.saturating_add(value.rx_bytes.unwrap_or(0)),
+                        total.tx_bytes.saturating_add(value.tx_bytes.unwrap_or(0)),
                     )
                 });
-            let client = self
-                .coverage_clients
-                .update(now_ms, rates.rx_bytes, rates.tx_bytes);
             self.coverage
                 .push(CoverageSample::valid(now_ms, interface, client));
         } else {
-            self.coverage_clients.pause();
             self.coverage.reset();
             self.coverage.push(CoverageSample::invalid(now_ms));
         }
@@ -1076,10 +1304,19 @@ impl ProductionRuntime {
         if self.shutdown_complete {
             return Ok(());
         }
+        let mut failures = Vec::new();
         if let Some(runtime) = self.bpf.as_mut() {
-            runtime
-                .shutdown(&mut self.adapter)
-                .map_err(|error| DaemonError::collection(error.to_string()))?;
+            if let Err(error) = runtime.shutdown(&mut self.adapter) {
+                failures.push(format!("TC-BPF shutdown: {error}"));
+            }
+        }
+        if let Some(runtime) = self.ecm_bpf.as_mut() {
+            if let Err(error) = runtime.shutdown() {
+                failures.push(format!("ECM+BPF shutdown: {error}"));
+            }
+        }
+        if !failures.is_empty() {
+            return Err(DaemonError::collection(failures.join("; ")));
         }
         self.shutdown_complete = true;
         Ok(())
@@ -1109,6 +1346,10 @@ impl Runtime for ProductionRuntime {
         // collect_and_reschedule owns the hot-cycle transaction. Candidate reload
         // collection uses ProductionRuntime::collect and keeps its local rollback.
         self.collect_inner(ProbeMethod::Status, None)
+    }
+
+    fn collection_interval_ms(&self, configured_ms: u32) -> u32 {
+        effective_collection_interval_ms(self.rate_owner, configured_ms)
     }
 
     fn shutdown(&mut self) -> Result<(), DaemonError> {
@@ -1148,7 +1389,12 @@ impl App {
         };
         let signals =
             DaeModeTickSignals::new(has_bpf, process_activity_changed, attach_mode_mismatch);
-        let retry_delay = self.state.config().refresh_interval_ms;
+        let retry_delay = self
+            .runtime
+            .as_ref()
+            .map_or(self.state.config().refresh_interval_ms, |runtime| {
+                runtime.collection_interval_ms(self.state.config().refresh_interval_ms)
+            });
         let mut mode_reload = std::mem::take(&mut self.mode_reload);
         let outcome = run_dae_mode_tick(
             &mut mode_reload,
@@ -1290,7 +1536,13 @@ impl App {
         let process_tracker = self.runtime.as_ref().unwrap().process_tracker.clone();
         let mut candidate =
             ProductionRuntime::prepare_with_process_tracker(config.clone(), process_tracker)?;
-        let wants_bpf = config.enable_bpf && candidate.probe_report.facts.tc.safe_attach;
+        candidate.activate_new_ecm_bpf();
+        let wants_bpf = config.enable_bpf
+            && matches!(
+                config.rate_collector_mode,
+                crate::config::RateCollectorMode::Auto | crate::config::RateCollectorMode::Bpf
+            )
+            && candidate.probe_report.facts.tc.safe_attach;
         let desired_mode = candidate.desired_attach_mode();
         let current_has_bpf = self
             .runtime
@@ -1401,12 +1653,18 @@ impl App {
                 }
             }
         };
-        let old_interval = self.state.config().refresh_interval_ms;
+        let old_interval = self
+            .runtime
+            .as_ref()
+            .map_or(self.state.config().refresh_interval_ms, |runtime| {
+                runtime.collection_interval_ms(self.state.config().refresh_interval_ms)
+            });
+        let new_interval = candidate.collection_interval_ms(config.refresh_interval_ms);
         if let Err(error) = self
             .collection_timer
             .as_ref()
             .unwrap()
-            .schedule(config.refresh_interval_ms)
+            .schedule(new_interval)
         {
             let bpf_rollback = prepared_bpf.take().and_then(|prepared| {
                 let current = self.runtime.as_mut().unwrap();
@@ -1913,41 +2171,32 @@ fn clients_response(
             }
             .into()
         }),
-        nss_ecm_direct_flows_seen: None,
-        nss_ecm_direct_flows_matched: None,
-        nss_ecm_direct_parse_errors: None,
+        nss_ecm_nodes_seen: None,
+        nss_ecm_nodes_matched: None,
+        nss_ecm_node_parse_errors: None,
         conn_collector_mode: None,
         conn_semantics: Some(CONNECTION_SEMANTICS.into()),
     }
 }
 
-fn rate_clients(
-    rates: &mut RateBook,
-    samples: &[CounterClient],
-    now_ms: u64,
+fn ecm_bpf_clients_response(
+    samples: Option<&[EcmBpfClientSample]>,
+    conntrack: Option<&CollectedSnapshot>,
     identities: &IdentityTable,
     client_confidence: ProbeConfidence,
-    collector_mode: &str,
 ) -> ClientsResponse {
-    let update = rates.update(
-        now_ms,
-        samples.iter().map(|sample| ClientCounters {
-            identity_key: sample.identity_key.clone(),
-            tx_bytes: sample.tx_bytes,
-            rx_bytes: sample.rx_bytes,
-            last_seen_ms: sample.last_seen_ms,
-        }),
-    );
-    let by_key = samples
-        .iter()
+    let rate_available = samples.is_some();
+    let connection_counts = conntrack
+        .into_iter()
+        .flat_map(|snapshot| snapshot.clients.iter())
         .map(|sample| (sample.identity_key.as_str(), sample))
         .collect::<BTreeMap<_, _>>();
-    let clients = update
-        .clients
-        .into_iter()
-        .filter_map(|rate| {
-            let sample = by_key.get(rate.identity_key.as_str())?;
-            Some(Client {
+    let mut clients = samples
+        .unwrap_or_default()
+        .iter()
+        .map(|sample| {
+            let counts = connection_counts.get(sample.identity_key.as_str()).copied();
+            Client {
                 mac: sample.mac.clone(),
                 identity_key: sample.identity_key.clone(),
                 zone: sample.zone.clone(),
@@ -1956,26 +2205,61 @@ fn rate_clients(
                 hostname: identities
                     .by_mac_zone(&sample.mac, &sample.zone)
                     .and_then(|identity| identity.hostname.clone()),
-                rx_bps: rate.rx_bps,
-                tx_bps: rate.tx_bps,
-                last_seen: rate.last_seen_ms,
-                sample_ms: Some(rate.sample_ms),
-                rx_bytes: Some(rate.rx_bytes),
-                tx_bytes: Some(rate.tx_bytes),
-                collector_mode: collector_mode.into(),
+                rx_bps: sample.rx_bps,
+                tx_bps: sample.tx_bps,
+                last_seen: sample.last_seen_ms,
+                sample_ms: Some(sample.sample_ms),
+                rx_bytes: Some(sample.rx_bytes),
+                tx_bytes: Some(sample.tx_bytes),
+                collector_mode: "nss_ecm_bpf".into(),
                 confidence: confidence(client_confidence),
-                warnings: rate
-                    .warnings
+                warnings: vec![],
+                tcp_conns: counts.map(|sample| u64::from(sample.tcp_conns)),
+                udp_conns: counts.map(|sample| u64::from(sample.udp_conns)),
+                udp_dns_conns: counts.map(|sample| u64::from(sample.udp_dns_conns)),
+                udp_other_conns: counts.map(|sample| u64::from(sample.udp_other_conns)),
+            }
+        })
+        .collect::<Vec<_>>();
+    if let Some(snapshot) = conntrack {
+        for sample in &snapshot.clients {
+            if !has_counted_connections(sample)
+                || clients
                     .iter()
-                    .map(|warning| warning.as_str().to_owned())
-                    .collect(),
+                    .any(|client| client.identity_key == sample.identity_key)
+            {
+                continue;
+            }
+            let mut warnings = vec![CONNECTION_ONLY_WARNING.to_owned()];
+            if !rate_available {
+                warnings.push("conntrack_routed_nat_only".into());
+            }
+            clients.push(Client {
+                mac: sample.mac.clone(),
+                identity_key: sample.identity_key.clone(),
+                zone: sample.zone.clone(),
+                interface: sample.interface.clone(),
+                ips: sample.ips.clone(),
+                hostname: identities
+                    .by_mac_zone(&sample.mac, &sample.zone)
+                    .and_then(|identity| identity.hostname.clone()),
+                rx_bps: 0,
+                tx_bps: 0,
+                last_seen: sample.last_seen_ms,
+                sample_ms: Some(sample.last_seen_ms),
+                rx_bytes: None,
+                tx_bytes: None,
+                collector_mode: conntrack_source(snapshot).into(),
+                confidence: confidence(client_confidence),
+                warnings,
                 tcp_conns: Some(u64::from(sample.tcp_conns)),
                 udp_conns: Some(u64::from(sample.udp_conns)),
                 udp_dns_conns: Some(u64::from(sample.udp_dns_conns)),
                 udp_other_conns: Some(u64::from(sample.udp_other_conns)),
-            })
-        })
-        .collect::<Vec<_>>();
+            });
+        }
+    }
+    clients.sort_by(|left, right| left.identity_key.cmp(&right.identity_key));
     let totals = clients
         .iter()
         .fold((0u64, 0u64, 0u64, 0u64), |totals, client| {
@@ -1993,16 +2277,183 @@ fn rate_clients(
         udp_conns_total: Some(totals.1),
         udp_dns_conns_total: Some(totals.2),
         udp_other_conns_total: Some(totals.3),
-        conntrack_entries_seen: None,
-        conntrack_entries_matched: None,
-        conntrack_parse_errors: None,
-        conn_source: Some(collector_mode.into()),
-        nss_ecm_direct_flows_seen: None,
-        nss_ecm_direct_flows_matched: None,
-        nss_ecm_direct_parse_errors: None,
+        conntrack_entries_seen: conntrack.map(|value| value.stats.entries_seen as u64),
+        conntrack_entries_matched: conntrack.map(|value| value.stats.entries_matched as u64),
+        conntrack_parse_errors: conntrack.map(|value| value.stats.malformed_lines as u64),
+        conn_source: conntrack.map(|value| {
+            if value.stats.netlink_read {
+                "conntrack_netlink"
+            } else {
+                "conntrack_procfs"
+            }
+            .into()
+        }),
+        nss_ecm_nodes_seen: None,
+        nss_ecm_nodes_matched: None,
+        nss_ecm_node_parse_errors: None,
         conn_collector_mode: None,
         conn_semantics: Some(CONNECTION_SEMANTICS.into()),
     }
+}
+
+fn window_clients(
+    window: &WindowOutput,
+    identities: &IdentityTable,
+    conntrack: Option<&CollectedSnapshot>,
+    client_confidence: ProbeConfidence,
+    report: &ProbeReport,
+) -> ClientsResponse {
+    let connection_counts = conntrack
+        .into_iter()
+        .flat_map(|snapshot| snapshot.clients.iter())
+        .map(|sample| (sample.identity_key.as_str(), sample))
+        .collect::<BTreeMap<_, _>>();
+    let warning = (!matches!(
+        window.quality,
+        WindowQuality::Ok
+            | WindowQuality::Idle
+            | WindowQuality::LowTraffic
+            | WindowQuality::Pending
+    ))
+    .then(|| window.quality.as_str().to_owned());
+    let clients = window
+        .clients
+        .iter()
+        .filter_map(|rate| {
+            let identity = identities
+                .iter()
+                .find(|identity| identity.key.to_string() == rate.identity_key)?;
+            let counts = connection_counts.get(rate.identity_key.as_str()).copied();
+            Some(Client {
+                mac: identity.key.mac.to_string(),
+                identity_key: rate.identity_key.clone(),
+                zone: identity.key.zone.clone(),
+                interface: identity.interface.clone(),
+                ips: identity.ips.clone(),
+                hostname: identity.hostname.clone(),
+                rx_bps: rate.rx_bps,
+                tx_bps: rate.tx_bps,
+                last_seen: identity.last_seen,
+                sample_ms: Some(window.end_ms),
+                rx_bytes: Some(rate.total.rx_bytes),
+                tx_bytes: Some(rate.total.tx_bytes),
+                collector_mode: "nss_ecm_node".into(),
+                confidence: confidence(client_confidence),
+                warnings: warning.iter().cloned().collect(),
+                tcp_conns: counts.map(|sample| u64::from(sample.tcp_conns)),
+                udp_conns: counts.map(|sample| u64::from(sample.udp_conns)),
+                udp_dns_conns: counts.map(|sample| u64::from(sample.udp_dns_conns)),
+                udp_other_conns: counts.map(|sample| u64::from(sample.udp_other_conns)),
+            })
+        })
+        .collect::<Vec<_>>();
+    let totals = clients
+        .iter()
+        .fold((0u64, 0u64, 0u64, 0u64), |totals, client| {
+            (
+                totals.0.saturating_add(client.tcp_conns.unwrap_or(0)),
+                totals.1.saturating_add(client.udp_conns.unwrap_or(0)),
+                totals.2.saturating_add(client.udp_dns_conns.unwrap_or(0)),
+                totals.3.saturating_add(client.udp_other_conns.unwrap_or(0)),
+            )
+        });
+    ClientsResponse {
+        clients,
+        evidence: Some(evidence(report, "clients")),
+        tcp_conns_total: Some(totals.0),
+        udp_conns_total: Some(totals.1),
+        udp_dns_conns_total: Some(totals.2),
+        udp_other_conns_total: Some(totals.3),
+        conntrack_entries_seen: None,
+        conntrack_entries_matched: None,
+        conntrack_parse_errors: None,
+        conn_source: conntrack.map(|snapshot| conntrack_source(snapshot).into()),
+        nss_ecm_nodes_seen: None,
+        nss_ecm_nodes_matched: None,
+        nss_ecm_node_parse_errors: None,
+        conn_collector_mode: None,
+        conn_semantics: Some(CONNECTION_SEMANTICS.into()),
+    }
+}
+
+fn window_coverage(window: &WindowOutput) -> Coverage {
+    let coverage = &window.coverage;
+    let reportable = coverage.aligned
+        && matches!(
+            coverage.quality,
+            WindowQuality::Ok | WindowQuality::Idle | WindowQuality::LowTraffic
+        );
+    Coverage {
+        quality: coverage.quality.as_str().into(),
+        samples: u64::from(reportable),
+        window_ms: Some(coverage.window_ms()),
+        tx_pct: reportable.then_some(coverage.tx_pct).flatten(),
+        rx_pct: reportable.then_some(coverage.rx_pct).flatten(),
+        denom_rx_bytes: Some(coverage.lan_normalized.rx_bytes),
+        denom_tx_bytes: Some(coverage.lan_normalized.tx_bytes),
+        numer_rx_bytes: Some(coverage.client_normalized.rx_bytes),
+        numer_tx_bytes: Some(coverage.client_normalized.tx_bytes),
+    }
+}
+
+fn window_evidence(window: &WindowOutput) -> Value {
+    let coverage = &window.coverage;
+    json!({
+        "state": window.quality.as_str(),
+        "reason": window.reason,
+        "source": ecm_node::SOURCE,
+        "window_start_ms": window.start_ms,
+        "window_end_ms": window.end_ms,
+        "window_ms": window.window_ms(),
+        "collector_min_interval_ms": NSS_COLLECTION_INTERVAL_MS,
+        "rate_filter": "per_node_generation_median_last_3_windows",
+        "fresh_rate_sample": window.fresh_rate_sample,
+        "held_rate_age_ms": window.held_rate_age_ms,
+        "rate_and_coverage_decoupled": true,
+        "aligned_snapshot_retained": coverage.aligned,
+        "fcs_bytes_per_packet": 4,
+        "raw": {
+            "client": traffic_evidence(coverage.client_raw),
+            "lan": traffic_evidence(coverage.lan_raw),
+        },
+        "fcs_normalized": {
+            "client": traffic_evidence(coverage.client_normalized),
+            "lan": traffic_evidence(coverage.lan_normalized),
+        },
+        "directions": {
+            "tx": {
+                "client_bytes": coverage.client_normalized.tx_bytes,
+                "client_packets": coverage.client_normalized.tx_packets,
+                "lan_bytes": coverage.lan_normalized.rx_bytes,
+                "lan_packets": coverage.lan_normalized.rx_packets,
+            },
+            "rx": {
+                "client_bytes": coverage.client_normalized.rx_bytes,
+                "client_packets": coverage.client_normalized.rx_packets,
+                "lan_bytes": coverage.lan_normalized.tx_bytes,
+                "lan_packets": coverage.lan_normalized.tx_packets,
+            },
+        },
+        "coverage": {
+            "state": coverage.quality.as_str(),
+            "reason": coverage.reason,
+            "window_start_ms": coverage.start_ms,
+            "window_end_ms": coverage.end_ms,
+            "window_ms": coverage.window_ms(),
+            "aligned": coverage.aligned,
+            "tx_pct": coverage.tx_pct,
+            "rx_pct": coverage.rx_pct,
+        },
+    })
+}
+
+fn traffic_evidence(value: TrafficCounters) -> Value {
+    json!({
+        "tx_bytes": value.tx_bytes,
+        "rx_bytes": value.rx_bytes,
+        "tx_packets": value.tx_packets,
+        "rx_packets": value.rx_packets,
+    })
 }
 
 fn evidence(report: &ProbeReport, method: &str) -> Evidence {
@@ -2018,6 +2469,13 @@ fn evidence(report: &ProbeReport, method: &str) -> Evidence {
     details.insert(
         "effective_collector".into(),
         json!(report.evidence.collector.effective_rate_collector),
+    );
+    details.insert(
+        "platform".into(),
+        json!({
+            "target_arch": std::env::consts::ARCH,
+            "nss_modes_exposed": cfg!(target_arch = "aarch64") && report.facts.nss.present,
+        }),
     );
     details.insert("collector".into(), json!({"rate_reason":report.evidence.collector.rate_reason,"connection_reason":report.evidence.collector.connection_reason,
         "primary_source":report.evidence.collector.effective_rate_collector,"mode":report.evidence.collector.mode,"confidence":report.evidence.collector.confidence}));
@@ -2056,9 +2514,6 @@ fn conntrack_generation_evidence(snapshot: &CollectedSnapshot) -> Value {
         "conntrack_ids_present": snapshot.stats.conntrack_ids_present,
         "conntrack_zones_present": snapshot.stats.conntrack_zones_present,
         "flow_id_coverage_pct": flow_id_coverage_pct,
-        "counter_baseline_retention_ms": CT_ID_BASELINE_RETENTION_MS,
-        "tuple_fallback_retention_ms": TUPLE_BASELINE_RETENTION_MS,
-        "max_retained_flow_baselines": MAX_RETAINED_FLOW_BASELINES,
     })
 }
 
@@ -2097,6 +2552,103 @@ fn apply_decision_evidence(
     );
 }
 
+fn apply_nss_snapshot_evidence(evidence: &mut Evidence, snapshot: Option<&ecm_node::NodeSnapshot>) {
+    let Some(snapshot) = snapshot else {
+        return;
+    };
+    let Some(nss) = evidence
+        .details
+        .get_mut("nss")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    nss.insert(
+        "sync_barrier_supported".into(),
+        json!(snapshot.stats.sync_barrier_supported),
+    );
+    nss.insert(
+        "sync_barrier_wait_ms".into(),
+        json!(snapshot.stats.sync_barrier_wait_ms),
+    );
+    nss.insert(
+        "sync_snapshot_retries".into(),
+        json!(snapshot.stats.sync_snapshot_retries),
+    );
+}
+
+fn apply_ecm_bpf_evidence(
+    evidence: &mut Evidence,
+    runtime: &RuntimeHealth,
+    snapshot: Option<&EcmBpfSnapshot>,
+) {
+    let retained_fresh_snapshot = !runtime.ecm_bpf_map_read_ok
+        && runtime
+            .ecm_bpf_last_complete_snapshot_ms
+            .is_some_and(|sample_ms| {
+                crate::is_fresh(runtime.now_ms, sample_ms, runtime.ecm_bpf_freshness_ms)
+            });
+    let attach_state = if !runtime.ecm_bpf_object_loaded {
+        "not_ready"
+    } else if runtime.ecm_bpf_attached {
+        "ready"
+    } else {
+        "failed"
+    };
+    let map_state = if !runtime.ecm_bpf_attached {
+        "not_attempted"
+    } else if runtime.ecm_bpf_map_read_ok {
+        "ready"
+    } else if retained_fresh_snapshot {
+        "retained"
+    } else if runtime.ecm_bpf_map_read_attempted {
+        "failed"
+    } else {
+        "not_attempted"
+    };
+    let layout = runtime.ecm_bpf_layout.map(|layout| {
+        json!({
+            "connection_node_offset": layout.connection_node_offset,
+            "connection_generation_offset": layout.connection_generation_offset,
+            "node_address_offset": layout.node_address_offset,
+            "pointer_size": layout.pointer_size,
+            "from_index": layout.from_index,
+            "to_index": layout.to_index,
+            "ready": layout.ready == 1,
+        })
+    });
+    evidence.details.insert(
+        "ecm_bpf".into(),
+        json!({
+            "source": "kprobe:ecm_db_connection_data_totals_update",
+            "object": ECM_BPF_OBJECT_PATH,
+            "target_arch": std::env::consts::ARCH,
+            "target_arch_supported": cfg!(target_arch = "aarch64"),
+            "source_contract": "single_ecm_update_chain_no_tc_or_node_aggregation",
+            "coverage": "ecm_slow_path_and_nss_sync_deltas",
+            "deduplication": "one_ecm_increment_consumed_once;tc_map_not_read",
+            "generation_key": "connection_pointer+time_added_u32+direction+mac",
+            "object_loaded": runtime.ecm_bpf_object_loaded,
+            "attach_state": attach_state,
+            "map_state": map_state,
+            "map_entries": snapshot.map_or(runtime.ecm_bpf_map_entries, |value| value.map_entries),
+            "matched_entries": snapshot.map_or(runtime.ecm_bpf_matched_entries, |value| value.matched_entries),
+            "snapshot_clients": snapshot.map_or(runtime.ecm_bpf_snapshot_clients, |value| value.clients.len()),
+            "map_iteration_truncated": runtime.ecm_bpf_map_iteration_truncated
+                || snapshot.is_some_and(|value| value.truncated),
+            "sample_ms": snapshot.map(|value| value.sample_ms),
+            "last_complete_snapshot_ms": runtime.ecm_bpf_last_complete_snapshot_ms,
+            "retained_fresh_snapshot": retained_fresh_snapshot,
+            "collector_min_interval_ms": NSS_COLLECTION_INTERVAL_MS,
+            "rate_window": "per_connection_generation_direction_collector_elapsed_delta",
+            "rate_filter": "per_connection_generation_median_last_3_windows",
+            "rate_hold_ms": ECM_RATE_HOLD_MS,
+            "btf_layout": layout,
+            "error_stage": runtime.ecm_bpf_error_stage,
+        }),
+    );
+}
+
 fn capabilities(value: &ProbeCapabilities, report: &ProbeReport) -> Capabilities {
     Capabilities {
         // `bpf_supported` is a platform/configuration capability. Keep it
@@ -2115,7 +2667,8 @@ fn capabilities(value: &ProbeCapabilities, report: &ProbeReport) -> Capabilities
         nss: report.facts.nss.present,
         nss_ecm_offload: report.facts.nss.ecm_active,
         nss_ppe_offload: report.facts.nss.ppe_active,
-        nss_ecm_direct: report.facts.nss.direct_state_readable,
+        nss_ecm_node: report.facts.nss.direct_state_readable,
+        nss_ecm_bpf: value.nss_ecm_bpf,
         nss_bridge_mgr: report.evidence.nss.bridge_mgr,
         nss_ifb: report.evidence.nss.ifb_active,
         nss_nsm: report.evidence.nss.nsm_active,
@@ -2508,10 +3061,6 @@ mod tests {
         assert_eq!(evidence["conntrack_ids_present"], 3);
         assert_eq!(evidence["conntrack_zones_present"], 4);
         assert_eq!(evidence["flow_id_coverage_pct"], 75.0);
-        assert_eq!(
-            evidence["counter_baseline_retention_ms"],
-            CT_ID_BASELINE_RETENTION_MS
-        );
     }
 
     #[test]
@@ -2520,5 +3069,147 @@ mod tests {
         assert!(!probe_due(29_999, 30_000, ProbeMethod::Status));
         assert!(probe_due(30_000, 30_000, ProbeMethod::Status));
         assert!(probe_due(1, u64::MAX, ProbeMethod::Reload));
+    }
+
+    #[test]
+    fn lan_clock_replaces_a_batched_bridge_with_its_physical_members() {
+        let masters = BTreeMap::from([
+            ("lan1".into(), "br-lan".into()),
+            ("lan2".into(), "br-lan".into()),
+            ("wlan0".into(), "br-lan".into()),
+        ]);
+
+        let selected = independent_lan_boundaries(&["br-lan".into()], &masters).unwrap();
+
+        assert_eq!(selected, vec!["lan1", "lan2", "wlan0"]);
+    }
+
+    #[test]
+    fn lan_clock_deduplicates_overlapping_roots_and_sums_disjoint_boundaries() {
+        let masters = BTreeMap::from([
+            ("lan1".into(), "br-lan".into()),
+            ("lan2".into(), "br-lan".into()),
+        ]);
+        let selected = independent_lan_boundaries(
+            &["br-lan".into(), "lan2".into(), "br-guest".into()],
+            &masters,
+        )
+        .unwrap();
+        assert_eq!(selected, vec!["br-guest", "lan1", "lan2"]);
+
+        let counters = BTreeMap::from([
+            (
+                "lan1".into(),
+                InterfaceCounters {
+                    rx_bytes: 100,
+                    tx_bytes: 200,
+                    rx_packets: 1,
+                    tx_packets: 2,
+                },
+            ),
+            (
+                "lan2".into(),
+                InterfaceCounters {
+                    rx_bytes: 300,
+                    tx_bytes: 400,
+                    rx_packets: 3,
+                    tx_packets: 4,
+                },
+            ),
+            (
+                "br-guest".into(),
+                InterfaceCounters {
+                    rx_bytes: 500,
+                    tx_bytes: 600,
+                    rx_packets: 5,
+                    tx_packets: 6,
+                },
+            ),
+        ]);
+        assert_eq!(
+            sum_interface_counters(&selected, &counters),
+            Some(InterfaceCounters {
+                rx_bytes: 900,
+                tx_bytes: 1_200,
+                rx_packets: 9,
+                tx_packets: 12,
+            })
+        );
+    }
+
+    #[test]
+    fn effective_collector_controls_only_the_nss_timer_floor() {
+        assert_eq!(effective_collection_interval_ms(None, 500), 500);
+        assert_eq!(
+            effective_collection_interval_ms(Some(RateCollector::Bpf), 500),
+            500
+        );
+        assert_eq!(
+            effective_collection_interval_ms(Some(RateCollector::NssEcmNode), 500),
+            2_000
+        );
+        assert_eq!(
+            effective_collection_interval_ms(Some(RateCollector::NssEcmBpf), 1_000),
+            2_000
+        );
+        assert_eq!(
+            effective_collection_interval_ms(Some(RateCollector::NssEcmBpf), 3_000),
+            3_000
+        );
+    }
+
+    #[test]
+    fn nss_bpf_handoff_rewarms_without_republishing_the_old_owner_interval() {
+        use crate::collectors::ecm_node::{NodeCounters, NodeSnapshot, ParseStats};
+
+        let snapshot = |sample_ms, tx_bytes, rx_bytes| NodeSnapshot {
+            sample_ms,
+            nodes: vec![NodeCounters {
+                identity_key: "02:00:00:00:20:11@lan".into(),
+                generation: 7,
+                counters: TrafficCounters {
+                    tx_bytes,
+                    rx_bytes,
+                    tx_packets: tx_bytes / 1_000,
+                    rx_packets: rx_bytes / 1_000,
+                },
+            }],
+            stats: ParseStats::default(),
+        };
+        let lan = |sample_ms, rx_bytes, tx_bytes| LanClock {
+            interface: "br-lan".into(),
+            sample_ms,
+            counters: TrafficCounters {
+                tx_bytes,
+                rx_bytes,
+                tx_packets: tx_bytes / 1_000,
+                rx_packets: rx_bytes / 1_000,
+            },
+        };
+        let mut owner = None;
+        let mut windows = NssWindowBook::default();
+
+        transition_rate_owner(&mut owner, &mut windows, RateCollector::NssEcmNode);
+        assert_eq!(
+            windows
+                .update(&snapshot(1_000, 10_000, 20_000), lan(1_000, 10_000, 20_000))
+                .quality,
+            WindowQuality::Warmup
+        );
+        transition_rate_owner(&mut owner, &mut windows, RateCollector::Bpf);
+
+        transition_rate_owner(&mut owner, &mut windows, RateCollector::NssEcmNode);
+        let reentry = windows.update(
+            &snapshot(5_000, 4_010_000, 8_020_000),
+            lan(5_000, 4_010_000, 8_020_000),
+        );
+
+        assert_eq!(reentry.quality, WindowQuality::Warmup);
+        assert!(reentry
+            .clients
+            .iter()
+            .all(|client| client.tx_bps == 0 && client.rx_bps == 0));
+        assert_eq!(reentry.coverage.tx_pct, None);
+        assert_eq!(reentry.coverage.rx_pct, None);
     }
 }

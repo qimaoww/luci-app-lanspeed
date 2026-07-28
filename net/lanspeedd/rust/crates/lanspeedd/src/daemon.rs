@@ -89,6 +89,9 @@ pub trait Runtime {
     fn checkpoint(&self) -> Self::Checkpoint;
     fn restore(&mut self, checkpoint: Self::Checkpoint);
     fn collect(&mut self) -> Result<ResponseSnapshot, DaemonError>;
+    fn collection_interval_ms(&self, configured_ms: u32) -> u32 {
+        configured_ms
+    }
     fn shutdown(&mut self) -> Result<(), DaemonError>;
 }
 
@@ -230,7 +233,8 @@ pub fn activate_runtime<R: Runtime>(
             let previous = state.snapshot();
             let now_ms = diagnostic_now_ms(snapshot.interfaces.monotonic_ms.unwrap_or(0));
             state.publish_collection_success(snapshot, now_ms);
-            if let Err(error) = schedule_collection(state.config().refresh_interval_ms) {
+            let interval = runtime.collection_interval_ms(state.config().refresh_interval_ms);
+            if let Err(error) = schedule_collection(interval) {
                 state.publish(previous);
                 return match runtime.shutdown() {
                     Ok(()) => Err(error),
@@ -279,7 +283,8 @@ pub fn collect_and_reschedule<R: Runtime>(
             Some(error)
         }
     };
-    if let Err(schedule) = schedule_collection(state.config().refresh_interval_ms) {
+    let interval = runtime.collection_interval_ms(state.config().refresh_interval_ms);
+    if let Err(schedule) = schedule_collection(interval) {
         let message = match collection_error {
             None => format!("collection timer failed: {schedule}"),
             Some(collection) => {

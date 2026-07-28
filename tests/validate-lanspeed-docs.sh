@@ -188,15 +188,19 @@ require_phrase "lan_to_lan_visibility_limited"
 require_phrase "asymmetric_path_possible"
 require_phrase "duplicate_mac_across_vlans"
 require_phrase "map_full"
-require_phrase "非 NSS 设备以 BPF 为实时来源"
-require_phrase "NSS ECM/PPE 活跃时 BPF 继续挂载观测慢路径"
-require_phrase "客户端总速率以 NSS Conntrack 同步计数为准"
-require_phrase "绝不把两套累计值相加"
-require_phrase 'NSS-direct 是显式选择 `nss_ecm_direct`'
-require_phrase "NSS sync 不可用时的后备来源"
+require_phrase "非 NSS 设备由 BPF tc"
+require_phrase "x86_64 的自动模式只能落到 BPF"
+require_phrase "Qualcomm aarch64 NSS 设备自动按 ECM+BPF、ECM、BPF"
+require_phrase "AYA_BPF_TARGET_ARCH=aarch64"
+require_phrase "它不读取 TC map 或 ECM node totals 做二次叠加"
+require_phrase '`nss_ecm_node`'
+require_phrase '`nss_ecm_bpf`'
+reject_phrase "NSS ECM node 是 ECM 加速活跃时的唯一客户端总速率来源"
+require_phrase '覆盖率进入 `pending`，不会阻塞逐客户端速率'
+require_phrase "物理 LAN MIB 只负责覆盖率验证"
 require_phrase '强制依赖 `lanspeedd-bpf`'
-require_phrase "低流量与真正无流量分开显示"
-require_phrase "恢复流量时首个样本不再固定显示为 0"
+require_phrase "空闲数分钟后恢复流量也不会产生跨整段空闲期的低速平均值"
+require_phrase '首次快照保持 `warmup/0`'
 require_phrase "SDK 缺失"
 require_phrase "缺少 BPF 包或对象"
 require_phrase '缺少 `tc`'

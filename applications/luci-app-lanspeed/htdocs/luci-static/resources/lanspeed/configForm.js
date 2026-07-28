@@ -11,7 +11,7 @@ var BOOLEAN_FIELDS = [ 'show_client_status', 'show_ipv6', 'hide_private_ipv6',
 	'enable_bpf', 'enable_conntrack_fallback' ];
 var NUMBER_FIELDS = [ 'refresh_interval_ms', 'active_client_window_ms',
 	'active_client_min_bps', 'overview_window_samples', 'max_clients' ];
-var STATUS_RATE_MODES = [ 'auto', 'bpf', 'nss_ecm_direct', 'nss_conntrack_sync' ];
+var STATUS_RATE_MODES = [ 'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf' ];
 var STATUS_CONNECTION_MODES = [ 'auto', 'conntrack_netlink', 'conntrack_procfs' ];
 var STATUS_MODES = [ 'Full', 'Degraded', 'Unsupported' ];
 var STATUS_CONFIDENCE = [ 'high', 'medium', 'low', 'unsupported' ];
@@ -109,8 +109,8 @@ function errorMessage(code, field) {
 		bpf_disabled: _('请先启用 BPF，或改用自动模式'),
 		bpf_unavailable: _('当前运行环境不具备完整 BPF 能力'),
 		no_collect_interface: _('强制 BPF 模式至少需要一个接口设为“采集”'),
-		nss_direct_unavailable: _('当前设备不支持 NSS-direct'),
-		nss_sync_unavailable: _('当前设备不支持 NSS sync'),
+		nss_node_unavailable: _('当前设备不支持 NSS ECM node 计数'),
+		nss_ecm_bpf_unavailable: _('当前设备不具备 ECM+BPF 所需的 NSS ECM、BTF 或 BPF 对象'),
 		conntrack_fallback_disabled: _('请先允许连接跟踪回退，或选择其他速率模式'),
 		conntrack_netlink_unavailable: _('当前运行环境不支持 CT-Netlink'),
 		conntrack_procfs_unavailable: _('当前运行环境不支持 CT-Procfs'),
@@ -522,15 +522,15 @@ function buildDaemonSection(data, viewState) {
 	]);
 
 	rows.push(rowFor(viewState, 'rate_collector_mode', _('速率采集'), refs.inputs.rate_collector_mode,
-		_('根据运行能力选择客户端速率来源；不可用选项会禁用并保留原因。')));
+		_('自动按平台选择：x86_64 只使用 BPF；Qualcomm NSS 依次尝试 ECM+BPF、ECM、BPF；手动模式失败不会静默切换。')));
 	rows.push(rowFor(viewState, 'conn_collector_mode', _('连接数采集'), refs.inputs.conn_collector_mode,
 		_('CT-Netlink 优先；CT-Procfs 仅用于明确的兼容场景。')));
 	rows.push(rowFor(viewState, 'enable_bpf', _('启用 BPF'), refs.toggleWrap.enable_bpf,
 		_('关闭后 BPF 模式不可选，自动模式会尝试受支持的其他来源。')));
 	rows.push(rowFor(viewState, 'enable_conntrack_fallback', _('允许连接跟踪回退'), refs.toggleWrap.enable_conntrack_fallback,
-		_('控制 NSS sync 与连接跟踪回退路径。')));
+		_('仅控制连接详情的 conntrack 后备读取，不参与 NSS 客户端速率。')));
 	rows.push(rowFor(viewState, 'refresh_interval_ms', _('采样间隔'), refs.inputs.refresh_interval_ms,
-		_('守护进程采集周期，范围 500 到 4294967295 ms。')));
+		_('BPF 不限制采样周期；ECM 与 ECM+BPF 固定使用 2000 ms。')));
 	rows.push(rowFor(viewState, 'overview_window_samples', _('历史采样点'), refs.inputs.overview_window_samples,
 		_('内存中保留的概览样本数，范围 2 到 240。')));
 	rows.push(rowFor(viewState, 'max_clients', _('客户端上限'), refs.inputs.max_clients,

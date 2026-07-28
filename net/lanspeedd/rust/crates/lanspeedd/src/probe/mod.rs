@@ -6,6 +6,7 @@ pub mod proxy;
 pub mod tc;
 
 use crate::config::RuntimeConfig;
+use lanspeed_common::EcmLayout;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
@@ -57,8 +58,20 @@ pub struct RuntimeHealth {
     pub bpf_self_heal_failures: u64,
     pub bpf_self_heal_last_reason: Option<String>,
     pub bpf_self_heal_last_failure: Option<String>,
-    pub nss_direct_read_ok: Option<bool>,
-    pub nss_sync_read_ok: Option<bool>,
+    pub ecm_bpf_object_loaded: bool,
+    pub ecm_bpf_attached: bool,
+    pub ecm_bpf_map_read_attempted: bool,
+    pub ecm_bpf_map_read_ok: bool,
+    pub ecm_bpf_last_complete_snapshot_ms: Option<u64>,
+    pub ecm_bpf_freshness_ms: u64,
+    pub ecm_bpf_snapshot_clients: usize,
+    pub ecm_bpf_map_entries: usize,
+    pub ecm_bpf_matched_entries: usize,
+    pub ecm_bpf_map_iteration_truncated: bool,
+    pub ecm_bpf_layout: Option<EcmLayout>,
+    pub ecm_bpf_error_stage: Option<String>,
+    pub ecm_bpf_runtime_error: Option<String>,
+    pub nss_node_read_ok: Option<bool>,
     pub conntrack_netlink_available: bool,
     pub conntrack_procfs_available: bool,
     pub dae_early_bpf: bool,
@@ -81,8 +94,20 @@ impl Default for RuntimeHealth {
             bpf_self_heal_failures: 0,
             bpf_self_heal_last_reason: None,
             bpf_self_heal_last_failure: None,
-            nss_direct_read_ok: None,
-            nss_sync_read_ok: None,
+            ecm_bpf_object_loaded: false,
+            ecm_bpf_attached: false,
+            ecm_bpf_map_read_attempted: false,
+            ecm_bpf_map_read_ok: false,
+            ecm_bpf_last_complete_snapshot_ms: None,
+            ecm_bpf_freshness_ms: 0,
+            ecm_bpf_snapshot_clients: 0,
+            ecm_bpf_map_entries: 0,
+            ecm_bpf_matched_entries: 0,
+            ecm_bpf_map_iteration_truncated: false,
+            ecm_bpf_layout: None,
+            ecm_bpf_error_stage: None,
+            ecm_bpf_runtime_error: None,
+            nss_node_read_ok: None,
             conntrack_netlink_available: true,
             conntrack_procfs_available: true,
             dae_early_bpf: false,
@@ -194,6 +219,7 @@ pub struct NssObservation {
 pub struct BpfObservation {
     pub package: bool,
     pub object: bool,
+    pub ecm_object: bool,
     pub map_full_observed: bool,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -275,6 +301,7 @@ pub struct NssFacts {
 pub struct BpfFacts {
     pub package: bool,
     pub object: bool,
+    pub ecm_object: bool,
     pub map_full_observed: bool,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -302,6 +329,7 @@ pub struct ProbeCapabilities {
     pub bpf_package: bool,
     pub bpf_object: bool,
     pub bpf_runtime_metrics: bool,
+    pub nss_ecm_bpf: bool,
     pub conntrack_fallback: bool,
     pub live_metrics: bool,
     pub fw4: bool,
@@ -493,6 +521,7 @@ pub struct NssEvidence {
 pub struct BpfEvidence {
     pub package_present: bool,
     pub object_present: bool,
+    pub ecm_object_present: bool,
     pub runtime_attach_map_read_success: bool,
     pub map_full_observed: bool,
     pub object_loaded: bool,
@@ -512,8 +541,6 @@ pub struct CollectorEvidence {
     pub configured_connection_mode: &'static str,
     pub effective_rate_collector: &'static str,
     pub effective_connection_collector: &'static str,
-    pub nss_direct_overlay: bool,
-    pub nss_sync_secondary: bool,
     pub rate_reason: &'static str,
     pub connection_reason: &'static str,
     pub mode: &'static str,
@@ -593,6 +620,10 @@ pub fn assess(
                     crate::is_fresh(runtime.now_ms, sample_ms, runtime.bpf_freshness_ms)
                 }))
         && !observations.offload.hardware;
+    let ecm_bpf_supported = config.enable_bpf
+        && observations.nss.present
+        && observations.nss.ecm_active
+        && observations.bpf.ecm_object;
     let probe_error = observations.probe_error
         || observations.commands.flowtable_exit_code != 0
         || observations.ubus.network_lan_exit_code != 0;
@@ -638,6 +669,7 @@ pub fn assess(
         bpf: BpfFacts {
             package: observations.bpf.package,
             object: observations.bpf.object,
+            ecm_object: observations.bpf.ecm_object,
             map_full_observed: observations.bpf.map_full_observed,
         },
         sqm: observations.uci.sqm,
@@ -773,7 +805,8 @@ pub fn assess(
         bpf_package: facts.bpf.package,
         bpf_object: facts.bpf.object,
         bpf_runtime_metrics: bpf_runtime,
-        conntrack_fallback: decision.rate == crate::policy::RateCollector::NssConntrackSync,
+        nss_ecm_bpf: ecm_bpf_supported,
+        conntrack_fallback: false,
         live_metrics,
         fw4: facts.fw4,
         nft: facts.nft,
@@ -1229,6 +1262,7 @@ fn build_evidence(
         bpf: BpfEvidence {
             package_present: facts.bpf.package,
             object_present: facts.bpf.object,
+            ecm_object_present: facts.bpf.ecm_object,
             runtime_attach_map_read_success: bpf_runtime,
             map_full_observed: facts.bpf.map_full_observed,
             object_loaded: runtime.bpf_object_loaded,
@@ -1247,8 +1281,6 @@ fn build_evidence(
             configured_connection_mode: config.conn_collector_mode.as_str(),
             effective_rate_collector: decision.rate.as_str(),
             effective_connection_collector: decision.connection.as_str(),
-            nss_direct_overlay: decision.nss_direct_overlay,
-            nss_sync_secondary: decision.nss_sync_secondary,
             rate_reason: decision.evidence.rate_reason,
             connection_reason: decision.evidence.connection_reason,
             mode: decision.mode.as_str(),

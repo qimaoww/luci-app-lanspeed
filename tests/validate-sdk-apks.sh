@@ -199,10 +199,24 @@ while IFS= read -r library; do
 done <<<"$needed"
 [[ $has_libc == true ]] || fail 'daemon DT_NEEDED does not include libc'
 
-READELF="$readelf_tool" LLVM_OBJDUMP="${LLVM_OBJDUMP:-llvm-objdump}" \
-	"$script_dir/validate-rust-ebpf-objects.sh" \
-	"$bpf_root/usr/lib/bpf/lanspeed-ebpf-kfunc.o" \
-	"$bpf_root/usr/lib/bpf/lanspeed-ebpf-fallback.o"
+ecm_object="$bpf_root/usr/lib/bpf/lanspeed-ebpf-ecm.o"
+case "$expected_arch" in
+	x86_64)
+		[[ ! -e $ecm_object ]] || fail 'x86 BPF APK must not contain an NSS ECM object'
+		READELF="$readelf_tool" LLVM_OBJDUMP="${LLVM_OBJDUMP:-llvm-objdump}" \
+			"$script_dir/validate-rust-ebpf-objects.sh" \
+			"$bpf_root/usr/lib/bpf/lanspeed-ebpf-kfunc.o" \
+			"$bpf_root/usr/lib/bpf/lanspeed-ebpf-fallback.o"
+		;;
+	aarch64*)
+		[[ -s $ecm_object ]] || fail 'aarch64 BPF APK must contain the isolated NSS ECM object'
+		READELF="$readelf_tool" LLVM_OBJDUMP="${LLVM_OBJDUMP:-llvm-objdump}" \
+			"$script_dir/validate-rust-ebpf-objects.sh" \
+			"$bpf_root/usr/lib/bpf/lanspeed-ebpf-kfunc.o" \
+			"$bpf_root/usr/lib/bpf/lanspeed-ebpf-fallback.o" \
+			"$ecm_object"
+		;;
+esac
 
 printf 'SDK APK validation: PASS: %s metadata, dependency, ELF, BTF, and atomic contracts\n' \
 	"$expected_arch"

@@ -179,6 +179,7 @@ struct CargoInvocation {
     working_directory: PathBuf,
     bootstrap: String,
     linker: String,
+    aya_arch: String,
 }
 
 fn parse_invocations(log: &str) -> Vec<CargoInvocation> {
@@ -189,6 +190,7 @@ fn parse_invocations(log: &str) -> Vec<CargoInvocation> {
             let mut working_directory = None;
             let mut bootstrap = None;
             let mut linker = None;
+            let mut aya_arch = None;
             for line in record.lines() {
                 if let Some(value) = line.strip_prefix("ARG=") {
                     args.push(value.to_owned());
@@ -198,6 +200,8 @@ fn parse_invocations(log: &str) -> Vec<CargoInvocation> {
                     bootstrap = Some(value.to_owned());
                 } else if let Some(value) = line.strip_prefix("LINKER=") {
                     linker = Some(value.to_owned());
+                } else if let Some(value) = line.strip_prefix("AYA_ARCH=") {
+                    aya_arch = Some(value.to_owned());
                 }
             }
             CargoInvocation {
@@ -205,6 +209,7 @@ fn parse_invocations(log: &str) -> Vec<CargoInvocation> {
                 working_directory: working_directory.expect("fake cargo must log PWD"),
                 bootstrap: bootstrap.expect("fake cargo must log RUSTC_BOOTSTRAP"),
                 linker: linker.expect("fake cargo must log linker"),
+                aya_arch: aya_arch.expect("fake cargo must log AYA_BPF_TARGET_ARCH"),
             }
         })
         .collect()
@@ -220,7 +225,7 @@ fn has_pair(args: &[String], first: &str, second: &str) -> bool {
 }
 
 #[test]
-fn ebpf_build_invokes_both_variants_and_copies_all_objects() {
+fn ebpf_build_separates_x86_tc_and_aarch64_nss_objects() {
     let _lock = environment_lock();
     let tools = TempDir::new("ebpf");
     let rustc = tools.path().join("rustc");
@@ -243,6 +248,7 @@ set -eu
     printf 'PWD=%s\n' "$PWD"
     printf 'BOOTSTRAP=%s\n' "${RUSTC_BOOTSTRAP-}"
     printf 'LINKER=%s\n' "${CARGO_TARGET_BPFEL_UNKNOWN_NONE_LINKER-}"
+    printf 'AYA_ARCH=%s\n' "${AYA_BPF_TARGET_ARCH-}"
     for arg
     do
         printf 'ARG=%s\n' "$arg"
@@ -266,13 +272,21 @@ case "$target_dir" in
     *) exit 0 ;;
 esac
 
-flavor=kfunc
+flavor=
+previous=
 for arg
 do
-    if [ "$arg" = '--no-default-features' ]; then
-        flavor=fallback
+    if [ "$previous" = '--features' ]; then
+        case "$arg" in
+            tc,conntrack-kfunc) flavor=kfunc ;;
+            tc) flavor=fallback ;;
+            ecm) flavor=ecm ;;
+            *) exit 90 ;;
+        esac
     fi
+    previous="$arg"
 done
+[ -n "$flavor" ] || exit 91
 
 output="$target_dir/bpfel-unknown-none/release/lanspeed-ebpf"
 mkdir -p "$(dirname "$output")"
@@ -287,6 +301,7 @@ exit 0
     variables.set("CARGO", &cargo);
     variables.set("CARGO_LOG", &cargo_log);
     variables.set("LANSPEED_BUILD_WORKSPACE", &workspace);
+    variables.set("LANSPEED_BPF_TARGET_ARCH", "aarch64");
     let target_root = workspace.join("matrix-target");
     variables.set("CARGO_TARGET_DIR", &target_root);
 
@@ -295,20 +310,35 @@ exit 0
     let invocations = parse_invocations(&fs::read_to_string(&cargo_log).unwrap());
     assert_eq!(
         invocations.len(),
-        2,
-        "expected kfunc and fallback Cargo calls"
+        3,
+        "aarch64 must build kfunc TC, fallback TC, and isolated ECM objects"
     );
     assert_eq!(invocations[0].working_directory, workspace);
     assert_eq!(invocations[1].working_directory, workspace);
+    assert_eq!(invocations[2].working_directory, workspace);
     assert_eq!(invocations[0].bootstrap, "1");
     assert_eq!(invocations[1].bootstrap, "1");
+    assert_eq!(invocations[2].bootstrap, "1");
     assert_eq!(invocations[0].linker, bpf_linker.to_string_lossy());
     assert_eq!(invocations[1].linker, bpf_linker.to_string_lossy());
+    assert_eq!(invocations[2].linker, bpf_linker.to_string_lossy());
+    assert!(invocations
+        .iter()
+        .all(|invocation| invocation.aya_arch == "aarch64"));
 
     assert!(has_pair(&invocations[0].args, "-Z", "build-std=core"));
     assert!(has_pair(&invocations[1].args, "-Z", "build-std=core"));
-    assert!(!has_arg(&invocations[0].args, "--no-default-features"));
-    assert!(has_arg(&invocations[1].args, "--no-default-features"));
+    assert!(has_pair(&invocations[2].args, "-Z", "build-std=core"));
+    assert!(invocations
+        .iter()
+        .all(|invocation| has_arg(&invocation.args, "--no-default-features")));
+    assert!(has_pair(
+        &invocations[0].args,
+        "--features",
+        "tc,conntrack-kfunc"
+    ));
+    assert!(has_pair(&invocations[1].args, "--features", "tc"));
+    assert!(has_pair(&invocations[2].args, "--features", "ecm"));
 
     let target_dirs = invocations
         .iter()
@@ -326,6 +356,7 @@ exit 0
         vec![
             target_root.join("lanspeed-ebpf-kfunc"),
             target_root.join("lanspeed-ebpf-fallback"),
+            target_root.join("lanspeed-ebpf-ecm-aarch64"),
         ]
     );
     assert_ne!(target_dirs[0], target_dirs[1]);
@@ -340,6 +371,7 @@ exit 0
         output_names,
         vec![
             OsString::from("lanspeed-ebpf"),
+            OsString::from("lanspeed-ebpf-ecm"),
             OsString::from("lanspeed-ebpf-fallback"),
             OsString::from("lanspeed-ebpf-kfunc"),
         ]
@@ -355,5 +387,26 @@ exit 0
     assert_eq!(
         fs::read_to_string(output_dir.join("lanspeed-ebpf")).unwrap(),
         "kfunc\n"
+    );
+    assert_eq!(
+        fs::read_to_string(output_dir.join("lanspeed-ebpf-ecm")).unwrap(),
+        "ecm\n"
+    );
+
+    variables.set("LANSPEED_BPF_TARGET_ARCH", "x86_64");
+    build(BuildTarget::Ebpf).unwrap();
+    let all_invocations = parse_invocations(&fs::read_to_string(&cargo_log).unwrap());
+    let x86_invocations = &all_invocations[3..];
+    assert_eq!(x86_invocations.len(), 2, "x86 must build TC objects only");
+    assert!(x86_invocations
+        .iter()
+        .all(|invocation| invocation.aya_arch == "x86_64"));
+    assert!(x86_invocations.iter().all(|invocation| {
+        has_pair(&invocation.args, "--features", "tc")
+            || has_pair(&invocation.args, "--features", "tc,conntrack-kfunc")
+    }));
+    assert!(
+        !output_dir.join("lanspeed-ebpf-ecm").exists(),
+        "x86 build must remove a stale NSS ECM object"
     );
 }

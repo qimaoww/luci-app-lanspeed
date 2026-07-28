@@ -119,6 +119,7 @@ bpf_linker_bin=$(resolve_executable "$bpf_linker_request") || \
 [[ $("$bpf_linker_bin" --version) == 'bpf-linker 0.10.3' ]] || \
 	fail "expected bpf-linker 0.10.3, found $("$bpf_linker_bin" --version)"
 export BPF_LINKER=$bpf_linker_bin
+export LANSPEED_BPF_TARGET_ARCH=aarch64
 
 run_cargo run \
 	--manifest-path "$manifest" \
@@ -127,14 +128,17 @@ run_cargo run \
 object_dir="$CARGO_TARGET_DIR/bpfel-unknown-none/release"
 kfunc_object="$object_dir/lanspeed-ebpf-kfunc"
 fallback_object="$object_dir/lanspeed-ebpf-fallback"
+ecm_object="$object_dir/lanspeed-ebpf-ecm"
 [[ -s $kfunc_object ]] || fail "missing kfunc eBPF object: $kfunc_object"
 [[ -s $fallback_object ]] || fail "missing fallback eBPF object: $fallback_object"
+[[ -s $ecm_object ]] || fail "missing aarch64 ECM eBPF object: $ecm_object"
 
 export LANSPEED_EBPF_OBJECT=$kfunc_object
 export LANSPEED_EBPF_FALLBACK_OBJECT=$fallback_object
+export LANSPEED_EBPF_ECM_OBJECT=$ecm_object
 
 if [[ $deep_ebpf == 1 ]]; then
-	"$script_dir/validate-rust-ebpf-objects.sh" "$kfunc_object" "$fallback_object"
+	"$script_dir/validate-rust-ebpf-objects.sh" "$kfunc_object" "$fallback_object" "$ecm_object"
 	run_cargo test \
 		--manifest-path "$manifest" \
 		-p lanspeedd --test ebpf_object_contract \

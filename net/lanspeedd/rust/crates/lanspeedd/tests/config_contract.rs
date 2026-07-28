@@ -107,25 +107,16 @@ fn defaults_and_limits_match_the_legacy_c_contract() {
 }
 
 #[test]
-fn rate_collector_accepts_every_legacy_string_and_canonicalizes_the_alias() {
+fn rate_collector_accepts_only_current_modes() {
     let cases = [
         ("auto", RateCollectorMode::Auto, "auto"),
         ("bpf", RateCollectorMode::Bpf, "bpf"),
         (
-            "nss_ecm_direct",
-            RateCollectorMode::NssEcmDirect,
-            "nss_ecm_direct",
+            "nss_ecm_node",
+            RateCollectorMode::NssEcmNode,
+            "nss_ecm_node",
         ),
-        (
-            "nss_conntrack_sync",
-            RateCollectorMode::NssConntrackSync,
-            "nss_conntrack_sync",
-        ),
-        (
-            "conntrack_ecm_sync",
-            RateCollectorMode::NssConntrackSync,
-            "nss_conntrack_sync",
-        ),
+        ("nss_ecm_bpf", RateCollectorMode::NssEcmBpf, "nss_ecm_bpf"),
     ];
 
     for (input, expected, canonical) in cases {
@@ -133,6 +124,8 @@ fn rate_collector_accepts_every_legacy_string_and_canonicalizes_the_alias() {
         assert_eq!(expected.as_str(), canonical, "{input}");
     }
     assert_eq!(RateCollectorMode::parse("conntrack_netlink"), None);
+    assert_eq!(RateCollectorMode::parse("nss_ecm_direct"), None);
+    assert_eq!(RateCollectorMode::parse("nss_conntrack_sync"), None);
     assert_eq!(RateCollectorMode::parse("BPF"), None);
 }
 

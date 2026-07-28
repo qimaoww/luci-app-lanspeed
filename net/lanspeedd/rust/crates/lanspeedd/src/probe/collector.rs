@@ -183,19 +183,20 @@ impl FileSource for SystemFileSource {
             .is_some())
     }
     fn probe_nss_state(&mut self) -> Result<NssStateProbe, Self::Error> {
-        match crate::collectors::nss::open_ecm_state() {
-            Ok(opened) => Ok(NssStateProbe {
+        let major_path = "/sys/kernel/debug/ecm/ecm_state/state_dev_major";
+        match std::fs::read_to_string(major_path) {
+            Ok(value) => Ok(NssStateProbe {
                 present: true,
-                readable: true,
+                readable: value.trim().parse::<u32>().is_ok(),
                 errno: 0,
-                state_major: opened.state_major,
-                source_path: Some(opened.source_path),
+                state_major: value.trim().parse::<u32>().unwrap_or(0),
+                source_path: Some("/dev/ecm_state".into()),
             }),
             Err(error) => Ok(NssStateProbe {
-                present: error.errno() != Some(libc::ENOENT),
+                present: error.kind() != io::ErrorKind::NotFound,
                 readable: false,
-                errno: error.errno().unwrap_or(0),
-                state_major: error.state_major,
+                errno: error.raw_os_error().unwrap_or(0),
+                state_major: 0,
                 source_path: None,
             }),
         }
@@ -294,7 +295,8 @@ pub fn system_collector() -> lanspeed_openwrt_sys::Result<SystemProbeCollector> 
         SystemFileSource,
         SystemUciSource::new()?,
         SystemUbusSource,
-    ))
+    )
+    .with_nss_probe(cfg!(target_arch = "aarch64")))
 }
 
 pub struct ProbeCollector<C, F, U, B> {
@@ -302,6 +304,7 @@ pub struct ProbeCollector<C, F, U, B> {
     files: F,
     uci: U,
     ubus: B,
+    nss_probe: bool,
 }
 impl<C, F, U, B> ProbeCollector<C, F, U, B>
 where
@@ -316,7 +319,12 @@ where
             files,
             uci,
             ubus,
+            nss_probe: true,
         }
+    }
+    pub fn with_nss_probe(mut self, enabled: bool) -> Self {
+        self.nss_probe = enabled;
+        self
     }
     pub fn into_parts(self) -> (C, F, U, B) {
         (self.commands, self.files, self.uci, self.ubus)
@@ -668,6 +676,13 @@ where
             &mut o.probe_error,
         );
         o.bpf.object = primary && fallback;
+        if self.nss_probe {
+            o.bpf.ecm_object = self.exists(
+                crate::collectors::bpf::ecm::ECM_BPF_OBJECT_PATH,
+                evidence,
+                &mut o.probe_error,
+            );
+        }
         for path in [
             "/etc/config/openclash",
             "/etc/config/dae",
@@ -686,6 +701,9 @@ where
                 let path = format!("/sys/class/net/{ifname}/bridge");
                 self.exists(&path, evidence, &mut o.probe_error)
             });
+        if !self.nss_probe {
+            return;
+        }
         o.nss.present = self.any_exists(
             &[
                 "/sys/module/qca_nss_drv",

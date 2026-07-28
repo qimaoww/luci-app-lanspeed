@@ -5,11 +5,14 @@ pub mod packet;
 
 pub const CLIENTS_MAP_NAME: &str = "lanspeed_clients";
 pub const SEEN_CONNS_MAP_NAME: &str = "lanspeed_seen_conns";
+pub const ECM_CLIENTS_MAP_NAME: &str = "lanspeed_ecm_clients";
+pub const ECM_LAYOUT_MAP_NAME: &str = "lanspeed_ecm_layout";
 
 pub const INGRESS_PROGRAM_NAME: &str = "lanspeed_ingress";
 pub const EGRESS_PROGRAM_NAME: &str = "lanspeed_egress";
 pub const INGRESS_EARLY_PROGRAM_NAME: &str = "lanspeed_ingress_early";
 pub const EGRESS_EARLY_PROGRAM_NAME: &str = "lanspeed_egress_early";
+pub const ECM_UPDATE_PROGRAM_NAME: &str = "lanspeed_ecm_update";
 
 pub const MAX_CLIENTS: u32 = 2048;
 pub const MAX_CONN_TUPLES: u32 = 8192;
@@ -46,6 +49,47 @@ pub struct LanspeedCounters {
     pub last_seen: u64,
     pub tcp_conns: u32,
     pub udp_conns: u32,
+}
+
+/// Runtime-discovered ECM structure layout consumed by the kprobe program.
+///
+/// The Qualcomm ECM module is built out-of-tree and its private structure
+/// offsets are not a stable ABI. Userspace resolves these three fields from
+/// `/sys/kernel/btf/ecm` before attaching the program. Keeping the offsets in
+/// a map avoids baking a firmware-specific layout into the eBPF object.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C)]
+pub struct EcmLayout {
+    pub connection_node_offset: u32,
+    pub connection_generation_offset: u32,
+    pub node_address_offset: u32,
+    pub pointer_size: u8,
+    pub from_index: u8,
+    pub to_index: u8,
+    pub ready: u8,
+}
+
+/// One ECM connection direction. The connection pointer is intentionally an
+/// internal generation discriminator and is never exposed by the daemon API.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C, align(8))]
+pub struct EcmKey {
+    pub connection: u64,
+    pub generation: u32,
+    pub direction: u8,
+    pub reserved: u8,
+    pub mac: [u8; 6],
+    /// Map keys include every byte. Keep the aligned tail deterministic instead
+    /// of leaving four implicit stack bytes to split one flow into many keys.
+    pub padding: [u8; 4],
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C, align(8))]
+pub struct EcmCounters {
+    pub bytes: u64,
+    pub packets: u64,
+    pub last_seen: u64,
 }
 
 /// Connection-deduplication key matching `struct lanspeed_conn_key`.
@@ -97,5 +141,13 @@ const _: [(); 16] = [(); core::mem::size_of::<LanspeedKey>()];
 const _: [(); 4] = [(); core::mem::align_of::<LanspeedKey>()];
 const _: [(); 32] = [(); core::mem::size_of::<LanspeedCounters>()];
 const _: [(); 8] = [(); core::mem::align_of::<LanspeedCounters>()];
+const _: [(); 16] = [(); core::mem::size_of::<EcmLayout>()];
+const _: [(); 4] = [(); core::mem::align_of::<EcmLayout>()];
+const _: [(); 24] = [(); core::mem::size_of::<EcmKey>()];
+const _: [(); 8] = [(); core::mem::align_of::<EcmKey>()];
+const _: [(); 14] = [(); core::mem::offset_of!(EcmKey, mac)];
+const _: [(); 20] = [(); core::mem::offset_of!(EcmKey, padding)];
+const _: [(); 24] = [(); core::mem::size_of::<EcmCounters>()];
+const _: [(); 8] = [(); core::mem::align_of::<EcmCounters>()];
 const _: [(); 28] = [(); core::mem::size_of::<LanspeedConnKey>()];
 const _: [(); 2] = [(); core::mem::align_of::<LanspeedConnKey>()];

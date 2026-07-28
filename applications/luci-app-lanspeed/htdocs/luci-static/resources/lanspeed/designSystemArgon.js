@@ -34,7 +34,7 @@ var ARGON_CSS = [
 		'--lanspeed-shadow-section:none;--lanspeed-shadow-raised:none;',
 		'--lanspeed-disabled-opacity:var(--disabled-opacity,.45);',
 		'--lanspeed-page-gap:1rem;--lanspeed-section-x:1.25rem;--lanspeed-section-y:1rem;',
-		'--lanspeed-control-height:2.5rem;--lanspeed-transition:120ms ease;',
+		'--lanspeed-control-height:2.5rem;--lanspeed-transition:0s;',
 		'--lanspeed-native-row-stripe:var(--lanspeed-surface-muted);color:var(--lanspeed-text)}',
 	'@supports (color:color-mix(in srgb,currentColor 5%,transparent)){' + ROOT + '{',
 		'--lanspeed-surface:color-mix(in srgb,currentColor 2%,transparent);',

@@ -223,16 +223,23 @@ function createController(viewState, options) {
 		timer = null;
 	}
 
-	function schedule() {
+	function schedule(anchorAt) {
 		stopTimer();
 		if (destroyed || pending || (viewState.prefs && viewState.prefs.paused)) return;
-		var interval = Math.max(fmt.MIN_REFRESH_MS,
-			Number(viewState.prefs && viewState.prefs.refreshMs) || fmt.MIN_REFRESH_MS);
+		var interval = typeof fmt.effectiveRefreshMs === 'function'
+			? fmt.effectiveRefreshMs(viewState.status, viewState.prefs)
+			: Math.max(fmt.MIN_REFRESH_MS,
+				Number(viewState.prefs && viewState.prefs.refreshMs) || fmt.MIN_REFRESH_MS);
+		var now = clock();
+		var anchor = Number(anchorAt);
+		if (!isFinite(anchor) || anchor < 0 || anchor > now)
+			anchor = now;
+		var delay = Math.max(0, interval - Math.max(0, now - anchor));
 		if (typeof timerApi.setTimeout !== 'function') return;
 		timer = timerApi.setTimeout(function() {
 			timer = null;
 			reload(false);
-		}, interval);
+		}, delay);
 	}
 
 	function apply(next) {
@@ -264,6 +271,7 @@ function createController(viewState, options) {
 		}
 
 		stopTimer();
+		var startedAt = clock();
 		var sequence = ++requestSeq;
 		viewState.loading = true;
 		viewState.manualBusy = manual === true;
@@ -285,7 +293,7 @@ function createController(viewState, options) {
 				viewState.manualBusy = false;
 				pending = null;
 				refresh();
-				schedule();
+				schedule(startedAt);
 			}
 			return next;
 		});

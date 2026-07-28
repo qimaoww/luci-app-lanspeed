@@ -139,8 +139,8 @@ impl ResponseSnapshot {
                 udp_conns_total: None, udp_dns_conns_total: None, udp_other_conns_total: None,
                 conntrack_entries_seen: None, conntrack_entries_matched: None,
                 conntrack_parse_errors: None, conn_source: None,
-                nss_ecm_direct_flows_seen: None, nss_ecm_direct_flows_matched: None,
-                nss_ecm_direct_parse_errors: None, conn_collector_mode: None,
+                nss_ecm_nodes_seen: None, nss_ecm_nodes_matched: None,
+                nss_ecm_node_parse_errors: None, conn_collector_mode: None,
                 conn_semantics: None,
             },
             overview: OverviewResponse {
@@ -561,19 +561,19 @@ fn diagnostic_interfaces(response: &InterfacesResponse) -> DiagnosticInterfaces 
 
 fn diagnostic_connection(response: &ClientsResponse) -> DiagnosticConnection {
     let source = response.conn_source.as_deref().and_then(safe_code);
-    let direct = source.as_deref() == Some("nss_ecm_direct");
+    let direct = source.as_deref() == Some("nss_ecm_node");
     let entries_seen = if direct {
-        response.nss_ecm_direct_flows_seen
+        response.nss_ecm_nodes_seen
     } else {
         response.conntrack_entries_seen
     };
     let entries_matched = if direct {
-        response.nss_ecm_direct_flows_matched
+        response.nss_ecm_nodes_matched
     } else {
         response.conntrack_entries_matched
     };
     let parse_errors = if direct {
-        response.nss_ecm_direct_parse_errors
+        response.nss_ecm_node_parse_errors
     } else {
         response.conntrack_parse_errors
     };
@@ -725,8 +725,8 @@ fn diagnostic_subsystems(snapshot: &ResponseSnapshot) -> Vec<DiagnosticSubsystem
         DiagnosticHealthState::Degraded => (
             DiagnosticHealthState::Degraded,
             Some(
-                if connection.source.as_deref() == Some("nss_ecm_direct") {
-                    "nss_ecm_direct_parse_errors"
+                if connection.source.as_deref() == Some("nss_ecm_node") {
+                    "nss_ecm_node_parse_errors"
                 } else {
                     "conntrack_parse_errors"
                 }
@@ -1139,12 +1139,12 @@ mod diagnostics_tests {
     }
 
     #[test]
-    fn nss_direct_connection_health_uses_direct_counters_and_reason() {
+    fn nss_node_connection_health_uses_node_counters_and_reason() {
         let mut snapshot = ResponseSnapshot::unsupported("test");
-        snapshot.clients.conn_source = Some("nss_ecm_direct".into());
-        snapshot.clients.nss_ecm_direct_flows_seen = Some(12);
-        snapshot.clients.nss_ecm_direct_flows_matched = Some(9);
-        snapshot.clients.nss_ecm_direct_parse_errors = Some(2);
+        snapshot.clients.conn_source = Some("nss_ecm_node".into());
+        snapshot.clients.nss_ecm_nodes_seen = Some(12);
+        snapshot.clients.nss_ecm_nodes_matched = Some(9);
+        snapshot.clients.nss_ecm_node_parse_errors = Some(2);
 
         let diagnostics = snapshot.diagnostics_at(0);
         assert_eq!(
@@ -1153,7 +1153,7 @@ mod diagnostics_tests {
         );
         assert_eq!(
             diagnostics.connection.source.as_deref(),
-            Some("nss_ecm_direct")
+            Some("nss_ecm_node")
         );
         assert_eq!(diagnostics.connection.entries_seen, Some(12));
         assert_eq!(diagnostics.connection.entries_matched, Some(9));
@@ -1164,18 +1164,15 @@ mod diagnostics_tests {
             .find(|subsystem| subsystem.id == "conntrack")
             .expect("missing connection subsystem");
         assert_eq!(subsystem.state, DiagnosticHealthState::Degraded);
-        assert_eq!(
-            subsystem.code.as_deref(),
-            Some("nss_ecm_direct_parse_errors")
-        );
+        assert_eq!(subsystem.code.as_deref(), Some("nss_ecm_node_parse_errors"));
     }
 
     #[test]
     fn direct_counters_without_source_metadata_remain_unavailable() {
         let mut response = ClientsResponse::empty(Evidence::default());
-        response.nss_ecm_direct_flows_seen = Some(4);
-        response.nss_ecm_direct_flows_matched = Some(3);
-        response.nss_ecm_direct_parse_errors = Some(0);
+        response.nss_ecm_nodes_seen = Some(4);
+        response.nss_ecm_nodes_matched = Some(3);
+        response.nss_ecm_node_parse_errors = Some(0);
 
         let connection = diagnostic_connection(&response);
         assert_eq!(connection.state, DiagnosticHealthState::Unavailable);

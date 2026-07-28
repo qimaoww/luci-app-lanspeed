@@ -287,9 +287,9 @@ fn production_rust_has_no_pidof_probe_path_and_publishes_dae_and_nss_alias_evide
         "\"ppe_offload_active\"",
         "\"direct_state_present\"",
         "\"direct_state_readable\"",
-        "\"direct_supported\"",
-        "\"direct_enabled\"",
-        "\"direct_source\"",
+        "\"node_supported\"",
+        "\"node_enabled\"",
+        "\"node_source\"",
         "\"fallback_reason\"",
         "\"direct_state_errno\"",
         "\"direct_state_major\"",
@@ -319,7 +319,7 @@ fn production_rust_has_no_pidof_probe_path_and_publishes_dae_and_nss_alias_evide
         );
     }
     assert!(production.contains("production_evidence::nss_details("));
-    assert!(nss_evidence.contains("direct_fallback_reason("));
+    assert!(nss_evidence.contains("single_ecm_node_owner"));
 }
 
 #[test]

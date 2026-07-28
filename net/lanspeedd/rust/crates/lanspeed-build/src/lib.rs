@@ -17,6 +17,39 @@ pub const MAXIMUM_BPF_LINKER_EXCLUSIVE: &str = "0.11.0";
 pub const BPF_LINKER_ARCHIVE_URL: &str = "https://github.com/aya-rs/bpf-linker/releases/download/v0.10.3/bpf-linker-x86_64-unknown-linux-musl.tar.gz";
 pub const BPF_LINKER_ARCHIVE_SHA256: &str =
     "0fa4645d2dfbb5cafe6231b0aa9fad4f1430bd0871e3bd7319e82d827bf6262c";
+pub const BPF_TARGET_ARCH_ENV: &str = "LANSPEED_BPF_TARGET_ARCH";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BpfTargetArch {
+    Aarch64,
+    X86_64,
+}
+
+impl BpfTargetArch {
+    pub fn parse(value: &OsStr) -> Result<Self, BuildError> {
+        let value = value
+            .to_str()
+            .ok_or_else(|| BuildError::InvalidBpfTargetArch(value.to_os_string()))?;
+        match value {
+            "aarch64" | "arm64" => Ok(Self::Aarch64),
+            "x86_64" | "amd64" => Ok(Self::X86_64),
+            _ if value.starts_with("aarch64-") => Ok(Self::Aarch64),
+            _ if value.starts_with("x86_64-") => Ok(Self::X86_64),
+            _ => Err(BuildError::InvalidBpfTargetArch(value.into())),
+        }
+    }
+
+    const fn aya_name(self) -> &'static str {
+        match self {
+            Self::Aarch64 => "aarch64",
+            Self::X86_64 => "x86_64",
+        }
+    }
+
+    const fn builds_ecm(self) -> bool {
+        matches!(self, Self::Aarch64)
+    }
+}
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct ToolVersions {
@@ -78,13 +111,46 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
         }
         BuildTarget::Ebpf => {
             ToolVersions::detect()?.validate()?;
-            let kfunc = build_ebpf_variant(&cargo, &workspace, &target_dir, "kfunc", false)?;
-            let fallback = build_ebpf_variant(&cargo, &workspace, &target_dir, "fallback", true)?;
+            let target_arch = BpfTargetArch::parse(
+                &env::var_os(BPF_TARGET_ARCH_ENV).ok_or(BuildError::MissingBpfTargetArch)?,
+            )?;
+            let kfunc = build_ebpf_variant(
+                &cargo,
+                &workspace,
+                &target_dir,
+                "kfunc",
+                "tc,conntrack-kfunc",
+                target_arch,
+            )?;
+            let fallback = build_ebpf_variant(
+                &cargo,
+                &workspace,
+                &target_dir,
+                "fallback",
+                "tc",
+                target_arch,
+            )?;
             let output_dir = target_dir.join("bpfel-unknown-none/release");
             fs::create_dir_all(&output_dir)?;
             fs::copy(&kfunc, output_dir.join("lanspeed-ebpf-kfunc"))?;
             fs::copy(&fallback, output_dir.join("lanspeed-ebpf-fallback"))?;
-            fs::copy(kfunc, output_dir.join("lanspeed-ebpf"))?;
+            fs::copy(&kfunc, output_dir.join("lanspeed-ebpf"))?;
+            let ecm_output = output_dir.join("lanspeed-ebpf-ecm");
+            if target_arch.builds_ecm() {
+                let ecm = build_ebpf_variant(
+                    &cargo,
+                    &workspace,
+                    &target_dir,
+                    "ecm-aarch64",
+                    "ecm",
+                    target_arch,
+                )?;
+                fs::copy(ecm, ecm_output)?;
+            } else if let Err(error) = fs::remove_file(ecm_output) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    return Err(error.into());
+                }
+            }
             Ok(())
         }
     }
@@ -95,7 +161,8 @@ fn build_ebpf_variant(
     workspace: &PathBuf,
     target_root: &PathBuf,
     variant: &str,
-    fallback: bool,
+    features: &str,
+    target_arch: BpfTargetArch,
 ) -> Result<PathBuf, BuildError> {
     let target_dir = target_root.join(format!("lanspeed-ebpf-{variant}"));
     let mut command = Command::new(cargo);
@@ -108,14 +175,15 @@ fn build_ebpf_variant(
         "bpfel-unknown-none",
         "-Z",
         "build-std=core",
+        "--no-default-features",
+        "--features",
+        features,
         "--locked",
         "--offline",
     ]);
     command.arg("--target-dir").arg(&target_dir);
-    if fallback {
-        command.arg("--no-default-features");
-    }
     command.env("RUSTC_BOOTSTRAP", "1");
+    command.env("AYA_BPF_TARGET_ARCH", target_arch.aya_name());
     if let Some(linker) = env::var_os("BPF_LINKER") {
         command.env("CARGO_TARGET_BPFEL_UNKNOWN_NONE_LINKER", linker);
     }
@@ -250,6 +318,10 @@ pub enum BuildError {
     Usage,
     #[error("LANSPEED_USERSPACE_TARGET is required for userspace builds")]
     MissingUserspaceTarget,
+    #[error("LANSPEED_BPF_TARGET_ARCH is required for eBPF builds")]
+    MissingBpfTargetArch,
+    #[error("unsupported eBPF target architecture {0:?}; expected aarch64 or x86_64")]
+    InvalidBpfTargetArch(OsString),
     #[error("{name} must be at least {minimum}, found {actual}")]
     VersionTooOld {
         name: &'static str,
@@ -369,5 +441,22 @@ mod tests {
             BuildTarget::parse(OsStr::new("build-all")),
             Err(BuildError::Usage)
         ));
+    }
+
+    #[test]
+    fn separates_x86_tc_from_aarch64_nss_ecm_objects() {
+        for value in ["x86_64", "amd64", "x86_64-openwrt-linux-musl"] {
+            let arch = BpfTargetArch::parse(OsStr::new(value)).unwrap();
+            assert_eq!(arch, BpfTargetArch::X86_64);
+            assert!(!arch.builds_ecm());
+            assert_eq!(arch.aya_name(), "x86_64");
+        }
+        for value in ["aarch64", "arm64", "aarch64-openwrt-linux-musl"] {
+            let arch = BpfTargetArch::parse(OsStr::new(value)).unwrap();
+            assert_eq!(arch, BpfTargetArch::Aarch64);
+            assert!(arch.builds_ecm());
+            assert_eq!(arch.aya_name(), "aarch64");
+        }
+        assert!(BpfTargetArch::parse(OsStr::new("mips64")).is_err());
     }
 }

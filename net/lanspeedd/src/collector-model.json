@@ -1,305 +1,228 @@
 {
-  "source": "lanspeedd_aya_tc_collector",
-  "version": 1,
-  "bpf_source": "rust/crates/lanspeed-ebpf/src/main.rs",
-  "runtime_objects": [
-    "/usr/lib/bpf/lanspeed-ebpf-kfunc",
-    "/usr/lib/bpf/lanspeed-ebpf-fallback"
-  ],
-  "device_requires_llvm": false,
-  "attach_model": {
-    "cpu_visible_lan_edges_only": true,
-    "allowed": [
-      "lan_bridge_members",
-      "vlan_subinterfaces",
-      "wlan_interfaces"
-    ],
-    "excluded": [
-      "wan",
-      "tun",
-      "ppp",
-      "wg",
-      "dae0",
-      "dae0peer"
-    ],
-    "tc_coexistence": "create_or_reuse_clsact_and_append_owned_filter_only",
-    "delete_existing": false,
-    "reorder_existing": false,
-    "self_heal_reorders_existing": false,
-    "owner": "lanspeed",
-    "pref": 49152,
-    "handle": "0x1eed"
-  },
-  "map_model": {
-    "key": [
-      "ifindex",
-      "vlan_or_zone",
-      "mac",
-      "direction"
-    ],
-    "default_max_clients": 2048,
-    "full_warning": "map_full",
-    "client_limit_warning": "client_limit_exceeded",
-    "map_read_failure_warning": "map_read_failed",
-    "counters": [
-      "bytes",
-      "packets",
-      "last_seen"
-    ],
-    "direction": {
-      "tx_bps": "client-originated traffic from the client point of view",
-      "rx_bps": "traffic to client from the client point of view"
+  "source": "lanspeedd_collectors",
+  "version": 5,
+  "platform_matrix": {
+    "x86_64": {
+      "schemes": ["bpf"],
+      "objects": [
+        "/usr/lib/bpf/lanspeed-ebpf-kfunc",
+        "/usr/lib/bpf/lanspeed-ebpf-fallback"
+      ],
+      "nss_modes_exposed": false
+    },
+    "aarch64_nss": {
+      "schemes": ["bpf", "nss_ecm_node", "nss_ecm_bpf"],
+      "objects": [
+        "/usr/lib/bpf/lanspeed-ebpf-kfunc",
+        "/usr/lib/bpf/lanspeed-ebpf-fallback",
+        "/usr/lib/bpf/lanspeed-ebpf-ecm"
+      ],
+      "nss_modes_exposed": true,
+      "ecm_bpf_target_arch": "aarch64"
     }
   },
-  "rate_model": {
-    "default_refresh_interval_ms": 1000,
-    "minimum_refresh_interval_ms": 500,
-    "window_count": 3,
-    "stale_client_ms": 5000,
-    "minimum_rate_baseline_retention_ms": 60000,
-    "stale_baseline_policy": "retain_hidden_baseline_for_accurate_first_sample_then_evict_before_active_clients",
-    "delta_formula": "max(0, current_bytes - previous_bytes) * 8 * 1000 / delta_ms",
-    "negative_rate_policy": "clamp_to_zero_per_client",
-    "counter_wrap_policy": "counter_anomaly_and_zero_delta",
-    "time_rollback_policy": "time_rollback_and_zero_delta",
-    "anomaly_warnings": [
-      "counter_anomaly",
-      "time_rollback"
+  "ownership": {
+    "configured_schemes": ["bpf", "nss_ecm_node", "nss_ecm_bpf"],
+    "auto_preference": ["nss_ecm_bpf", "nss_ecm_node", "bpf"],
+    "pure_bpf_rate_owner": "tc_lan_edge_map",
+    "ecm_rate_owner": "ecm_node_adv_stats",
+    "ecm_bpf_rate_owner": "ecm_totals_update_kprobe_map",
+    "connection_metadata_owner": "conntrack_netlink_or_procfs",
+    "interface_clock_owner": "non_overlapping_kernel_lan_netdev_counters",
+    "mixed_rate_owners_forbidden": true,
+    "manual_fallback_forbidden": true,
+    "rate_and_coverage_windows": "independent_with_shared_ecm_numerator",
+    "coverage_can_block_rate": false
+  },
+  "bpf_model": {
+    "source": "rust/crates/lanspeed-ebpf/src/main.rs",
+    "runtime_objects": [
+      "/usr/lib/bpf/lanspeed-ebpf-kfunc",
+      "/usr/lib/bpf/lanspeed-ebpf-fallback"
     ],
-    "refresh_interval_warning": "refresh_interval_below_minimum",
-    "default_active_client_window_ms": 10000,
-    "minimum_active_client_window_ms": 1000,
-    "default_active_client_min_bps": 1,
-    "default_overview_window_samples": 240
-  },
-  "coverage_model": {
-    "window_samples": 32,
-    "minimum_window_ms": 3000,
-    "minimum_stable_denominator_bytes": 524288,
-    "numerator_source": "monotonic_integral_of_per_client_rates",
-    "membership_change_policy": "never_sum_current_absolute_client_counters",
-    "idle_policy": "only_when_interface_delta_bytes_equal_zero",
-    "low_traffic_quality": "low_traffic",
-    "unsupported_gap_policy": "reset_window_and_pause_client_rate_integrator"
-  },
-  "lifecycle_model": {
-    "procd": {
-      "respawn": {
-        "threshold_seconds": 3600,
-        "timeout_seconds": 5,
-        "retry": 5
-      },
-      "stdout": true,
-      "stderr": true,
-      "reload_triggers": [
-        "lanspeed",
-        "network"
-      ]
-    },
-    "hotplug": {
-      "path": "/etc/hotplug.d/iface/90-lanspeedd",
-      "actions": [
-        "ifup",
-        "ifupdate"
-      ],
-      "operation": "/etc/init.d/lanspeedd reload"
-    },
-    "cleanup_model": {
+    "map_key": ["ifindex", "vlan_or_zone", "mac", "direction"],
+    "counters": ["bytes", "packets", "last_seen"],
+    "default_max_clients": 2048,
+    "attach": {
+      "owner": "lanspeed",
+      "pref": 49152,
+      "handle": "0x1eed",
       "delete_clsact": false,
       "delete_foreign_filters": false,
-      "owned_filter_identity": {
-        "owner": "lanspeed",
-        "pref": 49152,
-        "handle": "0x1eed",
-        "objects": [
-          "/usr/lib/bpf/lanspeed-ebpf-kfunc",
-          "/usr/lib/bpf/lanspeed-ebpf-fallback"
-        ]
-      }
-    }
-  },
-  "performance_guardrails": {
-    "default_max_clients": 2048,
-    "minimum_refresh_interval_ms": 500,
-    "stale_client_ms": 5000,
-    "warning_high_client_count": 1536,
-    "map_full_warning": "map_full",
-    "map_read_failure_warning": "map_read_failed",
-    "attach_failure_warning": "unsafe_attach",
-    "attach_failure_behavior": "degrade_or_unsupported_without_deleting_foreign_tc_filters",
-    "low_end_device": {
-      "mode": "auto",
-      "recommended_refresh_interval_ms": 2000,
-      "avoid_high_frequency_sampling": true
+      "reorder_foreign_filters": false
     },
-    "active_client_window_ms": 10000,
-    "active_client_min_bps": 1,
-    "overview_window_samples": 240
+    "nss_policy": "manual_pure_bpf_allowed_with_explicit_slow_path_only_warning"
   },
-  "dedupe_model": {
-    "lan_to_lan": "merge matching frame observations before aggregate totals",
-    "visibility_unknown_mode": "Degraded",
-    "visibility_unknown_warning": "lan_to_lan_visibility_unknown",
-    "visibility_limited_mode": "Degraded",
-    "visibility_limited_warning": "lan_to_lan_visibility_limited",
-    "cpu_visible_only": true,
-    "complete_coverage_claimed_for_hardware_switch_paths": false,
-    "duplicate_policy": "do_not_count_one_lan_to_lan_frame_twice"
-  },
-  "router_local_model": {
-    "client_perspective": true,
-    "client_to_router": "tx_bps",
-    "router_to_client": "rx_bps",
-    "router_originated_bucket": "router_self",
-    "router_originated_alias": "local_router",
-    "client_attribution": "never_attribute_router_originated_traffic_to_lan_client"
-  },
-  "topology_identity_model": {
-    "primary_key": "mac+zone",
-    "preserve_mac_zone_identity": true,
-    "guest_vlan": "separate zone identity",
-    "multi_bridge": "bridge zone participates in identity key",
-    "wifi_wds_ap_isolation": "wireless attachment metadata must not collapse MAC+zone identity",
-    "duplicate_mac_warning": "duplicate_mac_across_vlans"
-  },
-  "uplink_encapsulation_model": {
-    "wan_side_only": [
-      "pppoe",
-      "wg",
-      "tun"
-    ],
-    "identity_policy": "PPPoE/WG/TUN evidence never changes LAN-edge client MAC ownership"
-  },
-  "side_router_model": {
-    "same_subnet_direct_mode": "Degraded",
-    "same_subnet_direct_warning": "asymmetric_path_possible",
-    "coverage_complete": false,
-    "complete_coverage_claimed": false
-  },
-  "conntrack_fallback_model": {
-    "source": "lanspeedd_ctnetlink_conntrack_acct",
-    "fallback_source": "lanspeedd_procfs_conntrack_acct",
-    "collector_mode": "conntrack",
-    "nss_sync_collector_mode": "conntrack_ecm_sync",
-    "primary_sources": [
-      "nss_conntrack_sync"
-    ],
-    "non_nss_live_rate_policy": "bpf_only",
-    "nss_auto_live_rate_policy": "nss_sync_primary_when_offload_active_bpf_slow_path_observer",
-    "non_nss_conntrack_policy": "connection_counts_and_diagnostics_only",
-    "mode": "Degraded",
-    "active_only_when": [
-      "rate_collector_mode=nss_conntrack_sync",
-      "forced_nss_direct_falls_back_to_sync",
-      "auto_nss_ecm_or_ppe_active_and_sync_available",
-      "enable_conntrack_fallback=1",
-      "nf_conntrack_acct=1"
-    ],
-    "inactive_when": [
-      "non_nss_device",
-      "nss_ecm_and_ppe_inactive",
-      "bpf_full_unavailable_without_nss_ecm_sync",
-      "enable_conntrack_fallback=0",
-      "conntrack_acct_disabled"
-    ],
-    "coverage": "routed_nat_only",
-    "coverage_warning": "conntrack_routed_nat_only",
-    "nss_sync_coverage": "nss_ecm_sync",
-    "nss_sync_coverage_warning": "nss_ecm_sync_cadence",
-    "counter_delta_scope": "per_conntrack_flow_before_client_aggregation",
-    "counter_generation_key": "ctnetlink_cta_id_with_zone_tuple_fallback",
-    "ctnetlink_generation_baseline_retention_ms": 60000,
-    "procfs_tuple_baseline_retention_ms": 2000,
-    "maximum_retained_flow_baselines": 32768,
-    "flow_id_coverage_evidence": "status_health_clients_evidence.conntrack_generation.flow_id_coverage_pct",
-    "confidence": {
-      "maximum": "medium",
-      "degrade_to_low_when": [
-        "openclash_fake_ip_or_tun_detected",
-        "dae_or_daed_detected",
-        "sqm_qosify_or_ifb_detected",
-        "hardware_flow_offload_enabled",
-        "software_flow_offload_enabled",
-        "flowtable_counter_missing",
-        "nlbwmon_counter_conflict",
-        "probe_error"
-      ]
-    },
-    "counter_sources": [
-      "ctnetlink_conntrack_acct_orig_reply_bytes",
-      "procfs_conntrack_acct_orig_reply_bytes"
-    ],
-    "forbidden_sources": [
-      "firewall_forward_chain_counters",
-      "iptables_forward_chain_counters",
-      "nft_forward_chain_counters",
-      "nlbwmon_counters"
-    ],
-    "warnings": [
-      "conntrack_routed_nat_only",
-      "nss_ecm_sync_cadence",
-      "nss_prefers_conntrack_sync",
-      "nss_bpf_slow_path_only",
-      "conntrack_acct_disabled",
-      "flowtable_counter_missing",
-      "nlbwmon_counter_conflict"
-    ],
-    "identity_model": {
-      "primary_key": "mac+zone",
-      "ip_role": "LAN client IP maps to an existing MAC/zone identity through ARP or IPv6 neighbor and is never the primary identity"
-    },
-    "direction": {
-      "tx_bps": "NSS ECM/PPE sync only: bytes sent by the LAN endpoint from the client point of view",
-      "rx_bps": "NSS ECM/PPE sync only: bytes received by the LAN endpoint from the client point of view"
-    },
-    "nlbwmon_policy": "detect_conflict_without_reading_or_resetting_nlbwmon_counters",
-    "procfs_paths": [
-      "/proc/net/nf_conntrack",
-      "/proc/net/ip_conntrack",
-      "/proc/net/arp",
-      "netlink:rtnetlink_neigh"
-    ],
-    "netlink_path": "netlink:ctnetlink",
-    "neighbor_source": "netlink:rtnetlink_neigh",
-    "snapshot_policy": {
-      "first_sample_warning": "conntrack_snapshot_pending",
-      "previous_snapshot": "in_daemon_memory",
-      "delta_formula": "max(0, current_bytes - previous_bytes) * 8 * 1000 / delta_ms"
-    }
-  },
-  "nss_direct_model": {
-    "source": "lanspeedd_nss_ecm_direct_state",
-    "collector_mode": "nss_ecm_direct",
-    "primary_source": "nss_ecm_direct",
-    "read_only": true,
-    "fallback_to": "conntrack_ecm_sync",
+  "ecm_node_model": {
+    "collector_mode": "nss_ecm_node",
+    "source": "ecm_state_node_adv_stats",
+    "output_mask": 8,
     "state_sources": [
       "/dev/ecm_state",
-      "/sys/kernel/debug/ecm/ecm_state/state_dev_major",
-      "/dev/lanspeed-ecm-state",
-      "/proc/net/arp",
-      "netlink:rtnetlink_neigh"
+      "/sys/kernel/debug/ecm/ecm_state/state_dev_major"
     ],
-    "counter_source": "ecm_state_adv_stats_from_to_data_total",
-    "forbidden_writes": [
-      "defunct_all",
-      "flush",
-      "decelerate"
-    ],
-    "identity_model": {
-      "primary_key": "mac+zone",
-      "ip_role": "sip_address/dip_address and sip_address_nat/dip_address_nat map through ARP/neighbor",
-      "mac_role": "snode_address or snode_address_nat preferred for source-side LAN, dnode_address or dnode_address_nat preferred for destination-side LAN; MAC can identify LAN when ECM IP endpoints are post-NAT"
+    "identity": "unique_node_mac_to_mac_zone_identity",
+    "generation": "nodes.node.time_added",
+    "raw_counters": {
+      "tx_bytes": "nodes.node.adv_stats.from_data_total",
+      "rx_bytes": "nodes.node.adv_stats.to_data_total",
+      "tx_packets": "nodes.node.adv_stats.from_packet_total",
+      "rx_packets": "nodes.node.adv_stats.to_packet_total"
     },
+    "counter_merge_policy": "single_ecm_node_owner",
+    "conntrack_rate_overlay": false,
+    "bpf_rate_overlay": false,
+    "sync_barrier": {
+      "request_counter_sources": [
+        "/sys/kernel/debug/ecm/ecm_nss_ipv4/stats_request_counter",
+        "/sys/kernel/debug/ecm/ecm_nss_ipv6/stats_request_counter"
+      ],
+      "quiet_ms": 20,
+      "poll_ms": 5,
+      "snapshot_retries": 2,
+      "continuous_sync_boundary": "return_on_request_counter_edge",
+      "pre_and_post_counter_match_required": true
+    },
+    "read_only": true,
+    "forbidden_writes": ["defunct_all", "flush", "decelerate"]
+  },
+  "ecm_bpf_model": {
+    "collector_mode": "nss_ecm_bpf",
+    "object": "/usr/lib/bpf/lanspeed-ebpf-ecm",
+    "object_role": "isolated_ecm_kprobe_only",
+    "target_arch": "aarch64",
+    "program": "lanspeed_ecm_update",
+    "attach": "kprobe:ecm_db_connection_data_totals_update",
+    "coverage": ["ecm_slow_path_packet_updates", "nss_ipv4_sync_deltas", "nss_ipv6_sync_deltas"],
+    "runtime_layout": {
+      "base_btf": "/sys/kernel/btf/vmlinux",
+      "module_btf": "/sys/kernel/btf/ecm",
+      "fields": [
+        "ecm_db_connection_instance.node",
+        "ecm_db_connection_instance.time_added",
+        "ecm_db_node_instance.address"
+      ],
+      "time_added_type": "uint32_t",
+      "pointer_size": 8
+    },
+    "map": "lanspeed_ecm_clients",
+    "map_key": ["connection_pointer", "time_added", "direction", "client_mac"],
+    "map_value": ["bytes", "packets", "last_seen_ns"],
+    "identity": "unique_node_mac_to_mac_zone_identity",
     "direction": {
-      "tx_bps": "ECM adv_stats bytes sent by the LAN endpoint from the client point of view",
-      "rx_bps": "ECM adv_stats bytes received by the LAN endpoint from the client point of view"
+      "is_from_true": "from_node_tx_and_to_node_rx",
+      "is_from_false": "to_node_tx_and_from_node_rx"
     },
-    "snapshot_policy": {
-      "first_sample_warning": "nss_ecm_direct_snapshot_pending",
-      "previous_snapshot": "in_daemon_memory",
-      "delta_formula": "max(0, current_bytes - previous_bytes) * 8 * 1000 / delta_ms",
-      "overlay_policy": "never overlay direct client totals on conntrack sync; direct is fallback only"
-    }
+    "counter_merge_policy": "single_ecm_update_owner",
+    "tc_bpf_rate_overlay": false,
+    "ecm_node_rate_overlay": false,
+    "conntrack_rate_overlay": false,
+    "deduplication": "each_ecm_update_increment_is_consumed_once_by_one_kprobe_map",
+    "read_only": true
+  },
+  "lan_clock_model": {
+    "source": "/sys/class/net/<if>/statistics",
+    "selection": "configured_lan_boundaries_minus_members_whose_master_is_also_selected",
+    "aggregation": "sum_only_disjoint_independent_boundaries",
+    "raw_counters": ["rx_bytes", "tx_bytes", "rx_packets", "tx_packets"],
+    "bridge_and_member_double_count_forbidden": true,
+    "counter_overflow": "unavailable"
+  },
+  "nss_window_model": {
+    "rate_clock": "adjacent_ecm_node_polls",
+    "rate_filter": "per_node_generation_median_last_3_windows",
+    "coverage_clock": "lan_packet_clock",
+    "cold_start": "warmup_zero",
+    "first_ecm_delta": "publish_immediately",
+    "inter_batch_publication": "hold_last_rate_for_one_ecm_cycle_then_zero",
+    "rate_hold_ms": 1500,
+    "maximum_rate_window_ms": 5000,
+    "idle_gap_rate_window": "adjacent_daemon_samples",
+    "node_warmup": "first_snapshot_baseline_next_delta_publish",
+    "coverage_blocks_rate": false,
+    "coverage_accumulation": "independent_until_owned_or_timeout",
+    "high_traffic_threshold_bytes": 131072,
+    "high_traffic_min_ownership_percent": 90,
+    "high_traffic_ownership_basis": "bidirectional_aggregate_overlap",
+    "high_traffic_overlap_counters": ["fcs_bytes", "packets"],
+    "high_traffic_client_clock_percent": 90,
+    "high_traffic_lan_ownership_percent": 90,
+    "coverage_timeout_ms": 5000,
+    "coverage_timeout_origin": "first_lan_mismatch",
+    "coverage_timeout_reset_on_node_progress": false,
+    "low_traffic_coverage_timeout": "rebaseline_with_raw_evidence",
+    "counter_generation_change": "generation_scoped_baseline",
+    "counter_reset": "rebaseline_and_publish_zero",
+    "client_ahead_of_lan": "rate_published_coverage_pending_or_counter_skew",
+    "minor_direction_ahead": "preserve_raw_and_return_null_direction_percentage",
+    "direction_map": {
+      "client_tx": "lan_rx",
+      "client_rx": "lan_tx"
+    },
+    "fcs": "raw_bytes_plus_real_packets_times_4",
+    "packet_estimation_forbidden": true,
+    "rate_formula": "adjacent_ecm_node_delta_bytes * 8 * 1000 / poll_window_ms",
+    "percentage_formula": "coverage_window_client_fcs_bytes * 100 / coverage_window_lan_fcs_bytes",
+    "percentage_clamp_forbidden": true,
+    "byte_backfill_forbidden": true,
+    "interface_rate_copy_forbidden": true,
+    "numerator_greater_than_denominator": "null_direction_percentage_when_aggregate_window_owned",
+    "quality": ["warmup", "pending", "ok", "idle", "low_traffic", "counter_reset", "counter_skew"]
+  },
+  "ecm_bpf_window_model": {
+    "rate_clock": "per_connection_adjacent_daemon_samples",
+    "event_timestamp_role": "freshness_only_because_map_fields_are_not_one_atomic_snapshot",
+    "rate_filter": "per_connection_generation_median_last_3_windows",
+    "baseline_scope": "connection_pointer+time_added+direction+client_mac",
+    "client_fold_order": "rate_each_connection_generation_before_mac_sum",
+    "cold_start": "zero_until_adjacent_increment",
+    "rate_hold_ms": 2500,
+    "flow_retention_ms": 60000,
+    "fcs": "raw_bytes_plus_real_packets_times_4",
+    "packet_estimation_forbidden": true,
+    "counter_reset": "rebaseline_only_affected_connection_generation",
+    "client_wide_reset_forbidden": true
+  },
+  "diagnostics": {
+    "public_client_api_exposes_internal_packets": false,
+    "evidence_key": "nss_window",
+    "evidence_fields": [
+      "start_ms",
+      "end_ms",
+      "window_ms",
+      "quality",
+      "reason",
+      "fresh_rate_sample",
+      "held_rate_age_ms",
+      "rate_and_coverage_decoupled",
+      "coverage"
+    ]
+  },
+  "connection_metadata_model": {
+    "rate_source": false,
+    "sources": ["conntrack_netlink", "conntrack_procfs"],
+    "purpose": ["connection_counts", "connection_details", "ip_metadata"],
+    "byte_rate_fallback": false
+  },
+  "performance_guardrails": {
+    "default_refresh_interval_ms": 1000,
+    "minimum_refresh_interval_ms": 500,
+    "maximum_ecm_lines": 65536,
+    "maximum_ecm_nodes": 16384,
+    "maximum_ecm_line_bytes": 256,
+    "target_router_cpu_pct": 5,
+    "ui_refresh_policy": {
+      "bpf": "unrestricted_selector",
+      "nss_ecm_node": 2000,
+      "nss_ecm_bpf": 2000,
+      "auto": "follow_effective_collector"
+    },
+    "backend_collection_policy": {
+      "bpf": "configured_interval",
+      "nss_ecm_node_minimum_ms": 2000,
+      "nss_ecm_bpf_minimum_ms": 2000,
+      "auto": "follow_effective_collector"
+    },
+    "animation_interpolation": false
   }
 }

@@ -704,12 +704,18 @@ try {
     'BPF Build/Prepare must reject unsupported build hosts without breaking package metadata expansion'
   );
   assertMatch(pkgMakefile, /BPF_LINKER="\$\(BPF_LINKER\)"/, 'eBPF build must use the extracted pinned linker');
+	assertMatch(pkgMakefile, /LANSPEED_BPF_TARGET_ARCH="\$\(ARCH\)"/,
+		'eBPF build must receive the OpenWrt target architecture explicitly');
 	assert(buildDriver.includes('PINNED_BPF_LINKER: &str = "0.10.3"'), 'build driver must retain the packaged bpf-linker version');
 	assert(buildDriver.includes('MINIMUM_BPF_LINKER: &str = PINNED_BPF_LINKER') &&
 		buildDriver.includes('MAXIMUM_BPF_LINKER_EXCLUSIVE: &str = "0.11.0"') &&
 		buildDriver.includes('validate_version_range('),
 		'build driver must accept the compatible stable bpf-linker 0.10.x range');
   assert(buildDriver.includes('"--locked"') && buildDriver.includes('"--offline"'), 'build driver must use locked offline Cargo');
+	assert(buildDriver.includes('BPF_TARGET_ARCH_ENV: &str = "LANSPEED_BPF_TARGET_ARCH"') &&
+		buildDriver.includes('command.env("AYA_BPF_TARGET_ARCH", target_arch.aya_name())') &&
+		buildDriver.includes('target_arch.builds_ecm()'),
+		'build driver must separate x86 TC objects from the aarch64 ECM object ABI');
   assert(cargoConfig.includes('replace-with = "vendored-sources"'), 'Cargo must use vendored sources');
   assert(cargoConfig.includes('offline = true'), 'Cargo config must forbid network dependency resolution');
   assertMatch(
@@ -732,6 +738,13 @@ try {
       `lanspeedd-bpf must preserve the runtime path for ${object} through a relative symlink`
     );
   }
+	assertMatch(pkgMakefile, /LANSPEED_NSS_ECM_BPF_ENABLED:=\$\(filter aarch64,\$\(ARCH\)\)/,
+		'ECM object packaging must be gated to aarch64');
+	assert(
+		pkgMakefile.includes('target/bpfel-unknown-none/release/lanspeed-ebpf-ecm $(1)/usr/lib/bpf/lanspeed-ebpf-ecm.o') &&
+		pkgMakefile.includes('$(LN) lanspeed-ebpf-ecm.o $(1)/usr/lib/bpf/lanspeed-ebpf-ecm'),
+		'aarch64 BPF package must install the isolated ECM object and runtime symlink'
+	);
   assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+libgcc \+kmod-nf-conntrack-netlink/,
     'base daemon must retain verified LP64, libgcc_s runtime, and conntrack kernel constraints');
   assertNoMatch(pkgMakefile, /\+libubox|\+libubus|\+libuci|\+libblobmsg-json/,

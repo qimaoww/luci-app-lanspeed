@@ -43,9 +43,9 @@ var LIMITS = {
 
 var RATE_MODES = [
 	{ value: 'auto', label: _('自动'), capability: null },
-	{ value: 'bpf', label: 'BPF', capability: 'bpf' },
-	{ value: 'nss_ecm_direct', label: 'NSS-direct', capability: 'nss_ecm_direct' },
-	{ value: 'nss_conntrack_sync', label: 'NSS sync', capability: 'nss_conntrack_sync' }
+	{ value: 'bpf', label: _('BPF'), capability: 'bpf' },
+	{ value: 'nss_ecm_node', label: 'ECM', capability: 'nss_ecm_node' },
+	{ value: 'nss_ecm_bpf', label: 'ECM+BPF', capability: 'nss_ecm_bpf' }
 ];
 
 var CONNECTION_MODES = [
@@ -276,10 +276,6 @@ function normalize(raw) {
 
 	var rateRaw = raw.rate_collector_mode;
 	var connRaw = raw.conn_collector_mode;
-	if (rateRaw === 'conntrack_ecm_sync') {
-		rateRaw = 'nss_conntrack_sync';
-		warnings.push({ field: 'rate_collector_mode', code: 'legacy_alias_normalized' });
-	}
 	var rate = normalizeEnum(rateRaw === undefined ? legacyRate(legacy.value) : rateRaw, RATE_MODES, DEFAULTS.rate_collector_mode);
 	var conn = normalizeEnum(connRaw === undefined ? legacyConnection(legacy.value) : connRaw, CONNECTION_MODES, DEFAULTS.conn_collector_mode);
 	values.rate_collector_mode = rate.value;
@@ -312,10 +308,9 @@ function normalize(raw) {
 
 	if (values.hide_private_ipv6 === '0')
 		warnings.push({ field: 'hide_ipv6_ranges', code: 'dependency_disabled' });
-	if (values.enable_bpf === '0' && values.rate_collector_mode === 'bpf')
+	if (values.enable_bpf === '0' &&
+		(values.rate_collector_mode === 'bpf' || values.rate_collector_mode === 'nss_ecm_bpf'))
 		errors.rate_collector_mode = 'bpf_disabled';
-	if (values.enable_conntrack_fallback === '0' && values.rate_collector_mode === 'nss_conntrack_sync')
-		errors.rate_collector_mode = 'conntrack_fallback_disabled';
 	if (unique(values.ifname.concat(values.interface_include)).length > MAX_INTERFACE_NAMES)
 		errors.interface_include = 'too_many_interfaces';
 	if (values.observe.length > MAX_INTERFACE_NAMES)
@@ -324,9 +319,8 @@ function normalize(raw) {
 		errors.interface_exclude = 'too_many_interfaces';
 
 	/* Legacy field is written from the split rate mode but remains visible as a compatibility fact. */
-	if (values.rate_collector_mode === 'bpf' || values.rate_collector_mode === 'nss_ecm_direct' ||
-		values.rate_collector_mode === 'nss_conntrack_sync')
-		values.collector_mode = 'bpf';
+	if ([ 'bpf', 'nss_ecm_node', 'nss_ecm_bpf' ].indexOf(values.rate_collector_mode) !== -1)
+		values.collector_mode = values.rate_collector_mode;
 	else if (values.conn_collector_mode !== 'auto' && values.rate_collector_mode === 'auto')
 		values.collector_mode = values.conn_collector_mode;
 	else
@@ -363,18 +357,19 @@ function capabilityState(status, values) {
 		set('bpf', true, null, has('bpf_supported') ||
 			[ 'bpf_package', 'bpf_object', 'tc', 'tc_clsact' ].every(has));
 
-	if (knownFalse('nss_ecm_direct') || knownFalse('nss') || knownFalse('nss_ecm_offload'))
-		set('nss_ecm_direct', false, 'nss_direct_unavailable', true);
+	if (knownFalse('nss_ecm_node') || knownFalse('nss') || knownFalse('nss_ecm_offload'))
+		set('nss_ecm_node', false, 'nss_node_unavailable', true);
 	else
-		set('nss_ecm_direct', true, null, Object.prototype.hasOwnProperty.call(caps, 'nss_ecm_direct'));
+		set('nss_ecm_node', true, null, Object.prototype.hasOwnProperty.call(caps, 'nss_ecm_node'));
 
-	if (values && values.enable_conntrack_fallback === '0')
-		set('nss_conntrack_sync', false, 'conntrack_fallback_disabled', true);
-	else if (knownFalse('nf_conntrack_acct') || knownFalse('conntrack_fallback') || knownFalse('nss'))
-		set('nss_conntrack_sync', false, 'nss_sync_unavailable', true);
+	if (values && values.enable_bpf === '0')
+		set('nss_ecm_bpf', false, 'bpf_disabled', true);
+	else if (knownFalse('nss_ecm_bpf') || knownFalse('nss') || knownFalse('nss_ecm_offload') ||
+		knownFalse('bpf_package') || knownFalse('bpf_object'))
+		set('nss_ecm_bpf', false, 'nss_ecm_bpf_unavailable', true);
 	else
-		set('nss_conntrack_sync', true, null,
-			Object.prototype.hasOwnProperty.call(caps, 'conntrack_fallback'));
+		set('nss_ecm_bpf', true, null,
+			[ 'nss_ecm_bpf', 'nss', 'nss_ecm_offload', 'bpf_package', 'bpf_object' ].every(has));
 
 	[ 'conntrack_netlink', 'conntrack_procfs' ].forEach(function(name) {
 		var value = collector[name + '_available'];
@@ -420,8 +415,7 @@ function validate(values, status, interfaceState) {
 
 function collectorModeFor(values) {
 	values = values || {};
-	if (values.rate_collector_mode === 'bpf' || values.rate_collector_mode === 'nss_ecm_direct' ||
-		values.rate_collector_mode === 'nss_conntrack_sync')
+	if ([ 'bpf', 'nss_ecm_node', 'nss_ecm_bpf' ].indexOf(values.rate_collector_mode) !== -1)
 		return 'bpf';
 	if (values.rate_collector_mode === 'auto' && values.conn_collector_mode === 'conntrack_netlink')
 		return 'conntrack_netlink';
@@ -461,7 +455,13 @@ function buildUciPatch(values, original) {
 function modeChoices(kind, status, values) {
 	var source = kind === 'rate' ? RATE_MODES : CONNECTION_MODES;
 	var caps = capabilityState(status, values || DEFAULTS);
-	return source.map(function(item) {
+	var selected = values && values.rate_collector_mode;
+	var nssKnownAbsent = kind === 'rate' && status && status.capabilities &&
+		status.capabilities.nss === false;
+	return source.filter(function(item) {
+		var nssMode = item.value === 'nss_ecm_node' || item.value === 'nss_ecm_bpf';
+		return !nssKnownAbsent || !nssMode || item.value === selected;
+	}).map(function(item) {
 		var cap = item.capability ? caps[item.capability] : caps.auto;
 		return {
 			value: item.value,

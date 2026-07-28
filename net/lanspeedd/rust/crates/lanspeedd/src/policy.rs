@@ -6,16 +6,16 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RateCollector {
     Bpf,
-    NssEcmDirect,
-    NssConntrackSync,
+    NssEcmNode,
+    NssEcmBpf,
     Unsupported,
 }
 impl RateCollector {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Bpf => "bpf",
-            Self::NssEcmDirect => "nss_ecm_direct",
-            Self::NssConntrackSync => "nss_conntrack_sync",
+            Self::NssEcmNode => "nss_ecm_node",
+            Self::NssEcmBpf => "nss_ecm_bpf",
             Self::Unsupported => "unsupported",
         }
     }
@@ -45,6 +45,12 @@ pub struct PolicyEvidence {
     pub runtime_error: Option<String>,
     pub retained_fresh_snapshot: bool,
     pub bpf_snapshot_clients: usize,
+    pub ecm_bpf_retained_fresh_snapshot: bool,
+    pub ecm_bpf_snapshot_clients: usize,
+    pub ecm_bpf_map_entries: usize,
+    pub ecm_bpf_matched_entries: usize,
+    pub ecm_bpf_error_stage: Option<String>,
+    pub ecm_bpf_runtime_error: Option<String>,
     pub bpf_self_heal_recoveries: u64,
     pub bpf_self_heal_failures: u64,
     pub bpf_self_heal_last_reason: Option<String>,
@@ -55,8 +61,6 @@ pub struct PolicyEvidence {
 pub struct PolicyDecision {
     pub rate: RateCollector,
     pub connection: ConnectionCollector,
-    pub nss_direct_overlay: bool,
-    pub nss_sync_secondary: bool,
     pub mode: Mode,
     pub confidence: Confidence,
     pub warnings: Vec<&'static str>,
@@ -70,19 +74,40 @@ pub fn select_collectors(
 ) -> PolicyDecision {
     let mut warnings = Vec::new();
     let has_collect_target = !config.runtime_collect_ifnames().is_empty();
-    if !config.enable_bpf {
+    let tc_bpf_requested = matches!(
+        config.rate_collector_mode,
+        RateCollectorMode::Auto | RateCollectorMode::Bpf
+    );
+    let ecm_bpf_requested = matches!(
+        config.rate_collector_mode,
+        RateCollectorMode::Auto | RateCollectorMode::NssEcmBpf
+    );
+    if !config.enable_bpf && (tc_bpf_requested || ecm_bpf_requested) {
         push_unique(&mut warnings, "bpf_disabled");
     }
-    if config.enable_bpf && !has_collect_target {
+    if config.enable_bpf && tc_bpf_requested && !has_collect_target {
         push_unique(&mut warnings, "no_collect_interface");
     }
-    if !facts.bpf.package && !runtime.bpf_object_loaded {
+    if (tc_bpf_requested || ecm_bpf_requested)
+        && !facts.bpf.package
+        && !runtime.bpf_object_loaded
+        && !runtime.ecm_bpf_object_loaded
+    {
         push_unique(&mut warnings, "bpf_optional_package_missing");
     }
-    if !facts.bpf.object && !runtime.bpf_object_loaded {
+    if (tc_bpf_requested || ecm_bpf_requested)
+        && !facts.bpf.object
+        && !runtime.bpf_object_loaded
+        && !runtime.ecm_bpf_object_loaded
+    {
         push_unique(&mut warnings, "bpf_object_missing");
     }
-    if config.enable_bpf && has_collect_target && !facts.tc.safe_attach && !runtime.bpf_attached {
+    if config.enable_bpf
+        && tc_bpf_requested
+        && has_collect_target
+        && !facts.tc.safe_attach
+        && !runtime.bpf_attached
+    {
         push_unique(&mut warnings, "unsafe_attach");
     }
     if !facts.files.nf_conntrack_acct
@@ -110,26 +135,35 @@ pub fn select_collectors(
             .is_some_and(|sample_ms| {
                 crate::is_fresh(runtime.now_ms, sample_ms, runtime.bpf_freshness_ms)
             });
-    let bpf_full = bpf_prerequisites
+    let bpf_ready = bpf_prerequisites
         && (runtime.bpf_map_read_ok || retained_fresh_snapshot)
-        && !facts.offload.hardware
-        && !nss_offload_active;
-    let nss_sync = config.enable_conntrack_fallback
-        && facts.files.nf_conntrack_acct
+        && !facts.offload.hardware;
+    let bpf_full = bpf_ready && !nss_offload_active;
+    let ecm_bpf_retained_fresh_snapshot = !runtime.ecm_bpf_map_read_ok
+        && runtime
+            .ecm_bpf_last_complete_snapshot_ms
+            .is_some_and(|sample_ms| {
+                crate::is_fresh(runtime.now_ms, sample_ms, runtime.ecm_bpf_freshness_ms)
+            });
+    let ecm_bpf_ready = config.enable_bpf
         && facts.nss.present
-        && (facts.nss.ecm_active || facts.nss.ppe_active)
-        && runtime.nss_sync_read_ok.unwrap_or(true);
-    let nss_direct = facts.nss.present
+        && facts.nss.ecm_active
+        && runtime.ecm_bpf_object_loaded
+        && runtime.ecm_bpf_attached
+        && (runtime.ecm_bpf_map_read_ok || ecm_bpf_retained_fresh_snapshot);
+    let nss_node = facts.nss.present
         && facts.nss.ecm_active
         && facts.nss.direct_state_readable
-        && runtime.nss_direct_read_ok.unwrap_or(true);
+        && runtime.nss_node_read_ok.unwrap_or(true);
     let dae_active = facts.proxy.runtime_active;
     let dae_prefers_bpf =
-        config.rate_collector_mode == RateCollectorMode::Auto && dae_active && bpf_full;
+        config.rate_collector_mode == RateCollectorMode::Auto && dae_active && bpf_ready;
 
     let (rate, rate_reason) = match config.rate_collector_mode {
         RateCollectorMode::Bpf => {
-            if bpf_full {
+            // A forced pure-BPF mode is an explicit request for the Linux TC
+            // view. NSS offload makes that view incomplete, not unavailable.
+            if bpf_ready {
                 (RateCollector::Bpf, "forced_bpf")
             } else if !has_collect_target {
                 (RateCollector::Unsupported, "no_collect_interface")
@@ -137,82 +171,73 @@ pub fn select_collectors(
                 (RateCollector::Unsupported, "forced_bpf_unavailable")
             }
         }
-        RateCollectorMode::NssEcmDirect => {
-            if nss_direct {
-                (RateCollector::NssEcmDirect, "forced_nss_ecm_direct")
-            } else if nss_sync {
-                (
-                    RateCollector::NssConntrackSync,
-                    "forced_direct_fallback_to_sync",
-                )
+        RateCollectorMode::NssEcmNode => {
+            if nss_node {
+                (RateCollector::NssEcmNode, "forced_nss_ecm_node")
             } else {
                 (
                     RateCollector::Unsupported,
-                    "forced_nss_ecm_direct_unavailable",
+                    "forced_nss_ecm_node_unavailable",
                 )
             }
         }
-        RateCollectorMode::NssConntrackSync => {
-            if nss_sync {
-                (RateCollector::NssConntrackSync, "forced_nss_conntrack_sync")
+        RateCollectorMode::NssEcmBpf => {
+            if ecm_bpf_ready {
+                (RateCollector::NssEcmBpf, "forced_nss_ecm_bpf")
             } else {
-                (
-                    RateCollector::Unsupported,
-                    "forced_nss_conntrack_sync_unavailable",
-                )
+                (RateCollector::Unsupported, "forced_nss_ecm_bpf_unavailable")
             }
         }
         RateCollectorMode::Auto => {
-            // NSS sync is the only source that includes hardware-accelerated
-            // bytes and CPU slow-path bytes without double counting them.
-            if nss_sync {
-                (
-                    RateCollector::NssConntrackSync,
-                    "nss_offload_conntrack_sync_primary",
-                )
-            } else if nss_direct {
-                (
-                    RateCollector::NssEcmDirect,
-                    "nss_sync_unavailable_nss_direct_fallback",
-                )
+            if ecm_bpf_ready {
+                (RateCollector::NssEcmBpf, "nss_ecm_bpf_primary")
+            } else if nss_node {
+                (RateCollector::NssEcmNode, "nss_ecm_node_fallback")
             } else if dae_prefers_bpf {
                 (RateCollector::Bpf, "dae_runtime_prefers_bpf")
-            } else if bpf_full {
-                (RateCollector::Bpf, "bpf_available")
+            } else if bpf_ready {
+                (
+                    RateCollector::Bpf,
+                    if nss_offload_active {
+                        "nss_collectors_unavailable_bpf_fallback"
+                    } else {
+                        "bpf_available"
+                    },
+                )
             } else {
                 (RateCollector::Unsupported, "no_live_rate_collector")
             }
         }
     };
-    // Direct ECM counters describe accelerated flows only.  Replacing a
-    // client-level conntrack sample with them can discard that client's
-    // concurrent CPU slow-path flows, so direct remains a fallback source and
-    // is never overlaid on the sync snapshot.
-    let nss_direct_overlay = false;
-    let nss_sync_secondary = rate == RateCollector::NssEcmDirect && nss_sync;
-
     match rate {
-        RateCollector::NssEcmDirect => push_unique(&mut warnings, "nss_ecm_direct_active"),
-        RateCollector::NssConntrackSync => {
-            push_unique(&mut warnings, "nss_ecm_sync_cadence");
-            if nss_offload_active {
-                push_unique(&mut warnings, "nss_prefers_conntrack_sync");
-                push_unique(&mut warnings, "nss_bpf_slow_path_only");
-            }
-            if facts.nss.present && dae_active {
-                push_unique(&mut warnings, "nss_dae_bpf_fallback_may_be_inaccurate");
-            }
+        RateCollector::NssEcmNode => {
+            push_unique(&mut warnings, "nss_ecm_node_active");
+            push_unique(&mut warnings, "nss_ecm_node_ecm_flows_only");
+        }
+        RateCollector::NssEcmBpf => {
+            push_unique(&mut warnings, "nss_ecm_bpf_active");
+            push_unique(&mut warnings, "nss_ecm_bpf_disjoint_ownership");
+        }
+        RateCollector::Bpf if nss_offload_active => {
+            push_unique(&mut warnings, "nss_bpf_slow_path_only");
         }
         RateCollector::Bpf if dae_prefers_bpf => {
             push_unique(&mut warnings, "dae_runtime_prefers_bpf")
         }
         _ => {}
     }
-    if nss_direct_overlay {
-        push_unique(&mut warnings, "nss_ecm_direct_active");
-    }
     if bpf_prerequisites && runtime.bpf_map_read_attempted && !runtime.bpf_map_read_ok {
         push_unique(&mut warnings, "map_read_failed");
+    }
+    if ecm_bpf_requested
+        && runtime.ecm_bpf_map_read_attempted
+        && !runtime.ecm_bpf_map_read_ok
+        && !ecm_bpf_retained_fresh_snapshot
+    {
+        push_unique(&mut warnings, "nss_ecm_bpf_map_read_failed");
+    }
+    if config.rate_collector_mode == RateCollectorMode::NssEcmBpf && !ecm_bpf_ready {
+        push_unique(&mut warnings, "nss_ecm_bpf_runtime_unavailable");
     }
     let bpf_mode_allowed = matches!(
         config.rate_collector_mode,
@@ -268,12 +293,12 @@ pub fn select_collectors(
 
     let mode = match rate {
         RateCollector::Bpf if bpf_full => Mode::Full,
+        RateCollector::NssEcmBpf => Mode::Full,
         // ECM direct exposes accelerated flows only. CPU slow-path traffic can
         // be absent even when the state reader is healthy, so this source must
         // never claim complete client coverage.
-        RateCollector::NssEcmDirect => Mode::Degraded,
-        RateCollector::NssConntrackSync => Mode::Degraded,
-        _ if !facts.tc.available && !nss_sync => Mode::Unsupported,
+        RateCollector::NssEcmNode | RateCollector::Bpf => Mode::Degraded,
+        _ if !facts.tc.available && !nss_node && !ecm_bpf_ready => Mode::Unsupported,
         _ => Mode::Degraded,
     };
     if rate == RateCollector::Unsupported {
@@ -283,14 +308,11 @@ pub fn select_collectors(
         (Mode::Full, _) => Confidence::High,
         _ if facts.probe_error || facts.lan_probe_error => Confidence::Low,
         (Mode::Unsupported, _) => Confidence::Unsupported,
-        (_, RateCollector::NssConntrackSync) if low_conntrack_confidence(facts) => Confidence::Low,
         _ => Confidence::Medium,
     };
     PolicyDecision {
         rate,
         connection,
-        nss_direct_overlay,
-        nss_sync_secondary,
         mode,
         confidence,
         warnings,
@@ -302,27 +324,16 @@ pub fn select_collectors(
             runtime_error: runtime.runtime_error.clone(),
             retained_fresh_snapshot,
             bpf_snapshot_clients: runtime.bpf_snapshot_clients,
+            ecm_bpf_retained_fresh_snapshot,
+            ecm_bpf_snapshot_clients: runtime.ecm_bpf_snapshot_clients,
+            ecm_bpf_map_entries: runtime.ecm_bpf_map_entries,
+            ecm_bpf_matched_entries: runtime.ecm_bpf_matched_entries,
+            ecm_bpf_error_stage: runtime.ecm_bpf_error_stage.clone(),
+            ecm_bpf_runtime_error: runtime.ecm_bpf_runtime_error.clone(),
             bpf_self_heal_recoveries: runtime.bpf_self_heal_recoveries,
             bpf_self_heal_failures: runtime.bpf_self_heal_failures,
             bpf_self_heal_last_reason: runtime.bpf_self_heal_last_reason.clone(),
             bpf_self_heal_last_failure: runtime.bpf_self_heal_last_failure.clone(),
         },
     }
-}
-
-fn low_conntrack_confidence(facts: &ProbeFacts) -> bool {
-    !facts.files.flowtable_counter
-        || facts.offload.software
-        || facts.proxy.openclash_fake_ip
-        || facts.proxy.openclash_tun_mix
-        || facts.proxy.openclash_router_self_proxy
-        || facts.proxy.openclash_udp_proxy
-        || facts.proxy.dae
-        || facts.homeproxy
-        || facts.sqm
-        || facts.qosify
-        || facts.files.ifb
-        || facts.nlbwmon
-        || facts.probe_error
-        || facts.lan_probe_error
 }

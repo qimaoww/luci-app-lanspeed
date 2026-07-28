@@ -99,6 +99,27 @@ function refreshAvailability(viewState, refs) {
 	return { failed: failed, hardFailure: hardFailure };
 }
 
+function refreshIntervalControl(viewState, refs, status) {
+	if (!refs || !refs.intervalSel) return;
+	var locked = typeof fmt.nssRefreshLocked === 'function' && fmt.nssRefreshLocked(status);
+	var state = locked ? 'locked' : 'open';
+	var choices = locked
+		? [ { value: fmt.NSS_REFRESH_MS, label: '2s' } ]
+		: fmt.REFRESH_CHOICES;
+	var value = locked ? fmt.NSS_REFRESH_MS : viewState.prefs.refreshMs;
+	if (refs.intervalSel.getAttribute('data-lock-state') !== state) {
+		while (refs.intervalSel.firstChild)
+			refs.intervalSel.removeChild(refs.intervalSel.firstChild);
+		choices.forEach(function(choice) {
+			refs.intervalSel.appendChild(fmt.opt(choice.value, choice.label, value === choice.value));
+		});
+		refs.intervalSel.setAttribute('data-lock-state', state);
+	}
+	refs.intervalSel.disabled = locked;
+	refs.intervalSel.title = locked ? _('ECM 采集方案固定每 2 秒刷新') : '';
+	refs.intervalSel.value = String(value);
+}
+
 function refreshPagination(viewState, refs, sorted) {
 	var page = typeof fmt.paginate === 'function'
 		? fmt.paginate(sorted, viewState.page, viewState.prefs.pageSize)
@@ -314,6 +335,7 @@ function refreshLive(viewState) {
 	if (!refs) return;
 	var viewport = captureClientViewport(refs);
 	var status = viewState.status || {};
+	refreshIntervalControl(viewState, refs, status);
 	var clientsAll = fmt.asArray(viewState.clients && viewState.clients.clients);
 	var prefs = viewState.prefs;
 	var activeCfg = fmt.activeConfig(status);
@@ -378,7 +400,9 @@ function refreshLive(viewState) {
 
 	var cov = status.coverage || {};
 	var covQuality = cov.quality || 'warmup';
-	if (covQuality === 'ok') {
+	var retainedPending = covQuality === 'pending' &&
+		(typeof cov.tx_pct === 'number' || typeof cov.rx_pct === 'number');
+	if (covQuality === 'ok' || retainedPending) {
 		var txPct = typeof cov.tx_pct === 'number' ? cov.tx_pct : null;
 		var rxPct = typeof cov.rx_pct === 'number' ? cov.rx_pct : null;
 		var minPct = null;
@@ -395,6 +419,9 @@ function refreshLive(viewState) {
 			refs.mCoverageSub.textContent = '↑' + (txPct !== null ? txPct : '-') +
 				' ↓' + (rxPct !== null ? rxPct : '-') +
 				' · ' + _('缺口 ') + fmt.formatRate(missingBps, prefs.unit);
+		} else if (retainedPending) {
+			refs.mCoverageSub.textContent = '↑' + (txPct !== null ? txPct : '-') +
+				' ↓' + (rxPct !== null ? rxPct : '-') + ' · ' + _('等待新批次');
 		} else if (txPct !== null && rxPct !== null && Math.abs(txPct - rxPct) <= 2) {
 			refs.mCoverageSub.textContent = _('上下行均衡');
 		} else {
@@ -407,6 +434,9 @@ function refreshLive(viewState) {
 	} else if (covQuality === 'low_traffic') {
 		refs.mCoverage.textContent = '-';
 		refs.mCoverageSub.textContent = _('LAN 流量较低，暂不计算覆盖率');
+	} else if (covQuality === 'pending') {
+		refs.mCoverage.textContent = '…';
+		refs.mCoverageSub.textContent = _('LAN 覆盖率窗口正在追平，不影响客户端速率');
 	} else if (covQuality === 'warmup' || covQuality === 'counter_reset') {
 		refs.mCoverage.textContent = '…';
 		refs.mCoverageSub.textContent = _('采样中');
@@ -473,12 +503,10 @@ function refreshLive(viewState) {
 			var modeLabel = statusCollector.collectorLabel(mode), modeTitle;
 			if (mode === 'bpf') {
 				modeTitle = _('BPF 在 LAN 接口按 MAC 统计客户端实时速率。');
-			} else if (mode === 'nss_ecm_direct') {
-				modeTitle = _('NSS-direct 直接读取 ECM 流量计数，并归属到对应 LAN 客户端。');
-			} else if (mode === 'nss_ecm_direct+conntrack_ecm_sync') {
-				modeTitle = _('NSS-direct 提供实时数据，NSS sync 补齐未覆盖的客户端。');
-			} else if (mode === 'conntrack_ecm_sync' || mode === 'nss_conntrack_sync') {
-				modeTitle = _('NSS sync 从 conntrack 读取硬件加速流量，更新精度约为 1–2 秒。');
+			} else if (mode === 'nss_ecm_node') {
+				modeTitle = _('NSS ECM node 按客户端 MAC 读取真实字节与包计数并立即发布；独立 LAN 窗口只验证覆盖率。');
+			} else if (mode === 'nss_ecm_bpf') {
+				modeTitle = _('BPF 只挂到 ECM 统计更新链路，统一接收慢路径与 NSS 同步增量；不会叠加 TC-BPF 或 ECM node 计数。');
 			} else if (mode === 'conntrack_netlink') {
 				modeTitle = _('CT-Netlink 仅补充当前连接数，不参与非 NSS 设备的实时速率统计。');
 			} else if (mode === 'conntrack_procfs') {
@@ -627,6 +655,7 @@ return baseclass.extend({
 	restoreClientViewport: restoreClientViewport,
 	reconcileClientRows: reconcileClientRows,
 	refreshAvailability: refreshAvailability,
+	refreshIntervalControl: refreshIntervalControl,
 	refreshPagination: refreshPagination,
 
 	refreshLive: function(viewState) {

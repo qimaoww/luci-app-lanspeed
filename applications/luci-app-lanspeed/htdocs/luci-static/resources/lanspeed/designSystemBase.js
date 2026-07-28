@@ -57,7 +57,7 @@ var BASE_CSS = [
 		'--lanspeed-shadow-raised:none;--lanspeed-disabled-opacity:.45;',
 		'--lanspeed-page-gap:1rem;--lanspeed-section-x:1.25rem;',
 		'--lanspeed-section-y:1rem;--lanspeed-control-height:2.35rem;',
-		'--lanspeed-transition:120ms ease;box-sizing:border-box;',
+		'--lanspeed-transition:0s;box-sizing:border-box;',
 		'color:var(--lanspeed-text);background-color:var(--lanspeed-page-bg)}',
 	ROOT + ' *, ' + ROOT + ' *::before, ' + ROOT + ' *::after{box-sizing:border-box}',
 	ROOT + ' [hidden]{display:none!important}',

@@ -589,6 +589,9 @@ function assertProductDesignSystem() {
 	    bootstrapCss.includes('background-color:var(--lanspeed-action-hover)!important')) {
 		fail('designSystemBootstrap.js must suppress native gradients without changing action color on hover');
 	}
+	if (!bootstrapCss.includes(':is(.cbi-button,.lanspeed-ifcfg-seg>button):is(:focus,:focus-visible):not(:disabled):not([aria-disabled="true"]){')) {
+		fail('designSystemBootstrap.js button focus must outrank its enabled hover shadow');
+	}
 	if (!bootstrapCss.includes('.lanspeed-theme-bootstrap[data-lanspeed-color-mode="dark"]{') ||
 	    !bootstrapCss.includes('--lanspeed-action-hover:color-mix(in srgb,var(--primary-color-high) 92%,var(--text-color-high))')) {
 		fail('designSystemBootstrap.js must keep dark action hover colors readable and derived from native variables');
@@ -4394,8 +4397,8 @@ function assertWarningAliases(src) {
 		fail('vocab.js must localize common diagnostics environment notices');
 	}
 	const productionWarnings = [
-		'nss_ecm_direct_active', 'nss_ecm_sync_cadence', 'nss_prefers_conntrack_sync',
-		'nss_direct_no_data', 'skip_nss_ecm_direct_flow_without_lan_identity',
+		'nss_ecm_node_active', 'nss_ecm_node_parse_errors',
+		'pending', 'warmup', 'counter_reset', 'counter_skew',
 		'dae_runtime_prefers_bpf', 'bpf_unsupported', 'tc_clsact_unsupported',
 		'bpf_tc_self_heal_failed', 'counter_anomaly', 'time_rollback',
 		'lan_topology_probe_error', 'flowtable_counter_probe_unavailable',
@@ -4593,7 +4596,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.3-r2';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.4-r1';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
@@ -4601,7 +4604,7 @@ function assertCacheAwareViewEntry(src, moduleName, label) {
 	    !src.includes('return view.extend({') ||
 	    !src.includes('return module.load();') ||
 	    !src.includes('return pageModule.render(data);')) {
-		fail(`${label} must load ${moduleName} through the 1.1.3 resource cache boundary`);
+		fail(`${label} must load ${moduleName} through the 1.1.4 resource cache boundary`);
 	}
 	if (src.includes('buildShell(') || src.includes('refreshLive(') || src.includes('loadAll()')) {
 		fail(`${label} must remain a cache-aware entry and not duplicate page logic`);
@@ -4654,18 +4657,15 @@ function assertConfigView(src) {
 	    src.includes('dae.dae_service || dae.daed_service')) {
 		fail('view/lanspeed/config.js must not treat stopped daed service or leftover dae0 as runtime-active daed');
 	}
-	if (!src.includes('NSS-direct') ||
-	    !src.includes('NSS sync')) {
-		fail('view/lanspeed/config.js must explain NSS direct and NSS sync on NSS devices');
+	if (!src.includes('NSS ECM node')) {
+		fail('view/lanspeed/config.js must explain the ECM node source on NSS devices');
 	}
 	if (!src.includes('function rateCollectorModesForStatus(') ||
-	    !src.includes("[ 'nss_ecm_direct', 'NSS-direct' ]") ||
-	    !src.includes("[ 'nss_conntrack_sync', 'NSS sync' ]")) {
+	    !src.includes("[ 'nss_ecm_node', 'NSS ECM node' ]")) {
 		fail('view/lanspeed/config.js must show NSS-aware rate_collector_mode labels on NSS devices');
 	}
 	if (!src.includes('function rateCollectorModesForStatus(status, currentValue)') ||
-	    !src.includes("currentValue === 'nss_ecm_direct'") ||
-	    !src.includes("currentValue === 'nss_conntrack_sync'")) {
+	    !src.includes("currentValue === 'nss_ecm_node'")) {
 		fail('view/lanspeed/config.js must preserve saved NSS rate_collector_mode values even when runtime NSS detection is unavailable');
 	}
 	if (!src.includes('lanspeed-current-rate-source') ||
@@ -4952,8 +4952,8 @@ function assertStatusViewSourceOnlyState(src) {
 	if (src.includes("status.collector_mode;")) {
 		fail('LAN Speed status modules header must not show configured collector_mode as the current collector source');
 	}
-	if (!src.includes("return 'NSS sync'")) {
-		fail('LAN Speed status modules must keep NSS sync as a clear collector label');
+	if (!src.includes("return 'ECM'") || !src.includes("return 'ECM+BPF'")) {
+		fail('LAN Speed status modules must expose distinct ECM and ECM+BPF collector labels');
 	}
 	if (!src.includes("return 'CT-Netlink'")) {
 		fail('LAN Speed status modules must keep conntrack netlink as a clear collector label');
@@ -4966,9 +4966,6 @@ function assertStatusViewSourceOnlyState(src) {
 	}
 	if (src.includes('置信度：')) {
 		fail('LAN Speed status modules client state tooltip must not expose confidence text');
-	}
-	if (!src.includes("return 'NSS-direct'")) {
-		fail('LAN Speed status modules must keep existing nss_ecm_direct label');
 	}
 	if (!src.includes('parseIpv6Cidr') ||
 	    !src.includes('displayIpsForClient: function(') ||
@@ -5892,15 +5889,36 @@ function assertConfigModelRewrite(src) {
 		!invalid.errors.hide_ipv6_ranges || !invalid.errors.ifname || !invalid.errors.enable_bpf) {
 		fail('configModel.js must return field-scoped errors for malformed UCI values');
 	}
-	const alias = model.normalize({ rate_collector_mode: 'conntrack_ecm_sync' });
-	if (alias.values.rate_collector_mode !== 'nss_conntrack_sync')
-		fail('configModel.js must canonicalize the supported legacy NSS sync alias');
+	const removedMode = model.normalize({ rate_collector_mode: 'conntrack_ecm_sync' });
+	if (removedMode.valid || removedMode.values.rate_collector_mode !== 'auto' ||
+	    removedMode.errors.rate_collector_mode !== 'enum_required')
+		fail('configModel.js must reject removed NSS rate modes instead of aliasing them');
+	const rateModes = model.modeChoices('rate', { capabilities: {} }, model.DEFAULTS)
+		.map(choice => choice.value);
+	if (JSON.stringify(rateModes) !== JSON.stringify([
+		'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf'
+	]))
+		fail('configModel.js must expose automatic plus pure BPF, ECM, and ECM+BPF in order');
+	const x86RateModes = model.modeChoices('rate', { capabilities: { nss: false } }, model.DEFAULTS)
+		.map(choice => choice.value);
+	if (JSON.stringify(x86RateModes) !== JSON.stringify([ 'auto', 'bpf' ]))
+		fail('configModel.js must hide ECM and ECM+BPF on a known non-NSS/x86 platform');
+	const staleX86Mode = model.modeChoices('rate', { capabilities: { nss: false } },
+		Object.assign({}, model.DEFAULTS, { rate_collector_mode: 'nss_ecm_bpf' }));
+	if (!staleX86Mode.some(choice => choice.value === 'nss_ecm_bpf' && choice.disabled))
+		fail('configModel.js must retain a stale NSS selection only as a disabled repair value on x86');
 	const gated = model.validate({
 		rate_collector_mode: 'bpf', conn_collector_mode: 'auto', enable_bpf: '0',
 		enable_conntrack_fallback: '1'
 	}, { capabilities: { bpf: false, bpf_package: false, bpf_object: false, tc: false } });
 	if (gated.valid || gated.errors.rate_collector_mode !== 'bpf_disabled')
 		fail('configModel.js must gate collector modes with both configuration and runtime capabilities');
+	const combinedDisabled = model.validate({
+		rate_collector_mode: 'nss_ecm_bpf', conn_collector_mode: 'auto', enable_bpf: '0',
+		enable_conntrack_fallback: '1'
+	}, { capabilities: { nss: true, nss_ecm_offload: true, bpf_package: true, bpf_object: true } });
+	if (combinedDisabled.valid || combinedDisabled.errors.rate_collector_mode !== 'bpf_disabled')
+		fail('configModel.js must require BPF to be enabled for ECM+BPF');
 	const repairing = model.validate({
 		rate_collector_mode: 'bpf', conn_collector_mode: 'auto', enable_bpf: '1',
 		enable_conntrack_fallback: '1', interface_include: [ 'eth1' ]
@@ -6372,7 +6390,7 @@ function matchingConfigStatus(values) {
 		max_clients: values.max_clients,
 		enable_bpf: values.enable_bpf === '1',
 		enable_conntrack_fallback: values.enable_conntrack_fallback === '1',
-		version: '1.1.3-r2',
+		version: '1.1.4-r1',
 		capabilities: { bpf: true, conntrack_fallback: true },
 		evidence: { collector: { primary_source: 'bpf', effective_connection_collector: 'conntrack_netlink' } }
 	};
@@ -6399,7 +6417,7 @@ function assertConfigFormBehavior(src) {
 	}, makeConfigIfaceStub(), model);
 	asyncChecks.push(validLoadForm.loadValues().then(function(values) {
 		if (values.pageState !== 'ready' || !values.rpc.status.ok ||
-			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.3-r2') {
+			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.4-r1') {
 			fail('configForm.js must accept the complete status contract and retain capability evidence');
 		}
 	}).catch(function(error) {

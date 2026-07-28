@@ -4,10 +4,7 @@ use lanspeedd::{
         DEFAULT_MAX_CLIENTS, DEFAULT_REFRESH_INTERVAL_MS, MIN_REFRESH_INTERVAL_MS,
     },
     history::{
-        coverage::{
-            ByteTotals, CoverageQuality, CoverageRateAccumulator, CoverageRing, CoverageSample,
-            COVERAGE_WINDOW,
-        },
+        coverage::{ByteTotals, CoverageQuality, CoverageRing, CoverageSample, COVERAGE_WINDOW},
         overview::{
             ConnectionTotals, ConnectionTotalsOverride, OverviewClient, OverviewConfig,
             OverviewRing, OVERVIEW_WINDOW,
@@ -315,32 +312,6 @@ fn stale_baselines_are_evicted_before_rejecting_a_new_active_client() {
     assert!(replacement.rejected_clients.is_empty());
     assert!(!rates.contains("old@lan"));
     assert!(rates.contains("new@lan"));
-}
-
-#[test]
-fn coverage_rate_accumulator_is_monotonic_precise_and_pauses_gaps() {
-    let mut accumulator = CoverageRateAccumulator::default();
-    assert_eq!(
-        accumulator.update(1_000, 8_004, 16_004),
-        ByteTotals::new(0, 0)
-    );
-    assert_eq!(
-        accumulator.update(2_000, 8_004, 16_004),
-        ByteTotals::new(1_000, 2_000)
-    );
-    assert_eq!(
-        accumulator.update(3_000, 8_004, 16_004),
-        ByteTotals::new(2_001, 4_001),
-        "fractional byte remainders must carry across samples"
-    );
-
-    accumulator.pause();
-    assert_eq!(
-        accumulator.update(30_000, 8_000_000, 8_000_000),
-        ByteTotals::new(2_001, 4_001),
-        "unsupported gaps must not integrate a stale rate"
-    );
-    assert_eq!(accumulator.totals(), ByteTotals::new(2_001, 4_001));
 }
 
 #[test]

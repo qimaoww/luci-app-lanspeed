@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use serde_json::{json, Map, Value};
 
 use crate::{
-    collectors::nss,
+    collectors::ecm_node,
     config::RuntimeConfig,
     policy::{PolicyDecision, RateCollector},
     probe::{ProbeFailure, ProbeReport, RuntimeHealth},
@@ -27,7 +27,7 @@ const PUBLIC_COMMAND_SOURCES: [&str; 11] = [
     "command:ip_route_table_2023",
 ];
 
-const PUBLIC_FILE_SOURCES: [&str; 39] = [
+const PUBLIC_FILE_SOURCES: [&str; 40] = [
     "file:/proc/sys/net/netfilter/nf_conntrack_acct",
     "file:/proc/net/nf_flowtable",
     "file:/sys/kernel/debug/netfilter/nf_flowtable",
@@ -36,6 +36,7 @@ const PUBLIC_FILE_SOURCES: [&str; 39] = [
     "file:/usr/share/lanspeed/bpf/collector-model.json",
     "file:/usr/lib/bpf/lanspeed-ebpf-kfunc",
     "file:/usr/lib/bpf/lanspeed-ebpf-fallback",
+    "file:/usr/lib/bpf/lanspeed-ebpf-ecm",
     "file:/etc/config/openclash",
     "file:/etc/config/dae",
     "file:/etc/config/daed",
@@ -326,27 +327,19 @@ fn safe_file_source(source: &str) -> Option<String> {
 }
 
 pub(crate) fn nss_details(
-    config: &RuntimeConfig,
+    _config: &RuntimeConfig,
     report: &ProbeReport,
     decision: &PolicyDecision,
 ) -> Value {
-    let direct_enabled =
-        decision.rate == RateCollector::NssEcmDirect || decision.nss_direct_overlay;
-    let direct_supported = report.evidence.nss.present
+    let node_enabled = decision.rate == RateCollector::NssEcmNode;
+    let ecm_bpf_enabled = decision.rate == RateCollector::NssEcmBpf;
+    let node_supported = report.evidence.nss.present
         && report.evidence.nss.ecm_active
         && report.evidence.nss.direct_state_readable;
-    let fallback_reason = if decision.rate == RateCollector::NssConntrackSync {
-        "nss_conntrack_sync_primary"
-    } else {
-        nss::direct_fallback_reason(nss::DirectFallbackInput {
-            state_readable: direct_supported,
-            overlay_enabled: direct_enabled,
-            rate_mode: config.rate_collector_mode,
-            dae_runtime_prefers_bpf: decision.evidence.rate_reason == "dae_runtime_prefers_bpf",
-        })
-    };
     let offload_active = report.evidence.nss.ecm_active || report.evidence.nss.ppe_active;
     let mut value = json!({
+        "target_arch": std::env::consts::ARCH,
+        "architecture_supported": cfg!(target_arch = "aarch64"),
         "present": report.evidence.nss.present,
         "ecm_active": report.evidence.nss.ecm_active,
         "ecm_offload_active": report.evidence.nss.ecm_active,
@@ -354,10 +347,11 @@ pub(crate) fn nss_details(
         "ppe_offload_active": report.evidence.nss.ppe_active,
         "direct_state_present": report.evidence.nss.direct_state_present,
         "direct_state_readable": report.evidence.nss.direct_state_readable,
-        "direct_supported": direct_supported,
-        "direct_enabled": direct_enabled,
-        "direct_source": nss::NSS_DIRECT_SOURCE,
-        "fallback_reason": fallback_reason,
+        "node_supported": node_supported,
+        "node_enabled": node_enabled,
+        "ecm_bpf_enabled": ecm_bpf_enabled,
+        "node_source": ecm_node::SOURCE,
+        "fallback_reason": if node_enabled || ecm_bpf_enabled { "none" } else { decision.evidence.rate_reason },
         "direct_state_errno": report.evidence.nss.direct_state_errno,
         "direct_state_major": report.evidence.nss.direct_state_major,
         "direct_source_path": report.evidence.nss.direct_source_path.as_deref().unwrap_or_default(),
@@ -368,18 +362,22 @@ pub(crate) fn nss_details(
         "mcs_active": report.evidence.nss.mcs_active,
         "subsystems": report.evidence.nss.subsystems,
         "counter_source": counter_source(decision, report),
-        "counter_cadence_seconds": if offload_active { 2 } else { 0 },
-        "counter_merge_policy": if decision.rate == RateCollector::NssConntrackSync {
-            "conntrack_sync_authoritative_no_bpf_addition"
+        "counter_cadence_seconds": if offload_active { 1 } else { 0 },
+        "counter_merge_policy": if ecm_bpf_enabled {
+            "single_ecm_update_kprobe_owner_no_tc_or_node_sum"
+        } else if node_enabled {
+            "single_ecm_node_owner"
         } else {
-            "single_source"
+            "single_tc_bpf_owner"
         },
-        "counter_delta_scope": if decision.rate == RateCollector::NssConntrackSync {
-            "per_conntrack_flow_before_client_aggregation"
+        "counter_delta_scope": if ecm_bpf_enabled {
+            "per_connection_time_added_direction_mac"
         } else {
-            "single_source_client_snapshot"
+            "per_mac_node_generation"
         },
-        "bpf_visibility": if offload_active {
+        "bpf_visibility": if ecm_bpf_enabled {
+            "ecm_update_chain_slow_path_and_nss_sync"
+        } else if offload_active {
             "slow_path_only_until_deceleration"
         } else {
             "full_when_nss_not_offloading"
@@ -411,10 +409,10 @@ pub(crate) fn nss_details(
 }
 
 fn counter_source(decision: &PolicyDecision, report: &ProbeReport) -> &'static str {
-    if decision.rate == RateCollector::NssConntrackSync || decision.nss_sync_secondary {
-        "ecm_conntrack_sync"
-    } else if decision.rate == RateCollector::NssEcmDirect || decision.nss_direct_overlay {
-        "ecm_state_direct"
+    if decision.rate == RateCollector::NssEcmNode {
+        ecm_node::SOURCE
+    } else if decision.rate == RateCollector::NssEcmBpf {
+        "kprobe:ecm_db_connection_data_totals_update"
     } else if report.evidence.nss.ppe_active {
         "ppe_conntrack_sync"
     } else if report.evidence.nss.ecm_active {
@@ -728,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn production_nss_evidence_keeps_the_complete_legacy_c_contract_and_values() {
+    fn production_nss_evidence_reports_the_node_counter_contract() {
         let mut config = RuntimeConfig::default();
         config.enable_conntrack_fallback = true;
         let mut observations = crate::probe::ProbeObservations::default();
@@ -759,6 +757,8 @@ mod tests {
         assert_eq!(
             nss,
             json!({
+                "target_arch": std::env::consts::ARCH,
+                "architecture_supported": cfg!(target_arch = "aarch64"),
                 "present": true,
                 "ecm_active": true,
                 "ecm_offload_active": true,
@@ -766,10 +766,11 @@ mod tests {
                 "ppe_offload_active": true,
                 "direct_state_present": true,
                 "direct_state_readable": true,
-                "direct_supported": true,
-                "direct_enabled": false,
-                "direct_source": "nss_ecm_direct",
-                "fallback_reason": "nss_conntrack_sync_primary",
+                "node_supported": true,
+                "node_enabled": true,
+                "ecm_bpf_enabled": false,
+                "node_source": "ecm_state_node_adv_stats",
+                "fallback_reason": "none",
                 "direct_state_errno": 13,
                 "direct_state_major": 241,
                 "direct_source_path": "/dev/ecm_state",
@@ -785,10 +786,10 @@ mod tests {
                 "accelerated_other": 5,
                 "host_count": 7,
                 "mapping_count": 8,
-                "counter_source": "ecm_conntrack_sync",
-                "counter_cadence_seconds": 2,
-                "counter_merge_policy": "conntrack_sync_authoritative_no_bpf_addition",
-                "counter_delta_scope": "per_conntrack_flow_before_client_aggregation",
+                "counter_source": "ecm_state_node_adv_stats",
+                "counter_cadence_seconds": 1,
+                "counter_merge_policy": "single_ecm_node_owner",
+                "counter_delta_scope": "per_mac_node_generation",
                 "bpf_visibility": "slow_path_only_until_deceleration",
                 "interface_counters_accurate": true,
                 "nssifb_policy": "mirror_of_physical_ingress_not_a_real_client_source",
@@ -797,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn readable_direct_state_without_nss_and_ecm_is_not_legacy_supported() {
+    fn readable_state_without_nss_and_ecm_is_not_node_supported() {
         let mut observations = crate::probe::ProbeObservations::default();
         observations.nss.direct_state_present = true;
         observations.nss.direct_state_readable = true;
@@ -805,13 +806,13 @@ mod tests {
         let nss = rendered_nss_evidence(&RuntimeConfig::default(), observations);
 
         assert_eq!(nss["direct_state_readable"], true);
-        assert_eq!(nss["direct_supported"], false);
-        assert_eq!(nss["direct_enabled"], false);
-        assert_eq!(nss["fallback_reason"], "state_unavailable_or_unreadable");
+        assert_eq!(nss["node_supported"], false);
+        assert_eq!(nss["node_enabled"], false);
+        assert_eq!(nss["fallback_reason"], "no_live_rate_collector");
     }
 
     #[test]
-    fn production_nss_evidence_omits_unknown_counts_but_keeps_other_compatibility_fields() {
+    fn production_nss_evidence_omits_unknown_counts() {
         let nss = rendered_nss_evidence(
             &RuntimeConfig::default(),
             crate::probe::ProbeObservations::default(),
@@ -828,7 +829,7 @@ mod tests {
             assert!(nss.get(key).is_none(), "{key} must be omitted");
         }
         assert_eq!(nss["direct_source_path"], "");
-        assert_eq!(nss["direct_source"], "nss_ecm_direct");
+        assert_eq!(nss["node_source"], "ecm_state_node_adv_stats");
         assert_eq!(nss["counter_source"], "netdev_counters_only");
         assert_eq!(nss["counter_cadence_seconds"], 0);
         assert_eq!(nss["bpf_visibility"], "full_when_nss_not_offloading");
@@ -838,10 +839,8 @@ mod tests {
 
     #[test]
     fn production_nss_counter_source_follows_decision_priority() {
-        let mut forced_direct_with_sync = RuntimeConfig::default();
-        forced_direct_with_sync.enable_conntrack_fallback = true;
-        forced_direct_with_sync.rate_collector_mode =
-            crate::config::RateCollectorMode::NssEcmDirect;
+        let mut forced_node = RuntimeConfig::default();
+        forced_node.rate_collector_mode = crate::config::RateCollectorMode::NssEcmNode;
         let mut sync = crate::probe::ProbeObservations::default();
         sync.files.nf_conntrack_acct_present = true;
         sync.files.nf_conntrack_acct_value = Some("1".into());
@@ -861,8 +860,12 @@ mod tests {
         ecm.nss.ecm_active = true;
 
         for (config, observations, expected) in [
-            (&forced_direct_with_sync, sync, "ecm_conntrack_sync"),
-            (&RuntimeConfig::default(), direct, "ecm_state_direct"),
+            (&forced_node, sync, "ecm_state_node_adv_stats"),
+            (
+                &RuntimeConfig::default(),
+                direct,
+                "ecm_state_node_adv_stats",
+            ),
             (&RuntimeConfig::default(), ppe, "ppe_conntrack_sync"),
             (&RuntimeConfig::default(), ecm, "ecm_conntrack_sync"),
             (

@@ -4,13 +4,11 @@
 function collectorLabel(mode) {
 	mode = String(mode || '-');
 	if (mode === 'bpf')
-		return 'BPF';
-	if (mode === 'nss_ecm_direct')
-		return 'NSS-direct';
-	if (mode === 'nss_ecm_direct+conntrack_ecm_sync')
-		return 'NSS-direct / NSS sync';
-	if (mode === 'conntrack_ecm_sync' || mode === 'nss_conntrack_sync')
-		return 'NSS sync';
+		return _('BPF');
+	if (mode === 'nss_ecm_node')
+		return 'ECM';
+	if (mode === 'nss_ecm_bpf')
+		return 'ECM+BPF';
 	if (mode === 'conntrack_netlink')
 		return 'CT-Netlink';
 	if (mode === 'conntrack_procfs')
@@ -24,12 +22,8 @@ function collectorLabel(mode) {
 
 function collectorClass(mode) {
 	mode = String(mode || '-');
-	if (mode === 'bpf' || mode === 'nss_ecm_direct')
+	if (mode === 'bpf' || mode === 'nss_ecm_node' || mode === 'nss_ecm_bpf')
 		return 'label label-success';
-	if (mode === 'nss_ecm_direct+conntrack_ecm_sync')
-		return 'label label-warning';
-	if (mode === 'conntrack_ecm_sync' || mode === 'nss_conntrack_sync')
-		return 'label label-warning';
 	return 'label label-danger';
 }
 

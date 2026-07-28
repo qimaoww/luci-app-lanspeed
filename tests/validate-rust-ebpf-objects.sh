@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-	printf 'usage: %s <kfunc-object> <fallback-object>\n' "$0" >&2
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+	printf 'usage: %s <kfunc-object> <fallback-object> [aarch64-ecm-object]\n' "$0" >&2
 	exit 2
 fi
 
 kfunc_object=$1
 fallback_object=$2
+ecm_object=${3:-}
 readelf_bin=$(command -v -- "${READELF:-readelf}" 2>/dev/null || true)
 objdump_bin=$(command -v -- "${LLVM_OBJDUMP:-llvm-objdump}" 2>/dev/null || true)
 
@@ -80,6 +81,11 @@ done
 kfunc_disassembly=$("$objdump_bin" -d "$kfunc_object")
 grep -Eq 'lock[[:space:]]+\*\(u32 \*\).*\+= r[0-9]+' <<<"$kfunc_disassembly" || \
 	fail 'kfunc object has no 32-bit BPF atomic add instruction'
+for forbidden in lanspeed_ecm_update lanspeed_ecm_clients lanspeed_ecm_layout; do
+	if has_symbol "$kfunc_symbols" "$forbidden"; then
+		fail "kfunc TC object unexpectedly contains ECM symbol $forbidden"
+	fi
+done
 
 validate_common fallback "$fallback_object"
 fallback_symbols=$("$readelf_bin" -sW "$fallback_object")
@@ -88,5 +94,52 @@ for forbidden_map in lanspeed_conntrack_scratch lanspeed_seen_conns; do
 		fail "fallback object unexpectedly contains map $forbidden_map"
 	fi
 done
+for forbidden in lanspeed_ecm_update lanspeed_ecm_clients lanspeed_ecm_layout; do
+	if has_symbol "$fallback_symbols" "$forbidden"; then
+		fail "fallback TC object unexpectedly contains ECM symbol $forbidden"
+	fi
+done
 
-printf 'eBPF object validation: PASS: EM_BPF, BTF, classifiers, maps, GPL, and atomics\n'
+if [[ -n $ecm_object ]]; then
+	[[ -s $ecm_object ]] || fail "ECM object is missing or empty: $ecm_object"
+	ecm_header=$("$readelf_bin" -h "$ecm_object")
+	grep -Eq 'Class:[[:space:]]+ELF64([[:space:]]|$)' <<<"$ecm_header" || \
+		fail 'ECM object is not ELF64'
+	grep -Eq 'Data:[[:space:]]+2.s complement, little endian' <<<"$ecm_header" || \
+		fail 'ECM object is not little-endian'
+	grep -Eq 'Machine:[[:space:]]+(Linux BPF|EM_BPF)' <<<"$ecm_header" || \
+		fail 'ECM object is not EM_BPF'
+
+	ecm_sections=$("$readelf_bin" -SW "$ecm_object")
+	for section in '\.BTF' '\.BTF\.ext' 'kprobe/ecm_db_connection_data_totals_update' 'maps' 'license'; do
+		grep -Eq "[[:space:]]${section}[[:space:]]" <<<"$ecm_sections" || \
+			fail "ECM object is missing section ${section//\\/}"
+	done
+	if grep -Eq '[[:space:]]classifier(/|[[:space:]])' <<<"$ecm_sections"; then
+		fail 'ECM object unexpectedly contains a TC classifier section'
+	fi
+	ecm_license_size=$(awk '$3 == "license" { print $7; found = 1 } END { if (!found) exit 1 }' <<<"$ecm_sections") || \
+		fail 'ECM object license section is missing'
+	[[ $ecm_license_size == 000004 ]] || \
+		fail "ECM object license section has unexpected size $ecm_license_size"
+	ecm_license_hex=$("$readelf_bin" -x license "$ecm_object" | \
+		awk '$1 ~ /^0x/ { print tolower($2) }')
+	[[ $ecm_license_hex == 47504c00 ]] || fail 'ECM object license is not exactly GPL\0'
+
+	ecm_symbols=$("$readelf_bin" -sW "$ecm_object")
+	for required in lanspeed_ecm_update lanspeed_ecm_clients lanspeed_ecm_layout; do
+		has_symbol "$ecm_symbols" "$required" || fail "ECM object is missing symbol $required"
+	done
+	for forbidden in \
+		lanspeed_ingress lanspeed_egress lanspeed_ingress_early lanspeed_egress_early \
+		lanspeed_clients lanspeed_packet_prefix lanspeed_conntrack_scratch lanspeed_seen_conns; do
+		if has_symbol "$ecm_symbols" "$forbidden"; then
+			fail "ECM object unexpectedly contains TC symbol $forbidden"
+		fi
+	done
+	ecm_disassembly=$("$objdump_bin" -d "$ecm_object")
+	grep -Eq 'lock[[:space:]]+\*\(u64 \*\).*\+= r[0-9]+' <<<"$ecm_disassembly" || \
+		fail 'ECM object has no 64-bit BPF atomic add instruction'
+fi
+
+printf 'eBPF object validation: PASS: architecture-separated EM_BPF, BTF, programs, maps, GPL, and atomics\n'

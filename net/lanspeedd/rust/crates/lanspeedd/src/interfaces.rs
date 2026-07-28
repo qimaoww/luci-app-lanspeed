@@ -13,6 +13,8 @@ use crate::{
 pub struct InterfaceCounters {
     pub rx_bytes: u64,
     pub tx_bytes: u64,
+    pub rx_packets: u64,
+    pub tx_packets: u64,
 }
 
 pub trait InterfaceCounterReader {
@@ -28,6 +30,8 @@ impl InterfaceCounterReader for SysfsInterfaceCounterReader {
         Ok(InterfaceCounters {
             rx_bytes: read_counter(root.join("rx_bytes"))?,
             tx_bytes: read_counter(root.join("tx_bytes"))?,
+            rx_packets: read_counter(root.join("rx_packets"))?,
+            tx_packets: read_counter(root.join("tx_packets"))?,
         })
     }
 }

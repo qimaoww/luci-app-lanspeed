@@ -32,7 +32,7 @@ var MAX_RETAIN_MS = 120000;
 var CAPABILITY_KEYS = [
 	'bpf', 'bpf_supported', 'bpf_package', 'bpf_object', 'bpf_runtime_metrics', 'conntrack_fallback',
 	'live_metrics', 'fw4', 'nft', 'software_flow_offload', 'hardware_flow_offload',
-	'nss', 'nss_ecm_offload', 'nss_ppe_offload', 'nss_ecm_direct', 'nss_bridge_mgr',
+	'nss', 'nss_ecm_offload', 'nss_ppe_offload', 'nss_ecm_node', 'nss_ecm_bpf', 'nss_bridge_mgr',
 	'nss_ifb', 'nss_nsm', 'nss_dp', 'nss_mcs', 'fullcone', 'nf_conntrack_acct',
 	'flowtable_counter', 'tc', 'tc_clsact', 'existing_tc_filters', 'ifb', 'sqm',
 	'qosify', 'openclash', 'openclash_fake_ip', 'openclash_tun_mix',
@@ -54,19 +54,18 @@ var REASON_LABELS = {
 	bpf_available: _('BPF 运行时可用'),
 	netlink_preferred: _('优先使用 Conntrack Netlink'),
 	procfs_fallback: _('Conntrack Netlink 不可用，回退 Procfs'),
-	nss_direct_available: _('NSS 直接计数可用'),
-	nss_sync_available: _('NSS 同步计数可用'),
+	nss_ecm_node_primary: _('NSS ECM node 计数可用'),
+	nss_ecm_bpf_primary: _('ECM+BPF 更新链路可用'),
+	nss_ecm_node_fallback: _('ECM+BPF 不可用，自动回退到 ECM'),
+	nss_collectors_unavailable_bpf_fallback: _('ECM+BPF 与 ECM 不可用，自动回退到 BPF'),
 	forced_bpf: _('配置强制使用 BPF'),
 	forced_bpf_unavailable: _('配置强制使用 BPF，但运行时不可用'),
 	no_collect_interface: _('没有接口被分配到客户端采集'),
-	forced_nss_ecm_direct: _('配置强制使用 NSS 直接计数'),
-	forced_direct_fallback_to_sync: _('NSS 直接计数不可用，回退 NSS 同步计数'),
-	forced_nss_ecm_direct_unavailable: _('配置强制使用 NSS 直接计数，但数据源不可用'),
-	forced_nss_conntrack_sync: _('配置强制使用 NSS 同步计数'),
-	forced_nss_conntrack_sync_unavailable: _('配置强制使用 NSS 同步计数，但数据源不可用'),
+	forced_nss_ecm_node: _('配置强制使用 NSS ECM node 计数'),
+	forced_nss_ecm_node_unavailable: _('配置强制使用 NSS ECM node，但数据源不可用'),
+	forced_nss_ecm_bpf: _('配置强制使用 ECM+BPF 更新链路'),
+	forced_nss_ecm_bpf_unavailable: _('配置强制使用 ECM+BPF，但运行链路不可用'),
 	dae_runtime_prefers_bpf: _('检测到 dae/daed，优先使用 BPF'),
-	bpf_unavailable_nss_sync_fallback: _('BPF 不可用，回退 NSS 同步计数'),
-	bpf_unavailable_nss_direct_fallback: _('BPF 不可用，回退 NSS 直接计数'),
 	no_live_rate_collector: _('没有可用的实时速率采集器'),
 	forced_conntrack_netlink: _('配置强制使用 Conntrack Netlink'),
 	forced_conntrack_netlink_unavailable: _('配置强制使用 Conntrack Netlink，但数据源不可用'),
@@ -113,9 +112,7 @@ var INTERFACE_STATUS_REPORT_LABELS = {
 	missing: _('缺失'), unsupported: _('不支持'), excluded: _('已排除'), unknown: _('未知')
 };
 var COLLECTOR_REPORT_LABELS = {
-	bpf: _('BPF'), nss_ecm_direct: _('NSS-direct'),
-	'nss_ecm_direct+conntrack_ecm_sync': _('NSS-direct / NSS sync'),
-	conntrack_ecm_sync: _('NSS sync'), nss_conntrack_sync: _('NSS sync'),
+	bpf: _('BPF'), nss_ecm_node: _('ECM'), nss_ecm_bpf: _('ECM+BPF'),
 	conntrack_netlink: _('CT-Netlink'), conntrack_procfs: _('CT-Procfs'),
 	conntrack: _('CT'), unsupported: _('不可用')
 };
@@ -384,7 +381,8 @@ function validateCoverage(value, path) {
 	if (!onlyFields(value, fields)) return failure(path, _('覆盖率字段无效'));
 	var missing = requireFields(value, [ 'quality', 'samples' ], path);
 	if (missing) return missing;
-	if (!enumValue(value.quality, [ 'warmup', 'idle', 'low_traffic', 'counter_reset', 'ok', 'unsupported' ]) ||
+	if (!enumValue(value.quality, [ 'warmup', 'pending', 'idle', 'low_traffic', 'counter_reset',
+		'counter_skew', 'ok', 'unsupported' ]) ||
 		!nonNegativeInteger(value.samples) || !optionalIntegers(value, fields.slice(2)) ||
 		(hasOwn(value, 'tx_pct') && value.tx_pct > 100) ||
 		(hasOwn(value, 'rx_pct') && value.rx_pct > 100)) return failure(path, _('覆盖率字段无效'));
@@ -402,11 +400,11 @@ function validateStatusResponse(value) {
 	if (!enumValue(value.mode, RUNTIME_MODES) || !enumValue(value.confidence, CONFIDENCES) ||
 		!Array.isArray(value.warnings) || !value.warnings.every(function(item) { return boundedString(item, 1, 160); }) ||
 		!safeInteger(value.refresh_interval_ms, 500) ||
-		!enumValue(value.rate_collector_mode, [ 'auto', 'bpf', 'nss_ecm_direct', 'nss_conntrack_sync' ]) ||
+		!enumValue(value.rate_collector_mode, [ 'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf' ]) ||
 		!enumValue(value.conn_collector_mode, [ 'auto', 'conntrack_netlink', 'conntrack_procfs' ]) ||
 		!boundedString(value.version, 1, 64)) return failure('status', _('字段无效'));
 	if (hasOwn(value, 'collector_mode') && !enumValue(value.collector_mode,
-		[ 'auto', 'bpf', 'nss_ecm_direct', 'nss_conntrack_sync', 'conntrack_netlink', 'conntrack_procfs' ]))
+		[ 'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf', 'conntrack_netlink', 'conntrack_procfs' ]))
 		return failure('status.collector_mode', _('字段无效'));
 	if (!optionalIntegers(value, [ 'active_client_window_ms', 'active_client_min_bps', 'overview_window_samples' ],
 		{ active_client_window_ms: 1000, active_client_min_bps: 1, overview_window_samples: 2 }))
@@ -438,8 +436,8 @@ function validateClientsResponse(value) {
 	var fields = [ 'clients', 'evidence', 'tcp_conns_total', 'udp_conns_total',
 		'udp_dns_conns_total', 'udp_other_conns_total', 'conntrack_entries_seen',
 		'conntrack_entries_matched', 'conntrack_parse_errors', 'conn_source',
-		'nss_ecm_direct_flows_seen', 'nss_ecm_direct_flows_matched',
-		'nss_ecm_direct_parse_errors', 'conn_collector_mode', 'conn_semantics' ];
+		'nss_ecm_nodes_seen', 'nss_ecm_nodes_matched',
+		'nss_ecm_node_parse_errors', 'conn_collector_mode', 'conn_semantics' ];
 	if (!onlyFields(value, fields)) return failure('clients', _('存在未定义字段'));
 	if (!hasOwn(value, 'clients')) return failure('clients.clients', _('字段缺失'));
 	var clientFields = [ 'mac', 'ips', 'identity_key', 'zone', 'interface', 'hostname', 'rx_bps',
@@ -463,19 +461,19 @@ function validateClientsResponse(value) {
 	})) return failure('clients.clients', _('字段无效'));
 	var counters = [ 'tcp_conns_total', 'udp_conns_total', 'udp_dns_conns_total', 'udp_other_conns_total',
 		'conntrack_entries_seen', 'conntrack_entries_matched', 'conntrack_parse_errors',
-		'nss_ecm_direct_flows_seen', 'nss_ecm_direct_flows_matched', 'nss_ecm_direct_parse_errors' ];
+		'nss_ecm_nodes_seen', 'nss_ecm_nodes_matched', 'nss_ecm_node_parse_errors' ];
 	if (!optionalIntegers(value, counters)) return failure('clients', _('连接计数字段无效'));
 	if (hasOwn(value, 'evidence') && !plainObject(value.evidence)) return failure('clients.evidence', _('字段无效'));
 	if (hasOwn(value, 'conn_source') &&
-		!enumValue(value.conn_source, [ 'conntrack', 'conntrack_netlink', 'conntrack_procfs', 'nss_ecm_direct' ]))
+		!enumValue(value.conn_source, [ 'conntrack', 'conntrack_netlink', 'conntrack_procfs' ]))
 		return failure('clients.conn_source', _('连接数据源无效'));
 	if (hasOwn(value, 'conn_collector_mode') &&
 		!enumValue(value.conn_collector_mode, [ 'auto', 'conntrack_netlink', 'conntrack_procfs' ]))
 		return failure('clients.conn_collector_mode', _('字段无效'));
 	if (hasOwn(value, 'conn_semantics') && !boundedString(value.conn_semantics, 1, 160))
 		return failure('clients.conn_semantics', _('字段无效'));
-	var seen = value.conn_source === 'nss_ecm_direct' ? value.nss_ecm_direct_flows_seen : value.conntrack_entries_seen;
-	var matched = value.conn_source === 'nss_ecm_direct' ? value.nss_ecm_direct_flows_matched : value.conntrack_entries_matched;
+	var seen = value.conntrack_entries_seen;
+	var matched = value.conntrack_entries_matched;
 	if (seen !== undefined && matched !== undefined && matched > seen)
 		return failure('clients', _('连接计数关系无效'));
 	return null;
@@ -845,7 +843,9 @@ function coverageState(status) {
 	} else if (quality === 'idle') { state = 'good'; badge = _('空闲'); value = '-'; description = _('当前没有活动流量。'); }
 	else if (quality === 'low_traffic') { state = 'warning'; badge = _('低流量'); value = '-'; description = _('流量过低，暂不判断覆盖率。'); }
 	else if (quality === 'warmup') { state = 'warning'; badge = _('采样中'); value = '-'; description = _('正在积累覆盖率样本。'); }
+	else if (quality === 'pending') { state = 'warning'; badge = _('追平中'); value = '-'; description = _('LAN 覆盖率窗口正在追平；客户端速率仍按 ECM node 增量独立发布。'); }
 	else if (quality === 'counter_reset') { state = 'warning'; badge = _('重新采样'); description = _('检测到计数器重置，正在重新建立窗口。'); }
+	else if (quality === 'counter_skew') { state = 'bad'; badge = _('不可计算'); value = '-'; description = _('客户端与独立 LAN 包时钟不一致，当前窗口未发布。'); }
 	else if (quality === 'unsupported') { state = 'bad'; badge = _('不可用'); value = '-'; description = _('后端没有可用的覆盖率数据源。'); }
 	return { state: state, badge: badge, value: value, description: description,
 		meta: _('%d 个样本 · %s 窗口').format(Math.round(Number(coverage.samples) || 0),
@@ -958,11 +958,10 @@ function contractPathState(viewState) {
 function connectionState(clients, status) {
 	clients = clients || {}; status = status || {};
 	var source = clients.conn_source || clients.conn_collector_mode || '';
-	var direct = String(source).toLowerCase() === 'nss_ecm_direct';
-	var seen = finiteNumber(direct ? clients.nss_ecm_direct_flows_seen : clients.conntrack_entries_seen);
-	var matched = finiteNumber(direct ? clients.nss_ecm_direct_flows_matched : clients.conntrack_entries_matched);
-	var errors = Math.max(0, finiteNumber(direct ? clients.nss_ecm_direct_parse_errors : clients.conntrack_parse_errors) || 0);
-	var pct = seen !== null && seen > 0 && matched !== null ? Math.min(100, matched * 100 / seen) : null;
+	var seen = finiteNumber(clients.conntrack_entries_seen);
+	var matched = finiteNumber(clients.conntrack_entries_matched);
+	var errors = Math.max(0, finiteNumber(clients.conntrack_parse_errors) || 0);
+	var pct = seen !== null && seen > 0 && matched !== null && matched <= seen ? matched * 100 / seen : null;
 	var state = !source || source === 'unsupported' ? 'bad' : (!knownCollector(source) ? 'warning' : 'good');
 	if (seen !== null && matched !== null && matched > seen) state = 'bad';
 	else if (errors > 10) state = 'bad'; else if (errors || pct !== null && pct < 70 || seen === null || matched === null) state = 'warning';
@@ -1301,7 +1300,7 @@ function reportVersion(value) {
 	return /^[0-9]+(?:\.[0-9]+){1,3}(?:[-+~._][A-Za-z0-9]+)*$/.test(value) ? value : '-';
 }
 function reportConfiguredMode(value, kind) {
-	var rate = [ 'auto', 'bpf', 'nss_ecm_direct', 'nss_conntrack_sync' ];
+	var rate = [ 'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf' ];
 	var connection = [ 'auto', 'conntrack_netlink', 'conntrack_procfs' ];
 	value = String(value || '').toLowerCase();
 	return (kind === 'rate' ? rate : connection).indexOf(value) !== -1 ? value : _('未知配置');

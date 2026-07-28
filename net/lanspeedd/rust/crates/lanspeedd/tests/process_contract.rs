@@ -227,7 +227,7 @@ fn process_overlay_removes_cached_policy_warnings_before_current_cycle_reselecti
     let mut config = RuntimeConfig::default();
     config.enable_bpf = true;
     config.enable_conntrack_fallback = true;
-    config.rate_collector_mode = lanspeedd::config::RateCollectorMode::NssConntrackSync;
+    config.rate_collector_mode = lanspeedd::config::RateCollectorMode::NssEcmNode;
     config.interface_include.push("br-lan".into());
     let mut observations = ProbeObservations::default();
     observations.commands.tc = true;
@@ -249,8 +249,9 @@ fn process_overlay_removes_cached_policy_warnings_before_current_cycle_reselecti
     };
     let mut report = assess(&config, observations, &runtime);
     let cached = report.evidence.collector.warnings.clone();
-    assert!(cached.contains(&"nss_ecm_sync_cadence"));
-    assert!(cached.contains(&"nss_prefers_conntrack_sync"));
+    assert!(cached.contains(&"nss_ecm_node_active"));
+    assert!(cached.contains(&"nss_ecm_node_ecm_flows_only"));
+    assert!(!cached.contains(&"nss_bpf_slow_path_only"));
 
     tracker.overlay_report(&mut report);
 

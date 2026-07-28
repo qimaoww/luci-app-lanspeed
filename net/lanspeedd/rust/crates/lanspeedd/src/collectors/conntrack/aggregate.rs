@@ -130,8 +130,8 @@ impl<'a> AggregateState<'a> {
         }
         // Keep a per-flow baseline even when the flow cannot be rendered as a
         // connection detail (missing remote endpoint) or uses a protocol other
-        // than TCP/UDP.  The client-rate ledger needs both cases to avoid
-        // under-counting the authoritative conntrack sync source.
+        // than TCP/UDP. This keeps generation baselines continuous without
+        // making conntrack an aggregate client-rate owner.
         self.connection_details.record_flow_rate_counters(
             ConnectionRateKey::from_owned_flow(
                 &key,

@@ -18,7 +18,7 @@ use lanspeedd::{
 };
 use serde_json::{json, Value};
 
-const CAPABILITY_KEYS: [&str; 45] = [
+const CAPABILITY_KEYS: [&str; 46] = [
     "bpf",
     "bpf_supported",
     "bpf_package",
@@ -33,7 +33,8 @@ const CAPABILITY_KEYS: [&str; 45] = [
     "nss",
     "nss_ecm_offload",
     "nss_ppe_offload",
-    "nss_ecm_direct",
+    "nss_ecm_node",
+    "nss_ecm_bpf",
     "nss_bridge_mgr",
     "nss_ifb",
     "nss_nsm",
@@ -137,9 +138,9 @@ fn fixture_snapshot() -> ResponseSnapshot {
         conntrack_entries_matched: Some(3),
         conntrack_parse_errors: Some(0),
         conn_source: Some("conntrack_netlink".into()),
-        nss_ecm_direct_flows_seen: Some(4),
-        nss_ecm_direct_flows_matched: Some(3),
-        nss_ecm_direct_parse_errors: Some(1),
+        nss_ecm_nodes_seen: Some(4),
+        nss_ecm_nodes_matched: Some(3),
+        nss_ecm_node_parse_errors: Some(1),
         conn_collector_mode: Some("auto".into()),
         conn_semantics: Some(
             "conntrack_current_tcp_established_assured_udp_assured_dns_split".into(),
@@ -280,9 +281,9 @@ fn minimal_optional_snapshot() -> ResponseSnapshot {
     snapshot.clients.conntrack_entries_matched = None;
     snapshot.clients.conntrack_parse_errors = None;
     snapshot.clients.conn_source = None;
-    snapshot.clients.nss_ecm_direct_flows_seen = None;
-    snapshot.clients.nss_ecm_direct_flows_matched = None;
-    snapshot.clients.nss_ecm_direct_parse_errors = None;
+    snapshot.clients.nss_ecm_nodes_seen = None;
+    snapshot.clients.nss_ecm_nodes_matched = None;
+    snapshot.clients.nss_ecm_node_parse_errors = None;
     snapshot.clients.conn_collector_mode = None;
     snapshot.clients.conn_semantics = None;
 
@@ -656,9 +657,9 @@ fn all_eight_fixed_methods_and_nested_models_keep_exact_maximal_key_sets() {
             "conntrack_entries_matched",
             "conntrack_parse_errors",
             "conn_source",
-            "nss_ecm_direct_flows_seen",
-            "nss_ecm_direct_flows_matched",
-            "nss_ecm_direct_parse_errors",
+            "nss_ecm_nodes_seen",
+            "nss_ecm_nodes_matched",
+            "nss_ecm_node_parse_errors",
             "conn_collector_mode",
             "conn_semantics",
         ],
@@ -969,7 +970,8 @@ fn json_names_enums_warnings_evidence_version_and_directions_are_stable() {
         "nss",
         "nss_ecm_offload",
         "nss_ppe_offload",
-        "nss_ecm_direct",
+        "nss_ecm_node",
+        "nss_ecm_bpf",
         "nss_bridge_mgr",
         "nss_ifb",
         "nss_nsm",

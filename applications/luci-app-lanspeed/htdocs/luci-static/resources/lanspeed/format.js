@@ -13,6 +13,7 @@
 
 var PREF_KEY                  = 'luci-app-lanspeed.prefs.v4';
 var MIN_REFRESH_MS            = 1000;
+var NSS_REFRESH_MS            = 2000;
 var ACTIVE_CLIENT_WINDOW_MS   = 10000;
 var ACTIVE_CLIENT_MIN_BPS     = 1;
 var DELTA_SIGNIFICANT_RATIO   = 0.10;
@@ -46,6 +47,23 @@ function asArray(v) { return Array.isArray(v) ? v : []; }
 function textOrDash(v) { return (v === null || v === undefined || v === '') ? '-' : String(v); }
 function identityOf(c) { return c.identity_key || [c.mac, c.zone].filter(Boolean).join('@') || '-'; }
 function clientDisplayName(c) { return c.hostname || c.mac || identityOf(c); }
+
+function effectiveRateCollector(status) {
+	var evidence = status && status.evidence || {};
+	var collector = evidence.collector || {};
+	return String(evidence.effective_collector || collector.primary_source || 'unsupported');
+}
+
+function nssRefreshLocked(status) {
+	var effective = effectiveRateCollector(status);
+	return effective === 'nss_ecm_node' || effective === 'nss_ecm_bpf';
+}
+
+function effectiveRefreshMs(status, prefs) {
+	if (nssRefreshLocked(status)) return NSS_REFRESH_MS;
+	return Math.max(MIN_REFRESH_MS,
+		Number(prefs && prefs.refreshMs) || DEFAULT_PREFS.refreshMs);
+}
 
 function compareText(a, b) {
 	return String(a || '').localeCompare(String(b || ''), undefined, { numeric: true, sensitivity: 'base' });
@@ -250,6 +268,7 @@ function savePrefs(p) {
 return baseclass.extend({
 	PREF_KEY:                  PREF_KEY,
 	MIN_REFRESH_MS:            MIN_REFRESH_MS,
+	NSS_REFRESH_MS:            NSS_REFRESH_MS,
 	ACTIVE_CLIENT_WINDOW_MS:   ACTIVE_CLIENT_WINDOW_MS,
 	ACTIVE_CLIENT_MIN_BPS:     ACTIVE_CLIENT_MIN_BPS,
 	DELTA_SIGNIFICANT_RATIO:   DELTA_SIGNIFICANT_RATIO,
@@ -258,6 +277,9 @@ return baseclass.extend({
 	PAGE_SIZE_CHOICES:         PAGE_SIZE_CHOICES,
 	SORT_KEYS:                 SORT_KEYS,
 	DEFAULT_PREFS:             DEFAULT_PREFS,
+	nssRefreshLocked:          nssRefreshLocked,
+	effectiveRateCollector:    effectiveRateCollector,
+	effectiveRefreshMs:        effectiveRefreshMs,
 
 	asArray:           asArray,
 	textOrDash:        textOrDash,

@@ -237,7 +237,7 @@ function successRpc(at) {
 
 function normalizedResult(marker, at) {
 	return {
-		status: { marker: marker, version: '1.1.3-r2' },
+		status: { marker: marker, version: '1.1.4-r1' },
 		clients: { clients: [] },
 		interfaces: { interfaces: [] },
 		uci: {},
@@ -250,7 +250,7 @@ async function testIndependentRpcSettlement(context, fmt) {
 	let tick = 1000;
 	const clock = function() { tick += 10; return tick; };
 	const rpc = {
-		status: function() { return Promise.resolve({ version: '1.1.3-r2' }); },
+		status: function() { return Promise.resolve({ version: '1.1.4-r1' }); },
 		clients: function() { return Promise.reject(new Error('clients down')); },
 		interfaces: function() { return Promise.resolve({ interfaces: [ { name: 'br-lan' } ] }); },
 		uciGet: function() { return Promise.reject(new Error('uci down')); }
@@ -338,6 +338,7 @@ async function testControllerLifecycle(context, fmt) {
 	let busyRefreshes = 0;
 	let calls = 0;
 	let deferred = makeDeferred();
+	let now = 500;
 	const state = Object.assign(normalizedResult('initial', 100), {
 		prefs: { paused: false, refreshMs: 3000 },
 		refreshLive: function() { refreshes++; },
@@ -349,12 +350,32 @@ async function testControllerLifecycle(context, fmt) {
 		load: function() { calls++; return deferred.promise; },
 		timerApi: timers,
 		eventTarget: target,
-		now: function() { return 500; }
+		now: function() { return now; }
 	});
 
 	controller.schedule();
 	assert.strictEqual(timers.count(), 1);
 	assert.strictEqual(timers.firstDelay(), 3000);
+	state.status = {
+		capabilities: { nss: true },
+		evidence: { effective_collector: 'bpf' }
+	};
+	controller.schedule();
+	assert.strictEqual(timers.count(), 1);
+	assert.strictEqual(timers.firstDelay(), 3000,
+		'pure BPF must keep the selected refresh cadence even on an NSS device');
+	state.status.evidence.effective_collector = 'nss_ecm_node';
+	controller.schedule();
+	assert.strictEqual(timers.firstDelay(), 2000,
+		'ECM must use the fixed two-second backend-value refresh cadence');
+	state.status.evidence.effective_collector = 'nss_ecm_bpf';
+	controller.schedule();
+	assert.strictEqual(timers.firstDelay(), 2000,
+		'ECM+BPF must use the fixed two-second backend-value refresh cadence');
+	state.status = normalizedResult('initial', 100).status;
+	controller.schedule();
+	assert.strictEqual(timers.firstDelay(), 3000,
+		'non-NSS status pages must retain the saved refresh preference');
 	const automatic = controller.reload(false);
 	assert.strictEqual(state.loading, true);
 	assert.strictEqual(state.manualBusy, false);
@@ -367,12 +388,15 @@ async function testControllerLifecycle(context, fmt) {
 	assert.strictEqual(timers.count(), 0);
 	await Promise.resolve();
 	assert.strictEqual(calls, 1);
+	now = 1250;
 	deferred.resolve(normalizedResult('fresh', 500));
 	await automatic;
 	assert.strictEqual(state.status.marker, 'fresh');
 	assert.strictEqual(state.loading, false);
 	assert.strictEqual(state.manualBusy, false);
 	assert.strictEqual(timers.count(), 1);
+	assert.strictEqual(timers.firstDelay(), 2250,
+		'RPC time must be deducted from the refresh period instead of extending it');
 
 	state.prefs.paused = true;
 	controller.stopTimer();
@@ -452,7 +476,7 @@ function loadShellAndRefresh(context, fmt) {
 		},
 		fmt,
 		{ detailHref: function(pathname, key) { return pathname + '?client=' + encodeURIComponent(key); } },
-		{ FULL_VERSION: '1.1.3-r2' },
+		{ FULL_VERSION: '1.1.4-r1' },
 		{
 			hideIpv6RangesValue: function(value) { return value || ''; },
 			displayIpsForClient: function(values) { return Array.isArray(values) ? values : []; }
@@ -504,7 +528,7 @@ function testPaginationAndUiStates(context, fmt) {
 	let refreshCount = 0;
 	const clients = Array.from({ length: 30 }, function(_value, index) { return client(index + 1); });
 	const state = {
-		status: { version: '1.1.3-r2', coverage: { quality: 'idle' } },
+		status: { version: '1.1.4-r1', coverage: { quality: 'idle' } },
 		clients: { clients: clients },
 		interfaces: { interfaces: [ { name: 'br-lan', role: 'lan', rx_bps: 100, tx_bps: 200 } ] },
 		rpc: successRpc(100000),
@@ -532,6 +556,27 @@ function testPaginationAndUiStates(context, fmt) {
 	};
 	const built = modules.shell.buildShell(state);
 	state.refs = built.refs;
+	const nssState = Object.assign({}, state, {
+		status: {
+			capabilities: { nss: true },
+			evidence: { effective_collector: 'nss_ecm_bpf' }
+		},
+		prefs: Object.assign({}, state.prefs)
+	});
+	const nssBuilt = modules.shell.buildShell(nssState);
+	assert.strictEqual(nssBuilt.refs.intervalSel.disabled, true);
+	assert.strictEqual(nssBuilt.refs.intervalSel.children.length, 1);
+	assert.strictEqual(textOf(nssBuilt.refs.intervalSel.children[0]), '2s',
+		'ECM pages must expose only the fixed two-second refresh cadence');
+	nssState.status.evidence.effective_collector = 'bpf';
+	modules.refresh.refreshIntervalControl(nssState, nssBuilt.refs, nssState.status);
+	assert.strictEqual(nssBuilt.refs.intervalSel.disabled, false,
+		'pure BPF must unlock the selector even when NSS capability remains true');
+	assert.strictEqual(nssBuilt.refs.intervalSel.children.length, 5);
+	nssState.status.evidence.effective_collector = 'nss_ecm_node';
+	modules.refresh.refreshIntervalControl(nssState, nssBuilt.refs, nssState.status);
+	assert.strictEqual(nssBuilt.refs.intervalSel.disabled, true,
+		'automatic recovery to ECM must relock the selector without rebuilding the page');
 	state.refreshLive = function() { refreshCount++; modules.refresh.refreshLive(state); };
 	state.refreshLive();
 	const toolbarRight = findByClass(built.root, 'lanspeed-toolbar-right');
@@ -545,7 +590,7 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.strictEqual(findAllByClass(built.root, 'lanspeed-freshness-status').length, 0);
 	assert.strictEqual(state.refs.servicePill, undefined);
 	assert.strictEqual(state.refs.freshnessPill, undefined);
-	assert.strictEqual(state.refs.meta.textContent, '后端 1.1.3-r2 · luci 1.1.3-r2');
+	assert.strictEqual(state.refs.meta.textContent, '后端 1.1.4-r1 · luci 1.1.4-r1');
 	assert.ok(!state.refs.meta.textContent.includes('检查于'));
 	assert.strictEqual(state.pageCount, 3);
 	assert.strictEqual(state.refs.root.attrs['aria-busy'], 'false');
@@ -556,6 +601,10 @@ function testPaginationAndUiStates(context, fmt) {
 	state.refreshLive();
 	assert.strictEqual(state.refs.tbody.children[0], stableFirstRow,
 		'live refresh must preserve a stable client row so its hover state does not flash');
+	assert.ok(textOf(stableFirstRow).includes(fmt.formatRate(987654, 'bit')),
+		'a changed live rate must render the real backend value immediately without interpolation');
+	assert.strictEqual(findByClass(stableFirstRow, 'lanspeed-live-rate'), null,
+		'rate rendering must not introduce animation-only DOM');
 
 	state.refs.pageNext.listeners.click({ preventDefault: function() {} });
 	assert.strictEqual(state.page, 2);

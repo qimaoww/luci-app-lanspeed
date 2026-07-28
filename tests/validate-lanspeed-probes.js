@@ -442,13 +442,7 @@ function buildHealth(fixture) {
   const mapFull = fixture.config.max_clients === 0;
   const nssPresent = Boolean(fixture.nss && fixture.nss.present);
   const nssEcmActive = Boolean(fixture.nss && fixture.nss.ecm_active);
-  const nssConntrackSyncPreferred = Boolean(
-    fixture.config.enable_conntrack_fallback &&
-    nfAcct.present &&
-    nfAcct.value === '1' &&
-    nssPresent &&
-    nssEcmActive
-  );
+  const nssEcmNodePreferred = Boolean(nssPresent && nssEcmActive);
   const safeAttach = Boolean(
     fixture.config.enable_bpf &&
     fixture.commands.tc &&
@@ -475,17 +469,9 @@ function buildHealth(fixture) {
   }
 
   const bpfFullAvailable = Boolean(bpfRuntimeMetrics && !firewall.hardware_flow_offload);
-  const conntrackPrimaryPreferred = nssConntrackSyncPreferred;
-  const conntrackFallbackActive = Boolean(
-    fixture.config.enable_conntrack_fallback &&
-    conntrackPrimaryPreferred &&
-    nfAcct.present &&
-    nfAcct.value === '1'
-  );
-  const bpfPrimaryActive = Boolean(bpfFullAvailable && !conntrackPrimaryPreferred);
-  if (conntrackFallbackActive) {
-    addUnique(warnings, 'conntrack_routed_nat_only');
-  }
+  const ecmNodePrimaryPreferred = nssEcmNodePreferred;
+  const conntrackFallbackActive = false;
+  const bpfPrimaryActive = Boolean(bpfFullAvailable && !ecmNodePrimaryPreferred);
 
   let mode = 'Full';
   if (!fixture.commands.tc && !conntrackFallbackActive) {
@@ -589,7 +575,7 @@ function buildHealth(fixture) {
         bpf_assets_are_evidence_only: true,
         runtime_attach_map_read_success: bpfRuntimeMetrics,
         live_metrics: bpfPrimaryActive,
-        primary_source: conntrackPrimaryPreferred ? 'nss_conntrack_sync' : (bpfPrimaryActive ? 'bpf' : 'unsupported'),
+        primary_source: ecmNodePrimaryPreferred ? 'nss_ecm_node' : (bpfPrimaryActive ? 'bpf' : 'unsupported'),
         runtime_gate_warning: 'bpf_runtime_loader_unavailable',
         map_full: mapFull,
         attach_model: {
@@ -657,7 +643,8 @@ function buildHealth(fixture) {
           enabled: Boolean(fixture.config.enable_conntrack_fallback),
           active: conntrackFallbackActive,
           collector_mode: 'conntrack',
-          primary_source: conntrackPrimaryPreferred ? 'nss_conntrack_sync' : (bpfPrimaryActive ? 'bpf' : 'unsupported'),
+          primary_source: 'unsupported',
+          role: 'connection_metadata_only',
           mode: 'Degraded',
           confidence: conntrackFallbackActive ? (conntrackLowConfidence ? 'low' : 'medium') : 'unsupported',
           bpf_full_blocked_by_runtime_gate: !bpfRuntimeMetrics,

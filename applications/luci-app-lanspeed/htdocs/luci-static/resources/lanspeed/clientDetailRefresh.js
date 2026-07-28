@@ -36,7 +36,6 @@ function warningLabel(warning) {
 function sourceLabel(source) {
 	if (source === 'conntrack_netlink') return 'Conntrack Netlink';
 	if (source === 'conntrack_procfs') return 'Conntrack Procfs';
-	if (source === 'nss_ecm_direct') return 'NSS-direct';
 	return source ? String(source) : _('未知');
 }
 

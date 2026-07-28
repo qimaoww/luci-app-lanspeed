@@ -251,6 +251,7 @@ fn expected_capabilities(value: &Value, report_safe_attach: bool) -> ProbeCapabi
         bpf_package: flag(value, &["files", "bpf_package"]),
         bpf_object: flag(value, &["files", "bpf_object"]),
         bpf_runtime_metrics: false,
+        nss_ecm_bpf: false,
         conntrack_fallback: false,
         live_metrics: false,
         fw4: flag(value, &["commands", "fw4"]),
@@ -944,6 +945,42 @@ fn missing_optional_dae_route_table_is_not_a_probe_failure() {
 }
 
 #[test]
+fn x86_probe_profile_does_not_touch_or_publish_nss_ecm_paths() {
+    let files = FakeFiles {
+        nss_state_error: true,
+        ..FakeFiles::default()
+    };
+    let mut collector = ProbeCollector::new(
+        FakeCommands::default(),
+        files,
+        FakeUci::default(),
+        FakeUbus::default(),
+    )
+    .with_nss_probe(false);
+
+    let report = collector.collect(
+        &RuntimeConfig::default(),
+        &ProbeRuntimeHealth::default(),
+        ProbeMethod::Health,
+    );
+
+    assert!(!report.evidence.probe_error);
+    assert!(!report.facts.nss.present);
+    assert!(!report.capabilities.nss_ecm_bpf);
+    assert!(report.evidence.file.iter().all(|entry| {
+        !entry.source.contains("lanspeed-ebpf-ecm")
+            && !entry.source.contains("/ecm")
+            && !entry.source.contains("qca-nss")
+            && !entry.source.contains("/dev/nss")
+    }));
+    assert!(report
+        .evidence
+        .probe_failures
+        .iter()
+        .all(|failure| failure.kind != "nss"));
+}
+
+#[test]
 fn command_availability_requires_an_executable_file() {
     use std::os::unix::fs::PermissionsExt;
     let directory =
@@ -999,7 +1036,7 @@ fn report_mode_confidence_and_capabilities_come_from_the_single_policy_decision(
     );
     assert_eq!(sync.mode.as_str(), "Degraded");
     assert!(sync.capabilities.live_metrics);
-    assert!(sync.capabilities.conntrack_fallback);
+    assert!(!sync.capabilities.conntrack_fallback);
     assert!(!sync.capabilities.bpf);
 
     observations.commands.tc = false;
@@ -1025,6 +1062,7 @@ fn nss_presence_does_not_invent_the_firewall_hardware_offload_flag() {
     observations.bpf.object = true;
     observations.nss.present = true;
     observations.nss.ecm_active = true;
+    observations.nss.direct_state_readable = true;
     observations.proxy.daed_running = true;
     observations.proxy.daed_process = true;
     let runtime = ProbeRuntimeHealth {
@@ -1037,13 +1075,14 @@ fn nss_presence_does_not_invent_the_firewall_hardware_offload_flag() {
     let report = assess(&config, observations, &runtime);
     assert!(!report.capabilities.bpf);
     assert!(report.capabilities.bpf_runtime_metrics);
-    assert!(report.capabilities.conntrack_fallback);
+    assert!(!report.capabilities.conntrack_fallback);
     assert!(!report.capabilities.hardware_flow_offload);
     assert!(!report
         .warnings
         .contains(&"hardware_flow_offload_unsupported"));
     assert!(!report.warnings.contains(&"dae_runtime_prefers_bpf"));
-    assert!(report.warnings.contains(&"nss_bpf_slow_path_only"));
+    assert!(report.warnings.contains(&"nss_ecm_node_ecm_flows_only"));
+    assert!(!report.warnings.contains(&"nss_bpf_slow_path_only"));
 }
 
 #[test]

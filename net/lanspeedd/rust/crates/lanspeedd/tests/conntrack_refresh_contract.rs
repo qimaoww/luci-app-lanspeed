@@ -134,22 +134,18 @@ fn collected_with_details(
 }
 
 #[test]
-fn periodic_conntrack_is_only_required_by_sync_rate_source() {
+fn periodic_conntrack_is_not_part_of_any_rate_source() {
     assert_eq!(
         periodic_conntrack_plan(RateCollector::Bpf),
         PeriodicConntrackPlan::Skip
     );
     assert_eq!(
-        periodic_conntrack_plan(RateCollector::NssEcmDirect),
+        periodic_conntrack_plan(RateCollector::NssEcmNode),
         PeriodicConntrackPlan::Skip
     );
     assert_eq!(
         periodic_conntrack_plan(RateCollector::Unsupported),
         PeriodicConntrackPlan::Skip
-    );
-    assert_eq!(
-        periodic_conntrack_plan(RateCollector::NssConntrackSync),
-        PeriodicConntrackPlan::Read
     );
 }
 
@@ -665,9 +661,9 @@ fn overlay_does_not_append_conntrack_only_clients_without_counted_connections() 
 #[test]
 fn failed_overlay_never_returns_stale_connection_counts() {
     let mut before = base_snapshot();
-    before.clients.nss_ecm_direct_flows_seen = Some(11);
-    before.clients.nss_ecm_direct_flows_matched = Some(7);
-    before.clients.nss_ecm_direct_parse_errors = Some(2);
+    before.clients.nss_ecm_nodes_seen = Some(11);
+    before.clients.nss_ecm_nodes_matched = Some(7);
+    before.clients.nss_ecm_node_parse_errors = Some(2);
     let after = apply_conntrack_failure(&before, "netlink: permission denied");
 
     assert_eq!(
@@ -684,9 +680,9 @@ fn failed_overlay_never_returns_stale_connection_counts() {
     assert_eq!(after.clients.udp_conns_total, None);
     assert_eq!(after.clients.conntrack_entries_seen, None);
     assert_eq!(after.clients.conn_source, None);
-    assert_eq!(after.clients.nss_ecm_direct_flows_seen, Some(11));
-    assert_eq!(after.clients.nss_ecm_direct_flows_matched, Some(7));
-    assert_eq!(after.clients.nss_ecm_direct_parse_errors, Some(2));
+    assert_eq!(after.clients.nss_ecm_nodes_seen, Some(11));
+    assert_eq!(after.clients.nss_ecm_nodes_matched, Some(7));
+    assert_eq!(after.clients.nss_ecm_node_parse_errors, Some(2));
     assert_eq!(after.overview.samples[0].tcp_conns, Some(0));
     let evidence = after.clients.evidence.unwrap();
     assert_eq!(evidence.details["conntrack_status"], "unavailable");
@@ -728,17 +724,17 @@ fn failed_overlay_removes_stale_connection_only_clients() {
 }
 
 #[test]
-fn successful_overlay_preserves_independent_nss_direct_diagnostics() {
+fn successful_overlay_preserves_independent_nss_node_diagnostics() {
     let mut before = base_snapshot();
-    before.clients.nss_ecm_direct_flows_seen = Some(11);
-    before.clients.nss_ecm_direct_flows_matched = Some(7);
-    before.clients.nss_ecm_direct_parse_errors = Some(2);
+    before.clients.nss_ecm_nodes_seen = Some(11);
+    before.clients.nss_ecm_nodes_matched = Some(7);
+    before.clients.nss_ecm_node_parse_errors = Some(2);
 
     let after = apply_conntrack_success(&before, &collected(), "auto");
 
-    assert_eq!(after.clients.nss_ecm_direct_flows_seen, Some(11));
-    assert_eq!(after.clients.nss_ecm_direct_flows_matched, Some(7));
-    assert_eq!(after.clients.nss_ecm_direct_parse_errors, Some(2));
+    assert_eq!(after.clients.nss_ecm_nodes_seen, Some(11));
+    assert_eq!(after.clients.nss_ecm_nodes_matched, Some(7));
+    assert_eq!(after.clients.nss_ecm_node_parse_errors, Some(2));
 }
 
 #[test]
@@ -771,7 +767,6 @@ fn unattempted_observation_preserves_default_conntrack_availability() {
 
     assert!(health.conntrack_netlink_available);
     assert!(health.conntrack_procfs_available);
-    assert_eq!(health.nss_sync_read_ok, None);
 }
 
 #[test]
@@ -782,21 +777,18 @@ fn attempted_observation_propagates_success_failure_and_skipped_state() {
     observation.apply_runtime_health(true, &mut health);
     assert!(health.conntrack_netlink_available);
     assert!(!health.conntrack_procfs_available);
-    assert_eq!(health.nss_sync_read_ok, Some(true));
 
     observation.record_skipped();
     let mut skipped = RuntimeHealth::default();
     observation.apply_runtime_health(true, &mut skipped);
     assert!(skipped.conntrack_netlink_available);
     assert!(!skipped.conntrack_procfs_available);
-    assert_eq!(skipped.nss_sync_read_ok, Some(true));
 
     observation.record_failure(11, "dump failed", false, true);
     let mut failed = RuntimeHealth::default();
     observation.apply_runtime_health(false, &mut failed);
     assert!(!failed.conntrack_netlink_available);
     assert!(failed.conntrack_procfs_available);
-    assert_eq!(failed.nss_sync_read_ok, Some(false));
 }
 
 #[test]

@@ -6,7 +6,8 @@ use std::{
 
 use aya_obj::{generated::bpf_map_type, obj::ProgramSection, Object};
 use lanspeed_common::{
-    CLIENTS_MAP_NAME, EGRESS_EARLY_PROGRAM_NAME, EGRESS_PROGRAM_NAME, INGRESS_EARLY_PROGRAM_NAME,
+    CLIENTS_MAP_NAME, ECM_CLIENTS_MAP_NAME, ECM_LAYOUT_MAP_NAME, ECM_UPDATE_PROGRAM_NAME,
+    EGRESS_EARLY_PROGRAM_NAME, EGRESS_PROGRAM_NAME, INGRESS_EARLY_PROGRAM_NAME,
     INGRESS_PROGRAM_NAME, MAX_CLIENTS, MAX_CONN_TUPLES, SEEN_CONNS_MAP_NAME,
 };
 use object::{
@@ -57,6 +58,26 @@ fn fallback_object_bytes() -> Vec<u8> {
     })
 }
 
+fn ecm_object_path() -> PathBuf {
+    env::var_os("LANSPEED_EBPF_ECM_OBJECT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join("target/bpfel-unknown-none/release/lanspeed-ebpf-ecm")
+        })
+}
+
+fn ecm_object_bytes() -> Vec<u8> {
+    let path = ecm_object_path();
+    fs::read(&path).unwrap_or_else(|error| {
+        panic!(
+            "failed to read {}: {error}; build the aarch64 ECM eBPF object first",
+            path.display()
+        )
+    })
+}
+
 #[test]
 fn objects_are_fresh_for_the_accounting_sources() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -85,6 +106,29 @@ fn objects_are_fresh_for_the_accounting_sources() {
                 source.display()
             );
         }
+    }
+
+    let ecm_object = ecm_object_path();
+    let ecm_object_time = fs::metadata(&ecm_object)
+        .unwrap_or_else(|error| panic!("failed to stat {}: {error}", ecm_object.display()))
+        .modified()
+        .expect("ECM object modification time must be available");
+    for source in [
+        workspace.join("crates/lanspeed-common/src/lib.rs"),
+        workspace.join("crates/lanspeed-ebpf/src/atomics.rs"),
+        workspace.join("crates/lanspeed-ebpf/src/ecm.rs"),
+        workspace.join("crates/lanspeed-ebpf/src/main.rs"),
+    ] {
+        let source_time = fs::metadata(&source)
+            .unwrap_or_else(|error| panic!("failed to stat {}: {error}", source.display()))
+            .modified()
+            .expect("ECM source modification time must be available");
+        assert!(
+            ecm_object_time >= source_time,
+            "{} is older than {}; rebuild the aarch64 ECM object before running this contract",
+            ecm_object.display(),
+            source.display()
+        );
     }
 }
 
@@ -140,7 +184,7 @@ fn compiled_accounting_entry_does_not_zero_the_full_prefix() {
 }
 
 #[test]
-fn production_object_has_exact_maps_programs_and_license() {
+fn production_tc_object_has_exact_maps_programs_and_license() {
     let bytes = object_bytes();
     let object = Object::parse(&bytes).expect("Aya must parse the eBPF object");
 
@@ -270,7 +314,7 @@ fn fallback_object_preserves_abi_without_kfunc_relocations() {
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from([CLIENTS_MAP_NAME, PACKET_SCRATCH_MAP_NAME])
+        BTreeSet::from([CLIENTS_MAP_NAME, PACKET_SCRATCH_MAP_NAME,])
     );
     assert_eq!(
         parsed
@@ -321,6 +365,63 @@ fn fallback_object_preserves_abi_without_kfunc_relocations() {
         .collect::<BTreeSet<_>>();
     assert!(!undefined.contains("bpf_skb_ct_lookup"));
     assert!(!undefined.contains("bpf_ct_release"));
+}
+
+#[test]
+fn aarch64_ecm_object_is_isolated_from_tc_and_uses_aarch64_probe_registers() {
+    let bytes = ecm_object_bytes();
+    let parsed = Object::parse(&bytes).expect("Aya must parse the ECM object");
+    assert_eq!(parsed.license.to_bytes_with_nul(), b"GPL\0");
+    assert_eq!(
+        parsed
+            .maps
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([ECM_CLIENTS_MAP_NAME, ECM_LAYOUT_MAP_NAME])
+    );
+    assert_eq!(
+        parsed
+            .programs
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([ECM_UPDATE_PROGRAM_NAME])
+    );
+    assert!(matches!(
+        parsed.programs[ECM_UPDATE_PROGRAM_NAME].section,
+        ProgramSection::KProbe
+    ));
+
+    let clients = &parsed.maps[ECM_CLIENTS_MAP_NAME];
+    assert_eq!(
+        clients.map_type(),
+        bpf_map_type::BPF_MAP_TYPE_LRU_HASH as u32
+    );
+    assert_eq!((clients.key_size(), clients.value_size()), (24, 24));
+    assert_eq!(clients.max_entries(), MAX_CLIENTS * 4);
+    let layout = &parsed.maps[ECM_LAYOUT_MAP_NAME];
+    assert_eq!(layout.map_type(), bpf_map_type::BPF_MAP_TYPE_ARRAY as u32);
+    assert_eq!((layout.key_size(), layout.value_size()), (4, 16));
+    assert_eq!(layout.max_entries(), 1);
+
+    let elf = object::File::parse(bytes.as_slice()).expect("object crate must parse ECM ELF");
+    let section = elf
+        .section_by_name("kprobe/ecm_db_connection_data_totals_update")
+        .expect("ECM object must contain the totals-update kprobe section");
+    let argument_offsets = section
+        .data()
+        .expect("ECM kprobe section must be readable")
+        .chunks_exact(8)
+        .take(12)
+        .filter(|instruction| instruction[0] == 0x79 && instruction[1] >> 4 == 1)
+        .map(|instruction| i16::from_le_bytes([instruction[2], instruction[3]]))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        argument_offsets,
+        BTreeSet::from([0, 8, 16, 24]),
+        "ECM kprobe must read x0-x3 from the aarch64 pt_regs layout"
+    );
 }
 
 #[test]

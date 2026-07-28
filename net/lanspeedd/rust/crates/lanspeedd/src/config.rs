@@ -55,8 +55,8 @@ pub fn is_sysdevice_candidate(name: &str) -> bool {
 pub enum RateCollectorMode {
     Auto,
     Bpf,
-    NssEcmDirect,
-    NssConntrackSync,
+    NssEcmNode,
+    NssEcmBpf,
 }
 
 impl RateCollectorMode {
@@ -64,8 +64,8 @@ impl RateCollectorMode {
         match value {
             "auto" => Some(Self::Auto),
             "bpf" => Some(Self::Bpf),
-            "nss_ecm_direct" => Some(Self::NssEcmDirect),
-            "nss_conntrack_sync" | "conntrack_ecm_sync" => Some(Self::NssConntrackSync),
+            "nss_ecm_node" => Some(Self::NssEcmNode),
+            "nss_ecm_bpf" => Some(Self::NssEcmBpf),
             _ => None,
         }
     }
@@ -74,8 +74,8 @@ impl RateCollectorMode {
         match self {
             Self::Auto => "auto",
             Self::Bpf => "bpf",
-            Self::NssEcmDirect => "nss_ecm_direct",
-            Self::NssConntrackSync => "nss_conntrack_sync",
+            Self::NssEcmNode => "nss_ecm_node",
+            Self::NssEcmBpf => "nss_ecm_bpf",
         }
     }
 }

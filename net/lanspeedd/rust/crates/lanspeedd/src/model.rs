@@ -63,7 +63,8 @@ pub struct Capabilities {
     pub nss: bool,
     pub nss_ecm_offload: bool,
     pub nss_ppe_offload: bool,
-    pub nss_ecm_direct: bool,
+    pub nss_ecm_node: bool,
+    pub nss_ecm_bpf: bool,
     pub nss_bridge_mgr: bool,
     pub nss_ifb: bool,
     pub nss_nsm: bool,
@@ -253,17 +254,17 @@ pub struct ClientsResponse {
         skip_serializing_if = "Option::is_none",
         serialize_with = "saturated_option_u64"
     )]
-    pub nss_ecm_direct_flows_seen: Option<u64>,
+    pub nss_ecm_nodes_seen: Option<u64>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         serialize_with = "saturated_option_u64"
     )]
-    pub nss_ecm_direct_flows_matched: Option<u64>,
+    pub nss_ecm_nodes_matched: Option<u64>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         serialize_with = "saturated_option_u64"
     )]
-    pub nss_ecm_direct_parse_errors: Option<u64>,
+    pub nss_ecm_node_parse_errors: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conn_collector_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -283,9 +284,9 @@ impl ClientsResponse {
             conntrack_entries_matched: None,
             conntrack_parse_errors: None,
             conn_source: None,
-            nss_ecm_direct_flows_seen: None,
-            nss_ecm_direct_flows_matched: None,
-            nss_ecm_direct_parse_errors: None,
+            nss_ecm_nodes_seen: None,
+            nss_ecm_nodes_matched: None,
+            nss_ecm_node_parse_errors: None,
             conn_collector_mode: None,
             conn_semantics: Some(crate::state::CONNECTION_SEMANTICS.into()),
         }

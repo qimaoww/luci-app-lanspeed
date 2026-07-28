@@ -21,6 +21,8 @@ pub mod history;
 pub mod identity;
 pub mod interfaces;
 pub mod model;
+#[cfg(any(feature = "openwrt", test))]
+mod nss_window;
 pub mod policy;
 pub mod probe;
 #[cfg(feature = "openwrt")]

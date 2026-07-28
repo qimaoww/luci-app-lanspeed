@@ -42,7 +42,7 @@ var AURORA_CSS = [
 		'--lanspeed-section-x:calc(var(--spacing,.25rem)*5);',
 		'--lanspeed-section-y:calc(var(--spacing,.25rem)*4);',
 		'--lanspeed-control-height:calc(var(--spacing,.25rem)*10);',
-		'--lanspeed-transition:120ms ease;color:var(--lanspeed-text)}',
+		'--lanspeed-transition:0s;color:var(--lanspeed-text)}',
 
 	ROOT + '>:is(.cbi-section,.lanspeed-config-subsection,.lanspeed-ifcfg){margin:0;padding:0;',
 		'overflow:hidden;border:1px solid var(--lanspeed-border);',
