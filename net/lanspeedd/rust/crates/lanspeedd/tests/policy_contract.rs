@@ -62,7 +62,7 @@ fn auto_uses_bpf_without_nss_then_ecm_node_and_ecm_bpf_in_order() {
 }
 
 #[test]
-fn forced_ecm_bpf_uses_only_its_kprobe_health_and_never_silently_falls_back() {
+fn forced_ecm_bpf_requires_its_kprobe_and_degrades_without_the_tc_rate_floor() {
     let mut config = config();
     config.rate_collector_mode = RateCollectorMode::NssEcmBpf;
     let mut facts = bpf_facts();
@@ -83,6 +83,16 @@ fn forced_ecm_bpf_uses_only_its_kprobe_health_and_never_silently_falls_back() {
     let available = select_collectors(&config, &facts, &healthy_ecm_bpf());
     assert_eq!(available.rate, RateCollector::NssEcmBpf);
     assert_eq!(available.evidence.rate_reason, "forced_nss_ecm_bpf");
+    assert_eq!(available.mode, Mode::Full);
+
+    let mut ecm_only = healthy_ecm_bpf();
+    ecm_only.bpf_object_loaded = false;
+    ecm_only.bpf_attached = false;
+    ecm_only.bpf_map_read_ok = false;
+    let degraded = select_collectors(&config, &facts, &ecm_only);
+    assert_eq!(degraded.rate, RateCollector::NssEcmBpf);
+    assert_eq!(degraded.mode, Mode::Degraded);
+    assert!(degraded.warnings.contains(&"nss_ecm_bpf_tc_degraded"));
 }
 
 #[test]

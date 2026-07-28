@@ -28,6 +28,8 @@ pub const ECM_BPF_MAP_READ_STAGE: &str = "ecm_bpf_map_read";
 pub const ECM_BPF_DETACH_STAGE: &str = "ecm_bpf_kprobe_detach";
 pub const ECM_RATE_HOLD_MS: u64 = 2_500;
 const FLOW_RETENTION_MS: u64 = 60_000;
+pub const ECM_EVENT_CLOCK_MAX_LAG_MS: u64 = 1_500;
+pub const ECM_EVENT_RATE_MAX_WINDOW_MS: u64 = 5_000;
 const RATE_MEDIAN_SAMPLES: usize = 3;
 const MAX_ECM_MAP_ENTRIES: usize = MAX_CLIENTS as usize * 4;
 const BTF_KIND_INT: u32 = 1;
@@ -102,6 +104,8 @@ struct FlowBaseline {
     bytes: u64,
     packets: u64,
     last_progress_sample_ms: u64,
+    last_progress_event_ms: u64,
+    event_clock_valid: bool,
     last_seen_ms: u64,
 }
 
@@ -196,6 +200,7 @@ impl EcmBpfSnapshotCollector {
                         counters.bytes - previous.bytes,
                         counters.packets - previous.packets,
                         previous.last_progress_sample_ms,
+                        Some((previous.last_progress_event_ms, previous.event_clock_valid)),
                     ))
                 }
                 Some(_) => {
@@ -207,9 +212,9 @@ impl EcmBpfSnapshotCollector {
                 // first complete read is an unknown-time baseline; a later new
                 // generation contains traffic since the preceding map snapshot.
                 None => previous_sample_ms
-                    .map(|sample_ms| (counters.bytes, counters.packets, sample_ms)),
+                    .map(|sample_ms| (counters.bytes, counters.packets, sample_ms, None)),
             };
-            if let Some((delta_bytes, delta_packets, delta_start_ms)) = delta {
+            if let Some((delta_bytes, delta_packets, delta_start_ms, previous_event_ms)) = delta {
                 if (delta_bytes != 0 || delta_packets != 0) && identity_key.is_some() {
                     if key.direction == DIR_TX {
                         coverage_delta.tx_bytes =
@@ -222,11 +227,21 @@ impl EcmBpfSnapshotCollector {
                         coverage_delta.rx_packets =
                             coverage_delta.rx_packets.saturating_add(delta_packets);
                     }
-                    // Counters and last_seen are separate map-value stores, so
-                    // a concurrent read can observe them from different ECM
-                    // updates. Use the coherent daemon sample clock for rates;
-                    // last_seen remains freshness evidence only.
-                    let window_ms = now_ms.saturating_sub(delta_start_ms);
+                    // ECM emits cumulative increments roughly once per NSS
+                    // sync round. Its kprobe timestamp gives the actual delta
+                    // window even when the daemon poll cuts two connections at
+                    // different points in that round. A map lookup can observe
+                    // counters and last_seen from adjacent writes, so only use
+                    // the event clock while it is monotonic and fresh.
+                    let collector_window_ms = now_ms.saturating_sub(delta_start_ms);
+                    let event_window_ms = previous_event_ms
+                        .filter(|(previous, valid)| {
+                            *valid && *previous != 0 && event_ms > *previous
+                        })
+                        .map(|(previous, _)| event_ms - previous)
+                        .filter(|window| *window <= ECM_EVENT_RATE_MAX_WINDOW_MS)
+                        .filter(|_| now_ms.saturating_sub(event_ms) < ECM_EVENT_CLOCK_MAX_LAG_MS);
+                    let window_ms = event_window_ms.unwrap_or(collector_window_ms);
                     if window_ms != 0 {
                         let wire_bytes =
                             delta_bytes.saturating_add(delta_packets.saturating_mul(4));
@@ -249,6 +264,9 @@ impl EcmBpfSnapshotCollector {
             let progressed = previous.is_none_or(|value| {
                 value.bytes != counters.bytes || value.packets != counters.packets
             });
+            let current_event_clock_valid = event_ms != 0
+                && now_ms.saturating_sub(event_ms) < ECM_EVENT_CLOCK_MAX_LAG_MS
+                && previous.is_none_or(|value| event_ms > value.last_progress_event_ms);
             self.baselines.insert(
                 *key,
                 FlowBaseline {
@@ -258,6 +276,16 @@ impl EcmBpfSnapshotCollector {
                         now_ms
                     } else {
                         previous.map_or(now_ms, |value| value.last_progress_sample_ms)
+                    },
+                    last_progress_event_ms: if progressed && current_event_clock_valid {
+                        event_ms
+                    } else {
+                        previous.map_or(event_ms, |value| value.last_progress_event_ms)
+                    },
+                    event_clock_valid: if progressed {
+                        current_event_clock_valid
+                    } else {
+                        previous.is_none_or(|value| value.event_clock_valid)
                     },
                     last_seen_ms: event_ms,
                 },
@@ -1030,6 +1058,69 @@ mod tests {
         );
 
         assert_eq!(snapshot.clients[0].tx_bps, 8_320);
+
+        let recovery = collector.convert(
+            EcmMapRead {
+                entries: vec![raw(1, 10, DIR_TX, 5_000, 50, 5_000)],
+                truncated: false,
+            },
+            &identities,
+            5_000,
+        );
+        assert_eq!(recovery.clients[0].tx_bps, 8_320);
+
+        let event_clock_restored = collector.convert(
+            EcmMapRead {
+                entries: vec![raw(1, 10, DIR_TX, 7_000, 70, 7_000)],
+                truncated: false,
+            },
+            &identities,
+            7_000,
+        );
+        assert_eq!(event_clock_restored.clients[0].tx_bps, 8_320);
+    }
+
+    #[test]
+    fn staggered_ecm_updates_keep_a_stable_client_aggregate() {
+        let identities = identities();
+        let mut collector = EcmBpfSnapshotCollector::default();
+        collector.convert(
+            EcmMapRead {
+                entries: vec![
+                    raw(1, 10, DIR_TX, 0, 0, 1_000),
+                    raw(2, 20, DIR_TX, 0, 0, 1_000),
+                ],
+                truncated: false,
+            },
+            &identities,
+            1_000,
+        );
+
+        let first = collector.convert(
+            EcmMapRead {
+                entries: vec![
+                    raw(1, 10, DIR_TX, 2_000, 0, 3_000),
+                    raw(2, 20, DIR_TX, 1_000, 0, 2_000),
+                ],
+                truncated: false,
+            },
+            &identities,
+            3_000,
+        );
+        assert_eq!(first.clients[0].tx_bps, 16_000);
+
+        let second = collector.convert(
+            EcmMapRead {
+                entries: vec![
+                    raw(1, 10, DIR_TX, 3_000, 0, 4_000),
+                    raw(2, 20, DIR_TX, 4_000, 0, 5_000),
+                ],
+                truncated: false,
+            },
+            &identities,
+            5_000,
+        );
+        assert_eq!(second.clients[0].tx_bps, 16_000);
     }
 
     #[test]

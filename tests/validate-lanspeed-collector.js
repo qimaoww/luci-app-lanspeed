@@ -87,7 +87,7 @@ const buildDriver = read('net/lanspeedd/rust/crates/lanspeed-build/src/lib.rs');
 const packageMakefile = read('net/lanspeedd/Makefile');
 const init = read('net/lanspeedd/files/etc/init.d/lanspeedd');
 
-assert(model.version === 5, 'collector model must describe the architecture-separated rate schemes');
+assert(model.version === 6, 'collector model must describe the architecture-separated rate schemes');
 assert(JSON.stringify(model.platform_matrix.x86_64.schemes) === JSON.stringify(['bpf']) &&
   model.platform_matrix.x86_64.nss_modes_exposed === false,
   'x86 platform contract must expose only pure BPF');
@@ -103,8 +103,9 @@ assert(JSON.stringify(model.ownership.auto_preference) ===
   'automatic selection must prefer ECM+BPF, then ECM, then pure BPF');
 assert(model.ownership.pure_bpf_rate_owner === 'tc_lan_edge_map' &&
   model.ownership.ecm_rate_owner === 'ecm_node_adv_stats' &&
-  model.ownership.ecm_bpf_rate_owner === 'ecm_totals_update_kprobe_map',
-  'each configured scheme must have exactly one explicit rate owner');
+  model.ownership.ecm_bpf_rate_owner === 'ecm_totals_update_kprobe_map_with_tc_rate_floor' &&
+  model.ownership.ecm_bpf_rate_floor_policy === 'per_client_direction_max_never_sum',
+  'ECM+BPF must keep ECM authoritative while using a non-additive TC rate floor');
 assert(model.ownership.mixed_rate_owners_forbidden === true, 'mixed NSS/BPF rate ownership must be forbidden');
 assert(model.ownership.manual_fallback_forbidden === true,
   'manual rate schemes must fail closed instead of silently switching');
@@ -118,20 +119,26 @@ assert(model.ecm_node_model.conntrack_rate_overlay === false, 'conntrack bytes m
 assert(model.ecm_node_model.bpf_rate_overlay === false, 'BPF bytes must never overlay ECM rates');
 assert(model.ecm_bpf_model.collector_mode === 'nss_ecm_bpf' &&
   model.ecm_bpf_model.object === '/usr/lib/bpf/lanspeed-ebpf-ecm' &&
-  model.ecm_bpf_model.object_role === 'isolated_ecm_kprobe_only' &&
+  model.ecm_bpf_model.object_role === 'isolated_ecm_kprobe_authoritative' &&
+  model.ecm_bpf_model.tc_bpf_object === '/usr/lib/bpf/lanspeed-ebpf-fallback' &&
   model.ecm_bpf_model.target_arch === 'aarch64' &&
   model.ecm_bpf_model.attach === 'kprobe:ecm_db_connection_data_totals_update',
-  'ECM+BPF must use its isolated aarch64 object on the unified ECM totals-update call chain');
-assert(model.ecm_bpf_model.counter_merge_policy === 'single_ecm_update_owner' &&
-  model.ecm_bpf_model.tc_bpf_rate_overlay === false &&
+  'ECM+BPF must use its isolated aarch64 ECM object and the TC slow-path observer');
+assert(model.ecm_bpf_model.counter_merge_policy ===
+    'ecm_update_authoritative_tc_rate_floor_no_sum' &&
+  model.ecm_bpf_model.tc_bpf_rate_overlay === 'per_client_direction_max' &&
   model.ecm_bpf_model.ecm_node_rate_overlay === false,
-  'ECM+BPF must never add TC-BPF or ECM-node values to its kprobe map');
-assert(model.ecm_bpf_window_model.rate_clock === 'per_connection_adjacent_daemon_samples' &&
+  'ECM+BPF must use TC-BPF only as a non-additive rate floor and never overlay ECM nodes');
+assert(model.ecm_bpf_window_model.rate_clock ===
+    'per_connection_ecm_event_elapsed_with_daemon_fallback' &&
   model.ecm_bpf_window_model.event_timestamp_role ===
-    'freshness_only_because_map_fields_are_not_one_atomic_snapshot' &&
+    'rate_window_when_monotonic_fresh_and_bounded' &&
+  model.ecm_bpf_window_model.torn_event_timestamp_fallback === 'adjacent_daemon_samples' &&
   ecmBpf.includes('previous.last_progress_sample_ms') &&
-  ecmBpf.includes('now_ms.saturating_sub(delta_start_ms)'),
-  'ECM+BPF rates must use the coherent daemon sample clock, not a torn map timestamp');
+  ecmBpf.includes('event_window_ms.unwrap_or(collector_window_ms)') &&
+  production.includes('client.tx_bps.max(sample.tx_bps)') &&
+  production.includes('client.rx_bps.max(sample.rx_bps)'),
+  'ECM+BPF must use bounded ECM event windows and a non-additive TC-BPF rate floor');
 assert(model.ecm_bpf_window_model.rate_filter ===
   'per_connection_generation_median_last_3_windows' &&
   model.ecm_bpf_window_model.rate_hold_ms === 2500 &&

@@ -76,7 +76,7 @@ pub fn select_collectors(
     let has_collect_target = !config.runtime_collect_ifnames().is_empty();
     let tc_bpf_requested = matches!(
         config.rate_collector_mode,
-        RateCollectorMode::Auto | RateCollectorMode::Bpf
+        RateCollectorMode::Auto | RateCollectorMode::Bpf | RateCollectorMode::NssEcmBpf
     );
     let ecm_bpf_requested = matches!(
         config.rate_collector_mode,
@@ -217,6 +217,9 @@ pub fn select_collectors(
         RateCollector::NssEcmBpf => {
             push_unique(&mut warnings, "nss_ecm_bpf_active");
             push_unique(&mut warnings, "nss_ecm_bpf_disjoint_ownership");
+            if !bpf_ready {
+                push_unique(&mut warnings, "nss_ecm_bpf_tc_degraded");
+            }
         }
         RateCollector::Bpf if nss_offload_active => {
             push_unique(&mut warnings, "nss_bpf_slow_path_only");
@@ -241,7 +244,7 @@ pub fn select_collectors(
     }
     let bpf_mode_allowed = matches!(
         config.rate_collector_mode,
-        RateCollectorMode::Auto | RateCollectorMode::Bpf
+        RateCollectorMode::Auto | RateCollectorMode::Bpf | RateCollectorMode::NssEcmBpf
     );
     let bpf_runtime_failed = runtime.bpf_object_loaded == false
         || runtime.bpf_attached == false
@@ -293,7 +296,8 @@ pub fn select_collectors(
 
     let mode = match rate {
         RateCollector::Bpf if bpf_full => Mode::Full,
-        RateCollector::NssEcmBpf => Mode::Full,
+        RateCollector::NssEcmBpf if bpf_ready => Mode::Full,
+        RateCollector::NssEcmBpf => Mode::Degraded,
         // ECM direct exposes accelerated flows only. CPU slow-path traffic can
         // be absent even when the state reader is healthy, so this source must
         // never claim complete client coverage.

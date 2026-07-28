@@ -1,6 +1,6 @@
 {
   "source": "lanspeedd_collectors",
-  "version": 5,
+  "version": 6,
   "platform_matrix": {
     "x86_64": {
       "schemes": ["bpf"],
@@ -26,10 +26,11 @@
     "auto_preference": ["nss_ecm_bpf", "nss_ecm_node", "bpf"],
     "pure_bpf_rate_owner": "tc_lan_edge_map",
     "ecm_rate_owner": "ecm_node_adv_stats",
-    "ecm_bpf_rate_owner": "ecm_totals_update_kprobe_map",
+    "ecm_bpf_rate_owner": "ecm_totals_update_kprobe_map_with_tc_rate_floor",
     "connection_metadata_owner": "conntrack_netlink_or_procfs",
     "interface_clock_owner": "non_overlapping_kernel_lan_netdev_counters",
     "mixed_rate_owners_forbidden": true,
+    "ecm_bpf_rate_floor_policy": "per_client_direction_max_never_sum",
     "manual_fallback_forbidden": true,
     "rate_and_coverage_windows": "independent_with_shared_ecm_numerator",
     "coverage_can_block_rate": false
@@ -89,7 +90,8 @@
   "ecm_bpf_model": {
     "collector_mode": "nss_ecm_bpf",
     "object": "/usr/lib/bpf/lanspeed-ebpf-ecm",
-    "object_role": "isolated_ecm_kprobe_only",
+    "object_role": "isolated_ecm_kprobe_authoritative",
+    "tc_bpf_object": "/usr/lib/bpf/lanspeed-ebpf-fallback",
     "target_arch": "aarch64",
     "program": "lanspeed_ecm_update",
     "attach": "kprobe:ecm_db_connection_data_totals_update",
@@ -113,15 +115,15 @@
       "is_from_true": "from_node_tx_and_to_node_rx",
       "is_from_false": "to_node_tx_and_from_node_rx"
     },
-    "counter_merge_policy": "single_ecm_update_owner",
-    "tc_bpf_rate_overlay": false,
+    "counter_merge_policy": "ecm_update_authoritative_tc_rate_floor_no_sum",
+    "tc_bpf_rate_overlay": "per_client_direction_max",
     "ecm_node_rate_overlay": false,
     "conntrack_rate_overlay": false,
-    "deduplication": "each_ecm_update_increment_is_consumed_once_by_one_kprobe_map",
+    "deduplication": "ecm_owns_totals_and_coverage_tc_rate_is_never_added",
     "read_only": true
   },
   "lan_clock_model": {
-    "source": "/sys/class/net/<if>/statistics",
+    "source": "/proc/net/dev single-pass snapshot with sysfs fallback",
     "selection": "configured_lan_boundaries_minus_members_whose_master_is_also_selected",
     "aggregation": "sum_only_disjoint_independent_boundaries",
     "raw_counters": ["rx_bytes", "tx_bytes", "rx_packets", "tx_packets"],
@@ -171,8 +173,11 @@
     "quality": ["warmup", "pending", "ok", "idle", "low_traffic", "counter_reset", "counter_skew"]
   },
   "ecm_bpf_window_model": {
-    "rate_clock": "per_connection_adjacent_daemon_samples",
-    "event_timestamp_role": "freshness_only_because_map_fields_are_not_one_atomic_snapshot",
+    "rate_clock": "per_connection_ecm_event_elapsed_with_daemon_fallback",
+    "event_timestamp_role": "rate_window_when_monotonic_fresh_and_bounded",
+    "event_clock_max_lag_ms": 1500,
+    "event_clock_max_window_ms": 5000,
+    "torn_event_timestamp_fallback": "adjacent_daemon_samples",
     "rate_filter": "per_connection_generation_median_last_3_windows",
     "baseline_scope": "connection_pointer+time_added+direction+client_mac",
     "client_fold_order": "rate_each_connection_generation_before_mac_sum",

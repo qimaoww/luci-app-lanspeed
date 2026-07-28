@@ -604,6 +604,14 @@ fn diagnostic_subsystems(snapshot: &ResponseSnapshot) -> Vec<DiagnosticSubsystem
         nested_evidence_bool(evidence, "ecm_bpf", "object_loaded").unwrap_or(false);
     let ecm_bpf_attach_state = nested_evidence_code(evidence, "ecm_bpf", "attach_state");
     let ecm_bpf_map_state = nested_evidence_code(evidence, "ecm_bpf", "map_state");
+    let ecm_bpf_runtime_ready = ecm_bpf_object_loaded
+        && ecm_bpf_attach_state.as_deref() == Some("ready")
+        && matches!(
+            ecm_bpf_map_state.as_deref(),
+            Some("ready") | Some("retained")
+        );
+    let tc_bpf_runtime_ready = attach_state.as_deref() == Some("ready")
+        && matches!(map_state.as_deref(), Some("ready") | Some("retained"));
     let enabled = nested_evidence_bool(evidence, "bpf", "enabled").unwrap_or(true);
     let collect_targets = nested_evidence_u64(evidence, "bpf", "collect_target_count")
         .unwrap_or_else(|| u64::from(snapshot.status.capabilities.lan_edge));
@@ -620,14 +628,22 @@ fn diagnostic_subsystems(snapshot: &ResponseSnapshot) -> Vec<DiagnosticSubsystem
         )
     );
     let bpf = if ecm_bpf_selected {
-        if ecm_bpf_object_loaded
-            && ecm_bpf_attach_state.as_deref() == Some("ready")
-            && matches!(
-                ecm_bpf_map_state.as_deref(),
-                Some("ready") | Some("retained")
+        if ecm_bpf_runtime_ready && tc_bpf_runtime_ready {
+            if ecm_bpf_map_state.as_deref() == Some("retained")
+                || map_state.as_deref() == Some("retained")
+            {
+                (
+                    DiagnosticHealthState::Degraded,
+                    Some("nss_ecm_bpf_map_read_failed".into()),
+                )
+            } else {
+                (DiagnosticHealthState::Healthy, None)
+            }
+        } else if ecm_bpf_runtime_ready {
+            (
+                DiagnosticHealthState::Degraded,
+                Some("nss_ecm_bpf_tc_degraded".into()),
             )
-        {
-            (DiagnosticHealthState::Healthy, None)
         } else if !ecm_bpf_object_loaded {
             (
                 DiagnosticHealthState::Unavailable,
@@ -691,17 +707,10 @@ fn diagnostic_subsystems(snapshot: &ResponseSnapshot) -> Vec<DiagnosticSubsystem
             Some("bpf_not_selected".into()),
         )
     };
-    let tc = if nss_rate {
+    let tc = if nss_rate && !ecm_bpf_selected {
         (
             DiagnosticHealthState::Disabled,
-            Some(
-                if ecm_bpf_selected {
-                    "tc_bpf_not_selected"
-                } else {
-                    "bpf_not_selected"
-                }
-                .into(),
-            ),
+            Some("bpf_not_selected".into()),
         )
     } else if disabled {
         (DiagnosticHealthState::Disabled, Some("bpf_disabled".into()))
@@ -731,13 +740,17 @@ fn diagnostic_subsystems(snapshot: &ResponseSnapshot) -> Vec<DiagnosticSubsystem
         )
     };
     let bpf_map = if ecm_bpf_selected {
-        match ecm_bpf_map_state.as_deref() {
-            Some("ready") => (DiagnosticHealthState::Healthy, None),
-            Some("retained") => (
+        match (ecm_bpf_map_state.as_deref(), map_state.as_deref()) {
+            (Some("ready"), Some("ready")) => (DiagnosticHealthState::Healthy, None),
+            (Some("ready") | Some("retained"), Some("ready") | Some("retained")) => (
                 DiagnosticHealthState::Degraded,
                 Some("nss_ecm_bpf_map_read_failed".into()),
             ),
-            Some("failed") => (
+            (Some("ready") | Some("retained"), _) => (
+                DiagnosticHealthState::Degraded,
+                Some("nss_ecm_bpf_tc_degraded".into()),
+            ),
+            (Some("failed"), _) => (
                 DiagnosticHealthState::Unavailable,
                 Some("nss_ecm_bpf_map_read_failed".into()),
             ),
@@ -1336,16 +1349,16 @@ mod diagnostics_tests {
     }
 
     #[test]
-    fn ecm_bpf_diagnostics_use_the_kprobe_runtime_instead_of_idle_tc_bpf() {
+    fn ecm_bpf_diagnostics_require_both_the_kprobe_and_tc_runtime() {
         let mut snapshot = ResponseSnapshot::unsupported("test");
         set_bpf_evidence(
             &mut snapshot,
             json!({
                 "enabled": true, "collect_target_count": 1,
-                "expected_hook_count": 2, "attached_hook_count": 0,
-                "object_loaded": false, "attach_state": "not_attempted",
-                "map_state": "not_attempted", "last_complete_snapshot_ms": null,
-                "retained_fresh_snapshot": false, "reason_code": "object_load_failed"
+                "expected_hook_count": 2, "attached_hook_count": 2,
+                "object_loaded": true, "attach_state": "ready",
+                "map_state": "ready", "last_complete_snapshot_ms": 1,
+                "retained_fresh_snapshot": false, "reason_code": "ready"
             }),
             true,
         );
@@ -1378,12 +1391,38 @@ mod diagnostics_tests {
         assert_eq!(find("bpf").code, None);
         assert_eq!(find("bpf_map").state, DiagnosticHealthState::Healthy);
         assert_eq!(find("bpf_map").code, None);
-        assert_eq!(find("tc").state, DiagnosticHealthState::Disabled);
-        assert_eq!(find("tc").code.as_deref(), Some("tc_bpf_not_selected"));
-        assert!(!diagnostics.alerts.iter().any(|alert| matches!(
-            alert.id.as_str(),
-            "object_load_failed" | "bpf_runtime_loader_unavailable"
-        )));
+        assert_eq!(find("tc").state, DiagnosticHealthState::Healthy);
+        assert_eq!(find("tc").code, None);
+
+        set_bpf_evidence(
+            &mut snapshot,
+            json!({
+                "enabled": true, "collect_target_count": 1,
+                "expected_hook_count": 2, "attached_hook_count": 0,
+                "object_loaded": false, "attach_state": "not_attempted",
+                "map_state": "not_attempted", "last_complete_snapshot_ms": null,
+                "retained_fresh_snapshot": false, "reason_code": "object_load_failed"
+            }),
+            true,
+        );
+        let degraded = snapshot.diagnostics_at(0);
+        let find_degraded = |id: &str| {
+            degraded
+                .subsystems
+                .iter()
+                .find(|item| item.id == id)
+                .unwrap_or_else(|| panic!("missing {id} subsystem"))
+        };
+        assert_eq!(find_degraded("bpf").state, DiagnosticHealthState::Degraded);
+        assert_eq!(
+            find_degraded("bpf").code.as_deref(),
+            Some("nss_ecm_bpf_tc_degraded")
+        );
+        assert_eq!(
+            find_degraded("bpf_map").state,
+            DiagnosticHealthState::Degraded
+        );
+        assert_eq!(find_degraded("tc").state, DiagnosticHealthState::Degraded);
     }
 
     #[test]
