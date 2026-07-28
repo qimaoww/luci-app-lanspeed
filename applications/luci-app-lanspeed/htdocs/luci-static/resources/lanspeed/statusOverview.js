@@ -69,18 +69,39 @@ function maxSampleClock(items) {
 	return latest;
 }
 
+function collectorEvidence(data) {
+	var evidence = data && data.evidence || {};
+	return {
+		evidence: evidence,
+		collector: evidence.effective_collector ||
+			(evidence.collector && evidence.collector.primary_source) || ''
+	};
+}
+
+function collectorSampleClock(data) {
+	var source = collectorEvidence(data);
+	var evidence = source.evidence;
+	if (source.collector === 'nss_ecm_bpf')
+		return sampleClock(evidence.ecm_bpf && evidence.ecm_bpf.sample_ms);
+	if (source.collector === 'nss_ecm_node')
+		return sampleClock(evidence.nss_window && evidence.nss_window.window_end_ms);
+	if (source.collector === 'bpf')
+		return sampleClock(evidence.bpf && evidence.bpf.last_complete_snapshot_ms);
+	return null;
+}
+
+function statusBatch(data) {
+	return {
+		sampleMs: collectorSampleClock(data),
+		hasCoverage: !!(data && data.coverage && typeof data.coverage === 'object')
+	};
+}
+
 function clientBatch(data) {
 	data = data || {};
-	var evidence = data.evidence || {};
-	var collector = evidence.effective_collector ||
-		(evidence.collector && evidence.collector.primary_source) || '';
-	var evidenceClock = null;
-	if (collector === 'nss_ecm_bpf')
-		evidenceClock = sampleClock(evidence.ecm_bpf && evidence.ecm_bpf.sample_ms);
-	else if (collector === 'nss_ecm_node')
-		evidenceClock = sampleClock(evidence.nss_window && evidence.nss_window.window_end_ms);
-	else if (collector === 'bpf')
-		evidenceClock = sampleClock(evidence.bpf && evidence.bpf.last_complete_snapshot_ms);
+	var source = collectorEvidence(data);
+	var collector = source.collector;
+	var evidenceClock = collectorSampleClock(data);
 
 	var rateModes = { bpf: true, nss_ecm_node: true, nss_ecm_bpf: true };
 	var rows = Array.isArray(data.clients) ? data.clients : [];
@@ -101,25 +122,31 @@ function interfaceBatch(data) {
 }
 
 function livePair(data) {
+	var status = statusBatch(data && data.status);
 	var clients = clientBatch(data && data.clients);
 	var interfaces = interfaceBatch(data && data.interfaces);
-	var comparable = clients.sampleMs !== null && interfaces !== null;
+	var clocks = [ status.sampleMs, clients.sampleMs, interfaces ].filter(function(value) {
+		return value !== null;
+	});
+	var comparable = clocks.length > 1;
+	var aligned = !comparable || clocks.every(function(value) { return value === clocks[0]; });
 	return {
+		coverageSampleMs: status.sampleMs,
 		clientSampleMs: clients.sampleMs,
 		interfaceSampleMs: interfaces,
-		sampleMs: comparable && clients.sampleMs === interfaces
-			? clients.sampleMs
-			: (!clients.hasRates ? interfaces : null),
-		aligned: comparable ? clients.sampleMs === interfaces : null,
+		sampleMs: aligned ? (interfaces !== null ? interfaces :
+			(clients.sampleMs !== null ? clients.sampleMs : status.sampleMs)) : null,
+		aligned: comparable ? aligned : null,
+		hasCoverage: status.hasCoverage,
 		hasClientRates: clients.hasRates,
 		retained: false
 	};
 }
 
 /*
- * Clients and interfaces are separate ubus calls over one atomic daemon
- * snapshot. A collection may publish between the calls, so hold the last
- * visible pair whenever their backend clocks identify different snapshots.
+ * Coverage, clients, and interfaces are separate ubus calls over one atomic
+ * daemon snapshot. A collection may publish between the calls, so hold the
+ * last visible metric set whenever their clocks identify different snapshots.
  */
 function alignLiveSamples(next, previous) {
 	var pair = livePair(next);
@@ -131,20 +158,27 @@ function alignLiveSamples(next, previous) {
 	var oldPair = previous && previous.livePair || livePair(previous);
 	var canRetain = !!(previous && oldPair.aligned !== false);
 	if (canRetain) {
+		next.status = previousValue(previous, 'status');
 		next.clients = previousValue(previous, 'clients');
 		next.interfaces = previousValue(previous, 'interfaces');
 	}
 	else {
+		var status = Object.assign({}, next.status || {});
+		status.coverage = null;
+		next.status = status;
 		next.clients = emptySource('clients');
 		next.interfaces = emptySource('interfaces');
 	}
 	next.livePair = {
+		coverageSampleMs: oldPair.coverageSampleMs,
 		clientSampleMs: oldPair.clientSampleMs,
 		interfaceSampleMs: oldPair.interfaceSampleMs,
 		sampleMs: oldPair.sampleMs,
 		aligned: oldPair.aligned,
+		hasCoverage: oldPair.hasCoverage,
 		hasClientRates: oldPair.hasClientRates,
 		retained: canRetain,
+		pendingCoverageSampleMs: pair.coverageSampleMs,
 		pendingClientSampleMs: pair.clientSampleMs,
 		pendingInterfaceSampleMs: pair.interfaceSampleMs
 	};
@@ -501,6 +535,7 @@ return baseclass.extend({
 	createController: createController,
 	normalizeData: normalizeData,
 	loadAll: loadAll,
+	statusBatch: statusBatch,
 	clientBatch: clientBatch,
 	interfaceBatch: interfaceBatch,
 	alignLiveSamples: alignLiveSamples,

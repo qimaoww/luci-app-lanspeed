@@ -300,13 +300,24 @@ async function testIndependentRpcSettlement(context, fmt) {
 }
 
 async function testLiveSamplePairing(context, fmt) {
+	let statusSampleMs = 1000;
 	let clientSampleMs = 1000;
 	let interfaceSampleMs = 1000;
+	let coveragePct = 55;
 	let clientRate = 111;
 	let interfaceRate = 777;
 	let emptyClients = false;
 	const rpc = {
-		status: function() { return Promise.resolve({ version: '1.1.4-r1' }); },
+		status: function() {
+			return Promise.resolve({
+				version: '1.1.4-r1',
+				coverage: { quality: 'ok', tx_pct: coveragePct, rx_pct: coveragePct },
+				evidence: {
+					effective_collector: 'bpf',
+					bpf: { last_complete_snapshot_ms: statusSampleMs }
+				}
+			});
+		},
 		clients: function() {
 			return Promise.resolve({
 				clients: emptyClients ? [] : [ {
@@ -334,50 +345,101 @@ async function testLiveSamplePairing(context, fmt) {
 	const first = await overview.loadAll(null, clock);
 	assert.strictEqual(first.livePair.sampleMs, 1000);
 	assert.strictEqual(first.livePair.aligned, true);
+	assert.strictEqual(first.livePair.coverageSampleMs, 1000);
+	assert.strictEqual(first.status.coverage.tx_pct, 55);
 	assert.strictEqual(first.clients.clients[0].tx_bps, 111);
 	assert.strictEqual(first.interfaces.interfaces[0].rx_bps, 777);
 
+	statusSampleMs = 2000;
 	clientSampleMs = 2000;
 	interfaceSampleMs = 3000;
+	coveragePct = 66;
 	clientRate = 222;
 	interfaceRate = 999;
 	const straddled = await overview.loadAll(first, clock);
+	assert.strictEqual(straddled.status, first.status,
+		'a metric RPC boundary split must retain the complete previous status snapshot');
+	assert.strictEqual(straddled.status.coverage, first.status.coverage,
+		'a status/interface RPC boundary split must retain the previous coverage batch');
 	assert.strictEqual(straddled.clients, first.clients,
-		'a client/interface RPC boundary split must retain the previous client batch');
+		'a metric RPC boundary split must retain the previous client batch');
 	assert.strictEqual(straddled.interfaces, first.interfaces,
-		'a client/interface RPC boundary split must retain the previous interface batch');
+		'a metric RPC boundary split must retain the previous interface batch');
+	assert.strictEqual(straddled.status.coverage.tx_pct, 55,
+		'retaining a metric set must never rewrite the previous coverage value');
 	assert.strictEqual(straddled.clients.clients[0].tx_bps, 111,
-		'retaining a pair must never rewrite the previous client rate');
+		'retaining a metric set must never rewrite the previous client rate');
 	assert.strictEqual(straddled.interfaces.interfaces[0].rx_bps, 777,
-		'retaining a pair must never rewrite the previous interface rate');
+		'retaining a metric set must never rewrite the previous interface rate');
 	assert.strictEqual(straddled.livePair.retained, true);
+	assert.strictEqual(straddled.livePair.pendingCoverageSampleMs, 2000);
 	assert.strictEqual(straddled.livePair.pendingClientSampleMs, 2000);
 	assert.strictEqual(straddled.livePair.pendingInterfaceSampleMs, 3000);
 
+	statusSampleMs = 3000;
 	clientSampleMs = 3000;
+	coveragePct = 77;
 	const aligned = await overview.loadAll(straddled, clock);
 	assert.strictEqual(aligned.livePair.sampleMs, 3000);
 	assert.strictEqual(aligned.livePair.aligned, true);
 	assert.strictEqual(aligned.livePair.retained, false);
+	assert.strictEqual(aligned.status.coverage.tx_pct, 77,
+		'the next matching coverage batch must publish its untouched backend value');
 	assert.strictEqual(aligned.clients.clients[0].tx_bps, 222,
 		'the next matching client batch must publish its untouched backend rate');
 	assert.strictEqual(aligned.interfaces.interfaces[0].rx_bps, 999,
 		'the next matching interface batch must publish its untouched backend rate');
 
+	statusSampleMs = 5000;
 	clientSampleMs = 4000;
-	interfaceSampleMs = 5000;
+	interfaceSampleMs = 4000;
+	coveragePct = 88;
+	clientRate = 333;
+	interfaceRate = 1111;
+	const coverageStraddled = await overview.loadAll(aligned, clock);
+	assert.strictEqual(coverageStraddled.status.coverage.tx_pct, 77);
+	assert.strictEqual(coverageStraddled.clients.clients[0].tx_bps, 222);
+	assert.strictEqual(coverageStraddled.interfaces.interfaces[0].rx_bps, 999);
+	assert.strictEqual(coverageStraddled.livePair.pendingCoverageSampleMs, 5000);
+	assert.strictEqual(coverageStraddled.livePair.pendingClientSampleMs, 4000);
+	assert.strictEqual(coverageStraddled.livePair.pendingInterfaceSampleMs, 4000);
+
+	const loadStatus = rpc.status;
+	rpc.status = function() { return Promise.reject(new Error('status down')); };
+	const failedStatus = await overview.loadAll(coverageStraddled, clock);
+	assert.strictEqual(failedStatus.status, coverageStraddled.status,
+		'a failed status RPC after a boundary split must not pair old coverage with new rates');
+	assert.strictEqual(failedStatus.clients, coverageStraddled.clients);
+	assert.strictEqual(failedStatus.interfaces, coverageStraddled.interfaces);
+	assert.strictEqual(failedStatus.livePair.retained, true);
+	rpc.status = loadStatus;
+
+	statusSampleMs = 4000;
+	const coherent = await overview.loadAll(failedStatus, clock);
+	assert.strictEqual(coherent.status.coverage.tx_pct, 88);
+	assert.strictEqual(coherent.clients.clients[0].tx_bps, 333);
+	assert.strictEqual(coherent.interfaces.interfaces[0].rx_bps, 1111);
+	assert.strictEqual(coherent.livePair.sampleMs, 4000);
+
+	statusSampleMs = 6000;
+	clientSampleMs = 6000;
+	interfaceSampleMs = 7000;
+	coveragePct = 99;
 	const coldStraddle = await overview.loadAll(null, clock);
+	assert.strictEqual(coldStraddle.status.coverage, null);
 	assert.deepStrictEqual(Array.from(coldStraddle.clients.clients), []);
 	assert.deepStrictEqual(Array.from(coldStraddle.interfaces.interfaces), []);
 	assert.strictEqual(coldStraddle.livePair.retained, false,
-		'a cold start must not expose either half of a mismatched live pair');
+		'a cold start must not expose any part of a mismatched metric set');
 
 	emptyClients = true;
-	interfaceSampleMs = 6000;
-	const empty = await overview.loadAll(aligned, clock);
+	statusSampleMs = 8000;
+	interfaceSampleMs = 8000;
+	const empty = await overview.loadAll(coherent, clock);
 	assert.deepStrictEqual(Array.from(empty.clients.clients), []);
-	assert.strictEqual(empty.interfaces.interfaces[0].sample_ms, 6000);
-	assert.strictEqual(empty.livePair.sampleMs, 6000,
+	assert.strictEqual(empty.interfaces.interfaces[0].sample_ms, 8000);
+	assert.strictEqual(empty.status.coverage.tx_pct, 99);
+	assert.strictEqual(empty.livePair.sampleMs, 8000,
 		'a successful empty-client response must not block a new empty live batch');
 }
 
