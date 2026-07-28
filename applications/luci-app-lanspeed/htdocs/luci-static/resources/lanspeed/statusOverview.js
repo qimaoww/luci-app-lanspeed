@@ -54,6 +54,103 @@ function previousValue(previous, key) {
 	return emptySource(key);
 }
 
+function sampleClock(value) {
+	if (value === undefined || value === null || value === '') return null;
+	var clock = Number(value);
+	return isFinite(clock) && clock >= 0 ? clock : null;
+}
+
+function maxSampleClock(items) {
+	var latest = null;
+	(items || []).forEach(function(item) {
+		var clock = sampleClock(item && item.sample_ms);
+		if (clock !== null && (latest === null || clock > latest)) latest = clock;
+	});
+	return latest;
+}
+
+function clientBatch(data) {
+	data = data || {};
+	var evidence = data.evidence || {};
+	var collector = evidence.effective_collector ||
+		(evidence.collector && evidence.collector.primary_source) || '';
+	var evidenceClock = null;
+	if (collector === 'nss_ecm_bpf')
+		evidenceClock = sampleClock(evidence.ecm_bpf && evidence.ecm_bpf.sample_ms);
+	else if (collector === 'nss_ecm_node')
+		evidenceClock = sampleClock(evidence.nss_window && evidence.nss_window.window_end_ms);
+	else if (collector === 'bpf')
+		evidenceClock = sampleClock(evidence.bpf && evidence.bpf.last_complete_snapshot_ms);
+
+	var rateModes = { bpf: true, nss_ecm_node: true, nss_ecm_bpf: true };
+	var rows = Array.isArray(data.clients) ? data.clients : [];
+	var rateRows = rows.filter(function(item) {
+		var mode = String(item && item.collector_mode || '');
+		return collector ? mode === collector : rateModes[mode] === true;
+	});
+	return {
+		sampleMs: evidenceClock !== null ? evidenceClock : maxSampleClock(rateRows),
+		hasRates: rateRows.length > 0
+	};
+}
+
+function interfaceBatch(data) {
+	data = data || {};
+	var clock = sampleClock(data.monotonic_ms);
+	return clock !== null ? clock : maxSampleClock(data.interfaces);
+}
+
+function livePair(data) {
+	var clients = clientBatch(data && data.clients);
+	var interfaces = interfaceBatch(data && data.interfaces);
+	var comparable = clients.sampleMs !== null && interfaces !== null;
+	return {
+		clientSampleMs: clients.sampleMs,
+		interfaceSampleMs: interfaces,
+		sampleMs: comparable && clients.sampleMs === interfaces
+			? clients.sampleMs
+			: (!clients.hasRates ? interfaces : null),
+		aligned: comparable ? clients.sampleMs === interfaces : null,
+		hasClientRates: clients.hasRates,
+		retained: false
+	};
+}
+
+/*
+ * Clients and interfaces are separate ubus calls over one atomic daemon
+ * snapshot. A collection may publish between the calls, so hold the last
+ * visible pair whenever their backend clocks identify different snapshots.
+ */
+function alignLiveSamples(next, previous) {
+	var pair = livePair(next);
+	if (pair.aligned !== false) {
+		next.livePair = pair;
+		return next;
+	}
+
+	var oldPair = previous && previous.livePair || livePair(previous);
+	var canRetain = !!(previous && oldPair.aligned !== false);
+	if (canRetain) {
+		next.clients = previousValue(previous, 'clients');
+		next.interfaces = previousValue(previous, 'interfaces');
+	}
+	else {
+		next.clients = emptySource('clients');
+		next.interfaces = emptySource('interfaces');
+	}
+	next.livePair = {
+		clientSampleMs: oldPair.clientSampleMs,
+		interfaceSampleMs: oldPair.interfaceSampleMs,
+		sampleMs: oldPair.sampleMs,
+		aligned: oldPair.aligned,
+		hasClientRates: oldPair.hasClientRates,
+		retained: canRetain,
+		pendingClientSampleMs: pair.clientSampleMs,
+		pendingInterfaceSampleMs: pair.interfaceSampleMs
+	};
+	return next;
+}
+
 function sourceSettled(key, loader, previous, clock) {
 	var startedAt = clock();
 	return Promise.resolve().then(function() {
@@ -126,6 +223,8 @@ function loadAll(previous, clock) {
 		return sourceSettled(key, loaders[key], previous, clock);
 	})).then(function(results) {
 		return aggregateResults(results, startedAt);
+	}).then(function(next) {
+		return alignLiveSamples(next, previous);
 	});
 }
 
@@ -161,7 +260,8 @@ function normalizeData(data) {
 		checkedAt: Number(data.checkedAt) || 0,
 		error: firstError,
 		degraded: failed.length > 0 && !hardFailure,
-		hardFailure: hardFailure
+		hardFailure: hardFailure,
+		livePair: data.livePair || null
 	};
 }
 
@@ -171,13 +271,14 @@ function snapshot(viewState) {
 		clients: viewState.clients || { clients: [] },
 		interfaces: viewState.interfaces || { interfaces: [] },
 		uci: viewState.uci || {},
-		rpc: viewState.rpc || {}
+		rpc: viewState.rpc || {},
+		livePair: viewState.livePair || null
 	};
 }
 
 function failureData(previous, error, clock) {
 	var at = clock();
-	return aggregateResults(SOURCE_KEYS.map(function(key) {
+	var next = aggregateResults(SOURCE_KEYS.map(function(key) {
 		var old = previous && previous.rpc && previous.rpc[key];
 		var retained = hasPreviousSuccess(previous, key);
 		return {
@@ -192,6 +293,7 @@ function failureData(previous, error, clock) {
 			}
 		};
 	}), at);
+	return alignLiveSamples(next, previous);
 }
 
 function createController(viewState, options) {
@@ -257,6 +359,7 @@ function createController(viewState, options) {
 		viewState.error = normalized.error;
 		viewState.degraded = normalized.degraded;
 		viewState.hardFailure = normalized.hardFailure;
+		viewState.livePair = normalized.livePair;
 		return normalized;
 	}
 
@@ -366,13 +469,14 @@ return baseclass.extend({
 			showClientStatus: normalized.showClientStatus,
 			showIpv6: normalized.showIpv6,
 			hidePrivateIpv6: normalized.hidePrivateIpv6,
-			hideIpv6Ranges: normalized.hideIpv6Ranges,
-			rpc: normalized.rpc,
-			checkedAt: normalized.checkedAt,
-			error: normalized.error,
-			degraded: normalized.degraded,
-			hardFailure: normalized.hardFailure,
-			filter: '',
+				hideIpv6Ranges: normalized.hideIpv6Ranges,
+				rpc: normalized.rpc,
+				checkedAt: normalized.checkedAt,
+				error: normalized.error,
+				degraded: normalized.degraded,
+				hardFailure: normalized.hardFailure,
+				livePair: normalized.livePair,
+				filter: '',
 			page: 1,
 			loading: false,
 				manualBusy: false,
@@ -397,6 +501,9 @@ return baseclass.extend({
 	createController: createController,
 	normalizeData: normalizeData,
 	loadAll: loadAll,
+	clientBatch: clientBatch,
+	interfaceBatch: interfaceBatch,
+	alignLiveSamples: alignLiveSamples,
 
 	handleSave: null,
 	handleSaveApply: null,

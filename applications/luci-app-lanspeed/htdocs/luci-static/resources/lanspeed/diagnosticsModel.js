@@ -841,11 +841,25 @@ function coverageState(status) {
 		badge = state === 'good' ? _('可信') : (state === 'bad' ? _('缺口较大') : _('存在缺口'));
 		description = _('上行 %s · 下行 %s').format(formatPercent(tx), formatPercent(rx));
 	} else if (quality === 'idle') { state = 'good'; badge = _('空闲'); value = '-'; description = _('当前没有活动流量。'); }
-	else if (quality === 'low_traffic') { state = 'warning'; badge = _('低流量'); value = '-'; description = _('流量过低，暂不判断覆盖率。'); }
+	else if (quality === 'low_traffic') {
+		state = minimum === null ? 'warning' : (minimum < 60 ? 'bad' : (minimum < 85 ? 'warning' : 'good'));
+		badge = _('低流量');
+		value = minimum === null ? '-' : formatPercent(minimum);
+		description = minimum === null ? _('流量过低，暂不判断覆盖率。') :
+			_('低流量实测：上行 %s · 下行 %s').format(formatPercent(tx), formatPercent(rx));
+	}
 	else if (quality === 'warmup') { state = 'warning'; badge = _('采样中'); value = '-'; description = _('正在积累覆盖率样本。'); }
-	else if (quality === 'pending') { state = 'warning'; badge = _('追平中'); value = '-'; description = _('LAN 覆盖率窗口正在追平；客户端速率仍按 ECM node 增量独立发布。'); }
+	else if (quality === 'pending') {
+		state = 'warning'; badge = _('追平中'); value = minimum === null ? '-' : formatPercent(minimum);
+		description = minimum === null ? _('LAN 覆盖率窗口正在追平；客户端速率仍按当前采集增量独立发布。') :
+			_('显示上一批覆盖率，正在等待新的对齐窗口。');
+	}
 	else if (quality === 'counter_reset') { state = 'warning'; badge = _('重新采样'); description = _('检测到计数器重置，正在重新建立窗口。'); }
-	else if (quality === 'counter_skew') { state = 'bad'; badge = _('不可计算'); value = '-'; description = _('客户端与独立 LAN 包时钟不一致，当前窗口未发布。'); }
+	else if (quality === 'counter_skew') {
+		state = 'warning'; badge = _('重新对齐'); value = minimum === null ? '-' : formatPercent(minimum);
+		description = minimum === null ? _('客户端与独立 LAN 计数批次错位，当前窗口未发布。') :
+			_('显示上一批覆盖率，正在重新对齐客户端与 LAN 计数。');
+	}
 	else if (quality === 'unsupported') { state = 'bad'; badge = _('不可用'); value = '-'; description = _('后端没有可用的覆盖率数据源。'); }
 	return { state: state, badge: badge, value: value, description: description,
 		meta: _('%d 个样本 · %s 窗口').format(Math.round(Number(coverage.samples) || 0),

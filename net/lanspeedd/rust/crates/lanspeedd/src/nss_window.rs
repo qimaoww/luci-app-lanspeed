@@ -63,6 +63,8 @@ pub(crate) struct CoverageWindow {
     pub lan_normalized: TrafficCounters,
     pub tx_pct: Option<u8>,
     pub rx_pct: Option<u8>,
+    pub retained_tx_pct: Option<u8>,
+    pub retained_rx_pct: Option<u8>,
     pub aligned: bool,
 }
 
@@ -83,6 +85,8 @@ impl CoverageWindow {
             lan_normalized: TrafficCounters::default(),
             tx_pct: None,
             rx_pct: None,
+            retained_tx_pct: None,
+            retained_rx_pct: None,
             aligned: false,
         }
     }
@@ -166,6 +170,172 @@ impl NodeRateHistory {
 }
 
 #[derive(Clone, Debug, Default)]
+pub(crate) struct NssCoverageBook {
+    start: Option<LanClock>,
+    pending_since_ms: Option<u64>,
+    pending_client: TrafficCounters,
+    last_reported: Option<(Option<u8>, Option<u8>)>,
+}
+
+impl NssCoverageBook {
+    pub fn update(&mut self, client_delta: TrafficCounters, lan: &LanClock) -> CoverageWindow {
+        let Some(start) = self.start.clone() else {
+            self.clear(lan.clone());
+            return CoverageWindow::empty(WindowQuality::Warmup, "cold_start", lan.sample_ms);
+        };
+        if start.interface != lan.interface {
+            self.clear(lan.clone());
+            return CoverageWindow::empty(
+                WindowQuality::CounterReset,
+                "lan_boundary_changed",
+                lan.sample_ms,
+            );
+        }
+        if lan.sample_ms <= start.sample_ms {
+            self.clear(lan.clone());
+            return CoverageWindow::empty(
+                WindowQuality::CounterReset,
+                "sample_clock_reset",
+                lan.sample_ms,
+            );
+        }
+
+        add_assign(&mut self.pending_client, client_delta);
+        let client_raw = self.pending_client;
+        let Some(lan_raw) = checked_delta(lan.counters, start.counters) else {
+            self.clear(lan.clone());
+            return CoverageWindow::empty(
+                WindowQuality::CounterReset,
+                "lan_coverage_counter_reset",
+                lan.sample_ms,
+            );
+        };
+        let Some(client_normalized) = client_raw.fcs_normalized() else {
+            self.clear(lan.clone());
+            return coverage_window(
+                WindowQuality::CounterSkew,
+                "client_fcs_overflow",
+                &start,
+                lan,
+                client_raw,
+                TrafficCounters::default(),
+                lan_raw,
+                lan_raw.fcs_normalized().unwrap_or_default(),
+                false,
+            );
+        };
+        let Some(lan_normalized) = lan_raw.fcs_normalized() else {
+            self.clear(lan.clone());
+            return coverage_window(
+                WindowQuality::CounterSkew,
+                "lan_fcs_overflow",
+                &start,
+                lan,
+                client_raw,
+                client_normalized,
+                lan_raw,
+                TrafficCounters::default(),
+                false,
+            );
+        };
+
+        let aligned = fits_lan_clock(client_raw, lan_raw)
+            && fits_lan_clock(client_normalized, lan_normalized)
+            && ownership_ready(client_normalized, lan_normalized)
+            && directional_coverage_ready(client_raw, lan_raw)
+            && directional_coverage_ready(client_normalized, lan_normalized);
+        if aligned {
+            let denominator = lan_normalized
+                .rx_bytes
+                .saturating_add(lan_normalized.tx_bytes);
+            let quality = if denominator == 0 {
+                WindowQuality::Idle
+            } else if denominator < MIN_COVERAGE_BYTES {
+                WindowQuality::LowTraffic
+            } else {
+                WindowQuality::Ok
+            };
+            let output = coverage_window(
+                quality,
+                "lan_coverage_aligned",
+                &start,
+                lan,
+                client_raw,
+                client_normalized,
+                lan_raw,
+                lan_normalized,
+                true,
+            );
+            if quality == WindowQuality::Idle {
+                self.last_reported = None;
+            } else if output.tx_pct.is_some() || output.rx_pct.is_some() {
+                self.last_reported = Some((output.tx_pct, output.rx_pct));
+            }
+            self.rebaseline(lan.clone());
+            return output;
+        }
+
+        let pending_since = *self.pending_since_ms.get_or_insert(lan.sample_ms);
+        let timeout = if !has_traffic(&client_raw) && has_traffic(&lan_raw) {
+            UNOWNED_SETTLE_MS
+        } else {
+            COVERAGE_CATCHUP_TIMEOUT_MS
+        };
+        if lan.sample_ms.saturating_sub(pending_since) <= timeout {
+            return self.with_last_reported(coverage_window(
+                WindowQuality::Pending,
+                "lan_coverage_pending",
+                &start,
+                lan,
+                client_raw,
+                client_normalized,
+                lan_raw,
+                lan_normalized,
+                false,
+            ));
+        }
+
+        let (quality, reason) = if is_low_traffic_pair(client_raw, lan_raw) {
+            (WindowQuality::LowTraffic, "low_traffic_coverage_rebaseline")
+        } else {
+            (WindowQuality::CounterSkew, "lan_coverage_timeout")
+        };
+        let output = self.with_last_reported(coverage_window(
+            quality,
+            reason,
+            &start,
+            lan,
+            client_raw,
+            client_normalized,
+            lan_raw,
+            lan_normalized,
+            false,
+        ));
+        self.rebaseline(lan.clone());
+        output
+    }
+
+    fn with_last_reported(&self, mut coverage: CoverageWindow) -> CoverageWindow {
+        if let Some((tx_pct, rx_pct)) = self.last_reported {
+            coverage.retained_tx_pct = tx_pct;
+            coverage.retained_rx_pct = rx_pct;
+        }
+        coverage
+    }
+
+    fn clear(&mut self, lan: LanClock) {
+        self.rebaseline(lan);
+        self.last_reported = None;
+    }
+
+    fn rebaseline(&mut self, lan: LanClock) {
+        self.start = Some(lan);
+        self.pending_since_ms = None;
+        self.pending_client = TrafficCounters::default();
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub(crate) struct NssWindowBook {
     initialized: bool,
     previous_sample_ms: Option<u64>,
@@ -175,9 +345,7 @@ pub(crate) struct NssWindowBook {
     rx_rate_histories: BTreeMap<(String, NodeKey), NodeRateHistory>,
     committed_totals: BTreeMap<String, TrafficCounters>,
     published_rates: BTreeMap<String, PublishedClientRate>,
-    coverage_start: Option<LanClock>,
-    coverage_pending_since_ms: Option<u64>,
-    coverage_pending_clients: BTreeMap<String, TrafficCounters>,
+    coverage: NssCoverageBook,
 }
 
 impl NssWindowBook {
@@ -242,17 +410,10 @@ impl NssWindowBook {
             }
         };
 
-        for (identity, delta) in &node_deltas {
-            add_assign(
-                self.coverage_pending_clients
-                    .entry(identity.clone())
-                    .or_default(),
-                delta.raw,
-            );
-        }
+        let coverage_delta = sum(node_deltas.values().map(|delta| delta.raw));
         self.previous_sample_ms = Some(nodes.sample_ms);
         self.previous_lan = Some(lan.clone());
-        let coverage = self.update_coverage(&lan);
+        let coverage = self.coverage.update(coverage_delta, &lan);
 
         if node_deltas.values().any(ClientDelta::progressed) {
             self.publish_rate(nodes.sample_ms, node_deltas, coverage)
@@ -460,128 +621,6 @@ impl NssWindowBook {
             .collect()
     }
 
-    fn update_coverage(&mut self, lan: &LanClock) -> CoverageWindow {
-        let Some(start) = self.coverage_start.clone() else {
-            self.reset_coverage(lan.clone());
-            return CoverageWindow::empty(
-                WindowQuality::CounterReset,
-                "missing_coverage_baseline",
-                lan.sample_ms,
-            );
-        };
-        let client_raw = sum(self.coverage_pending_clients.values().copied());
-        let Some(lan_raw) = checked_delta(lan.counters, start.counters) else {
-            self.reset_coverage(lan.clone());
-            return CoverageWindow::empty(
-                WindowQuality::CounterReset,
-                "lan_coverage_counter_reset",
-                lan.sample_ms,
-            );
-        };
-        let Some(client_normalized) = client_raw.fcs_normalized() else {
-            self.reset_coverage(lan.clone());
-            return coverage_window(
-                WindowQuality::CounterSkew,
-                "client_fcs_overflow",
-                &start,
-                lan,
-                client_raw,
-                TrafficCounters::default(),
-                lan_raw,
-                lan_raw.fcs_normalized().unwrap_or_default(),
-                false,
-            );
-        };
-        let Some(lan_normalized) = lan_raw.fcs_normalized() else {
-            self.reset_coverage(lan.clone());
-            return coverage_window(
-                WindowQuality::CounterSkew,
-                "lan_fcs_overflow",
-                &start,
-                lan,
-                client_raw,
-                client_normalized,
-                lan_raw,
-                TrafficCounters::default(),
-                false,
-            );
-        };
-
-        let aligned = fits_lan_clock(client_raw, lan_raw)
-            && fits_lan_clock(client_normalized, lan_normalized)
-            && ownership_ready(client_normalized, lan_normalized);
-        if aligned {
-            let denominator = lan_normalized
-                .rx_bytes
-                .saturating_add(lan_normalized.tx_bytes);
-            let quality = if denominator == 0 {
-                WindowQuality::Idle
-            } else if denominator < MIN_COVERAGE_BYTES {
-                WindowQuality::LowTraffic
-            } else {
-                WindowQuality::Ok
-            };
-            let output = coverage_window(
-                quality,
-                "lan_coverage_aligned",
-                &start,
-                lan,
-                client_raw,
-                client_normalized,
-                lan_raw,
-                lan_normalized,
-                true,
-            );
-            self.reset_coverage(lan.clone());
-            return output;
-        }
-
-        let pending_since = *self.coverage_pending_since_ms.get_or_insert(lan.sample_ms);
-        let timeout = if !has_traffic(&client_raw) && has_traffic(&lan_raw) {
-            UNOWNED_SETTLE_MS
-        } else {
-            COVERAGE_CATCHUP_TIMEOUT_MS
-        };
-        if lan.sample_ms.saturating_sub(pending_since) <= timeout {
-            return coverage_window(
-                WindowQuality::Pending,
-                "lan_coverage_pending",
-                &start,
-                lan,
-                client_raw,
-                client_normalized,
-                lan_raw,
-                lan_normalized,
-                false,
-            );
-        }
-
-        let (quality, reason) = if is_low_traffic_pair(client_raw, lan_raw) {
-            (WindowQuality::LowTraffic, "low_traffic_coverage_rebaseline")
-        } else {
-            (WindowQuality::CounterSkew, "lan_coverage_timeout")
-        };
-        let output = coverage_window(
-            quality,
-            reason,
-            &start,
-            lan,
-            client_raw,
-            client_normalized,
-            lan_raw,
-            lan_normalized,
-            false,
-        );
-        self.reset_coverage(lan.clone());
-        output
-    }
-
-    fn reset_coverage(&mut self, lan: LanClock) {
-        self.coverage_start = Some(lan);
-        self.coverage_pending_since_ms = None;
-        self.coverage_pending_clients.clear();
-    }
-
     fn rebaseline(&mut self, nodes: &NodeSnapshot, lan: LanClock) {
         self.initialized = true;
         self.previous_sample_ms = Some(nodes.sample_ms);
@@ -614,7 +653,7 @@ impl NssWindowBook {
             }
         }
         self.published_rates.clear();
-        self.reset_coverage(lan);
+        self.coverage.clear(lan);
     }
 
     fn zero_output(
@@ -676,6 +715,8 @@ fn coverage_window(
         rx_pct: aligned
             .then(|| percentage(client_normalized.rx_bytes, lan_normalized.tx_bytes))
             .flatten(),
+        retained_tx_pct: None,
+        retained_rx_pct: None,
         aligned,
     }
 }
@@ -722,6 +763,13 @@ fn fits_lan_clock(client: TrafficCounters, lan: TrafficCounters) -> bool {
 fn ownership_ready(client: TrafficCounters, lan: TrafficCounters) -> bool {
     is_low_traffic_pair(client, lan)
         || (aggregate_client_clock_ready(client, lan) && aggregate_lan_ownership_ready(client, lan))
+}
+
+fn directional_coverage_ready(client: TrafficCounters, lan: TrafficCounters) -> bool {
+    client.tx_bytes <= lan.rx_bytes
+        && client.tx_packets <= lan.rx_packets
+        && client.rx_bytes <= lan.tx_bytes
+        && client.rx_packets <= lan.tx_packets
 }
 
 fn aggregate_client_clock_ready(client: TrafficCounters, lan: TrafficCounters) -> bool {
@@ -1169,6 +1217,128 @@ mod tests {
     }
 
     #[test]
+    fn packet_aware_low_traffic_reports_a_real_percentage() {
+        let mut coverage = NssCoverageBook::default();
+        let warmup = coverage.update(
+            TrafficCounters::default(),
+            &lan(0, TrafficCounters::default()),
+        );
+        assert_eq!(warmup.quality, WindowQuality::Warmup);
+
+        let output = coverage.update(
+            traffic(10_000, 20_000, 2_500, 5_000),
+            &lan(2_000, traffic(20_000, 10_000, 5_000, 2_500)),
+        );
+
+        assert_eq!(output.quality, WindowQuality::LowTraffic);
+        assert!(output.aligned);
+        assert_eq!(
+            output.client_normalized,
+            traffic(20_000, 40_000, 2_500, 5_000)
+        );
+        assert_eq!(
+            output.client_normalized.tx_bytes,
+            output.lan_normalized.rx_bytes
+        );
+        assert_eq!(
+            output.client_normalized.rx_bytes,
+            output.lan_normalized.tx_bytes
+        );
+        assert_eq!(
+            output.client_normalized.tx_packets,
+            output.lan_normalized.rx_packets
+        );
+        assert_eq!(
+            output.client_normalized.rx_packets,
+            output.lan_normalized.tx_packets
+        );
+        assert_eq!(output.tx_pct, Some(100));
+        assert_eq!(output.rx_pct, Some(100));
+    }
+
+    #[test]
+    fn coverage_waits_for_a_late_lan_batch_then_aligns_the_original_window() {
+        let mut coverage = NssCoverageBook::default();
+        coverage.update(
+            TrafficCounters::default(),
+            &lan(0, TrafficCounters::default()),
+        );
+
+        let pending = coverage.update(
+            traffic(200_000, 400_000, 200, 400),
+            &lan(2_000, traffic(200_000, 100_000, 200, 100)),
+        );
+        assert_eq!(pending.quality, WindowQuality::Pending);
+        assert_eq!(pending.start_ms, 0);
+
+        let aligned = coverage.update(
+            TrafficCounters::default(),
+            &lan(4_000, traffic(400_000, 200_000, 400, 200)),
+        );
+        assert_eq!(aligned.quality, WindowQuality::Ok);
+        assert_eq!(aligned.start_ms, 0);
+        assert_eq!(aligned.end_ms, 4_000);
+        assert_eq!(aligned.tx_pct, Some(100));
+        assert_eq!(aligned.rx_pct, Some(100));
+    }
+
+    #[test]
+    fn pending_window_retains_only_the_last_aligned_percentage_for_display() {
+        let mut coverage = NssCoverageBook::default();
+        coverage.update(
+            TrafficCounters::default(),
+            &lan(0, TrafficCounters::default()),
+        );
+
+        let published = coverage.update(
+            traffic(200_000, 400_000, 200, 400),
+            &lan(2_000, traffic(400_000, 200_000, 400, 200)),
+        );
+        assert_eq!(published.quality, WindowQuality::Ok);
+        assert_eq!(published.tx_pct, Some(100));
+        assert_eq!(published.rx_pct, Some(100));
+
+        let pending = coverage.update(
+            traffic(400_000, 400_000, 400, 400),
+            &lan(4_000, traffic(500_000, 300_000, 500, 300)),
+        );
+        assert_eq!(pending.quality, WindowQuality::Pending);
+        assert_eq!(pending.tx_pct, None);
+        assert_eq!(pending.rx_pct, None);
+        assert_eq!(pending.retained_tx_pct, Some(100));
+        assert_eq!(pending.retained_rx_pct, Some(100));
+
+        let aligned = coverage.update(
+            TrafficCounters::default(),
+            &lan(6_000, traffic(800_000, 600_000, 800, 600)),
+        );
+        assert_eq!(aligned.quality, WindowQuality::Ok);
+        assert_eq!(aligned.tx_pct, Some(100));
+        assert_eq!(aligned.rx_pct, Some(100));
+        assert_eq!(aligned.retained_tx_pct, None);
+        assert_eq!(aligned.retained_rx_pct, None);
+    }
+
+    #[test]
+    fn low_volume_unowned_lan_traffic_remains_visible_as_low_coverage() {
+        let mut coverage = NssCoverageBook::default();
+        coverage.update(
+            TrafficCounters::default(),
+            &lan(0, TrafficCounters::default()),
+        );
+
+        let output = coverage.update(
+            traffic(10_000, 0, 100, 0),
+            &lan(2_000, traffic(0, 20_000, 0, 200)),
+        );
+
+        assert_eq!(output.quality, WindowQuality::LowTraffic);
+        assert!(output.aligned);
+        assert_eq!(output.tx_pct, Some(50));
+        assert_eq!(output.rx_pct, None);
+    }
+
+    #[test]
     fn packet_fcs_is_exact_and_counter_reset_rewarms() {
         assert_eq!(
             traffic(1_000, 2_000, 3, 5).fcs_normalized(),
@@ -1212,6 +1382,7 @@ mod tests {
         let client = traffic(3_763_764, 109_645_207, 39_568, 75_590);
         let lan = traffic(109_940_744, 3_033_545, 75_542, 38_478);
         assert!(fits_lan_clock(client, lan));
+        assert!(!directional_coverage_ready(client, lan));
         let client_normalized = client.fcs_normalized().unwrap();
         let lan_normalized = lan.fcs_normalized().unwrap();
         assert!(ownership_ready(client_normalized, lan_normalized));
@@ -1223,5 +1394,28 @@ mod tests {
             percentage(client_normalized.rx_bytes, lan_normalized.tx_bytes),
             Some(99)
         );
+    }
+
+    #[test]
+    fn aggregate_overlap_waits_until_each_coverage_direction_is_reportable() {
+        let mut coverage = NssCoverageBook::default();
+        coverage.update(
+            TrafficCounters::default(),
+            &lan(0, TrafficCounters::default()),
+        );
+        let client = traffic(3_763_764, 109_645_207, 39_568, 75_590);
+        let pending = coverage.update(
+            client,
+            &lan(1_000, traffic(109_940_744, 3_033_545, 75_542, 38_478)),
+        );
+        assert_eq!(pending.quality, WindowQuality::Pending);
+
+        let aligned = coverage.update(
+            TrafficCounters::default(),
+            &lan(3_000, traffic(109_940_744, 3_763_764, 75_590, 39_568)),
+        );
+        assert_eq!(aligned.quality, WindowQuality::Ok);
+        assert!(aligned.tx_pct.is_some());
+        assert!(aligned.rx_pct.is_some());
     }
 }

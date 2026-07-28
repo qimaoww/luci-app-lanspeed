@@ -11,6 +11,7 @@ use lanspeed_common::{
 };
 
 use crate::{
+    collectors::ecm_node::TrafficCounters,
     identity::{ClientIdentity, IdentityTable},
     merge_split_btf,
 };
@@ -70,6 +71,7 @@ pub struct EcmBpfClientSample {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EcmBpfSnapshot {
     pub clients: Vec<EcmBpfClientSample>,
+    pub coverage_delta: TrafficCounters,
     pub sample_ms: u64,
     pub map_entries: usize,
     pub matched_entries: usize,
@@ -168,48 +170,81 @@ impl EcmBpfSnapshotCollector {
         now_ms: u64,
     ) -> EcmBpfSnapshot {
         let map_entries = read.entries.len();
-        let mut current = BTreeMap::<FlowKey, (EcmCounters, String)>::new();
+        let previous_sample_ms = self
+            .last_complete
+            .as_ref()
+            .map(|snapshot| snapshot.sample_ms);
+        let mut current = BTreeMap::<FlowKey, (EcmCounters, Option<String>)>::new();
+        let mut coverage_delta = TrafficCounters::default();
         for raw in read.entries {
             if raw.key.direction != DIR_TX && raw.key.direction != DIR_RX {
                 continue;
             }
-            let Some(identity) = unique_identity_for_mac(identities, raw.key.mac) else {
-                continue;
-            };
-            current.insert(raw.key.into(), (raw.counters, identity.key.to_string()));
+            let identity_key = unique_identity_for_mac(identities, raw.key.mac)
+                .map(|identity| identity.key.to_string());
+            current.insert(raw.key.into(), (raw.counters, identity_key));
         }
 
-        for (key, (counters, _)) in &current {
+        for (key, (counters, identity_key)) in &current {
             let event_ms = (counters.last_seen / 1_000_000).min(now_ms);
             let previous = self.baselines.get(key).copied();
-            if let Some(previous) = previous {
-                if counters.bytes >= previous.bytes && counters.packets >= previous.packets {
-                    let delta_bytes = counters.bytes - previous.bytes;
-                    let delta_packets = counters.packets - previous.packets;
-                    if delta_bytes != 0 || delta_packets != 0 {
-                        // Counters and last_seen are separate map-value stores, so
-                        // a concurrent read can observe them from different ECM
-                        // updates. Use the coherent daemon sample clock for rates;
-                        // last_seen remains freshness evidence only.
-                        let window_ms = now_ms.saturating_sub(previous.last_progress_sample_ms);
-                        if window_ms != 0 {
-                            let wire_bytes =
-                                delta_bytes.saturating_add(delta_packets.saturating_mul(4));
-                            let raw_bps = bits_per_second(wire_bytes, window_ms);
-                            let bps = self.rate_histories.entry(*key).or_default().push(raw_bps);
-                            self.published.insert(
-                                *key,
-                                PublishedRate {
-                                    bps,
-                                    end_ms: now_ms,
-                                },
-                            );
-                        }
-                    }
-                } else {
+            let delta = match previous {
+                Some(previous)
+                    if counters.bytes >= previous.bytes && counters.packets >= previous.packets =>
+                {
+                    Some((
+                        counters.bytes - previous.bytes,
+                        counters.packets - previous.packets,
+                        previous.last_progress_sample_ms,
+                    ))
+                }
+                Some(_) => {
                     self.published.remove(key);
                     self.rate_histories.remove(key);
+                    None
                 }
+                // This runtime owns the map and every entry starts at zero. The
+                // first complete read is an unknown-time baseline; a later new
+                // generation contains traffic since the preceding map snapshot.
+                None => previous_sample_ms
+                    .map(|sample_ms| (counters.bytes, counters.packets, sample_ms)),
+            };
+            if let Some((delta_bytes, delta_packets, delta_start_ms)) = delta {
+                if (delta_bytes != 0 || delta_packets != 0) && identity_key.is_some() {
+                    if key.direction == DIR_TX {
+                        coverage_delta.tx_bytes =
+                            coverage_delta.tx_bytes.saturating_add(delta_bytes);
+                        coverage_delta.tx_packets =
+                            coverage_delta.tx_packets.saturating_add(delta_packets);
+                    } else {
+                        coverage_delta.rx_bytes =
+                            coverage_delta.rx_bytes.saturating_add(delta_bytes);
+                        coverage_delta.rx_packets =
+                            coverage_delta.rx_packets.saturating_add(delta_packets);
+                    }
+                    // Counters and last_seen are separate map-value stores, so
+                    // a concurrent read can observe them from different ECM
+                    // updates. Use the coherent daemon sample clock for rates;
+                    // last_seen remains freshness evidence only.
+                    let window_ms = now_ms.saturating_sub(delta_start_ms);
+                    if window_ms != 0 {
+                        let wire_bytes =
+                            delta_bytes.saturating_add(delta_packets.saturating_mul(4));
+                        let raw_bps = bits_per_second(wire_bytes, window_ms);
+                        let bps = self.rate_histories.entry(*key).or_default().push(raw_bps);
+                        self.published.insert(
+                            *key,
+                            PublishedRate {
+                                bps,
+                                end_ms: now_ms,
+                            },
+                        );
+                    }
+                }
+            }
+            if identity_key.is_none() {
+                self.published.remove(key);
+                self.rate_histories.remove(key);
             }
             let progressed = previous.is_none_or(|value| {
                 value.bytes != counters.bytes || value.packets != counters.packets
@@ -242,6 +277,9 @@ impl EcmBpfSnapshotCollector {
 
         let mut folded = BTreeMap::<String, FoldedClient>::new();
         for (key, (counters, identity_key)) in &current {
+            let Some(identity_key) = identity_key else {
+                continue;
+            };
             let client = folded.entry(identity_key.clone()).or_default();
             let total = counters
                 .bytes
@@ -269,8 +307,12 @@ impl EcmBpfSnapshotCollector {
             })
             .collect::<Vec<_>>();
         let snapshot = EcmBpfSnapshot {
-            matched_entries: current.len(),
+            matched_entries: current
+                .values()
+                .filter(|(_, identity_key)| identity_key.is_some())
+                .count(),
             clients,
+            coverage_delta,
             sample_ms: now_ms,
             map_entries,
             truncated: read.truncated,
@@ -1052,8 +1094,78 @@ mod tests {
             &identities,
             3_000,
         );
-        assert_eq!(snapshot.clients[0].tx_bps, 0);
+        assert_eq!(snapshot.clients[0].tx_bps, 216);
         assert_eq!(snapshot.clients[0].rx_bps, 8_320);
+    }
+
+    #[test]
+    fn coverage_delta_uses_raw_bytes_and_packets_without_generation_regression() {
+        let identities = identities();
+        let mut collector = EcmBpfSnapshotCollector::default();
+        collector.convert(
+            EcmMapRead {
+                entries: vec![
+                    raw(1, 10, DIR_TX, 1_000, 10, 1_000),
+                    raw(2, 20, DIR_RX, 2_000, 20, 1_000),
+                ],
+                truncated: false,
+            },
+            &identities,
+            1_000,
+        );
+
+        let progressed = collector.convert(
+            EcmMapRead {
+                entries: vec![
+                    raw(1, 10, DIR_TX, 3_000, 30, 3_000),
+                    raw(2, 20, DIR_RX, 6_000, 60, 3_000),
+                ],
+                truncated: false,
+            },
+            &identities,
+            3_000,
+        );
+        assert_eq!(
+            progressed.coverage_delta,
+            TrafficCounters {
+                tx_bytes: 2_000,
+                rx_bytes: 4_000,
+                tx_packets: 20,
+                rx_packets: 40,
+            }
+        );
+
+        let disappeared = collector.convert(
+            EcmMapRead {
+                entries: vec![raw(2, 20, DIR_RX, 6_000, 60, 3_000)],
+                truncated: false,
+            },
+            &identities,
+            4_000,
+        );
+        assert_eq!(disappeared.coverage_delta, TrafficCounters::default());
+
+        let returned = collector.convert(
+            EcmMapRead {
+                entries: vec![
+                    raw(1, 10, DIR_TX, 4_000, 40, 5_000),
+                    raw(2, 20, DIR_RX, 6_000, 60, 3_000),
+                    raw(1, 11, DIR_TX, 50_000, 500, 5_000),
+                ],
+                truncated: false,
+            },
+            &identities,
+            5_000,
+        );
+        assert_eq!(
+            returned.coverage_delta,
+            TrafficCounters {
+                tx_bytes: 51_000,
+                rx_bytes: 0,
+                tx_packets: 510,
+                rx_packets: 0,
+            }
+        );
     }
 
     #[test]

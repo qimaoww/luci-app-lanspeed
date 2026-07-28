@@ -150,6 +150,7 @@
     "coverage_timeout_ms": 5000,
     "coverage_timeout_origin": "first_lan_mismatch",
     "coverage_timeout_reset_on_node_progress": false,
+    "pending_display": "retain_last_aligned_percentage_until_next_aligned_window",
     "low_traffic_coverage_timeout": "rebaseline_with_raw_evidence",
     "counter_generation_change": "generation_scoped_baseline",
     "counter_reset": "rebaseline_and_publish_zero",

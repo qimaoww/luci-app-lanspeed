@@ -400,9 +400,11 @@ function refreshLive(viewState) {
 
 	var cov = status.coverage || {};
 	var covQuality = cov.quality || 'warmup';
-	var retainedPending = covQuality === 'pending' &&
+	var retainedPending = (covQuality === 'pending' || covQuality === 'counter_skew') &&
 		(typeof cov.tx_pct === 'number' || typeof cov.rx_pct === 'number');
-	if (covQuality === 'ok' || retainedPending) {
+	var measuredLowTraffic = covQuality === 'low_traffic' &&
+		(typeof cov.tx_pct === 'number' || typeof cov.rx_pct === 'number');
+	if (covQuality === 'ok' || retainedPending || measuredLowTraffic) {
 		var txPct = typeof cov.tx_pct === 'number' ? cov.tx_pct : null;
 		var rxPct = typeof cov.rx_pct === 'number' ? cov.rx_pct : null;
 		var minPct = null;
@@ -410,7 +412,10 @@ function refreshLive(viewState) {
 		else if (rxPct !== null) minPct = rxPct;
 		else if (txPct !== null) minPct = txPct;
 		refs.mCoverage.textContent = minPct !== null ? (minPct + '%') : '-';
-		if ((rxPct !== null && rxPct < 85) || (txPct !== null && txPct < 85)) {
+		if (retainedPending) {
+			refs.mCoverageSub.textContent = '↑' + (txPct !== null ? txPct : '-') +
+				' ↓' + (rxPct !== null ? rxPct : '-') + ' · ' + _('等待新批次');
+		} else if ((rxPct !== null && rxPct < 85) || (txPct !== null && txPct < 85)) {
 			var missingBps = 0;
 			var denomTotal = (Number(cov.denom_rx_bytes) || 0) + (Number(cov.denom_tx_bytes) || 0);
 			var numerTotal = (Number(cov.numer_rx_bytes) || 0) + (Number(cov.numer_tx_bytes) || 0);
@@ -419,9 +424,6 @@ function refreshLive(viewState) {
 			refs.mCoverageSub.textContent = '↑' + (txPct !== null ? txPct : '-') +
 				' ↓' + (rxPct !== null ? rxPct : '-') +
 				' · ' + _('缺口 ') + fmt.formatRate(missingBps, prefs.unit);
-		} else if (retainedPending) {
-			refs.mCoverageSub.textContent = '↑' + (txPct !== null ? txPct : '-') +
-				' ↓' + (rxPct !== null ? rxPct : '-') + ' · ' + _('等待新批次');
 		} else if (txPct !== null && rxPct !== null && Math.abs(txPct - rxPct) <= 2) {
 			refs.mCoverageSub.textContent = _('上下行均衡');
 		} else {
@@ -437,12 +439,18 @@ function refreshLive(viewState) {
 	} else if (covQuality === 'pending') {
 		refs.mCoverage.textContent = '…';
 		refs.mCoverageSub.textContent = _('LAN 覆盖率窗口正在追平，不影响客户端速率');
+	} else if (covQuality === 'counter_skew') {
+		refs.mCoverage.textContent = '…';
+		refs.mCoverageSub.textContent = _('客户端与 LAN 计数批次错位，等待重新采样');
 	} else if (covQuality === 'warmup' || covQuality === 'counter_reset') {
 		refs.mCoverage.textContent = '…';
 		refs.mCoverageSub.textContent = _('采样中');
-	} else {
+	} else if (covQuality === 'unsupported') {
 		refs.mCoverage.textContent = '-';
 		refs.mCoverageSub.textContent = _('不支持');
+	} else {
+		refs.mCoverage.textContent = '…';
+		refs.mCoverageSub.textContent = _('采样中');
 	}
 
 	var latestSample = fmt.latestClientSampleMs(clientsAll);
@@ -625,7 +633,8 @@ function refreshLive(viewState) {
 		].join(' · ');
 
 		var covHint = status.coverage || {};
-		if (covHint.quality === 'ok') {
+		if (covHint.quality === 'ok' || (covHint.quality === 'low_traffic' &&
+		    (typeof covHint.tx_pct === 'number' || typeof covHint.rx_pct === 'number'))) {
 			var hintTx = typeof covHint.tx_pct === 'number' ? covHint.tx_pct : 100;
 			var hintRx = typeof covHint.rx_pct === 'number' ? covHint.rx_pct : 100;
 			refs.ifacesHint.textContent = (hintTx < 85 || hintRx < 85)

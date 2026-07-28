@@ -299,6 +299,88 @@ async function testIndependentRpcSettlement(context, fmt) {
 	assert.strictEqual(malformed.rpc.clients.error.code, 'INVALID_RESPONSE');
 }
 
+async function testLiveSamplePairing(context, fmt) {
+	let clientSampleMs = 1000;
+	let interfaceSampleMs = 1000;
+	let clientRate = 111;
+	let interfaceRate = 777;
+	let emptyClients = false;
+	const rpc = {
+		status: function() { return Promise.resolve({ version: '1.1.4-r1' }); },
+		clients: function() {
+			return Promise.resolve({
+				clients: emptyClients ? [] : [ {
+					collector_mode: 'bpf', sample_ms: clientSampleMs,
+					tx_bps: clientRate, rx_bps: clientRate
+				} ],
+				evidence: { effective_collector: 'bpf' }
+			});
+		},
+		interfaces: function() {
+			return Promise.resolve({
+				monotonic_ms: interfaceSampleMs,
+				interfaces: [ {
+					name: 'br-lan', sample_ms: interfaceSampleMs,
+					rx_bps: interfaceRate, tx_bps: interfaceRate
+				} ]
+			});
+		},
+		uciGet: function() { return Promise.resolve({}); }
+	};
+	const overview = loadOverview(context, fmt, rpc);
+	let tick = 10000;
+	const clock = function() { return ++tick; };
+
+	const first = await overview.loadAll(null, clock);
+	assert.strictEqual(first.livePair.sampleMs, 1000);
+	assert.strictEqual(first.livePair.aligned, true);
+	assert.strictEqual(first.clients.clients[0].tx_bps, 111);
+	assert.strictEqual(first.interfaces.interfaces[0].rx_bps, 777);
+
+	clientSampleMs = 2000;
+	interfaceSampleMs = 3000;
+	clientRate = 222;
+	interfaceRate = 999;
+	const straddled = await overview.loadAll(first, clock);
+	assert.strictEqual(straddled.clients, first.clients,
+		'a client/interface RPC boundary split must retain the previous client batch');
+	assert.strictEqual(straddled.interfaces, first.interfaces,
+		'a client/interface RPC boundary split must retain the previous interface batch');
+	assert.strictEqual(straddled.clients.clients[0].tx_bps, 111,
+		'retaining a pair must never rewrite the previous client rate');
+	assert.strictEqual(straddled.interfaces.interfaces[0].rx_bps, 777,
+		'retaining a pair must never rewrite the previous interface rate');
+	assert.strictEqual(straddled.livePair.retained, true);
+	assert.strictEqual(straddled.livePair.pendingClientSampleMs, 2000);
+	assert.strictEqual(straddled.livePair.pendingInterfaceSampleMs, 3000);
+
+	clientSampleMs = 3000;
+	const aligned = await overview.loadAll(straddled, clock);
+	assert.strictEqual(aligned.livePair.sampleMs, 3000);
+	assert.strictEqual(aligned.livePair.aligned, true);
+	assert.strictEqual(aligned.livePair.retained, false);
+	assert.strictEqual(aligned.clients.clients[0].tx_bps, 222,
+		'the next matching client batch must publish its untouched backend rate');
+	assert.strictEqual(aligned.interfaces.interfaces[0].rx_bps, 999,
+		'the next matching interface batch must publish its untouched backend rate');
+
+	clientSampleMs = 4000;
+	interfaceSampleMs = 5000;
+	const coldStraddle = await overview.loadAll(null, clock);
+	assert.deepStrictEqual(Array.from(coldStraddle.clients.clients), []);
+	assert.deepStrictEqual(Array.from(coldStraddle.interfaces.interfaces), []);
+	assert.strictEqual(coldStraddle.livePair.retained, false,
+		'a cold start must not expose either half of a mismatched live pair');
+
+	emptyClients = true;
+	interfaceSampleMs = 6000;
+	const empty = await overview.loadAll(aligned, clock);
+	assert.deepStrictEqual(Array.from(empty.clients.clients), []);
+	assert.strictEqual(empty.interfaces.interfaces[0].sample_ms, 6000);
+	assert.strictEqual(empty.livePair.sampleMs, 6000,
+		'a successful empty-client response must not block a new empty live batch');
+}
+
 function fakeTimers() {
 	let nextId = 1;
 	const entries = new Map();
@@ -703,11 +785,12 @@ async function main() {
 	const context = createContext();
 	const fmt = loadFormat(context);
 	await testIndependentRpcSettlement(context, fmt);
+	await testLiveSamplePairing(context, fmt);
 	await testControllerLifecycle(context, fmt);
 	testRenderWiresLiveRefresh(context, fmt);
 	testPaginationAndUiStates(context, fmt);
 	console.log('validate-lanspeed-status: PASS');
-	console.log('  independent RPC settlement, retained data, hard failure, single-flight refresh');
+	console.log('  independent RPC settlement, paired sample clocks, hard failure, single-flight refresh');
 	console.log('  timer lifecycle, destroy invalidation, pagination, keyboard, ARIA, and empty states');
 }
 

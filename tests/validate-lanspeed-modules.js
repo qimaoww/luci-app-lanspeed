@@ -5580,9 +5580,14 @@ function assertStatusRefreshModule(src) {
 	    !src.includes("_('%d 告警').format(specificWarnings.length)")) {
 		fail('statusRefresh.js must fold connection-only details into the collector tooltip without rendering another label');
 	}
-	if (!src.includes("covQuality === 'low_traffic'") ||
+	if (!src.includes("var measuredLowTraffic = covQuality === 'low_traffic'") ||
+	    !src.includes("covQuality === 'pending' || covQuality === 'counter_skew'") ||
+	    !src.includes('covQuality === \'ok\' || retainedPending || measuredLowTraffic') ||
 	    !src.includes('LAN 流量较低，暂不计算覆盖率') ||
-	    !src.includes('LAN 无活动流量')) {
+	    !src.includes('LAN 无活动流量') ||
+	    !src.includes("covQuality === 'counter_skew'") ||
+	    !src.includes('客户端与 LAN 计数批次错位，等待重新采样') ||
+	    !src.includes("covQuality === 'unsupported'")) {
 		fail('statusRefresh.js must distinguish low traffic from a truly idle LAN');
 	}
 	if (!src.includes("'class': 'lanspeed-connection-link'") ||
@@ -5715,6 +5720,10 @@ function assertDiagnosticsModelModule(src) {
 	    !src.includes('function probeFailureBundle') ||
 	    !src.includes('if (!progressRpcOk(rpc, key)) return;') ||
 	    !src.includes('evidence && health.evidence.probe_failures') ||
+	    !src.includes("quality === 'low_traffic'") ||
+	    !src.includes('低流量实测：上行 %s · 下行 %s') ||
+	    !src.includes("quality === 'counter_skew'") ||
+	    !src.includes("badge = _('重新对齐')") ||
 	    !src.includes("_('隐私说明')")) {
 		fail('lanspeed/diagnosticsModel.js must parse structured probe failures and redact copied reports');
 	}

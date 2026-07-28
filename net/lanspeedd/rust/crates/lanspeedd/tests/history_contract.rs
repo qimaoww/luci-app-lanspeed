@@ -335,7 +335,10 @@ fn coverage_ring_is_fixed_and_distinguishes_idle_low_traffic_and_ok_quality() {
         ByteTotals::new(200_000, 200_000),
         ByteTotals::new(100_000, 100_000),
     ));
-    assert_eq!(ring.report(true).quality, CoverageQuality::LowTraffic);
+    let low_traffic = ring.report(true);
+    assert_eq!(low_traffic.quality, CoverageQuality::LowTraffic);
+    assert_eq!(low_traffic.tx_pct, Some(50));
+    assert_eq!(low_traffic.rx_pct, Some(50));
 
     let mut idle = CoverageRing::new();
     idle.push(CoverageSample::valid(

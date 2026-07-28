@@ -27,6 +27,7 @@ var SUBSYSTEM_LABELS = {
 var NEUTRAL_DISABLED_SUBSYSTEM_CODES = {
 	bpf_disabled: true,
 	bpf_not_selected: true,
+	tc_bpf_not_selected: true,
 	nss_not_present: true
 };
 

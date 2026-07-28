@@ -129,13 +129,16 @@ assert(model.ecm_bpf_model.counter_merge_policy === 'single_ecm_update_owner' &&
 assert(model.ecm_bpf_window_model.rate_clock === 'per_connection_adjacent_daemon_samples' &&
   model.ecm_bpf_window_model.event_timestamp_role ===
     'freshness_only_because_map_fields_are_not_one_atomic_snapshot' &&
-  ecmBpf.includes('now_ms.saturating_sub(previous.last_progress_sample_ms)'),
+  ecmBpf.includes('previous.last_progress_sample_ms') &&
+  ecmBpf.includes('now_ms.saturating_sub(delta_start_ms)'),
   'ECM+BPF rates must use the coherent daemon sample clock, not a torn map timestamp');
 assert(model.ecm_bpf_window_model.rate_filter ===
   'per_connection_generation_median_last_3_windows' &&
+  model.ecm_bpf_window_model.rate_hold_ms === 2500 &&
   ecmBpf.includes('const RATE_MEDIAN_SAMPLES: usize = 3;') &&
-  ecmBpf.includes('.push(raw_bps)'),
-  'ECM+BPF must reject one-off NSS synchronization and destroy-batch rate spikes per flow');
+  ecmBpf.includes('.push(raw_bps)') &&
+  ecmBpf.includes('now_ms.saturating_sub(rate.end_ms) <= ECM_RATE_HOLD_MS'),
+  'ECM+BPF must reject one-off batch spikes and retain the previous rate for one collection cycle');
 assert(model.ecm_bpf_model.runtime_layout.time_added_type === 'uint32_t',
   'ECM+BPF must read the real uint32_t time_added field width');
 assert(model.ecm_node_model.sync_barrier.quiet_ms === 20,
@@ -165,6 +168,11 @@ assert(nssWindow.coverage_blocks_rate === false &&
   nssWindow.coverage_timeout_origin === 'first_lan_mismatch' &&
   nssWindow.coverage_timeout_reset_on_node_progress === false,
   'coverage mismatch must neither block rates nor extend its timeout on node progress');
+assert(nssWindow.pending_display ===
+  'retain_last_aligned_percentage_until_next_aligned_window' &&
+  windowSource.includes('last_reported: Option<(Option<u8>, Option<u8>)>') &&
+  production.includes('coverage.retained_tx_pct'),
+  'pending NSS coverage must retain only the last aligned percentage for display');
 assert(model.ecm_node_model.forbidden_writes.includes('defunct_all') &&
   model.ecm_node_model.forbidden_writes.includes('decelerate'), 'ECM collector must remain read-only');
 assert(model.lan_clock_model.bridge_and_member_double_count_forbidden === true, 'bridge/member double counting must be forbidden');
@@ -285,9 +293,12 @@ assert(windowSource.includes('if node_deltas.values().any(ClientDelta::progresse
   windowSource.includes('self.publish_rate('),
   'each fresh ECM node delta must publish independently of LAN coverage');
 assert(windowSource.includes('const MIN_OWNERSHIP_PERCENT: u64 = 90;') &&
-  windowSource.includes('ownership_ready(client_normalized, lan_normalized)'),
+  windowSource.includes('ownership_ready(client_normalized, lan_normalized)') &&
+  windowSource.includes('directional_coverage_ready(client_raw, lan_raw)') &&
+  windowSource.includes('directional_coverage_ready(client_normalized, lan_normalized)'),
   'coverage ownership must retain the 90% aggregate threshold');
-assert(windowSource.includes('coverage_pending_since_ms') &&
+assert(windowSource.includes('struct NssCoverageBook') &&
+  windowSource.includes('pending_since_ms: Option<u64>') &&
   windowSource.includes('.get_or_insert(lan.sample_ms)') &&
   !windowSource.includes('batch_pending_since_ms'),
   'coverage timeout must start once and must not be reset by ECM node progress');
@@ -307,7 +318,10 @@ assert(production.includes('independent_lan_boundaries(&lan_roots, &masters)'),
   'runtime must expand LAN roots to independent boundaries');
 assert(production.includes('interface: boundaries.join("+")'),
   'multiple disjoint LAN boundaries must be explicitly identified');
-assert(production.includes('let coverage = nss_window.as_ref().map_or_else'), 'NSS coverage must consume its independent coverage result');
+assert(production.includes('if let Some(window) = nss_window.as_ref()') &&
+  production.includes('else if let Some(window) = ecm_bpf_coverage_window.as_ref()') &&
+  production.includes('coverage_response(window)'),
+  'both NSS collectors must consume their independent coverage result');
 assert(production.includes('let coverage = &window.coverage;') &&
   production.includes('"rate_and_coverage_decoupled": true'),
   'runtime evidence must expose the decoupled rate and coverage windows');

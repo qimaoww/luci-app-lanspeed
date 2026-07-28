@@ -36,6 +36,7 @@ var WARNING_LABELS = {
 	bpf_runtime_loader_unavailable: _('BPF 组件已安装，但 TC 挂载或映射表读取失败，客户端实时测速未能启动。'),
 	bpf_unavailable: _('BPF 运行环境不可用，客户端实时速率采集无法启动。'),
 	bpf_not_selected: _('当前未选择 BPF 实时速率采集路径，该组件不参与本次采集。'),
+	tc_bpf_not_selected: _('当前采集路径不使用 TC-BPF 挂载。'),
 	no_collect_interface: _('没有 LAN 接口设为“采集”，客户端实时测速不会启动。'),
 	package_missing: _('缺少 BPF 运行组件，客户端实时测速无法启动。'),
 	object_missing: _('缺少 BPF 对象文件，客户端实时测速无法启动。'),

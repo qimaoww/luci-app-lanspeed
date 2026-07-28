@@ -226,18 +226,17 @@ impl CoverageRing {
             report.quality = CoverageQuality::Idle;
             return report;
         }
-        if denominator < COVERAGE_MIN_DENOM_BYTES {
-            report.quality = CoverageQuality::LowTraffic;
-            return report;
-        }
-
         if dc_tx > di_rx || dc_rx > di_tx {
             report.quality = CoverageQuality::CounterSkew;
             return report;
         }
-        report.quality = CoverageQuality::Ok;
         report.tx_pct = percentage(dc_tx, di_rx);
         report.rx_pct = percentage(dc_rx, di_tx);
+        report.quality = if denominator < COVERAGE_MIN_DENOM_BYTES {
+            CoverageQuality::LowTraffic
+        } else {
+            CoverageQuality::Ok
+        };
         report
     }
 

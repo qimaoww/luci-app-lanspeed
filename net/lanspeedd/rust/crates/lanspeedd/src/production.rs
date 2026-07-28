@@ -70,7 +70,9 @@ use crate::{
         OverviewResponse, OverviewSample, ReloadResponse, StatusResponse, Sysdevice,
         SysdeviceLimits, SysdevicesResponse,
     },
-    nss_window::{LanClock, NssWindowBook, WindowOutput, WindowQuality},
+    nss_window::{
+        CoverageWindow, LanClock, NssCoverageBook, NssWindowBook, WindowOutput, WindowQuality,
+    },
     policy::{self, RateCollector},
     probe::{
         collector::{self, probe_deadline, probe_due, ProbeMethod, SystemProbeCollector},
@@ -181,10 +183,16 @@ fn sum_interface_counters(
 fn transition_rate_owner(
     current: &mut Option<RateCollector>,
     nss_windows: &mut NssWindowBook,
+    ecm_bpf_coverage: &mut NssCoverageBook,
     next: RateCollector,
 ) {
-    if *current != Some(next) && next == RateCollector::NssEcmNode {
-        *nss_windows = NssWindowBook::default();
+    if *current != Some(next) {
+        if next == RateCollector::NssEcmNode {
+            *nss_windows = NssWindowBook::default();
+        }
+        if next == RateCollector::NssEcmBpf {
+            *ecm_bpf_coverage = NssCoverageBook::default();
+        }
     }
     *current = Some(next);
 }
@@ -232,6 +240,7 @@ struct ProductionRuntime {
     coverage: CoverageRing,
     interface_rates: InterfaceRateBook,
     nss_windows: NssWindowBook,
+    ecm_bpf_coverage: NssCoverageBook,
     rate_owner: Option<RateCollector>,
     hostnames: HostnameCache,
     shutdown_complete: bool,
@@ -244,6 +253,7 @@ struct RuntimeCheckpoint {
     coverage: CoverageRing,
     interface_rates: InterfaceRateBook,
     nss_windows: NssWindowBook,
+    ecm_bpf_coverage: NssCoverageBook,
     rate_owner: Option<RateCollector>,
     hostnames: HostnameCache,
     conntrack_snapshot: Option<Arc<CollectedSnapshot>>,
@@ -293,6 +303,7 @@ impl ProductionRuntime {
             probe_report: Arc::new(preflight),
             next_probe_ms: 0,
             nss_windows: NssWindowBook::default(),
+            ecm_bpf_coverage: NssCoverageBook::default(),
             rate_owner: None,
             hostnames: HostnameCache::new(),
             config,
@@ -422,6 +433,7 @@ impl ProductionRuntime {
             coverage: self.coverage.clone(),
             interface_rates: self.interface_rates.clone(),
             nss_windows: self.nss_windows.clone(),
+            ecm_bpf_coverage: self.ecm_bpf_coverage.clone(),
             rate_owner: self.rate_owner,
             hostnames: self.hostnames.clone(),
             conntrack_snapshot: self.conntrack_snapshot.clone(),
@@ -448,6 +460,7 @@ impl ProductionRuntime {
         self.coverage = checkpoint.coverage;
         self.interface_rates = checkpoint.interface_rates;
         self.nss_windows = checkpoint.nss_windows;
+        self.ecm_bpf_coverage = checkpoint.ecm_bpf_coverage;
         self.rate_owner = checkpoint.rate_owner;
         self.hostnames = checkpoint.hostnames;
         self.conntrack_snapshot = checkpoint.conntrack_snapshot;
@@ -745,8 +758,14 @@ impl ProductionRuntime {
         self.apply_conntrack_health(&mut runtime_health);
         decision = policy::select_collectors(&self.config, &report.facts, &runtime_health);
         let (interfaces, lan_clock) = self.interfaces(now_ms);
-        transition_rate_owner(&mut self.rate_owner, &mut self.nss_windows, decision.rate);
+        transition_rate_owner(
+            &mut self.rate_owner,
+            &mut self.nss_windows,
+            &mut self.ecm_bpf_coverage,
+            decision.rate,
+        );
         let mut nss_window = None;
+        let mut ecm_bpf_coverage_window = None;
         let (mut clients, actual_live, actual_degraded, coverage_fresh) =
             if decision.rate == RateCollector::Bpf {
                 (
@@ -794,6 +813,17 @@ impl ProductionRuntime {
                     ),
                 }
             } else if decision.rate == RateCollector::NssEcmBpf {
+                if ecm_bpf_snapshot_fresh {
+                    match (ecm_bpf_snapshot.as_ref(), lan_clock.as_ref()) {
+                        (Some(snapshot), Some(lan)) if !snapshot.truncated => {
+                            ecm_bpf_coverage_window =
+                                Some(self.ecm_bpf_coverage.update(snapshot.coverage_delta, lan));
+                        }
+                        _ => {
+                            self.ecm_bpf_coverage = NssCoverageBook::default();
+                        }
+                    }
+                }
                 (
                     ecm_bpf_clients_response(
                         ecm_bpf_snapshot
@@ -805,7 +835,7 @@ impl ProductionRuntime {
                     ),
                     ecm_bpf_snapshot.is_some(),
                     !ecm_bpf_snapshot_fresh,
-                    ecm_bpf_snapshot_fresh,
+                    false,
                 )
             } else {
                 (
@@ -861,12 +891,21 @@ impl ProductionRuntime {
                     .details
                     .insert("nss_window".into(), window_evidence(window));
             }
+            if let Some(coverage) = ecm_bpf_coverage_window.as_ref() {
+                client_evidence.details.insert(
+                    "ecm_bpf_coverage_window".into(),
+                    coverage_evidence(coverage, "ecm_bpf_map_delta"),
+                );
+            }
         }
         let overview = self.update_overview(now_ms, &clients);
-        let coverage = nss_window.as_ref().map_or_else(
-            || self.update_coverage(now_ms, &clients, &interfaces, coverage_fresh),
-            window_coverage,
-        );
+        let coverage = if let Some(window) = nss_window.as_ref() {
+            window_coverage(window)
+        } else if let Some(window) = ecm_bpf_coverage_window.as_ref() {
+            coverage_response(window)
+        } else {
+            self.update_coverage(now_ms, &clients, &interfaces, coverage_fresh)
+        };
         let sysdevices = sysdevices(&self.config)?;
         let mut capabilities = capabilities(&report.capabilities, &report);
         capabilities.live_metrics = actual_live;
@@ -914,6 +953,12 @@ impl ProductionRuntime {
             status_evidence
                 .details
                 .insert("nss_window".into(), window_evidence(window));
+        }
+        if let Some(coverage) = ecm_bpf_coverage_window.as_ref() {
+            status_evidence.details.insert(
+                "ecm_bpf_coverage_window".into(),
+                coverage_evidence(coverage, "ecm_bpf_map_delta"),
+            );
         }
         let mut warnings = report
             .warnings
@@ -1008,6 +1053,12 @@ impl ProductionRuntime {
             health_evidence
                 .details
                 .insert("nss_window".into(), window_evidence(window));
+        }
+        if let Some(coverage) = ecm_bpf_coverage_window.as_ref() {
+            health_evidence.details.insert(
+                "ecm_bpf_coverage_window".into(),
+                coverage_evidence(coverage, "ecm_bpf_map_delta"),
+            );
         }
         health_evidence.details.insert(
             "bpf".into(),
@@ -2377,23 +2428,97 @@ fn window_clients(
 }
 
 fn window_coverage(window: &WindowOutput) -> Coverage {
-    let coverage = &window.coverage;
+    coverage_response(&window.coverage)
+}
+
+fn coverage_response(coverage: &CoverageWindow) -> Coverage {
+    let waiting_for_aligned_batch = !coverage.aligned
+        && matches!(
+            (coverage.quality, coverage.reason),
+            (WindowQuality::CounterSkew, "lan_coverage_timeout")
+                | (WindowQuality::LowTraffic, "low_traffic_coverage_rebaseline")
+        );
+    let public_quality = if waiting_for_aligned_batch {
+        WindowQuality::Pending
+    } else {
+        coverage.quality
+    };
     let reportable = coverage.aligned
         && matches!(
-            coverage.quality,
+            public_quality,
             WindowQuality::Ok | WindowQuality::Idle | WindowQuality::LowTraffic
         );
+    let retained = !reportable
+        && matches!(
+            public_quality,
+            WindowQuality::Pending | WindowQuality::CounterSkew
+        )
+        && (coverage.retained_tx_pct.is_some() || coverage.retained_rx_pct.is_some());
     Coverage {
-        quality: coverage.quality.as_str().into(),
-        samples: u64::from(reportable),
+        quality: public_quality.as_str().into(),
+        samples: u64::from(reportable || retained),
         window_ms: Some(coverage.window_ms()),
-        tx_pct: reportable.then_some(coverage.tx_pct).flatten(),
-        rx_pct: reportable.then_some(coverage.rx_pct).flatten(),
+        tx_pct: if reportable {
+            coverage.tx_pct
+        } else if retained {
+            coverage.retained_tx_pct
+        } else {
+            None
+        },
+        rx_pct: if reportable {
+            coverage.rx_pct
+        } else if retained {
+            coverage.retained_rx_pct
+        } else {
+            None
+        },
         denom_rx_bytes: Some(coverage.lan_normalized.rx_bytes),
         denom_tx_bytes: Some(coverage.lan_normalized.tx_bytes),
         numer_rx_bytes: Some(coverage.client_normalized.rx_bytes),
         numer_tx_bytes: Some(coverage.client_normalized.tx_bytes),
     }
+}
+
+fn coverage_evidence(coverage: &CoverageWindow, source: &str) -> Value {
+    json!({
+        "source": source,
+        "rate_and_coverage_decoupled": true,
+        "fcs_bytes_per_packet": 4,
+        "raw": {
+            "client": traffic_evidence(coverage.client_raw),
+            "lan": traffic_evidence(coverage.lan_raw),
+        },
+        "fcs_normalized": {
+            "client": traffic_evidence(coverage.client_normalized),
+            "lan": traffic_evidence(coverage.lan_normalized),
+        },
+        "directions": {
+            "tx": {
+                "client_bytes": coverage.client_normalized.tx_bytes,
+                "client_packets": coverage.client_normalized.tx_packets,
+                "lan_bytes": coverage.lan_normalized.rx_bytes,
+                "lan_packets": coverage.lan_normalized.rx_packets,
+            },
+            "rx": {
+                "client_bytes": coverage.client_normalized.rx_bytes,
+                "client_packets": coverage.client_normalized.rx_packets,
+                "lan_bytes": coverage.lan_normalized.tx_bytes,
+                "lan_packets": coverage.lan_normalized.tx_packets,
+            },
+        },
+        "coverage": {
+            "state": coverage.quality.as_str(),
+            "reason": coverage.reason,
+            "window_start_ms": coverage.start_ms,
+            "window_end_ms": coverage.end_ms,
+            "window_ms": coverage.window_ms(),
+            "aligned": coverage.aligned,
+            "tx_pct": coverage.tx_pct,
+            "rx_pct": coverage.rx_pct,
+            "retained_tx_pct": coverage.retained_tx_pct,
+            "retained_rx_pct": coverage.retained_rx_pct,
+        },
+    })
 }
 
 fn window_evidence(window: &WindowOutput) -> Value {
@@ -2643,6 +2768,9 @@ fn apply_ecm_bpf_evidence(
             "rate_window": "per_connection_generation_direction_collector_elapsed_delta",
             "rate_filter": "per_connection_generation_median_last_3_windows",
             "rate_hold_ms": ECM_RATE_HOLD_MS,
+            "coverage_delta_raw": snapshot.map(|value| traffic_evidence(value.coverage_delta)),
+            "coverage_window": "independent_packet_aware_lan_catchup",
+            "coverage_normalization": "client_and_lan_bytes_plus_packets_times_4",
             "btf_layout": layout,
             "error_stage": runtime.ecm_bpf_error_stage,
         }),
@@ -3159,6 +3287,68 @@ mod tests {
     }
 
     #[test]
+    fn pending_coverage_response_exposes_only_the_last_aligned_percentage() {
+        let response = coverage_response(&CoverageWindow {
+            quality: WindowQuality::Pending,
+            reason: "lan_coverage_pending",
+            start_ms: 1_000,
+            end_ms: 3_000,
+            client_raw: TrafficCounters::default(),
+            client_normalized: TrafficCounters::default(),
+            lan_raw: TrafficCounters::default(),
+            lan_normalized: TrafficCounters::default(),
+            tx_pct: None,
+            rx_pct: None,
+            retained_tx_pct: Some(91),
+            retained_rx_pct: Some(97),
+            aligned: false,
+        });
+
+        assert_eq!(response.quality, "pending");
+        assert_eq!(response.samples, 1);
+        assert_eq!(response.tx_pct, Some(91));
+        assert_eq!(response.rx_pct, Some(97));
+
+        let timed_out = coverage_response(&CoverageWindow {
+            quality: WindowQuality::CounterSkew,
+            reason: "lan_coverage_timeout",
+            start_ms: 3_000,
+            end_ms: 9_000,
+            client_raw: TrafficCounters::default(),
+            client_normalized: TrafficCounters::default(),
+            lan_raw: TrafficCounters::default(),
+            lan_normalized: TrafficCounters::default(),
+            tx_pct: None,
+            rx_pct: None,
+            retained_tx_pct: Some(91),
+            retained_rx_pct: Some(97),
+            aligned: false,
+        });
+        assert_eq!(timed_out.quality, "pending");
+        assert_eq!(timed_out.tx_pct, Some(91));
+        assert_eq!(timed_out.rx_pct, Some(97));
+
+        let low_traffic_wait = coverage_response(&CoverageWindow {
+            quality: WindowQuality::LowTraffic,
+            reason: "low_traffic_coverage_rebaseline",
+            start_ms: 9_000,
+            end_ms: 15_000,
+            client_raw: TrafficCounters::default(),
+            client_normalized: TrafficCounters::default(),
+            lan_raw: TrafficCounters::default(),
+            lan_normalized: TrafficCounters::default(),
+            tx_pct: None,
+            rx_pct: None,
+            retained_tx_pct: Some(91),
+            retained_rx_pct: Some(97),
+            aligned: false,
+        });
+        assert_eq!(low_traffic_wait.quality, "pending");
+        assert_eq!(low_traffic_wait.tx_pct, Some(91));
+        assert_eq!(low_traffic_wait.rx_pct, Some(97));
+    }
+
+    #[test]
     fn nss_bpf_handoff_rewarms_without_republishing_the_old_owner_interval() {
         use crate::collectors::ecm_node::{NodeCounters, NodeSnapshot, ParseStats};
 
@@ -3188,17 +3378,33 @@ mod tests {
         };
         let mut owner = None;
         let mut windows = NssWindowBook::default();
+        let mut ecm_bpf_coverage = NssCoverageBook::default();
 
-        transition_rate_owner(&mut owner, &mut windows, RateCollector::NssEcmNode);
+        transition_rate_owner(
+            &mut owner,
+            &mut windows,
+            &mut ecm_bpf_coverage,
+            RateCollector::NssEcmNode,
+        );
         assert_eq!(
             windows
                 .update(&snapshot(1_000, 10_000, 20_000), lan(1_000, 10_000, 20_000))
                 .quality,
             WindowQuality::Warmup
         );
-        transition_rate_owner(&mut owner, &mut windows, RateCollector::Bpf);
+        transition_rate_owner(
+            &mut owner,
+            &mut windows,
+            &mut ecm_bpf_coverage,
+            RateCollector::Bpf,
+        );
 
-        transition_rate_owner(&mut owner, &mut windows, RateCollector::NssEcmNode);
+        transition_rate_owner(
+            &mut owner,
+            &mut windows,
+            &mut ecm_bpf_coverage,
+            RateCollector::NssEcmNode,
+        );
         let reentry = windows.update(
             &snapshot(5_000, 4_010_000, 8_020_000),
             lan(5_000, 4_010_000, 8_020_000),
