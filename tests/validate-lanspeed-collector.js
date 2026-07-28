@@ -87,7 +87,7 @@ const buildDriver = read('net/lanspeedd/rust/crates/lanspeed-build/src/lib.rs');
 const packageMakefile = read('net/lanspeedd/Makefile');
 const init = read('net/lanspeedd/files/etc/init.d/lanspeedd');
 
-assert(model.version === 6, 'collector model must describe the architecture-separated rate schemes');
+assert(model.version === 8, 'collector model must describe aligned ECM+BPF raw-delta fusion');
 assert(JSON.stringify(model.platform_matrix.x86_64.schemes) === JSON.stringify(['bpf']) &&
   model.platform_matrix.x86_64.nss_modes_exposed === false,
   'x86 platform contract must expose only pure BPF');
@@ -103,13 +103,14 @@ assert(JSON.stringify(model.ownership.auto_preference) ===
   'automatic selection must prefer ECM+BPF, then ECM, then pure BPF');
 assert(model.ownership.pure_bpf_rate_owner === 'tc_lan_edge_map' &&
   model.ownership.ecm_rate_owner === 'ecm_node_adv_stats' &&
-  model.ownership.ecm_bpf_rate_owner === 'ecm_totals_update_kprobe_map_with_tc_rate_floor' &&
-  model.ownership.ecm_bpf_rate_floor_policy === 'per_client_direction_max_never_sum',
-  'ECM+BPF must keep ECM authoritative while using a non-additive TC rate floor');
-assert(model.ownership.mixed_rate_owners_forbidden === true, 'mixed NSS/BPF rate ownership must be forbidden');
+  model.ownership.ecm_bpf_rate_owner === 'nss_hardware_kprobe_map_plus_tc_slow_path_map' &&
+  model.ownership.ecm_bpf_merge_policy === 'kernel_source_disjoint_raw_delta_fusion',
+  'ECM+BPF must combine kernel-classified hardware and slow-path ownership');
+assert(model.ownership.overlapping_rate_owners_forbidden === true,
+  'overlapping NSS/BPF rate ownership must be forbidden');
 assert(model.ownership.manual_fallback_forbidden === true,
   'manual rate schemes must fail closed instead of silently switching');
-assert(model.ownership.rate_and_coverage_windows === 'independent_with_shared_ecm_numerator' &&
+assert(model.ownership.rate_and_coverage_windows === 'shared_collector_batch_with_lan_catchup' &&
   model.ownership.coverage_can_block_rate === false,
   'LAN coverage must never gate the ECM client-rate window');
 assert(model.ecm_node_model.collector_mode === 'nss_ecm_node', 'new collector mode must be nss_ecm_node');
@@ -119,16 +120,19 @@ assert(model.ecm_node_model.conntrack_rate_overlay === false, 'conntrack bytes m
 assert(model.ecm_node_model.bpf_rate_overlay === false, 'BPF bytes must never overlay ECM rates');
 assert(model.ecm_bpf_model.collector_mode === 'nss_ecm_bpf' &&
   model.ecm_bpf_model.object === '/usr/lib/bpf/lanspeed-ebpf-ecm' &&
-  model.ecm_bpf_model.object_role === 'isolated_ecm_kprobe_authoritative' &&
+  model.ecm_bpf_model.object_role === 'isolated_nss_hardware_context_kprobe' &&
   model.ecm_bpf_model.tc_bpf_object === '/usr/lib/bpf/lanspeed-ebpf-fallback' &&
   model.ecm_bpf_model.target_arch === 'aarch64' &&
-  model.ecm_bpf_model.attach === 'kprobe:ecm_db_connection_data_totals_update',
+  model.ecm_bpf_model.attach.totals === 'kprobe:ecm_db_connection_data_totals_update' &&
+  model.ecm_bpf_model.attach.nss_context.length === 4,
   'ECM+BPF must use its isolated aarch64 ECM object and the TC slow-path observer');
 assert(model.ecm_bpf_model.counter_merge_policy ===
-    'ecm_update_authoritative_tc_rate_floor_no_sum' &&
-  model.ecm_bpf_model.tc_bpf_rate_overlay === 'per_client_direction_max' &&
+    'aligned_nss_hardware_plus_tc_slow_path_raw_deltas' &&
+  model.ecm_bpf_model.tc_bpf_rate_overlay === 'raw_delta_fusion_then_single_rate' &&
+  model.ecm_bpf_model.misaligned_rate_fallback === 'directional_max_single_source_no_sum' &&
+  model.ecm_bpf_model.cumulative_bytes === 'ecm_hardware_map_only' &&
   model.ecm_bpf_model.ecm_node_rate_overlay === false,
-  'ECM+BPF must use TC-BPF only as a non-additive rate floor and never overlay ECM nodes');
+  'ECM+BPF must fuse aligned source-disjoint raw deltas and never overlay ECM nodes');
 assert(model.ecm_bpf_window_model.rate_clock ===
     'per_connection_ecm_event_elapsed_with_daemon_fallback' &&
   model.ecm_bpf_window_model.event_timestamp_role ===
@@ -136,9 +140,18 @@ assert(model.ecm_bpf_window_model.rate_clock ===
   model.ecm_bpf_window_model.torn_event_timestamp_fallback === 'adjacent_daemon_samples' &&
   ecmBpf.includes('previous.last_progress_sample_ms') &&
   ecmBpf.includes('event_window_ms.unwrap_or(collector_window_ms)') &&
-  production.includes('client.tx_bps.max(sample.tx_bps)') &&
-  production.includes('client.rx_bps.max(sample.rx_bps)'),
-  'ECM+BPF must use bounded ECM event windows and a non-additive TC-BPF rate floor');
+  model.ecm_bpf_window_model.hybrid_rate_fusion ===
+    'aligned_raw_delta_sum_then_single_rate' &&
+  model.ecm_bpf_window_model.hybrid_rate_lan_guard ===
+    'directionally_valid_merged_lan_window_required' &&
+  model.ecm_bpf_window_model.precomputed_rate_sum_forbidden === true &&
+  production.includes('aligned_ecm_bpf_window(') &&
+  production.includes('directional_bps(merged.tx_bytes, merged.tx_packets, window_ms)') &&
+  production.includes('ecm.tx_bps.max(bpf.tx_bps)') &&
+  production.includes('ecm.rx_bps.max(bpf.rx_bps)') &&
+  !production.includes('client.tx_bps.saturating_add(sample.tx_bps)') &&
+  !production.includes('client.rx_bps.saturating_add(sample.rx_bps)'),
+  'ECM+BPF must calculate one rate from aligned raw deltas and never add precomputed rates');
 assert(model.ecm_bpf_window_model.rate_filter ===
   'per_connection_generation_median_last_3_windows' &&
   model.ecm_bpf_window_model.rate_hold_ms === 2500 &&
@@ -164,6 +177,13 @@ assert(nssWindow.high_traffic_ownership_basis === 'bidirectional_aggregate_overl
 assert(nssWindow.rate_clock === 'adjacent_ecm_node_polls' &&
   nssWindow.first_ecm_delta === 'publish_immediately',
   'client rates must publish on the first valid ECM delta');
+assert(nssWindow.public_coverage_source ===
+    'same_snapshot_displayed_client_and_lan_rates' &&
+  nssWindow.raw_coverage_window_role === 'diagnostic_and_rate_fusion_guard_only' &&
+  production.includes('nss_rate_coverage(&clients, &interfaces)') &&
+  production.includes('percentage(client_tx_bps, lan_rx_bps)') &&
+  production.includes('percentage(client_rx_bps, lan_tx_bps)'),
+  'NSS public coverage must use the same displayed client and LAN rate batch');
 assert(nssWindow.rate_filter === 'per_node_generation_median_last_3_windows' &&
   windowSource.includes('const NODE_RATE_MEDIAN_SAMPLES: usize = 3;') &&
   windowSource.includes('.push(rate(normalized.tx_bytes, window_ms))'),
@@ -176,10 +196,13 @@ assert(nssWindow.coverage_blocks_rate === false &&
   nssWindow.coverage_timeout_reset_on_node_progress === false,
   'coverage mismatch must neither block rates nor extend its timeout on node progress');
 assert(nssWindow.pending_display ===
-  'retain_last_aligned_percentage_until_next_aligned_window' &&
+  'publish_current_directional_percentage_retain_last_only_when_no_direction_is_reportable' &&
   windowSource.includes('last_reported: Option<(Option<u8>, Option<u8>)>') &&
+  windowSource.includes('percentages_available: bool') &&
+  windowSource.includes('"lan_coverage_partial"') &&
+  windowSource.includes('if ownership_complete || partial_timed_out') &&
   production.includes('coverage.retained_tx_pct'),
-  'pending NSS coverage must retain only the last aligned percentage for display');
+  'coverage must publish valid partial ownership while retaining the last value only for clock-ahead batches');
 assert(model.ecm_node_model.forbidden_writes.includes('defunct_all') &&
   model.ecm_node_model.forbidden_writes.includes('decelerate'), 'ECM collector must remain read-only');
 assert(model.lan_clock_model.bridge_and_member_double_count_forbidden === true, 'bridge/member double counting must be forbidden');
@@ -229,13 +252,17 @@ assert(ecm.includes('unique_mac_owners'), 'ECM nodes must map only to unique MAC
 assert(ecm.includes('time_added') && ecm.includes('generation'), 'ECM node generations must be explicit');
 assert(ecmBpf.includes('EcmBpfRuntime') &&
   ecmBpf.includes('program.attach(ECM_UPDATE_FUNCTION, 0)') &&
+  ecmBpf.includes('ECM_NSS_ENTER_PROGRAM_NAME') &&
+  ecmBpf.includes('ECM_NSS_EXIT_PROGRAM_NAME') &&
   ecmBpf.includes('resolve_ecm_layout()'),
-  'ECM+BPF userspace must resolve BTF, load the object, and attach the ECM kprobe');
+  'ECM+BPF userspace must resolve BTF and attach totals plus NSS context probes');
 assert(ecmBpfProgram.includes('ecm_db_connection_data_totals_update') &&
   ecmBpfProgram.includes('LANSPEED_ECM_CLIENTS') &&
+  ecmBpfProgram.includes('LANSPEED_ECM_NSS_CONTEXT') &&
+  ecmBpfProgram.includes('if !nss') &&
   ecmBpfProgram.includes('generation_ptr.cast::<u32>()') &&
   ecmBpfProgram.includes('padding: [0; 4]'),
-  'ECM+BPF program must use uint32_t generation and a fully initialized map key');
+  'ECM+BPF program must exclude slow-path ECM calls before publishing hardware counters');
 assert(ebpfManifest.includes('default = ["tc", "conntrack-kfunc"]') &&
   ebpfManifest.includes('tc = []') && ebpfManifest.includes('ecm = []') &&
   ebpfMain.includes('#[cfg(feature = "tc")]') && ebpfMain.includes('#[cfg(feature = "ecm")]'),
@@ -325,10 +352,10 @@ assert(production.includes('independent_lan_boundaries(&lan_roots, &masters)'),
   'runtime must expand LAN roots to independent boundaries');
 assert(production.includes('interface: boundaries.join("+")'),
   'multiple disjoint LAN boundaries must be explicitly identified');
-assert(production.includes('if let Some(window) = nss_window.as_ref()') &&
-  production.includes('else if let Some(window) = ecm_bpf_coverage_window.as_ref()') &&
-  production.includes('coverage_response(window)'),
-  'both NSS collectors must consume their independent coverage result');
+assert(production.includes('nss_rate_coverage(&clients, &interfaces)') &&
+  production.includes('"nss_window".into(), window_evidence(window)') &&
+  production.includes('"ecm_bpf_coverage_window".into()'),
+  'NSS public coverage must use the live batch while both raw windows remain diagnostic evidence');
 assert(production.includes('let coverage = &window.coverage;') &&
   production.includes('"rate_and_coverage_decoupled": true'),
   'runtime evidence must expose the decoupled rate and coverage windows');

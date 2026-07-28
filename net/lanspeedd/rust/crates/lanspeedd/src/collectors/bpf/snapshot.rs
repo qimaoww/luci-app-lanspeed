@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use lanspeed_common::{LanspeedCounters, LanspeedKey, DIR_RX, DIR_TX};
 
 use crate::{
+    collectors::ecm_node::TrafficCounters,
     identity::{filter, IdentityTable},
     rate::{ClientCounters, RateBook, RateWarning},
 };
@@ -98,6 +99,39 @@ pub struct BpfSnapshot {
     pub warnings: Vec<SnapshotWarning>,
     pub rate_warnings: Vec<RateWarning>,
     pub sample_ms: u64,
+    pub coverage_deltas: BTreeMap<String, TrafficCounters>,
+    pub coverage_start_ms: Option<u64>,
+    pub coverage_end_ms: u64,
+    pub coverage_ready: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct CoverageKey {
+    ifindex: u32,
+    vlan_or_zone: u16,
+    direction: u8,
+    reserved: u8,
+    mac: [u8; 6],
+    padding: [u8; 2],
+}
+
+impl From<LanspeedKey> for CoverageKey {
+    fn from(value: LanspeedKey) -> Self {
+        Self {
+            ifindex: value.ifindex,
+            vlan_or_zone: value.vlan_or_zone,
+            direction: value.direction,
+            reserved: value.reserved,
+            mac: value.mac,
+            padding: value.padding,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CoverageBaseline {
+    identity_key: String,
+    counters: LanspeedCounters,
 }
 
 #[derive(Clone, Debug)]
@@ -120,6 +154,8 @@ pub struct BpfSnapshotCollector {
     max_clients: usize,
     stale_client_ms: u64,
     last_complete: Option<BpfSnapshot>,
+    coverage_baselines: BTreeMap<CoverageKey, CoverageBaseline>,
+    coverage_sample_ms: Option<u64>,
 }
 
 impl BpfSnapshotCollector {
@@ -129,6 +165,8 @@ impl BpfSnapshotCollector {
             max_clients,
             stale_client_ms,
             last_complete: None,
+            coverage_baselines: BTreeMap::new(),
+            coverage_sample_ms: None,
         }
     }
 
@@ -138,6 +176,8 @@ impl BpfSnapshotCollector {
 
     pub fn reset_rates(&mut self) {
         self.rate_book = RateBook::new(self.max_clients, self.stale_client_ms);
+        self.coverage_baselines.clear();
+        self.coverage_sample_ms = None;
     }
 
     pub(crate) fn convert<F>(
@@ -153,6 +193,7 @@ impl BpfSnapshotCollector {
         F: FnMut(u32) -> Option<String>,
     {
         let mut folded = BTreeMap::<String, FoldedClient>::new();
+        let mut coverage_current = BTreeMap::<CoverageKey, CoverageBaseline>::new();
         let mut sample_ms = now_ms;
         let mut client_limit_exceeded = false;
         for raw in read.entries {
@@ -170,6 +211,13 @@ impl BpfSnapshotCollector {
                 continue;
             };
             let identity_key = identity.key.to_string();
+            coverage_current.insert(
+                raw.key.into(),
+                CoverageBaseline {
+                    identity_key: identity_key.clone(),
+                    counters: raw.counters,
+                },
+            );
             let client = folded
                 .entry(identity_key.clone())
                 .or_insert_with(|| FoldedClient {
@@ -258,15 +306,92 @@ impl BpfSnapshotCollector {
         if connections.unavailable_reason().is_some() {
             warnings.push(SnapshotWarning::ConnectionOverlayUnavailable);
         }
+        let coverage_start_ms = self.coverage_sample_ms;
+        let mut coverage_deltas = BTreeMap::<String, TrafficCounters>::new();
+        let mut coverage_ready = coverage_start_ms.is_some();
+        if read.truncated || sticky_truncation {
+            self.coverage_baselines.clear();
+            self.coverage_sample_ms = None;
+            coverage_ready = false;
+        } else {
+            if coverage_ready {
+                for (key, current) in &coverage_current {
+                    let delta = match self.coverage_baselines.get(key) {
+                        Some(previous) if previous.identity_key == current.identity_key => {
+                            checked_coverage_delta(
+                                key.direction,
+                                current.counters,
+                                previous.counters,
+                            )
+                        }
+                        Some(_) => None,
+                        None => Some(directional_counters(key.direction, current.counters)),
+                    };
+                    let Some(delta) = delta else {
+                        coverage_ready = false;
+                        coverage_deltas.clear();
+                        break;
+                    };
+                    add_coverage_delta(
+                        coverage_deltas
+                            .entry(current.identity_key.clone())
+                            .or_default(),
+                        delta,
+                    );
+                }
+            }
+            self.coverage_baselines = coverage_current;
+            self.coverage_sample_ms = Some(now_ms);
+        }
         let snapshot = BpfSnapshot {
             clients,
             warnings,
             rate_warnings: rates.warnings,
             sample_ms,
+            coverage_deltas,
+            coverage_start_ms,
+            coverage_end_ms: now_ms,
+            coverage_ready,
         };
         self.last_complete = Some(snapshot.clone());
         snapshot
     }
+}
+
+fn checked_coverage_delta(
+    direction: u8,
+    current: LanspeedCounters,
+    previous: LanspeedCounters,
+) -> Option<TrafficCounters> {
+    let counters = LanspeedCounters {
+        bytes: current.bytes.checked_sub(previous.bytes)?,
+        packets: current.packets.checked_sub(previous.packets)?,
+        ..LanspeedCounters::default()
+    };
+    Some(directional_counters(direction, counters))
+}
+
+fn directional_counters(direction: u8, counters: LanspeedCounters) -> TrafficCounters {
+    if direction == DIR_TX {
+        TrafficCounters {
+            tx_bytes: counters.bytes,
+            tx_packets: counters.packets,
+            ..TrafficCounters::default()
+        }
+    } else {
+        TrafficCounters {
+            rx_bytes: counters.bytes,
+            rx_packets: counters.packets,
+            ..TrafficCounters::default()
+        }
+    }
+}
+
+fn add_coverage_delta(total: &mut TrafficCounters, value: TrafficCounters) {
+    total.tx_bytes = total.tx_bytes.saturating_add(value.tx_bytes);
+    total.rx_bytes = total.rx_bytes.saturating_add(value.rx_bytes);
+    total.tx_packets = total.tx_packets.saturating_add(value.tx_packets);
+    total.rx_packets = total.rx_packets.saturating_add(value.rx_packets);
 }
 
 fn format_mac(mac: [u8; 6]) -> String {

@@ -6,9 +6,11 @@ use std::{
 
 use aya_obj::{generated::bpf_map_type, obj::ProgramSection, Object};
 use lanspeed_common::{
-    CLIENTS_MAP_NAME, ECM_CLIENTS_MAP_NAME, ECM_LAYOUT_MAP_NAME, ECM_UPDATE_PROGRAM_NAME,
-    EGRESS_EARLY_PROGRAM_NAME, EGRESS_PROGRAM_NAME, INGRESS_EARLY_PROGRAM_NAME,
-    INGRESS_PROGRAM_NAME, MAX_CLIENTS, MAX_CONN_TUPLES, SEEN_CONNS_MAP_NAME,
+    CLIENTS_MAP_NAME, ECM_CLIENTS_MAP_NAME, ECM_LAYOUT_MAP_NAME, ECM_NSS_CONTEXT_MAP_NAME,
+    ECM_NSS_ENTER_PROGRAM_NAME, ECM_NSS_EXIT_PROGRAM_NAME, ECM_SOURCE_STATS_MAP_NAME,
+    ECM_UPDATE_PROGRAM_NAME, EGRESS_EARLY_PROGRAM_NAME, EGRESS_PROGRAM_NAME,
+    INGRESS_EARLY_PROGRAM_NAME, INGRESS_PROGRAM_NAME, MAX_CLIENTS, MAX_CONN_TUPLES,
+    SEEN_CONNS_MAP_NAME,
 };
 use object::{
     Object as _, ObjectSection as _, ObjectSymbol as _, RelocationTarget, SectionIndex,
@@ -378,7 +380,12 @@ fn aarch64_ecm_object_is_isolated_from_tc_and_uses_aarch64_probe_registers() {
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from([ECM_CLIENTS_MAP_NAME, ECM_LAYOUT_MAP_NAME])
+        BTreeSet::from([
+            ECM_CLIENTS_MAP_NAME,
+            ECM_LAYOUT_MAP_NAME,
+            ECM_NSS_CONTEXT_MAP_NAME,
+            ECM_SOURCE_STATS_MAP_NAME,
+        ])
     );
     assert_eq!(
         parsed
@@ -386,11 +393,23 @@ fn aarch64_ecm_object_is_isolated_from_tc_and_uses_aarch64_probe_registers() {
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from([ECM_UPDATE_PROGRAM_NAME])
+        BTreeSet::from([
+            ECM_NSS_ENTER_PROGRAM_NAME,
+            ECM_NSS_EXIT_PROGRAM_NAME,
+            ECM_UPDATE_PROGRAM_NAME,
+        ])
     );
     assert!(matches!(
         parsed.programs[ECM_UPDATE_PROGRAM_NAME].section,
         ProgramSection::KProbe
+    ));
+    assert!(matches!(
+        parsed.programs[ECM_NSS_ENTER_PROGRAM_NAME].section,
+        ProgramSection::KProbe
+    ));
+    assert!(matches!(
+        parsed.programs[ECM_NSS_EXIT_PROGRAM_NAME].section,
+        ProgramSection::KRetProbe
     ));
 
     let clients = &parsed.maps[ECM_CLIENTS_MAP_NAME];
@@ -404,6 +423,23 @@ fn aarch64_ecm_object_is_isolated_from_tc_and_uses_aarch64_probe_registers() {
     assert_eq!(layout.map_type(), bpf_map_type::BPF_MAP_TYPE_ARRAY as u32);
     assert_eq!((layout.key_size(), layout.value_size()), (4, 16));
     assert_eq!(layout.max_entries(), 1);
+    let context = &parsed.maps[ECM_NSS_CONTEXT_MAP_NAME];
+    assert_eq!(
+        context.map_type(),
+        bpf_map_type::BPF_MAP_TYPE_PERCPU_ARRAY as u32
+    );
+    assert_eq!((context.key_size(), context.value_size()), (4, 4));
+    assert_eq!(context.max_entries(), 1);
+    let source_stats = &parsed.maps[ECM_SOURCE_STATS_MAP_NAME];
+    assert_eq!(
+        source_stats.map_type(),
+        bpf_map_type::BPF_MAP_TYPE_ARRAY as u32
+    );
+    assert_eq!(
+        (source_stats.key_size(), source_stats.value_size()),
+        (4, 48)
+    );
+    assert_eq!(source_stats.max_entries(), 1);
 
     let elf = object::File::parse(bytes.as_slice()).expect("object crate must parse ECM ELF");
     let section = elf

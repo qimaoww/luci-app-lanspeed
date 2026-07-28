@@ -908,6 +908,140 @@ fn mode_switch_detach_failure_enters_inconsistent_state_and_blocks_snapshots() {
 }
 
 #[test]
+fn tc_coverage_exports_exact_per_client_byte_and_packet_deltas() {
+    let identities = identities();
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let mut collector = BpfSnapshotCollector::new(16, 5_000);
+
+    let mut baseline = raw(DIR_TX, 1_000, 1_000_000_000);
+    baseline.counters.packets = 10;
+    adapter.map_read = Some(Ok(read(vec![baseline])));
+    let first = runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            1_000,
+        )
+        .unwrap();
+    assert!(!first.coverage_ready);
+    assert!(first.coverage_deltas.is_empty());
+
+    let mut progressed = raw(DIR_TX, 3_500, 3_000_000_000);
+    progressed.counters.packets = 35;
+    adapter.map_read = Some(Ok(read(vec![progressed])));
+    let second = runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            3_000,
+        )
+        .unwrap();
+    let delta = second.coverage_deltas.get("02:00:00:00:00:01@lan").unwrap();
+    assert!(second.coverage_ready);
+    assert_eq!(second.coverage_start_ms, Some(1_000));
+    assert_eq!(second.coverage_end_ms, 3_000);
+    assert_eq!((delta.tx_bytes, delta.tx_packets), (2_500, 25));
+    assert_eq!((delta.rx_bytes, delta.rx_packets), (0, 0));
+}
+
+#[test]
+fn tc_coverage_counter_reset_rebaselines_without_publishing_a_spike() {
+    let identities = identities();
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let mut collector = BpfSnapshotCollector::new(16, 5_000);
+
+    for (sample_ms, bytes, packets, ready, delta_bytes) in [
+        (1_000, 10_000, 100, false, None),
+        (3_000, 20_000, 200, true, Some(10_000)),
+        (5_000, 1_000, 10, false, None),
+        (7_000, 4_000, 40, true, Some(3_000)),
+    ] {
+        let mut sample = raw(DIR_TX, bytes, sample_ms * 1_000_000);
+        sample.counters.packets = packets;
+        adapter.map_read = Some(Ok(read(vec![sample])));
+        let snapshot = runtime
+            .collect_snapshot(
+                &mut adapter,
+                &mut collector,
+                &identities,
+                &ConnectionOverlay::available(),
+                sample_ms,
+            )
+            .unwrap();
+        assert_eq!(snapshot.coverage_ready, ready);
+        assert_eq!(
+            snapshot
+                .coverage_deltas
+                .get("02:00:00:00:00:01@lan")
+                .map(|delta| delta.tx_bytes),
+            delta_bytes
+        );
+    }
+}
+
+#[test]
+fn tc_coverage_truncation_never_publishes_partial_deltas() {
+    let identities = identities();
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    let mut collector = BpfSnapshotCollector::new(16, 5_000);
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 1_000, 1_000_000_000)])));
+    runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            1_000,
+        )
+        .unwrap();
+
+    adapter.map_read = Some(Ok(MapRead {
+        entries: vec![raw(DIR_TX, 2_000, 3_000_000_000)],
+        truncated: true,
+    }));
+    let truncated = runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            3_000,
+        )
+        .unwrap();
+    assert!(!truncated.coverage_ready);
+    assert!(truncated.coverage_deltas.is_empty());
+
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 3_000, 5_000_000_000)])));
+    let after = runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            5_000,
+        )
+        .unwrap();
+    assert!(!after.coverage_ready);
+    assert!(after.coverage_deltas.is_empty());
+}
+
+#[test]
 fn a_foreign_filter_in_the_fixed_slot_is_never_replaced() {
     let mut adapter = FakeAya::default();
     let ingress = LinkSpec::pair("br-lan", AttachMode::Normal)[0].clone();

@@ -7,12 +7,16 @@ pub const CLIENTS_MAP_NAME: &str = "lanspeed_clients";
 pub const SEEN_CONNS_MAP_NAME: &str = "lanspeed_seen_conns";
 pub const ECM_CLIENTS_MAP_NAME: &str = "lanspeed_ecm_clients";
 pub const ECM_LAYOUT_MAP_NAME: &str = "lanspeed_ecm_layout";
+pub const ECM_NSS_CONTEXT_MAP_NAME: &str = "lanspeed_ecm_nss_context";
+pub const ECM_SOURCE_STATS_MAP_NAME: &str = "lanspeed_ecm_source_stats";
 
 pub const INGRESS_PROGRAM_NAME: &str = "lanspeed_ingress";
 pub const EGRESS_PROGRAM_NAME: &str = "lanspeed_egress";
 pub const INGRESS_EARLY_PROGRAM_NAME: &str = "lanspeed_ingress_early";
 pub const EGRESS_EARLY_PROGRAM_NAME: &str = "lanspeed_egress_early";
 pub const ECM_UPDATE_PROGRAM_NAME: &str = "lanspeed_ecm_update";
+pub const ECM_NSS_ENTER_PROGRAM_NAME: &str = "lanspeed_ecm_nss_enter";
+pub const ECM_NSS_EXIT_PROGRAM_NAME: &str = "lanspeed_ecm_nss_exit";
 
 pub const MAX_CLIENTS: u32 = 2048;
 pub const MAX_CONN_TUPLES: u32 = 8192;
@@ -92,6 +96,19 @@ pub struct EcmCounters {
     pub last_seen: u64,
 }
 
+/// Global evidence that the ECM probe separated hardware callbacks from
+/// ordinary CPU slow-path updates before publishing client counters.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C, align(8))]
+pub struct EcmSourceStats {
+    pub nss_bytes: u64,
+    pub nss_packets: u64,
+    pub nss_updates: u64,
+    pub slow_path_bytes: u64,
+    pub slow_path_packets: u64,
+    pub slow_path_updates: u64,
+}
+
 /// Connection-deduplication key matching `struct lanspeed_conn_key`.
 ///
 /// Every field is naturally contiguous under `repr(C)`: the six-byte MAC and
@@ -149,5 +166,7 @@ const _: [(); 14] = [(); core::mem::offset_of!(EcmKey, mac)];
 const _: [(); 20] = [(); core::mem::offset_of!(EcmKey, padding)];
 const _: [(); 24] = [(); core::mem::size_of::<EcmCounters>()];
 const _: [(); 8] = [(); core::mem::align_of::<EcmCounters>()];
+const _: [(); 48] = [(); core::mem::size_of::<EcmSourceStats>()];
+const _: [(); 8] = [(); core::mem::align_of::<EcmSourceStats>()];
 const _: [(); 28] = [(); core::mem::size_of::<LanspeedConnKey>()];
 const _: [(); 2] = [(); core::mem::align_of::<LanspeedConnKey>()];

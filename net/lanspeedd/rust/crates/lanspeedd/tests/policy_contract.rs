@@ -62,7 +62,7 @@ fn auto_uses_bpf_without_nss_then_ecm_node_and_ecm_bpf_in_order() {
 }
 
 #[test]
-fn forced_ecm_bpf_requires_its_kprobe_and_degrades_without_the_tc_rate_floor() {
+fn forced_ecm_bpf_requires_both_hardware_kprobe_and_tc_slow_path_runtime() {
     let mut config = config();
     config.rate_collector_mode = RateCollectorMode::NssEcmBpf;
     let mut facts = bpf_facts();

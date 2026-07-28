@@ -1,6 +1,6 @@
 {
   "source": "lanspeedd_collectors",
-  "version": 6,
+  "version": 8,
   "platform_matrix": {
     "x86_64": {
       "schemes": ["bpf"],
@@ -26,13 +26,13 @@
     "auto_preference": ["nss_ecm_bpf", "nss_ecm_node", "bpf"],
     "pure_bpf_rate_owner": "tc_lan_edge_map",
     "ecm_rate_owner": "ecm_node_adv_stats",
-    "ecm_bpf_rate_owner": "ecm_totals_update_kprobe_map_with_tc_rate_floor",
+    "ecm_bpf_rate_owner": "nss_hardware_kprobe_map_plus_tc_slow_path_map",
     "connection_metadata_owner": "conntrack_netlink_or_procfs",
     "interface_clock_owner": "non_overlapping_kernel_lan_netdev_counters",
-    "mixed_rate_owners_forbidden": true,
-    "ecm_bpf_rate_floor_policy": "per_client_direction_max_never_sum",
+    "overlapping_rate_owners_forbidden": true,
+    "ecm_bpf_merge_policy": "kernel_source_disjoint_raw_delta_fusion",
     "manual_fallback_forbidden": true,
-    "rate_and_coverage_windows": "independent_with_shared_ecm_numerator",
+    "rate_and_coverage_windows": "shared_collector_batch_with_lan_catchup",
     "coverage_can_block_rate": false
   },
   "bpf_model": {
@@ -90,12 +90,21 @@
   "ecm_bpf_model": {
     "collector_mode": "nss_ecm_bpf",
     "object": "/usr/lib/bpf/lanspeed-ebpf-ecm",
-    "object_role": "isolated_ecm_kprobe_authoritative",
+    "object_role": "isolated_nss_hardware_context_kprobe",
     "tc_bpf_object": "/usr/lib/bpf/lanspeed-ebpf-fallback",
     "target_arch": "aarch64",
-    "program": "lanspeed_ecm_update",
-    "attach": "kprobe:ecm_db_connection_data_totals_update",
-    "coverage": ["ecm_slow_path_packet_updates", "nss_ipv4_sync_deltas", "nss_ipv6_sync_deltas"],
+    "programs": ["lanspeed_ecm_nss_enter", "lanspeed_ecm_nss_exit", "lanspeed_ecm_update"],
+    "attach": {
+      "totals": "kprobe:ecm_db_connection_data_totals_update",
+      "nss_context": [
+        "ecm_nss_ipv4_connection_sync_many_callback",
+        "ecm_nss_ipv4_net_dev_callback",
+        "ecm_nss_ipv6_connection_sync_many_callback",
+        "ecm_nss_ipv6_net_dev_callback"
+      ]
+    },
+    "coverage": ["nss_hardware_callback_deltas", "tc_bpf_slow_path_deltas"],
+    "cumulative_bytes": "ecm_hardware_map_only",
     "runtime_layout": {
       "base_btf": "/sys/kernel/btf/vmlinux",
       "module_btf": "/sys/kernel/btf/ecm",
@@ -107,7 +116,7 @@
       "time_added_type": "uint32_t",
       "pointer_size": 8
     },
-    "map": "lanspeed_ecm_clients",
+    "maps": ["lanspeed_ecm_clients", "lanspeed_ecm_nss_context", "lanspeed_ecm_source_stats"],
     "map_key": ["connection_pointer", "time_added", "direction", "client_mac"],
     "map_value": ["bytes", "packets", "last_seen_ns"],
     "identity": "unique_node_mac_to_mac_zone_identity",
@@ -115,11 +124,12 @@
       "is_from_true": "from_node_tx_and_to_node_rx",
       "is_from_false": "to_node_tx_and_from_node_rx"
     },
-    "counter_merge_policy": "ecm_update_authoritative_tc_rate_floor_no_sum",
-    "tc_bpf_rate_overlay": "per_client_direction_max",
+    "counter_merge_policy": "aligned_nss_hardware_plus_tc_slow_path_raw_deltas",
+    "tc_bpf_rate_overlay": "raw_delta_fusion_then_single_rate",
+    "misaligned_rate_fallback": "directional_max_single_source_no_sum",
     "ecm_node_rate_overlay": false,
     "conntrack_rate_overlay": false,
-    "deduplication": "ecm_owns_totals_and_coverage_tc_rate_is_never_added",
+    "deduplication": "nss_callback_context_excludes_ecm_slow_path_before_aligned_raw_delta_fusion",
     "read_only": true
   },
   "lan_clock_model": {
@@ -134,6 +144,8 @@
     "rate_clock": "adjacent_ecm_node_polls",
     "rate_filter": "per_node_generation_median_last_3_windows",
     "coverage_clock": "lan_packet_clock",
+    "public_coverage_source": "same_snapshot_displayed_client_and_lan_rates",
+    "raw_coverage_window_role": "diagnostic_and_rate_fusion_guard_only",
     "cold_start": "warmup_zero",
     "first_ecm_delta": "publish_immediately",
     "inter_batch_publication": "hold_last_rate_for_one_ecm_cycle_then_zero",
@@ -142,7 +154,7 @@
     "idle_gap_rate_window": "adjacent_daemon_samples",
     "node_warmup": "first_snapshot_baseline_next_delta_publish",
     "coverage_blocks_rate": false,
-    "coverage_accumulation": "independent_until_owned_or_timeout",
+    "coverage_accumulation": "publish_partial_then_accumulate_until_owned_or_timeout",
     "high_traffic_threshold_bytes": 131072,
     "high_traffic_min_ownership_percent": 90,
     "high_traffic_ownership_basis": "bidirectional_aggregate_overlap",
@@ -152,7 +164,7 @@
     "coverage_timeout_ms": 5000,
     "coverage_timeout_origin": "first_lan_mismatch",
     "coverage_timeout_reset_on_node_progress": false,
-    "pending_display": "retain_last_aligned_percentage_until_next_aligned_window",
+    "pending_display": "publish_current_directional_percentage_retain_last_only_when_no_direction_is_reportable",
     "low_traffic_coverage_timeout": "rebaseline_with_raw_evidence",
     "counter_generation_change": "generation_scoped_baseline",
     "counter_reset": "rebaseline_and_publish_zero",
@@ -183,6 +195,10 @@
     "client_fold_order": "rate_each_connection_generation_before_mac_sum",
     "cold_start": "zero_until_adjacent_increment",
     "rate_hold_ms": 2500,
+    "hybrid_rate_fusion": "aligned_raw_delta_sum_then_single_rate",
+    "hybrid_rate_clock_skew_ms": 250,
+    "hybrid_rate_lan_guard": "directionally_valid_merged_lan_window_required",
+    "precomputed_rate_sum_forbidden": true,
     "flow_retention_ms": 60000,
     "fcs": "raw_bytes_plus_real_packets_times_4",
     "packet_estimation_forbidden": true,

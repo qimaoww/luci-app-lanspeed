@@ -25,7 +25,7 @@ use aya_ebpf::{
 use lanspeed_common::{DIR_RX, DIR_TX};
 
 #[cfg(feature = "ecm")]
-pub use ecm::lanspeed_ecm_update;
+pub use ecm::{lanspeed_ecm_nss_enter, lanspeed_ecm_nss_exit, lanspeed_ecm_update};
 
 #[link_section = "license"]
 #[no_mangle]

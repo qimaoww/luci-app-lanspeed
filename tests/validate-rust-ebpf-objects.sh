@@ -81,7 +81,9 @@ done
 kfunc_disassembly=$("$objdump_bin" -d "$kfunc_object")
 grep -Eq 'lock[[:space:]]+\*\(u32 \*\).*\+= r[0-9]+' <<<"$kfunc_disassembly" || \
 	fail 'kfunc object has no 32-bit BPF atomic add instruction'
-for forbidden in lanspeed_ecm_update lanspeed_ecm_clients lanspeed_ecm_layout; do
+for forbidden in \
+	lanspeed_ecm_update lanspeed_ecm_nss_enter lanspeed_ecm_nss_exit \
+	lanspeed_ecm_clients lanspeed_ecm_layout lanspeed_ecm_nss_context lanspeed_ecm_source_stats; do
 	if has_symbol "$kfunc_symbols" "$forbidden"; then
 		fail "kfunc TC object unexpectedly contains ECM symbol $forbidden"
 	fi
@@ -94,7 +96,9 @@ for forbidden_map in lanspeed_conntrack_scratch lanspeed_seen_conns; do
 		fail "fallback object unexpectedly contains map $forbidden_map"
 	fi
 done
-for forbidden in lanspeed_ecm_update lanspeed_ecm_clients lanspeed_ecm_layout; do
+for forbidden in \
+	lanspeed_ecm_update lanspeed_ecm_nss_enter lanspeed_ecm_nss_exit \
+	lanspeed_ecm_clients lanspeed_ecm_layout lanspeed_ecm_nss_context lanspeed_ecm_source_stats; do
 	if has_symbol "$fallback_symbols" "$forbidden"; then
 		fail "fallback TC object unexpectedly contains ECM symbol $forbidden"
 	fi
@@ -111,7 +115,7 @@ if [[ -n $ecm_object ]]; then
 		fail 'ECM object is not EM_BPF'
 
 	ecm_sections=$("$readelf_bin" -SW "$ecm_object")
-	for section in '\.BTF' '\.BTF\.ext' 'kprobe/ecm_db_connection_data_totals_update' 'maps' 'license'; do
+	for section in '\.BTF' '\.BTF\.ext' 'kprobe' 'kretprobe' 'kprobe/ecm_db_connection_data_totals_update' 'maps' 'license'; do
 		grep -Eq "[[:space:]]${section}[[:space:]]" <<<"$ecm_sections" || \
 			fail "ECM object is missing section ${section//\\/}"
 	done
@@ -127,7 +131,9 @@ if [[ -n $ecm_object ]]; then
 	[[ $ecm_license_hex == 47504c00 ]] || fail 'ECM object license is not exactly GPL\0'
 
 	ecm_symbols=$("$readelf_bin" -sW "$ecm_object")
-	for required in lanspeed_ecm_update lanspeed_ecm_clients lanspeed_ecm_layout; do
+	for required in \
+		lanspeed_ecm_update lanspeed_ecm_nss_enter lanspeed_ecm_nss_exit \
+		lanspeed_ecm_clients lanspeed_ecm_layout lanspeed_ecm_nss_context lanspeed_ecm_source_stats; do
 		has_symbol "$ecm_symbols" "$required" || fail "ECM object is missing symbol $required"
 	done
 	for forbidden in \

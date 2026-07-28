@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, fmt, fs, io, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt, fs, io,
+    path::Path,
+};
 
 use aya::{
     maps::{Array, HashMap},
@@ -6,8 +10,9 @@ use aya::{
     Ebpf, EbpfLoader, Pod,
 };
 use lanspeed_common::{
-    EcmCounters, EcmKey, EcmLayout, DIR_RX, DIR_TX, ECM_CLIENTS_MAP_NAME, ECM_LAYOUT_MAP_NAME,
-    ECM_UPDATE_PROGRAM_NAME, MAX_CLIENTS,
+    EcmCounters, EcmKey, EcmLayout, EcmSourceStats, DIR_RX, DIR_TX, ECM_CLIENTS_MAP_NAME,
+    ECM_LAYOUT_MAP_NAME, ECM_NSS_ENTER_PROGRAM_NAME, ECM_NSS_EXIT_PROGRAM_NAME,
+    ECM_SOURCE_STATS_MAP_NAME, ECM_UPDATE_PROGRAM_NAME, MAX_CLIENTS,
 };
 
 use crate::{
@@ -26,6 +31,7 @@ pub const ECM_BPF_PROGRAM_LOAD_STAGE: &str = "ecm_bpf_program_load";
 pub const ECM_BPF_ATTACH_STAGE: &str = "ecm_bpf_kprobe_attach";
 pub const ECM_BPF_MAP_READ_STAGE: &str = "ecm_bpf_map_read";
 pub const ECM_BPF_DETACH_STAGE: &str = "ecm_bpf_kprobe_detach";
+pub const KALLSYMS_PATH: &str = "/proc/kallsyms";
 pub const ECM_RATE_HOLD_MS: u64 = 2_500;
 const FLOW_RETENTION_MS: u64 = 60_000;
 pub const ECM_EVENT_CLOCK_MAX_LAG_MS: u64 = 1_500;
@@ -42,6 +48,12 @@ const BTF_KIND_VAR: u32 = 14;
 const BTF_KIND_DATASEC: u32 = 15;
 const BTF_KIND_DECL_TAG: u32 = 17;
 const BTF_KIND_ENUM64: u32 = 19;
+const NSS_SYNC_CALLBACKS: [&str; 4] = [
+    "ecm_nss_ipv4_connection_sync_many_callback",
+    "ecm_nss_ipv4_net_dev_callback",
+    "ecm_nss_ipv6_connection_sync_many_callback",
+    "ecm_nss_ipv6_net_dev_callback",
+];
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RawEcmSample {
@@ -74,6 +86,9 @@ pub struct EcmBpfClientSample {
 pub struct EcmBpfSnapshot {
     pub clients: Vec<EcmBpfClientSample>,
     pub coverage_delta: TrafficCounters,
+    pub coverage_deltas: BTreeMap<String, TrafficCounters>,
+    pub coverage_start_ms: Option<u64>,
+    pub coverage_end_ms: u64,
     pub sample_ms: u64,
     pub map_entries: usize,
     pub matched_entries: usize,
@@ -180,6 +195,7 @@ impl EcmBpfSnapshotCollector {
             .map(|snapshot| snapshot.sample_ms);
         let mut current = BTreeMap::<FlowKey, (EcmCounters, Option<String>)>::new();
         let mut coverage_delta = TrafficCounters::default();
+        let mut coverage_deltas = BTreeMap::<String, TrafficCounters>::new();
         for raw in read.entries {
             if raw.key.direction != DIR_TX && raw.key.direction != DIR_RX {
                 continue;
@@ -216,16 +232,25 @@ impl EcmBpfSnapshotCollector {
             };
             if let Some((delta_bytes, delta_packets, delta_start_ms, previous_event_ms)) = delta {
                 if (delta_bytes != 0 || delta_packets != 0) && identity_key.is_some() {
+                    let client_delta = coverage_deltas
+                        .entry(identity_key.as_ref().expect("identity checked").clone())
+                        .or_default();
                     if key.direction == DIR_TX {
                         coverage_delta.tx_bytes =
                             coverage_delta.tx_bytes.saturating_add(delta_bytes);
                         coverage_delta.tx_packets =
                             coverage_delta.tx_packets.saturating_add(delta_packets);
+                        client_delta.tx_bytes = client_delta.tx_bytes.saturating_add(delta_bytes);
+                        client_delta.tx_packets =
+                            client_delta.tx_packets.saturating_add(delta_packets);
                     } else {
                         coverage_delta.rx_bytes =
                             coverage_delta.rx_bytes.saturating_add(delta_bytes);
                         coverage_delta.rx_packets =
                             coverage_delta.rx_packets.saturating_add(delta_packets);
+                        client_delta.rx_bytes = client_delta.rx_bytes.saturating_add(delta_bytes);
+                        client_delta.rx_packets =
+                            client_delta.rx_packets.saturating_add(delta_packets);
                     }
                     // ECM emits cumulative increments roughly once per NSS
                     // sync round. Its kprobe timestamp gives the actual delta
@@ -341,6 +366,9 @@ impl EcmBpfSnapshotCollector {
                 .count(),
             clients,
             coverage_delta,
+            coverage_deltas,
+            coverage_start_ms: previous_sample_ms,
+            coverage_end_ms: now_ms,
             sample_ms: now_ms,
             map_entries,
             truncated: read.truncated,
@@ -393,6 +421,12 @@ unsafe impl Pod for LayoutValue {}
 unsafe impl Pod for MapKey {}
 unsafe impl Pod for MapValue {}
 
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+struct SourceStatsValue(EcmSourceStats);
+
+unsafe impl Pod for SourceStatsValue {}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EcmBpfHealth {
     pub object_loaded: bool,
@@ -405,6 +439,8 @@ pub struct EcmBpfHealth {
     pub map_entries: usize,
     pub matched_entries: usize,
     pub map_iteration_truncated: bool,
+    pub nss_context_callbacks: Vec<String>,
+    pub source_stats: EcmSourceStats,
     pub layout: Option<EcmLayout>,
     pub error_stage: Option<&'static str>,
     pub error: Option<String>,
@@ -419,6 +455,7 @@ pub struct EcmBpfCollectionCheckpoint {
     map_entries: usize,
     matched_entries: usize,
     map_iteration_truncated: bool,
+    source_stats: EcmSourceStats,
     last_error_stage: Option<&'static str>,
     last_error: Option<String>,
     collector: EcmBpfSnapshotCollector,
@@ -426,14 +463,16 @@ pub struct EcmBpfCollectionCheckpoint {
 
 /// A dedicated ECM-update kprobe runtime.
 ///
-/// This intentionally loads a second copy of the fallback object. Its ECM map
-/// is therefore disjoint from the TC maps used by pure BPF, and production
-/// never adds those two sources together. Every value in this runtime comes
-/// from the single ECM totals-update call chain, which receives both slow-path
-/// packet updates and NSS sync deltas.
+/// The NSS callback entry/return probes mark hardware-stat update context on
+/// each CPU. The totals-update probe publishes only those hardware increments;
+/// ordinary ECM slow-path calls remain diagnostic evidence because TC-BPF owns
+/// that disjoint traffic domain in ECM+BPF mode.
 pub struct EcmBpfRuntime {
     ebpf: Option<Ebpf>,
-    link: Option<KProbeLinkId>,
+    update_link: Option<KProbeLinkId>,
+    nss_enter_links: Vec<KProbeLinkId>,
+    nss_exit_links: Vec<KProbeLinkId>,
+    nss_context_callbacks: Vec<String>,
     layout: EcmLayout,
     map_read_attempted: bool,
     last_map_read_ok: bool,
@@ -442,8 +481,27 @@ pub struct EcmBpfRuntime {
     map_entries: usize,
     matched_entries: usize,
     map_iteration_truncated: bool,
+    source_stats: EcmSourceStats,
     last_error_stage: Option<&'static str>,
     last_error: Option<String>,
+}
+
+pub fn available_nss_context_callbacks(path: impl AsRef<Path>) -> Result<Vec<String>, String> {
+    let contents = fs::read_to_string(path.as_ref())
+        .map_err(|error| format!("read {}: {error}", path.as_ref().display()))?;
+    let available = contents
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(2))
+        .collect::<BTreeSet<_>>();
+    let callbacks = NSS_SYNC_CALLBACKS
+        .iter()
+        .filter(|name| available.contains(**name))
+        .map(|name| (*name).to_owned())
+        .collect::<Vec<_>>();
+    if callbacks.is_empty() {
+        return Err("no supported ECM NSS callback symbol found".into());
+    }
+    Ok(callbacks)
 }
 
 impl EcmBpfRuntime {
@@ -496,7 +554,74 @@ impl EcmBpfRuntime {
                 )
             })?;
         }
-        let link = {
+        let nss_context_callbacks =
+            available_nss_context_callbacks(KALLSYMS_PATH).map_err(|error| {
+                EcmBpfRuntimeError::new(
+                    ECM_BPF_ATTACH_STAGE,
+                    format!("resolve NSS callback symbols: {error}"),
+                )
+            })?;
+        let nss_exit_links = {
+            let program: &mut KProbe = ebpf
+                .program_mut(ECM_NSS_EXIT_PROGRAM_NAME)
+                .ok_or_else(|| {
+                    EcmBpfRuntimeError::new(
+                        ECM_BPF_PROGRAM_LOAD_STAGE,
+                        format!("{ECM_NSS_EXIT_PROGRAM_NAME} missing"),
+                    )
+                })?
+                .try_into()
+                .map_err(|error: aya::programs::ProgramError| {
+                    EcmBpfRuntimeError::new(ECM_BPF_PROGRAM_LOAD_STAGE, error.to_string())
+                })?;
+            program.load().map_err(|error| {
+                EcmBpfRuntimeError::new(
+                    ECM_BPF_PROGRAM_LOAD_STAGE,
+                    format!("load {ECM_NSS_EXIT_PROGRAM_NAME}: {error}"),
+                )
+            })?;
+            let mut links = Vec::with_capacity(nss_context_callbacks.len());
+            for symbol in &nss_context_callbacks {
+                links.push(program.attach(symbol, 0).map_err(|error| {
+                    EcmBpfRuntimeError::new(
+                        ECM_BPF_ATTACH_STAGE,
+                        format!("attach {ECM_NSS_EXIT_PROGRAM_NAME} to {symbol}: {error}"),
+                    )
+                })?);
+            }
+            links
+        };
+        let nss_enter_links = {
+            let program: &mut KProbe = ebpf
+                .program_mut(ECM_NSS_ENTER_PROGRAM_NAME)
+                .ok_or_else(|| {
+                    EcmBpfRuntimeError::new(
+                        ECM_BPF_PROGRAM_LOAD_STAGE,
+                        format!("{ECM_NSS_ENTER_PROGRAM_NAME} missing"),
+                    )
+                })?
+                .try_into()
+                .map_err(|error: aya::programs::ProgramError| {
+                    EcmBpfRuntimeError::new(ECM_BPF_PROGRAM_LOAD_STAGE, error.to_string())
+                })?;
+            program.load().map_err(|error| {
+                EcmBpfRuntimeError::new(
+                    ECM_BPF_PROGRAM_LOAD_STAGE,
+                    format!("load {ECM_NSS_ENTER_PROGRAM_NAME}: {error}"),
+                )
+            })?;
+            let mut links = Vec::with_capacity(nss_context_callbacks.len());
+            for symbol in &nss_context_callbacks {
+                links.push(program.attach(symbol, 0).map_err(|error| {
+                    EcmBpfRuntimeError::new(
+                        ECM_BPF_ATTACH_STAGE,
+                        format!("attach {ECM_NSS_ENTER_PROGRAM_NAME} to {symbol}: {error}"),
+                    )
+                })?);
+            }
+            links
+        };
+        let update_link = {
             let program: &mut KProbe = ebpf
                 .program_mut(ECM_UPDATE_PROGRAM_NAME)
                 .ok_or_else(|| {
@@ -524,7 +649,10 @@ impl EcmBpfRuntime {
         };
         Ok(Self {
             ebpf: Some(ebpf),
-            link: Some(link),
+            update_link: Some(update_link),
+            nss_enter_links,
+            nss_exit_links,
+            nss_context_callbacks,
             layout,
             map_read_attempted: false,
             last_map_read_ok: false,
@@ -533,6 +661,7 @@ impl EcmBpfRuntime {
             map_entries: 0,
             matched_entries: 0,
             map_iteration_truncated: false,
+            source_stats: EcmSourceStats::default(),
             last_error_stage: None,
             last_error: None,
         })
@@ -550,6 +679,7 @@ impl EcmBpfRuntime {
             map_entries: self.map_entries,
             matched_entries: self.matched_entries,
             map_iteration_truncated: self.map_iteration_truncated,
+            source_stats: self.source_stats,
             last_error_stage: self.last_error_stage,
             last_error: self.last_error.clone(),
             collector: collector.clone(),
@@ -568,6 +698,7 @@ impl EcmBpfRuntime {
         self.map_entries = checkpoint.map_entries;
         self.matched_entries = checkpoint.matched_entries;
         self.map_iteration_truncated = checkpoint.map_iteration_truncated;
+        self.source_stats = checkpoint.source_stats;
         self.last_error_stage = checkpoint.last_error_stage;
         self.last_error = checkpoint.last_error;
         *collector = checkpoint.collector;
@@ -580,7 +711,7 @@ impl EcmBpfRuntime {
         now_ms: u64,
     ) -> Result<EcmBpfSnapshot, EcmBpfRuntimeError> {
         self.map_read_attempted = true;
-        let read = match self.read_map() {
+        let (read, source_stats) = match self.read_maps() {
             Ok(read) => read,
             Err(error) => {
                 self.last_map_read_ok = false;
@@ -589,6 +720,7 @@ impl EcmBpfRuntime {
                 return Err(error);
             }
         };
+        self.source_stats = source_stats;
         self.map_iteration_truncated |= read.truncated;
         let snapshot = collector.convert(read, identities, now_ms);
         self.last_map_read_ok = true;
@@ -601,7 +733,7 @@ impl EcmBpfRuntime {
         Ok(snapshot)
     }
 
-    fn read_map(&self) -> Result<EcmMapRead, EcmBpfRuntimeError> {
+    fn read_maps(&self) -> Result<(EcmMapRead, EcmSourceStats), EcmBpfRuntimeError> {
         let map = self
             .ebpf
             .as_ref()
@@ -638,7 +770,22 @@ impl EcmBpfRuntime {
             }
         }
         truncated |= entries.len() == MAX_ECM_MAP_ENTRIES;
-        Ok(EcmMapRead { entries, truncated })
+        let source_map = self
+            .ebpf
+            .as_ref()
+            .and_then(|ebpf| ebpf.map(ECM_SOURCE_STATS_MAP_NAME))
+            .ok_or_else(|| {
+                EcmBpfRuntimeError::new(
+                    ECM_BPF_MAP_READ_STAGE,
+                    format!("{ECM_SOURCE_STATS_MAP_NAME} missing"),
+                )
+            })?;
+        let source_stats = Array::<_, SourceStatsValue>::try_from(source_map)
+            .map_err(|error| EcmBpfRuntimeError::new(ECM_BPF_MAP_READ_STAGE, error.to_string()))?
+            .get(&0, 0)
+            .map_err(|error| EcmBpfRuntimeError::new(ECM_BPF_MAP_READ_STAGE, error.to_string()))?
+            .0;
+        Ok((EcmMapRead { entries, truncated }, source_stats))
     }
 
     pub fn health(&self, now_ms: u64, freshness_ms: u64) -> EcmBpfHealth {
@@ -647,7 +794,10 @@ impl EcmBpfRuntime {
         });
         EcmBpfHealth {
             object_loaded: self.ebpf.is_some(),
-            attached: self.link.is_some(),
+            attached: self.update_link.is_some()
+                && !self.nss_context_callbacks.is_empty()
+                && self.nss_enter_links.len() == self.nss_context_callbacks.len()
+                && self.nss_exit_links.len() == self.nss_context_callbacks.len(),
             map_read_attempted: self.map_read_attempted,
             map_read_ok: self.last_map_read_ok && fresh_snapshot,
             fresh_snapshot,
@@ -656,6 +806,8 @@ impl EcmBpfRuntime {
             map_entries: self.map_entries,
             matched_entries: self.matched_entries,
             map_iteration_truncated: self.map_iteration_truncated,
+            nss_context_callbacks: self.nss_context_callbacks.clone(),
+            source_stats: self.source_stats,
             layout: Some(self.layout),
             error_stage: self.last_error_stage,
             error: self.last_error.clone(),
@@ -679,39 +831,88 @@ impl EcmBpfRuntime {
         runtime.ecm_bpf_map_entries = health.map_entries;
         runtime.ecm_bpf_matched_entries = health.matched_entries;
         runtime.ecm_bpf_map_iteration_truncated = health.map_iteration_truncated;
+        runtime.ecm_bpf_nss_context_callbacks = health.nss_context_callbacks;
+        runtime.ecm_bpf_source_stats = health.source_stats;
         runtime.ecm_bpf_layout = health.layout;
         runtime.ecm_bpf_error_stage = health.error_stage.map(str::to_owned);
         runtime.ecm_bpf_runtime_error = health.error;
     }
 
     pub fn shutdown(&mut self) -> Result<(), EcmBpfRuntimeError> {
-        let Some(link) = self.link.take() else {
-            self.ebpf = None;
+        let Some(ebpf) = self.ebpf.as_mut() else {
+            self.update_link = None;
+            self.nss_enter_links.clear();
+            self.nss_exit_links.clear();
+            self.nss_context_callbacks.clear();
             return Ok(());
         };
-        let result = self
-            .ebpf
-            .as_mut()
-            .and_then(|ebpf| ebpf.program_mut(ECM_UPDATE_PROGRAM_NAME))
-            .ok_or_else(|| {
-                EcmBpfRuntimeError::new(
-                    ECM_BPF_DETACH_STAGE,
-                    format!("{ECM_UPDATE_PROGRAM_NAME} missing during detach"),
-                )
-            })
-            .and_then(|program| {
-                let program: &mut KProbe =
-                    program
-                        .try_into()
-                        .map_err(|error: aya::programs::ProgramError| {
-                            EcmBpfRuntimeError::new(ECM_BPF_DETACH_STAGE, error.to_string())
-                        })?;
-                program.detach(link).map_err(|error| {
-                    EcmBpfRuntimeError::new(ECM_BPF_DETACH_STAGE, error.to_string())
-                })
-            });
+        let mut first_error = detach_kprobe_links(
+            ebpf,
+            ECM_NSS_ENTER_PROGRAM_NAME,
+            std::mem::take(&mut self.nss_enter_links),
+        )
+        .err();
+        if let Some(link) = self.update_link.take() {
+            if let Err(error) = detach_kprobe_links(ebpf, ECM_UPDATE_PROGRAM_NAME, vec![link]) {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        if let Err(error) = detach_kprobe_links(
+            ebpf,
+            ECM_NSS_EXIT_PROGRAM_NAME,
+            std::mem::take(&mut self.nss_exit_links),
+        ) {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
+        self.nss_context_callbacks.clear();
         self.ebpf = None;
-        result
+        if let Some(error) = first_error {
+            Err(error)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn detach_kprobe_links(
+    ebpf: &mut Ebpf,
+    program_name: &str,
+    links: Vec<KProbeLinkId>,
+) -> Result<(), EcmBpfRuntimeError> {
+    if links.is_empty() {
+        return Ok(());
+    }
+    let Some(program) = ebpf.program_mut(program_name) else {
+        return Err(EcmBpfRuntimeError::new(
+            ECM_BPF_DETACH_STAGE,
+            format!("{program_name} missing during detach"),
+        ));
+    };
+    let program: &mut KProbe =
+        program
+            .try_into()
+            .map_err(|error: aya::programs::ProgramError| {
+                EcmBpfRuntimeError::new(ECM_BPF_DETACH_STAGE, error.to_string())
+            })?;
+    let mut first_error = None;
+    for link in links {
+        if let Err(error) = program.detach(link) {
+            if first_error.is_none() {
+                first_error = Some(EcmBpfRuntimeError::new(
+                    ECM_BPF_DETACH_STAGE,
+                    format!("detach {program_name}: {error}"),
+                ));
+            }
+        }
+    }
+    if let Some(error) = first_error {
+        Err(error)
+    } else {
+        Ok(())
     }
 }
 
@@ -977,6 +1178,32 @@ mod tests {
     }
 
     #[test]
+    fn kallsyms_selection_attaches_only_supported_nss_callback_boundaries() {
+        let path =
+            std::env::temp_dir().join(format!("lanspeed-ecm-kallsyms-{}", std::process::id()));
+        fs::write(
+            &path,
+            concat!(
+                "0000000000001000 t ecm_nss_ipv4_net_dev_callback [ecm]\n",
+                "0000000000002000 t unrelated_callback [ecm]\n",
+                "0000000000003000 t ecm_nss_ipv6_connection_sync_many_callback [ecm]\n",
+            ),
+        )
+        .unwrap();
+
+        let callbacks = available_nss_context_callbacks(&path).unwrap();
+        fs::remove_file(path).unwrap();
+
+        assert_eq!(
+            callbacks,
+            [
+                "ecm_nss_ipv4_net_dev_callback",
+                "ecm_nss_ipv6_connection_sync_many_callback",
+            ]
+        );
+    }
+
+    #[test]
     fn rates_are_windowed_per_connection_generation_before_client_folding() {
         let identities = identities();
         let mut collector = EcmBpfSnapshotCollector::default();
@@ -1225,6 +1452,12 @@ mod tests {
                 rx_packets: 40,
             }
         );
+        assert_eq!(progressed.coverage_start_ms, Some(1_000));
+        assert_eq!(progressed.coverage_end_ms, 3_000);
+        assert_eq!(
+            progressed.coverage_deltas.get("02:00:00:00:00:01@lan"),
+            Some(&progressed.coverage_delta)
+        );
 
         let disappeared = collector.convert(
             EcmMapRead {
@@ -1235,6 +1468,10 @@ mod tests {
             4_000,
         );
         assert_eq!(disappeared.coverage_delta, TrafficCounters::default());
+        assert!(disappeared
+            .coverage_deltas
+            .get("02:00:00:00:00:01@lan")
+            .is_none());
 
         let returned = collector.convert(
             EcmMapRead {
@@ -1256,6 +1493,10 @@ mod tests {
                 tx_packets: 510,
                 rx_packets: 0,
             }
+        );
+        assert_eq!(
+            returned.coverage_deltas.get("02:00:00:00:00:01@lan"),
+            Some(&returned.coverage_delta)
         );
     }
 

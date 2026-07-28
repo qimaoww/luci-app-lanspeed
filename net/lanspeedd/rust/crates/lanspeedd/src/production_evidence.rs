@@ -364,7 +364,7 @@ pub(crate) fn nss_details(
         "counter_source": counter_source(decision, report),
         "counter_cadence_seconds": if offload_active { 1 } else { 0 },
         "counter_merge_policy": if ecm_bpf_enabled {
-            "ecm_kprobe_authoritative_tc_rate_floor_no_sum"
+            "aligned_raw_nss_hardware_plus_tc_slow_path_then_single_rate"
         } else if node_enabled {
             "single_ecm_node_owner"
         } else {
@@ -376,7 +376,7 @@ pub(crate) fn nss_details(
             "per_mac_node_generation"
         },
         "bpf_visibility": if ecm_bpf_enabled {
-            "ecm_update_chain_plus_tc_slow_path_rate_floor"
+            "nss_hardware_callbacks_plus_tc_slow_path"
         } else if offload_active {
             "slow_path_only_until_deceleration"
         } else {

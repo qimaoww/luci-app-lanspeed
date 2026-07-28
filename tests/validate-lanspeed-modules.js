@@ -5574,6 +5574,9 @@ function assertStatusRefreshModule(src) {
 	    !src.includes('refs.ifacesSummary') || !src.includes('refs.ifacesHint')) {
 		fail('statusRefresh.js must refresh the interface throughput details');
 	}
+	if (!/if \(isLan\)\s*\{\s*totalIfTx \+= ifUp;\s*totalIfRx \+= ifDn;/.test(src)) {
+		fail('statusRefresh.js must summarize only LAN collection boundaries without adding observe-path duplicates');
+	}
 	if (!src.includes('splitClientWarnings(rawWarnings, globalWarnings)') ||
 	    !src.includes("modeTitle += '\\n' + vocab.warningText('conntrack_connection_only');") ||
 	    src.includes("_('仅连接')") ||

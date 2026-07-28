@@ -1,14 +1,15 @@
-use core::ptr::addr_of_mut;
+use core::ptr::{addr_of, addr_of_mut};
 
 use aya_ebpf::{
     bindings::BPF_NOEXIST,
     helpers::{bpf_ktime_get_ns, bpf_probe_read_kernel, bpf_probe_read_kernel_buf},
-    macros::{kprobe, map},
-    maps::{Array, LruHashMap},
-    programs::ProbeContext,
+    macros::{kprobe, kretprobe, map},
+    maps::{Array, LruHashMap, PerCpuArray},
+    programs::{ProbeContext, RetProbeContext},
 };
 use lanspeed_common::{
-    packet::is_valid_client_mac, EcmCounters, EcmKey, EcmLayout, DIR_RX, DIR_TX, MAX_CLIENTS,
+    packet::is_valid_client_mac, EcmCounters, EcmKey, EcmLayout, EcmSourceStats, DIR_RX, DIR_TX,
+    MAX_CLIENTS,
 };
 
 use crate::atomics::add_u64;
@@ -19,6 +20,24 @@ pub static LANSPEED_ECM_CLIENTS: LruHashMap<EcmKey, EcmCounters> =
 
 #[map(name = "lanspeed_ecm_layout")]
 pub static LANSPEED_ECM_LAYOUT: Array<EcmLayout> = Array::with_max_entries(1, 0);
+
+#[map(name = "lanspeed_ecm_source_stats")]
+pub static LANSPEED_ECM_SOURCE_STATS: Array<EcmSourceStats> = Array::with_max_entries(1, 0);
+
+#[map(name = "lanspeed_ecm_nss_context")]
+pub static LANSPEED_ECM_NSS_CONTEXT: PerCpuArray<u32> = PerCpuArray::with_max_entries(1, 0);
+
+#[kprobe]
+pub fn lanspeed_ecm_nss_enter(_ctx: ProbeContext) -> u32 {
+    update_nss_context(true);
+    0
+}
+
+#[kretprobe]
+pub fn lanspeed_ecm_nss_exit(_ctx: RetProbeContext) -> u32 {
+    update_nss_context(false);
+    0
+}
 
 #[kprobe(function = "ecm_db_connection_data_totals_update")]
 pub fn lanspeed_ecm_update(ctx: ProbeContext) -> u32 {
@@ -40,6 +59,11 @@ fn try_ecm_update(ctx: &ProbeContext) {
         return;
     };
     if connection == 0 || (bytes == 0 && packets == 0) {
+        return;
+    }
+    let nss = nss_context_active();
+    record_source(nss, bytes, packets);
+    if !nss {
         return;
     }
     let Some(layout) = LANSPEED_ECM_LAYOUT.get(0) else {
@@ -68,6 +92,46 @@ fn try_ecm_update(ctx: &ProbeContext) {
     }
     if let Some(mac) = receiver {
         account(connection, generation, mac, DIR_RX, bytes, packets, now);
+    }
+}
+
+#[inline(always)]
+fn update_nss_context(enter: bool) {
+    let Some(depth) = LANSPEED_ECM_NSS_CONTEXT.get_ptr_mut(0) else {
+        return;
+    };
+    unsafe {
+        let current = depth.read_volatile();
+        depth.write_volatile(if enter {
+            current.saturating_add(1)
+        } else {
+            current.saturating_sub(1)
+        });
+    }
+}
+
+#[inline(always)]
+fn nss_context_active() -> bool {
+    LANSPEED_ECM_NSS_CONTEXT
+        .get(0)
+        .is_some_and(|depth| unsafe { addr_of!(*depth).read_volatile() != 0 })
+}
+
+#[inline(always)]
+fn record_source(nss: bool, bytes: u64, packets: u64) {
+    let Some(value) = LANSPEED_ECM_SOURCE_STATS.get_ptr_mut(0) else {
+        return;
+    };
+    unsafe {
+        if nss {
+            add_u64(addr_of_mut!((*value).nss_bytes), bytes);
+            add_u64(addr_of_mut!((*value).nss_packets), packets);
+            add_u64(addr_of_mut!((*value).nss_updates), 1);
+        } else {
+            add_u64(addr_of_mut!((*value).slow_path_bytes), bytes);
+            add_u64(addr_of_mut!((*value).slow_path_packets), packets);
+            add_u64(addr_of_mut!((*value).slow_path_updates), 1);
+        }
     }
 }
 

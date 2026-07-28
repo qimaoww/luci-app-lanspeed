@@ -6,7 +6,7 @@ pub mod proxy;
 pub mod tc;
 
 use crate::config::RuntimeConfig;
-use lanspeed_common::EcmLayout;
+use lanspeed_common::{EcmLayout, EcmSourceStats};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
@@ -68,6 +68,8 @@ pub struct RuntimeHealth {
     pub ecm_bpf_map_entries: usize,
     pub ecm_bpf_matched_entries: usize,
     pub ecm_bpf_map_iteration_truncated: bool,
+    pub ecm_bpf_nss_context_callbacks: Vec<String>,
+    pub ecm_bpf_source_stats: EcmSourceStats,
     pub ecm_bpf_layout: Option<EcmLayout>,
     pub ecm_bpf_error_stage: Option<String>,
     pub ecm_bpf_runtime_error: Option<String>,
@@ -104,6 +106,8 @@ impl Default for RuntimeHealth {
             ecm_bpf_map_entries: 0,
             ecm_bpf_matched_entries: 0,
             ecm_bpf_map_iteration_truncated: false,
+            ecm_bpf_nss_context_callbacks: Vec::new(),
+            ecm_bpf_source_stats: EcmSourceStats::default(),
             ecm_bpf_layout: None,
             ecm_bpf_error_stage: None,
             ecm_bpf_runtime_error: None,

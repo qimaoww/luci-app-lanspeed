@@ -514,7 +514,7 @@ function refreshLive(viewState) {
 			} else if (mode === 'nss_ecm_node') {
 				modeTitle = _('NSS ECM node 按客户端 MAC 读取真实字节与包计数并立即发布；独立 LAN 窗口只验证覆盖率。');
 			} else if (mode === 'nss_ecm_bpf') {
-				modeTitle = _('BPF 只挂到 ECM 统计更新链路，统一接收慢路径与 NSS 同步增量；不会叠加 TC-BPF 或 ECM node 计数。');
+				modeTitle = _('ECM+BPF 在内核区分 NSS 硬件增量与 TC 慢路径增量，同一原始采样窗口只计算一次速率。');
 			} else if (mode === 'conntrack_netlink') {
 				modeTitle = _('CT-Netlink 仅补充当前连接数，不参与非 NSS 设备的实时速率统计。');
 			} else if (mode === 'conntrack_procfs') {
@@ -614,7 +614,10 @@ function refreshLive(viewState) {
 			var ifDn = Number(isLan ? i.tx_bps : i.rx_bps) || 0;
 			var cs = clientSumByIf[n] || { tx: 0, rx: 0 };
 
-			totalIfTx += ifUp; totalIfRx += ifDn;
+			if (isLan) {
+				totalIfTx += ifUp;
+				totalIfRx += ifDn;
+			}
 
 			return E('tr', {}, [
 				E('td', { 'data-label': _('接口') }, n),

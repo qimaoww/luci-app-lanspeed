@@ -222,6 +222,7 @@ impl NssCoverageBook {
                 lan_raw,
                 lan_raw.fcs_normalized().unwrap_or_default(),
                 false,
+                false,
             );
         };
         let Some(lan_normalized) = lan_raw.fcs_normalized() else {
@@ -236,15 +237,16 @@ impl NssCoverageBook {
                 lan_raw,
                 TrafficCounters::default(),
                 false,
+                false,
             );
         };
 
         let aligned = fits_lan_clock(client_raw, lan_raw)
             && fits_lan_clock(client_normalized, lan_normalized)
-            && ownership_ready(client_normalized, lan_normalized)
             && directional_coverage_ready(client_raw, lan_raw)
             && directional_coverage_ready(client_normalized, lan_normalized);
         if aligned {
+            let ownership_complete = ownership_ready(client_normalized, lan_normalized);
             let denominator = lan_normalized
                 .rx_bytes
                 .saturating_add(lan_normalized.tx_bytes);
@@ -255,9 +257,25 @@ impl NssCoverageBook {
             } else {
                 WindowQuality::Ok
             };
+            let timeout = if !has_traffic(&client_raw) && has_traffic(&lan_raw) {
+                UNOWNED_SETTLE_MS
+            } else {
+                COVERAGE_CATCHUP_TIMEOUT_MS
+            };
+            let partial_since =
+                (!ownership_complete).then(|| *self.pending_since_ms.get_or_insert(lan.sample_ms));
+            let partial_timed_out =
+                partial_since.is_some_and(|since| lan.sample_ms.saturating_sub(since) > timeout);
+            let reason = if ownership_complete {
+                "lan_coverage_aligned"
+            } else if partial_timed_out {
+                "lan_coverage_unowned"
+            } else {
+                "lan_coverage_partial"
+            };
             let output = coverage_window(
                 quality,
-                "lan_coverage_aligned",
+                reason,
                 &start,
                 lan,
                 client_raw,
@@ -265,13 +283,16 @@ impl NssCoverageBook {
                 lan_raw,
                 lan_normalized,
                 true,
+                true,
             );
             if quality == WindowQuality::Idle {
                 self.last_reported = None;
             } else if output.tx_pct.is_some() || output.rx_pct.is_some() {
                 self.last_reported = Some((output.tx_pct, output.rx_pct));
             }
-            self.rebaseline(lan.clone());
+            if ownership_complete || partial_timed_out {
+                self.rebaseline(lan.clone());
+            }
             return output;
         }
 
@@ -292,6 +313,7 @@ impl NssCoverageBook {
                 lan_raw,
                 lan_normalized,
                 false,
+                true,
             ));
         }
 
@@ -310,6 +332,7 @@ impl NssCoverageBook {
             lan_raw,
             lan_normalized,
             false,
+            true,
         ));
         self.rebaseline(lan.clone());
         output
@@ -699,6 +722,7 @@ fn coverage_window(
     lan_raw: TrafficCounters,
     lan_normalized: TrafficCounters,
     aligned: bool,
+    percentages_available: bool,
 ) -> CoverageWindow {
     CoverageWindow {
         quality,
@@ -709,10 +733,10 @@ fn coverage_window(
         client_normalized,
         lan_raw,
         lan_normalized,
-        tx_pct: aligned
+        tx_pct: percentages_available
             .then(|| percentage(client_normalized.tx_bytes, lan_normalized.rx_bytes))
             .flatten(),
-        rx_pct: aligned
+        rx_pct: percentages_available
             .then(|| percentage(client_normalized.rx_bytes, lan_normalized.tx_bytes))
             .flatten(),
         retained_tx_pct: None,
@@ -1168,7 +1192,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_client_batches_accumulate_for_coverage_but_publish_rates_independently() {
+    fn partial_client_batches_publish_partial_coverage_without_waiting_for_full_ownership() {
         let snapshot = |sample_ms, first: TrafficCounters, second: TrafficCounters| NodeSnapshot {
             sample_ms,
             nodes: vec![
@@ -1200,7 +1224,9 @@ mod tests {
             lan(1_000, traffic(1_000_000, 1_000_000, 1_000, 1_000)),
         );
         assert!(first.clients.iter().any(|client| client.tx_bps > 0));
-        assert_eq!(first.coverage.quality, WindowQuality::Pending);
+        assert_eq!(first.coverage.quality, WindowQuality::Ok);
+        assert_eq!(first.coverage.tx_pct, Some(10));
+        assert_eq!(first.coverage.rx_pct, Some(10));
 
         let second = book.update(
             &snapshot(
@@ -1317,6 +1343,30 @@ mod tests {
         assert_eq!(aligned.rx_pct, Some(100));
         assert_eq!(aligned.retained_tx_pct, None);
         assert_eq!(aligned.retained_rx_pct, None);
+    }
+
+    #[test]
+    fn pending_window_publishes_the_current_reportable_direction_without_clamping() {
+        let mut coverage = NssCoverageBook::default();
+        coverage.update(
+            TrafficCounters::default(),
+            &lan(0, TrafficCounters::default()),
+        );
+        coverage.update(
+            traffic(200_000, 400_000, 200, 400),
+            &lan(2_000, traffic(400_000, 200_000, 400, 200)),
+        );
+
+        let pending = coverage.update(
+            traffic(50_000, 200_000, 50, 200),
+            &lan(4_000, traffic(500_000, 300_000, 500, 300)),
+        );
+
+        assert_eq!(pending.quality, WindowQuality::Pending);
+        assert_eq!(pending.tx_pct, Some(50));
+        assert_eq!(pending.rx_pct, None);
+        assert_eq!(pending.retained_tx_pct, Some(100));
+        assert_eq!(pending.retained_rx_pct, Some(100));
     }
 
     #[test]
