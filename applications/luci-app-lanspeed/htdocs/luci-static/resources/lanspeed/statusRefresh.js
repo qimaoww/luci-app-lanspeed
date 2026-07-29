@@ -101,22 +101,25 @@ function refreshAvailability(viewState, refs) {
 
 function refreshIntervalControl(viewState, refs, status) {
 	if (!refs || !refs.intervalSel) return;
-	var locked = typeof fmt.nssRefreshLocked === 'function' && fmt.nssRefreshLocked(status);
-	var state = locked ? 'locked' : 'open';
-	var choices = locked
-		? [ { value: fmt.NSS_REFRESH_MS, label: '2s' } ]
+	var restricted = typeof fmt.nssRefreshRestricted === 'function' &&
+		fmt.nssRefreshRestricted(status);
+	var state = restricted ? 'nss' : 'default';
+	var choices = restricted
+		? fmt.NSS_REFRESH_CHOICES
 		: fmt.REFRESH_CHOICES;
-	var value = locked ? fmt.NSS_REFRESH_MS : viewState.prefs.refreshMs;
-	if (refs.intervalSel.getAttribute('data-lock-state') !== state) {
+	var value = restricted
+		? fmt.normalizeNssRefreshMs(viewState.prefs.nssRefreshMs)
+		: viewState.prefs.refreshMs;
+	if (refs.intervalSel.getAttribute('data-refresh-policy') !== state) {
 		while (refs.intervalSel.firstChild)
 			refs.intervalSel.removeChild(refs.intervalSel.firstChild);
 		choices.forEach(function(choice) {
 			refs.intervalSel.appendChild(fmt.opt(choice.value, choice.label, value === choice.value));
 		});
-		refs.intervalSel.setAttribute('data-lock-state', state);
+		refs.intervalSel.setAttribute('data-refresh-policy', state);
 	}
-	refs.intervalSel.disabled = locked;
-	refs.intervalSel.title = locked ? _('ECM 采集方案固定每 2 秒刷新') : '';
+	refs.intervalSel.disabled = false;
+	refs.intervalSel.title = restricted ? _('ECM 采集方案最低每 2 秒刷新') : '';
 	refs.intervalSel.value = String(value);
 }
 

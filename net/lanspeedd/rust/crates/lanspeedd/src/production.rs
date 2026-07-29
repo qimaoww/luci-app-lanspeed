@@ -41,7 +41,8 @@ use crate::{
         apply_conntrack_failure, apply_conntrack_success, before_reply_action,
         client_conntrack_plan, conntrack_source, has_counted_connections, periodic_conntrack_plan,
         publish_connection_details, BeforeReplyAction, ClientConntrackPlan, ConntrackObservation,
-        PeriodicConntrackPlan, CONNECTION_ONLY_WARNING,
+        PeriodicConntrackPlan, CLIENT_CONNTRACK_CACHE_TTL_MS, CONNECTION_ONLY_WARNING,
+        NSS_CLIENT_CONNTRACK_CACHE_TTL_MS,
     },
     daemon::{
         abort_reload_after_timer_failure, abort_reload_candidate, activate_runtime,
@@ -778,6 +779,7 @@ impl ProductionRuntime {
         &mut self,
         identities: &IdentityTable,
         now_ms: u64,
+        defer_connection_rates: bool,
     ) -> Result<Arc<CollectedSnapshot>, String> {
         match conntrack::collect(
             conntrack_mode(self.config.conn_collector_mode),
@@ -786,11 +788,19 @@ impl ProductionRuntime {
             self.config.max_clients,
         ) {
             Ok(mut snapshot) => {
-                self.connection_rates.update(
-                    snapshot.sample_ms,
-                    &snapshot.connection_counters,
-                    &mut snapshot.connection_details,
-                );
+                if defer_connection_rates {
+                    self.connection_rates.update_deferred(
+                        snapshot.sample_ms,
+                        &snapshot.connection_counters,
+                        &mut snapshot.connection_details,
+                    );
+                } else {
+                    self.connection_rates.update(
+                        snapshot.sample_ms,
+                        &snapshot.connection_counters,
+                        &mut snapshot.connection_details,
+                    );
+                }
                 self.conntrack_observation.record_success(
                     now_ms,
                     snapshot.stats.netlink_read,
@@ -821,10 +831,19 @@ impl ProductionRuntime {
         base: &ResponseSnapshot,
     ) -> Result<ResponseSnapshot, DaemonError> {
         let now_ms = production_now_ms()?;
+        let defer_connection_rates = matches!(
+            self.rate_owner,
+            Some(RateCollector::NssEcmNode | RateCollector::NssEcmBpf)
+        );
         let plan = client_conntrack_plan(
             now_ms,
             self.conntrack_observation.last_attempt_ms,
             self.conntrack_snapshot.is_some(),
+            if defer_connection_rates {
+                NSS_CLIENT_CONNTRACK_CACHE_TTL_MS
+            } else {
+                CLIENT_CONNTRACK_CACHE_TTL_MS
+            },
         );
         let cached = if plan == ClientConntrackPlan::ReuseCached {
             self.conntrack_snapshot.as_ref().map(|collected| {
@@ -837,7 +856,7 @@ impl ProductionRuntime {
             (snapshot, Vec::new())
         } else {
             let (identities, identity_errors) = read_identities(&self.config, now_ms);
-            let snapshot = match self.read_conntrack(&identities, now_ms) {
+            let snapshot = match self.read_conntrack(&identities, now_ms, defer_connection_rates) {
                 Ok(collected) => apply_conntrack_success(
                     base,
                     &collected,
@@ -1048,7 +1067,13 @@ impl ProductionRuntime {
         decision = policy::select_collectors(&self.config, &report.facts, &runtime_health);
         match periodic_conntrack_plan(decision.rate) {
             PeriodicConntrackPlan::Read => {
-                conntrack = self.read_conntrack(&identities, now_ms).ok();
+                let defer_connection_rates = matches!(
+                    decision.rate,
+                    RateCollector::NssEcmNode | RateCollector::NssEcmBpf
+                );
+                conntrack = self
+                    .read_conntrack(&identities, now_ms, defer_connection_rates)
+                    .ok();
             }
             PeriodicConntrackPlan::Skip => {
                 self.conntrack_observation.record_skipped();

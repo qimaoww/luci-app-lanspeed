@@ -21,6 +21,7 @@ function detailStorage() {
 function detailPrefs(shared) {
 	var defaults = {
 		refreshMs: 3000,
+		nssRefreshMs: fmt.NSS_REFRESH_MS || 2000,
 		paused: false
 	};
 	var storage = detailStorage();
@@ -35,6 +36,7 @@ function detailPrefs(shared) {
 	} else if (shared) {
 		/* Non-browser callers keep deterministic defaults without a storage API. */
 		defaults.refreshMs = shared.refreshMs;
+		defaults.nssRefreshMs = shared.nssRefreshMs;
 		defaults.paused = shared.paused === true;
 	}
 	choices = fmt.REFRESH_CHOICES || [];
@@ -46,6 +48,10 @@ function detailPrefs(shared) {
 		if (!isFinite(defaults.refreshMs) || defaults.refreshMs <= 0)
 			defaults.refreshMs = 3000;
 	}
+	if (typeof fmt.normalizeNssRefreshMs === 'function')
+		defaults.nssRefreshMs = fmt.normalizeNssRefreshMs(defaults.nssRefreshMs);
+	else
+		defaults.nssRefreshMs = 2000;
 	defaults.paused = defaults.paused === true;
 	return defaults;
 }
@@ -57,21 +63,54 @@ function saveDetailPrefs(prefs) {
 	try {
 		storage.setItem(DETAIL_PREF_KEY, JSON.stringify({
 			refreshMs: Number(prefs.refreshMs) || 3000,
+			nssRefreshMs: typeof fmt.normalizeNssRefreshMs === 'function'
+				? fmt.normalizeNssRefreshMs(prefs.nssRefreshMs) : 2000,
 			paused: prefs.paused === true
 		}));
 	} catch (e) {}
 }
 
+function collectorStatus(previous) {
+	if (!lsRpc || typeof lsRpc.status !== 'function')
+		return Promise.resolve(previous || null);
+	return Promise.resolve().then(function() {
+		return lsRpc.status();
+	}).then(function(status) {
+		return status || previous || null;
+	}, function() {
+		return previous || null;
+	});
+}
+
+function nssRefreshRestricted(status) {
+	return typeof fmt.nssRefreshRestricted === 'function' &&
+		fmt.nssRefreshRestricted(status);
+}
+
+function detailRefreshChoices(status) {
+	return nssRefreshRestricted(status)
+		? (fmt.NSS_REFRESH_CHOICES || []) : (fmt.REFRESH_CHOICES || []);
+}
+
+function detailRefreshMs(status, prefs) {
+	if (nssRefreshRestricted(status))
+		return typeof fmt.normalizeNssRefreshMs === 'function'
+			? fmt.normalizeNssRefreshMs(prefs && prefs.nssRefreshMs) : 2000;
+	return Math.max(fmt.MIN_REFRESH_MS, Number(prefs && prefs.refreshMs) || 3000);
+}
+
 function loadClient(identityKey) {
 	return Promise.all([
 		lsRpc.clientConnections(identityKey),
-		dhcpHostnames.loadForMac(dhcpHostnames.identityMac(identityKey))
+		dhcpHostnames.loadForMac(dhcpHostnames.identityMac(identityKey)),
+		collectorStatus(null)
 	]).then(function(data) {
 		return {
 			identityKey: identityKey,
 			response: data[0],
 			customHostname: data[1] && data[1].host && data[1].host.name || '',
 			hostnameAvailable: data[1] && data[1].available !== false,
+			status: data[2],
 			updatedAt: Date.now(),
 			error: null
 		};
@@ -89,6 +128,7 @@ function normalizedPrefs() {
 	var prefs = Object.assign({}, fmt.loadPrefs() || {});
 	var detail = detailPrefs(prefs);
 	prefs.refreshMs = Math.max(fmt.MIN_REFRESH_MS, detail.refreshMs);
+	prefs.nssRefreshMs = detail.nssRefreshMs;
 	prefs.paused = detail.paused;
 	return prefs;
 }
@@ -267,7 +307,9 @@ return baseclass.extend({
 			sortDir: 'desc',
 			sortCustom: false,
 			prefs: normalizedPrefs(),
-			refreshChoices: fmt.REFRESH_CHOICES || [],
+			status: data && data.status || null,
+			refreshChoices: detailRefreshChoices(data && data.status),
+			refreshPolicy: nssRefreshRestricted(data && data.status) ? 'nss' : 'default',
 			timer: null,
 			loading: false,
 			manualLoading: false,
@@ -288,21 +330,30 @@ return baseclass.extend({
 				}
 			},
 
-			schedule: function() {
+			schedule: function(anchorAt) {
 				var self = this;
 				this.stopTimer();
 				if (this.destroyed || this.prefs.paused)
 					return;
-				var interval = this.prefs.refreshMs;
+				var interval = this.effectiveRefreshMs();
+				var delay = interval;
+				if (nssRefreshRestricted(this.status)) {
+					var now = Date.now();
+					var anchor = Number(anchorAt);
+					if (!isFinite(anchor) || anchor < 0 || anchor > now)
+						anchor = now;
+					delay = Math.max(0, interval - Math.max(0, now - anchor));
+				}
 				this.timer = window.setTimeout(function() {
 					self.timer = null;
 					self.reload(false);
-				}, interval);
+				}, delay);
 			},
 
 			reload: function(manual) {
 				var self = this;
 				var request;
+				var startedAt = Date.now();
 				var requestedManually = manual === true;
 				if (pending) {
 					if (requestedManually && !this.manualLoading) {
@@ -317,16 +368,23 @@ return baseclass.extend({
 				this.manualLoading = requestedManually;
 				clientDetailRefresh.render(this);
 				try {
-					request = lsRpc.clientConnections(this.identityKey);
+					request = Promise.all([
+						lsRpc.clientConnections(this.identityKey),
+						collectorStatus(this.status)
+					]);
 				} catch (error) {
 					request = Promise.reject(error);
 				}
 
-				pending = Promise.resolve(request).then(function(response) {
+				pending = Promise.resolve(request).then(function(result) {
+					var response = result[0];
 					self.response = response;
 					self.lastGood = response && response.available
 						? response : null;
 					self.updatedAt = Date.now();
+					self.status = result[1] || self.status;
+					self.refreshChoices = detailRefreshChoices(self.status);
+					self.refreshPolicy = nssRefreshRestricted(self.status) ? 'nss' : 'default';
 					self.error = null;
 				}, function(error) {
 					self.error = error;
@@ -334,7 +392,7 @@ return baseclass.extend({
 					self.loading = false;
 					self.manualLoading = false;
 					clientDetailRefresh.render(self);
-					self.schedule();
+					self.schedule(startedAt);
 					pending = null;
 					return self.response;
 				});
@@ -411,11 +469,18 @@ return baseclass.extend({
 				});
 				if (allowed.indexOf(selected) === -1)
 					return;
-				this.prefs.refreshMs = selected;
+				if (nssRefreshRestricted(this.status))
+					this.prefs.nssRefreshMs = selected;
+				else
+					this.prefs.refreshMs = selected;
 				saveDetailPrefs(this.prefs);
 				clientDetailRefresh.render(this);
 				if (!this.loading)
 					this.schedule();
+			},
+
+			effectiveRefreshMs: function() {
+				return detailRefreshMs(this.status, this.prefs);
 			},
 
 			setPaused: function(paused) {

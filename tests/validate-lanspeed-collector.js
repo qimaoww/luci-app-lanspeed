@@ -260,10 +260,12 @@ assert(model.connection_metadata_model.rate_source === false &&
   model.connection_metadata_model.byte_rate_fallback === false, 'conntrack must be metadata-only');
 assert(model.performance_guardrails.target_router_cpu_pct === 5, 'router CPU acceptance threshold must remain 5%');
 assert(model.performance_guardrails.ui_refresh_policy.bpf === 'unrestricted_selector' &&
-  model.performance_guardrails.ui_refresh_policy.nss_ecm_node === 2000 &&
-  model.performance_guardrails.ui_refresh_policy.nss_ecm_bpf === 2000 &&
+  JSON.stringify(model.performance_guardrails.ui_refresh_policy.nss_ecm_node) ===
+    JSON.stringify([2000, 4000, 8000, 10000]) &&
+  JSON.stringify(model.performance_guardrails.ui_refresh_policy.nss_ecm_bpf) ===
+    JSON.stringify([2000, 4000, 8000, 10000]) &&
   model.performance_guardrails.ui_refresh_policy.auto === 'follow_effective_collector',
-  'refresh policy must lock only the two ECM schemes to two seconds');
+  'refresh policy must restrict only the two ECM schemes to the four NSS-safe cadences');
 assert(model.performance_guardrails.backend_collection_policy.bpf === 'configured_interval' &&
   model.performance_guardrails.backend_collection_policy.nss_ecm_node_minimum_ms === 2000 &&
   model.performance_guardrails.backend_collection_policy.nss_ecm_bpf_minimum_ms === 2000 &&
@@ -271,6 +273,14 @@ assert(model.performance_guardrails.backend_collection_policy.bpf === 'configure
   production.includes('const NSS_COLLECTION_INTERVAL_MS: u32 = 2_000;') &&
   production.includes('effective_collection_interval_ms(self.rate_owner, configured_ms)'),
   'backend scheduling must restrict only effective ECM collectors to two seconds');
+assert(model.performance_guardrails.live_refresh_alignment.nss_sample_clock ===
+  'published_shared_rate_window_end' &&
+  model.performance_guardrails.live_refresh_alignment.nss_rpc_boundary_retry_count === 1 &&
+  model.performance_guardrails.live_refresh_alignment.nss_detail_schedule_anchor ===
+    'request_start' &&
+  model.performance_guardrails.live_refresh_alignment.bpf_detail_schedule_anchor ===
+    'request_completion_unchanged',
+  'NSS live pages must avoid four-second double waits without changing x86 detail scheduling');
 assert(model.performance_guardrails.animation_interpolation === false,
   'rate values must never be animated or interpolated');
 

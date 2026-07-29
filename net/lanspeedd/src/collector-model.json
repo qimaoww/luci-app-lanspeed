@@ -251,8 +251,8 @@
     "target_router_cpu_pct": 5,
     "ui_refresh_policy": {
       "bpf": "unrestricted_selector",
-      "nss_ecm_node": 2000,
-      "nss_ecm_bpf": 2000,
+      "nss_ecm_node": [2000, 4000, 8000, 10000],
+      "nss_ecm_bpf": [2000, 4000, 8000, 10000],
       "auto": "follow_effective_collector"
     },
     "backend_collection_policy": {
@@ -260,6 +260,12 @@
       "nss_ecm_node_minimum_ms": 2000,
       "nss_ecm_bpf_minimum_ms": 2000,
       "auto": "follow_effective_collector"
+    },
+    "live_refresh_alignment": {
+      "nss_sample_clock": "published_shared_rate_window_end",
+      "nss_rpc_boundary_retry_count": 1,
+      "nss_detail_schedule_anchor": "request_start",
+      "bpf_detail_schedule_anchor": "request_completion_unchanged"
     },
     "animation_interpolation": false
   }

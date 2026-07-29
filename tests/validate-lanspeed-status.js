@@ -237,7 +237,7 @@ function successRpc(at) {
 
 function normalizedResult(marker, at) {
 	return {
-		status: { marker: marker, version: '1.1.4-r1' },
+		status: { marker: marker, version: '1.1.4-r2' },
 		clients: { clients: [] },
 		interfaces: { interfaces: [] },
 		uci: {},
@@ -250,7 +250,7 @@ async function testIndependentRpcSettlement(context, fmt) {
 	let tick = 1000;
 	const clock = function() { tick += 10; return tick; };
 	const rpc = {
-		status: function() { return Promise.resolve({ version: '1.1.4-r1' }); },
+		status: function() { return Promise.resolve({ version: '1.1.4-r2' }); },
 		clients: function() { return Promise.reject(new Error('clients down')); },
 		interfaces: function() { return Promise.resolve({ interfaces: [ { name: 'br-lan' } ] }); },
 		uciGet: function() { return Promise.reject(new Error('uci down')); }
@@ -307,31 +307,47 @@ async function testLiveSamplePairing(context, fmt) {
 	let clientRate = 111;
 	let interfaceRate = 777;
 	let emptyClients = false;
+	let interfaceSampleQueue = [];
+	let collector = 'bpf';
 	const rpc = {
 		status: function() {
-			return Promise.resolve({
-				version: '1.1.4-r1',
-				coverage: { quality: 'ok', tx_pct: coveragePct, rx_pct: coveragePct },
-				evidence: {
-					effective_collector: 'bpf',
+			const rateEvidence = collector === 'nss_ecm_bpf'
+				? {
+					effective_collector: collector,
+					ecm_bpf: { sample_ms: statusSampleMs },
+					ecm_bpf_rate_window: { window_end_ms: statusSampleMs }
+				} : {
+					effective_collector: collector,
 					bpf: { last_complete_snapshot_ms: statusSampleMs }
-				}
+				};
+			return Promise.resolve({
+				version: '1.1.4-r2',
+				coverage: { quality: 'ok', tx_pct: coveragePct, rx_pct: coveragePct },
+				evidence: rateEvidence
 			});
 		},
 		clients: function() {
+			const rateEvidence = collector === 'nss_ecm_bpf'
+				? {
+					effective_collector: collector,
+					ecm_bpf: { sample_ms: clientSampleMs },
+					ecm_bpf_rate_window: { window_end_ms: clientSampleMs }
+				} : { effective_collector: collector };
 			return Promise.resolve({
 				clients: emptyClients ? [] : [ {
-					collector_mode: 'bpf', sample_ms: clientSampleMs,
+					collector_mode: collector, sample_ms: clientSampleMs,
 					tx_bps: clientRate, rx_bps: clientRate
 				} ],
-				evidence: { effective_collector: 'bpf' }
+				evidence: rateEvidence
 			});
 		},
 		interfaces: function() {
+			const sampledAt = interfaceSampleQueue.length
+				? interfaceSampleQueue.shift() : interfaceSampleMs;
 			return Promise.resolve({
-				monotonic_ms: interfaceSampleMs,
+				monotonic_ms: sampledAt,
 				interfaces: [ {
-					name: 'br-lan', sample_ms: interfaceSampleMs,
+					name: 'br-lan', sample_ms: sampledAt,
 					rx_bps: interfaceRate, tx_bps: interfaceRate
 				} ]
 			});
@@ -349,6 +365,24 @@ async function testLiveSamplePairing(context, fmt) {
 	assert.strictEqual(first.status.coverage.tx_pct, 55);
 	assert.strictEqual(first.clients.clients[0].tx_bps, 111);
 	assert.strictEqual(first.interfaces.interfaces[0].rx_bps, 777);
+
+	statusSampleMs = 1500;
+	clientSampleMs = 1500;
+	interfaceSampleMs = 1500;
+	interfaceSampleQueue = [ 1600, 1500 ];
+	coveragePct = 60;
+	clientRate = 150;
+	interfaceRate = 850;
+	collector = 'nss_ecm_bpf';
+	const recoveredSplit = await overview.loadAll(first, clock);
+	assert.strictEqual(recoveredSplit.livePair.sampleMs, 1500);
+	assert.strictEqual(recoveredSplit.livePair.aligned, true);
+	assert.strictEqual(recoveredSplit.status.coverage.tx_pct, 60);
+	assert.strictEqual(recoveredSplit.clients.clients[0].tx_bps, 150);
+	assert.strictEqual(recoveredSplit.interfaces.interfaces[0].rx_bps, 850);
+	assert.strictEqual(interfaceSampleQueue.length, 0,
+		'a one-round RPC boundary split must be re-read inside the same refresh cycle');
+	collector = 'bpf';
 
 	statusSampleMs = 2000;
 	clientSampleMs = 2000;
@@ -441,6 +475,37 @@ async function testLiveSamplePairing(context, fmt) {
 	assert.strictEqual(empty.status.coverage.tx_pct, 99);
 	assert.strictEqual(empty.livePair.sampleMs, 8000,
 		'a successful empty-client response must not block a new empty live batch');
+
+	emptyClients = false;
+	rpc.status = function() {
+		return Promise.resolve({
+			coverage: { quality: 'ok', tx_pct: 91, rx_pct: 91 },
+			evidence: {
+				effective_collector: 'nss_ecm_bpf',
+				ecm_bpf: { sample_ms: 10000 },
+				ecm_bpf_rate_window: { window_end_ms: 9000 }
+			}
+		});
+	};
+	rpc.clients = function() {
+		return Promise.resolve({
+			clients: [ {
+				collector_mode: 'nss_ecm_bpf', sample_ms: 9000,
+				tx_bps: 900, rx_bps: 900
+			} ],
+			evidence: {
+				effective_collector: 'nss_ecm_bpf',
+				ecm_bpf: { sample_ms: 10000 },
+				ecm_bpf_rate_window: { window_end_ms: 9000 }
+			}
+		});
+	};
+	interfaceSampleMs = 9000;
+	const heldPublishedWindow = await overview.loadAll(empty, clock);
+	assert.strictEqual(heldPublishedWindow.livePair.sampleMs, 9000);
+	assert.strictEqual(heldPublishedWindow.livePair.aligned, true);
+	assert.strictEqual(heldPublishedWindow.clients.clients[0].tx_bps, 900,
+		'ECM+BPF alignment must use the published shared rate window instead of the newer raw collection clock');
 }
 
 function fakeTimers() {
@@ -484,7 +549,7 @@ async function testControllerLifecycle(context, fmt) {
 	let deferred = makeDeferred();
 	let now = 500;
 	const state = Object.assign(normalizedResult('initial', 100), {
-		prefs: { paused: false, refreshMs: 3000 },
+		prefs: { paused: false, refreshMs: 3000, nssRefreshMs: 8000 },
 		refreshLive: function() { refreshes++; },
 		refreshBusy: function() { busyRefreshes++; },
 		loading: false,
@@ -510,12 +575,12 @@ async function testControllerLifecycle(context, fmt) {
 		'pure BPF must keep the selected refresh cadence even on an NSS device');
 	state.status.evidence.effective_collector = 'nss_ecm_node';
 	controller.schedule();
-	assert.strictEqual(timers.firstDelay(), 2000,
-		'ECM must use the fixed two-second backend-value refresh cadence');
+	assert.strictEqual(timers.firstDelay(), 8000,
+		'ECM must use the independently selected NSS refresh cadence');
 	state.status.evidence.effective_collector = 'nss_ecm_bpf';
 	controller.schedule();
-	assert.strictEqual(timers.firstDelay(), 2000,
-		'ECM+BPF must use the fixed two-second backend-value refresh cadence');
+	assert.strictEqual(timers.firstDelay(), 8000,
+		'ECM+BPF must use the independently selected NSS refresh cadence');
 	state.status = normalizedResult('initial', 100).status;
 	controller.schedule();
 	assert.strictEqual(timers.firstDelay(), 3000,
@@ -620,7 +685,7 @@ function loadShellAndRefresh(context, fmt) {
 		},
 		fmt,
 		{ detailHref: function(pathname, key) { return pathname + '?client=' + encodeURIComponent(key); } },
-		{ FULL_VERSION: '1.1.4-r1' },
+		{ FULL_VERSION: '1.1.4-r2' },
 		{
 			hideIpv6RangesValue: function(value) { return value || ''; },
 			displayIpsForClient: function(values) { return Array.isArray(values) ? values : []; }
@@ -667,12 +732,17 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.strictEqual(fmt.loadPrefs().pageSize, 25);
 	context.window.localStorage.setItem(fmt.PREF_KEY, JSON.stringify({ pageSize: 50 }));
 	assert.strictEqual(fmt.loadPrefs().pageSize, 50);
+	context.window.localStorage.setItem(fmt.PREF_KEY, JSON.stringify({ nssRefreshMs: 8000 }));
+	assert.strictEqual(fmt.loadPrefs().nssRefreshMs, 8000);
+	context.window.localStorage.setItem(fmt.PREF_KEY, JSON.stringify({ nssRefreshMs: 3000 }));
+	assert.strictEqual(fmt.loadPrefs().nssRefreshMs, 2000,
+		'unsupported legacy NSS cadence must normalize to the safe two-second default');
 
 	const modules = loadShellAndRefresh(context, fmt);
 	let refreshCount = 0;
 	const clients = Array.from({ length: 30 }, function(_value, index) { return client(index + 1); });
 	const state = {
-		status: { version: '1.1.4-r1', coverage: { quality: 'idle' } },
+		status: { version: '1.1.4-r2', coverage: { quality: 'idle' } },
 		clients: { clients: clients },
 		interfaces: { interfaces: [ { name: 'br-lan', role: 'lan', rx_bps: 100, tx_bps: 200 } ] },
 		rpc: successRpc(100000),
@@ -705,13 +775,21 @@ function testPaginationAndUiStates(context, fmt) {
 			capabilities: { nss: true },
 			evidence: { effective_collector: 'nss_ecm_bpf' }
 		},
-		prefs: Object.assign({}, state.prefs)
+		prefs: Object.assign({}, state.prefs, { nssRefreshMs: 8000 })
 	});
 	const nssBuilt = modules.shell.buildShell(nssState);
-	assert.strictEqual(nssBuilt.refs.intervalSel.disabled, true);
-	assert.strictEqual(nssBuilt.refs.intervalSel.children.length, 1);
-	assert.strictEqual(textOf(nssBuilt.refs.intervalSel.children[0]), '2s',
-		'ECM pages must expose only the fixed two-second refresh cadence');
+	assert.strictEqual(nssBuilt.refs.intervalSel.disabled, false);
+	assert.deepStrictEqual(
+		Array.from(nssBuilt.refs.intervalSel.children).map(textOf),
+		[ '2s', '4s', '8s', '10s' ],
+		'ECM pages must expose only the four NSS-safe refresh cadences');
+	modules.refresh.refreshIntervalControl(nssState, nssBuilt.refs, nssState.status);
+	assert.strictEqual(nssBuilt.refs.intervalSel.value, '8000');
+	nssBuilt.refs.intervalSel.value = '4000';
+	nssBuilt.refs.intervalSel.listeners.change({ target: nssBuilt.refs.intervalSel });
+	assert.strictEqual(nssState.prefs.nssRefreshMs, 4000);
+	assert.strictEqual(nssState.prefs.refreshMs, 3000,
+		'NSS selection must not overwrite the BPF refresh preference');
 	nssState.status.evidence.effective_collector = 'bpf';
 	modules.refresh.refreshIntervalControl(nssState, nssBuilt.refs, nssState.status);
 	assert.strictEqual(nssBuilt.refs.intervalSel.disabled, false,
@@ -719,8 +797,10 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.strictEqual(nssBuilt.refs.intervalSel.children.length, 5);
 	nssState.status.evidence.effective_collector = 'nss_ecm_node';
 	modules.refresh.refreshIntervalControl(nssState, nssBuilt.refs, nssState.status);
-	assert.strictEqual(nssBuilt.refs.intervalSel.disabled, true,
-		'automatic recovery to ECM must relock the selector without rebuilding the page');
+	assert.strictEqual(nssBuilt.refs.intervalSel.disabled, false);
+	assert.strictEqual(nssBuilt.refs.intervalSel.children.length, 4);
+	assert.strictEqual(nssBuilt.refs.intervalSel.value, '4000',
+		'automatic recovery to ECM must restore the independent NSS preference');
 	state.refreshLive = function() { refreshCount++; modules.refresh.refreshLive(state); };
 	state.refreshLive();
 	const toolbarRight = findByClass(built.root, 'lanspeed-toolbar-right');
@@ -734,7 +814,7 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.strictEqual(findAllByClass(built.root, 'lanspeed-freshness-status').length, 0);
 	assert.strictEqual(state.refs.servicePill, undefined);
 	assert.strictEqual(state.refs.freshnessPill, undefined);
-	assert.strictEqual(state.refs.meta.textContent, '后端 1.1.4-r1 · luci 1.1.4-r1');
+	assert.strictEqual(state.refs.meta.textContent, '后端 1.1.4-r2 · luci 1.1.4-r2');
 	assert.ok(!state.refs.meta.textContent.includes('检查于'));
 	assert.strictEqual(state.pageCount, 3);
 	assert.strictEqual(state.refs.root.attrs['aria-busy'], 'false');

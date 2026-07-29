@@ -2208,8 +2208,9 @@ function assertClientDetailViewSource(src) {
 		fail('clientDetailView.js must own lifecycle and hostname dialog behavior without RPC declarations, CSS, or connection grouping logic');
 	}
 	if (!src.includes('lsRpc.clientConnections(identityKey)') ||
-	    /lsRpc\.(?:status|clients|interfaces|uciGet|overview)\s*\(/.test(cleaned)) {
-		fail('clientDetailView.js load/reload must call only the shared clientConnections RPC');
+	    !src.includes('lsRpc.status()') ||
+	    /lsRpc\.(?:clients|interfaces|uciGet|overview)\s*\(/.test(cleaned)) {
+		fail('clientDetailView.js must pair shared clientConnections and status RPCs without unrelated requests');
 	}
 }
 
@@ -2251,7 +2252,9 @@ function assertClientDetailViewLifecycle(src) {
 				fail('clientDetailView.js must pass the decoded identity unchanged to every RPC');
 			return responses.shift();
 		},
-		status: function() { throw new Error('unexpected status RPC'); },
+		status: function() {
+			return Promise.resolve({ evidence: { effective_collector: 'bpf' } });
+		},
 		clients: function() { throw new Error('unexpected clients RPC'); },
 		interfaces: function() { throw new Error('unexpected interfaces RPC'); },
 		uciGet: function() { throw new Error('unexpected uci RPC'); }
@@ -2261,7 +2264,7 @@ function assertClientDetailViewLifecycle(src) {
 	const events = [];
 	let timerId = 0;
 	let now = new Date(2026, 0, 2, 3, 4, 5).getTime();
-	let storedDetailPrefs = JSON.stringify({ refreshMs: 1000, paused: false });
+	let storedDetailPrefs = JSON.stringify({ refreshMs: 1000, nssRefreshMs: 8000, paused: false });
 	const fakeDate = { now: function() { return now; } };
 	const fakeWindow = {
 		location: {
@@ -2312,12 +2315,27 @@ function assertClientDetailViewLifecycle(src) {
 	};
 	const fmt = {
 		MIN_REFRESH_MS: 1000,
-		DEFAULT_PREFS: { refreshMs: 3000 },
+		NSS_REFRESH_MS: 2000,
+		DEFAULT_PREFS: { refreshMs: 3000, nssRefreshMs: 2000 },
 		REFRESH_CHOICES: [
 			{ value: 1000, label: '1s' },
 			{ value: 3000, label: '3s' },
 			{ value: 5000, label: '5s' }
 		],
+		NSS_REFRESH_CHOICES: [
+			{ value: 2000, label: '2s' },
+			{ value: 4000, label: '4s' },
+			{ value: 8000, label: '8s' },
+			{ value: 10000, label: '10s' }
+		],
+		nssRefreshRestricted: function(status) {
+			const effective = status && status.evidence && status.evidence.effective_collector;
+			return effective === 'nss_ecm_node' || effective === 'nss_ecm_bpf';
+		},
+		normalizeNssRefreshMs: function(value) {
+			return [ 2000, 4000, 8000, 10000 ].includes(Number(value))
+				? Number(value) : 2000;
+		},
 		nextSort: nextDetailSort,
 		loadPrefs: function() { return { refreshMs: 250, paused: false }; }
 	};
@@ -2335,7 +2353,8 @@ function assertClientDetailViewLifecycle(src) {
 		const requiredFields = [
 			'identityKey', 'response', 'lastGood', 'updatedAt', 'protocol', 'filter', 'expanded',
 			'sortKey', 'sortDir', 'sortCustom',
-			'prefs', 'timer', 'loading', 'manualLoading', 'reload', 'schedule', 'stopTimer',
+			'prefs', 'status', 'refreshChoices', 'refreshPolicy', 'effectiveRefreshMs',
+			'timer', 'loading', 'manualLoading', 'reload', 'schedule', 'stopTimer',
 			'setProtocol', 'setFilter', 'setSort', 'setRefreshMs', 'setPaused',
 			'locationLabelFor',
 			'requestLocations', 'destroy', 'back'
@@ -2345,14 +2364,17 @@ function assertClientDetailViewLifecycle(src) {
 		}) || state.lastGood !== fixture || state.protocol !== 'all' ||
 		    state.filter !== '' || state.sortKey !== 'rx' || state.sortDir !== 'desc' ||
 		    state.sortCustom !== false || state.loading !== false || timers.size !== 1 ||
-		    Array.from(timers.values())[0].interval !== 1000) {
+		    Array.from(timers.values())[0].interval !== 1000 ||
+		    state.refreshPolicy !== 'default' || state.effectiveRefreshMs() !== 1000 ||
+		    JSON.stringify(state.refreshChoices.map(function(choice) { return choice.value; })) !==
+			JSON.stringify([ 1000, 3000, 5000 ])) {
 			fail('clientDetailView.js render must initialize RX-descending detail sort state and schedule at MIN_REFRESH_MS when detail refresh is enabled');
 		}
 		state.setRefreshMs(5000);
 		state.setPaused();
 		if (state.prefs.refreshMs !== 5000 || !state.prefs.paused || timers.size !== 0 ||
 		    JSON.stringify(JSON.parse(storedDetailPrefs)) !==
-			JSON.stringify({ refreshMs: 5000, paused: true })) {
+			JSON.stringify({ refreshMs: 5000, nssRefreshMs: 8000, paused: true })) {
 			fail('clientDetailView.js must persist detail refresh interval and pause state under its independent preference key');
 		}
 		state.setPaused();
@@ -2471,6 +2493,54 @@ function assertClientDetailViewLifecycle(src) {
 		if (timers.size !== 0 || fakeWindow.location.assigned !== fakeWindow.location.pathname) {
 			fail('clientDetailView.js back must stop the timer and navigate to the current LAN pathname without a client query or hard-coded host');
 		}
+
+		storedDetailPrefs = JSON.stringify({
+			refreshMs: 1000, nssRefreshMs: 8000, paused: false
+		});
+		let nssStatusCalls = 0;
+		let nssConnectionCalls = 0;
+		const nssReloadDeferred = makeDeferred();
+		const nssView = loadClientDetailViewModule(src, fmt, {
+			clientConnections: function() {
+				nssConnectionCalls++;
+				return nssConnectionCalls === 1
+					? Promise.resolve(fixture) : nssReloadDeferred.promise;
+			},
+			status: function() {
+				nssStatusCalls++;
+				return nssStatusCalls === 1
+					? Promise.resolve({ evidence: { effective_collector: 'nss_ecm_bpf' } })
+					: Promise.reject(new Error('status temporarily unavailable'));
+			}
+		}, shell, refresh, fakeWindow, fakeDate);
+		const nssLoaded = await nssView.load('30:c5:0a@eth1');
+		nssView.render(nssLoaded);
+		const nssState = shellState;
+		if (nssState.refreshPolicy !== 'nss' || nssState.effectiveRefreshMs() !== 8000 ||
+		    JSON.stringify(nssState.refreshChoices.map(function(choice) { return choice.value; })) !==
+			JSON.stringify([ 2000, 4000, 8000, 10000 ]) ||
+		    timers.size !== 1 || Array.from(timers.values())[0].interval !== 8000 ||
+		    nssState.prefs.refreshMs !== 1000) {
+			fail('clientDetailView.js must restrict only NSS detail pages to independent 2/4/8/10 second refresh choices');
+		}
+		nssState.setRefreshMs(4000);
+		if (nssState.prefs.nssRefreshMs !== 4000 || nssState.prefs.refreshMs !== 1000 ||
+		    timers.size !== 1 || Array.from(timers.values())[0].interval !== 4000 ||
+		    JSON.stringify(JSON.parse(storedDetailPrefs)) !== JSON.stringify({
+			refreshMs: 1000, nssRefreshMs: 4000, paused: false
+		    })) {
+			fail('clientDetailView.js must persist NSS detail cadence without changing the x86/BPF preference');
+		}
+		const nssReload = nssState.reload();
+		now += 1000;
+		nssReloadDeferred.resolve(fixture);
+		await nssReload;
+		if (nssState.refreshPolicy !== 'nss' || nssState.effectiveRefreshMs() !== 4000 ||
+		    nssState.refreshChoices.length !== 4 || timers.size !== 1 ||
+		    Array.from(timers.values())[0].interval !== 3000) {
+			fail('clientDetailView.js must retain the NSS policy and deduct RPC time from its selected cadence when status refresh fails');
+		}
+		nssState.destroy();
 
 		let failingCalls = 0;
 		const firstFailureView = loadClientDetailViewModule(src, fmt, {
@@ -4596,7 +4666,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.4-r1';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.4-r2';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
@@ -6402,7 +6472,7 @@ function matchingConfigStatus(values) {
 		max_clients: values.max_clients,
 		enable_bpf: values.enable_bpf === '1',
 		enable_conntrack_fallback: values.enable_conntrack_fallback === '1',
-		version: '1.1.4-r1',
+		version: '1.1.4-r2',
 		capabilities: { bpf: true, conntrack_fallback: true },
 		evidence: { collector: { primary_source: 'bpf', effective_connection_collector: 'conntrack_netlink' } }
 	};
@@ -6429,7 +6499,7 @@ function assertConfigFormBehavior(src) {
 	}, makeConfigIfaceStub(), model);
 	asyncChecks.push(validLoadForm.loadValues().then(function(values) {
 		if (values.pageState !== 'ready' || !values.rpc.status.ok ||
-			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.4-r1') {
+			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.4-r2') {
 			fail('configForm.js must accept the complete status contract and retain capability evidence');
 		}
 	}).catch(function(error) {

@@ -55,8 +55,8 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 - **接口配置**：采集 / 观察 / 关闭 三态切换，默认采集 `br-lan`、观察 `wan`；异步扫描具有代次保护，并显示缺失接口、数量限制和不可采集原因。自动忽略 `dae*`、`miireg*`、`tun*`、`erspan*`、`gretap*`、`gre*`、`ip6gre*`、`ip6tnl*`、`sit*`、`bonding_masters*`，拒绝 nssifb 采集并可观察 WAN / ifb 计数。
 - **告警体系**：OpenClash / dae/daed / SQM/qosify/ifb / flow offload / fullcone NAT 等场景自动识别并提示。
 - **客户端状态列**：默认隐藏 LAN 客户端的采集来源与告警状态，可在“LAN Speed 配置”中开启。
-- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.4-r1`。
-- **刷新口径**：BPF 不限制实时页刷新选择器；ECM 和 ECM+BPF 固定为 2 秒；自动模式跟随实际 `effective_collector`。速率值直接替换，不使用动画、缓动或插值。
+- **版本显示**：LuCI 状态页显示完整版本，例如 `1.1.4-r2`。
+- **刷新口径**：BPF 保持 `1/2/3/5/10` 秒选择器与原调度方式；ECM 和 ECM+BPF 的实时页与客户端详情页仅提供 `2/4/8/10` 秒，详情页会从所选周期扣除 RPC 耗时，实时页跨批时在本轮重读一次完整快照；自动模式跟随实际 `effective_collector`。NSS 后端采样周期仍不低于 2 秒，速率值直接替换，不使用动画、缓动或插值。
 
 ## 采集策略
 

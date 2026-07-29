@@ -7,6 +7,7 @@
 'require lanspeed.statusRefresh as statusRefresh';
 
 var SOURCE_KEYS = [ 'status', 'clients', 'interfaces', 'uci' ];
+var LIVE_SOURCE_KEYS = [ 'status', 'clients', 'interfaces' ];
 var SOURCE_LABELS = {
 	status: 'status',
 	clients: 'clients',
@@ -81,8 +82,12 @@ function collectorEvidence(data) {
 function collectorSampleClock(data) {
 	var source = collectorEvidence(data);
 	var evidence = source.evidence;
-	if (source.collector === 'nss_ecm_bpf')
-		return sampleClock(evidence.ecm_bpf && evidence.ecm_bpf.sample_ms);
+	if (source.collector === 'nss_ecm_bpf') {
+		var published = sampleClock(evidence.ecm_bpf_rate_window &&
+			evidence.ecm_bpf_rate_window.window_end_ms);
+		return published !== null ? published
+			: sampleClock(evidence.ecm_bpf && evidence.ecm_bpf.sample_ms);
+	}
 	if (source.collector === 'nss_ecm_node')
 		return sampleClock(evidence.nss_window && evidence.nss_window.window_end_ms);
 	if (source.collector === 'bpf')
@@ -256,9 +261,28 @@ function loadAll(previous, clock) {
 	return Promise.all(SOURCE_KEYS.map(function(key) {
 		return sourceSettled(key, loaders[key], previous, clock);
 	})).then(function(results) {
-		return aggregateResults(results, startedAt);
-	}).then(function(next) {
-		return alignLiveSamples(next, previous);
+		var next = aggregateResults(results, startedAt);
+		var pair = livePair(next);
+		var collector = collectorEvidence(next.status).collector;
+		var nss = collector === 'nss_ecm_node' || collector === 'nss_ecm_bpf';
+		var liveSucceeded = LIVE_SOURCE_KEYS.every(function(key) {
+			return next.rpc[key] && next.rpc[key].ok === true;
+		});
+		if (pair.aligned !== false || !liveSucceeded || !nss)
+			return alignLiveSamples(next, previous);
+
+		/* A collection can publish between the three live RPC replies. Retry the
+		 * cheap snapshot reads once inside this refresh cycle so a boundary split
+		 * does not turn a two-second cadence into four seconds. UCI is retained
+		 * from the first round and a persistent split still falls back safely. */
+		var uciResult = results.filter(function(result) { return result.key === 'uci'; })[0];
+		return Promise.all(LIVE_SOURCE_KEYS.map(function(key) {
+			return sourceSettled(key, loaders[key], next, clock);
+		})).then(function(retried) {
+			if (uciResult) retried.push(uciResult);
+			var recovered = aggregateResults(retried, startedAt);
+			return alignLiveSamples(recovered, previous);
+		});
 	});
 }
 

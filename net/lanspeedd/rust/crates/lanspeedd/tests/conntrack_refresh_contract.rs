@@ -10,7 +10,7 @@ use lanspeedd::{
         apply_conntrack_failure, apply_conntrack_success, before_reply_action,
         client_conntrack_plan, periodic_conntrack_plan, BeforeReplyAction, ClientConntrackPlan,
         ConntrackObservation, ConntrackObservationState, PeriodicConntrackPlan,
-        CLIENT_CONNTRACK_CACHE_TTL_MS,
+        CLIENT_CONNTRACK_CACHE_TTL_MS, NSS_CLIENT_CONNTRACK_CACHE_TTL_MS,
     },
     model::{Client, OverviewResponse, OverviewSample},
     policy::RateCollector,
@@ -152,24 +152,43 @@ fn periodic_conntrack_is_not_part_of_any_rate_source() {
 #[test]
 fn client_conntrack_cache_reuses_only_a_fresh_available_snapshot() {
     assert_eq!(CLIENT_CONNTRACK_CACHE_TTL_MS, 1_000);
+    assert_eq!(NSS_CLIENT_CONNTRACK_CACHE_TTL_MS, 1_900);
     assert_eq!(
-        client_conntrack_plan(10_999, Some(10_000), true),
+        client_conntrack_plan(10_999, Some(10_000), true, CLIENT_CONNTRACK_CACHE_TTL_MS),
         ClientConntrackPlan::ReuseCached
     );
     assert_eq!(
-        client_conntrack_plan(11_000, Some(10_000), true),
+        client_conntrack_plan(11_000, Some(10_000), true, CLIENT_CONNTRACK_CACHE_TTL_MS),
         ClientConntrackPlan::Read
     );
     assert_eq!(
-        client_conntrack_plan(10_999, Some(10_000), false),
+        client_conntrack_plan(10_999, Some(10_000), false, CLIENT_CONNTRACK_CACHE_TTL_MS),
         ClientConntrackPlan::Read
     );
     assert_eq!(
-        client_conntrack_plan(9_999, Some(10_000), true),
+        client_conntrack_plan(9_999, Some(10_000), true, CLIENT_CONNTRACK_CACHE_TTL_MS),
         ClientConntrackPlan::Read
     );
     assert_eq!(
-        client_conntrack_plan(10_000, None, true),
+        client_conntrack_plan(10_000, None, true, CLIENT_CONNTRACK_CACHE_TTL_MS),
+        ClientConntrackPlan::Read
+    );
+    assert_eq!(
+        client_conntrack_plan(
+            11_899,
+            Some(10_000),
+            true,
+            NSS_CLIENT_CONNTRACK_CACHE_TTL_MS,
+        ),
+        ClientConntrackPlan::ReuseCached
+    );
+    assert_eq!(
+        client_conntrack_plan(
+            11_900,
+            Some(10_000),
+            true,
+            NSS_CLIENT_CONNTRACK_CACHE_TTL_MS,
+        ),
         ClientConntrackPlan::Read
     );
 }

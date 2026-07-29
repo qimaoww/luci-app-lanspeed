@@ -27,12 +27,20 @@ var REFRESH_CHOICES = [
 	{ value: 10000, label: '10s' }
 ];
 
+var NSS_REFRESH_CHOICES = [
+	{ value:  2000, label: '2s'  },
+	{ value:  4000, label: '4s'  },
+	{ value:  8000, label: '8s'  },
+	{ value: 10000, label: '10s' }
+];
+
 var PAGE_SIZE_CHOICES = [ 10, 25, 50, 100 ];
 
 var SORT_KEYS = [ 'hostname', 'mac', 'tx', 'rx', 'tcp_conns', 'udp_conns' ];
 
 var DEFAULT_PREFS = {
 	refreshMs: 3000,
+	nssRefreshMs: NSS_REFRESH_MS,
 	unit: 'bit',
 	activeOnly: false,
 	sortKey: 'rx',
@@ -54,13 +62,20 @@ function effectiveRateCollector(status) {
 	return String(evidence.effective_collector || collector.primary_source || 'unsupported');
 }
 
-function nssRefreshLocked(status) {
+function nssRefreshRestricted(status) {
 	var effective = effectiveRateCollector(status);
 	return effective === 'nss_ecm_node' || effective === 'nss_ecm_bpf';
 }
 
+function normalizeNssRefreshMs(value) {
+	var refreshMs = Number(value);
+	return NSS_REFRESH_CHOICES.some(function(choice) { return choice.value === refreshMs; })
+		? refreshMs : NSS_REFRESH_MS;
+}
+
 function effectiveRefreshMs(status, prefs) {
-	if (nssRefreshLocked(status)) return NSS_REFRESH_MS;
+	if (nssRefreshRestricted(status))
+		return normalizeNssRefreshMs(prefs && prefs.nssRefreshMs);
 	return Math.max(MIN_REFRESH_MS,
 		Number(prefs && prefs.refreshMs) || DEFAULT_PREFS.refreshMs);
 }
@@ -256,6 +271,7 @@ function loadPrefs() {
 			prefs.sortKey = DEFAULT_PREFS.sortKey;
 			prefs.sortDir = DEFAULT_PREFS.sortDir;
 		}
+		prefs.nssRefreshMs = normalizeNssRefreshMs(prefs.nssRefreshMs);
 		prefs.pageSize = normalizePageSize(prefs.pageSize);
 		return prefs;
 	} catch (e) { return Object.assign({}, DEFAULT_PREFS); }
@@ -269,6 +285,7 @@ return baseclass.extend({
 	PREF_KEY:                  PREF_KEY,
 	MIN_REFRESH_MS:            MIN_REFRESH_MS,
 	NSS_REFRESH_MS:            NSS_REFRESH_MS,
+	NSS_REFRESH_CHOICES:       NSS_REFRESH_CHOICES,
 	ACTIVE_CLIENT_WINDOW_MS:   ACTIVE_CLIENT_WINDOW_MS,
 	ACTIVE_CLIENT_MIN_BPS:     ACTIVE_CLIENT_MIN_BPS,
 	DELTA_SIGNIFICANT_RATIO:   DELTA_SIGNIFICANT_RATIO,
@@ -277,7 +294,8 @@ return baseclass.extend({
 	PAGE_SIZE_CHOICES:         PAGE_SIZE_CHOICES,
 	SORT_KEYS:                 SORT_KEYS,
 	DEFAULT_PREFS:             DEFAULT_PREFS,
-	nssRefreshLocked:          nssRefreshLocked,
+	nssRefreshRestricted:      nssRefreshRestricted,
+	normalizeNssRefreshMs:     normalizeNssRefreshMs,
 	effectiveRateCollector:    effectiveRateCollector,
 	effectiveRefreshMs:        effectiveRefreshMs,
 

@@ -6,6 +6,8 @@
 function buildShell(viewState) {
 	var refs = {};
 	var prefs = viewState.prefs || {};
+	var refreshValue = typeof viewState.effectiveRefreshMs === 'function'
+		? viewState.effectiveRefreshMs() : prefs.refreshMs;
 	refs.sortHeaders = {};
 
 	var sortableHeader = function(sortKey, label, attrs) {
@@ -196,10 +198,11 @@ function buildShell(viewState) {
 	});
 	refs.intervalSel = E('select', {
 		'class': 'cbi-input-select lanspeed-connection-interval',
-		'aria-label': _('刷新')
+		'aria-label': _('刷新'),
+		'data-refresh-policy': viewState.refreshPolicy || 'default'
 	}, (viewState.refreshChoices || []).map(function(choice) {
 		var attrs = { 'value': String(choice.value) };
-		if (Number(choice.value) === Number(viewState.prefs.refreshMs))
+		if (Number(choice.value) === Number(refreshValue))
 			attrs.selected = 'selected';
 		return E('option', attrs, choice.label);
 	}));

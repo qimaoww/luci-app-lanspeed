@@ -6,6 +6,34 @@
 var CONNECTION_PAGE_SIZE = 100;
 var LAZY_DETAIL_THRESHOLD = 32;
 
+function effectiveRefreshMs(viewState) {
+	return typeof viewState.effectiveRefreshMs === 'function'
+		? viewState.effectiveRefreshMs()
+		: Number(viewState.prefs && viewState.prefs.refreshMs) || 3000;
+}
+
+function refreshIntervalControl(viewState, refs) {
+	if (!refs || !refs.intervalSel) return;
+	var choices = viewState.refreshChoices || [];
+	var restricted = typeof fmt.nssRefreshRestricted === 'function' &&
+		fmt.nssRefreshRestricted(viewState.status);
+	var policy = restricted ? 'nss' : 'default';
+	if (refs.intervalSel.getAttribute('data-refresh-policy') !== policy) {
+		while (refs.intervalSel.firstChild)
+			refs.intervalSel.removeChild(refs.intervalSel.firstChild);
+		choices.forEach(function(choice) {
+			refs.intervalSel.appendChild(fmt.opt(
+				choice.value,
+				choice.label,
+				Number(choice.value) === Number(effectiveRefreshMs(viewState))
+			));
+		});
+		refs.intervalSel.setAttribute('data-refresh-policy', policy);
+	}
+	refs.intervalSel.value = String(effectiveRefreshMs(viewState));
+	refs.intervalSel.disabled = viewState.manualLoading === true;
+}
+
 function replaceRows(tbody, rows) {
 	var activeRow = document.activeElement;
 	var activeRemoteIp = activeRow && activeRow.parentNode === tbody
@@ -365,7 +393,7 @@ function render(viewState) {
 		: [];
 	groups = clientConnections.sortGroups(groups, viewState.sortKey, viewState.sortDir);
 	var pageSize = Number(viewState.pageSize);
-	var interval = viewState.prefs && viewState.prefs.refreshMs;
+	var interval = effectiveRefreshMs(viewState);
 	if (!isFinite(pageSize) || pageSize < 1)
 		pageSize = CONNECTION_PAGE_SIZE;
 	pageSize = Math.max(1, Math.floor(pageSize));
@@ -423,10 +451,7 @@ function render(viewState) {
 	protocolButton(refs.protocolUdp, viewState.protocol === 'udp');
 	refreshSortHeaders(refs, viewState);
 	refs.filter.value = viewState.filter || '';
-	if (refs.intervalSel) {
-		refs.intervalSel.value = String(interval);
-		refs.intervalSel.disabled = viewState.manualLoading === true;
-	}
+	refreshIntervalControl(viewState, refs);
 	refs.refresh.disabled = viewState.manualLoading === true;
 	refs.refresh.setAttribute('aria-busy',
 		viewState.manualLoading === true ? 'true' : 'false');
