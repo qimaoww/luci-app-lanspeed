@@ -1055,6 +1055,7 @@ fn alert_component(id: &str) -> &'static str {
 
 fn alert_severity(id: &str, live_metrics: bool) -> &'static str {
     match id {
+        "nss_ecm_bpf_active" | "nss_ecm_bpf_disjoint_ownership" => "info",
         "live_metrics_unavailable"
         | "no_collect_interface"
         | "package_missing"
@@ -1205,6 +1206,26 @@ mod diagnostics_tests {
             .alerts
             .iter()
             .any(|alert| alert.id == "collection_stale"));
+    }
+
+    #[test]
+    fn ecm_bpf_operational_status_is_informational() {
+        let mut snapshot = ResponseSnapshot::unsupported("test");
+        snapshot.status.capabilities.live_metrics = true;
+        snapshot.status.warnings = vec![
+            "nss_ecm_bpf_active".into(),
+            "nss_ecm_bpf_disjoint_ownership".into(),
+        ];
+
+        let diagnostics = snapshot.diagnostics_at(0);
+        for id in ["nss_ecm_bpf_active", "nss_ecm_bpf_disjoint_ownership"] {
+            let alert = diagnostics
+                .alerts
+                .iter()
+                .find(|alert| alert.id == id)
+                .unwrap_or_else(|| panic!("missing {id} alert"));
+            assert_eq!(alert.severity, "info");
+        }
     }
 
     #[test]

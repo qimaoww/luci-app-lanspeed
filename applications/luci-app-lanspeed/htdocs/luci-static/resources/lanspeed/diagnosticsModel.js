@@ -1027,6 +1027,12 @@ function pathStateWithRpc(viewState) {
 	var base = contractPathState(viewState) || dataPathState(viewState && viewState.status, viewState && viewState.clients);
 	var clients = rpcState(viewState, 'clients'), status = rpcState(viewState, 'status'), health = rpcState(viewState, 'health');
 	var result = Object.assign({}, base, { rpc: { clients: clients.state, status: status.state, health: health.state } });
+	var collectorEvidence = viewState && viewState.status && viewState.status.evidence &&
+		viewState.status.evidence.collector || {};
+	var effectiveInterval = finiteNumber(collectorEvidence.effective_interval_ms);
+	if ((result.rateSource === 'nss_ecm_node' || result.rateSource === 'nss_ecm_bpf') &&
+		effectiveInterval !== null && effectiveInterval >= 500)
+		result.meta += ' · ' + _('数据周期 %s').format(formatDuration(effectiveInterval));
 	if ([ clients, status, health ].some(function(item) { return item.state === 'failed' || item.state === 'invalid' || item.state === 'missing'; })) {
 		result.state = clients.state === 'failed' || clients.state === 'invalid' || clients.state === 'missing' ? 'bad' : worseState(result.state, 'warning');
 		result.badge = result.state === 'bad' ? _('不可用') : _('未完全确认');

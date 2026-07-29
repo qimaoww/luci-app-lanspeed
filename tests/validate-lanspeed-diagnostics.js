@@ -435,6 +435,20 @@ async function testResourceStateMachine() {
   assert.strictEqual(good.pageState, 'ready');
   model.RPC_KEYS.forEach((key) => assert([ 'success', 'degraded', 'empty' ].includes(good.resources[key].phase)));
 
+  const nssCadence = payloads();
+  nssCadence.diagnostics.data_path.effective_rate = 'nss_ecm_bpf';
+  nssCadence.diagnostics.data_path.reason_code = 'nss_ecm_bpf_primary';
+  nssCadence.status.evidence.effective_collector = 'nss_ecm_bpf';
+  nssCadence.status.evidence.collector.primary_source = 'nss_ecm_bpf';
+  nssCadence.status.evidence.collector.rate_reason = 'nss_ecm_bpf_primary';
+  nssCadence.status.evidence.collector.effective_interval_ms = 2000;
+  nssCadence.diagnostics.collection.refresh_interval_ms = 2000;
+  const nssCadenceState = model.normalizeResults(await settled(nssCadence), null, 10200, 2);
+  assert(model.pathStateWithRpc(nssCadenceState).meta.includes('数据周期 2 秒'),
+    'NSS diagnostics must expose the effective two-second collector cadence');
+  assert(model.contractCollectionState(nssCadenceState).meta.includes('刷新间隔 2 秒'),
+    'NSS diagnostics collection state must expose the effective two-second timer');
+
   const nssVisibilityLimited = payloads();
   nssVisibilityLimited.status.mode = 'Degraded';
   nssVisibilityLimited.status.confidence = 'low';

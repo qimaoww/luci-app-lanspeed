@@ -131,16 +131,26 @@ impl CoordinatorState {
         self.snapshots.publish(snapshot);
     }
 
-    pub fn publish_collection_success(&self, mut snapshot: ResponseSnapshot, now_ms: u64) {
+    pub fn publish_collection_success(
+        &self,
+        mut snapshot: ResponseSnapshot,
+        now_ms: u64,
+        collection_interval_ms: u32,
+    ) {
         let generation = self.snapshot().diagnostic_generation().saturating_add(1);
-        snapshot.mark_collection_success(generation, now_ms, self.config.refresh_interval_ms);
+        snapshot.mark_collection_success(generation, now_ms, collection_interval_ms);
         snapshot.set_config_issues(&self.config);
         self.publish(Arc::new(snapshot));
     }
 
-    pub fn publish_collection_failure(&self, now_ms: u64, error: &DaemonError) {
+    pub fn publish_collection_failure(
+        &self,
+        now_ms: u64,
+        collection_interval_ms: u32,
+        error: &DaemonError,
+    ) {
         let mut retained = self.snapshot().as_ref().clone();
-        retained.mark_collection_failure(now_ms, self.config.refresh_interval_ms, error);
+        retained.mark_collection_failure(now_ms, collection_interval_ms, error);
         retained.set_config_issues(&self.config);
         self.publish(Arc::new(retained));
     }
@@ -155,9 +165,10 @@ impl CoordinatorState {
         config: RuntimeConfig,
         mut snapshot: ResponseSnapshot,
         now_ms: u64,
+        collection_interval_ms: u32,
     ) {
         let generation = self.snapshot().diagnostic_generation().saturating_add(1);
-        snapshot.mark_collection_success(generation, now_ms, config.refresh_interval_ms);
+        snapshot.mark_collection_success(generation, now_ms, collection_interval_ms);
         snapshot.set_config_issues(&config);
         self.config = config;
         self.snapshots.publish(Arc::new(snapshot));
@@ -232,8 +243,8 @@ pub fn activate_runtime<R: Runtime>(
         Ok(snapshot) => {
             let previous = state.snapshot();
             let now_ms = diagnostic_now_ms(snapshot.interfaces.monotonic_ms.unwrap_or(0));
-            state.publish_collection_success(snapshot, now_ms);
             let interval = runtime.collection_interval_ms(state.config().refresh_interval_ms);
+            state.publish_collection_success(snapshot, now_ms, interval);
             if let Err(error) = schedule_collection(interval) {
                 state.publish(previous);
                 return match runtime.shutdown() {
@@ -273,13 +284,15 @@ pub fn collect_and_reschedule<R: Runtime>(
     let collection_error = match runtime.collect() {
         Ok(snapshot) => {
             let now_ms = diagnostic_now_ms(snapshot.interfaces.monotonic_ms.unwrap_or(0));
-            state.publish_collection_success(snapshot, now_ms);
+            let interval = runtime.collection_interval_ms(state.config().refresh_interval_ms);
+            state.publish_collection_success(snapshot, now_ms, interval);
             None
         }
         Err(error) => {
             runtime.restore(checkpoint);
             let fallback = state.snapshot().interfaces.monotonic_ms.unwrap_or(0);
-            state.publish_collection_failure(diagnostic_now_ms(fallback), &error);
+            let interval = runtime.collection_interval_ms(state.config().refresh_interval_ms);
+            state.publish_collection_failure(diagnostic_now_ms(fallback), interval, &error);
             Some(error)
         }
     };
@@ -362,9 +375,10 @@ pub fn commit_reload<R: Runtime>(
     let mut old = runtime
         .take()
         .expect("runtime checked before reload staging");
+    let collection_interval_ms = candidate.collection_interval_ms(config.refresh_interval_ms);
     *runtime = Some(candidate);
     let now_ms = diagnostic_now_ms(snapshot.interfaces.monotonic_ms.unwrap_or(0));
-    state.commit_collection(config, snapshot, now_ms);
+    state.commit_collection(config, snapshot, now_ms, collection_interval_ms);
     if let Err(cleanup) = old.shutdown() {
         let message = format!("reload committed; postcommit old runtime cleanup failed: {cleanup}");
         state.record_fatal(message.clone());
@@ -492,11 +506,14 @@ impl<T: Transport, F: RuntimeFactory> ProductionCoordinator<T, F> {
                 ));
             }
         };
-        if let Err(error) = self
-            .transport
-            .schedule_collection(config.refresh_interval_ms)
-        {
-            let old_interval = self.state.config().refresh_interval_ms;
+        let old_interval = self
+            .runtime
+            .as_ref()
+            .map_or(self.state.config().refresh_interval_ms, |runtime| {
+                runtime.collection_interval_ms(self.state.config().refresh_interval_ms)
+            });
+        let new_interval = candidate.collection_interval_ms(config.refresh_interval_ms);
+        if let Err(error) = self.transport.schedule_collection(new_interval) {
             return Err(abort_reload_after_timer_failure(
                 &self.state,
                 &mut candidate,

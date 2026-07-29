@@ -107,6 +107,17 @@ const INTERNAL_BPF_SELF_HEAL_REASON: &str = "production.collect.internal";
 const EXTERNAL_BPF_SELF_HEAL_REASON: &str = "production.collect.external";
 const INTERFACE_NOTE: &str = "Per-interface totals from one kernel net-device pass with sysfs fallback; reflect hardware-offloaded and hardware-switched traffic too.";
 
+fn retain_collector_warnings(warnings: &mut Vec<String>, rate: RateCollector) {
+    if rate == RateCollector::NssEcmBpf {
+        warnings.retain(|warning| {
+            !matches!(
+                warning.as_str(),
+                "flowtable_counter_probe_unavailable" | "flowtable_counter_missing"
+            )
+        });
+    }
+}
+
 type Bpf = BpfRuntime<SystemAyaLink>;
 
 fn nss_tc_snapshot(snapshot: &BpfSnapshot) -> NssTcSnapshot {
@@ -1029,6 +1040,7 @@ impl ProductionRuntime {
                 warnings.push((*warning).into());
             }
         }
+        retain_collector_warnings(&mut warnings, decision.rate);
         if capabilities.bpf_runtime_metrics {
             warnings.retain(|warning| {
                 !matches!(
@@ -2229,6 +2241,8 @@ fn apply_decision_evidence(
     evidence
         .details
         .insert("effective_collector".into(), json!(effective));
+    let effective_interval_ms =
+        effective_collection_interval_ms(Some(decision.rate), config.refresh_interval_ms);
     if let Some(collector) = evidence
         .details
         .get_mut("collector")
@@ -2247,6 +2261,7 @@ fn apply_decision_evidence(
         collector.insert("mode".into(), json!(decision.mode.as_str()));
         collector.insert("confidence".into(), json!(decision.confidence.as_str()));
         collector.insert("warnings".into(), json!(decision.warnings));
+        collector.insert("effective_interval_ms".into(), json!(effective_interval_ms));
     }
     evidence.details.insert(
         "nss".into(),
@@ -2504,6 +2519,22 @@ mod tests {
             RuntimeConfig::default(),
             Arc::new(ResponseSnapshot::unsupported("test")),
         )
+    }
+
+    #[test]
+    fn ecm_bpf_ignores_flowtable_warnings_owned_by_other_offload_paths() {
+        let original = vec![
+            "flowtable_counter_probe_unavailable".to_owned(),
+            "flowtable_counter_missing".to_owned(),
+            "nss_ecm_bpf_active".to_owned(),
+        ];
+        let mut ecm_bpf = original.clone();
+        retain_collector_warnings(&mut ecm_bpf, RateCollector::NssEcmBpf);
+        assert_eq!(ecm_bpf, ["nss_ecm_bpf_active"]);
+
+        let mut bpf = original.clone();
+        retain_collector_warnings(&mut bpf, RateCollector::Bpf);
+        assert_eq!(bpf, original);
     }
 
     #[test]

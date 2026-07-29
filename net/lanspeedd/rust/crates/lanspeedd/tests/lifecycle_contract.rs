@@ -90,6 +90,7 @@ struct FakeRuntime {
     fail_collect: bool,
     fail_shutdown: bool,
     cycles: u64,
+    interval_override: Option<u32>,
 }
 impl Runtime for FakeRuntime {
     type Checkpoint = u64;
@@ -108,6 +109,9 @@ impl Runtime for FakeRuntime {
         let mut snapshot = ResponseSnapshot::unsupported(format!("v{}", self.generation));
         snapshot.status.refresh_interval_ms = 500 + self.generation as u32;
         Ok(snapshot)
+    }
+    fn collection_interval_ms(&self, configured_ms: u32) -> u32 {
+        self.interval_override.unwrap_or(configured_ms)
     }
     fn shutdown(&mut self) -> Result<(), DaemonError> {
         self.events
@@ -247,6 +251,7 @@ impl RuntimeFactory for FakeFactory {
             fail_collect: self.next_fail_collect,
             fail_shutdown: self.next_fail_shutdown,
             cycles: 0,
+            interval_override: None,
         };
         self.next_fail_collect = false;
         self.next_fail_shutdown = false;
@@ -368,6 +373,7 @@ fn activation_publishes_before_timer_and_rolls_back_exact_arc_on_timer_failure()
         fail_collect: false,
         fail_shutdown: false,
         cycles: 0,
+        interval_override: None,
     };
     let error = activate_runtime(
         &state,
@@ -398,6 +404,7 @@ fn signal_install_failure_cleans_runtime_then_transport_and_combines_cleanup_err
         fail_collect: false,
         fail_shutdown: false,
         cycles: 0,
+        interval_override: None,
     };
     let error = install_control_or_shutdown(
         Some(&mut runtime),
@@ -420,6 +427,7 @@ fn signal_install_failure_cleans_runtime_then_transport_and_combines_cleanup_err
         fail_collect: false,
         fail_shutdown: true,
         cycles: 0,
+        interval_override: None,
     };
     let error = install_control_or_shutdown(
         Some(&mut runtime),
@@ -510,6 +518,22 @@ fn collection_tick_retains_payload_and_publishes_degraded_diagnostics_on_failure
     assert!(events
         .values()
         .ends_with(&["collect:1".into(), "collection_timer:1000".into()]));
+}
+
+#[test]
+fn diagnostics_publish_the_effective_runtime_collection_interval() {
+    let events = Events::default();
+    let mut daemon = daemon(events.clone());
+    daemon.start().unwrap();
+    daemon.runtime_mut().unwrap().interval_override = Some(2_000);
+
+    daemon.on_collection_tick().unwrap();
+
+    let diagnostics = daemon.response(Method::Diagnostics).unwrap();
+    assert_eq!(diagnostics["collection"]["refresh_interval_ms"], 2_000);
+    assert!(events
+        .values()
+        .ends_with(&["collect:1".into(), "collection_timer:2000".into()]));
 }
 
 #[test]
@@ -609,6 +633,7 @@ fn shared_collection_path_makes_timer_failure_fatal_without_masking_collection_e
         fail_collect: true,
         fail_shutdown: false,
         cycles: 0,
+        interval_override: None,
     };
     let stop_requested = Cell::new(false);
 
@@ -773,6 +798,7 @@ fn shared_reload_abort_path_restores_old_timer_and_combines_cleanup_failures() {
         fail_collect: false,
         fail_shutdown: true,
         cycles: 0,
+        interval_override: None,
     };
     let stop_requested = Cell::new(false);
 
