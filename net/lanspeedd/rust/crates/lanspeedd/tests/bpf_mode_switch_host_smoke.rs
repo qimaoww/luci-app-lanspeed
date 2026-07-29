@@ -3,7 +3,7 @@ use std::{
     process::{Command, Output},
 };
 
-use lanspeedd::collectors::bpf::runtime::{AttachMode, AyaAdapter, BpfRuntime, SystemAyaAdapter};
+use lanspeedd::platform::x86::runtime::{AttachMode, AyaAdapter, BpfRuntime, SystemAyaAdapter};
 
 struct TestNetwork {
     host: String,
@@ -59,7 +59,7 @@ fn object_paths() -> (PathBuf, PathBuf) {
 
 fn load_runtime(
     adapter: &mut SystemAyaAdapter,
-) -> BpfRuntime<lanspeedd::collectors::bpf::runtime::SystemAyaLink> {
+) -> BpfRuntime<lanspeedd::platform::x86::runtime::SystemAyaLink> {
     let (primary, fallback) = object_paths();
     assert!(primary.is_file(), "missing {}", primary.display());
     assert!(fallback.is_file(), "missing {}", fallback.display());

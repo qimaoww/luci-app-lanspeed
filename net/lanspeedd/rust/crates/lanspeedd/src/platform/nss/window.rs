@@ -1,4 +1,4 @@
-use crate::collectors::ecm_node::{NodeSnapshot, TrafficCounters};
+use crate::platform::{counters::TrafficCounters, nss::ecm_node::NodeSnapshot};
 use std::collections::{BTreeMap, VecDeque};
 
 const NODE_BASELINE_RETENTION_MS: u64 = 60_000;
@@ -1604,7 +1604,7 @@ fn percentage(numerator: u64, denominator: u64) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collectors::ecm_node::{NodeCounters, ParseStats};
+    use crate::platform::nss::ecm_node::{NodeCounters, ParseStats};
 
     fn traffic(tx_bytes: u64, rx_bytes: u64, tx_packets: u64, rx_packets: u64) -> TrafficCounters {
         TrafficCounters {

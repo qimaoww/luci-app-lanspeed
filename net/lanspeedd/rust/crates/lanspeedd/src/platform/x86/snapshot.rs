@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use lanspeed_common::{LanspeedCounters, LanspeedKey, DIR_RX, DIR_TX};
 
 use crate::{
-    collectors::ecm_node::TrafficCounters,
     identity::{filter, IdentityTable},
+    platform::counters::TrafficCounters,
     rate::{ClientCounters, RateBook, RateWarning},
 };
 

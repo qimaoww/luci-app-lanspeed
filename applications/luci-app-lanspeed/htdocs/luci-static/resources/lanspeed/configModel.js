@@ -149,7 +149,7 @@ function parseInterfaceList(value) {
 	var seen = {};
 	raw.forEach(function(item) {
 		var name = trimAscii(item);
-		/* A scalar UCI list is one value; accept whitespace-separated legacy text. */
+		/* A scalar UCI list is one value; accept whitespace-separated compatibility input. */
 		if (raw.length === 1 && typeof value === 'string' && /[\s,]/.test(name)) {
 			name.split(/[\s,]+/).filter(Boolean).forEach(function(part) {
 				if (!seen[part]) {
@@ -318,7 +318,7 @@ function normalize(raw) {
 	if (values.interface_exclude.length > MAX_INTERFACE_NAMES)
 		errors.interface_exclude = 'too_many_interfaces';
 
-	/* Legacy field is written from the split rate mode but remains visible as a compatibility fact. */
+	/* collector_mode mirrors the split rate mode as a compatibility fact. */
 	if ([ 'bpf', 'nss_ecm_node', 'nss_ecm_bpf' ].indexOf(values.rate_collector_mode) !== -1)
 		values.collector_mode = values.rate_collector_mode;
 	else if (values.conn_collector_mode !== 'auto' && values.rate_collector_mode === 'auto')

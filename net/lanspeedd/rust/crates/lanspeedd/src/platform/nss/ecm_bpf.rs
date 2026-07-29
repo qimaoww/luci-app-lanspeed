@@ -16,9 +16,9 @@ use lanspeed_common::{
 };
 
 use crate::{
-    collectors::ecm_node::TrafficCounters,
     identity::{ClientIdentity, IdentityTable},
     merge_split_btf,
+    platform::counters::TrafficCounters,
 };
 
 pub const ECM_BTF_PATH: &str = "/sys/kernel/btf/ecm";

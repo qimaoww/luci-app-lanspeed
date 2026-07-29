@@ -933,7 +933,7 @@ fn build_evidence(
         exit_code: Some(o.commands.flowtable_exit_code),
         supported: Some(facts.files.flowtable_counter),
         summary: Some(
-            "legacy evidence alias; canonical source is command:nft_list_flowtables".into(),
+            "compatibility evidence alias; canonical source is command:nft_list_flowtables".into(),
         ),
     });
     let mut tc_seen = Vec::new();
@@ -989,12 +989,12 @@ fn build_evidence(
             None,
         ),
         (
-            crate::collectors::bpf::runtime::PRIMARY_OBJECT_PATH,
+            crate::platform::x86::runtime::PRIMARY_OBJECT_PATH,
             o.bpf.object,
             None,
         ),
         (
-            crate::collectors::bpf::runtime::FALLBACK_OBJECT_PATH,
+            crate::platform::x86::runtime::FALLBACK_OBJECT_PATH,
             o.bpf.object,
             None,
         ),

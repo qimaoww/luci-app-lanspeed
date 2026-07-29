@@ -48,7 +48,7 @@ pub struct Capabilities {
     /// configured. This deliberately does not mean that the current runtime
     /// has successfully attached hooks or read a map.
     pub bpf_supported: bool,
-    /// Legacy runtime alias retained for clients that still consume `bpf`.
+    /// Compatibility capability field mirroring the active BPF runtime state.
     /// Production sets it to the current BPF live-metrics state.
     pub bpf: bool,
     pub bpf_package: bool,

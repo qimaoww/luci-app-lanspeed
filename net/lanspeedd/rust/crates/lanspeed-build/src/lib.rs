@@ -49,6 +49,13 @@ impl BpfTargetArch {
     const fn builds_ecm(self) -> bool {
         matches!(self, Self::Aarch64)
     }
+
+    const fn tc_feature(self) -> &'static str {
+        match self {
+            Self::Aarch64 => "nss-tc",
+            Self::X86_64 => "x86-tc",
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -114,12 +121,13 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
             let target_arch = BpfTargetArch::parse(
                 &env::var_os(BPF_TARGET_ARCH_ENV).ok_or(BuildError::MissingBpfTargetArch)?,
             )?;
+            let kfunc_features = format!("{},conntrack-kfunc", target_arch.tc_feature());
             let kfunc = build_ebpf_variant(
                 &cargo,
                 &workspace,
                 &target_dir,
                 "kfunc",
-                "tc,conntrack-kfunc",
+                &kfunc_features,
                 target_arch,
             )?;
             let fallback = build_ebpf_variant(
@@ -127,7 +135,7 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
                 &workspace,
                 &target_dir,
                 "fallback",
-                "tc",
+                target_arch.tc_feature(),
                 target_arch,
             )?;
             let output_dir = target_dir.join("bpfel-unknown-none/release");
@@ -142,7 +150,7 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
                     &workspace,
                     &target_dir,
                     "ecm-aarch64",
-                    "ecm",
+                    "nss-ecm",
                     target_arch,
                 )?;
                 fs::copy(ecm, ecm_output)?;

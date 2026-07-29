@@ -1,6 +1,17 @@
 {
   "source": "lanspeedd_collectors",
-  "version": 8,
+  "version": 10,
+  "module_boundaries": {
+    "shared_counters": "rust/crates/lanspeedd/src/platform/counters.rs",
+    "x86_userspace": "rust/crates/lanspeedd/src/platform/x86",
+    "nss_userspace": "rust/crates/lanspeedd/src/platform/nss",
+    "x86_ebpf": "rust/crates/lanspeed-ebpf/src/x86",
+    "nss_ebpf": "rust/crates/lanspeed-ebpf/src/nss",
+    "x86_depends_on_nss": false,
+    "nss_depends_on_x86": false,
+    "tc_snapshot_bridge": "production_explicit_value_copy_to_nss_owned_contract",
+    "production_role": "collector_selection_and_shared_rpc_publication"
+  },
   "platform_matrix": {
     "x86_64": {
       "schemes": ["bpf"],
@@ -36,7 +47,14 @@
     "coverage_can_block_rate": false
   },
   "bpf_model": {
-    "source": "rust/crates/lanspeed-ebpf/src/main.rs",
+    "source_by_platform": {
+      "x86_64": "rust/crates/lanspeed-ebpf/src/x86/account.rs",
+      "aarch64_nss": "rust/crates/lanspeed-ebpf/src/nss/account.rs"
+    },
+    "feature_by_platform": {
+      "x86_64": "x86-tc",
+      "aarch64_nss": "nss-tc"
+    },
     "runtime_objects": [
       "/usr/lib/bpf/lanspeed-ebpf-kfunc",
       "/usr/lib/bpf/lanspeed-ebpf-fallback"
@@ -89,6 +107,9 @@
   },
   "ecm_bpf_model": {
     "collector_mode": "nss_ecm_bpf",
+    "userspace_source": "rust/crates/lanspeedd/src/platform/nss/ecm_bpf.rs",
+    "program_source": "rust/crates/lanspeed-ebpf/src/nss/mod.rs",
+    "tc_program_source": "rust/crates/lanspeed-ebpf/src/nss/account.rs",
     "object": "/usr/lib/bpf/lanspeed-ebpf-ecm",
     "object_role": "isolated_nss_hardware_context_kprobe",
     "tc_bpf_object": "/usr/lib/bpf/lanspeed-ebpf-fallback",

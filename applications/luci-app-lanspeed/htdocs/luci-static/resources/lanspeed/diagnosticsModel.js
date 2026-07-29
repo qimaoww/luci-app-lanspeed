@@ -807,6 +807,10 @@ function formatDuration(value) {
 	if (milliseconds < 60000) return _('%s 秒').format(String(Math.round(milliseconds / 100) / 10));
 	return _('%s 分钟').format(String(Math.round(milliseconds / 6000) / 10));
 }
+function sampleAge(clockValue, sampleValue) {
+	var clock = finiteNumber(clockValue), sample = finiteNumber(sampleValue);
+	return clock === null || sample === null || sample > clock ? null : clock - sample;
+}
 function formatPercent(value) {
 	var number = finiteNumber(value);
 	return number === null ? '-' : String(Math.round(number * 10) / 10) + '%';
@@ -1059,11 +1063,13 @@ function contractInterfaceState(viewState, fallback) {
 	if (!contract.usable) return null;
 	var summary = contract.data.interfaces, state = summary.state === 'healthy' ? 'good' :
 		(summary.state === 'degraded' ? 'warning' : 'bad');
+	var age = sampleAge(viewState && viewState.interfaces && viewState.interfaces.monotonic_ms,
+		summary.sample_ms);
 	if (contract.retained && state === 'good') state = 'warning';
 	return { state: state, badge: state === 'good' ? _('%d 个可用').format(summary.available) :
 		(state === 'bad' ? _('接口不可用') : _('接口降级')), value: _('%d / %d').format(summary.available, summary.total),
 		description: summary.missing ? _('%d 个接口缺失或不可用。').format(summary.missing) : _('接口汇总来自诊断契约。'),
-		meta: summary.sample_ms === null ? _('尚无接口采样时间') : _('采样 %s').format(formatDuration(summary.sample_ms)),
+		meta: age === null ? _('尚无接口采样时间') : _('采样 %s').format(formatDuration(age)),
 		items: fallback && Array.isArray(fallback.items) ? fallback.items : [], available: summary.available,
 		pending: 0, bad: summary.missing, excluded: 0, unknown: 0, total: summary.total };
 }
@@ -1421,7 +1427,8 @@ return baseclass.extend({
 			mode: contract.data.collection.state === 'fresh' ? 'Full' : 'Degraded', confidence: contract.data.collection.state === 'fresh' ? 'high' : 'low',
 			collector: contract.data.data_path.effective_rate, capabilities: source.capabilities || fallback.capabilities || {} } : {});
 	},
-	formatDuration: formatDuration, formatPercent: formatPercent, sampleClock: sampleClock, assessProgress: assessProgress,
+	formatDuration: formatDuration, sampleAge: sampleAge, formatPercent: formatPercent,
+	sampleClock: sampleClock, assessProgress: assessProgress,
 	coverageState: coverageState, freshnessState: freshnessState, qualityState: qualityState,
 	dataPathState: dataPathState, connectionState: connectionState, interfaceState: interfaceState,
 	versionState: versionState, pathStateWithRpc: pathStateWithRpc, connectionStateWithRpc: connectionStateWithRpc,

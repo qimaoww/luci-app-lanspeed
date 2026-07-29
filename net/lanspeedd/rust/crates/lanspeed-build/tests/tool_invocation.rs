@@ -278,9 +278,9 @@ for arg
 do
     if [ "$previous" = '--features' ]; then
         case "$arg" in
-            tc,conntrack-kfunc) flavor=kfunc ;;
-            tc) flavor=fallback ;;
-            ecm) flavor=ecm ;;
+            x86-tc,conntrack-kfunc|nss-tc,conntrack-kfunc) flavor=kfunc ;;
+            x86-tc|nss-tc) flavor=fallback ;;
+            nss-ecm) flavor=ecm ;;
             *) exit 90 ;;
         esac
     fi
@@ -335,10 +335,10 @@ exit 0
     assert!(has_pair(
         &invocations[0].args,
         "--features",
-        "tc,conntrack-kfunc"
+        "nss-tc,conntrack-kfunc"
     ));
-    assert!(has_pair(&invocations[1].args, "--features", "tc"));
-    assert!(has_pair(&invocations[2].args, "--features", "ecm"));
+    assert!(has_pair(&invocations[1].args, "--features", "nss-tc"));
+    assert!(has_pair(&invocations[2].args, "--features", "nss-ecm"));
 
     let target_dirs = invocations
         .iter()
@@ -402,8 +402,8 @@ exit 0
         .iter()
         .all(|invocation| invocation.aya_arch == "x86_64"));
     assert!(x86_invocations.iter().all(|invocation| {
-        has_pair(&invocation.args, "--features", "tc")
-            || has_pair(&invocation.args, "--features", "tc,conntrack-kfunc")
+        has_pair(&invocation.args, "--features", "x86-tc")
+            || has_pair(&invocation.args, "--features", "x86-tc,conntrack-kfunc")
     }));
     assert!(
         !output_dir.join("lanspeed-ebpf-ecm").exists(),

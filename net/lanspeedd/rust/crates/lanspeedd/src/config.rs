@@ -218,8 +218,7 @@ pub struct RuntimeConfig {
     /// Safe, de-duplicated names exactly as configured across `ifname` and
     /// `interface_include`, before runtime eligibility filtering.
     pub configured_ifnames: Vec<String>,
-    /// Retained for the LuCI/UCI contract. The legacy daemon does not use it
-    /// to alter its attach set.
+    /// Diagnostic-only exclusion values. They never alter the runtime attach set.
     pub interface_exclude: Vec<String>,
     pub observe_ifnames: Vec<String>,
     /// Safe configured values retained for sysdevices/config diagnostics even
@@ -556,8 +555,7 @@ fn trim_c_ascii_whitespace(value: &str) -> &str {
 #[cfg(feature = "openwrt")]
 impl ConfigSource for lanspeed_openwrt_sys::UciContext {
     fn get(&mut self, path: &str) -> Result<Option<ConfigValue>, ConfigError> {
-        // Match the former libuci adapter's lossy C-string conversion for legacy
-        // non-UTF-8 values while keeping the public configuration API as Strings.
+        // Keep the String-based configuration API deterministic for non-UTF-8 UCI bytes.
         self.lookup(path)
             .map(|value| {
                 value.map(|value| match value {

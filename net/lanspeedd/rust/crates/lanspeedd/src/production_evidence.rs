@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use serde_json::{json, Map, Value};
 
 use crate::{
-    collectors::ecm_node,
     config::RuntimeConfig,
+    platform::nss::ecm_node,
     policy::{PolicyDecision, RateCollector},
     probe::{ProbeFailure, ProbeReport, RuntimeHealth},
 };

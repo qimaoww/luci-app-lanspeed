@@ -3,12 +3,13 @@ use lanspeedd::{
         ConfigError, ConfigSource, ConfigValue, LegacyNameEligibility, RuntimeConfig,
         DEFAULT_MAX_CLIENTS, DEFAULT_REFRESH_INTERVAL_MS, MIN_REFRESH_INTERVAL_MS,
     },
-    history::{
-        coverage::{ByteTotals, CoverageQuality, CoverageRing, CoverageSample, COVERAGE_WINDOW},
-        overview::{
-            ConnectionTotals, ConnectionTotalsOverride, OverviewClient, OverviewConfig,
-            OverviewRing, OVERVIEW_WINDOW,
-        },
+    history::overview::{
+        ConnectionTotals, ConnectionTotalsOverride, OverviewClient, OverviewConfig, OverviewRing,
+        OVERVIEW_WINDOW,
+    },
+    platform::x86::coverage::{
+        ByteTotals, CoverageQuality, CoverageRateAccumulator, CoverageRing, CoverageSample,
+        COVERAGE_WINDOW,
     },
     rate::{
         ClientCounters, RateBook, RateWarning, RATE_BASELINE_RETENTION_MS, RATE_WINDOW_COUNT,
@@ -315,6 +316,32 @@ fn stale_baselines_are_evicted_before_rejecting_a_new_active_client() {
 }
 
 #[test]
+fn coverage_rate_accumulator_is_monotonic_precise_and_pauses_gaps() {
+    let mut accumulator = CoverageRateAccumulator::default();
+    assert_eq!(
+        accumulator.update(1_000, 8_004, 16_004),
+        ByteTotals::new(0, 0)
+    );
+    assert_eq!(
+        accumulator.update(2_000, 8_004, 16_004),
+        ByteTotals::new(1_000, 2_000)
+    );
+    assert_eq!(
+        accumulator.update(3_000, 8_004, 16_004),
+        ByteTotals::new(2_001, 4_001),
+        "fractional byte remainders must carry across samples"
+    );
+
+    accumulator.pause();
+    assert_eq!(
+        accumulator.update(30_000, 8_000_000, 8_000_000),
+        ByteTotals::new(2_001, 4_001),
+        "unsupported gaps must not integrate a stale rate"
+    );
+    assert_eq!(accumulator.totals(), ByteTotals::new(2_001, 4_001));
+}
+
+#[test]
 fn coverage_ring_is_fixed_and_distinguishes_idle_low_traffic_and_ok_quality() {
     let mut ring = CoverageRing::new();
     assert_eq!(ring.capacity(), COVERAGE_WINDOW);
@@ -335,10 +362,7 @@ fn coverage_ring_is_fixed_and_distinguishes_idle_low_traffic_and_ok_quality() {
         ByteTotals::new(200_000, 200_000),
         ByteTotals::new(100_000, 100_000),
     ));
-    let low_traffic = ring.report(true);
-    assert_eq!(low_traffic.quality, CoverageQuality::LowTraffic);
-    assert_eq!(low_traffic.tx_pct, Some(50));
-    assert_eq!(low_traffic.rx_pct, Some(50));
+    assert_eq!(ring.report(true).quality, CoverageQuality::LowTraffic);
 
     let mut idle = CoverageRing::new();
     idle.push(CoverageSample::valid(

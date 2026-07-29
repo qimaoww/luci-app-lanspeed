@@ -666,19 +666,19 @@ where
             *slot = self.exists(path, evidence, &mut o.probe_error);
         }
         let primary = self.exists(
-            crate::collectors::bpf::runtime::PRIMARY_OBJECT_PATH,
+            crate::platform::x86::runtime::PRIMARY_OBJECT_PATH,
             evidence,
             &mut o.probe_error,
         );
         let fallback = self.exists(
-            crate::collectors::bpf::runtime::FALLBACK_OBJECT_PATH,
+            crate::platform::x86::runtime::FALLBACK_OBJECT_PATH,
             evidence,
             &mut o.probe_error,
         );
         o.bpf.object = primary && fallback;
         if self.nss_probe {
             o.bpf.ecm_object = self.exists(
-                crate::collectors::bpf::ecm::ECM_BPF_OBJECT_PATH,
+                crate::platform::nss::ecm_bpf::ECM_BPF_OBJECT_PATH,
                 evidence,
                 &mut o.probe_error,
             );

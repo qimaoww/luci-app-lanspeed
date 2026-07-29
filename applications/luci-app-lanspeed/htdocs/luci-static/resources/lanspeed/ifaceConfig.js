@@ -270,7 +270,7 @@ function orphanEntries(viewState) {
 	visibleDevices(viewState.sysdevices || {}).forEach(function(device) { visible[device.name] = true; });
 	var seen = {};
 	var entries = [];
-	/* interface_exclude is a legacy compatibility option, not an assignable interface mode. */
+	/* interface_exclude is diagnostic-only, not an assignable interface mode. */
 	[ 'ifname', 'interface_include', 'observe' ].forEach(function(option) {
 		original[option].forEach(function(name) {
 			var key = option + ':' + name;

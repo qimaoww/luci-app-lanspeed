@@ -4,6 +4,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const root = path.resolve(__dirname, '..');
 
@@ -73,10 +74,28 @@ function alignedWindow(client, lan, windowMs) {
 
 const model = readJson('net/lanspeedd/src/collector-model.json');
 const schema = readJson('net/lanspeedd/files/usr/share/lanspeed/schema.json');
-const ecm = read('net/lanspeedd/rust/crates/lanspeedd/src/collectors/ecm_node.rs');
-const ecmBpf = read('net/lanspeedd/rust/crates/lanspeedd/src/collectors/bpf/ecm.rs');
-const ecmBpfProgram = read('net/lanspeedd/rust/crates/lanspeed-ebpf/src/ecm.rs');
-const windowSource = read('net/lanspeedd/rust/crates/lanspeedd/src/nss_window.rs');
+const ecm = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/ecm_node.rs');
+const ecmBpf = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/ecm_bpf.rs');
+const ecmBpfProgram = read('net/lanspeedd/rust/crates/lanspeed-ebpf/src/nss/mod.rs');
+const windowSource = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/window.rs');
+const nssFusion = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/fusion.rs');
+const nssOutput = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/output.rs');
+const nssEvidence = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/evidence.rs');
+const nssRuntime = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/runtime.rs');
+const nssModule = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/mod.rs');
+const nssBpfCoverage = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/bpf_coverage.rs');
+const nssTcSnapshot = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/tc_snapshot.rs');
+const x86Coverage = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/x86/coverage.rs');
+const x86CoverageState = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/x86/coverage_state.rs');
+const counterSource = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/counters.rs');
+const x86Sources = collectFiles('net/lanspeedd/rust/crates/lanspeedd/src/platform/x86')
+  .map((file) => fs.readFileSync(file, 'utf8')).join('\n');
+const nssUserspace = collectFiles('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss')
+  .map((file) => fs.readFileSync(file, 'utf8')).join('\n');
+const x86Ebpf = collectFiles('net/lanspeedd/rust/crates/lanspeed-ebpf/src/x86')
+  .map((file) => fs.readFileSync(file, 'utf8')).join('\n');
+const nssEbpf = collectFiles('net/lanspeedd/rust/crates/lanspeed-ebpf/src/nss')
+  .map((file) => fs.readFileSync(file, 'utf8')).join('\n');
 const production = read('net/lanspeedd/rust/crates/lanspeedd/src/production.rs');
 const policy = read('net/lanspeedd/rust/crates/lanspeedd/src/policy.rs');
 const config = read('net/lanspeedd/rust/crates/lanspeedd/src/config.rs');
@@ -87,7 +106,16 @@ const buildDriver = read('net/lanspeedd/rust/crates/lanspeed-build/src/lib.rs');
 const packageMakefile = read('net/lanspeedd/Makefile');
 const init = read('net/lanspeedd/files/etc/init.d/lanspeedd');
 
-assert(model.version === 8, 'collector model must describe aligned ECM+BPF raw-delta fusion');
+assert(model.version === 10, 'collector model must describe fully separated platform backends');
+assert(model.module_boundaries.x86_userspace.endsWith('/platform/x86') &&
+  model.module_boundaries.nss_userspace.endsWith('/platform/nss') &&
+  model.module_boundaries.x86_ebpf.endsWith('/lanspeed-ebpf/src/x86') &&
+  model.module_boundaries.nss_ebpf.endsWith('/lanspeed-ebpf/src/nss') &&
+  model.module_boundaries.x86_depends_on_nss === false &&
+  model.module_boundaries.nss_depends_on_x86 === false &&
+  model.module_boundaries.tc_snapshot_bridge ===
+    'production_explicit_value_copy_to_nss_owned_contract',
+  'collector model must make the bidirectional x86/NSS boundary explicit');
 assert(JSON.stringify(model.platform_matrix.x86_64.schemes) === JSON.stringify(['bpf']) &&
   model.platform_matrix.x86_64.nss_modes_exposed === false,
   'x86 platform contract must expose only pure BPF');
@@ -121,6 +149,7 @@ assert(model.ecm_node_model.bpf_rate_overlay === false, 'BPF bytes must never ov
 assert(model.ecm_bpf_model.collector_mode === 'nss_ecm_bpf' &&
   model.ecm_bpf_model.object === '/usr/lib/bpf/lanspeed-ebpf-ecm' &&
   model.ecm_bpf_model.object_role === 'isolated_nss_hardware_context_kprobe' &&
+  model.ecm_bpf_model.tc_program_source.endsWith('/lanspeed-ebpf/src/nss/account.rs') &&
   model.ecm_bpf_model.tc_bpf_object === '/usr/lib/bpf/lanspeed-ebpf-fallback' &&
   model.ecm_bpf_model.target_arch === 'aarch64' &&
   model.ecm_bpf_model.attach.totals === 'kprobe:ecm_db_connection_data_totals_update' &&
@@ -170,8 +199,8 @@ assert(model.ecm_bpf_window_model.rate_clock ===
     'retain_previous_complete_client_and_interface_batch' &&
   model.ecm_bpf_window_model.published_sample_timestamp === 'aligned_window_end' &&
   model.ecm_bpf_window_model.precomputed_rate_sum_forbidden === true &&
-  production.includes('aligned_ecm_bpf_window(') &&
-  production.includes('apply_ecm_bpf_rate_batch(&mut clients, &mut interfaces, batch)') &&
+  nssFusion.includes('aligned_ecm_bpf_window(') &&
+  nssOutput.includes('apply_ecm_bpf_rate_batch(') &&
   production.includes('.update_with_client_interfaces(') &&
   windowSource.includes('fallback_rate_window_clients(') &&
   windowSource.includes('high_rate_window_clients(') &&
@@ -182,12 +211,12 @@ assert(model.ecm_bpf_window_model.rate_clock ===
   windowSource.includes('reconcile_rate_direction(') &&
   windowSource.includes('aggregate_low_rate_history(') &&
   windowSource.includes('ECM_BPF_LOW_RATE_ROLLING_WINDOW_MS') &&
-  production.includes('ECM+BPF high-rate client floor') &&
-  production.includes('directional_bps(merged.tx_bytes, merged.tx_packets, window_ms)') &&
-  production.includes('ecm.tx_bps.max(bpf.tx_bps)') &&
-  production.includes('ecm.rx_bps.max(bpf.rx_bps)') &&
-  !production.includes('client.tx_bps.saturating_add(sample.tx_bps)') &&
-  !production.includes('client.rx_bps.saturating_add(sample.rx_bps)'),
+  nssOutput.includes('ECM+BPF high-rate client floor') &&
+  nssFusion.includes('directional_bps(merged.tx_bytes, merged.tx_packets, window_ms)') &&
+  nssFusion.includes('ecm.tx_bps.max(bpf.tx_bps)') &&
+  nssFusion.includes('ecm.rx_bps.max(bpf.rx_bps)') &&
+  !nssUserspace.includes('client.tx_bps.saturating_add(sample.tx_bps)') &&
+  !nssUserspace.includes('client.rx_bps.saturating_add(sample.rx_bps)'),
   'ECM+BPF must roll aligned client/LAN rates together and never add precomputed rates');
 assert(model.ecm_bpf_window_model.rate_filter ===
   'per_connection_generation_median_last_3_windows' &&
@@ -218,8 +247,8 @@ assert(nssWindow.public_coverage_source ===
     'same_snapshot_displayed_client_and_lan_rates' &&
   nssWindow.raw_coverage_window_role === 'diagnostic_and_rate_fusion_guard_only' &&
   production.includes('nss_rate_coverage(&clients, &interfaces)') &&
-  production.includes('percentage(client_tx_bps, lan_rx_bps)') &&
-  production.includes('percentage(client_rx_bps, lan_tx_bps)'),
+  nssOutput.includes('percentage(client_tx_bps, lan_rx_bps)') &&
+  nssOutput.includes('percentage(client_rx_bps, lan_tx_bps)'),
   'NSS public coverage must use the same displayed client and LAN rate batch');
 assert(nssWindow.rate_filter === 'per_node_generation_median_last_3_windows' &&
   windowSource.includes('const NODE_RATE_MEDIAN_SAMPLES: usize = 3;') &&
@@ -238,7 +267,7 @@ assert(nssWindow.pending_display ===
   windowSource.includes('percentages_available: bool') &&
   windowSource.includes('"lan_coverage_partial"') &&
   windowSource.includes('if ownership_complete || partial_timed_out') &&
-  production.includes('coverage.retained_tx_pct'),
+  nssOutput.includes('coverage.retained_tx_pct'),
   'coverage must publish valid partial ownership while retaining the last value only for clock-ahead batches');
 assert(model.ecm_node_model.forbidden_writes.includes('defunct_all') &&
   model.ecm_node_model.forbidden_writes.includes('decelerate'), 'ECM collector must remain read-only');
@@ -270,7 +299,7 @@ assert(model.performance_guardrails.backend_collection_policy.bpf === 'configure
   model.performance_guardrails.backend_collection_policy.nss_ecm_node_minimum_ms === 2000 &&
   model.performance_guardrails.backend_collection_policy.nss_ecm_bpf_minimum_ms === 2000 &&
   model.performance_guardrails.backend_collection_policy.auto === 'follow_effective_collector' &&
-  production.includes('const NSS_COLLECTION_INTERVAL_MS: u32 = 2_000;') &&
+  nssModule.includes('pub const COLLECTION_INTERVAL_MS: u32 = 2_000;') &&
   production.includes('effective_collection_interval_ms(self.rate_owner, configured_ms)'),
   'backend scheduling must restrict only effective ECM collectors to two seconds');
 assert(model.performance_guardrails.live_refresh_alignment.nss_sample_clock ===
@@ -294,7 +323,7 @@ for (const field of [
   assert(ecm.includes(`"${field}"`), `ECM node parser must consume ${field}`);
 }
 assert(ecm.includes('const NODE_OUTPUT_MASK: &str = "8\\n";'), 'ECM collector must select node state mask 8');
-assert(ecm.includes('checked_mul(4)'), 'FCS normalization must multiply real packet counters by four');
+assert(counterSource.includes('checked_mul(4)'), 'FCS normalization must multiply real packet counters by four');
 assert(ecm.includes('unique_mac_owners'), 'ECM nodes must map only to unique MAC owners');
 assert(ecm.includes('time_added') && ecm.includes('generation'), 'ECM node generations must be explicit');
 assert(ecmBpf.includes('EcmBpfRuntime') &&
@@ -310,21 +339,27 @@ assert(ecmBpfProgram.includes('ecm_db_connection_data_totals_update') &&
   ecmBpfProgram.includes('generation_ptr.cast::<u32>()') &&
   ecmBpfProgram.includes('padding: [0; 4]'),
   'ECM+BPF program must exclude slow-path ECM calls before publishing hardware counters');
-assert(ebpfManifest.includes('default = ["tc", "conntrack-kfunc"]') &&
-  ebpfManifest.includes('tc = []') && ebpfManifest.includes('ecm = []') &&
-  ebpfMain.includes('#[cfg(feature = "tc")]') && ebpfMain.includes('#[cfg(feature = "ecm")]'),
-  'TC and ECM eBPF programs must be feature-isolated');
+assert(ebpfManifest.includes('default = ["x86-tc", "conntrack-kfunc"]') &&
+  ebpfManifest.includes('x86-tc = ["tc"]') &&
+  ebpfManifest.includes('nss-tc = ["tc"]') &&
+  ebpfManifest.includes('nss-ecm = []') &&
+  ebpfMain.includes('#[path = "x86/account.rs"]') &&
+  ebpfMain.includes('#[path = "nss/account.rs"]') &&
+  ebpfMain.includes('x86-tc and nss-tc are mutually exclusive'),
+  'x86 TC, NSS TC, and NSS ECM eBPF programs must have separate source features');
 assert(buildDriver.includes('LANSPEED_BPF_TARGET_ARCH') &&
   buildDriver.includes('command.env("AYA_BPF_TARGET_ARCH", target_arch.aya_name())') &&
-  buildDriver.includes('"lanspeed-ebpf-ecm"') && buildDriver.includes('target_arch.builds_ecm()'),
-  'build driver must compile ECM only for the explicit aarch64 target ABI');
+  buildDriver.includes('Self::Aarch64 => "nss-tc"') &&
+  buildDriver.includes('Self::X86_64 => "x86-tc"') &&
+  buildDriver.includes('"nss-ecm"') && buildDriver.includes('target_arch.builds_ecm()'),
+  'build driver must select platform-owned TC sources and compile ECM only for aarch64');
 assert(packageMakefile.includes('LANSPEED_BPF_TARGET_ARCH="$(ARCH)"') &&
   packageMakefile.includes('LANSPEED_NSS_ECM_BPF_ENABLED:=$(filter aarch64,$(ARCH))') &&
   packageMakefile.includes('/usr/lib/bpf/lanspeed-ebpf-ecm.o'),
   'OpenWrt packaging must install the isolated ECM object only on aarch64');
-assert(production.includes('cfg!(target_arch = "aarch64")') &&
-  production.includes('EcmBpfRuntime::load_and_attach(ECM_BPF_OBJECT_PATH)') &&
-  !production.includes('EcmBpfRuntime::load_and_attach(FALLBACK_OBJECT_PATH)'),
+assert(nssRuntime.includes('#[cfg(target_arch = "aarch64")]') &&
+  nssRuntime.includes('EcmBpfRuntime::load_and_attach(ECM_BPF_OBJECT_PATH)') &&
+  !nssRuntime.includes('EcmBpfRuntime::load_and_attach(FALLBACK_OBJECT_PATH)'),
   'runtime must never load ECM from a TC object or on x86');
 assert(probeCollector.includes('.with_nss_probe(cfg!(target_arch = "aarch64"))') &&
   probeCollector.includes('if !self.nss_probe'),
@@ -403,18 +438,65 @@ assert(production.includes('nss_rate_coverage(&clients, &interfaces)') &&
   production.includes('"nss_window".into(), window_evidence(window)') &&
   production.includes('"ecm_bpf_coverage_window".into()'),
   'NSS public coverage must use the live batch while both raw windows remain diagnostic evidence');
-assert(production.includes('let coverage = &window.coverage;') &&
-  production.includes('"rate_and_coverage_decoupled": true'),
+assert(nssOutput.includes('let coverage = &window.coverage;') &&
+  nssOutput.includes('"rate_and_coverage_decoupled": true'),
   'runtime evidence must expose the decoupled rate and coverage windows');
 assert(!production.includes('catch_up_nss_lan_clock') &&
   !production.includes('NSS_LAN_CATCHUP_POLL_MS'),
   'the collection loop must not block while waiting for the LAN packet clock');
-assert(production.includes('"fcs_bytes_per_packet": 4'), 'diagnostics must prove exact FCS normalization');
+assert(nssOutput.includes('"fcs_bytes_per_packet": 4'), 'diagnostics must prove exact FCS normalization');
 for (const evidence of ['"raw"', '"fcs_normalized"', '"client_packets"', '"lan_packets"', '"reason"']) {
-  assert(production.includes(evidence), `diagnostics must expose ${evidence}`);
+  assert(nssOutput.includes(evidence), `diagnostics must expose ${evidence}`);
 }
 for (const evidence of ['"sync_barrier_supported"', '"sync_barrier_wait_ms"', '"sync_snapshot_retries"']) {
-  assert(production.includes(evidence), `NSS runtime evidence must expose ${evidence}`);
+  assert(nssEvidence.includes(evidence), `NSS runtime evidence must expose ${evidence}`);
+}
+
+assert(!x86Sources.includes('platform::nss') &&
+  !/\b(?:Nss|Ecm)[A-Za-z0-9_]*/.test(x86Sources) &&
+  !/\b(?:nss|ecm)_(?:bpf|node)::/.test(x86Sources),
+  'x86/TC-BPF userspace module must not depend on NSS or ECM internals');
+assert(!nssUserspace.includes('platform::x86') &&
+  !nssUserspace.includes('x86::') &&
+  !/\bBpfSnapshot\b/.test(nssUserspace) &&
+  nssTcSnapshot.includes('pub(crate) struct NssTcSnapshot'),
+  'NSS userspace must consume only its own TC snapshot contract');
+assert(!/(?:ecm|nss)/i.test(x86Ebpf),
+  'x86 TC eBPF sources must remain isolated from NSS programs and maps');
+assert(!/x86(?:-tc|\/|::)/i.test(nssEbpf),
+  'NSS eBPF sources must remain isolated from x86 programs and features');
+assert(production.includes('fn nss_tc_snapshot(snapshot: &BpfSnapshot) -> NssTcSnapshot') &&
+  production.includes('.map(nss_tc_snapshot)') &&
+  production.includes('nss_tc_snapshot.as_ref()'),
+  'only production orchestration may convert x86 TC results into the NSS-owned value contract');
+assert(model.bpf_model.source_by_platform.x86_64.endsWith('/lanspeed-ebpf/src/x86/account.rs') &&
+  model.bpf_model.source_by_platform.aarch64_nss.endsWith('/lanspeed-ebpf/src/nss/account.rs') &&
+  model.bpf_model.feature_by_platform.x86_64 === 'x86-tc' &&
+  model.bpf_model.feature_by_platform.aarch64_nss === 'nss-tc',
+  'collector model must map each platform to its own TC source and feature');
+
+assert(crypto.createHash('sha256').update(x86Coverage).digest('hex') ===
+  'deaa49708a03d99dc9b05cba645b14823b52a14f14072a69a9f1aa8498d865dc',
+  'x86 coverage engine must stay byte-identical to 0fe46d9');
+assert(x86CoverageState.includes('CoverageRateAccumulator') &&
+  x86CoverageState.includes('value.rx_bps') && x86CoverageState.includes('value.tx_bps') &&
+  !x86CoverageState.includes('value.rx_bytes') && !x86CoverageState.includes('value.tx_bytes'),
+  'x86 coverage state must integrate displayed rates exactly as 0fe46d9');
+assert(nssBpfCoverage.includes('value.rx_bytes.unwrap_or(0)') &&
+  nssBpfCoverage.includes('value.tx_bytes.unwrap_or(0)') &&
+  nssBpfCoverage.includes('CoverageQuality::CounterSkew'),
+  'NSS pure-BPF coverage must retain its independent cumulative-counter behavior');
+assert(production.includes('x86_coverage: X86Coverage') &&
+  production.includes('nss_bpf_coverage: NssBpfCoverage') &&
+  production.includes('RateCollector::Bpf if report.facts.nss.present'),
+  'production must checkpoint and select independent x86 and NSS-BPF coverage states');
+for (const removedPath of [
+  'net/lanspeedd/rust/crates/lanspeedd/src/collectors/bpf',
+  'net/lanspeedd/rust/crates/lanspeedd/src/collectors/ecm_node.rs',
+  'net/lanspeedd/rust/crates/lanspeedd/src/nss_window.rs',
+  'net/lanspeedd/rust/crates/lanspeed-ebpf/src/ecm.rs'
+]) {
+  assert(!fs.existsSync(path.join(root, removedPath)), `${removedPath} must not survive the platform split`);
 }
 
 assert(policy.includes('RateCollector::NssEcmNode'), 'policy must select the ECM node owner');

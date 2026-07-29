@@ -2,7 +2,8 @@ use std::{collections::BTreeMap, path::Path};
 
 use lanspeed_common::{LanspeedCounters, LanspeedKey, DIR_RX, DIR_TX};
 use lanspeedd::{
-    collectors::bpf::{
+    identity::{IdentityObservation, IdentityTable, ObservationSource},
+    platform::x86::{
         runtime::{
             AdapterError, AdapterErrorKind, AttachMode, AyaAdapter, BpfRuntime, HookState,
             LinkDirection, LinkSpec, ObjectFlavor, ReconfigureRateBaseline, ReconfigureStrategy,
@@ -12,7 +13,6 @@ use lanspeedd::{
             SnapshotWarning,
         },
     },
-    identity::{IdentityObservation, IdentityTable, ObservationSource},
     rate::RateWarning,
 };
 
@@ -191,7 +191,7 @@ impl AyaAdapter for FakeAya {
 
 #[test]
 fn production_adapter_uses_only_explicit_legacy_netlink_attach() {
-    let source = include_str!("../src/collectors/bpf/runtime.rs");
+    let source = include_str!("../src/platform/x86/runtime.rs");
     assert!(source.contains("attach_with_options"));
     assert!(source.contains("TcAttachOptions::Netlink"));
     assert!(!source.contains(".attach("));
@@ -200,7 +200,7 @@ fn production_adapter_uses_only_explicit_legacy_netlink_attach() {
 #[test]
 fn production_sampling_uses_the_same_boot_monotonic_epoch_as_bpf() {
     let production = include_str!("../src/production.rs");
-    let ebpf = include_str!("../../lanspeed-ebpf/src/account.rs");
+    let ebpf = include_str!("../../lanspeed-ebpf/src/x86/account.rs");
 
     assert!(
         ebpf.contains("bpf_ktime_get_ns()"),
@@ -1436,7 +1436,14 @@ fn production_bpf_sampling_paths_use_stable_self_heal_reasons() {
         .contains("const EXTERNAL_BPF_SELF_HEAL_REASON: &str = \"production.collect.external\";"));
     assert!(source.contains("bpf_snapshot_fresh"));
     assert!(source.contains("(self.bpf_collector.last_complete().cloned(), false)"));
-    assert!(source.contains("update_coverage(now_ms, &clients, &interfaces, coverage_fresh)"));
+    assert!(source.contains("x86_coverage"));
+    assert!(source.contains("nss_bpf_coverage"));
+    let coverage = include_str!("../src/platform/x86/coverage_state.rs");
+    assert!(coverage.contains("self.clients.update"));
+    assert!(coverage.contains("value.rx_bps"));
+    assert!(coverage.contains("value.tx_bps"));
+    assert!(!coverage.contains("value.rx_bytes"));
+    assert!(!coverage.contains("value.tx_bytes"));
 }
 
 #[test]

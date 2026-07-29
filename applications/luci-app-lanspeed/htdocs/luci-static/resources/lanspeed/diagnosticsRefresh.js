@@ -226,12 +226,14 @@ function renderInterfaces(refs, viewState) {
 	var rows = (result.items || []).map(function(item) {
 		item = item && typeof item === 'object' ? item : {};
 		var state = interfaceRowState(item.status);
+		var sampleAge = diagnosticsModel.sampleAge(viewState && viewState.interfaces &&
+			viewState.interfaces.monotonic_ms, item.sample_ms);
 		return E('tr', { 'data-state': state }, [
 			E('td', { 'data-label': _('接口') }, String(item.name || '-')),
 			E('td', { 'data-label': _('角色') }, interfaceRoleLabel(item.role)),
 			E('td', { 'data-label': _('状态') }, interfaceStatusLabel(item.status)),
-			E('td', { 'data-label': _('采样') }, item.sample_ms !== undefined
-				? diagnosticsModel.formatDuration(item.sample_ms) : _('未采样')),
+			E('td', { 'data-label': _('采样') }, sampleAge === null
+				? _('未采样') : diagnosticsModel.formatDuration(sampleAge)),
 			E('td', { 'data-label': _('实时速率'), 'class': 'lanspeed-diagnostic-interface-rate' }, rateText(item))
 		]);
 	});

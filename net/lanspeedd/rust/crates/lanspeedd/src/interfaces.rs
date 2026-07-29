@@ -4,11 +4,6 @@ use std::{
     path::Path,
 };
 
-use crate::{
-    history::coverage::ByteTotals,
-    model::{Interface, InterfaceRole, InterfaceStatus},
-};
-
 pub const PROC_NET_DEV_SOURCE: &str = "/proc/net/dev single-pass snapshot";
 pub const SYSFS_INTERFACE_SOURCE: &str = "/sys/class/net/<if>/statistics fallback";
 pub const MIXED_INTERFACE_SOURCE: &str = "/proc/net/dev with sysfs fallback";
@@ -185,27 +180,6 @@ impl InterfaceRateBook {
         self.previous.insert(name.to_owned(), (counters, now_ms));
         rates
     }
-}
-
-pub fn lan_coverage_totals(interfaces: &[Interface]) -> ByteTotals {
-    let mut names = BTreeSet::new();
-    interfaces
-        .iter()
-        .filter(|interface| {
-            interface.role == InterfaceRole::Lan
-                && interface.status == InterfaceStatus::Available
-                && names.insert(interface.name.as_str())
-        })
-        .fold(ByteTotals::new(0, 0), |totals, interface| {
-            ByteTotals::new(
-                totals
-                    .rx_bytes
-                    .saturating_add(interface.rx_bytes.unwrap_or(0)),
-                totals
-                    .tx_bytes
-                    .saturating_add(interface.tx_bytes.unwrap_or(0)),
-            )
-        })
 }
 
 #[cfg(test)]

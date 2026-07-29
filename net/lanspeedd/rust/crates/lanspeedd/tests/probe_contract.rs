@@ -644,7 +644,7 @@ fn every_fixture_has_complete_typed_evidence_and_an_explicit_flowtable_alias() {
             .summary
             .as_deref()
             .unwrap()
-            .contains("legacy evidence alias"));
+            .contains("compatibility evidence alias"));
         assert_eq!(report.evidence.collector.mode, report.mode.as_str());
         assert_eq!(
             report.evidence.collector.confidence,

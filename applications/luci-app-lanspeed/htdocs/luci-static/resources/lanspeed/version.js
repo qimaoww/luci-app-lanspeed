@@ -3,6 +3,6 @@
 
 return baseclass.extend({
 	PACKAGE_VERSION: '1.1.4',
-	PACKAGE_RELEASE: '2',
-	FULL_VERSION: '1.1.4-r2'
+	PACKAGE_RELEASE: '3',
+	FULL_VERSION: '1.1.4-r3'
 });
