@@ -73,7 +73,10 @@ use crate::{
         SysdeviceLimits, SysdevicesResponse,
     },
     nss_window::{
-        CoverageWindow, LanClock, NssCoverageBook, NssWindowBook, WindowOutput, WindowQuality,
+        CoverageWindow, EcmBpfRateBatch, EcmBpfRateWindowBook, LanClock, NssCoverageBook,
+        NssWindowBook, RateWindowInterfaceCounter, RateWindowValue, WindowOutput, WindowQuality,
+        ECM_BPF_EVENT_HIGH_RATE_BPS, ECM_BPF_HIGH_RATE_CONFIRMATION_MS,
+        ECM_BPF_LOW_RATE_ROLLING_WINDOW_MS, ECM_BPF_LOW_RATE_STEP_MS, ECM_BPF_LOW_RATE_WINDOW_MS,
     },
     policy::{self, RateCollector},
     probe::{
@@ -301,6 +304,79 @@ fn merge_ecm_bpf_coverage_delta(
     }
 }
 
+fn merge_ecm_bpf_client_deltas(
+    ecm: &EcmBpfSnapshot,
+    bpf: Option<&BpfSnapshot>,
+    bpf_fresh: bool,
+) -> BTreeMap<String, TrafficCounters> {
+    let mut merged = ecm.coverage_deltas.clone();
+    if aligned_ecm_bpf_window(ecm, bpf, bpf_fresh, ECM_BPF_COVERAGE_CLOCK_SKEW_MS).is_none() {
+        return merged;
+    }
+    let Some(bpf) = bpf else {
+        return merged;
+    };
+    for (identity_key, delta) in &bpf.coverage_deltas {
+        add_traffic_counters(merged.entry(identity_key.clone()).or_default(), *delta);
+    }
+    merged
+}
+
+fn ecm_bpf_fallback_client_rates(
+    ecm: &EcmBpfSnapshot,
+    bpf: Option<&BpfSnapshot>,
+    bpf_fresh: bool,
+) -> BTreeMap<String, RateWindowValue> {
+    let bpf = bpf.filter(|_| bpf_fresh);
+    let mut rates = BTreeMap::new();
+    for identity_key in ecm
+        .clients
+        .iter()
+        .map(|sample| sample.identity_key.as_str())
+        .chain(
+            bpf.into_iter()
+                .flat_map(|snapshot| snapshot.clients.iter())
+                .map(|sample| sample.identity_key.as_str()),
+        )
+    {
+        if rates.contains_key(identity_key) {
+            continue;
+        }
+        let Some(rate) = fused_client_rate(identity_key, Some(ecm), bpf, false) else {
+            continue;
+        };
+        rates.insert(
+            identity_key.to_owned(),
+            RateWindowValue {
+                rx_bps: rate.rx_bps,
+                tx_bps: rate.tx_bps,
+            },
+        );
+    }
+    rates
+}
+
+fn ecm_bpf_client_interfaces(
+    ecm: &EcmBpfSnapshot,
+    bpf: Option<&BpfSnapshot>,
+    bpf_fresh: bool,
+) -> BTreeMap<String, String> {
+    let mut interfaces = BTreeMap::new();
+    for sample in &ecm.clients {
+        interfaces
+            .entry(sample.identity_key.clone())
+            .or_insert_with(|| sample.interface.clone());
+    }
+    if let Some(bpf) = bpf.filter(|_| bpf_fresh) {
+        for sample in &bpf.clients {
+            interfaces
+                .entry(sample.identity_key.clone())
+                .or_insert_with(|| sample.interface.clone());
+        }
+    }
+    interfaces
+}
+
 fn add_traffic_counters(total: &mut TrafficCounters, value: TrafficCounters) {
     total.tx_bytes = total.tx_bytes.saturating_add(value.tx_bytes);
     total.rx_bytes = total.rx_bytes.saturating_add(value.rx_bytes);
@@ -398,6 +474,7 @@ fn transition_rate_owner(
     current: &mut Option<RateCollector>,
     nss_windows: &mut NssWindowBook,
     ecm_bpf_coverage: &mut NssCoverageBook,
+    ecm_bpf_rates: &mut EcmBpfRateWindowBook,
     next: RateCollector,
 ) {
     if *current != Some(next) {
@@ -406,6 +483,7 @@ fn transition_rate_owner(
         }
         if next == RateCollector::NssEcmBpf {
             *ecm_bpf_coverage = NssCoverageBook::default();
+            *ecm_bpf_rates = EcmBpfRateWindowBook::default();
         }
     }
     *current = Some(next);
@@ -455,6 +533,7 @@ struct ProductionRuntime {
     interface_rates: InterfaceRateBook,
     nss_windows: NssWindowBook,
     ecm_bpf_coverage: NssCoverageBook,
+    ecm_bpf_rates: EcmBpfRateWindowBook,
     rate_owner: Option<RateCollector>,
     hostnames: HostnameCache,
     shutdown_complete: bool,
@@ -468,6 +547,7 @@ struct RuntimeCheckpoint {
     interface_rates: InterfaceRateBook,
     nss_windows: NssWindowBook,
     ecm_bpf_coverage: NssCoverageBook,
+    ecm_bpf_rates: EcmBpfRateWindowBook,
     rate_owner: Option<RateCollector>,
     hostnames: HostnameCache,
     conntrack_snapshot: Option<Arc<CollectedSnapshot>>,
@@ -518,6 +598,7 @@ impl ProductionRuntime {
             next_probe_ms: 0,
             nss_windows: NssWindowBook::default(),
             ecm_bpf_coverage: NssCoverageBook::default(),
+            ecm_bpf_rates: EcmBpfRateWindowBook::default(),
             rate_owner: None,
             hostnames: HostnameCache::new(),
             config,
@@ -650,6 +731,7 @@ impl ProductionRuntime {
             interface_rates: self.interface_rates.clone(),
             nss_windows: self.nss_windows.clone(),
             ecm_bpf_coverage: self.ecm_bpf_coverage.clone(),
+            ecm_bpf_rates: self.ecm_bpf_rates.clone(),
             rate_owner: self.rate_owner,
             hostnames: self.hostnames.clone(),
             conntrack_snapshot: self.conntrack_snapshot.clone(),
@@ -677,6 +759,7 @@ impl ProductionRuntime {
         self.interface_rates = checkpoint.interface_rates;
         self.nss_windows = checkpoint.nss_windows;
         self.ecm_bpf_coverage = checkpoint.ecm_bpf_coverage;
+        self.ecm_bpf_rates = checkpoint.ecm_bpf_rates;
         self.rate_owner = checkpoint.rate_owner;
         self.hostnames = checkpoint.hostnames;
         self.conntrack_snapshot = checkpoint.conntrack_snapshot;
@@ -973,16 +1056,18 @@ impl ProductionRuntime {
         }
         self.apply_conntrack_health(&mut runtime_health);
         decision = policy::select_collectors(&self.config, &report.facts, &runtime_health);
-        let (interfaces, lan_clock) = self.interfaces(now_ms);
+        let (mut interfaces, lan_clock) = self.interfaces(now_ms);
         transition_rate_owner(
             &mut self.rate_owner,
             &mut self.nss_windows,
             &mut self.ecm_bpf_coverage,
+            &mut self.ecm_bpf_rates,
             decision.rate,
         );
         let mut nss_window = None;
         let mut ecm_bpf_coverage_window = None;
         let mut ecm_bpf_coverage_merge = None;
+        let mut ecm_bpf_rate_batch = None;
         let (mut clients, actual_live, actual_degraded, coverage_fresh) =
             if decision.rate == RateCollector::Bpf {
                 (
@@ -1038,14 +1123,42 @@ impl ProductionRuntime {
                                 bpf_snapshot.as_ref(),
                                 bpf_snapshot_fresh,
                             );
+                            let client_deltas = merge_ecm_bpf_client_deltas(
+                                snapshot,
+                                bpf_snapshot.as_ref(),
+                                bpf_snapshot_fresh,
+                            );
+                            let fallback_rates = ecm_bpf_fallback_client_rates(
+                                snapshot,
+                                bpf_snapshot.as_ref(),
+                                bpf_snapshot_fresh,
+                            );
+                            let client_interfaces = ecm_bpf_client_interfaces(
+                                snapshot,
+                                bpf_snapshot.as_ref(),
+                                bpf_snapshot_fresh,
+                            );
                             ecm_bpf_coverage_window =
                                 Some(self.ecm_bpf_coverage.update(merged.merged, lan));
+                            ecm_bpf_rate_batch = self.ecm_bpf_rates.update_with_client_interfaces(
+                                &client_deltas,
+                                &fallback_rates,
+                                &client_interfaces,
+                                lan,
+                                &rate_window_interface_counters(&interfaces),
+                            );
                             ecm_bpf_coverage_merge = Some(merged);
                         }
                         _ => {
                             self.ecm_bpf_coverage = NssCoverageBook::default();
+                            self.ecm_bpf_rates = EcmBpfRateWindowBook::default();
                         }
                     }
+                }
+                if ecm_bpf_rate_batch.is_none() && !ecm_bpf_snapshot_fresh {
+                    ecm_bpf_rate_batch = lan_clock
+                        .as_ref()
+                        .and_then(|lan| self.ecm_bpf_rates.held_at(lan.sample_ms));
                 }
                 (
                     ecm_bpf_clients_response(
@@ -1075,6 +1188,9 @@ impl ProductionRuntime {
                     false,
                 )
             };
+        if let Some(batch) = ecm_bpf_rate_batch.as_ref() {
+            apply_ecm_bpf_rate_batch(&mut clients, &mut interfaces, batch);
+        }
         self.hostnames.refresh_from_paths(
             &HostnamePaths::default(),
             now_ms,
@@ -1137,6 +1253,12 @@ impl ProductionRuntime {
                     );
                 }
             }
+            if let Some(batch) = ecm_bpf_rate_batch.as_ref() {
+                client_evidence.details.insert(
+                    "ecm_bpf_rate_window".into(),
+                    ecm_bpf_rate_batch_evidence(batch),
+                );
+            }
         }
         let overview = self.update_overview(now_ms, &clients);
         let coverage = if matches!(
@@ -1193,7 +1315,11 @@ impl ProductionRuntime {
                     "source": "same_snapshot_displayed_client_and_lan_rates",
                     "sample_ms": interfaces.monotonic_ms,
                     "window_ms": coverage.window_ms,
-                    "raw_counter_window_role": "diagnostic_and_rate_fusion_guard_only",
+                    "raw_counter_window_role": if decision.rate == RateCollector::NssEcmBpf {
+                        "client_interface_rate_alignment_and_fusion"
+                    } else {
+                        "diagnostic_and_rate_fusion_guard_only"
+                    },
                     "percentage_clamp": false,
                 }),
             );
@@ -1224,6 +1350,12 @@ impl ProductionRuntime {
                     ecm_bpf_coverage_merge_evidence(merged),
                 );
             }
+        }
+        if let Some(batch) = ecm_bpf_rate_batch.as_ref() {
+            status_evidence.details.insert(
+                "ecm_bpf_rate_window".into(),
+                ecm_bpf_rate_batch_evidence(batch),
+            );
         }
         let mut warnings = report
             .warnings
@@ -1333,6 +1465,12 @@ impl ProductionRuntime {
                     ecm_bpf_coverage_merge_evidence(merged),
                 );
             }
+        }
+        if let Some(batch) = ecm_bpf_rate_batch.as_ref() {
+            health_evidence.details.insert(
+                "ecm_bpf_rate_window".into(),
+                ecm_bpf_rate_batch_evidence(batch),
+            );
         }
         health_evidence.details.insert(
             "bpf".into(),
@@ -2829,6 +2967,85 @@ fn coverage_response(coverage: &CoverageWindow) -> Coverage {
     }
 }
 
+fn rate_window_interface_counters(
+    interfaces: &InterfacesResponse,
+) -> BTreeMap<String, RateWindowInterfaceCounter> {
+    interfaces
+        .interfaces
+        .iter()
+        .filter_map(|interface| {
+            if interface.status != InterfaceStatus::Available {
+                return None;
+            }
+            Some((
+                interface.name.clone(),
+                RateWindowInterfaceCounter {
+                    rx_bytes: interface.rx_bytes?,
+                    tx_bytes: interface.tx_bytes?,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn apply_ecm_bpf_rate_batch(
+    clients: &mut ClientsResponse,
+    interfaces: &mut InterfacesResponse,
+    batch: &EcmBpfRateBatch,
+) {
+    for client in &mut clients.clients {
+        let rate = batch
+            .clients
+            .get(&client.identity_key)
+            .copied()
+            .unwrap_or_default();
+        client.rx_bps = rate.rx_bps;
+        client.tx_bps = rate.tx_bps;
+        client.sample_ms = Some(batch.end_ms);
+    }
+    let client_rates_by_interface = clients.clients.iter().fold(
+        BTreeMap::<String, RateWindowValue>::new(),
+        |mut rates, client| {
+            let rate = rates.entry(client.interface.clone()).or_default();
+            rate.rx_bps = rate.rx_bps.saturating_add(client.rx_bps);
+            rate.tx_bps = rate.tx_bps.saturating_add(client.tx_bps);
+            rates
+        },
+    );
+    for interface in &mut interfaces.interfaces {
+        if interface.status != InterfaceStatus::Available {
+            continue;
+        }
+        let Some(rate) = batch.interfaces.get(&interface.name) else {
+            continue;
+        };
+        let mut rx_bps = rate.rx_bps;
+        let mut tx_bps = rate.tx_bps;
+        if !batch.low_rate && interface.role == InterfaceRole::Lan {
+            if let Some(client_rate) = client_rates_by_interface.get(&interface.name) {
+                let lifted_rx = rx_bps.max(client_rate.tx_bps);
+                let lifted_tx = tx_bps.max(client_rate.rx_bps);
+                if lifted_rx != rx_bps || lifted_tx != tx_bps {
+                    interface.source = Some(format!(
+                        "{} + ECM+BPF high-rate client floor",
+                        interface
+                            .source
+                            .as_deref()
+                            .unwrap_or("kernel net-device counters")
+                    ));
+                }
+                rx_bps = lifted_rx;
+                tx_bps = lifted_tx;
+            }
+        }
+        interface.rx_bps = Some(rx_bps);
+        interface.tx_bps = Some(tx_bps);
+        interface.delta_ms = Some(batch.window_ms());
+        interface.sample_ms = Some(batch.end_ms);
+    }
+    interfaces.monotonic_ms = Some(batch.end_ms);
+}
+
 fn nss_rate_coverage(clients: &ClientsResponse, interfaces: &InterfacesResponse) -> Coverage {
     let sample_ms = interfaces.monotonic_ms;
     let client_clocks_aligned = clients.clients.iter().all(|client| {
@@ -2991,6 +3208,42 @@ fn coverage_evidence(coverage: &CoverageWindow, source: &str) -> Value {
             "retained_tx_pct": coverage.retained_tx_pct,
             "retained_rx_pct": coverage.retained_rx_pct,
         },
+    })
+}
+
+fn ecm_bpf_rate_batch_evidence(batch: &EcmBpfRateBatch) -> Value {
+    json!({
+        "source": "shared_client_interface_rate_window",
+        "window_start_ms": batch.start_ms,
+        "window_end_ms": batch.end_ms,
+        "window_ms": batch.window_ms(),
+        "fresh": batch.fresh,
+        "held_age_ms": batch.held_age_ms,
+        "client_count": batch.clients.len(),
+        "interface_count": batch.interfaces.len(),
+        "raw_aligned": batch.raw_aligned,
+        "fallback_event_gap_filled": batch.fallback_event_gap_filled,
+        "fallback_lan_reconciled": batch.fallback_lan_reconciled,
+        "low_rate_rolling": batch.low_rate,
+        "high_rate_interface_floor": !batch.low_rate,
+        "high_rate_quiet_confirmation_ms": ECM_BPF_HIGH_RATE_CONFIRMATION_MS,
+        "high_rate_lan_guard": "valid_physical_lan_budget_directional_reconciliation",
+        "high_rate_interface_guard": "identity_to_discovered_interface_directional_budget",
+        "client_rate_source": if batch.raw_aligned {
+            "aligned_ecm_nss_hardware_plus_tc_slow_path_raw_deltas"
+        } else if batch.low_rate {
+            "shared_raw_deltas_with_event_gap_fill_and_lan_reconciliation"
+        } else {
+            "event_clock_preferred_raw_when_event_missing_high_rate_with_interface_floor"
+        },
+        "fallback_aggregation": "raw_delta_preferred_event_gap_elapsed_ms_weighted_mean",
+        "fallback_priority": if batch.low_rate {
+            "raw_delta_first_event_gap_uses_remaining_lan_budget"
+        } else {
+            "event_clock_first_raw_only_when_event_missing_or_implausible_no_sum"
+        },
+        "publish_policy": "high_rate_event_clock_valid_lan_budget_and_10s_quiet_confirmation_then_2s_18s_low_rate_rolling",
+        "client_interface_sample_clock": "shared",
     })
 }
 
@@ -3234,9 +3487,7 @@ fn apply_ecm_bpf_evidence(
             "ready": layout.ready == 1,
         })
     });
-    evidence.details.insert(
-        "ecm_bpf".into(),
-        json!({
+    let mut ecm_bpf_details = json!({
             "source": "kprobe:ecm_db_connection_data_totals_update+nss_callback_context",
             "object": ECM_BPF_OBJECT_PATH,
             "target_arch": std::env::consts::ARCH,
@@ -3272,6 +3523,11 @@ fn apply_ecm_bpf_evidence(
             "event_clock_max_window_ms": ECM_EVENT_RATE_MAX_WINDOW_MS,
             "rate_filter": "per_connection_generation_median_last_3_windows",
             "rate_hold_ms": ECM_RATE_HOLD_MS,
+            "published_rate_window": "shared_client_and_interface_lan_window",
+            "low_rate_unaligned_fallback": "shared_raw_deltas_with_event_gap_fill_and_lan_reconciliation",
+            "fallback_lan_guard": "directional_proportional_reconciliation_to_physical_lan",
+            "fallback_aggregation": "raw_delta_preferred_event_gap_elapsed_ms_weighted_mean",
+            "pending_rate_display": "previous_complete_client_and_interface_batch",
             "tc_bpf_overlay": {
                 "ready": runtime.bpf_object_loaded
                     && runtime.bpf_attached
@@ -3288,8 +3544,34 @@ fn apply_ecm_bpf_evidence(
             "coverage_normalization": "client_and_lan_bytes_plus_packets_times_4",
             "btf_layout": layout,
             "error_stage": runtime.ecm_bpf_error_stage,
-        }),
-    );
+    });
+    if let Some(details) = ecm_bpf_details.as_object_mut() {
+        details.insert(
+            "published_low_rate_warmup_ms".into(),
+            json!(ECM_BPF_LOW_RATE_WINDOW_MS),
+        );
+        details.insert(
+            "published_low_rate_step_ms".into(),
+            json!(ECM_BPF_LOW_RATE_STEP_MS),
+        );
+        details.insert(
+            "published_low_rate_rolling_window_ms".into(),
+            json!(ECM_BPF_LOW_RATE_ROLLING_WINDOW_MS),
+        );
+        details.insert(
+            "event_high_rate_threshold_bps".into(),
+            json!(ECM_BPF_EVENT_HIGH_RATE_BPS),
+        );
+        details.insert(
+            "high_rate_quiet_confirmation_ms".into(),
+            json!(ECM_BPF_HIGH_RATE_CONFIRMATION_MS),
+        );
+        details.insert(
+            "high_rate_interface_guard".into(),
+            json!("identity_to_discovered_interface_directional_budget"),
+        );
+    }
+    evidence.details.insert("ecm_bpf".into(), ecm_bpf_details);
 }
 
 fn capabilities(value: &ProbeCapabilities, report: &ProbeReport) -> Capabilities {
@@ -3833,6 +4115,119 @@ mod tests {
     }
 
     #[test]
+    fn ecm_bpf_high_rate_floor_uses_the_discovered_client_interface() {
+        let identity_key = "02:00:00:00:00:01@lan";
+        let mut snapshot = coverage_snapshot(1_000, 3_000, &[]);
+        snapshot.clients.push(EcmBpfClientSample {
+            mac: "02:00:00:00:00:01".into(),
+            identity_key: identity_key.into(),
+            zone: "lan".into(),
+            interface: "bridge-dynamic".into(),
+            ips: vec!["192.0.2.1".into()],
+            tx_bytes: 0,
+            rx_bytes: 0,
+            tx_bps: 0,
+            rx_bps: 0,
+            sample_ms: 3_000,
+            last_seen_ms: 3_000,
+        });
+        let mut clients = ecm_bpf_clients_response(
+            Some(&snapshot),
+            None,
+            false,
+            3_000,
+            None,
+            &IdentityTable::new(4),
+            ProbeConfidence::High,
+        );
+        let mut interfaces = InterfacesResponse {
+            interfaces: vec![
+                Interface {
+                    name: "bridge-dynamic".into(),
+                    role: InterfaceRole::Lan,
+                    status: InterfaceStatus::Available,
+                    rx_bytes: Some(100),
+                    tx_bytes: Some(200),
+                    rx_bps: Some(0),
+                    tx_bps: Some(0),
+                    delta_ms: Some(2_000),
+                    sample_ms: Some(3_000),
+                    source: Some("kernel counters".into()),
+                    coverage: None,
+                    evidence: None,
+                },
+                Interface {
+                    name: "member-dynamic".into(),
+                    role: InterfaceRole::Observe,
+                    status: InterfaceStatus::Available,
+                    rx_bytes: Some(300),
+                    tx_bytes: Some(400),
+                    rx_bps: Some(0),
+                    tx_bps: Some(0),
+                    delta_ms: Some(2_000),
+                    sample_ms: Some(3_000),
+                    source: Some("kernel counters".into()),
+                    coverage: None,
+                    evidence: None,
+                },
+            ],
+            monotonic_ms: Some(3_000),
+            note: None,
+            evidence: None,
+        };
+        let batch = EcmBpfRateBatch {
+            start_ms: 3_000,
+            end_ms: 5_000,
+            clients: BTreeMap::from([(
+                identity_key.into(),
+                RateWindowValue {
+                    tx_bps: 100_000_000,
+                    rx_bps: 50_000_000,
+                },
+            )]),
+            interfaces: BTreeMap::from([
+                (
+                    "bridge-dynamic".into(),
+                    RateWindowValue {
+                        rx_bps: 10_000_000,
+                        tx_bps: 20_000_000,
+                    },
+                ),
+                (
+                    "member-dynamic".into(),
+                    RateWindowValue {
+                        rx_bps: 30_000_000,
+                        tx_bps: 40_000_000,
+                    },
+                ),
+            ]),
+            raw_aligned: false,
+            fallback_event_gap_filled: true,
+            fallback_lan_reconciled: false,
+            low_rate: false,
+            fresh: true,
+            held_age_ms: None,
+        };
+
+        apply_ecm_bpf_rate_batch(&mut clients, &mut interfaces, &batch);
+
+        assert_eq!(clients.clients[0].tx_bps, 100_000_000);
+        assert_eq!(clients.clients[0].rx_bps, 50_000_000);
+        assert_eq!(clients.clients[0].sample_ms, Some(5_000));
+        let bridge = &interfaces.interfaces[0];
+        assert_eq!(bridge.rx_bps, Some(100_000_000));
+        assert_eq!(bridge.tx_bps, Some(50_000_000));
+        assert!(bridge
+            .source
+            .as_deref()
+            .is_some_and(|source| source.contains("ECM+BPF high-rate client floor")));
+        let member = &interfaces.interfaces[1];
+        assert_eq!(member.rx_bps, Some(30_000_000));
+        assert_eq!(member.tx_bps, Some(40_000_000));
+        assert_eq!(interfaces.monotonic_ms, Some(5_000));
+    }
+
+    #[test]
     fn ecm_bpf_computes_one_rate_from_aligned_raw_deltas() {
         let ecm = EcmBpfClientSample {
             mac: "02:00:00:00:00:01".into(),
@@ -4288,11 +4683,13 @@ mod tests {
         let mut owner = None;
         let mut windows = NssWindowBook::default();
         let mut ecm_bpf_coverage = NssCoverageBook::default();
+        let mut ecm_bpf_rates = EcmBpfRateWindowBook::default();
 
         transition_rate_owner(
             &mut owner,
             &mut windows,
             &mut ecm_bpf_coverage,
+            &mut ecm_bpf_rates,
             RateCollector::NssEcmNode,
         );
         assert_eq!(
@@ -4305,6 +4702,7 @@ mod tests {
             &mut owner,
             &mut windows,
             &mut ecm_bpf_coverage,
+            &mut ecm_bpf_rates,
             RateCollector::Bpf,
         );
 
@@ -4312,6 +4710,7 @@ mod tests {
             &mut owner,
             &mut windows,
             &mut ecm_bpf_coverage,
+            &mut ecm_bpf_rates,
             RateCollector::NssEcmNode,
         );
         let reentry = windows.update(

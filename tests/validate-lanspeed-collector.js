@@ -144,14 +144,51 @@ assert(model.ecm_bpf_window_model.rate_clock ===
     'aligned_raw_delta_sum_then_single_rate' &&
   model.ecm_bpf_window_model.hybrid_rate_lan_guard ===
     'directionally_valid_merged_lan_window_required' &&
+  model.ecm_bpf_window_model.published_rate_clock ===
+    'shared_client_and_interface_lan_window' &&
+  model.ecm_bpf_window_model.published_high_rate_min_bytes === 131072 &&
+  model.ecm_bpf_window_model.published_low_rate_warmup_ms === 6000 &&
+  model.ecm_bpf_window_model.published_low_rate_step_ms === 2000 &&
+  model.ecm_bpf_window_model.published_low_rate_rolling_window_ms === 18000 &&
+  model.ecm_bpf_window_model.event_high_rate_threshold_bps === 8000000 &&
+  model.ecm_bpf_window_model.high_rate_quiet_confirmation_ms === 10000 &&
+  model.ecm_bpf_window_model.high_rate_lan_guard ===
+    'valid_physical_lan_budget_directional_reconciliation' &&
+  model.ecm_bpf_window_model.high_rate_interface_guard ===
+    'identity_to_discovered_interface_directional_budget' &&
+  model.ecm_bpf_window_model.high_rate_unaligned_priority ===
+    'event_clock_first_raw_only_when_event_missing_or_implausible_no_sum' &&
+  model.ecm_bpf_window_model.low_rate_unaligned_fallback ===
+    'shared_raw_deltas_with_event_gap_fill_and_lan_reconciliation' &&
+  model.ecm_bpf_window_model.fallback_aggregation ===
+    'raw_delta_preferred_event_gap_elapsed_ms_weighted_mean' &&
+  model.ecm_bpf_window_model.fallback_lan_guard ===
+    'directional_proportional_reconciliation_to_physical_lan' &&
+  model.ecm_bpf_window_model.fallback_priority ===
+    'raw_delta_first_event_gap_uses_remaining_lan_budget' &&
+  model.ecm_bpf_window_model.pending_rate_display ===
+    'retain_previous_complete_client_and_interface_batch' &&
+  model.ecm_bpf_window_model.published_sample_timestamp === 'aligned_window_end' &&
   model.ecm_bpf_window_model.precomputed_rate_sum_forbidden === true &&
   production.includes('aligned_ecm_bpf_window(') &&
+  production.includes('apply_ecm_bpf_rate_batch(&mut clients, &mut interfaces, batch)') &&
+  production.includes('.update_with_client_interfaces(') &&
+  windowSource.includes('fallback_rate_window_clients(') &&
+  windowSource.includes('high_rate_window_clients(') &&
+  windowSource.includes('ECM_BPF_HIGH_RATE_CONFIRMATION_MS') &&
+  windowSource.includes('reconcile_high_rate_direction(') &&
+  windowSource.includes('reconcile_high_rate_interfaces(') &&
+  windowSource.includes('high_rate_direction(') &&
+  windowSource.includes('reconcile_rate_direction(') &&
+  windowSource.includes('aggregate_low_rate_history(') &&
+  windowSource.includes('ECM_BPF_LOW_RATE_ROLLING_WINDOW_MS') &&
+  production.includes('ECM+BPF high-rate client floor') &&
   production.includes('directional_bps(merged.tx_bytes, merged.tx_packets, window_ms)') &&
   production.includes('ecm.tx_bps.max(bpf.tx_bps)') &&
   production.includes('ecm.rx_bps.max(bpf.rx_bps)') &&
   !production.includes('client.tx_bps.saturating_add(sample.tx_bps)') &&
   !production.includes('client.rx_bps.saturating_add(sample.rx_bps)'),
-  'ECM+BPF must calculate one rate from aligned raw deltas and never add precomputed rates');
+  'ECM+BPF must roll aligned client/LAN rates together and never add precomputed rates');
 assert(model.ecm_bpf_window_model.rate_filter ===
   'per_connection_generation_median_last_3_windows' &&
   model.ecm_bpf_window_model.rate_hold_ms === 2500 &&
