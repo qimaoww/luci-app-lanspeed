@@ -1,7 +1,7 @@
 'use strict';
 'require view';
 
-var RESOURCE_VERSION = 'lanspeed-1.1.5-r1';
+var RESOURCE_VERSION = 'lanspeed-1.1.5-r3';
 var pageModule;
 
 function loadPageModule() {

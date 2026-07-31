@@ -237,7 +237,7 @@ function successRpc(at) {
 
 function normalizedResult(marker, at) {
 	return {
-		status: { marker: marker, version: '1.1.5-r1' },
+		status: { marker: marker, version: '1.1.5-r3' },
 		clients: { clients: [] },
 		interfaces: { interfaces: [] },
 		uci: {},
@@ -250,7 +250,7 @@ async function testIndependentRpcSettlement(context, fmt) {
 	let tick = 1000;
 	const clock = function() { tick += 10; return tick; };
 	const rpc = {
-		status: function() { return Promise.resolve({ version: '1.1.5-r1' }); },
+		status: function() { return Promise.resolve({ version: '1.1.5-r3' }); },
 		clients: function() { return Promise.reject(new Error('clients down')); },
 		interfaces: function() { return Promise.resolve({ interfaces: [ { name: 'br-lan' } ] }); },
 		uciGet: function() { return Promise.reject(new Error('uci down')); }
@@ -321,7 +321,7 @@ async function testLiveSamplePairing(context, fmt) {
 					bpf: { last_complete_snapshot_ms: statusSampleMs }
 				};
 			return Promise.resolve({
-				version: '1.1.5-r1',
+				version: '1.1.5-r3',
 				coverage: { quality: 'ok', tx_pct: coveragePct, rx_pct: coveragePct },
 				evidence: rateEvidence
 			});
@@ -506,6 +506,40 @@ async function testLiveSamplePairing(context, fmt) {
 	assert.strictEqual(heldPublishedWindow.livePair.aligned, true);
 	assert.strictEqual(heldPublishedWindow.clients.clients[0].tx_bps, 900,
 		'ECM+BPF alignment must use the published shared rate window instead of the newer raw collection clock');
+
+	rpc.status = function() {
+		return Promise.resolve({
+			access_edge_mode: 'active',
+			coverage: { quality: 'warmup' },
+			evidence: {
+				effective_collector: 'nss_ecm_bpf',
+				ecm_bpf: { sample_ms: 11000 }
+			}
+		});
+	};
+	rpc.clients = function() {
+		return Promise.resolve({
+			clients: [ {
+				collector_mode: 'nss_ecm_bpf', sample_ms: 12004,
+				tx_bps: 1200, rx_bps: 1200,
+				rate_meta: { tx: { source: 'edge_port' }, rx: { source: 'edge_port' } }
+			} ],
+			evidence: {
+				effective_collector: 'nss_ecm_bpf',
+				ecm_bpf: { sample_ms: 11000 },
+				access_edge: { sample_ms: 12004 }
+			}
+		});
+	};
+	interfaceSampleMs = 12000;
+	const activeEdge = await overview.loadAll(heldPublishedWindow, clock);
+	assert.strictEqual(activeEdge.livePair.aligned, true);
+	assert.strictEqual(activeEdge.livePair.coverageSampleMs, null,
+		'the two-second NSS classifier clock must not gate an active one-second Edge batch');
+	assert.strictEqual(activeEdge.livePair.clientSampleMs, 12004);
+	assert.strictEqual(activeEdge.livePair.interfaceSampleMs, 12000);
+	assert.strictEqual(activeEdge.clients.clients[0].tx_bps, 1200,
+		'active Edge clients within the 50ms read-end skew must remain visible');
 }
 
 function fakeTimers() {
@@ -685,7 +719,7 @@ function loadShellAndRefresh(context, fmt) {
 		},
 		fmt,
 		{ detailHref: function(pathname, key) { return pathname + '?client=' + encodeURIComponent(key); } },
-		{ FULL_VERSION: '1.1.5-r1' },
+		{ FULL_VERSION: '1.1.5-r3' },
 		{
 			hideIpv6RangesValue: function(value) { return value || ''; },
 			displayIpsForClient: function(values) { return Array.isArray(values) ? values : []; }
@@ -742,7 +776,7 @@ function testPaginationAndUiStates(context, fmt) {
 	let refreshCount = 0;
 	const clients = Array.from({ length: 30 }, function(_value, index) { return client(index + 1); });
 	const state = {
-		status: { version: '1.1.5-r1', coverage: { quality: 'idle' } },
+		status: { version: '1.1.5-r3', coverage: { quality: 'idle' } },
 		clients: { clients: clients },
 		interfaces: { interfaces: [ { name: 'br-lan', role: 'lan', rx_bps: 100, tx_bps: 200 } ] },
 		rpc: successRpc(100000),
@@ -814,7 +848,7 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.strictEqual(findAllByClass(built.root, 'lanspeed-freshness-status').length, 0);
 	assert.strictEqual(state.refs.servicePill, undefined);
 	assert.strictEqual(state.refs.freshnessPill, undefined);
-	assert.strictEqual(state.refs.meta.textContent, '后端 1.1.5-r1 · luci 1.1.5-r1');
+	assert.strictEqual(state.refs.meta.textContent, '后端 1.1.5-r3 · luci 1.1.5-r3');
 	assert.ok(!state.refs.meta.textContent.includes('检查于'));
 	assert.strictEqual(state.pageCount, 3);
 	assert.strictEqual(state.refs.root.attrs['aria-busy'], 'false');

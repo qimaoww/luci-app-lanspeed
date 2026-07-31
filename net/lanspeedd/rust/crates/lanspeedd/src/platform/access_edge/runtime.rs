@@ -567,40 +567,7 @@ impl AccessEdgeRuntime {
         end_ms: u64,
     ) -> Option<ObservedDelta> {
         let history = self.histories.get(&(key, direction))?;
-        let selected = history
-            .iter()
-            .copied()
-            .filter(|segment| {
-                segment.end_ms > start_ms.saturating_sub(CLASSIFIER_READ_END_SKEW_MS)
-                    && segment.start_ms < end_ms.saturating_add(CLASSIFIER_READ_END_SKEW_MS)
-            })
-            .collect::<Vec<_>>();
-        let first = selected.first()?;
-        let last = selected.last()?;
-        if first.start_ms.abs_diff(start_ms) > CLASSIFIER_READ_END_SKEW_MS
-            || last.end_ms.abs_diff(end_ms) > CLASSIFIER_READ_END_SKEW_MS
-            || selected
-                .windows(2)
-                .any(|pair| pair[0].end_ms != pair[1].start_ms)
-            || selected.iter().any(|segment| {
-                segment.source != first.source
-                    || segment.byte_domain != first.byte_domain
-                    || segment.attachment_generation != first.attachment_generation
-            })
-        {
-            return None;
-        }
-        Some(ObservedDelta {
-            source: first.source,
-            bytes: selected
-                .iter()
-                .fold(0u64, |total, segment| total.saturating_add(segment.bytes)),
-            packets: selected
-                .iter()
-                .fold(0u64, |total, segment| total.saturating_add(segment.packets)),
-            byte_domain: first.byte_domain,
-            read_end_ms: last.read_end_ms,
-        })
+        aggregate_history(history, start_ms, end_ms)
     }
 
     pub fn update_classification(
@@ -614,6 +581,47 @@ impl AccessEdgeRuntime {
     pub fn clear_classification(&mut self) {
         self.classification.clear();
     }
+}
+
+fn aggregate_history(
+    history: &VecDeque<CounterSegment>,
+    start_ms: u64,
+    end_ms: u64,
+) -> Option<ObservedDelta> {
+    let selected = history
+        .iter()
+        .copied()
+        .filter(|segment| {
+            segment.start_ms >= start_ms.saturating_sub(CLASSIFIER_READ_END_SKEW_MS)
+                && segment.end_ms <= end_ms.saturating_add(CLASSIFIER_READ_END_SKEW_MS)
+        })
+        .collect::<Vec<_>>();
+    let first = selected.first()?;
+    let last = selected.last()?;
+    if first.start_ms.abs_diff(start_ms) > CLASSIFIER_READ_END_SKEW_MS
+        || last.end_ms.abs_diff(end_ms) > CLASSIFIER_READ_END_SKEW_MS
+        || selected
+            .windows(2)
+            .any(|pair| pair[0].end_ms != pair[1].start_ms)
+        || selected.iter().any(|segment| {
+            segment.source != first.source
+                || segment.byte_domain != first.byte_domain
+                || segment.attachment_generation != first.attachment_generation
+        })
+    {
+        return None;
+    }
+    Some(ObservedDelta {
+        source: first.source,
+        bytes: selected
+            .iter()
+            .fold(0u64, |total, segment| total.saturating_add(segment.bytes)),
+        packets: selected
+            .iter()
+            .fold(0u64, |total, segment| total.saturating_add(segment.packets)),
+        byte_domain: first.byte_domain,
+        read_end_ms: last.read_end_ms,
+    })
 }
 
 trait StationReadTimes {
@@ -728,5 +736,35 @@ mod tests {
         );
         assert_eq!(ambiguous.key.vlan_id, None);
         assert_eq!(ambiguous.point.vlan_id, None);
+    }
+
+    #[test]
+    fn classifier_window_excludes_adjacent_edge_segments_inside_the_skew_margin() {
+        let segment = |epoch_id, start_ms, end_ms, bytes| CounterSegment {
+            epoch_id,
+            start_ms,
+            end_ms,
+            read_begin_ms: end_ms,
+            read_end_ms: end_ms,
+            source: RateSource::EdgePort,
+            direction: Direction::Tx,
+            bytes,
+            packets: bytes / 10,
+            attachment_generation: 7,
+            byte_domain: ByteDomain::L2NoFcs,
+            uncertainty_ms: 4,
+        };
+        let history = VecDeque::from([
+            segment(1, 1_000, 2_000, 10),
+            segment(2, 2_000, 3_000, 20),
+            segment(3, 3_000, 4_000, 30),
+            segment(4, 4_000, 5_000, 40),
+        ]);
+
+        let observed = aggregate_history(&history, 2_004, 4_004)
+            .expect("two complete Edge segments should match the skewed classifier window");
+        assert_eq!(observed.bytes, 50);
+        assert_eq!(observed.packets, 5);
+        assert_eq!(observed.read_end_ms, 4_000);
     }
 }

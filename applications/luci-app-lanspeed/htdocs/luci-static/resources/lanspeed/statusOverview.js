@@ -8,6 +8,7 @@
 
 var SOURCE_KEYS = [ 'status', 'clients', 'interfaces', 'uci' ];
 var LIVE_SOURCE_KEYS = [ 'status', 'clients', 'interfaces' ];
+var ACCESS_EDGE_SAMPLE_SKEW_MS = 50;
 var SOURCE_LABELS = {
 	status: 'status',
 	clients: 'clients',
@@ -96,17 +97,25 @@ function collectorSampleClock(data) {
 }
 
 function statusBatch(data) {
+	var edgeActive = String(data && data.access_edge_mode || '') === 'active';
+	var edgeSample = sampleClock(data && data.evidence && data.evidence.access_edge &&
+		data.evidence.access_edge.sample_ms);
 	return {
-		sampleMs: collectorSampleClock(data),
+		// Active Access Edge owns the one-second client rate. The NSS classifier
+		// clock is intentionally two-second and must not gate that live batch.
+		sampleMs: edgeSample !== null ? edgeSample : (edgeActive ? null : collectorSampleClock(data)),
 		hasCoverage: !!(data && data.coverage && typeof data.coverage === 'object')
 	};
 }
 
-function clientBatch(data) {
+function clientBatch(data, status) {
 	data = data || {};
 	var source = collectorEvidence(data);
 	var collector = source.collector;
 	var evidenceClock = collectorSampleClock(data);
+	var edgeActive = String(status && status.access_edge_mode || '') === 'active';
+	var edgeClock = edgeActive ? sampleClock(data.evidence && data.evidence.access_edge &&
+		data.evidence.access_edge.sample_ms) : null;
 
 	var rateModes = { bpf: true, nss_ecm_node: true, nss_ecm_bpf: true };
 	var rows = Array.isArray(data.clients) ? data.clients : [];
@@ -115,7 +124,8 @@ function clientBatch(data) {
 		return collector ? mode === collector : rateModes[mode] === true;
 	});
 	return {
-		sampleMs: evidenceClock !== null ? evidenceClock : maxSampleClock(rateRows),
+		sampleMs: edgeClock !== null ? edgeClock :
+			(evidenceClock !== null ? evidenceClock : maxSampleClock(rateRows)),
 		hasRates: rateRows.length > 0
 	};
 }
@@ -128,13 +138,17 @@ function interfaceBatch(data) {
 
 function livePair(data) {
 	var status = statusBatch(data && data.status);
-	var clients = clientBatch(data && data.clients);
+	var clients = clientBatch(data && data.clients, data && data.status);
 	var interfaces = interfaceBatch(data && data.interfaces);
 	var clocks = [ status.sampleMs, clients.sampleMs, interfaces ].filter(function(value) {
 		return value !== null;
 	});
 	var comparable = clocks.length > 1;
-	var aligned = !comparable || clocks.every(function(value) { return value === clocks[0]; });
+	var skew = String(data && data.status && data.status.access_edge_mode || '') === 'active'
+		? ACCESS_EDGE_SAMPLE_SKEW_MS : 0;
+	var aligned = !comparable || clocks.every(function(value) {
+		return Math.abs(value - clocks[0]) <= skew;
+	});
 	return {
 		coverageSampleMs: status.sampleMs,
 		clientSampleMs: clients.sampleMs,

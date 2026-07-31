@@ -620,11 +620,11 @@ function refreshLive(viewState) {
 			if (connectionOnly)
 				modeTitle += '\n' + vocab.warningText('conntrack_connection_only');
 
-				var stateCells = rateMetaCells(c.rate_meta);
-				stateCells.push(E('span', {
-					'class': 'label',
-					'title': c.rate_meta ? _('采集流水线：') + modeTitle : modeTitle
-				}, c.rate_meta ? _('流水线 ') + modeLabel : modeLabel));
+			var stateCells = rateMetaCells(c.rate_meta);
+			stateCells.push(E('span', {
+				'class': 'label',
+				'title': c.rate_meta ? _('采集流水线：') + modeTitle : modeTitle
+			}, c.rate_meta ? _('流水线 ') + modeLabel : modeLabel));
 			if (specificWarnings.length)
 				stateCells.push(E('span', {
 					'class': critClient ? 'label danger' : 'label warning',
