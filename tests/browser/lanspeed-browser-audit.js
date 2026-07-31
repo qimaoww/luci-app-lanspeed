@@ -1783,7 +1783,7 @@ async page => {
 				} else {
 					const requiredSubsections = [ 'lanspeed-config-runtime-section', 'lanspeed-ifcfg' ];
 					const requiredFields = [
-						'rate_collector_mode', 'access_edge_mode', 'dedicated_port', 'conn_collector_mode',
+						'rate_collector_mode', 'access_edge_mode', 'conn_collector_mode',
 						'enable_bpf', 'enable_conntrack_fallback', 'refresh_interval_ms',
 						'overview_window_samples', 'max_clients', 'active_client_window_ms',
 						'active_client_min_bps', 'show_client_status', 'show_ipv6',

@@ -2,7 +2,7 @@
 
 `luci-app-lanspeed` 为 ImmortalWrt / OpenWrt 提供 LAN 客户端实时速率、接口吞吐、连接数、逐连接速率、诊断与配置页面。用户态服务 `lanspeedd` 使用 Rust/Aya，提供九个 ubus 方法；`lanspeedd-bpf` 安装目标架构对应的 eBPF 对象。
 
-客户端总速率优先来自只读 Access Edge：有线直连端口使用 netdev 64 位计数，Wi-Fi 使用 NL80211 station 计数。TC-BPF 观察 CPU 慢路径，Qualcomm ECM kprobe 只记录已由 NSS callback context 证明的硬件增量；分类值不再与总速率相加。直连声明端口可达到 `all_frames/full`，已验证 AP station 最高为 `unicast/full`，WDS、Mesh、共享下联与未验证组播保持 Partial。本项目按证据声明覆盖范围，不把未知字节强行二分为 NSS/非 NSS。
+客户端总速率优先来自只读 Access Edge：稳定观测到的有线客户端使用 netdev 64 位计数，Wi-Fi 使用 NL80211 station 计数。TC-BPF 观察 CPU 慢路径，Qualcomm ECM kprobe 只记录已由 NSS callback context 证明的硬件增量；分类值不再与总速率相加。已验证 AP station 最高为 `unicast/full`，WDS、Mesh、共享下联与未验证组播保持 Partial。本项目按证据声明覆盖范围，不把未知字节强行二分为 NSS/非 NSS。
 
 ## 界面预览
 
@@ -29,7 +29,7 @@ x86/TC-BPF 与 Qualcomm NSS 是两个独立源码模块，公共生产循环只�
 
 ### Access Edge 与分类语义
 
-每个客户端、每个方向只有一个总速率 owner：Wi-Fi station、管理员声明的直连端口、严格同窗的 ECM+TC fallback、单源 lower-bound，或 unavailable。候选源分别维护累计基线，禁止跨来源相减；移动、重关联、计数回退和来源切换都会重新 warmup。
+每个客户端、每个方向只有一个总速率 owner：Wi-Fi station、稳定观测到的有线端口、严格同窗的 ECM+TC fallback、单源 lower-bound，或 unavailable。候选源分别维护累计基线，禁止跨来源相减；移动、重关联、计数回退和来源切换都会重新 warmup。
 
 ```text
 E = Access Edge 权威总量
@@ -72,7 +72,7 @@ Qualcomm aarch64 NSS 设备自动按 ECM+BPF、ECM、BPF 选择健康后端，�
 - LuCI 显示完整包版本，例如 `1.1.5-r6`，并使用同一版本作为静态资源缓存键。
 - 诊断页独立校验六个 RPC，并分开展示客户端总速率 owner、精准接入拓扑、NSS/CPU 分类和不可比较或降级边界。
 - 配置页支持速率模式、连接模式、采样、活动阈值、IPv6 显示、接口采集/观察和严格输入校验。
-- 配置页支持 Access Edge `off/shadow/active` 与管理员直连端口声明；默认 `active` 在自动模式中启用精准总速率。
+- 配置页支持 Access Edge `off/shadow/active`；默认 `active` 在自动模式中启用精准总速率。
 - OpenClash、dae/daed、SQM/qosify/ifb、flow offload 与 fullcone NAT 探测和机器可读告警。
 
 ## 安装与编译
@@ -163,8 +163,6 @@ config lanspeed 'main'
     option overview_window_samples '240'
     option rate_collector_mode 'auto'
     option access_edge_mode 'active'
-    # 只有确认一口一客户端时才添加；默认没有此项
-    # list dedicated_port 'lan2'
     option conn_collector_mode 'auto'
     option show_client_status '0'
     option show_ipv6 '1'
@@ -185,13 +183,14 @@ config lanspeed 'main'
 | `overview_window_samples` | `240` | 概览历史样本数 |
 | `rate_collector_mode` | `auto` | 自动精准优先；也可手动强制只看 BPF、NSS ECM 或 ECM+BPF 路径 |
 | `access_edge_mode` | `active` | 自动模式默认使用有线端口/无线客户端计数作为总速率；`shadow` 仅后台验证，`off` 关闭 |
-| `dedicated_port` | 空 | 管理员确认的一口一客户端端口；AP、交换机下联、Mesh、WDS、trunk 不得声明 |
 | `conn_collector_mode` | `auto` | `auto` / `conntrack_netlink` / `conntrack_procfs` |
 | `max_clients` | `2048` | 客户端与聚合容量，范围 64 到 16384 |
 | `interface_include` | `br-lan` | 客户端速率采集接口 |
 | `observe` | `wan` | 仅显示接口吞吐 |
 | `enable_bpf` | `1` | BPF 运行开关，不改变包依赖 |
 | `enable_conntrack_fallback` | `1` | 连接元数据回退，不参与客户端总速率 |
+
+旧版本曾提供手工 `dedicated_port` 声明；当前配置页不再提供该选项，保存配置时会自动清理遗留 UCI 项。
 
 分类覆盖率只在同一比较口径上发布。有线客户端会把端口、TC 慢路径和 NSS ECM
 计数按真实包数统一换算为 `l2_with_fcs` 后比较；NL80211 的 Wi-Fi station 字节包含

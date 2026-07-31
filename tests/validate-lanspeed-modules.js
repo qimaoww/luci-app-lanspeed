@@ -6068,7 +6068,7 @@ function assertConfigModelRewrite(src) {
 	const required = [
 		'refresh_interval_ms', 'active_client_window_ms', 'active_client_min_bps',
 			'overview_window_samples', 'rate_collector_mode', 'conn_collector_mode',
-			'access_edge_mode', 'dedicated_port',
+			'access_edge_mode',
 			'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges',
 		'collector_mode', 'max_clients', 'ifname', 'interface_include',
 		'interface_exclude', 'observe', 'enable_bpf', 'enable_conntrack_fallback'
@@ -6081,10 +6081,13 @@ function assertConfigModelRewrite(src) {
 	const readableLabels = Object.fromEntries(model.FIELDS.map(field => [ field.name, field.label ]));
 	if (String(readableLabels.rate_collector_mode) !== '客户端网速模式' ||
 		String(readableLabels.access_edge_mode) !== '客户端总速率' ||
-		String(readableLabels.dedicated_port) !== '一口一设备端口' ||
 		String(readableLabels.enable_bpf) !== '启用 CPU 流量检测（BPF）') {
 		fail('configModel.js must present user-facing meanings instead of internal collector terminology');
 	}
+	if (Object.prototype.hasOwnProperty.call(readableLabels, 'dedicated_port'))
+		fail('configModel.js must remove the obsolete dedicated-port field from the visible contract');
+	if (JSON.stringify(model.REMOVED_UCI_FIELDS) !== JSON.stringify([ 'dedicated_port' ]))
+		fail('configModel.js must keep removed UCI fields explicit for compatibility cleanup');
 	if (model.DEFAULTS.access_edge_mode !== 'active' ||
 		JSON.stringify(model.ACCESS_EDGE_MODES.map(item => String(item.label))) !== JSON.stringify([
 			'关闭精准检测', '仅后台验证（不用于显示）', '精准总速率（推荐）'
@@ -6100,21 +6103,21 @@ function assertConfigModelRewrite(src) {
 		model.parseCidr('2001:db8::/129').valid) {
 		fail('configModel.js must strictly validate IPv6 CIDRs and prefix lengths');
 	}
-		const invalid = model.normalize({
-			refresh_interval_ms: 'oops', hide_ipv6_ranges: 'not-a-cidr',
-			ifname: [ 'bad name' ], dedicated_port: [ 'bad/name' ],
-			access_edge_mode: 'guess', enable_bpf: 'maybe'
-		});
-		if (invalid.valid || !invalid.errors.refresh_interval_ms ||
-			!invalid.errors.hide_ipv6_ranges || !invalid.errors.ifname ||
-			!invalid.errors.dedicated_port || !invalid.errors.access_edge_mode ||
-			!invalid.errors.enable_bpf) {
-			fail('configModel.js must return field-scoped errors for malformed UCI values');
-		}
-		const edge = model.normalize({ access_edge_mode: 'active', dedicated_port: [ 'lan2', 'lan2', 'lan3' ] });
-		if (!edge.valid || edge.values.access_edge_mode !== 'active' ||
-			JSON.stringify(edge.values.dedicated_port) !== JSON.stringify([ 'lan2', 'lan3' ]))
-			fail('configModel.js must normalize Access Edge mode and de-duplicate declared direct ports');
+	const invalid = model.normalize({
+		refresh_interval_ms: 'oops', hide_ipv6_ranges: 'not-a-cidr',
+		ifname: [ 'bad name' ],
+		access_edge_mode: 'guess', enable_bpf: 'maybe'
+	});
+	if (invalid.valid || !invalid.errors.refresh_interval_ms ||
+		!invalid.errors.hide_ipv6_ranges || !invalid.errors.ifname ||
+		!invalid.errors.access_edge_mode ||
+		!invalid.errors.enable_bpf) {
+		fail('configModel.js must return field-scoped errors for malformed UCI values');
+	}
+	const edge = model.normalize({ access_edge_mode: 'active' });
+	if (!edge.valid || edge.values.access_edge_mode !== 'active' ||
+		Object.prototype.hasOwnProperty.call(edge.values, 'dedicated_port'))
+		fail('configModel.js must keep Access Edge independent from the removed direct-port declaration');
 	const removedMode = model.normalize({ rate_collector_mode: 'conntrack_ecm_sync' });
 	if (removedMode.valid || removedMode.values.rate_collector_mode !== 'auto' ||
 	    removedMode.errors.rate_collector_mode !== 'enum_required')
@@ -6180,6 +6183,12 @@ function assertConfigModelRewrite(src) {
 	}), { ifname: [ 'br-lan' ] });
 	if (JSON.stringify(presentPatch.unset) !== JSON.stringify([ 'ifname' ]))
 		fail('configModel.js must unset only owned list options that were actually present');
+	const removedPortPatch = model.buildUciPatch(model.DEFAULTS, {
+		dedicated_port: [ 'lan2', 'lan3' ]
+	});
+	if (JSON.stringify(removedPortPatch.unset) !== JSON.stringify([ 'dedicated_port' ]) ||
+		Object.prototype.hasOwnProperty.call(removedPortPatch.set, 'dedicated_port'))
+		fail('configModel.js must clean the removed dedicated-port option on the next save');
 	if (!src.includes('legacy-enum') || !src.includes('compatibility: true') ||
 		!src.includes('MAX_INTERFACE_NAMES'))
 		fail('configModel.js must explicitly identify compatibility fields and interface limits');
@@ -6303,7 +6312,7 @@ function makeConfigFormState(model, overrides) {
 		'overview_window_samples', 'max_clients' ];
 	const booleans = [ 'show_client_status', 'show_ipv6', 'hide_private_ipv6',
 		'enable_bpf', 'enable_conntrack_fallback' ];
-	const editable = [ 'rate_collector_mode', 'access_edge_mode', 'dedicated_port',
+	const editable = [ 'rate_collector_mode', 'access_edge_mode',
 		'conn_collector_mode', 'enable_bpf',
 		'enable_conntrack_fallback', 'refresh_interval_ms', 'overview_window_samples',
 		'max_clients', 'active_client_window_ms', 'active_client_min_bps',
@@ -6314,7 +6323,6 @@ function makeConfigFormState(model, overrides) {
 		inputs[name] = fakeElement('select', { value: values[name] });
 		inputs[name].value = values[name];
 	});
-	inputs.dedicated_port = fakeElement('input', { value: (values.dedicated_port || []).join(' ') });
 	booleans.forEach(function(name) {
 		inputs[name] = fakeElement('input', { type: 'checkbox' });
 		inputs[name].checked = values[name] === '1';
@@ -6599,11 +6607,15 @@ function assertConfigFormRewrite(src) {
 		src.includes("lsRpc.uciDelete")) {
 		fail('configForm.js must never revert the whole package or bypass the LuCI UCI cache');
 	}
-		[ 'refresh_interval_ms', 'overview_window_samples', 'max_clients', 'enable_bpf',
-			'enable_conntrack_fallback', 'access_edge_mode', 'dedicated_port',
-			'interface_exclude' ].forEach(name => {
+	[ 'refresh_interval_ms', 'overview_window_samples', 'max_clients', 'enable_bpf',
+		'enable_conntrack_fallback', 'access_edge_mode', 'interface_exclude' ].forEach(name => {
 		if (!src.includes(name)) fail(`configForm.js must preserve ${name} in the owned data contract`);
 	});
+	if (!src.includes("values.dedicated_port = uci.get('lanspeed', 'main', 'dedicated_port')") ||
+		src.includes("rowFor(viewState, 'dedicated_port'") ||
+		src.includes('refs.inputs.dedicated_port') ||
+		!src.includes('FIELD_NAMES.concat(REMOVED_UCI_FIELDS)'))
+		fail('configForm.js must migrate the removed dedicated-port option without rendering or editing it');
 	if (src.includes('lanspeed-compatibility') || src.includes('compatibilityBlock') ||
 		src.includes('清空兼容排除项'))
 		fail('configForm.js must not expose internal compatibility fields as a second configuration workflow');
@@ -6619,7 +6631,6 @@ function matchingConfigStatus(values) {
 		warnings: [],
 			rate_collector_mode: values.rate_collector_mode,
 			access_edge_mode: values.access_edge_mode,
-			dedicated_ports: cloneConfigValue(values.dedicated_port || []),
 			conn_collector_mode: values.conn_collector_mode,
 		refresh_interval_ms: values.refresh_interval_ms,
 		active_client_window_ms: values.active_client_window_ms,
@@ -6661,6 +6672,18 @@ function assertConfigFormBehavior(src) {
 	}).catch(function(error) {
 		fail('configForm.js valid-status load behavior failed: ' + (error && error.stack || error));
 	}));
+	const legacyLoadForm = loadConfigFormModule(src, makeConfigUci(model, { initial: {
+		dedicated_port: [ 'lan2', 'lan3' ]
+	} }), { status: function() { return Promise.resolve({}); } }, makeConfigIfaceStub(), model);
+	asyncChecks.push(legacyLoadForm.loadValues().then(function(values) {
+		if (JSON.stringify(values.raw.dedicated_port) !== JSON.stringify([ 'lan2', 'lan3' ]) ||
+			Object.prototype.hasOwnProperty.call(values, 'dedicated_port') ||
+			Object.prototype.hasOwnProperty.call(values.values || {}, 'dedicated_port')) {
+			fail('configForm.js must retain a legacy dedicated-port value only in raw migration data');
+		}
+	}).catch(function(error) {
+		fail('configForm.js legacy migration load behavior failed: ' + (error && error.stack || error));
+	}));
 	const invalidUci = makeConfigUci(model);
 	const invalidIface = makeConfigIfaceStub();
 	const invalidForm = loadConfigFormModule(src, invalidUci, { status: function() { return Promise.resolve({}); } }, invalidIface, model);
@@ -6690,30 +6713,36 @@ function assertConfigFormBehavior(src) {
 		}
 	}));
 
-	const stagedUci = makeConfigUci(model);
+	const stagedUci = makeConfigUci(model, { initial: {
+		dedicated_port: [ 'lan2', 'lan3' ]
+	} });
 	const stagedIface = makeConfigIfaceStub();
-	const stagedForm = loadConfigFormModule(src, stagedUci, { status: function() { return Promise.resolve({}); } }, stagedIface, model);
-		const stagedState = makeConfigFormState(model, { localDirty: true });
-		stagedState.daemonRefs.inputs.refresh_interval_ms.value = '2000';
-		stagedState.daemonRefs.inputs.access_edge_mode.value = 'active';
-		stagedState.daemonRefs.inputs.dedicated_port.value = 'lan2 lan3';
-		asyncChecks.push(stagedForm.saveAll(stagedState).then(function(result) {
-			if (!result || !result.ok || !result.staged || !stagedState.hasStagedSave ||
-				stagedState.configSaving || stagedState.ifaceBusy ||
-				String(stagedUci.remote.refresh_interval_ms) !== '2000' ||
-				stagedUci.remote.access_edge_mode !== 'active' ||
-				JSON.stringify(stagedUci.remote.dedicated_port) !== JSON.stringify([ 'lan2', 'lan3' ]) ||
-				stagedState.saveState !== 'staged') {
-				fail('configForm.js Save must stage Access Edge and other valid values, unlock controls and expose the staged state');
-			}
+	const stagedForm = loadConfigFormModule(src, stagedUci,
+		{ status: function() { return Promise.resolve({}); } }, stagedIface, model);
+	const stagedState = makeConfigFormState(model, { localDirty: true });
+	stagedState.originalRaw.dedicated_port = [ 'lan2', 'lan3' ];
+	stagedState.daemonRefs.inputs.refresh_interval_ms.value = '2000';
+	stagedState.daemonRefs.inputs.access_edge_mode.value = 'active';
+	asyncChecks.push(stagedForm.saveAll(stagedState).then(function(result) {
+		if (!result || !result.ok || !result.staged || !stagedState.hasStagedSave ||
+			stagedState.configSaving || stagedState.ifaceBusy ||
+			String(stagedUci.remote.refresh_interval_ms) !== '2000' ||
+			stagedUci.remote.access_edge_mode !== 'active' ||
+			Object.prototype.hasOwnProperty.call(stagedUci.remote, 'dedicated_port') ||
+			!stagedUci.calls.some(function(call) {
+				return call[0] === 'unset' && call[1] === 'dedicated_port';
+			}) ||
+			stagedState.saveState !== 'staged') {
+			fail('configForm.js Save must stage Access Edge and other valid values, unlock controls and expose the staged state');
+		}
 		return stagedForm.resetAll(stagedState);
 	}).then(function(result) {
 		const saves = stagedUci.calls.filter(function(call) { return call[0] === 'save'; });
-			if (!result || !result.ok || !result.staged || stagedState.hasStagedSave ||
-				String(stagedUci.remote.refresh_interval_ms) !== '1000' || saves.length !== 2 ||
-				stagedUci.remote.access_edge_mode !== 'active' ||
-				Object.prototype.hasOwnProperty.call(stagedUci.remote, 'dedicated_port') ||
-				stagedState.daemonRefs.inputs.refresh_interval_ms.value !== '1000') {
+		if (!result || !result.ok || !result.staged || stagedState.hasStagedSave ||
+			String(stagedUci.remote.refresh_interval_ms) !== '1000' || saves.length !== 2 ||
+			stagedUci.remote.access_edge_mode !== 'active' ||
+			Object.prototype.hasOwnProperty.call(stagedUci.remote, 'dedicated_port') ||
+			stagedState.daemonRefs.inputs.refresh_interval_ms.value !== '1000') {
 			fail('configForm.js Reset must stage an owned-field reversal after Save without applying');
 		}
 	}).catch(function(error) {
@@ -6763,6 +6792,7 @@ function assertConfigFormBehavior(src) {
 	}));
 
 	const rollbackUci = makeConfigUci(model, {
+		initial: { dedicated_port: [ 'lan2' ] },
 		saveBehaviors: [
 			function(api) {
 				api.commit();
@@ -6775,6 +6805,7 @@ function assertConfigFormBehavior(src) {
 	const rollbackForm = loadConfigFormModule(src, rollbackUci,
 		{ status: function() { return Promise.resolve({}); } }, makeConfigIfaceStub(), model);
 	const rollbackState = makeConfigFormState(model);
+	rollbackState.originalRaw.dedicated_port = [ 'lan2' ];
 	rollbackState.daemonRefs.inputs.refresh_interval_ms.value = '3000';
 	asyncChecks.push(rollbackForm.saveAll(rollbackState).then(function() {
 		fail('configForm.js must report the original staging failure after compensating rollback');
@@ -6783,6 +6814,7 @@ function assertConfigFormBehavior(src) {
 		if (!String(error && error.message || error).includes('partial save failed') ||
 			!String(error && error.message || error).includes('本页字段已回滚') || saves.length !== 2 ||
 			String(rollbackUci.remote.refresh_interval_ms) !== '1000' ||
+			JSON.stringify(rollbackUci.remote.dedicated_port) !== JSON.stringify([ 'lan2' ]) ||
 			rollbackUci.remote.foreign_option !== 'external-after-failure' ||
 			rollbackState.configSaving || rollbackState.saveState !== 'error') {
 			fail('configForm.js failed Save must compensate only owned fields and preserve unrelated staged values');

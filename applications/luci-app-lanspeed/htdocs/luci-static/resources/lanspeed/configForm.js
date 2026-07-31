@@ -6,6 +6,7 @@
 'require lanspeed.configModel as cfgModel';
 
 var FIELD_NAMES = cfgModel.FIELDS.map(function(field) { return field.name; });
+var REMOVED_UCI_FIELDS = cfgModel.REMOVED_UCI_FIELDS || [];
 var LIST_FIELDS = [ 'ifname', 'interface_include', 'interface_exclude', 'observe' ];
 var BOOLEAN_FIELDS = [ 'show_client_status', 'show_ipv6', 'hide_private_ipv6',
 	'enable_bpf', 'enable_conntrack_fallback' ];
@@ -61,10 +62,6 @@ function statusContractIssue(status) {
 	if (status.access_edge_mode !== undefined &&
 		STATUS_ACCESS_EDGE_MODES.indexOf(status.access_edge_mode) === -1)
 		return _('客户端总速率模式无效');
-	if (status.dedicated_ports !== undefined &&
-		(!Array.isArray(status.dedicated_ports) ||
-		 cfgModel.parseInterfaceList(status.dedicated_ports).valid.length !== status.dedicated_ports.length))
-		return _('直连端口字段无效');
 	if (typeof status.refresh_interval_ms !== 'number' || !isFinite(status.refresh_interval_ms) ||
 		Math.floor(status.refresh_interval_ms) !== status.refresh_interval_ms || status.refresh_interval_ms < 500)
 		return _('采样周期无效');
@@ -132,6 +129,8 @@ function rawUciValues() {
 	FIELD_NAMES.forEach(function(name) {
 		values[name] = uci.get('lanspeed', 'main', name);
 	});
+	/* Read removed options only so the next save can clean them up. */
+	values.dedicated_port = uci.get('lanspeed', 'main', 'dedicated_port');
 	return values;
 }
 
@@ -387,7 +386,6 @@ function readForm(viewState) {
 	values.rate_collector_mode = refs.inputs.rate_collector_mode.value;
 	values.access_edge_mode = refs.inputs.access_edge_mode.value;
 	values.conn_collector_mode = refs.inputs.conn_collector_mode.value;
-	values.dedicated_port = refs.inputs.dedicated_port.value;
 	BOOLEAN_FIELDS.forEach(function(name) { values[name] = refs.inputs[name].checked ? '1' : '0'; });
 	values.hide_ipv6_ranges = rangeValues(refs);
 	values.collector_mode = cfgModel.collectorModeFor(values);
@@ -453,7 +451,6 @@ function updateDependencies(viewState) {
 		cfgModel.modeChoices('connection', viewState.runtimeStatus || {}, values), values.conn_collector_mode,
 		'conn_collector_mode');
 	var rangesEnabled = !busy && values.show_ipv6 === '1' && values.hide_private_ipv6 === '1';
-	var edgePortsEnabled = !busy && values.access_edge_mode !== 'off';
 	refs.inputs.hide_private_ipv6.disabled = busy || values.show_ipv6 !== '1';
 	refs.hideIpv6RangeInput.disabled = !rangesEnabled;
 	refs.addRangeBtn.disabled = !rangesEnabled;
@@ -462,9 +459,6 @@ function updateDependencies(viewState) {
 		refs.fields.hide_ipv6_ranges.row.setAttribute('data-disabled', rangesEnabled ? 'false' : 'true');
 	if (refs.fields.hide_private_ipv6)
 		refs.fields.hide_private_ipv6.row.setAttribute('data-disabled', values.show_ipv6 === '1' ? 'false' : 'true');
-	refs.inputs.dedicated_port.disabled = !edgePortsEnabled;
-	if (refs.fields.dedicated_port)
-		refs.fields.dedicated_port.row.setAttribute('data-disabled', edgePortsEnabled ? 'false' : 'true');
 }
 
 function formChanged(viewState) {
@@ -482,7 +476,6 @@ function fillForm(viewState, values) {
 	refs.inputs.rate_collector_mode.value = values.rate_collector_mode;
 	refs.inputs.access_edge_mode.value = values.access_edge_mode;
 	refs.inputs.conn_collector_mode.value = values.conn_collector_mode;
-	refs.inputs.dedicated_port.value = (values.dedicated_port || []).join(' ');
 	BOOLEAN_FIELDS.forEach(function(name) {
 		refs.inputs[name].checked = values[name] === '1';
 		var wrap = refs.inputs[name].parentNode;
@@ -549,7 +542,6 @@ function buildDaemonSection(data, viewState) {
 		cfgModel.ACCESS_EDGE_MODES, values.access_edge_mode);
 	refs.inputs.conn_collector_mode = choiceSelect('conn_collector_mode',
 		cfgModel.modeChoices('connection', viewState.runtimeStatus, values), values.conn_collector_mode);
-	refs.inputs.dedicated_port = interfaceListInput('dedicated_port', values.dedicated_port, 'lan2 lan3');
 	BOOLEAN_FIELDS.forEach(function(name) {
 		var field = cfgModel.FIELDS.filter(function(item) { return item.name === name; })[0];
 		var wrap = toggleInput(name, field ? field.label : name, values[name] === '1');
@@ -575,8 +567,6 @@ function buildDaemonSection(data, viewState) {
 		_('推荐“自动精准”：优先显示每个客户端接入口的总速率；NSS 与 CPU 检测用于流量分类，并在总速率不可用时降级显示。手动模式只显示所选路径能看到的流量。')));
 	rows.push(rowFor(viewState, 'access_edge_mode', _('客户端总速率'), refs.inputs.access_edge_mode,
 		_('“精准总速率”在自动模式中使用有线端口或无线客户端计数；“仅后台验证”只采集核对，不改变页面速率；“关闭”完全停用。')));
-	rows.push(rowFor(viewState, 'dedicated_port', _('一口一设备端口'), refs.inputs.dedicated_port,
-		_('只填写确定一口只连接一个客户端的物理端口，以空格分隔。连接 AP、交换机、Mesh、WDS 或其他共享设备的端口不要填写。')));
 	rows.push(rowFor(viewState, 'conn_collector_mode', _('连接详情来源'), refs.inputs.conn_collector_mode,
 		_('推荐自动选择；内核连接接口优先，兼容接口仅用于旧系统。')));
 	rows.push(rowFor(viewState, 'enable_bpf', _('启用 CPU 流量检测（BPF）'), refs.toggleWrap.enable_bpf,
@@ -618,7 +608,6 @@ function buildDaemonSection(data, viewState) {
 	NUMBER_FIELDS.concat([ 'rate_collector_mode', 'access_edge_mode', 'conn_collector_mode' ]).forEach(function(name) {
 		refs.inputs[name].addEventListener(name.indexOf('_mode') >= 0 ? 'change' : 'input', function() { formChanged(viewState); });
 	});
-	refs.inputs.dedicated_port.addEventListener('input', function() { formChanged(viewState); });
 	BOOLEAN_FIELDS.forEach(function(name) {
 		refs.inputs[name].addEventListener('change', function() {
 			var label = refs.toggleWrap[name].querySelector('.lanspeed-toggle-label');
@@ -676,7 +665,9 @@ function ensureSection(viewState) {
 
 function snapshotOwnedValues() {
 	var values = {};
-	FIELD_NAMES.forEach(function(name) { values[name] = uci.get('lanspeed', 'main', name); });
+	FIELD_NAMES.concat(REMOVED_UCI_FIELDS).forEach(function(name) {
+		values[name] = uci.get('lanspeed', 'main', name);
+	});
 	return values;
 }
 
@@ -688,7 +679,7 @@ function applyLocalPatch(patch) {
 }
 
 function restoreOwnedValues(snapshot) {
-	FIELD_NAMES.forEach(function(name) {
+	FIELD_NAMES.concat(REMOVED_UCI_FIELDS).forEach(function(name) {
 		if (snapshot[name] === undefined || snapshot[name] === null)
 			uci.unset('lanspeed', 'main', name);
 		else
@@ -868,11 +859,8 @@ function resetAllSettings(viewState) {
 
 function statusMatches(status, values) {
 	if (statusContractIssue(status)) return false;
-	var expectedDedicated = cfgModel.parseInterfaceList(values.dedicated_port).valid.slice().sort();
-	var actualDedicated = cfgModel.parseInterfaceList(status.dedicated_ports).valid.slice().sort();
 	return status.rate_collector_mode === values.rate_collector_mode &&
 		status.access_edge_mode === values.access_edge_mode &&
-		JSON.stringify(actualDedicated) === JSON.stringify(expectedDedicated) &&
 		status.conn_collector_mode === values.conn_collector_mode &&
 		Number(status.refresh_interval_ms) === Number(values.refresh_interval_ms) &&
 		Number(status.active_client_window_ms) === Number(values.active_client_window_ms) &&

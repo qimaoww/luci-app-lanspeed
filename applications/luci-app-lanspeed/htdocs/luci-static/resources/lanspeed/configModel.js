@@ -30,7 +30,6 @@ var DEFAULTS = {
 	interface_include: [],
 	interface_exclude: [],
 	observe: [],
-	dedicated_port: [],
 	enable_bpf: '1',
 	enable_conntrack_fallback: '1'
 };
@@ -80,10 +79,16 @@ var FIELD_DEFS = [
 	{ name: 'interface_include', kind: 'interface-list', label: _('采集接口') },
 	{ name: 'interface_exclude', kind: 'interface-list', label: _('排除接口'), compatibility: true },
 	{ name: 'observe', kind: 'interface-list', label: _('观察接口') },
-	{ name: 'dedicated_port', kind: 'interface-list', label: _('一口一设备端口') },
 	{ name: 'enable_bpf', kind: 'boolean', label: _('启用 CPU 流量检测（BPF）') },
 	{ name: 'enable_conntrack_fallback', kind: 'boolean', label: _('允许兼容连接详情') }
 ];
+
+/*
+ * The manual direct-port declaration is no longer exposed by LuCI. Read the
+ * old UCI option once so the next save can remove it without overwriting the
+ * rest of the user's configuration.
+ */
+var REMOVED_UCI_FIELDS = [ 'dedicated_port' ];
 
 function clone(value) {
 	if (Array.isArray(value))
@@ -267,7 +272,7 @@ function normalize(raw) {
 	var issue;
 	var numberFields = [ 'refresh_interval_ms', 'active_client_window_ms', 'active_client_min_bps',
 		'overview_window_samples', 'max_clients' ];
-	var listFields = [ 'ifname', 'interface_include', 'interface_exclude', 'observe', 'dedicated_port' ];
+	var listFields = [ 'ifname', 'interface_include', 'interface_exclude', 'observe' ];
 
 	numberFields.forEach(function(name) {
 		var result = parseInteger(raw[name] === undefined ? DEFAULTS[name] : raw[name], LIMITS[name]);
@@ -452,7 +457,7 @@ function buildUciPatch(values, original) {
 		'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges',
 		'collector_mode', 'max_clients', 'enable_bpf', 'enable_conntrack_fallback'
 	];
-	var listFields = [ 'ifname', 'interface_include', 'interface_exclude', 'observe', 'dedicated_port' ];
+	var listFields = [ 'ifname', 'interface_include', 'interface_exclude', 'observe' ];
 	scalarFields.forEach(function(name) {
 		var value = name === 'collector_mode' ? collectorModeFor(normalized) : normalized[name];
 		if (value !== undefined && value !== null)
@@ -463,6 +468,11 @@ function buildUciPatch(values, original) {
 		if (valuesList.length)
 			set[name] = valuesList;
 		else if (Object.prototype.hasOwnProperty.call(originalValues, name) &&
+			originalValues[name] !== undefined && originalValues[name] !== null)
+			unset.push(name);
+	});
+	REMOVED_UCI_FIELDS.forEach(function(name) {
+		if (Object.prototype.hasOwnProperty.call(originalValues, name) &&
 			originalValues[name] !== undefined && originalValues[name] !== null)
 			unset.push(name);
 	});
@@ -497,6 +507,7 @@ return baseclass.extend({
 	ACCESS_EDGE_MODES: ACCESS_EDGE_MODES,
 	MAX_INTERFACE_NAMES: MAX_INTERFACE_NAMES,
 	MAX_RANGE_ITEMS: MAX_RANGE_ITEMS,
+	REMOVED_UCI_FIELDS: REMOVED_UCI_FIELDS,
 	parseInteger: parseInteger,
 	parseBoolean: parseBoolean,
 	parseCidr: parseCidr,
