@@ -637,10 +637,17 @@ async page => {
 
 		const layoutEvidence = await root.evaluate(node => {
 			function visible(element) {
-				const style = getComputedStyle(element);
+				const closedDetails = element.closest('details:not([open])');
+				if (closedDetails && !element.closest('summary')) return false;
+				let current = element;
+				while (current && current !== node.parentElement) {
+					const currentStyle = getComputedStyle(current);
+					if (currentStyle.display === 'none' || currentStyle.visibility === 'hidden' ||
+						Number(currentStyle.opacity) === 0) return false;
+					current = current.parentElement;
+				}
 				const rect = element.getBoundingClientRect();
-				return style.display !== 'none' && style.visibility !== 'hidden' &&
-					Number(style.opacity) > 0 && rect.width > 0 && rect.height > 0;
+				return element.getClientRects().length > 0 && rect.width > 0 && rect.height > 0;
 			}
 			function descriptor(element) {
 				return {
@@ -1181,7 +1188,7 @@ async page => {
 						};
 					});
 					evidence.observations.metricCoverage = metricCoverage;
-					addCheck('overview-wide-metric-coverage', metricCoverage.items.length === 5 &&
+					addCheck('overview-wide-metric-coverage', metricCoverage.items.length === 4 &&
 						metricCoverage.leftGap !== null && metricCoverage.rightGap !== null &&
 						Math.abs(metricCoverage.leftGap) <= 2 && Math.abs(metricCoverage.rightGap) <= 2 &&
 						metricCoverage.topSpread <= 2 && metricCoverage.widthSpread <= 2,
@@ -1264,7 +1271,7 @@ async page => {
 						return { items: items, rows: measuredRows };
 					});
 					evidence.observations.metricAlignment = metricAlignment;
-					addCheck('bootstrap-overview-metric-alignment', metricAlignment.items.length === 5 &&
+					addCheck('bootstrap-overview-metric-alignment', metricAlignment.items.length === 4 &&
 						metricAlignment.items.every(item => item.bigCount === 1 &&
 							item.borderLeftWidth <= 1.5 && item.boxShadow === 'none') &&
 						metricAlignment.rows.length > 0 && metricAlignment.rows.every(row =>
@@ -1494,8 +1501,9 @@ async page => {
 						const marker = '__lanspeedBrowserAuditClipboard';
 						const state = window[marker] || {};
 						const text = String(state.text || '');
-						const requiredFields = [ 'LAN Speed', 'RPC 检查', '采集质量', '数据新鲜度',
-							'数据路径', '连接健康', '版本一致性', '接口健康', '隐私说明' ];
+						const requiredFields = [ 'LAN Speed', 'RPC 检查', '客户端总速率', '精准接入点',
+							'NSS/CPU 流量分类', '降级与能力边界', '数据新鲜度', '连接健康',
+							'版本一致性', '接口健康', '隐私说明' ];
 						const sensitivePatterns = [];
 						if (/\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b/i.test(text) ||
 							/\b(?:[0-9a-f]{4}\.){2}[0-9a-f]{4}\b/i.test(text))
@@ -1533,14 +1541,14 @@ async page => {
 				}
 
 				const diagnosticsContract = await root.evaluate(node => {
-					function rows(selector) {
-						return Array.from(node.querySelectorAll(selector)).map(element => ({
-							state: element.getAttribute('data-state') || '',
-							cells: Array.from(element.querySelectorAll('th,td')).map(cell =>
-								cell.innerText.replace(/\s+/g, ' ').trim()),
-							text: element.innerText.replace(/\s+/g, ' ').trim()
-						}));
-					}
+				function rows(selector) {
+					return Array.from(node.querySelectorAll(selector)).map(element => ({
+						state: element.getAttribute('data-state') || '',
+						cells: Array.from(element.querySelectorAll('th,td')).map(cell =>
+							cell.textContent.replace(/\s+/g, ' ').trim()),
+						text: element.textContent.replace(/\s+/g, ' ').trim()
+					}));
+				}
 					const sections = Array.from(node.children).filter(element =>
 						element.matches && element.matches('.cbi-section')).map(element => ({
 						classes: Array.from(element.classList),
@@ -1557,7 +1565,9 @@ async page => {
 						heading: (element.querySelector('h4') || {}).textContent || '',
 						badge: (element.querySelector('.lanspeed-diagnostic-stage-badge') || {}).textContent || '',
 						value: (element.querySelector('.lanspeed-diagnostic-stage-value') || {}).textContent || '',
-						description: (element.querySelector('.lanspeed-diagnostic-stage-description') || {}).textContent || ''
+						description: (element.querySelector('.lanspeed-diagnostic-stage-description') || {}).textContent || '',
+						meta: (element.querySelector('.lanspeed-diagnostic-stage-meta') || {}).textContent || '',
+						evidenceItems: element.querySelectorAll('.lanspeed-diagnostic-stage-evidence dt').length
 					}));
 					const rpcRows = rows('.lanspeed-diagnostics-rpc-table tbody>tr');
 					const errorDetails = node.querySelector('.lanspeed-diagnostics-error-details');
@@ -1589,8 +1599,9 @@ async page => {
 							severity: element.getAttribute('data-severity') || '', text: element.innerText.trim()
 						})),
 						reportLength: report ? report.textContent.length : 0,
-						reportFields: report ? [ 'LAN Speed', 'RPC 检查', '采集质量', '数据新鲜度',
-							'数据路径', '连接健康', '版本一致性', '接口健康', '隐私说明' ].map(field => ({
+						reportFields: report ? [ 'LAN Speed', 'RPC 检查', '客户端总速率', '精准接入点',
+							'NSS/CPU 流量分类', '降级与能力边界', '数据新鲜度', '连接健康',
+							'版本一致性', '接口健康', '隐私说明' ].map(field => ({
 								field: field, found: report.textContent.indexOf(field) !== -1
 							})) : [],
 						nestedSections: node.querySelectorAll('.cbi-section .cbi-section').length,
@@ -1631,9 +1642,13 @@ async page => {
 					diagnosticsContract.checked.trim() && diagnosticsContract.facts.length === 4 &&
 					diagnosticsContract.facts.every(item => allowedItemState.test(item.state) &&
 						item.label.trim() && item.value.trim()), diagnosticsContract);
-				addCheck('diagnostics-pipeline-contract', diagnosticsContract.stages.length === 4 &&
+				const expectedStageHeadings = [ '总速率', '接入归属', 'NSS / CPU 分类' ];
+				addCheck('diagnostics-pipeline-contract', diagnosticsContract.stages.length === 3 &&
+					expectedStageHeadings.every(heading => diagnosticsContract.stages.some(item =>
+						item.heading.trim() === heading)) &&
 					diagnosticsContract.stages.every(item => allowedItemState.test(item.state) &&
-						item.heading.trim() && item.badge.trim() && item.value.trim() && item.description.trim()),
+						item.heading.trim() && item.badge.trim() && item.value.trim() &&
+						(item.description.trim() || item.meta.trim() || item.evidenceItems > 0)),
 					diagnosticsContract.stages);
 				addCheck('diagnostics-six-rpc-contract', diagnosticsContract.rpcRows.length === 6 &&
 					invalidRpcRows.length === 0 && diagnosticsContract.errors.length === rpcErrors &&
@@ -1661,7 +1676,7 @@ async page => {
 					diagnosticsContract.environmentAlerts.length > 0 &&
 					diagnosticsContract.importantAlerts.concat(diagnosticsContract.environmentAlerts).every(item =>
 						/^(critical|warning|info)$/.test(item.severity) && item.text) &&
-					diagnosticsContract.reportLength >= 100 && diagnosticsContract.reportFields.length === 9 &&
+					diagnosticsContract.reportLength >= 100 && diagnosticsContract.reportFields.length === 11 &&
 					diagnosticsContract.reportFields.every(item => item.found), diagnosticsContract);
 				if (!config.allowBadState)
 					addCheck('diagnostics-no-hard-failure', diagnosticsContract.pageState !== 'error' &&
@@ -1767,6 +1782,13 @@ async page => {
 						addCheck('config-no-hard-failure', false, configContract);
 				} else {
 					const requiredSubsections = [ 'lanspeed-config-runtime-section', 'lanspeed-ifcfg' ];
+					const requiredFields = [
+						'rate_collector_mode', 'access_edge_mode', 'dedicated_port', 'conn_collector_mode',
+						'enable_bpf', 'enable_conntrack_fallback', 'refresh_interval_ms',
+						'overview_window_samples', 'max_clients', 'active_client_window_ms',
+						'active_client_min_bps', 'show_client_status', 'show_ipv6',
+						'hide_private_ipv6', 'hide_ipv6_ranges'
+					];
 					const uniqueFields = Array.from(new Set(configContract.fieldNames));
 					const invalidGroups = configContract.groups.filter(group => {
 						const modes = group.buttons.map(button => button.mode).sort().join(',');
@@ -1785,8 +1807,10 @@ async page => {
 						configContract.nestedSections === 0 && configContract.subsections.length === 2 &&
 						requiredSubsections.every(className => configContract.subsections.some(section =>
 							section.classes.indexOf(className) !== -1 && section.heading.trim())), configContract);
-						addCheck('config-fields-contract', configContract.fieldNames.length === 13 &&
-							uniqueFields.length === 13 && !configContract.compatibilityVisible &&
+						addCheck('config-fields-contract', configContract.fieldNames.length === requiredFields.length &&
+							uniqueFields.length === requiredFields.length &&
+							requiredFields.every(field => uniqueFields.indexOf(field) !== -1) &&
+							!configContract.compatibilityVisible &&
 							configContract.compatibilityTerms === 0 && configContract.compatibilityValues === 0,
 							configContract);
 					addCheck('config-interface-mode-contract', configContract.groups.length ===

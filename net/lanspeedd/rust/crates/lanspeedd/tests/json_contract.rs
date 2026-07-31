@@ -162,6 +162,8 @@ fn fixture_snapshot() -> ResponseSnapshot {
                 reason_codes: Vec::new(),
                 classification: Some(RateClassificationSummary {
                     state: ClassificationState::Aligned,
+                    tx_state: None,
+                    rx_state: None,
                     sample_ms: Some(10_000),
                     window_ms: Some(2_000),
                     comparison_window_ms: Some(6_000),
@@ -1085,6 +1087,25 @@ fn main_clients_payload_stays_bounded_and_fast_at_2048_rate_metadata_rows() {
     assert!(!encoded.contains("\"slow_bps\""));
     assert!(!encoded.contains("\"unclassified_bps\""));
     assert!(encoded.contains("\"tx_coverage_pct\""));
+}
+
+#[test]
+fn divergent_direction_state_is_serialized_sparsely() {
+    let mut snapshot = fixture_snapshot();
+    let classification = snapshot.clients.clients[0]
+        .rate_meta
+        .as_mut()
+        .and_then(|meta| meta.classification.as_mut())
+        .expect("fixture classification summary");
+    classification.state = ClassificationState::CounterSkew;
+    classification.tx_state = Some(ClassificationState::Aligned);
+    classification.rx_state = None;
+
+    let value = serde_json::to_value(snapshot.clients).unwrap();
+    let summary = &value["clients"][0]["rate_meta"]["classification"];
+    assert_eq!(summary["state"], "counter_skew");
+    assert_eq!(summary["tx_state"], "aligned");
+    assert!(summary.get("rx_state").is_none());
 }
 
 #[test]

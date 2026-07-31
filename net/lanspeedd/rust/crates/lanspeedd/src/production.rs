@@ -202,6 +202,64 @@ fn format_edge_mac(mac: [u8; 6]) -> String {
     )
 }
 
+fn mac_lookup_key(value: &str) -> String {
+    value.to_ascii_lowercase()
+}
+
+/// One-pass MAC index used by the hot client-rate path. A MAC that appears in
+/// more than one attachment/identity is deliberately removed from `unique` so
+/// the index preserves the old fail-closed attribution rule.
+struct MacIndex<'a, T> {
+    unique: BTreeMap<String, &'a T>,
+    ambiguous: BTreeSet<String>,
+}
+
+impl<T> Default for MacIndex<'_, T> {
+    fn default() -> Self {
+        Self {
+            unique: BTreeMap::new(),
+            ambiguous: BTreeSet::new(),
+        }
+    }
+}
+
+impl<'a, T> MacIndex<'a, T> {
+    fn insert(&mut self, key: String, value: &'a T) {
+        if self.ambiguous.contains(&key) {
+            return;
+        }
+        if self.unique.remove(&key).is_some() {
+            self.ambiguous.insert(key);
+        } else {
+            self.unique.insert(key, value);
+        }
+    }
+}
+
+fn edge_mac_index<'a>(clients: &'a [EdgeClientObservation]) -> MacIndex<'a, EdgeClientObservation> {
+    let mut index = MacIndex::default();
+    for client in clients {
+        index.insert(format_edge_mac(client.attachment.key.mac), client);
+    }
+    index
+}
+
+fn identity_mac_index<'a>(identities: &'a IdentityTable) -> MacIndex<'a, ClientIdentity> {
+    let mut index = MacIndex::default();
+    for identity in identities.iter() {
+        index.insert(identity.key.mac.to_string(), identity);
+    }
+    index
+}
+
+fn response_mac_index<'a>(clients: &'a [Client]) -> MacIndex<'a, Client> {
+    let mut index = MacIndex::default();
+    for client in clients {
+        index.insert(mac_lookup_key(&client.mac), client);
+    }
+    index
+}
+
 fn observed_traffic_delta(
     source: EdgeRateSource,
     byte_domain: EdgeByteDomain,
@@ -224,37 +282,6 @@ fn observed_traffic_delta(
 
 fn comparable_l2_with_fcs(value: ObservedDelta) -> ObservedDelta {
     normalize_l2_with_fcs(value).unwrap_or(value)
-}
-
-fn unique_identity_for_edge_mac<'a>(
-    identities: &'a IdentityTable,
-    mac: &str,
-) -> Option<&'a ClientIdentity> {
-    let mut matches = identities
-        .iter()
-        .filter(|identity| identity.key.mac.to_string().eq_ignore_ascii_case(mac));
-    let identity = matches.next()?;
-    matches.next().is_none().then_some(identity)
-}
-
-fn unique_edge_for_mac<'a>(
-    clients: &'a [EdgeClientObservation],
-    mac: &str,
-) -> Option<&'a EdgeClientObservation> {
-    let mut matches = clients
-        .iter()
-        .filter(|sample| format_edge_mac(sample.attachment.key.mac).eq_ignore_ascii_case(mac));
-    let sample = matches.next()?;
-    matches.next().is_none().then_some(sample)
-}
-
-fn edge_mac_is_ambiguous(clients: &[EdgeClientObservation], mac: &str) -> bool {
-    clients
-        .iter()
-        .filter(|sample| format_edge_mac(sample.attachment.key.mac).eq_ignore_ascii_case(mac))
-        .take(2)
-        .count()
-        > 1
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -394,22 +421,36 @@ const fn classifier_sample_fresh(now_ms: u64, sample_ms: u64) -> bool {
         && now_ms.saturating_sub(sample_ms) <= CLASSIFIER_INTERVAL_MS.saturating_mul(5) / 2
 }
 
+/// An Edge segment is usable only when its end is at or before the completed
+/// Edge snapshot. `saturating_sub` alone would treat a segment from a clock
+/// anomaly in the future as fresh (the subtraction would become zero), which
+/// can briefly publish a rate from an invalid window.
+const fn edge_segment_fresh(snapshot_ms: u64, segment_end_ms: u64, cadence_ms: u64) -> bool {
+    segment_end_ms <= snapshot_ms
+        && snapshot_ms.saturating_sub(segment_end_ms) <= cadence_ms.saturating_mul(5) / 2
+}
+
 const fn classifier_map_loss_invalidates_owner(
     owner: Option<EdgeRateSource>,
     has_edge_candidate: bool,
+    has_classifier_candidate: bool,
     classifier_loss: bool,
 ) -> bool {
-    if !classifier_loss {
+    // A valid Edge or remaining classifier candidate keeps the rate path alive
+    // while one map is being rebuilt. Dropping the current owner in that case
+    // would create an avoidable zero/warmup gap before the mux can promote the
+    // surviving source. The map-loss state is still published by classification.
+    if !classifier_loss || has_edge_candidate || has_classifier_candidate {
         return false;
     }
     match owner {
-        Some(EdgeRateSource::EdgePort | EdgeRateSource::EdgeWifi) => false,
         Some(
             EdgeRateSource::EcmBpfFallback
             | EdgeRateSource::EcmNssLowerBound
             | EdgeRateSource::TcBpfLowerBound,
         ) => true,
-        None => !has_edge_candidate,
+        Some(EdgeRateSource::EdgePort | EdgeRateSource::EdgeWifi) => false,
+        None => true,
     }
 }
 
@@ -550,6 +591,8 @@ fn model_attachment(attachment: &EdgeAttachment) -> RateAttachment {
 fn classification_summary(result: &ClassificationResult) -> RateClassificationSummary {
     RateClassificationSummary {
         state: result.state,
+        tx_state: (result.tx_state != result.state).then_some(result.tx_state),
+        rx_state: (result.rx_state != result.state).then_some(result.rx_state),
         sample_ms: result.window_end_ms,
         window_ms: result.classifier_window_ms,
         comparison_window_ms: result.comparison_window_ms,
@@ -559,8 +602,10 @@ fn classification_summary(result: &ClassificationResult) -> RateClassificationSu
 }
 
 fn traffic_classification(result: &ClassificationResult) -> TrafficClassification {
-    let direction = |value: crate::platform::access_edge::DirectionClassification| {
+    let direction = |state, value: crate::platform::access_edge::DirectionClassification| {
         TrafficClassificationDirection {
+            state,
+            edge_bps: value.edge_bps,
             nss_bps: value.nss_bps,
             slow_bps: value.slow_bps,
             unclassified_bps: value.unclassified_bps,
@@ -572,8 +617,8 @@ fn traffic_classification(result: &ClassificationResult) -> TrafficClassificatio
         window_start_ms: result.window_start_ms,
         window_end_ms: result.window_end_ms,
         comparison_window_ms: result.comparison_window_ms,
-        tx: direction(result.tx),
-        rx: direction(result.rx),
+        tx: direction(result.tx_state, result.tx),
+        rx: direction(result.rx_state, result.rx),
     }
 }
 
@@ -832,27 +877,25 @@ fn access_edge_global_evidence(
     let mut published = 0usize;
     let mut all_full = snapshot.topology_complete && !snapshot.clients.is_empty();
     let mut seen_macs = BTreeSet::new();
+    let edge_index = edge_mac_index(&snapshot.clients);
+    let client_index = response_mac_index(&clients.clients);
     for edge in &snapshot.clients {
         let mac = format_edge_mac(edge.attachment.key.mac);
-        if !seen_macs.insert(mac.clone()) || edge_mac_is_ambiguous(&snapshot.clients, &mac) {
+        if !seen_macs.insert(mac.clone()) || edge_index.ambiguous.contains(&mac) {
             all_full = false;
             reasons.push("duplicate_mac_attachment".to_owned());
             continue;
         }
-        let mut matching = clients
-            .clients
-            .iter()
-            .filter(|client| client.mac.eq_ignore_ascii_case(&mac));
-        let Some(client) = matching.next() else {
-            all_full = false;
-            reasons.push("active_attachment_unpublished".to_owned());
-            continue;
-        };
-        if matching.next().is_some() {
+        if client_index.ambiguous.contains(&mac) {
             all_full = false;
             reasons.push("duplicate_client_identity".to_owned());
             continue;
         }
+        let Some(client) = client_index.unique.get(&mac).copied() else {
+            all_full = false;
+            reasons.push("active_attachment_unpublished".to_owned());
+            continue;
+        };
         published = published.saturating_add(1);
         let Some(meta) = client.rate_meta.as_ref() else {
             all_full = false;
@@ -2179,6 +2222,11 @@ impl ProductionRuntime {
         self.classifier_epoch_id = self.classifier_epoch_id.saturating_add(1);
         let sources_complete = ecm_window.is_some() && slow_window.is_some();
         let edge_clients = self.access_edge.latest().clients.clone();
+        let edge_index = edge_mac_index(&edge_clients);
+        let identities_by_key = identities
+            .iter()
+            .map(|identity| (identity.key.to_string(), identity))
+            .collect::<BTreeMap<_, _>>();
         let mut identity_keys = identities
             .iter()
             .map(|identity| identity.key.to_string())
@@ -2192,11 +2240,12 @@ impl ProductionRuntime {
 
         let mut active_results = BTreeMap::new();
         for identity_key in identity_keys {
-            let identity = identities
-                .iter()
-                .find(|identity| identity.key.to_string() == identity_key);
+            let identity = identities_by_key.get(&identity_key).copied();
             let edge = identity.and_then(|identity| {
-                unique_edge_for_mac(&edge_clients, &identity.key.mac.to_string())
+                edge_index
+                    .unique
+                    .get(&identity.key.mac.to_string())
+                    .copied()
             });
             let ecm_delta = ecm.filter(|_| ecm_new).map(|snapshot| {
                 snapshot
@@ -2287,31 +2336,39 @@ impl ProductionRuntime {
             self.config.rate_collector_mode,
         );
         let edge_snapshot = self.access_edge.latest().clone();
+        let edge_index = edge_mac_index(&edge_snapshot.clients);
+        let identity_index = identity_mac_index(identities);
+        let mut published_identity_keys = clients
+            .clients
+            .iter()
+            .map(|client| client.identity_key.clone())
+            .collect::<BTreeSet<_>>();
+        let conntrack_by_identity = conntrack.map(|snapshot| {
+            let mut index = BTreeMap::new();
+            for sample in &snapshot.clients {
+                index.entry(sample.identity_key.as_str()).or_insert(sample);
+            }
+            index
+        });
 
         if active_auto {
             for edge in &edge_snapshot.clients {
                 let mac = format_edge_mac(edge.attachment.key.mac);
-                let Some(identity) = unique_identity_for_edge_mac(identities, &mac) else {
+                let Some(identity) = identity_index.unique.get(&mac).copied() else {
                     continue;
                 };
                 let identity_key = identity.key.to_string();
-                if clients
-                    .clients
-                    .iter()
-                    .any(|client| client.identity_key == identity_key)
+                if published_identity_keys.contains(&identity_key)
                     || clients.clients.len() >= self.config.max_clients
                 {
                     continue;
                 }
-                let counts = conntrack.and_then(|snapshot| {
-                    snapshot
-                        .clients
-                        .iter()
-                        .find(|sample| sample.identity_key == identity_key)
-                });
+                let counts = conntrack_by_identity
+                    .as_ref()
+                    .and_then(|index| index.get(identity_key.as_str()).copied());
                 clients.clients.push(Client {
                     mac: identity.key.mac.to_string(),
-                    identity_key,
+                    identity_key: identity_key.clone(),
                     zone: identity.key.zone.clone(),
                     interface: identity.interface.clone(),
                     ips: identity.ips.clone(),
@@ -2331,6 +2388,7 @@ impl ProductionRuntime {
                     udp_other_conns: counts.map(|sample| u64::from(sample.udp_other_conns)),
                     rate_meta: None,
                 });
+                published_identity_keys.insert(identity_key);
             }
         }
 
@@ -2339,8 +2397,12 @@ impl ProductionRuntime {
                 .warnings
                 .iter()
                 .any(|warning| warning == "conntrack_connection_only");
-            let edge = unique_identity_for_edge_mac(identities, &client.mac)
-                .and_then(|_| unique_edge_for_mac(&edge_snapshot.clients, &client.mac));
+            let client_mac_key = mac_lookup_key(&client.mac);
+            let edge = identity_index
+                .unique
+                .get(&client_mac_key)
+                .and_then(|_| edge_index.unique.get(&client_mac_key))
+                .copied();
             let attachment_generation = edge.map_or(0, |sample| sample.attachment.generation);
             let mut reasons = edge
                 .into_iter()
@@ -2357,7 +2419,7 @@ impl ProductionRuntime {
             if !edge_snapshot.topology_complete {
                 reasons.push("topology_incomplete".to_owned());
             }
-            if edge_mac_is_ambiguous(&edge_snapshot.clients, &client.mac) {
+            if edge_index.ambiguous.contains(&client_mac_key) {
                 reasons.push("duplicate_mac_attachment".to_owned());
             }
             if self.config.access_edge_mode == AccessEdgeMode::Shadow {
@@ -2383,8 +2445,11 @@ impl ProductionRuntime {
                                 window_ms,
                                 cadence_ms: ACCESS_EDGE_INTERVAL_MS,
                                 attachment_generation,
-                                fresh: edge_snapshot.sample_ms.saturating_sub(segment.end_ms)
-                                    <= ACCESS_EDGE_INTERVAL_MS.saturating_mul(5) / 2,
+                                fresh: edge_segment_fresh(
+                                    edge_snapshot.sample_ms,
+                                    segment.end_ms,
+                                    ACCESS_EDGE_INTERVAL_MS,
+                                ),
                             });
                         }
                     }
@@ -2399,7 +2464,7 @@ impl ProductionRuntime {
                     slow_read_end_ms,
                     runtime_health,
                 ));
-                let mut failure = edge_direction.and_then(|observation| observation.failure);
+                let edge_failure = edge_direction.and_then(|observation| observation.failure);
                 let classifier_loss = ecm.is_some_and(|snapshot| snapshot.truncated)
                     || slow.is_some_and(|snapshot| !snapshot.map_complete)
                     || (runtime_health.ecm_bpf_map_read_attempted
@@ -2411,11 +2476,26 @@ impl ProductionRuntime {
                         EdgeRateSource::EdgePort | EdgeRateSource::EdgeWifi
                     )
                 });
+                let has_classifier_candidate = candidates.iter().any(|candidate| {
+                    matches!(
+                        candidate.source,
+                        EdgeRateSource::EcmBpfFallback
+                            | EdgeRateSource::EcmNssLowerBound
+                            | EdgeRateSource::TcBpfLowerBound
+                    )
+                });
+                // An Edge reset/ambiguity invalidates only that Edge source. If
+                // a classifier lower-bound is available, let the mux promote
+                // it instead of turning a transient topology event into an
+                // unavailable client rate. With no fallback candidate the hard
+                // failure remains, so an unsafe Edge value is never published.
+                let mut failure = edge_failure.filter(|_| !has_classifier_candidate);
                 let mux_owner = self.access_edge.mux_owner(&client.identity_key, direction);
                 if failure.is_none()
                     && classifier_map_loss_invalidates_owner(
                         mux_owner,
                         has_edge_candidate,
+                        has_classifier_candidate,
                         classifier_loss,
                     )
                 {
@@ -4174,6 +4254,7 @@ mod tests {
             assert!(!classifier_map_loss_invalidates_owner(
                 Some(owner),
                 false,
+                false,
                 true
             ));
         }
@@ -4184,13 +4265,57 @@ mod tests {
         ] {
             assert!(classifier_map_loss_invalidates_owner(
                 Some(owner),
+                false,
+                false,
+                true
+            ));
+            assert!(!classifier_map_loss_invalidates_owner(
+                Some(owner),
+                true,
+                false,
+                true
+            ));
+            assert!(!classifier_map_loss_invalidates_owner(
+                Some(owner),
+                false,
                 true,
                 true
             ));
         }
-        assert!(!classifier_map_loss_invalidates_owner(None, true, true));
-        assert!(classifier_map_loss_invalidates_owner(None, false, true));
-        assert!(!classifier_map_loss_invalidates_owner(None, false, false));
+        assert!(!classifier_map_loss_invalidates_owner(
+            None, true, false, true
+        ));
+        assert!(!classifier_map_loss_invalidates_owner(
+            None, false, true, true
+        ));
+        assert!(classifier_map_loss_invalidates_owner(
+            None, false, false, true
+        ));
+        assert!(!classifier_map_loss_invalidates_owner(
+            None, false, false, false
+        ));
+    }
+
+    #[test]
+    fn mac_index_keeps_unique_entries_and_fails_closed_on_duplicates() {
+        let values = [11, 22, 33];
+        let mut index = MacIndex::default();
+        index.insert(mac_lookup_key("AA:BB:CC:DD:EE:01"), &values[0]);
+        index.insert(mac_lookup_key("aa:bb:cc:dd:ee:02"), &values[1]);
+        assert_eq!(index.unique.get("aa:bb:cc:dd:ee:01"), Some(&&11));
+
+        index.insert(mac_lookup_key("aa:bb:cc:dd:ee:01"), &values[2]);
+        assert!(!index.unique.contains_key("aa:bb:cc:dd:ee:01"));
+        assert!(index.ambiguous.contains("aa:bb:cc:dd:ee:01"));
+        assert_eq!(index.unique.get("aa:bb:cc:dd:ee:02"), Some(&&22));
+    }
+
+    #[test]
+    fn edge_segment_freshness_rejects_future_and_expired_samples() {
+        assert!(edge_segment_fresh(10_000, 9_000, 1_000));
+        assert!(!edge_segment_fresh(10_000, 10_001, 1_000));
+        assert!(!edge_segment_fresh(10_000, 7_499, 1_000));
+        assert!(edge_segment_fresh(10_000, 7_500, 1_000));
     }
 
     #[test]

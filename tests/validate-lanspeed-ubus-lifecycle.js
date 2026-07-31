@@ -96,6 +96,11 @@ assert(validateReloadService(initScript), 'reload must immediately return after 
 assert(!/^stop_service\(\)/m.test(initScript), 'owned tc cleanup must not race a daemon that has not stopped yet');
 assert(/^\s*cleanup_lanspeed_tc_filters\s*$/m.test(shellFunctionBody(initScript, 'service_stopped')),
   'service_stopped must remove owned tc filters after procd has stopped the daemon');
+const tcDeleteBody = shellFunctionBody(initScript, 'lanspeed_tc_delete_owned');
+assert(tcDeleteBody.includes('2>/dev/null') &&
+  tcDeleteBody.includes('lanspeed_tc_filter_present') &&
+  tcDeleteBody.indexOf('lanspeed_tc_filter_present') < tcDeleteBody.indexOf('daemon.warn'),
+  'owned tc cleanup must suppress a raced delete error, recheck the exact filter, and warn only if it remains');
 assert(hotplugScript.includes('/etc/init.d/lanspeedd reload'), 'hotplug must request reload rather than restart');
 assert(!/restart/i.test(hotplugScript), 'hotplug must not restart the daemon');
 

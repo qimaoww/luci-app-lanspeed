@@ -252,6 +252,10 @@ pub struct RateAttachment {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct RateClassificationSummary {
     pub state: ClassificationState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_state: Option<ClassificationState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rx_state: Option<ClassificationState>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         serialize_with = "saturated_option_u64"

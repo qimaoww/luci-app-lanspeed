@@ -168,6 +168,10 @@ function buildShell(viewState) {
 	refs.classificationWindow = E('span', {
 		'class': 'lanspeed-classification-window'
 	}, '—');
+	refs.classificationTxDirectionState = E('td', { 'class': 'num', 'data-label': _('上行') }, '—');
+	refs.classificationRxDirectionState = E('td', { 'class': 'num', 'data-label': _('下行') }, '—');
+	refs.classificationTxEdge = E('td', { 'class': 'num', 'data-label': _('上行') }, '—');
+	refs.classificationRxEdge = E('td', { 'class': 'num', 'data-label': _('下行') }, '—');
 	refs.classificationTxNss = E('td', { 'class': 'num', 'data-label': _('上行') }, '—');
 	refs.classificationRxNss = E('td', { 'class': 'num', 'data-label': _('下行') }, '—');
 	refs.classificationTxSlow = E('td', { 'class': 'num', 'data-label': _('上行') }, '—');
@@ -200,6 +204,10 @@ function buildShell(viewState) {
 					E('th', { 'scope': 'col', 'class': 'num' }, _('下行'))
 				])),
 				E('tbody', {}, [
+					E('tr', {}, [ E('th', { 'scope': 'row' }, _('方向状态')),
+						refs.classificationTxDirectionState, refs.classificationRxDirectionState ]),
+					E('tr', {}, [ E('th', { 'scope': 'row' }, _('Edge 同窗总速率')),
+						refs.classificationTxEdge, refs.classificationRxEdge ]),
 					E('tr', {}, [ E('th', { 'scope': 'row' }, _('NSS已识别')),
 						refs.classificationTxNss, refs.classificationRxNss ]),
 					E('tr', {}, [ E('th', { 'scope': 'row' }, _('CPU慢路径已识别')),
@@ -211,7 +219,7 @@ function buildShell(viewState) {
 				])
 			]),
 			E('p', { 'class': 'lanspeed-classification-note' },
-				_('NSS 与 CPU 慢路径是可验证分类，不与客户端总速率相加；无法安全比较时不推断未分类流量。'))
+				_('Edge 同窗值只用于核对；NSS 与 CPU 慢路径是可验证分类，不与客户端总速率相加；无法安全比较时不推断未分类流量。'))
 		])
 	]);
 

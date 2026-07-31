@@ -191,9 +191,8 @@ function renderPipeline(refs, viewState) {
 	rateEvidence[_('范围')] = rate.scopeText;
 	edgeEvidence[_('接入')] = edge.attachmentText;
 	edgeEvidence[_('归属')] = edge.trustText;
-	if (classification.coverageText === '-')
-		classificationEvidence[_('状态')] = classification.stateText;
-	else
+	classificationEvidence[_('核对')] = classification.verificationText;
+	if (classification.coverageText !== '-')
 		classificationEvidence[_('覆盖率')] = classification.coverageText;
 	classificationEvidence[_('映射')] = classification.maps.text;
 	setStage(refs, 'rate', rate.state, rate.badge, rate.value,
@@ -201,12 +200,12 @@ function renderPipeline(refs, viewState) {
 	setStage(refs, 'edge', edge.state, edge.badge, edge.value,
 		'', edge.meta, edgeEvidence);
 	setStage(refs, 'classification', classification.state, classification.badge, classification.value,
-		'', _('分类 %s · 对齐 %s').format(
+		'', _('分类 %s · 核对 %s').format(
 			diagnosticsModel.formatDuration(classification.windowMs),
 			diagnosticsModel.formatDuration(classification.comparisonWindowMs)), classificationEvidence);
-	refs.pipelineSummary.textContent = _('总速率 %d/%d 方向 · 分类 %d/%d 可比较').format(
+	refs.pipelineSummary.textContent = _('总速率 %d/%d 方向 · 分类 %d/%d 客户端').format(
 		rate.facts.ownerDirections, rate.facts.totalDirections,
-		classification.aligned, classification.totalClients);
+		classification.classified, classification.totalClients);
 	return { rate: rate, edge: edge, classification: classification };
 }
 

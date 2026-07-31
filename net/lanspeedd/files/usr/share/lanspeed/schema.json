@@ -217,6 +217,12 @@
         "state": {
           "$ref": "#/$defs/classificationState"
         },
+        "tx_state": {
+          "$ref": "#/$defs/classificationState"
+        },
+        "rx_state": {
+          "$ref": "#/$defs/classificationState"
+        },
         "sample_ms": {
           "type": "integer",
           "minimum": 0
@@ -1374,11 +1380,14 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "state": { "$ref": "#/$defs/classificationState" },
+        "edge_bps": { "type": "integer", "minimum": 0 },
         "nss_bps": { "type": "integer", "minimum": 0 },
         "slow_bps": { "type": "integer", "minimum": 0 },
         "unclassified_bps": { "type": "integer", "minimum": 0 },
         "coverage_pct": { "type": "integer", "minimum": 0, "maximum": 100 }
-      }
+      },
+      "required": ["state"]
     },
     "trafficClassification": {
       "type": "object",

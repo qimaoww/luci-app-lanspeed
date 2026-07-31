@@ -39,38 +39,74 @@ lanspeed_tc_filter_owned() {
 	return 0
 }
 
+lanspeed_tc_filter_sections() {
+	dev="$1"
+	direction="$2"
+	$TC filter show dev "$dev" "$direction" 2>/dev/null | awk '
+		/^filter / {
+			if (entry != "") print entry;
+			entry = $0;
+			next;
+		}
+		{
+			if (entry != "") entry = entry " " $0;
+		}
+		END {
+			if (entry != "") print entry;
+		}
+	'
+}
+
+lanspeed_tc_filter_present() {
+	dev="$1"
+	direction="$2"
+	pref="$3"
+	handle="$4"
+	sections=$(lanspeed_tc_filter_sections "$dev" "$direction")
+	while IFS= read -r filter; do
+		if lanspeed_tc_filter_owned "$filter" &&
+		   printf '%s\n' "$filter" | grep -q "pref $pref" &&
+		   printf '%s\n' "$filter" | grep -q "handle $handle"; then
+			return 0
+		fi
+	done <<EOF
+$sections
+EOF
+	return 1
+}
+
+lanspeed_tc_delete_owned() {
+	dev="$1"
+	direction="$2"
+	pref="$3"
+	handle="$4"
+	logger -t "$NAME" "removing owned tc filter dev=$dev direction=$direction pref=$pref handle=$handle"
+	if $TC filter del dev "$dev" "$direction" protocol all pref "$pref" handle "$handle" bpf 2>/dev/null; then
+		return 0
+	fi
+	# Aya may release the link between `show` and `del` while procd is
+	# completing shutdown. Treat an already-absent owned filter as success;
+	# warn only when the kernel still reports the exact owned identity.
+	if lanspeed_tc_filter_present "$dev" "$direction" "$pref" "$handle"; then
+		logger -p daemon.warn -t "$NAME" "owned tc filter cleanup failed dev=$dev direction=$direction pref=$pref handle=$handle"
+	fi
+	return 0
+}
+
 cleanup_lanspeed_tc_filters_on_dev() {
 	dev="$1"
 	[ -n "$dev" ] || return 0
 	[ -x "$TC" ] || return 0
 
 	for direction in ingress egress; do
-		sections=$($TC filter show dev "$dev" "$direction" 2>/dev/null | awk '
-			/^filter / {
-				if (entry != "") print entry;
-				entry = $0;
-				next;
-			}
-			{
-				if (entry != "") entry = entry " " $0;
-			}
-			END {
-				if (entry != "") print entry;
-			}
-		')
+		sections=$(lanspeed_tc_filter_sections "$dev" "$direction")
 
 		printf '%s\n' "$sections" | while IFS= read -r filter; do
 			if lanspeed_tc_filter_owned "$filter"; then
 				if printf '%s\n' "$filter" | grep -q "pref $LANSPEED_TC_EARLY_PREF"; then
-					logger -t "$NAME" "removing owned tc filter dev=$dev direction=$direction pref=$LANSPEED_TC_EARLY_PREF handle=$LANSPEED_TC_EARLY_HANDLE"
-					if ! $TC filter del dev "$dev" "$direction" protocol all pref "$LANSPEED_TC_EARLY_PREF" handle "$LANSPEED_TC_EARLY_HANDLE" bpf; then
-						logger -p daemon.warn -t "$NAME" "owned tc filter cleanup failed dev=$dev direction=$direction pref=$LANSPEED_TC_EARLY_PREF handle=$LANSPEED_TC_EARLY_HANDLE"
-					fi
+					lanspeed_tc_delete_owned "$dev" "$direction" "$LANSPEED_TC_EARLY_PREF" "$LANSPEED_TC_EARLY_HANDLE"
 				else
-					logger -t "$NAME" "removing owned tc filter dev=$dev direction=$direction pref=$LANSPEED_TC_PREF handle=$LANSPEED_TC_HANDLE"
-					if ! $TC filter del dev "$dev" "$direction" protocol all pref "$LANSPEED_TC_PREF" handle "$LANSPEED_TC_HANDLE" bpf; then
-						logger -p daemon.warn -t "$NAME" "owned tc filter cleanup failed dev=$dev direction=$direction pref=$LANSPEED_TC_PREF handle=$LANSPEED_TC_HANDLE"
-					fi
+					lanspeed_tc_delete_owned "$dev" "$direction" "$LANSPEED_TC_PREF" "$LANSPEED_TC_HANDLE"
 				fi
 			fi
 		done

@@ -490,12 +490,16 @@ function validateRateMeta(value, path) {
 	if (hasOwn(value, 'classification')) {
 		var classification = value.classification;
 		var classificationFields = [ 'state', 'sample_ms', 'window_ms', 'comparison_window_ms',
-			'tx_coverage_pct', 'rx_coverage_pct' ];
+			'tx_coverage_pct', 'rx_coverage_pct', 'tx_state', 'rx_state' ];
+		var classificationStates = [ 'warmup', 'aligned', 'partial', 'stale',
+			'domain_mismatch', 'window_mismatch', 'counter_skew', 'map_loss', 'unavailable' ];
 		if (!onlyFields(classification, classificationFields) ||
 			requireFields(classification, [ 'state' ], path + '.classification') ||
-			!enumValue(classification.state, [ 'warmup', 'aligned', 'partial', 'stale',
-				'domain_mismatch', 'window_mismatch', 'counter_skew', 'map_loss', 'unavailable' ]) ||
-			!optionalIntegers(classification, classificationFields.slice(1)) ||
+			!enumValue(classification.state, classificationStates) ||
+			(hasOwn(classification, 'tx_state') && !enumValue(classification.tx_state, classificationStates)) ||
+			(hasOwn(classification, 'rx_state') && !enumValue(classification.rx_state, classificationStates)) ||
+			!optionalIntegers(classification, [ 'sample_ms', 'window_ms', 'comparison_window_ms',
+				'tx_coverage_pct', 'rx_coverage_pct' ]) ||
 			(hasOwn(classification, 'tx_coverage_pct') && classification.tx_coverage_pct > 100) ||
 			(hasOwn(classification, 'rx_coverage_pct') && classification.rx_coverage_pct > 100))
 			return failure(path + '.classification', _('分类覆盖率元数据无效'));
@@ -1140,9 +1144,9 @@ function accessEdgeStateWithRpc(viewState) {
 
 function classifierMapState(clients) {
 	var maps = clients && clients.evidence && clients.evidence.classifier_maps;
-	var result = { available: false, loss: false, pressure: false, text: '-' };
+	var result = { available: false, loss: false, pressure: false, text: '-', detailText: '-' };
 	if (!plainObject(maps)) return result;
-	var labels = { ecm_nss: _('NSS'), tc_bpf: _('CPU') }, parts = [];
+	var labels = { ecm_nss: _('NSS'), tc_bpf: _('CPU') }, parts = [], details = [];
 	[ 'ecm_nss', 'tc_bpf' ].forEach(function(key) {
 		var item = maps[key];
 		if (!plainObject(item)) return;
@@ -1150,10 +1154,12 @@ function classifierMapState(clients) {
 		if (item.map_loss === true || item.current_truncated === true) result.loss = true;
 		if (item.pressure === true || item.truncated === true) result.pressure = true;
 		var entries = finiteNumber(item.entries), capacity = finiteNumber(item.capacity);
-		parts.push((labels[key] || key) + ' ' + (entries === null ? '-' : Math.round(entries)) + '/' +
-			(capacity === null ? '-' : Math.round(capacity)));
+		var label = labels[key] || key, entryText = entries === null ? '-' : Math.round(entries);
+		parts.push(label + ' ' + entryText);
+		details.push(label + ' ' + entryText + '/' + (capacity === null ? '-' : Math.round(capacity)));
 	});
 	result.text = parts.join(' · ') || '-';
+	result.detailText = details.join(' · ') || '-';
 	return result;
 }
 
@@ -1165,17 +1171,42 @@ function classificationStateWithRpc(viewState) {
 	viewState = viewState || {};
 	var clients = viewState.clients || {}, items = asArray(clients.clients), rpc = rpcState(viewState, 'clients');
 	var counts = Object.create(null), classified = 0, txCoverage = [], rxCoverage = [];
+	var comparableDirections = 0, alignedDirections = 0, wifiObservedDirections = 0;
+	var unexpectedDomainMismatch = 0;
 	var windowMs = null, comparisonWindowMs = null;
 	items.forEach(function(client) {
-		var classification = client && client.rate_meta && client.rate_meta.classification;
-		if (!plainObject(classification)) return;
-		var state = String(classification.state || 'unavailable');
-		classified++; counts[state] = (counts[state] || 0) + 1;
-		if (state === 'aligned') {
-			var tx = finiteNumber(classification.tx_coverage_pct), rx = finiteNumber(classification.rx_coverage_pct);
-			if (tx !== null) txCoverage.push(tx);
-			if (rx !== null) rxCoverage.push(rx);
+		var meta = client && client.rate_meta;
+		var classification = meta && meta.classification;
+		var state = plainObject(classification) ? String(classification.state || 'unavailable') : 'unavailable';
+		if (plainObject(classification)) {
+			classified++; counts[state] = (counts[state] || 0) + 1;
 		}
+		[ 'tx', 'rx' ].forEach(function(directionName) {
+			var direction = meta && meta[directionName];
+			if (!plainObject(direction)) return;
+			var source = String(direction.source || ''), domain = String(direction.byte_domain || '');
+			if (source === 'edge_wifi' || domain === 'station_data') {
+				wifiObservedDirections++;
+				return;
+			}
+			if (source !== 'edge_port' || (domain !== 'l2_no_fcs' && domain !== 'l2_with_fcs'))
+				return;
+			comparableDirections++;
+			if (!plainObject(classification)) return;
+			var coverage = finiteNumber(classification[directionName + '_coverage_pct']);
+			var explicitState = classification[directionName + '_state'];
+			var directionState = String(explicitState || state);
+			/* Old v1 payloads can expose one valid percentage without direction states. */
+			var directionAligned = directionState === 'aligned' ||
+				(!explicitState && state === 'counter_skew' && coverage !== null);
+			if (directionAligned) {
+				alignedDirections++;
+				if (coverage !== null) (directionName === 'tx' ? txCoverage : rxCoverage).push(coverage);
+			} else if (directionState === 'domain_mismatch') {
+				unexpectedDomainMismatch++;
+			}
+		});
+		if (!plainObject(classification)) return;
 		var window = finiteNumber(classification.window_ms), comparison = finiteNumber(classification.comparison_window_ms);
 		if (window !== null) windowMs = windowMs === null ? window : Math.max(windowMs, window);
 		if (comparison !== null) comparisonWindowMs = comparisonWindowMs === null ? comparison : Math.max(comparisonWindowMs, comparison);
@@ -1183,24 +1214,34 @@ function classificationStateWithRpc(viewState) {
 	var missing = Math.max(0, items.length - classified);
 	if (missing) counts.unavailable = (counts.unavailable || 0) + missing;
 	var aligned = counts.aligned || 0, maps = classifierMapState(clients);
-	var complete = items.length > 0 && classified === items.length && aligned === items.length;
-	var state = !classified ? 'warning' : (complete ? 'good' : 'warning');
-	var badge = !classified ? _('等待分类') : (complete ? _('已对齐') :
-		(aligned ? _('部分可比') : _('不可比较')));
+	var pending = missing || counts.warmup || counts.partial || counts.stale ||
+		counts.window_mismatch || counts.unavailable || unexpectedDomainMismatch;
+	var complete = items.length > 0 && classified === items.length && !pending;
+	var state = !classified || pending ? 'warning' : 'good';
+	var badge = !classified ? _('等待分类') : (complete ? _('运行正常') : _('等待稳定'));
 	if (maps.loss || counts.map_loss) { state = 'bad'; badge = _('映射丢失'); }
 	else if (maps.pressure) { state = worseState(state, 'warning'); badge = _('映射压力'); }
 	else if (!maps.available) { state = worseState(state, 'warning'); badge = _('映射未确认'); }
-	var value = items.length ? _('%d/%d 可比较').format(aligned, items.length) : _('尚无分类窗口');
+	var value = items.length ? _('%d/%d 客户端已分类').format(classified, items.length) : _('尚无分类窗口');
 	var stateText = countSummary(counts, CLASSIFICATION_STATE_LABELS,
 		[ 'aligned', 'domain_mismatch', 'counter_skew', 'window_mismatch', 'partial', 'warmup', 'stale', 'map_loss', 'unavailable' ]);
 	var txMin = maps.loss || !maps.available ? null : minimumNumber(txCoverage);
 	var rxMin = maps.loss || !maps.available ? null : minimumNumber(rxCoverage);
-	var coverageText = txMin === null && rxMin === null ? '-' :
-		_('上行最低 %s · 下行最低 %s').format(formatPercent(txMin), formatPercent(rxMin));
+	var coverageParts = [];
+	if (txMin !== null) coverageParts.push(_('上行最低 %s').format(formatPercent(txMin)));
+	if (rxMin !== null) coverageParts.push(_('下行最低 %s').format(formatPercent(rxMin)));
+	var coverageText = coverageParts.join(' · ') || '-';
+	var verificationParts = [];
+	if (comparableDirections)
+		verificationParts.push(_('有线 %d/%d 方向已核对').format(alignedDirections, comparableDirections));
+	if (wifiObservedDirections)
+		verificationParts.push(_('Wi-Fi %d 方向仅观察').format(wifiObservedDirections));
+	var verificationText = verificationParts.join(' · ') || _('暂无可核对方向');
 	var description = !classified ? _('尚未收到每客户端 NSS/CPU 分类结果。') :
 		_('NSS已识别与CPU慢路径已识别只用于分类，不与客户端总速率相加。');
 	if (missing) description += ' ' + _('%d 个客户端尚未发布分类窗口。').format(missing);
-	if (counts.domain_mismatch) description += ' ' + _('字节口径不同的客户端会省略未分类和覆盖率。');
+	if (wifiObservedDirections) description += ' ' + _('Wi-Fi 使用独立站点口径，仅观察分类，不计算未分类或覆盖率。');
+	if (unexpectedDomainMismatch) description += ' ' + _('有线字节口径不同，当前省略未分类和覆盖率。');
 	if (maps.loss) description = _('分类映射读取不完整；本轮不得标记为完整，也不得推算未分类流量。');
 	else if (!maps.available) description += ' ' + _('缺少分类映射容量与完整性证据。');
 	if (rpc.state === 'failed' || rpc.state === 'invalid' || rpc.state === 'missing') {
@@ -1214,7 +1255,9 @@ function classificationStateWithRpc(viewState) {
 		meta: _('分类窗口 %s · 比较窗口 %s').format(formatDuration(windowMs), formatDuration(comparisonWindowMs)),
 		counts: counts, stateText: stateText, aligned: aligned, classified: classified,
 		totalClients: items.length, txMinimumPct: txMin, rxMinimumPct: rxMin,
-		coverageText: coverageText, maps: maps, windowMs: windowMs,
+		coverageText: coverageText, verificationText: verificationText,
+		comparableDirections: comparableDirections, alignedDirections: alignedDirections,
+		wifiObservedDirections: wifiObservedDirections, maps: maps, windowMs: windowMs,
 		comparisonWindowMs: comparisonWindowMs };
 }
 
@@ -1875,7 +1918,7 @@ function buildReport(viewState, frontendVersion) {
 		_('NSS/CPU 流量分类') + ': ' + stateLabel(classification.state) + ' · ' + reportField(classification.value),
 		'- ' + _('分类状态') + ': ' + reportField(classification.stateText),
 		'- ' + _('最低分类覆盖率') + ': ' + reportField(classification.coverageText),
-		'- ' + _('分类映射') + ': ' + reportField(classification.maps.text),
+		'- ' + _('分类映射') + ': ' + reportField(classification.maps.detailText),
 		_('降级与能力边界') + ': ' + stateLabel(integrity.state) + ' · ' + reportField(integrity.value),
 		'- ' + reportField(integrity.reasonText),
 		'- ' + _('安全规则') + ': ' + _('N/S 不与 E 相加；不可比较时不生成未分类或覆盖率'),

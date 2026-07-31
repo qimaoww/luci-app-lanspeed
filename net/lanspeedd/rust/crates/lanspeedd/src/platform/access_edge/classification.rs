@@ -70,6 +70,10 @@ pub struct ClassificationEpoch {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DirectionClassification {
+    /// Access Edge bytes projected onto this exact comparison window. This
+    /// remains observable when N+S exceeds Edge so diagnostics can explain
+    /// `counter_skew` without turning the value into another rate owner.
+    pub edge_bps: Option<u64>,
     pub nss_bps: Option<u64>,
     pub slow_bps: Option<u64>,
     pub unclassified_bps: Option<u64>,
@@ -79,6 +83,8 @@ pub struct DirectionClassification {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClassificationResult {
     pub state: ClassificationState,
+    pub tx_state: ClassificationState,
+    pub rx_state: ClassificationState,
     pub window_start_ms: Option<u64>,
     pub window_end_ms: Option<u64>,
     /// The actual classifier epoch represented by the latest N/S sample.
@@ -93,6 +99,8 @@ impl ClassificationResult {
     pub fn state(state: ClassificationState) -> Self {
         Self {
             state,
+            tx_state: state,
+            rx_state: state,
             window_start_ms: None,
             window_end_ms: None,
             classifier_window_ms: None,
@@ -201,6 +209,8 @@ fn single_epoch_result(
     let window_ms = epoch.end_ms.checked_sub(epoch.start_ms);
     ClassificationResult {
         state,
+        tx_state: state,
+        rx_state: state,
         window_start_ms: Some(epoch.start_ms),
         window_end_ms: Some(epoch.end_ms),
         classifier_window_ms: window_ms,
@@ -212,6 +222,7 @@ fn single_epoch_result(
 
 fn observed_only(epoch: DirectionEpoch, window_ms: u64) -> DirectionClassification {
     DirectionClassification {
+        edge_bps: epoch.edge.map(|value| bps(value.bytes, window_ms)),
         nss_bps: epoch.nss.map(|value| bps(value.bytes, window_ms)),
         slow_bps: epoch.slow.map(|value| bps(value.bytes, window_ms)),
         unclassified_bps: None,
@@ -231,6 +242,8 @@ fn classify_window(epochs: &VecDeque<ClassificationEpoch>) -> ClassificationResu
     let state = merge_states(tx_state, rx_state);
     ClassificationResult {
         state,
+        tx_state,
+        rx_state,
         window_start_ms: Some(first.start_ms),
         window_end_ms: Some(last.end_ms),
         classifier_window_ms: last.end_ms.checked_sub(last.start_ms),
@@ -260,6 +273,7 @@ fn classify_direction(
     }
 
     let mut result = DirectionClassification {
+        edge_bps: edge_present.then(|| bps(edge, window_ms)),
         nss_bps: nss_present.then(|| bps(nss, window_ms)),
         slow_bps: slow_present.then(|| bps(slow, window_ms)),
         unclassified_bps: None,
@@ -432,6 +446,7 @@ mod tests {
         assert_eq!(result.state, ClassificationState::Aligned);
         assert_eq!(result.classifier_window_ms, Some(2_000));
         assert_eq!(result.comparison_window_ms, Some(6_000));
+        assert_eq!(result.tx.edge_bps, Some(4_000));
         assert_eq!(result.tx.coverage_pct, Some(80));
         assert_eq!(result.tx.unclassified_bps, Some(800));
     }
@@ -548,8 +563,47 @@ mod tests {
         book.update("client", epoch(2, 100, 80, 40));
         let result = book.update("client", epoch(3, 100, 80, 40));
         assert_eq!(result.state, ClassificationState::CounterSkew);
+        assert_eq!(result.tx_state, ClassificationState::CounterSkew);
+        assert_eq!(result.rx_state, ClassificationState::CounterSkew);
+        assert_eq!(result.tx.edge_bps, Some(400));
         assert_eq!(result.tx.unclassified_bps, None);
         assert_eq!(result.tx.coverage_pct, None);
+    }
+
+    #[test]
+    fn merged_result_preserves_each_direction_state() {
+        let mut book = ClassificationBook::default();
+        for id in 1..=3 {
+            let mut value = epoch(id, 100, 80, 40);
+            value.rx = DirectionEpoch {
+                edge: Some(observed(
+                    RateSource::EdgePort,
+                    100,
+                    ByteDomain::L2NoFcs,
+                    value.end_ms,
+                )),
+                nss: Some(observed(
+                    RateSource::EcmNssLowerBound,
+                    60,
+                    ByteDomain::L2NoFcs,
+                    value.end_ms,
+                )),
+                slow: Some(observed(
+                    RateSource::TcBpfLowerBound,
+                    20,
+                    ByteDomain::L2NoFcs,
+                    value.end_ms + 20,
+                )),
+            };
+            let result = book.update("client", value);
+            if id == 3 {
+                assert_eq!(result.state, ClassificationState::CounterSkew);
+                assert_eq!(result.tx_state, ClassificationState::CounterSkew);
+                assert_eq!(result.rx_state, ClassificationState::Aligned);
+                assert_eq!(result.tx.coverage_pct, None);
+                assert_eq!(result.rx.coverage_pct, Some(80));
+            }
+        }
     }
 
     #[test]

@@ -770,10 +770,20 @@ validateValue(schema, schema.$defs.rateAttachment, {
 }, 'Wi-Fi associated station attachment');
 assertSchemaRequired(schema, 'rateClassificationSummary', ['state']);
 assertSchemaRequired(schema, 'trafficClassification', ['state', 'tx', 'rx']);
+assertSchemaRequired(schema, 'trafficClassificationDirection', ['state']);
 assert(sameStringSet(Object.keys(schema.$defs.trafficClassificationDirection.properties), [
-  'nss_bps', 'slow_bps', 'unclassified_bps', 'coverage_pct'
+  'state', 'edge_bps', 'nss_bps', 'slow_bps', 'unclassified_bps', 'coverage_pct'
 ]) && schema.$defs.trafficClassificationDirection.additionalProperties === false,
-'trafficClassificationDirection must expose only optional N/S/U/coverage fields');
+'trafficClassificationDirection must expose one direction state plus optional comparison E/N/S/U/coverage fields');
+validateValue(schema, schema.$defs.trafficClassification, {
+  state: 'counter_skew',
+  window_start_ms: 117000,
+  window_end_ms: 123000,
+  comparison_window_ms: 6000,
+  tx: { state: 'counter_skew', edge_bps: 90000000, nss_bps: 80000000, slow_bps: 15000000 },
+  rx: { state: 'aligned', edge_bps: 60000000, nss_bps: 50000000, slow_bps: 5000000,
+    unclassified_bps: 5000000, coverage_pct: 91 }
+}, 'directional traffic classification detail');
 validateValue(schema, schema.$defs.clientRateMeta, {
   version: 1,
   scope: 'all_frames',
@@ -786,12 +796,12 @@ validateValue(schema, schema.$defs.clientRateMeta, {
   stale: false,
   reason_codes: [],
   classification: {
-    state: 'aligned',
+    state: 'counter_skew',
+    tx_state: 'aligned',
     sample_ms: 123000,
     window_ms: 2000,
     comparison_window_ms: 6000,
-    tx_coverage_pct: 96,
-    rx_coverage_pct: 94
+    tx_coverage_pct: 96
   }
 }, 'client rate_meta example');
 assertSchemaRequired(schema, 'health', ['mode', 'confidence', 'capabilities', 'conflicts', 'warnings', 'evidence']);

@@ -71,7 +71,7 @@ function classificationStateLabel(state) {
 	var labels = {
 		warmup: _('预热中'), aligned: _('已对齐'), partial: _('部分可用'), stale: _('已过期'),
 		domain_mismatch: _('字节域不匹配'), window_mismatch: _('窗口不匹配'),
-		counter_skew: _('计数偏移'), map_loss: _('映射表数据丢失'), unavailable: _('不可用')
+		counter_skew: _('计数错位'), map_loss: _('映射表数据丢失'), unavailable: _('不可用')
 	};
 	return labels[String(state || '')] || _('未知状态');
 }
@@ -106,6 +106,10 @@ function renderTrafficClassification(refs, response, unit) {
 		return typeof value === 'number' && isFinite(value) && value >= 0 && value <= 100
 			? String(value) + '%' : '—';
 	};
+	refs.classificationTxDirectionState.textContent = classificationStateLabel(tx.state);
+	refs.classificationRxDirectionState.textContent = classificationStateLabel(rx.state);
+	refs.classificationTxEdge.textContent = rate(tx.edge_bps);
+	refs.classificationRxEdge.textContent = rate(rx.edge_bps);
 	refs.classificationTxNss.textContent = rate(tx.nss_bps);
 	refs.classificationRxNss.textContent = rate(rx.nss_bps);
 	refs.classificationTxSlow.textContent = rate(tx.slow_bps);

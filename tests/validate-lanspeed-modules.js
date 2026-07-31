@@ -2976,12 +2976,14 @@ function assertClientDetailRefreshBehavior(src) {
 		classifiedResponse.traffic_classification = {
 			state: 'aligned', window_start_ms: 120000, window_end_ms: 126000,
 			comparison_window_ms: 6000,
-			tx: { nss_bps: 80000000, slow_bps: 10000000, unclassified_bps: 5000000, coverage_pct: 95 },
-			rx: { nss_bps: 50000000, slow_bps: 5000000, unclassified_bps: 4000000, coverage_pct: 93 }
+			tx: { state: 'aligned', edge_bps: 95000000, nss_bps: 80000000, slow_bps: 10000000, unclassified_bps: 5000000, coverage_pct: 95 },
+			rx: { state: 'aligned', edge_bps: 59000000, nss_bps: 50000000, slow_bps: 5000000, unclassified_bps: 4000000, coverage_pct: 93 }
 		};
 		state.response = classifiedResponse;
 		refresh.render(state);
 		if (refs.classificationCard.hidden || refs.classificationState.textContent !== '已对齐' ||
+		    refs.classificationTxDirectionState.textContent !== '已对齐' ||
+		    refs.classificationTxEdge.textContent !== '95.00 Mbps' ||
 		    refs.classificationTxNss.textContent !== '80.00 Mbps' ||
 		    refs.classificationRxSlow.textContent !== '5.00 Mbps' ||
 		    refs.classificationTxUnknown.textContent !== '5.00 Mbps' ||
@@ -2991,8 +2993,8 @@ function assertClientDetailRefreshBehavior(src) {
 		}
 		classifiedResponse.traffic_classification = {
 			state: 'domain_mismatch', comparison_window_ms: 6000,
-			tx: { nss_bps: 80000000, slow_bps: 10000000 },
-			rx: { nss_bps: 50000000, slow_bps: 5000000 }
+			tx: { state: 'domain_mismatch', edge_bps: 95000000, nss_bps: 80000000, slow_bps: 10000000 },
+			rx: { state: 'domain_mismatch', edge_bps: 59000000, nss_bps: 50000000, slow_bps: 5000000 }
 		};
 		refresh.render(state);
 		if (refs.classificationState.textContent !== '字节域不匹配' ||
@@ -3001,7 +3003,7 @@ function assertClientDetailRefreshBehavior(src) {
 			fail('domain mismatch must retain observed N/S while omitting fabricated U and coverage');
 		}
 		classifiedResponse.traffic_classification = {
-			state: 'map_loss', tx: {}, rx: {}
+			state: 'map_loss', tx: { state: 'map_loss' }, rx: { state: 'map_loss' }
 		};
 		refresh.render(state);
 		if (refs.classificationState.textContent !== '映射表数据丢失' ||
@@ -3484,6 +3486,8 @@ function assertClientDetailShellInteraction(src) {
 			'summaryTargets', 'summaryConnections', 'summaryUpdated', 'protocolAll',
 			'protocolTcp', 'protocolUdp', 'filter', 'intervalSel', 'refresh', 'pause',
 			'classificationCard', 'classificationState', 'classificationWindow',
+			'classificationTxDirectionState', 'classificationRxDirectionState',
+			'classificationTxEdge', 'classificationRxEdge',
 			'classificationTxNss', 'classificationRxNss', 'classificationTxSlow',
 			'classificationRxSlow', 'classificationTxUnknown', 'classificationRxUnknown',
 			'classificationTxCoverage', 'classificationRxCoverage',
@@ -3499,7 +3503,7 @@ function assertClientDetailShellInteraction(src) {
 		'返回客户端列表', 'LAN Speed 状态 / 客户端连接详情', '无法加载连接详情',
 		'客户端身份', '正在加载客户端身份…', 'MAC 与 IP 信息将在加载后显示',
 			'等待数据', '连接摘要', '目标 IP 数', '连接数', '更新时间',
-			'流量分类', 'NSS已识别', 'CPU慢路径已识别', '未分类', '分类覆盖率',
+			'流量分类', '方向状态', 'Edge 同窗总速率', 'NSS已识别', 'CPU慢路径已识别', '未分类', '分类覆盖率',
 		'当前连接', '全部', 'TCP', 'UDP', '立即刷新', '目标 IP', '国家/地区', '目标端口',
 		'协议', '状态', '上行', '下行', '暂无连接', '连接数据加载后会显示来源、刷新间隔和 IP 位置说明。'
 	].forEach(function(text) {

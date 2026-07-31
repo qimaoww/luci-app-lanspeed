@@ -428,6 +428,16 @@ async function testStrictContracts() {
   mapLossMeta.clients[0].rate_meta.classification = { state: 'map_loss' };
   assert.strictEqual(model.validateRuntimeResponse(mapLossMeta, 'clients').valid, true,
     'map_loss classification must remain valid without fabricated coverage');
+  const directionalMeta = clone(futureRateSource);
+  directionalMeta.clients[0].rate_meta.classification = {
+    state: 'counter_skew', tx_state: 'aligned', sample_ms: 9500,
+    window_ms: 2000, comparison_window_ms: 6000, tx_coverage_pct: 96
+  };
+  assert.strictEqual(model.validateRuntimeResponse(directionalMeta, 'clients').valid, true,
+    'optional per-direction state must distinguish a valid direction from the merged worst state');
+  directionalMeta.clients[0].rate_meta.classification.tx_state = 'invalid_state';
+  assert.strictEqual(model.validateRuntimeResponse(directionalMeta, 'clients').valid, false,
+    'per-direction classification state remains a closed machine enum');
   assert.strictEqual(model.validateRuntimeResponse({}, 'status').valid, false);
   const badStatus = healthyStatus();
   badStatus.capabilities.bpf = 'yes';
@@ -492,7 +502,9 @@ async function testResourceStateMachine() {
   assert.strictEqual(model.accessEdgeStateWithRpc(good).trustText, '声明直连 1');
   const goodClassification = model.classificationStateWithRpc(good);
   assert.strictEqual(goodClassification.state, 'good');
-  assert.strictEqual(goodClassification.value, '1/1 可比较');
+  assert.strictEqual(goodClassification.badge, '运行正常');
+  assert.strictEqual(goodClassification.value, '1/1 客户端已分类');
+  assert.strictEqual(goodClassification.verificationText, '有线 2/2 方向已核对');
   assert.strictEqual(goodClassification.coverageText, '上行最低 96% · 下行最低 94%');
   assert.strictEqual(model.integrityStateWithRpc(good).state, 'good');
   assert.strictEqual(model.pathStateWithRpc(good).rateSource, 'access_edge');
@@ -595,8 +607,42 @@ async function testResourceStateMachine() {
   const missingClassificationValues = payloads();
   delete missingClassificationValues.clients.clients[0].rate_meta.classification;
   const missingClassification = model.normalizeResults(await settled(missingClassificationValues), null, 12850, 6);
-  assert.strictEqual(model.classificationStateWithRpc(missingClassification).value, '0/1 可比较');
+  assert.strictEqual(model.classificationStateWithRpc(missingClassification).value, '0/1 客户端已分类');
   assert(model.classificationStateWithRpc(missingClassification).stateText.includes('不可用 1'));
+
+  const mixedClassificationValues = payloads();
+  mixedClassificationValues.clients.clients[0].rate_meta.classification = {
+    state: 'counter_skew', tx_state: 'aligned', sample_ms: 9500, window_ms: 2000,
+    comparison_window_ms: 6000, tx_coverage_pct: 96
+  };
+  [ '02:00:00:00:10:01', '02:00:00:00:10:02' ].forEach((mac, index) => {
+    const wifi = clone(mixedClassificationValues.clients.clients[0]);
+    wifi.mac = mac;
+    wifi.identity_key = `${mac}@lan`;
+    wifi.hostname = `wifi-${index + 1}`;
+    wifi.rate_meta.scope = 'unicast';
+    wifi.rate_meta.tx = { source: 'edge_wifi', coverage: 'full', byte_domain: 'station_data' };
+    wifi.rate_meta.rx = { source: 'edge_wifi', coverage: 'full', byte_domain: 'station_data' };
+    wifi.rate_meta.attachment = { kind: 'wifi', ifname: 'phy1-ap0', trust: 'associated_station' };
+    wifi.rate_meta.classification = {
+      state: 'domain_mismatch', sample_ms: 9500, window_ms: 2000,
+      comparison_window_ms: 6000
+    };
+    mixedClassificationValues.clients.clients.push(wifi);
+  });
+  const mixedClassification = model.normalizeResults(await settled(mixedClassificationValues), null, 12875, 6);
+  const mixedClassificationState = model.classificationStateWithRpc(mixedClassification);
+  assert.strictEqual(mixedClassificationState.state, 'good',
+    'expected Wi-Fi domain separation and transient wired skew do not make the classifier unhealthy');
+  assert.strictEqual(mixedClassificationState.badge, '运行正常');
+  assert.strictEqual(mixedClassificationState.value, '3/3 客户端已分类');
+  assert.strictEqual(mixedClassificationState.verificationText,
+    '有线 1/2 方向已核对 · Wi-Fi 4 方向仅观察');
+  assert.strictEqual(mixedClassificationState.coverageText, '上行最低 96%');
+  assert(mixedClassificationState.stateText.includes('字节口径不可比 2'));
+  assert(mixedClassificationState.stateText.includes('计数错位 1'));
+  assert.strictEqual(mixedClassificationState.maps.text, 'NSS 2 · CPU 1');
+  assert.strictEqual(mixedClassificationState.maps.detailText, 'NSS 2/4096 · CPU 1/8192');
 
   const mapLossValues = payloads();
   mapLossValues.clients.evidence.classifier_maps.ecm_nss.map_loss = true;
@@ -874,9 +920,9 @@ async function testDomAndPresenter() {
   assert.strictEqual(goodBuilt.refs.rateEvidence.children[0].textContent, '客户端采集覆盖率');
   assert.strictEqual(goodBuilt.refs.rateEvidence.children[1].textContent, '100%');
   assert.strictEqual(goodBuilt.refs.edgeEvidence.children.length, 4);
-  assert.strictEqual(goodBuilt.refs.classificationEvidence.children.length, 4);
+  assert.strictEqual(goodBuilt.refs.classificationEvidence.children.length, 6);
   assert.strictEqual(goodBuilt.refs.pipeline.children.length, 3);
-  assert.strictEqual(goodBuilt.refs.pipelineSummary.textContent, '总速率 2/2 方向 · 分类 1/1 可比较');
+  assert.strictEqual(goodBuilt.refs.pipelineSummary.textContent, '总速率 2/2 方向 · 分类 1/1 客户端');
   assert.strictEqual(goodBuilt.refs.interfacesBody.children.length, 1);
   assert.strictEqual(goodBuilt.refs.interfacesBody.children[0].children[3].textContent, '500 毫秒',
     'interface sample timestamps must render as age relative to the interface clock');

@@ -300,8 +300,9 @@
       "total_rate_prefers": "E",
       "edge_missing_fallback": "strictly_aligned_N_plus_S_degraded_only",
       "unclassified_must_not_be_named_unaccelerated": true,
-      "main_clients_payload": "rate_meta_with_classification_coverage_summary",
-      "detail_payload": "traffic_classification_with_N_S_U",
+      "classification_state_granularity": "client_worst_state_plus_sparse_direction_override",
+      "main_clients_payload": "rate_meta_with_directional_classification_coverage_summary",
+      "detail_payload": "traffic_classification_with_direction_state_comparison_E_and_N_S_U",
       "connection_only": "source_none_coverage_unavailable_scope_none"
     }
   },
