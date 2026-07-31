@@ -182,7 +182,7 @@ function renderPipeline(refs, viewState) {
 	var connections = diagnosticsModel.connectionStateWithRpc(viewState);
 	var freshnessEvidence = {}, qualityEvidence = {}, pathEvidence = {}, connectionEvidence = {};
 	freshnessEvidence[_('诊断 RPC')] = phaseLabel(displayPhase(viewState, 'diagnostics'));
-	qualityEvidence[_('覆盖率')] = quality.coverage && quality.coverage.badge || _('未知');
+	qualityEvidence[_('当前网速覆盖')] = quality.coverage && quality.coverage.badge || _('未知');
 	qualityEvidence[_('状态 RPC')] = phaseLabel(displayPhase(viewState, 'status'));
 	pathEvidence[_('速率配置')] = textOrDash(path.configuredRate);
 	pathEvidence[_('连接配置')] = textOrDash(path.configuredConnection);

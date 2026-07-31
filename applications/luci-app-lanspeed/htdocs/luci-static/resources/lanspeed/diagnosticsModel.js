@@ -903,10 +903,35 @@ function collectorDisplayLabel(value) {
 	return knownCollector(key) ? statusCollector.collectorLabel(key) : _('未知');
 }
 
-function coverageState(status) {
+function accessEdgeCoverageState(clients) {
+	var evidence = clients && clients.evidence && clients.evidence.access_edge;
+	if (!plainObject(evidence)) return { state: 'warning', badge: _('等待采样'), value: '…',
+		description: _('自动精准模式尚未收到接入点覆盖数据。'),
+		meta: _('精准总速率 · 覆盖契约缺失'), quality: 'warmup', source: 'access_edge' };
+	var quality = String(evidence.coverage || 'unavailable');
+	var labels = { full: _('完整'), partial: _('部分'), degraded: _('降级'), unavailable: _('不可用') };
+	var active = finiteNumber(evidence.active_attachments);
+	var published = finiteNumber(evidence.published_attachments);
+	var countText = active !== null && published !== null
+		? _('%d/%d 个接入点已识别').format(Math.round(published), Math.round(active)) : _('接入点数量未知');
+	var state = quality === 'full' ? 'good' : quality === 'unavailable' ? 'bad' : 'warning';
+	var description = quality === 'full' ? _('所有活动客户端都有完整总速率来源。') :
+		(quality === 'partial' ? _('部分客户端或广播、组播流量无法完整归属。') :
+			(quality === 'degraded' ? _('当前仅有 NSS/CPU 分类器降级速率。') :
+				_('暂无可用的客户端总速率来源。')));
+	return { state: state, badge: labels[quality] || labels.unavailable,
+		value: labels[quality] || labels.unavailable, description: countText + ' · ' + description,
+		meta: _('精准总速率 · %s').format(countText), quality: quality,
+		activeAttachments: active, publishedAttachments: published, source: 'access_edge' };
+}
+
+function coverageState(status, clients) {
+	if (String(status && status.rate_collector_mode || '') === 'auto' &&
+	    String(status && status.access_edge_mode || '') === 'active')
+		return accessEdgeCoverageState(clients);
 	var coverage = status && status.coverage;
 	if (!plainObject(coverage)) return { state: 'warning', badge: _('未知'), value: '-',
-		description: _('没有收到覆盖率数据。'), meta: _('覆盖率契约缺失'), quality: '' };
+		description: _('没有收到覆盖率数据。'), meta: _('覆盖率契约缺失'), quality: '', source: 'collector' };
 	var quality = String(coverage.quality || '');
 	var tx = finiteNumber(coverage.tx_pct), rx = finiteNumber(coverage.rx_pct);
 	var minimum = tx !== null && rx !== null ? Math.min(tx, rx) : null;
@@ -939,7 +964,8 @@ function coverageState(status) {
 	else if (quality === 'unsupported') { state = 'bad'; badge = _('不可用'); value = '-'; description = _('后端没有可用的覆盖率数据源。'); }
 	return { state: state, badge: badge, value: value, description: description,
 		meta: _('%d 个样本 · %s 窗口').format(Math.round(Number(coverage.samples) || 0),
-			formatDuration(coverage.window_ms)), quality: quality, txPct: tx, rxPct: rx, minimumPct: minimum };
+			formatDuration(coverage.window_ms)), quality: quality, txPct: tx, rxPct: rx,
+		minimumPct: minimum, source: 'collector' };
 }
 
 function freshnessFromContract(viewState) {
@@ -1201,10 +1227,22 @@ function versionStateWithRpc(viewState, backendVersion, frontendVersion) {
 }
 
 function qualityState(data, progress) {
-	var coverage = coverageState(data && data.status), freshness = freshnessState(data, progress);
+	var coverage = coverageState(data && data.status, data && data.clients), freshness = freshnessState(data, progress);
 	var statusRpc = rpcState(data, 'status');
 	if (statusRpc.state === 'failed' || statusRpc.state === 'invalid' || statusRpc.state === 'missing') coverage.state = 'bad';
 	else if (statusRpc.state === 'loading') { coverage.state = 'warning'; coverage.badge = _('检查中'); }
+	if (coverage.source === 'access_edge') {
+		var clientsRpc = rpcState(data, 'clients');
+		if (clientsRpc.state === 'failed' || clientsRpc.state === 'invalid' || clientsRpc.state === 'missing') {
+			coverage.state = 'bad'; coverage.badge = _('不可用');
+			coverage.description = _('客户端数据接口没有返回当前精准总速率覆盖。');
+		} else if (clientsRpc.state === 'loading') {
+			coverage.state = 'warning'; coverage.badge = _('检查中');
+		} else if (clientsRpc.state === 'retained') {
+			coverage.state = worseState(coverage.state, 'warning'); coverage.badge = _('沿用旧值');
+			coverage.description += ' ' + _('当前显示最近一次成功覆盖结果。');
+		}
+	}
 	var state = worseState(coverage.state, freshness.state);
 	return { state: state, badge: state === 'bad' ? _('异常') : (state === 'warning' ? _('需关注') : coverage.badge),
 		value: coverage.value, description: coverage.description + ' ' + freshness.description,

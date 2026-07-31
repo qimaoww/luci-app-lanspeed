@@ -18,7 +18,7 @@ var DEFAULTS = {
 	active_client_min_bps: 1,
 	overview_window_samples: 240,
 	rate_collector_mode: 'auto',
-	access_edge_mode: 'shadow',
+	access_edge_mode: 'active',
 	conn_collector_mode: 'auto',
 	show_client_status: '0',
 	show_ipv6: '1',
@@ -44,22 +44,22 @@ var LIMITS = {
 };
 
 var RATE_MODES = [
-	{ value: 'auto', label: _('自动'), capability: null },
-	{ value: 'bpf', label: _('BPF'), capability: 'bpf' },
-	{ value: 'nss_ecm_node', label: 'ECM', capability: 'nss_ecm_node' },
-	{ value: 'nss_ecm_bpf', label: 'ECM+BPF', capability: 'nss_ecm_bpf' }
+	{ value: 'auto', label: _('自动精准（推荐）'), capability: null },
+	{ value: 'bpf', label: _('仅 CPU 路径（BPF）'), capability: 'bpf' },
+	{ value: 'nss_ecm_node', label: _('仅 NSS 加速（ECM）'), capability: 'nss_ecm_node' },
+	{ value: 'nss_ecm_bpf', label: _('NSS + CPU 路径（ECM+BPF）'), capability: 'nss_ecm_bpf' }
 ];
 
 var CONNECTION_MODES = [
-	{ value: 'auto', label: _('自动'), capability: null },
-	{ value: 'conntrack_netlink', label: 'CT-Netlink', capability: 'conntrack_netlink' },
-	{ value: 'conntrack_procfs', label: 'CT-Procfs', capability: 'conntrack_procfs' }
+	{ value: 'auto', label: _('自动（推荐）'), capability: null },
+	{ value: 'conntrack_netlink', label: _('内核连接接口（Netlink）'), capability: 'conntrack_netlink' },
+	{ value: 'conntrack_procfs', label: _('兼容连接接口（Procfs）'), capability: 'conntrack_procfs' }
 ];
 
 var ACCESS_EDGE_MODES = [
-	{ value: 'off', label: _('关闭') },
-	{ value: 'shadow', label: _('Shadow（仅采集）') },
-	{ value: 'active', label: _('Active（作为总速率来源）') }
+	{ value: 'off', label: _('关闭精准检测') },
+	{ value: 'shadow', label: _('仅后台验证（不用于显示）') },
+	{ value: 'active', label: _('精准总速率（推荐）') }
 ];
 
 var FIELD_DEFS = [
@@ -67,9 +67,9 @@ var FIELD_DEFS = [
 	{ name: 'active_client_window_ms', kind: 'integer', label: _('活跃客户端窗口'), unit: 'ms', limits: LIMITS.active_client_window_ms },
 	{ name: 'active_client_min_bps', kind: 'integer', label: _('活跃最小速率'), unit: 'bps', limits: LIMITS.active_client_min_bps },
 	{ name: 'overview_window_samples', kind: 'integer', label: _('历史采样点'), unit: _('个'), limits: LIMITS.overview_window_samples },
-	{ name: 'rate_collector_mode', kind: 'enum', label: _('速率采集') },
-	{ name: 'access_edge_mode', kind: 'enum', label: _('Access Edge 总速率') },
-	{ name: 'conn_collector_mode', kind: 'enum', label: _('连接数采集') },
+	{ name: 'rate_collector_mode', kind: 'enum', label: _('客户端网速模式') },
+	{ name: 'access_edge_mode', kind: 'enum', label: _('客户端总速率') },
+	{ name: 'conn_collector_mode', kind: 'enum', label: _('连接详情来源') },
 	{ name: 'show_client_status', kind: 'boolean', label: _('显示客户端状态') },
 	{ name: 'show_ipv6', kind: 'boolean', label: _('显示 IPv6 地址') },
 	{ name: 'hide_private_ipv6', kind: 'boolean', label: _('隐藏私有 IPv6 地址') },
@@ -80,9 +80,9 @@ var FIELD_DEFS = [
 	{ name: 'interface_include', kind: 'interface-list', label: _('采集接口') },
 	{ name: 'interface_exclude', kind: 'interface-list', label: _('排除接口'), compatibility: true },
 	{ name: 'observe', kind: 'interface-list', label: _('观察接口') },
-	{ name: 'dedicated_port', kind: 'interface-list', label: _('已确认直连端口') },
-	{ name: 'enable_bpf', kind: 'boolean', label: _('启用 BPF') },
-	{ name: 'enable_conntrack_fallback', kind: 'boolean', label: _('允许连接跟踪回退') }
+	{ name: 'dedicated_port', kind: 'interface-list', label: _('一口一设备端口') },
+	{ name: 'enable_bpf', kind: 'boolean', label: _('启用 CPU 流量检测（BPF）') },
+	{ name: 'enable_conntrack_fallback', kind: 'boolean', label: _('允许兼容连接详情') }
 ];
 
 function clone(value) {

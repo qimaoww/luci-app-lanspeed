@@ -69,10 +69,10 @@ Qualcomm aarch64 NSS 设备自动按 ECM+BPF、ECM、BPF 选择健康后端，�
 - 客户端详情按远端 IP 聚合 TCP/UDP 连接，可展开实际连接并排序、分页、暂停刷新。
 - 浏览器按当前页查询公网 IP 地理位置；私网、保留地址和 Fake-IP 在本地分类。
 - 实时状态、运行诊断、LAN Speed 配置和客户端详情使用同一后端版本与 RPC 契约。
-- LuCI 显示完整包版本，例如 `1.1.5-r3`，并使用同一版本作为静态资源缓存键。
+- LuCI 显示完整包版本，例如 `1.1.5-r4`，并使用同一版本作为静态资源缓存键。
 - 诊断页独立校验 status、health、clients、interfaces、overview、diagnostics 六个 RPC 请求。
 - 配置页支持速率模式、连接模式、采样、活动阈值、IPv6 显示、接口采集/观察和严格输入校验。
-- 配置页支持 Access Edge `off/shadow/active` 与管理员直连端口声明；默认 `shadow` 不改变当前显示速率。
+- 配置页支持 Access Edge `off/shadow/active` 与管理员直连端口声明；默认 `active` 在自动模式中启用精准总速率。
 - OpenClash、dae/daed、SQM/qosify/ifb、flow offload 与 fullcone NAT 探测和机器可读告警。
 
 ## 安装与编译
@@ -162,7 +162,7 @@ config lanspeed 'main'
     option active_client_min_bps '1'
     option overview_window_samples '240'
     option rate_collector_mode 'auto'
-    option access_edge_mode 'shadow'
+    option access_edge_mode 'active'
     # 只有确认一口一客户端时才添加；默认没有此项
     # list dedicated_port 'lan2'
     option conn_collector_mode 'auto'
@@ -183,8 +183,8 @@ config lanspeed 'main'
 | `active_client_window_ms` | `10000` | 活跃客户端最近可见窗口 |
 | `active_client_min_bps` | `1` | 活跃客户端最低速率 |
 | `overview_window_samples` | `240` | 概览历史样本数 |
-| `rate_collector_mode` | `auto` | `auto` / `bpf` / `nss_ecm_node` / `nss_ecm_bpf`，NSS 选项按运行能力显示 |
-| `access_edge_mode` | `shadow` | `off` / `shadow` / `active`；仅 `active + auto` 切换总速率 owner |
+| `rate_collector_mode` | `auto` | 自动精准优先；也可手动强制只看 BPF、NSS ECM 或 ECM+BPF 路径 |
+| `access_edge_mode` | `active` | 自动模式默认使用有线端口/无线客户端计数作为总速率；`shadow` 仅后台验证，`off` 关闭 |
 | `dedicated_port` | 空 | 管理员确认的一口一客户端端口；AP、交换机下联、Mesh、WDS、trunk 不得声明 |
 | `conn_collector_mode` | `auto` | `auto` / `conntrack_netlink` / `conntrack_procfs` |
 | `max_clients` | `2048` | 客户端与聚合容量，范围 64 到 16384 |
@@ -192,6 +192,11 @@ config lanspeed 'main'
 | `observe` | `wan` | 仅显示接口吞吐 |
 | `enable_bpf` | `1` | BPF 运行开关，不改变包依赖 |
 | `enable_conntrack_fallback` | `1` | 连接元数据回退，不参与客户端总速率 |
+
+分类覆盖率只在同一比较口径上发布。有线客户端会把端口、TC 慢路径和 NSS ECM
+计数按真实包数统一换算为 `l2_with_fcs` 后比较；NL80211 的 Wi-Fi station 字节包含
+802.11 口径，无法仅凭标准接口精确还原为以太网字节，因此仍保留
+`domain_mismatch`，不会生成虚假的未分类速率或覆盖率。
 
 客户端详情中的主机名编辑按 MAC 写入 `/etc/config/dhcp` 的 `option mac` 与 `option name`，不强制静态 IP。
 

@@ -423,74 +423,7 @@ function refreshSortHeaders(refs, prefs) {
 	});
 }
 
-function refreshLive(viewState) {
-	var refs = viewState.refs;
-	if (!refs) return;
-	var viewport = captureClientViewport(refs);
-	var status = viewState.status || {};
-	refreshIntervalControl(viewState, refs, status);
-	var clientsAll = fmt.asArray(viewState.clients && viewState.clients.clients);
-	var prefs = viewState.prefs;
-	var activeCfg = fmt.activeConfig(status);
-	var showClientStatus = viewState.showClientStatus === true;
-	var showIpv6 = viewState.showIpv6 !== false;
-	var hidePrivateIpv6 = viewState.hidePrivateIpv6 === true;
-	var hideIpv6Ranges = statusIp.hideIpv6RangesValue(viewState.hideIpv6Ranges);
-	setClientStatusVisibility(refs, showClientStatus);
-	var availability = refreshAvailability(viewState, refs);
-
-	var collector = statusCollector.effectiveCollector(status, viewState.clients);
-	refs.collectorPill.className = statusCollector.collectorClass(collector) +
-		' lanspeed-collector-status';
-	refs.collectorPill.textContent = statusCollector.collectorLabel(collector);
-	refs.collectorPill.title = _('当前实时速率数据源');
-	if ((viewState.rpc && viewState.rpc.status && viewState.rpc.status.ok === false) ||
-	    (viewState.rpc && viewState.rpc.clients && viewState.rpc.clients.ok === false)) {
-		refs.collectorPill.className = 'label label-warning lanspeed-collector-status';
-		refs.collectorPill.title = _('数据源信息可能来自上次成功结果');
-	}
-
-	var metaParts = [];
-	if (status.version) metaParts.push(_('后端 ') + status.version);
-	metaParts.push('luci ' + lsVersion.FULL_VERSION);
-	if (prefs.paused) metaParts.push(_('已暂停'));
-	refs.meta.textContent = metaParts.join(' · ');
-
-	var totals = fmt.sumTotals(clientsAll, activeCfg);
-	refs.mTx.textContent = fmt.formatRate(totals.tx, prefs.unit);
-	refs.mRx.textContent = fmt.formatRate(totals.rx, prefs.unit);
-	refs.mClients.textContent = String(clientsAll.length);
-
-	var clientsData = viewState.clients || {};
-	var udpSub;
-	if (typeof clientsData.tcp_conns_total === 'number' || typeof clientsData.udp_conns_total === 'number') {
-		refs.mConnsWrap.style.display = '';
-		refs.mTcpConns.textContent = String(typeof clientsData.tcp_conns_total === 'number' ? clientsData.tcp_conns_total : '-');
-		refs.mUdpConns.textContent = String(typeof clientsData.udp_conns_total === 'number' ? clientsData.udp_conns_total : '-');
-		if (typeof clientsData.udp_dns_conns_total === 'number' || typeof clientsData.udp_other_conns_total === 'number') {
-			udpSub = [
-				'DNS ' + (typeof clientsData.udp_dns_conns_total === 'number' ? clientsData.udp_dns_conns_total : '-'),
-				_('其它 ') + (typeof clientsData.udp_other_conns_total === 'number' ? clientsData.udp_other_conns_total : '-')
-			];
-			refs.mUdpConnsSub.textContent = udpSub.join(' · ');
-		} else {
-			refs.mUdpConnsSub.textContent = '-';
-		}
-	} else {
-		refs.mConnsWrap.style.display = 'none';
-	}
-
-	var nssEv = status.evidence && status.evidence.nss;
-	var subParts = [ _('%d 个活跃').format(totals.active) ];
-	if (nssEv && typeof nssEv.host_count === 'number' &&
-	    nssEv.host_count > clientsAll.length) {
-		subParts.push(_('NSS 发现 %d 个').format(nssEv.host_count));
-	}
-	subParts.push(_('活跃判定 %d 秒').format(Math.round(activeCfg.activeWindowMs / 1000)));
-	if (activeCfg.activeMinBps > 1)
-		subParts.push(_('≥ ') + fmt.formatRate(activeCfg.activeMinBps, prefs.unit));
-	refs.mClientsSub.textContent = subParts.join(' · ');
-
+function refreshLegacyCoverage(refs, status, prefs) {
 	var cov = status.coverage || {};
 	var covQuality = cov.quality || 'warmup';
 	var retainedPending = (covQuality === 'pending' || covQuality === 'counter_skew') &&
@@ -544,6 +477,116 @@ function refreshLive(viewState) {
 	} else {
 		refs.mCoverage.textContent = '…';
 		refs.mCoverageSub.textContent = _('采样中');
+	}
+}
+
+function accessEdgeOwnsCurrentRate(status) {
+	return String(status && status.rate_collector_mode || '') === 'auto' &&
+		String(status && status.access_edge_mode || '') === 'active';
+}
+
+function refreshAccessEdgeCoverage(refs, edgeCoverage) {
+	if (!edgeCoverage || typeof edgeCoverage !== 'object') {
+		refs.mCoverage.textContent = '…';
+		refs.mCoverageSub.textContent = _('等待精准总速率的接入点采样');
+		return;
+	}
+	var edgeState = String(edgeCoverage.coverage || 'unavailable');
+	var edgeLabels = {
+		full: _('完整'), partial: _('部分'), degraded: _('降级'), unavailable: _('不可用')
+	};
+	var edgeHints = {
+		full: _('所有活动客户端都有完整总速率来源'),
+		partial: _('部分客户端或广播、组播流量无法完整归属'),
+		degraded: _('当前仅有 NSS/CPU 分类器降级速率'),
+		unavailable: _('暂无可用的客户端总速率来源')
+	};
+	var activeAttachments = Number(edgeCoverage.active_attachments);
+	var publishedAttachments = Number(edgeCoverage.published_attachments);
+	refs.mCoverage.textContent = edgeLabels[edgeState] || edgeLabels.unavailable;
+	refs.mCoverageSub.textContent = [
+		isFinite(activeAttachments) && isFinite(publishedAttachments)
+			? _('%d/%d 个接入点已识别').format(publishedAttachments, activeAttachments) : '',
+		edgeHints[edgeState] || edgeHints.unavailable
+	].filter(Boolean).join(' · ');
+}
+
+function refreshLive(viewState) {
+	var refs = viewState.refs;
+	if (!refs) return;
+	var viewport = captureClientViewport(refs);
+	var status = viewState.status || {};
+	refreshIntervalControl(viewState, refs, status);
+	var clientsAll = fmt.asArray(viewState.clients && viewState.clients.clients);
+	var prefs = viewState.prefs;
+	var activeCfg = fmt.activeConfig(status);
+	var showClientStatus = viewState.showClientStatus === true;
+	var showIpv6 = viewState.showIpv6 !== false;
+	var hidePrivateIpv6 = viewState.hidePrivateIpv6 === true;
+	var hideIpv6Ranges = statusIp.hideIpv6RangesValue(viewState.hideIpv6Ranges);
+	setClientStatusVisibility(refs, showClientStatus);
+	var availability = refreshAvailability(viewState, refs);
+
+	var collector = accessEdgeOwnsCurrentRate(status) ? 'access_edge' :
+		statusCollector.effectiveCollector(status, viewState.clients);
+	refs.collectorPill.className = statusCollector.collectorClass(collector) +
+		' lanspeed-collector-status';
+	refs.collectorPill.textContent = statusCollector.collectorLabel(collector);
+	refs.collectorPill.title = accessEdgeOwnsCurrentRate(status)
+		? _('当前客户端网速模式；每个方向的真实数据源见客户端元数据')
+		: _('当前实时速率数据源');
+	if ((viewState.rpc && viewState.rpc.status && viewState.rpc.status.ok === false) ||
+	    (viewState.rpc && viewState.rpc.clients && viewState.rpc.clients.ok === false)) {
+		refs.collectorPill.className = 'label label-warning lanspeed-collector-status';
+		refs.collectorPill.title = _('数据源信息可能来自上次成功结果');
+	}
+
+	var metaParts = [];
+	if (status.version) metaParts.push(_('后端 ') + status.version);
+	metaParts.push('luci ' + lsVersion.FULL_VERSION);
+	if (prefs.paused) metaParts.push(_('已暂停'));
+	refs.meta.textContent = metaParts.join(' · ');
+
+	var totals = fmt.sumTotals(clientsAll, activeCfg);
+	refs.mTx.textContent = fmt.formatRate(totals.tx, prefs.unit);
+	refs.mRx.textContent = fmt.formatRate(totals.rx, prefs.unit);
+	refs.mClients.textContent = String(clientsAll.length);
+
+	var clientsData = viewState.clients || {};
+	var udpSub;
+	if (typeof clientsData.tcp_conns_total === 'number' || typeof clientsData.udp_conns_total === 'number') {
+		refs.mConnsWrap.style.display = '';
+		refs.mTcpConns.textContent = String(typeof clientsData.tcp_conns_total === 'number' ? clientsData.tcp_conns_total : '-');
+		refs.mUdpConns.textContent = String(typeof clientsData.udp_conns_total === 'number' ? clientsData.udp_conns_total : '-');
+		if (typeof clientsData.udp_dns_conns_total === 'number' || typeof clientsData.udp_other_conns_total === 'number') {
+			udpSub = [
+				'DNS ' + (typeof clientsData.udp_dns_conns_total === 'number' ? clientsData.udp_dns_conns_total : '-'),
+				_('其它 ') + (typeof clientsData.udp_other_conns_total === 'number' ? clientsData.udp_other_conns_total : '-')
+			];
+			refs.mUdpConnsSub.textContent = udpSub.join(' · ');
+		} else {
+			refs.mUdpConnsSub.textContent = '-';
+		}
+	} else {
+		refs.mConnsWrap.style.display = 'none';
+	}
+
+	var nssEv = status.evidence && status.evidence.nss;
+	var subParts = [ _('%d 个活跃').format(totals.active) ];
+	if (nssEv && typeof nssEv.host_count === 'number' &&
+	    nssEv.host_count > clientsAll.length) {
+		subParts.push(_('NSS 发现 %d 个').format(nssEv.host_count));
+	}
+	subParts.push(_('活跃判定 %d 秒').format(Math.round(activeCfg.activeWindowMs / 1000)));
+	if (activeCfg.activeMinBps > 1)
+		subParts.push(_('≥ ') + fmt.formatRate(activeCfg.activeMinBps, prefs.unit));
+	refs.mClientsSub.textContent = subParts.join(' · ');
+
+	if (accessEdgeOwnsCurrentRate(status)) {
+		refreshAccessEdgeCoverage(refs,
+			clientsData.evidence && clientsData.evidence.access_edge);
+	} else {
+		refreshLegacyCoverage(refs, status, prefs);
 	}
 
 	var latestSample = fmt.latestClientSampleMs(clientsAll);

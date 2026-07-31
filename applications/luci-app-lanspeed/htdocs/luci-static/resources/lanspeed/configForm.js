@@ -55,12 +55,12 @@ function statusContractIssue(status) {
 	if (typeof status.version !== 'string' || !status.version.trim())
 		return _('运行版本字段无效');
 	if (STATUS_RATE_MODES.indexOf(status.rate_collector_mode) === -1)
-		return _('速率采集模式无效');
+		return _('客户端网速模式无效');
 	if (STATUS_CONNECTION_MODES.indexOf(status.conn_collector_mode) === -1)
 		return _('连接采集模式无效');
 	if (status.access_edge_mode !== undefined &&
 		STATUS_ACCESS_EDGE_MODES.indexOf(status.access_edge_mode) === -1)
-		return _('Access Edge 模式无效');
+		return _('客户端总速率模式无效');
 	if (status.dedicated_ports !== undefined &&
 		(!Array.isArray(status.dedicated_ports) ||
 		 cfgModel.parseInterfaceList(status.dedicated_ports).valid.length !== status.dedicated_ports.length))
@@ -114,7 +114,7 @@ function errorMessage(code, field) {
 		too_many_ranges: _('IPv6 范围数量超过上限'),
 		interface_invalid: _('接口列表包含无效名称'),
 		too_many_interfaces: _('接口数量超过运行时上限'),
-		bpf_disabled: _('请先启用 BPF，或改用自动模式'),
+		bpf_disabled: _('请先启用 CPU 流量检测（BPF），或改用自动精准模式'),
 		bpf_unavailable: _('当前运行环境不具备完整 BPF 能力'),
 		no_collect_interface: _('强制 BPF 模式至少需要一个接口设为“采集”'),
 		nss_node_unavailable: _('当前设备不支持 NSS ECM node 计数'),
@@ -502,7 +502,26 @@ function applyRuntimeInfo(viewState, status) {
 	var collector = evidence.collector || {};
 	var effectiveRate = collector.primary_source || evidence.effective_collector || _('未知');
 	var effectiveConnection = collector.effective_connection_collector || _('未知');
-	refs.runtimeInfo.textContent = _('当前运行：速率 %s · 连接 %s').format(effectiveRate, effectiveConnection);
+	var rateLabels = {
+		bpf: _('仅 CPU 路径（BPF）'),
+		nss_ecm_node: _('仅 NSS 加速（ECM）'),
+		nss_ecm_bpf: _('NSS + CPU 路径（ECM+BPF）'),
+		unsupported: _('不可用')
+	};
+	var connectionLabels = {
+		conntrack_netlink: _('内核连接接口'),
+		conntrack_procfs: _('兼容连接接口'),
+		unsupported: _('不可用')
+	};
+	var rateLabel = rateLabels[String(effectiveRate)] || String(effectiveRate);
+	var connectionLabel = connectionLabels[String(effectiveConnection)] || String(effectiveConnection);
+	if (String(status && status.rate_collector_mode || '') === 'auto' &&
+	    String(status && status.access_edge_mode || '') === 'active') {
+		refs.runtimeInfo.textContent = _('当前运行：总速率 精准接入点 · 分类 %s · 连接 %s')
+			.format(rateLabel, connectionLabel);
+	} else {
+		refs.runtimeInfo.textContent = _('当前运行：网速 %s · 连接 %s').format(rateLabel, connectionLabel);
+	}
 	refs.runtimeInfo.setAttribute('data-state', viewState.loadData && viewState.loadData.rpc.status.ok ? 'ready' : 'degraded');
 }
 
@@ -552,18 +571,18 @@ function buildDaemonSection(data, viewState) {
 		E('div', { 'class': 'lanspeed-range-add' }, [ refs.hideIpv6RangeInput, refs.addRangeBtn ])
 	]);
 
-	rows.push(rowFor(viewState, 'rate_collector_mode', _('速率采集'), refs.inputs.rate_collector_mode,
-		_('自动按平台选择：x86_64 只使用 BPF；Qualcomm NSS 依次尝试 ECM+BPF、ECM、BPF；手动模式失败不会静默切换。')));
-	rows.push(rowFor(viewState, 'access_edge_mode', _('Access Edge 总速率'), refs.inputs.access_edge_mode,
-		_('Shadow 只采集和核对；Active 仅在速率采集为“自动”时，让端口/无线计数成为客户端总速率权威来源。')));
-	rows.push(rowFor(viewState, 'dedicated_port', _('已确认直连端口'), refs.inputs.dedicated_port,
-		_('仅填写管理员确认一口一客户端的物理端口，以空格分隔。AP、交换机下联、Mesh、WDS、trunk 或共享端口不得声明。')));
-	rows.push(rowFor(viewState, 'conn_collector_mode', _('连接数采集'), refs.inputs.conn_collector_mode,
-		_('CT-Netlink 优先；CT-Procfs 仅用于明确的兼容场景。')));
-	rows.push(rowFor(viewState, 'enable_bpf', _('启用 BPF'), refs.toggleWrap.enable_bpf,
-		_('关闭后 BPF 模式不可选，自动模式会尝试受支持的其他来源。')));
-	rows.push(rowFor(viewState, 'enable_conntrack_fallback', _('允许连接跟踪回退'), refs.toggleWrap.enable_conntrack_fallback,
-		_('仅控制连接详情的 conntrack 后备读取，不参与 NSS 客户端速率。')));
+	rows.push(rowFor(viewState, 'rate_collector_mode', _('客户端网速模式'), refs.inputs.rate_collector_mode,
+		_('推荐“自动精准”：优先显示每个客户端接入口的总速率；NSS 与 CPU 检测用于流量分类，并在总速率不可用时降级显示。手动模式只显示所选路径能看到的流量。')));
+	rows.push(rowFor(viewState, 'access_edge_mode', _('客户端总速率'), refs.inputs.access_edge_mode,
+		_('“精准总速率”在自动模式中使用有线端口或无线客户端计数；“仅后台验证”只采集核对，不改变页面速率；“关闭”完全停用。')));
+	rows.push(rowFor(viewState, 'dedicated_port', _('一口一设备端口'), refs.inputs.dedicated_port,
+		_('只填写确定一口只连接一个客户端的物理端口，以空格分隔。连接 AP、交换机、Mesh、WDS 或其他共享设备的端口不要填写。')));
+	rows.push(rowFor(viewState, 'conn_collector_mode', _('连接详情来源'), refs.inputs.conn_collector_mode,
+		_('推荐自动选择；内核连接接口优先，兼容接口仅用于旧系统。')));
+	rows.push(rowFor(viewState, 'enable_bpf', _('启用 CPU 流量检测（BPF）'), refs.toggleWrap.enable_bpf,
+		_('用于识别经过 CPU 的流量，并作为自动精准模式的降级来源；关闭后相关手动模式不可选。')));
+	rows.push(rowFor(viewState, 'enable_conntrack_fallback', _('允许兼容连接详情'), refs.toggleWrap.enable_conntrack_fallback,
+		_('只用于读取客户端连接详情，不参与客户端网速计算。')));
 	rows.push(rowFor(viewState, 'refresh_interval_ms', _('采样间隔'), refs.inputs.refresh_interval_ms,
 		_('BPF 不限制采样周期；ECM 与 ECM+BPF 固定使用 2000 ms。')));
 	rows.push(rowFor(viewState, 'overview_window_samples', _('历史采样点'), refs.inputs.overview_window_samples,

@@ -690,7 +690,7 @@ function validateUci(config) {
     "option active_client_min_bps '1'",
     "option overview_window_samples '240'",
     "option rate_collector_mode 'auto'",
-    "option access_edge_mode 'shadow'",
+    "option access_edge_mode 'active'",
     "option conn_collector_mode 'auto'",
     "option show_client_status '0'",
     "option show_ipv6 '1'",

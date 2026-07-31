@@ -58,12 +58,13 @@ use crate::{
     },
     platform::{
         access_edge::{
-            AccessEdgeCheckpoint, AccessEdgeRuntime, Attachment as EdgeAttachment,
-            AttachmentKind as EdgeAttachmentKind, AttachmentTrust as EdgeAttachmentTrust,
-            ByteDomain as EdgeByteDomain, ClassificationEpoch, ClassificationResult,
-            Direction as EdgeDirection, DirectionEpoch, EdgeClientObservation, MuxFailure,
-            ObservedDelta, RateCandidate, RateSource as EdgeRateSource,
-            TrafficScope as EdgeTrafficScope, CLASSIFIER_READ_END_SKEW_MS,
+            normalize_l2_with_fcs, AccessEdgeCheckpoint, AccessEdgeRuntime,
+            Attachment as EdgeAttachment, AttachmentKind as EdgeAttachmentKind,
+            AttachmentTrust as EdgeAttachmentTrust, ByteDomain as EdgeByteDomain,
+            ClassificationEpoch, ClassificationResult, Direction as EdgeDirection, DirectionEpoch,
+            EdgeClientObservation, MuxFailure, ObservedDelta, RateCandidate,
+            RateSource as EdgeRateSource, TrafficScope as EdgeTrafficScope,
+            CLASSIFIER_READ_END_SKEW_MS,
         },
         confidence,
         counters::TrafficCounters,
@@ -221,6 +222,10 @@ fn observed_traffic_delta(
     }
 }
 
+fn comparable_l2_with_fcs(value: ObservedDelta) -> ObservedDelta {
+    normalize_l2_with_fcs(value).unwrap_or(value)
+}
+
 fn unique_identity_for_edge_mac<'a>(
     identities: &'a IdentityTable,
     mac: &str,
@@ -278,14 +283,21 @@ fn classifier_rate_candidates(
                 return None;
             }
             let delta = snapshot.coverage_deltas.get(identity_key).copied()?;
-            let (bytes, _) = traffic_direction(delta, direction);
+            let observed = normalize_l2_with_fcs(observed_traffic_delta(
+                EdgeRateSource::EcmNssLowerBound,
+                EdgeByteDomain::EcmData,
+                delta,
+                direction,
+                ecm_read_end_ms.unwrap_or(snapshot.coverage_end_ms),
+            ))?;
+            let bytes = observed.bytes;
             Some((
                 RateCandidate {
                     source: EdgeRateSource::EcmNssLowerBound,
                     bps: bytes_to_bps(bytes, window_ms),
                     coverage: crate::platform::access_edge::Coverage::Degraded,
                     scope: EdgeTrafficScope::LowerBound,
-                    byte_domain: EdgeByteDomain::EcmData,
+                    byte_domain: observed.byte_domain,
                     sample_ms: snapshot.coverage_end_ms,
                     window_ms,
                     cadence_ms: CLASSIFIER_INTERVAL_MS,
@@ -311,14 +323,21 @@ fn classifier_rate_candidates(
                 return None;
             }
             let delta = snapshot.coverage_deltas.get(identity_key).copied()?;
-            let (bytes, _) = traffic_direction(delta, direction);
+            let observed = normalize_l2_with_fcs(observed_traffic_delta(
+                EdgeRateSource::TcBpfLowerBound,
+                EdgeByteDomain::L2NoFcs,
+                delta,
+                direction,
+                slow_read_end_ms.unwrap_or(snapshot.coverage_end_ms),
+            ))?;
+            let bytes = observed.bytes;
             Some((
                 RateCandidate {
                     source: EdgeRateSource::TcBpfLowerBound,
                     bps: bytes_to_bps(bytes, window_ms),
                     coverage: crate::platform::access_edge::Coverage::Degraded,
                     scope: EdgeTrafficScope::LowerBound,
-                    byte_domain: EdgeByteDomain::L2NoFcs,
+                    byte_domain: observed.byte_domain,
                     sample_ms: snapshot.coverage_end_ms,
                     window_ms,
                     cadence_ms: CLASSIFIER_INTERVAL_MS,
@@ -391,13 +410,6 @@ const fn classifier_map_loss_invalidates_owner(
             | EdgeRateSource::TcBpfLowerBound,
         ) => true,
         None => !has_edge_candidate,
-    }
-}
-
-const fn traffic_direction(counters: TrafficCounters, direction: EdgeDirection) -> (u64, u64) {
-    match direction {
-        EdgeDirection::Tx => (counters.tx_bytes, counters.tx_packets),
-        EdgeDirection::Rx => (counters.rx_bytes, counters.rx_packets),
     }
 }
 
@@ -1775,7 +1787,13 @@ impl ProductionRuntime {
         let overview = self.update_overview(now_ms, &clients);
         let coverage = match decision.rate {
             RateCollector::NssEcmNode | RateCollector::NssEcmBpf => {
-                nss_rate_coverage(&clients, &interfaces)
+                let sample_skew_ms = active_access_edge_owns_display_rate(
+                    self.config.access_edge_mode,
+                    self.config.rate_collector_mode,
+                )
+                .then_some(CLASSIFIER_READ_END_SKEW_MS)
+                .unwrap_or(0);
+                nss_rate_coverage(&clients, &interfaces, sample_skew_ms)
             }
             RateCollector::Bpf if report.facts.nss.present => {
                 self.nss_bpf_coverage
@@ -2202,15 +2220,12 @@ impl ProductionRuntime {
             });
             let direction = |direction| DirectionEpoch {
                 edge: edge.and_then(|sample| {
-                    self.access_edge.aggregate_edge(
-                        sample.attachment.key,
-                        direction,
-                        start_ms,
-                        end_ms,
-                    )
+                    self.access_edge
+                        .aggregate_edge(sample.attachment.key, direction, start_ms, end_ms)
+                        .map(comparable_l2_with_fcs)
                 }),
                 nss: ecm_delta.map(|delta| {
-                    observed_traffic_delta(
+                    comparable_l2_with_fcs(observed_traffic_delta(
                         EdgeRateSource::EcmNssLowerBound,
                         EdgeByteDomain::EcmData,
                         delta,
@@ -2218,10 +2233,10 @@ impl ProductionRuntime {
                         ecm_read_end_ms
                             .or_else(|| ecm.map(|snapshot| snapshot.coverage_end_ms))
                             .unwrap_or(end_ms),
-                    )
+                    ))
                 }),
                 slow: slow_delta.map(|delta| {
-                    observed_traffic_delta(
+                    comparable_l2_with_fcs(observed_traffic_delta(
                         EdgeRateSource::TcBpfLowerBound,
                         EdgeByteDomain::L2NoFcs,
                         delta,
@@ -2229,7 +2244,7 @@ impl ProductionRuntime {
                         slow_read_end_ms
                             .or_else(|| slow.map(|snapshot| snapshot.coverage_end_ms))
                             .unwrap_or(end_ms),
-                    )
+                    ))
                 }),
             };
             let epoch = ClassificationEpoch {
@@ -4349,6 +4364,64 @@ mod tests {
         );
 
         assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn aligned_classifier_sources_normalize_and_fuse_as_one_fallback() {
+        let identity_key = "02:00:00:00:00:01@lan";
+        let ecm = coverage_snapshot(
+            1_000,
+            3_000,
+            &[(
+                identity_key,
+                TrafficCounters {
+                    tx_bytes: 1_000,
+                    tx_packets: 10,
+                    ..TrafficCounters::default()
+                },
+            )],
+        );
+        let slow = tc_coverage_snapshot(
+            1_000,
+            3_000,
+            &[(
+                identity_key,
+                TrafficCounters {
+                    tx_bytes: 500,
+                    tx_packets: 5,
+                    ..TrafficCounters::default()
+                },
+            )],
+        );
+        let runtime = RuntimeHealth {
+            now_ms: 3_000,
+            ecm_bpf_map_read_ok: true,
+            bpf_map_read_ok: true,
+            ..RuntimeHealth::default()
+        };
+
+        let candidates = classifier_rate_candidates(
+            identity_key,
+            EdgeDirection::Tx,
+            7,
+            Some(&ecm),
+            Some(3_010),
+            Some(&slow),
+            Some(3_020),
+            &runtime,
+        );
+
+        assert_eq!(candidates.len(), 3);
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.byte_domain == EdgeByteDomain::L2WithFcs));
+        let fallback = candidates
+            .iter()
+            .find(|candidate| candidate.source == EdgeRateSource::EcmBpfFallback)
+            .unwrap();
+        // ECM: 1000 + 10 * (14 + 4), TC: 500 + 5 * 4.
+        assert_eq!(fallback.bps, 6_800);
+        assert_eq!(fallback.scope, EdgeTrafficScope::RoutedObserved);
     }
 
     #[test]

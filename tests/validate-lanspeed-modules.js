@@ -4755,7 +4755,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.5-r3';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.5-r4';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
@@ -5113,6 +5113,10 @@ function assertStatusViewSourceOnlyState(src) {
 	}
 	if (!src.includes("return 'ECM'") || !src.includes("return 'ECM+BPF'")) {
 		fail('LAN Speed status modules must expose distinct ECM and ECM+BPF collector labels');
+	}
+	if (!src.includes("mode === 'access_edge'") || !src.includes("自动精准") ||
+	    !src.includes("accessEdgeOwnsCurrentRate(status) ? 'access_edge'")) {
+		fail('LAN Speed status header must identify active automatic Access Edge instead of presenting its classifier as the total-rate owner');
 	}
 	if (!src.includes("return 'CT-Netlink'")) {
 		fail('LAN Speed status modules must keep conntrack netlink as a clear collector label');
@@ -5648,6 +5652,8 @@ function assertStatusShellModule(src) {
 	    !src.includes('refs.ifacesBody') || !src.includes('ifacesCard')) {
 		fail('lanspeed/statusShell.js must preserve the interface throughput details');
 	}
+	if (!src.includes('当前网速覆盖'))
+		fail('lanspeed/statusShell.js must name the coverage card by the currently selected rate mode');
 	if (src.includes('运行诊断') || src.includes('diagnosticStatusCard') ||
 	    src.includes('lanspeed-diagnostic-') || src.includes('diagnosticsCard')) {
 		fail('lanspeed/statusShell.js must not render the dedicated diagnostics page inside realtime status');
@@ -5752,6 +5758,14 @@ function assertStatusRefreshModule(src) {
 	    !src.includes("covQuality === 'unsupported'")) {
 		fail('statusRefresh.js must distinguish low traffic from a truly idle LAN');
 	}
+	if (!src.includes("String(status && status.rate_collector_mode || '') === 'auto'") ||
+	    !src.includes("String(status && status.access_edge_mode || '') === 'active'") ||
+	    !src.includes('clientsData.evidence.access_edge') ||
+	    !src.includes("full: _('完整'), partial: _('部分'), degraded: _('降级'), unavailable: _('不可用')") ||
+	    !src.includes('部分客户端或广播、组播流量无法完整归属') ||
+	    !src.includes('等待精准总速率的接入点采样')) {
+		fail('statusRefresh.js must select coverage from the currently effective rate configuration');
+	}
 	if (!src.includes("'class': 'lanspeed-connection-link'") ||
 	    !src.includes('clientConnections.detailHref(window.location.pathname, c.identity_key)') ||
 	    !src.includes("'aria-label':") || !src.includes("'title':") ||
@@ -5853,8 +5867,10 @@ function assertDiagnosticsRefreshModule(src) {
 	    !src.includes('renderWarnings(refs, viewState.status') ||
 	    !src.includes("'data-label': _('结果')") ||
 	    !src.includes('lsVersion.FULL_VERSION')) {
-		fail('lanspeed/diagnosticsRefresh.js must render RPC, quality, path, interface, connection, version and graded warning state');
+			fail('lanspeed/diagnosticsRefresh.js must render RPC, quality, path, interface, connection, version and graded warning state');
 	}
+	if (!src.includes("当前网速覆盖"))
+		fail('lanspeed/diagnosticsRefresh.js must identify coverage as belonging to the current rate mode');
 }
 
 function assertDiagnosticsModelModule(src) {
@@ -5884,10 +5900,16 @@ function assertDiagnosticsModelModule(src) {
 	    !src.includes('evidence && health.evidence.probe_failures') ||
 	    !src.includes("quality === 'low_traffic'") ||
 	    !src.includes('低流量实测：上行 %s · 下行 %s') ||
-	    !src.includes("quality === 'counter_skew'") ||
-	    !src.includes("badge = _('重新对齐')") ||
-	    !src.includes("_('隐私说明')")) {
+			!src.includes("quality === 'counter_skew'") ||
+			!src.includes("badge = _('重新对齐')") ||
+			!src.includes("_('隐私说明')")) {
 		fail('lanspeed/diagnosticsModel.js must parse structured probe failures and redact copied reports');
+	}
+	if (!src.includes("status && status.rate_collector_mode || '') === 'auto'") ||
+	    !src.includes("status && status.access_edge_mode || '') === 'active'") ||
+	    !src.includes("source: 'access_edge'") ||
+	    !src.includes('客户端数据接口没有返回当前精准总速率覆盖')) {
+		fail('lanspeed/diagnosticsModel.js must assess coverage from the currently effective rate configuration');
 	}
 }
 
@@ -6007,6 +6029,11 @@ function assertConfigFormModule(src) {
 	    !src.includes('markDirty(refs.viewState)')) {
 		fail('configForm.js must report daemon, range and default-value edits to the native unsaved indicator');
 	}
+	if (!src.includes("当前运行：总速率 精准接入点 · 分类 %s · 连接 %s") ||
+	    !src.includes("nss_ecm_bpf: _('NSS + CPU 路径（ECM+BPF）')") ||
+	    !src.includes("conntrack_netlink: _('内核连接接口')")) {
+		fail('configForm.js must translate the effective runtime configuration into user-facing traffic meanings');
+	}
 	if (!src.includes("E('tr', { 'class': 'lanspeed-range-row' }, [")) {
 		fail('configForm.js must identify the multi-control IPv6 range row for theme-specific alignment');
 	}
@@ -6044,6 +6071,19 @@ function assertConfigModelRewrite(src) {
 		fail('configModel.js must own every persisted LAN Speed UCI field');
 		return;
 	}
+	const readableLabels = Object.fromEntries(model.FIELDS.map(field => [ field.name, field.label ]));
+	if (String(readableLabels.rate_collector_mode) !== '客户端网速模式' ||
+		String(readableLabels.access_edge_mode) !== '客户端总速率' ||
+		String(readableLabels.dedicated_port) !== '一口一设备端口' ||
+		String(readableLabels.enable_bpf) !== '启用 CPU 流量检测（BPF）') {
+		fail('configModel.js must present user-facing meanings instead of internal collector terminology');
+	}
+	if (model.DEFAULTS.access_edge_mode !== 'active' ||
+		JSON.stringify(model.ACCESS_EDGE_MODES.map(item => String(item.label))) !== JSON.stringify([
+			'关闭精准检测', '仅后台验证（不用于显示）', '精准总速率（推荐）'
+		])) {
+		fail('configModel.js automatic defaults and total-rate choices must make precise mode the clear recommendation');
+	}
 	if (model.parseInteger('1000ms', model.LIMITS.refresh_interval_ms).valid ||
 		model.parseInteger('499', model.LIMITS.refresh_interval_ms).valid ||
 		!model.parseInteger('500', model.LIMITS.refresh_interval_ms).valid) {
@@ -6078,6 +6118,13 @@ function assertConfigModelRewrite(src) {
 		'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf'
 	]))
 		fail('configModel.js must expose automatic plus pure BPF, ECM, and ECM+BPF in order');
+	const rateLabels = model.modeChoices('rate', { capabilities: {} }, model.DEFAULTS)
+		.map(choice => String(choice.label));
+	if (JSON.stringify(rateLabels) !== JSON.stringify([
+		'自动精准（推荐）', '仅 CPU 路径（BPF）', '仅 NSS 加速（ECM）',
+		'NSS + CPU 路径（ECM+BPF）'
+	]))
+		fail('configModel.js rate choices must explain which traffic each manual mode can see');
 	const x86RateModes = model.modeChoices('rate', { capabilities: { nss: false } }, model.DEFAULTS)
 		.map(choice => choice.value);
 	if (JSON.stringify(x86RateModes) !== JSON.stringify([ 'auto', 'bpf' ]))
@@ -6574,7 +6621,7 @@ function matchingConfigStatus(values) {
 		max_clients: values.max_clients,
 		enable_bpf: values.enable_bpf === '1',
 		enable_conntrack_fallback: values.enable_conntrack_fallback === '1',
-		version: '1.1.5-r3',
+		version: '1.1.5-r4',
 		capabilities: { bpf: true, conntrack_fallback: true },
 		evidence: { collector: { primary_source: 'bpf', effective_connection_collector: 'conntrack_netlink' } }
 	};
@@ -6601,7 +6648,7 @@ function assertConfigFormBehavior(src) {
 	}, makeConfigIfaceStub(), model);
 	asyncChecks.push(validLoadForm.loadValues().then(function(values) {
 		if (values.pageState !== 'ready' || !values.rpc.status.ok ||
-			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.5-r3') {
+			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.5-r4') {
 			fail('configForm.js must accept the complete status contract and retain capability evidence');
 		}
 	}).catch(function(error) {
@@ -6657,7 +6704,7 @@ function assertConfigFormBehavior(src) {
 		const saves = stagedUci.calls.filter(function(call) { return call[0] === 'save'; });
 			if (!result || !result.ok || !result.staged || stagedState.hasStagedSave ||
 				String(stagedUci.remote.refresh_interval_ms) !== '1000' || saves.length !== 2 ||
-				stagedUci.remote.access_edge_mode !== 'shadow' ||
+				stagedUci.remote.access_edge_mode !== 'active' ||
 				Object.prototype.hasOwnProperty.call(stagedUci.remote, 'dedicated_port') ||
 				stagedState.daemonRefs.inputs.refresh_interval_ms.value !== '1000') {
 			fail('configForm.js Reset must stage an owned-field reversal after Save without applying');

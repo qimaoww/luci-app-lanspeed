@@ -15,8 +15,9 @@ pub mod topology;
 pub mod types;
 
 pub use classification::{
-    ClassificationBook, ClassificationEpoch, ClassificationResult, DirectionClassification,
-    DirectionEpoch, ObservedDelta, CLASSIFIER_READ_END_SKEW_MS, COMPARISON_EPOCH_COUNT,
+    normalize_l2_with_fcs, ClassificationBook, ClassificationEpoch, ClassificationResult,
+    DirectionClassification, DirectionEpoch, ObservedDelta, CLASSIFIER_READ_END_SKEW_MS,
+    COMPARISON_EPOCH_COUNT,
 };
 pub use fdb::{
     read_bridge_fdb, BridgeFdbEventMonitor, BridgeFdbProvider, BridgeFdbSnapshot, FdbEntry,

@@ -106,9 +106,9 @@ function buildShell(viewState) {
 		]),
 		E('div', {
 			'class': 'lanspeed-metric',
-			'title': _('客户端速率合计与采集接口总速率的比值，用于判断流量是否完整归属到客户端。')
+			'title': _('按当前网速模式显示覆盖情况；自动精准模式检查每个客户端是否有可用的总速率来源。')
 		}, [
-			E('div', { 'class': 'caption' }, _('覆盖率')),
+			E('div', { 'class': 'caption' }, _('当前网速覆盖')),
 			refs.mCoverage,
 			refs.mCoverageSub
 		]),

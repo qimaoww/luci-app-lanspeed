@@ -131,7 +131,7 @@ impl ResponseSnapshot {
                 overview_window_samples: 240,
                 collector_mode: "auto".into(),
                 rate_collector_mode: "auto".into(),
-                access_edge_mode: "shadow".into(),
+                access_edge_mode: "active".into(),
                 dedicated_ports: Vec::new(),
                 conn_collector_mode: "auto".into(),
                 version: version.clone(),

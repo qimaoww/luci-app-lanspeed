@@ -83,8 +83,8 @@ impl RateCollectorMode {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum AccessEdgeMode {
     Off,
-    #[default]
     Shadow,
+    #[default]
     Active,
 }
 
@@ -276,7 +276,7 @@ impl Default for RuntimeConfig {
             overview_window_samples_clamped: false,
             max_clients_clamped: false,
             rate_collector_mode: RateCollectorMode::Auto,
-            access_edge_mode: AccessEdgeMode::Shadow,
+            access_edge_mode: AccessEdgeMode::Active,
             conn_collector_mode: ConnectionCollectorMode::Auto,
             ifnames: Vec::new(),
             interface_include: Vec::new(),

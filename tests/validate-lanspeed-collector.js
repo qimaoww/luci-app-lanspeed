@@ -190,9 +190,9 @@ assert(JSON.stringify(model.ecm_bpf_model.map_key) ===
 const edgeModel = model.access_edge_model;
 assert(edgeModel.read_only === true &&
   JSON.stringify(edgeModel.modes) === JSON.stringify(['off', 'shadow', 'active']) &&
-  edgeModel.default_mode === 'shadow' &&
+  edgeModel.default_mode === 'active' &&
   edgeModel.display_activation === 'active_and_rate_collector_auto',
-  'Access Edge must default to a read-only shadow pipeline and own rates only in active+auto');
+  'Access Edge must default to the read-only precise-rate owner and own rates only in active+auto');
 assert(edgeModel.topology.fdb_primary === 'RTM_GETNEIGH_AF_BRIDGE' &&
   edgeModel.topology.fdb_fallback === 'brforward' &&
   edgeModel.topology.fdb_event_monitor === 'RTMGRP_NEIGH' &&
@@ -265,6 +265,12 @@ assert(edgeModel.classification.E === 'access_edge_authoritative_total' &&
   edgeModel.classification.read_end_skew_max_ms === 50 &&
   edgeModel.classification.comparison_requires_stable_epochs === 3 &&
   edgeModel.classification.counter_skew_policy === 'omit_U_and_coverage_without_clamp' &&
+  edgeModel.classification.comparison_normalization.ethernet_edge ===
+    'l2_no_fcs_plus_4_byte_fcs_per_packet_to_l2_with_fcs' &&
+  edgeModel.classification.comparison_normalization.ecm_nss ===
+    'conntrack_network_bytes_plus_14_byte_ethernet_header_plus_4_byte_fcs_per_packet_to_l2_with_fcs' &&
+  edgeModel.classification.comparison_normalization.wifi_station ===
+    'not_convertible_from_nl80211_station_data_domain' &&
   edgeModel.classification.domain_mismatch_policy ===
     'show_observed_N_and_S_separately_omit_U_and_coverage' &&
   edgeModel.public_contract.unclassified_must_not_be_named_unaccelerated === true &&
@@ -368,7 +374,7 @@ assert(nssWindow.rate_clock === 'adjacent_ecm_node_polls' &&
 assert(nssWindow.public_coverage_source ===
     'same_snapshot_displayed_client_and_lan_rates' &&
   nssWindow.raw_coverage_window_role === 'diagnostic_and_rate_fusion_guard_only' &&
-  production.includes('nss_rate_coverage(&clients, &interfaces)') &&
+  production.includes('nss_rate_coverage(&clients, &interfaces, sample_skew_ms)') &&
   nssOutput.includes('percentage(client_tx_bps, lan_rx_bps)') &&
   nssOutput.includes('percentage(client_rx_bps, lan_tx_bps)'),
   'NSS public coverage must use the same displayed client and LAN rate batch');
@@ -564,7 +570,7 @@ assert(production.includes('independent_lan_boundaries(&lan_roots, &masters)'),
   'runtime must expand LAN roots to independent boundaries');
 assert(production.includes('interface: boundaries.join("+")'),
   'multiple disjoint LAN boundaries must be explicitly identified');
-assert(production.includes('nss_rate_coverage(&clients, &interfaces)') &&
+assert(production.includes('nss_rate_coverage(&clients, &interfaces, sample_skew_ms)') &&
   production.includes('"nss_window".into(), window_evidence(window)') &&
   production.includes('"ecm_bpf_coverage_window".into()'),
   'NSS public coverage must use the live batch while both raw windows remain diagnostic evidence');

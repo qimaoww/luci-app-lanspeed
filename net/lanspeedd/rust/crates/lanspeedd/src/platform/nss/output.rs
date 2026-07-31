@@ -438,13 +438,13 @@ pub(crate) fn apply_ecm_bpf_rate_batch(
 pub(crate) fn nss_rate_coverage(
     clients: &ClientsResponse,
     interfaces: &InterfacesResponse,
+    sample_skew_ms: u64,
 ) -> Coverage {
     let sample_ms = interfaces.monotonic_ms;
-    let client_clocks_aligned = clients.clients.iter().all(|client| {
-        client
-            .sample_ms
-            .is_none_or(|client_ms| Some(client_ms) == sample_ms)
-    });
+    let client_clocks_aligned = clients
+        .clients
+        .iter()
+        .all(|client| sample_clock_within(client.sample_ms, sample_ms, sample_skew_ms));
     let mut lan_rx_bps = 0u64;
     let mut lan_tx_bps = 0u64;
     let mut window_ms = None;
@@ -459,9 +459,7 @@ pub(crate) fn nss_rate_coverage(
             continue;
         };
         if delta_ms == 0
-            || interface
-                .sample_ms
-                .is_some_and(|interface_ms| Some(interface_ms) != sample_ms)
+            || !sample_clock_within(interface.sample_ms, sample_ms, sample_skew_ms)
             || window_ms.is_some_and(|current| current != delta_ms)
         {
             return empty_nss_rate_coverage("warmup");
@@ -491,6 +489,14 @@ pub(crate) fn nss_rate_coverage(
         lan_rx_bps,
         lan_tx_bps,
     )
+}
+
+fn sample_clock_within(sample_ms: Option<u64>, anchor_ms: Option<u64>, max_skew_ms: u64) -> bool {
+    match (sample_ms, anchor_ms) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(sample), Some(anchor)) => sample.abs_diff(anchor) <= max_skew_ms,
+    }
 }
 
 pub(crate) fn nss_rate_coverage_values(
@@ -559,6 +565,20 @@ fn percentage(numerator: u64, denominator: u64) -> Option<u8> {
     }
     let value = u128::from(numerator).saturating_mul(100) / u128::from(denominator);
     u8::try_from(value).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sample_clock_within;
+
+    #[test]
+    fn active_edge_clock_allows_only_bounded_read_skew() {
+        assert!(sample_clock_within(Some(12_004), Some(12_000), 50));
+        assert!(sample_clock_within(Some(12_000), Some(12_000), 0));
+        assert!(!sample_clock_within(Some(12_051), Some(12_000), 50));
+        assert!(sample_clock_within(None, Some(12_000), 50));
+        assert!(!sample_clock_within(Some(12_000), None, 50));
+    }
 }
 
 pub(crate) fn coverage_evidence(coverage: &CoverageWindow, source: &str) -> Value {

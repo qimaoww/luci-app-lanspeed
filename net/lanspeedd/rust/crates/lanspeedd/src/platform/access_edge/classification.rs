@@ -6,6 +6,8 @@ use super::types::{ByteDomain, RateSource};
 
 pub const CLASSIFIER_READ_END_SKEW_MS: u64 = 50;
 pub const COMPARISON_EPOCH_COUNT: usize = 3;
+const ETHERNET_HEADER_BYTES: u64 = 14;
+const ETHERNET_FCS_BYTES: u64 = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ObservedDelta {
@@ -20,6 +22,29 @@ impl ObservedDelta {
     const fn has_traffic(self) -> bool {
         self.bytes != 0 || self.packets != 0
     }
+}
+
+/// Convert byte counters that describe the routed Ethernet data path into one
+/// explicit, comparable wire domain. NSS ECM sync bytes are the network-layer
+/// byte count also fed into conntrack accounting, while TC and Ethernet Edge
+/// counters already include the Ethernet header but exclude FCS. Packet
+/// counters let both sources be normalized without estimating packet counts.
+///
+/// Wi-Fi station counters describe 802.11 frames and cannot be converted to an
+/// Ethernet wire total from NL80211 alone, so callers must retain their raw
+/// `StationData` observation and let the domain check reject subtraction.
+pub fn normalize_l2_with_fcs(mut value: ObservedDelta) -> Option<ObservedDelta> {
+    let overhead_per_packet = match value.byte_domain {
+        ByteDomain::EcmData => ETHERNET_HEADER_BYTES + ETHERNET_FCS_BYTES,
+        ByteDomain::L2NoFcs => ETHERNET_FCS_BYTES,
+        ByteDomain::L2WithFcs => 0,
+        ByteDomain::StationData => return None,
+    };
+    value.bytes = value
+        .bytes
+        .saturating_add(value.packets.saturating_mul(overhead_per_packet));
+    value.byte_domain = ByteDomain::L2WithFcs;
+    Some(value)
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -244,13 +269,10 @@ fn classify_direction(
         return (result, ClassificationState::Unavailable);
     }
 
-    // A zero-byte source adds nothing and therefore does not force its byte
-    // domain onto the subtraction. A non-zero source must match every other
-    // contributor and the Access Edge owner exactly.
-    let classified_domain = match (
-        (nss != 0).then_some(nss_domain).flatten(),
-        (slow != 0).then_some(slow_domain).flatten(),
-    ) {
+    // Comparison is a statement about counter semantics, not just the current
+    // numeric delta. Even a zero-byte classifier sample cannot prove coverage
+    // against a different Edge byte domain (notably NL80211 station_data).
+    let classified_domain = match (nss_domain, slow_domain) {
         (Some(left), Some(right)) if left != right => {
             return (result, ClassificationState::DomainMismatch)
         }
@@ -342,6 +364,22 @@ mod tests {
         }
     }
 
+    fn observed_packets(
+        source: RateSource,
+        bytes: u64,
+        packets: u64,
+        domain: ByteDomain,
+        end_ms: u64,
+    ) -> ObservedDelta {
+        ObservedDelta {
+            source,
+            bytes,
+            packets,
+            byte_domain: domain,
+            read_end_ms: end_ms,
+        }
+    }
+
     fn epoch(id: u64, edge: u64, nss: u64, slow: u64) -> ClassificationEpoch {
         let start = (id - 1) * 2_000;
         let end = id * 2_000;
@@ -396,6 +434,111 @@ mod tests {
         assert_eq!(result.comparison_window_ms, Some(6_000));
         assert_eq!(result.tx.coverage_pct, Some(80));
         assert_eq!(result.tx.unclassified_bps, Some(800));
+    }
+
+    #[test]
+    fn ethernet_sources_normalize_to_one_exact_comparison_domain() {
+        let edge = normalize_l2_with_fcs(observed_packets(
+            RateSource::EdgePort,
+            1_000,
+            10,
+            ByteDomain::L2NoFcs,
+            2_000,
+        ))
+        .unwrap();
+        let nss = normalize_l2_with_fcs(observed_packets(
+            RateSource::EcmNssLowerBound,
+            500,
+            10,
+            ByteDomain::EcmData,
+            2_000,
+        ))
+        .unwrap();
+        let slow = normalize_l2_with_fcs(observed_packets(
+            RateSource::TcBpfLowerBound,
+            340,
+            5,
+            ByteDomain::L2NoFcs,
+            2_020,
+        ))
+        .unwrap();
+        assert_eq!(edge.bytes, 1_040);
+        assert_eq!(nss.bytes, 680);
+        assert_eq!(slow.bytes, 360);
+        assert_eq!(edge.byte_domain, ByteDomain::L2WithFcs);
+        assert_eq!(nss.byte_domain, ByteDomain::L2WithFcs);
+        assert_eq!(slow.byte_domain, ByteDomain::L2WithFcs);
+
+        let mut book = ClassificationBook::default();
+        for id in 1..=3 {
+            let start_ms = (id - 1) * 2_000;
+            let end_ms = id * 2_000;
+            let retime = |mut value: ObservedDelta| {
+                value.read_end_ms = end_ms;
+                value
+            };
+            let result = book.update(
+                "client",
+                ClassificationEpoch {
+                    epoch_id: id,
+                    start_ms,
+                    end_ms,
+                    attachment_generation: 1,
+                    attachment_stable: true,
+                    map_complete: true,
+                    sources_complete: true,
+                    classifier_window_aligned: true,
+                    tx: DirectionEpoch {
+                        edge: Some(retime(edge)),
+                        nss: Some(retime(nss)),
+                        slow: Some(retime(slow)),
+                    },
+                    rx: DirectionEpoch {
+                        edge: Some(retime(edge)),
+                        nss: Some(retime(nss)),
+                        slow: Some(retime(slow)),
+                    },
+                },
+            );
+            if id == 3 {
+                assert_eq!(result.state, ClassificationState::Aligned);
+                assert_eq!(result.tx.coverage_pct, Some(100));
+                assert_eq!(result.tx.unclassified_bps, Some(0));
+            }
+        }
+    }
+
+    #[test]
+    fn wifi_station_domain_is_never_guessed_into_ethernet_bytes() {
+        assert_eq!(
+            normalize_l2_with_fcs(observed_packets(
+                RateSource::EdgeWifi,
+                1_000,
+                10,
+                ByteDomain::StationData,
+                2_000,
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn wifi_station_domain_never_publishes_aligned_coverage() {
+        let mut book = ClassificationBook::default();
+        for id in 1..=3 {
+            let mut value = epoch(id, 1_000, 0, 0);
+            for direction in [&mut value.tx, &mut value.rx] {
+                direction.edge.as_mut().unwrap().byte_domain = ByteDomain::StationData;
+                direction.nss.as_mut().unwrap().byte_domain = ByteDomain::L2WithFcs;
+                direction.slow.as_mut().unwrap().byte_domain = ByteDomain::L2WithFcs;
+            }
+            let result = book.update("wifi-client", value);
+            if id == 3 {
+                assert_eq!(result.state, ClassificationState::DomainMismatch);
+                assert_eq!(result.tx.coverage_pct, None);
+                assert_eq!(result.tx.unclassified_bps, None);
+            }
+        }
     }
 
     #[test]

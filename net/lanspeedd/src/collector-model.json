@@ -170,7 +170,7 @@
     "source": "rust/crates/lanspeedd/src/platform/access_edge",
     "read_only": true,
     "modes": ["off", "shadow", "active"],
-    "default_mode": "shadow",
+    "default_mode": "active",
     "display_activation": "active_and_rate_collector_auto",
     "topology": {
       "fdb_primary": "RTM_GETNEIGH_AF_BRIDGE",
@@ -271,6 +271,12 @@
       "classifier_delivery_time_is_occurrence_time": false,
       "classifier_refresh_ms": 2000,
       "read_end_skew_max_ms": 50,
+      "comparison_normalization": {
+        "ethernet_edge": "l2_no_fcs_plus_4_byte_fcs_per_packet_to_l2_with_fcs",
+        "tc_slow": "l2_no_fcs_plus_4_byte_fcs_per_packet_to_l2_with_fcs",
+        "ecm_nss": "conntrack_network_bytes_plus_14_byte_ethernet_header_plus_4_byte_fcs_per_packet_to_l2_with_fcs",
+        "wifi_station": "not_convertible_from_nl80211_station_data_domain"
+      },
       "required_alignment": [
         "same_previous_and_current_classifier_epoch",
         "complete_map_read",
@@ -432,6 +438,7 @@
       "access_edge_deadline": "absolute_clock_monotonic_skip_missed_slots"
     },
     "live_refresh_alignment": {
+      "access_edge_coverage_skew_ms": 50,
       "nss_sample_clock": "published_shared_rate_window_end",
       "nss_rpc_boundary_retry_count": 1,
       "nss_detail_schedule_anchor": "request_start",

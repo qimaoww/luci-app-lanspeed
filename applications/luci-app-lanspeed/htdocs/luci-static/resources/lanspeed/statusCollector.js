@@ -3,6 +3,8 @@
 
 function collectorLabel(mode) {
 	mode = String(mode || '-');
+	if (mode === 'access_edge')
+		return _('自动精准');
 	if (mode === 'bpf')
 		return _('BPF');
 	if (mode === 'nss_ecm_node')
@@ -22,7 +24,7 @@ function collectorLabel(mode) {
 
 function collectorClass(mode) {
 	mode = String(mode || '-');
-	if (mode === 'bpf' || mode === 'nss_ecm_node' || mode === 'nss_ecm_bpf')
+	if (mode === 'access_edge' || mode === 'bpf' || mode === 'nss_ecm_node' || mode === 'nss_ecm_bpf')
 		return 'label label-success';
 	return 'label label-danger';
 }

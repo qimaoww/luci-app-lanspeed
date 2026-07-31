@@ -92,7 +92,7 @@ fn defaults_and_limits_match_the_legacy_c_contract() {
     assert!(!config.enable_bpf);
     assert!(config.enable_conntrack_fallback);
     assert_eq!(config.rate_collector_mode, RateCollectorMode::Auto);
-    assert_eq!(config.access_edge_mode, AccessEdgeMode::Shadow);
+    assert_eq!(config.access_edge_mode, AccessEdgeMode::Active);
     assert_eq!(config.conn_collector_mode, ConnectionCollectorMode::Auto);
     assert!(!config.refresh_interval_clamped);
     assert!(!config.active_client_window_clamped);
@@ -131,7 +131,7 @@ fn access_edge_accepts_only_off_shadow_and_active() {
         assert_eq!(AccessEdgeMode::parse(invalid), None, "{invalid}");
         assert_eq!(
             load(MemorySource::default().with("access_edge_mode", invalid)).access_edge_mode,
-            AccessEdgeMode::Shadow,
+            AccessEdgeMode::Active,
             "{invalid}"
         );
     }
