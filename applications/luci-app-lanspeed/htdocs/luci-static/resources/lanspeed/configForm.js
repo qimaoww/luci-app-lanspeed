@@ -13,6 +13,7 @@ var NUMBER_FIELDS = [ 'refresh_interval_ms', 'active_client_window_ms',
 	'active_client_min_bps', 'overview_window_samples', 'max_clients' ];
 var STATUS_RATE_MODES = [ 'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf' ];
 var STATUS_CONNECTION_MODES = [ 'auto', 'conntrack_netlink', 'conntrack_procfs' ];
+var STATUS_ACCESS_EDGE_MODES = [ 'off', 'shadow', 'active' ];
 var STATUS_MODES = [ 'Full', 'Degraded', 'Unsupported' ];
 var STATUS_CONFIDENCE = [ 'high', 'medium', 'low', 'unsupported' ];
 var REQUIRED_STATUS_CAPABILITIES = [ 'bpf', 'conntrack_fallback' ];
@@ -57,6 +58,13 @@ function statusContractIssue(status) {
 		return _('速率采集模式无效');
 	if (STATUS_CONNECTION_MODES.indexOf(status.conn_collector_mode) === -1)
 		return _('连接采集模式无效');
+	if (status.access_edge_mode !== undefined &&
+		STATUS_ACCESS_EDGE_MODES.indexOf(status.access_edge_mode) === -1)
+		return _('Access Edge 模式无效');
+	if (status.dedicated_ports !== undefined &&
+		(!Array.isArray(status.dedicated_ports) ||
+		 cfgModel.parseInterfaceList(status.dedicated_ports).valid.length !== status.dedicated_ports.length))
+		return _('直连端口字段无效');
 	if (typeof status.refresh_interval_ms !== 'number' || !isFinite(status.refresh_interval_ms) ||
 		Math.floor(status.refresh_interval_ms) !== status.refresh_interval_ms || status.refresh_interval_ms < 500)
 		return _('采样周期无效');
@@ -252,6 +260,18 @@ function choiceSelect(name, choices, value) {
 	return select;
 }
 
+function interfaceListInput(name, values, placeholder) {
+	return E('input', {
+		'id': fieldId(name),
+		'type': 'text',
+		'class': 'cbi-input-text',
+		'value': (values || []).join(' '),
+		'placeholder': placeholder || '',
+		'autocomplete': 'off',
+		'aria-describedby': fieldId(name) + '-hint ' + fieldId(name) + '-error'
+	});
+}
+
 function rowFor(viewState, name, label, control, hint, attrs) {
 	var refs = viewState.daemonRefs;
 	var error = E('div', {
@@ -365,7 +385,9 @@ function readForm(viewState) {
 	var values = cloneValues(viewState.currentValues || cfgModel.DEFAULTS);
 	NUMBER_FIELDS.forEach(function(name) { values[name] = refs.inputs[name].value; });
 	values.rate_collector_mode = refs.inputs.rate_collector_mode.value;
+	values.access_edge_mode = refs.inputs.access_edge_mode.value;
 	values.conn_collector_mode = refs.inputs.conn_collector_mode.value;
+	values.dedicated_port = refs.inputs.dedicated_port.value;
 	BOOLEAN_FIELDS.forEach(function(name) { values[name] = refs.inputs[name].checked ? '1' : '0'; });
 	values.hide_ipv6_ranges = rangeValues(refs);
 	values.collector_mode = cfgModel.collectorModeFor(values);
@@ -431,6 +453,7 @@ function updateDependencies(viewState) {
 		cfgModel.modeChoices('connection', viewState.runtimeStatus || {}, values), values.conn_collector_mode,
 		'conn_collector_mode');
 	var rangesEnabled = !busy && values.show_ipv6 === '1' && values.hide_private_ipv6 === '1';
+	var edgePortsEnabled = !busy && values.access_edge_mode !== 'off';
 	refs.inputs.hide_private_ipv6.disabled = busy || values.show_ipv6 !== '1';
 	refs.hideIpv6RangeInput.disabled = !rangesEnabled;
 	refs.addRangeBtn.disabled = !rangesEnabled;
@@ -439,6 +462,9 @@ function updateDependencies(viewState) {
 		refs.fields.hide_ipv6_ranges.row.setAttribute('data-disabled', rangesEnabled ? 'false' : 'true');
 	if (refs.fields.hide_private_ipv6)
 		refs.fields.hide_private_ipv6.row.setAttribute('data-disabled', values.show_ipv6 === '1' ? 'false' : 'true');
+	refs.inputs.dedicated_port.disabled = !edgePortsEnabled;
+	if (refs.fields.dedicated_port)
+		refs.fields.dedicated_port.row.setAttribute('data-disabled', edgePortsEnabled ? 'false' : 'true');
 }
 
 function formChanged(viewState) {
@@ -454,7 +480,9 @@ function fillForm(viewState, values) {
 	values = cfgModel.normalize(values || cfgModel.DEFAULTS).values;
 	NUMBER_FIELDS.forEach(function(name) { refs.inputs[name].value = String(values[name]); });
 	refs.inputs.rate_collector_mode.value = values.rate_collector_mode;
+	refs.inputs.access_edge_mode.value = values.access_edge_mode;
 	refs.inputs.conn_collector_mode.value = values.conn_collector_mode;
+	refs.inputs.dedicated_port.value = (values.dedicated_port || []).join(' ');
 	BOOLEAN_FIELDS.forEach(function(name) {
 		refs.inputs[name].checked = values[name] === '1';
 		var wrap = refs.inputs[name].parentNode;
@@ -498,8 +526,11 @@ function buildDaemonSection(data, viewState) {
 	NUMBER_FIELDS.forEach(function(name) { refs.inputs[name] = numberInput(name, values[name]); });
 	refs.inputs.rate_collector_mode = choiceSelect('rate_collector_mode',
 		cfgModel.modeChoices('rate', viewState.runtimeStatus, values), values.rate_collector_mode);
+	refs.inputs.access_edge_mode = choiceSelect('access_edge_mode',
+		cfgModel.ACCESS_EDGE_MODES, values.access_edge_mode);
 	refs.inputs.conn_collector_mode = choiceSelect('conn_collector_mode',
 		cfgModel.modeChoices('connection', viewState.runtimeStatus, values), values.conn_collector_mode);
+	refs.inputs.dedicated_port = interfaceListInput('dedicated_port', values.dedicated_port, 'lan2 lan3');
 	BOOLEAN_FIELDS.forEach(function(name) {
 		var field = cfgModel.FIELDS.filter(function(item) { return item.name === name; })[0];
 		var wrap = toggleInput(name, field ? field.label : name, values[name] === '1');
@@ -523,6 +554,10 @@ function buildDaemonSection(data, viewState) {
 
 	rows.push(rowFor(viewState, 'rate_collector_mode', _('速率采集'), refs.inputs.rate_collector_mode,
 		_('自动按平台选择：x86_64 只使用 BPF；Qualcomm NSS 依次尝试 ECM+BPF、ECM、BPF；手动模式失败不会静默切换。')));
+	rows.push(rowFor(viewState, 'access_edge_mode', _('Access Edge 总速率'), refs.inputs.access_edge_mode,
+		_('Shadow 只采集和核对；Active 仅在速率采集为“自动”时，让端口/无线计数成为客户端总速率权威来源。')));
+	rows.push(rowFor(viewState, 'dedicated_port', _('已确认直连端口'), refs.inputs.dedicated_port,
+		_('仅填写管理员确认一口一客户端的物理端口，以空格分隔。AP、交换机下联、Mesh、WDS、trunk 或共享端口不得声明。')));
 	rows.push(rowFor(viewState, 'conn_collector_mode', _('连接数采集'), refs.inputs.conn_collector_mode,
 		_('CT-Netlink 优先；CT-Procfs 仅用于明确的兼容场景。')));
 	rows.push(rowFor(viewState, 'enable_bpf', _('启用 BPF'), refs.toggleWrap.enable_bpf,
@@ -561,9 +596,10 @@ function buildDaemonSection(data, viewState) {
 	refs.hideIpv6RangeInput.addEventListener('keydown', function(event) {
 		if (event.key === 'Enter') { event.preventDefault(); addRange(viewState); }
 	});
-	NUMBER_FIELDS.concat([ 'rate_collector_mode', 'conn_collector_mode' ]).forEach(function(name) {
+	NUMBER_FIELDS.concat([ 'rate_collector_mode', 'access_edge_mode', 'conn_collector_mode' ]).forEach(function(name) {
 		refs.inputs[name].addEventListener(name.indexOf('_mode') >= 0 ? 'change' : 'input', function() { formChanged(viewState); });
 	});
+	refs.inputs.dedicated_port.addEventListener('input', function() { formChanged(viewState); });
 	BOOLEAN_FIELDS.forEach(function(name) {
 		refs.inputs[name].addEventListener('change', function() {
 			var label = refs.toggleWrap[name].querySelector('.lanspeed-toggle-label');
@@ -813,7 +849,11 @@ function resetAllSettings(viewState) {
 
 function statusMatches(status, values) {
 	if (statusContractIssue(status)) return false;
+	var expectedDedicated = cfgModel.parseInterfaceList(values.dedicated_port).valid.slice().sort();
+	var actualDedicated = cfgModel.parseInterfaceList(status.dedicated_ports).valid.slice().sort();
 	return status.rate_collector_mode === values.rate_collector_mode &&
+		status.access_edge_mode === values.access_edge_mode &&
+		JSON.stringify(actualDedicated) === JSON.stringify(expectedDedicated) &&
 		status.conn_collector_mode === values.conn_collector_mode &&
 		Number(status.refresh_interval_ms) === Number(values.refresh_interval_ms) &&
 		Number(status.active_client_window_ms) === Number(values.active_client_window_ms) &&

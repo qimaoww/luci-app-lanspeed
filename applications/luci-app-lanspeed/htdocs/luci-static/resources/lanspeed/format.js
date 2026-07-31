@@ -142,7 +142,21 @@ function activeConfig(status, overview) {
 	};
 }
 
-function isActiveClient(c, nowMs, config) {
+function isNssActivityClient(c) {
+	var mode = String(c && c.collector_mode || '');
+	return mode === 'nss_ecm_node' || mode === 'nss_ecm_bpf';
+}
+
+function isNssActiveClient(c, nowMs, config) {
+	var sample = Number(nowMs) || clientSampleMs(c);
+	var rate = (Number(c && c.tx_bps) || 0) + (Number(c && c.rx_bps) || 0);
+	var cfg = config || activeConfig();
+	var minBps = positiveNumber(cfg.activeMinBps, ACTIVE_CLIENT_MIN_BPS);
+	// NSS publishes a complete rate batch even when its last kernel event is old.
+	return sample > 0 && rate >= minBps;
+}
+
+function isX86ActiveClient(c, nowMs, config) {
 	var sample = Number(nowMs) || clientSampleMs(c);
 	var last = Number(c && c.last_seen) || 0;
 	var rate = (Number(c && c.tx_bps) || 0) + (Number(c && c.rx_bps) || 0);
@@ -154,6 +168,12 @@ function isActiveClient(c, nowMs, config) {
 	if (sample <= 0 || last <= 0 || last > sample)
 		return false;
 	return sample - last <= windowMs;
+}
+
+function isActiveClient(c, nowMs, config) {
+	return isNssActivityClient(c)
+		? isNssActiveClient(c, nowMs, config)
+		: isX86ActiveClient(c, nowMs, config);
 }
 
 function sumTotals(clients, config) {
@@ -310,6 +330,8 @@ return baseclass.extend({
 	clientSampleMs:    clientSampleMs,
 	latestClientSampleMs: latestClientSampleMs,
 	activeConfig:      activeConfig,
+	isNssActivityClient: isNssActivityClient,
+	isNssActiveClient: isNssActiveClient,
 	isActiveClient:    isActiveClient,
 	sumTotals:         sumTotals,
 	sortClients:       sortClients,

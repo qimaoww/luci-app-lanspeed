@@ -18,6 +18,7 @@ var DEFAULTS = {
 	active_client_min_bps: 1,
 	overview_window_samples: 240,
 	rate_collector_mode: 'auto',
+	access_edge_mode: 'shadow',
 	conn_collector_mode: 'auto',
 	show_client_status: '0',
 	show_ipv6: '1',
@@ -29,6 +30,7 @@ var DEFAULTS = {
 	interface_include: [],
 	interface_exclude: [],
 	observe: [],
+	dedicated_port: [],
 	enable_bpf: '1',
 	enable_conntrack_fallback: '1'
 };
@@ -54,12 +56,19 @@ var CONNECTION_MODES = [
 	{ value: 'conntrack_procfs', label: 'CT-Procfs', capability: 'conntrack_procfs' }
 ];
 
+var ACCESS_EDGE_MODES = [
+	{ value: 'off', label: _('关闭') },
+	{ value: 'shadow', label: _('Shadow（仅采集）') },
+	{ value: 'active', label: _('Active（作为总速率来源）') }
+];
+
 var FIELD_DEFS = [
 	{ name: 'refresh_interval_ms', kind: 'integer', label: _('采样间隔'), unit: 'ms', limits: LIMITS.refresh_interval_ms },
 	{ name: 'active_client_window_ms', kind: 'integer', label: _('活跃客户端窗口'), unit: 'ms', limits: LIMITS.active_client_window_ms },
 	{ name: 'active_client_min_bps', kind: 'integer', label: _('活跃最小速率'), unit: 'bps', limits: LIMITS.active_client_min_bps },
 	{ name: 'overview_window_samples', kind: 'integer', label: _('历史采样点'), unit: _('个'), limits: LIMITS.overview_window_samples },
 	{ name: 'rate_collector_mode', kind: 'enum', label: _('速率采集') },
+	{ name: 'access_edge_mode', kind: 'enum', label: _('Access Edge 总速率') },
 	{ name: 'conn_collector_mode', kind: 'enum', label: _('连接数采集') },
 	{ name: 'show_client_status', kind: 'boolean', label: _('显示客户端状态') },
 	{ name: 'show_ipv6', kind: 'boolean', label: _('显示 IPv6 地址') },
@@ -71,6 +80,7 @@ var FIELD_DEFS = [
 	{ name: 'interface_include', kind: 'interface-list', label: _('采集接口') },
 	{ name: 'interface_exclude', kind: 'interface-list', label: _('排除接口'), compatibility: true },
 	{ name: 'observe', kind: 'interface-list', label: _('观察接口') },
+	{ name: 'dedicated_port', kind: 'interface-list', label: _('已确认直连端口') },
 	{ name: 'enable_bpf', kind: 'boolean', label: _('启用 BPF') },
 	{ name: 'enable_conntrack_fallback', kind: 'boolean', label: _('允许连接跟踪回退') }
 ];
@@ -257,7 +267,7 @@ function normalize(raw) {
 	var issue;
 	var numberFields = [ 'refresh_interval_ms', 'active_client_window_ms', 'active_client_min_bps',
 		'overview_window_samples', 'max_clients' ];
-	var listFields = [ 'ifname', 'interface_include', 'interface_exclude', 'observe' ];
+	var listFields = [ 'ifname', 'interface_include', 'interface_exclude', 'observe', 'dedicated_port' ];
 
 	numberFields.forEach(function(name) {
 		var result = parseInteger(raw[name] === undefined ? DEFAULTS[name] : raw[name], LIMITS[name]);
@@ -284,6 +294,12 @@ function normalize(raw) {
 	present.conn_collector_mode = connRaw !== undefined && connRaw !== null;
 	if (!rate.valid && present.rate_collector_mode) errors.rate_collector_mode = rate.reason;
 	if (!conn.valid && present.conn_collector_mode) errors.conn_collector_mode = conn.reason;
+
+	var edgeRaw = raw.access_edge_mode === undefined ? DEFAULTS.access_edge_mode : raw.access_edge_mode;
+	var edge = normalizeEnum(edgeRaw, ACCESS_EDGE_MODES, DEFAULTS.access_edge_mode);
+	values.access_edge_mode = edge.value;
+	present.access_edge_mode = raw.access_edge_mode !== undefined && raw.access_edge_mode !== null;
+	if (!edge.valid && present.access_edge_mode) errors.access_edge_mode = edge.reason;
 
 	[ 'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'enable_bpf', 'enable_conntrack_fallback' ].forEach(function(name) {
 		var result = parseBoolean(raw[name] === undefined ? DEFAULTS[name] : raw[name], DEFAULTS[name]);
@@ -432,10 +448,11 @@ function buildUciPatch(values, original) {
 	var scalarFields = [
 		'refresh_interval_ms', 'active_client_window_ms', 'active_client_min_bps',
 		'overview_window_samples', 'rate_collector_mode', 'conn_collector_mode',
+		'access_edge_mode',
 		'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges',
 		'collector_mode', 'max_clients', 'enable_bpf', 'enable_conntrack_fallback'
 	];
-	var listFields = [ 'ifname', 'interface_include', 'interface_exclude', 'observe' ];
+	var listFields = [ 'ifname', 'interface_include', 'interface_exclude', 'observe', 'dedicated_port' ];
 	scalarFields.forEach(function(name) {
 		var value = name === 'collector_mode' ? collectorModeFor(normalized) : normalized[name];
 		if (value !== undefined && value !== null)
@@ -477,6 +494,7 @@ return baseclass.extend({
 	DEFAULTS: DEFAULTS,
 	LIMITS: LIMITS,
 	FIELDS: FIELD_DEFS,
+	ACCESS_EDGE_MODES: ACCESS_EDGE_MODES,
 	MAX_INTERFACE_NAMES: MAX_INTERFACE_NAMES,
 	MAX_RANGE_ITEMS: MAX_RANGE_ITEMS,
 	parseInteger: parseInteger,

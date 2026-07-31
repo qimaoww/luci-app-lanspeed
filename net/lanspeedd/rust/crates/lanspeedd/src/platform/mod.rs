@@ -1,3 +1,4 @@
+pub mod access_edge;
 pub mod counters;
 pub mod nss;
 pub mod x86;

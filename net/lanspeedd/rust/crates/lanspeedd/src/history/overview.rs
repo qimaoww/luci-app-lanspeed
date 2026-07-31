@@ -68,6 +68,7 @@ pub struct OverviewClient {
     pub rx_bps: u64,
     pub sample_ms: u64,
     pub last_seen_ms: u64,
+    pub nss_activity: bool,
     pub connections: ConnectionTotals,
 }
 
@@ -254,10 +255,13 @@ impl Default for OverviewRing {
 }
 
 fn client_is_active(client: &OverviewClient, config: &OverviewConfig) -> bool {
+    let rate = client.tx_bps.saturating_add(client.rx_bps);
+    if client.nss_activity {
+        return client.sample_ms > 0 && rate >= config.active_client_min_bps;
+    }
     if client.sample_ms == 0 || client.last_seen_ms == 0 || client.last_seen_ms > client.sample_ms {
         return false;
     }
     let recent = client.sample_ms - client.last_seen_ms <= config.active_client_window_ms;
-    let rate = client.tx_bps.saturating_add(client.rx_bps);
     recent && rate >= config.active_client_min_bps
 }

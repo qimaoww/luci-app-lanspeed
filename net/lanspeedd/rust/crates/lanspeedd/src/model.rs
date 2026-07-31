@@ -147,11 +147,176 @@ pub struct StatusResponse {
     pub overview_window_samples: usize,
     pub collector_mode: String,
     pub rate_collector_mode: String,
+    pub access_edge_mode: String,
+    pub dedicated_ports: Vec<String>,
     pub conn_collector_mode: String,
     pub version: String,
     pub capabilities: Capabilities,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coverage: Option<Coverage>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateScope {
+    AllFrames,
+    Unicast,
+    RoutedObserved,
+    LowerBound,
+    #[default]
+    None,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateSource {
+    EdgePort,
+    EdgeWifi,
+    EcmBpfFallback,
+    EcmNssLowerBound,
+    TcBpfLowerBound,
+    #[default]
+    None,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateCoverage {
+    Full,
+    Partial,
+    Degraded,
+    #[default]
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ByteDomain {
+    L2NoFcs,
+    L2WithFcs,
+    StationData,
+    EcmData,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachmentKind {
+    Ethernet,
+    Wifi,
+    #[default]
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachmentTrust {
+    DeclaredDirect,
+    AssociatedStation,
+    ObservedExclusive,
+    Shared,
+    #[default]
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClassificationState {
+    Warmup,
+    Aligned,
+    Partial,
+    Stale,
+    DomainMismatch,
+    WindowMismatch,
+    CounterSkew,
+    MapLoss,
+    #[default]
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct RateDirectionMeta {
+    pub source: RateSource,
+    pub coverage: RateCoverage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub byte_domain: Option<ByteDomain>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct RateAttachment {
+    pub kind: AttachmentKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ifname: Option<String>,
+    pub trust: AttachmentTrust,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct RateClassificationSummary {
+    pub state: ClassificationState,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "saturated_option_u64"
+    )]
+    pub sample_ms: Option<u64>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "saturated_option_u64"
+    )]
+    pub window_ms: Option<u64>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "saturated_option_u64"
+    )]
+    pub comparison_window_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_coverage_pct: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rx_coverage_pct: Option<u8>,
+}
+
+pub const CLIENT_RATE_META_VERSION: u8 = 1;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ClientRateMeta {
+    pub version: u8,
+    pub scope: RateScope,
+    pub tx: RateDirectionMeta,
+    pub rx: RateDirectionMeta,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<RateAttachment>,
+    #[serde(serialize_with = "saturated_u64")]
+    pub generation: u64,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "saturated_option_u64"
+    )]
+    pub window_ms: Option<u64>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "saturated_option_u64"
+    )]
+    pub sample_ms: Option<u64>,
+    pub stale: bool,
+    pub reason_codes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classification: Option<RateClassificationSummary>,
+}
+
+impl Default for ClientRateMeta {
+    fn default() -> Self {
+        Self {
+            version: CLIENT_RATE_META_VERSION,
+            scope: RateScope::None,
+            tx: RateDirectionMeta::default(),
+            rx: RateDirectionMeta::default(),
+            attachment: None,
+            generation: 0,
+            window_ms: None,
+            sample_ms: None,
+            stale: false,
+            reason_codes: Vec::new(),
+            classification: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -206,6 +371,8 @@ pub struct Client {
         serialize_with = "saturated_option_u64"
     )]
     pub udp_other_conns: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_meta: Option<ClientRateMeta>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

@@ -223,6 +223,7 @@ pub fn apply_conntrack_success(
             udp_conns: Some(u64::from(sample.udp_conns)),
             udp_dns_conns: Some(u64::from(sample.udp_dns_conns)),
             udp_other_conns: Some(u64::from(sample.udp_other_conns)),
+            rate_meta: None,
         });
     }
     overlaid
@@ -397,6 +398,7 @@ mod tests {
             udp_conns: None,
             udp_dns_conns: None,
             udp_other_conns: None,
+            rate_meta: None,
         });
         snapshot
     }

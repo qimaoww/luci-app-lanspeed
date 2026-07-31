@@ -94,6 +94,12 @@ pub(crate) fn apply_ecm_bpf_evidence(
             "ready": layout.ready == 1,
         })
     });
+    let map_entries = snapshot.map_or(runtime.ecm_bpf_map_entries, |value| value.map_entries);
+    let map_capacity = runtime.ecm_bpf_map_capacity;
+    let map_occupancy_pct = (map_capacity > 0)
+        .then(|| ((map_entries as u128).saturating_mul(100) / map_capacity as u128).min(100) as u8);
+    let map_iteration_truncated =
+        runtime.ecm_bpf_map_iteration_truncated || snapshot.is_some_and(|value| value.truncated);
     let mut ecm_bpf_details = json!({
             "source": "kprobe:ecm_db_connection_data_totals_update+nss_callback_context",
             "object": ECM_BPF_OBJECT_PATH,
@@ -112,15 +118,18 @@ pub(crate) fn apply_ecm_bpf_evidence(
                 "slow_path_packets": runtime.ecm_bpf_source_stats.slow_path_packets,
                 "slow_path_updates": runtime.ecm_bpf_source_stats.slow_path_updates,
             },
-            "generation_key": "connection_pointer+time_added_u32+direction+mac",
+            "aggregation_key": "mac+direction",
             "object_loaded": runtime.ecm_bpf_object_loaded,
             "attach_state": attach_state,
             "map_state": map_state,
-            "map_entries": snapshot.map_or(runtime.ecm_bpf_map_entries, |value| value.map_entries),
+            "map_entries": map_entries,
+            "map_capacity": map_capacity,
+            "map_occupancy_pct": map_occupancy_pct,
+            "map_pressure": map_occupancy_pct.is_some_and(|value| value >= 90),
+            "map_loss": map_iteration_truncated,
             "matched_entries": snapshot.map_or(runtime.ecm_bpf_matched_entries, |value| value.matched_entries),
             "snapshot_clients": snapshot.map_or(runtime.ecm_bpf_snapshot_clients, |value| value.clients.len()),
-            "map_iteration_truncated": runtime.ecm_bpf_map_iteration_truncated
-                || snapshot.is_some_and(|value| value.truncated),
+            "map_iteration_truncated": map_iteration_truncated,
             "sample_ms": snapshot.map(|value| value.sample_ms),
             "last_complete_snapshot_ms": runtime.ecm_bpf_last_complete_snapshot_ms,
             "retained_fresh_snapshot": retained_fresh_snapshot,

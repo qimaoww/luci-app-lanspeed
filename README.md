@@ -2,7 +2,7 @@
 
 `luci-app-lanspeed` 为 ImmortalWrt / OpenWrt 提供 LAN 客户端实时速率、接口吞吐、连接数、逐连接速率、诊断与配置页面。用户态服务 `lanspeedd` 使用 Rust/Aya，提供九个 ubus 方法；`lanspeedd-bpf` 安装目标架构对应的 eBPF 对象。
 
-速率结果表示采集器可观察到的流量。TC-BPF 观察 CPU 可见 LAN 边缘流量，Qualcomm NSS/ECM 路径观察硬件卸载统计。旁路网关、same-subnet side-router direct、LAN-to-LAN、交换芯片桥内转发、驱动 offload 与 PPPoE/WG/TUN/IFB 等路径可能绕过采集点。本项目不是完整流量审计系统，不声明全流量绝对准确。
+客户端总速率优先来自只读 Access Edge：有线直连端口使用 netdev 64 位计数，Wi-Fi 使用 NL80211 station 计数。TC-BPF 观察 CPU 慢路径，Qualcomm ECM kprobe 只记录已由 NSS callback context 证明的硬件增量；分类值不再与总速率相加。直连声明端口可达到 `all_frames/full`，已验证 AP station 最高为 `unicast/full`，WDS、Mesh、共享下联与未验证组播保持 Partial。本项目按证据声明覆盖范围，不把未知字节强行二分为 NSS/非 NSS。
 
 ## 界面预览
 
@@ -22,9 +22,23 @@ x86/TC-BPF 与 Qualcomm NSS 是两个独立源码模块，公共生产循环只�
 |---|---|---|---|
 | x86/TC-BPF | `platform/x86/` | `lanspeed-ebpf/src/x86/` | LAN ingress/egress TC map，按 MAC + zone/VLAN 聚合 |
 | Qualcomm NSS | `platform/nss/` | `lanspeed-ebpf/src/nss/` | NSS 自有 TC 慢路径、ECM node 与 ECM totals-update kprobe |
+| Access Edge | `platform/access_edge/` | 无 | Bridge FDB、NL80211 station 与一次 netdev 计数快照 |
 | 公共层 | `platform/counters.rs`、`production.rs` | `lanspeed-common` | 无平台计数结构、后端选择、统一响应发布 |
 
 `platform/x86` 与 `platform/nss` 双向零引用。公共调度层把 TC 结果逐字段复制为 NSS 自有 `NssTcSnapshot`，NSS 融合层不接收 x86 类型；两个平台的覆盖率状态、快照、输出、运行时和测试分别归属各自目录。eBPF 构建也分别启用 `x86-tc` 与 `nss-tc` 源入口。x86_64 构建不会安装 ECM 对象，运行时也不会探测 NSS 文件族；aarch64 仅在检测到 Qualcomm NSS/ECM 后开放 NSS 模式。
+
+### Access Edge 与分类语义
+
+每个客户端、每个方向只有一个总速率 owner：Wi-Fi station、管理员声明的直连端口、严格同窗的 ECM+TC fallback、单源 lower-bound，或 unavailable。候选源分别维护累计基线，禁止跨来源相减；移动、重关联、计数回退和来源切换都会重新 warmup。
+
+```text
+E = Access Edge 权威总量
+N = ECM/NSS 已识别硬件流量
+S = TC-BPF 已识别 CPU 慢路径流量
+U = E - (N + S)，只在同窗口且 ByteDomain 兼容时发布
+```
+
+主表总速率始终优先显示 `E`。`N`、`S` 是分类观察值，不与 `E` 相加；`U` 只能显示为“未分类”。Edge 每 1 秒采样，ECM/TC 每 2 秒采样，连续三个稳定分类 epoch 形成 6 秒比较窗。不同 ByteDomain、map loss、读端偏差、attachment 变化或 `N+S>E` 时仍可显示 N/S，但必须省略 U 与分类覆盖率。
 
 ### x86/TC-BPF
 
@@ -40,7 +54,8 @@ Qualcomm aarch64 NSS 设备自动按 ECM+BPF、ECM、BPF 选择健康后端，�
 
 - `nss_ecm_node` 读取 ECM node advanced statistics，使用 `time_added` 区分计数代次。
 - `nss_ecm_bpf` 使用 `AYA_BPF_TARGET_ARCH=aarch64` 构建的 `/usr/lib/bpf/lanspeed-ebpf-ecm`，解析 `/sys/kernel/btf/vmlinux` 与 `/sys/kernel/btf/ecm` 后挂载 totals-update 与 NSS callback context kprobe。
-- ECM+BPF 将内核已区分的 NSS 硬件增量与 NSS 自有 TC-BPF 慢路径原始增量放入同一采样窗口，只合并一次原始增量并计算一次速率；不叠加已经计算过的速率，也不使用 ECM node totals。
+- ECM 热 map 按 `MAC + direction` 聚合，加载容量至少为 `2 × max_clients`；TC map 容量至少为 `4 × max_clients`。两者发布 occupancy、pressure、当前/历史 truncation 与 map-loss 证据。
+- NSS callback 上下文按 `pid_tgid` 记录嵌套深度，避免 callback 期间任务迁核造成 per-CPU 上下文泄漏。ECM 同步时间只表示统计送达窗口，不伪装成字节真实发生时间。
 - ECM node、ECM+BPF 最低每 2 秒采样，页面刷新选择为 `2/4/8/10` 秒；自动模式跟随 `effective_collector`。
 - 首次快照保持 `warmup/0`。有效相邻计数推进后发布速率，停顿时短暂保留上一完整批次，再明确归零；空闲数分钟后恢复流量也不会产生跨整段空闲期的低速平均值。
 - 覆盖率、客户端速率和接口速率使用同一发布批次与 `sample_ms`。覆盖率进入 `pending`，不会阻塞逐客户端速率。
@@ -48,15 +63,16 @@ Qualcomm aarch64 NSS 设备自动按 ECM+BPF、ECM、BPF 选择健康后端，�
 
 ## 功能
 
-- 实时客户端上行/下行 `tx_bps`、`rx_bps`、累计字节、主机名、地址和连接数。
+- 实时客户端上行/下行 `tx_bps`、`rx_bps`、总速率 owner、覆盖范围、物理接入点、主机名、地址和连接数；端口 owner 不伪造客户端累计字节。
 - LAN 与观察接口吞吐；bridge 与 member 同时配置时只统计独立边界，避免重复计数。
 - CT-Netlink 连接统计，失败时回退 CT-Procfs；conntrack 只提供连接数、逐连接详情和目标 IP 元数据。
 - 客户端详情按远端 IP 聚合 TCP/UDP 连接，可展开实际连接并排序、分页、暂停刷新。
 - 浏览器按当前页查询公网 IP 地理位置；私网、保留地址和 Fake-IP 在本地分类。
 - 实时状态、运行诊断、LAN Speed 配置和客户端详情使用同一后端版本与 RPC 契约。
-- LuCI 显示完整包版本，例如 `1.1.4-r3`，并使用同一版本作为静态资源缓存键。
+- LuCI 显示完整包版本，例如 `1.1.5-r1`，并使用同一版本作为静态资源缓存键。
 - 诊断页独立校验 status、health、clients、interfaces、overview、diagnostics 六个 RPC 请求。
 - 配置页支持速率模式、连接模式、采样、活动阈值、IPv6 显示、接口采集/观察和严格输入校验。
+- 配置页支持 Access Edge `off/shadow/active` 与管理员直连端口声明；默认 `shadow` 不改变当前显示速率。
 - OpenClash、dae/daed、SQM/qosify/ifb、flow offload 与 fullcone NAT 探测和机器可读告警。
 
 ## 安装与编译
@@ -146,6 +162,9 @@ config lanspeed 'main'
     option active_client_min_bps '1'
     option overview_window_samples '240'
     option rate_collector_mode 'auto'
+    option access_edge_mode 'shadow'
+    # 只有确认一口一客户端时才添加；默认没有此项
+    # list dedicated_port 'lan2'
     option conn_collector_mode 'auto'
     option show_client_status '0'
     option show_ipv6 '1'
@@ -165,6 +184,8 @@ config lanspeed 'main'
 | `active_client_min_bps` | `1` | 活跃客户端最低速率 |
 | `overview_window_samples` | `240` | 概览历史样本数 |
 | `rate_collector_mode` | `auto` | `auto` / `bpf` / `nss_ecm_node` / `nss_ecm_bpf`，NSS 选项按运行能力显示 |
+| `access_edge_mode` | `shadow` | `off` / `shadow` / `active`；仅 `active + auto` 切换总速率 owner |
+| `dedicated_port` | 空 | 管理员确认的一口一客户端端口；AP、交换机下联、Mesh、WDS、trunk 不得声明 |
 | `conn_collector_mode` | `auto` | `auto` / `conntrack_netlink` / `conntrack_procfs` |
 | `max_clients` | `2048` | 客户端与聚合容量，范围 64 到 16384 |
 | `interface_include` | `br-lan` | 客户端速率采集接口 |
@@ -212,6 +233,8 @@ ubus call lanspeed client_connections \
 | 不对称路径 | `asymmetric_path_possible` |
 | VLAN/Wi-Fi 重复 MAC | `duplicate_mac_across_vlans` |
 | BPF map 容量耗尽 | `map_full` |
+| FDB/NL80211 不完整或事件监听失败 | 降级为 Partial/Unavailable，并发布对应 `rate_meta.reason_codes` |
+| ECM/TC ByteDomain 不兼容 | 保留 NSS/慢路径观察速率，分类状态为 `domain_mismatch`，不计算“未分类” |
 | router-local | 不自然归属为 LAN 客户端 |
 | PPPoE/WG/TUN | 外层可观察，客户端身份仍由 LAN 边缘决定 |
 
@@ -234,6 +257,7 @@ ubus call lanspeed client_connections \
 applications/luci-app-lanspeed/
   htdocs/luci-static/resources/lanspeed/      状态、诊断、配置、客户端详情
 net/lanspeedd/rust/crates/lanspeedd/src/
+  platform/access_edge/                       FDB、NL80211、计数 delta、RateMux 与 6 秒分类窗
   platform/x86/                              x86/TC-BPF 覆盖率、运行时、快照、输出
   platform/nss/                              NSS-BPF 覆盖率、TC 契约、ECM、窗口、融合、输出
   collectors/conntrack/                      连接元数据

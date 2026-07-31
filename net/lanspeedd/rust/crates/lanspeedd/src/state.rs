@@ -1,4 +1,4 @@
-use std::{cell::RefCell, mem::MaybeUninit, rc::Rc, sync::Arc};
+use std::{cell::RefCell, collections::BTreeMap, mem::MaybeUninit, rc::Rc, sync::Arc};
 
 use serde_json::{json, Value};
 
@@ -6,7 +6,7 @@ use crate::{
     config::{RateCollectorMode, RuntimeConfig},
     connection_details::{
         ClientConnectionSummary, ClientConnectionsResponse, ConnectionDetailsSnapshot,
-        PublishedConnectionDetails, MAX_CLIENT_CONNECTION_DETAILS,
+        PublishedConnectionDetails, TrafficClassification, MAX_CLIENT_CONNECTION_DETAILS,
     },
     error::DaemonError,
     model::{
@@ -56,6 +56,7 @@ pub struct ResponseSnapshot {
     diagnostics_collection: DiagnosticCollection,
     config_issues: Vec<DiagnosticConfigIssue>,
     connection_details: PublishedConnectionDetails,
+    traffic_classification: BTreeMap<String, TrafficClassification>,
 }
 
 impl ResponseSnapshot {
@@ -81,6 +82,7 @@ impl ResponseSnapshot {
             diagnostics_collection: DiagnosticCollection::unavailable(refresh_interval_ms),
             config_issues: Vec::new(),
             connection_details: PublishedConnectionDetails::Unavailable,
+            traffic_classification: BTreeMap::new(),
         }
     }
 
@@ -129,6 +131,8 @@ impl ResponseSnapshot {
                 overview_window_samples: 240,
                 collector_mode: "auto".into(),
                 rate_collector_mode: "auto".into(),
+                access_edge_mode: "shadow".into(),
+                dedicated_ports: Vec::new(),
                 conn_collector_mode: "auto".into(),
                 version: version.clone(),
                 capabilities: capabilities.clone(),
@@ -178,6 +182,7 @@ impl ResponseSnapshot {
             diagnostics_collection: DiagnosticCollection::unavailable(1_000),
             config_issues: Vec::new(),
             connection_details: PublishedConnectionDetails::Unavailable,
+            traffic_classification: BTreeMap::new(),
         }
     }
 
@@ -332,6 +337,7 @@ impl ResponseSnapshot {
             zone: client.zone.clone(),
         });
         let mut warnings = Vec::new();
+        let traffic_classification = self.traffic_classification.get(identity_key).cloned();
         if current_client.is_none() {
             warnings.push("client_not_found".to_owned());
         }
@@ -351,6 +357,7 @@ impl ResponseSnapshot {
                     conn_semantics: CONNECTION_SEMANTICS.to_owned(),
                     connections: Vec::new(),
                     warnings,
+                    traffic_classification,
                 }
             }
             PublishedConnectionDetails::Incomplete {
@@ -370,6 +377,7 @@ impl ResponseSnapshot {
                     conn_semantics: CONNECTION_SEMANTICS.to_owned(),
                     connections: Vec::new(),
                     warnings,
+                    traffic_classification,
                 }
             }
             PublishedConnectionDetails::Available {
@@ -393,9 +401,17 @@ impl ResponseSnapshot {
                     conn_semantics: CONNECTION_SEMANTICS.to_owned(),
                     connections,
                     warnings,
+                    traffic_classification,
                 }
             }
         }
+    }
+
+    pub(crate) fn replace_traffic_classification(
+        &mut self,
+        values: BTreeMap<String, TrafficClassification>,
+    ) {
+        self.traffic_classification = values;
     }
 
     pub(crate) fn replace_connection_details(

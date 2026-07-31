@@ -343,6 +343,7 @@ fn client_connections_refreshes_before_loading_the_latest_snapshot() {
         udp_conns: None,
         udp_dns_conns: None,
         udp_other_conns: None,
+        rate_meta: None,
     });
     let refreshed = Arc::new(refreshed);
     let callback_snapshots = snapshots.clone();

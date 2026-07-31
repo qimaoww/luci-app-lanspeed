@@ -444,7 +444,21 @@ fn overview_client(
         rx_bps,
         sample_ms,
         last_seen_ms,
+        nss_activity: false,
         connections,
+    }
+}
+
+fn nss_overview_client(
+    tx_bps: u64,
+    rx_bps: u64,
+    sample_ms: u64,
+    last_seen_ms: u64,
+    connections: ConnectionTotals,
+) -> OverviewClient {
+    OverviewClient {
+        nss_activity: true,
+        ..overview_client(tx_bps, rx_bps, sample_ms, last_seen_ms, connections)
     }
 }
 
@@ -491,6 +505,27 @@ fn overview_active_rules_and_connection_overrides_are_exact() {
     let json = ring.to_json(&config);
     assert_eq!(json["samples"][0]["tx_bps"], i64::MAX);
     assert_eq!(json["samples"][0]["tcp_conns"], u32::MAX);
+}
+
+#[test]
+fn nss_activity_uses_the_published_batch_instead_of_kernel_event_age() {
+    let config = OverviewConfig {
+        window_samples: 240,
+        active_client_window_ms: 10_000,
+        active_client_min_bps: 1,
+    };
+    let mut ring = OverviewRing::new();
+    ring.push(
+        20_000,
+        &[
+            nss_overview_client(100, 0, 20_000, 1, ConnectionTotals::default()),
+            nss_overview_client(0, 0, 20_000, 1, ConnectionTotals::default()),
+        ],
+        ConnectionTotalsOverride::default(),
+        &config,
+    );
+
+    assert_eq!(ring.latest().unwrap().active_clients, 1);
 }
 
 #[test]

@@ -1,10 +1,11 @@
 use lanspeedd::config::{
-    ConfigError, ConfigSource, ConfigValue, ConnectionCollectorMode, InterfaceEligibility,
-    LegacyNameEligibility, RateCollectorMode, RuntimeConfig, DEFAULT_ACTIVE_CLIENT_MIN_BPS,
-    DEFAULT_ACTIVE_CLIENT_WINDOW_MS, DEFAULT_MAX_CLIENTS, DEFAULT_OVERVIEW_WINDOW_SAMPLES,
-    DEFAULT_REFRESH_INTERVAL_MS, MAX_INTERFACE_NAMES, MAX_INTERFACE_NAME_LEN, MAX_MAX_CLIENTS,
-    MAX_OVERVIEW_WINDOW_SAMPLES, MIN_ACTIVE_CLIENT_WINDOW_MS, MIN_MAX_CLIENTS,
-    MIN_OVERVIEW_WINDOW_SAMPLES, MIN_REFRESH_INTERVAL_MS,
+    AccessEdgeMode, ConfigError, ConfigSource, ConfigValue, ConnectionCollectorMode,
+    InterfaceEligibility, LegacyNameEligibility, RateCollectorMode, RuntimeConfig,
+    DEFAULT_ACTIVE_CLIENT_MIN_BPS, DEFAULT_ACTIVE_CLIENT_WINDOW_MS, DEFAULT_MAX_CLIENTS,
+    DEFAULT_OVERVIEW_WINDOW_SAMPLES, DEFAULT_REFRESH_INTERVAL_MS, MAX_INTERFACE_NAMES,
+    MAX_INTERFACE_NAME_LEN, MAX_MAX_CLIENTS, MAX_OVERVIEW_WINDOW_SAMPLES,
+    MIN_ACTIVE_CLIENT_WINDOW_MS, MIN_MAX_CLIENTS, MIN_OVERVIEW_WINDOW_SAMPLES,
+    MIN_REFRESH_INTERVAL_MS,
 };
 use std::collections::HashMap;
 
@@ -91,6 +92,7 @@ fn defaults_and_limits_match_the_legacy_c_contract() {
     assert!(!config.enable_bpf);
     assert!(config.enable_conntrack_fallback);
     assert_eq!(config.rate_collector_mode, RateCollectorMode::Auto);
+    assert_eq!(config.access_edge_mode, AccessEdgeMode::Shadow);
     assert_eq!(config.conn_collector_mode, ConnectionCollectorMode::Auto);
     assert!(!config.refresh_interval_clamped);
     assert!(!config.active_client_window_clamped);
@@ -103,7 +105,42 @@ fn defaults_and_limits_match_the_legacy_c_contract() {
     assert!(config.observe_ifnames.is_empty());
     assert!(config.configured_excluded.is_empty());
     assert!(config.configured_observed.is_empty());
+    assert!(config.dedicated_ports.is_empty());
     assert!(!config.rejected_nssifb_collect);
+}
+
+#[test]
+fn access_edge_accepts_only_off_shadow_and_active() {
+    let cases = [
+        ("off", AccessEdgeMode::Off, "off"),
+        ("shadow", AccessEdgeMode::Shadow, "shadow"),
+        ("active", AccessEdgeMode::Active, "active"),
+    ];
+
+    for (input, expected, canonical) in cases {
+        assert_eq!(AccessEdgeMode::parse(input), Some(expected), "{input}");
+        assert_eq!(expected.as_str(), canonical, "{input}");
+        assert_eq!(
+            load(MemorySource::default().with("access_edge_mode", input)).access_edge_mode,
+            expected,
+            "{input}"
+        );
+    }
+
+    for invalid in ["", "AUTO", "enabled", "observe", "ACTIVE"] {
+        assert_eq!(AccessEdgeMode::parse(invalid), None, "{invalid}");
+        assert_eq!(
+            load(MemorySource::default().with("access_edge_mode", invalid)).access_edge_mode,
+            AccessEdgeMode::Shadow,
+            "{invalid}"
+        );
+    }
+
+    let mut wrong_type = MemorySource::default().with_list("access_edge_mode", &["active"]);
+    assert!(matches!(
+        RuntimeConfig::load(&mut wrong_type, &LegacyNameEligibility),
+        Err(ConfigError::WrongType { option, .. }) if option == "access_edge_mode"
+    ));
 }
 
 #[test]
@@ -366,6 +403,41 @@ fn list_options_are_preserved_deduplicated_and_bounded() {
         ConfigValue::List(vec![accepted.clone(), rejected]),
     );
     assert_eq!(load(boundary).ifnames, [accepted]);
+}
+
+#[test]
+fn dedicated_ports_are_safe_deduplicated_bounded_and_not_runtime_filtered() {
+    let mut values = vec!["lan1".to_owned(), "lan1".to_owned(), "down0".to_owned()];
+    values.extend((0..MAX_INTERFACE_NAMES + 4).map(|index| format!("port{index}")));
+    values.extend([
+        ".".to_owned(),
+        "..".to_owned(),
+        "nested/name".to_owned(),
+        "bad\0name".to_owned(),
+    ]);
+    let mut source = MemorySource::default();
+    source.values.insert(
+        "lanspeed.main.dedicated_port".into(),
+        ConfigValue::List(values),
+    );
+
+    let config = RuntimeConfig::load(&mut source, &RejectNamed("down0")).unwrap();
+    assert_eq!(config.dedicated_ports.len(), MAX_INTERFACE_NAMES);
+    assert_eq!(
+        config.dedicated_ports.first().map(String::as_str),
+        Some("lan1")
+    );
+    assert_eq!(
+        config.dedicated_ports.get(1).map(String::as_str),
+        Some("down0")
+    );
+    assert_eq!(
+        config.dedicated_ports.last().map(String::as_str),
+        Some("port13")
+    );
+
+    let scalar = load(MemorySource::default().with("dedicated_port", "lan3"));
+    assert_eq!(scalar.dedicated_ports, ["lan3"]);
 }
 
 #[test]

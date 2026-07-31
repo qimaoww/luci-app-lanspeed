@@ -248,16 +248,45 @@ pub(crate) fn ecm_bpf_fallback_client_rates(
         if rates.contains_key(identity_key) {
             continue;
         }
-        let Some(rate) = fused_client_rate(identity_key, Some(ecm), bpf, false) else {
-            continue;
+        let ecm_rate = ecm
+            .fresh_rates
+            .get(identity_key)
+            .copied()
+            .unwrap_or_default();
+        let bpf_sample = bpf.and_then(|snapshot| {
+            snapshot
+                .clients
+                .iter()
+                .find(|sample| sample.identity_key == identity_key)
+                .map(|sample| {
+                    let delta = snapshot
+                        .coverage_deltas
+                        .get(identity_key)
+                        .copied()
+                        .unwrap_or_default();
+                    RateWindowValue {
+                        tx_bps: ((delta.tx_bytes != 0 || delta.tx_packets != 0)
+                            .then_some(sample.tx_bps))
+                        .unwrap_or(0),
+                        rx_bps: ((delta.rx_bytes != 0 || delta.rx_packets != 0)
+                            .then_some(sample.rx_bps))
+                        .unwrap_or(0),
+                    }
+                })
+        });
+        let rate = RateWindowValue {
+            // A fallback direction chooses one source. ECM hardware events and
+            // TC slow-path rates are never added outside a shared raw window.
+            tx_bps: ecm_rate
+                .tx_bps
+                .max(bpf_sample.map_or(0, |sample| sample.tx_bps)),
+            rx_bps: ecm_rate
+                .rx_bps
+                .max(bpf_sample.map_or(0, |sample| sample.rx_bps)),
         };
-        rates.insert(
-            identity_key.to_owned(),
-            RateWindowValue {
-                rx_bps: rate.rx_bps,
-                tx_bps: rate.tx_bps,
-            },
-        );
+        if rate.tx_bps != 0 || rate.rx_bps != 0 {
+            rates.insert(identity_key.to_owned(), rate);
+        }
     }
     rates
 }
@@ -288,4 +317,43 @@ pub(crate) fn add_traffic_counters(total: &mut TrafficCounters, value: TrafficCo
     total.rx_bytes = total.rx_bytes.saturating_add(value.rx_bytes);
     total.tx_packets = total.tx_packets.saturating_add(value.tx_packets);
     total.rx_packets = total.rx_packets.saturating_add(value.rx_packets);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::nss::ecm_bpf::{EcmBpfClientSample, EcmBpfFreshRate};
+
+    #[test]
+    fn fallback_rates_exclude_a_held_ecm_event_from_the_current_window() {
+        let identity_key = "client@lan".to_owned();
+        let mut snapshot = EcmBpfSnapshot {
+            clients: vec![EcmBpfClientSample {
+                mac: "02:00:00:00:00:01".into(),
+                identity_key: identity_key.clone(),
+                zone: "lan".into(),
+                interface: "br-lan".into(),
+                ips: vec!["192.0.2.1".into()],
+                tx_bytes: 1_000,
+                rx_bytes: 0,
+                tx_bps: 50_000_000,
+                rx_bps: 0,
+                sample_ms: 4_000,
+                last_seen_ms: 2_000,
+            }],
+            ..EcmBpfSnapshot::default()
+        };
+
+        assert!(ecm_bpf_fallback_client_rates(&snapshot, None, false).is_empty());
+
+        snapshot.fresh_rates.insert(
+            identity_key.clone(),
+            EcmBpfFreshRate {
+                tx_bps: 50_000_000,
+                rx_bps: 0,
+            },
+        );
+        let rates = ecm_bpf_fallback_client_rates(&snapshot, None, false);
+        assert_eq!(rates[&identity_key].tx_bps, 50_000_000);
+    }
 }

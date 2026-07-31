@@ -9,6 +9,13 @@ const COVERAGE_CATCHUP_TIMEOUT_MS: u64 = 5_000;
 const UNOWNED_SETTLE_MS: u64 = 2_500;
 const MIN_COVERAGE_BYTES: u64 = 128 * 1024;
 const MIN_OWNERSHIP_PERCENT: u64 = 90;
+// A two-second LAN/TC window can straddle the allowed 250 ms fusion skew.
+// Treat only a major directional deficit as a missing high-rate source; a
+// normal startup edge must publish its current partial window instead of
+// freezing the previous batch for another poll.
+const HIGH_RATE_RAW_GAP_PERCENT: u64 = 75;
+const PREVIOUS_DIRECTION_MIN_LAN_PERCENT: u64 = 75;
+const PREVIOUS_DIRECTION_MAX_LAN_PERCENT: u64 = 200;
 pub(crate) const ECM_BPF_LOW_RATE_WINDOW_MS: u64 = 6_000;
 pub(crate) const ECM_BPF_LOW_RATE_STEP_MS: u64 = 2_000;
 pub(crate) const ECM_BPF_LOW_RATE_ROLLING_WINDOW_MS: u64 = 18_000;
@@ -383,6 +390,8 @@ pub(crate) struct EcmBpfRateBatch {
     pub interfaces: BTreeMap<String, RateWindowValue>,
     pub raw_aligned: bool,
     pub fallback_event_gap_filled: bool,
+    pub previous_direction_gap_filled: bool,
+    pub previous_high_direction_gap_filled: bool,
     pub fallback_lan_reconciled: bool,
     pub low_rate: bool,
     pub fresh: bool,
@@ -404,6 +413,7 @@ pub(crate) struct EcmBpfRateWindowBook {
     last_fallback_sample_ms: Option<u64>,
     low_rate_history: VecDeque<EcmBpfRateBatch>,
     published: Option<EcmBpfRateBatch>,
+    last_emitted: Option<EcmBpfRateBatch>,
     high_rate_quiet_since_ms: Option<u64>,
 }
 
@@ -495,22 +505,111 @@ impl EcmBpfRateWindowBook {
                     && directional_coverage_ready(client, lan)
             })
         });
-        let total_bytes = lan_normalized.map_or(u64::MAX, |value| {
-            value.tx_bytes.saturating_add(value.rx_bytes)
+        // `MIN_COVERAGE_BYTES` is a reporting-confidence threshold, not a
+        // rate-mode boundary. A paced low-rate TCP stream can emit one 128 KiB
+        // batch followed by several empty two-second polls; classifying that
+        // batch as high-rate clears the rolling history on every burst.
+        let lan_peak_bps = lan_normalized.map_or(u64::MAX, |value| {
+            rate(value.rx_bytes, window_ms).max(rate(value.tx_bytes, window_ms))
         });
         let idle = !has_traffic(&client_raw) && !has_traffic(&lan_raw);
-        let low_rate = total_bytes < MIN_COVERAGE_BYTES && !event_high_rate;
+        let low_rate = lan_peak_bps < ECM_BPF_EVENT_HIGH_RATE_BPS && !event_high_rate;
         let history_ready = self.low_rate_history_ms() >= ECM_BPF_LOW_RATE_WINDOW_MS;
-        let published_high = self.published.as_ref().is_some_and(|batch| !batch.low_rate);
+        let has_published_batch = self.published.is_some();
         let low_rate_ready = idle
             || window_ms >= ECM_BPF_LOW_RATE_WINDOW_MS
-            || ((history_ready || published_high) && window_ms >= ECM_BPF_LOW_RATE_STEP_MS);
+            // Six seconds are required only for the first low-rate result.
+            // A confirmed high-to-low transition may commit a two-second
+            // segment; do not warm up for another six seconds afterwards.
+            || ((history_ready || has_published_batch)
+                && window_ms >= ECM_BPF_LOW_RATE_STEP_MS);
         let aligned_ready = if low_rate { low_rate_ready } else { true };
 
         if aligned && aligned_ready {
-            let Some(clients) = rate_window_clients(&self.pending_clients, window_ms) else {
-                self.rebaseline(lan.clone(), interfaces.clone(), true);
-                return None;
+            let (
+                clients,
+                event_gap_filled,
+                previous_direction_gap_filled,
+                previous_high_direction_gap_filled,
+                lan_reconciled,
+            ) = if low_rate {
+                let Some(clients) = rate_window_clients(&self.pending_clients, window_ms) else {
+                    self.rebaseline(lan.clone(), interfaces.clone(), true);
+                    return None;
+                };
+                (clients, false, false, false, false)
+            } else {
+                // `aligned` only proves that the raw client delta does not run
+                // ahead of the physical LAN clock.  NSS may skip one stats-sync
+                // round while the net-device counter keeps advancing, leaving a
+                // tiny but technically valid raw delta.  Use the still-live ECM
+                // event rate for that direction and constrain it to the same LAN
+                // and discovered-interface budgets.  Each direction still picks
+                // one source; raw and event rates are never added.
+                let (
+                    mut clients,
+                    event_gap_filled,
+                    previous_high_direction_gap_filled,
+                    mut lan_reconciled,
+                ) = match aligned_high_rate_window_clients(
+                    &self.pending_clients,
+                    &fallback_average,
+                    lan_raw,
+                    client_interfaces,
+                    &interface_rates,
+                    window_ms,
+                    self.last_emitted.as_ref().or(self.published.as_ref()),
+                    start.sample_ms,
+                ) {
+                    Some(repaired) => repaired,
+                    None => {
+                        if let Some(held) = self.held_at(lan.sample_ms) {
+                            if held
+                                .held_age_ms
+                                .is_some_and(|age| age <= ECM_BPF_HIGH_RATE_CONFIRMATION_MS)
+                            {
+                                // The LAN clock advanced but this snapshot contains
+                                // no current NSS event for the high-rate direction.
+                                // Retain the entire previous client/interface batch;
+                                // never pair its event rate with this LAN window.
+                                self.rebaseline(lan.clone(), interfaces.clone(), false);
+                                return Some(held);
+                            }
+                        } else {
+                            self.rebaseline(lan.clone(), interfaces.clone(), false);
+                            return None;
+                        }
+                        let Some(clients) = rate_window_clients(&self.pending_clients, window_ms)
+                        else {
+                            self.rebaseline(lan.clone(), interfaces.clone(), true);
+                            return None;
+                        };
+                        (clients, false, false, false)
+                    }
+                };
+                let previous_low_direction_gap_filled = repair_previous_complete_low_directions(
+                    &mut clients,
+                    self.last_emitted.as_ref().or(self.published.as_ref()),
+                    start.sample_ms,
+                    lan_raw,
+                    window_ms,
+                );
+                let previous_direction_gap_filled =
+                    previous_high_direction_gap_filled || previous_low_direction_gap_filled;
+                if previous_direction_gap_filled {
+                    lan_reconciled |= reconcile_high_rate_interfaces(
+                        &mut clients,
+                        client_interfaces,
+                        &interface_rates,
+                    );
+                }
+                (
+                    clients,
+                    event_gap_filled,
+                    previous_direction_gap_filled,
+                    previous_high_direction_gap_filled,
+                    lan_reconciled,
+                )
             };
             let batch = EcmBpfRateBatch {
                 start_ms: start.sample_ms,
@@ -518,8 +617,10 @@ impl EcmBpfRateWindowBook {
                 clients,
                 interfaces: interface_rates,
                 raw_aligned: true,
-                fallback_event_gap_filled: false,
-                fallback_lan_reconciled: false,
+                fallback_event_gap_filled: event_gap_filled,
+                previous_direction_gap_filled,
+                previous_high_direction_gap_filled,
+                fallback_lan_reconciled: lan_reconciled,
                 low_rate,
                 fresh: true,
                 held_age_ms: None,
@@ -535,10 +636,13 @@ impl EcmBpfRateWindowBook {
             low_rate_ready
         } else {
             window_ms >= ECM_BPF_LOW_RATE_WINDOW_MS
-                || (published_high && window_ms >= ECM_BPF_LOW_RATE_STEP_MS)
+                // An unaligned low-to-high transition already has a trusted
+                // shared baseline. Publish its current fallback window at the
+                // regular step instead of starting another six-second warmup.
+                || (has_published_batch && window_ms >= ECM_BPF_LOW_RATE_STEP_MS)
         };
         if fallback_ready {
-            let (clients, event_gap_filled, lan_reconciled) = if low_rate {
+            let (mut clients, event_gap_filled, mut lan_reconciled) = if low_rate {
                 fallback_rate_window_clients(
                     &self.pending_clients,
                     &fallback_average,
@@ -555,6 +659,21 @@ impl EcmBpfRateWindowBook {
                     window_ms,
                 )
             };
+            let previous_direction_gap_filled = !low_rate
+                && repair_previous_complete_low_directions(
+                    &mut clients,
+                    self.last_emitted.as_ref().or(self.published.as_ref()),
+                    start.sample_ms,
+                    lan_raw,
+                    window_ms,
+                );
+            if previous_direction_gap_filled {
+                lan_reconciled |= reconcile_high_rate_interfaces(
+                    &mut clients,
+                    client_interfaces,
+                    &interface_rates,
+                );
+            }
             let batch = EcmBpfRateBatch {
                 start_ms: start.sample_ms,
                 end_ms: lan.sample_ms,
@@ -562,6 +681,8 @@ impl EcmBpfRateWindowBook {
                 interfaces: interface_rates,
                 raw_aligned: false,
                 fallback_event_gap_filled: event_gap_filled,
+                previous_direction_gap_filled,
+                previous_high_direction_gap_filled: false,
                 fallback_lan_reconciled: lan_reconciled,
                 low_rate,
                 fresh: true,
@@ -586,12 +707,23 @@ impl EcmBpfRateWindowBook {
         let previous_high = self.published.as_ref().filter(|batch| !batch.low_rate);
         let candidate_is_live =
             previous_high.is_none_or(|previous| high_rate_candidate_is_live(&candidate, previous));
-        if previous_high.is_some() && !candidate_is_live {
+        if previous_high.is_some() && !candidate_is_live && candidate.low_rate {
             let quiet_since = *self
                 .high_rate_quiet_since_ms
                 .get_or_insert(candidate.end_ms);
             if candidate.end_ms.saturating_sub(quiet_since) < ECM_BPF_HIGH_RATE_CONFIRMATION_MS {
-                return self.held_at(candidate.end_ms);
+                // Keep the committed high-rate state while confirming the
+                // transition, but retain every real low-rate segment in the
+                // rolling window.  Publishing only the latest segment made a
+                // single delayed NSS sync look like a deep low-speed drop; the
+                // weighted history smooths that gap without adding sources or
+                // inventing bytes. A still-high candidate falls through to the
+                // normal high-rate publication path and clears this history.
+                self.low_rate_history.push_back(candidate);
+                trim_low_rate_history(&mut self.low_rate_history);
+                let emitted = aggregate_low_rate_history(&self.low_rate_history);
+                self.last_emitted = Some(emitted.clone());
+                return Some(emitted);
             }
             candidate.low_rate = true;
         }
@@ -609,6 +741,7 @@ impl EcmBpfRateWindowBook {
         if !low_rate {
             self.low_rate_history.clear();
             self.published = Some(segment.clone());
+            self.last_emitted = Some(segment.clone());
             return segment;
         }
 
@@ -616,15 +749,20 @@ impl EcmBpfRateWindowBook {
         trim_low_rate_history(&mut self.low_rate_history);
         let batch = aggregate_low_rate_history(&self.low_rate_history);
         self.published = Some(batch.clone());
+        self.last_emitted = Some(batch.clone());
         batch
     }
 
     pub fn held_at(&self, sample_ms: u64) -> Option<EcmBpfRateBatch> {
-        self.published.clone().map(|mut batch| {
-            batch.fresh = false;
-            batch.held_age_ms = Some(sample_ms.saturating_sub(batch.end_ms));
-            batch
-        })
+        self.last_emitted
+            .as_ref()
+            .or(self.published.as_ref())
+            .cloned()
+            .map(|mut batch| {
+                batch.fresh = false;
+                batch.held_age_ms = Some(sample_ms.saturating_sub(batch.end_ms));
+                batch
+            })
     }
 
     fn rebaseline(
@@ -642,6 +780,7 @@ impl EcmBpfRateWindowBook {
         if clear_published {
             self.low_rate_history.clear();
             self.published = None;
+            self.last_emitted = None;
             self.high_rate_quiet_since_ms = None;
         }
     }
@@ -689,6 +828,12 @@ fn aggregate_low_rate_history(history: &VecDeque<EcmBpfRateBatch>) -> EcmBpfRate
         ),
         raw_aligned: history.iter().all(|batch| batch.raw_aligned),
         fallback_event_gap_filled: history.iter().any(|batch| batch.fallback_event_gap_filled),
+        previous_direction_gap_filled: history
+            .iter()
+            .any(|batch| batch.previous_direction_gap_filled),
+        previous_high_direction_gap_filled: history
+            .iter()
+            .any(|batch| batch.previous_high_direction_gap_filled),
         fallback_lan_reconciled: history.iter().any(|batch| batch.fallback_lan_reconciled),
         low_rate: true,
         fresh: true,
@@ -851,6 +996,260 @@ fn fallback_rate_window_clients(
         tx_gap_filled || rx_gap_filled,
         tx_reconciled || rx_reconciled || tx_gap_limited || rx_gap_limited,
     )
+}
+
+fn aligned_high_rate_window_clients(
+    pending_raw: &BTreeMap<String, TrafficCounters>,
+    fallback: &BTreeMap<String, RateWindowValue>,
+    lan_raw: TrafficCounters,
+    client_interfaces: &BTreeMap<String, String>,
+    interface_rates: &BTreeMap<String, RateWindowValue>,
+    window_ms: u64,
+    previous: Option<&EcmBpfRateBatch>,
+    current_start_ms: u64,
+) -> Option<(BTreeMap<String, RateWindowValue>, bool, bool, bool)> {
+    let mut clients = rate_window_clients(pending_raw, window_ms)?;
+    let raw_total = sum_rate_values(clients.values());
+    let fallback_total = sum_rate_values(fallback.values());
+    let lan_rate = lan_raw
+        .fcs_normalized()
+        .map(|counters| RateWindowValue {
+            rx_bps: rate(counters.rx_bytes, window_ms),
+            tx_bps: rate(counters.tx_bytes, window_ms),
+        })
+        .unwrap_or_default();
+    let repair_tx =
+        aligned_event_repair_ready(raw_total.tx_bps, fallback_total.tx_bps, lan_rate.rx_bps);
+    let repair_rx =
+        aligned_event_repair_ready(raw_total.rx_bps, fallback_total.rx_bps, lan_rate.tx_bps);
+    let missing_tx = high_rate_raw_gap(raw_total.tx_bps, lan_rate.rx_bps) && !repair_tx;
+    let missing_rx = high_rate_raw_gap(raw_total.rx_bps, lan_rate.tx_bps) && !repair_rx;
+    let mut event_rate_selected = false;
+    for (identity_key, fallback_rate) in fallback {
+        let current = clients.entry(identity_key.clone()).or_default();
+        if repair_tx && fallback_rate.tx_bps > current.tx_bps {
+            current.tx_bps = fallback_rate.tx_bps;
+            event_rate_selected = true;
+        }
+        if repair_rx && fallback_rate.rx_bps > current.rx_bps {
+            current.rx_bps = fallback_rate.rx_bps;
+            event_rate_selected = true;
+        }
+    }
+    let (previous_tx_repaired, previous_rx_repaired) = repair_previous_complete_high_directions(
+        &mut clients,
+        previous,
+        current_start_ms,
+        lan_rate,
+        missing_tx,
+        missing_rx,
+    );
+    if missing_tx && !previous_tx_repaired || missing_rx && !previous_rx_repaired {
+        return None;
+    }
+    let previous_high_direction_gap_filled = previous_tx_repaired || previous_rx_repaired;
+    let tx_reconciled =
+        reconcile_high_rate_direction(&mut clients, lan_rate.rx_bps, raw_total.tx_bps, false);
+    let rx_reconciled =
+        reconcile_high_rate_direction(&mut clients, lan_rate.tx_bps, raw_total.rx_bps, true);
+    let interface_reconciled =
+        reconcile_high_rate_interfaces(&mut clients, client_interfaces, interface_rates);
+    Some((
+        clients,
+        event_rate_selected,
+        previous_high_direction_gap_filled,
+        tx_reconciled || rx_reconciled || interface_reconciled,
+    ))
+}
+
+fn aligned_event_repair_ready(raw_bps: u64, event_bps: u64, lan_bps: u64) -> bool {
+    high_rate_raw_gap(raw_bps, lan_bps) && event_bps > raw_bps
+}
+
+fn high_rate_raw_gap(raw_bps: u64, lan_bps: u64) -> bool {
+    lan_bps >= ECM_BPF_EVENT_HIGH_RATE_BPS
+        && u128::from(raw_bps).saturating_mul(100)
+            < u128::from(lan_bps).saturating_mul(u128::from(HIGH_RATE_RAW_GAP_PERCENT))
+}
+
+fn repair_previous_complete_high_directions(
+    clients: &mut BTreeMap<String, RateWindowValue>,
+    previous: Option<&EcmBpfRateBatch>,
+    current_start_ms: u64,
+    lan_rate: RateWindowValue,
+    repair_tx: bool,
+    repair_rx: bool,
+) -> (bool, bool) {
+    let Some(previous) = previous.filter(|batch| {
+        batch.fresh
+            && batch.held_age_ms.is_none()
+            && !batch.previous_direction_gap_filled
+            && batch.end_ms == current_start_ms
+    }) else {
+        return (false, false);
+    };
+
+    let repaired_tx = repair_tx
+        && replace_direction_from_previous_distribution(
+            clients,
+            &previous.clients,
+            lan_rate.rx_bps,
+            false,
+        );
+    let repaired_rx = repair_rx
+        && replace_direction_from_previous_distribution(
+            clients,
+            &previous.clients,
+            lan_rate.tx_bps,
+            true,
+        );
+    (repaired_tx, repaired_rx)
+}
+
+fn replace_direction_from_previous_distribution(
+    clients: &mut BTreeMap<String, RateWindowValue>,
+    previous: &BTreeMap<String, RateWindowValue>,
+    lan_bps: u64,
+    receive: bool,
+) -> bool {
+    if lan_bps < ECM_BPF_EVENT_HIGH_RATE_BPS {
+        return false;
+    }
+    let direction = |value: &RateWindowValue| {
+        if receive {
+            value.rx_bps
+        } else {
+            value.tx_bps
+        }
+    };
+    let previous_total = previous.values().fold(0u128, |total, value| {
+        total.saturating_add(u128::from(direction(value)))
+    });
+    if previous_total == 0 {
+        return false;
+    }
+
+    for value in clients.values_mut() {
+        if receive {
+            value.rx_bps = 0;
+        } else {
+            value.tx_bps = 0;
+        }
+    }
+    let mut assigned_any = false;
+    for (identity_key, previous_value) in previous {
+        let previous_bps = direction(previous_value);
+        if previous_bps == 0 {
+            continue;
+        }
+        let assigned =
+            u128::from(previous_bps).saturating_mul(u128::from(lan_bps)) / previous_total;
+        let assigned = u64::try_from(assigned).unwrap_or(lan_bps);
+        if assigned == 0 {
+            continue;
+        }
+        let value = clients.entry(identity_key.clone()).or_default();
+        if receive {
+            value.rx_bps = assigned;
+        } else {
+            value.tx_bps = assigned;
+        }
+        assigned_any = true;
+    }
+    assigned_any
+}
+
+fn repair_previous_complete_low_directions(
+    clients: &mut BTreeMap<String, RateWindowValue>,
+    previous: Option<&EcmBpfRateBatch>,
+    current_start_ms: u64,
+    lan_raw: TrafficCounters,
+    window_ms: u64,
+) -> bool {
+    let Some(previous) = previous.filter(|batch| {
+        batch.fresh
+            && batch.held_age_ms.is_none()
+            && !batch.previous_direction_gap_filled
+            && batch.end_ms == current_start_ms
+    }) else {
+        return false;
+    };
+    let Some(lan) = lan_raw.fcs_normalized() else {
+        return false;
+    };
+    let lan_rate = RateWindowValue {
+        rx_bps: rate(lan.rx_bytes, window_ms),
+        tx_bps: rate(lan.tx_bytes, window_ms),
+    };
+    let repaired_tx =
+        repair_previous_complete_low_direction(clients, &previous.clients, lan_rate.rx_bps, false);
+    let repaired_rx =
+        repair_previous_complete_low_direction(clients, &previous.clients, lan_rate.tx_bps, true);
+    repaired_tx || repaired_rx
+}
+
+fn repair_previous_complete_low_direction(
+    clients: &mut BTreeMap<String, RateWindowValue>,
+    previous: &BTreeMap<String, RateWindowValue>,
+    lan_bps: u64,
+    receive: bool,
+) -> bool {
+    if lan_bps == 0 || lan_bps >= ECM_BPF_EVENT_HIGH_RATE_BPS {
+        return false;
+    }
+    let direction = |value: &RateWindowValue| {
+        if receive {
+            value.rx_bps
+        } else {
+            value.tx_bps
+        }
+    };
+    let current_total = clients.values().fold(0u128, |total, value| {
+        total.saturating_add(u128::from(direction(value)))
+    });
+    let previous_total = previous.values().fold(0u128, |total, value| {
+        total.saturating_add(u128::from(direction(value)))
+    });
+    let lan_total = u128::from(lan_bps);
+    if previous_total <= current_total
+        || current_total.saturating_mul(100)
+            >= lan_total.saturating_mul(u128::from(MIN_OWNERSHIP_PERCENT))
+        || previous_total.saturating_mul(100)
+            < lan_total.saturating_mul(u128::from(PREVIOUS_DIRECTION_MIN_LAN_PERCENT))
+        || previous_total.saturating_mul(100)
+            > lan_total.saturating_mul(u128::from(PREVIOUS_DIRECTION_MAX_LAN_PERCENT))
+    {
+        return false;
+    }
+
+    let selected_total = previous_total.min(lan_total);
+    for value in clients.values_mut() {
+        if receive {
+            value.rx_bps = 0;
+        } else {
+            value.tx_bps = 0;
+        }
+    }
+    let mut assigned_any = false;
+    for (identity_key, previous_value) in previous {
+        let previous_bps = direction(previous_value);
+        if previous_bps == 0 {
+            continue;
+        }
+        let assigned = u128::from(previous_bps).saturating_mul(selected_total) / previous_total;
+        let assigned = u64::try_from(assigned).unwrap_or(lan_bps);
+        if assigned == 0 {
+            continue;
+        }
+        let value = clients.entry(identity_key.clone()).or_default();
+        if receive {
+            value.rx_bps = assigned;
+        } else {
+            value.tx_bps = assigned;
+        }
+        assigned_any = true;
+    }
+    assigned_any
 }
 
 fn high_rate_window_clients(
@@ -1748,6 +2147,8 @@ mod tests {
             )]),
             raw_aligned: true,
             fallback_event_gap_filled: false,
+            previous_direction_gap_filled: false,
+            previous_high_direction_gap_filled: false,
             fallback_lan_reconciled: false,
             low_rate: true,
             fresh: true,
@@ -1798,16 +2199,25 @@ mod tests {
         );
         assert_eq!(pending, None);
 
+        let still_warming = book.update(
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &lan(4_000, traffic(0, 250_000, 0, 250)),
+            &interface_counters(251_000, 0),
+        );
+        assert_eq!(still_warming, None);
+
         let aligned = book
             .update(
                 &BTreeMap::new(),
                 &BTreeMap::new(),
-                &lan(4_000, traffic(0, 250_000, 0, 250)),
+                &lan(6_000, traffic(0, 250_000, 0, 250)),
                 &interface_counters(251_000, 0),
             )
-            .expect("LAN counter catch-up");
-        assert_eq!(aligned.window_ms(), 4_000);
-        assert_eq!(aligned.clients[&identity].tx_bps, rate(200_800, 4_000));
+            .expect("paced low-rate burst window");
+        assert!(aligned.low_rate);
+        assert_eq!(aligned.window_ms(), 6_000);
+        assert_eq!(aligned.clients[&identity].tx_bps, rate(200_800, 6_000));
         assert!(aligned.clients[&identity].tx_bps < aligned.interfaces["br-lan"].rx_bps);
         assert!(aligned.raw_aligned);
         assert!(!aligned.fallback_event_gap_filled);
@@ -1897,6 +2307,271 @@ mod tests {
             assert!(published.fallback_event_gap_filled);
             assert!(!published.fallback_lan_reconciled);
         }
+    }
+
+    #[test]
+    fn ecm_bpf_aligned_high_rate_repairs_a_missed_nss_sync_round() {
+        let identity = "02:00:00:00:20:11@lan".to_owned();
+        let fallback =
+            |tx_bps| BTreeMap::from([(identity.clone(), RateWindowValue { tx_bps, rx_bps: 0 })]);
+        let mut book = EcmBpfRateWindowBook::default();
+        book.update(
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &lan(0, TrafficCounters::default()),
+            &interface_counters(0, 0),
+        );
+
+        let steady = book
+            .update(
+                &BTreeMap::from([(identity.clone(), traffic(12_500_000, 0, 10_000, 0))]),
+                &fallback(46_000_000),
+                &lan(2_000, traffic(0, 13_000_000, 0, 11_000)),
+                &interface_counters(13_000_000, 0),
+            )
+            .expect("initial aligned high-rate batch");
+        assert!(steady.raw_aligned);
+        assert!(!steady.fallback_event_gap_filled);
+        assert_eq!(steady.clients[&identity].tx_bps, 50_160_000);
+
+        let repaired = book
+            .update(
+                &BTreeMap::from([(identity.clone(), traffic(1_000, 0, 1, 0))]),
+                &fallback(50_000_000),
+                &lan(4_000, traffic(0, 26_000_000, 0, 22_000)),
+                &interface_counters(26_000_000, 0),
+            )
+            .expect("event-clock repair for a missed NSS sync round");
+
+        assert!(repaired.raw_aligned);
+        assert!(repaired.fallback_event_gap_filled);
+        assert!(!repaired.fallback_lan_reconciled);
+        assert_eq!(repaired.window_ms(), 2_000);
+        assert_eq!(repaired.clients[&identity].tx_bps, 50_000_000);
+        assert_eq!(repaired.interfaces["br-lan"].rx_bps, 52_000_000);
+    }
+
+    #[test]
+    fn ecm_bpf_high_to_low_confirmation_rolls_real_segments_before_commit() {
+        let identity = "02:00:00:00:20:11@lan".to_owned();
+        let mut book = EcmBpfRateWindowBook::default();
+        book.update(
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &lan(0, TrafficCounters::default()),
+            &interface_counters(0, 0),
+        );
+
+        let high = book
+            .update(
+                &BTreeMap::from([(identity.clone(), traffic(12_500_000, 0, 10_000, 0))]),
+                &BTreeMap::from([(
+                    identity.clone(),
+                    RateWindowValue {
+                        tx_bps: 50_000_000,
+                        rx_bps: 0,
+                    },
+                )]),
+                &lan(2_000, traffic(0, 13_000_000, 0, 11_000)),
+                &interface_counters(13_000_000, 0),
+            )
+            .expect("initial high-rate batch");
+        assert!(!high.low_rate);
+
+        for (sample_ms, lan_bytes, lan_packets) in
+            [(4_000, 13_060_000, 11_050), (6_000, 13_120_000, 11_100)]
+        {
+            let current = book
+                .update(
+                    &BTreeMap::from([(identity.clone(), traffic(50_000, 0, 50, 0))]),
+                    &BTreeMap::new(),
+                    &lan(sample_ms, traffic(0, lan_bytes, 0, lan_packets)),
+                    &interface_counters(lan_bytes, 0),
+                )
+                .expect("current low-rate confirmation segment");
+            assert!(current.fresh);
+            assert!(current.low_rate);
+            assert_eq!(current.end_ms, sample_ms);
+        }
+
+        let delayed_sync = book
+            .update(
+                &BTreeMap::from([(identity.clone(), traffic(10_000, 0, 10, 0))]),
+                &BTreeMap::new(),
+                &lan(8_000, traffic(0, 13_180_000, 0, 11_150)),
+                &interface_counters(13_180_000, 0),
+            )
+            .expect("rolling transition batch");
+
+        let steady_bps = rate(50_200, 2_000);
+        let delayed_bps = rate(10_040, 2_000);
+        assert!(delayed_sync.fresh);
+        assert!(delayed_sync.low_rate);
+        assert_eq!(delayed_sync.end_ms, 8_000);
+        assert_eq!(delayed_sync.window_ms(), 6_000);
+        assert_eq!(
+            delayed_sync.clients[&identity].tx_bps,
+            (steady_bps * 2 + delayed_bps) / 3
+        );
+        assert!(delayed_sync.clients[&identity].tx_bps > delayed_bps);
+    }
+
+    #[test]
+    fn ecm_bpf_mixed_high_low_window_repairs_one_adjacent_low_direction_gap() {
+        let identity = "02:00:00:00:20:11@lan".to_owned();
+        let mut book = EcmBpfRateWindowBook::default();
+        book.update(
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &lan(0, TrafficCounters::default()),
+            &interface_counters(0, 0),
+        );
+
+        let complete = book
+            .update(
+                &BTreeMap::from([(identity.clone(), traffic(50_000, 5_000_000, 50, 3_500))]),
+                &BTreeMap::new(),
+                &lan(2_000, traffic(5_100_000, 60_000, 3_600, 60)),
+                &interface_counters(60_000, 5_100_000),
+            )
+            .expect("complete mixed-direction high-rate batch");
+        assert!(!complete.low_rate);
+        assert!(!complete.previous_direction_gap_filled);
+
+        let repaired = book
+            .update(
+                &BTreeMap::from([(identity.clone(), traffic(2_000, 5_000_000, 2, 3_500))]),
+                &BTreeMap::new(),
+                &lan(4_000, traffic(10_200_000, 120_000, 7_200, 120)),
+                &interface_counters(120_000, 10_200_000),
+            )
+            .expect("previous complete low direction repair");
+        assert!(repaired.fresh);
+        assert!(!repaired.low_rate);
+        assert!(repaired.previous_direction_gap_filled);
+        assert!(!repaired.fallback_event_gap_filled);
+        assert_eq!(
+            repaired.clients[&identity].tx_bps,
+            complete.clients[&identity].tx_bps
+        );
+        assert!(repaired.clients[&identity].rx_bps >= ECM_BPF_EVENT_HIGH_RATE_BPS);
+
+        let not_chained = book
+            .update(
+                &BTreeMap::from([(identity.clone(), traffic(2_000, 5_000_000, 2, 3_500))]),
+                &BTreeMap::new(),
+                &lan(6_000, traffic(15_300_000, 180_000, 10_800, 180)),
+                &interface_counters(180_000, 15_300_000),
+            )
+            .expect("current raw direction after one bounded repair");
+        assert!(!not_chained.previous_direction_gap_filled);
+        assert!(not_chained.clients[&identity].tx_bps < repaired.clients[&identity].tx_bps);
+    }
+
+    #[test]
+    fn high_rate_gap_guard_tolerates_poll_edge_skew_but_rejects_major_loss() {
+        assert!(!high_rate_raw_gap(7_500_000, 10_000_000));
+        assert!(high_rate_raw_gap(7_499_999, 10_000_000));
+        assert!(!high_rate_raw_gap(0, ECM_BPF_EVENT_HIGH_RATE_BPS - 1));
+    }
+
+    #[test]
+    fn ecm_bpf_missing_current_event_repairs_only_the_current_high_direction() {
+        let identity = "02:00:00:00:20:11@lan".to_owned();
+        let fallback =
+            |tx_bps| BTreeMap::from([(identity.clone(), RateWindowValue { tx_bps, rx_bps: 0 })]);
+        let client_interfaces = BTreeMap::from([(identity.clone(), "br-lan".to_owned())]);
+        let mut book = EcmBpfRateWindowBook::default();
+        book.update(
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &lan(0, TrafficCounters::default()),
+            &interface_counters(0, 0),
+        );
+
+        let steady = book
+            .update(
+                &BTreeMap::from([(identity.clone(), traffic(12_500_000, 0, 10_000, 0))]),
+                &fallback(50_000_000),
+                &lan(2_000, traffic(0, 13_000_000, 0, 11_000)),
+                &interface_counters(13_000_000, 0),
+            )
+            .expect("initial complete batch");
+        assert!(steady.fresh);
+
+        let repaired = book
+            .update_with_client_interfaces(
+                &BTreeMap::from([(identity.clone(), traffic(1_000, 0, 1, 0))]),
+                &BTreeMap::new(),
+                &client_interfaces,
+                &lan(4_000, traffic(0, 26_000_000, 0, 22_000)),
+                &interface_counters(26_000_000, 0),
+            )
+            .expect("current high direction repaired from adjacent ownership");
+        assert!(repaired.fresh);
+        assert_eq!(repaired.held_age_ms, None);
+        assert_eq!(repaired.start_ms, 2_000);
+        assert_eq!(repaired.end_ms, 4_000);
+        assert!(repaired.previous_direction_gap_filled);
+        assert!(repaired.previous_high_direction_gap_filled);
+        assert!(!repaired.fallback_event_gap_filled);
+        assert_eq!(repaired.clients[&identity].tx_bps, 52_000_000);
+        assert_eq!(repaired.interfaces["br-lan"].rx_bps, 52_000_000);
+
+        let recovered = book
+            .update_with_client_interfaces(
+                &BTreeMap::from([(identity.clone(), traffic(12_500_000, 0, 10_000, 0))]),
+                &fallback(50_000_000),
+                &client_interfaces,
+                &lan(6_000, traffic(0, 39_000_000, 0, 33_000)),
+                &interface_counters(39_000_000, 0),
+            )
+            .expect("next current NSS event");
+        assert!(recovered.fresh);
+        assert_eq!(recovered.start_ms, 4_000);
+        assert_eq!(recovered.end_ms, 6_000);
+        assert!(!recovered.previous_direction_gap_filled);
+        assert!(!recovered.previous_high_direction_gap_filled);
+        assert_eq!(recovered.clients[&identity].tx_bps, 50_160_000);
+        assert_eq!(recovered.interfaces["br-lan"].rx_bps, 52_000_000);
+    }
+
+    #[test]
+    fn ecm_bpf_high_direction_repair_keeps_the_current_low_direction() {
+        let identity = "02:00:00:00:20:11@lan".to_owned();
+        let client_interfaces = BTreeMap::from([(identity.clone(), "br-lan".to_owned())]);
+        let mut book = EcmBpfRateWindowBook::default();
+        book.update(
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &lan(0, TrafficCounters::default()),
+            &interface_counters(0, 0),
+        );
+
+        book.update(
+            &BTreeMap::from([(identity.clone(), traffic(50_000, 5_000_000, 50, 3_500))]),
+            &BTreeMap::new(),
+            &lan(2_000, traffic(5_100_000, 60_000, 3_600, 60)),
+            &interface_counters(60_000, 5_100_000),
+        )
+        .expect("initial complete mixed-direction batch");
+
+        let repaired = book
+            .update_with_client_interfaces(
+                &BTreeMap::from([(identity.clone(), traffic(55_000, 1_000, 55, 1))]),
+                &BTreeMap::new(),
+                &client_interfaces,
+                &lan(4_000, traffic(10_200_000, 120_000, 7_200, 120)),
+                &interface_counters(120_000, 10_200_000),
+            )
+            .expect("current mixed batch with one repaired high direction");
+
+        assert!(repaired.fresh);
+        assert!(repaired.previous_high_direction_gap_filled);
+        assert_eq!(repaired.clients[&identity].tx_bps, rate(55_220, 2_000));
+        assert_eq!(repaired.clients[&identity].rx_bps, 20_400_000);
+        assert_eq!(repaired.interfaces["br-lan"].rx_bps, 240_000);
+        assert_eq!(repaired.interfaces["br-lan"].tx_bps, 20_400_000);
     }
 
     #[test]
@@ -2004,7 +2679,7 @@ mod tests {
     }
 
     #[test]
-    fn ecm_bpf_high_rate_holds_through_a_transient_empty_window() {
+    fn ecm_bpf_high_rate_publishes_current_windows_while_confirming_quiet() {
         let identity = "02:00:00:00:20:11@lan".to_owned();
         let fallback = BTreeMap::from([(
             identity.clone(),
@@ -2037,19 +2712,26 @@ mod tests {
             );
         }
 
-        for (sample_ms, expected_age) in [(8_000, 2_000), (10_000, 4_000)] {
-            let held = book
+        for sample_ms in [8_000, 10_000] {
+            let current = book
                 .update(
                     &BTreeMap::new(),
                     &BTreeMap::new(),
                     &lan(sample_ms, traffic(0, 3_000, 0, 0)),
                     &interface_counters(3_000, 0),
                 )
-                .expect("previous high batch");
-            assert!(!held.fresh);
-            assert_eq!(held.held_age_ms, Some(expected_age));
-            assert_eq!(held.clients[&identity].tx_bps, 100_000_000);
+                .expect("current quiet-confirmation batch");
+            assert!(current.fresh);
+            assert_eq!(current.end_ms, sample_ms);
+            assert_eq!(current.held_age_ms, None);
+            assert_eq!(current.clients.get(&identity), None);
         }
+
+        let held = book.held_at(11_000).expect("most recent emitted batch");
+        assert!(!held.fresh);
+        assert_eq!(held.end_ms, 10_000);
+        assert_eq!(held.held_age_ms, Some(1_000));
+        assert_eq!(held.clients.get(&identity), None);
 
         let recovered = book
             .update(
@@ -2064,16 +2746,18 @@ mod tests {
         assert_eq!(recovered.clients[&identity].tx_bps, 100_000_000);
 
         for sample_ms in [14_000, 16_000, 18_000, 20_000, 22_000] {
-            let held = book
+            let current = book
                 .update(
                     &BTreeMap::new(),
                     &BTreeMap::new(),
                     &lan(sample_ms, traffic(0, 4_000, 0, 0)),
                     &interface_counters(4_000, 0),
                 )
-                .expect("high batch during quiet confirmation");
-            assert!(!held.fresh);
-            assert_eq!(held.clients[&identity].tx_bps, 100_000_000);
+                .expect("current batch during quiet confirmation");
+            assert!(current.fresh);
+            assert_eq!(current.end_ms, sample_ms);
+            assert_eq!(current.held_age_ms, None);
+            assert_eq!(current.clients.get(&identity), None);
         }
         let low = book
             .update(
@@ -2086,6 +2770,36 @@ mod tests {
         assert!(low.fresh);
         assert!(low.low_rate);
         assert_eq!(low.clients.get(&identity), None);
+
+        let continued_low = book
+            .update(
+                &BTreeMap::from([(identity.clone(), traffic(100, 200, 1, 2))]),
+                &BTreeMap::new(),
+                &lan(26_000, traffic(200, 4_100, 2, 1)),
+                &interface_counters(4_104, 208),
+            )
+            .expect("two-second low-rate batch after the confirmed transition");
+        assert!(continued_low.fresh);
+        assert!(continued_low.low_rate);
+        assert_eq!(continued_low.end_ms, 26_000);
+        assert_eq!(continued_low.held_age_ms, None);
+        assert!(continued_low.clients[&identity].tx_bps > 0);
+        assert!(continued_low.clients[&identity].rx_bps > 0);
+
+        let continued_burst = book
+            .update(
+                &BTreeMap::from([(identity.clone(), traffic(300_000, 0, 100, 0))]),
+                &BTreeMap::new(),
+                &lan(28_000, traffic(200, 204_100, 2, 1_001)),
+                &interface_counters(204_104, 208),
+            )
+            .expect("sub-megabit burst stays in the rolling low-rate mode");
+        assert!(continued_burst.fresh);
+        assert!(continued_burst.low_rate);
+        assert!(!continued_burst.raw_aligned);
+        assert_eq!(continued_burst.end_ms, 28_000);
+        assert_eq!(continued_burst.held_age_ms, None);
+        assert!(continued_burst.clients[&identity].tx_bps > 0);
     }
 
     #[test]
@@ -2097,6 +2811,8 @@ mod tests {
             interfaces: BTreeMap::new(),
             raw_aligned: true,
             fallback_event_gap_filled: false,
+            previous_direction_gap_filled: false,
+            previous_high_direction_gap_filled: false,
             fallback_lan_reconciled: false,
             low_rate,
             fresh: true,

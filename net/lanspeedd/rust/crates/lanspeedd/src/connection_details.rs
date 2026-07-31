@@ -1,6 +1,7 @@
 use crate::{
     collectors::conntrack::{FlowSample, Protocol, TcpState},
     identity::{ClientIdentity, IdentityTable},
+    model::ClassificationState,
 };
 use serde::Serialize;
 use std::{cmp::Ordering, collections::BTreeMap, net::IpAddr, sync::Arc};
@@ -32,6 +33,33 @@ pub struct ClientConnectionsResponse {
     pub conn_semantics: String,
     pub connections: Vec<ClientConnectionDetail>,
     pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub traffic_classification: Option<TrafficClassification>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct TrafficClassificationDirection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nss_bps: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slow_bps: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unclassified_bps: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coverage_pct: Option<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct TrafficClassification {
+    pub state: ClassificationState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_start_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_end_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comparison_window_ms: Option<u64>,
+    pub tx: TrafficClassificationDirection,
+    pub rx: TrafficClassificationDirection,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]

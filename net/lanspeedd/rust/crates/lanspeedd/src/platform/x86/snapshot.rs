@@ -103,6 +103,9 @@ pub struct BpfSnapshot {
     pub coverage_start_ms: Option<u64>,
     pub coverage_end_ms: u64,
     pub coverage_ready: bool,
+    /// Completeness of this map traversal, distinct from the sticky historical
+    /// warning retained in `warnings` for diagnostics.
+    pub map_read_truncated: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -309,7 +312,7 @@ impl BpfSnapshotCollector {
         let coverage_start_ms = self.coverage_sample_ms;
         let mut coverage_deltas = BTreeMap::<String, TrafficCounters>::new();
         let mut coverage_ready = coverage_start_ms.is_some();
-        if read.truncated || sticky_truncation {
+        if read.truncated {
             self.coverage_baselines.clear();
             self.coverage_sample_ms = None;
             coverage_ready = false;
@@ -352,6 +355,7 @@ impl BpfSnapshotCollector {
             coverage_start_ms,
             coverage_end_ms: now_ms,
             coverage_ready,
+            map_read_truncated: read.truncated,
         };
         self.last_complete = Some(snapshot.clone());
         snapshot

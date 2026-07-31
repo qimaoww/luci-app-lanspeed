@@ -1,4 +1,11 @@
-use std::{collections::BTreeMap, fs, net::IpAddr, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fs,
+    net::IpAddr,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use lanspeedd::{
     collectors::conntrack::{CollectStats, CollectedSnapshot},
@@ -8,10 +15,12 @@ use lanspeedd::{
     },
     connections::{apply_conntrack_success, before_reply_action, BeforeReplyAction},
     model::{
-        Capabilities, Client, ClientsResponse, Confidence, Conflict, Coverage, Evidence,
-        HealthResponse, Interface, InterfaceRole, InterfaceStatus, InterfacesResponse, Mode,
-        OverviewResponse, OverviewSample, ReloadResponse, StatusResponse, Sysdevice,
-        SysdeviceLimits, SysdevicesResponse,
+        AttachmentKind, AttachmentTrust, ByteDomain, Capabilities, ClassificationState, Client,
+        ClientRateMeta, ClientsResponse, Confidence, Conflict, Coverage, Evidence, HealthResponse,
+        Interface, InterfaceRole, InterfaceStatus, InterfacesResponse, Mode, OverviewResponse,
+        OverviewSample, RateAttachment, RateClassificationSummary, RateCoverage, RateDirectionMeta,
+        RateScope, RateSource, ReloadResponse, StatusResponse, Sysdevice, SysdeviceLimits,
+        SysdevicesResponse, CLIENT_RATE_META_VERSION,
     },
     state::ResponseSnapshot,
     ubus::{validated_identity_key, Method},
@@ -128,6 +137,38 @@ fn fixture_snapshot() -> ResponseSnapshot {
             udp_conns: Some(1),
             udp_dns_conns: Some(1),
             udp_other_conns: Some(0),
+            rate_meta: Some(ClientRateMeta {
+                version: CLIENT_RATE_META_VERSION,
+                scope: RateScope::AllFrames,
+                tx: RateDirectionMeta {
+                    source: RateSource::EdgePort,
+                    coverage: RateCoverage::Full,
+                    byte_domain: Some(ByteDomain::L2NoFcs),
+                },
+                rx: RateDirectionMeta {
+                    source: RateSource::EdgePort,
+                    coverage: RateCoverage::Full,
+                    byte_domain: Some(ByteDomain::L2NoFcs),
+                },
+                attachment: Some(RateAttachment {
+                    kind: AttachmentKind::Ethernet,
+                    ifname: Some("lan2".into()),
+                    trust: AttachmentTrust::DeclaredDirect,
+                }),
+                generation: 17,
+                window_ms: Some(1_000),
+                sample_ms: Some(10_000),
+                stale: false,
+                reason_codes: Vec::new(),
+                classification: Some(RateClassificationSummary {
+                    state: ClassificationState::Aligned,
+                    sample_ms: Some(10_000),
+                    window_ms: Some(2_000),
+                    comparison_window_ms: Some(6_000),
+                    tx_coverage_pct: Some(96),
+                    rx_coverage_pct: Some(94),
+                }),
+            }),
         }],
         evidence: Some(evidence("clients")),
         tcp_conns_total: Some(2),
@@ -158,6 +199,8 @@ fn fixture_snapshot() -> ResponseSnapshot {
             overview_window_samples: 240,
             collector_mode: "auto".into(),
             rate_collector_mode: "auto".into(),
+            access_edge_mode: "shadow".into(),
+            dedicated_ports: vec!["lan2".into()],
             conn_collector_mode: "auto".into(),
             version: "1.0.0-r1".into(),
             capabilities: capabilities.clone(),
@@ -272,6 +315,7 @@ fn minimal_optional_snapshot() -> ResponseSnapshot {
     client.udp_conns = None;
     client.udp_dns_conns = None;
     client.udp_other_conns = None;
+    client.rate_meta = None;
     snapshot.clients.evidence = None;
     snapshot.clients.tcp_conns_total = None;
     snapshot.clients.udp_conns_total = None;
@@ -617,6 +661,8 @@ fn all_eight_fixed_methods_and_nested_models_keep_exact_maximal_key_sets() {
             "overview_window_samples",
             "collector_mode",
             "rate_collector_mode",
+            "access_edge_mode",
+            "dedicated_ports",
             "conn_collector_mode",
             "version",
             "capabilities",
@@ -687,8 +733,48 @@ fn all_eight_fixed_methods_and_nested_models_keep_exact_maximal_key_sets() {
             "udp_conns",
             "udp_dns_conns",
             "udp_other_conns",
+            "rate_meta",
         ],
         "clients.clients[]",
+    );
+    assert_exact_keys(
+        &clients["clients"][0]["rate_meta"],
+        &[
+            "version",
+            "scope",
+            "tx",
+            "rx",
+            "attachment",
+            "generation",
+            "window_ms",
+            "sample_ms",
+            "stale",
+            "reason_codes",
+            "classification",
+        ],
+        "clients.clients[].rate_meta",
+    );
+    assert_exact_keys(
+        &clients["clients"][0]["rate_meta"]["tx"],
+        &["source", "coverage", "byte_domain"],
+        "clients.clients[].rate_meta.tx",
+    );
+    assert_exact_keys(
+        &clients["clients"][0]["rate_meta"]["attachment"],
+        &["kind", "ifname", "trust"],
+        "clients.clients[].rate_meta.attachment",
+    );
+    assert_exact_keys(
+        &clients["clients"][0]["rate_meta"]["classification"],
+        &[
+            "state",
+            "sample_ms",
+            "window_ms",
+            "comparison_window_ms",
+            "tx_coverage_pct",
+            "rx_coverage_pct",
+        ],
+        "clients.clients[].rate_meta.classification",
     );
     assert_exact_keys(
         &overview,
@@ -871,6 +957,8 @@ fn optional_fields_are_omitted_without_changing_required_key_sets() {
             "overview_window_samples",
             "collector_mode",
             "rate_collector_mode",
+            "access_edge_mode",
+            "dedicated_ports",
             "conn_collector_mode",
             "version",
             "capabilities",
@@ -929,6 +1017,74 @@ fn optional_fields_are_omitted_without_changing_required_key_sets() {
         ],
         "minimal sysdevices.devices[]",
     );
+}
+
+#[test]
+fn unavailable_rate_meta_omits_unknown_numeric_and_attachment_fields() {
+    let value = serde_json::to_value(ClientRateMeta::default()).unwrap();
+    assert_exact_keys(
+        &value,
+        &[
+            "version",
+            "scope",
+            "tx",
+            "rx",
+            "generation",
+            "stale",
+            "reason_codes",
+        ],
+        "default rate_meta",
+    );
+    assert_eq!(value["scope"], "none");
+    assert_eq!(
+        value["tx"],
+        json!({"source": "none", "coverage": "unavailable"})
+    );
+    assert_eq!(
+        value["rx"],
+        json!({"source": "none", "coverage": "unavailable"})
+    );
+    assert!(value.get("window_ms").is_none());
+    assert!(value.get("sample_ms").is_none());
+    assert!(value.get("attachment").is_none());
+    assert!(value.get("classification").is_none());
+}
+
+#[test]
+fn main_clients_payload_stays_bounded_and_fast_at_2048_rate_metadata_rows() {
+    let mut response = fixture_snapshot().clients;
+    let template = response.clients[0].clone();
+    response.clients = (0..2_048u32)
+        .map(|index| {
+            let mut client = template.clone();
+            let mac = format!(
+                "02:10:{:02x}:{:02x}:{:02x}:{:02x}",
+                (index >> 24) & 0xff,
+                (index >> 16) & 0xff,
+                (index >> 8) & 0xff,
+                index & 0xff
+            );
+            client.mac = mac.clone();
+            client.identity_key = format!("{mac}@lan");
+            client.hostname = Some(format!("client-{index}"));
+            client
+        })
+        .collect();
+
+    let started = Instant::now();
+    let encoded = serde_json::to_vec(&response).unwrap();
+    let _: Value = serde_json::from_slice(&encoded).unwrap();
+    let elapsed = started.elapsed();
+    assert!(encoded.len() < 4 * 1024 * 1024, "{} bytes", encoded.len());
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "serialization and parse took {elapsed:?}"
+    );
+    let encoded = std::str::from_utf8(&encoded).unwrap();
+    assert!(!encoded.contains("\"nss_bps\""));
+    assert!(!encoded.contains("\"slow_bps\""));
+    assert!(!encoded.contains("\"unclassified_bps\""));
+    assert!(encoded.contains("\"tx_coverage_pct\""));
 }
 
 #[test]
@@ -1016,6 +1172,17 @@ fn json_names_enums_warnings_evidence_version_and_directions_are_stable() {
     assert_eq!(client["rx_bps"], 2_000, "rx is client download");
     assert_eq!(client["identity_key"], "02:00:00:00:00:01@lan");
     assert_eq!(client["confidence"], "high");
+    assert_eq!(client["rate_meta"]["version"], 1);
+    assert_eq!(client["rate_meta"]["scope"], "all_frames");
+    assert_eq!(client["rate_meta"]["tx"]["source"], "edge_port");
+    assert_eq!(client["rate_meta"]["tx"]["coverage"], "full");
+    assert_eq!(client["rate_meta"]["tx"]["byte_domain"], "l2_no_fcs");
+    assert_eq!(
+        client["rate_meta"]["attachment"]["trust"],
+        "declared_direct"
+    );
+    assert_eq!(client["rate_meta"]["classification"]["state"], "aligned");
+    assert_eq!(client["rate_meta"]["classification"]["tx_coverage_pct"], 96);
     assert_eq!(clients["evidence"]["method"], "clients");
     let health = snapshot.response(Method::Health).unwrap();
     assert_eq!(health["mode"], "Degraded");

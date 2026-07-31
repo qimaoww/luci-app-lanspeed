@@ -10,7 +10,7 @@ use lanspeed_common::{
     ECM_NSS_ENTER_PROGRAM_NAME, ECM_NSS_EXIT_PROGRAM_NAME, ECM_SOURCE_STATS_MAP_NAME,
     ECM_UPDATE_PROGRAM_NAME, EGRESS_EARLY_PROGRAM_NAME, EGRESS_PROGRAM_NAME,
     INGRESS_EARLY_PROGRAM_NAME, INGRESS_PROGRAM_NAME, MAX_CLIENTS, MAX_CONN_TUPLES,
-    SEEN_CONNS_MAP_NAME,
+    MAX_ECM_NSS_CONTEXTS, SEEN_CONNS_MAP_NAME,
 };
 use object::{
     Object as _, ObjectSection as _, ObjectSymbol as _, RelocationTarget, SectionIndex,
@@ -426,10 +426,10 @@ fn aarch64_ecm_object_is_isolated_from_tc_and_uses_aarch64_probe_registers() {
     let context = &parsed.maps[ECM_NSS_CONTEXT_MAP_NAME];
     assert_eq!(
         context.map_type(),
-        bpf_map_type::BPF_MAP_TYPE_PERCPU_ARRAY as u32
+        bpf_map_type::BPF_MAP_TYPE_LRU_HASH as u32
     );
-    assert_eq!((context.key_size(), context.value_size()), (4, 4));
-    assert_eq!(context.max_entries(), 1);
+    assert_eq!((context.key_size(), context.value_size()), (8, 4));
+    assert_eq!(context.max_entries(), MAX_ECM_NSS_CONTEXTS);
     let source_stats = &parsed.maps[ECM_SOURCE_STATS_MAP_NAME];
     assert_eq!(
         source_stats.map_type(),

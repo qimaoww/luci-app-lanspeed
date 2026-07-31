@@ -2966,13 +2966,53 @@ function assertClientDetailRefreshBehavior(src) {
 	    refs.table.hidden || !refs.empty.hidden || !refs.error.hidden) {
 		fail('clientDetailRefresh.js must render identity/meta, real summaries, and destination groups with highest download speed first by default');
 	}
-	if (!footer.includes('连接数据') || !footer.includes('Conntrack Netlink') ||
+		if (!footer.includes('连接数据') || !footer.includes('Conntrack Netlink') ||
 	    !footer.includes('显示 2 / 共 2 条') ||
 	    !footer.includes('每 1 秒自动刷新') ||
 	    !footer.includes('国家/地区及中国省份按 IP 推测，由浏览器查询并缓存')) {
-		fail('clientDetailRefresh.js footer must report source/count/refresh meanings and disclose browser-cached IP inference');
-	}
-	if (JSON.stringify(locationRequests[0]) !== JSON.stringify([
+			fail('clientDetailRefresh.js footer must report source/count/refresh meanings and disclose browser-cached IP inference');
+		}
+		const classifiedResponse = JSON.parse(JSON.stringify(fixture));
+		classifiedResponse.traffic_classification = {
+			state: 'aligned', window_start_ms: 120000, window_end_ms: 126000,
+			comparison_window_ms: 6000,
+			tx: { nss_bps: 80000000, slow_bps: 10000000, unclassified_bps: 5000000, coverage_pct: 95 },
+			rx: { nss_bps: 50000000, slow_bps: 5000000, unclassified_bps: 4000000, coverage_pct: 93 }
+		};
+		state.response = classifiedResponse;
+		refresh.render(state);
+		if (refs.classificationCard.hidden || refs.classificationState.textContent !== '已对齐' ||
+		    refs.classificationTxNss.textContent !== '80.00 Mbps' ||
+		    refs.classificationRxSlow.textContent !== '5.00 Mbps' ||
+		    refs.classificationTxUnknown.textContent !== '5.00 Mbps' ||
+		    refs.classificationTxCoverage.textContent !== '95%' ||
+		    !refs.classificationWindow.textContent.includes('6 s')) {
+			fail('client detail classification card must render aligned N/S/U and coverage without adding them to total rate');
+		}
+		classifiedResponse.traffic_classification = {
+			state: 'domain_mismatch', comparison_window_ms: 6000,
+			tx: { nss_bps: 80000000, slow_bps: 10000000 },
+			rx: { nss_bps: 50000000, slow_bps: 5000000 }
+		};
+		refresh.render(state);
+		if (refs.classificationState.textContent !== '字节域不匹配' ||
+		    refs.classificationTxUnknown.textContent !== '—' ||
+		    refs.classificationRxCoverage.textContent !== '—') {
+			fail('domain mismatch must retain observed N/S while omitting fabricated U and coverage');
+		}
+		classifiedResponse.traffic_classification = {
+			state: 'map_loss', tx: {}, rx: {}
+		};
+		refresh.render(state);
+		if (refs.classificationState.textContent !== '映射表数据丢失' ||
+		    refs.classificationTxCoverage.textContent !== '—') {
+			fail('map loss must remain explicit and must not render a zero classification coverage');
+		}
+		state.response = fixture;
+		refresh.render(state);
+		if (!refs.classificationCard.hidden)
+			fail('old detail responses without traffic_classification must keep the optional card hidden');
+		if (JSON.stringify(locationRequests[0]) !== JSON.stringify([
 		'2001:db8:ffff::20', '198.51.100.53'
 	])) {
 		fail('clientDetailRefresh.js must request geolocation only for the deduplicated groups on the rendered page');
@@ -3403,19 +3443,20 @@ function assertClientDetailShellInteraction(src) {
 	    !rootClasses.includes('lanspeed-connection-detail') || themedRoot !== built.root) {
 		fail('clientDetailShell.js root must reuse cbi-map/lanspeed-root, add the detail class and receive theme detection');
 	}
-	const sections = findFakeElementsByClass(built.root, 'cbi-section');
-	if (sections.length !== 2 || sections.some(function(section) {
-		return !built.root.children.includes(section);
-	}) || !findFakeElement(built.root, 'lanspeed-connection-identity-card') ||
-	    !findFakeElement(built.root, 'lanspeed-connections-card')) {
-		fail('clientDetailShell.js must render exactly two main sections for identity and connections');
-	}
-	if (findFakeElementsByClass(built.root, 'lanspeed-header').length !== 2 ||
-	    findFakeElementsByClass(built.root, 'lanspeed-body').length !== 2 ||
-	    findFakeElementsByClass(built.root, 'lanspeed-toolbar').length !== 1 ||
-	    findFakeElementsByClass(built.root, 'lanspeed-table').length !== 1 ||
-	    findFakeElementsByClass(built.root, 'big').length) {
-		fail('clientDetailShell.js must reuse the compact status header/body/toolbar/table structure without metric cards');
+		const sections = findFakeElementsByClass(built.root, 'cbi-section');
+		if (sections.length !== 3 || sections.some(function(section) {
+			return !built.root.children.includes(section);
+		}) || !findFakeElement(built.root, 'lanspeed-connection-identity-card') ||
+		    !findFakeElement(built.root, 'lanspeed-classification-card') ||
+		    !findFakeElement(built.root, 'lanspeed-connections-card')) {
+			fail('clientDetailShell.js must render three peer sections for identity, classification and connections');
+		}
+		if (findFakeElementsByClass(built.root, 'lanspeed-header').length !== 3 ||
+		    findFakeElementsByClass(built.root, 'lanspeed-body').length !== 3 ||
+		    findFakeElementsByClass(built.root, 'lanspeed-toolbar').length !== 1 ||
+		    findFakeElementsByClass(built.root, 'lanspeed-table').length !== 2 ||
+		    findFakeElementsByClass(built.root, 'big').length) {
+			fail('clientDetailShell.js must reuse compact peer header/body/table structures without metric cards');
 	}
 
 	const allowedSharedClasses = new Set([
@@ -3428,9 +3469,10 @@ function assertClientDetailShellInteraction(src) {
 	]);
 	walkFakeElements(built.root, function(node) {
 		String(node.attrs && node.attrs.class || '').split(/\s+/).filter(Boolean).forEach(function(className) {
-			if (!allowedSharedClasses.has(className) &&
-			    !className.startsWith('lanspeed-connection-') &&
-			    className !== 'lanspeed-connections-card') {
+				if (!allowedSharedClasses.has(className) &&
+				    !className.startsWith('lanspeed-connection-') &&
+				    !className.startsWith('lanspeed-classification-') &&
+				    className !== 'lanspeed-connections-card') {
 				fail(`clientDetailShell.js must prefix its new class ${className}`);
 			}
 		});
@@ -3438,10 +3480,14 @@ function assertClientDetailShellInteraction(src) {
 
 	const refs = built.refs;
 	[
-		'error', 'back', 'clientName', 'clientMeta', 'connectionState', 'summary',
-		'summaryTargets', 'summaryConnections', 'summaryUpdated', 'protocolAll',
-		'protocolTcp', 'protocolUdp', 'filter', 'intervalSel', 'refresh', 'pause',
-		'sortHeaders', 'table', 'tbody',
+			'error', 'back', 'clientName', 'clientMeta', 'connectionState', 'summary',
+			'summaryTargets', 'summaryConnections', 'summaryUpdated', 'protocolAll',
+			'protocolTcp', 'protocolUdp', 'filter', 'intervalSel', 'refresh', 'pause',
+			'classificationCard', 'classificationState', 'classificationWindow',
+			'classificationTxNss', 'classificationRxNss', 'classificationTxSlow',
+			'classificationRxSlow', 'classificationTxUnknown', 'classificationRxUnknown',
+			'classificationTxCoverage', 'classificationRxCoverage',
+			'sortHeaders', 'table', 'tbody',
 		'empty', 'footer'
 	].forEach(function(name) {
 		if (!refs[name]) fail(`clientDetailShell.js refs must expose ${name}`);
@@ -3452,7 +3498,8 @@ function assertClientDetailShellInteraction(src) {
 	[
 		'返回客户端列表', 'LAN Speed 状态 / 客户端连接详情', '无法加载连接详情',
 		'客户端身份', '正在加载客户端身份…', 'MAC 与 IP 信息将在加载后显示',
-		'等待数据', '连接摘要', '目标 IP 数', '连接数', '更新时间',
+			'等待数据', '连接摘要', '目标 IP 数', '连接数', '更新时间',
+			'流量分类', 'NSS已识别', 'CPU慢路径已识别', '未分类', '分类覆盖率',
 		'当前连接', '全部', 'TCP', 'UDP', '立即刷新', '目标 IP', '国家/地区', '目标端口',
 		'协议', '状态', '上行', '下行', '暂无连接', '连接数据加载后会显示来源、刷新间隔和 IP 位置说明。'
 	].forEach(function(text) {
@@ -3581,6 +3628,10 @@ function assertFormatActiveWindow(src) {
 		fail('format.js must expose isActiveClient(client, nowMs, config)');
 		return;
 	}
+	if (typeof fmt.isNssActiveClient !== 'function' || typeof fmt.isNssActivityClient !== 'function') {
+		fail('format.js must expose the NSS-specific active-client policy');
+		return;
+	}
 	if (typeof fmt.activeConfig !== 'function') {
 		fail('format.js must expose activeConfig(status, overview)');
 		return;
@@ -3605,6 +3656,17 @@ function assertFormatActiveWindow(src) {
 	}
 	if (fmt.sumTotals(clients, { activeWindowMs: 10001, activeMinBps: 1 }).active !== 2) {
 		fail('format.js sumTotals must honor configured active window');
+	}
+	const nssClient = {
+		collector_mode: 'nss_ecm_bpf', sample_ms: 20000, last_seen: 1, tx_bps: 100, rx_bps: 0
+	};
+	if (!fmt.isNssActivityClient(nssClient) || !fmt.isNssActiveClient(nssClient, 20000) ||
+		!fmt.isActiveClient(nssClient, 20000)) {
+		fail('format.js must keep a nonzero NSS batch active despite an old kernel event timestamp');
+	}
+	nssClient.tx_bps = 0;
+	if (fmt.isNssActiveClient(nssClient, 20000) || fmt.isActiveClient(nssClient, 20000)) {
+		fail('format.js must mark a zero-rate NSS batch inactive');
 	}
 	if (fmt.activeConfig({ active_client_window_ms: 15000, active_client_min_bps: 4096 }).activeWindowMs !== 15000) {
 		fail('format.js activeConfig must read status.active_client_window_ms');
@@ -3811,9 +3873,36 @@ function assertStatusRefreshSortingInteraction(src) {
 		    JSON.stringify(Array.from(warningState.warnings)) !==
 			JSON.stringify([ 'map_read_failed', 'counter_anomaly' ])) {
 			fail('statusRefresh.js must render connection-only rows as information and keep only actionable client warnings');
+			}
 		}
-	}
-	if (typeof mod.reconcileClientRows !== 'function') {
+		if (typeof mod.rateMetaCells !== 'function') {
+			fail('statusRefresh.js must expose rate metadata rendering for validation');
+		} else {
+			const edgeCells = mod.rateMetaCells({
+				tx: { source: 'edge_port', coverage: 'full' },
+				rx: { source: 'edge_port', coverage: 'full' },
+				attachment: { kind: 'ethernet', ifname: 'lan2', trust: 'declared_direct' },
+				classification: { state: 'aligned', tx_coverage_pct: 96, rx_coverage_pct: 94 },
+				stale: false
+			});
+			const edgeText = edgeCells.map(fakeElementText).join(' · ');
+			if (!edgeText.includes('Edge-Port') || !edgeText.includes('Full') ||
+			    !edgeText.includes('lan2') || !edgeText.includes('NSS分类覆盖率 94%')) {
+				fail('status client metadata must show owner, total coverage, attachment and compact NSS coverage');
+			}
+			const unknownCells = mod.rateMetaCells({
+				tx: { source: 'future_owner', coverage: 'degraded' },
+				rx: { source: 'future_owner', coverage: 'degraded' },
+				classification: { state: 'domain_mismatch' }, stale: false
+			});
+			if (!unknownCells.map(fakeElementText).join(' ').includes('其他来源') ||
+			    unknownCells.some(function(cell) {
+				    return fakeElementText(cell).includes('NSS分类覆盖率');
+			    })) {
+				fail('unknown sources need a generic label and missing U/coverage must not become a zero badge');
+			}
+		}
+		if (typeof mod.reconcileClientRows !== 'function') {
 		fail('statusRefresh.js must expose keyed client-row reconciliation for validation');
 	} else {
 		const tbody = fakeElement('tbody', {});
@@ -4666,7 +4755,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.4-r3';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.5-r1';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
@@ -4674,7 +4763,7 @@ function assertCacheAwareViewEntry(src, moduleName, label) {
 	    !src.includes('return view.extend({') ||
 	    !src.includes('return module.load();') ||
 	    !src.includes('return pageModule.render(data);')) {
-		fail(`${label} must load ${moduleName} through the 1.1.4 resource cache boundary`);
+		fail(`${label} must load ${moduleName} through the 1.1.5 resource cache boundary`);
 	}
 	if (src.includes('buildShell(') || src.includes('refreshLive(') || src.includes('loadAll()')) {
 		fail(`${label} must remain a cache-aware entry and not duplicate page logic`);
@@ -5944,8 +6033,9 @@ function assertConfigModelRewrite(src) {
 	const model = loadConfigModelModule(src);
 	const required = [
 		'refresh_interval_ms', 'active_client_window_ms', 'active_client_min_bps',
-		'overview_window_samples', 'rate_collector_mode', 'conn_collector_mode',
-		'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges',
+			'overview_window_samples', 'rate_collector_mode', 'conn_collector_mode',
+			'access_edge_mode', 'dedicated_port',
+			'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges',
 		'collector_mode', 'max_clients', 'ifname', 'interface_include',
 		'interface_exclude', 'observe', 'enable_bpf', 'enable_conntrack_fallback'
 	];
@@ -5963,14 +6053,21 @@ function assertConfigModelRewrite(src) {
 		model.parseCidr('2001:db8::/129').valid) {
 		fail('configModel.js must strictly validate IPv6 CIDRs and prefix lengths');
 	}
-	const invalid = model.normalize({
-		refresh_interval_ms: 'oops', hide_ipv6_ranges: 'not-a-cidr',
-		ifname: [ 'bad name' ], enable_bpf: 'maybe'
-	});
-	if (invalid.valid || !invalid.errors.refresh_interval_ms ||
-		!invalid.errors.hide_ipv6_ranges || !invalid.errors.ifname || !invalid.errors.enable_bpf) {
-		fail('configModel.js must return field-scoped errors for malformed UCI values');
-	}
+		const invalid = model.normalize({
+			refresh_interval_ms: 'oops', hide_ipv6_ranges: 'not-a-cidr',
+			ifname: [ 'bad name' ], dedicated_port: [ 'bad/name' ],
+			access_edge_mode: 'guess', enable_bpf: 'maybe'
+		});
+		if (invalid.valid || !invalid.errors.refresh_interval_ms ||
+			!invalid.errors.hide_ipv6_ranges || !invalid.errors.ifname ||
+			!invalid.errors.dedicated_port || !invalid.errors.access_edge_mode ||
+			!invalid.errors.enable_bpf) {
+			fail('configModel.js must return field-scoped errors for malformed UCI values');
+		}
+		const edge = model.normalize({ access_edge_mode: 'active', dedicated_port: [ 'lan2', 'lan2', 'lan3' ] });
+		if (!edge.valid || edge.values.access_edge_mode !== 'active' ||
+			JSON.stringify(edge.values.dedicated_port) !== JSON.stringify([ 'lan2', 'lan3' ]))
+			fail('configModel.js must normalize Access Edge mode and de-duplicate declared direct ports');
 	const removedMode = model.normalize({ rate_collector_mode: 'conntrack_ecm_sync' });
 	if (removedMode.valid || removedMode.values.rate_collector_mode !== 'auto' ||
 	    removedMode.errors.rate_collector_mode !== 'enum_required')
@@ -6152,16 +6249,18 @@ function makeConfigFormState(model, overrides) {
 		'overview_window_samples', 'max_clients' ];
 	const booleans = [ 'show_client_status', 'show_ipv6', 'hide_private_ipv6',
 		'enable_bpf', 'enable_conntrack_fallback' ];
-	const editable = [ 'rate_collector_mode', 'conn_collector_mode', 'enable_bpf',
+	const editable = [ 'rate_collector_mode', 'access_edge_mode', 'dedicated_port',
+		'conn_collector_mode', 'enable_bpf',
 		'enable_conntrack_fallback', 'refresh_interval_ms', 'overview_window_samples',
 		'max_clients', 'active_client_window_ms', 'active_client_min_bps',
 		'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges' ];
 	const inputs = {};
 	numbers.forEach(function(name) { inputs[name] = fakeElement('input', { value: String(values[name]) }); });
-	[ 'rate_collector_mode', 'conn_collector_mode' ].forEach(function(name) {
+	[ 'rate_collector_mode', 'access_edge_mode', 'conn_collector_mode' ].forEach(function(name) {
 		inputs[name] = fakeElement('select', { value: values[name] });
 		inputs[name].value = values[name];
 	});
+	inputs.dedicated_port = fakeElement('input', { value: (values.dedicated_port || []).join(' ') });
 	booleans.forEach(function(name) {
 		inputs[name] = fakeElement('input', { type: 'checkbox' });
 		inputs[name].checked = values[name] === '1';
@@ -6446,8 +6545,9 @@ function assertConfigFormRewrite(src) {
 		src.includes("lsRpc.uciDelete")) {
 		fail('configForm.js must never revert the whole package or bypass the LuCI UCI cache');
 	}
-	[ 'refresh_interval_ms', 'overview_window_samples', 'max_clients', 'enable_bpf',
-		'enable_conntrack_fallback', 'interface_exclude' ].forEach(name => {
+		[ 'refresh_interval_ms', 'overview_window_samples', 'max_clients', 'enable_bpf',
+			'enable_conntrack_fallback', 'access_edge_mode', 'dedicated_port',
+			'interface_exclude' ].forEach(name => {
 		if (!src.includes(name)) fail(`configForm.js must preserve ${name} in the owned data contract`);
 	});
 	if (src.includes('lanspeed-compatibility') || src.includes('compatibilityBlock') ||
@@ -6463,8 +6563,10 @@ function matchingConfigStatus(values) {
 		mode: 'Full',
 		confidence: 'high',
 		warnings: [],
-		rate_collector_mode: values.rate_collector_mode,
-		conn_collector_mode: values.conn_collector_mode,
+			rate_collector_mode: values.rate_collector_mode,
+			access_edge_mode: values.access_edge_mode,
+			dedicated_ports: cloneConfigValue(values.dedicated_port || []),
+			conn_collector_mode: values.conn_collector_mode,
 		refresh_interval_ms: values.refresh_interval_ms,
 		active_client_window_ms: values.active_client_window_ms,
 		active_client_min_bps: values.active_client_min_bps,
@@ -6472,7 +6574,7 @@ function matchingConfigStatus(values) {
 		max_clients: values.max_clients,
 		enable_bpf: values.enable_bpf === '1',
 		enable_conntrack_fallback: values.enable_conntrack_fallback === '1',
-		version: '1.1.4-r3',
+		version: '1.1.5-r1',
 		capabilities: { bpf: true, conntrack_fallback: true },
 		evidence: { collector: { primary_source: 'bpf', effective_connection_collector: 'conntrack_netlink' } }
 	};
@@ -6499,7 +6601,7 @@ function assertConfigFormBehavior(src) {
 	}, makeConfigIfaceStub(), model);
 	asyncChecks.push(validLoadForm.loadValues().then(function(values) {
 		if (values.pageState !== 'ready' || !values.rpc.status.ok ||
-			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.4-r3') {
+			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.5-r1') {
 			fail('configForm.js must accept the complete status contract and retain capability evidence');
 		}
 	}).catch(function(error) {
@@ -6537,21 +6639,27 @@ function assertConfigFormBehavior(src) {
 	const stagedUci = makeConfigUci(model);
 	const stagedIface = makeConfigIfaceStub();
 	const stagedForm = loadConfigFormModule(src, stagedUci, { status: function() { return Promise.resolve({}); } }, stagedIface, model);
-	const stagedState = makeConfigFormState(model, { localDirty: true });
-	stagedState.daemonRefs.inputs.refresh_interval_ms.value = '2000';
-	asyncChecks.push(stagedForm.saveAll(stagedState).then(function(result) {
-		if (!result || !result.ok || !result.staged || !stagedState.hasStagedSave ||
-			stagedState.configSaving || stagedState.ifaceBusy ||
-			String(stagedUci.remote.refresh_interval_ms) !== '2000' ||
-			stagedState.saveState !== 'staged') {
-			fail('configForm.js Save must stage valid values, unlock controls and expose the staged state');
-		}
+		const stagedState = makeConfigFormState(model, { localDirty: true });
+		stagedState.daemonRefs.inputs.refresh_interval_ms.value = '2000';
+		stagedState.daemonRefs.inputs.access_edge_mode.value = 'active';
+		stagedState.daemonRefs.inputs.dedicated_port.value = 'lan2 lan3';
+		asyncChecks.push(stagedForm.saveAll(stagedState).then(function(result) {
+			if (!result || !result.ok || !result.staged || !stagedState.hasStagedSave ||
+				stagedState.configSaving || stagedState.ifaceBusy ||
+				String(stagedUci.remote.refresh_interval_ms) !== '2000' ||
+				stagedUci.remote.access_edge_mode !== 'active' ||
+				JSON.stringify(stagedUci.remote.dedicated_port) !== JSON.stringify([ 'lan2', 'lan3' ]) ||
+				stagedState.saveState !== 'staged') {
+				fail('configForm.js Save must stage Access Edge and other valid values, unlock controls and expose the staged state');
+			}
 		return stagedForm.resetAll(stagedState);
 	}).then(function(result) {
 		const saves = stagedUci.calls.filter(function(call) { return call[0] === 'save'; });
-		if (!result || !result.ok || !result.staged || stagedState.hasStagedSave ||
-			String(stagedUci.remote.refresh_interval_ms) !== '1000' || saves.length !== 2 ||
-			stagedState.daemonRefs.inputs.refresh_interval_ms.value !== '1000') {
+			if (!result || !result.ok || !result.staged || stagedState.hasStagedSave ||
+				String(stagedUci.remote.refresh_interval_ms) !== '1000' || saves.length !== 2 ||
+				stagedUci.remote.access_edge_mode !== 'shadow' ||
+				Object.prototype.hasOwnProperty.call(stagedUci.remote, 'dedicated_port') ||
+				stagedState.daemonRefs.inputs.refresh_interval_ms.value !== '1000') {
 			fail('configForm.js Reset must stage an owned-field reversal after Save without applying');
 		}
 	}).catch(function(error) {

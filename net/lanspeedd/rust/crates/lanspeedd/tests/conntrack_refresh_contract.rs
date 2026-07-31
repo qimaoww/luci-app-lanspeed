@@ -40,6 +40,7 @@ fn client(identity_key: &str, tx_bps: u64) -> Client {
         udp_conns: Some(8),
         udp_dns_conns: Some(7),
         udp_other_conns: Some(6),
+        rate_meta: None,
     }
 }
 

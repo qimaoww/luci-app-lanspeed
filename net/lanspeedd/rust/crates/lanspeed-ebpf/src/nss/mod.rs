@@ -1,15 +1,18 @@
-use core::ptr::{addr_of, addr_of_mut};
+use core::ptr::addr_of_mut;
 
 use aya_ebpf::{
     bindings::BPF_NOEXIST,
-    helpers::{bpf_ktime_get_ns, bpf_probe_read_kernel, bpf_probe_read_kernel_buf},
+    helpers::{
+        bpf_get_current_pid_tgid, bpf_ktime_get_ns, bpf_probe_read_kernel,
+        bpf_probe_read_kernel_buf,
+    },
     macros::{kprobe, kretprobe, map},
-    maps::{Array, LruHashMap, PerCpuArray},
+    maps::{Array, LruHashMap},
     programs::{ProbeContext, RetProbeContext},
 };
 use lanspeed_common::{
     packet::is_valid_client_mac, EcmCounters, EcmKey, EcmLayout, EcmSourceStats, DIR_RX, DIR_TX,
-    MAX_CLIENTS,
+    MAX_CLIENTS, MAX_ECM_NSS_CONTEXTS,
 };
 
 use crate::atomics::add_u64;
@@ -25,7 +28,8 @@ pub static LANSPEED_ECM_LAYOUT: Array<EcmLayout> = Array::with_max_entries(1, 0)
 pub static LANSPEED_ECM_SOURCE_STATS: Array<EcmSourceStats> = Array::with_max_entries(1, 0);
 
 #[map(name = "lanspeed_ecm_nss_context")]
-pub static LANSPEED_ECM_NSS_CONTEXT: PerCpuArray<u32> = PerCpuArray::with_max_entries(1, 0);
+pub static LANSPEED_ECM_NSS_CONTEXT: LruHashMap<u64, u32> =
+    LruHashMap::with_max_entries(MAX_ECM_NSS_CONTEXTS, 0);
 
 #[kprobe]
 pub fn lanspeed_ecm_nss_enter(_ctx: ProbeContext) -> u32 {
@@ -97,24 +101,30 @@ fn try_ecm_update(ctx: &ProbeContext) {
 
 #[inline(always)]
 fn update_nss_context(enter: bool) {
-    let Some(depth) = LANSPEED_ECM_NSS_CONTEXT.get_ptr_mut(0) else {
-        return;
-    };
-    unsafe {
-        let current = depth.read_volatile();
-        depth.write_volatile(if enter {
-            current.saturating_add(1)
-        } else {
-            current.saturating_sub(1)
-        });
+    // Entry and return probes can run on different CPUs after task migration.
+    // Track nesting by pid_tgid so an old CPU cannot retain a false NSS context
+    // and classify unrelated ECM slow-path updates as hardware increments.
+    let task = bpf_get_current_pid_tgid();
+    let current = LANSPEED_ECM_NSS_CONTEXT
+        .get_ptr(&task)
+        .map_or(0, |depth| unsafe { depth.read_volatile() });
+    if enter {
+        let next = current.saturating_add(1);
+        let _ = LANSPEED_ECM_NSS_CONTEXT.insert(&task, &next, 0);
+    } else if current > 1 {
+        let next = current - 1;
+        let _ = LANSPEED_ECM_NSS_CONTEXT.insert(&task, &next, 0);
+    } else if current == 1 {
+        let _ = LANSPEED_ECM_NSS_CONTEXT.remove(&task);
     }
 }
 
 #[inline(always)]
 fn nss_context_active() -> bool {
+    let task = bpf_get_current_pid_tgid();
     LANSPEED_ECM_NSS_CONTEXT
-        .get(0)
-        .is_some_and(|depth| unsafe { addr_of!(*depth).read_volatile() != 0 })
+        .get_ptr(&task)
+        .is_some_and(|depth| unsafe { depth.read_volatile() != 0 })
 }
 
 #[inline(always)]
@@ -153,17 +163,23 @@ fn read_node_mac(connection: *const u8, layout: &EcmLayout, index: u8) -> Option
 }
 
 fn account(
-    connection: u64,
-    generation: u32,
+    _connection: u64,
+    _generation: u32,
     mac: [u8; 6],
     direction: u8,
     bytes: u64,
     packets: u64,
     now: u64,
 ) {
+    // Keep the existing EcmKey ABI so a new object can be loaded by old and
+    // new userspace, but aggregate the hot map by MAC + client direction.
+    // Per-connection keys multiplied occupancy by the flow count and made LRU
+    // eviction look like traffic loss on busy routers.  The callback context
+    // above already proves these bytes are NSS hardware increments, so neither
+    // the connection pointer nor its generation is needed for accounting.
     let key = EcmKey {
-        connection,
-        generation,
+        connection: 0,
+        generation: 0,
         direction,
         reserved: 0,
         mac,

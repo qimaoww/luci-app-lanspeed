@@ -1039,6 +1039,23 @@ fn tc_coverage_truncation_never_publishes_partial_deltas() {
         .unwrap();
     assert!(!after.coverage_ready);
     assert!(after.coverage_deltas.is_empty());
+
+    adapter.map_read = Some(Ok(read(vec![raw(DIR_TX, 4_000, 7_000_000_000)])));
+    let recovered = runtime
+        .collect_snapshot(
+            &mut adapter,
+            &mut collector,
+            &identities,
+            &ConnectionOverlay::available(),
+            7_000,
+        )
+        .unwrap();
+    assert!(recovered.coverage_ready);
+    assert!(!recovered.map_read_truncated);
+    assert_eq!(
+        recovered.coverage_deltas["02:00:00:00:00:01@lan"].tx_bytes,
+        1_000
+    );
 }
 
 #[test]
@@ -1590,7 +1607,7 @@ fn foreign_replacement_invalidates_health_and_is_never_overwritten() {
 }
 
 #[test]
-fn exact_physical_map_capacity_is_reported_as_at_capacity() {
+fn logical_client_limit_is_not_mistaken_for_the_larger_physical_map_capacity() {
     let identities = identities();
     let entries = (0..lanspeed_common::MAX_CLIENTS)
         .map(|_| raw(DIR_TX, 1, 10_000_000_000))
@@ -1616,7 +1633,10 @@ fn exact_physical_map_capacity_is_reported_as_at_capacity() {
             10_000,
         )
         .unwrap();
-    assert!(runtime.map_iteration_truncated_observed());
+    // The physical TC map is now sized to 4 × max_clients. Only the adapter,
+    // which knows the loaded map's actual capacity, may set MapRead::truncated;
+    // the runtime must not infer loss from the old logical client constant.
+    assert!(!runtime.map_iteration_truncated_observed());
 }
 
 #[test]

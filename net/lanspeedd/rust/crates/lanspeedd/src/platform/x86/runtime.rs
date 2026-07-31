@@ -228,6 +228,7 @@ pub struct BpfHealth {
     pub fresh_snapshot: bool,
     pub last_complete_snapshot_ms: Option<u64>,
     pub snapshot_clients: usize,
+    pub map_entries: usize,
     pub mode: Option<AttachMode>,
 }
 
@@ -248,6 +249,7 @@ pub struct BpfRuntime<L> {
     last_map_read_ok: bool,
     last_complete_snapshot_ms: Option<u64>,
     snapshot_clients: usize,
+    map_entries: usize,
     map_iteration_truncated_observed: bool,
     self_heal_recoveries: u64,
     self_heal_failures: u64,
@@ -263,6 +265,7 @@ pub struct BpfCollectionCheckpoint {
     last_map_read_ok: bool,
     last_complete_snapshot_ms: Option<u64>,
     snapshot_clients: usize,
+    map_entries: usize,
     map_iteration_truncated_observed: bool,
     last_runtime_error: Option<String>,
     next_hook_audit_ms: u64,
@@ -280,6 +283,7 @@ impl<L> BpfRuntime<L> {
             last_map_read_ok: self.last_map_read_ok,
             last_complete_snapshot_ms: self.last_complete_snapshot_ms,
             snapshot_clients: self.snapshot_clients,
+            map_entries: self.map_entries,
             map_iteration_truncated_observed: self.map_iteration_truncated_observed,
             last_runtime_error: self.last_runtime_error.clone(),
             next_hook_audit_ms: self.next_hook_audit_ms,
@@ -297,6 +301,7 @@ impl<L> BpfRuntime<L> {
         self.last_map_read_ok = checkpoint.last_map_read_ok;
         self.last_complete_snapshot_ms = checkpoint.last_complete_snapshot_ms;
         self.snapshot_clients = checkpoint.snapshot_clients;
+        self.map_entries = checkpoint.map_entries;
         self.map_iteration_truncated_observed = checkpoint.map_iteration_truncated_observed;
         self.last_runtime_error = checkpoint.last_runtime_error;
         self.next_hook_audit_ms = checkpoint.next_hook_audit_ms;
@@ -354,6 +359,7 @@ impl<L> BpfRuntime<L> {
             last_map_read_ok: false,
             last_complete_snapshot_ms: None,
             snapshot_clients: 0,
+            map_entries: 0,
             map_iteration_truncated_observed: false,
             self_heal_recoveries: 0,
             self_heal_failures: 0,
@@ -1135,8 +1141,8 @@ impl<L> BpfRuntime<L> {
                 return Err(error);
             }
         };
-        self.map_iteration_truncated_observed |=
-            read.truncated || read.entries.len() >= MAX_CLIENTS as usize;
+        self.map_iteration_truncated_observed |= read.truncated;
+        self.map_entries = read.entries.len();
         let sticky = self.map_iteration_truncated_observed;
         if self.rate_reset_required {
             collector.reset_rates();
@@ -1175,6 +1181,7 @@ impl<L> BpfRuntime<L> {
             fresh_snapshot,
             last_complete_snapshot_ms: self.last_complete_snapshot_ms,
             snapshot_clients: self.snapshot_clients,
+            map_entries: self.map_entries,
             mode: if self.reconcile_required {
                 None
             } else {
@@ -1196,6 +1203,8 @@ impl<L> BpfRuntime<L> {
             bpf_freshness_ms: freshness_ms,
             now_ms,
             bpf_snapshot_clients: health.snapshot_clients,
+            bpf_map_entries: health.map_entries,
+            bpf_map_iteration_truncated: self.map_iteration_truncated_observed,
             bpf_self_heal_recoveries: self.self_heal_recoveries,
             bpf_self_heal_failures: self.self_heal_failures,
             bpf_self_heal_last_reason: self.last_self_heal_reason.clone(),
@@ -1328,6 +1337,7 @@ pub struct SystemAyaLink {
 pub struct SystemAyaAdapter {
     ebpf: Option<Ebpf>,
     tc_monitor: TcTopologyMonitor,
+    client_map_capacity: u32,
 }
 
 impl Default for SystemAyaAdapter {
@@ -1335,6 +1345,7 @@ impl Default for SystemAyaAdapter {
         Self {
             ebpf: None,
             tc_monitor: TcTopologyMonitor::new(),
+            client_map_capacity: MAX_CLIENTS.saturating_mul(4),
         }
     }
 }
@@ -1342,6 +1353,15 @@ impl Default for SystemAyaAdapter {
 impl SystemAyaAdapter {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_max_clients(max_clients: usize) -> Self {
+        let requested = max_clients.max(1).saturating_mul(4);
+        let client_map_capacity = u32::try_from(requested).unwrap_or(u32::MAX);
+        Self {
+            client_map_capacity,
+            ..Self::default()
+        }
     }
 
     fn classifier(&mut self, name: &str) -> Result<&mut SchedClassifier, AdapterError> {
@@ -1364,6 +1384,7 @@ impl SystemAyaAdapter {
     ) -> Result<(), AdapterError> {
         let mut loader = EbpfLoader::new();
         loader.kfunc_btf_fds(module_btf_fds);
+        loader.map_max_entries(CLIENTS_MAP_NAME, self.client_map_capacity);
         let mut ebpf = loader.load(bytes).map_err(classify_aya_load_error)?;
         for name in [
             INGRESS_PROGRAM_NAME,
@@ -1633,7 +1654,7 @@ impl AyaAdapter for SystemAyaAdapter {
         for entry in clients.iter() {
             match entry {
                 Ok((key, value)) => {
-                    if entries.len() >= MAX_CLIENTS as usize {
+                    if entries.len() >= self.client_map_capacity as usize {
                         truncated = true;
                         break;
                     }
@@ -1651,7 +1672,7 @@ impl AyaAdapter for SystemAyaAdapter {
                 }
             }
         }
-        truncated |= entries.len() == MAX_CLIENTS as usize;
+        truncated |= entries.len() == self.client_map_capacity as usize;
         Ok(MapRead { entries, truncated })
     }
 

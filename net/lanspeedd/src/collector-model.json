@@ -1,8 +1,9 @@
 {
   "source": "lanspeedd_collectors",
-  "version": 10,
+  "version": 11,
   "module_boundaries": {
     "shared_counters": "rust/crates/lanspeedd/src/platform/counters.rs",
+    "access_edge_userspace": "rust/crates/lanspeedd/src/platform/access_edge",
     "x86_userspace": "rust/crates/lanspeedd/src/platform/x86",
     "nss_userspace": "rust/crates/lanspeedd/src/platform/nss",
     "x86_ebpf": "rust/crates/lanspeed-ebpf/src/x86",
@@ -43,7 +44,13 @@
     "overlapping_rate_owners_forbidden": true,
     "ecm_bpf_merge_policy": "kernel_source_disjoint_raw_delta_fusion",
     "manual_fallback_forbidden": true,
-    "rate_and_coverage_windows": "shared_collector_batch_with_lan_catchup",
+    "rate_and_coverage_windows": "legacy_manual_collector_shared_batch_with_lan_catchup",
+    "active_auto_display_rate_owner": "access_edge_per_direction_rate_mux",
+    "active_auto_legacy_inference_enabled": false,
+    "authoritative_total_symbol": "E",
+    "classified_sources_are_total_addends": false,
+    "unclassified_formula": "E_minus_N_plus_S_only_same_window_generation_and_byte_domain",
+    "unclassified_label": "unclassified_not_non_accelerated",
     "coverage_can_block_rate": false
   },
   "bpf_model": {
@@ -138,7 +145,9 @@
       "pointer_size": 8
     },
     "maps": ["lanspeed_ecm_clients", "lanspeed_ecm_nss_context", "lanspeed_ecm_source_stats"],
-    "map_key": ["connection_pointer", "time_added", "direction", "client_mac"],
+    "map_key": ["client_mac", "direction"],
+    "map_abi": "EcmKey_v1_with_connection_and_generation_zeroed",
+    "map_capacity": "at_least_2_times_max_clients",
     "map_value": ["bytes", "packets", "last_seen_ns"],
     "identity": "unique_node_mac_to_mac_zone_identity",
     "direction": {
@@ -151,7 +160,144 @@
     "ecm_node_rate_overlay": false,
     "conntrack_rate_overlay": false,
     "deduplication": "nss_callback_context_excludes_ecm_slow_path_before_aligned_raw_delta_fusion",
+    "nss_context_key": "pid_tgid",
+    "nss_context_value": "nested_callback_depth",
+    "classification_role": "N_nss_identified_only",
+    "active_auto_misaligned_rate_fallback": "forbidden",
     "read_only": true
+  },
+  "access_edge_model": {
+    "source": "rust/crates/lanspeedd/src/platform/access_edge",
+    "read_only": true,
+    "modes": ["off", "shadow", "active"],
+    "default_mode": "shadow",
+    "display_activation": "active_and_rate_collector_auto",
+    "topology": {
+      "fdb_primary": "RTM_GETNEIGH_AF_BRIDGE",
+      "fdb_fallback": "brforward",
+      "fdb_event_monitor": "RTMGRP_NEIGH",
+      "fdb_full_sync_ms": 30000,
+      "wifi": "generic_netlink_NL80211_CMD_GET_STATION",
+      "wifi_interface_type": "generic_netlink_NL80211_CMD_GET_INTERFACE",
+      "wifi_reassociation_marker": "NL80211_STA_INFO_ASSOC_AT_BOOTTIME_with_connected_time_fallback",
+      "wifi_fork_iw": false,
+      "wifi_vlan_alignment": "inherit_only_unique_same_mac_bridge_ap_ifindex_fdb_vid",
+      "attachment_key": [
+        "bridge",
+        "standard_fdb_vlan_id_when_present",
+        "mac",
+        "ifindex",
+        "attachment_or_association_generation"
+      ],
+      "private_ssdk_fid_ioctl": false,
+      "generation_reset_events": [
+        "mac_move",
+        "wifi_reassociation",
+        "link_reset",
+        "counter_regression",
+        "source_change"
+      ]
+    },
+    "edge_counters": {
+      "port_snapshot": "single_64_bit_netdev_pass",
+      "client_tx": "port_or_station_rx",
+      "client_rx": "port_or_station_tx",
+      "port_lifetime_bytes_published": false,
+      "wifi_counter_width_preference": [64, 32],
+      "byte_domains": ["l2_no_fcs", "l2_with_fcs", "station_data", "ecm_data"]
+    },
+    "full_rules": {
+      "dedicated_port_default": [],
+      "declared_direct_required": true,
+      "stable_complete_fdb_snapshots": 2,
+      "other_dynamic_mac_forbidden": true,
+      "cross_vlan_mac_forbidden": true,
+      "fdb_event_monitor_required": true,
+      "automatic_single_mac_port_maximum": "partial",
+      "shared_ap_wds_mesh_trunk_maximum": "partial",
+      "wifi_unicast_maximum": "full",
+      "wifi_all_frames_maximum": "partial"
+    },
+    "schedule": {
+      "clock": "CLOCK_MONOTONIC_absolute_deadline",
+      "edge_ms": 1000,
+      "classifier_ms": 2000,
+      "comparison_epochs": 3,
+      "comparison_window_ms": 6000,
+      "missed_deadline": "skip_expired_slots_no_catch_up"
+    },
+    "segment_fields": [
+      "epoch_id",
+      "start_ms",
+      "end_ms",
+      "read_begin_ms",
+      "read_end_ms",
+      "source",
+      "direction",
+      "bytes",
+      "packets",
+      "attachment_generation",
+      "byte_domain",
+      "uncertainty_ms"
+    ],
+    "rate_mux": {
+      "direction_independent": true,
+      "priority": [
+        "edge_wifi",
+        "edge_port",
+        "ecm_bpf_fallback",
+        "ecm_nss_lower_bound",
+        "tc_bpf_lower_bound",
+        "unavailable"
+      ],
+      "promotion_windows": 2,
+      "soft_failure_windows": 2,
+      "freshness_multiple": 2.5,
+      "immediate_failure": [
+        "attachment_ambiguity",
+        "counter_reset",
+        "map_loss"
+      ],
+      "all_source_baselines_maintained": true,
+      "cross_source_delta_forbidden": true,
+      "stale_requires_age": true
+    },
+    "classification": {
+      "E": "access_edge_authoritative_total",
+      "N": "ecm_nss_identified",
+      "S": "tc_bpf_cpu_slow_path_identified",
+      "U": "unclassified",
+      "n_and_s_added_to_e": false,
+      "classifier_delivery_time_is_occurrence_time": false,
+      "classifier_refresh_ms": 2000,
+      "read_end_skew_max_ms": 50,
+      "required_alignment": [
+        "same_previous_and_current_classifier_epoch",
+        "complete_map_read",
+        "stable_attachment_generation",
+        "compatible_byte_domain"
+      ],
+      "comparison_requires_stable_epochs": 3,
+      "counter_skew_policy": "omit_U_and_coverage_without_clamp",
+      "domain_mismatch_policy": "show_observed_N_and_S_separately_omit_U_and_coverage",
+      "map_loss_policy": "classification_must_not_be_complete",
+      "legacy_active_auto_inference_paths": {
+        "lan_proportional_reconciliation": false,
+        "previous_distribution": false,
+        "event_gap_distribution": false,
+        "directional_max": false,
+        "interface_floor": false,
+        "eighteen_second_smoothing": false
+      }
+    },
+    "public_contract": {
+      "total_rate_prefers": "E",
+      "edge_missing_fallback": "strictly_aligned_N_plus_S_degraded_only",
+      "unclassified_must_not_be_named_unaccelerated": true,
+      "main_clients_payload": "rate_meta_with_classification_coverage_summary",
+      "detail_payload": "traffic_classification_with_N_S_U",
+      "connection_only": "source_none_coverage_unavailable_scope_none"
+    }
   },
   "lan_clock_model": {
     "source": "/proc/net/dev single-pass snapshot with sysfs fallback",
@@ -280,7 +426,10 @@
       "bpf": "configured_interval",
       "nss_ecm_node_minimum_ms": 2000,
       "nss_ecm_bpf_minimum_ms": 2000,
-      "auto": "follow_effective_collector"
+      "auto": "follow_effective_collector",
+      "access_edge_main_ms": 1000,
+      "access_edge_classifier_ms": 2000,
+      "access_edge_deadline": "absolute_clock_monotonic_skip_missed_slots"
     },
     "live_refresh_alignment": {
       "nss_sample_clock": "published_shared_rate_window_end",

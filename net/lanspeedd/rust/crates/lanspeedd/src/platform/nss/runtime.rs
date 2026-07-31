@@ -66,7 +66,10 @@ impl NssRuntime {
             {
                 return;
             }
-            match EcmBpfRuntime::load_and_attach(ECM_BPF_OBJECT_PATH) {
+            match EcmBpfRuntime::load_and_attach_with_max_clients(
+                ECM_BPF_OBJECT_PATH,
+                config.max_clients,
+            ) {
                 Ok(runtime) => {
                     self.ecm_bpf = Some(runtime);
                     self.ecm_bpf_error = None;
@@ -119,9 +122,14 @@ impl NssRuntime {
         now_ms: &mut u64,
         freshness_ms: u64,
         runtime_health: &mut RuntimeHealth,
+        read_due: bool,
     ) -> (Option<EcmBpfSnapshot>, bool) {
         match self.ecm_bpf.as_mut() {
             Some(runtime) => {
+                if !read_due {
+                    runtime.apply_runtime_health(runtime_health, *now_ms, freshness_ms);
+                    return (self.ecm_bpf_collector.last_complete().cloned(), false);
+                }
                 let (snapshot, fresh) = match runtime.collect_snapshot(
                     &mut self.ecm_bpf_collector,
                     identities,

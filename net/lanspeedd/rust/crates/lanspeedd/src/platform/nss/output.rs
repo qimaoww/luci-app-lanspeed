@@ -90,6 +90,7 @@ pub(crate) fn ecm_bpf_clients_response(
                 udp_conns: counts.map(|sample| u64::from(sample.udp_conns)),
                 udp_dns_conns: counts.map(|sample| u64::from(sample.udp_dns_conns)),
                 udp_other_conns: counts.map(|sample| u64::from(sample.udp_other_conns)),
+                rate_meta: None,
             }
         })
         .collect::<Vec<_>>();
@@ -141,6 +142,7 @@ pub(crate) fn ecm_bpf_clients_response(
             udp_conns: counts.map(|sample| u64::from(sample.udp_conns)),
             udp_dns_conns: counts.map(|sample| u64::from(sample.udp_dns_conns)),
             udp_other_conns: counts.map(|sample| u64::from(sample.udp_other_conns)),
+            rate_meta: None,
         });
     }
     if let Some(snapshot) = conntrack {
@@ -178,6 +180,7 @@ pub(crate) fn ecm_bpf_clients_response(
                 udp_conns: Some(u64::from(sample.udp_conns)),
                 udp_dns_conns: Some(u64::from(sample.udp_dns_conns)),
                 udp_other_conns: Some(u64::from(sample.udp_other_conns)),
+                rate_meta: None,
             });
         }
     }
@@ -266,6 +269,7 @@ pub(crate) fn window_clients(
                 udp_conns: counts.map(|sample| u64::from(sample.udp_conns)),
                 udp_dns_conns: counts.map(|sample| u64::from(sample.udp_dns_conns)),
                 udp_other_conns: counts.map(|sample| u64::from(sample.udp_other_conns)),
+                rate_meta: None,
             })
         })
         .collect::<Vec<_>>();
@@ -611,13 +615,25 @@ pub(crate) fn ecm_bpf_rate_batch_evidence(batch: &EcmBpfRateBatch) -> Value {
         "interface_count": batch.interfaces.len(),
         "raw_aligned": batch.raw_aligned,
         "fallback_event_gap_filled": batch.fallback_event_gap_filled,
+        "previous_direction_gap_filled": batch.previous_direction_gap_filled,
+        "previous_high_direction_gap_filled": batch.previous_high_direction_gap_filled,
         "fallback_lan_reconciled": batch.fallback_lan_reconciled,
         "low_rate_rolling": batch.low_rate,
         "high_rate_interface_floor": !batch.low_rate,
         "high_rate_quiet_confirmation_ms": ECM_BPF_HIGH_RATE_CONFIRMATION_MS,
         "high_rate_lan_guard": "valid_physical_lan_budget_directional_reconciliation",
         "high_rate_interface_guard": "identity_to_discovered_interface_directional_budget",
-        "client_rate_source": if batch.raw_aligned {
+        "client_rate_source": if batch.previous_high_direction_gap_filled && batch.fallback_event_gap_filled {
+            "event_clock_and_previous_complete_high_direction_current_lan_replacement_no_sum"
+        } else if batch.previous_high_direction_gap_filled {
+            "previous_complete_high_direction_current_lan_replacement_no_sum"
+        } else if batch.previous_direction_gap_filled && batch.fallback_event_gap_filled {
+            "event_clock_and_previous_complete_direction_gap_repair_no_sum"
+        } else if batch.previous_direction_gap_filled {
+            "previous_complete_low_direction_gap_repair_with_current_lan_budget"
+        } else if batch.raw_aligned && batch.fallback_event_gap_filled {
+            "aligned_raw_deltas_with_event_clock_nss_sync_gap_repair"
+        } else if batch.raw_aligned {
             "aligned_ecm_nss_hardware_plus_tc_slow_path_raw_deltas"
         } else if batch.low_rate {
             "shared_raw_deltas_with_event_gap_fill_and_lan_reconciliation"
@@ -625,6 +641,7 @@ pub(crate) fn ecm_bpf_rate_batch_evidence(batch: &EcmBpfRateBatch) -> Value {
             "event_clock_preferred_raw_when_event_missing_high_rate_with_interface_floor"
         },
         "fallback_aggregation": "raw_delta_preferred_event_gap_elapsed_ms_weighted_mean",
+        "previous_direction_policy": "one_complete_adjacent_batch_directional_replacement_current_lan_budget_no_sum_no_chain",
         "fallback_priority": if batch.low_rate {
             "raw_delta_first_event_gap_uses_remaining_lan_budget"
         } else {

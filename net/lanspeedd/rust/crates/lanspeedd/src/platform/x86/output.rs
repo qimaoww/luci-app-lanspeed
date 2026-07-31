@@ -40,6 +40,7 @@ pub(crate) fn clients_response(
                 udp_conns: sample.udp_conns.map(u64::from),
                 udp_dns_conns: sample.udp_dns_conns.map(u64::from),
                 udp_other_conns: sample.udp_other_conns.map(u64::from),
+                rate_meta: None,
             })
             .collect::<Vec<_>>()
     } else {
@@ -80,6 +81,7 @@ pub(crate) fn clients_response(
                 udp_conns: Some(u64::from(sample.udp_conns)),
                 udp_dns_conns: Some(u64::from(sample.udp_dns_conns)),
                 udp_other_conns: Some(u64::from(sample.udp_other_conns)),
+                rate_meta: None,
             });
         }
     }

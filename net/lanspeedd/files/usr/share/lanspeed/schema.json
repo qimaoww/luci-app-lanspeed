@@ -131,6 +131,176 @@
       "type": "string",
       "enum": ["auto", "conntrack_netlink", "conntrack_procfs"]
     },
+    "rateScope": {
+      "type": "string",
+      "enum": ["all_frames", "unicast", "routed_observed", "lower_bound", "none"]
+    },
+    "rateSource": {
+      "type": "string",
+      "enum": [
+        "edge_port",
+        "edge_wifi",
+        "ecm_bpf_fallback",
+        "ecm_nss_lower_bound",
+        "tc_bpf_lower_bound",
+        "none"
+      ]
+    },
+    "rateCoverage": {
+      "type": "string",
+      "enum": ["full", "partial", "degraded", "unavailable"]
+    },
+    "byteDomain": {
+      "type": "string",
+      "enum": ["l2_no_fcs", "l2_with_fcs", "station_data", "ecm_data"]
+    },
+    "attachmentKind": {
+      "type": "string",
+      "enum": ["ethernet", "wifi", "unknown"]
+    },
+    "attachmentTrust": {
+      "type": "string",
+      "enum": ["declared_direct", "associated_station", "observed_exclusive", "shared", "unknown"]
+    },
+    "classificationState": {
+      "type": "string",
+      "enum": [
+        "warmup",
+        "aligned",
+        "partial",
+        "stale",
+        "domain_mismatch",
+        "window_mismatch",
+        "counter_skew",
+        "map_loss",
+        "unavailable"
+      ]
+    },
+    "rateDirectionMeta": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/rateSource"
+        },
+        "coverage": {
+          "$ref": "#/$defs/rateCoverage"
+        },
+        "byte_domain": {
+          "$ref": "#/$defs/byteDomain"
+        }
+      },
+      "required": ["source", "coverage"]
+    },
+    "rateAttachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/attachmentKind"
+        },
+        "ifname": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 31
+        },
+        "trust": {
+          "$ref": "#/$defs/attachmentTrust"
+        }
+      },
+      "required": ["kind", "trust"]
+    },
+    "rateClassificationSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/classificationState"
+        },
+        "sample_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "window_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "comparison_window_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tx_coverage_pct": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "rx_coverage_pct": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        }
+      },
+      "required": ["state"]
+    },
+    "clientRateMeta": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "type": "integer",
+          "const": 1
+        },
+        "scope": {
+          "$ref": "#/$defs/rateScope"
+        },
+        "tx": {
+          "$ref": "#/$defs/rateDirectionMeta"
+        },
+        "rx": {
+          "$ref": "#/$defs/rateDirectionMeta"
+        },
+        "attachment": {
+          "$ref": "#/$defs/rateAttachment"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "window_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sample_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stale": {
+          "type": "boolean"
+        },
+        "reason_codes": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 48,
+            "pattern": "^[a-z0-9_]+$"
+          }
+        },
+        "classification": {
+          "$ref": "#/$defs/rateClassificationSummary"
+        }
+      },
+      "required": [
+        "version",
+        "scope",
+        "tx",
+        "rx",
+        "generation",
+        "stale",
+        "reason_codes"
+      ]
+    },
     "capabilities": {
       "type": "object",
       "additionalProperties": false,
@@ -854,6 +1024,21 @@
         "rate_collector_mode": {
           "$ref": "#/$defs/rateCollectorMode"
         },
+        "access_edge_mode": {
+          "type": "string",
+          "enum": ["off", "shadow", "active"]
+        },
+        "dedicated_ports": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 31,
+            "pattern": "^[^\\s/,\\u0000]+$"
+          }
+        },
         "conn_collector_mode": {
           "$ref": "#/$defs/connCollectorMode"
         },
@@ -875,6 +1060,8 @@
         "evidence",
         "refresh_interval_ms",
         "rate_collector_mode",
+        "access_edge_mode",
+        "dedicated_ports",
         "conn_collector_mode",
         "version",
         "capabilities"
@@ -1056,6 +1243,9 @@
         "udp_other_conns": {
           "type": "integer",
           "minimum": 0
+        },
+        "rate_meta": {
+          "$ref": "#/$defs/clientRateMeta"
         }
       },
       "required": [
@@ -1180,6 +1370,29 @@
         "zone"
       ]
     },
+    "trafficClassificationDirection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "nss_bps": { "type": "integer", "minimum": 0 },
+        "slow_bps": { "type": "integer", "minimum": 0 },
+        "unclassified_bps": { "type": "integer", "minimum": 0 },
+        "coverage_pct": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "trafficClassification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state": { "$ref": "#/$defs/classificationState" },
+        "window_start_ms": { "type": "integer", "minimum": 0 },
+        "window_end_ms": { "type": "integer", "minimum": 0 },
+        "comparison_window_ms": { "type": "integer", "minimum": 1 },
+        "tx": { "$ref": "#/$defs/trafficClassificationDirection" },
+        "rx": { "$ref": "#/$defs/trafficClassificationDirection" }
+      },
+      "required": ["state", "tx", "rx"]
+    },
     "client_connections": {
       "type": "object",
       "additionalProperties": false,
@@ -1248,6 +1461,9 @@
           "items": {
             "$ref": "#/$defs/warning"
           }
+        },
+        "traffic_classification": {
+          "$ref": "#/$defs/trafficClassification"
         }
       },
       "required": [

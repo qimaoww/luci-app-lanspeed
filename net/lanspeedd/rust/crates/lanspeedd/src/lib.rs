@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use aya::maps::MapError;
 use aya_obj::btf::{Btf, BtfKind};
 use aya_obj::generated::{bpf_attr, bpf_btf_info, bpf_cmd};

@@ -37,7 +37,7 @@ const FLOW_RETENTION_MS: u64 = 60_000;
 pub const ECM_EVENT_CLOCK_MAX_LAG_MS: u64 = 1_500;
 pub const ECM_EVENT_RATE_MAX_WINDOW_MS: u64 = 5_000;
 const RATE_MEDIAN_SAMPLES: usize = 3;
-const MAX_ECM_MAP_ENTRIES: usize = MAX_CLIENTS as usize * 4;
+const ECM_MAP_STABLE_READ_ATTEMPTS: usize = 3;
 const BTF_KIND_INT: u32 = 1;
 const BTF_KIND_ARRAY: u32 = 3;
 const BTF_KIND_STRUCT: u32 = 4;
@@ -82,13 +82,23 @@ pub struct EcmBpfClientSample {
     pub last_seen_ms: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EcmBpfFreshRate {
+    pub tx_bps: u64,
+    pub rx_bps: u64,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EcmBpfSnapshot {
     pub clients: Vec<EcmBpfClientSample>,
+    /// Event-clock rates produced by counters that progressed in this map
+    /// snapshot. Held rates deliberately stay in `clients` only.
+    pub fresh_rates: BTreeMap<String, EcmBpfFreshRate>,
     pub coverage_delta: TrafficCounters,
     pub coverage_deltas: BTreeMap<String, TrafficCounters>,
     pub coverage_start_ms: Option<u64>,
     pub coverage_end_ms: u64,
+    pub coverage_ready: bool,
     pub sample_ms: u64,
     pub map_entries: usize,
     pub matched_entries: usize,
@@ -114,8 +124,9 @@ impl From<EcmKey> for FlowKey {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct FlowBaseline {
+    identity_key: Option<String>,
     bytes: u64,
     packets: u64,
     last_progress_sample_ms: u64,
@@ -159,6 +170,8 @@ struct FoldedClient {
     rx_bytes: u64,
     tx_bps: u64,
     rx_bps: u64,
+    fresh_tx_bps: u64,
+    fresh_rx_bps: u64,
     last_seen_ms: u64,
 }
 
@@ -189,10 +202,28 @@ impl EcmBpfSnapshotCollector {
         now_ms: u64,
     ) -> EcmBpfSnapshot {
         let map_entries = read.entries.len();
+        if read.truncated {
+            // A partial traversal cannot become a cumulative baseline: doing so
+            // would make omitted keys look like new lifetime bytes on the next
+            // read. Invalidate rates now, require one complete read to warm a
+            // new baseline, and only publish deltas from the following read.
+            self.baselines.clear();
+            self.published.clear();
+            self.rate_histories.clear();
+            self.last_complete = None;
+            return EcmBpfSnapshot {
+                coverage_end_ms: now_ms,
+                sample_ms: now_ms,
+                map_entries,
+                truncated: true,
+                ..EcmBpfSnapshot::default()
+            };
+        }
         let previous_sample_ms = self
             .last_complete
             .as_ref()
             .map(|snapshot| snapshot.sample_ms);
+        let mut coverage_ready = previous_sample_ms.is_some();
         let mut current = BTreeMap::<FlowKey, (EcmCounters, Option<String>)>::new();
         let mut coverage_delta = TrafficCounters::default();
         let mut coverage_deltas = BTreeMap::<String, TrafficCounters>::new();
@@ -207,10 +238,12 @@ impl EcmBpfSnapshotCollector {
 
         for (key, (counters, identity_key)) in &current {
             let event_ms = (counters.last_seen / 1_000_000).min(now_ms);
-            let previous = self.baselines.get(key).copied();
-            let delta = match previous {
+            let previous = self.baselines.get(key).cloned();
+            let delta = match previous.as_ref() {
                 Some(previous)
-                    if counters.bytes >= previous.bytes && counters.packets >= previous.packets =>
+                    if previous.identity_key.as_ref() == identity_key.as_ref()
+                        && counters.bytes >= previous.bytes
+                        && counters.packets >= previous.packets =>
                 {
                     Some((
                         counters.bytes - previous.bytes,
@@ -220,6 +253,7 @@ impl EcmBpfSnapshotCollector {
                     ))
                 }
                 Some(_) => {
+                    coverage_ready = false;
                     self.published.remove(key);
                     self.rate_histories.remove(key);
                     None
@@ -286,31 +320,40 @@ impl EcmBpfSnapshotCollector {
                 self.published.remove(key);
                 self.rate_histories.remove(key);
             }
-            let progressed = previous.is_none_or(|value| {
+            let progressed = previous.as_ref().is_none_or(|value| {
                 value.bytes != counters.bytes || value.packets != counters.packets
             });
             let current_event_clock_valid = event_ms != 0
                 && now_ms.saturating_sub(event_ms) < ECM_EVENT_CLOCK_MAX_LAG_MS
-                && previous.is_none_or(|value| event_ms > value.last_progress_event_ms);
+                && previous
+                    .as_ref()
+                    .is_none_or(|value| event_ms > value.last_progress_event_ms);
             self.baselines.insert(
                 *key,
                 FlowBaseline {
+                    identity_key: identity_key.clone(),
                     bytes: counters.bytes,
                     packets: counters.packets,
                     last_progress_sample_ms: if progressed {
                         now_ms
                     } else {
-                        previous.map_or(now_ms, |value| value.last_progress_sample_ms)
+                        previous
+                            .as_ref()
+                            .map_or(now_ms, |value| value.last_progress_sample_ms)
                     },
                     last_progress_event_ms: if progressed && current_event_clock_valid {
                         event_ms
                     } else {
-                        previous.map_or(event_ms, |value| value.last_progress_event_ms)
+                        previous
+                            .as_ref()
+                            .map_or(event_ms, |value| value.last_progress_event_ms)
                     },
                     event_clock_valid: if progressed {
                         current_event_clock_valid
                     } else {
-                        previous.is_none_or(|value| value.event_clock_valid)
+                        previous
+                            .as_ref()
+                            .is_none_or(|value| value.event_clock_valid)
                     },
                     last_seen_ms: event_ms,
                 },
@@ -338,18 +381,39 @@ impl EcmBpfSnapshotCollector {
                 .bytes
                 .saturating_add(counters.packets.saturating_mul(4));
             let rate = self.published.get(key).map_or(0, |value| value.bps);
+            let fresh_rate = self
+                .published
+                .get(key)
+                .filter(|value| value.end_ms == now_ms)
+                .map_or(0, |value| value.bps);
             if key.direction == DIR_TX {
                 client.tx_bytes = client.tx_bytes.saturating_add(total);
                 client.tx_bps = client.tx_bps.saturating_add(rate);
+                client.fresh_tx_bps = client.fresh_tx_bps.saturating_add(fresh_rate);
             } else {
                 client.rx_bytes = client.rx_bytes.saturating_add(total);
                 client.rx_bps = client.rx_bps.saturating_add(rate);
+                client.fresh_rx_bps = client.fresh_rx_bps.saturating_add(fresh_rate);
             }
             client.last_seen_ms = client
                 .last_seen_ms
                 .max((counters.last_seen / 1_000_000).min(now_ms));
         }
 
+        let fresh_rates = folded
+            .iter()
+            .filter_map(|(identity_key, folded)| {
+                (folded.fresh_tx_bps != 0 || folded.fresh_rx_bps != 0).then(|| {
+                    (
+                        identity_key.clone(),
+                        EcmBpfFreshRate {
+                            tx_bps: folded.fresh_tx_bps,
+                            rx_bps: folded.fresh_rx_bps,
+                        },
+                    )
+                })
+            })
+            .collect();
         let clients = folded
             .into_iter()
             .filter_map(|(identity_key, folded)| {
@@ -365,10 +429,12 @@ impl EcmBpfSnapshotCollector {
                 .filter(|(_, identity_key)| identity_key.is_some())
                 .count(),
             clients,
+            fresh_rates,
             coverage_delta,
             coverage_deltas,
-            coverage_start_ms: previous_sample_ms,
+            coverage_start_ms: coverage_ready.then_some(previous_sample_ms).flatten(),
             coverage_end_ms: now_ms,
+            coverage_ready,
             sample_ms: now_ms,
             map_entries,
             truncated: read.truncated,
@@ -437,6 +503,7 @@ pub struct EcmBpfHealth {
     pub last_complete_snapshot_ms: Option<u64>,
     pub snapshot_clients: usize,
     pub map_entries: usize,
+    pub map_capacity: usize,
     pub matched_entries: usize,
     pub map_iteration_truncated: bool,
     pub nss_context_callbacks: Vec<String>,
@@ -479,6 +546,7 @@ pub struct EcmBpfRuntime {
     last_complete_snapshot_ms: Option<u64>,
     snapshot_clients: usize,
     map_entries: usize,
+    map_capacity: usize,
     matched_entries: usize,
     map_iteration_truncated: bool,
     source_stats: EcmSourceStats,
@@ -506,18 +574,28 @@ pub fn available_nss_context_callbacks(path: impl AsRef<Path>) -> Result<Vec<Str
 
 impl EcmBpfRuntime {
     pub fn load_and_attach(path: impl AsRef<Path>) -> Result<Self, EcmBpfRuntimeError> {
+        Self::load_and_attach_with_max_clients(path, MAX_CLIENTS as usize)
+    }
+
+    pub fn load_and_attach_with_max_clients(
+        path: impl AsRef<Path>,
+        max_clients: usize,
+    ) -> Result<Self, EcmBpfRuntimeError> {
         let layout = resolve_ecm_layout().map_err(|error| {
             EcmBpfRuntimeError::new(
                 ECM_BPF_LAYOUT_STAGE,
                 format!("resolve ECM BTF layout: {error}"),
             )
         })?;
-        Self::load_and_attach_with_layout(path, layout)
+        let requested = max_clients.max(1).saturating_mul(2);
+        let map_capacity = u32::try_from(requested).unwrap_or(u32::MAX);
+        Self::load_and_attach_with_layout(path, layout, map_capacity)
     }
 
     fn load_and_attach_with_layout(
         path: impl AsRef<Path>,
         layout: EcmLayout,
+        map_capacity: u32,
     ) -> Result<Self, EcmBpfRuntimeError> {
         let path = path.as_ref();
         let bytes = fs::read(path).map_err(|error| {
@@ -531,7 +609,9 @@ impl EcmBpfRuntime {
                 format!("ECM+BPF {detail} at {}: {error}", path.display()),
             )
         })?;
-        let mut ebpf = EbpfLoader::new().load(&bytes).map_err(|error| {
+        let mut loader = EbpfLoader::new();
+        loader.map_max_entries(ECM_CLIENTS_MAP_NAME, map_capacity);
+        let mut ebpf = loader.load(&bytes).map_err(|error| {
             EcmBpfRuntimeError::new(
                 ECM_BPF_OBJECT_LOAD_STAGE,
                 format!("load ECM+BPF object {}: {error}", path.display()),
@@ -659,6 +739,7 @@ impl EcmBpfRuntime {
             last_complete_snapshot_ms: None,
             snapshot_clients: 0,
             map_entries: 0,
+            map_capacity: map_capacity as usize,
             matched_entries: 0,
             map_iteration_truncated: false,
             source_stats: EcmSourceStats::default(),
@@ -734,6 +815,24 @@ impl EcmBpfRuntime {
     }
 
     fn read_maps(&self) -> Result<(EcmMapRead, EcmSourceStats), EcmBpfRuntimeError> {
+        for _ in 0..ECM_MAP_STABLE_READ_ATTEMPTS {
+            let before = self.read_source_stats()?;
+            let read = self.read_client_map()?;
+            let after = self.read_source_stats()?;
+            if same_nss_source_generation(before, after) {
+                return Ok((read, after));
+            }
+        }
+        // Never publish a traversal that crossed an NSS callback generation:
+        // its entries belong to different hardware-sync windows. The runtime
+        // retains the last complete batch and retries on the next collection.
+        Err(EcmBpfRuntimeError::new(
+            ECM_BPF_MAP_READ_STAGE,
+            "ECM NSS counters changed during every bounded map snapshot attempt",
+        ))
+    }
+
+    fn read_client_map(&self) -> Result<EcmMapRead, EcmBpfRuntimeError> {
         let map = self
             .ebpf
             .as_ref()
@@ -751,7 +850,7 @@ impl EcmBpfRuntime {
         for entry in clients.iter() {
             match entry {
                 Ok((key, value)) => {
-                    if entries.len() >= MAX_ECM_MAP_ENTRIES {
+                    if entries.len() >= self.map_capacity {
                         truncated = true;
                         break;
                     }
@@ -769,7 +868,11 @@ impl EcmBpfRuntime {
                 }
             }
         }
-        truncated |= entries.len() == MAX_ECM_MAP_ENTRIES;
+        truncated |= entries.len() == self.map_capacity;
+        Ok(EcmMapRead { entries, truncated })
+    }
+
+    fn read_source_stats(&self) -> Result<EcmSourceStats, EcmBpfRuntimeError> {
         let source_map = self
             .ebpf
             .as_ref()
@@ -785,7 +888,7 @@ impl EcmBpfRuntime {
             .get(&0, 0)
             .map_err(|error| EcmBpfRuntimeError::new(ECM_BPF_MAP_READ_STAGE, error.to_string()))?
             .0;
-        Ok((EcmMapRead { entries, truncated }, source_stats))
+        Ok(source_stats)
     }
 
     pub fn health(&self, now_ms: u64, freshness_ms: u64) -> EcmBpfHealth {
@@ -804,6 +907,7 @@ impl EcmBpfRuntime {
             last_complete_snapshot_ms: self.last_complete_snapshot_ms,
             snapshot_clients: self.snapshot_clients,
             map_entries: self.map_entries,
+            map_capacity: self.map_capacity,
             matched_entries: self.matched_entries,
             map_iteration_truncated: self.map_iteration_truncated,
             nss_context_callbacks: self.nss_context_callbacks.clone(),
@@ -829,6 +933,7 @@ impl EcmBpfRuntime {
         runtime.ecm_bpf_freshness_ms = freshness_ms;
         runtime.ecm_bpf_snapshot_clients = health.snapshot_clients;
         runtime.ecm_bpf_map_entries = health.map_entries;
+        runtime.ecm_bpf_map_capacity = health.map_capacity;
         runtime.ecm_bpf_matched_entries = health.matched_entries;
         runtime.ecm_bpf_map_iteration_truncated = health.map_iteration_truncated;
         runtime.ecm_bpf_nss_context_callbacks = health.nss_context_callbacks;
@@ -876,6 +981,12 @@ impl EcmBpfRuntime {
             Ok(())
         }
     }
+}
+
+fn same_nss_source_generation(before: EcmSourceStats, after: EcmSourceStats) -> bool {
+    before.nss_updates == after.nss_updates
+        && before.nss_bytes == after.nss_bytes
+        && before.nss_packets == after.nss_packets
 }
 
 fn detach_kprobe_links(
@@ -1204,6 +1315,28 @@ mod tests {
     }
 
     #[test]
+    fn stable_map_read_generation_ignores_slow_path_but_rejects_nss_progress() {
+        let before = EcmSourceStats {
+            nss_bytes: 1_000,
+            nss_packets: 10,
+            nss_updates: 2,
+            slow_path_bytes: 100,
+            slow_path_packets: 1,
+            slow_path_updates: 1,
+        };
+        let mut after = before;
+        after.slow_path_bytes += 100;
+        after.slow_path_packets += 1;
+        after.slow_path_updates += 1;
+        assert!(same_nss_source_generation(before, after));
+
+        after.nss_bytes += 1_500;
+        after.nss_packets += 2;
+        after.nss_updates += 1;
+        assert!(!same_nss_source_generation(before, after));
+    }
+
+    #[test]
     fn rates_are_windowed_per_connection_generation_before_client_folding() {
         let identities = identities();
         let mut collector = EcmBpfSnapshotCollector::default();
@@ -1219,6 +1352,7 @@ mod tests {
             1_000,
         );
         assert_eq!(first.clients[0].tx_bps, 0);
+        assert!(first.fresh_rates.is_empty());
 
         let second = collector.convert(
             EcmMapRead {
@@ -1232,6 +1366,10 @@ mod tests {
             3_000,
         );
         assert_eq!(second.clients[0].tx_bps, 8_320);
+        assert_eq!(
+            second.fresh_rates[&second.clients[0].identity_key].tx_bps,
+            8_320
+        );
 
         let third = collector.convert(
             EcmMapRead {
@@ -1245,6 +1383,10 @@ mod tests {
             5_000,
         );
         assert_eq!(third.clients[0].tx_bps, 8_320 + 4_160);
+        assert_eq!(
+            third.fresh_rates[&third.clients[0].identity_key].tx_bps,
+            4_160
+        );
 
         let fourth = collector.convert(
             EcmMapRead {
@@ -1258,6 +1400,7 @@ mod tests {
             6_001,
         );
         assert_eq!(fourth.clients[0].tx_bps, 4_160);
+        assert!(fourth.fresh_rates.is_empty());
     }
 
     #[test]
@@ -1498,6 +1641,106 @@ mod tests {
             returned.coverage_deltas.get("02:00:00:00:00:01@lan"),
             Some(&returned.coverage_delta)
         );
+    }
+
+    #[test]
+    fn identity_zone_change_rebaselines_the_aggregated_mac_counter() {
+        let first_identities = identities();
+        let mut collector = EcmBpfSnapshotCollector::default();
+        collector.convert(
+            EcmMapRead {
+                entries: vec![raw(0, 0, DIR_TX, 1_000, 10, 1_000)],
+                truncated: false,
+            },
+            &first_identities,
+            1_000,
+        );
+
+        let mut moved_identities = IdentityTable::new(4);
+        moved_identities
+            .observe(IdentityObservation {
+                mac: "02:00:00:00:00:01",
+                zone: Some("guest"),
+                interface: "br-guest",
+                ip: Some("198.51.100.2"),
+                hostname: Some("client"),
+                last_seen: 2,
+                source: ObservationSource::Neighbor,
+            })
+            .unwrap();
+        let moved = collector.convert(
+            EcmMapRead {
+                entries: vec![raw(0, 0, DIR_TX, 3_000, 30, 3_000)],
+                truncated: false,
+            },
+            &moved_identities,
+            3_000,
+        );
+        assert_eq!(moved.clients[0].identity_key, "02:00:00:00:00:01@guest");
+        assert_eq!(moved.clients[0].tx_bps, 0);
+        assert!(!moved.coverage_ready);
+        assert_eq!(moved.coverage_start_ms, None);
+        assert_eq!(moved.coverage_delta, TrafficCounters::default());
+
+        let recovered = collector.convert(
+            EcmMapRead {
+                entries: vec![raw(0, 0, DIR_TX, 4_000, 40, 4_000)],
+                truncated: false,
+            },
+            &moved_identities,
+            4_000,
+        );
+        assert!(recovered.coverage_ready);
+        assert_eq!(recovered.coverage_delta.tx_bytes, 1_000);
+        assert!(recovered
+            .coverage_deltas
+            .contains_key("02:00:00:00:00:01@guest"));
+    }
+
+    #[test]
+    fn truncated_map_read_requires_a_complete_rewarm_before_publishing_deltas() {
+        let identities = identities();
+        let mut collector = EcmBpfSnapshotCollector::default();
+        collector.convert(
+            EcmMapRead {
+                entries: vec![raw(1, 10, DIR_TX, 1_000, 10, 1_000)],
+                truncated: false,
+            },
+            &identities,
+            1_000,
+        );
+        let lost = collector.convert(
+            EcmMapRead {
+                entries: vec![raw(1, 10, DIR_TX, 2_000, 20, 2_000)],
+                truncated: true,
+            },
+            &identities,
+            2_000,
+        );
+        assert!(lost.truncated);
+        assert!(collector.last_complete().is_none());
+
+        let warmup = collector.convert(
+            EcmMapRead {
+                entries: vec![raw(1, 10, DIR_TX, 3_000, 30, 3_000)],
+                truncated: false,
+            },
+            &identities,
+            3_000,
+        );
+        assert_eq!(warmup.coverage_start_ms, None);
+        assert_eq!(warmup.coverage_delta, TrafficCounters::default());
+        let recovered = collector.convert(
+            EcmMapRead {
+                entries: vec![raw(1, 10, DIR_TX, 4_000, 40, 4_000)],
+                truncated: false,
+            },
+            &identities,
+            4_000,
+        );
+        assert_eq!(recovered.coverage_start_ms, Some(3_000));
+        assert_eq!(recovered.coverage_delta.tx_bytes, 1_000);
+        assert_eq!(recovered.coverage_delta.tx_packets, 10);
     }
 
     #[test]

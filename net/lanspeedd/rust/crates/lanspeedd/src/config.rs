@@ -80,6 +80,33 @@ impl RateCollectorMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AccessEdgeMode {
+    Off,
+    #[default]
+    Shadow,
+    Active,
+}
+
+impl AccessEdgeMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "off" => Some(Self::Off),
+            "shadow" => Some(Self::Shadow),
+            "active" => Some(Self::Active),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Shadow => "shadow",
+            Self::Active => "active",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConnectionCollectorMode {
     Auto,
@@ -212,6 +239,7 @@ pub struct RuntimeConfig {
     pub overview_window_samples_clamped: bool,
     pub max_clients_clamped: bool,
     pub rate_collector_mode: RateCollectorMode,
+    pub access_edge_mode: AccessEdgeMode,
     pub conn_collector_mode: ConnectionCollectorMode,
     pub ifnames: Vec<String>,
     pub interface_include: Vec<String>,
@@ -225,6 +253,10 @@ pub struct RuntimeConfig {
     /// when runtime policy filters or bounds the effective lists.
     pub configured_excluded: Vec<String>,
     pub configured_observed: Vec<String>,
+    /// Safe, de-duplicated ports explicitly declared as direct client access
+    /// ports. Runtime topology validation remains authoritative and must
+    /// downgrade a port when the declaration conflicts with observed FDB data.
+    pub dedicated_ports: Vec<String>,
     pub rejected_nssifb_collect: bool,
 }
 
@@ -244,6 +276,7 @@ impl Default for RuntimeConfig {
             overview_window_samples_clamped: false,
             max_clients_clamped: false,
             rate_collector_mode: RateCollectorMode::Auto,
+            access_edge_mode: AccessEdgeMode::Shadow,
             conn_collector_mode: ConnectionCollectorMode::Auto,
             ifnames: Vec::new(),
             interface_include: Vec::new(),
@@ -252,6 +285,7 @@ impl Default for RuntimeConfig {
             observe_ifnames: Vec::new(),
             configured_excluded: Vec::new(),
             configured_observed: Vec::new(),
+            dedicated_ports: Vec::new(),
             rejected_nssifb_collect: false,
         }
     }
@@ -356,6 +390,11 @@ impl RuntimeConfig {
                 config.rate_collector_mode = mode;
             }
         }
+        if let Some(value) = scalar(source, "access_edge_mode")? {
+            if let Some(mode) = AccessEdgeMode::parse(&value) {
+                config.access_edge_mode = mode;
+            }
+        }
         if let Some(value) = scalar(source, "conn_collector_mode")? {
             if let Some(mode) = ConnectionCollectorMode::parse(&value) {
                 config.conn_collector_mode = mode;
@@ -418,6 +457,9 @@ impl RuntimeConfig {
                 continue;
             }
             push_unique_bounded(&mut config.observe_ifnames, value);
+        }
+        for value in list(source, "dedicated_port")? {
+            push_unique_bounded(&mut config.dedicated_ports, value);
         }
 
         Ok(config)

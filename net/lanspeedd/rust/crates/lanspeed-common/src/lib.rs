@@ -20,6 +20,7 @@ pub const ECM_NSS_EXIT_PROGRAM_NAME: &str = "lanspeed_ecm_nss_exit";
 
 pub const MAX_CLIENTS: u32 = 2048;
 pub const MAX_CONN_TUPLES: u32 = 8192;
+pub const MAX_ECM_NSS_CONTEXTS: u32 = 4096;
 
 pub const DIR_TX: u8 = 1;
 pub const DIR_RX: u8 = 2;
@@ -73,8 +74,9 @@ pub struct EcmLayout {
     pub ready: u8,
 }
 
-/// One ECM connection direction. The connection pointer is intentionally an
-/// internal generation discriminator and is never exposed by the daemon API.
+/// ECM client-direction key ABI. Current eBPF objects set `connection` and
+/// `generation` to zero to aggregate by MAC + direction. Userspace continues
+/// accepting non-zero legacy per-connection keys during rolling upgrades.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(C, align(8))]
 pub struct EcmKey {

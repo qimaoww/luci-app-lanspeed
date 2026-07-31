@@ -88,6 +88,14 @@ const nssTcSnapshot = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss
 const x86Coverage = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/x86/coverage.rs');
 const x86CoverageState = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/x86/coverage_state.rs');
 const counterSource = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/counters.rs');
+const accessEdgeTypes = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/access_edge/types.rs');
+const accessEdgeRate = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/access_edge/rate.rs');
+const accessEdgeMux = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/access_edge/mux.rs');
+const accessEdgeFdb = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/access_edge/fdb.rs');
+const accessEdgeWifi = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/access_edge/nl80211.rs');
+const accessEdgeTopology = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/access_edge/topology.rs');
+const accessEdgeRuntime = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/access_edge/runtime.rs');
+const accessEdgeClassification = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/access_edge/classification.rs');
 const x86Sources = collectFiles('net/lanspeedd/rust/crates/lanspeedd/src/platform/x86')
   .map((file) => fs.readFileSync(file, 'utf8')).join('\n');
 const nssUserspace = collectFiles('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss')
@@ -106,9 +114,10 @@ const buildDriver = read('net/lanspeedd/rust/crates/lanspeed-build/src/lib.rs');
 const packageMakefile = read('net/lanspeedd/Makefile');
 const init = read('net/lanspeedd/files/etc/init.d/lanspeedd');
 
-assert(model.version === 10, 'collector model must describe fully separated platform backends');
+assert(model.version === 11, 'collector model must describe Access Edge total ownership and verified classification');
 assert(model.module_boundaries.x86_userspace.endsWith('/platform/x86') &&
   model.module_boundaries.nss_userspace.endsWith('/platform/nss') &&
+  model.module_boundaries.access_edge_userspace.endsWith('/platform/access_edge') &&
   model.module_boundaries.x86_ebpf.endsWith('/lanspeed-ebpf/src/x86') &&
   model.module_boundaries.nss_ebpf.endsWith('/lanspeed-ebpf/src/nss') &&
   model.module_boundaries.x86_depends_on_nss === false &&
@@ -138,9 +147,15 @@ assert(model.ownership.overlapping_rate_owners_forbidden === true,
   'overlapping NSS/BPF rate ownership must be forbidden');
 assert(model.ownership.manual_fallback_forbidden === true,
   'manual rate schemes must fail closed instead of silently switching');
-assert(model.ownership.rate_and_coverage_windows === 'shared_collector_batch_with_lan_catchup' &&
+assert(model.ownership.rate_and_coverage_windows ===
+    'legacy_manual_collector_shared_batch_with_lan_catchup' &&
+  model.ownership.active_auto_display_rate_owner === 'access_edge_per_direction_rate_mux' &&
+  model.ownership.active_auto_legacy_inference_enabled === false &&
+  model.ownership.authoritative_total_symbol === 'E' &&
+  model.ownership.classified_sources_are_total_addends === false &&
+  model.ownership.unclassified_label === 'unclassified_not_non_accelerated' &&
   model.ownership.coverage_can_block_rate === false,
-  'LAN coverage must never gate the ECM client-rate window');
+  'Access Edge E must own active-auto totals while legacy manual windows remain isolated');
 assert(model.ecm_node_model.collector_mode === 'nss_ecm_node', 'new collector mode must be nss_ecm_node');
 assert(model.ecm_node_model.output_mask === 8, 'ECM state must request node output only');
 assert(model.ecm_node_model.counter_merge_policy === 'single_ecm_node_owner', 'ECM node counters must have one owner');
@@ -162,6 +177,113 @@ assert(model.ecm_bpf_model.counter_merge_policy ===
   model.ecm_bpf_model.cumulative_bytes === 'ecm_hardware_map_only' &&
   model.ecm_bpf_model.ecm_node_rate_overlay === false,
   'ECM+BPF must fuse aligned source-disjoint raw deltas and never overlay ECM nodes');
+assert(JSON.stringify(model.ecm_bpf_model.map_key) ===
+    JSON.stringify(['client_mac', 'direction']) &&
+  model.ecm_bpf_model.map_abi === 'EcmKey_v1_with_connection_and_generation_zeroed' &&
+  model.ecm_bpf_model.map_capacity === 'at_least_2_times_max_clients' &&
+  model.ecm_bpf_model.nss_context_key === 'pid_tgid' &&
+  model.ecm_bpf_model.nss_context_value === 'nested_callback_depth' &&
+  model.ecm_bpf_model.classification_role === 'N_nss_identified_only' &&
+  model.ecm_bpf_model.active_auto_misaligned_rate_fallback === 'forbidden',
+  'ECM hot accounting must aggregate by MAC+direction and use task-scoped NSS context');
+
+const edgeModel = model.access_edge_model;
+assert(edgeModel.read_only === true &&
+  JSON.stringify(edgeModel.modes) === JSON.stringify(['off', 'shadow', 'active']) &&
+  edgeModel.default_mode === 'shadow' &&
+  edgeModel.display_activation === 'active_and_rate_collector_auto',
+  'Access Edge must default to a read-only shadow pipeline and own rates only in active+auto');
+assert(edgeModel.topology.fdb_primary === 'RTM_GETNEIGH_AF_BRIDGE' &&
+  edgeModel.topology.fdb_fallback === 'brforward' &&
+  edgeModel.topology.fdb_event_monitor === 'RTMGRP_NEIGH' &&
+  edgeModel.topology.fdb_full_sync_ms === 30000 &&
+  edgeModel.topology.wifi === 'generic_netlink_NL80211_CMD_GET_STATION' &&
+  edgeModel.topology.wifi_interface_type ===
+    'generic_netlink_NL80211_CMD_GET_INTERFACE' &&
+  edgeModel.topology.wifi_reassociation_marker ===
+    'NL80211_STA_INFO_ASSOC_AT_BOOTTIME_with_connected_time_fallback' &&
+  edgeModel.topology.wifi_fork_iw === false &&
+  edgeModel.topology.wifi_vlan_alignment ===
+    'inherit_only_unique_same_mac_bridge_ap_ifindex_fdb_vid' &&
+  accessEdgeFdb.includes('const RTM_GETNEIGH: u16 = 30;') &&
+  accessEdgeFdb.includes('const AF_BRIDGE: u8 = 7;') &&
+  accessEdgeFdb.includes('RTMGRP_NEIGH') &&
+  accessEdgeWifi.includes('const NL80211_CMD_GET_INTERFACE: u8 = 5;') &&
+  accessEdgeWifi.includes('const NL80211_CMD_GET_STATION: u8 = 17;') &&
+  accessEdgeWifi.includes('const NL80211_STA_INFO_ASSOC_AT_BOOTTIME: u16 = 42;') &&
+  accessEdgeWifi.includes('pub const NL80211_IFTYPE_WDS: u32 = 5;') &&
+  accessEdgeWifi.includes('pub const NL80211_IFTYPE_MESH_POINT: u32 = 7;') &&
+  accessEdgeRuntime.includes('wifi_shared_or_unproven_interface') &&
+  accessEdgeRuntime.includes('inherit_unambiguous_fdb_vlan(') &&
+  !accessEdgeWifi.includes('Command::new("iw")'),
+  'Access Edge topology must use only standard read-only netlink APIs');
+assert(edgeModel.full_rules.declared_direct_required === true &&
+  edgeModel.full_rules.stable_complete_fdb_snapshots === 2 &&
+  edgeModel.full_rules.other_dynamic_mac_forbidden === true &&
+  edgeModel.full_rules.cross_vlan_mac_forbidden === true &&
+  edgeModel.full_rules.fdb_event_monitor_required === true &&
+  edgeModel.full_rules.automatic_single_mac_port_maximum === 'partial' &&
+  edgeModel.full_rules.wifi_unicast_maximum === 'full' &&
+  edgeModel.full_rules.wifi_all_frames_maximum === 'partial' &&
+  accessEdgeTopology.includes('AttachmentTrust::DeclaredDirect') &&
+  accessEdgeRuntime.includes('!self.event_monitor_failed'),
+  'Full ownership must require declared direct topology and a healthy complete FDB view');
+assert(edgeModel.schedule.clock === 'CLOCK_MONOTONIC_absolute_deadline' &&
+  edgeModel.schedule.edge_ms === 1000 &&
+  edgeModel.schedule.classifier_ms === 2000 &&
+  edgeModel.schedule.comparison_epochs === 3 &&
+  edgeModel.schedule.comparison_window_ms === 6000 &&
+  edgeModel.schedule.missed_deadline === 'skip_expired_slots_no_catch_up' &&
+  accessEdgeClassification.includes('pub const CLASSIFIER_READ_END_SKEW_MS: u64 = 50;') &&
+  accessEdgeClassification.includes('pub const COMPARISON_EPOCH_COUNT: usize = 3;'),
+  'Access Edge must preserve real 1s/2s/6s windows on one monotonic deadline');
+assert(JSON.stringify(edgeModel.segment_fields) === JSON.stringify([
+  'epoch_id', 'start_ms', 'end_ms', 'read_begin_ms', 'read_end_ms', 'source',
+  'direction', 'bytes', 'packets', 'attachment_generation', 'byte_domain', 'uncertainty_ms'
+]) &&
+  accessEdgeTypes.includes('pub struct CounterSegment') &&
+  accessEdgeRate.includes('current.source != previous.source') &&
+  edgeModel.rate_mux.cross_source_delta_forbidden === true,
+  'every delta must retain source, epoch, generation, byte domain and physical read timing');
+assert(JSON.stringify(edgeModel.rate_mux.priority) === JSON.stringify([
+  'edge_wifi', 'edge_port', 'ecm_bpf_fallback', 'ecm_nss_lower_bound',
+  'tc_bpf_lower_bound', 'unavailable'
+]) &&
+  edgeModel.rate_mux.direction_independent === true &&
+  edgeModel.rate_mux.promotion_windows === 2 &&
+  edgeModel.rate_mux.soft_failure_windows === 2 &&
+  edgeModel.rate_mux.freshness_multiple === 2.5 &&
+  accessEdgeMux.includes('const PROMOTION_WINDOWS: u8 = 2;') &&
+  accessEdgeMux.includes('const SOFT_FAILURE_WINDOWS: u8 = 2;') &&
+  accessEdgeMux.includes('self.cadence_ms.saturating_mul(5) / 2'),
+  'RateMux must select each direction independently with bounded promotion, stale and demotion');
+assert(edgeModel.classification.E === 'access_edge_authoritative_total' &&
+  edgeModel.classification.N === 'ecm_nss_identified' &&
+  edgeModel.classification.S === 'tc_bpf_cpu_slow_path_identified' &&
+  edgeModel.classification.U === 'unclassified' &&
+  edgeModel.classification.n_and_s_added_to_e === false &&
+  edgeModel.classification.read_end_skew_max_ms === 50 &&
+  edgeModel.classification.comparison_requires_stable_epochs === 3 &&
+  edgeModel.classification.counter_skew_policy === 'omit_U_and_coverage_without_clamp' &&
+  edgeModel.classification.domain_mismatch_policy ===
+    'show_observed_N_and_S_separately_omit_U_and_coverage' &&
+  edgeModel.public_contract.unclassified_must_not_be_named_unaccelerated === true &&
+  accessEdgeClassification.includes('if classified > edge') &&
+  !accessEdgeClassification.includes('.min(100)') &&
+  accessEdgeClassification.includes('ClassificationState::DomainMismatch'),
+  'E/N/S/U must be compared only on complete aligned compatible windows without forced bisection');
+assert(Object.values(edgeModel.classification.legacy_active_auto_inference_paths)
+    .every((enabled) => enabled === false) &&
+  production.includes('fn active_access_edge_owns_display_rate(') &&
+  production.includes('fn legacy_nss_rate_window_enabled(') &&
+  production.includes('!active_access_edge_owns_display_rate(access_edge_mode, rate_collector_mode)') &&
+  production.includes('Active Access Edge never falls through to the legacy NSS') &&
+  production.includes('no LAN allocation, previous distribution, directional') &&
+  production.includes('interface floor, or smoothed rate may become E.'),
+  'active+auto must not execute any legacy LAN allocation, gap fill, max, floor or smoothing path');
+assert(production.includes('Active-auto rates are owned exclusively by RateMux') &&
+  production.includes('client.tx_bytes = None;\n                client.rx_bytes = None;'),
+  'active+auto must never retain cumulative totals from the displaced legacy pipeline');
 assert(model.ecm_bpf_window_model.rate_clock ===
     'per_connection_ecm_event_elapsed_with_daemon_fallback' &&
   model.ecm_bpf_window_model.event_timestamp_role ===
@@ -299,9 +421,15 @@ assert(model.performance_guardrails.backend_collection_policy.bpf === 'configure
   model.performance_guardrails.backend_collection_policy.nss_ecm_node_minimum_ms === 2000 &&
   model.performance_guardrails.backend_collection_policy.nss_ecm_bpf_minimum_ms === 2000 &&
   model.performance_guardrails.backend_collection_policy.auto === 'follow_effective_collector' &&
+  model.performance_guardrails.backend_collection_policy.access_edge_main_ms === 1000 &&
+  model.performance_guardrails.backend_collection_policy.access_edge_classifier_ms === 2000 &&
+  model.performance_guardrails.backend_collection_policy.access_edge_deadline ===
+    'absolute_clock_monotonic_skip_missed_slots' &&
   nssModule.includes('pub const COLLECTION_INTERVAL_MS: u32 = 2_000;') &&
-  production.includes('effective_collection_interval_ms(self.rate_owner, configured_ms)'),
-  'backend scheduling must restrict only effective ECM collectors to two seconds');
+  production.includes('self.config.access_edge_mode') &&
+  production.includes('next_absolute_collection_slot') &&
+  production.includes('periodic_deadline_due'),
+  'backend scheduling must use the 1s Access Edge clock and 2s classifier deadline without catch-up');
 assert(model.performance_guardrails.live_refresh_alignment.nss_sample_clock ===
   'published_shared_rate_window_end' &&
   model.performance_guardrails.live_refresh_alignment.nss_rpc_boundary_retry_count === 1 &&
@@ -358,9 +486,11 @@ assert(packageMakefile.includes('LANSPEED_BPF_TARGET_ARCH="$(ARCH)"') &&
   packageMakefile.includes('/usr/lib/bpf/lanspeed-ebpf-ecm.o'),
   'OpenWrt packaging must install the isolated ECM object only on aarch64');
 assert(nssRuntime.includes('#[cfg(target_arch = "aarch64")]') &&
-  nssRuntime.includes('EcmBpfRuntime::load_and_attach(ECM_BPF_OBJECT_PATH)') &&
+  nssRuntime.includes('EcmBpfRuntime::load_and_attach_with_max_clients(') &&
+  nssRuntime.includes('ECM_BPF_OBJECT_PATH') &&
+  nssRuntime.includes('config.max_clients') &&
   !nssRuntime.includes('EcmBpfRuntime::load_and_attach(FALLBACK_OBJECT_PATH)'),
-  'runtime must never load ECM from a TC object or on x86');
+  'runtime must size and load the isolated ECM object only on aarch64');
 assert(probeCollector.includes('.with_nss_probe(cfg!(target_arch = "aarch64"))') &&
   probeCollector.includes('if !self.nss_probe'),
   'x86 system probes must skip the NSS/ECM path family entirely');

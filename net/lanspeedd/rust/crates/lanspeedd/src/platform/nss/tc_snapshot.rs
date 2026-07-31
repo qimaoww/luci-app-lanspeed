@@ -23,4 +23,5 @@ pub(crate) struct NssTcSnapshot {
     pub(crate) coverage_start_ms: Option<u64>,
     pub(crate) coverage_end_ms: u64,
     pub(crate) coverage_ready: bool,
+    pub(crate) map_complete: bool,
 }

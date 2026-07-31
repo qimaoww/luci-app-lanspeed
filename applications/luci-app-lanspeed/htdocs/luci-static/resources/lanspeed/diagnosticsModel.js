@@ -388,10 +388,70 @@ function validateCoverage(value, path) {
 		(hasOwn(value, 'rx_pct') && value.rx_pct > 100)) return failure(path, _('覆盖率字段无效'));
 	return null;
 }
+function validateRateDirectionMeta(value, path) {
+	if (!onlyFields(value, [ 'source', 'coverage', 'byte_domain' ]))
+		return failure(path, _('速率方向元数据无效'));
+	var missing = requireFields(value, [ 'source', 'coverage' ], path);
+	if (missing) return missing;
+	/* Source codes are deliberately forward-compatible.  A newer daemon may
+	 * publish a source this UI does not know yet; rendering falls back to a
+	 * generic label instead of invalidating the complete clients response. */
+	if (!boundedString(value.source, 1, 48) || !/^[A-Za-z0-9_-]+$/.test(value.source) ||
+		!enumValue(value.coverage, [ 'full', 'partial', 'degraded', 'unavailable' ]) ||
+		(hasOwn(value, 'byte_domain') && !enumValue(value.byte_domain,
+			[ 'l2_no_fcs', 'l2_with_fcs', 'station_data', 'ecm_data' ])))
+		return failure(path, _('速率方向元数据无效'));
+	return null;
+}
+function validateRateMeta(value, path) {
+	var fields = [ 'version', 'scope', 'tx', 'rx', 'attachment', 'generation', 'window_ms',
+		'sample_ms', 'stale', 'reason_codes', 'classification' ];
+	if (!onlyFields(value, fields)) return failure(path, _('客户端速率元数据无效'));
+	var missing = requireFields(value,
+		[ 'version', 'scope', 'tx', 'rx', 'generation', 'stale', 'reason_codes' ], path);
+	if (missing) return missing;
+	if (value.version !== 1 ||
+		!enumValue(value.scope, [ 'all_frames', 'unicast', 'routed_observed', 'lower_bound', 'none' ]) ||
+		!nonNegativeInteger(value.generation) || typeof value.stale !== 'boolean' ||
+		!optionalIntegers(value, [ 'window_ms', 'sample_ms' ]) ||
+		!Array.isArray(value.reason_codes) || value.reason_codes.length > 16 ||
+		!value.reason_codes.every(function(reason) {
+			return boundedString(reason, 1, 48) && /^[A-Za-z0-9_-]+$/.test(reason);
+		})) return failure(path, _('客户端速率元数据无效'));
+	var issue = validateRateDirectionMeta(value.tx, path + '.tx') ||
+		validateRateDirectionMeta(value.rx, path + '.rx');
+	if (issue) return issue;
+	if (hasOwn(value, 'attachment')) {
+		var attachment = value.attachment;
+		if (!onlyFields(attachment, [ 'kind', 'ifname', 'trust' ]))
+			return failure(path + '.attachment', _('物理接入点元数据无效'));
+		var attachmentMissing = requireFields(attachment, [ 'kind', 'trust' ], path + '.attachment');
+		if (attachmentMissing) return attachmentMissing;
+		if (!enumValue(attachment.kind, [ 'ethernet', 'wifi', 'unknown' ]) ||
+			!enumValue(attachment.trust, [ 'declared_direct', 'associated_station', 'observed_exclusive', 'shared', 'unknown' ]) ||
+			(hasOwn(attachment, 'ifname') && !boundedString(attachment.ifname, 1, 48)))
+			return failure(path + '.attachment', _('物理接入点元数据无效'));
+	}
+	if (hasOwn(value, 'classification')) {
+		var classification = value.classification;
+		var classificationFields = [ 'state', 'sample_ms', 'window_ms', 'comparison_window_ms',
+			'tx_coverage_pct', 'rx_coverage_pct' ];
+		if (!onlyFields(classification, classificationFields) ||
+			requireFields(classification, [ 'state' ], path + '.classification') ||
+			!enumValue(classification.state, [ 'warmup', 'aligned', 'partial', 'stale',
+				'domain_mismatch', 'window_mismatch', 'counter_skew', 'map_loss', 'unavailable' ]) ||
+			!optionalIntegers(classification, classificationFields.slice(1)) ||
+			(hasOwn(classification, 'tx_coverage_pct') && classification.tx_coverage_pct > 100) ||
+			(hasOwn(classification, 'rx_coverage_pct') && classification.rx_coverage_pct > 100))
+			return failure(path + '.classification', _('分类覆盖率元数据无效'));
+	}
+	return null;
+}
 function validateStatusResponse(value) {
 	var fields = [ 'mode', 'confidence', 'warnings', 'evidence', 'refresh_interval_ms',
 		'active_client_window_ms', 'active_client_min_bps', 'overview_window_samples',
-		'collector_mode', 'rate_collector_mode', 'conn_collector_mode', 'version',
+		'collector_mode', 'rate_collector_mode', 'access_edge_mode', 'dedicated_ports',
+		'conn_collector_mode', 'version',
 		'capabilities', 'coverage' ];
 	if (!onlyFields(value, fields)) return failure('status', _('存在未定义字段'));
 	var missing = requireFields(value, [ 'mode', 'confidence', 'warnings', 'evidence',
@@ -399,10 +459,20 @@ function validateStatusResponse(value) {
 	if (missing) return missing;
 	if (!enumValue(value.mode, RUNTIME_MODES) || !enumValue(value.confidence, CONFIDENCES) ||
 		!Array.isArray(value.warnings) || !value.warnings.every(function(item) { return boundedString(item, 1, 160); }) ||
-		!safeInteger(value.refresh_interval_ms, 500) ||
-		!enumValue(value.rate_collector_mode, [ 'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf' ]) ||
-		!enumValue(value.conn_collector_mode, [ 'auto', 'conntrack_netlink', 'conntrack_procfs' ]) ||
-		!boundedString(value.version, 1, 64)) return failure('status', _('字段无效'));
+			!safeInteger(value.refresh_interval_ms, 500) ||
+			!enumValue(value.rate_collector_mode, [ 'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf' ]) ||
+			!enumValue(value.conn_collector_mode, [ 'auto', 'conntrack_netlink', 'conntrack_procfs' ]) ||
+			!boundedString(value.version, 1, 64)) return failure('status', _('字段无效'));
+	if (hasOwn(value, 'access_edge_mode') &&
+		!enumValue(value.access_edge_mode, [ 'off', 'shadow', 'active' ]))
+		return failure('status.access_edge_mode', _('字段无效'));
+	if (hasOwn(value, 'dedicated_ports') &&
+		(!Array.isArray(value.dedicated_ports) || value.dedicated_ports.length > 16 ||
+		 value.dedicated_ports.some(function(port, index) {
+			return !boundedString(port, 1, 31) || !/^[^\s/,\u0000]+$/.test(port) ||
+				value.dedicated_ports.indexOf(port) !== index;
+		 })))
+		return failure('status.dedicated_ports', _('字段无效'));
 	if (hasOwn(value, 'collector_mode') && !enumValue(value.collector_mode,
 		[ 'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf', 'conntrack_netlink', 'conntrack_procfs' ]))
 		return failure('status.collector_mode', _('字段无效'));
@@ -442,11 +512,13 @@ function validateClientsResponse(value) {
 	if (!hasOwn(value, 'clients')) return failure('clients.clients', _('字段缺失'));
 	var clientFields = [ 'mac', 'ips', 'identity_key', 'zone', 'interface', 'hostname', 'rx_bps',
 		'tx_bps', 'last_seen', 'sample_ms', 'rx_bytes', 'tx_bytes', 'collector_mode', 'confidence',
-		'warnings', 'tcp_conns', 'udp_conns', 'udp_dns_conns', 'udp_other_conns' ];
+		'warnings', 'tcp_conns', 'udp_conns', 'udp_dns_conns', 'udp_other_conns', 'rate_meta' ];
 	var clientRequired = [ 'mac', 'identity_key', 'zone', 'interface', 'ips', 'hostname', 'rx_bps',
 		'tx_bps', 'last_seen', 'collector_mode', 'confidence', 'warnings' ];
-	if (!Array.isArray(value.clients) || !value.clients.every(function(item) {
-		return onlyFields(item, clientFields) && !requireFields(item, clientRequired, 'client') &&
+	if (!Array.isArray(value.clients) || !value.clients.every(function(item, index) {
+		var metaIssue = hasOwn(item, 'rate_meta')
+			? validateRateMeta(item.rate_meta, 'clients.clients[' + index + '].rate_meta') : null;
+		return !metaIssue && onlyFields(item, clientFields) && !requireFields(item, clientRequired, 'client') &&
 			/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(item.mac || '') &&
 			boundedString(item.identity_key, 1, 160) && boundedString(item.zone, 1, 64) &&
 			boundedString(item.interface, 1, 160) && Array.isArray(item.ips) &&
