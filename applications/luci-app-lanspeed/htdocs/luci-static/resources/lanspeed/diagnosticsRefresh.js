@@ -20,8 +20,8 @@ function phaseLabel(phase) {
 }
 
 var SUBSYSTEM_LABELS = {
-	bpf: _('BPF 运行时'), tc: _('TC 挂载'), bpf_map: _('BPF 映射表'),
-	conntrack: _('连接跟踪'), nss: _('NSS'), identity: _('客户端归属'), ubus: _('RPC 服务')
+	bpf: _('CPU 慢路径检测（BPF）'), tc: _('CPU 路径挂载（TC）'), bpf_map: _('分类映射表'),
+	conntrack: _('连接跟踪'), nss: _('NSS 加速识别'), identity: _('客户端接入归属'), ubus: _('RPC 服务')
 };
 
 var NEUTRAL_DISABLED_SUBSYSTEM_CODES = {
@@ -145,13 +145,14 @@ function renderErrors(refs, viewState) {
 	}));
 }
 
-function refreshStatusCards(refs, status, health, rpcData, collector, diagnostics) {
-	var viewState = { status: status || {}, health: health || {}, rpc: rpcData || {}, diagnostics: diagnostics || {} };
+function refreshStatusCards(refs, status, health, rpcData, collector, diagnostics, clientsData) {
+	var viewState = { status: status || {}, health: health || {}, clients: clientsData || {},
+		rpc: rpcData || {}, diagnostics: diagnostics || {} };
 	var c = contract(viewState);
 	var runtime = diagnosticsModel.mergeRuntime(status, health, rpcData, diagnostics);
 	var versions = diagnosticsModel.versionStateWithRpc(viewState,
 		status && status.version || health && health.version || runtime.version, lsVersion.FULL_VERSION);
-	var path = diagnosticsModel.pathStateWithRpc(viewState);
+	var connections = diagnosticsModel.connectionStateWithRpc(viewState);
 	var collection = c.usable ? c.data.collection : null;
 	var service = c.usable ? c.data.service : null;
 	var diagnosticPhase = displayPhase(viewState, 'diagnostics');
@@ -167,37 +168,51 @@ function refreshStatusCards(refs, status, health, rpcData, collector, diagnostic
 		collection ? phaseLabel(collection.state) : phaseLabel(displayPhase(viewState, 'diagnostics')),
 		collection ? _('第 %d 代 · 年龄 %s').format(collection.generation,
 			diagnosticsModel.formatDuration(collection.age_ms)) : _('诊断契约未确认'));
+	setFact(refs, 'connections', connections.state, connections.value,
+		connections.matchPct === null || connections.matchPct === undefined ? connections.description :
+			_('匹配率 %s · TCP %d · UDP %d').format(
+				diagnosticsModel.formatPercent(connections.matchPct),
+				Math.max(0, Number(status && status.tcp_conns_total) || Number(viewState.clients && viewState.clients.tcp_conns_total) || 0),
+				Math.max(0, Number(status && status.udp_conns_total) || Number(viewState.clients && viewState.clients.udp_conns_total) || 0)));
 	setFact(refs, 'version', versions.state, versions.state === 'good' ? _('一致') : versions.badge, versions.value);
-	setFact(refs, 'source', path.state, path.value,
-		(path.configuredRate || '-') + ' / ' + (path.configuredConnection || '-'));
-	return { states: [ serviceState, collectionState, versions.state, path.state ], version: versions, path: path,
-		collector: collector, attention: [ serviceState, collectionState, versions.state, path.state ]
+	return { states: [ serviceState, collectionState, connections.state, versions.state ], version: versions,
+		connections: connections, collector: collector,
+		attention: [ serviceState, collectionState, connections.state, versions.state ]
 			.filter(function(state) { return state !== 'good'; }).length };
 }
 
 function renderPipeline(refs, viewState) {
-	var quality = diagnosticsModel.qualityState(viewState, viewState.progress);
-	var freshness = quality.freshness || {};
-	var path = diagnosticsModel.pathStateWithRpc(viewState);
-	var connections = diagnosticsModel.connectionStateWithRpc(viewState);
-	var freshnessEvidence = {}, qualityEvidence = {}, pathEvidence = {}, connectionEvidence = {};
-	freshnessEvidence[_('诊断 RPC')] = phaseLabel(displayPhase(viewState, 'diagnostics'));
-	qualityEvidence[_('当前网速覆盖')] = quality.coverage && quality.coverage.badge || _('未知');
-	qualityEvidence[_('状态 RPC')] = phaseLabel(displayPhase(viewState, 'status'));
-	pathEvidence[_('速率配置')] = textOrDash(path.configuredRate);
-	pathEvidence[_('连接配置')] = textOrDash(path.configuredConnection);
-	connectionEvidence[_('数据 RPC')] = phaseLabel(displayPhase(viewState, 'clients'));
-	connectionEvidence[_('匹配率')] = connections.matchPct === null || connections.matchPct === undefined
-		? '-' : String(Math.round(connections.matchPct * 10) / 10) + '%';
-	setStage(refs, 'freshness', freshness.state, freshness.badge, freshness.value,
-		freshness.description, freshness.meta, freshnessEvidence);
-	setStage(refs, 'quality', quality.state, quality.badge, quality.value,
-		quality.description, quality.meta, qualityEvidence);
-	setStage(refs, 'path', path.state, path.badge, path.value, path.description, path.meta, pathEvidence);
-	setStage(refs, 'connections', connections.state, connections.badge, connections.value,
-		connections.description, connections.meta, connectionEvidence);
-	refs.pipelineSummary.textContent = [ quality.badge, freshness.badge, path.badge, connections.badge ].join(' · ');
-	return { quality: quality, freshness: freshness, path: path, connections: connections };
+	var rate = diagnosticsModel.rateOwnerStateWithRpc(viewState);
+	var edge = diagnosticsModel.accessEdgeStateWithRpc(viewState);
+	var classification = diagnosticsModel.classificationStateWithRpc(viewState);
+	var integrity = diagnosticsModel.integrityStateWithRpc(viewState);
+	var rateEvidence = {}, edgeEvidence = {}, classificationEvidence = {}, integrityEvidence = {};
+	rateEvidence[_('覆盖')] = rate.coverageText;
+	rateEvidence[_('范围')] = rate.scopeText;
+	edgeEvidence[_('接入')] = edge.attachmentText;
+	edgeEvidence[_('归属')] = edge.trustText;
+	if (classification.coverageText === '-')
+		classificationEvidence[_('状态')] = classification.stateText;
+	else
+		classificationEvidence[_('覆盖率')] = classification.coverageText;
+	classificationEvidence[_('映射')] = classification.maps.text;
+	integrityEvidence[_('总速率')] = _('回退 %d · 缺失 %d · 陈旧 %d').format(
+		integrity.fallbackDirections, integrity.unavailableDirections, integrity.staleClients);
+	integrityEvidence[_('规则')] = _('N/S 不与总速率相加');
+	setStage(refs, 'rate', rate.state, rate.badge, rate.value,
+		'', _('%d/%d 方向 · 1 秒窗口').format(rate.facts.ownerDirections, rate.facts.totalDirections), rateEvidence);
+	setStage(refs, 'edge', edge.state, edge.badge, edge.value,
+		'', edge.meta, edgeEvidence);
+	setStage(refs, 'classification', classification.state, classification.badge, classification.value,
+		'', _('分类 %s · 对齐 %s').format(
+			diagnosticsModel.formatDuration(classification.windowMs),
+			diagnosticsModel.formatDuration(classification.comparisonWindowMs)), classificationEvidence);
+	setStage(refs, 'integrity', integrity.state, integrity.badge, integrity.value,
+		'', integrity.reasonCodes.length ? _('详情见诊断报告') : '', integrityEvidence);
+	refs.pipelineSummary.textContent = _('总速率 %d/%d 方向 · 分类 %d/%d 可比较').format(
+		rate.facts.ownerDirections, rate.facts.totalDirections,
+		classification.aligned, classification.totalClients);
+	return { rate: rate, edge: edge, classification: classification, integrity: integrity };
 }
 
 function interfaceRoleLabel(role) {
@@ -330,7 +345,8 @@ function refresh(viewState) {
 	if (!refs) return null;
 	var state = renderPageState(refs, viewState);
 	var cardState = refreshStatusCards(refs, viewState.status, viewState.health, viewState.rpc,
-		statusCollector.effectiveCollector(viewState.status, viewState.clients), viewState.diagnostics);
+		statusCollector.effectiveCollector(viewState.status, viewState.clients), viewState.diagnostics,
+		viewState.clients);
 	var pipeline = renderPipeline(refs, viewState);
 	var rpcState = renderRpcChecks(refs, viewState);
 	var interfaces = renderInterfaces(refs, viewState);

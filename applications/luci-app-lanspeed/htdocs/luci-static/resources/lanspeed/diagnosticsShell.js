@@ -111,8 +111,8 @@ function buildSummarySection(refs, viewState) {
 	refs.summaryFacts = E('dl', { 'class': 'lanspeed-diagnostics-facts' }, [
 		fact(refs, 'service', _('服务与 RPC')),
 		fact(refs, 'collection', _('采集循环')),
-		fact(refs, 'version', _('版本一致性')),
-		fact(refs, 'source', _('当前数据源'))
+		fact(refs, 'connections', _('连接详情')),
+		fact(refs, 'version', _('版本一致性'))
 	]);
 
 	return E('section', { 'class': 'cbi-section lanspeed-diagnostics-summary-section' }, [
@@ -123,7 +123,7 @@ function buildSummarySection(refs, viewState) {
 		]),
 		E('div', { 'class': 'lanspeed-body lanspeed-diagnostics-summary-body' }, [
 			E('p', { 'class': 'lanspeed-diagnostics-intro' },
-				_('按数据来源分别检查服务、采集质量、接口、连接和 RPC；失败接口不会由其它响应替代。')),
+				_('总速率由客户端接入口采集；NSS/CPU 只做分类，不与总速率相加。')),
 			refs.restartFeedback,
 			refs.pageNotice,
 			refs.errorDetails,
@@ -133,15 +133,15 @@ function buildSummarySection(refs, viewState) {
 }
 
 function buildPipelineSection(refs) {
-	refs.pipelineSummary = E('span', { 'class': 'sum lanspeed-diagnostics-pipeline-summary' }, _('等待采集证据'));
+	refs.pipelineSummary = E('span', { 'class': 'sum lanspeed-diagnostics-pipeline-summary' }, _('等待精准速率证据'));
 	refs.pipeline = E('ol', { 'class': 'lanspeed-diagnostics-pipeline' }, [
-		stage(refs, 'freshness', _('采集新鲜度')),
-		stage(refs, 'quality', _('采集质量')),
-		stage(refs, 'path', _('速率与连接路径')),
-		stage(refs, 'connections', _('连接统计'))
+		stage(refs, 'rate', _('总速率')),
+		stage(refs, 'edge', _('接入归属')),
+		stage(refs, 'classification', _('NSS / CPU 分类')),
+		stage(refs, 'integrity', _('当前限制'))
 	]);
 	return E('section', { 'class': 'cbi-section lanspeed-diagnostics-pipeline-section' }, [
-		sectionHeader(_('采集链路'), refs.pipelineSummary, '', []),
+		sectionHeader(_('精准速率'), refs.pipelineSummary, '', []),
 		E('div', { 'class': 'lanspeed-body lanspeed-diagnostics-pipeline-body' }, [ refs.pipeline ])
 	]);
 }
@@ -152,11 +152,8 @@ function buildHealthSection(refs) {
 	refs.subsystemsBody = E('tbody', {});
 	refs.rpcBody = E('tbody', {});
 	refs.rpcSummary = E('span', { 'class': 'sum lanspeed-diagnostics-rpc-summary' }, _('等待 RPC 响应'));
-	refs.rpcDetails = E('div', { 'class': 'lanspeed-diagnostics-health-group lanspeed-diagnostics-rpc-group' }, [
-		E('div', { 'class': 'lanspeed-diagnostics-subheading' }, [
-			E('h4', {}, _('RPC 请求明细')),
-			refs.rpcSummary
-		]),
+	refs.rpcDetails = E('details', { 'class': 'lanspeed-diagnostics-health-group lanspeed-diagnostics-rpc-group' }, [
+		E('summary', {}, [ _('RPC 请求明细'), refs.rpcSummary ]),
 		E('div', { 'class': 'lanspeed-diagnostics-table-wrap' }, [
 			E('table', { 'class': 'table lanspeed-diagnostics-rpc-table' }, [
 				E('caption', {}, _('本轮各诊断接口的独立结果')),
@@ -167,13 +164,13 @@ function buildHealthSection(refs) {
 	]);
 
 	return E('section', { 'class': 'cbi-section lanspeed-diagnostics-health-section' }, [
-		sectionHeader(_('接口与 RPC 健康'), refs.healthSummary, '', []),
+		sectionHeader(_('基础接口与 RPC 健康'), refs.healthSummary, '', []),
 		E('div', { 'class': 'lanspeed-body lanspeed-diagnostics-health-body' }, [
-			E('div', { 'class': 'lanspeed-diagnostics-health-group' }, [
-				E('h4', {}, _('采集接口')),
-				E('div', { 'class': 'lanspeed-diagnostics-table-wrap' }, [
-					E('table', { 'class': 'table lanspeed-diagnostics-health-table' }, [
-						E('caption', {}, _('接口角色、采样状态和实时速率')),
+				E('div', { 'class': 'lanspeed-diagnostics-health-group' }, [
+					E('h4', {}, _('逻辑接口吞吐')),
+					E('div', { 'class': 'lanspeed-diagnostics-table-wrap' }, [
+						E('table', { 'class': 'table lanspeed-diagnostics-health-table' }, [
+							E('caption', {}, _('逻辑接口健康与吞吐，仅用于交叉验证，不代表客户端总速率来源')),
 						tableHead([ _('接口'), _('角色'), _('状态'), _('采样'), _('实时速率') ]),
 						refs.interfacesBody
 					])
@@ -222,12 +219,12 @@ function buildSupportSection(refs, viewState) {
 		'role': 'status',
 		'aria-live': 'polite'
 	}, _('报告仅包含白名单状态与计数，不复制客户端或接口身份。'));
-	refs.reportDetails = E('div', {
+	refs.reportDetails = E('details', {
 		'class': 'lanspeed-diagnostics-report-details',
 		'role': 'region',
 		'aria-label': _('脱敏报告预览')
 	}, [
-		E('h4', {}, _('脱敏报告预览')),
+		E('summary', {}, _('详细诊断报告（脱敏）')),
 		refs.reportPreview
 	]);
 

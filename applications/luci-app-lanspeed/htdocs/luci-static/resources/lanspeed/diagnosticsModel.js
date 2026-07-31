@@ -76,8 +76,8 @@ var REASON_LABELS = {
 	unsupported: _('没有受支持的数据源')
 };
 var SUBSYSTEM_LABELS = {
-	bpf: _('BPF 运行时'), tc: _('TC 挂载'), bpf_map: _('BPF 映射表'),
-	conntrack: _('连接跟踪'), nss: _('NSS'), identity: _('客户端归属'), ubus: _('RPC 服务')
+	bpf: _('CPU 慢路径检测（BPF）'), tc: _('CPU 路径挂载（TC）'), bpf_map: _('分类映射表'),
+	conntrack: _('连接跟踪'), nss: _('NSS 加速识别'), identity: _('客户端接入归属'), ubus: _('RPC 服务')
 };
 var HEALTH_REPORT_LABELS = {
 	healthy: _('正常'), degraded: _('降级'), unavailable: _('不可用'), disabled: _('未启用')
@@ -112,9 +112,64 @@ var INTERFACE_STATUS_REPORT_LABELS = {
 	missing: _('缺失'), unsupported: _('不支持'), excluded: _('已排除'), unknown: _('未知')
 };
 var COLLECTOR_REPORT_LABELS = {
-	bpf: _('BPF'), nss_ecm_node: _('ECM'), nss_ecm_bpf: _('ECM+BPF'),
+	access_edge: _('自动精准'), bpf: _('BPF'), nss_ecm_node: _('ECM'), nss_ecm_bpf: _('ECM+BPF'),
 	conntrack_netlink: _('CT-Netlink'), conntrack_procfs: _('CT-Procfs'),
 	conntrack: _('CT'), unsupported: _('不可用')
+};
+var RATE_SOURCE_LABELS = {
+	edge_port: _('Edge-Port'), edge_wifi: _('Edge-WiFi'),
+	ecm_bpf_fallback: _('ECM+BPF 降级'), ecm_nss_lower_bound: _('NSS 下界'),
+	tc_bpf_lower_bound: _('CPU 慢路径下界'), none: _('无来源')
+};
+var RATE_COVERAGE_LABELS = {
+	full: _('完整'), partial: _('部分'), degraded: _('降级'), unavailable: _('不可用')
+};
+var RATE_SCOPE_LABELS = {
+	all_frames: _('全部帧'), unicast: _('单播'), routed_observed: _('已观察路由流量'),
+	lower_bound: _('下界'), none: _('无')
+};
+var CLASSIFICATION_STATE_LABELS = {
+	warmup: _('预热'), aligned: _('已对齐'), partial: _('部分'), stale: _('已过期'),
+	domain_mismatch: _('字节口径不可比'), window_mismatch: _('窗口不一致'),
+	counter_skew: _('计数错位'), map_loss: _('映射丢失'), unavailable: _('不可用')
+};
+var ACCESS_EDGE_REASON_LABELS = {
+	active_attachment_unpublished: _('活动接入点尚未发布为客户端'),
+	attachment_ambiguous: _('客户端接入点存在歧义'),
+	access_edge_shadow: _('精准接入点仅在后台验证，不负责页面总速率'),
+	classification_counter_skew: _('分类计数窗口错位，未发布未分类速率和覆盖率'),
+	classification_domain_mismatch: _('总速率与分类字节口径不同，不能安全相减'),
+	classification_map_loss: _('分类映射读取不完整'),
+	classification_partial: _('分类来源不完整'),
+	classification_stale: _('分类结果已过期'),
+	classification_unavailable: _('当前没有可验证分类结果'),
+	classification_warmup: _('分类比较窗口正在预热'),
+	classification_window_mismatch: _('分类窗口不一致，不能安全合并'),
+	counter_reset: _('接入口计数器重置，正在重新预热'),
+	direction_window_mismatch: _('上下行总速率窗口不同'),
+	duplicate_client_identity: _('同一接入设备匹配到多个客户端身份'),
+	duplicate_mac_attachment: _('同一 MAC 出现在多个接入点'),
+	fdb_dump_failed: _('网桥 FDB 完整读取失败'),
+	fdb_event_monitor_failed: _('网桥 FDB 事件监听失败'),
+	fdb_event_monitor_unavailable: _('网桥 FDB 事件监听不可用'),
+	fdb_fallback_incomplete: _('FDB 后备读取无法证明结果完整'),
+	fresh_edge_owner_missing: _('部分方向的精准总速率来源尚未达到 Full 证明'),
+	nl80211_dump_failed: _('无线客户端计数读取失败'),
+	nl80211_dump_incomplete: _('无线客户端计数读取不完整'),
+	nl80211_station_sample_missing: _('无线客户端缺少本轮计数'),
+	port_counter_missing: _('有线接入口缺少本轮计数'),
+	port_not_declared_direct: _('有线端口未声明为一口一设备，不能证明 Full'),
+	rate_owner_unavailable: _('客户端没有可用的总速率来源'),
+	shadow_not_rate_owner: _('精准接入点当前不负责页面总速率'),
+	shared_or_unproven_port: _('端口为共享下联或无法证明为直连'),
+	topology_incomplete: _('接入拓扑读取不完整'),
+	warmup: _('接入口计数正在建立基线'),
+	wifi_group_traffic_unattributed: _('Wi-Fi 广播和组播无法逐客户端完整归属'),
+	wifi_shared_or_unproven_interface: _('无线接口为共享接入，全部帧最多为 Partial')
+};
+var FDB_SOURCE_LABELS = {
+	rtnetlink_af_bridge: _('标准 Bridge Netlink'),
+	sysfs_brforward_fallback: _('兼容 brforward 读取')
 };
 
 function asArray(value) { return Array.isArray(value) ? value : []; }
@@ -903,6 +958,297 @@ function collectorDisplayLabel(value) {
 	return knownCollector(key) ? statusCollector.collectorLabel(key) : _('未知');
 }
 
+function currentRateUsesAccessEdge(status) {
+	return String(status && status.rate_collector_mode || '') === 'auto' &&
+		String(status && status.access_edge_mode || '') === 'active';
+}
+
+function countSummary(counts, labels, preferred) {
+	var keys = [], seen = Object.create(null);
+	(preferred || []).forEach(function(key) {
+		if (counts[key]) { keys.push(key); seen[key] = true; }
+	});
+	Object.keys(counts || {}).sort().forEach(function(key) {
+		if (counts[key] && !seen[key]) keys.push(key);
+	});
+	return keys.map(function(key) {
+		return (labels[key] || _('未知')) + ' ' + counts[key];
+	}).join(' · ') || '-';
+}
+
+function edgeReasonText(code) {
+	return ACCESS_EDGE_REASON_LABELS[String(code || '')] || _('未识别的能力边界');
+}
+
+function collectRateFacts(clientsResponse) {
+	var clients = asArray(clientsResponse && clientsResponse.clients);
+	var sourceCounts = Object.create(null), coverageCounts = Object.create(null), scopeCounts = Object.create(null);
+	var ownerDirections = 0, unavailableDirections = 0, fallbackDirections = 0, staleClients = 0;
+	var attachmentKinds = Object.create(null), attachmentTrust = Object.create(null), reasonCodes = [];
+	clients.forEach(function(client) {
+		var meta = client && client.rate_meta;
+		if (!plainObject(meta)) {
+			sourceCounts.none = (sourceCounts.none || 0) + 2;
+			coverageCounts.unavailable = (coverageCounts.unavailable || 0) + 2;
+			scopeCounts.none = (scopeCounts.none || 0) + 1;
+			unavailableDirections += 2;
+			return;
+		}
+		if (meta.stale === true) staleClients++;
+		if (plainObject(meta.attachment)) {
+			var kind = String(meta.attachment.kind || 'unknown');
+			var trust = String(meta.attachment.trust || 'unknown');
+			attachmentKinds[kind] = (attachmentKinds[kind] || 0) + 1;
+			attachmentTrust[trust] = (attachmentTrust[trust] || 0) + 1;
+		}
+		var scope = String(meta.scope || 'none');
+		scopeCounts[scope] = (scopeCounts[scope] || 0) + 1;
+		asArray(meta.reason_codes).forEach(function(code) {
+			code = String(code || '');
+			if (code && reasonCodes.indexOf(code) === -1) reasonCodes.push(code);
+		});
+		[ meta.tx, meta.rx ].forEach(function(direction) {
+			var source = plainObject(direction) ? String(direction.source || 'none') : 'none';
+			var coverage = plainObject(direction) ? String(direction.coverage || 'unavailable') : 'unavailable';
+			sourceCounts[source] = (sourceCounts[source] || 0) + 1;
+			coverageCounts[coverage] = (coverageCounts[coverage] || 0) + 1;
+			if (source === 'none' || coverage === 'unavailable') unavailableDirections++;
+			else ownerDirections++;
+			if (source === 'ecm_bpf_fallback' || source === 'ecm_nss_lower_bound' || source === 'tc_bpf_lower_bound')
+				fallbackDirections++;
+		});
+	});
+	return {
+		clients: clients, totalClients: clients.length, totalDirections: clients.length * 2,
+		ownerDirections: ownerDirections, unavailableDirections: unavailableDirections,
+		fallbackDirections: fallbackDirections, staleClients: staleClients,
+		sourceCounts: sourceCounts, coverageCounts: coverageCounts, scopeCounts: scopeCounts,
+		attachmentKinds: attachmentKinds, attachmentTrust: attachmentTrust, reasonCodes: reasonCodes
+	};
+}
+
+function rateOwnerStateWithRpc(viewState) {
+	viewState = viewState || {};
+	var status = viewState.status || {}, clients = viewState.clients || {};
+	var facts = collectRateFacts(clients), edgeOwner = currentRateUsesAccessEdge(status);
+	var statusRpc = rpcState(viewState, 'status'), clientsRpc = rpcState(viewState, 'clients');
+	var coverage = coverageState(status, clients), source, state, badge, value, description, meta;
+	var sourceText = countSummary(facts.sourceCounts, RATE_SOURCE_LABELS,
+		[ 'edge_port', 'edge_wifi', 'ecm_bpf_fallback', 'ecm_nss_lower_bound', 'tc_bpf_lower_bound', 'none' ]);
+	var coverageText = countSummary(facts.coverageCounts, RATE_COVERAGE_LABELS,
+		[ 'full', 'partial', 'degraded', 'unavailable' ]);
+	if (edgeOwner) {
+		source = 'access_edge'; state = coverage.state; badge = coverage.badge;
+		value = sourceText === '-' ? _('等待总速率来源') : sourceText;
+		description = coverage.description + ' ' +
+			_('每个方向只使用一个总速率来源（owner）；NSS/CPU 分类不会与总速率相加。');
+		meta = _('%d/%d 个方向已有来源 · 目标窗口 1 秒').format(facts.ownerDirections, facts.totalDirections);
+		if (facts.unavailableDirections) {
+			state = 'bad'; badge = _('存在缺失');
+			description += ' ' + _('%d 个方向没有可用的总速率 owner。').format(facts.unavailableDirections);
+		} else if (facts.fallbackDirections || facts.coverageCounts.degraded) {
+			state = worseState(state, 'warning');
+			if (state !== 'bad') badge = _('降级');
+			description += ' ' + _('部分方向正在使用分类器降级来源，只能代表已观察到的路由流量。');
+		} else if (facts.coverageCounts.partial) {
+			state = worseState(state, 'warning');
+			if (state !== 'bad') badge = _('部分');
+			description += ' ' + _('部分方向尚未达到全部帧 Full 证明。');
+		} else if (facts.staleClients) {
+			state = worseState(state, 'warning');
+			if (state !== 'bad') badge = _('存在陈旧值');
+			description += ' ' + _('%d 个客户端的总速率已标记为陈旧。').format(facts.staleClients);
+		}
+	} else {
+		var evidence = status.evidence && status.evidence.collector || {};
+		source = collectorKey((status.evidence && status.evidence.effective_collector) ||
+			evidence.primary_source || statusCollector.effectiveCollector(status, clients));
+		state = source === 'unsupported' ? 'bad' : coverage.state;
+		badge = source === 'unsupported' ? _('不可用') : _('手动路径');
+		value = collectorDisplayLabel(source);
+		description = source === 'unsupported' ? _('手动网速模式没有可用采集来源。') :
+			_('当前只显示所选路径能够观察到的流量，不代表全部客户端帧。');
+		meta = _('Access Edge 不负责当前页面总速率 · %s').format(coverage.description);
+	}
+	if (statusRpc.state === 'failed' || statusRpc.state === 'invalid' || statusRpc.state === 'missing' ||
+	    clientsRpc.state === 'failed' || clientsRpc.state === 'invalid' || clientsRpc.state === 'missing') {
+		state = 'bad'; badge = _('不可用');
+		description = _('状态或客户端 RPC 没有返回可验证的总速率来源。');
+	} else if (statusRpc.state === 'loading' || clientsRpc.state === 'loading') {
+		state = 'warning'; badge = _('检查中'); description = _('正在等待总速率 owner 证据。');
+	} else if (statusRpc.state === 'retained' || clientsRpc.state === 'retained') {
+		state = worseState(state, 'warning'); badge = _('沿用旧值');
+		description += ' ' + _('当前显示最近一次成功结果。');
+	}
+	return { state: state, badge: badge, value: value, description: description, meta: meta,
+		source: source, sourceText: sourceText, coverageText: coverageText,
+		scopeText: countSummary(facts.scopeCounts, RATE_SCOPE_LABELS,
+			[ 'all_frames', 'unicast', 'routed_observed', 'lower_bound', 'none' ]),
+		facts: facts, edgeOwner: edgeOwner };
+}
+
+function accessEdgeStateWithRpc(viewState) {
+	viewState = viewState || {};
+	var status = viewState.status || {}, clients = viewState.clients || {};
+	var mode = String(status.access_edge_mode || 'off'), owner = currentRateUsesAccessEdge(status);
+	var evidence = clients.evidence && clients.evidence.access_edge;
+	var facts = collectRateFacts(clients), rpc = rpcState(viewState, 'clients');
+	if (mode === 'off') return { state: 'neutral', badge: _('已关闭'), value: _('不参与'),
+		description: _('精准接入点采集已关闭；当前总速率只能来自手动采集路径。'),
+		meta: _('配置模式 off'), reasonCodes: [], reasonText: '-', topologyComplete: false,
+		activeAttachments: 0, publishedAttachments: 0, attachmentText: '-', trustText: '-' };
+	if (!plainObject(evidence)) return { state: rpc.state === 'failed' ? 'bad' : 'warning',
+		badge: rpc.state === 'loading' ? _('检查中') : _('等待采样'), value: '…',
+		description: _('尚未收到精准接入点、FDB 与无线关联覆盖证据。'),
+		meta: mode === 'shadow' ? _('仅后台验证') : _('当前总速率来源'), reasonCodes: [],
+		reasonText: '-', topologyComplete: false, activeAttachments: null,
+		publishedAttachments: null, attachmentText: '-', trustText: '-' };
+	var quality = String(evidence.coverage || 'unavailable');
+	var active = finiteNumber(evidence.active_attachments), published = finiteNumber(evidence.published_attachments);
+	var topologyComplete = evidence.topology_complete === true;
+	var reasons = asArray(evidence.reason_codes).map(String).filter(function(code, index, values) {
+		return code && values.indexOf(code) === index;
+	});
+	var state = quality === 'unavailable' && owner ? 'bad' :
+		(!topologyComplete || published === null || active === null || published < active || quality !== 'full' && owner ? 'warning' : 'good');
+	var badge = owner ? (RATE_COVERAGE_LABELS[quality] || _('未知')) : _('后台验证');
+	var value = active !== null && published !== null ? _('%d/%d 个接入点').format(published, active) : _('接入点未知');
+	var description = owner ? _('精准接入点负责当前客户端总速率。') :
+		_('精准接入点继续采集核对，但当前网速模式不会采用它的速率。');
+	if (reasons.length) description += ' ' + reasons.slice(0, 2).map(edgeReasonText).join('；') + '。';
+	var attachmentText = countSummary(facts.attachmentKinds,
+		{ ethernet: _('有线'), wifi: _('Wi-Fi'), unknown: _('未知') }, [ 'ethernet', 'wifi', 'unknown' ]);
+	var trustText = countSummary(facts.attachmentTrust, {
+		declared_direct: _('声明直连'), associated_station: _('无线关联'),
+		observed_exclusive: _('单 MAC 观察'), shared: _('共享'), unknown: _('未知')
+	}, [ 'declared_direct', 'associated_station', 'observed_exclusive', 'shared', 'unknown' ]);
+	if (rpc.state === 'failed' || rpc.state === 'invalid' || rpc.state === 'missing') {
+		state = 'bad'; badge = _('不可用'); description = _('客户端 RPC 没有返回精准接入点证据。');
+	} else if (rpc.state === 'loading') {
+		state = 'warning'; badge = _('检查中'); description = _('正在等待精准接入点证据。');
+	} else if (rpc.state === 'retained') {
+		state = worseState(state, 'warning'); badge = _('沿用旧值'); description += ' ' + _('本轮 RPC 沿用旧值。');
+	}
+	return { state: state, badge: badge, value: value, description: description,
+		meta: _('拓扑 %s · FDB %s').format(topologyComplete ? _('完整') : _('不完整'),
+			FDB_SOURCE_LABELS[String(evidence.fdb_source || '')] || _('未知来源')),
+		reasonCodes: reasons, reasonText: reasons.length ? reasons.map(edgeReasonText).join('；') : _('无'),
+		topologyComplete: topologyComplete, activeAttachments: active, publishedAttachments: published,
+		attachmentText: attachmentText, trustText: trustText, owner: owner, quality: quality };
+}
+
+function classifierMapState(clients) {
+	var maps = clients && clients.evidence && clients.evidence.classifier_maps;
+	var result = { available: false, loss: false, pressure: false, text: '-' };
+	if (!plainObject(maps)) return result;
+	var labels = { ecm_nss: _('NSS'), tc_bpf: _('CPU') }, parts = [];
+	[ 'ecm_nss', 'tc_bpf' ].forEach(function(key) {
+		var item = maps[key];
+		if (!plainObject(item)) return;
+		result.available = true;
+		if (item.map_loss === true || item.current_truncated === true) result.loss = true;
+		if (item.pressure === true || item.truncated === true) result.pressure = true;
+		var entries = finiteNumber(item.entries), capacity = finiteNumber(item.capacity);
+		parts.push((labels[key] || key) + ' ' + (entries === null ? '-' : Math.round(entries)) + '/' +
+			(capacity === null ? '-' : Math.round(capacity)));
+	});
+	result.text = parts.join(' · ') || '-';
+	return result;
+}
+
+function minimumNumber(values) {
+	return values.length ? Math.min.apply(Math, values) : null;
+}
+
+function classificationStateWithRpc(viewState) {
+	viewState = viewState || {};
+	var clients = viewState.clients || {}, items = asArray(clients.clients), rpc = rpcState(viewState, 'clients');
+	var counts = Object.create(null), classified = 0, txCoverage = [], rxCoverage = [];
+	var windowMs = null, comparisonWindowMs = null;
+	items.forEach(function(client) {
+		var classification = client && client.rate_meta && client.rate_meta.classification;
+		if (!plainObject(classification)) return;
+		var state = String(classification.state || 'unavailable');
+		classified++; counts[state] = (counts[state] || 0) + 1;
+		if (state === 'aligned') {
+			var tx = finiteNumber(classification.tx_coverage_pct), rx = finiteNumber(classification.rx_coverage_pct);
+			if (tx !== null) txCoverage.push(tx);
+			if (rx !== null) rxCoverage.push(rx);
+		}
+		var window = finiteNumber(classification.window_ms), comparison = finiteNumber(classification.comparison_window_ms);
+		if (window !== null) windowMs = windowMs === null ? window : Math.max(windowMs, window);
+		if (comparison !== null) comparisonWindowMs = comparisonWindowMs === null ? comparison : Math.max(comparisonWindowMs, comparison);
+	});
+	var missing = Math.max(0, items.length - classified);
+	if (missing) counts.unavailable = (counts.unavailable || 0) + missing;
+	var aligned = counts.aligned || 0, maps = classifierMapState(clients);
+	var complete = items.length > 0 && classified === items.length && aligned === items.length;
+	var state = !classified ? 'warning' : (complete ? 'good' : 'warning');
+	var badge = !classified ? _('等待分类') : (complete ? _('已对齐') :
+		(aligned ? _('部分可比') : _('不可比较')));
+	if (maps.loss || counts.map_loss) { state = 'bad'; badge = _('映射丢失'); }
+	else if (maps.pressure) { state = worseState(state, 'warning'); badge = _('映射压力'); }
+	else if (!maps.available) { state = worseState(state, 'warning'); badge = _('映射未确认'); }
+	var value = items.length ? _('%d/%d 可比较').format(aligned, items.length) : _('尚无分类窗口');
+	var stateText = countSummary(counts, CLASSIFICATION_STATE_LABELS,
+		[ 'aligned', 'domain_mismatch', 'counter_skew', 'window_mismatch', 'partial', 'warmup', 'stale', 'map_loss', 'unavailable' ]);
+	var txMin = maps.loss || !maps.available ? null : minimumNumber(txCoverage);
+	var rxMin = maps.loss || !maps.available ? null : minimumNumber(rxCoverage);
+	var coverageText = txMin === null && rxMin === null ? '-' :
+		_('上行最低 %s · 下行最低 %s').format(formatPercent(txMin), formatPercent(rxMin));
+	var description = !classified ? _('尚未收到每客户端 NSS/CPU 分类结果。') :
+		_('NSS已识别与CPU慢路径已识别只用于分类，不与客户端总速率相加。');
+	if (missing) description += ' ' + _('%d 个客户端尚未发布分类窗口。').format(missing);
+	if (counts.domain_mismatch) description += ' ' + _('字节口径不同的客户端会省略未分类和覆盖率。');
+	if (maps.loss) description = _('分类映射读取不完整；本轮不得标记为完整，也不得推算未分类流量。');
+	else if (!maps.available) description += ' ' + _('缺少分类映射容量与完整性证据。');
+	if (rpc.state === 'failed' || rpc.state === 'invalid' || rpc.state === 'missing') {
+		state = 'bad'; badge = _('不可用'); description = _('客户端 RPC 没有返回分类元数据。');
+	} else if (rpc.state === 'loading') {
+		state = 'warning'; badge = _('检查中'); description = _('正在等待 NSS/CPU 分类元数据。');
+	} else if (rpc.state === 'retained') {
+		state = worseState(state, 'warning'); badge = _('沿用旧值'); description += ' ' + _('本轮 RPC 沿用旧值。');
+	}
+	return { state: state, badge: badge, value: value, description: description,
+		meta: _('分类窗口 %s · 比较窗口 %s').format(formatDuration(windowMs), formatDuration(comparisonWindowMs)),
+		counts: counts, stateText: stateText, aligned: aligned, classified: classified,
+		totalClients: items.length, txMinimumPct: txMin, rxMinimumPct: rxMin,
+		coverageText: coverageText, maps: maps, windowMs: windowMs,
+		comparisonWindowMs: comparisonWindowMs };
+}
+
+function integrityStateWithRpc(viewState) {
+	viewState = viewState || {};
+	var clients = viewState.clients || {}, facts = collectRateFacts(clients);
+	var evidence = clients.evidence && clients.evidence.access_edge || {};
+	var reasons = [];
+	asArray(evidence.reason_codes).concat(facts.reasonCodes).forEach(function(code) {
+		code = String(code || '');
+		if (code && reasons.indexOf(code) === -1) reasons.push(code);
+	});
+	var rpc = rpcState(viewState, 'clients');
+	var state = facts.unavailableDirections ? 'bad' :
+		(facts.fallbackDirections || facts.staleClients || reasons.length ? 'warning' : 'good');
+	var badge = state === 'bad' ? _('有缺失') : (state === 'warning' ? _('需关注') : _('正常'));
+	var value = reasons.length ? _('%d 项限制').format(reasons.length) : _('无未解释缺口');
+	var description = reasons.length ? reasons.slice(0, 3).map(edgeReasonText).join('；') + '。' :
+		_('当前没有发现需要解释的总速率降级或分类边界。');
+	description += ' ' + _('未分类只在同窗口、同字节口径时计算；计数错位不会钳制为零。');
+	if (rpc.state === 'failed' || rpc.state === 'invalid' || rpc.state === 'missing') {
+		state = 'bad'; badge = _('不可用'); description = _('客户端 RPC 失败，无法验证降级与能力边界。');
+	} else if (rpc.state === 'loading') {
+		state = 'warning'; badge = _('检查中'); description = _('正在汇总降级与能力边界。');
+	} else if (rpc.state === 'retained') {
+		state = worseState(state, 'warning'); badge = _('沿用旧值'); description += ' ' + _('本轮 RPC 沿用旧值。');
+	}
+	return { state: state, badge: badge, value: value, description: description,
+		meta: _('回退方向 %d · 不可用方向 %d · 陈旧客户端 %d').format(
+			facts.fallbackDirections, facts.unavailableDirections, facts.staleClients),
+		reasonCodes: reasons, reasonText: reasons.length ? reasons.map(edgeReasonText).join('；') : _('无'),
+		fallbackDirections: facts.fallbackDirections, unavailableDirections: facts.unavailableDirections,
+		staleClients: facts.staleClients };
+}
+
 function accessEdgeCoverageState(clients) {
 	var evidence = clients && clients.evidence && clients.evidence.access_edge;
 	if (!plainObject(evidence)) return { state: 'warning', badge: _('等待采样'), value: '…',
@@ -1127,10 +1473,25 @@ function pathStateWithRpc(viewState) {
 	var result = Object.assign({}, base, { rpc: { clients: clients.state, status: status.state, health: health.state } });
 	var collectorEvidence = viewState && viewState.status && viewState.status.evidence &&
 		viewState.status.evidence.collector || {};
+	var classifierSource = result.rateSource;
 	var effectiveInterval = finiteNumber(collectorEvidence.effective_interval_ms);
-	if ((result.rateSource === 'nss_ecm_node' || result.rateSource === 'nss_ecm_bpf') &&
-		effectiveInterval !== null && effectiveInterval >= 500)
+	var classifierEvidence = viewState && viewState.clients && viewState.clients.evidence &&
+		viewState.clients.evidence.ecm_bpf || {};
+	var classifierInterval = finiteNumber(classifierEvidence.collector_min_interval_ms);
+	if (currentRateUsesAccessEdge(viewState && viewState.status)) {
+		result.classifierSource = classifierSource;
+		result.classifierLabel = collectorDisplayLabel(classifierSource);
+		result.rateSource = 'access_edge';
+		result.rateLabel = collectorDisplayLabel('access_edge');
+		result.value = result.rateLabel + ' / ' + result.connectionLabel;
+		result.description = _('客户端总速率来自精准接入点；%s 只负责 NSS/CPU 分类。').format(result.classifierLabel);
+		if (classifierInterval === null && (classifierSource === 'nss_ecm_node' || classifierSource === 'nss_ecm_bpf'))
+			classifierInterval = 2000;
+		result.meta = _('总速率周期 1 秒 · 分类周期 %s').format(formatDuration(classifierInterval));
+	} else if ((classifierSource === 'nss_ecm_node' || classifierSource === 'nss_ecm_bpf') &&
+		effectiveInterval !== null && effectiveInterval >= 500) {
 		result.meta += ' · ' + _('数据周期 %s').format(formatDuration(effectiveInterval));
+	}
 	if ([ clients, status, health ].some(function(item) { return item.state === 'failed' || item.state === 'invalid' || item.state === 'missing'; })) {
 		result.state = clients.state === 'failed' || clients.state === 'invalid' || clients.state === 'missing' ? 'bad' : worseState(result.state, 'warning');
 		result.badge = result.state === 'bad' ? _('不可用') : _('未完全确认');
@@ -1476,12 +1837,14 @@ function subsystemReportText(item) {
 
 function buildReport(viewState, frontendVersion) {
 	viewState = viewState || {};
-	var runtime = viewState.status || {}, quality = qualityState(viewState, viewState.progress), path = pathStateWithRpc(viewState),
-		connections = connectionStateWithRpc(viewState), interfaces = interfaceStateWithRpc(viewState),
+	var runtime = viewState.status || {}, rate = rateOwnerStateWithRpc(viewState), edge = accessEdgeStateWithRpc(viewState),
+		classification = classificationStateWithRpc(viewState), integrity = integrityStateWithRpc(viewState),
+		freshness = freshnessState(viewState, viewState.progress), connections = connectionStateWithRpc(viewState),
+		interfaces = interfaceStateWithRpc(viewState),
 		versions = versionStateWithRpc(viewState, runtime.version, frontendVersion), groups = warningGroups(viewState.status, viewState.health, viewState.rpc, viewState.diagnostics),
 		contract = diagnosticsContractState(viewState), backendVersion = contract.usable ? contract.data.versions.daemon : runtime.version,
 		lines = [
-			'LAN Speed ' + _('运行诊断报告 v1'), _('页面状态') + ': ' + reportPageState(viewState.pageState || pageState(viewState)),
+			'LAN Speed ' + _('运行诊断报告 v2'), _('页面状态') + ': ' + reportPageState(viewState.pageState || pageState(viewState)),
 			_('检查时间') + ': ' + reportField(new Date(viewState.checkedAt || Date.now()).toLocaleString()),
 			_('LuCI 版本') + ': ' + reportVersion(frontendVersion), _('后端版本') + ': ' + reportVersion(backendVersion), ''
 		];
@@ -1498,11 +1861,22 @@ function buildReport(viewState, frontendVersion) {
 		lines.push('- ' + RPC_LABELS[key] + ': ' + text +
 			(rpc && !rpc.ok ? ' · ' + rpcReportErrorText(rpc) : ''));
 	});
-	lines.push('', _('采集质量') + ': ' + stateLabel(quality.state) + ' · ' + reportField(quality.value),
-		'- ' + reportField(quality.description), _('数据新鲜度') + ': ' + stateLabel(quality.freshness.state) + ' · ' + reportField(quality.freshness.value),
-		_('数据路径') + ': ' + stateLabel(path.state) + ' · ' + reportCollectorLabel(path.rateSource) + ' / ' + reportCollectorLabel(path.connectionSource),
-		'- ' + reportField(path.description), '- ' + _('路径原因') + ': ' + reportReasonText(path.rateReason || path.connectionReason),
-		'- ' + _('配置路径') + ': ' + reportConfiguredMode(path.configuredRate, 'rate') + ' / ' + reportConfiguredMode(path.configuredConnection, 'connection'),
+	lines.push('', _('客户端总速率') + ': ' + stateLabel(rate.state) + ' · ' + reportCollectorLabel(rate.source),
+			'- ' + _('方向唯一来源') + ': ' + reportField(rate.sourceText),
+		'- ' + _('方向覆盖') + ': ' + reportField(rate.coverageText),
+		'- ' + _('流量范围') + ': ' + reportField(rate.scopeText),
+		_('精准接入点') + ': ' + stateLabel(edge.state) + ' · ' + reportField(edge.value),
+		'- ' + _('接入类型') + ': ' + reportField(edge.attachmentText),
+		'- ' + _('归属信任') + ': ' + reportField(edge.trustText),
+		'- ' + _('接入边界') + ': ' + reportField(edge.reasonText),
+		_('NSS/CPU 流量分类') + ': ' + stateLabel(classification.state) + ' · ' + reportField(classification.value),
+		'- ' + _('分类状态') + ': ' + reportField(classification.stateText),
+		'- ' + _('最低分类覆盖率') + ': ' + reportField(classification.coverageText),
+		'- ' + _('分类映射') + ': ' + reportField(classification.maps.text),
+		_('降级与能力边界') + ': ' + stateLabel(integrity.state) + ' · ' + reportField(integrity.value),
+		'- ' + reportField(integrity.reasonText),
+		'- ' + _('安全规则') + ': ' + _('N/S 不与 E 相加；不可比较时不生成未分类或覆盖率'),
+		_('数据新鲜度') + ': ' + stateLabel(freshness.state) + ' · ' + reportField(freshness.value),
 		_('连接健康') + ': ' + stateLabel(connections.state) + ' · ' + reportCollectorLabel(connections.source),
 		_('版本一致性') + ': ' + stateLabel(versions.state) + ' · ' + reportField(versions.badge),
 		_('接口健康') + ': ' + stateLabel(interfaces.state) + ' · ' + reportField(interfaces.value), '');
@@ -1546,6 +1920,8 @@ return baseclass.extend({
 	formatDuration: formatDuration, sampleAge: sampleAge, formatPercent: formatPercent,
 	sampleClock: sampleClock, assessProgress: assessProgress,
 	coverageState: coverageState, freshnessState: freshnessState, qualityState: qualityState,
+	rateOwnerStateWithRpc: rateOwnerStateWithRpc, accessEdgeStateWithRpc: accessEdgeStateWithRpc,
+	classificationStateWithRpc: classificationStateWithRpc, integrityStateWithRpc: integrityStateWithRpc,
 	dataPathState: dataPathState, connectionState: connectionState, interfaceState: interfaceState,
 	versionState: versionState, pathStateWithRpc: pathStateWithRpc, connectionStateWithRpc: connectionStateWithRpc,
 	interfaceStateWithRpc: interfaceStateWithRpc, versionStateWithRpc: versionStateWithRpc,

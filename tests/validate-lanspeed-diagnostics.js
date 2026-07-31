@@ -67,7 +67,7 @@ const statusCollector = {
         status.evidence.collector.primary_source || 'unsupported';
   },
   collectorLabel(value) {
-    return ({ bpf: 'BPF', conntrack_netlink: 'CT-Netlink', unsupported: '不可用' })[value] || String(value || '-');
+    return ({ access_edge: '自动精准', bpf: 'BPF', conntrack_netlink: 'CT-Netlink', unsupported: '不可用' })[value] || String(value || '-');
   }
 };
 const model = vm.compileFunction(readModule('diagnosticsModel.js'),
@@ -164,7 +164,7 @@ function loadRefresh(vocabulary) {
   return vm.compileFunction(readModule('diagnosticsRefresh.js'),
     [ 'baseclass', 'fmt', 'vocab', 'lsVersion', 'statusCollector', 'diagnosticsModel', 'E', '_' ],
     { filename: 'diagnosticsRefresh.js', parsingContext: context })(
-      baseclass, format, vocabulary || vocab, { FULL_VERSION: '1.1.5-r4' }, statusCollector, model,
+      baseclass, format, vocabulary || vocab, { FULL_VERSION: '1.1.5-r5' }, statusCollector, model,
       fakeElement, translate
     );
 }
@@ -174,7 +174,7 @@ function loadView(rpc, shell, refresh, navigatorValue) {
     'baseclass', 'lsRpc', 'lsVersion', 'diagnosticsModel',
     'diagnosticsShell', 'diagnosticsRefresh', 'navigator', 'document', 'window', '_'
   ], { filename: 'diagnosticsView.js', parsingContext: context })(
-    baseclass, rpc, { FULL_VERSION: '1.1.5-r4' }, model,
+    baseclass, rpc, { FULL_VERSION: '1.1.5-r5' }, model,
     shell || loadShell(), refresh || loadRefresh(), navigatorValue || {},
     { body: null }, { setTimeout }, translate
   );
@@ -211,13 +211,14 @@ function healthyDiagnostics() {
   return value;
 }
 
-function healthyStatus(version = '1.1.5-r4') {
+function healthyStatus(version = '1.1.5-r5') {
   const value = clone(readFixture('lanspeed-status.json'));
   value.mode = 'Full';
   value.confidence = 'high';
   value.warnings = [];
   value.refresh_interval_ms = 1000;
   value.rate_collector_mode = 'auto';
+  value.access_edge_mode = 'active';
   value.conn_collector_mode = 'auto';
   value.version = version;
   value.capabilities.bpf = true;
@@ -259,23 +260,41 @@ function healthyHealth() {
 }
 
 function healthyClients() {
-	const value = clone(readFixture('lanspeed-clients.json'));
+  const value = clone(readFixture('lanspeed-clients.json'));
   value.clients[0].sample_ms = 9500;
   value.clients[0].last_seen = 9400;
   value.clients[0].collector_mode = 'bpf';
   value.clients[0].confidence = 'high';
   value.clients[0].warnings = [];
-	Object.assign(value, {
-		conn_source: 'conntrack_netlink', conntrack_entries_seen: 100,
-		conntrack_entries_matched: 95, conntrack_parse_errors: 0,
-		tcp_conns_total: 4, udp_conns_total: 2
-	});
-	value.evidence.access_edge = {
-		coverage: 'full', scope: 'all_frames', active_attachments: 1,
-		published_attachments: 1, topology_complete: true, fdb_source: 'netlink',
-		sample_ms: 9500, reason_codes: []
-	};
-	return value;
+  value.clients[0].rate_meta = {
+    version: 1, scope: 'all_frames',
+    tx: { source: 'edge_port', coverage: 'full', byte_domain: 'l2_no_fcs' },
+    rx: { source: 'edge_port', coverage: 'full', byte_domain: 'l2_no_fcs' },
+    attachment: { kind: 'ethernet', ifname: 'lan2', trust: 'declared_direct' },
+    generation: 1, window_ms: 1000, sample_ms: 9500, stale: false, reason_codes: [],
+    classification: {
+      state: 'aligned', sample_ms: 9500, window_ms: 2000,
+      comparison_window_ms: 6000, tx_coverage_pct: 96, rx_coverage_pct: 94
+    }
+  };
+  Object.assign(value, {
+    conn_source: 'conntrack_netlink', conntrack_entries_seen: 100,
+    conntrack_entries_matched: 95, conntrack_parse_errors: 0,
+    tcp_conns_total: 4, udp_conns_total: 2
+  });
+  value.evidence.access_edge = {
+    coverage: 'full', scope: 'all_frames', active_attachments: 1,
+    published_attachments: 1, topology_complete: true, fdb_source: 'rtnetlink_af_bridge',
+    sample_ms: 9500, reason_codes: []
+  };
+  value.evidence.classifier_maps = {
+    ecm_nss: { entries: 2, capacity: 4096, occupancy_pct: 0, pressure: false,
+      truncated: false, current_truncated: false, map_loss: false },
+    tc_bpf: { entries: 1, capacity: 8192, occupancy_pct: 0, pressure: false,
+      truncated: false, current_truncated: false, map_loss: false }
+  };
+  value.evidence.ecm_bpf = { collector_min_interval_ms: 2000 };
+  return value;
 }
 
 function healthyInterfaces() {
@@ -449,10 +468,10 @@ async function testStrictContracts() {
   assert.strictEqual(model.validateRuntimeResponse(badOverviewRelation, 'overview').valid, false);
   assert.strictEqual(model.validateRuntimeResponse({}, 'unknown').valid, false);
 
-  const versionMismatch = payloads('1.1.5-r4');
+  const versionMismatch = payloads('1.1.5-r5');
   versionMismatch.status.version = '1.1.1-r6';
   const mismatchState = model.normalizeResults(await settled(versionMismatch), null, 9000, 1);
-  assert.strictEqual(model.versionStateWithRpc(mismatchState, mismatchState.status.version, '1.1.5-r4').state, 'warning');
+  assert.strictEqual(model.versionStateWithRpc(mismatchState, mismatchState.status.version, '1.1.5-r5').state, 'warning');
 
   const timeout = await model.runCall({ key: 'overview', call: () => new Promise(() => {}) }, 250);
   assert.strictEqual(timeout.ok, false);
@@ -465,6 +484,19 @@ async function testResourceStateMachine() {
   const good = model.normalizeResults(await settled(values), null, 10000, 1);
   assert.strictEqual(good.pageState, 'ready');
   model.RPC_KEYS.forEach((key) => assert([ 'success', 'degraded', 'empty' ].includes(good.resources[key].phase)));
+  const goodRate = model.rateOwnerStateWithRpc(good);
+  assert.strictEqual(goodRate.source, 'access_edge');
+  assert.strictEqual(goodRate.state, 'good');
+  assert.strictEqual(goodRate.sourceText, 'Edge-Port 2');
+  assert.strictEqual(model.accessEdgeStateWithRpc(good).value, '1/1 个接入点');
+  assert.strictEqual(model.accessEdgeStateWithRpc(good).trustText, '声明直连 1');
+  const goodClassification = model.classificationStateWithRpc(good);
+  assert.strictEqual(goodClassification.state, 'good');
+  assert.strictEqual(goodClassification.value, '1/1 可比较');
+  assert.strictEqual(goodClassification.coverageText, '上行最低 96% · 下行最低 94%');
+  assert.strictEqual(model.integrityStateWithRpc(good).state, 'good');
+  assert.strictEqual(model.pathStateWithRpc(good).rateSource, 'access_edge');
+  assert.strictEqual(model.pathStateWithRpc(good).classifierSource, 'bpf');
 
   const nssCadence = payloads();
   nssCadence.diagnostics.data_path.effective_rate = 'nss_ecm_bpf';
@@ -475,8 +507,9 @@ async function testResourceStateMachine() {
   nssCadence.status.evidence.collector.effective_interval_ms = 2000;
   nssCadence.diagnostics.collection.refresh_interval_ms = 2000;
   const nssCadenceState = model.normalizeResults(await settled(nssCadence), null, 10200, 2);
-  assert(model.pathStateWithRpc(nssCadenceState).meta.includes('数据周期 2 秒'),
-    'NSS diagnostics must expose the effective two-second collector cadence');
+  assert(model.pathStateWithRpc(nssCadenceState).meta.includes('总速率周期 1 秒') &&
+    model.pathStateWithRpc(nssCadenceState).meta.includes('分类周期 2 秒'),
+    'automatic diagnostics must distinguish the one-second Edge total from the two-second classifier');
   assert(model.contractCollectionState(nssCadenceState).meta.includes('刷新间隔 2 秒'),
     'NSS diagnostics collection state must expose the effective two-second timer');
 
@@ -509,28 +542,77 @@ async function testResourceStateMachine() {
       error: model.rpcErrorInfo(new Error('clients unavailable'), 'transport') })
   });
   const partial = model.normalizeResults(clientFailure, null, 12000, 3);
-	assert.strictEqual(partial.pageState, 'partial');
-	assert.strictEqual(partial.resources.clients.phase, 'error');
-	assert.strictEqual(model.pathStateWithRpc(partial).state, 'bad');
-	assert.strictEqual(model.connectionStateWithRpc(partial).state, 'bad');
-	assert.strictEqual(model.qualityState(partial, partial.progress).state, 'bad',
-		'automatic precise coverage depends on the clients RPC that carries Access Edge evidence');
+  assert.strictEqual(partial.pageState, 'partial');
+  assert.strictEqual(partial.resources.clients.phase, 'error');
+  assert.strictEqual(model.pathStateWithRpc(partial).state, 'bad');
+  assert.strictEqual(model.connectionStateWithRpc(partial).state, 'bad');
+  assert.strictEqual(model.qualityState(partial, partial.progress).state, 'bad',
+    'automatic precise coverage depends on the clients RPC that carries Access Edge evidence');
 
-	const manualValues = payloads();
-	manualValues.status.rate_collector_mode = 'bpf';
-	const manualClientFailure = model.normalizeResults(await settled(manualValues, {
-		clients: Promise.resolve({ key: 'clients', ok: false,
-			error: model.rpcErrorInfo(new Error('clients unavailable'), 'transport') })
-	}), null, 12500, 4);
-	assert.strictEqual(model.qualityState(manualClientFailure, manualClientFailure.progress).state, 'good',
-		'a manual collector keeps using its status coverage when the clients RPC fails');
+  const manualValues = payloads();
+  manualValues.status.rate_collector_mode = 'bpf';
+  const manualClientFailure = model.normalizeResults(await settled(manualValues, {
+    clients: Promise.resolve({ key: 'clients', ok: false,
+      error: model.rpcErrorInfo(new Error('clients unavailable'), 'transport') })
+  }), null, 12500, 4);
+  assert.strictEqual(model.qualityState(manualClientFailure, manualClientFailure.progress).state, 'good',
+    'a manual collector keeps using its status coverage when the clients RPC fails');
 
-	const partialEdgeValues = payloads();
-	partialEdgeValues.clients.evidence.access_edge.coverage = 'partial';
-	const partialEdge = model.normalizeResults(await settled(partialEdgeValues), null, 12750, 4);
-	const partialEdgeQuality = model.qualityState(partialEdge, partialEdge.progress);
-	assert.strictEqual(partialEdgeQuality.state, 'warning');
-	assert.strictEqual(partialEdgeQuality.coverage.value, '部分');
+  const partialEdgeValues = payloads();
+  partialEdgeValues.clients.evidence.access_edge.coverage = 'partial';
+  const partialEdge = model.normalizeResults(await settled(partialEdgeValues), null, 12750, 4);
+  const partialEdgeQuality = model.qualityState(partialEdge, partialEdge.progress);
+  assert.strictEqual(partialEdgeQuality.state, 'warning');
+  assert.strictEqual(partialEdgeQuality.coverage.value, '部分');
+  assert.strictEqual(model.rateOwnerStateWithRpc(partialEdge).state, 'warning');
+  assert.strictEqual(model.accessEdgeStateWithRpc(partialEdge).badge, '部分');
+
+  const missingRateMetaValues = payloads();
+  delete missingRateMetaValues.clients.clients[0].rate_meta;
+  const missingRateMeta = model.normalizeResults(await settled(missingRateMetaValues), null, 12775, 5);
+  const missingRateOwner = model.rateOwnerStateWithRpc(missingRateMeta);
+  assert.strictEqual(missingRateOwner.state, 'bad');
+  assert.strictEqual(missingRateOwner.sourceText, '无来源 2');
+  assert.strictEqual(missingRateOwner.coverageText, '不可用 2');
+  assert.strictEqual(model.integrityStateWithRpc(missingRateMeta).unavailableDirections, 2);
+
+  const domainMismatchValues = payloads();
+  domainMismatchValues.clients.clients[0].rate_meta.classification = {
+    state: 'domain_mismatch', sample_ms: 9500, window_ms: 2000,
+    comparison_window_ms: 6000, tx_coverage_pct: 96, rx_coverage_pct: 94
+  };
+  domainMismatchValues.clients.clients[0].rate_meta.reason_codes = [ 'classification_domain_mismatch' ];
+  const domainMismatch = model.normalizeResults(await settled(domainMismatchValues), null, 12800, 5);
+  const domainMismatchClassification = model.classificationStateWithRpc(domainMismatch);
+  assert.strictEqual(domainMismatchClassification.state, 'warning');
+  assert.strictEqual(domainMismatchClassification.coverageText, '-',
+    'non-aligned classifier states must not expose stale or incomparable coverage');
+  assert(domainMismatchClassification.description.includes('省略未分类和覆盖率'));
+  assert.strictEqual(model.integrityStateWithRpc(domainMismatch).state, 'warning');
+
+  const missingClassificationValues = payloads();
+  delete missingClassificationValues.clients.clients[0].rate_meta.classification;
+  const missingClassification = model.normalizeResults(await settled(missingClassificationValues), null, 12850, 6);
+  assert.strictEqual(model.classificationStateWithRpc(missingClassification).value, '0/1 可比较');
+  assert(model.classificationStateWithRpc(missingClassification).stateText.includes('不可用 1'));
+
+  const mapLossValues = payloads();
+  mapLossValues.clients.evidence.classifier_maps.ecm_nss.map_loss = true;
+  mapLossValues.clients.evidence.classifier_maps.ecm_nss.current_truncated = true;
+  const mapLoss = model.normalizeResults(await settled(mapLossValues), null, 12900, 6);
+  const mapLossClassification = model.classificationStateWithRpc(mapLoss);
+  assert.strictEqual(mapLossClassification.state, 'bad');
+  assert.strictEqual(mapLossClassification.badge, '映射丢失');
+  assert.strictEqual(mapLossClassification.coverageText, '-',
+    'map loss must suppress classification coverage even if an older aligned sample retained percentages');
+
+  const missingMapEvidenceValues = payloads();
+  delete missingMapEvidenceValues.clients.evidence.classifier_maps;
+  const missingMapEvidence = model.normalizeResults(await settled(missingMapEvidenceValues), null, 12925, 6);
+  const unconfirmedClassification = model.classificationStateWithRpc(missingMapEvidence);
+  assert.strictEqual(unconfirmedClassification.badge, '映射未确认');
+  assert.strictEqual(unconfirmedClassification.coverageText, '-',
+    'classification coverage requires map completeness evidence');
 
   const interfaceFailure = await settled(values, {
     interfaces: Promise.resolve({ key: 'interfaces', ok: false,
@@ -644,7 +726,7 @@ async function testRequestOrdering() {
   await Promise.resolve();
   assert.strictEqual(state.refs.btnRefresh.disabled, true);
   assert.strictEqual(state.refs.btnCopy.disabled, true);
-  const secondPayload = payloads('1.1.5-r4');
+  const secondPayload = payloads('1.1.5-r5');
   model.RPC_KEYS.forEach((key) => queues[key][1](secondPayload[key]));
   const secondResult = await second;
   assert.strictEqual(secondResult.ignored, false);
@@ -655,8 +737,8 @@ async function testRequestOrdering() {
   const firstResult = await first;
   assert.strictEqual(firstResult.ignored, true);
   assert.strictEqual(state.requestId, 2);
-  assert.strictEqual(state.status.version, '1.1.5-r4');
-  assert.strictEqual(state.diagnostics.versions.daemon, '1.1.5-r4');
+  assert.strictEqual(state.status.version, '1.1.5-r5');
+  assert.strictEqual(state.diagnostics.versions.daemon, '1.1.5-r5');
   assert.strictEqual(state.refs.btnRefresh.disabled, false);
   assert.strictEqual(state.refs.root.getAttribute('aria-busy'), 'false');
 }
@@ -777,12 +859,25 @@ async function testDomAndPresenter() {
   assert.strictEqual(goodBuilt.refs.btnRestart.disabled, false);
   assert.strictEqual(goodBuilt.refs.btnCopy.disabled, false);
   assert.strictEqual(goodBuilt.refs.pageNotice.style.display, 'none');
+  assert.strictEqual(goodBuilt.refs.rpcDetails.tag, 'details');
+  assert.strictEqual(goodBuilt.refs.reportDetails.tag, 'details');
+  assert.strictEqual(goodBuilt.refs.rpcDetails.open, false);
+  assert.strictEqual(goodBuilt.refs.reportDetails.open, false);
+  assert.strictEqual(goodBuilt.refs.rateDescription.textContent, '');
+  assert.strictEqual(goodBuilt.refs.edgeDescription.textContent, '');
+  assert.strictEqual(goodBuilt.refs.classificationDescription.textContent, '');
+  assert.strictEqual(goodBuilt.refs.integrityDescription.textContent, '');
+  assert.strictEqual(goodBuilt.refs.rateEvidence.children.length, 4);
+  assert.strictEqual(goodBuilt.refs.edgeEvidence.children.length, 4);
+  assert.strictEqual(goodBuilt.refs.classificationEvidence.children.length, 4);
+  assert.strictEqual(goodBuilt.refs.integrityEvidence.children.length, 4);
+  assert.strictEqual(goodBuilt.refs.pipelineSummary.textContent, '总速率 2/2 方向 · 分类 1/1 可比较');
   assert.strictEqual(goodBuilt.refs.interfacesBody.children.length, 1);
   assert.strictEqual(goodBuilt.refs.interfacesBody.children[0].children[3].textContent, '500 毫秒',
     'interface sample timestamps must render as age relative to the interface clock');
   assert.strictEqual(goodBuilt.refs.subsystemsBody.children.length, 7);
   const nssRow = goodBuilt.refs.subsystemsBody.children.find((row) =>
-    row.children[0] && row.children[0].textContent === 'NSS');
+    row.children[0] && row.children[0].textContent === 'NSS 加速识别');
   assert(nssRow, 'diagnostics must retain the optional NSS subsystem row');
   assert.strictEqual(nssRow.attrs['data-state'], 'neutral',
     'an unavailable optional platform component must not render as a hard failure');
@@ -792,7 +887,7 @@ async function testDomAndPresenter() {
   assert(!goodBuilt.refs.subsystemsBody.children.some((row) =>
     row.children.some((cell) => String(cell.textContent || '').includes('未识别的诊断代码'))),
   'known subsystem codes must never fall through to the unknown-code UI');
-  assert(goodBuilt.refs.reportPreview.textContent.includes('运行诊断报告 v1'));
+  assert(goodBuilt.refs.reportPreview.textContent.includes('运行诊断报告 v2'));
   assert(goodBuilt.refs.versionValue.textContent.includes('一致'));
 
   const allFailedResults = model.RPC_KEYS.map((key) => ({
@@ -827,8 +922,8 @@ async function testSubsystemCodeContracts() {
   const shell = loadShell();
   const refresh = loadRefresh(vocabulary);
   const labels = {
-    bpf: 'BPF 运行时', tc: 'TC 挂载', bpf_map: 'BPF 映射表',
-    conntrack: '连接跟踪', nss: 'NSS', identity: '客户端归属'
+    bpf: 'CPU 慢路径检测（BPF）', tc: 'CPU 路径挂载（TC）', bpf_map: '分类映射表',
+    conntrack: '连接跟踪', nss: 'NSS 加速识别', identity: '客户端接入归属'
   };
   const cases = [
     { id: 'bpf', state: 'disabled', code: 'bpf_disabled', rowState: 'neutral' },
@@ -949,17 +1044,17 @@ async function testAlertsAndReport() {
   ], 'warning aliases from status, health conflicts and diagnostics must collapse to root causes');
   assert.strictEqual(new Set(Array.from(deduplicated.all, (item) => item.text)).size,
     deduplicated.all.length, 'deduplicated diagnostics must not render repeated warning text');
-  const deduplicatedReport = model.buildReport(duplicateState, '1.1.5-r4');
+  const deduplicatedReport = model.buildReport(duplicateState, '1.1.5-r5');
   assert.strictEqual((deduplicatedReport.match(/localized:software_flow_offload_enabled/g) || []).length, 1);
   assert.strictEqual((deduplicatedReport.match(/localized:fullcone_detected/g) || []).length, 1);
 
-  const report = model.buildReport(state, '1.1.5-r4');
+  const report = model.buildReport(state, '1.1.5-r5');
   [ 'router.private.example', '10.77.0.20', 'secret-lan-interface',
     'collector-secret', 'token_secret_reason', 'command:ip_route_private', 'ip_route_private' ].forEach((secret) => {
     assert(!report.includes(secret), `report leaked ${secret}`);
   });
   assert(report.includes('接口 1 · LAN · 采集中'));
-  assert(report.includes('BPF 映射表'));
+  assert(report.includes('分类映射表'));
   assert(report.includes('白名单状态'));
   assert(report.includes('localized:live_metrics_unavailable'));
 
@@ -976,8 +1071,8 @@ async function testAlertsAndReport() {
     message_public: rawBpfSecret
   } ];
   const mapFailureState = model.normalizeResults(await settled(mapFailureValues), null, 30500, 2);
-  const mapFailureReport = model.buildReport(mapFailureState, '1.1.5-r4');
-  assert(mapFailureReport.includes('BPF 映射表'));
+  const mapFailureReport = model.buildReport(mapFailureState, '1.1.5-r5');
+  assert(mapFailureReport.includes('分类映射表'));
   assert(mapFailureReport.includes('localized:map_read_failed') || mapFailureReport.includes('映射表'));
   [ rawBpfSecret, '/sys/fs/bpf/private-map', 'eth1', 'bpf-secret' ].forEach((secret) => {
     assert(!mapFailureReport.includes(secret), `BPF report leaked ${secret}`);
@@ -998,7 +1093,7 @@ async function testAlertsAndReport() {
   const copyResult = await viewState.copyReport();
   assert.strictEqual(copyResult, true);
   assert.strictEqual(copied, viewState.refs.reportPreview.textContent);
-  assert(copied.includes('运行诊断报告 v1'));
+  assert(copied.includes('运行诊断报告 v2'));
   assert.strictEqual(viewState.refs.btnCopy.disabled, false);
   assert.strictEqual(viewState.refs.btnCopy.getAttribute('data-state'), 'success');
 
@@ -1007,7 +1102,7 @@ async function testAlertsAndReport() {
       error: model.rpcErrorInfo({ code: 'TOKEN_SECRET', message: 'token=do-not-copy router.private.example' }, 'transport') })
   });
   const secretFailure = model.normalizeResults(secretFailureResults, null, 31000, 2);
-  const failureReport = model.buildReport(secretFailure, '1.1.5-r4');
+  const failureReport = model.buildReport(secretFailure, '1.1.5-r5');
   [ 'TOKEN_SECRET', 'do-not-copy', 'router.private.example' ].forEach((secret) => {
     assert(!failureReport.includes(secret), `RPC report leaked ${secret}`);
   });

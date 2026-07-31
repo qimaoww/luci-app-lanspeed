@@ -4755,7 +4755,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.5-r4';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.5-r5';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
@@ -5831,10 +5831,12 @@ function assertDiagnosticsShellModule(src) {
 	    !src.includes('buildPipelineSection(refs)') ||
 	    !src.includes('buildHealthSection(refs)') ||
 	    !src.includes('buildSupportSection(refs, viewState)') ||
-	    !src.includes("stage(refs, 'freshness'") ||
-	    !src.includes("stage(refs, 'quality'") ||
-	    !src.includes("stage(refs, 'path'") ||
-	    !src.includes("stage(refs, 'connections'") ||
+	    !src.includes("stage(refs, 'rate'") ||
+	    !src.includes("stage(refs, 'edge'") ||
+	    !src.includes("stage(refs, 'classification'") ||
+	    !src.includes("stage(refs, 'integrity'") ||
+	    !src.includes("refs.rpcDetails = E('details'") ||
+	    !src.includes("refs.reportDetails = E('details'") ||
 	    !src.includes('refs.btnCopy') ||
 	    !src.includes('refs.btnRestart') ||
 	    !src.includes('lanspeed-diagnostics-restart-feedback') ||
@@ -5854,8 +5856,10 @@ function assertDiagnosticsShellModule(src) {
 function assertDiagnosticsRefreshModule(src) {
 	if (!src.includes('refreshStatusCards: refreshStatusCards') ||
 	    !src.includes('renderRpcChecks: renderRpcChecks') ||
-	    !src.includes('diagnosticsModel.qualityState(viewState, viewState.progress)') ||
-	    !src.includes('diagnosticsModel.pathStateWithRpc(') ||
+	    !src.includes('diagnosticsModel.rateOwnerStateWithRpc(viewState)') ||
+	    !src.includes('diagnosticsModel.accessEdgeStateWithRpc(viewState)') ||
+	    !src.includes('diagnosticsModel.classificationStateWithRpc(viewState)') ||
+	    !src.includes('diagnosticsModel.integrityStateWithRpc(viewState)') ||
 	    !src.includes('diagnosticsModel.connectionStateWithRpc(') ||
 	    !src.includes('diagnosticsModel.interfaceStateWithRpc(viewState)') ||
 	    !src.includes('diagnosticsModel.warningGroups(status, health, rpcData, diagnostics)') ||
@@ -5867,10 +5871,12 @@ function assertDiagnosticsRefreshModule(src) {
 	    !src.includes('renderWarnings(refs, viewState.status') ||
 	    !src.includes("'data-label': _('结果')") ||
 	    !src.includes('lsVersion.FULL_VERSION')) {
-			fail('lanspeed/diagnosticsRefresh.js must render RPC, quality, path, interface, connection, version and graded warning state');
+		fail('lanspeed/diagnosticsRefresh.js must render total-rate, Access Edge, classification, integrity, RPC and health states');
 	}
-	if (!src.includes("当前网速覆盖"))
-		fail('lanspeed/diagnosticsRefresh.js must identify coverage as belonging to the current rate mode');
+	if (!src.includes("rateEvidence[_('覆盖')]") || !src.includes("rateEvidence[_('范围')]") ||
+	    !src.includes("classificationEvidence[_('覆盖率')]") ||
+	    !src.includes('N/S 不与总速率相加') || src.includes('rate.description, rate.meta'))
+		fail('lanspeed/diagnosticsRefresh.js must render a concise total-rate and classification summary');
 }
 
 function assertDiagnosticsModelModule(src) {
@@ -5878,9 +5884,13 @@ function assertDiagnosticsModelModule(src) {
 		'RPC_LABELS: RPC_LABELS',
 		'assessProgress: assessProgress',
 		'qualityState: qualityState',
-		'dataPathState: dataPathState',
-		'connectionState: connectionState',
-		'interfaceState: interfaceState',
+			'rateOwnerStateWithRpc: rateOwnerStateWithRpc',
+			'accessEdgeStateWithRpc: accessEdgeStateWithRpc',
+			'classificationStateWithRpc: classificationStateWithRpc',
+			'integrityStateWithRpc: integrityStateWithRpc',
+			'dataPathState: dataPathState',
+			'connectionState: connectionState',
+			'interfaceState: interfaceState',
 		'versionState: versionState',
 		'probeFailureBundle: probeFailureBundle',
 		'rpcReportErrorText: rpcReportErrorText',
@@ -5890,19 +5900,19 @@ function assertDiagnosticsModelModule(src) {
 		if (!src.includes(marker))
 			fail(`lanspeed/diagnosticsModel.js must expose ${marker}`);
 	});
-	if (!src.includes('[0-9a-f]{2}[:-]') ||
-	    !src.includes("'[MAC]'") ||
-	    !src.includes("replace(/\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b/g, '[IP]')") ||
-	    !src.includes("'[HOST]'") ||
-	    !src.includes('function rpcReportErrorText') ||
-	    !src.includes('function probeFailureBundle') ||
-	    !src.includes('if (!progressRpcOk(rpc, key)) return;') ||
+		if (!src.includes('[0-9a-f]{2}[:-]') ||
+		    !src.includes("'[MAC]'") ||
+		    !src.includes("replace(/\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b/g, '[IP]')") ||
+		    !src.includes("'[HOST]'") ||
+		    !src.includes('function rpcReportErrorText') ||
+		    !src.includes('function probeFailureBundle') ||
+		    !src.includes('if (!progressRpcOk(rpc, key)) return;') ||
 	    !src.includes('evidence && health.evidence.probe_failures') ||
 	    !src.includes("quality === 'low_traffic'") ||
 	    !src.includes('低流量实测：上行 %s · 下行 %s') ||
-			!src.includes("quality === 'counter_skew'") ||
-			!src.includes("badge = _('重新对齐')") ||
-			!src.includes("_('隐私说明')")) {
+	    !src.includes("quality === 'counter_skew'") ||
+	    !src.includes("badge = _('重新对齐')") ||
+	    !src.includes("_('隐私说明')")) {
 		fail('lanspeed/diagnosticsModel.js must parse structured probe failures and redact copied reports');
 	}
 	if (!src.includes("status && status.rate_collector_mode || '') === 'auto'") ||
@@ -5910,6 +5920,13 @@ function assertDiagnosticsModelModule(src) {
 	    !src.includes("source: 'access_edge'") ||
 	    !src.includes('客户端数据接口没有返回当前精准总速率覆盖')) {
 		fail('lanspeed/diagnosticsModel.js must assess coverage from the currently effective rate configuration');
+	}
+	if (!src.includes('每个方向只使用一个总速率来源（owner）') ||
+	    !src.includes('NSS已识别与CPU慢路径已识别只用于分类') ||
+	    !src.includes('未分类只在同窗口、同字节口径时计算') ||
+	    !src.includes("map_loss === true") ||
+	    !src.includes("classification_domain_mismatch")) {
+		fail('lanspeed/diagnosticsModel.js must diagnose the precise-rate and verifiable-classification scheme without summing E/N/S');
 	}
 }
 
@@ -6621,7 +6638,7 @@ function matchingConfigStatus(values) {
 		max_clients: values.max_clients,
 		enable_bpf: values.enable_bpf === '1',
 		enable_conntrack_fallback: values.enable_conntrack_fallback === '1',
-		version: '1.1.5-r4',
+		version: '1.1.5-r5',
 		capabilities: { bpf: true, conntrack_fallback: true },
 		evidence: { collector: { primary_source: 'bpf', effective_connection_collector: 'conntrack_netlink' } }
 	};
@@ -6648,7 +6665,7 @@ function assertConfigFormBehavior(src) {
 	}, makeConfigIfaceStub(), model);
 	asyncChecks.push(validLoadForm.loadValues().then(function(values) {
 		if (values.pageState !== 'ready' || !values.rpc.status.ok ||
-			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.5-r4') {
+			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.5-r5') {
 			fail('configForm.js must accept the complete status contract and retain capability evidence');
 		}
 	}).catch(function(error) {
