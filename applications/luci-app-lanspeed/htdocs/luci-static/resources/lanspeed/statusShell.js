@@ -65,8 +65,6 @@ function buildShell(viewState) {
 	refs.mRx          = E('div', { 'class': 'big' }, '0');
 	refs.mClients     = E('div', { 'class': 'big' }, '0');
 	refs.mClientsSub  = E('div', { 'class': 'hint' }, '-');
-	refs.mCoverage    = E('div', { 'class': 'big' }, '-');
-	refs.mCoverageSub = E('div', { 'class': 'hint' }, '-');
 	refs.mTcpConns    = E('span', { 'class': 'lanspeed-connection-number' }, '-');
 	refs.mUdpConns    = E('span', { 'class': 'lanspeed-connection-number' }, '-');
 	refs.mUdpConnsSub = E('div', { 'class': 'hint' }, '-');
@@ -103,14 +101,6 @@ function buildShell(viewState) {
 			E('div', { 'class': 'caption' }, _('客户端')),
 			refs.mClients,
 			refs.mClientsSub
-		]),
-		E('div', {
-			'class': 'lanspeed-metric',
-			'title': _('按当前网速模式显示覆盖情况；自动精准模式检查每个客户端是否有可用的总速率来源。')
-		}, [
-			E('div', { 'class': 'caption' }, _('当前网速覆盖')),
-			refs.mCoverage,
-			refs.mCoverageSub
 		]),
 		refs.mConnsWrap
 	]);

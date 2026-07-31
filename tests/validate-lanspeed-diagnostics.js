@@ -164,7 +164,7 @@ function loadRefresh(vocabulary) {
   return vm.compileFunction(readModule('diagnosticsRefresh.js'),
     [ 'baseclass', 'fmt', 'vocab', 'lsVersion', 'statusCollector', 'diagnosticsModel', 'E', '_' ],
     { filename: 'diagnosticsRefresh.js', parsingContext: context })(
-      baseclass, format, vocabulary || vocab, { FULL_VERSION: '1.1.5-r5' }, statusCollector, model,
+      baseclass, format, vocabulary || vocab, { FULL_VERSION: '1.1.5-r6' }, statusCollector, model,
       fakeElement, translate
     );
 }
@@ -174,7 +174,7 @@ function loadView(rpc, shell, refresh, navigatorValue) {
     'baseclass', 'lsRpc', 'lsVersion', 'diagnosticsModel',
     'diagnosticsShell', 'diagnosticsRefresh', 'navigator', 'document', 'window', '_'
   ], { filename: 'diagnosticsView.js', parsingContext: context })(
-    baseclass, rpc, { FULL_VERSION: '1.1.5-r5' }, model,
+    baseclass, rpc, { FULL_VERSION: '1.1.5-r6' }, model,
     shell || loadShell(), refresh || loadRefresh(), navigatorValue || {},
     { body: null }, { setTimeout }, translate
   );
@@ -211,7 +211,7 @@ function healthyDiagnostics() {
   return value;
 }
 
-function healthyStatus(version = '1.1.5-r5') {
+function healthyStatus(version = '1.1.5-r6') {
   const value = clone(readFixture('lanspeed-status.json'));
   value.mode = 'Full';
   value.confidence = 'high';
@@ -468,10 +468,10 @@ async function testStrictContracts() {
   assert.strictEqual(model.validateRuntimeResponse(badOverviewRelation, 'overview').valid, false);
   assert.strictEqual(model.validateRuntimeResponse({}, 'unknown').valid, false);
 
-  const versionMismatch = payloads('1.1.5-r5');
+  const versionMismatch = payloads('1.1.5-r6');
   versionMismatch.status.version = '1.1.1-r6';
   const mismatchState = model.normalizeResults(await settled(versionMismatch), null, 9000, 1);
-  assert.strictEqual(model.versionStateWithRpc(mismatchState, mismatchState.status.version, '1.1.5-r5').state, 'warning');
+  assert.strictEqual(model.versionStateWithRpc(mismatchState, mismatchState.status.version, '1.1.5-r6').state, 'warning');
 
   const timeout = await model.runCall({ key: 'overview', call: () => new Promise(() => {}) }, 250);
   assert.strictEqual(timeout.ok, false);
@@ -562,10 +562,12 @@ async function testResourceStateMachine() {
   partialEdgeValues.clients.evidence.access_edge.coverage = 'partial';
   const partialEdge = model.normalizeResults(await settled(partialEdgeValues), null, 12750, 4);
   const partialEdgeQuality = model.qualityState(partialEdge, partialEdge.progress);
-  assert.strictEqual(partialEdgeQuality.state, 'warning');
+  assert.strictEqual(partialEdgeQuality.state, 'good');
   assert.strictEqual(partialEdgeQuality.coverage.value, '部分');
-  assert.strictEqual(model.rateOwnerStateWithRpc(partialEdge).state, 'warning');
-  assert.strictEqual(model.accessEdgeStateWithRpc(partialEdge).badge, '部分');
+  assert.strictEqual(model.rateOwnerStateWithRpc(partialEdge).state, 'good',
+    'provable frame-scope limits must not turn a fresh total-rate owner into a fault');
+  assert.strictEqual(model.rateOwnerStateWithRpc(partialEdge).badge, '正常');
+  assert.strictEqual(model.accessEdgeStateWithRpc(partialEdge).badge, '正常');
 
   const missingRateMetaValues = payloads();
   delete missingRateMetaValues.clients.clients[0].rate_meta;
@@ -726,7 +728,7 @@ async function testRequestOrdering() {
   await Promise.resolve();
   assert.strictEqual(state.refs.btnRefresh.disabled, true);
   assert.strictEqual(state.refs.btnCopy.disabled, true);
-  const secondPayload = payloads('1.1.5-r5');
+  const secondPayload = payloads('1.1.5-r6');
   model.RPC_KEYS.forEach((key) => queues[key][1](secondPayload[key]));
   const secondResult = await second;
   assert.strictEqual(secondResult.ignored, false);
@@ -737,8 +739,8 @@ async function testRequestOrdering() {
   const firstResult = await first;
   assert.strictEqual(firstResult.ignored, true);
   assert.strictEqual(state.requestId, 2);
-  assert.strictEqual(state.status.version, '1.1.5-r5');
-  assert.strictEqual(state.diagnostics.versions.daemon, '1.1.5-r5');
+  assert.strictEqual(state.status.version, '1.1.5-r6');
+  assert.strictEqual(state.diagnostics.versions.daemon, '1.1.5-r6');
   assert.strictEqual(state.refs.btnRefresh.disabled, false);
   assert.strictEqual(state.refs.root.getAttribute('aria-busy'), 'false');
 }
@@ -866,11 +868,14 @@ async function testDomAndPresenter() {
   assert.strictEqual(goodBuilt.refs.rateDescription.textContent, '');
   assert.strictEqual(goodBuilt.refs.edgeDescription.textContent, '');
   assert.strictEqual(goodBuilt.refs.classificationDescription.textContent, '');
-  assert.strictEqual(goodBuilt.refs.integrityDescription.textContent, '');
+  assert.strictEqual(goodBuilt.refs.integrityDescription, undefined,
+    'normal capability boundaries belong only in the folded report');
   assert.strictEqual(goodBuilt.refs.rateEvidence.children.length, 4);
+  assert.strictEqual(goodBuilt.refs.rateEvidence.children[0].textContent, '客户端采集覆盖率');
+  assert.strictEqual(goodBuilt.refs.rateEvidence.children[1].textContent, '100%');
   assert.strictEqual(goodBuilt.refs.edgeEvidence.children.length, 4);
   assert.strictEqual(goodBuilt.refs.classificationEvidence.children.length, 4);
-  assert.strictEqual(goodBuilt.refs.integrityEvidence.children.length, 4);
+  assert.strictEqual(goodBuilt.refs.pipeline.children.length, 3);
   assert.strictEqual(goodBuilt.refs.pipelineSummary.textContent, '总速率 2/2 方向 · 分类 1/1 可比较');
   assert.strictEqual(goodBuilt.refs.interfacesBody.children.length, 1);
   assert.strictEqual(goodBuilt.refs.interfacesBody.children[0].children[3].textContent, '500 毫秒',
@@ -1044,11 +1049,11 @@ async function testAlertsAndReport() {
   ], 'warning aliases from status, health conflicts and diagnostics must collapse to root causes');
   assert.strictEqual(new Set(Array.from(deduplicated.all, (item) => item.text)).size,
     deduplicated.all.length, 'deduplicated diagnostics must not render repeated warning text');
-  const deduplicatedReport = model.buildReport(duplicateState, '1.1.5-r5');
+  const deduplicatedReport = model.buildReport(duplicateState, '1.1.5-r6');
   assert.strictEqual((deduplicatedReport.match(/localized:software_flow_offload_enabled/g) || []).length, 1);
   assert.strictEqual((deduplicatedReport.match(/localized:fullcone_detected/g) || []).length, 1);
 
-  const report = model.buildReport(state, '1.1.5-r5');
+  const report = model.buildReport(state, '1.1.5-r6');
   [ 'router.private.example', '10.77.0.20', 'secret-lan-interface',
     'collector-secret', 'token_secret_reason', 'command:ip_route_private', 'ip_route_private' ].forEach((secret) => {
     assert(!report.includes(secret), `report leaked ${secret}`);
@@ -1071,7 +1076,7 @@ async function testAlertsAndReport() {
     message_public: rawBpfSecret
   } ];
   const mapFailureState = model.normalizeResults(await settled(mapFailureValues), null, 30500, 2);
-  const mapFailureReport = model.buildReport(mapFailureState, '1.1.5-r5');
+  const mapFailureReport = model.buildReport(mapFailureState, '1.1.5-r6');
   assert(mapFailureReport.includes('分类映射表'));
   assert(mapFailureReport.includes('localized:map_read_failed') || mapFailureReport.includes('映射表'));
   [ rawBpfSecret, '/sys/fs/bpf/private-map', 'eth1', 'bpf-secret' ].forEach((secret) => {
@@ -1102,7 +1107,7 @@ async function testAlertsAndReport() {
       error: model.rpcErrorInfo({ code: 'TOKEN_SECRET', message: 'token=do-not-copy router.private.example' }, 'transport') })
   });
   const secretFailure = model.normalizeResults(secretFailureResults, null, 31000, 2);
-  const failureReport = model.buildReport(secretFailure, '1.1.5-r5');
+  const failureReport = model.buildReport(secretFailure, '1.1.5-r6');
   [ 'TOKEN_SECRET', 'do-not-copy', 'router.private.example' ].forEach((secret) => {
     assert(!failureReport.includes(secret), `RPC report leaked ${secret}`);
   });

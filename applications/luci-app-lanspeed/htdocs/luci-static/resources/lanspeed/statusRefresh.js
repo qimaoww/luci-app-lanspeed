@@ -423,92 +423,9 @@ function refreshSortHeaders(refs, prefs) {
 	});
 }
 
-function refreshLegacyCoverage(refs, status, prefs) {
-	var cov = status.coverage || {};
-	var covQuality = cov.quality || 'warmup';
-	var retainedPending = (covQuality === 'pending' || covQuality === 'counter_skew') &&
-		(typeof cov.tx_pct === 'number' || typeof cov.rx_pct === 'number');
-	var measuredLowTraffic = covQuality === 'low_traffic' &&
-		(typeof cov.tx_pct === 'number' || typeof cov.rx_pct === 'number');
-	if (covQuality === 'ok' || retainedPending || measuredLowTraffic) {
-		var txPct = typeof cov.tx_pct === 'number' ? cov.tx_pct : null;
-		var rxPct = typeof cov.rx_pct === 'number' ? cov.rx_pct : null;
-		var minPct = null;
-		if (txPct !== null && rxPct !== null) minPct = Math.min(txPct, rxPct);
-		else if (rxPct !== null) minPct = rxPct;
-		else if (txPct !== null) minPct = txPct;
-		refs.mCoverage.textContent = minPct !== null ? (minPct + '%') : '-';
-		if (retainedPending) {
-			refs.mCoverageSub.textContent = '↑' + (txPct !== null ? txPct : '-') +
-				' ↓' + (rxPct !== null ? rxPct : '-') + ' · ' + _('等待新批次');
-		} else if ((rxPct !== null && rxPct < 85) || (txPct !== null && txPct < 85)) {
-			var missingBps = 0;
-			var denomTotal = (Number(cov.denom_rx_bytes) || 0) + (Number(cov.denom_tx_bytes) || 0);
-			var numerTotal = (Number(cov.numer_rx_bytes) || 0) + (Number(cov.numer_tx_bytes) || 0);
-			if (denomTotal > numerTotal && cov.window_ms > 0)
-				missingBps = Math.round(((denomTotal - numerTotal) * 8000) / cov.window_ms);
-			refs.mCoverageSub.textContent = '↑' + (txPct !== null ? txPct : '-') +
-				' ↓' + (rxPct !== null ? rxPct : '-') +
-				' · ' + _('缺口 ') + fmt.formatRate(missingBps, prefs.unit);
-		} else if (txPct !== null && rxPct !== null && Math.abs(txPct - rxPct) <= 2) {
-			refs.mCoverageSub.textContent = _('上下行均衡');
-		} else {
-			refs.mCoverageSub.textContent = '↑' + (txPct !== null ? txPct : '-') +
-				' ↓' + (rxPct !== null ? rxPct : '-');
-		}
-	} else if (covQuality === 'idle') {
-		refs.mCoverage.textContent = '-';
-		refs.mCoverageSub.textContent = _('LAN 无活动流量');
-	} else if (covQuality === 'low_traffic') {
-		refs.mCoverage.textContent = '-';
-		refs.mCoverageSub.textContent = _('LAN 流量较低，暂不计算覆盖率');
-	} else if (covQuality === 'pending') {
-		refs.mCoverage.textContent = '…';
-		refs.mCoverageSub.textContent = _('LAN 覆盖率窗口正在追平，不影响客户端速率');
-	} else if (covQuality === 'counter_skew') {
-		refs.mCoverage.textContent = '…';
-		refs.mCoverageSub.textContent = _('客户端与 LAN 计数批次错位，等待重新采样');
-	} else if (covQuality === 'warmup' || covQuality === 'counter_reset') {
-		refs.mCoverage.textContent = '…';
-		refs.mCoverageSub.textContent = _('采样中');
-	} else if (covQuality === 'unsupported') {
-		refs.mCoverage.textContent = '-';
-		refs.mCoverageSub.textContent = _('不支持');
-	} else {
-		refs.mCoverage.textContent = '…';
-		refs.mCoverageSub.textContent = _('采样中');
-	}
-}
-
 function accessEdgeOwnsCurrentRate(status) {
 	return String(status && status.rate_collector_mode || '') === 'auto' &&
 		String(status && status.access_edge_mode || '') === 'active';
-}
-
-function refreshAccessEdgeCoverage(refs, edgeCoverage) {
-	if (!edgeCoverage || typeof edgeCoverage !== 'object') {
-		refs.mCoverage.textContent = '…';
-		refs.mCoverageSub.textContent = _('等待精准总速率的接入点采样');
-		return;
-	}
-	var edgeState = String(edgeCoverage.coverage || 'unavailable');
-	var edgeLabels = {
-		full: _('完整'), partial: _('部分'), degraded: _('降级'), unavailable: _('不可用')
-	};
-	var edgeHints = {
-		full: _('所有活动客户端都有完整总速率来源'),
-		partial: _('部分客户端或广播、组播流量无法完整归属'),
-		degraded: _('当前仅有 NSS/CPU 分类器降级速率'),
-		unavailable: _('暂无可用的客户端总速率来源')
-	};
-	var activeAttachments = Number(edgeCoverage.active_attachments);
-	var publishedAttachments = Number(edgeCoverage.published_attachments);
-	refs.mCoverage.textContent = edgeLabels[edgeState] || edgeLabels.unavailable;
-	refs.mCoverageSub.textContent = [
-		isFinite(activeAttachments) && isFinite(publishedAttachments)
-			? _('%d/%d 个接入点已识别').format(publishedAttachments, activeAttachments) : '',
-		edgeHints[edgeState] || edgeHints.unavailable
-	].filter(Boolean).join(' · ');
 }
 
 function refreshLive(viewState) {
@@ -581,13 +498,6 @@ function refreshLive(viewState) {
 	if (activeCfg.activeMinBps > 1)
 		subParts.push(_('≥ ') + fmt.formatRate(activeCfg.activeMinBps, prefs.unit));
 	refs.mClientsSub.textContent = subParts.join(' · ');
-
-	if (accessEdgeOwnsCurrentRate(status)) {
-		refreshAccessEdgeCoverage(refs,
-			clientsData.evidence && clientsData.evidence.access_edge);
-	} else {
-		refreshLegacyCoverage(refs, status, prefs);
-	}
 
 	var latestSample = fmt.latestClientSampleMs(clientsAll);
 	var filtered = clientsAll.filter(function(c) {

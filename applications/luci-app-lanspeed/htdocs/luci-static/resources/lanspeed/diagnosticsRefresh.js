@@ -185,9 +185,9 @@ function renderPipeline(refs, viewState) {
 	var rate = diagnosticsModel.rateOwnerStateWithRpc(viewState);
 	var edge = diagnosticsModel.accessEdgeStateWithRpc(viewState);
 	var classification = diagnosticsModel.classificationStateWithRpc(viewState);
-	var integrity = diagnosticsModel.integrityStateWithRpc(viewState);
-	var rateEvidence = {}, edgeEvidence = {}, classificationEvidence = {}, integrityEvidence = {};
-	rateEvidence[_('覆盖')] = rate.coverageText;
+	var rateEvidence = {}, edgeEvidence = {}, classificationEvidence = {};
+	rateEvidence[_('客户端采集覆盖率')] = rate.facts.totalDirections
+		? diagnosticsModel.formatPercent(rate.facts.ownerDirections * 100 / rate.facts.totalDirections) : '-';
 	rateEvidence[_('范围')] = rate.scopeText;
 	edgeEvidence[_('接入')] = edge.attachmentText;
 	edgeEvidence[_('归属')] = edge.trustText;
@@ -196,9 +196,6 @@ function renderPipeline(refs, viewState) {
 	else
 		classificationEvidence[_('覆盖率')] = classification.coverageText;
 	classificationEvidence[_('映射')] = classification.maps.text;
-	integrityEvidence[_('总速率')] = _('回退 %d · 缺失 %d · 陈旧 %d').format(
-		integrity.fallbackDirections, integrity.unavailableDirections, integrity.staleClients);
-	integrityEvidence[_('规则')] = _('N/S 不与总速率相加');
 	setStage(refs, 'rate', rate.state, rate.badge, rate.value,
 		'', _('%d/%d 方向 · 1 秒窗口').format(rate.facts.ownerDirections, rate.facts.totalDirections), rateEvidence);
 	setStage(refs, 'edge', edge.state, edge.badge, edge.value,
@@ -207,12 +204,10 @@ function renderPipeline(refs, viewState) {
 		'', _('分类 %s · 对齐 %s').format(
 			diagnosticsModel.formatDuration(classification.windowMs),
 			diagnosticsModel.formatDuration(classification.comparisonWindowMs)), classificationEvidence);
-	setStage(refs, 'integrity', integrity.state, integrity.badge, integrity.value,
-		'', integrity.reasonCodes.length ? _('详情见诊断报告') : '', integrityEvidence);
 	refs.pipelineSummary.textContent = _('总速率 %d/%d 方向 · 分类 %d/%d 可比较').format(
 		rate.facts.ownerDirections, rate.facts.totalDirections,
 		classification.aligned, classification.totalClients);
-	return { rate: rate, edge: edge, classification: classification, integrity: integrity };
+	return { rate: rate, edge: edge, classification: classification };
 }
 
 function interfaceRoleLabel(role) {

@@ -628,7 +628,7 @@ function assertProductDesignSystem() {
 	const bootstrapStatusCss = loadStyleLeaf('statusStyleBootstrap.js').CSS;
 	[
 		'align-items:stretch',
-		'grid-template-columns:repeat(5,minmax(0,1fr))',
+		'grid-template-columns:repeat(4,minmax(0,1fr))',
 		'grid-template-rows:.9rem 1.85rem minmax(1rem,auto)',
 		'border-top:2px solid var(--lanspeed-accent)',
 		'border-left-color:var(--lanspeed-border-strong)',
@@ -798,8 +798,8 @@ function assertAuroraNativeVisualSystem() {
 		fail('statusStyleAurora.js must render header metadata as plain supporting text instead of a pill');
 
 	const metricsBody = ruleBody(statusCss, '.lanspeed-theme-aurora .lanspeed-metrics');
-	if (!/grid-template-columns\s*:\s*repeat\(5\s*,/.test(metricsBody))
-		fail('statusStyleAurora.js must retain five overview metric columns on wide screens');
+	if (!/grid-template-columns\s*:\s*repeat\(4\s*,/.test(metricsBody))
+		fail('statusStyleAurora.js must retain four overview metric columns on wide screens');
 	const metricBody = ruleBody(statusCss, '.lanspeed-theme-aurora .lanspeed-metric{');
 	if (propertyValue(metricBody, 'display') !== 'flex' ||
 	    propertyValue(metricBody, 'flex-direction') !== 'column' ||
@@ -808,9 +808,9 @@ function assertAuroraNativeVisualSystem() {
 	}
 
 	const diagnostic1100Css = mediaSlice(diagnosticsResponsiveCss, 1100, 900);
-	if (!diagnostic1100Css.includes('.lanspeed-diagnostics-pipeline{grid-template-columns:repeat(2,minmax(0,1fr))') ||
-	    !diagnostic1100Css.includes('.lanspeed-diagnostic-stage:nth-child(3){padding-left:0}')) {
-		fail('diagnostics responsive layout must realign the four-stage pipeline at 1100px');
+	if (diagnostic1100Css.includes('.lanspeed-diagnostics-pipeline{grid-template-columns:repeat(2,minmax(0,1fr))') ||
+	    diagnostic1100Css.includes('.lanspeed-diagnostic-stage:nth-child(3)')) {
+		fail('diagnostics responsive layout must keep the three-stage pipeline intact until mobile width');
 	}
 	const diagnostic900Css = mediaSlice(diagnosticsResponsiveCss, 900, 700);
 	if (!diagnostic900Css.includes('.lanspeed-diagnostic-stage-evidence{grid-template-columns:minmax(0,1fr)}')) {
@@ -1103,9 +1103,9 @@ function assertArgonAlignmentContracts() {
 
 	[
 		'.lanspeed-theme-argon :is(.lanspeed-header,.lanspeed-details>summary){padding:.95rem 1.25rem .8rem}',
-		'.lanspeed-theme-argon .lanspeed-metrics{grid-template-columns:repeat(5,minmax(0,1fr));',
+		'.lanspeed-theme-argon .lanspeed-metrics{grid-template-columns:repeat(4,minmax(0,1fr));',
 		'@media (max-width:1100px){.lanspeed-theme-argon .lanspeed-metrics{',
-		'.lanspeed-theme-argon .lanspeed-metric:last-child{grid-column:1/-1}',
+		'grid-template-columns:repeat(2,minmax(0,1fr))',
 		'.lanspeed-theme-argon .lanspeed-sort-button{height:auto!important',
 		'.lanspeed-theme-argon .lanspeed-toolbar label{font-size:.95rem;line-height:1.5rem}',
 		'.lanspeed-root.lanspeed-theme-argon .lanspeed-active-only>input[type="checkbox"]{',
@@ -3873,36 +3873,36 @@ function assertStatusRefreshSortingInteraction(src) {
 		    JSON.stringify(Array.from(warningState.warnings)) !==
 			JSON.stringify([ 'map_read_failed', 'counter_anomaly' ])) {
 			fail('statusRefresh.js must render connection-only rows as information and keep only actionable client warnings');
-			}
 		}
-		if (typeof mod.rateMetaCells !== 'function') {
-			fail('statusRefresh.js must expose rate metadata rendering for validation');
-		} else {
-			const edgeCells = mod.rateMetaCells({
-				tx: { source: 'edge_port', coverage: 'full' },
-				rx: { source: 'edge_port', coverage: 'full' },
-				attachment: { kind: 'ethernet', ifname: 'lan2', trust: 'declared_direct' },
-				classification: { state: 'aligned', tx_coverage_pct: 96, rx_coverage_pct: 94 },
-				stale: false
-			});
-			const edgeText = edgeCells.map(fakeElementText).join(' · ');
-			if (!edgeText.includes('Edge-Port') || !edgeText.includes('Full') ||
-			    !edgeText.includes('lan2') || !edgeText.includes('NSS分类覆盖率 94%')) {
-				fail('status client metadata must show owner, total coverage, attachment and compact NSS coverage');
-			}
-			const unknownCells = mod.rateMetaCells({
-				tx: { source: 'future_owner', coverage: 'degraded' },
-				rx: { source: 'future_owner', coverage: 'degraded' },
-				classification: { state: 'domain_mismatch' }, stale: false
-			});
-			if (!unknownCells.map(fakeElementText).join(' ').includes('其他来源') ||
-			    unknownCells.some(function(cell) {
-				    return fakeElementText(cell).includes('NSS分类覆盖率');
-			    })) {
-				fail('unknown sources need a generic label and missing U/coverage must not become a zero badge');
-			}
+	}
+	if (typeof mod.rateMetaCells !== 'function') {
+		fail('statusRefresh.js must expose rate metadata rendering for validation');
+	} else {
+		const edgeCells = mod.rateMetaCells({
+			tx: { source: 'edge_port', coverage: 'full' },
+			rx: { source: 'edge_port', coverage: 'full' },
+			attachment: { kind: 'ethernet', ifname: 'lan2', trust: 'declared_direct' },
+			classification: { state: 'aligned', tx_coverage_pct: 96, rx_coverage_pct: 94 },
+			stale: false
+		});
+		const edgeText = edgeCells.map(fakeElementText).join(' · ');
+		if (!edgeText.includes('Edge-Port') || !edgeText.includes('Full') ||
+		    !edgeText.includes('lan2') || !edgeText.includes('NSS分类覆盖率 94%')) {
+			fail('status client metadata must show owner, total coverage, attachment and compact NSS coverage');
 		}
-		if (typeof mod.reconcileClientRows !== 'function') {
+		const unknownCells = mod.rateMetaCells({
+			tx: { source: 'future_owner', coverage: 'degraded' },
+			rx: { source: 'future_owner', coverage: 'degraded' },
+			classification: { state: 'domain_mismatch' }, stale: false
+		});
+		if (!unknownCells.map(fakeElementText).join(' ').includes('其他来源') ||
+		    unknownCells.some(function(cell) {
+			    return fakeElementText(cell).includes('NSS分类覆盖率');
+		    })) {
+			fail('unknown sources need a generic label and missing U/coverage must not become a zero badge');
+		}
+	}
+	if (typeof mod.reconcileClientRows !== 'function') {
 		fail('statusRefresh.js must expose keyed client-row reconciliation for validation');
 	} else {
 		const tbody = fakeElement('tbody', {});
@@ -4755,7 +4755,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.5-r5';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.5-r6';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
@@ -5652,8 +5652,8 @@ function assertStatusShellModule(src) {
 	    !src.includes('refs.ifacesBody') || !src.includes('ifacesCard')) {
 		fail('lanspeed/statusShell.js must preserve the interface throughput details');
 	}
-	if (!src.includes('当前网速覆盖'))
-		fail('lanspeed/statusShell.js must name the coverage card by the currently selected rate mode');
+	if (src.includes('当前网速覆盖') || src.includes('refs.mCoverage'))
+		fail('lanspeed/statusShell.js must not render the removed overview coverage card');
 	if (src.includes('运行诊断') || src.includes('diagnosticStatusCard') ||
 	    src.includes('lanspeed-diagnostic-') || src.includes('diagnosticsCard')) {
 		fail('lanspeed/statusShell.js must not render the dedicated diagnostics page inside realtime status');
@@ -5748,23 +5748,11 @@ function assertStatusRefreshModule(src) {
 	    !src.includes("_('%d 告警').format(specificWarnings.length)")) {
 		fail('statusRefresh.js must fold connection-only details into the collector tooltip without rendering another label');
 	}
-	if (!src.includes("var measuredLowTraffic = covQuality === 'low_traffic'") ||
-	    !src.includes("covQuality === 'pending' || covQuality === 'counter_skew'") ||
-	    !src.includes('covQuality === \'ok\' || retainedPending || measuredLowTraffic') ||
-	    !src.includes('LAN 流量较低，暂不计算覆盖率') ||
-	    !src.includes('LAN 无活动流量') ||
-	    !src.includes("covQuality === 'counter_skew'") ||
-	    !src.includes('客户端与 LAN 计数批次错位，等待重新采样') ||
-	    !src.includes("covQuality === 'unsupported'")) {
-		fail('statusRefresh.js must distinguish low traffic from a truly idle LAN');
-	}
 	if (!src.includes("String(status && status.rate_collector_mode || '') === 'auto'") ||
 	    !src.includes("String(status && status.access_edge_mode || '') === 'active'") ||
-	    !src.includes('clientsData.evidence.access_edge') ||
-	    !src.includes("full: _('完整'), partial: _('部分'), degraded: _('降级'), unavailable: _('不可用')") ||
-	    !src.includes('部分客户端或广播、组播流量无法完整归属') ||
-	    !src.includes('等待精准总速率的接入点采样')) {
-		fail('statusRefresh.js must select coverage from the currently effective rate configuration');
+	    !src.includes("? 'access_edge' :") || src.includes('refs.mCoverage') ||
+	    src.includes('refreshLegacyCoverage') || src.includes('refreshAccessEdgeCoverage')) {
+		fail('statusRefresh.js must identify Access Edge without rendering the removed overview coverage metric');
 	}
 	if (!src.includes("'class': 'lanspeed-connection-link'") ||
 	    !src.includes('clientConnections.detailHref(window.location.pathname, c.identity_key)') ||
@@ -5797,7 +5785,7 @@ function assertDiagnosticsStyleModule(src) {
 	[
 		'.lanspeed-diagnostics-root .lanspeed-header{display:flex',
 		'.lanspeed-diagnostics-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))',
-		'.lanspeed-diagnostics-pipeline{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))',
+		'.lanspeed-diagnostics-pipeline{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))',
 		'.lanspeed-diagnostic-stage{', '.lanspeed-diagnostics-health-group{',
 		'.lanspeed-diagnostics-table-wrap{', '.lanspeed-diagnostic-alert,',
 		'.lanspeed-diagnostics-report-preview{'
@@ -5834,7 +5822,6 @@ function assertDiagnosticsShellModule(src) {
 	    !src.includes("stage(refs, 'rate'") ||
 	    !src.includes("stage(refs, 'edge'") ||
 	    !src.includes("stage(refs, 'classification'") ||
-	    !src.includes("stage(refs, 'integrity'") ||
 	    !src.includes("refs.rpcDetails = E('details'") ||
 	    !src.includes("refs.reportDetails = E('details'") ||
 	    !src.includes('refs.btnCopy') ||
@@ -5848,7 +5835,7 @@ function assertDiagnosticsShellModule(src) {
 		fail('lanspeed/diagnosticsShell.js must own the independent diagnostics page DOM');
 	}
 	if ((src.match(/'class': 'cbi-section/g) || []).length !== 4 ||
-	    src.includes('lanspeed-diagnostic-card')) {
+	    src.includes('lanspeed-diagnostic-card') || src.includes("stage(refs, 'integrity'")) {
 		fail('lanspeed/diagnosticsShell.js must expose four peer task sections without nested cards');
 	}
 }
@@ -5859,7 +5846,6 @@ function assertDiagnosticsRefreshModule(src) {
 	    !src.includes('diagnosticsModel.rateOwnerStateWithRpc(viewState)') ||
 	    !src.includes('diagnosticsModel.accessEdgeStateWithRpc(viewState)') ||
 	    !src.includes('diagnosticsModel.classificationStateWithRpc(viewState)') ||
-	    !src.includes('diagnosticsModel.integrityStateWithRpc(viewState)') ||
 	    !src.includes('diagnosticsModel.connectionStateWithRpc(') ||
 	    !src.includes('diagnosticsModel.interfaceStateWithRpc(viewState)') ||
 	    !src.includes('diagnosticsModel.warningGroups(status, health, rpcData, diagnostics)') ||
@@ -5871,11 +5857,11 @@ function assertDiagnosticsRefreshModule(src) {
 	    !src.includes('renderWarnings(refs, viewState.status') ||
 	    !src.includes("'data-label': _('结果')") ||
 	    !src.includes('lsVersion.FULL_VERSION')) {
-		fail('lanspeed/diagnosticsRefresh.js must render total-rate, Access Edge, classification, integrity, RPC and health states');
+		fail('lanspeed/diagnosticsRefresh.js must render total-rate, Access Edge, classification, RPC and health states');
 	}
-	if (!src.includes("rateEvidence[_('覆盖')]") || !src.includes("rateEvidence[_('范围')]") ||
+	if (!src.includes("rateEvidence[_('客户端采集覆盖率')]") || !src.includes("rateEvidence[_('范围')]") ||
 	    !src.includes("classificationEvidence[_('覆盖率')]") ||
-	    !src.includes('N/S 不与总速率相加') || src.includes('rate.description, rate.meta'))
+	    src.includes('diagnosticsModel.integrityStateWithRpc(viewState)') || src.includes('rate.description, rate.meta'))
 		fail('lanspeed/diagnosticsRefresh.js must render a concise total-rate and classification summary');
 }
 
@@ -6638,7 +6624,7 @@ function matchingConfigStatus(values) {
 		max_clients: values.max_clients,
 		enable_bpf: values.enable_bpf === '1',
 		enable_conntrack_fallback: values.enable_conntrack_fallback === '1',
-		version: '1.1.5-r5',
+		version: '1.1.5-r6',
 		capabilities: { bpf: true, conntrack_fallback: true },
 		evidence: { collector: { primary_source: 'bpf', effective_connection_collector: 'conntrack_netlink' } }
 	};
@@ -6665,7 +6651,7 @@ function assertConfigFormBehavior(src) {
 	}, makeConfigIfaceStub(), model);
 	asyncChecks.push(validLoadForm.loadValues().then(function(values) {
 		if (values.pageState !== 'ready' || !values.rpc.status.ok ||
-			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.5-r5') {
+			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.5-r6') {
 			fail('configForm.js must accept the complete status contract and retain capability evidence');
 		}
 	}).catch(function(error) {

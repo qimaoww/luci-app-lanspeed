@@ -17,7 +17,7 @@ var AURORA_CSS = [
 		'min-width:calc(var(--spacing,.25rem)*28);max-width:calc(var(--spacing,.25rem)*28);',
 		'padding-right:calc(var(--spacing,.25rem)*11)!important;text-overflow:clip}',
 	'.lanspeed-theme-aurora .lanspeed-pagination{padding-right:.25rem}',
-	'.lanspeed-theme-aurora .lanspeed-metrics{grid-template-columns:repeat(5,minmax(0,1fr));',
+	'.lanspeed-theme-aurora .lanspeed-metrics{grid-template-columns:repeat(4,minmax(0,1fr));',
 		'gap:0;align-items:stretch}',
 	'.lanspeed-theme-aurora .lanspeed-metric{display:flex;flex-direction:column;justify-content:center;',
 		'min-height:5.8rem;padding:.28rem 1.15rem .22rem;border-left:1px solid var(--lanspeed-border)}',
@@ -38,8 +38,8 @@ var AURORA_CSS = [
 	'.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-table :is(th,td):nth-child(2){width:15rem}}',
 	'.lanspeed-theme-aurora .lanspeed-table td .ipline{max-width:18rem}',
 	'@media (max-width:1100px){.lanspeed-theme-aurora .lanspeed-metrics{',
-		'grid-template-columns:repeat(3,minmax(0,1fr));gap:.8rem 0}',
-	'.lanspeed-theme-aurora .lanspeed-metric:nth-child(4){padding-left:0;border-left:0}}',
+		'grid-template-columns:repeat(2,minmax(0,1fr));gap:.8rem 0}',
+	'.lanspeed-theme-aurora .lanspeed-metric:nth-child(odd){padding-left:0;border-left:0}}',
 	'@media (max-width:700px){',
 	'.lanspeed-theme-aurora :is(.lanspeed-header,.lanspeed-details>summary){padding:.85rem 1rem .7rem}',
 	'.lanspeed-theme-aurora :is(.lanspeed-body,.lanspeed-details-body){padding:.85rem 1rem}',
@@ -47,7 +47,6 @@ var AURORA_CSS = [
 	'.lanspeed-theme-aurora .lanspeed-metric{min-height:5.1rem;padding:.2rem .75rem}',
 	'.lanspeed-theme-aurora .lanspeed-metric:nth-child(odd){padding-left:0;border-left:0}',
 	'.lanspeed-theme-aurora .lanspeed-metric:nth-child(even){border-left:1px solid var(--lanspeed-border)}',
-	'.lanspeed-theme-aurora .lanspeed-metric:last-child{grid-column:1/-1;padding-left:0;border-left:0}',
 	'.lanspeed-theme-aurora .lanspeed-toolbar input[type="search"]{min-width:0;width:100%;max-width:none}}',
 	'@media (max-width:480px){.lanspeed-theme-aurora .lanspeed-metric .big{font-size:1.3rem}}'
 ].join('\n');

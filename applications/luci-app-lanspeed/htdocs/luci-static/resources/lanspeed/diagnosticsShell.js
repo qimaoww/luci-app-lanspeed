@@ -137,8 +137,7 @@ function buildPipelineSection(refs) {
 	refs.pipeline = E('ol', { 'class': 'lanspeed-diagnostics-pipeline' }, [
 		stage(refs, 'rate', _('总速率')),
 		stage(refs, 'edge', _('接入归属')),
-		stage(refs, 'classification', _('NSS / CPU 分类')),
-		stage(refs, 'integrity', _('当前限制'))
+		stage(refs, 'classification', _('NSS / CPU 分类'))
 	]);
 	return E('section', { 'class': 'cbi-section lanspeed-diagnostics-pipeline-section' }, [
 		sectionHeader(_('精准速率'), refs.pipelineSummary, '', []),

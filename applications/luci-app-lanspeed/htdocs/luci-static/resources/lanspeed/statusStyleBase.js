@@ -24,7 +24,7 @@ var BASE_CSS = [
 	'.lanspeed-status-error-list{display:grid;gap:.3em;margin:.45em 0 0;padding-left:1.2em;',
 		'font-size:.85em;line-height:1.45}',
 
-	'.lanspeed-metrics{display:grid;grid-template-columns:repeat(5,minmax(9.5em,12.5em));',
+	'.lanspeed-metrics{display:grid;grid-template-columns:repeat(4,minmax(9.5em,12.5em));',
 		'gap:.9em 1.2em;align-items:start;justify-content:start;margin:0}',
 	'.lanspeed-metric{min-width:0;padding-left:.8em;border-left:.2em solid var(--lanspeed-border-strong)}',
 	'.lanspeed-metric:first-child{border-left-color:var(--lanspeed-accent)}',

@@ -68,7 +68,7 @@ var BASE_CSS = [
 	'.lanspeed-diagnostic-fact[data-state="bad"] .lanspeed-diagnostic-fact-value{color:var(--lanspeed-danger)}',
 	'.lanspeed-diagnostic-fact[data-state="loading"] .lanspeed-diagnostic-fact-value{color:var(--lanspeed-info)}',
 
-	'.lanspeed-diagnostics-pipeline{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));',
+		'.lanspeed-diagnostics-pipeline{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));',
 		'gap:0;margin:0;padding:0;list-style:none;min-width:0}',
 	'.lanspeed-diagnostic-stage{display:grid;grid-template-rows:repeat(4,auto);align-content:start;gap:.32em;',
 		'min-width:0;min-height:0;padding:.1em .9em;border-left:1px solid var(--lanspeed-border)}',

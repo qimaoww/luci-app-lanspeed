@@ -27,10 +27,9 @@ var TABLE_LABELLED_CELLS = tableSelectors('tbody>tr>td[data-label]::before');
 var TABLE_SPANNING_CELLS = tableSelectors('tbody>tr>td[colspan]');
 var RESPONSIVE_CSS = [
 	'@media (max-width:1100px){',
-		ROOT + ' .lanspeed-diagnostics-facts,' + ROOT + ' .lanspeed-diagnostics-pipeline{grid-template-columns:repeat(2,minmax(0,1fr))}',
-		ROOT + ' .lanspeed-diagnostic-fact:nth-child(odd),' + ROOT + ' .lanspeed-diagnostic-stage:nth-child(odd){padding-left:0;border-left:0}',
-		ROOT + ' .lanspeed-diagnostic-stage:nth-child(3){padding-left:0}',
-		ROOT + ' .lanspeed-diagnostic-fact:nth-child(n+3),' + ROOT + ' .lanspeed-diagnostic-stage:nth-child(n+3){border-top:1px solid var(--lanspeed-border);padding-top:.75em}',
+		ROOT + ' .lanspeed-diagnostics-facts{grid-template-columns:repeat(2,minmax(0,1fr))}',
+		ROOT + ' .lanspeed-diagnostic-fact:nth-child(odd){padding-left:0;border-left:0}',
+		ROOT + ' .lanspeed-diagnostic-fact:nth-child(n+3){border-top:1px solid var(--lanspeed-border);padding-top:.75em}',
 	'}',
 	'@media (max-width:900px){',
 		ROOT + ' .lanspeed-diagnostic-stage-evidence{grid-template-columns:minmax(0,1fr)}',

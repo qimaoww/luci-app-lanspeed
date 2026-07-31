@@ -13,7 +13,7 @@ var ARGON_CSS = [
 	'.lanspeed-theme-argon .lanspeed-header>.meta,',
 	'.lanspeed-theme-argon .lanspeed-details>summary .sum{padding-left:.55rem;',
 		'border-left:.18rem solid var(--lanspeed-accent)}',
-	'.lanspeed-theme-argon .lanspeed-metrics{grid-template-columns:repeat(5,minmax(0,1fr));',
+	'.lanspeed-theme-argon .lanspeed-metrics{grid-template-columns:repeat(4,minmax(0,1fr));',
 		'gap:.85rem 1rem}',
 	'.lanspeed-theme-argon .lanspeed-metric{border-left-width:.18rem}',
 	'.lanspeed-theme-argon .lanspeed-metric .big{font-size:1.5rem}',
@@ -45,15 +45,14 @@ var ARGON_CSS = [
 	'.lanspeed-theme-argon .lanspeed-clients-card .lanspeed-table :is(th,td):nth-child(2){width:14.5rem}}',
 	'.lanspeed-theme-argon .lanspeed-table td .ipline{max-width:18rem}',
 	'@media (max-width:1100px){.lanspeed-theme-argon .lanspeed-metrics{',
-		'grid-template-columns:repeat(3,minmax(0,1fr))}}',
+		'grid-template-columns:repeat(2,minmax(0,1fr))}}',
 	'@media (max-width:700px){',
 	'.lanspeed-theme-argon :is(.lanspeed-header,.lanspeed-details>summary){padding:.85rem 1rem .7rem}',
 	'.lanspeed-theme-argon :is(.lanspeed-body,.lanspeed-details-body){padding:.85rem 1rem}',
 	'.lanspeed-theme-argon .lanspeed-toolbar input[type="search"]{min-width:0;width:100%;max-width:none}}',
 	'@media (max-width:480px){.lanspeed-theme-argon .lanspeed-metrics{',
 		'grid-template-columns:repeat(2,minmax(0,1fr))}',
-	'.lanspeed-theme-argon .lanspeed-metric .big{font-size:1.3rem}',
-	'.lanspeed-theme-argon .lanspeed-metric:last-child{grid-column:1/-1}}'
+	'.lanspeed-theme-argon .lanspeed-metric .big{font-size:1.3rem}}'
 ].join('\n');
 
 return baseclass.extend({

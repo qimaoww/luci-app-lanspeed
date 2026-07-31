@@ -1043,21 +1043,20 @@ function rateOwnerStateWithRpc(viewState) {
 		description = coverage.description + ' ' +
 			_('每个方向只使用一个总速率来源（owner）；NSS/CPU 分类不会与总速率相加。');
 		meta = _('%d/%d 个方向已有来源 · 目标窗口 1 秒').format(facts.ownerDirections, facts.totalDirections);
-		if (facts.unavailableDirections) {
+		if (facts.unavailableDirections || coverage.quality === 'unavailable') {
 			state = 'bad'; badge = _('存在缺失');
 			description += ' ' + _('%d 个方向没有可用的总速率 owner。').format(facts.unavailableDirections);
-		} else if (facts.fallbackDirections || facts.coverageCounts.degraded) {
-			state = worseState(state, 'warning');
-			if (state !== 'bad') badge = _('降级');
+		} else if (facts.fallbackDirections || facts.coverageCounts.degraded || coverage.quality === 'degraded') {
+			state = 'warning'; badge = _('降级');
 			description += ' ' + _('部分方向正在使用分类器降级来源，只能代表已观察到的路由流量。');
-		} else if (facts.coverageCounts.partial) {
-			state = worseState(state, 'warning');
-			if (state !== 'bad') badge = _('部分');
-			description += ' ' + _('部分方向尚未达到全部帧 Full 证明。');
 		} else if (facts.staleClients) {
-			state = worseState(state, 'warning');
-			if (state !== 'bad') badge = _('存在陈旧值');
+			state = 'warning'; badge = _('存在陈旧值');
 			description += ' ' + _('%d 个客户端的总速率已标记为陈旧。').format(facts.staleClients);
+		} else if (coverage.quality === 'full' || coverage.quality === 'partial') {
+			/* Partial describes the provable frame scope, not a failed rate sample. */
+			state = 'good'; badge = _('正常');
+			if (facts.coverageCounts.partial)
+				description += ' ' + _('全部方向都有新鲜总速率来源；帧归属边界仅在详细报告中说明。');
 		}
 	} else {
 		var evidence = status.evidence && status.evidence.collector || {};
@@ -1109,9 +1108,11 @@ function accessEdgeStateWithRpc(viewState) {
 	var reasons = asArray(evidence.reason_codes).map(String).filter(function(code, index, values) {
 		return code && values.indexOf(code) === index;
 	});
+	var publicationComplete = topologyComplete && published !== null && active !== null && published >= active;
 	var state = quality === 'unavailable' && owner ? 'bad' :
-		(!topologyComplete || published === null || active === null || published < active || quality !== 'full' && owner ? 'warning' : 'good');
-	var badge = owner ? (RATE_COVERAGE_LABELS[quality] || _('未知')) : _('后台验证');
+		(!publicationComplete || (quality === 'degraded' && owner) ? 'warning' : 'good');
+	var badge = owner ? (state === 'good' ? _('正常') :
+		(state === 'bad' ? _('不可用') : quality === 'degraded' ? _('降级') : _('不完整'))) : _('后台验证');
 	var value = active !== null && published !== null ? _('%d/%d 个接入点').format(published, active) : _('接入点未知');
 	var description = owner ? _('精准接入点负责当前客户端总速率。') :
 		_('精准接入点继续采集核对，但当前网速模式不会采用它的速率。');
@@ -1260,12 +1261,14 @@ function accessEdgeCoverageState(clients) {
 	var published = finiteNumber(evidence.published_attachments);
 	var countText = active !== null && published !== null
 		? _('%d/%d 个接入点已识别').format(Math.round(published), Math.round(active)) : _('接入点数量未知');
-	var state = quality === 'full' ? 'good' : quality === 'unavailable' ? 'bad' : 'warning';
+	var publicationComplete = evidence.topology_complete === true && active !== null && published !== null && published >= active;
+	var state = quality === 'unavailable' ? 'bad' :
+		(quality === 'degraded' || !publicationComplete ? 'warning' : 'good');
 	var description = quality === 'full' ? _('所有活动客户端都有完整总速率来源。') :
 		(quality === 'partial' ? _('部分客户端或广播、组播流量无法完整归属。') :
 			(quality === 'degraded' ? _('当前仅有 NSS/CPU 分类器降级速率。') :
 				_('暂无可用的客户端总速率来源。')));
-	return { state: state, badge: labels[quality] || labels.unavailable,
+	return { state: state, badge: state === 'good' ? _('正常') : labels[quality] || labels.unavailable,
 		value: labels[quality] || labels.unavailable, description: countText + ' · ' + description,
 		meta: _('精准总速率 · %s').format(countText), quality: quality,
 		activeAttachments: active, publishedAttachments: published, source: 'access_edge' };
