@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
-const evidenceDir = path.join(root, '.sisyphus', 'evidence');
+const evidenceDir = process.env.LANSPEED_TEST_OUTPUT_DIR || null;
 
 function readJson(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(root, relativePath), 'utf8'));
@@ -809,6 +809,9 @@ function validateHealth(name, health) {
 }
 
 function writeEvidence(fileName, health) {
+  if (!evidenceDir) {
+    return;
+  }
   fs.writeFileSync(path.join(evidenceDir, fileName), `${JSON.stringify(health, null, 2)}\n`);
 }
 
@@ -845,7 +848,9 @@ function assertNoForbiddenRuntimePatterns(source, conntrackHeader, conntrackSour
   assert(!/"counter_source"\s*,\s*json_object_new_string\("(?:firewall|iptables|nft)_forward_chain_counters"\)/.test(source), 'fallback must not use firewall forward-chain counters as counter_source');
 }
 
-fs.mkdirSync(evidenceDir, { recursive: true });
+if (evidenceDir) {
+  fs.mkdirSync(evidenceDir, { recursive: true });
+}
 
 const baseHealth = buildHealth(readJson('tests/fixtures/lanspeed-probe-base.json'));
 const softwareFlowOffloadHealth = buildHealth(readJson('tests/fixtures/lanspeed-probe-software-flow-offload.json'));

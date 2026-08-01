@@ -2,10 +2,15 @@
 
 set -eu
 
-ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+ROOT_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
+. "$SCRIPT_DIR/test-output.sh"
+lanspeed_test_output_init
+trap 'lanspeed_test_output_cleanup' EXIT
+
 README="$ROOT_DIR/README.md"
 MATRIX="$ROOT_DIR/docs/rust-compatibility-matrix.md"
-EVIDENCE_DIR="$ROOT_DIR/.sisyphus/evidence"
+EVIDENCE_DIR="$LANSPEED_TEST_OUTPUT_DIR"
 EVIDENCE="$EVIDENCE_DIR/task-14-doc-check.txt"
 
 mkdir -p "$EVIDENCE_DIR"
@@ -221,4 +226,4 @@ for theme in aurora argon bootstrap; do
 done
 
 log "result: pass"
-printf 'documentation checklist passed: %s\n' "$EVIDENCE"
+printf '%s\n' "documentation checklist passed"

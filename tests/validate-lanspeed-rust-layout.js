@@ -251,6 +251,16 @@ try {
   );
 
   const testRunner = fs.readFileSync(path.join(root, 'tests/run.sh'), 'utf8');
+  const testOutputHelper = fs.readFileSync(path.join(root, 'tests/test-output.sh'), 'utf8');
+  const testOutputUsers = [
+    'tests/run.sh',
+    'tests/validate-build-sdk.sh',
+    'tests/validate-lanspeed-docs.sh',
+    'tests/validate-lanspeed-network.sh',
+    'tests/validate-lanspeed-identity.js',
+    'tests/validate-lanspeed-probes.js',
+    'tests/qa-device.sh'
+  ].map((relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8')).join('\n');
   const openwrtCompileValidator = fs.readFileSync(
     path.join(root, 'tests/validate-lanspeed-openwrt-compile.sh'),
     'utf8'
@@ -271,6 +281,17 @@ try {
   );
   const normalizedTestRunner = testRunner.replace(/\\\r?\n[ \t]*/g, ' ');
   const normalizedLinkingValidator = linkingValidator.replace(/\\\r?\n[ \t]*/g, ' ');
+  assert(
+    testRunner.includes('. "$SCRIPT_DIR/test-output.sh"') &&
+      testRunner.includes("trap 'lanspeed_test_output_cleanup' EXIT") &&
+      testOutputHelper.includes('mktemp -d "${TMPDIR:-/tmp}/lanspeed-tests.XXXXXX"') &&
+      testOutputHelper.includes('rm -rf -- "$LANSPEED_TEST_OUTPUT_DIR"'),
+    'tests must use one disposable output directory and remove it on exit'
+  );
+  assert(
+    !testOutputUsers.includes('.' + 'sisyphus'),
+    'test scripts must not write into an agent-specific scratch directory'
+  );
   assert(
     testRunner.includes('validate-lanspeed-openwrt-compile.sh'),
     'tests/run.sh must compile the production pure Rust OpenWrt path when the 25.12 SDK is available'

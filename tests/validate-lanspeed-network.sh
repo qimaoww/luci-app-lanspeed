@@ -3,7 +3,11 @@ set -u
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
-EVIDENCE_DIR="$ROOT/.sisyphus/evidence"
+. "$SCRIPT_DIR/test-output.sh"
+lanspeed_test_output_init
+trap 'lanspeed_test_output_cleanup' EXIT
+
+EVIDENCE_DIR="$LANSPEED_TEST_OUTPUT_DIR"
 EVIDENCE="$EVIDENCE_DIR/task-15-network-cleanup.txt"
 PREFIX="lanspeedtest"
 BRIDGE="${PREFIX}br"
@@ -57,6 +61,7 @@ cleanup() {
 
 finish() {
 	status=$?
+	trap - EXIT INT TERM
 	if [ "$CREATED" -eq 1 ]; then
 		cleanup
 	fi
@@ -64,13 +69,15 @@ finish() {
 	if [ -n "$stale" ]; then
 		write_evidence "cleanup=FAIL stale_interfaces=$stale"
 		printf '%s\n' "FAIL network cleanup stale_interfaces=$stale evidence=$EVIDENCE" >&2
+		lanspeed_test_output_cleanup
 		exit 1
 	fi
 	write_evidence "cleanup=PASS stale_interfaces=none"
 	write_evidence "finished=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 	if [ "$status" -eq 0 ]; then
-		printf '%s\n' "network validation completed; evidence: $EVIDENCE"
+		printf '%s\n' "network validation completed"
 	fi
+	lanspeed_test_output_cleanup
 	exit "$status"
 }
 
@@ -90,7 +97,7 @@ skip() {
 		write_evidence "cleanup=PASS stale_interfaces=none"
 	fi
 	write_evidence "finished=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-	printf '%s\n' "SKIP network validation: $reason evidence=$EVIDENCE"
+	printf '%s\n' "SKIP network validation: $reason"
 	exit 0
 }
 

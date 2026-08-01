@@ -3,7 +3,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
-OUT_DIR=${OUT_DIR:-"$ROOT/.sisyphus/evidence"}
+OUT_DIR=${OUT_DIR:-${LANSPEED_TEST_OUTPUT_DIR:-}}
 TARGET=${TARGET:-}
 DRY_RUN=${DRY_RUN:-0}
 SSH_OPTS=${SSH_OPTS:-}
@@ -16,8 +16,6 @@ OPENCLASH_DAE_EVIDENCE="$OUT_DIR/task-16-openclash-dae.json"
 MATRIX_EVIDENCE="$OUT_DIR/task-16-device-matrix.json"
 IPERF_EVIDENCE="$OUT_DIR/task-16-device-iperf.txt"
 
-mkdir -p "$OUT_DIR"
-
 usage() {
 	cat <<EOF
 Usage: $0 {collect|iperf|matrix|openclash-dae}
@@ -25,7 +23,7 @@ Usage: $0 {collect|iperf|matrix|openclash-dae}
 Environment:
   TARGET=root@router              SSH target for a real router.
   DRY_RUN=1                       Print commands without executing remote commands.
-  OUT_DIR=.sisyphus/evidence      Evidence output directory.
+  OUT_DIR=/path                   Required evidence output directory.
   SSH_OPTS='-p 22'                Optional ssh options.
   IPERF_SERVER=192.0.2.1          Required for non-dry-run iperf.
   IPERF_CLIENT_OPTS='-t 10 -P 1'  Optional iperf client flags.
@@ -36,6 +34,14 @@ Subcommands:
   matrix         Write machine-readable high-risk QA matrix results.
   openclash-dae  Write mock/dry-run OpenClash + dae conflict evidence JSON.
 EOF
+}
+
+require_output_dir() {
+	if [ -z "$OUT_DIR" ]; then
+		printf '%s\n' "OUT_DIR is required for device evidence" >&2
+		exit 2
+	fi
+	mkdir -p "$OUT_DIR"
 }
 
 timestamp() {
@@ -176,6 +182,7 @@ collect_client_connections() {
 }
 
 run_collect() {
+	require_output_dir
 	require_target_for_real_remote
 	{
 		printf '%s\n' "Task 16 device QA collect evidence"
@@ -210,6 +217,7 @@ EOF
 }
 
 run_iperf() {
+	require_output_dir
 	require_target_for_real_remote
 	if [ "$DRY_RUN" != "1" ] && [ -z "$IPERF_SERVER" ]; then
 		printf '%s\n' "IPERF_SERVER is required for non-dry-run iperf" >&2
@@ -248,6 +256,7 @@ matrix_result_for() {
 }
 
 run_matrix() {
+	require_output_dir
 	{
 		printf '%s\n' "{"
 		printf '  "schema": "lanspeed.task16.qa_matrix.v1",\n'
@@ -282,6 +291,7 @@ run_matrix() {
 }
 
 run_openclash_dae() {
+	require_output_dir
 	tc_conflict=${TC_FILTER_CONFLICT:-1}
 	{
 		printf '%s\n' "{"

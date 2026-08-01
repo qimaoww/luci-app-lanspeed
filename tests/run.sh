@@ -3,7 +3,11 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
-EVIDENCE_DIR="$ROOT/.sisyphus/evidence"
+. "$SCRIPT_DIR/test-output.sh"
+lanspeed_test_output_init
+trap 'lanspeed_test_output_cleanup' EXIT
+
+EVIDENCE_DIR="$LANSPEED_TEST_OUTPUT_DIR"
 UNIT_EVIDENCE="$EVIDENCE_DIR/task-15-unit-fixtures.txt"
 LOG_DIR="$EVIDENCE_DIR/task-15-logs"
 RUN_ID=$(date -u '+%Y%m%dT%H%M%SZ')-$$
@@ -40,6 +44,11 @@ Subcommands:
   probe-fixtures  Run fixture validators covering OpenClash, dae, QoS/IFB, offload, and conntrack fallback.
   network         Run a defensive VM/veth cleanup check, or write explicit SKIP evidence.
   all             Run unit, probe-fixtures, and network.
+
+Environment:
+  LANSPEED_TEST_OUTPUT_DIR=/path  Preserve logs in an explicit directory.
+                                 By default a unique temporary directory is
+                                 removed when the test process exits.
 EOF
 }
 
@@ -229,7 +238,11 @@ run_unit() {
 	append_unit_evidence "coverage=rust_workspace openwrt_sys_host openwrt_feature_pure_rust openwrt_sys_ubus_tests contract identity collector lifecycle probes diagnostics realtime_status lanspeed-geo lanspeed-modules build-sdk"
 	append_unit_evidence "completed=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 	append_unit_evidence "END unit run_id=$RUN_ID"
-	printf '%s\n' "unit validations passed; evidence: $UNIT_EVIDENCE"
+	if [ "$LANSPEED_TEST_OUTPUT_OWNED" -eq 1 ]; then
+		printf '%s\n' "unit validations passed"
+	else
+		printf '%s\n' "unit validations passed; output: $EVIDENCE_DIR"
+	fi
 }
 
 run_probe_fixtures() {
@@ -243,7 +256,11 @@ run_probe_fixtures() {
 	append_unit_evidence "fixture_coverage=openclash_fakeip openclash_router_self dae_tc_preserve dae_tc_conflict sqm_qosify_ifb software_offload hardware_offload conntrack_nat conntrack_acct_disabled flowtable_missing_nlbwmon"
 	append_unit_evidence "completed_probe_fixtures=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 	append_unit_evidence "END probe-fixtures run_id=$RUN_ID"
-	printf '%s\n' "probe fixture validations passed; evidence: $UNIT_EVIDENCE"
+	if [ "$LANSPEED_TEST_OUTPUT_OWNED" -eq 1 ]; then
+		printf '%s\n' "probe fixture validations passed"
+	else
+		printf '%s\n' "probe fixture validations passed; output: $EVIDENCE_DIR"
+	fi
 }
 
 run_network() {

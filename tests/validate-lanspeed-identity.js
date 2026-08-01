@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
-const evidenceDir = path.join(root, '.sisyphus', 'evidence');
+const evidenceDir = process.env.LANSPEED_TEST_OUTPUT_DIR || null;
 
 function readJson(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(root, relativePath), 'utf8'));
@@ -186,10 +186,15 @@ function assertClientsEqual(actual, expected, scenarioName) {
 }
 
 function writeEvidence(fileName, payload) {
+  if (!evidenceDir) {
+    return;
+  }
   fs.writeFileSync(path.join(evidenceDir, fileName), `${JSON.stringify(payload, null, 2)}\n`);
 }
 
-fs.mkdirSync(evidenceDir, { recursive: true });
+if (evidenceDir) {
+  fs.mkdirSync(evidenceDir, { recursive: true });
+}
 
 const multiIpFixture = readJson('tests/fixtures/lanspeed-identity-multi-ip.json');
 const routerExcludedFixture = readJson('tests/fixtures/lanspeed-identity-router-mac-excluded.json');

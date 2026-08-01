@@ -288,6 +288,8 @@ sh tests/validate-lanspeed-docs.sh
 
 这些检查覆盖平台模块边界、Rust 单元测试、eBPF 对象、RPC/schema、LuCI 模块、探针 fixtures 与打包契约。最终验收还需要真实 SDK 编译、目标设备安装，以及真实浏览器检查实时状态、运行诊断、配置和客户端详情。
 
+测试输出默认写入每次运行唯一的临时目录，并在进程退出时清理。只有显式设置 `LANSPEED_TEST_OUTPUT_DIR=/path` 才会保留日志和校验证据；实机 `qa-device.sh` 必须显式提供 `OUT_DIR`。
+
 ## 发布
 
 `main` 分支上的 `net/lanspeedd/Makefile` 或 `applications/luci-app-lanspeed/Makefile` 完整版本发生变化时，发布 workflow 为 x86_64 和四种 aarch64 包架构构建三个 APK。Rust 主机工具链按 runner 操作系统与架构、目标架构、SDK SHA256、feeds 实际 revision、Rust 配方版本和内容哈希隔离缓存，后续相同 SDK 不再从头编译 Rust。

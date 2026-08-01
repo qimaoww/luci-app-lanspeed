@@ -3,12 +3,25 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
-EVIDENCE_DIR="$ROOT/.sisyphus/evidence"
+. "$SCRIPT_DIR/test-output.sh"
+lanspeed_test_output_init
+
+EVIDENCE_DIR="$LANSPEED_TEST_OUTPUT_DIR"
 MISSING_EVIDENCE="$EVIDENCE_DIR/task-3-missing-sdk.txt"
 DRY_RUN_EVIDENCE="$EVIDENCE_DIR/task-3-sdk-dry-run.txt"
 FAKE_SDK_EVIDENCE="$EVIDENCE_DIR/task-3-sdk-fake-config-dir.txt"
 PREPARE_FEEDS_EVIDENCE="$EVIDENCE_DIR/task-3-sdk-prepare-feeds.txt"
 IDENTITY_TAMPER_EVIDENCE="$EVIDENCE_DIR/task-3-sdk-identity-tamper.txt"
+TMP_SDK=
+
+cleanup() {
+	if [ -n "$TMP_SDK" ]; then
+		rm -rf -- "$TMP_SDK"
+	fi
+	lanspeed_test_output_cleanup
+}
+
+trap cleanup EXIT
 
 mkdir -p "$EVIDENCE_DIR"
 
@@ -92,7 +105,6 @@ fi
 grep -F "SDK_FEEDS_PREPARED must be 0 or 1" "$PREPARE_FEEDS_EVIDENCE" >/dev/null
 
 TMP_SDK=$(mktemp -d "${TMPDIR:-/tmp}/lanspeed-sdk.XXXXXX")
-trap 'rm -rf "$TMP_SDK"' EXIT
 mkdir -p "$TMP_SDK/bin" "$TMP_SDK/scripts/config"
 printf '%s\n' '25.12 fake sdk' > "$TMP_SDK/version.buildinfo"
 printf '%s\n' 'all:' > "$TMP_SDK/Makefile"
