@@ -1,6 +1,9 @@
+#[cfg(feature = "nss-platform")]
 pub mod access_edge;
 pub mod counters;
+#[cfg(feature = "nss-platform")]
 pub mod nss;
+pub mod profile;
 pub mod x86;
 
 pub(crate) const fn confidence(value: crate::probe::Confidence) -> crate::model::Confidence {

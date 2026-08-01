@@ -22,5 +22,6 @@ serde_json.workspace = true
 [features]
 default = []
 openwrt = ["dep:lanspeed-openwrt-sys"]
+nss-platform = []
 
 [dev-dependencies]

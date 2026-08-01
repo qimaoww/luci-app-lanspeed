@@ -230,6 +230,17 @@ return baseclass.extend({
 			restartPending: false,
 			restartPromise: null,
 			restartDelayMs: 1000,
+			mountPipeline: function() {
+				var refs = this.refs;
+				if (!refs || refs.pipelineSection)
+					return refs && refs.pipelineSection || null;
+				var section = diagnosticsShell.buildPipelineSection(refs);
+				if (refs.root && refs.healthSection && typeof refs.root.insertBefore === 'function')
+					refs.root.insertBefore(section, refs.healthSection);
+				else if (refs.root && typeof refs.root.appendChild === 'function')
+					refs.root.appendChild(section);
+				return section;
+			},
 
 			reload: function() {
 				var self = this;

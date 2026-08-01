@@ -2902,6 +2902,8 @@ function assertClientDetailRefreshBehavior(src) {
 		sortDir: 'desc',
 		sortCustom: false,
 		prefs: { refreshMs: 1000, unit: 'bit' },
+		status: { evidence: { platform: { profile: 'nss_aarch64' } } },
+		nssPlatform: true,
 		loading: false,
 		locationLabelFor: function(ip) {
 			return ip === '198.51.100.53' ? '美国' : '保留/未知';
@@ -3014,6 +3016,20 @@ function assertClientDetailRefreshBehavior(src) {
 		refresh.render(state);
 		if (!refs.classificationCard.hidden)
 			fail('old detail responses without traffic_classification must keep the optional card hidden');
+		const x86State = Object.assign({}, state, {
+			response: classifiedResponse,
+			status: { evidence: { platform: { profile: 'x86_tc_bpf' } } },
+			nssPlatform: false
+		});
+		const x86Built = buildClientDetailShellForRefresh(x86State);
+		x86State.refs = x86Built.refs;
+		refresh.render(x86State);
+		if (x86Built.refs.classificationCard ||
+		    findFakeElement(x86Built.root, 'lanspeed-classification-card') ||
+		    fakeElementText(x86Built.root).includes('流量分类') ||
+		    fakeElementText(x86Built.root).includes('NSS已识别')) {
+			fail('x86 client detail must not construct classification DOM even when the response carries forged NSS fields');
+		}
 		if (JSON.stringify(locationRequests[0]) !== JSON.stringify([
 		'2001:db8:ffff::20', '198.51.100.53'
 	])) {
@@ -3425,6 +3441,7 @@ function assertClientDetailShellInteraction(src) {
 		);
 	const calls = { back: [], protocol: [], filter: [], sort: [], reload: [], interval: [], paused: [] };
 	const viewState = {
+		nssPlatform: true,
 		prefs: { refreshMs: 3000, paused: false },
 		refreshChoices: [ { value: 1000, label: '1s' }, { value: 3000, label: '3s' } ],
 		back: function() { calls.back.push(Array.from(arguments)); },
@@ -3497,6 +3514,14 @@ function assertClientDetailShellInteraction(src) {
 		if (!refs[name]) fail(`clientDetailShell.js refs must expose ${name}`);
 	});
 	if (!refs.table || !refs.tbody) return;
+	const x86Built = shell.buildShell(Object.assign({}, viewState, { nssPlatform: false }));
+	if (findFakeElementsByClass(x86Built.root, 'cbi-section').length !== 2 ||
+	    findFakeElement(x86Built.root, 'lanspeed-classification-card') ||
+	    x86Built.refs.classificationCard ||
+	    fakeElementText(x86Built.root).includes('流量分类') ||
+	    fakeElementText(x86Built.root).includes('NSS已识别')) {
+		fail('clientDetailShell.js must build only identity and connections sections for x86 TC-BPF');
+	}
 
 	const copy = fakeElementText(built.root);
 	[
@@ -3667,6 +3692,12 @@ function assertFormatActiveWindow(src) {
 	if (!fmt.isNssActivityClient(nssClient) || !fmt.isNssActiveClient(nssClient, 20000) ||
 		!fmt.isActiveClient(nssClient, 20000)) {
 		fail('format.js must keep a nonzero NSS batch active despite an old kernel event timestamp');
+	}
+	const edgeClient = {
+		collector_mode: 'access_edge', sample_ms: 20000, last_seen: 1, tx_bps: 100, rx_bps: 0
+	};
+	if (!fmt.isNssActivityClient(edgeClient) || !fmt.isActiveClient(edgeClient, 20000)) {
+		fail('format.js must treat an Access Edge total as a published NSS-platform rate batch');
 	}
 	nssClient.tx_bps = 0;
 	if (fmt.isNssActiveClient(nssClient, 20000) || fmt.isActiveClient(nssClient, 20000)) {
@@ -4560,6 +4591,10 @@ function assertWarningAliases(src) {
 	    vocab.warningText('bpf_optional_package_missing').includes('可选 BPF 软件包')) {
 		fail('vocab.js must keep the legacy BPF warning ID but describe the package as mandatory');
 	}
+	const conntrackUnavailable = vocab.warningText('conntrack_unavailable');
+	if (!conntrackUnavailable.includes('客户端总速率') || /NSS|ECM|Access Edge/.test(conntrackUnavailable)) {
+		fail('vocab.js must keep conntrack-unavailable guidance valid for both x86 and NSS profiles');
+	}
 	if (vocab.warningText('openclash_detected') === 'openclash detected' ||
 	    vocab.warningText('software_flow_offload_enabled') === 'software flow offload enabled' ||
 	    vocab.warningText('fullcone_detected') === 'fullcone detected' ||
@@ -4766,7 +4801,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.5-r6';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.5-r8';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
@@ -6129,27 +6164,50 @@ function assertConfigModelRewrite(src) {
 	if (removedMode.valid || removedMode.values.rate_collector_mode !== 'auto' ||
 	    removedMode.errors.rate_collector_mode !== 'enum_required')
 		fail('configModel.js must reject removed NSS rate modes instead of aliasing them');
-	const rateModes = model.modeChoices('rate', { capabilities: {} }, model.DEFAULTS)
+	const rateModes = model.modeChoices('rate', {
+		evidence: { platform: { profile: 'nss_aarch64' } }, capabilities: {}
+	}, model.DEFAULTS)
 		.map(choice => choice.value);
 	if (JSON.stringify(rateModes) !== JSON.stringify([
 		'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf'
 	]))
 		fail('configModel.js must expose automatic plus pure BPF, ECM, and ECM+BPF in order');
-	const rateLabels = model.modeChoices('rate', { capabilities: {} }, model.DEFAULTS)
+	const rateLabels = model.modeChoices('rate', {
+		evidence: { platform: { profile: 'nss_aarch64' } }, capabilities: {}
+	}, model.DEFAULTS)
 		.map(choice => String(choice.label));
 	if (JSON.stringify(rateLabels) !== JSON.stringify([
 		'自动精准（推荐）', '仅 CPU 路径（BPF）', '仅 NSS 加速（ECM）',
 		'NSS + CPU 路径（ECM+BPF）'
 	]))
 		fail('configModel.js rate choices must explain which traffic each manual mode can see');
-	const x86RateModes = model.modeChoices('rate', { capabilities: { nss: false } }, model.DEFAULTS)
+	const x86Status = {
+		evidence: { platform: { profile: 'x86_tc_bpf' } }, capabilities: { nss: false }
+	};
+	const x86RateModes = model.modeChoices('rate', x86Status, model.DEFAULTS)
 		.map(choice => choice.value);
 	if (JSON.stringify(x86RateModes) !== JSON.stringify([ 'auto', 'bpf' ]))
 		fail('configModel.js must hide ECM and ECM+BPF on a known non-NSS/x86 platform');
-	const staleX86Mode = model.modeChoices('rate', { capabilities: { nss: false } },
+	const x86ConnectionLabels = model.modeChoices('connection', {
+		evidence: { platform: { profile: 'x86_tc_bpf' } }, capabilities: {}
+	}, model.DEFAULTS).map(choice => String(choice.label));
+	if (JSON.stringify(x86ConnectionLabels) !== JSON.stringify([
+		'自动（CT-Netlink 推荐）', '内核连接接口（Netlink）', '兼容连接接口（Procfs）'
+	]))
+		fail('configModel.js must not reuse the x86 TC-BPF rate label for connection details');
+	const staleX86Mode = model.modeChoices('rate', x86Status,
 		Object.assign({}, model.DEFAULTS, { rate_collector_mode: 'nss_ecm_bpf' }));
 	if (!staleX86Mode.some(choice => choice.value === 'nss_ecm_bpf' && choice.disabled))
 		fail('configModel.js must retain a stale NSS selection only as a disabled repair value on x86');
+	const unknownRate = model.modeChoices('rate', {}, model.DEFAULTS);
+	if (model.platformProfile({}) !== 'unknown' || model.isX86Platform({}) ||
+	    model.isNssPlatform({}) || String(unknownRate[0].label) !== '自动' ||
+	    unknownRate.some(choice => choice.value === 'nss_ecm_node' || choice.value === 'nss_ecm_bpf'))
+		fail('configModel.js must keep an unknown platform fail-closed without mislabelling it as x86');
+	if (model.platformProfile({ evidence: { platform: {
+		target_arch: 'aarch64', nss_compiled: true
+	} }, capabilities: { nss: false } }) !== 'nss_aarch64')
+		fail('configModel.js must derive the compiled NSS profile independently of transient NSS probe state');
 	const gated = model.validate({
 		rate_collector_mode: 'bpf', conn_collector_mode: 'auto', enable_bpf: '0',
 		enable_conntrack_fallback: '1'
@@ -6384,7 +6442,9 @@ function makeConfigFormState(model, overrides) {
 		initialIfaceOriginal: Object.assign({}, cloneConfigRecord(ifaceOriginal), {
 			present: Object.assign({}, ifaceOriginal.present)
 		}),
-		runtimeStatus: overrides.runtimeStatus || {},
+		runtimeStatus: overrides.runtimeStatus || {
+			evidence: { platform: { profile: 'nss_aarch64' } }
+		},
 		ifcfgLoaded: overrides.ifcfgLoaded !== false,
 		ifcfgDirty: Boolean(overrides.ifcfgDirty),
 		ifcfgState: overrides.ifcfgState || null,
@@ -6646,9 +6706,12 @@ function matchingConfigStatus(values) {
 		max_clients: values.max_clients,
 		enable_bpf: values.enable_bpf === '1',
 		enable_conntrack_fallback: values.enable_conntrack_fallback === '1',
-		version: '1.1.5-r6',
+		version: '1.1.5-r8',
 		capabilities: { bpf: true, conntrack_fallback: true },
-		evidence: { collector: { primary_source: 'bpf', effective_connection_collector: 'conntrack_netlink' } }
+		evidence: {
+			platform: { profile: 'nss_aarch64' },
+			collector: { primary_source: 'bpf', effective_connection_collector: 'conntrack_netlink' }
+		}
 	};
 }
 
@@ -6673,7 +6736,7 @@ function assertConfigFormBehavior(src) {
 	}, makeConfigIfaceStub(), model);
 	asyncChecks.push(validLoadForm.loadValues().then(function(values) {
 		if (values.pageState !== 'ready' || !values.rpc.status.ok ||
-			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.5-r6') {
+			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.5-r8') {
 			fail('configForm.js must accept the complete status contract and retain capability evidence');
 		}
 	}).catch(function(error) {
@@ -6719,6 +6782,34 @@ function assertConfigFormBehavior(src) {
 			fail('configForm.js invalid-save path must not mutate UCI or leave controls busy');
 		}
 	}));
+
+	const profileGuardForm = loadConfigFormModule(src, makeConfigUci(model),
+		{ status: function() { return Promise.resolve({}); } }, makeConfigIfaceStub(), model);
+	const unknownProfileState = makeConfigFormState(model, {
+		values: { rate_collector_mode: 'nss_ecm_bpf', access_edge_mode: 'shadow' },
+		runtimeStatus: {}
+	});
+	const unknownProfilePlan = profileGuardForm.prepareSave(unknownProfileState);
+	if (unknownProfilePlan.values.rate_collector_mode !== 'nss_ecm_bpf' ||
+	    Object.prototype.hasOwnProperty.call(unknownProfilePlan.patch.set, 'access_edge_mode') ||
+	    unknownProfilePlan.patch.unset.indexOf('access_edge_mode') !== -1) {
+		fail('configForm.js must preserve NSS mode and Access Edge UCI when the runtime platform is temporarily unknown');
+	}
+	const x86ProfileState = makeConfigFormState(model, {
+		values: {
+			rate_collector_mode: 'nss_ecm_bpf', access_edge_mode: 'active',
+			interface_include: [ 'br-lan' ]
+		},
+		runtimeStatus: { evidence: { platform: { profile: 'x86_tc_bpf' } } }
+	});
+	const x86ProfilePlan = profileGuardForm.prepareSave(x86ProfileState);
+	if (x86ProfilePlan.values.rate_collector_mode !== 'bpf' ||
+	    x86ProfilePlan.values.access_edge_mode !== 'off' ||
+	    x86ProfilePlan.patch.set.rate_collector_mode !== 'bpf' ||
+	    Object.prototype.hasOwnProperty.call(x86ProfilePlan.patch.set, 'access_edge_mode') ||
+	    x86ProfilePlan.patch.unset.indexOf('access_edge_mode') === -1) {
+		fail('configForm.js must normalize forged NSS settings only for an explicit x86 profile');
+	}
 
 	const stagedUci = makeConfigUci(model, { initial: {
 		dedicated_port: [ 'lan2', 'lan3' ]

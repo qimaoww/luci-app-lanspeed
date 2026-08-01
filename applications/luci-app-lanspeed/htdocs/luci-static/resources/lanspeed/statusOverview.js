@@ -97,7 +97,7 @@ function collectorSampleClock(data) {
 }
 
 function statusBatch(data) {
-	var edgeActive = String(data && data.access_edge_mode || '') === 'active';
+	var edgeActive = fmt.nssPlatform(data) && String(data && data.access_edge_mode || '') === 'active';
 	var edgeSample = sampleClock(data && data.evidence && data.evidence.access_edge &&
 		data.evidence.access_edge.sample_ms);
 	return {
@@ -111,16 +111,26 @@ function statusBatch(data) {
 function clientBatch(data, status) {
 	data = data || {};
 	var source = collectorEvidence(data);
+	var nssPlatform = fmt.nssPlatform(status);
 	var collector = source.collector;
+	if (!nssPlatform && (collector === 'nss_ecm_node' || collector === 'nss_ecm_bpf'))
+		collector = 'bpf';
 	var evidenceClock = collectorSampleClock(data);
-	var edgeActive = String(status && status.access_edge_mode || '') === 'active';
+	var edgeActive = nssPlatform && String(status && status.access_edge_mode || '') === 'active';
 	var edgeClock = edgeActive ? sampleClock(data.evidence && data.evidence.access_edge &&
 		data.evidence.access_edge.sample_ms) : null;
 
-	var rateModes = { bpf: true, nss_ecm_node: true, nss_ecm_bpf: true };
+	var rateModes = nssPlatform
+		? { access_edge: true, bpf: true, nss_ecm_node: true, nss_ecm_bpf: true }
+		: { bpf: true };
 	var rows = Array.isArray(data.clients) ? data.clients : [];
 	var rateRows = rows.filter(function(item) {
 		var mode = String(item && item.collector_mode || '');
+		// rate_meta is authoritative while active Access Edge owns the total.
+		// Accept it during a rolling daemon/LuCI upgrade even if a response still
+		// carries the identity's old conntrack/NSS collector_mode.
+		if (edgeActive)
+			return mode === 'access_edge' || !!(item && item.rate_meta);
 		return collector ? mode === collector : rateModes[mode] === true;
 	});
 	return {
@@ -144,7 +154,7 @@ function livePair(data) {
 		return value !== null;
 	});
 	var comparable = clocks.length > 1;
-	var skew = String(data && data.status && data.status.access_edge_mode || '') === 'active'
+	var skew = fmt.nssPlatform(data && data.status) && String(data && data.status && data.status.access_edge_mode || '') === 'active'
 		? ACCESS_EDGE_SAMPLE_SKEW_MS : 0;
 	var aligned = !comparable || clocks.every(function(value) {
 		return Math.abs(value - clocks[0]) <= skew;
@@ -278,7 +288,8 @@ function loadAll(previous, clock) {
 		var next = aggregateResults(results, startedAt);
 		var pair = livePair(next);
 		var collector = collectorEvidence(next.status).collector;
-		var nss = collector === 'nss_ecm_node' || collector === 'nss_ecm_bpf';
+		var nss = fmt.nssPlatform(next.status) &&
+			(collector === 'nss_ecm_node' || collector === 'nss_ecm_bpf');
 		var liveSucceeded = LIVE_SOURCE_KEYS.every(function(key) {
 			return next.rpc[key] && next.rpc[key].ok === true;
 		});

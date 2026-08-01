@@ -129,7 +129,12 @@ fn userspace_build_does_not_invoke_bpf_linker() {
         .lines()
         .collect::<Vec<_>>()
         .windows(2)
-        .any(|pair| pair == ["--features", "openwrt"]));
+        .any(|pair| pair == ["--no-default-features", "--features"]));
+    assert!(args
+        .lines()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|pair| pair == ["--features", "openwrt,nss-platform"]));
     assert!(args
         .lines()
         .collect::<Vec<_>>()
@@ -144,6 +149,42 @@ fn userspace_build_does_not_invoke_bpf_linker() {
         })
     ));
     assert!(marker.exists());
+}
+
+#[test]
+fn x86_userspace_build_excludes_nss_platform() {
+    let _lock = environment_lock();
+    let tools = TempDir::new("userspace-x86");
+    let rustc = tools.path().join("rustc");
+    let cargo = tools.path().join("cargo");
+    let cargo_args = tools.path().join("cargo-args");
+    let workspace = tools.path().join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    write_executable(&rustc, "#!/bin/sh\nprintf 'rustc 1.96.0 (fake)\\n'\n");
+    write_executable(
+        &cargo,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CARGO_ARGS\"\nexit 0\n",
+    );
+    let mut variables = Environment::new();
+    variables.set("RUSTC", &rustc);
+    variables.set("CARGO", &cargo);
+    variables.set("CARGO_ARGS", &cargo_args);
+    variables.set("LANSPEED_BUILD_WORKSPACE", &workspace);
+    variables.set("LANSPEED_USERSPACE_TARGET", "x86_64-unknown-linux-musl");
+
+    build(BuildTarget::Userspace).unwrap();
+    let args = fs::read_to_string(&cargo_args).unwrap();
+    assert!(args
+        .lines()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|pair| pair == ["--features", "openwrt"]));
+    assert!(!args.contains("nss-platform"));
+    assert!(args
+        .lines()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|pair| pair == ["--no-default-features", "--features"]));
 }
 
 #[test]

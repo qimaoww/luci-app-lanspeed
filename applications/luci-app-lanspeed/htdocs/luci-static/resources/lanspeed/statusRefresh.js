@@ -236,8 +236,10 @@ function combinedDirectionLabel(tx, rx, labelFor) {
 	return txValue === rxValue ? txValue : '↑ ' + txValue + ' / ↓ ' + rxValue;
 }
 
-function rateMetaCells(meta) {
+function rateMetaCells(meta, nssProfile) {
 	if (!meta || typeof meta !== 'object') return [];
+	if (nssProfile === undefined) nssProfile = true;
+	if (nssProfile !== true) return [];
 	var tx = meta.tx || {}, rx = meta.rx || {};
 	var sourceTitle = [
 		_('当前速率 owner'),
@@ -273,7 +275,7 @@ function rateMetaCells(meta) {
 		}, String(attachment.ifname)));
 	}
 
-	var classification = meta.classification;
+	var classification = nssProfile && meta.classification;
 	if (classification && typeof classification === 'object') {
 		var txPct = typeof classification.tx_coverage_pct === 'number'
 			? classification.tx_coverage_pct : null;
@@ -429,7 +431,7 @@ function refreshSortHeaders(refs, prefs) {
 }
 
 function accessEdgeOwnsCurrentRate(status) {
-	return String(status && status.rate_collector_mode || '') === 'auto' &&
+	return fmt.nssPlatform(status) && String(status && status.rate_collector_mode || '') === 'auto' &&
 		String(status && status.access_edge_mode || '') === 'active';
 }
 
@@ -438,6 +440,7 @@ function refreshLive(viewState) {
 	if (!refs) return;
 	var viewport = captureClientViewport(refs);
 	var status = viewState.status || {};
+	var nssProfile = fmt.nssPlatform(status);
 	refreshIntervalControl(viewState, refs, status);
 	var clientsAll = fmt.asArray(viewState.clients && viewState.clients.clients);
 	var prefs = viewState.prefs;
@@ -451,6 +454,8 @@ function refreshLive(viewState) {
 
 	var collector = accessEdgeOwnsCurrentRate(status) ? 'access_edge' :
 		statusCollector.effectiveCollector(status, viewState.clients);
+	if (!nssProfile && (collector === 'access_edge' || collector === 'nss_ecm_node' || collector === 'nss_ecm_bpf'))
+		collector = 'bpf';
 	refs.collectorPill.className = statusCollector.collectorClass(collector) +
 		' lanspeed-collector-status';
 	refs.collectorPill.textContent = statusCollector.collectorLabel(collector);
@@ -493,7 +498,7 @@ function refreshLive(viewState) {
 		refs.mConnsWrap.style.display = 'none';
 	}
 
-	var nssEv = status.evidence && status.evidence.nss;
+	var nssEv = nssProfile && status.evidence && status.evidence.nss;
 	var subParts = [ _('%d 个活跃').format(totals.active) ];
 	if (nssEv && typeof nssEv.host_count === 'number' &&
 	    nssEv.host_count > clientsAll.length) {
@@ -559,8 +564,12 @@ function refreshLive(viewState) {
 			var critClient = specificWarnings.some(function(w) { return vocab.CRITICAL_WARNINGS[w]; });
 
 			var mode = String(c.collector_mode || '-');
+			if (!nssProfile && (mode === 'nss_ecm_node' || mode === 'nss_ecm_bpf'))
+				mode = 'unsupported';
 			var modeLabel = statusCollector.collectorLabel(mode), modeTitle;
-			if (mode === 'bpf') {
+			if (mode === 'access_edge') {
+				modeTitle = _('自动精准按客户端、按方向选择唯一总速率来源；具体来源显示在相邻标签中。');
+			} else if (mode === 'bpf') {
 				modeTitle = _('BPF 在 LAN 接口按 MAC 统计客户端实时速率。');
 			} else if (mode === 'nss_ecm_node') {
 				modeTitle = _('NSS ECM node 按客户端 MAC 读取真实字节与包计数并立即发布；独立 LAN 窗口只验证覆盖率。');
@@ -578,7 +587,7 @@ function refreshLive(viewState) {
 			if (connectionOnly)
 				modeTitle += '\n' + vocab.warningText('conntrack_connection_only');
 
-			var stateCells = rateMetaCells(c.rate_meta);
+			var stateCells = rateMetaCells(c.rate_meta, nssProfile);
 			stateCells.push(E('span', {
 				'class': 'label',
 				'title': c.rate_meta ? _('采集流水线：') + modeTitle : modeTitle

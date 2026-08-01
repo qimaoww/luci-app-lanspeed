@@ -530,9 +530,9 @@ assert(nssRuntime.includes('#[cfg(target_arch = "aarch64")]') &&
   nssRuntime.includes('config.max_clients') &&
   !nssRuntime.includes('EcmBpfRuntime::load_and_attach(FALLBACK_OBJECT_PATH)'),
   'runtime must size and load the isolated ECM object only on aarch64');
-assert(probeCollector.includes('.with_nss_probe(cfg!(target_arch = "aarch64"))') &&
-  probeCollector.includes('if !self.nss_probe'),
-  'x86 system probes must skip the NSS/ECM path family entirely');
+assert(probeCollector.includes('.with_nss_probe(cfg!(feature = "nss-platform"))') &&
+	probeCollector.includes('if !self.nss_probe'),
+	'x86 system probes must compile out and skip the NSS/ECM path family entirely');
 for (const counterPath of model.ecm_node_model.sync_barrier.request_counter_sources) {
   assert(ecm.includes(`"${counterPath}"`), `ECM sync barrier must read ${counterPath}`);
 }

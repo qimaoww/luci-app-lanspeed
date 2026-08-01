@@ -133,10 +133,13 @@ dump_metadata LuCI "$luci_apk" "$luci_metadata"
 
 assert_metadata_field daemon "$daemon_metadata" name lanspeedd
 assert_metadata_field daemon "$daemon_metadata" arch "$expected_arch"
+assert_metadata_field daemon "$daemon_metadata" origin lanspeedd
 assert_metadata_field BPF "$bpf_metadata" name lanspeedd-bpf
 assert_metadata_field BPF "$bpf_metadata" arch "$expected_arch"
+assert_metadata_field BPF "$bpf_metadata" origin lanspeedd
 assert_metadata_field LuCI "$luci_metadata" name luci-app-lanspeed
 assert_metadata_field LuCI "$luci_metadata" arch noarch
+assert_metadata_field LuCI "$luci_metadata" origin luci-app-lanspeed
 
 assert_no_forbidden_dependencies daemon "$daemon_metadata"
 assert_no_forbidden_dependencies BPF "$bpf_metadata"
@@ -170,6 +173,9 @@ extract_package LuCI "$luci_apk" "$luci_root"
 
 daemon="$daemon_root/usr/sbin/lanspeedd"
 [[ -s $daemon ]] || fail "daemon APK does not contain usr/sbin/lanspeedd"
+daemon_config="$daemon_root/etc/config/lanspeed"
+[[ -s $daemon_config ]] || fail "daemon APK does not contain etc/config/lanspeed"
+x86_migration="$daemon_root/etc/uci-defaults/95-lanspeed-x86-profile"
 
 daemon_header=$("$readelf_tool" -hW "$daemon")
 grep -Eq 'Class:[[:space:]]+ELF64([[:space:]]|$)' <<<"$daemon_header" || \
@@ -203,6 +209,21 @@ ecm_object="$bpf_root/usr/lib/bpf/lanspeed-ebpf-ecm.o"
 case "$expected_arch" in
 	x86_64)
 		[[ ! -e $ecm_object ]] || fail 'x86 BPF APK must not contain an NSS ECM object'
+		[[ -x $x86_migration ]] || fail 'x86 daemon APK must contain the executable profile migration'
+		grep -q 'delete lanspeed.main.access_edge_mode' "$x86_migration" || \
+			fail 'x86 profile migration must remove a retained Access Edge option'
+		grep -q 'delete lanspeed.main.single_client_ports' "$x86_migration" || \
+			fail 'x86 profile migration must remove the retired single-client-port option'
+		grep -q 'delete lanspeed.main.dedicated_port' "$x86_migration" || \
+			fail 'x86 profile migration must remove the legacy dedicated-port option'
+		grep -q "rate_collector_mode='bpf'" "$x86_migration" || \
+			fail 'x86 profile migration must normalize retained forced NSS modes to BPF'
+		if grep -q 'access_edge_mode' "$daemon_config"; then
+			fail 'x86 daemon configuration must not contain Access Edge settings'
+		fi
+		if grep -aEq 'qca_nss|qca-nss|/sys/(module|kernel/debug)/ecm|lanspeed-ebpf-ecm|nss:ecm_state|nss_ecm_bpf_runtime_unavailable|nss_ecm_bpf_tc_degraded|nss_not_present' "$daemon"; then
+			fail 'x86 daemon must not contain NSS/ECM probes, objects, or diagnostics'
+		fi
 		READELF="$readelf_tool" LLVM_OBJDUMP="${LLVM_OBJDUMP:-llvm-objdump}" \
 			"$script_dir/validate-rust-ebpf-objects.sh" \
 			"$bpf_root/usr/lib/bpf/lanspeed-ebpf-kfunc.o" \
@@ -210,6 +231,9 @@ case "$expected_arch" in
 		;;
 	aarch64*)
 		[[ -s $ecm_object ]] || fail 'aarch64 BPF APK must contain the isolated NSS ECM object'
+		[[ ! -e $x86_migration ]] || fail 'aarch64 daemon APK must not contain the x86 profile migration'
+		grep -q "option access_edge_mode 'active'" "$daemon_config" || \
+			fail 'aarch64 daemon configuration must retain the Access Edge default'
 		READELF="$readelf_tool" LLVM_OBJDUMP="${LLVM_OBJDUMP:-llvm-objdump}" \
 			"$script_dir/validate-rust-ebpf-objects.sh" \
 			"$bpf_root/usr/lib/bpf/lanspeed-ebpf-kfunc.o" \

@@ -50,7 +50,7 @@ var RATE_MODES = [
 ];
 
 var CONNECTION_MODES = [
-	{ value: 'auto', label: _('自动（推荐）'), capability: null },
+	{ value: 'auto', label: _('自动（CT-Netlink 推荐）'), capability: null },
 	{ value: 'conntrack_netlink', label: _('内核连接接口（Netlink）'), capability: 'conntrack_netlink' },
 	{ value: 'conntrack_procfs', label: _('兼容连接接口（Procfs）'), capability: 'conntrack_procfs' }
 ];
@@ -403,6 +403,31 @@ function capabilityState(status, values) {
 	return state;
 }
 
+function platformProfile(status) {
+	var evidence = status && status.evidence || {};
+	var platform = evidence.platform || {};
+	if (platform.profile !== undefined && platform.profile !== null && platform.profile !== '') {
+		if (platform.profile === 'nss_aarch64' || platform.profile === 'x86_tc_bpf')
+			return platform.profile;
+		return 'unknown';
+	}
+	if (platform.target_arch !== undefined && platform.target_arch !== null && platform.target_arch !== '') {
+		if (String(platform.target_arch) === 'aarch64' && platform.nss_compiled !== false)
+			return 'nss_aarch64';
+		if (String(platform.target_arch) === 'x86_64' || platform.nss_compiled === false)
+			return 'x86_tc_bpf';
+	}
+	return 'unknown';
+}
+
+function isNssPlatform(status) {
+	return platformProfile(status) === 'nss_aarch64';
+}
+
+function isX86Platform(status) {
+	return platformProfile(status) === 'x86_tc_bpf';
+}
+
 function validate(values, status, interfaceState) {
 	var normalized = normalize(values);
 	var capabilities = capabilityState(status, normalized.values);
@@ -483,8 +508,7 @@ function modeChoices(kind, status, values) {
 	var source = kind === 'rate' ? RATE_MODES : CONNECTION_MODES;
 	var caps = capabilityState(status, values || DEFAULTS);
 	var selected = values && values.rate_collector_mode;
-	var nssKnownAbsent = kind === 'rate' && status && status.capabilities &&
-		status.capabilities.nss === false;
+	var nssKnownAbsent = kind === 'rate' && !isNssPlatform(status);
 	return source.filter(function(item) {
 		var nssMode = item.value === 'nss_ecm_node' || item.value === 'nss_ecm_bpf';
 		return !nssKnownAbsent || !nssMode || item.value === selected;
@@ -492,7 +516,10 @@ function modeChoices(kind, status, values) {
 		var cap = item.capability ? caps[item.capability] : caps.auto;
 		return {
 			value: item.value,
-			label: item.label,
+			label: kind === 'rate' && item.value === 'auto'
+				? (isX86Platform(status) ? _('自动（TC-BPF 推荐）') :
+					(isNssPlatform(status) ? item.label : _('自动')))
+				: item.label,
 			disabled: !!(cap && cap.known && !cap.allowed),
 			reason: cap && cap.reason,
 			pending: !!(cap && !cap.known)
@@ -516,6 +543,9 @@ return baseclass.extend({
 	normalize: normalize,
 	validate: validate,
 	capabilityState: capabilityState,
+	platformProfile: platformProfile,
+	isNssPlatform: isNssPlatform,
+	isX86Platform: isX86Platform,
 	modeChoices: modeChoices,
 	collectorModeFor: collectorModeFor,
 	buildUciPatch: buildUciPatch

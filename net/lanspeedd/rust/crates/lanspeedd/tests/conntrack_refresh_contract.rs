@@ -223,7 +223,7 @@ fn production_checks_the_client_cache_before_reading_identities() {
 fn production_periodic_skip_reuses_the_existing_local_conntrack_snapshot() {
     let source = include_str!("../src/production.rs");
     let collect_inner = source
-        .split("fn collect_inner(")
+        .split("#[cfg(feature = \"nss-platform\")]\n    fn collect_inner(")
         .nth(1)
         .unwrap()
         .split("fn refresh_connections(")

@@ -1,7 +1,9 @@
+#[cfg(feature = "nss-platform")]
+use lanspeedd::probe::Mode;
 use lanspeedd::{
     config::{RateCollectorMode, RuntimeConfig},
     policy::{select_collectors, RateCollector},
-    probe::{Mode, ProbeFacts, RuntimeHealth},
+    probe::{ProbeFacts, RuntimeHealth},
 };
 
 fn config() -> RuntimeConfig {
@@ -40,6 +42,7 @@ fn bpf_facts() -> ProbeFacts {
 }
 
 #[test]
+#[cfg(feature = "nss-platform")]
 fn auto_uses_bpf_without_nss_then_ecm_node_and_ecm_bpf_in_order() {
     let config = config();
     let mut facts = bpf_facts();
@@ -62,6 +65,7 @@ fn auto_uses_bpf_without_nss_then_ecm_node_and_ecm_bpf_in_order() {
 }
 
 #[test]
+#[cfg(feature = "nss-platform")]
 fn forced_ecm_bpf_requires_both_hardware_kprobe_and_tc_slow_path_runtime() {
     let mut config = config();
     config.rate_collector_mode = RateCollectorMode::NssEcmBpf;
@@ -96,6 +100,7 @@ fn forced_ecm_bpf_requires_both_hardware_kprobe_and_tc_slow_path_runtime() {
 }
 
 #[test]
+#[cfg(feature = "nss-platform")]
 fn forced_pure_bpf_remains_selectable_on_nss_but_reports_slow_path_coverage() {
     let mut config = config();
     config.rate_collector_mode = RateCollectorMode::Bpf;
@@ -109,6 +114,7 @@ fn forced_pure_bpf_remains_selectable_on_nss_but_reports_slow_path_coverage() {
 }
 
 #[test]
+#[cfg(feature = "nss-platform")]
 fn forced_node_fails_closed_when_state_is_unreadable() {
     let mut config = config();
     config.rate_collector_mode = RateCollectorMode::NssEcmNode;
@@ -131,6 +137,7 @@ fn forced_node_fails_closed_when_state_is_unreadable() {
 }
 
 #[test]
+#[cfg(feature = "nss-platform")]
 fn nss_node_does_not_depend_on_conntrack_accounting() {
     let config = config();
     let mut facts = bpf_facts();
@@ -142,4 +149,23 @@ fn nss_node_does_not_depend_on_conntrack_accounting() {
     let decision = select_collectors(&config, &facts, &healthy_bpf());
     assert_eq!(decision.rate, RateCollector::NssEcmNode);
     assert!(decision.warnings.contains(&"nf_conntrack_acct_disabled"));
+}
+
+#[cfg(not(feature = "nss-platform"))]
+#[test]
+fn x86_profile_ignores_forged_nss_facts_and_forced_modes() {
+    let mut config = config();
+    config.rate_collector_mode = RateCollectorMode::NssEcmBpf;
+    config.access_edge_mode = lanspeedd::config::AccessEdgeMode::Active;
+    let mut facts = bpf_facts();
+    facts.nss.present = true;
+    facts.nss.ecm_active = true;
+    facts.nss.direct_state_readable = true;
+    let decision = select_collectors(&config, &facts, &healthy_ecm_bpf());
+    assert_eq!(decision.rate, RateCollector::Bpf);
+    assert_eq!(decision.evidence.rate_reason, "forced_bpf");
+    assert!(!decision
+        .warnings
+        .iter()
+        .any(|warning| warning.starts_with("nss_")));
 }

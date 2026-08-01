@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=lanspeedd
 PKG_VERSION:=1.1.5
-PKG_RELEASE:=6
+PKG_RELEASE:=8
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=
@@ -39,6 +39,7 @@ define Package/lanspeedd
   SECTION:=net
   CATEGORY:=Network
   TITLE:=LAN speed monitor daemon
+  SOURCE:=lanspeedd
   DEPENDS:=@(aarch64||x86_64) +libgcc +kmod-nf-conntrack-netlink
 endef
 
@@ -50,6 +51,7 @@ define Package/lanspeedd-bpf
   SECTION:=net
   CATEGORY:=Network
   TITLE:=BPF assets for lanspeedd
+  SOURCE:=lanspeedd
   DEPENDS:=@!BIG_ENDIAN +lanspeedd +tc-full +kmod-sched-bpf
 endef
 
@@ -99,7 +101,15 @@ define Package/lanspeedd/install
 	$(INSTALL_DIR) $(1)/etc/hotplug.d/iface
 	$(INSTALL_BIN) ./files/etc/hotplug.d/iface/90-lanspeedd $(1)/etc/hotplug.d/iface/90-lanspeedd
 	$(INSTALL_DIR) $(1)/etc/config
-	$(INSTALL_CONF) ./files/etc/config/lanspeed $(1)/etc/config/lanspeed
+	if [ "$(ARCH)" = "x86_64" ]; then \
+		$(INSTALL_CONF) ./files/etc/config/lanspeed.x86 $(1)/etc/config/lanspeed; \
+	else \
+		$(INSTALL_CONF) ./files/etc/config/lanspeed $(1)/etc/config/lanspeed; \
+	fi
+	if [ "$(ARCH)" = "x86_64" ]; then \
+		$(INSTALL_DIR) $(1)/etc/uci-defaults; \
+		$(INSTALL_BIN) ./files/etc/uci-defaults/95-lanspeed-x86-profile $(1)/etc/uci-defaults/95-lanspeed-x86-profile; \
+	fi
 	$(INSTALL_DIR) $(1)/usr/share/lanspeed
 	$(INSTALL_DATA) ./files/usr/share/lanspeed/schema.json $(1)/usr/share/lanspeed/schema.json
 endef

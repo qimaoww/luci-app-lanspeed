@@ -72,6 +72,173 @@ pub fn select_collectors(
     facts: &ProbeFacts,
     runtime: &RuntimeHealth,
 ) -> PolicyDecision {
+    #[cfg(feature = "nss-platform")]
+    {
+        select_collectors_nss(config, facts, runtime)
+    }
+    #[cfg(not(feature = "nss-platform"))]
+    {
+        select_collectors_x86(config, facts, runtime)
+    }
+}
+
+#[cfg(not(feature = "nss-platform"))]
+fn select_collectors_x86(
+    config: &RuntimeConfig,
+    facts: &ProbeFacts,
+    runtime: &RuntimeHealth,
+) -> PolicyDecision {
+    let mut config = config.clone();
+    config.enforce_platform_profile();
+    let mut warnings = Vec::new();
+    let has_collect_target = !config.runtime_collect_ifnames().is_empty();
+    if !config.enable_bpf {
+        push_unique(&mut warnings, "bpf_disabled");
+    }
+    if config.enable_bpf && !has_collect_target {
+        push_unique(&mut warnings, "no_collect_interface");
+    }
+    if !facts.bpf.package && !runtime.bpf_object_loaded {
+        push_unique(&mut warnings, "bpf_optional_package_missing");
+    }
+    if !facts.bpf.object && !runtime.bpf_object_loaded {
+        push_unique(&mut warnings, "bpf_object_missing");
+    }
+    if config.enable_bpf && has_collect_target && !facts.tc.safe_attach && !runtime.bpf_attached {
+        push_unique(&mut warnings, "unsafe_attach");
+    }
+    if !facts.files.nf_conntrack_acct && facts.files.nf_conntrack_acct_present {
+        push_unique(&mut warnings, "nf_conntrack_acct_disabled");
+        push_unique(&mut warnings, "conntrack_acct_disabled");
+    }
+    if facts.offload.hardware {
+        push_unique(&mut warnings, "hardware_flow_offload_unsupported");
+    }
+
+    let bpf_prerequisites = config.enable_bpf
+        && has_collect_target
+        && runtime.bpf_object_loaded
+        && runtime.bpf_attached;
+    let retained_fresh_snapshot = !runtime.bpf_map_read_ok
+        && runtime
+            .bpf_last_complete_snapshot_ms
+            .is_some_and(|sample_ms| {
+                crate::is_fresh(runtime.now_ms, sample_ms, runtime.bpf_freshness_ms)
+            });
+    let bpf_ready = bpf_prerequisites
+        && (runtime.bpf_map_read_ok || retained_fresh_snapshot)
+        && !facts.offload.hardware;
+    let forced = config.rate_collector_mode == RateCollectorMode::Bpf;
+    let (rate, rate_reason) = if bpf_ready {
+        (
+            RateCollector::Bpf,
+            if forced {
+                "forced_bpf"
+            } else {
+                "bpf_available"
+            },
+        )
+    } else if !has_collect_target && forced {
+        (RateCollector::Unsupported, "no_collect_interface")
+    } else if forced {
+        (RateCollector::Unsupported, "forced_bpf_unavailable")
+    } else {
+        (RateCollector::Unsupported, "no_live_rate_collector")
+    };
+    if bpf_prerequisites && runtime.bpf_map_read_attempted && !runtime.bpf_map_read_ok {
+        push_unique(&mut warnings, "map_read_failed");
+    }
+    if rate == RateCollector::Unsupported
+        && config.enable_bpf
+        && has_collect_target
+        && (facts.tc.safe_attach || runtime.bpf_object_loaded)
+        && (!runtime.bpf_object_loaded
+            || !runtime.bpf_attached
+            || (runtime.bpf_map_read_attempted
+                && !runtime.bpf_map_read_ok
+                && !retained_fresh_snapshot))
+    {
+        push_unique(&mut warnings, "bpf_runtime_loader_unavailable");
+    }
+
+    let (connection, connection_reason) = match config.conn_collector_mode {
+        ConnectionCollectorMode::ConntrackNetlink if runtime.conntrack_netlink_available => {
+            (ConnectionCollector::Netlink, "forced_conntrack_netlink")
+        }
+        ConnectionCollectorMode::ConntrackNetlink => (
+            ConnectionCollector::Unsupported,
+            "forced_conntrack_netlink_unavailable",
+        ),
+        ConnectionCollectorMode::ConntrackProcfs if runtime.conntrack_procfs_available => {
+            (ConnectionCollector::Procfs, "forced_conntrack_procfs")
+        }
+        ConnectionCollectorMode::ConntrackProcfs => (
+            ConnectionCollector::Unsupported,
+            "forced_conntrack_procfs_unavailable",
+        ),
+        ConnectionCollectorMode::Auto if runtime.conntrack_netlink_available => {
+            (ConnectionCollector::Netlink, "netlink_preferred")
+        }
+        ConnectionCollectorMode::Auto if runtime.conntrack_procfs_available => {
+            (ConnectionCollector::Procfs, "procfs_fallback")
+        }
+        ConnectionCollectorMode::Auto => {
+            (ConnectionCollector::Unsupported, "conntrack_unavailable")
+        }
+    };
+    if connection == ConnectionCollector::Unsupported {
+        push_unique(&mut warnings, "conntrack_unavailable");
+    }
+    let mode = match rate {
+        RateCollector::Bpf => Mode::Full,
+        _ if !facts.tc.available => Mode::Unsupported,
+        _ => Mode::Degraded,
+    };
+    if rate == RateCollector::Unsupported {
+        push_unique(&mut warnings, "live_metrics_unavailable");
+    }
+    let confidence = match mode {
+        Mode::Full => Confidence::High,
+        _ if facts.probe_error || facts.lan_probe_error => Confidence::Low,
+        Mode::Unsupported => Confidence::Unsupported,
+        _ => Confidence::Medium,
+    };
+    PolicyDecision {
+        rate,
+        connection,
+        mode,
+        confidence,
+        warnings,
+        evidence: PolicyEvidence {
+            rate_reason,
+            connection_reason,
+            dae_early_bpf: (facts.tc.dae_preempts_lan_ingress || facts.proxy.runtime_active)
+                && runtime.dae_early_bpf,
+            runtime_error: runtime.runtime_error.clone(),
+            retained_fresh_snapshot,
+            bpf_snapshot_clients: runtime.bpf_snapshot_clients,
+            ecm_bpf_retained_fresh_snapshot: false,
+            ecm_bpf_snapshot_clients: 0,
+            ecm_bpf_map_entries: 0,
+            ecm_bpf_matched_entries: 0,
+            ecm_bpf_error_stage: None,
+            ecm_bpf_runtime_error: None,
+            bpf_self_heal_recoveries: runtime.bpf_self_heal_recoveries,
+            bpf_self_heal_failures: runtime.bpf_self_heal_failures,
+            bpf_self_heal_last_reason: runtime.bpf_self_heal_last_reason.clone(),
+            bpf_self_heal_last_failure: runtime.bpf_self_heal_last_failure.clone(),
+        },
+    }
+}
+
+#[cfg(feature = "nss-platform")]
+fn select_collectors_nss(
+    config: &RuntimeConfig,
+    facts: &ProbeFacts,
+    runtime: &RuntimeHealth,
+) -> PolicyDecision {
+    let config = config.clone();
+    let facts = facts.clone();
     let mut warnings = Vec::new();
     let has_collect_target = !config.runtime_collect_ifnames().is_empty();
     let tc_bpf_requested = matches!(

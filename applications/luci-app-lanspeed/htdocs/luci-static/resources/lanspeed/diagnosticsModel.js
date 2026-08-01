@@ -957,8 +957,20 @@ function collectorDisplayLabel(value) {
 	return knownCollector(key) ? statusCollector.collectorLabel(key) : _('未知');
 }
 
+function nssPlatform(status) {
+	var evidence = status && status.evidence || {};
+	var platform = evidence.platform || {};
+	if (platform.profile !== undefined && platform.profile !== null && platform.profile !== '')
+		return platform.profile === 'nss_aarch64';
+	if (platform.target_arch !== undefined && platform.target_arch !== null && platform.target_arch !== '')
+		return String(platform.target_arch) === 'aarch64' &&
+		(!hasOwn(platform, 'nss_compiled') || platform.nss_compiled !== false) &&
+		(!status.capabilities || status.capabilities.nss !== false);
+	return false;
+}
+
 function currentRateUsesAccessEdge(status) {
-	return String(status && status.rate_collector_mode || '') === 'auto' &&
+	return nssPlatform(status) && String(status && status.rate_collector_mode || '') === 'auto' &&
 		String(status && status.access_edge_mode || '') === 'active';
 }
 
@@ -1092,6 +1104,10 @@ function rateOwnerStateWithRpc(viewState) {
 function accessEdgeStateWithRpc(viewState) {
 	viewState = viewState || {};
 	var status = viewState.status || {}, clients = viewState.clients || {};
+	if (!nssPlatform(status)) return { state: 'neutral', badge: _('不适用'), value: _('x86 TC-BPF'),
+		description: _('x86 构建不包含 Access Edge。'), meta: _('编译期已排除'), reasonCodes: [],
+		reasonText: '-', topologyComplete: false, activeAttachments: 0, publishedAttachments: 0,
+		attachmentText: '-', trustText: '-' };
 	var mode = String(status.access_edge_mode || 'off'), owner = currentRateUsesAccessEdge(status);
 	var evidence = clients.evidence && clients.evidence.access_edge;
 	var facts = collectRateFacts(clients), rpc = rpcState(viewState, 'clients');
@@ -1168,6 +1184,12 @@ function minimumNumber(values) {
 
 function classificationStateWithRpc(viewState) {
 	viewState = viewState || {};
+	if (!nssPlatform(viewState.status || {})) return { state: 'neutral', badge: _('不适用'),
+		value: _('x86 TC-BPF'), description: _('x86 构建不包含 NSS/CPU 分类融合。'), meta: _('编译期已排除'),
+		counts: {}, stateText: '-', aligned: 0, classified: 0, totalClients: 0,
+		txMinimumPct: null, rxMinimumPct: null, coverageText: '-', verificationText: '-',
+		comparableDirections: 0, alignedDirections: 0, wifiObservedDirections: 0,
+		maps: classifierMapState({}), windowMs: null, comparisonWindowMs: null };
 	var clients = viewState.clients || {}, items = asArray(clients.clients), rpc = rpcState(viewState, 'clients');
 	var counts = Object.create(null), classified = 0, txCoverage = [], rxCoverage = [];
 	var comparableDirections = 0, alignedDirections = 0, wifiObservedDirections = 0;
@@ -1712,6 +1734,13 @@ function warningGroups(status, health, rpc, diagnostics) {
 		seen[id] = { id: id, source: source, severity: severity, text: publicText || '', raw: item };
 		items.push(seen[id]);
 	}
+	function nssArtifact(item) {
+		var id = String(item && item.id || '').toLowerCase();
+		var raw = '';
+		try { raw = JSON.stringify(item && item.raw || item || {}).toLowerCase(); } catch (error) {}
+		return /^(?:nss|ecm|access[_-]?edge|lan[_-]?topology|classifier|classification)(?:[_:\-.]|$)/.test(id) ||
+			/(?:\bnss\b|\becm\b|access[_-]?edge|lan[_-]?topology|classifier|classification)/.test(raw);
+	}
 	if (sourceUsable('status')) asArray(status.warnings).forEach(function(id) {
 		if (id === 'live_metrics_unavailable' && status.capabilities && status.capabilities.live_metrics === true)
 			return;
@@ -1749,6 +1778,12 @@ function warningGroups(status, health, rpc, diagnostics) {
 	var failures = mergeProbeFailureBundles(sourceUsable('status') ? status : null,
 		sourceUsable('health') ? health : null);
 	failures.items.forEach(function(item) { add(item, 'probe', 'warning', probeFailureText(item), 'probe:' + probeFailureKey(item)); });
+	if (!nssPlatform(status)) {
+		failures.items = failures.items.filter(function(item) { return !nssArtifact({ raw: item }); });
+		failures.total = failures.items.length;
+		failures.truncated = false;
+		items = items.filter(function(item) { return !nssArtifact(item); });
+	}
 	var critical = items.filter(function(item) { return item.severity === 'critical'; });
 	var warnings = items.filter(function(item) { return item.severity === 'warning'; });
 	var info = items.filter(function(item) { return item.severity === 'info'; });
@@ -1868,10 +1903,11 @@ function diagnosticPublicText(item, fallback) {
 function stateLabel(state) { return state === 'good' ? _('正常') : state === 'bad' ? _('异常') : state === 'warning' ? _('需关注') : _('信息'); }
 function interfaceReportRole(value) { return INTERFACE_ROLE_REPORT_LABELS[String(value || '').toLowerCase()] || _('其他'); }
 function interfaceReportStatus(value) { return INTERFACE_STATUS_REPORT_LABELS[String(value || '').toLowerCase()] || _('未知'); }
-function subsystemReportText(item) {
+function subsystemReportText(item, isNssPlatform) {
 	item = plainObject(item) ? item : {};
 	var id = String(item.id || ''), code = String(item.code || '');
-	var label = SUBSYSTEM_LABELS[id] || _('未知组件');
+	var label = !isNssPlatform && id === 'identity'
+		? _('客户端身份识别') : SUBSYSTEM_LABELS[id] || _('未知组件');
 	var state = HEALTH_REPORT_LABELS[String(item.state || '')] || _('未知');
 	var detail = '-';
 	if (code && typeof vocab.hasWarning === 'function' && vocab.hasWarning(code) &&
@@ -1909,18 +1945,25 @@ function buildReport(viewState, frontendVersion) {
 	lines.push('', _('客户端总速率') + ': ' + stateLabel(rate.state) + ' · ' + reportCollectorLabel(rate.source),
 			'- ' + _('方向唯一来源') + ': ' + reportField(rate.sourceText),
 		'- ' + _('方向覆盖') + ': ' + reportField(rate.coverageText),
-		'- ' + _('流量范围') + ': ' + reportField(rate.scopeText),
-		_('精准接入点') + ': ' + stateLabel(edge.state) + ' · ' + reportField(edge.value),
-		'- ' + _('接入类型') + ': ' + reportField(edge.attachmentText),
-		'- ' + _('归属信任') + ': ' + reportField(edge.trustText),
-		'- ' + _('接入边界') + ': ' + reportField(edge.reasonText),
-		_('NSS/CPU 流量分类') + ': ' + stateLabel(classification.state) + ' · ' + reportField(classification.value),
-		'- ' + _('分类状态') + ': ' + reportField(classification.stateText),
-		'- ' + _('最低分类覆盖率') + ': ' + reportField(classification.coverageText),
-		'- ' + _('分类映射') + ': ' + reportField(classification.maps.detailText),
+		'- ' + _('流量范围') + ': ' + reportField(rate.scopeText));
+	if (nssPlatform(runtime)) {
+		lines.push(
+			_('精准接入点') + ': ' + stateLabel(edge.state) + ' · ' + reportField(edge.value),
+			'- ' + _('接入类型') + ': ' + reportField(edge.attachmentText),
+			'- ' + _('归属信任') + ': ' + reportField(edge.trustText),
+			'- ' + _('接入边界') + ': ' + reportField(edge.reasonText),
+			_('NSS/CPU 流量分类') + ': ' + stateLabel(classification.state) + ' · ' + reportField(classification.value),
+			'- ' + _('分类状态') + ': ' + reportField(classification.stateText),
+			'- ' + _('最低分类覆盖率') + ': ' + reportField(classification.coverageText),
+			'- ' + _('分类映射') + ': ' + reportField(classification.maps.detailText));
+	} else {
+		lines.push(
+			_('架构路径') + ': x86 TC-BPF');
+	}
+	lines.push(
 		_('降级与能力边界') + ': ' + stateLabel(integrity.state) + ' · ' + reportField(integrity.value),
 		'- ' + reportField(integrity.reasonText),
-		'- ' + _('安全规则') + ': ' + _('N/S 不与 E 相加；不可比较时不生成未分类或覆盖率'),
+		'- ' + _('安全规则') + ': ' + (nssPlatform(runtime) ? _('N/S 不与 E 相加；不可比较时不生成未分类或覆盖率') : _('x86 仅发布 TC-BPF 单一总速率来源')),
 		_('数据新鲜度') + ': ' + stateLabel(freshness.state) + ' · ' + reportField(freshness.value),
 		_('连接健康') + ': ' + stateLabel(connections.state) + ' · ' + reportCollectorLabel(connections.source),
 		_('版本一致性') + ': ' + stateLabel(versions.state) + ' · ' + reportField(versions.badge),
@@ -1928,7 +1971,8 @@ function buildReport(viewState, frontendVersion) {
 	if (contract.usable) {
 		lines.push(_('子系统状态') + ':');
 		asArray(contract.data.subsystems).forEach(function(item) {
-			lines.push('- ' + subsystemReportText(item));
+			if (!nssPlatform(runtime) && String(item && item.id || '') === 'nss') return;
+			lines.push('- ' + subsystemReportText(item, nssPlatform(runtime)));
 		});
 		lines.push('');
 	}
@@ -1963,6 +2007,7 @@ return baseclass.extend({
 			collector: contract.data.data_path.effective_rate, capabilities: source.capabilities || fallback.capabilities || {} } : {});
 	},
 	formatDuration: formatDuration, sampleAge: sampleAge, formatPercent: formatPercent,
+	nssPlatform: nssPlatform,
 	sampleClock: sampleClock, assessProgress: assessProgress,
 	coverageState: coverageState, freshnessState: freshnessState, qualityState: qualityState,
 	rateOwnerStateWithRpc: rateOwnerStateWithRpc, accessEdgeStateWithRpc: accessEdgeStateWithRpc,

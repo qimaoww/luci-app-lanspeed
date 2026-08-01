@@ -12,6 +12,10 @@ const buildDriver = fs.readFileSync(
   'utf8'
 );
 const cargoConfig = fs.readFileSync(path.join(root, 'net/lanspeedd/rust/.cargo/config.toml'), 'utf8');
+const x86ProfileMigration = fs.readFileSync(
+  path.join(root, 'net/lanspeedd/files/etc/uci-defaults/95-lanspeed-x86-profile'),
+  'utf8'
+);
 const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/Makefile'), 'utf8');
 const luciStaticRoot = path.join(
   root,
@@ -650,6 +654,15 @@ try {
   );
   assertMatch(pkgMakefile, /^PKG_BUILD_PARALLEL:=1$/m, 'Rust package build must enable OpenWrt parallel builds');
   assertMatch(pkgMakefile, /^RUST_PKG_LOCKED:=1$/m, 'Rust package build must keep Cargo.lock immutable');
+  assert(
+    (pkgMakefile.match(/^\s*SOURCE:=lanspeedd$/gm) || []).length === 2,
+    'daemon and BPF package metadata must use a stable origin without leaking the build path'
+  );
+  assertMatch(
+    luciMakefile,
+    /^\s*SOURCE:=luci-app-lanspeed$/m,
+    'LuCI package metadata must use a stable origin without leaking the build path'
+  );
   assertMatch(
     pkgMakefile,
     /include \$\(TOPDIR\)\/feeds\/packages\/lang\/rust\/rust-package\.mk/,
@@ -745,6 +758,19 @@ try {
 		pkgMakefile.includes('$(LN) lanspeed-ebpf-ecm.o $(1)/usr/lib/bpf/lanspeed-ebpf-ecm'),
 		'aarch64 BPF package must install the isolated ECM object and runtime symlink'
 	);
+  assertMatch(
+    pkgMakefile,
+    /if \[ "\$\(ARCH\)" = "x86_64" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/etc\/uci-defaults; \\\s*\$\(INSTALL_BIN\) \.\/files\/etc\/uci-defaults\/95-lanspeed-x86-profile \$\(1\)\/etc\/uci-defaults\/95-lanspeed-x86-profile; \\\s*fi/,
+    'x86 package must install its profile migration only behind the architecture gate'
+  );
+  assertMatch(x86ProfileMigration, /uci -q delete lanspeed\.main\.access_edge_mode/,
+    'x86 migration must remove a retained Access Edge option');
+  assertMatch(x86ProfileMigration, /uci -q delete lanspeed\.main\.single_client_ports/,
+    'x86 migration must remove the retired single-client-port option');
+  assertMatch(x86ProfileMigration, /uci -q delete lanspeed\.main\.dedicated_port/,
+    'x86 migration must remove the legacy dedicated-port option used by older releases');
+  assertMatch(x86ProfileMigration, /nss_ecm_node\|nss_ecm_bpf[\s\S]*rate_collector_mode='bpf'/,
+    'x86 migration must normalize retained forced NSS modes to BPF');
   assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+libgcc \+kmod-nf-conntrack-netlink/,
     'base daemon must retain verified LP64, libgcc_s runtime, and conntrack kernel constraints');
   assertNoMatch(pkgMakefile, /\+libubox|\+libubus|\+libuci|\+libblobmsg-json/,

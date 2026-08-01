@@ -112,8 +112,18 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
             command.current_dir(&workspace).arg("build");
             command.env_remove("RUSTC_BOOTSTRAP");
             command.args(["-p", "lanspeedd", "--release", "--target"]);
-            command.arg(userspace_target);
-            command.args(["--features", "openwrt", "--locked", "--offline"]);
+            let userspace_profile = BpfTargetArch::parse(&userspace_target)?;
+            command.arg(&userspace_target);
+            command.arg("--no-default-features");
+            command.args([
+                "--features",
+                match userspace_profile {
+                    BpfTargetArch::Aarch64 => "openwrt,nss-platform",
+                    BpfTargetArch::X86_64 => "openwrt",
+                },
+                "--locked",
+                "--offline",
+            ]);
             ensure_success(command.status()?, target)
         }
         BuildTarget::Ebpf => {

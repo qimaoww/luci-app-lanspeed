@@ -92,7 +92,14 @@ fn defaults_and_limits_match_the_legacy_c_contract() {
     assert!(!config.enable_bpf);
     assert!(config.enable_conntrack_fallback);
     assert_eq!(config.rate_collector_mode, RateCollectorMode::Auto);
-    assert_eq!(config.access_edge_mode, AccessEdgeMode::Active);
+    assert_eq!(
+        config.access_edge_mode,
+        if cfg!(feature = "nss-platform") {
+            AccessEdgeMode::Active
+        } else {
+            AccessEdgeMode::Off
+        }
+    );
     assert_eq!(config.conn_collector_mode, ConnectionCollectorMode::Auto);
     assert!(!config.refresh_interval_clamped);
     assert!(!config.active_client_window_clamped);
@@ -109,7 +116,7 @@ fn defaults_and_limits_match_the_legacy_c_contract() {
 }
 
 #[test]
-fn access_edge_accepts_only_off_shadow_and_active() {
+fn access_edge_parser_is_strict_and_runtime_enforces_the_compiled_profile() {
     let cases = [
         ("off", AccessEdgeMode::Off, "off"),
         ("shadow", AccessEdgeMode::Shadow, "shadow"),
@@ -121,7 +128,11 @@ fn access_edge_accepts_only_off_shadow_and_active() {
         assert_eq!(expected.as_str(), canonical, "{input}");
         assert_eq!(
             load(MemorySource::default().with("access_edge_mode", input)).access_edge_mode,
-            expected,
+            if cfg!(feature = "nss-platform") {
+                expected
+            } else {
+                AccessEdgeMode::Off
+            },
             "{input}"
         );
     }
@@ -130,7 +141,11 @@ fn access_edge_accepts_only_off_shadow_and_active() {
         assert_eq!(AccessEdgeMode::parse(invalid), None, "{invalid}");
         assert_eq!(
             load(MemorySource::default().with("access_edge_mode", invalid)).access_edge_mode,
-            AccessEdgeMode::Active,
+            if cfg!(feature = "nss-platform") {
+                AccessEdgeMode::Active
+            } else {
+                AccessEdgeMode::Off
+            },
             "{invalid}"
         );
     }

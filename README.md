@@ -2,7 +2,7 @@
 
 `luci-app-lanspeed` 为 ImmortalWrt / OpenWrt 提供 LAN 客户端实时速率、接口吞吐、连接数、逐连接速率、诊断与配置页面。用户态服务 `lanspeedd` 使用 Rust/Aya，提供九个 ubus 方法；`lanspeedd-bpf` 安装目标架构对应的 eBPF 对象。
 
-客户端总速率优先来自只读 Access Edge：稳定观测到的有线客户端使用 netdev 64 位计数，Wi-Fi 使用 NL80211 station 计数。TC-BPF 观察 CPU 可见 LAN 边缘流量；在 NSS 设备上它对应 CPU 慢路径。Qualcomm ECM kprobe 只记录已由 NSS callback context 证明的硬件增量；分类值不再与总速率相加。已验证 AP station 最高为 `unicast/full`，WDS、Mesh、共享下联与未验证组播保持 Partial。本项目按证据声明覆盖范围，不把未知字节强行二分为 NSS/非 NSS；它不是完整流量审计系统，不声明全流量绝对准确。
+Qualcomm aarch64 NSS 配置中，客户端总速率优先来自只读 Access Edge：稳定观测到的有线客户端使用 netdev 64 位计数，Wi-Fi 使用 NL80211 station 计数。TC-BPF 观察 CPU 可见 LAN 边缘流量，在 NSS 设备上对应 CPU 慢路径；Qualcomm ECM kprobe 只记录已由 NSS callback context 证明的硬件增量，分类值不再与总速率相加。x86_64 使用独立的原生 TC-BPF 总速率路径，不编译、探测或展示 NSS/ECM/Access Edge。已验证 AP station 最高为 `unicast/full`，WDS、Mesh、共享下联与未验证组播保持 Partial。本项目按证据声明覆盖范围，不把未知字节强行二分为 NSS/非 NSS；它不是完整流量审计系统，不声明全流量绝对准确。
 
 ## 界面预览
 
@@ -16,16 +16,16 @@
 
 ## 平台模块
 
-x86/TC-BPF 与 Qualcomm NSS 是两个独立源码模块，公共生产循环只负责选择后端并发布统一 RPC 契约。
+x86/TC-BPF 与 Qualcomm NSS 使用独立编译配置和生产采集循环，只共享稳定的 RPC 数据模型与平台无关基础组件。
 
 | 模块 | 用户态源码 | eBPF 源码 | 速率来源 |
 |---|---|---|---|
 | x86/TC-BPF | `platform/x86/` | `lanspeed-ebpf/src/x86/` | LAN ingress/egress TC map，按 MAC + zone/VLAN 聚合 |
 | Qualcomm NSS | `platform/nss/` | `lanspeed-ebpf/src/nss/` | NSS 自有 TC 慢路径、ECM node 与 ECM totals-update kprobe |
-| Access Edge | `platform/access_edge/` | 无 | Bridge FDB、NL80211 station 与一次 netdev 计数快照 |
-| 公共层 | `platform/counters.rs`、`production.rs` | `lanspeed-common` | 无平台计数结构、后端选择、统一响应发布 |
+| Access Edge（仅 NSS 配置） | `platform/access_edge/` | 无 | Bridge FDB、NL80211 station 与一次 netdev 计数快照 |
+| 公共层 | `platform/counters.rs`、RPC 数据模型 | `lanspeed-common` | 无平台计数结构与统一响应契约 |
 
-`platform/x86` 与 `platform/nss` 双向零引用。公共调度层把 TC 结果逐字段复制为 NSS 自有 `NssTcSnapshot`，NSS 融合层不接收 x86 类型；两个平台的覆盖率状态、快照、输出、运行时和测试分别归属各自目录。eBPF 构建也分别启用 `x86-tc` 与 `nss-tc` 源入口。x86_64 构建不会安装 ECM 对象，运行时也不会探测 NSS 文件族；aarch64 仅在检测到 Qualcomm NSS/ECM 后开放 NSS 模式。
+`platform/x86` 与 `platform/nss` 双向零引用。x86_64 用户态构建不包含 NSS、ECM、Access Edge、分类窗口或 RateMux 代码，直接发布 TC-BPF 客户端总速率；aarch64 NSS 构建使用独立生产循环，把 TC 结果逐字段复制为 NSS 自有 `NssTcSnapshot` 后参与分类，NSS 融合层不接收 x86 类型。eBPF 构建也分别启用 `x86-tc` 与 `nss-tc` 源入口；x86_64 构建不会安装 ECM 对象，也不会探测 NSS 文件族。
 
 ### Access Edge 与分类语义
 
@@ -69,10 +69,10 @@ Qualcomm aarch64 NSS 设备自动按 ECM+BPF、ECM、BPF 选择健康后端，�
 - 客户端详情按远端 IP 聚合 TCP/UDP 连接，可展开实际连接并排序、分页、暂停刷新。
 - 浏览器按当前页查询公网 IP 地理位置；私网、保留地址和 Fake-IP 在本地分类。
 - 实时状态、运行诊断、LAN Speed 配置和客户端详情使用同一后端版本与 RPC 契约。
-- LuCI 显示完整包版本，例如 `1.1.5-r6`，并使用同一版本作为静态资源缓存键。
-- 诊断页独立校验六个 RPC 请求，并分开展示客户端总速率 owner、精准接入拓扑、NSS/CPU 分类和不可比较或降级边界。
+- LuCI 显示完整包版本，例如 `1.1.5-r8`，并使用同一版本作为静态资源缓存键。
+- 诊断页独立校验六个 RPC 请求；NSS 配置分开展示总速率 owner、精准接入拓扑和 NSS/CPU 分类，x86 配置只展示 TC-BPF 与连接详情健康。
 - 配置页支持速率模式、连接模式、采样、活动阈值、IPv6 显示、接口采集/观察和严格输入校验。
-- 配置页支持 Access Edge `off/shadow/active`；默认 `active` 在自动模式中启用精准总速率。
+- aarch64 NSS 配置页支持 Access Edge `off/shadow/active`；x86 配置页不读取或展示 Access Edge/NSS 模式。
 - OpenClash、dae/daed、SQM/qosify/ifb、flow offload 与 fullcone NAT 探测和机器可读告警。
 
 ## 安装与编译
@@ -121,8 +121,8 @@ SDK_DIR=/openwrt/immortalwrt ENABLE_BPF=1 scripts/build-sdk.sh
 
 | 目标 | 支持 |
 |---|---|
-| `x86_64` LP64 | TC-BPF；自动与 BPF 模式，不构建或安装 ECM 对象 |
-| `aarch64` LP64 | TC-BPF；检测到 Qualcomm NSS/ECM 时提供 ECM 与 ECM+BPF |
+| `x86_64` LP64 | 独立 TC-BPF；自动与 BPF 模式，不编译 NSS/ECM/Access Edge，不安装 ECM 对象 |
+| Qualcomm `aarch64` LP64 | Access Edge 总速率与 NSS/ECM/TC 分类融合；支持 ECM、ECM+BPF 和 BPF 手动模式 |
 | 32 位 ARM、i386 和 MIPS | Unsupported |
 
 用户态和 eBPF workspace 要求稳定版 `Rust >= 1.87.0`。兼容矩阵逐版验证了 `1.87.0` 到 `1.97.1` 的每个稳定版，并覆盖低于 MSRV 的拒绝、内部 atomic intrinsic 的版本转折点、`EM_BPF` 与 aarch64-musl。完整证据见 [Rust compatibility matrix](docs/rust-compatibility-matrix.md)。
@@ -181,8 +181,8 @@ config lanspeed 'main'
 | `active_client_window_ms` | `10000` | 活跃客户端最近可见窗口 |
 | `active_client_min_bps` | `1` | 活跃客户端最低速率 |
 | `overview_window_samples` | `240` | 概览历史样本数 |
-| `rate_collector_mode` | `auto` | 自动精准优先；也可手动强制只看 BPF、NSS ECM 或 ECM+BPF 路径 |
-| `access_edge_mode` | `active` | 自动模式默认使用有线端口/无线客户端计数作为总速率；`shadow` 仅后台验证，`off` 关闭 |
+| `rate_collector_mode` | `auto` | x86 自动模式固定使用 TC-BPF；NSS 配置自动精准优先，也可手动选择 BPF、NSS ECM 或 ECM+BPF 路径 |
+| `access_edge_mode` | NSS: `active` | 仅 NSS 配置使用；自动模式默认使用有线端口/无线客户端计数作为总速率，x86 配置不包含此项 |
 | `conn_collector_mode` | `auto` | `auto` / `conntrack_netlink` / `conntrack_procfs` |
 | `max_clients` | `2048` | 客户端与聚合容量，范围 64 到 16384 |
 | `interface_include` | `br-lan` | 客户端速率采集接口 |

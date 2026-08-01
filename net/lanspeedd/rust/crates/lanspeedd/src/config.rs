@@ -272,7 +272,11 @@ impl Default for RuntimeConfig {
             overview_window_samples_clamped: false,
             max_clients_clamped: false,
             rate_collector_mode: RateCollectorMode::Auto,
-            access_edge_mode: AccessEdgeMode::Active,
+            access_edge_mode: if crate::platform::profile::COMPILED_PROFILE.uses_access_edge() {
+                AccessEdgeMode::Active
+            } else {
+                AccessEdgeMode::Off
+            },
             conn_collector_mode: ConnectionCollectorMode::Auto,
             ifnames: Vec::new(),
             interface_include: Vec::new(),
@@ -287,6 +291,19 @@ impl Default for RuntimeConfig {
 }
 
 impl RuntimeConfig {
+    pub fn enforce_platform_profile(&mut self) {
+        if crate::platform::profile::COMPILED_PROFILE.uses_nss() {
+            return;
+        }
+        if matches!(
+            self.rate_collector_mode,
+            RateCollectorMode::NssEcmNode | RateCollectorMode::NssEcmBpf
+        ) {
+            self.rate_collector_mode = RateCollectorMode::Bpf;
+        }
+        self.access_edge_mode = AccessEdgeMode::Off;
+    }
+
     pub fn runtime_collect_ifnames(&self) -> Vec<String> {
         let mut names = Vec::new();
         for name in self.ifnames.iter().chain(self.interface_include.iter()) {
@@ -453,6 +470,7 @@ impl RuntimeConfig {
             }
             push_unique_bounded(&mut config.observe_ifnames, value);
         }
+        config.enforce_platform_profile();
         Ok(config)
     }
 

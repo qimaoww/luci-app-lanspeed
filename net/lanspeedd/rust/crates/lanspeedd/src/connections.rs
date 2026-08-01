@@ -485,6 +485,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "nss-platform")]
     #[test]
     fn successful_overlay_preserves_independent_nss_diagnostics() {
         let mut snapshot = ResponseSnapshot::unsupported("test");

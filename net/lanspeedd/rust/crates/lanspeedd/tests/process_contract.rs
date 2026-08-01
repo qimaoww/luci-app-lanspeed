@@ -216,6 +216,7 @@ fn timed_tracker_throttles_failed_proc_scans_too() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[cfg(feature = "nss-platform")]
 #[test]
 fn process_overlay_removes_cached_policy_warnings_before_current_cycle_reselection() {
     let root = proc_root("warnings");

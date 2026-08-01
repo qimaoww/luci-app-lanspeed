@@ -122,8 +122,8 @@ function buildSummarySection(refs, viewState) {
 			refs.btnRefresh
 		]),
 		E('div', { 'class': 'lanspeed-body lanspeed-diagnostics-summary-body' }, [
-			E('p', { 'class': 'lanspeed-diagnostics-intro' },
-				_('总速率由客户端接入口采集；NSS/CPU 只做分类，不与总速率相加。')),
+			refs.intro = E('p', { 'class': 'lanspeed-diagnostics-intro' },
+				_('正在确认运行平台与采集链路。')),
 			refs.restartFeedback,
 			refs.pageNotice,
 			refs.errorDetails,
@@ -139,10 +139,12 @@ function buildPipelineSection(refs) {
 		stage(refs, 'edge', _('接入归属')),
 		stage(refs, 'classification', _('NSS / CPU 分类'))
 	]);
-	return E('section', { 'class': 'cbi-section lanspeed-diagnostics-pipeline-section' }, [
+	var section = E('section', { 'class': 'cbi-section lanspeed-diagnostics-pipeline-section' }, [
 		sectionHeader(_('精准速率'), refs.pipelineSummary, '', []),
 		E('div', { 'class': 'lanspeed-body lanspeed-diagnostics-pipeline-body' }, [ refs.pipeline ])
 	]);
+	refs.pipelineSection = section;
+	return section;
 }
 
 function buildHealthSection(refs) {
@@ -162,7 +164,7 @@ function buildHealthSection(refs) {
 		])
 	]);
 
-	return E('section', { 'class': 'cbi-section lanspeed-diagnostics-health-section' }, [
+	var section = E('section', { 'class': 'cbi-section lanspeed-diagnostics-health-section' }, [
 		sectionHeader(_('基础接口与 RPC 健康'), refs.healthSummary, '', []),
 		E('div', { 'class': 'lanspeed-body lanspeed-diagnostics-health-body' }, [
 				E('div', { 'class': 'lanspeed-diagnostics-health-group' }, [
@@ -188,6 +190,8 @@ function buildHealthSection(refs) {
 			refs.rpcDetails
 		])
 	]);
+	refs.healthSection = section;
+	return section;
 }
 
 function buildSupportSection(refs, viewState) {
@@ -252,7 +256,6 @@ function buildShell(viewState) {
 	}, [
 		E('style', {}, diagnosticsStyle.CSS),
 		buildSummarySection(refs, viewState),
-		buildPipelineSection(refs),
 		buildHealthSection(refs),
 		buildSupportSection(refs, viewState)
 	]);
@@ -262,6 +265,7 @@ function buildShell(viewState) {
 }
 
 return baseclass.extend({
+	buildPipelineSection: buildPipelineSection,
 	buildShell: function(viewState) {
 		return buildShell(viewState);
 	}

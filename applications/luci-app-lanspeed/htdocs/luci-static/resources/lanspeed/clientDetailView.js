@@ -308,6 +308,7 @@ return baseclass.extend({
 			sortCustom: false,
 			prefs: normalizedPrefs(),
 			status: data && data.status || null,
+			nssPlatform: typeof fmt.nssPlatform === 'function' && fmt.nssPlatform(data && data.status),
 			refreshChoices: detailRefreshChoices(data && data.status),
 			refreshPolicy: nssRefreshRestricted(data && data.status) ? 'nss' : 'default',
 			timer: null,
@@ -383,6 +384,7 @@ return baseclass.extend({
 						? response : null;
 					self.updatedAt = Date.now();
 					self.status = result[1] || self.status;
+					self.nssPlatform = typeof fmt.nssPlatform === 'function' && fmt.nssPlatform(self.status);
 					self.refreshChoices = detailRefreshChoices(self.status);
 					self.refreshPolicy = nssRefreshRestricted(self.status) ? 'nss' : 'default';
 					self.error = null;

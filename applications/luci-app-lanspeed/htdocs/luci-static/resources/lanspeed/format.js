@@ -62,9 +62,23 @@ function effectiveRateCollector(status) {
 	return String(evidence.effective_collector || collector.primary_source || 'unsupported');
 }
 
+function nssPlatform(status) {
+	var evidence = status && status.evidence || {};
+	var platform = evidence.platform || {};
+	if (platform.profile !== undefined && platform.profile !== null && platform.profile !== '')
+		return platform.profile === 'nss_aarch64';
+	if (platform.target_arch !== undefined && platform.target_arch !== null && platform.target_arch !== '')
+		return String(platform.target_arch) === 'aarch64' &&
+		(!Object.prototype.hasOwnProperty.call(platform, 'nss_compiled') || platform.nss_compiled !== false) &&
+		(!status.capabilities || status.capabilities.nss !== false);
+	/* New daemons always publish a profile. Do not infer NSS from a stray
+	 * capability in an old or mixed response: x86 must fail closed. */
+	return false;
+}
+
 function nssRefreshRestricted(status) {
 	var effective = effectiveRateCollector(status);
-	return effective === 'nss_ecm_node' || effective === 'nss_ecm_bpf';
+	return nssPlatform(status) && (effective === 'nss_ecm_node' || effective === 'nss_ecm_bpf');
 }
 
 function normalizeNssRefreshMs(value) {
@@ -144,7 +158,7 @@ function activeConfig(status, overview) {
 
 function isNssActivityClient(c) {
 	var mode = String(c && c.collector_mode || '');
-	return mode === 'nss_ecm_node' || mode === 'nss_ecm_bpf';
+	return mode === 'access_edge' || mode === 'nss_ecm_node' || mode === 'nss_ecm_bpf';
 }
 
 function isNssActiveClient(c, nowMs, config) {
@@ -315,6 +329,7 @@ return baseclass.extend({
 	SORT_KEYS:                 SORT_KEYS,
 	DEFAULT_PREFS:             DEFAULT_PREFS,
 	nssRefreshRestricted:      nssRefreshRestricted,
+	nssPlatform:               nssPlatform,
 	normalizeNssRefreshMs:     normalizeNssRefreshMs,
 	effectiveRateCollector:    effectiveRateCollector,
 	effectiveRefreshMs:        effectiveRefreshMs,

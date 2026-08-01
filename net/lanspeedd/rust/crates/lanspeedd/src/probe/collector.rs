@@ -8,10 +8,14 @@ use crate::config::RuntimeConfig;
 use std::{io, path::Path};
 
 const FILE_CAP: usize = 4_096;
+#[cfg(feature = "nss-platform")]
 const ECM_CONNECTION_COUNT_PATH: &str = "/sys/kernel/debug/ecm/ecm_db/connection_count";
+#[cfg(feature = "nss-platform")]
 const ECM_CONNECTION_COUNT_SIMPLE_PATH: &str =
     "/sys/kernel/debug/ecm/ecm_db/connection_count_simple";
+#[cfg(feature = "nss-platform")]
 const ECM_HOST_COUNT_PATH: &str = "/sys/kernel/debug/ecm/ecm_db/host_count";
+#[cfg(feature = "nss-platform")]
 const ECM_MAPPING_COUNT_PATH: &str = "/sys/kernel/debug/ecm/ecm_db/mapping_count";
 pub const PROBE_REFRESH_INTERVAL_MS: u64 = 30_000;
 const PACKAGES: [&str; 9] = [
@@ -109,6 +113,7 @@ pub trait FileSource {
     fn read(&mut self, path: &str, cap: usize) -> Result<BoundedFile, Self::Error>;
     fn exists(&mut self, path: &str) -> Result<FilePresence, Self::Error>;
     fn dir_has_entries(&mut self, path: &str) -> Result<bool, Self::Error>;
+    #[cfg(feature = "nss-platform")]
     fn probe_nss_state(&mut self) -> Result<NssStateProbe, Self::Error> {
         Ok(NssStateProbe::default())
     }
@@ -118,6 +123,7 @@ pub enum FilePresence {
     Present,
     Absent,
 }
+#[cfg(feature = "nss-platform")]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct NssStateProbe {
     pub present: bool,
@@ -182,6 +188,7 @@ impl FileSource for SystemFileSource {
             .map_err(|error| error.to_string())?
             .is_some())
     }
+    #[cfg(feature = "nss-platform")]
     fn probe_nss_state(&mut self) -> Result<NssStateProbe, Self::Error> {
         let major_path = "/sys/kernel/debug/ecm/ecm_state/state_dev_major";
         match std::fs::read_to_string(major_path) {
@@ -296,7 +303,7 @@ pub fn system_collector() -> lanspeed_openwrt_sys::Result<SystemProbeCollector> 
         SystemUciSource::new()?,
         SystemUbusSource,
     )
-    .with_nss_probe(cfg!(target_arch = "aarch64")))
+    .with_nss_probe(cfg!(feature = "nss-platform")))
 }
 
 pub struct ProbeCollector<C, F, U, B> {
@@ -676,6 +683,7 @@ where
             &mut o.probe_error,
         );
         o.bpf.object = primary && fallback;
+        #[cfg(feature = "nss-platform")]
         if self.nss_probe {
             o.bpf.ecm_object = self.exists(
                 crate::platform::nss::ecm_bpf::ECM_BPF_OBJECT_PATH,
@@ -701,88 +709,92 @@ where
                 let path = format!("/sys/class/net/{ifname}/bridge");
                 self.exists(&path, evidence, &mut o.probe_error)
             });
-        if !self.nss_probe {
-            return;
-        }
-        o.nss.present = self.any_exists(
-            &[
-                "/sys/module/qca_nss_drv",
-                "/sys/bus/platform/drivers/qca-nss",
-                "/sys/kernel/debug/qca-nss-drv",
-                "/proc/sys/dev/nss",
-            ],
-            evidence,
-            &mut o.probe_error,
-        );
-        o.nss.ecm_active = self.any_exists(
-            &["/sys/module/ecm", "/sys/kernel/debug/ecm"],
-            evidence,
-            &mut o.probe_error,
-        );
-        o.nss.ppe_active = self.any_exists(
-            &[
-                "/sys/module/qca_nss_ppe",
-                "/sys/module/ppe_drv",
-                "/sys/kernel/debug/qca-nss-ppe",
-                "/sys/kernel/debug/ppe_drv",
-            ],
-            evidence,
-            &mut o.probe_error,
-        );
-        o.nss.bridge_mgr = self.any_exists(
-            &["/sys/module/qca_nss_bridge_mgr"],
-            evidence,
-            &mut o.probe_error,
-        );
-        o.nss.ifb_active = self.any_exists(
-            &[
-                "/sys/class/net/nssifb",
-                "/sys/module/nss_ifb",
-                "/sys/module/nss-ifb",
-            ],
-            evidence,
-            &mut o.probe_error,
-        );
-        o.nss.nsm_active = self.any_exists(
-            &[
-                "/sys/module/qca_nss_nsm",
-                "/sys/module/nss_nsm",
-                "/sys/kernel/debug/qca-nss-nsm",
-            ],
-            evidence,
-            &mut o.probe_error,
-        );
-        o.nss.dp_active = self.any_exists(
-            &["/sys/module/qca_nss_dp", "/sys/module/nss_dp"],
-            evidence,
-            &mut o.probe_error,
-        );
-        o.nss.mcs_active = self.any_exists(
-            &["/sys/module/qca_mcs", "/sys/module/mc_snooping"],
-            evidence,
-            &mut o.probe_error,
-        );
-        o.nss.present |= o.nss.dp_active;
-        match self.files.probe_nss_state() {
-            Ok(state) => {
-                o.nss.direct_state_present = state.present;
-                o.nss.direct_state_readable = state.readable;
-                o.nss.direct_state_errno = state.errno;
-                o.nss.direct_state_major = state.state_major;
-                o.nss.direct_source_path = state.source_path;
-                if state.present && !state.readable {
+        #[cfg(feature = "nss-platform")]
+        {
+            if !self.nss_probe {
+                return;
+            }
+            o.nss.present = self.any_exists(
+                &[
+                    "/sys/module/qca_nss_drv",
+                    "/sys/bus/platform/drivers/qca-nss",
+                    "/sys/kernel/debug/qca-nss-drv",
+                    "/proc/sys/dev/nss",
+                ],
+                evidence,
+                &mut o.probe_error,
+            );
+            o.nss.ecm_active = self.any_exists(
+                &["/sys/module/ecm", "/sys/kernel/debug/ecm"],
+                evidence,
+                &mut o.probe_error,
+            );
+            o.nss.ppe_active = self.any_exists(
+                &[
+                    "/sys/module/qca_nss_ppe",
+                    "/sys/module/ppe_drv",
+                    "/sys/kernel/debug/qca-nss-ppe",
+                    "/sys/kernel/debug/ppe_drv",
+                ],
+                evidence,
+                &mut o.probe_error,
+            );
+            o.nss.bridge_mgr = self.any_exists(
+                &["/sys/module/qca_nss_bridge_mgr"],
+                evidence,
+                &mut o.probe_error,
+            );
+            o.nss.ifb_active = self.any_exists(
+                &[
+                    "/sys/class/net/nssifb",
+                    "/sys/module/nss_ifb",
+                    "/sys/module/nss-ifb",
+                ],
+                evidence,
+                &mut o.probe_error,
+            );
+            o.nss.nsm_active = self.any_exists(
+                &[
+                    "/sys/module/qca_nss_nsm",
+                    "/sys/module/nss_nsm",
+                    "/sys/kernel/debug/qca-nss-nsm",
+                ],
+                evidence,
+                &mut o.probe_error,
+            );
+            o.nss.dp_active = self.any_exists(
+                &["/sys/module/qca_nss_dp", "/sys/module/nss_dp"],
+                evidence,
+                &mut o.probe_error,
+            );
+            o.nss.mcs_active = self.any_exists(
+                &["/sys/module/qca_mcs", "/sys/module/mc_snooping"],
+                evidence,
+                &mut o.probe_error,
+            );
+            o.nss.present |= o.nss.dp_active;
+            match self.files.probe_nss_state() {
+                Ok(state) => {
+                    o.nss.direct_state_present = state.present;
+                    o.nss.direct_state_readable = state.readable;
+                    o.nss.direct_state_errno = state.errno;
+                    o.nss.direct_state_major = state.state_major;
+                    o.nss.direct_source_path = state.source_path;
+                    if state.present && !state.readable {
+                        o.probe_error = true;
+                        record_failure(evidence, "nss", "nss:ecm_state", "state_unreadable", None);
+                    }
+                }
+                Err(_) => {
                     o.probe_error = true;
-                    record_failure(evidence, "nss", "nss:ecm_state", "state_unreadable", None);
+                    record_failure(evidence, "nss", "nss:ecm_state", "state_probe_failed", None);
                 }
             }
-            Err(_) => {
-                o.probe_error = true;
-                record_failure(evidence, "nss", "nss:ecm_state", "state_probe_failed", None);
-            }
+            self.collect_nss_counts(o, evidence);
         }
-        self.collect_nss_counts(o, evidence);
     }
 
+    #[cfg(feature = "nss-platform")]
     fn collect_nss_counts(&mut self, o: &mut ProbeObservations, evidence: &mut CollectedEvidence) {
         let primary_total = self
             .read_optional_file(ECM_CONNECTION_COUNT_PATH, evidence, &mut o.probe_error)
@@ -806,6 +818,7 @@ where
             .and_then(|value| parse_nonnegative_count(&value));
     }
 
+    #[cfg(feature = "nss-platform")]
     fn read_optional_file(
         &mut self,
         path: &str,
@@ -878,6 +891,7 @@ where
             }
         }
     }
+    #[cfg(feature = "nss-platform")]
     fn any_exists(
         &mut self,
         paths: &[&str],
@@ -1177,6 +1191,7 @@ fn bool_value(value: Option<&str>) -> bool {
     matches!(value, Some("1" | "true" | "on" | "yes"))
 }
 
+#[cfg(feature = "nss-platform")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SimpleConnectionCounts {
     tcp: u64,
@@ -1185,10 +1200,12 @@ struct SimpleConnectionCounts {
     total: u64,
 }
 
+#[cfg(feature = "nss-platform")]
 fn parse_nonnegative_count(value: &str) -> Option<u64> {
     value.trim().parse().ok()
 }
 
+#[cfg(feature = "nss-platform")]
 fn parse_simple_connection_counts(value: &str) -> Option<SimpleConnectionCounts> {
     let mut fields = value.split_whitespace();
     if fields.next()? != "tcp" {

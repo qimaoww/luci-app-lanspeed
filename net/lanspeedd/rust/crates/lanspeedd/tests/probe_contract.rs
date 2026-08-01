@@ -1,8 +1,10 @@
 use lanspeedd::config::RuntimeConfig;
+#[cfg(feature = "nss-platform")]
+use lanspeedd::probe::collector::NssStateProbe;
 use lanspeedd::probe::collector::{
-    probe_deadline, probe_due, CommandRunner, FilePresence, FileSource, NssStateProbe,
-    ProbeCollector, ProbeMethod, UbusProbeResult, UbusQuery, UbusSource, UciOptionSnapshot,
-    UciPackageSnapshot, UciSectionSnapshot, UciSource, PROBE_REFRESH_INTERVAL_MS,
+    probe_deadline, probe_due, CommandRunner, FilePresence, FileSource, ProbeCollector,
+    ProbeMethod, UbusProbeResult, UbusQuery, UbusSource, UciOptionSnapshot, UciPackageSnapshot,
+    UciSectionSnapshot, UciSource, PROBE_REFRESH_INTERVAL_MS,
 };
 use lanspeedd::probe::commands::{validate_read_only_args, ReadOnlyCommand};
 use lanspeedd::probe::files::BoundedFile;
@@ -944,15 +946,12 @@ fn missing_optional_dae_route_table_is_not_a_probe_failure() {
     assert_eq!(route.summary.as_deref(), Some("optional state not present"));
 }
 
+#[cfg(not(feature = "nss-platform"))]
 #[test]
 fn x86_probe_profile_does_not_touch_or_publish_nss_ecm_paths() {
-    let files = FakeFiles {
-        nss_state_error: true,
-        ..FakeFiles::default()
-    };
     let mut collector = ProbeCollector::new(
         FakeCommands::default(),
-        files,
+        FakeFiles::default(),
         FakeUci::default(),
         FakeUbus::default(),
     )
@@ -999,6 +998,7 @@ fn command_availability_requires_an_executable_file() {
     fs::remove_dir_all(directory).unwrap();
 }
 
+#[cfg(feature = "nss-platform")]
 #[test]
 fn report_mode_confidence_and_capabilities_come_from_the_single_policy_decision() {
     let mut config = RuntimeConfig::default();
@@ -1045,6 +1045,7 @@ fn report_mode_confidence_and_capabilities_come_from_the_single_policy_decision(
     assert!(no_tc_sync.capabilities.live_metrics);
 }
 
+#[cfg(feature = "nss-platform")]
 #[test]
 fn nss_presence_does_not_invent_the_firewall_hardware_offload_flag() {
     let mut config = RuntimeConfig::default();
@@ -1173,7 +1174,9 @@ struct FakeFiles {
     entries: BTreeMap<String, BoundedFile>,
     errors: BTreeSet<String>,
     reads: Rc<RefCell<Vec<(String, usize)>>>,
+    #[cfg(feature = "nss-platform")]
     nss_state_error: bool,
+    #[cfg(feature = "nss-platform")]
     nss_state: NssStateProbe,
 }
 impl FileSource for FakeFiles {
@@ -1206,6 +1209,7 @@ impl FileSource for FakeFiles {
     fn dir_has_entries(&mut self, path: &str) -> Result<bool, Self::Error> {
         Ok(self.exists(path)? == FilePresence::Present)
     }
+    #[cfg(feature = "nss-platform")]
     fn probe_nss_state(&mut self) -> Result<NssStateProbe, Self::Error> {
         if self.nss_state_error {
             Err("raw nss state error".into())
@@ -1533,8 +1537,14 @@ fn file_io_errors_are_probe_errors_while_not_found_is_only_missing() {
 
 #[test]
 fn uci_and_nss_failures_are_classified_without_storing_raw_error_text() {
-    let mut files = FakeFiles::default();
-    files.nss_state_error = true;
+    #[cfg(feature = "nss-platform")]
+    let files = {
+        let mut files = FakeFiles::default();
+        files.nss_state_error = true;
+        files
+    };
+    #[cfg(not(feature = "nss-platform"))]
+    let files = FakeFiles::default();
     let mut collector = ProbeCollector::new(
         FakeCommands::default(),
         files,
@@ -1555,6 +1565,7 @@ fn uci_and_nss_failures_are_classified_without_storing_raw_error_text() {
             && failure.reason == "load_failed"
             && failure.exit_code.is_none()
     }));
+    #[cfg(feature = "nss-platform")]
     assert!(report.evidence.probe_failures.iter().any(|failure| {
         failure.kind == "nss"
             && failure.source == "nss:ecm_state"
@@ -1568,6 +1579,7 @@ fn uci_and_nss_failures_are_classified_without_storing_raw_error_text() {
         .all(|failure| !failure.source.contains("raw") && !failure.source.contains("secret")));
 }
 
+#[cfg(feature = "nss-platform")]
 #[test]
 fn ubus_timeout_and_present_unreadable_nss_state_have_distinct_reasons() {
     let files = FakeFiles {
@@ -1610,6 +1622,7 @@ fn ubus_timeout_and_present_unreadable_nss_state_have_distinct_reasons() {
         .any(|failure| { failure.kind == "ubus" && failure.reason == "output_truncated" }));
 }
 
+#[cfg(feature = "nss-platform")]
 #[test]
 fn production_collector_honors_every_legacy_nss_alternative_path() {
     let cases = [
@@ -1668,11 +1681,16 @@ fn production_collector_honors_every_legacy_nss_alternative_path() {
     }
 }
 
+#[cfg(feature = "nss-platform")]
 const ECM_CONNECTION_COUNT: &str = "/sys/kernel/debug/ecm/ecm_db/connection_count";
+#[cfg(feature = "nss-platform")]
 const ECM_CONNECTION_COUNT_SIMPLE: &str = "/sys/kernel/debug/ecm/ecm_db/connection_count_simple";
+#[cfg(feature = "nss-platform")]
 const ECM_HOST_COUNT: &str = "/sys/kernel/debug/ecm/ecm_db/host_count";
+#[cfg(feature = "nss-platform")]
 const ECM_MAPPING_COUNT: &str = "/sys/kernel/debug/ecm/ecm_db/mapping_count";
 
+#[cfg(feature = "nss-platform")]
 fn fake_file(path: &str, value: &str) -> BoundedFile {
     BoundedFile {
         source: format!("file:{path}"),
@@ -1683,6 +1701,7 @@ fn fake_file(path: &str, value: &str) -> BoundedFile {
     }
 }
 
+#[cfg(feature = "nss-platform")]
 fn collect_with_files(files: FakeFiles) -> lanspeedd::probe::ProbeReport {
     ProbeCollector::new(
         FakeCommands::default(),
@@ -1697,6 +1716,7 @@ fn collect_with_files(files: FakeFiles) -> lanspeedd::probe::ProbeReport {
     )
 }
 
+#[cfg(feature = "nss-platform")]
 #[test]
 fn nss_debugfs_counts_are_bounded_and_primary_total_wins_over_simple_total() {
     let mut files = FakeFiles::default();
@@ -1759,6 +1779,7 @@ fn nss_debugfs_counts_are_bounded_and_primary_total_wins_over_simple_total() {
     }
 }
 
+#[cfg(feature = "nss-platform")]
 #[test]
 fn nss_debugfs_simple_counts_reject_the_entire_line_when_any_number_is_invalid() {
     let mut files = FakeFiles::default();
@@ -1782,6 +1803,7 @@ fn nss_debugfs_simple_counts_reject_the_entire_line_when_any_number_is_invalid()
     assert_eq!(report.evidence.nss.accelerated_other, None);
 }
 
+#[cfg(feature = "nss-platform")]
 #[test]
 fn nss_debugfs_missing_or_malformed_files_do_not_invent_counts() {
     let mut files = FakeFiles::default();
@@ -1808,6 +1830,7 @@ fn nss_debugfs_missing_or_malformed_files_do_not_invent_counts() {
     assert!(!report.evidence.probe_error);
 }
 
+#[cfg(feature = "nss-platform")]
 #[test]
 fn nss_debugfs_io_and_truncation_errors_are_evidence_without_losing_valid_fallbacks() {
     let mut files = FakeFiles::default();

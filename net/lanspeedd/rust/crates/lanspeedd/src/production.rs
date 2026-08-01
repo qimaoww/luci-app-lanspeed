@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
     path::Path,
     rc::Rc,
@@ -15,12 +15,9 @@ use crate::{
     collectors::conntrack::{self, CollectedSnapshot, CollectorMode as ConntrackMode},
     config::{
         is_sysdevice_candidate, AccessEdgeMode, ConnectionCollectorMode, InterfaceEligibility,
-        RateCollectorMode, RuntimeConfig, SysfsInterfaceEligibility, MAX_INTERFACE_NAMES,
-        MAX_INTERFACE_NAME_LEN,
+        RuntimeConfig, SysfsInterfaceEligibility, MAX_INTERFACE_NAMES, MAX_INTERFACE_NAME_LEN,
     },
-    connection_details::{
-        ConnectionRateBook, TrafficClassification, TrafficClassificationDirection,
-    },
+    connection_details::ConnectionRateBook,
     connections::{
         apply_conntrack_failure, apply_conntrack_success, before_reply_action,
         client_conntrack_plan, periodic_conntrack_plan, publish_connection_details,
@@ -38,23 +35,59 @@ use crate::{
     },
     identity::{
         arp,
-        filter::{self, IdentityFilter},
+        filter::IdentityFilter,
         hostname::{HostnameCache, HostnamePaths},
-        netlink, ClientIdentity, IdentityObservation, IdentityTable, LegacyZoneResolver,
-        ObservationSource,
+        netlink, IdentityObservation, IdentityTable, LegacyZoneResolver, ObservationSource,
     },
     interfaces::{
         read_interface_counter_snapshot, InterfaceCounterSnapshot, InterfaceCounters,
         InterfaceRateBook, MIXED_INTERFACE_SOURCE,
     },
     model::{
-        AttachmentKind as ModelAttachmentKind, AttachmentTrust as ModelAttachmentTrust,
-        ByteDomain as ModelByteDomain, Capabilities, ClassificationState, Client, ClientRateMeta,
-        ClientsResponse, Confidence, Conflict, Evidence, HealthResponse, Interface, InterfaceRole,
-        InterfaceStatus, InterfacesResponse, Mode, OverviewResponse, OverviewSample,
-        RateAttachment, RateClassificationSummary, RateCoverage as ModelRateCoverage,
-        RateDirectionMeta, RateScope as ModelRateScope, RateSource as ModelRateSource,
+        Capabilities, ClientsResponse, Confidence, Conflict, Evidence, HealthResponse, Interface,
+        InterfaceRole, InterfaceStatus, InterfacesResponse, Mode, OverviewResponse, OverviewSample,
         ReloadResponse, StatusResponse, Sysdevice, SysdeviceLimits, SysdevicesResponse,
+    },
+    platform::{
+        confidence,
+        x86::{
+            coverage_state::X86Coverage,
+            output::clients_response,
+            runtime::{
+                AdapterError, AdapterErrorKind, AttachMode, BpfCollectionCheckpoint,
+                BpfPostCommitCleanup, BpfReconfigureTxn, BpfRuntime, ReconfigureRateBaseline,
+                ReconfigureStrategy, SystemAyaAdapter, SystemAyaLink, FALLBACK_OBJECT_PATH,
+            },
+            snapshot::{BpfSnapshotCollector, ConnectionCounts, ConnectionOverlay},
+        },
+    },
+    policy::{self, RateCollector},
+    probe::{
+        collector::{self, probe_deadline, probe_due, ProbeMethod, SystemProbeCollector},
+        process::{
+            run_dae_mode_tick, DaeModeReloadLatch, DaeModeTickOutcome, DaeModeTickSignals,
+            DaeProcessTracker,
+        },
+        Mode as ProbeMode, ProbeCapabilities, ProbeReport, RuntimeHealth,
+    },
+    state::{ResponseSnapshot, CONNECTION_SEMANTICS, OVERVIEW_SAMPLE_SOURCE},
+    ubus,
+};
+
+#[cfg(feature = "nss-platform")]
+use crate::config::RateCollectorMode;
+
+#[cfg(feature = "nss-platform")]
+use crate::platform::x86::snapshot::BpfSnapshot;
+#[cfg(feature = "nss-platform")]
+use crate::{
+    connection_details::{TrafficClassification, TrafficClassificationDirection},
+    identity::{filter, ClientIdentity},
+    model::{
+        AttachmentKind as ModelAttachmentKind, AttachmentTrust as ModelAttachmentTrust,
+        ByteDomain as ModelByteDomain, ClassificationState, Client, ClientRateMeta, RateAttachment,
+        RateClassificationSummary, RateCoverage as ModelRateCoverage, RateDirectionMeta,
+        RateScope as ModelRateScope, RateSource as ModelRateSource,
     },
     platform::{
         access_edge::{
@@ -66,7 +99,6 @@ use crate::{
             RateSource as EdgeRateSource, TrafficScope as EdgeTrafficScope,
             CLASSIFIER_READ_END_SKEW_MS,
         },
-        confidence,
         counters::TrafficCounters,
         nss::{
             bpf_coverage::NssBpfCoverage,
@@ -84,50 +116,33 @@ use crate::{
             runtime::{NssRuntime, NssRuntimeCheckpoint},
             tc_snapshot::{NssTcClientSample, NssTcSnapshot},
             window::{LanClock, WindowQuality},
-            COLLECTION_INTERVAL_MS as NSS_COLLECTION_INTERVAL_MS,
-        },
-        x86::{
-            coverage_state::X86Coverage,
-            output::clients_response,
-            runtime::{
-                AdapterError, AdapterErrorKind, AttachMode, BpfCollectionCheckpoint,
-                BpfPostCommitCleanup, BpfReconfigureTxn, BpfRuntime, ReconfigureRateBaseline,
-                ReconfigureStrategy, SystemAyaAdapter, SystemAyaLink, FALLBACK_OBJECT_PATH,
-            },
-            snapshot::{BpfSnapshot, BpfSnapshotCollector, ConnectionCounts, ConnectionOverlay},
         },
     },
-    policy::{self, RateCollector},
-    probe::{
-        collector::{self, probe_deadline, probe_due, ProbeMethod, SystemProbeCollector},
-        process::{
-            run_dae_mode_tick, DaeModeReloadLatch, DaeModeTickOutcome, DaeModeTickSignals,
-            DaeProcessTracker,
-        },
-        Mode as ProbeMode, ProbeCapabilities, ProbeReport, RuntimeHealth,
-    },
-    state::{ResponseSnapshot, CONNECTION_SEMANTICS, OVERVIEW_SAMPLE_SOURCE},
-    ubus,
 };
+#[cfg(feature = "nss-platform")]
+use std::collections::BTreeSet;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "nss-platform"))]
 use crate::platform::nss::fusion::add_traffic_counters;
-#[cfg(test)]
+#[cfg(all(test, feature = "nss-platform"))]
 use crate::platform::nss::{
     output::{coverage_response, nss_rate_coverage_values},
     window::{CoverageWindow, EcmBpfRateBatch, RateWindowValue},
 };
-#[cfg(test)]
+#[cfg(all(test, feature = "nss-platform"))]
 use crate::probe::Confidence as ProbeConfidence;
 
 const RECONNECT_MS: u32 = 1_000;
+// Kept as a policy/timer constant so the x86 build does not need to link the
+// NSS platform module merely to compile common scheduling code.
 const ACCESS_EDGE_INTERVAL_MS: u64 = 1_000;
-const CLASSIFIER_INTERVAL_MS: u64 = NSS_COLLECTION_INTERVAL_MS as u64;
+const CLASSIFIER_INTERVAL_MS: u64 = 2_000;
 const INTERNAL_BPF_SELF_HEAL_REASON: &str = "production.collect.internal";
 const EXTERNAL_BPF_SELF_HEAL_REASON: &str = "production.collect.external";
 const INTERFACE_NOTE: &str = "Per-interface totals from one kernel net-device pass with sysfs fallback; reflect hardware-offloaded and hardware-switched traffic too.";
 
 #[derive(Clone, Copy, Debug)]
+#[cfg(feature = "nss-platform")]
 struct PublishedRateDirection {
     bps: u64,
     source: ModelRateSource,
@@ -140,6 +155,7 @@ struct PublishedRateDirection {
     mux_owner: bool,
 }
 
+#[cfg(feature = "nss-platform")]
 impl PublishedRateDirection {
     fn unavailable(bps: u64) -> Self {
         Self {
@@ -156,6 +172,7 @@ impl PublishedRateDirection {
     }
 }
 
+#[cfg(feature = "nss-platform")]
 fn retain_collector_warnings(warnings: &mut Vec<String>, rate: RateCollector) {
     if rate == RateCollector::NssEcmBpf {
         warnings.retain(|warning| {
@@ -169,6 +186,7 @@ fn retain_collector_warnings(warnings: &mut Vec<String>, rate: RateCollector) {
 
 type Bpf = BpfRuntime<SystemAyaLink>;
 
+#[cfg(feature = "nss-platform")]
 fn nss_tc_snapshot(snapshot: &BpfSnapshot) -> NssTcSnapshot {
     NssTcSnapshot {
         clients: snapshot
@@ -195,6 +213,7 @@ fn nss_tc_snapshot(snapshot: &BpfSnapshot) -> NssTcSnapshot {
     }
 }
 
+#[cfg(feature = "nss-platform")]
 fn format_edge_mac(mac: [u8; 6]) -> String {
     format!(
         "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -202,6 +221,7 @@ fn format_edge_mac(mac: [u8; 6]) -> String {
     )
 }
 
+#[cfg(feature = "nss-platform")]
 fn mac_lookup_key(value: &str) -> String {
     value.to_ascii_lowercase()
 }
@@ -209,11 +229,13 @@ fn mac_lookup_key(value: &str) -> String {
 /// One-pass MAC index used by the hot client-rate path. A MAC that appears in
 /// more than one attachment/identity is deliberately removed from `unique` so
 /// the index preserves the old fail-closed attribution rule.
+#[cfg(feature = "nss-platform")]
 struct MacIndex<'a, T> {
     unique: BTreeMap<String, &'a T>,
     ambiguous: BTreeSet<String>,
 }
 
+#[cfg(feature = "nss-platform")]
 impl<T> Default for MacIndex<'_, T> {
     fn default() -> Self {
         Self {
@@ -223,6 +245,7 @@ impl<T> Default for MacIndex<'_, T> {
     }
 }
 
+#[cfg(feature = "nss-platform")]
 impl<'a, T> MacIndex<'a, T> {
     fn insert(&mut self, key: String, value: &'a T) {
         if self.ambiguous.contains(&key) {
@@ -236,6 +259,7 @@ impl<'a, T> MacIndex<'a, T> {
     }
 }
 
+#[cfg(feature = "nss-platform")]
 fn edge_mac_index<'a>(clients: &'a [EdgeClientObservation]) -> MacIndex<'a, EdgeClientObservation> {
     let mut index = MacIndex::default();
     for client in clients {
@@ -244,6 +268,7 @@ fn edge_mac_index<'a>(clients: &'a [EdgeClientObservation]) -> MacIndex<'a, Edge
     index
 }
 
+#[cfg(feature = "nss-platform")]
 fn identity_mac_index<'a>(identities: &'a IdentityTable) -> MacIndex<'a, ClientIdentity> {
     let mut index = MacIndex::default();
     for identity in identities.iter() {
@@ -252,6 +277,7 @@ fn identity_mac_index<'a>(identities: &'a IdentityTable) -> MacIndex<'a, ClientI
     index
 }
 
+#[cfg(feature = "nss-platform")]
 fn response_mac_index<'a>(clients: &'a [Client]) -> MacIndex<'a, Client> {
     let mut index = MacIndex::default();
     for client in clients {
@@ -260,6 +286,7 @@ fn response_mac_index<'a>(clients: &'a [Client]) -> MacIndex<'a, Client> {
     index
 }
 
+#[cfg(feature = "nss-platform")]
 fn observed_traffic_delta(
     source: EdgeRateSource,
     byte_domain: EdgeByteDomain,
@@ -280,11 +307,13 @@ fn observed_traffic_delta(
     }
 }
 
+#[cfg(feature = "nss-platform")]
 fn comparable_l2_with_fcs(value: ObservedDelta) -> ObservedDelta {
     normalize_l2_with_fcs(value).unwrap_or(value)
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "nss-platform")]
 fn classifier_rate_candidates(
     identity_key: &str,
     direction: EdgeDirection,
@@ -417,6 +446,7 @@ fn classifier_rate_candidates(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(feature = "nss-platform")]
 enum ClassifierWindowSelection {
     Unavailable,
     Invalid,
@@ -427,6 +457,7 @@ enum ClassifierWindowSelection {
     },
 }
 
+#[cfg(feature = "nss-platform")]
 fn select_classifier_window(
     ecm: Option<(u64, u64)>,
     slow: Option<(u64, u64)>,
@@ -451,6 +482,7 @@ fn select_classifier_window(
     }
 }
 
+#[cfg(feature = "nss-platform")]
 const fn classifier_sample_fresh(now_ms: u64, sample_ms: u64) -> bool {
     sample_ms <= now_ms
         && now_ms.saturating_sub(sample_ms) <= CLASSIFIER_INTERVAL_MS.saturating_mul(5) / 2
@@ -461,10 +493,8 @@ const fn classifier_sample_fresh(now_ms: u64, sample_ms: u64) -> bool {
 // "the last complete map became unusable". Keep status health tied to the
 // retained snapshot's actual freshness; classification itself still consumes
 // only newly collected epochs.
-fn ecm_bpf_snapshot_current(
-    snapshot: Option<&EcmBpfSnapshot>,
-    runtime: &RuntimeHealth,
-) -> bool {
+#[cfg(feature = "nss-platform")]
+fn ecm_bpf_snapshot_current(snapshot: Option<&EcmBpfSnapshot>, runtime: &RuntimeHealth) -> bool {
     snapshot.is_some_and(|snapshot| !snapshot.truncated)
         && runtime
             .ecm_bpf_last_complete_snapshot_ms
@@ -477,11 +507,13 @@ fn ecm_bpf_snapshot_current(
 /// Edge snapshot. `saturating_sub` alone would treat a segment from a clock
 /// anomaly in the future as fresh (the subtraction would become zero), which
 /// can briefly publish a rate from an invalid window.
+#[cfg(feature = "nss-platform")]
 const fn edge_segment_fresh(snapshot_ms: u64, segment_end_ms: u64, cadence_ms: u64) -> bool {
     segment_end_ms <= snapshot_ms
         && snapshot_ms.saturating_sub(segment_end_ms) <= cadence_ms.saturating_mul(5) / 2
 }
 
+#[cfg(feature = "nss-platform")]
 const fn classifier_map_loss_invalidates_owner(
     owner: Option<EdgeRateSource>,
     has_edge_candidate: bool,
@@ -506,6 +538,7 @@ const fn classifier_map_loss_invalidates_owner(
     }
 }
 
+#[cfg(feature = "nss-platform")]
 fn remove_failed_edge_candidates(
     candidates: &mut Vec<RateCandidate>,
     edge_failure: Option<MuxFailure>,
@@ -520,6 +553,7 @@ fn remove_failed_edge_candidates(
     }
 }
 
+#[cfg(feature = "nss-platform")]
 const fn bytes_to_bps(bytes: u64, window_ms: u64) -> u64 {
     if window_ms == 0 {
         return 0;
@@ -532,6 +566,7 @@ const fn bytes_to_bps(bytes: u64, window_ms: u64) -> u64 {
     }
 }
 
+#[cfg(feature = "nss-platform")]
 fn published_from_candidate(candidate: RateCandidate, stale: bool) -> PublishedRateDirection {
     PublishedRateDirection {
         bps: candidate.bps,
@@ -546,6 +581,7 @@ fn published_from_candidate(candidate: RateCandidate, stale: bool) -> PublishedR
     }
 }
 
+#[cfg(feature = "nss-platform")]
 fn rate_direction_meta(
     direction: PublishedRateDirection,
     summary_sample_ms: Option<u64>,
@@ -566,6 +602,7 @@ fn rate_direction_meta(
     }
 }
 
+#[cfg(feature = "nss-platform")]
 fn compact_rate_sample_ms(tx_sample_ms: Option<u64>, rx_sample_ms: Option<u64>) -> Option<u64> {
     match (tx_sample_ms, rx_sample_ms) {
         (Some(tx), Some(rx)) => Some(tx.max(rx)),
@@ -577,6 +614,7 @@ fn compact_rate_sample_ms(tx_sample_ms: Option<u64>, rx_sample_ms: Option<u64>) 
     }
 }
 
+#[cfg(feature = "nss-platform")]
 fn pipeline_direction(
     pipeline: RateCollector,
     bps: u64,
@@ -615,6 +653,7 @@ fn pipeline_direction(
     }
 }
 
+#[cfg(feature = "nss-platform")]
 const fn model_rate_source(source: EdgeRateSource) -> ModelRateSource {
     match source {
         EdgeRateSource::EdgePort => ModelRateSource::EdgePort,
@@ -625,6 +664,7 @@ const fn model_rate_source(source: EdgeRateSource) -> ModelRateSource {
     }
 }
 
+#[cfg(feature = "nss-platform")]
 const fn model_rate_coverage(value: crate::platform::access_edge::Coverage) -> ModelRateCoverage {
     match value {
         crate::platform::access_edge::Coverage::Full => ModelRateCoverage::Full,
@@ -634,6 +674,7 @@ const fn model_rate_coverage(value: crate::platform::access_edge::Coverage) -> M
     }
 }
 
+#[cfg(feature = "nss-platform")]
 const fn model_rate_scope(value: EdgeTrafficScope) -> ModelRateScope {
     match value {
         EdgeTrafficScope::AllFrames => ModelRateScope::AllFrames,
@@ -644,6 +685,7 @@ const fn model_rate_scope(value: EdgeTrafficScope) -> ModelRateScope {
     }
 }
 
+#[cfg(feature = "nss-platform")]
 const fn model_byte_domain(value: EdgeByteDomain) -> ModelByteDomain {
     match value {
         EdgeByteDomain::L2NoFcs => ModelByteDomain::L2NoFcs,
@@ -653,6 +695,7 @@ const fn model_byte_domain(value: EdgeByteDomain) -> ModelByteDomain {
     }
 }
 
+#[cfg(feature = "nss-platform")]
 fn conservative_scope(left: ModelRateScope, right: ModelRateScope) -> ModelRateScope {
     let rank = |value| match value {
         ModelRateScope::None => 0,
@@ -668,6 +711,7 @@ fn conservative_scope(left: ModelRateScope, right: ModelRateScope) -> ModelRateS
     }
 }
 
+#[cfg(feature = "nss-platform")]
 fn model_attachment(attachment: &EdgeAttachment) -> RateAttachment {
     RateAttachment {
         kind: match attachment.point.kind {
@@ -684,6 +728,7 @@ fn model_attachment(attachment: &EdgeAttachment) -> RateAttachment {
     }
 }
 
+#[cfg(feature = "nss-platform")]
 fn classification_summary(result: &ClassificationResult) -> RateClassificationSummary {
     RateClassificationSummary {
         state: result.state,
@@ -697,6 +742,7 @@ fn classification_summary(result: &ClassificationResult) -> RateClassificationSu
     }
 }
 
+#[cfg(feature = "nss-platform")]
 fn traffic_classification(result: &ClassificationResult) -> TrafficClassification {
     let direction = |state, value: crate::platform::access_edge::DirectionClassification| {
         TrafficClassificationDirection {
@@ -718,6 +764,7 @@ fn traffic_classification(result: &ClassificationResult) -> TrafficClassificatio
     }
 }
 
+#[cfg(feature = "nss-platform")]
 const fn classification_state_code(state: ClassificationState) -> &'static str {
     match state {
         ClassificationState::Warmup => "warmup",
@@ -830,12 +877,13 @@ fn effective_collection_interval_ms(
         owner,
         Some(RateCollector::NssEcmNode | RateCollector::NssEcmBpf)
     ) {
-        configured_ms.max(NSS_COLLECTION_INTERVAL_MS)
+        configured_ms.max(CLASSIFIER_INTERVAL_MS as u32)
     } else {
         configured_ms
     }
 }
 
+#[cfg(feature = "nss-platform")]
 const fn active_access_edge_owns_display_rate(
     access_edge_mode: AccessEdgeMode,
     rate_collector_mode: RateCollectorMode,
@@ -844,6 +892,16 @@ const fn active_access_edge_owns_display_rate(
         && matches!(rate_collector_mode, RateCollectorMode::Auto)
 }
 
+#[cfg(feature = "nss-platform")]
+const fn published_rate_collector_mode<'a>(active_auto: bool, legacy: &'a str) -> &'a str {
+    if active_auto {
+        "access_edge"
+    } else {
+        legacy
+    }
+}
+
+#[cfg(feature = "nss-platform")]
 const fn legacy_nss_rate_window_enabled(
     access_edge_mode: AccessEdgeMode,
     rate_collector_mode: RateCollectorMode,
@@ -879,6 +937,7 @@ fn next_absolute_collection_slot(
     (deadline_ms, delay_ms)
 }
 
+#[cfg(feature = "nss-platform")]
 fn periodic_deadline_due(next_deadline_ms: &mut u64, now_ms: u64, cadence_ms: u64) -> bool {
     let cadence_ms = cadence_ms.max(1);
     if *next_deadline_ms == 0 {
@@ -912,10 +971,12 @@ fn schedule_absolute_collection(
     Ok(())
 }
 
+#[cfg(feature = "nss-platform")]
 fn nss_snapshot_freshness_ms(configured_ms: u32) -> u64 {
-    u64::from(configured_ms.max(NSS_COLLECTION_INTERVAL_MS)).saturating_mul(3)
+    u64::from(configured_ms.max(CLASSIFIER_INTERVAL_MS as u32)).saturating_mul(3)
 }
 
+#[cfg(feature = "nss-platform")]
 fn classifier_map_metrics(
     entries: usize,
     capacity: usize,
@@ -937,6 +998,7 @@ fn classifier_map_metrics(
     })
 }
 
+#[cfg(feature = "nss-platform")]
 fn classifier_map_evidence(
     runtime: &RuntimeHealth,
     ecm: Option<&EcmBpfSnapshot>,
@@ -964,6 +1026,7 @@ fn classifier_map_evidence(
     })
 }
 
+#[cfg(feature = "nss-platform")]
 fn access_edge_global_evidence(
     snapshot: &crate::platform::access_edge::AccessEdgeSnapshot,
     clients: &ClientsResponse,
@@ -1065,10 +1128,15 @@ struct ProductionRuntime {
     /// evidence exposes this code, while `bpf_error` remains private detail.
     bpf_error_stage: Option<&'static str>,
     bpf_collector: BpfSnapshotCollector,
+    #[cfg(feature = "nss-platform")]
     nss: NssRuntime,
+    #[cfg(feature = "nss-platform")]
     access_edge: AccessEdgeRuntime,
+    #[cfg(feature = "nss-platform")]
     classification_results: BTreeMap<String, ClassificationResult>,
+    #[cfg(feature = "nss-platform")]
     classifier_epoch_id: u64,
+    #[cfg(feature = "nss-platform")]
     next_classifier_deadline_ms: u64,
     conntrack_snapshot: Option<Arc<CollectedSnapshot>>,
     connection_rates: ConnectionRateBook,
@@ -1079,6 +1147,7 @@ struct ProductionRuntime {
     next_probe_ms: u64,
     overview: OverviewRing,
     x86_coverage: X86Coverage,
+    #[cfg(feature = "nss-platform")]
     nss_bpf_coverage: NssBpfCoverage,
     interface_rates: InterfaceRateBook,
     rate_owner: Option<RateCollector>,
@@ -1088,13 +1157,19 @@ struct ProductionRuntime {
 
 struct RuntimeCheckpoint {
     bpf: Option<BpfCollectionCheckpoint>,
+    #[cfg(feature = "nss-platform")]
     nss: NssRuntimeCheckpoint,
+    #[cfg(feature = "nss-platform")]
     access_edge: AccessEdgeCheckpoint,
+    #[cfg(feature = "nss-platform")]
     classification_results: BTreeMap<String, ClassificationResult>,
+    #[cfg(feature = "nss-platform")]
     classifier_epoch_id: u64,
+    #[cfg(feature = "nss-platform")]
     next_classifier_deadline_ms: u64,
     overview: OverviewRing,
     x86_coverage: X86Coverage,
+    #[cfg(feature = "nss-platform")]
     nss_bpf_coverage: NssBpfCoverage,
     interface_rates: InterfaceRateBook,
     rate_owner: Option<RateCollector>,
@@ -1112,6 +1187,7 @@ impl ProductionRuntime {
     fn stage(config: RuntimeConfig) -> Result<Self, DaemonError> {
         let mut runtime = Self::prepare(config)?;
         runtime.activate_new_bpf()?;
+        #[cfg(feature = "nss-platform")]
         runtime.nss.activate(&runtime.config, &runtime.probe_report);
         Ok(runtime)
     }
@@ -1121,9 +1197,10 @@ impl ProductionRuntime {
     }
 
     fn prepare_with_process_tracker(
-        config: RuntimeConfig,
+        mut config: RuntimeConfig,
         mut process_tracker: DaeProcessTracker,
     ) -> Result<Self, DaemonError> {
+        config.enforce_platform_profile();
         let mut probe = collector::system_collector()
             .map_err(|error| DaemonError::platform(error.to_string()))?;
         process_tracker.refresh_if_due("/proc", production_now_ms()?);
@@ -1134,10 +1211,15 @@ impl ProductionRuntime {
                 config.max_clients,
                 config.active_client_window_ms,
             ),
+            #[cfg(feature = "nss-platform")]
             nss: NssRuntime::default(),
+            #[cfg(feature = "nss-platform")]
             access_edge: AccessEdgeRuntime::new(config.max_clients),
+            #[cfg(feature = "nss-platform")]
             classification_results: BTreeMap::new(),
+            #[cfg(feature = "nss-platform")]
             classifier_epoch_id: 0,
+            #[cfg(feature = "nss-platform")]
             next_classifier_deadline_ms: 0,
             conntrack_snapshot: None,
             connection_rates: ConnectionRateBook::default(),
@@ -1155,6 +1237,7 @@ impl ProductionRuntime {
             bpf_error_stage: None,
             overview: OverviewRing::new(),
             x86_coverage: X86Coverage::default(),
+            #[cfg(feature = "nss-platform")]
             nss_bpf_coverage: NssBpfCoverage::default(),
             interface_rates: InterfaceRateBook::default(),
             shutdown_complete: false,
@@ -1240,13 +1323,19 @@ impl ProductionRuntime {
                 .bpf
                 .as_ref()
                 .map(|runtime| runtime.collection_checkpoint(&self.bpf_collector)),
+            #[cfg(feature = "nss-platform")]
             nss: self.nss.checkpoint(),
+            #[cfg(feature = "nss-platform")]
             access_edge: self.access_edge.checkpoint(),
+            #[cfg(feature = "nss-platform")]
             classification_results: self.classification_results.clone(),
+            #[cfg(feature = "nss-platform")]
             classifier_epoch_id: self.classifier_epoch_id,
+            #[cfg(feature = "nss-platform")]
             next_classifier_deadline_ms: self.next_classifier_deadline_ms,
             overview: self.overview.clone(),
             x86_coverage: self.x86_coverage.clone(),
+            #[cfg(feature = "nss-platform")]
             nss_bpf_coverage: self.nss_bpf_coverage.clone(),
             interface_rates: self.interface_rates.clone(),
             rate_owner: self.rate_owner,
@@ -1265,14 +1354,20 @@ impl ProductionRuntime {
         if let (Some(runtime), Some(checkpoint)) = (self.bpf.as_mut(), checkpoint.bpf) {
             runtime.restore_collection_checkpoint(&mut self.bpf_collector, checkpoint);
         }
-        self.nss.restore(checkpoint.nss);
-        self.access_edge.restore(checkpoint.access_edge);
-        self.classification_results = checkpoint.classification_results;
-        self.classifier_epoch_id = checkpoint.classifier_epoch_id;
-        self.next_classifier_deadline_ms = checkpoint.next_classifier_deadline_ms;
+        #[cfg(feature = "nss-platform")]
+        {
+            self.nss.restore(checkpoint.nss);
+            self.access_edge.restore(checkpoint.access_edge);
+            self.classification_results = checkpoint.classification_results;
+            self.classifier_epoch_id = checkpoint.classifier_epoch_id;
+            self.next_classifier_deadline_ms = checkpoint.next_classifier_deadline_ms;
+        }
         self.overview = checkpoint.overview;
         self.x86_coverage = checkpoint.x86_coverage;
-        self.nss_bpf_coverage = checkpoint.nss_bpf_coverage;
+        #[cfg(feature = "nss-platform")]
+        {
+            self.nss_bpf_coverage = checkpoint.nss_bpf_coverage;
+        }
         self.interface_rates = checkpoint.interface_rates;
         self.rate_owner = checkpoint.rate_owner;
         self.hostnames = checkpoint.hostnames;
@@ -1438,6 +1533,327 @@ impl ProductionRuntime {
         }
     }
 
+    // x86 is intentionally a separate production path. It reads the native
+    // TC-BPF client map and publishes that single source directly; no NSS map,
+    // Access Edge topology, classifier window, or RateMux state is reachable
+    // from this build.
+    #[cfg(not(feature = "nss-platform"))]
+    fn collect_inner(
+        &mut self,
+        method: ProbeMethod,
+        external_bpf: Option<(&mut Bpf, &mut SystemAyaAdapter)>,
+    ) -> Result<ResponseSnapshot, DaemonError> {
+        let mut now_ms = production_now_ms()?;
+        let (identities, identity_errors) = read_identities(&self.config, now_ms);
+        let conntrack = self.conntrack_snapshot.clone();
+        let overlay = connection_overlay(conntrack.as_deref());
+        let freshness_ms = u64::from(self.config.refresh_interval_ms).saturating_mul(3);
+        let (bpf_snapshot, mut runtime_health, bpf_snapshot_fresh) = match external_bpf {
+            Some((runtime, adapter)) => match runtime.collect_snapshot_self_healing(
+                adapter,
+                &mut self.bpf_collector,
+                &identities,
+                &overlay,
+                now_ms,
+                EXTERNAL_BPF_SELF_HEAL_REASON,
+            ) {
+                Ok(snapshot) => {
+                    self.bpf_error = None;
+                    self.bpf_error_stage = None;
+                    let health_now_ms = now_ms.max(snapshot.sample_ms);
+                    let health = runtime.runtime_health(health_now_ms, freshness_ms);
+                    (Some(snapshot), health, true)
+                }
+                Err(error) => {
+                    self.bpf_error_stage = Some(bpf_error_stage(error.kind()));
+                    self.bpf_error = Some(error.to_string());
+                    let snapshot = self.bpf_collector.last_complete().cloned();
+                    let health_now_ms = snapshot
+                        .as_ref()
+                        .map_or(now_ms, |value| now_ms.max(value.sample_ms));
+                    let health = runtime.runtime_health(health_now_ms, freshness_ms);
+                    (snapshot, health, false)
+                }
+            },
+            None => match self.bpf.as_mut() {
+                Some(runtime) => match runtime.collect_snapshot_self_healing(
+                    &mut self.adapter,
+                    &mut self.bpf_collector,
+                    &identities,
+                    &overlay,
+                    now_ms,
+                    INTERNAL_BPF_SELF_HEAL_REASON,
+                ) {
+                    Ok(snapshot) => {
+                        self.bpf_error = None;
+                        self.bpf_error_stage = None;
+                        let health_now_ms = now_ms.max(snapshot.sample_ms);
+                        let health = runtime.runtime_health(health_now_ms, freshness_ms);
+                        (Some(snapshot), health, true)
+                    }
+                    Err(error) => {
+                        self.bpf_error_stage = Some(bpf_error_stage(error.kind()));
+                        self.bpf_error = Some(error.to_string());
+                        let snapshot = self.bpf_collector.last_complete().cloned();
+                        let health_now_ms = snapshot
+                            .as_ref()
+                            .map_or(now_ms, |value| now_ms.max(value.sample_ms));
+                        let health = runtime.runtime_health(health_now_ms, freshness_ms);
+                        (snapshot, health, false)
+                    }
+                },
+                None => (None, RuntimeHealth::default(), false),
+            },
+        };
+        if runtime_health.bpf_object_loaded {
+            runtime_health.bpf_map_capacity = self.config.max_clients.saturating_mul(4);
+        }
+        if let Some(snapshot) = bpf_snapshot.as_ref() {
+            now_ms = now_ms.max(snapshot.sample_ms);
+        }
+        runtime_health.now_ms = now_ms;
+        self.apply_conntrack_health(&mut runtime_health);
+        if runtime_health.runtime_error.is_none() {
+            runtime_health.runtime_error = self.bpf_error.clone();
+        }
+        if probe_due(now_ms, self.next_probe_ms, method) {
+            let mut report = self.probe.collect(&self.config, &runtime_health, method);
+            self.process_tracker.overlay_report(&mut report);
+            self.probe_report = Arc::new(report);
+            self.next_probe_ms = probe_deadline(now_ms);
+        }
+        let report = Arc::clone(&self.probe_report);
+        let mut decision = policy::select_collectors(&self.config, &report.facts, &runtime_health);
+        if matches!(
+            periodic_conntrack_plan(decision.rate),
+            PeriodicConntrackPlan::Skip
+        ) {
+            self.conntrack_observation.record_skipped();
+        }
+        self.apply_conntrack_health(&mut runtime_health);
+        decision = policy::select_collectors(&self.config, &report.facts, &runtime_health);
+        let (interfaces, counter_snapshot) = self.interfaces_x86(now_ms);
+        let mut clients = if decision.rate == RateCollector::Bpf {
+            clients_response(
+                bpf_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.clients.as_slice()),
+                conntrack.as_deref(),
+                &identities,
+                decision.confidence,
+            )
+        } else {
+            ClientsResponse::empty(evidence(&report, "clients"))
+        };
+        let actual_live = decision.rate == RateCollector::Bpf && bpf_snapshot.is_some();
+        let actual_degraded = !actual_live;
+        self.hostnames.refresh_from_paths(
+            &HostnamePaths::default(),
+            now_ms,
+            method == ProbeMethod::Reload,
+        );
+        for client in &mut clients.clients {
+            let ips = client.ips.iter().map(String::as_str).collect::<Vec<_>>();
+            client.hostname = self.hostnames.lookup(&client.mac, &ips).map(str::to_owned);
+        }
+        if let Some(snapshot) = conntrack.as_ref() {
+            clients.conntrack_entries_seen = Some(snapshot.stats.entries_seen as u64);
+            clients.conntrack_entries_matched = Some(snapshot.stats.entries_matched as u64);
+            clients.conntrack_parse_errors = Some(snapshot.stats.malformed_lines as u64);
+            clients.conn_source = Some(
+                if snapshot.stats.netlink_read {
+                    "conntrack_netlink"
+                } else {
+                    "conntrack_procfs"
+                }
+                .into(),
+            );
+            clients.conn_collector_mode = Some(self.config.conn_collector_mode.as_str().into());
+        }
+        if clients.evidence.is_none() {
+            clients.evidence = Some(evidence(&report, "clients"));
+        }
+        if let Some(client_evidence) = clients.evidence.as_mut() {
+            apply_decision_evidence(client_evidence, &decision, &self.config, &report);
+            client_evidence.details.insert(
+                "x86_rate_path".into(),
+                json!({
+                    "profile": "tc_bpf",
+                    "source": "platform::x86::output::clients_response",
+                }),
+            );
+            if let Some(snapshot) = conntrack.as_deref() {
+                client_evidence.details.insert(
+                    "conntrack_generation".into(),
+                    conntrack_generation_evidence(snapshot),
+                );
+            }
+        }
+        let overview = self.update_overview(now_ms, &clients);
+        let coverage = self
+            .x86_coverage
+            .update(now_ms, &clients, &interfaces, bpf_snapshot_fresh);
+        let sysdevices = sysdevices(&self.config)?;
+        let mut capabilities = capabilities(&report.capabilities, &report);
+        capabilities.nss = false;
+        capabilities.nss_ecm_offload = false;
+        capabilities.nss_ppe_offload = false;
+        capabilities.nss_ecm_node = false;
+        capabilities.nss_ecm_bpf = false;
+        capabilities.nss_bridge_mgr = false;
+        capabilities.nss_ifb = false;
+        capabilities.nss_nsm = false;
+        capabilities.nss_dp = false;
+        capabilities.nss_mcs = false;
+        capabilities.live_metrics = actual_live;
+        capabilities.conntrack_fallback = false;
+        capabilities.bpf_runtime_metrics = runtime_health.bpf_object_loaded
+            && runtime_health.bpf_attached
+            && bpf_snapshot.is_some()
+            && (runtime_health.bpf_map_read_ok || decision.evidence.retained_fresh_snapshot);
+        capabilities.bpf = capabilities.bpf_runtime_metrics;
+        if capabilities.bpf_runtime_metrics {
+            capabilities.bpf_supported = true;
+            capabilities.bpf_package = true;
+            capabilities.bpf_object = true;
+            capabilities.tc = true;
+            capabilities.tc_clsact = true;
+        }
+        let mode = if decision.mode == ProbeMode::Unsupported {
+            Mode::Unsupported
+        } else if !actual_live || actual_degraded || !identity_errors.is_empty() {
+            Mode::Degraded
+        } else {
+            mode(decision.mode)
+        };
+        let confidence = if mode == Mode::Unsupported {
+            Confidence::Unsupported
+        } else if !actual_live || !identity_errors.is_empty() {
+            Confidence::Low
+        } else {
+            confidence(decision.confidence)
+        };
+        let mut status_evidence = runtime_evidence(
+            &report,
+            method.as_str(),
+            &self.config,
+            &runtime_health,
+            self.bpf_error_stage,
+        );
+        apply_decision_evidence(&mut status_evidence, &decision, &self.config, &report);
+        status_evidence.details.insert(
+            "x86_rate_path".into(),
+            json!({
+                "profile": "tc_bpf",
+                "counter_snapshot_interfaces": counter_snapshot.counters.len(),
+            }),
+        );
+        let mut warnings = report
+            .warnings
+            .iter()
+            .map(|warning| (*warning).to_owned())
+            .collect::<Vec<_>>();
+        for warning in &decision.warnings {
+            if !warnings.iter().any(|value| value == warning) {
+                warnings.push((*warning).into());
+            }
+        }
+        if capabilities.bpf_runtime_metrics {
+            warnings.retain(|warning| {
+                !matches!(
+                    warning.as_str(),
+                    "bpf_unsupported"
+                        | "tc_clsact_unsupported"
+                        | "unsafe_attach"
+                        | "bpf_runtime_loader_unavailable"
+                        | "bpf_optional_package_missing"
+                        | "bpf_object_missing"
+                )
+            });
+        }
+        if !actual_live
+            && !warnings
+                .iter()
+                .any(|warning| warning == "live_metrics_unavailable")
+        {
+            warnings.push("live_metrics_unavailable".into());
+        }
+        if !identity_errors.is_empty()
+            && !warnings
+                .iter()
+                .any(|warning| warning == "lan_topology_probe_error")
+        {
+            warnings.push("lan_topology_probe_error".into());
+            status_evidence
+                .details
+                .insert("identity_errors".into(), json!(identity_errors));
+        }
+        let version = version();
+        let status = StatusResponse {
+            mode,
+            confidence,
+            warnings: warnings.clone(),
+            evidence: status_evidence.clone(),
+            refresh_interval_ms: self.config.refresh_interval_ms,
+            active_client_window_ms: self.config.active_client_window_ms,
+            active_client_min_bps: self.config.active_client_min_bps,
+            overview_window_samples: self.config.overview_window_samples,
+            collector_mode: decision.rate.as_str().into(),
+            rate_collector_mode: self.config.rate_collector_mode.as_str().into(),
+            access_edge_mode: "off".into(),
+            conn_collector_mode: self.config.conn_collector_mode.as_str().into(),
+            version: version.clone(),
+            capabilities: capabilities.clone(),
+            coverage: Some(coverage),
+        };
+        let mut health_evidence = runtime_evidence(
+            &report,
+            "health",
+            &self.config,
+            &runtime_health,
+            self.bpf_error_stage,
+        );
+        apply_decision_evidence(&mut health_evidence, &decision, &self.config, &report);
+        health_evidence.details.insert(
+            "x86_rate_path".into(),
+            json!({
+                "profile": "tc_bpf",
+            }),
+        );
+        let health = HealthResponse {
+            mode,
+            confidence,
+            capabilities,
+            conflicts: report
+                .conflicts
+                .iter()
+                .map(|item| Conflict {
+                    id: item.id.into(),
+                    severity: item.severity.into(),
+                    message: item.message.into(),
+                    evidence: BTreeMap::new(),
+                })
+                .collect(),
+            warnings: warnings.clone(),
+            evidence: health_evidence,
+        };
+        let mut reload_evidence = evidence(&report, "reload");
+        apply_decision_evidence(&mut reload_evidence, &decision, &self.config, &report);
+        let reload = ReloadResponse {
+            ok: true,
+            mode,
+            warnings,
+            evidence: reload_evidence,
+            version,
+        };
+        let mut response = ResponseSnapshot::from_responses(
+            status, clients, overview, health, reload, interfaces, sysdevices,
+        );
+        publish_connection_details(&mut response, conntrack.as_deref());
+        Ok(response)
+    }
+
+    #[cfg(feature = "nss-platform")]
     fn collect_inner(
         &mut self,
         method: ProbeMethod,
@@ -1978,7 +2394,13 @@ impl ProductionRuntime {
         } else {
             confidence(decision.confidence)
         };
-        let mut status_evidence = evidence(&report, method.as_str());
+        let mut status_evidence = runtime_evidence(
+            &report,
+            method.as_str(),
+            &self.config,
+            &runtime_health,
+            self.bpf_error_stage,
+        );
         if matches!(
             decision.rate,
             RateCollector::NssEcmNode | RateCollector::NssEcmBpf
@@ -2065,15 +2487,6 @@ impl ProductionRuntime {
                 )
             });
         }
-        status_evidence.details.insert(
-            "bpf".into(),
-            crate::production_evidence::bpf_details(
-                &self.config,
-                &report,
-                &runtime_health,
-                self.bpf_error_stage,
-            ),
-        );
         if let Some(error) = &self.nss.node_error {
             status_evidence
                 .details
@@ -2096,10 +2509,6 @@ impl ProductionRuntime {
                 .details
                 .insert("identity_errors".into(), json!(identity_errors));
         }
-        status_evidence.details.insert(
-            "probe_failures".into(),
-            crate::production_evidence::probe_failure_details(&report.evidence.probe_failures),
-        );
         if let Some(snapshot) = conntrack.as_deref() {
             status_evidence.details.insert(
                 "conntrack_generation".into(),
@@ -2124,7 +2533,13 @@ impl ProductionRuntime {
             capabilities: capabilities.clone(),
             coverage: Some(coverage),
         };
-        let mut health_evidence = evidence(&report, "health");
+        let mut health_evidence = runtime_evidence(
+            &report,
+            "health",
+            &self.config,
+            &runtime_health,
+            self.bpf_error_stage,
+        );
         apply_decision_evidence(&mut health_evidence, &decision, &self.config, &report);
         apply_nss_snapshot_evidence(&mut health_evidence, node_snapshot.as_ref());
         apply_ecm_bpf_evidence(
@@ -2168,15 +2583,6 @@ impl ProductionRuntime {
                 ecm_bpf_rate_batch_evidence(batch),
             );
         }
-        health_evidence.details.insert(
-            "bpf".into(),
-            crate::production_evidence::bpf_details(
-                &self.config,
-                &report,
-                &runtime_health,
-                self.bpf_error_stage,
-            ),
-        );
         if let Some(error) = &self.nss.node_error {
             health_evidence
                 .details
@@ -2187,10 +2593,6 @@ impl ProductionRuntime {
                 .details
                 .insert("identity_errors".into(), json!(identity_errors));
         }
-        health_evidence.details.insert(
-            "probe_failures".into(),
-            crate::production_evidence::probe_failure_details(&report.evidence.probe_failures),
-        );
         if let Some(snapshot) = conntrack.as_deref() {
             health_evidence.details.insert(
                 "conntrack_generation".into(),
@@ -2242,6 +2644,7 @@ impl ProductionRuntime {
         Ok(response)
     }
 
+    #[cfg(feature = "nss-platform")]
     fn update_access_classification(
         &mut self,
         identities: &IdentityTable,
@@ -2424,6 +2827,7 @@ impl ProductionRuntime {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "nss-platform")]
     fn apply_access_edge_rates(
         &mut self,
         clients: &mut ClientsResponse,
@@ -2528,13 +2932,11 @@ impl ProductionRuntime {
                 .cloned()
                 .collect::<Vec<_>>();
             reasons.extend(edge_snapshot.reason_codes.iter().cloned());
-            let attachment_topology_complete = edge.map_or(
-                edge_snapshot.topology_complete,
-                |sample| {
+            let attachment_topology_complete =
+                edge.map_or(edge_snapshot.topology_complete, |sample| {
                     self.access_edge
                         .attachment_topology_complete(&sample.attachment)
-                },
-            );
+                });
             if !attachment_topology_complete {
                 reasons.push("topology_incomplete".to_owned());
             }
@@ -2669,6 +3071,13 @@ impl ProductionRuntime {
             if active_auto {
                 client.tx_bps = tx.bps;
                 client.rx_bps = rx.bps;
+                // `collector_mode` names the pipeline that owns the published
+                // total. Directional ownership remains in rate_meta; retaining
+                // the identity's legacy conntrack/NSS origin here makes the
+                // response internally contradictory and can hide the row from
+                // clients that align batches by collector.
+                client.collector_mode =
+                    published_rate_collector_mode(active_auto, &client.collector_mode).to_owned();
                 client.sample_ms = match (tx.sample_ms, rx.sample_ms) {
                     (Some(left), Some(right)) => Some(left.max(right)),
                     (Some(value), None) | (None, Some(value)) => Some(value),
@@ -2745,7 +3154,7 @@ impl ProductionRuntime {
                 last_seen_ms: client.last_seen,
                 nss_activity: matches!(
                     client.collector_mode.as_str(),
-                    "nss_ecm_node" | "nss_ecm_bpf"
+                    "access_edge" | "nss_ecm_node" | "nss_ecm_bpf"
                 ),
                 connections: ConnectionTotals::new(
                     client.tcp_conns.unwrap_or(0),
@@ -2805,6 +3214,7 @@ impl ProductionRuntime {
         }
     }
 
+    #[cfg(feature = "nss-platform")]
     fn interfaces(
         &mut self,
         now_ms: u64,
@@ -2934,6 +3344,114 @@ impl ProductionRuntime {
         )
     }
 
+    #[cfg(not(feature = "nss-platform"))]
+    fn interfaces_x86(&mut self, now_ms: u64) -> (InterfacesResponse, InterfaceCounterSnapshot) {
+        let roles = collect_ifnames_with_roles(&self.config);
+        let lan_roots = roles
+            .iter()
+            .filter_map(|(name, role)| (*role == InterfaceRole::Lan).then_some(name.clone()))
+            .collect::<Vec<_>>();
+        let masters = interface_masters();
+        let lan_boundaries = independent_lan_boundaries(&lan_roots, &masters);
+        let mut names_to_read = roles
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        if let Some(boundaries) = lan_boundaries.as_ref() {
+            names_to_read.extend(boundaries.iter().cloned());
+        }
+        let counter_snapshot = read_interface_counter_snapshot(&names_to_read);
+        let raw_counters = &counter_snapshot.counters;
+        let interfaces = roles
+            .into_iter()
+            .map(|(name, role)| {
+                let boundary_names = (role == InterfaceRole::Lan)
+                    .then(|| independent_lan_boundaries(std::slice::from_ref(&name), &masters))
+                    .flatten();
+                let sampled = if let Some(boundaries) = boundary_names.as_ref() {
+                    sum_interface_counters(boundaries, raw_counters)
+                } else {
+                    raw_counters.get(&name).copied()
+                };
+                match sampled {
+                    Some(counters) => {
+                        let sampled_names = boundary_names
+                            .as_deref()
+                            .unwrap_or_else(|| std::slice::from_ref(&name));
+                        let counter_source = counter_snapshot
+                            .source_for(sampled_names.iter().map(String::as_str))
+                            .unwrap_or(MIXED_INTERFACE_SOURCE);
+                        let display = if role == InterfaceRole::Lan {
+                            InterfaceCounters {
+                                rx_bytes: counters
+                                    .rx_bytes
+                                    .saturating_add(counters.rx_packets.saturating_mul(4)),
+                                tx_bytes: counters
+                                    .tx_bytes
+                                    .saturating_add(counters.tx_packets.saturating_mul(4)),
+                                ..counters
+                            }
+                        } else {
+                            counters
+                        };
+                        let (rx_bps, tx_bps, delta_ms) =
+                            self.interface_rates.update(&name, display, now_ms);
+                        Interface {
+                            name,
+                            role,
+                            status: InterfaceStatus::Available,
+                            rx_bytes: Some(display.rx_bytes),
+                            tx_bytes: Some(display.tx_bytes),
+                            rx_bps: Some(rx_bps),
+                            tx_bps: Some(tx_bps),
+                            delta_ms: Some(delta_ms),
+                            sample_ms: Some(now_ms),
+                            source: Some(if role == InterfaceRole::Lan {
+                                format!("{counter_source} + real packets * 4-byte FCS")
+                            } else {
+                                counter_source.into()
+                            }),
+                            coverage: Some(if role == InterfaceRole::Lan {
+                                format!(
+                                    "independent_lan_boundary:{}",
+                                    boundary_names.as_deref().unwrap_or_default().join("+")
+                                )
+                            } else {
+                                "kernel_netdev_statistics".into()
+                            }),
+                            evidence: None,
+                        }
+                    }
+                    None => Interface {
+                        name,
+                        role,
+                        status: InterfaceStatus::Missing,
+                        rx_bytes: Some(0),
+                        tx_bytes: Some(0),
+                        rx_bps: Some(0),
+                        tx_bps: Some(0),
+                        delta_ms: Some(0),
+                        sample_ms: Some(now_ms),
+                        source: Some(
+                            "counter unavailable after /proc/net/dev and sysfs fallback".into(),
+                        ),
+                        coverage: Some("includes_hardware_offload_and_switch_bridge".into()),
+                        evidence: None,
+                    },
+                }
+            })
+            .collect();
+        (
+            InterfacesResponse {
+                interfaces,
+                monotonic_ms: Some(now_ms),
+                note: Some(INTERFACE_NOTE.into()),
+                evidence: None,
+            },
+            counter_snapshot,
+        )
+    }
+
     fn shutdown(&mut self) -> Result<(), DaemonError> {
         if self.shutdown_complete {
             return Ok(());
@@ -2944,6 +3462,7 @@ impl ProductionRuntime {
                 failures.push(format!("TC-BPF shutdown: {error}"));
             }
         }
+        #[cfg(feature = "nss-platform")]
         if let Err(error) = self.nss.shutdown() {
             failures.push(format!("ECM+BPF shutdown: {error}"));
         }
@@ -3170,12 +3689,15 @@ impl App {
         let config = load_config()?;
         let current = self.runtime.as_ref().unwrap();
         let process_tracker = current.process_tracker.clone();
+        #[cfg(feature = "nss-platform")]
         let attachment_generation_floor = current.access_edge.attachment_generation_watermark();
         let mut candidate =
             ProductionRuntime::prepare_with_process_tracker(config.clone(), process_tracker)?;
+        #[cfg(feature = "nss-platform")]
         candidate
             .access_edge
             .advance_attachment_generation_floor(attachment_generation_floor);
+        #[cfg(feature = "nss-platform")]
         candidate
             .nss
             .activate(&candidate.config, &candidate.probe_report);
@@ -3709,6 +4231,10 @@ fn evidence(report: &ProbeReport, method: &str) -> Evidence {
         json!(report.evidence.lan_probe_error),
     );
     details.insert(
+        "probe_failures".into(),
+        crate::production_evidence::probe_failure_details(&report.evidence.probe_failures),
+    );
+    details.insert(
         "effective_collector".into(),
         json!(report.evidence.collector.effective_rate_collector),
     );
@@ -3716,7 +4242,15 @@ fn evidence(report: &ProbeReport, method: &str) -> Evidence {
         "platform".into(),
         json!({
             "target_arch": std::env::consts::ARCH,
-            "nss_modes_exposed": cfg!(target_arch = "aarch64") && report.facts.nss.present,
+            "profile": if crate::platform::profile::COMPILED_PROFILE.uses_nss() {
+                "nss_aarch64"
+            } else {
+                "x86_tc_bpf"
+            },
+            "nss_compiled": cfg!(feature = "nss-platform"),
+            "access_edge_compiled": cfg!(feature = "nss-platform"),
+            "nss_modes_exposed": crate::platform::profile::COMPILED_PROFILE.uses_nss()
+                && report.facts.nss.present,
         }),
     );
     details.insert("collector".into(), json!({"rate_reason":report.evidence.collector.rate_reason,"connection_reason":report.evidence.collector.connection_reason,
@@ -3737,6 +4271,50 @@ fn evidence(report: &ProbeReport, method: &str) -> Evidence {
         }),
     );
     Evidence { details }
+}
+
+fn runtime_evidence(
+    report: &ProbeReport,
+    method: &str,
+    config: &RuntimeConfig,
+    runtime: &RuntimeHealth,
+    bpf_error_stage: Option<&'static str>,
+) -> Evidence {
+    let mut public = evidence(report, method);
+    public.details.insert(
+        "bpf".into(),
+        crate::production_evidence::bpf_details(config, report, runtime, bpf_error_stage),
+    );
+    public
+}
+
+#[cfg(test)]
+mod shared_evidence_tests {
+    use super::*;
+
+    #[test]
+    fn status_and_health_share_the_required_probe_failure_contract() {
+        let report = crate::probe::assess(
+            &RuntimeConfig::default(),
+            crate::probe::ProbeObservations::default(),
+            &RuntimeHealth::default(),
+        );
+
+        for method in ["status", "health"] {
+            let public = runtime_evidence(
+                &report,
+                method,
+                &RuntimeConfig::default(),
+                &RuntimeHealth::default(),
+                None,
+            );
+            let failures = &public.details["probe_failures"];
+            assert_eq!(failures["items"], json!([]));
+            assert_eq!(failures["total"], 0);
+            assert_eq!(failures["truncated"], false);
+            assert!(public.details["bpf"].is_object());
+        }
+    }
 }
 
 fn conntrack_generation_evidence(snapshot: &CollectedSnapshot) -> Value {
@@ -3763,7 +4341,7 @@ fn apply_decision_evidence(
     evidence: &mut Evidence,
     decision: &policy::PolicyDecision,
     config: &RuntimeConfig,
-    report: &ProbeReport,
+    _report: &ProbeReport,
 ) {
     let effective = decision.rate.as_str();
     evidence
@@ -3794,9 +4372,10 @@ fn apply_decision_evidence(
         collector.insert("warnings".into(), json!(decision.warnings));
         collector.insert("effective_interval_ms".into(), json!(effective_interval_ms));
     }
+    #[cfg(feature = "nss-platform")]
     evidence.details.insert(
         "nss".into(),
-        crate::production_evidence::nss_details(config, report, decision),
+        crate::production_evidence::nss_details(config, _report, decision),
     );
 }
 
@@ -3883,6 +4462,7 @@ fn collect_ifnames_with_roles(config: &RuntimeConfig) -> Vec<(String, InterfaceR
         .collect()
 }
 
+#[cfg(feature = "nss-platform")]
 fn access_edge_bridges(config: &RuntimeConfig) -> Vec<String> {
     collect_ifnames(config)
         .into_iter()
@@ -4025,7 +4605,7 @@ fn record_fatal_cleanup(
     DaemonError::reload(combined)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "nss-platform"))]
 mod tests {
     use super::*;
     use crate::platform::nss::ecm_bpf::EcmBpfClientSample;
@@ -4367,6 +4947,14 @@ mod tests {
             AccessEdgeMode::Active,
             RateCollectorMode::Auto
         ));
+        assert_eq!(
+            published_rate_collector_mode(true, "conntrack_netlink"),
+            "access_edge"
+        );
+        assert_eq!(
+            published_rate_collector_mode(false, "nss_ecm_bpf"),
+            "nss_ecm_bpf"
+        );
 
         for (edge, rate) in [
             (AccessEdgeMode::Off, RateCollectorMode::Auto),

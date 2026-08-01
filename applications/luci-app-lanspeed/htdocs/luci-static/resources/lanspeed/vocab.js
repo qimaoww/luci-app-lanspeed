@@ -62,7 +62,7 @@ var WARNING_LABELS = {
 	live_metrics_unavailable: _('没有可用的实时速率数据，客户端列表可能为空或处于降级状态。'),
 	probe_error: _('部分运行环境探测失败，状态判断可能不完整。'),
 	tc_missing: _('系统缺少 tc，BPF 客户端实时测速无法启动。'),
-	conntrack_unavailable: _('Conntrack 当前不可用，连接数与逐连接详情无法更新；NSS node 总速率不受影响。'),
+	conntrack_unavailable: _('Conntrack 当前不可用，连接数与逐连接详情无法更新；客户端总速率采集不受影响。'),
 	conntrack_parse_errors: _('部分 Conntrack 记录无法解析，连接统计可能不完整。'),
 	lan_edge_missing: _('没有可采集的 LAN 接口，客户端实时测速无法启动。'),
 	lan_topology_probe_error: _('LAN 拓扑探测失败，接口边界和客户端归属判断可能不完整。'),

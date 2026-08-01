@@ -1,5 +1,20 @@
 #![recursion_limit = "256"]
 
+#[cfg(all(
+    feature = "nss-platform",
+    not(target_arch = "aarch64"),
+    not(debug_assertions)
+))]
+compile_error!("the nss-platform feature is valid only for aarch64 production builds");
+
+#[cfg(all(
+    feature = "openwrt",
+    target_arch = "aarch64",
+    not(feature = "nss-platform"),
+    not(debug_assertions)
+))]
+compile_error!("aarch64 OpenWrt builds must enable the nss-platform feature");
+
 use aya::maps::MapError;
 use aya_obj::btf::{Btf, BtfKind};
 use aya_obj::generated::{bpf_attr, bpf_btf_info, bpf_cmd};

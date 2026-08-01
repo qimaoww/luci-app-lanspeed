@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-lanspeed
 PKG_VERSION:=1.1.5
-PKG_RELEASE:=6
+PKG_RELEASE:=8
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=
@@ -16,6 +16,7 @@ define Package/luci-app-lanspeed
   CATEGORY:=LuCI
   SUBMENU:=3. Applications
   TITLE:=LuCI support for LAN speed monitor
+  SOURCE:=luci-app-lanspeed
   PKGARCH:=all
   DEPENDS:=+lanspeedd +lanspeedd-bpf +luci-base
 endef

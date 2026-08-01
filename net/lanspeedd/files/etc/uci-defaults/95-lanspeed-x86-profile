@@ -1,0 +1,28 @@
+#!/bin/sh
+
+changed=0
+
+if uci -q get lanspeed.main.access_edge_mode >/dev/null; then
+	uci -q delete lanspeed.main.access_edge_mode
+	changed=1
+fi
+
+if uci -q get lanspeed.main.single_client_ports >/dev/null; then
+	uci -q delete lanspeed.main.single_client_ports
+	changed=1
+fi
+
+if uci -q get lanspeed.main.dedicated_port >/dev/null; then
+	uci -q delete lanspeed.main.dedicated_port
+	changed=1
+fi
+
+case "$(uci -q get lanspeed.main.rate_collector_mode)" in
+	nss_ecm_node|nss_ecm_bpf)
+		uci set lanspeed.main.rate_collector_mode='bpf'
+		changed=1
+		;;
+esac
+
+[ "$changed" -eq 0 ] || uci commit lanspeed
+exit 0

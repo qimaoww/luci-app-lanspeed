@@ -4,13 +4,19 @@ use serde_json::{json, Map, Value};
 
 use crate::{
     config::RuntimeConfig,
+    probe::{ProbeFailure, ProbeReport, RuntimeHealth},
+};
+#[cfg(feature = "nss-platform")]
+use crate::{
     platform::nss::ecm_node,
     policy::{PolicyDecision, RateCollector},
-    probe::{ProbeFailure, ProbeReport, RuntimeHealth},
 };
 
 const PROBE_FAILURE_LIMIT: usize = 32;
 const PROBE_SOURCE_LIMIT: usize = 160;
+#[cfg(not(feature = "nss-platform"))]
+const PROBE_FAILURE_KINDS: [&str; 5] = ["probe", "command", "file", "uci", "ubus"];
+#[cfg(feature = "nss-platform")]
 const PROBE_FAILURE_KINDS: [&str; 6] = ["probe", "command", "file", "uci", "ubus", "nss"];
 
 const PUBLIC_COMMAND_SOURCES: [&str; 11] = [
@@ -27,7 +33,7 @@ const PUBLIC_COMMAND_SOURCES: [&str; 11] = [
     "command:ip_route_table_2023",
 ];
 
-const PUBLIC_FILE_SOURCES: [&str; 40] = [
+const PUBLIC_FILE_SOURCES: &[&str] = &[
     "file:/proc/sys/net/netfilter/nf_conntrack_acct",
     "file:/proc/net/nf_flowtable",
     "file:/sys/kernel/debug/netfilter/nf_flowtable",
@@ -36,13 +42,17 @@ const PUBLIC_FILE_SOURCES: [&str; 40] = [
     "file:/usr/share/lanspeed/bpf/collector-model.json",
     "file:/usr/lib/bpf/lanspeed-ebpf-kfunc",
     "file:/usr/lib/bpf/lanspeed-ebpf-fallback",
-    "file:/usr/lib/bpf/lanspeed-ebpf-ecm",
     "file:/etc/config/openclash",
     "file:/etc/config/dae",
     "file:/etc/config/daed",
     "file:/etc/config/homeproxy",
     "file:/etc/config/nlbwmon",
     "file:/sys/class/ieee80211",
+];
+
+#[cfg(feature = "nss-platform")]
+const PUBLIC_NSS_FILE_SOURCES: &[&str] = &[
+    "file:/usr/lib/bpf/lanspeed-ebpf-ecm",
     "file:/sys/module/qca_nss_drv",
     "file:/sys/bus/platform/drivers/qca-nss",
     "file:/sys/kernel/debug/qca-nss-drv",
@@ -177,11 +187,14 @@ pub(crate) fn probe_failure_details(failures: &[ProbeFailure]) -> Value {
     let mut seen = HashSet::new();
     let normalized = failures
         .iter()
-        .map(|failure| PublicProbeFailure {
-            kind: public_failure_kind(failure.kind),
-            source: safe_probe_source(public_failure_kind(failure.kind), &failure.source),
-            reason: public_failure_reason(failure.reason),
-            exit_code: failure.exit_code,
+        .filter_map(|failure| {
+            let kind = public_failure_kind(failure.kind)?;
+            Some(PublicProbeFailure {
+                kind,
+                source: safe_probe_source(kind, &failure.source),
+                reason: public_failure_reason(failure.reason),
+                exit_code: failure.exit_code,
+            })
         })
         .filter(|failure| seen.insert(failure.clone()))
         .collect::<Vec<_>>();
@@ -228,14 +241,17 @@ struct PublicProbeFailure {
     exit_code: Option<i32>,
 }
 
-fn public_failure_kind(kind: &str) -> &'static str {
+fn public_failure_kind(kind: &str) -> Option<&'static str> {
     match kind {
-        "command" => "command",
-        "file" => "file",
-        "uci" => "uci",
-        "ubus" => "ubus",
-        "nss" => "nss",
-        _ => "probe",
+        "command" => Some("command"),
+        "file" => Some("file"),
+        "uci" => Some("uci"),
+        "ubus" => Some("ubus"),
+        #[cfg(feature = "nss-platform")]
+        "nss" => Some("nss"),
+        "probe" => Some("probe"),
+        _ if kind != "nss" => Some("probe"),
+        _ => None,
     }
 }
 
@@ -249,7 +265,9 @@ fn public_failure_reason(reason: &str) -> &'static str {
         "read_failed" => "read_failed",
         "load_failed" => "load_failed",
         "query_failed" => "query_failed",
+        #[cfg(feature = "nss-platform")]
         "state_probe_failed" => "state_probe_failed",
+        #[cfg(feature = "nss-platform")]
         "state_unreadable" => "state_unreadable",
         _ => "failed",
     }
@@ -265,6 +283,7 @@ fn safe_probe_source(kind: &str, source: &str) -> String {
         "ubus" => PUBLIC_UBUS_SOURCES
             .contains(&source)
             .then(|| source.to_owned()),
+        #[cfg(feature = "nss-platform")]
         "nss" => (source == "nss:ecm_state").then(|| source.to_owned()),
         _ => None,
     };
@@ -320,12 +339,17 @@ fn safe_file_source(source: &str) -> Option<String> {
     if PUBLIC_FILE_SOURCES.contains(&source) {
         return Some(source.to_owned());
     }
+    #[cfg(feature = "nss-platform")]
+    if PUBLIC_NSS_FILE_SOURCES.contains(&source) {
+        return Some(source.to_owned());
+    }
     if source.starts_with("file:/sys/class/net/") && source.ends_with("/bridge") {
         return Some("file:/sys/class/net/<if>/bridge".into());
     }
     None
 }
 
+#[cfg(feature = "nss-platform")]
 pub(crate) fn nss_details(
     _config: &RuntimeConfig,
     report: &ProbeReport,
@@ -408,6 +432,7 @@ pub(crate) fn nss_details(
     value
 }
 
+#[cfg(feature = "nss-platform")]
 fn counter_source(decision: &PolicyDecision, report: &ProbeReport) -> &'static str {
     if decision.rate == RateCollector::NssEcmNode {
         ecm_node::SOURCE
@@ -645,11 +670,16 @@ mod tests {
 
         let details = probe_failure_details(&failures);
         let items = details["items"].as_array().unwrap();
+        #[cfg(not(feature = "nss-platform"))]
+        assert_eq!(details["total"], 5);
+        #[cfg(feature = "nss-platform")]
         assert_eq!(details["total"], 6);
         assert_eq!(details["truncated"], false);
-        for kind in ["command", "file", "uci", "ubus", "nss"] {
+        for kind in ["command", "file", "uci", "ubus"] {
             assert!(items.iter().any(|item| item["kind"] == kind));
         }
+        #[cfg(feature = "nss-platform")]
+        assert!(items.iter().any(|item| item["kind"] == "nss"));
         assert_eq!(
             items
                 .iter()
@@ -706,15 +736,18 @@ mod tests {
         assert_eq!(items[1]["source"], "file:/sys/class/net/<if>/bridge");
         assert_eq!(items[2]["source"], "uci:firewall");
         assert_eq!(items[3]["source"], "ubus:network.interface.lan");
+        #[cfg(feature = "nss-platform")]
         assert_eq!(items[4]["source"], "nss:ecm_state");
-        assert_eq!(items[5]["source"], "command:unknown");
-        assert_eq!(items[5]["reason"], "failed");
+        let unknown_index = if cfg!(feature = "nss-platform") { 5 } else { 4 };
+        assert_eq!(items[unknown_index]["source"], "command:unknown");
+        assert_eq!(items[unknown_index]["reason"], "failed");
         let rendered = serde_json::to_string(&details).unwrap();
         assert!(!rendered.contains("secret"));
         assert!(!rendered.contains("raw private error"));
         assert!(!rendered.contains("br-lan"));
     }
 
+    #[cfg(feature = "nss-platform")]
     fn rendered_nss_evidence(
         config: &RuntimeConfig,
         observations: crate::probe::ProbeObservations,
@@ -726,6 +759,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "nss-platform")]
     fn production_nss_evidence_reports_the_node_counter_contract() {
         let mut config = RuntimeConfig::default();
         config.enable_conntrack_fallback = true;
@@ -798,6 +832,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "nss-platform")]
     fn readable_state_without_nss_and_ecm_is_not_node_supported() {
         let mut observations = crate::probe::ProbeObservations::default();
         observations.nss.direct_state_present = true;
@@ -812,6 +847,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "nss-platform")]
     fn production_nss_evidence_omits_unknown_counts() {
         let nss = rendered_nss_evidence(
             &RuntimeConfig::default(),
@@ -838,6 +874,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "nss-platform")]
     fn production_nss_counter_source_follows_decision_priority() {
         let mut forced_node = RuntimeConfig::default();
         forced_node.rate_collector_mode = crate::config::RateCollectorMode::NssEcmNode;

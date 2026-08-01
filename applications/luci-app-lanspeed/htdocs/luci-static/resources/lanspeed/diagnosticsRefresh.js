@@ -24,6 +24,12 @@ var SUBSYSTEM_LABELS = {
 	conntrack: _('连接跟踪'), nss: _('NSS 加速识别'), identity: _('客户端接入归属'), ubus: _('RPC 服务')
 };
 
+function subsystemLabel(id, nssPlatform) {
+	if (!nssPlatform && id === 'identity')
+		return _('客户端身份识别');
+	return SUBSYSTEM_LABELS[id] || _('未知组件');
+}
+
 var NEUTRAL_DISABLED_SUBSYSTEM_CODES = {
 	bpf_disabled: true,
 	bpf_not_selected: true,
@@ -182,6 +188,17 @@ function refreshStatusCards(refs, status, health, rpcData, collector, diagnostic
 }
 
 function renderPipeline(refs, viewState) {
+	var nssPlatform = fmt.nssPlatform(viewState && viewState.status);
+	if (!nssPlatform) {
+		if (refs.pipelineSection && refs.pipelineSection.parentNode)
+			refs.pipelineSection.parentNode.removeChild(refs.pipelineSection);
+		refs.pipelineSection = null;
+		return null;
+	}
+	if (!refs.pipelineSection && viewState && typeof viewState.mountPipeline === 'function')
+		viewState.mountPipeline();
+	if (!refs.pipelineSection)
+		return null;
 	var rate = diagnosticsModel.rateOwnerStateWithRpc(viewState);
 	var edge = diagnosticsModel.accessEdgeStateWithRpc(viewState);
 	var classification = diagnosticsModel.classificationStateWithRpc(viewState);
@@ -207,6 +224,20 @@ function renderPipeline(refs, viewState) {
 		rate.facts.ownerDirections, rate.facts.totalDirections,
 		classification.classified, classification.totalClients);
 	return { rate: rate, edge: edge, classification: classification };
+}
+
+function renderPlatformIntro(refs, viewState) {
+	if (!refs.intro) return;
+	var platform = viewState && viewState.status && viewState.status.evidence &&
+		viewState.status.evidence.platform || {};
+	var known = platform.profile !== undefined || platform.target_arch !== undefined;
+	if (!known) {
+		refs.intro.textContent = _('正在确认运行平台与采集链路。');
+		return;
+	}
+	refs.intro.textContent = fmt.nssPlatform(viewState && viewState.status)
+		? _('总速率由客户端接入口采集；NSS/CPU 只做分类，不与总速率相加。')
+		: _('x86 使用原生 TC-BPF 客户端总速率。');
 }
 
 function interfaceRoleLabel(role) {
@@ -256,10 +287,13 @@ function renderInterfaces(refs, viewState) {
 
 function renderSubsystems(refs, viewState) {
 	var c = contract(viewState);
-	var rows = (c.usable ? c.data.subsystems : []).map(function(item) {
+	var nssPlatform = fmt.nssPlatform(viewState && viewState.status);
+	var rows = (c.usable ? c.data.subsystems : []).filter(function(item) {
+		return nssPlatform || String(item && item.id || '') !== 'nss';
+	}).map(function(item) {
 		var state = subsystemRowState(item.state, item.code);
 		return E('tr', { 'data-state': state }, [
-			E('td', { 'data-label': _('组件') }, SUBSYSTEM_LABELS[item.id] || _('未知组件')),
+			E('td', { 'data-label': _('组件') }, subsystemLabel(item.id, nssPlatform)),
 			E('td', { 'data-label': _('状态') }, phaseLabel(item.state)),
 			E('td', { 'data-label': _('诊断代码') }, subsystemCodeText(item.code))
 		]);
@@ -338,6 +372,7 @@ function refresh(viewState) {
 	var refs = viewState && viewState.refs;
 	if (!refs) return null;
 	var state = renderPageState(refs, viewState);
+	renderPlatformIntro(refs, viewState);
 	var cardState = refreshStatusCards(refs, viewState.status, viewState.health, viewState.rpc,
 		statusCollector.effectiveCollector(viewState.status, viewState.clients), viewState.diagnostics,
 		viewState.clients);

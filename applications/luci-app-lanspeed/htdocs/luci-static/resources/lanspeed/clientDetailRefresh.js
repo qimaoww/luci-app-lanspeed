@@ -76,11 +76,12 @@ function classificationStateLabel(state) {
 	return labels[String(state || '')] || _('未知状态');
 }
 
-function renderTrafficClassification(refs, response, unit) {
+function renderTrafficClassification(refs, response, unit, status) {
 	if (!refs.classificationCard) return;
 	var classification = response && response.traffic_classification;
-	refs.classificationCard.hidden = !classification;
-	if (!classification) return;
+	var enabled = fmt.nssPlatform(status);
+	refs.classificationCard.hidden = !enabled || !classification;
+	if (!enabled || !classification) return;
 
 	var state = String(classification.state || 'unavailable');
 	refs.classificationState.textContent = classificationStateLabel(state);
@@ -404,7 +405,7 @@ function render(viewState) {
 
 	refs.clientName.textContent = displayName;
 	renderClientMeta(refs.clientMeta, client, ips, viewState.identityKey);
-	renderTrafficClassification(refs, response, viewState.prefs && viewState.prefs.unit);
+	renderTrafficClassification(refs, response, viewState.prefs && viewState.prefs.unit, viewState.status);
 	if (refs.clientHeading) {
 		var hostnameEditable = Boolean(viewState.hostnameMac) &&
 			viewState.hostnameOpening !== true;

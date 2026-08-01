@@ -1446,11 +1446,15 @@ fn self_healing_collection_skips_map_read_when_hook_reattach_fails() {
 #[test]
 fn production_bpf_sampling_paths_use_stable_self_heal_reasons() {
     let source = include_str!("../src/production.rs");
-    assert_eq!(source.matches("collect_snapshot_self_healing(").count(), 2);
+    // x86 and NSS have separate collect_inner implementations; each retains
+    // one internal and one externally supplied BPF runtime path.
+    assert_eq!(source.matches("collect_snapshot_self_healing(").count(), 4);
     assert!(source
         .contains("const INTERNAL_BPF_SELF_HEAL_REASON: &str = \"production.collect.internal\";"));
     assert!(source
         .contains("const EXTERNAL_BPF_SELF_HEAL_REASON: &str = \"production.collect.external\";"));
+    assert_eq!(source.matches("INTERNAL_BPF_SELF_HEAL_REASON").count(), 3);
+    assert_eq!(source.matches("EXTERNAL_BPF_SELF_HEAL_REASON").count(), 3);
     assert!(source.contains("bpf_snapshot_fresh"));
     assert!(source.contains("(self.bpf_collector.last_complete().cloned(), false)"));
     assert!(source.contains("x86_coverage"));
