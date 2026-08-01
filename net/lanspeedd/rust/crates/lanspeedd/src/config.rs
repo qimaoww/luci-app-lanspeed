@@ -253,10 +253,6 @@ pub struct RuntimeConfig {
     /// when runtime policy filters or bounds the effective lists.
     pub configured_excluded: Vec<String>,
     pub configured_observed: Vec<String>,
-    /// Safe, de-duplicated ports explicitly declared as direct client access
-    /// ports. Runtime topology validation remains authoritative and must
-    /// downgrade a port when the declaration conflicts with observed FDB data.
-    pub dedicated_ports: Vec<String>,
     pub rejected_nssifb_collect: bool,
 }
 
@@ -285,7 +281,6 @@ impl Default for RuntimeConfig {
             observe_ifnames: Vec::new(),
             configured_excluded: Vec::new(),
             configured_observed: Vec::new(),
-            dedicated_ports: Vec::new(),
             rejected_nssifb_collect: false,
         }
     }
@@ -458,10 +453,6 @@ impl RuntimeConfig {
             }
             push_unique_bounded(&mut config.observe_ifnames, value);
         }
-        for value in list(source, "dedicated_port")? {
-            push_unique_bounded(&mut config.dedicated_ports, value);
-        }
-
         Ok(config)
     }
 

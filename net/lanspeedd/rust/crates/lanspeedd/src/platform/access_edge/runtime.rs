@@ -116,14 +116,14 @@ pub struct AccessEdgeRuntime {
 }
 
 impl AccessEdgeRuntime {
-    pub fn new(dedicated_ports: impl IntoIterator<Item = String>, max_clients: usize) -> Self {
+    pub fn new(max_clients: usize) -> Self {
         let event_monitor = BridgeFdbEventMonitor::open().ok();
         let event_monitor_failed = event_monitor.is_none();
         Self {
             fdb_provider: SystemBridgeFdbProvider,
             event_monitor,
             wifi_provider: SystemNl80211StationProvider::new(max_clients.max(1)),
-            topology: TopologyTable::new(dedicated_ports),
+            topology: TopologyTable::new(),
             cached_bridges: BTreeMap::new(),
             bridge_names: BTreeMap::new(),
             latest_wifi: None,
@@ -181,8 +181,32 @@ impl AccessEdgeRuntime {
         self.event_monitor_failed = checkpoint.event_monitor_failed;
     }
 
-    pub fn set_dedicated_ports(&mut self, ports: impl IntoIterator<Item = String>) {
-        self.topology.set_dedicated_ports(ports);
+    pub const fn attachment_generation_watermark(&self) -> u64 {
+        self.topology.generation_watermark()
+    }
+
+    pub fn advance_attachment_generation_floor(&mut self, floor: u64) {
+        self.topology.advance_generation_floor(floor);
+    }
+
+    /// Access Edge is deliberately cold-started after being disabled.  A
+    /// counter read made before the mode switch cannot be compared with the
+    /// first read after it, and retaining that segment would turn the entire
+    /// disabled interval into a misleading long average.
+    pub fn reset_for_disabled_mode(&mut self) {
+        self.rates.clear();
+        self.histories.clear();
+        self.muxes.clear();
+        self.classification.clear();
+        self.topology.clear_active();
+        self.cached_bridges.clear();
+        self.bridge_names.clear();
+        self.latest = AccessEdgeSnapshot::default();
+        self.latest_wifi = None;
+        self.wifi_fresh = false;
+        self.topology_complete = false;
+        self.next_fdb_sync_ms = 0;
+        self.initial_syncs = 0;
     }
 
     pub fn collect_topology(&mut self, bridges: &[String], max_entries: usize, now_ms: u64) {
@@ -203,9 +227,12 @@ impl AccessEdgeRuntime {
             reasons.push("fdb_event_monitor_unavailable".to_owned());
         }
         let bridge_set = bridges.iter().cloned().collect::<BTreeSet<_>>();
+        let bridge_inventory_changed = bridge_inventory_changed(&self.cached_bridges, &bridge_set);
         self.cached_bridges
             .retain(|bridge, _| bridge_set.contains(bridge));
-        let fdb_due = event_changed || now_ms >= self.next_fdb_sync_ms;
+        self.bridge_names
+            .retain(|_, bridge| bridge_set.contains(bridge));
+        let fdb_due = bridge_inventory_changed || event_changed || now_ms >= self.next_fdb_sync_ms;
         let mut refreshed_bridges = BTreeSet::new();
         if fdb_due {
             let mut all_complete = !bridges.is_empty();
@@ -271,6 +298,7 @@ impl AccessEdgeRuntime {
             let fresh_frame = refreshed_bridges.contains(bridge) && cached.complete;
             observations.extend(cached.observations.iter().cloned().map(|mut observation| {
                 observation.fresh_frame = fresh_frame;
+                observation.provider_complete = cached.complete;
                 observation
             }));
         }
@@ -282,27 +310,27 @@ impl AccessEdgeRuntime {
                     &mut observation,
                 );
                 observation.fresh_frame = self.wifi_fresh;
+                observation.provider_complete = self.wifi_fresh;
                 observations.push(observation);
             }
         }
-        let source_complete = self.topology_complete
-            && self
-                .latest_wifi
-                .as_ref()
-                .is_none_or(|snapshot| snapshot.complete);
-        let update = self.topology.reconcile(observations, source_complete);
+        // Ethernet trust is proved by the FDB source alone. Keep the public
+        // snapshot conservative when Wi-Fi is stale, but do not demote an
+        // independent wired attachment because an NL80211 dump failed.
+        let update = self.topology.reconcile(observations, self.topology_complete);
         for key in update.removed.iter().chain(update.changed.iter()) {
-            for source in [RateSource::EdgePort, RateSource::EdgeWifi] {
-                for direction in [Direction::Tx, Direction::Rx] {
+            for direction in [Direction::Tx, Direction::Rx] {
+                for source in [RateSource::EdgePort, RateSource::EdgeWifi] {
                     self.rates.remove(&(*key, source, direction));
-                    self.histories.remove(&(*key, direction));
                 }
+                self.histories.remove(&(*key, direction));
             }
         }
         reasons.sort();
         reasons.dedup();
         self.latest.reason_codes = reasons;
-        self.latest.topology_complete = source_complete;
+        self.latest.topology_complete = self.topology_complete
+            && wifi_topology_complete(self.latest_wifi.as_ref(), self.wifi_fresh);
         self.latest.fdb_source = common_fdb_source(&self.cached_bridges);
     }
 
@@ -402,18 +430,14 @@ impl AccessEdgeRuntime {
                         Some(value)
                             if !attachment.ambiguous
                                 && !matches!(attachment.trust, AttachmentTrust::Shared)
-                                && (!matches!(attachment.trust, AttachmentTrust::Unknown)
-                                    || self
-                                        .topology
-                                        .is_dedicated_port(&attachment.point.ifname)) =>
+                                && !matches!(attachment.trust, AttachmentTrust::Unknown) =>
                         {
-                            let coverage = if attachment.can_own_full_port_rate()
-                                && !self.event_monitor_failed
-                            {
-                                Coverage::Full
-                            } else {
-                                Coverage::Partial
-                            };
+                            // A complete FDB frame can prove that one MAC is
+                            // currently visible on the port, but cannot prove
+                            // there is no silent AP, switch, Mesh or WDS peer
+                            // behind it. Edge-Port remains the unique total-rate
+                            // owner while its attribution proof stays Partial.
+                            let coverage = Coverage::Partial;
                             let link = LinkCounters {
                                 rx_bytes: value.rx_bytes,
                                 tx_bytes: value.tx_bytes,
@@ -507,12 +531,18 @@ impl AccessEdgeRuntime {
                 failure: None,
                 reason_codes: vec!["warmup".to_owned()],
             },
-            CounterUpdate::Reset(_) => EdgeDirectionObservation {
-                segment: None,
-                coverage,
-                scope,
-                failure: Some(MuxFailure::CounterReset),
-                reason_codes: vec!["counter_reset".to_owned()],
+            CounterUpdate::Reset(_) => {
+                // A reset breaks comparability with every accumulated segment
+                // for this attachment direction. Start classification history
+                // from the next valid delta.
+                self.histories.remove(&(attachment.key, direction));
+                EdgeDirectionObservation {
+                    segment: None,
+                    coverage,
+                    scope,
+                    failure: Some(MuxFailure::CounterReset),
+                    reason_codes: vec!["counter_reset".to_owned()],
+                }
             },
             CounterUpdate::Segment(segment) => {
                 let history = self
@@ -538,6 +568,23 @@ impl AccessEdgeRuntime {
         &self.latest
     }
 
+    /// Return completeness for the provider that proves this attachment. The
+    /// snapshot-level flag remains conservative for global diagnostics, while
+    /// ownership and classifier warmup stay independent across Ethernet/Wi-Fi.
+    pub fn attachment_topology_complete(&self, attachment: &Attachment) -> bool {
+        match attachment.point.kind {
+            AttachmentKind::Ethernet => attachment
+                .point
+                .bridge_ifindex
+                .and_then(|ifindex| self.bridge_names.get(&ifindex))
+                .and_then(|bridge| self.cached_bridges.get(bridge))
+                .is_some_and(|snapshot| snapshot.complete),
+            AttachmentKind::Wifi => {
+                wifi_topology_complete(self.latest_wifi.as_ref(), self.wifi_fresh)
+            }
+        }
+    }
+
     pub fn update_mux(
         &mut self,
         identity_key: &str,
@@ -557,6 +604,18 @@ impl AccessEdgeRuntime {
         self.muxes
             .get(&(identity_key.to_owned(), direction))
             .and_then(DirectionRateMux::owner)
+    }
+
+    pub fn invalidate_edge_mux(
+        &mut self,
+        identity_key: &str,
+        direction: Direction,
+        attachment_generation: u64,
+    ) {
+        self.muxes
+            .entry((identity_key.to_owned(), direction))
+            .or_default()
+            .invalidate_edge(attachment_generation);
     }
 
     pub fn aggregate_edge(
@@ -581,6 +640,24 @@ impl AccessEdgeRuntime {
     pub fn clear_classification(&mut self) {
         self.classification.clear();
     }
+
+    /// Drop per-identity state after a publication pass.  Topology/rate
+    /// ledgers are keyed by active attachments and are reclaimed during
+    /// reconcile; mux and classifier ledgers need the published identity set
+    /// because their keys may outlive both conntrack and FDB observations.
+    pub fn retain_published_identities(&mut self, identity_keys: &BTreeSet<String>) {
+        self.muxes
+            .retain(|(identity_key, _), _| identity_keys.contains(identity_key));
+        self.classification.retain_identities(identity_keys);
+    }
+}
+
+fn bridge_inventory_changed<T>(cached: &BTreeMap<String, T>, requested: &BTreeSet<String>) -> bool {
+    cached.len() != requested.len() || cached.keys().any(|bridge| !requested.contains(bridge))
+}
+
+fn wifi_topology_complete(snapshot: Option<&StationCounterSnapshot>, fresh: bool) -> bool {
+    fresh && snapshot.is_some_and(|value| value.complete)
 }
 
 fn aggregate_history(
@@ -713,6 +790,7 @@ mod tests {
             },
             source_generation: 1,
             fresh_frame: true,
+            provider_complete: true,
         }
     }
 
@@ -766,5 +844,252 @@ mod tests {
         assert_eq!(observed.bytes, 50);
         assert_eq!(observed.packets, 5);
         assert_eq!(observed.read_end_ms, 4_000);
+    }
+
+    #[test]
+    fn publication_reclaims_mux_state_for_departed_identities() {
+        let mut runtime = AccessEdgeRuntime::new(1);
+        for index in 0..1_024 {
+            let identity = format!("client-{index}");
+            for direction in [Direction::Tx, Direction::Rx] {
+                runtime.update_mux(&identity, direction, 1_000, 1, &[], None);
+            }
+        }
+        assert_eq!(runtime.muxes.len(), 2_048);
+
+        runtime.retain_published_identities(&BTreeSet::from(["client-1023".to_owned()]));
+        assert_eq!(runtime.muxes.len(), 2);
+        assert!(runtime
+            .muxes
+            .keys()
+            .all(|(identity, _)| identity == "client-1023"));
+    }
+
+    #[test]
+    fn cached_wifi_snapshot_cannot_prove_the_current_topology_after_a_read_failure() {
+        let snapshot = StationCounterSnapshot {
+            complete: true,
+            ..StationCounterSnapshot::default()
+        };
+
+        assert!(!wifi_topology_complete(None, false));
+        assert!(wifi_topology_complete(Some(&snapshot), true));
+        assert!(!wifi_topology_complete(Some(&snapshot), false));
+    }
+
+    #[test]
+    fn wifi_failure_does_not_demote_wired_attachment_completeness() {
+        let mut runtime = AccessEdgeRuntime::new(1);
+        runtime.topology_complete = true;
+        runtime.bridge_names.insert(10, "br-lan".into());
+        runtime.cached_bridges.insert(
+            "br-lan".into(),
+            CachedBridge {
+                observations: Vec::new(),
+                source: FdbSource::Rtnetlink,
+                complete: true,
+            },
+        );
+        runtime.latest_wifi = Some(StationCounterSnapshot {
+            complete: true,
+            ..StationCounterSnapshot::default()
+        });
+        runtime.wifi_fresh = false;
+        let ethernet = Attachment {
+            key: AttachmentKey {
+                mac: [0x02, 1, 2, 3, 4, 5],
+                bridge_ifindex: Some(10),
+                vlan_id: None,
+            },
+            point: super::super::topology::AttachmentPoint {
+                kind: AttachmentKind::Ethernet,
+                ifindex: 7,
+                ifname: "lan2".into(),
+                bridge_ifindex: Some(10),
+                vlan_id: None,
+            },
+            trust: AttachmentTrust::ObservedExclusive,
+            generation: 1,
+            source_generation: 0,
+            stable_observations: 2,
+            ambiguous: false,
+        };
+        let wifi = Attachment {
+            point: super::super::topology::AttachmentPoint {
+                kind: AttachmentKind::Wifi,
+                ifname: "phy1-ap0".into(),
+                ..ethernet.point.clone()
+            },
+            ..ethernet.clone()
+        };
+        assert!(runtime.attachment_topology_complete(&ethernet));
+        assert!(!runtime.attachment_topology_complete(&wifi));
+    }
+
+    #[test]
+    fn failed_bridge_does_not_demote_attachment_on_an_independent_complete_bridge() {
+        let mut runtime = AccessEdgeRuntime::new(1);
+        runtime.bridge_names.insert(10, "br-lan".into());
+        runtime.bridge_names.insert(20, "br-guest".into());
+        runtime.cached_bridges.insert(
+            "br-lan".into(),
+            CachedBridge {
+                observations: Vec::new(),
+                source: FdbSource::Rtnetlink,
+                complete: true,
+            },
+        );
+        runtime.cached_bridges.insert(
+            "br-guest".into(),
+            CachedBridge {
+                observations: Vec::new(),
+                source: FdbSource::Rtnetlink,
+                complete: false,
+            },
+        );
+        let attachment = Attachment {
+            key: AttachmentKey {
+                mac: [0x02, 1, 2, 3, 4, 5],
+                bridge_ifindex: Some(10),
+                vlan_id: None,
+            },
+            point: super::super::topology::AttachmentPoint {
+                kind: AttachmentKind::Ethernet,
+                ifindex: 7,
+                ifname: "lan2".into(),
+                bridge_ifindex: Some(10),
+                vlan_id: None,
+            },
+            trust: AttachmentTrust::ObservedExclusive,
+            generation: 1,
+            source_generation: 0,
+            stable_observations: 2,
+            ambiguous: false,
+        };
+
+        assert!(runtime.attachment_topology_complete(&attachment));
+        assert!(!runtime.topology_complete);
+    }
+
+    #[test]
+    fn counter_reset_clears_edge_history_before_the_next_delta() {
+        let mut runtime = AccessEdgeRuntime::new(1);
+        let attachment = Attachment {
+            key: AttachmentKey {
+                mac: [0x02, 1, 2, 3, 4, 5],
+                bridge_ifindex: Some(10),
+                vlan_id: None,
+            },
+            point: super::super::topology::AttachmentPoint {
+                kind: AttachmentKind::Ethernet,
+                ifindex: 7,
+                ifname: "lan2".into(),
+                bridge_ifindex: Some(10),
+                vlan_id: None,
+            },
+            trust: AttachmentTrust::ObservedExclusive,
+            generation: 1,
+            source_generation: 0,
+            stable_observations: 2,
+            ambiguous: false,
+        };
+        let counters = |rx_bytes| LinkCounters {
+            rx_bytes,
+            tx_bytes: 0,
+            rx_packets: rx_bytes / 10,
+            tx_packets: 0,
+        };
+        assert!(runtime
+            .update_direction(
+                &attachment,
+                Direction::Tx,
+                counters(100),
+                (990, 1_000, 1_000),
+                RateSource::EdgePort,
+                ByteDomain::L2NoFcs,
+                Coverage::Partial,
+                TrafficScope::AllFrames,
+            )
+            .segment
+            .is_none());
+        assert!(runtime
+            .update_direction(
+                &attachment,
+                Direction::Tx,
+                counters(200),
+                (1_990, 2_000, 2_000),
+                RateSource::EdgePort,
+                ByteDomain::L2NoFcs,
+                Coverage::Partial,
+                TrafficScope::AllFrames,
+            )
+            .segment
+            .is_some());
+        assert_eq!(runtime.histories.len(), 1);
+        assert!(runtime
+            .update_direction(
+                &attachment,
+                Direction::Tx,
+                counters(50),
+                (2_990, 3_000, 3_000),
+                RateSource::EdgePort,
+                ByteDomain::L2NoFcs,
+                Coverage::Partial,
+                TrafficScope::AllFrames,
+            )
+            .failure
+            .is_some());
+        assert!(runtime.histories.is_empty());
+    }
+
+    #[test]
+    fn bridge_inventory_changes_force_an_immediate_fdb_refresh() {
+        let cached = BTreeMap::from([("br-lan".to_owned(), ())]);
+        assert!(!bridge_inventory_changed(
+            &cached,
+            &BTreeSet::from(["br-lan".to_owned()])
+        ));
+        assert!(bridge_inventory_changed(
+            &cached,
+            &BTreeSet::from(["br-guest".to_owned()])
+        ));
+        assert!(bridge_inventory_changed(
+            &cached,
+            &BTreeSet::from(["br-lan".to_owned(), "br-guest".to_owned()])
+        ));
+    }
+
+    #[test]
+    fn disabled_mode_reset_drops_rate_history_and_forces_a_fresh_topology() {
+        let mut runtime = AccessEdgeRuntime::new(1);
+        runtime.next_fdb_sync_ms = 99_000;
+        runtime.initial_syncs = 2;
+        runtime.topology_complete = true;
+        runtime.latest.sample_ms = 42_000;
+        runtime.histories.insert(
+            (
+                AttachmentKey {
+                    mac: [0x02, 1, 2, 3, 4, 5],
+                    bridge_ifindex: Some(10),
+                    vlan_id: None,
+                },
+                Direction::Tx,
+            ),
+            VecDeque::new(),
+        );
+        runtime.reset_for_disabled_mode();
+
+        assert!(runtime.rates.is_empty());
+        assert!(runtime.histories.is_empty());
+        assert!(runtime.muxes.is_empty());
+        assert!(runtime.classification.is_empty());
+        assert_eq!(runtime.topology.active().count(), 0);
+        assert!(runtime.cached_bridges.is_empty());
+        assert!(runtime.bridge_names.is_empty());
+        assert_eq!(runtime.latest.sample_ms, 0);
+        assert!(!runtime.topology_complete);
+        assert!(!runtime.wifi_fresh);
+        assert_eq!(runtime.next_fdb_sync_ms, 0);
+        assert_eq!(runtime.initial_syncs, 0);
     }
 }

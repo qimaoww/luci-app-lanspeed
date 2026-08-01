@@ -160,7 +160,7 @@
     },
     "attachmentTrust": {
       "type": "string",
-      "enum": ["declared_direct", "associated_station", "observed_exclusive", "shared", "unknown"]
+      "enum": ["associated_station", "observed_exclusive", "shared", "unknown"]
     },
     "classificationState": {
       "type": "string",
@@ -188,6 +188,17 @@
         },
         "byte_domain": {
           "$ref": "#/$defs/byteDomain"
+        },
+        "sample_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "window_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "stale": {
+          "type": "boolean"
         }
       },
       "required": ["source", "coverage"]
@@ -1034,17 +1045,6 @@
           "type": "string",
           "enum": ["off", "shadow", "active"]
         },
-        "dedicated_ports": {
-          "type": "array",
-          "maxItems": 16,
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 31,
-            "pattern": "^[^\\s/,\\u0000]+$"
-          }
-        },
         "conn_collector_mode": {
           "$ref": "#/$defs/connCollectorMode"
         },
@@ -1067,7 +1067,6 @@
         "refresh_interval_ms",
         "rate_collector_mode",
         "access_edge_mode",
-        "dedicated_ports",
         "conn_collector_mode",
         "version",
         "capabilities"

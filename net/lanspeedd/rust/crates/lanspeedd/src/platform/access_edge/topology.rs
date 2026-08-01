@@ -19,7 +19,6 @@ impl AttachmentKind {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum AttachmentTrust {
-    DeclaredDirect,
     AssociatedStation,
     ObservedExclusive,
     Shared,
@@ -29,7 +28,6 @@ pub enum AttachmentTrust {
 impl AttachmentTrust {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::DeclaredDirect => "declared_direct",
             Self::AssociatedStation => "associated_station",
             Self::ObservedExclusive => "observed_exclusive",
             Self::Shared => "shared",
@@ -63,6 +61,10 @@ pub struct AttachmentObservation {
     /// True only for a new complete provider frame. Reusing cached topology
     /// must not satisfy the two-frame stability requirement.
     pub fresh_frame: bool,
+    /// Completeness belongs to the provider frame that contains this
+    /// attachment. One failed bridge dump must not demote attachments proved
+    /// by another complete bridge dump.
+    pub provider_complete: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,14 +78,6 @@ pub struct Attachment {
     pub ambiguous: bool,
 }
 
-impl Attachment {
-    pub const fn can_own_full_port_rate(&self) -> bool {
-        !self.ambiguous
-            && self.stable_observations >= 2
-            && matches!(self.trust, AttachmentTrust::DeclaredDirect)
-    }
-}
-
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TopologyUpdate {
     pub active: Vec<Attachment>,
@@ -94,26 +88,20 @@ pub struct TopologyUpdate {
 
 #[derive(Clone, Debug, Default)]
 pub struct TopologyTable {
-    dedicated_ports: BTreeSet<String>,
     active: BTreeMap<AttachmentKey, Attachment>,
-    generations: BTreeMap<AttachmentKey, u64>,
+    /// One process-wide monotonic allocator is enough to invalidate every
+    /// counter/rate ledger when an attachment changes.  Keeping the last
+    /// generation for every historical key would otherwise grow forever as
+    /// clients churn through the network.
+    last_generation: u64,
 }
 
 impl TopologyTable {
-    pub fn new(dedicated_ports: impl IntoIterator<Item = String>) -> Self {
+    pub fn new() -> Self {
         Self {
-            dedicated_ports: dedicated_ports.into_iter().collect(),
             active: BTreeMap::new(),
-            generations: BTreeMap::new(),
+            last_generation: 0,
         }
-    }
-
-    pub fn set_dedicated_ports(&mut self, ports: impl IntoIterator<Item = String>) {
-        self.dedicated_ports = ports.into_iter().collect();
-    }
-
-    pub fn is_dedicated_port(&self, ifname: &str) -> bool {
-        self.dedicated_ports.contains(ifname)
     }
 
     pub fn get(&self, key: &AttachmentKey) -> Option<&Attachment> {
@@ -122,6 +110,21 @@ impl TopologyTable {
 
     pub fn active(&self) -> impl Iterator<Item = &Attachment> {
         self.active.values()
+    }
+
+    /// Drop observed attachments while retaining the monotonic allocator.
+    /// Re-enabling the feature must produce fresh attachment generations
+    /// instead of recovering a disabled-mode topology as if it were current.
+    pub fn clear_active(&mut self) {
+        self.active.clear();
+    }
+
+    pub const fn generation_watermark(&self) -> u64 {
+        self.last_generation
+    }
+
+    pub fn advance_generation_floor(&mut self, floor: u64) {
+        self.last_generation = self.last_generation.max(floor);
     }
 
     /// Atomically replace the observed topology. An incomplete source remains
@@ -193,13 +196,7 @@ impl TopologyTable {
                     && value.point.ifindex == selected.point.ifindex
                     && value.fresh_frame
             });
-            let trust = attachment_trust(
-                selected,
-                ambiguous,
-                source_complete,
-                &occupancy,
-                &self.dedicated_ports,
-            );
+            let trust = attachment_trust(selected, ambiguous, &occupancy);
 
             let material_matches = previous.get(&key).is_some_and(|old| {
                 old.point == selected.point
@@ -215,16 +212,11 @@ impl TopologyTable {
                         .saturating_add(u32::from(selected_fresh)),
                 )
             } else {
-                let generation = self
-                    .generations
-                    .get(&key)
-                    .copied()
-                    .unwrap_or(0)
-                    .saturating_add(1);
+                self.last_generation = self.last_generation.saturating_add(1);
+                let generation = self.last_generation;
                 changed.push(key);
                 (generation, u32::from(selected_fresh))
             };
-            self.generations.insert(key, generation);
             next.insert(
                 key,
                 Attachment {
@@ -240,9 +232,8 @@ impl TopologyTable {
         }
 
         let mut removed = Vec::new();
-        for (key, attachment) in previous {
+        for (key, _) in previous {
             if !next.contains_key(&key) {
-                self.generations.insert(key, attachment.generation);
                 removed.push(key);
             }
         }
@@ -285,6 +276,7 @@ where
                 },
                 source_generation: 0,
                 fresh_frame: true,
+                provider_complete: snapshot.complete,
             }
         })
         .collect()
@@ -309,6 +301,7 @@ pub fn observations_from_stations(snapshot: &StationCounterSnapshot) -> Vec<Atta
             },
             source_generation: station.association_generation,
             fresh_frame: true,
+            provider_complete: snapshot.complete,
         })
         .collect()
 }
@@ -316,9 +309,7 @@ pub fn observations_from_stations(snapshot: &StationCounterSnapshot) -> Vec<Atta
 fn attachment_trust(
     selected: &AttachmentObservation,
     ambiguous: bool,
-    source_complete: bool,
     occupancy: &BTreeMap<u32, BTreeSet<(Option<u32>, Option<u16>, [u8; 6])>>,
-    dedicated_ports: &BTreeSet<String>,
 ) -> AttachmentTrust {
     if ambiguous {
         return AttachmentTrust::Unknown;
@@ -326,7 +317,7 @@ fn attachment_trust(
     if selected.point.kind == AttachmentKind::Wifi {
         return AttachmentTrust::AssociatedStation;
     }
-    if !source_complete {
+    if !selected.provider_complete {
         return AttachmentTrust::Unknown;
     }
     if occupancy
@@ -334,8 +325,6 @@ fn attachment_trust(
         .is_some_and(|identities| identities.len() > 1)
     {
         AttachmentTrust::Shared
-    } else if dedicated_ports.contains(&selected.point.ifname) {
-        AttachmentTrust::DeclaredDirect
     } else {
         AttachmentTrust::ObservedExclusive
     }
@@ -392,28 +381,27 @@ mod tests {
     }
 
     #[test]
-    fn declared_port_needs_complete_single_client_observation() {
+    fn single_client_port_remains_observed_exclusive_while_stability_advances() {
         let mac = [0x02, 1, 2, 3, 4, 5];
         let snapshot = fdb(vec![fdb_entry(mac, 6)], true);
-        let mut table = TopologyTable::new(["lan2".to_owned()]);
+        let mut table = TopologyTable::new();
         let first = table.reconcile(observations_from_fdb(&snapshot, ifname), snapshot.complete);
-        assert_eq!(first.active[0].trust, AttachmentTrust::DeclaredDirect);
+        assert_eq!(first.active[0].trust, AttachmentTrust::ObservedExclusive);
         assert_eq!(first.active[0].stable_observations, 1);
-        assert!(!first.active[0].can_own_full_port_rate());
         let generation = first.active[0].generation;
 
         let second = table.reconcile(observations_from_fdb(&snapshot, ifname), snapshot.complete);
         assert_eq!(second.active[0].generation, generation);
         assert_eq!(second.active[0].stable_observations, 2);
-        assert!(second.active[0].can_own_full_port_rate());
+        assert_eq!(second.active[0].trust, AttachmentTrust::ObservedExclusive);
         assert!(second.changed.is_empty());
     }
 
     #[test]
-    fn reusing_one_cached_fdb_frame_does_not_promote_full() {
+    fn reusing_one_cached_fdb_frame_does_not_advance_stability() {
         let mac = [0x02, 1, 2, 3, 4, 5];
         let snapshot = fdb(vec![fdb_entry(mac, 6)], true);
-        let mut table = TopologyTable::new(["lan2".to_owned()]);
+        let mut table = TopologyTable::new();
         let first = table.reconcile(observations_from_fdb(&snapshot, ifname), true);
         assert_eq!(first.active[0].stable_observations, 1);
 
@@ -423,18 +411,16 @@ mod tests {
             .for_each(|observation| observation.fresh_frame = false);
         let reused = table.reconcile(cached, true);
         assert_eq!(reused.active[0].stable_observations, 1);
-        assert!(!reused.active[0].can_own_full_port_rate());
 
         let next = table.reconcile(observations_from_fdb(&snapshot, ifname), true);
         assert_eq!(next.active[0].stable_observations, 2);
-        assert!(next.active[0].can_own_full_port_rate());
     }
 
     #[test]
     fn shared_port_demotes_every_client_and_changes_generation() {
         let first_mac = [0x02, 1, 2, 3, 4, 5];
         let second_mac = [0x02, 6, 7, 8, 9, 10];
-        let mut table = TopologyTable::new(["lan2".to_owned()]);
+        let mut table = TopologyTable::new();
         let one = fdb(vec![fdb_entry(first_mac, 6)], true);
         let old_generation = table
             .reconcile(observations_from_fdb(&one, ifname), true)
@@ -466,7 +452,7 @@ mod tests {
         let mut second = fdb_entry(second_mac, 6);
         second.vlan_id = Some(20);
         let snapshot = fdb(vec![first, second], true);
-        let mut table = TopologyTable::new(["lan2".to_owned()]);
+        let mut table = TopologyTable::new();
 
         let update = table.reconcile(observations_from_fdb(&snapshot, ifname), true);
 
@@ -475,19 +461,43 @@ mod tests {
             .active
             .iter()
             .all(|attachment| attachment.trust == AttachmentTrust::Shared));
-        assert!(update
-            .active
-            .iter()
-            .all(|attachment| !attachment.can_own_full_port_rate()));
     }
 
     #[test]
     fn incomplete_fdb_can_only_create_unknown_attachment() {
         let snapshot = fdb(vec![fdb_entry([0x02, 1, 2, 3, 4, 5], 6)], false);
-        let mut table = TopologyTable::new(["lan2".to_owned()]);
+        let mut table = TopologyTable::new();
         let update = table.reconcile(observations_from_fdb(&snapshot, ifname), false);
         assert_eq!(update.active[0].trust, AttachmentTrust::Unknown);
-        assert!(!update.active[0].can_own_full_port_rate());
+    }
+
+    #[test]
+    fn incomplete_unrelated_bridge_does_not_demote_a_complete_bridge() {
+        let healthy_mac = [0x02, 1, 2, 3, 4, 5];
+        let broken_mac = [0x02, 6, 7, 8, 9, 10];
+        let mut healthy = fdb(vec![fdb_entry(healthy_mac, 6)], true);
+        healthy.bridge = "br-lan".into();
+        let mut broken_entry = fdb_entry(broken_mac, 8);
+        broken_entry.bridge_ifindex = Some(20);
+        let mut broken = fdb(vec![broken_entry], false);
+        broken.bridge = "br-guest".into();
+        broken.bridge_ifindex = 20;
+        let mut observations = observations_from_fdb(&healthy, ifname);
+        observations.extend(observations_from_fdb(&broken, ifname));
+
+        let update = TopologyTable::new().reconcile(observations, false);
+        let healthy = update
+            .active
+            .iter()
+            .find(|attachment| attachment.key.mac == healthy_mac)
+            .expect("healthy bridge attachment");
+        let broken = update
+            .active
+            .iter()
+            .find(|attachment| attachment.key.mac == broken_mac)
+            .expect("incomplete bridge attachment");
+        assert_eq!(healthy.trust, AttachmentTrust::ObservedExclusive);
+        assert_eq!(broken.trust, AttachmentTrust::Unknown);
     }
 
     #[test]
@@ -515,7 +525,7 @@ mod tests {
         };
         let mut observations = observations_from_fdb(&bridge, |_| Some("phy1-ap0".into()));
         observations.extend(observations_from_stations(&stations));
-        let mut table = TopologyTable::new(Vec::<String>::new());
+        let mut table = TopologyTable::new();
         let update = table.reconcile(observations, true);
         assert_eq!(update.active.len(), 1);
         assert_eq!(update.active[0].point.kind, AttachmentKind::Wifi);
@@ -527,7 +537,7 @@ mod tests {
     #[test]
     fn moving_between_ports_advances_attachment_generation() {
         let mac = [0x02, 1, 2, 3, 4, 5];
-        let mut table = TopologyTable::new(Vec::<String>::new());
+        let mut table = TopologyTable::new();
         let first = fdb(vec![fdb_entry(mac, 6)], true);
         let first_generation = table
             .reconcile(observations_from_fdb(&first, ifname), true)
@@ -539,5 +549,50 @@ mod tests {
             .active[0]
             .generation;
         assert!(second_generation > first_generation);
+    }
+
+    #[test]
+    fn churn_uses_one_bounded_generation_allocator_and_reentry_is_new() {
+        let mut table = TopologyTable::new();
+        let first_mac = [0x02, 0, 0, 0, 0, 1];
+        let first_generation = table
+            .reconcile(
+                observations_from_fdb(&fdb(vec![fdb_entry(first_mac, 6)], true), ifname),
+                true,
+            )
+            .active[0]
+            .generation;
+
+        for value in 2u16..=1_024 {
+            let mac = [0x02, 0, 0, (value >> 8) as u8, value as u8, 1];
+            let update = table.reconcile(
+                observations_from_fdb(&fdb(vec![fdb_entry(mac, 6)], true), ifname),
+                true,
+            );
+            assert_eq!(update.active.len(), 1);
+        }
+        assert_eq!(table.active.len(), 1);
+        assert_eq!(table.last_generation, 1_024);
+
+        let reentered = table.reconcile(
+            observations_from_fdb(&fdb(vec![fdb_entry(first_mac, 6)], true), ifname),
+            true,
+        );
+        assert!(reentered.active[0].generation > first_generation);
+        assert_eq!(table.last_generation, 1_025);
+    }
+
+    #[test]
+    fn reload_candidate_allocates_after_the_previous_runtime_watermark() {
+        let mut table = TopologyTable::new();
+        table.advance_generation_floor(41);
+        let mac = [0x02, 0, 0, 0, 0, 1];
+        let update = table.reconcile(
+            observations_from_fdb(&fdb(vec![fdb_entry(mac, 6)], true), ifname),
+            true,
+        );
+
+        assert_eq!(update.active[0].generation, 42);
+        assert_eq!(table.generation_watermark(), 42);
     }
 }

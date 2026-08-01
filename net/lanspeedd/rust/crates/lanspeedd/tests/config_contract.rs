@@ -105,7 +105,6 @@ fn defaults_and_limits_match_the_legacy_c_contract() {
     assert!(config.observe_ifnames.is_empty());
     assert!(config.configured_excluded.is_empty());
     assert!(config.configured_observed.is_empty());
-    assert!(config.dedicated_ports.is_empty());
     assert!(!config.rejected_nssifb_collect);
 }
 
@@ -406,38 +405,16 @@ fn list_options_are_preserved_deduplicated_and_bounded() {
 }
 
 #[test]
-fn dedicated_ports_are_safe_deduplicated_bounded_and_not_runtime_filtered() {
-    let mut values = vec!["lan1".to_owned(), "lan1".to_owned(), "down0".to_owned()];
-    values.extend((0..MAX_INTERFACE_NAMES + 4).map(|index| format!("port{index}")));
-    values.extend([
-        ".".to_owned(),
-        "..".to_owned(),
-        "nested/name".to_owned(),
-        "bad\0name".to_owned(),
-    ]);
-    let mut source = MemorySource::default();
-    source.values.insert(
-        "lanspeed.main.dedicated_port".into(),
-        ConfigValue::List(values),
-    );
-
-    let config = RuntimeConfig::load(&mut source, &RejectNamed("down0")).unwrap();
-    assert_eq!(config.dedicated_ports.len(), MAX_INTERFACE_NAMES);
-    assert_eq!(
-        config.dedicated_ports.first().map(String::as_str),
-        Some("lan1")
-    );
-    assert_eq!(
-        config.dedicated_ports.get(1).map(String::as_str),
-        Some("down0")
-    );
-    assert_eq!(
-        config.dedicated_ports.last().map(String::as_str),
-        Some("port13")
-    );
-
+fn legacy_dedicated_port_has_no_runtime_effect() {
+    let baseline = RuntimeConfig::default();
     let scalar = load(MemorySource::default().with("dedicated_port", "lan3"));
-    assert_eq!(scalar.dedicated_ports, ["lan3"]);
+    let list = load(
+        MemorySource::default()
+            .with_list("dedicated_port", &["lan1", "lan1", "down0", "nested/name"]),
+    );
+
+    assert_eq!(scalar, baseline);
+    assert_eq!(list, baseline);
 }
 
 #[test]

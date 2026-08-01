@@ -416,9 +416,61 @@ fn classifier_rate_candidates(
     candidates
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClassifierWindowSelection {
+    Unavailable,
+    Invalid,
+    Ready {
+        start_ms: u64,
+        end_ms: u64,
+        aligned: bool,
+    },
+}
+
+fn select_classifier_window(
+    ecm: Option<(u64, u64)>,
+    slow: Option<(u64, u64)>,
+) -> ClassifierWindowSelection {
+    if ecm.is_some_and(|(start, end)| end <= start) || slow.is_some_and(|(start, end)| end <= start)
+    {
+        return ClassifierWindowSelection::Invalid;
+    }
+    match (ecm, slow) {
+        (Some(ecm), Some(slow)) => ClassifierWindowSelection::Ready {
+            start_ms: ecm.0,
+            end_ms: ecm.1,
+            aligned: ecm.0.abs_diff(slow.0) <= CLASSIFIER_READ_END_SKEW_MS
+                && ecm.1.abs_diff(slow.1) <= CLASSIFIER_READ_END_SKEW_MS,
+        },
+        (Some(window), None) | (None, Some(window)) => ClassifierWindowSelection::Ready {
+            start_ms: window.0,
+            end_ms: window.1,
+            aligned: true,
+        },
+        (None, None) => ClassifierWindowSelection::Unavailable,
+    }
+}
+
 const fn classifier_sample_fresh(now_ms: u64, sample_ms: u64) -> bool {
     sample_ms <= now_ms
         && now_ms.saturating_sub(sample_ms) <= CLASSIFIER_INTERVAL_MS.saturating_mul(5) / 2
+}
+
+// ECM is sampled at the classifier cadence, which can be slower than the
+// response cadence. A skipped map read therefore means "no new epoch", not
+// "the last complete map became unusable". Keep status health tied to the
+// retained snapshot's actual freshness; classification itself still consumes
+// only newly collected epochs.
+fn ecm_bpf_snapshot_current(
+    snapshot: Option<&EcmBpfSnapshot>,
+    runtime: &RuntimeHealth,
+) -> bool {
+    snapshot.is_some_and(|snapshot| !snapshot.truncated)
+        && runtime
+            .ecm_bpf_last_complete_snapshot_ms
+            .is_some_and(|sample_ms| {
+                crate::is_fresh(runtime.now_ms, sample_ms, runtime.ecm_bpf_freshness_ms)
+            })
 }
 
 /// An Edge segment is usable only when its end is at or before the completed
@@ -454,6 +506,20 @@ const fn classifier_map_loss_invalidates_owner(
     }
 }
 
+fn remove_failed_edge_candidates(
+    candidates: &mut Vec<RateCandidate>,
+    edge_failure: Option<MuxFailure>,
+) {
+    if edge_failure.is_some() {
+        candidates.retain(|candidate| {
+            !matches!(
+                candidate.source,
+                EdgeRateSource::EdgePort | EdgeRateSource::EdgeWifi
+            )
+        });
+    }
+}
+
 const fn bytes_to_bps(bytes: u64, window_ms: u64) -> u64 {
     if window_ms == 0 {
         return 0;
@@ -477,6 +543,37 @@ fn published_from_candidate(candidate: RateCandidate, stale: bool) -> PublishedR
         window_ms: Some(candidate.window_ms),
         stale,
         mux_owner: true,
+    }
+}
+
+fn rate_direction_meta(
+    direction: PublishedRateDirection,
+    summary_sample_ms: Option<u64>,
+    summary_window_ms: Option<u64>,
+    summary_stale: bool,
+) -> RateDirectionMeta {
+    RateDirectionMeta {
+        source: direction.source,
+        coverage: direction.coverage,
+        byte_domain: direction.byte_domain,
+        sample_ms: (direction.sample_ms != summary_sample_ms)
+            .then_some(direction.sample_ms)
+            .flatten(),
+        window_ms: (direction.window_ms != summary_window_ms)
+            .then_some(direction.window_ms)
+            .flatten(),
+        stale: (direction.stale != summary_stale).then_some(direction.stale),
+    }
+}
+
+fn compact_rate_sample_ms(tx_sample_ms: Option<u64>, rx_sample_ms: Option<u64>) -> Option<u64> {
+    match (tx_sample_ms, rx_sample_ms) {
+        (Some(tx), Some(rx)) => Some(tx.max(rx)),
+        // A client-level value cannot represent which direction is missing.
+        // Keep the summary absent and let the sampled direction emit its
+        // sparse override instead of making the missing direction inherit a
+        // timestamp it never had.
+        _ => None,
     }
 }
 
@@ -579,7 +676,6 @@ fn model_attachment(attachment: &EdgeAttachment) -> RateAttachment {
         },
         ifname: Some(attachment.point.ifname.clone()),
         trust: match attachment.trust {
-            EdgeAttachmentTrust::DeclaredDirect => ModelAttachmentTrust::DeclaredDirect,
             EdgeAttachmentTrust::AssociatedStation => ModelAttachmentTrust::AssociatedStation,
             EdgeAttachmentTrust::ObservedExclusive => ModelAttachmentTrust::ObservedExclusive,
             EdgeAttachmentTrust::Shared => ModelAttachmentTrust::Shared,
@@ -875,30 +971,25 @@ fn access_edge_global_evidence(
 ) -> Value {
     let mut reasons = snapshot.reason_codes.clone();
     let mut published = 0usize;
-    let mut all_full = snapshot.topology_complete && !snapshot.clients.is_empty();
     let mut seen_macs = BTreeSet::new();
     let edge_index = edge_mac_index(&snapshot.clients);
     let client_index = response_mac_index(&clients.clients);
     for edge in &snapshot.clients {
         let mac = format_edge_mac(edge.attachment.key.mac);
         if !seen_macs.insert(mac.clone()) || edge_index.ambiguous.contains(&mac) {
-            all_full = false;
             reasons.push("duplicate_mac_attachment".to_owned());
             continue;
         }
         if client_index.ambiguous.contains(&mac) {
-            all_full = false;
             reasons.push("duplicate_client_identity".to_owned());
             continue;
         }
         let Some(client) = client_index.unique.get(&mac).copied() else {
-            all_full = false;
             reasons.push("active_attachment_unpublished".to_owned());
             continue;
         };
         published = published.saturating_add(1);
         let Some(meta) = client.rate_meta.as_ref() else {
-            all_full = false;
             reasons.push("rate_owner_unavailable".to_owned());
             continue;
         };
@@ -906,27 +997,29 @@ fn access_edge_global_evidence(
             EdgeAttachmentKind::Ethernet => ModelRateSource::EdgePort,
             EdgeAttachmentKind::Wifi => ModelRateSource::EdgeWifi,
         };
-        let fresh_full_owner = !meta.stale
+        let tx_stale = meta.tx.stale.unwrap_or(meta.stale);
+        let rx_stale = meta.rx.stale.unwrap_or(meta.stale);
+        let fresh_edge_owner = !tx_stale
+            && !rx_stale
             && meta.generation == edge.attachment.generation
             && meta.tx.source == expected_source
-            && meta.rx.source == expected_source
-            && meta.tx.coverage == ModelRateCoverage::Full
-            && meta.rx.coverage == ModelRateCoverage::Full;
-        if !fresh_full_owner {
-            all_full = false;
+            && meta.rx.source == expected_source;
+        if !fresh_edge_owner {
             reasons.push("fresh_edge_owner_missing".to_owned());
         }
         match edge.attachment.point.kind {
             EdgeAttachmentKind::Wifi => {
                 // Station counters prove unicast ownership only. Broadcast and
                 // multicast cannot yet be attributed per receiver.
-                all_full = false;
                 reasons.push("wifi_group_traffic_unattributed".to_owned());
             }
             EdgeAttachmentKind::Ethernet => {
-                if !edge.attachment.can_own_full_port_rate() {
-                    all_full = false;
-                    reasons.push("port_not_declared_direct".to_owned());
+                // A standard FDB dump observes learned identities, but cannot
+                // prove that no silent shared device exists behind the port.
+                // Keep the Edge-Port owner while refusing a synthetic Full
+                // claim even if an inconsistent caller supplies one.
+                if fresh_edge_owner {
+                    reasons.push("ethernet_full_scope_unproven".to_owned());
                 }
             }
         }
@@ -935,7 +1028,6 @@ fn access_edge_global_evidence(
         reasons.push("topology_incomplete".to_owned());
     }
     if mode != AccessEdgeMode::Active {
-        all_full = false;
         reasons.push("shadow_not_rate_owner".to_owned());
     }
     reasons.sort();
@@ -944,9 +1036,9 @@ fn access_edge_global_evidence(
     json!({
         "coverage": if snapshot.clients.is_empty() {
             "unavailable"
-        } else if all_full {
-            "full"
         } else {
+            // Without a manual direct-port assertion, standard FDB and Wi-Fi
+            // station data cannot prove per-client ownership of every frame.
             "partial"
         },
         "scope": if snapshot.clients.is_empty() { "none" } else { "all_frames" },
@@ -1043,7 +1135,7 @@ impl ProductionRuntime {
                 config.active_client_window_ms,
             ),
             nss: NssRuntime::default(),
-            access_edge: AccessEdgeRuntime::new(config.dedicated_ports.clone(), config.max_clients),
+            access_edge: AccessEdgeRuntime::new(config.max_clients),
             classification_results: BTreeMap::new(),
             classifier_epoch_id: 0,
             next_classifier_deadline_ms: 0,
@@ -1353,6 +1445,9 @@ impl ProductionRuntime {
     ) -> Result<ResponseSnapshot, DaemonError> {
         let mut now_ms = production_now_ms()?;
         let access_edge_enabled = self.config.access_edge_mode != AccessEdgeMode::Off;
+        if !access_edge_enabled {
+            self.access_edge.reset_for_disabled_mode();
+        }
         let classifier_due = access_edge_enabled
             && periodic_deadline_due(
                 &mut self.next_classifier_deadline_ms,
@@ -1638,6 +1733,8 @@ impl ProductionRuntime {
                     ),
                 }
             } else if decision.rate == RateCollector::NssEcmBpf {
+                let ecm_bpf_current =
+                    ecm_bpf_snapshot_current(ecm_bpf_snapshot.as_ref(), &runtime_health);
                 if ecm_bpf_snapshot_fresh {
                     match (ecm_bpf_snapshot.as_ref(), lan_clock.as_ref()) {
                         (Some(snapshot), Some(lan)) if !snapshot.truncated => {
@@ -1707,8 +1804,8 @@ impl ProductionRuntime {
                         &identities,
                         decision.confidence,
                     ),
-                    ecm_bpf_snapshot.is_some(),
-                    !ecm_bpf_snapshot_fresh,
+                    ecm_bpf_current,
+                    !ecm_bpf_current,
                     false,
                 )
             } else {
@@ -2022,7 +2119,6 @@ impl ProductionRuntime {
             collector_mode: self.config.rate_collector_mode.as_str().into(),
             rate_collector_mode: self.config.rate_collector_mode.as_str().into(),
             access_edge_mode: self.config.access_edge_mode.as_str().into(),
-            dedicated_ports: self.config.dedicated_ports.clone(),
             conn_collector_mode: self.config.conn_collector_mode.as_str().into(),
             version: version.clone(),
             capabilities: capabilities.clone(),
@@ -2158,6 +2254,8 @@ impl ProductionRuntime {
         runtime_health: &RuntimeHealth,
     ) {
         if self.config.access_edge_mode == AccessEdgeMode::Off {
+            self.access_edge.clear_classification();
+            self.classification_results.clear();
             return;
         }
         let ecm_map_loss = ecm
@@ -2187,38 +2285,47 @@ impl ProductionRuntime {
                     .coverage_start_ms
                     .map(|start| (start, snapshot.coverage_end_ms))
             });
-        let Some((start_ms, end_ms, classifier_window_aligned)) = (match (ecm_window, slow_window) {
-            (Some(ecm), Some(slow)) => Some((
-                ecm.0,
-                ecm.1,
-                ecm.0.abs_diff(slow.0) <= CLASSIFIER_READ_END_SKEW_MS
-                    && ecm.1.abs_diff(slow.1) <= CLASSIFIER_READ_END_SKEW_MS,
-            )),
-            (Some(window), None) | (None, Some(window)) => Some((window.0, window.1, true)),
-            (None, None) => None,
-        }) else {
-            let state = if map_loss {
-                ClassificationState::MapLoss
-            } else if ecm_new || slow_new {
-                ClassificationState::Warmup
-            } else {
-                ClassificationState::Unavailable
+        let (start_ms, end_ms, classifier_window_aligned) =
+            match select_classifier_window(ecm_window, slow_window) {
+                ClassifierWindowSelection::Ready {
+                    start_ms,
+                    end_ms,
+                    aligned,
+                } => (start_ms, end_ms, aligned),
+                state => {
+                    let state = match state {
+                        ClassifierWindowSelection::Invalid => ClassificationState::WindowMismatch,
+                        ClassifierWindowSelection::Unavailable if map_loss => {
+                            ClassificationState::MapLoss
+                        }
+                        ClassifierWindowSelection::Unavailable if ecm_new || slow_new => {
+                            ClassificationState::Warmup
+                        }
+                        ClassifierWindowSelection::Unavailable => ClassificationState::Unavailable,
+                        ClassifierWindowSelection::Ready { .. } => unreachable!(),
+                    };
+                    // Invalid or unavailable current windows are negative
+                    // evidence, not permission to retain an older Aligned
+                    // comparison. The next valid epoch must warm up again.
+                    self.access_edge.clear_classification();
+                    let mut identity_keys = identities
+                        .iter()
+                        .map(|identity| identity.key.to_string())
+                        .collect::<BTreeSet<_>>();
+                    identity_keys.extend(self.classification_results.keys().cloned());
+                    if let Some(snapshot) = ecm.filter(|_| ecm_new) {
+                        identity_keys.extend(snapshot.coverage_deltas.keys().cloned());
+                    }
+                    if let Some(snapshot) = slow.filter(|_| slow_new) {
+                        identity_keys.extend(snapshot.coverage_deltas.keys().cloned());
+                    }
+                    self.classification_results = identity_keys
+                        .into_iter()
+                        .map(|identity_key| (identity_key, ClassificationResult::state(state)))
+                        .collect();
+                    return;
+                }
             };
-            self.access_edge.clear_classification();
-            let mut identity_keys = identities
-                .iter()
-                .map(|identity| identity.key.to_string())
-                .collect::<BTreeSet<_>>();
-            identity_keys.extend(self.classification_results.keys().cloned());
-            self.classification_results = identity_keys
-                .into_iter()
-                .map(|identity_key| (identity_key, ClassificationResult::state(state)))
-                .collect();
-            return;
-        };
-        if end_ms <= start_ms {
-            return;
-        }
         self.classifier_epoch_id = self.classifier_epoch_id.saturating_add(1);
         let sources_complete = ecm_window.is_some() && slow_window.is_some();
         let edge_clients = self.access_edge.latest().clients.clone();
@@ -2265,7 +2372,9 @@ impl ProductionRuntime {
             let attachment_stable = edge.is_none_or(|sample| {
                 !sample.attachment.ambiguous
                     && sample.attachment.stable_observations >= 2
-                    && self.access_edge.latest().topology_complete
+                    && self
+                        .access_edge
+                        .attachment_topology_complete(&sample.attachment)
             });
             let direction = |direction| DirectionEpoch {
                 edge: edge.and_then(|sample| {
@@ -2329,6 +2438,9 @@ impl ProductionRuntime {
         runtime_health: &RuntimeHealth,
     ) {
         if self.config.access_edge_mode == AccessEdgeMode::Off {
+            self.access_edge
+                .retain_published_identities(&BTreeSet::new());
+            self.classification_results.clear();
             return;
         }
         let active_auto = active_access_edge_owns_display_rate(
@@ -2416,7 +2528,14 @@ impl ProductionRuntime {
                 .cloned()
                 .collect::<Vec<_>>();
             reasons.extend(edge_snapshot.reason_codes.iter().cloned());
-            if !edge_snapshot.topology_complete {
+            let attachment_topology_complete = edge.map_or(
+                edge_snapshot.topology_complete,
+                |sample| {
+                    self.access_edge
+                        .attachment_topology_complete(&sample.attachment)
+                },
+            );
+            if !attachment_topology_complete {
                 reasons.push("topology_incomplete".to_owned());
             }
             if edge_index.ambiguous.contains(&client_mac_key) {
@@ -2465,6 +2584,12 @@ impl ProductionRuntime {
                     runtime_health,
                 ));
                 let edge_failure = edge_direction.and_then(|observation| observation.failure);
+                // Keep the failure boundary explicit even though current Edge
+                // observations make `segment` and `failure` mutually exclusive.
+                // A future collector change must not allow a failed, higher-
+                // priority Edge candidate to re-enter promotion ahead of the
+                // independent classifier fallback.
+                remove_failed_edge_candidates(&mut candidates, edge_failure);
                 let classifier_loss = ecm.is_some_and(|snapshot| snapshot.truncated)
                     || slow.is_some_and(|snapshot| !snapshot.map_complete)
                     || (runtime_health.ecm_bpf_map_read_attempted
@@ -2484,12 +2609,19 @@ impl ProductionRuntime {
                             | EdgeRateSource::TcBpfLowerBound
                     )
                 });
-                // An Edge reset/ambiguity invalidates only that Edge source. If
-                // a classifier lower-bound is available, let the mux promote
-                // it instead of turning a transient topology event into an
-                // unavailable client rate. With no fallback candidate the hard
-                // failure remains, so an unsafe Edge value is never published.
-                let mut failure = edge_failure.filter(|_| !has_classifier_candidate);
+                // Edge failures are source-scoped. They invalidate an Edge
+                // owner or challenger immediately, while an independent
+                // classifier owner on the same attachment continues under its
+                // own freshness policy. A generation change still demotes all
+                // paths inside the mux.
+                if edge_failure.is_some() {
+                    self.access_edge.invalidate_edge_mux(
+                        &client.identity_key,
+                        direction,
+                        attachment_generation,
+                    );
+                }
+                let mut failure = None;
                 let mux_owner = self.access_edge.mux_owner(&client.identity_key, direction);
                 if failure.is_none()
                     && classifier_map_loss_invalidates_owner(
@@ -2573,6 +2705,8 @@ impl ProductionRuntime {
             let common_window = (tx.window_ms == rx.window_ms)
                 .then_some(tx.window_ms)
                 .flatten();
+            let summary_sample_ms = compact_rate_sample_ms(tx.sample_ms, rx.sample_ms);
+            let summary_stale = tx.stale || rx.stale;
             if tx.window_ms != rx.window_ms {
                 reasons.push("direction_window_mismatch".to_owned());
             }
@@ -2582,29 +2716,22 @@ impl ProductionRuntime {
             client.rate_meta = Some(ClientRateMeta {
                 version: 1,
                 scope: conservative_scope(tx.scope, rx.scope),
-                tx: RateDirectionMeta {
-                    source: tx.source,
-                    coverage: tx.coverage,
-                    byte_domain: tx.byte_domain,
-                },
-                rx: RateDirectionMeta {
-                    source: rx.source,
-                    coverage: rx.coverage,
-                    byte_domain: rx.byte_domain,
-                },
+                tx: rate_direction_meta(tx, summary_sample_ms, common_window, summary_stale),
+                rx: rate_direction_meta(rx, summary_sample_ms, common_window, summary_stale),
                 attachment: edge.map(|sample| model_attachment(&sample.attachment)),
                 generation: attachment_generation,
                 window_ms: common_window,
-                sample_ms: match (tx.sample_ms, rx.sample_ms) {
-                    (Some(left), Some(right)) => Some(left.max(right)),
-                    (Some(value), None) | (None, Some(value)) => Some(value),
-                    (None, None) => None,
-                },
-                stale: tx.stale || rx.stale,
+                sample_ms: summary_sample_ms,
+                stale: summary_stale,
                 reason_codes: reasons,
                 classification,
             });
         }
+
+        self.access_edge
+            .retain_published_identities(&published_identity_keys);
+        self.classification_results
+            .retain(|identity_key, _| published_identity_keys.contains(identity_key));
     }
 
     fn update_overview(&mut self, now_ms: u64, response: &ClientsResponse) -> OverviewResponse {
@@ -3041,9 +3168,14 @@ impl App {
             return Err(DaemonError::reload("runtime is not started"));
         }
         let config = load_config()?;
-        let process_tracker = self.runtime.as_ref().unwrap().process_tracker.clone();
+        let current = self.runtime.as_ref().unwrap();
+        let process_tracker = current.process_tracker.clone();
+        let attachment_generation_floor = current.access_edge.attachment_generation_watermark();
         let mut candidate =
             ProductionRuntime::prepare_with_process_tracker(config.clone(), process_tracker)?;
+        candidate
+            .access_edge
+            .advance_attachment_generation_floor(attachment_generation_floor);
         candidate
             .nss
             .activate(&candidate.config, &candidate.probe_report);
@@ -4249,6 +4381,70 @@ mod tests {
     }
 
     #[test]
+    fn direction_rate_meta_emits_only_summary_overrides() {
+        let direction = PublishedRateDirection {
+            bps: 1_000,
+            source: ModelRateSource::EdgePort,
+            coverage: ModelRateCoverage::Full,
+            scope: ModelRateScope::AllFrames,
+            byte_domain: Some(ModelByteDomain::L2NoFcs),
+            sample_ms: Some(9_000),
+            window_ms: Some(900),
+            stale: false,
+            mux_owner: true,
+        };
+
+        let exact = rate_direction_meta(direction, Some(9_000), Some(900), false);
+        assert_eq!(exact.sample_ms, None);
+        assert_eq!(exact.window_ms, None);
+        assert_eq!(exact.stale, None);
+
+        let override_meta = rate_direction_meta(direction, Some(10_000), None, true);
+        assert_eq!(override_meta.sample_ms, Some(9_000));
+        assert_eq!(override_meta.window_ms, Some(900));
+        assert_eq!(override_meta.stale, Some(false));
+
+        assert_eq!(
+            compact_rate_sample_ms(Some(9_000), Some(10_000)),
+            Some(10_000)
+        );
+        assert_eq!(compact_rate_sample_ms(Some(9_000), None), None);
+        assert_eq!(compact_rate_sample_ms(None, Some(10_000)), None);
+    }
+
+    #[test]
+    fn either_invalid_classifier_window_blocks_the_combined_epoch() {
+        let valid = Some((1_000, 3_000));
+        for invalid in [Some((3_000, 3_000)), Some((4_000, 3_000))] {
+            assert_eq!(
+                select_classifier_window(valid, invalid),
+                ClassifierWindowSelection::Invalid
+            );
+            assert_eq!(
+                select_classifier_window(invalid, valid),
+                ClassifierWindowSelection::Invalid
+            );
+        }
+
+        assert_eq!(
+            select_classifier_window(valid, Some((1_020, 3_020))),
+            ClassifierWindowSelection::Ready {
+                start_ms: 1_000,
+                end_ms: 3_000,
+                aligned: true,
+            }
+        );
+        assert_eq!(
+            select_classifier_window(valid, Some((1_100, 3_100))),
+            ClassifierWindowSelection::Ready {
+                start_ms: 1_000,
+                end_ms: 3_000,
+                aligned: false,
+            }
+        );
+    }
+
+    #[test]
     fn classifier_map_loss_only_invalidates_classifier_owners() {
         for owner in [EdgeRateSource::EdgePort, EdgeRateSource::EdgeWifi] {
             assert!(!classifier_map_loss_invalidates_owner(
@@ -4319,7 +4515,66 @@ mod tests {
     }
 
     #[test]
-    fn global_full_requires_every_fresh_declared_edge_owner_and_rejects_wifi_group_scope() {
+    fn ecm_bpf_retained_snapshot_stays_current_between_classifier_reads() {
+        let snapshot = coverage_snapshot(2_000, 4_000, &[]);
+        let mut runtime = RuntimeHealth {
+            now_ms: 5_000,
+            ecm_bpf_map_read_ok: true,
+            ecm_bpf_last_complete_snapshot_ms: Some(4_000),
+            ecm_bpf_freshness_ms: 6_000,
+            ..RuntimeHealth::default()
+        };
+
+        assert!(ecm_bpf_snapshot_current(Some(&snapshot), &runtime));
+
+        // The map is intentionally not read on this response tick. The last
+        // complete snapshot is still within its own cadence-derived window.
+        runtime.ecm_bpf_map_read_ok = false;
+        assert!(ecm_bpf_snapshot_current(Some(&snapshot), &runtime));
+
+        runtime.now_ms = 10_001;
+        assert!(!ecm_bpf_snapshot_current(Some(&snapshot), &runtime));
+
+        let mut truncated = snapshot;
+        truncated.truncated = true;
+        runtime.now_ms = 5_000;
+        assert!(!ecm_bpf_snapshot_current(Some(&truncated), &runtime));
+    }
+
+    #[test]
+    fn hard_edge_failure_removes_only_edge_candidates_before_fallback() {
+        let base = RateCandidate {
+            source: EdgeRateSource::EdgePort,
+            bps: 8_000,
+            coverage: crate::platform::access_edge::Coverage::Partial,
+            scope: EdgeTrafficScope::AllFrames,
+            byte_domain: EdgeByteDomain::L2NoFcs,
+            sample_ms: 2_000,
+            window_ms: 1_000,
+            cadence_ms: 1_000,
+            attachment_generation: 7,
+            fresh: true,
+        };
+        let mut candidates = vec![
+            base,
+            RateCandidate {
+                source: EdgeRateSource::EdgeWifi,
+                ..base
+            },
+            RateCandidate {
+                source: EdgeRateSource::EcmBpfFallback,
+                ..base
+            },
+        ];
+
+        remove_failed_edge_candidates(&mut candidates, Some(MuxFailure::CounterReset));
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].source, EdgeRateSource::EcmBpfFallback);
+    }
+
+    #[test]
+    fn global_evidence_separates_fresh_edge_owner_from_unprovable_frame_scope() {
         use crate::platform::access_edge::{
             AccessEdgeSnapshot, AttachmentKey, AttachmentPoint, Coverage as EdgeCoverage,
             EdgeDirectionObservation, TrafficScope,
@@ -4340,7 +4595,7 @@ mod tests {
                 bridge_ifindex: Some(10),
                 vlan_id: None,
             },
-            trust: EdgeAttachmentTrust::DeclaredDirect,
+            trust: EdgeAttachmentTrust::ObservedExclusive,
             generation: 17,
             source_generation: 0,
             stable_observations: 2,
@@ -4371,11 +4626,17 @@ mod tests {
                 source: ModelRateSource::EdgePort,
                 coverage: ModelRateCoverage::Full,
                 byte_domain: Some(ModelByteDomain::L2NoFcs),
+                sample_ms: None,
+                window_ms: None,
+                stale: None,
             },
             rx: RateDirectionMeta {
                 source: ModelRateSource::EdgePort,
                 coverage: ModelRateCoverage::Full,
                 byte_domain: Some(ModelByteDomain::L2NoFcs),
+                sample_ms: None,
+                window_ms: None,
+                stale: None,
             },
             attachment: Some(model_attachment(&attachment)),
             generation: 17,
@@ -4425,9 +4686,39 @@ mod tests {
             conn_semantics: None,
         };
 
-        let full = access_edge_global_evidence(&snapshot, &clients, AccessEdgeMode::Active);
-        assert_eq!(full["coverage"], "full");
-        assert_eq!(full["published_attachments"], 1);
+        // Even an inconsistent caller cannot promote Ethernet all-frame
+        // evidence to Full by supplying forged per-direction coverage.
+        let forged_full = access_edge_global_evidence(&snapshot, &clients, AccessEdgeMode::Active);
+        assert_eq!(forged_full["coverage"], "partial");
+        assert_eq!(forged_full["published_attachments"], 1);
+        let forged_reasons = forged_full["reason_codes"]
+            .as_array()
+            .expect("reason codes are an array");
+        assert!(forged_reasons
+            .iter()
+            .any(|value| value == "ethernet_full_scope_unproven"));
+        assert!(!forged_reasons
+            .iter()
+            .any(|value| value == "fresh_edge_owner_missing"));
+
+        let mut fallback_clients = clients.clone();
+        let fallback_meta = fallback_clients.clients[0]
+            .rate_meta
+            .as_mut()
+            .expect("test client has rate metadata");
+        fallback_meta.tx.source = ModelRateSource::EcmBpfFallback;
+        fallback_meta.rx.source = ModelRateSource::EcmBpfFallback;
+        let fallback =
+            access_edge_global_evidence(&snapshot, &fallback_clients, AccessEdgeMode::Active);
+        let fallback_reasons = fallback["reason_codes"]
+            .as_array()
+            .expect("reason codes are an array");
+        assert!(fallback_reasons
+            .iter()
+            .any(|value| value == "fresh_edge_owner_missing"));
+        assert!(!fallback_reasons
+            .iter()
+            .any(|value| value == "ethernet_full_scope_unproven"));
 
         let mut wifi_snapshot = snapshot;
         wifi_snapshot.clients[0].attachment.point.kind = EdgeAttachmentKind::Wifi;

@@ -31,7 +31,6 @@
   "collector_mode": "auto",
   "rate_collector_mode": "auto",
   "access_edge_mode": "active",
-  "dedicated_ports": [],
   "conn_collector_mode": "auto",
   "version": "1.1.5-r6",
   "capabilities": {

@@ -207,8 +207,7 @@
       "byte_domains": ["l2_no_fcs", "l2_with_fcs", "station_data", "ecm_data"]
     },
     "full_rules": {
-      "dedicated_port_default": [],
-      "declared_direct_required": true,
+      "manual_direct_port_override": false,
       "stable_complete_fdb_snapshots": 2,
       "other_dynamic_mac_forbidden": true,
       "cross_vlan_mac_forbidden": true,
@@ -216,7 +215,12 @@
       "automatic_single_mac_port_maximum": "partial",
       "shared_ap_wds_mesh_trunk_maximum": "partial",
       "wifi_unicast_maximum": "full",
-      "wifi_all_frames_maximum": "partial"
+      "wifi_all_frames_maximum": "partial",
+      "provider_completeness": {
+        "ethernet_attachment": "complete_attachment_bridge_fdb_dump_only",
+        "wifi_attachment": "fresh_complete_nl80211_station_dump_only",
+        "snapshot_global": "complete_fdb_and_fresh_complete_nl80211_station_dump"
+      }
     },
     "schedule": {
       "clock": "CLOCK_MONOTONIC_absolute_deadline",
@@ -260,7 +264,11 @@
       ],
       "all_source_baselines_maintained": true,
       "cross_source_delta_forbidden": true,
-      "stale_requires_age": true
+      "stale_requires_age": true,
+      "counter_reset": "clear_attachment_direction_history_and_rewarm",
+      "disabled_mode": "clear_edge_rate_state_and_force_topology_refresh",
+      "identity_state_retention": "current_published_identities_only",
+      "attachment_generation": "process_global_monotonic_allocator_without_historical_key_ledger"
     },
     "classification": {
       "E": "access_edge_authoritative_total",
@@ -301,7 +309,7 @@
       "edge_missing_fallback": "strictly_aligned_N_plus_S_degraded_only",
       "unclassified_must_not_be_named_unaccelerated": true,
       "classification_state_granularity": "client_worst_state_plus_sparse_direction_override",
-      "main_clients_payload": "rate_meta_with_directional_classification_coverage_summary",
+      "main_clients_payload": "rate_meta_with_sparse_directional_rate_freshness_and_classification_coverage_summary",
       "detail_payload": "traffic_classification_with_direction_state_comparison_E_and_N_S_U",
       "connection_only": "source_none_coverage_unavailable_scope_none"
     }

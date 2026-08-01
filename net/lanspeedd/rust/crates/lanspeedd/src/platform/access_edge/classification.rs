@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::model::ClassificationState;
 
@@ -121,8 +121,17 @@ impl ClassificationBook {
         self.epochs.clear();
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.epochs.is_empty()
+    }
+
     pub fn remove(&mut self, identity_key: &str) {
         self.epochs.remove(identity_key);
+    }
+
+    pub fn retain_identities(&mut self, identity_keys: &BTreeSet<String>) {
+        self.epochs
+            .retain(|identity_key, _| identity_keys.contains(identity_key));
     }
 
     pub fn update(
@@ -681,5 +690,36 @@ mod tests {
         let recovered = book.update("client", epoch(7, 1_000, 600, 200));
         assert_eq!(recovered.state, ClassificationState::Aligned);
         assert_eq!(recovered.comparison_window_ms, Some(6_000));
+    }
+
+    #[test]
+    fn invalid_window_clears_an_aligned_history_immediately() {
+        let mut book = ClassificationBook::default();
+        for id in 1..=3 {
+            book.update("client", epoch(id, 1_000, 600, 200));
+        }
+
+        let mut invalid = epoch(4, 1_000, 600, 200);
+        invalid.start_ms = invalid.end_ms;
+        assert_eq!(
+            book.update("client", invalid).state,
+            ClassificationState::WindowMismatch
+        );
+        assert_eq!(
+            book.update("client", epoch(5, 1_000, 600, 200)).state,
+            ClassificationState::Warmup
+        );
+    }
+
+    #[test]
+    fn retain_identities_bounds_classifier_history_during_churn() {
+        let mut book = ClassificationBook::default();
+        for index in 0..1_024 {
+            book.update(&format!("client-{index}"), epoch(1, 1_000, 600, 200));
+        }
+        let retained = BTreeSet::from(["client-1023".to_owned()]);
+        book.retain_identities(&retained);
+        assert_eq!(book.epochs.len(), 1);
+        assert!(book.epochs.contains_key("client-1023"));
     }
 }

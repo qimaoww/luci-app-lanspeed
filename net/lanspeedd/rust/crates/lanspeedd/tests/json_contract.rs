@@ -142,18 +142,24 @@ fn fixture_snapshot() -> ResponseSnapshot {
                 scope: RateScope::AllFrames,
                 tx: RateDirectionMeta {
                     source: RateSource::EdgePort,
-                    coverage: RateCoverage::Full,
+                    coverage: RateCoverage::Partial,
                     byte_domain: Some(ByteDomain::L2NoFcs),
+                    sample_ms: None,
+                    window_ms: None,
+                    stale: None,
                 },
                 rx: RateDirectionMeta {
                     source: RateSource::EdgePort,
-                    coverage: RateCoverage::Full,
+                    coverage: RateCoverage::Partial,
                     byte_domain: Some(ByteDomain::L2NoFcs),
+                    sample_ms: None,
+                    window_ms: None,
+                    stale: None,
                 },
                 attachment: Some(RateAttachment {
                     kind: AttachmentKind::Ethernet,
                     ifname: Some("lan2".into()),
-                    trust: AttachmentTrust::DeclaredDirect,
+                    trust: AttachmentTrust::ObservedExclusive,
                 }),
                 generation: 17,
                 window_ms: Some(1_000),
@@ -202,7 +208,6 @@ fn fixture_snapshot() -> ResponseSnapshot {
             collector_mode: "auto".into(),
             rate_collector_mode: "auto".into(),
             access_edge_mode: "shadow".into(),
-            dedicated_ports: vec!["lan2".into()],
             conn_collector_mode: "auto".into(),
             version: "1.0.0-r1".into(),
             capabilities: capabilities.clone(),
@@ -664,7 +669,6 @@ fn all_eight_fixed_methods_and_nested_models_keep_exact_maximal_key_sets() {
             "collector_mode",
             "rate_collector_mode",
             "access_edge_mode",
-            "dedicated_ports",
             "conn_collector_mode",
             "version",
             "capabilities",
@@ -960,7 +964,6 @@ fn optional_fields_are_omitted_without_changing_required_key_sets() {
             "collector_mode",
             "rate_collector_mode",
             "access_edge_mode",
-            "dedicated_ports",
             "conn_collector_mode",
             "version",
             "capabilities",
@@ -1109,6 +1112,29 @@ fn divergent_direction_state_is_serialized_sparsely() {
 }
 
 #[test]
+fn divergent_direction_freshness_is_serialized_sparsely() {
+    let mut snapshot = fixture_snapshot();
+    let meta = snapshot.clients.clients[0]
+        .rate_meta
+        .as_mut()
+        .expect("fixture rate metadata");
+    meta.stale = true;
+    meta.tx.sample_ms = Some(9_000);
+    meta.tx.window_ms = Some(900);
+    meta.tx.stale = Some(false);
+
+    let value = serde_json::to_value(snapshot.clients).unwrap();
+    let tx = &value["clients"][0]["rate_meta"]["tx"];
+    let rx = &value["clients"][0]["rate_meta"]["rx"];
+    assert_eq!(tx["sample_ms"], 9_000);
+    assert_eq!(tx["window_ms"], 900);
+    assert_eq!(tx["stale"], false);
+    assert!(rx.get("sample_ms").is_none());
+    assert!(rx.get("window_ms").is_none());
+    assert!(rx.get("stale").is_none());
+}
+
+#[test]
 fn json_names_enums_warnings_evidence_version_and_directions_are_stable() {
     let snapshot = fixture_snapshot();
     let status = snapshot.response(Method::Status).unwrap();
@@ -1196,11 +1222,11 @@ fn json_names_enums_warnings_evidence_version_and_directions_are_stable() {
     assert_eq!(client["rate_meta"]["version"], 1);
     assert_eq!(client["rate_meta"]["scope"], "all_frames");
     assert_eq!(client["rate_meta"]["tx"]["source"], "edge_port");
-    assert_eq!(client["rate_meta"]["tx"]["coverage"], "full");
+    assert_eq!(client["rate_meta"]["tx"]["coverage"], "partial");
     assert_eq!(client["rate_meta"]["tx"]["byte_domain"], "l2_no_fcs");
     assert_eq!(
         client["rate_meta"]["attachment"]["trust"],
-        "declared_direct"
+        "observed_exclusive"
     );
     assert_eq!(client["rate_meta"]["classification"]["state"], "aligned");
     assert_eq!(client["rate_meta"]["classification"]["tx_coverage_pct"], 96);

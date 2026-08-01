@@ -217,17 +217,43 @@ assert(edgeModel.topology.fdb_primary === 'RTM_GETNEIGH_AF_BRIDGE' &&
   accessEdgeRuntime.includes('inherit_unambiguous_fdb_vlan(') &&
   !accessEdgeWifi.includes('Command::new("iw")'),
   'Access Edge topology must use only standard read-only netlink APIs');
-assert(edgeModel.full_rules.declared_direct_required === true &&
+assert(edgeModel.full_rules.manual_direct_port_override === false &&
   edgeModel.full_rules.stable_complete_fdb_snapshots === 2 &&
   edgeModel.full_rules.other_dynamic_mac_forbidden === true &&
   edgeModel.full_rules.cross_vlan_mac_forbidden === true &&
   edgeModel.full_rules.fdb_event_monitor_required === true &&
   edgeModel.full_rules.automatic_single_mac_port_maximum === 'partial' &&
+  edgeModel.full_rules.shared_ap_wds_mesh_trunk_maximum === 'partial' &&
   edgeModel.full_rules.wifi_unicast_maximum === 'full' &&
   edgeModel.full_rules.wifi_all_frames_maximum === 'partial' &&
-  accessEdgeTopology.includes('AttachmentTrust::DeclaredDirect') &&
-  accessEdgeRuntime.includes('!self.event_monitor_failed'),
-  'Full ownership must require declared direct topology and a healthy complete FDB view');
+  edgeModel.full_rules.provider_completeness.ethernet_attachment ===
+    'complete_attachment_bridge_fdb_dump_only' &&
+  edgeModel.full_rules.provider_completeness.wifi_attachment ===
+    'fresh_complete_nl80211_station_dump_only' &&
+  edgeModel.full_rules.provider_completeness.snapshot_global ===
+    'complete_fdb_and_fresh_complete_nl80211_station_dump' &&
+  !accessEdgeTopology.includes('AttachmentTrust::DeclaredDirect') &&
+  accessEdgeTopology.includes('AttachmentTrust::ObservedExclusive') &&
+  accessEdgeRuntime.includes('let coverage = Coverage::Partial;') &&
+  accessEdgeRuntime.includes('fdb_event_monitor_unavailable'),
+  'Ethernet ownership must stay automatic and partial without a manual direct-port override');
+const generationFloorRead =
+  'let attachment_generation_floor = current.access_edge.attachment_generation_watermark();';
+const generationFloorAdvance =
+  '.advance_attachment_generation_floor(attachment_generation_floor);';
+const generationFloorReadOffset = production.indexOf(generationFloorRead);
+const generationFloorAdvanceOffset = production.indexOf(generationFloorAdvance);
+const reloadCandidateCollectionOffsets = Array.from(
+  production.matchAll(/candidate\.collect(?:_with_external_bpf)?\(/g),
+  (match) => match.index
+);
+assert(accessEdgeRuntime.includes('pub const fn attachment_generation_watermark(&self) -> u64') &&
+  accessEdgeRuntime.includes('pub fn advance_attachment_generation_floor(&mut self, floor: u64)') &&
+  generationFloorReadOffset >= 0 && generationFloorAdvanceOffset >= 0 &&
+  generationFloorReadOffset < generationFloorAdvanceOffset &&
+  reloadCandidateCollectionOffsets.length === 3 &&
+  reloadCandidateCollectionOffsets.every((offset) => generationFloorAdvanceOffset < offset),
+  'reload must advance the candidate attachment generation floor before every collection branch');
 assert(edgeModel.schedule.clock === 'CLOCK_MONOTONIC_absolute_deadline' &&
   edgeModel.schedule.edge_ms === 1000 &&
   edgeModel.schedule.classifier_ms === 2000 &&
@@ -245,6 +271,13 @@ assert(JSON.stringify(edgeModel.segment_fields) === JSON.stringify([
   accessEdgeRate.includes('current.source != previous.source') &&
   edgeModel.rate_mux.cross_source_delta_forbidden === true,
   'every delta must retain source, epoch, generation, byte domain and physical read timing');
+assert(edgeModel.rate_mux.counter_reset ===
+    'clear_attachment_direction_history_and_rewarm' &&
+  edgeModel.rate_mux.disabled_mode ===
+    'clear_edge_rate_state_and_force_topology_refresh' &&
+  accessEdgeRuntime.includes('reset_for_disabled_mode') &&
+  production.includes('self.access_edge.reset_for_disabled_mode();'),
+  'Access Edge mode changes must not reuse counter history across a disabled interval');
 assert(JSON.stringify(edgeModel.rate_mux.priority) === JSON.stringify([
   'edge_wifi', 'edge_port', 'ecm_bpf_fallback', 'ecm_nss_lower_bound',
   'tc_bpf_lower_bound', 'unavailable'

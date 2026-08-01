@@ -98,6 +98,36 @@ impl DirectionRateMux {
         self.transition_seq
     }
 
+    /// Invalidate Edge-owned state without disturbing an independent
+    /// classifier owner on the same attachment generation. A generation
+    /// change still invalidates every path because all candidates belong to
+    /// the previous attachment.
+    pub fn invalidate_edge(&mut self, attachment_generation: u64) {
+        if self
+            .attachment_generation
+            .is_some_and(|old| old != attachment_generation)
+        {
+            self.attachment_generation = Some(attachment_generation);
+            self.hard_demote();
+            return;
+        }
+        self.attachment_generation = Some(attachment_generation);
+        if self
+            .owner
+            .is_some_and(|source| matches!(source, RateSource::EdgePort | RateSource::EdgeWifi))
+        {
+            self.owner = None;
+            self.transition_seq = self.transition_seq.saturating_add(1);
+            self.consecutive_failures = 0;
+            self.last_selected = None;
+        }
+        if self.challenger.is_some_and(|(source, ..)| {
+            matches!(source, RateSource::EdgePort | RateSource::EdgeWifi)
+        }) {
+            self.challenger = None;
+        }
+    }
+
     pub fn update(
         &mut self,
         now_ms: u64,
@@ -345,6 +375,92 @@ mod tests {
     }
 
     #[test]
+    fn invalidated_edge_never_leaks_stale_while_fallback_rewarms() {
+        let mut mux = DirectionRateMux::new();
+        let edge = candidate(RateSource::EdgePort, 1, 8_000);
+        mux.update(1_000, 1, &[edge], None);
+        mux.update(
+            2_000,
+            1,
+            &[candidate_at(RateSource::EdgePort, 1, 8_000, 2_000)],
+            None,
+        );
+        assert_eq!(mux.owner(), Some(RateSource::EdgePort));
+
+        let first_fallback = candidate_at(RateSource::EcmBpfFallback, 1, 4_000, 2_000);
+        if matches!(
+            mux.owner(),
+            Some(RateSource::EdgePort | RateSource::EdgeWifi)
+        ) {
+            mux.invalidate_edge(1);
+        }
+        let warmup = mux.update(2_000, 1, &[first_fallback], None);
+        assert_eq!(warmup.state, MuxState::Warmup);
+        assert_eq!(warmup.owner, None);
+        assert_eq!(warmup.selected, None);
+
+        let second_fallback = candidate_at(RateSource::EcmBpfFallback, 1, 4_500, 4_000);
+        if matches!(
+            mux.owner(),
+            Some(RateSource::EdgePort | RateSource::EdgeWifi)
+        ) {
+            mux.invalidate_edge(1);
+        }
+        let promoted = mux.update(4_000, 1, &[second_fallback], None);
+        assert_eq!(promoted.state, MuxState::Available);
+        assert_eq!(promoted.owner, Some(RateSource::EcmBpfFallback));
+        assert_eq!(promoted.selected.unwrap().candidate.bps, 4_500);
+    }
+
+    #[test]
+    fn edge_failure_does_not_demote_an_independent_classifier_owner() {
+        let mut mux = DirectionRateMux::new();
+        let first = candidate_at(RateSource::EcmBpfFallback, 1, 4_000, 1_000);
+        let second = candidate_at(RateSource::EcmBpfFallback, 1, 4_500, 2_000);
+        mux.update(1_000, 1, &[first], None);
+        mux.update(2_000, 1, &[second], None);
+        assert_eq!(mux.owner(), Some(RateSource::EcmBpfFallback));
+
+        mux.invalidate_edge(1);
+        let retained = mux.update(3_000, 1, &[], None);
+        assert_eq!(retained.state, MuxState::Stale);
+        assert_eq!(retained.owner, Some(RateSource::EcmBpfFallback));
+        assert_eq!(
+            retained
+                .selected
+                .expect("classifier value is retained")
+                .candidate
+                .source,
+            RateSource::EcmBpfFallback
+        );
+
+        mux.invalidate_edge(2);
+        assert_eq!(mux.owner(), None);
+    }
+
+    #[test]
+    fn edge_failure_preserves_a_distinct_classifier_challenger_window() {
+        let mut mux = DirectionRateMux::new();
+        let edge_first = candidate_at(RateSource::EdgePort, 1, 8_000, 1_000);
+        let edge_second = candidate_at(RateSource::EdgePort, 1, 8_500, 2_000);
+        mux.update(1_000, 1, &[edge_first], None);
+        mux.update(2_000, 1, &[edge_second], None);
+
+        let fallback_first = candidate_at(RateSource::EcmBpfFallback, 1, 4_000, 3_000);
+        let held = mux.update(3_000, 1, &[fallback_first], None);
+        assert_eq!(held.state, MuxState::Stale);
+        assert_eq!(held.owner, Some(RateSource::EdgePort));
+
+        mux.invalidate_edge(1);
+        assert_eq!(mux.owner(), None);
+        let fallback_second = candidate_at(RateSource::EcmBpfFallback, 1, 4_500, 4_000);
+        let promoted = mux.update(4_000, 1, &[fallback_second], None);
+        assert_eq!(promoted.state, MuxState::Available);
+        assert_eq!(promoted.owner, Some(RateSource::EcmBpfFallback));
+        assert_eq!(promoted.selected.unwrap().candidate.bps, 4_500);
+    }
+
+    #[test]
     fn higher_priority_edge_replaces_fallback_after_two_windows() {
         let mut mux = DirectionRateMux::new();
         let fallback = candidate(RateSource::EcmBpfFallback, 1, 4_000);
@@ -364,6 +480,29 @@ mod tests {
                 .owner,
             Some(RateSource::EdgePort)
         );
+    }
+
+    #[test]
+    fn simultaneous_edge_nss_and_slow_candidates_publish_one_owner_without_sum() {
+        let mut mux = DirectionRateMux::new();
+        let first = [
+            candidate_at(RateSource::EdgePort, 1, 80_000, 1_000),
+            candidate_at(RateSource::EcmNssLowerBound, 1, 60_000, 1_000),
+            candidate_at(RateSource::TcBpfLowerBound, 1, 10_000, 1_000),
+        ];
+        assert_eq!(mux.update(1_000, 1, &first, None).state, MuxState::Warmup);
+
+        let second = [
+            candidate_at(RateSource::EdgePort, 1, 90_000, 2_000),
+            candidate_at(RateSource::EcmNssLowerBound, 1, 70_000, 2_000),
+            candidate_at(RateSource::TcBpfLowerBound, 1, 15_000, 2_000),
+        ];
+        let result = mux.update(2_000, 1, &second, None);
+        let selected = result.selected.expect("Edge owner is promoted");
+        assert_eq!(result.owner, Some(RateSource::EdgePort));
+        assert_eq!(selected.candidate.source, RateSource::EdgePort);
+        assert_eq!(selected.candidate.bps, 90_000);
+        assert_ne!(selected.candidate.bps, 90_000 + 70_000 + 15_000);
     }
 
     #[test]

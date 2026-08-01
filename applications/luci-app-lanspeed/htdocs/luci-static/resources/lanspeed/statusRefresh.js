@@ -24,7 +24,7 @@ var RATE_COVERAGE_LABELS = {
 };
 var RATE_COVERAGE_RANK = { unavailable: 0, degraded: 1, partial: 2, full: 3 };
 var ATTACHMENT_TRUST_LABELS = {
-	declared_direct: _('声明直连'), observed_exclusive: _('观测独占'),
+	observed_exclusive: _('观测独占'),
 	associated_station: _('已关联终端'),
 	shared: _('共享下联'), unknown: _('接入关系未知')
 };
@@ -289,11 +289,16 @@ function rateMetaCells(meta) {
 			}, _('NSS分类覆盖率 ') + minimum + '%'));
 		}
 	}
-	if (meta.stale === true) {
+	var summaryStale = meta.stale === true;
+	var txStale = typeof tx.stale === 'boolean' ? tx.stale : summaryStale;
+	var rxStale = typeof rx.stale === 'boolean' ? rx.stale : summaryStale;
+	if (txStale || rxStale) {
 		cells.push(E('span', {
 			'class': 'label warning',
-			'title': _('当前保留的是旧采样值')
-		}, _('已过期')));
+			'title': _('当前保留的是旧采样值') + '\n' +
+				_('上行：') + (txStale ? _('已过期') : _('新鲜')) + '\n' +
+				_('下行：') + (rxStale ? _('已过期') : _('新鲜'))
+		}, txStale && rxStale ? _('已过期') : _('部分过期')));
 	}
 	return cells;
 }

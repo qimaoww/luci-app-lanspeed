@@ -123,6 +123,10 @@ where
         self.previous.clear();
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.previous.is_empty()
+    }
+
     pub fn remove(&mut self, key: &K) {
         self.previous.remove(key);
     }

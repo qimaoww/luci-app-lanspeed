@@ -3883,14 +3883,14 @@ function assertStatusRefreshSortingInteraction(src) {
 		fail('statusRefresh.js must expose rate metadata rendering for validation');
 	} else {
 		const edgeCells = mod.rateMetaCells({
-			tx: { source: 'edge_port', coverage: 'full' },
-			rx: { source: 'edge_port', coverage: 'full' },
-			attachment: { kind: 'ethernet', ifname: 'lan2', trust: 'declared_direct' },
+			tx: { source: 'edge_port', coverage: 'partial' },
+			rx: { source: 'edge_port', coverage: 'partial' },
+			attachment: { kind: 'ethernet', ifname: 'lan2', trust: 'observed_exclusive' },
 			classification: { state: 'aligned', tx_coverage_pct: 96, rx_coverage_pct: 94 },
 			stale: false
 		});
 		const edgeText = edgeCells.map(fakeElementText).join(' · ');
-		if (!edgeText.includes('Edge-Port') || !edgeText.includes('Full') ||
+		if (!edgeText.includes('Edge-Port') || !edgeText.includes('Partial') ||
 		    !edgeText.includes('lan2') || !edgeText.includes('NSS分类覆盖率 94%')) {
 			fail('status client metadata must show owner, total coverage, attachment and compact NSS coverage');
 		}
@@ -3905,6 +3905,13 @@ function assertStatusRefreshSortingInteraction(src) {
 		    })) {
 			fail('unknown sources need a generic label and missing U/coverage must not become a zero badge');
 		}
+		const directionalStaleCells = mod.rateMetaCells({
+			tx: { source: 'edge_port', coverage: 'full', stale: true },
+			rx: { source: 'edge_port', coverage: 'full' },
+			stale: false
+		});
+		if (!directionalStaleCells.map(fakeElementText).join(' ').includes('部分过期'))
+			fail('status client metadata must preserve per-direction stale overrides');
 	}
 	if (typeof mod.reconcileClientRows !== 'function') {
 		fail('statusRefresh.js must expose keyed client-row reconciliation for validation');

@@ -268,9 +268,9 @@ function healthyClients() {
   value.clients[0].warnings = [];
   value.clients[0].rate_meta = {
     version: 1, scope: 'all_frames',
-    tx: { source: 'edge_port', coverage: 'full', byte_domain: 'l2_no_fcs' },
-    rx: { source: 'edge_port', coverage: 'full', byte_domain: 'l2_no_fcs' },
-    attachment: { kind: 'ethernet', ifname: 'lan2', trust: 'declared_direct' },
+    tx: { source: 'edge_port', coverage: 'partial', byte_domain: 'l2_no_fcs' },
+    rx: { source: 'edge_port', coverage: 'partial', byte_domain: 'l2_no_fcs' },
+    attachment: { kind: 'ethernet', ifname: 'lan2', trust: 'observed_exclusive' },
     generation: 1, window_ms: 1000, sample_ms: 9500, stale: false, reason_codes: [],
     classification: {
       state: 'aligned', sample_ms: 9500, window_ms: 2000,
@@ -429,12 +429,20 @@ async function testStrictContracts() {
   assert.strictEqual(model.validateRuntimeResponse(mapLossMeta, 'clients').valid, true,
     'map_loss classification must remain valid without fabricated coverage');
   const directionalMeta = clone(futureRateSource);
+  directionalMeta.clients[0].rate_meta.stale = true;
+  Object.assign(directionalMeta.clients[0].rate_meta.tx, {
+    sample_ms: 9000, window_ms: 1800, stale: false
+  });
   directionalMeta.clients[0].rate_meta.classification = {
     state: 'counter_skew', tx_state: 'aligned', sample_ms: 9500,
     window_ms: 2000, comparison_window_ms: 6000, tx_coverage_pct: 96
   };
   assert.strictEqual(model.validateRuntimeResponse(directionalMeta, 'clients').valid, true,
-    'optional per-direction state must distinguish a valid direction from the merged worst state');
+    'optional per-direction rate and classification state must override compact client summaries');
+  const badDirectionalRate = clone(directionalMeta);
+  badDirectionalRate.clients[0].rate_meta.tx.window_ms = 0;
+  assert.strictEqual(model.validateRuntimeResponse(badDirectionalRate, 'clients').valid, false,
+    'per-direction windows must remain positive');
   directionalMeta.clients[0].rate_meta.classification.tx_state = 'invalid_state';
   assert.strictEqual(model.validateRuntimeResponse(directionalMeta, 'clients').valid, false,
     'per-direction classification state remains a closed machine enum');
@@ -499,7 +507,7 @@ async function testResourceStateMachine() {
   assert.strictEqual(goodRate.state, 'good');
   assert.strictEqual(goodRate.sourceText, 'Edge-Port 2');
   assert.strictEqual(model.accessEdgeStateWithRpc(good).value, '1/1 个接入点');
-  assert.strictEqual(model.accessEdgeStateWithRpc(good).trustText, '声明直连 1');
+  assert.strictEqual(model.accessEdgeStateWithRpc(good).trustText, '单 MAC 观察 1');
   const goodClassification = model.classificationStateWithRpc(good);
   assert.strictEqual(goodClassification.state, 'good');
   assert.strictEqual(goodClassification.badge, '运行正常');
@@ -580,6 +588,31 @@ async function testResourceStateMachine() {
     'provable frame-scope limits must not turn a fresh total-rate owner into a fault');
   assert.strictEqual(model.rateOwnerStateWithRpc(partialEdge).badge, '正常');
   assert.strictEqual(model.accessEdgeStateWithRpc(partialEdge).badge, '正常');
+
+  const observedPortEvidence = payloads();
+  observedPortEvidence.clients.clients[0].rate_meta.tx.coverage = 'partial';
+  observedPortEvidence.clients.clients[0].rate_meta.rx.coverage = 'partial';
+  observedPortEvidence.clients.clients[0].rate_meta.attachment.trust = 'observed_exclusive';
+  observedPortEvidence.clients.evidence.access_edge.coverage = 'partial';
+  observedPortEvidence.clients.evidence.access_edge.reason_codes =
+    [ 'ethernet_full_scope_unproven' ];
+  const observedPort = model.normalizeResults(await settled(observedPortEvidence), null, 12755, 4);
+  const observedPortIntegrity = model.integrityStateWithRpc(observedPort);
+  assert(!observedPortIntegrity.reasonText.includes('缺少当前接入 generation'),
+    'an observed Edge-Port owner must not be described as missing merely because proof is Partial');
+  assert(observedPortIntegrity.reasonText.includes('Edge-Port'),
+    'Partial Ethernet proof must say that Edge-Port still owns the displayed total');
+
+  const directionalStaleValues = payloads();
+  directionalStaleValues.clients.clients[0].rate_meta.stale = false;
+  directionalStaleValues.clients.clients[0].rate_meta.tx.stale = true;
+  const directionalStale = model.normalizeResults(await settled(directionalStaleValues), null, 12760, 4);
+  const directionalStaleRate = model.rateOwnerStateWithRpc(directionalStale);
+  assert.strictEqual(directionalStaleRate.facts.staleDirections, 1);
+  assert(directionalStaleRate.description.includes('1 个方向'),
+    'diagnostics must preserve which direction is stale');
+  assert.strictEqual(model.integrityStateWithRpc(directionalStale).state, 'warning',
+    'direction-level stale evidence must not be hidden by a false client summary');
 
   const missingRateMetaValues = payloads();
   delete missingRateMetaValues.clients.clients[0].rate_meta;

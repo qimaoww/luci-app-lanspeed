@@ -153,12 +153,12 @@ var ACCESS_EDGE_REASON_LABELS = {
 	fdb_event_monitor_failed: _('网桥 FDB 事件监听失败'),
 	fdb_event_monitor_unavailable: _('网桥 FDB 事件监听不可用'),
 	fdb_fallback_incomplete: _('FDB 后备读取无法证明结果完整'),
-	fresh_edge_owner_missing: _('部分方向的精准总速率来源尚未达到 Full 证明'),
+	fresh_edge_owner_missing: _('部分方向缺少当前接入 generation 的新鲜精准总速率来源'),
+	ethernet_full_scope_unproven: _('有线总速率已由 Edge-Port 接管，但当前拓扑最多只能证明 Partial'),
 	nl80211_dump_failed: _('无线客户端计数读取失败'),
 	nl80211_dump_incomplete: _('无线客户端计数读取不完整'),
 	nl80211_station_sample_missing: _('无线客户端缺少本轮计数'),
 	port_counter_missing: _('有线接入口缺少本轮计数'),
-	port_not_declared_direct: _('有线端口未声明为一口一设备，不能证明 Full'),
 	rate_owner_unavailable: _('客户端没有可用的总速率来源'),
 	shadow_not_rate_owner: _('精准接入点当前不负责页面总速率'),
 	shared_or_unproven_port: _('端口为共享下联或无法证明为直连'),
@@ -444,7 +444,7 @@ function validateCoverage(value, path) {
 	return null;
 }
 function validateRateDirectionMeta(value, path) {
-	if (!onlyFields(value, [ 'source', 'coverage', 'byte_domain' ]))
+	if (!onlyFields(value, [ 'source', 'coverage', 'byte_domain', 'sample_ms', 'window_ms', 'stale' ]))
 		return failure(path, _('速率方向元数据无效'));
 	var missing = requireFields(value, [ 'source', 'coverage' ], path);
 	if (missing) return missing;
@@ -454,7 +454,9 @@ function validateRateDirectionMeta(value, path) {
 	if (!boundedString(value.source, 1, 48) || !/^[A-Za-z0-9_-]+$/.test(value.source) ||
 		!enumValue(value.coverage, [ 'full', 'partial', 'degraded', 'unavailable' ]) ||
 		(hasOwn(value, 'byte_domain') && !enumValue(value.byte_domain,
-			[ 'l2_no_fcs', 'l2_with_fcs', 'station_data', 'ecm_data' ])))
+			[ 'l2_no_fcs', 'l2_with_fcs', 'station_data', 'ecm_data' ])) ||
+		!optionalIntegers(value, [ 'sample_ms', 'window_ms' ], { window_ms: 1 }) ||
+		(hasOwn(value, 'stale') && typeof value.stale !== 'boolean'))
 		return failure(path, _('速率方向元数据无效'));
 	return null;
 }
@@ -483,7 +485,7 @@ function validateRateMeta(value, path) {
 		var attachmentMissing = requireFields(attachment, [ 'kind', 'trust' ], path + '.attachment');
 		if (attachmentMissing) return attachmentMissing;
 		if (!enumValue(attachment.kind, [ 'ethernet', 'wifi', 'unknown' ]) ||
-			!enumValue(attachment.trust, [ 'declared_direct', 'associated_station', 'observed_exclusive', 'shared', 'unknown' ]) ||
+			!enumValue(attachment.trust, [ 'associated_station', 'observed_exclusive', 'shared', 'unknown' ]) ||
 			(hasOwn(attachment, 'ifname') && !boundedString(attachment.ifname, 1, 48)))
 			return failure(path + '.attachment', _('物理接入点元数据无效'));
 	}
@@ -509,7 +511,7 @@ function validateRateMeta(value, path) {
 function validateStatusResponse(value) {
 	var fields = [ 'mode', 'confidence', 'warnings', 'evidence', 'refresh_interval_ms',
 		'active_client_window_ms', 'active_client_min_bps', 'overview_window_samples',
-		'collector_mode', 'rate_collector_mode', 'access_edge_mode', 'dedicated_ports',
+		'collector_mode', 'rate_collector_mode', 'access_edge_mode',
 		'conn_collector_mode', 'version',
 		'capabilities', 'coverage' ];
 	if (!onlyFields(value, fields)) return failure('status', _('存在未定义字段'));
@@ -525,13 +527,6 @@ function validateStatusResponse(value) {
 	if (hasOwn(value, 'access_edge_mode') &&
 		!enumValue(value.access_edge_mode, [ 'off', 'shadow', 'active' ]))
 		return failure('status.access_edge_mode', _('字段无效'));
-	if (hasOwn(value, 'dedicated_ports') &&
-		(!Array.isArray(value.dedicated_ports) || value.dedicated_ports.length > 16 ||
-		 value.dedicated_ports.some(function(port, index) {
-			return !boundedString(port, 1, 31) || !/^[^\s/,\u0000]+$/.test(port) ||
-				value.dedicated_ports.indexOf(port) !== index;
-		 })))
-		return failure('status.dedicated_ports', _('字段无效'));
 	if (hasOwn(value, 'collector_mode') && !enumValue(value.collector_mode,
 		[ 'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf', 'conntrack_netlink', 'conntrack_procfs' ]))
 		return failure('status.collector_mode', _('字段无效'));
@@ -987,7 +982,8 @@ function edgeReasonText(code) {
 function collectRateFacts(clientsResponse) {
 	var clients = asArray(clientsResponse && clientsResponse.clients);
 	var sourceCounts = Object.create(null), coverageCounts = Object.create(null), scopeCounts = Object.create(null);
-	var ownerDirections = 0, unavailableDirections = 0, fallbackDirections = 0, staleClients = 0;
+	var ownerDirections = 0, unavailableDirections = 0, fallbackDirections = 0;
+	var staleClients = 0, staleDirections = 0;
 	var attachmentKinds = Object.create(null), attachmentTrust = Object.create(null), reasonCodes = [];
 	clients.forEach(function(client) {
 		var meta = client && client.rate_meta;
@@ -1014,8 +1010,11 @@ function collectRateFacts(clientsResponse) {
 		[ meta.tx, meta.rx ].forEach(function(direction) {
 			var source = plainObject(direction) ? String(direction.source || 'none') : 'none';
 			var coverage = plainObject(direction) ? String(direction.coverage || 'unavailable') : 'unavailable';
+			var directionStale = plainObject(direction) && typeof direction.stale === 'boolean'
+				? direction.stale : meta.stale === true;
 			sourceCounts[source] = (sourceCounts[source] || 0) + 1;
 			coverageCounts[coverage] = (coverageCounts[coverage] || 0) + 1;
+			if (directionStale) staleDirections++;
 			if (source === 'none' || coverage === 'unavailable') unavailableDirections++;
 			else ownerDirections++;
 			if (source === 'ecm_bpf_fallback' || source === 'ecm_nss_lower_bound' || source === 'tc_bpf_lower_bound')
@@ -1025,7 +1024,7 @@ function collectRateFacts(clientsResponse) {
 	return {
 		clients: clients, totalClients: clients.length, totalDirections: clients.length * 2,
 		ownerDirections: ownerDirections, unavailableDirections: unavailableDirections,
-		fallbackDirections: fallbackDirections, staleClients: staleClients,
+		fallbackDirections: fallbackDirections, staleClients: staleClients, staleDirections: staleDirections,
 		sourceCounts: sourceCounts, coverageCounts: coverageCounts, scopeCounts: scopeCounts,
 		attachmentKinds: attachmentKinds, attachmentTrust: attachmentTrust, reasonCodes: reasonCodes
 	};
@@ -1053,9 +1052,9 @@ function rateOwnerStateWithRpc(viewState) {
 		} else if (facts.fallbackDirections || facts.coverageCounts.degraded || coverage.quality === 'degraded') {
 			state = 'warning'; badge = _('降级');
 			description += ' ' + _('部分方向正在使用分类器降级来源，只能代表已观察到的路由流量。');
-		} else if (facts.staleClients) {
+		} else if (facts.staleDirections) {
 			state = 'warning'; badge = _('存在陈旧值');
-			description += ' ' + _('%d 个客户端的总速率已标记为陈旧。').format(facts.staleClients);
+			description += ' ' + _('%d 个方向的总速率已标记为陈旧。').format(facts.staleDirections);
 		} else if (coverage.quality === 'full' || coverage.quality === 'partial') {
 			/* Partial describes the provable frame scope, not a failed rate sample. */
 			state = 'good'; badge = _('正常');
@@ -1124,9 +1123,9 @@ function accessEdgeStateWithRpc(viewState) {
 	var attachmentText = countSummary(facts.attachmentKinds,
 		{ ethernet: _('有线'), wifi: _('Wi-Fi'), unknown: _('未知') }, [ 'ethernet', 'wifi', 'unknown' ]);
 	var trustText = countSummary(facts.attachmentTrust, {
-		declared_direct: _('声明直连'), associated_station: _('无线关联'),
+		associated_station: _('无线关联'),
 		observed_exclusive: _('单 MAC 观察'), shared: _('共享'), unknown: _('未知')
-	}, [ 'declared_direct', 'associated_station', 'observed_exclusive', 'shared', 'unknown' ]);
+	}, [ 'associated_station', 'observed_exclusive', 'shared', 'unknown' ]);
 	if (rpc.state === 'failed' || rpc.state === 'invalid' || rpc.state === 'missing') {
 		state = 'bad'; badge = _('不可用'); description = _('客户端 RPC 没有返回精准接入点证据。');
 	} else if (rpc.state === 'loading') {
@@ -1272,7 +1271,7 @@ function integrityStateWithRpc(viewState) {
 	});
 	var rpc = rpcState(viewState, 'clients');
 	var state = facts.unavailableDirections ? 'bad' :
-		(facts.fallbackDirections || facts.staleClients || reasons.length ? 'warning' : 'good');
+		(facts.fallbackDirections || facts.staleDirections || reasons.length ? 'warning' : 'good');
 	var badge = state === 'bad' ? _('有缺失') : (state === 'warning' ? _('需关注') : _('正常'));
 	var value = reasons.length ? _('%d 项限制').format(reasons.length) : _('无未解释缺口');
 	var description = reasons.length ? reasons.slice(0, 3).map(edgeReasonText).join('；') + '。' :
@@ -1286,11 +1285,11 @@ function integrityStateWithRpc(viewState) {
 		state = worseState(state, 'warning'); badge = _('沿用旧值'); description += ' ' + _('本轮 RPC 沿用旧值。');
 	}
 	return { state: state, badge: badge, value: value, description: description,
-		meta: _('回退方向 %d · 不可用方向 %d · 陈旧客户端 %d').format(
-			facts.fallbackDirections, facts.unavailableDirections, facts.staleClients),
+		meta: _('回退方向 %d · 不可用方向 %d · 陈旧方向 %d').format(
+			facts.fallbackDirections, facts.unavailableDirections, facts.staleDirections),
 		reasonCodes: reasons, reasonText: reasons.length ? reasons.map(edgeReasonText).join('；') : _('无'),
 		fallbackDirections: facts.fallbackDirections, unavailableDirections: facts.unavailableDirections,
-		staleClients: facts.staleClients };
+		staleClients: facts.staleClients, staleDirections: facts.staleDirections };
 }
 
 function accessEdgeCoverageState(clients) {

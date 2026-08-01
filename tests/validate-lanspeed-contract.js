@@ -318,7 +318,6 @@ function validateFixture(fixture) {
     'refresh_interval_ms',
     'rate_collector_mode',
     'access_edge_mode',
-    'dedicated_ports',
     'conn_collector_mode',
     'version',
     'capabilities'
@@ -787,13 +786,14 @@ validateValue(schema, schema.$defs.trafficClassification, {
 validateValue(schema, schema.$defs.clientRateMeta, {
   version: 1,
   scope: 'all_frames',
-  tx: { source: 'edge_port', coverage: 'full', byte_domain: 'l2_no_fcs' },
-  rx: { source: 'edge_port', coverage: 'full', byte_domain: 'l2_no_fcs' },
-  attachment: { kind: 'ethernet', ifname: 'lan2', trust: 'declared_direct' },
+  tx: { source: 'edge_port', coverage: 'partial', byte_domain: 'l2_no_fcs',
+    sample_ms: 123000, window_ms: 900, stale: false },
+  rx: { source: 'edge_port', coverage: 'partial', byte_domain: 'l2_no_fcs' },
+  attachment: { kind: 'ethernet', ifname: 'lan2', trust: 'observed_exclusive' },
   generation: 17,
   window_ms: 1000,
   sample_ms: 123456,
-  stale: false,
+  stale: true,
   reason_codes: [],
   classification: {
     state: 'counter_skew',
@@ -881,9 +881,11 @@ assert(schema.$defs.status.properties.collector_mode.$ref === '#/$defs/collector
 assert(schema.$defs.status.properties.rate_collector_mode.$ref === '#/$defs/rateCollectorMode', 'schema status.rate_collector_mode must reuse rateCollectorMode enum');
 assert(JSON.stringify(schema.$defs.status.properties.access_edge_mode.enum) === JSON.stringify(['off', 'shadow', 'active']),
   'schema status.access_edge_mode must expose only off/shadow/active');
-assert(schema.$defs.status.properties.dedicated_ports.maxItems === 16 &&
-  schema.$defs.status.properties.dedicated_ports.uniqueItems === true,
-  'schema status.dedicated_ports must be bounded and unique');
+assert(!Object.prototype.hasOwnProperty.call(schema.$defs.status.properties, 'dedicated_ports'),
+  'schema status must not expose removed dedicated_ports runtime configuration');
+assert(JSON.stringify(schema.$defs.attachmentTrust.enum) ===
+  JSON.stringify(['associated_station', 'observed_exclusive', 'shared', 'unknown']),
+  'schema attachment trust must not retain a manual declared-direct override');
 assert(schema.$defs.status.properties.conn_collector_mode.$ref === '#/$defs/connCollectorMode', 'schema status.conn_collector_mode must reuse connCollectorMode enum');
 assert(schema.$defs.collectorMode.enum.includes('auto'), 'schema must allow status.collector_mode=auto');
 assert(schema.$defs.collectorMode.enum.includes('bpf'), 'schema must allow status.collector_mode=bpf');

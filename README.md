@@ -2,7 +2,7 @@
 
 `luci-app-lanspeed` 为 ImmortalWrt / OpenWrt 提供 LAN 客户端实时速率、接口吞吐、连接数、逐连接速率、诊断与配置页面。用户态服务 `lanspeedd` 使用 Rust/Aya，提供九个 ubus 方法；`lanspeedd-bpf` 安装目标架构对应的 eBPF 对象。
 
-客户端总速率优先来自只读 Access Edge：稳定观测到的有线客户端使用 netdev 64 位计数，Wi-Fi 使用 NL80211 station 计数。TC-BPF 观察 CPU 慢路径，Qualcomm ECM kprobe 只记录已由 NSS callback context 证明的硬件增量；分类值不再与总速率相加。已验证 AP station 最高为 `unicast/full`，WDS、Mesh、共享下联与未验证组播保持 Partial。本项目按证据声明覆盖范围，不把未知字节强行二分为 NSS/非 NSS。
+客户端总速率优先来自只读 Access Edge：稳定观测到的有线客户端使用 netdev 64 位计数，Wi-Fi 使用 NL80211 station 计数。TC-BPF 观察 CPU 可见 LAN 边缘流量；在 NSS 设备上它对应 CPU 慢路径。Qualcomm ECM kprobe 只记录已由 NSS callback context 证明的硬件增量；分类值不再与总速率相加。已验证 AP station 最高为 `unicast/full`，WDS、Mesh、共享下联与未验证组播保持 Partial。本项目按证据声明覆盖范围，不把未知字节强行二分为 NSS/非 NSS；它不是完整流量审计系统，不声明全流量绝对准确。
 
 ## 界面预览
 
@@ -38,7 +38,7 @@ S = TC-BPF 已识别 CPU 慢路径流量
 U = E - (N + S)，只在同窗口且 ByteDomain 兼容时发布
 ```
 
-主表总速率始终优先显示 `E`。`N`、`S` 是分类观察值，不与 `E` 相加；`U` 只能显示为“未分类”。Edge 每 1 秒采样，ECM/TC 每 2 秒采样，连续三个稳定分类 epoch 形成 6 秒比较窗。不同 ByteDomain、map loss、读端偏差、attachment 变化或 `N+S>E` 时仍可显示 N/S，但必须省略 U 与分类覆盖率。
+主表总速率始终优先显示 `E`。`N`、`S` 是分类观察值，不与 `E` 相加；`U` 只能显示为“未分类”。分类器内部只在严格同窗且口径兼容时合并 N/S 原始增量，不叠加已经计算过的速率；RateMux 更不会发布 E+N+S。Edge 每 1 秒采样，ECM/TC 每 2 秒采样，连续三个稳定分类 epoch 形成 6 秒比较窗。不同 ByteDomain、map loss、读端偏差、attachment 变化或 `N+S>E` 时仍可显示 N/S，但必须省略 U 与分类覆盖率。
 
 ### x86/TC-BPF
 
@@ -70,7 +70,7 @@ Qualcomm aarch64 NSS 设备自动按 ECM+BPF、ECM、BPF 选择健康后端，�
 - 浏览器按当前页查询公网 IP 地理位置；私网、保留地址和 Fake-IP 在本地分类。
 - 实时状态、运行诊断、LAN Speed 配置和客户端详情使用同一后端版本与 RPC 契约。
 - LuCI 显示完整包版本，例如 `1.1.5-r6`，并使用同一版本作为静态资源缓存键。
-- 诊断页独立校验六个 RPC，并分开展示客户端总速率 owner、精准接入拓扑、NSS/CPU 分类和不可比较或降级边界。
+- 诊断页独立校验六个 RPC 请求，并分开展示客户端总速率 owner、精准接入拓扑、NSS/CPU 分类和不可比较或降级边界。
 - 配置页支持速率模式、连接模式、采样、活动阈值、IPv6 显示、接口采集/观察和严格输入校验。
 - 配置页支持 Access Edge `off/shadow/active`；默认 `active` 在自动模式中启用精准总速率。
 - OpenClash、dae/daed、SQM/qosify/ifb、flow offload 与 fullcone NAT 探测和机器可读告警。
@@ -190,7 +190,7 @@ config lanspeed 'main'
 | `enable_bpf` | `1` | BPF 运行开关，不改变包依赖 |
 | `enable_conntrack_fallback` | `1` | 连接元数据回退，不参与客户端总速率 |
 
-旧版本曾提供手工 `dedicated_port` 声明；当前配置页不再提供该选项，保存配置时会自动清理遗留 UCI 项。
+历史配置可能包含手工 `dedicated_port` 声明；当前配置页不再提供该选项，保存配置时会自动清理遗留 UCI 项。
 
 分类覆盖率只在同一比较口径上发布。有线客户端会把端口、TC 慢路径和 NSS ECM
 计数按真实包数统一换算为 `l2_with_fcs` 后比较；NL80211 的 Wi-Fi station 字节包含
@@ -233,6 +233,7 @@ ubus call lanspeed client_connections \
 | 外部 TC filter | `tc_filter_conflict` |
 | conntrack NAT-only 行 | `conntrack_routed_nat_only` |
 | flowtable / nlbwmon | `flowtable_counter_missing`、`nlbwmon_counter_conflict` |
+| same-subnet side-router direct | 同网段客户端与旁路网关直连可能绕过路由器采集点 |
 | LAN-to-LAN | `lan_to_lan_visibility_limited` |
 | 不对称路径 | `asymmetric_path_possible` |
 | VLAN/Wi-Fi 重复 MAC | `duplicate_mac_across_vlans` |

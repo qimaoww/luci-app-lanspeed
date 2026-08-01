@@ -148,7 +148,6 @@ pub struct StatusResponse {
     pub collector_mode: String,
     pub rate_collector_mode: String,
     pub access_edge_mode: String,
-    pub dedicated_ports: Vec<String>,
     pub conn_collector_mode: String,
     pub version: String,
     pub capabilities: Capabilities,
@@ -210,7 +209,6 @@ pub enum AttachmentKind {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttachmentTrust {
-    DeclaredDirect,
     AssociatedStation,
     ObservedExclusive,
     Shared,
@@ -239,6 +237,20 @@ pub struct RateDirectionMeta {
     pub coverage: RateCoverage,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub byte_domain: Option<ByteDomain>,
+    /// Direction overrides are emitted only when they differ from the compact
+    /// client-level summary in `ClientRateMeta`.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "saturated_option_u64"
+    )]
+    pub sample_ms: Option<u64>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "saturated_option_u64"
+    )]
+    pub window_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
