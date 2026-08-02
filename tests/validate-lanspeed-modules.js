@@ -1556,6 +1556,83 @@ function loadStatusViewRouter(src, fakeWindow, clientDetailView, statusView) {
 	);
 }
 
+function loadStatusOverviewModule(src, rpc) {
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	return vm.compileFunction(src, [
+		'baseclass', 'fmt', 'lsRpc', 'statusIp', 'statusShell', 'statusRefresh'
+	], { filename: 'resources/lanspeed/statusOverview.js' })(
+		fakeBaseclass,
+		{
+			nssPlatform: function() { return false; }
+		},
+		rpc,
+		{
+			hideIpv6RangesValue: function(value) { return value || []; }
+		},
+		{},
+		{}
+	);
+}
+
+function assertStatusOverviewInitialAlignment(src) {
+	function statusSample(sampleMs) {
+		return {
+			coverage: { quality: 'ok' },
+			evidence: {
+				effective_collector: 'bpf',
+				bpf: { last_complete_snapshot_ms: sampleMs },
+				platform: { profile: 'x86_tc_bpf', target_arch: 'x86_64' }
+			}
+		};
+	}
+	function clientSample(sampleMs, identity) {
+		return {
+			clients: [ {
+				identity_key: identity,
+				collector_mode: 'bpf',
+				sample_ms: sampleMs,
+				tx_bps: sampleMs,
+				rx_bps: sampleMs
+			} ],
+			evidence: {
+				effective_collector: 'bpf',
+				bpf: { last_complete_snapshot_ms: sampleMs }
+			}
+		};
+	}
+	function interfaceSample(sampleMs) {
+		return {
+			monotonic_ms: sampleMs,
+			interfaces: [ { name: 'br-lan', sample_ms: sampleMs } ]
+		};
+	}
+
+	const calls = { status: 0, clients: 0, interfaces: 0, uci: 0 };
+	const responses = {
+		status: [ statusSample(1000), statusSample(3000) ],
+		clients: [ clientSample(2000, 'split@lan'), clientSample(3000, 'aligned@lan') ],
+		interfaces: [ interfaceSample(2000), interfaceSample(3000) ]
+	};
+	const rpc = {
+		status: function() { calls.status++; return Promise.resolve(responses.status.shift()); },
+		clients: function() { calls.clients++; return Promise.resolve(responses.clients.shift()); },
+		interfaces: function() { calls.interfaces++; return Promise.resolve(responses.interfaces.shift()); },
+		uciGet: function() { calls.uci++; return Promise.resolve({ show_client_status: '1' }); }
+	};
+	const mod = loadStatusOverviewModule(src, rpc);
+	let now = 10000;
+	asyncChecks.push(mod.loadAll(null, function() { return ++now; }).then(function(result) {
+		if (calls.status !== 2 || calls.clients !== 2 || calls.interfaces !== 2 || calls.uci !== 1 ||
+		    !result.livePair || result.livePair.aligned !== true || result.livePair.sampleMs !== 3000 ||
+		    !result.clients || !result.clients.clients || result.clients.clients.length !== 1 ||
+		    result.clients.clients[0].identity_key !== 'aligned@lan' || result.showClientStatus !== true) {
+			fail('statusOverview.js must retry an initial split x86 live sample before rendering instead of publishing a false empty page');
+		}
+	}).catch(function(error) {
+		fail('statusOverview.js initial x86 sample alignment behavior failed: ' + (error && error.stack || error));
+	}));
+}
+
 function assertStatusViewRouterBehavior(src) {
 	const fakeWindow = { location: { search: '' } };
 	const calls = {
@@ -3886,6 +3963,22 @@ function assertFormatSorting(src) {
 
 function assertStatusRefreshSortingInteraction(src) {
 	const mod = loadStatusRefreshModule(src);
+	if (!mod || typeof mod.sampleSyncPending !== 'function' ||
+	    !mod.sampleSyncPending({ livePair: {
+		aligned: null,
+		retained: false,
+		pendingCoverageSampleMs: 1000,
+		pendingClientSampleMs: 2000,
+		pendingInterfaceSampleMs: 2000
+	    } }) ||
+	    mod.sampleSyncPending({ livePair: { aligned: true, retained: false } }) ||
+	    mod.sampleSyncPending({ livePair: {
+		aligned: false,
+		retained: true,
+		pendingCoverageSampleMs: 1000
+	    } })) {
+		fail('statusRefresh.js must distinguish an unrenderable initial split sample from aligned or retained live data');
+	}
 	if (!mod || typeof mod.refreshSortHeaders !== 'function') {
 		fail('statusRefresh.js must expose its sort-header refresh behavior for validation');
 		return;
@@ -7242,6 +7335,9 @@ EXPECTED_MODULES.forEach(function(name) {
 	if (name === 'statusView.js') {
 		assertStatusViewEntryIsThin(src);
 		assertStatusViewRouterBehavior(src);
+	}
+	if (name === 'statusOverview.js') {
+		assertStatusOverviewInitialAlignment(src);
 	}
 	if (name === 'statusIp.js') {
 		assertStatusIpModule(src);

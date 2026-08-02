@@ -67,6 +67,18 @@ function rpcErrorText(result) {
 	return text;
 }
 
+function sampleSyncPending(viewState) {
+	var pair = viewState && viewState.livePair;
+	if (!pair || pair.retained === true || pair.aligned === true) return false;
+	return [
+		'pendingCoverageSampleMs',
+		'pendingClientSampleMs',
+		'pendingInterfaceSampleMs'
+	].some(function(key) {
+		return Object.prototype.hasOwnProperty.call(pair, key);
+	});
+}
+
 function refreshAvailability(viewState, refs) {
 	var rpc = viewState.rpc || {};
 	var keys = Object.keys(RPC_LABELS);
@@ -78,10 +90,12 @@ function refreshAvailability(viewState, refs) {
 	var status = viewState.status || {};
 	var liveUnavailable = status.capabilities && status.capabilities.live_metrics === false;
 	var runtimeUnavailable = liveUnavailable && status.mode === 'Unsupported';
+	var samplePending = !failed.length && !liveUnavailable && sampleSyncPending(viewState);
 
 	if (refs.root) {
-		refs.root.setAttribute('aria-busy', viewState.loading ? 'true' : 'false');
-		refs.root.setAttribute('data-state', hardFailure || runtimeUnavailable ? 'bad' :
+		refs.root.setAttribute('aria-busy', viewState.loading || samplePending ? 'true' : 'false');
+		refs.root.setAttribute('data-state', samplePending ? 'loading' :
+			hardFailure || runtimeUnavailable ? 'bad' :
 			failed.length || liveUnavailable ? 'warning' : 'good');
 	}
 	if (refs.btnRefresh) {
@@ -94,7 +108,7 @@ function refreshAvailability(viewState, refs) {
 		refs.errorBox.setAttribute('aria-hidden', 'true');
 		refs.errorPre.textContent = '';
 		fmt.replaceChildren(refs.errorList, []);
-		return { failed: failed, hardFailure: hardFailure };
+		return { failed: failed, hardFailure: hardFailure, samplePending: samplePending };
 	}
 
 	refs.errorBox.style.display = '';
@@ -114,7 +128,7 @@ function refreshAvailability(viewState, refs) {
 				: E('span', { 'class': 'label label-danger' }, _('不可用'))
 		]);
 	}));
-	return { failed: failed, hardFailure: hardFailure };
+	return { failed: failed, hardFailure: hardFailure, samplePending: false };
 }
 
 function refreshIntervalControl(viewState, refs, status) {
@@ -475,9 +489,9 @@ function refreshLive(viewState) {
 	refs.meta.textContent = metaParts.join(' · ');
 
 	var totals = fmt.sumTotals(clientsAll, activeCfg);
-	refs.mTx.textContent = fmt.formatRate(totals.tx, prefs.unit);
-	refs.mRx.textContent = fmt.formatRate(totals.rx, prefs.unit);
-	refs.mClients.textContent = String(clientsAll.length);
+	refs.mTx.textContent = availability.samplePending ? '—' : fmt.formatRate(totals.tx, prefs.unit);
+	refs.mRx.textContent = availability.samplePending ? '—' : fmt.formatRate(totals.rx, prefs.unit);
+	refs.mClients.textContent = availability.samplePending ? '—' : String(clientsAll.length);
 
 	var clientsData = viewState.clients || {};
 	var udpSub;
@@ -498,16 +512,20 @@ function refreshLive(viewState) {
 		refs.mConnsWrap.style.display = 'none';
 	}
 
-	var nssEv = nssProfile && status.evidence && status.evidence.nss;
-	var subParts = [ _('%d 个活跃').format(totals.active) ];
-	if (nssEv && typeof nssEv.host_count === 'number' &&
-	    nssEv.host_count > clientsAll.length) {
-		subParts.push(_('NSS 发现 %d 个').format(nssEv.host_count));
+	if (availability.samplePending) {
+		refs.mClientsSub.textContent = _('正在同步实时采样…');
+	} else {
+		var nssEv = nssProfile && status.evidence && status.evidence.nss;
+		var subParts = [ _('%d 个活跃').format(totals.active) ];
+		if (nssEv && typeof nssEv.host_count === 'number' &&
+		    nssEv.host_count > clientsAll.length) {
+			subParts.push(_('NSS 发现 %d 个').format(nssEv.host_count));
+		}
+		subParts.push(_('活跃判定 %d 秒').format(Math.round(activeCfg.activeWindowMs / 1000)));
+		if (activeCfg.activeMinBps > 1)
+			subParts.push(_('≥ ') + fmt.formatRate(activeCfg.activeMinBps, prefs.unit));
+		refs.mClientsSub.textContent = subParts.join(' · ');
 	}
-	subParts.push(_('活跃判定 %d 秒').format(Math.round(activeCfg.activeWindowMs / 1000)));
-	if (activeCfg.activeMinBps > 1)
-		subParts.push(_('≥ ') + fmt.formatRate(activeCfg.activeMinBps, prefs.unit));
-	refs.mClientsSub.textContent = subParts.join(' · ');
 
 	var latestSample = fmt.latestClientSampleMs(clientsAll);
 	var filtered = clientsAll.filter(function(c) {
@@ -519,7 +537,7 @@ function refreshLive(viewState) {
 	var page = refreshPagination(viewState, refs, sorted);
 	refreshSortHeaders(refs, prefs);
 
-	var summaryParts = [
+	var summaryParts = availability.samplePending ? [ _('正在同步') ] : [
 		_('%d 总').format(clientsAll.length),
 		_('%d 活跃').format(totals.active)
 	];
@@ -532,8 +550,11 @@ function refreshLive(viewState) {
 	if (!sorted.length) {
 		refs.clientsTable.style.display = 'none';
 		refs.empty.style.display = '';
+		refs.empty.setAttribute('data-state', availability.samplePending ? 'loading' : 'empty');
 		var clientsRpc = viewState.rpc && viewState.rpc.clients;
-		if (viewState.filter || prefs.activeOnly) {
+		if (availability.samplePending) {
+			refs.empty.textContent = _('正在同步实时采样…');
+		} else if (viewState.filter || prefs.activeOnly) {
 			refs.empty.textContent = _('没有匹配的客户端。');
 		} else if (availability.hardFailure || (clientsRpc && clientsRpc.ok === false && !clientsRpc.retained)) {
 			refs.empty.textContent = _('客户端数据不可用。请确认 lanspeedd 正在运行后重试。');
@@ -545,6 +566,7 @@ function refreshLive(viewState) {
 	} else {
 		refs.clientsTable.style.display = '';
 		refs.empty.style.display = 'none';
+		refs.empty.setAttribute('data-state', 'ready');
 
 		var globalWarnings = {};
 		fmt.asArray(status.warnings).forEach(function(w) {
@@ -729,6 +751,7 @@ return baseclass.extend({
 	captureClientViewport: captureClientViewport,
 	restoreClientViewport: restoreClientViewport,
 	reconcileClientRows: reconcileClientRows,
+	sampleSyncPending: sampleSyncPending,
 	refreshAvailability: refreshAvailability,
 	refreshIntervalControl: refreshIntervalControl,
 	refreshPagination: refreshPagination,

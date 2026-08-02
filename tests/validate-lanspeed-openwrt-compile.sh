@@ -50,7 +50,7 @@ RUSTC_BOOTSTRAP=1 \
 	--manifest-path "$ROOT/net/lanspeedd/rust/Cargo.toml" \
 	-p lanspeedd \
 	--lib \
-	--features openwrt \
+	--features openwrt,nss-platform \
 	--target aarch64-unknown-linux-musl \
 	--locked \
 	--offline

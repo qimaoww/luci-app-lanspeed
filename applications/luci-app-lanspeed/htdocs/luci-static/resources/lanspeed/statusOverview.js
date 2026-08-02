@@ -287,19 +287,15 @@ function loadAll(previous, clock) {
 	})).then(function(results) {
 		var next = aggregateResults(results, startedAt);
 		var pair = livePair(next);
-		var collector = collectorEvidence(next.status).collector;
-		var nss = fmt.nssPlatform(next.status) &&
-			(collector === 'nss_ecm_node' || collector === 'nss_ecm_bpf');
 		var liveSucceeded = LIVE_SOURCE_KEYS.every(function(key) {
 			return next.rpc[key] && next.rpc[key].ok === true;
 		});
-		if (pair.aligned !== false || !liveSucceeded || !nss)
+		if (pair.aligned !== false || !liveSucceeded)
 			return alignLiveSamples(next, previous);
 
-		/* A collection can publish between the three live RPC replies. Retry the
-		 * cheap snapshot reads once inside this refresh cycle so a boundary split
-		 * does not turn a two-second cadence into four seconds. UCI is retained
-		 * from the first round and a persistent split still falls back safely. */
+		/* Every collector can publish between the three live RPC replies. Retry the
+		 * cheap snapshot reads once so an initial boundary split is not rendered as
+		 * an empty page. UCI is retained from the first round. */
 		var uciResult = results.filter(function(result) { return result.key === 'uci'; })[0];
 		return Promise.all(LIVE_SOURCE_KEYS.map(function(key) {
 			return sourceSettled(key, loaders[key], next, clock);

@@ -61,9 +61,9 @@ function buildShell(viewState) {
 		refs.errorList
 	]);
 
-	refs.mTx          = E('div', { 'class': 'big' }, '0');
-	refs.mRx          = E('div', { 'class': 'big' }, '0');
-	refs.mClients     = E('div', { 'class': 'big' }, '0');
+	refs.mTx          = E('div', { 'class': 'big' }, '—');
+	refs.mRx          = E('div', { 'class': 'big' }, '—');
+	refs.mClients     = E('div', { 'class': 'big' }, '—');
 	refs.mClientsSub  = E('div', { 'class': 'hint' }, '-');
 	refs.mTcpConns    = E('span', { 'class': 'lanspeed-connection-number' }, '-');
 	refs.mUdpConns    = E('span', { 'class': 'lanspeed-connection-number' }, '-');
@@ -330,7 +330,13 @@ function buildShell(viewState) {
 		])),
 		refs.tbody
 	]);
-	refs.empty = E('div', { 'class': 'lanspeed-empty', 'style': 'display:none' }, '-');
+	refs.empty = E('div', {
+		'class': 'lanspeed-empty',
+		'role': 'status',
+		'aria-live': 'polite',
+		'aria-atomic': 'true',
+		'style': 'display:none'
+	}, '-');
 
 	var clientsCard = E('div', { 'class': 'cbi-section lanspeed-clients-card' }, [
 		clientsHeader,
@@ -372,7 +378,8 @@ function buildShell(viewState) {
 
 	var root = E('div', {
 		'class': 'cbi-map lanspeed-root lanspeed-status-root',
-		'aria-busy': 'false'
+		'aria-busy': 'true',
+		'data-state': 'loading'
 	}, [
 		E('style', {}, statusStyle.CSS),
 		overviewCard,
