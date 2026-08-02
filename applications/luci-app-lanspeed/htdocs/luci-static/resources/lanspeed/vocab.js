@@ -26,7 +26,6 @@ var WARNING_LABELS = {
 	counter_reset: _('计数器发生重置，本窗口不可计算并已重新建立基线。'),
 	counter_skew: _('客户端原始计数领先独立 LAN 时钟，本窗口不可计算。'),
 	nss_dae_bpf_fallback_may_be_inaccurate: _('NSS 与 dae/daed 同时运行，但 BPF 不可用；当前回退数据源可能导致实时速率不准确。'),
-	dae_runtime_prefers_bpf: _('检测到 dae/daed 正在运行，已优先使用 BPF 保持客户端流量归属。'),
 	dae_process_probe_failed: _('无法确认 dae/daed 的运行状态，后端的数据源选择可能暂时不准确。'),
 	nssifb_collect_rejected: _('nssifb 是镜像接口，不能用于客户端采集；后端已忽略该配置，请改为“观察”。'),
 	conntrack_connection_only: _('该客户端当前只有连接记录，没有新的速率样本；这不是异常。'),

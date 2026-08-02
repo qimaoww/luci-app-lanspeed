@@ -322,10 +322,6 @@ fn select_collectors_nss(
         && facts.nss.ecm_active
         && facts.nss.direct_state_readable
         && runtime.nss_node_read_ok.unwrap_or(true);
-    let dae_active = facts.proxy.runtime_active;
-    let dae_prefers_bpf =
-        config.rate_collector_mode == RateCollectorMode::Auto && dae_active && bpf_ready;
-
     let (rate, rate_reason) = match config.rate_collector_mode {
         RateCollectorMode::Bpf => {
             // A forced pure-BPF mode is an explicit request for the Linux TC
@@ -360,8 +356,6 @@ fn select_collectors_nss(
                 (RateCollector::NssEcmBpf, "nss_ecm_bpf_primary")
             } else if nss_node {
                 (RateCollector::NssEcmNode, "nss_ecm_node_fallback")
-            } else if dae_prefers_bpf {
-                (RateCollector::Bpf, "dae_runtime_prefers_bpf")
             } else if bpf_ready {
                 (
                     RateCollector::Bpf,
@@ -390,9 +384,6 @@ fn select_collectors_nss(
         }
         RateCollector::Bpf if nss_offload_active => {
             push_unique(&mut warnings, "nss_bpf_slow_path_only");
-        }
-        RateCollector::Bpf if dae_prefers_bpf => {
-            push_unique(&mut warnings, "dae_runtime_prefers_bpf")
         }
         _ => {}
     }
@@ -490,7 +481,7 @@ fn select_collectors_nss(
         evidence: PolicyEvidence {
             rate_reason,
             connection_reason,
-            dae_early_bpf: (facts.tc.dae_preempts_lan_ingress || dae_active)
+            dae_early_bpf: (facts.tc.dae_preempts_lan_ingress || facts.proxy.runtime_active)
                 && runtime.dae_early_bpf,
             runtime_error: runtime.runtime_error.clone(),
             retained_fresh_snapshot,

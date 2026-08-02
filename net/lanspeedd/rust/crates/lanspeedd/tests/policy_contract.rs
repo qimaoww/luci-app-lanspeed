@@ -66,6 +66,30 @@ fn auto_uses_bpf_without_nss_then_ecm_node_and_ecm_bpf_in_order() {
 
 #[test]
 #[cfg(feature = "nss-platform")]
+fn dae_activity_does_not_change_nss_auto_fallback() {
+    let config = config();
+    let mut facts = bpf_facts();
+    facts.nss.present = true;
+    facts.nss.ecm_active = true;
+
+    let inactive = select_collectors(&config, &facts, &healthy_bpf());
+    facts.proxy.runtime_active = true;
+    facts.proxy.dae = true;
+    let active = select_collectors(&config, &facts, &healthy_bpf());
+
+    assert_eq!(inactive.rate, RateCollector::Bpf);
+    assert_eq!(active.rate, inactive.rate);
+    assert_eq!(active.evidence.rate_reason, inactive.evidence.rate_reason);
+    assert_eq!(
+        active.evidence.rate_reason,
+        "nss_collectors_unavailable_bpf_fallback"
+    );
+    assert_eq!(active.warnings, inactive.warnings);
+    assert!(active.warnings.contains(&"nss_bpf_slow_path_only"));
+}
+
+#[test]
+#[cfg(feature = "nss-platform")]
 fn forced_ecm_bpf_requires_both_hardware_kprobe_and_tc_slow_path_runtime() {
     let mut config = config();
     config.rate_collector_mode = RateCollectorMode::NssEcmBpf;

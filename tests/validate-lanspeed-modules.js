@@ -4309,7 +4309,7 @@ function assertConfigCompatibility(src) {
 	    } })) {
 		fail('configForm.js must prefer the fresh Rust runtime_active boolean over stale legacy process fields');
 	}
-	if (mod.daeRuntimeActive({ evidence: { collector: { rate_reason: 'dae_runtime_prefers_bpf' } } }) ||
+	if (mod.daeRuntimeActive({ evidence: { collector: { rate_reason: 'nss_collectors_unavailable_bpf_fallback' } } }) ||
 	    mod.daeRuntimeActive({ warnings: [ 'nss_dae_bpf_fallback_may_be_inaccurate' ] }) ||
 	    mod.daeRuntimeActive({ evidence: { dae: { dae_service: true, dae0: true } } })) {
 		fail('configForm.js must not infer dae runtime activity from decisions, warnings, services, or leftover interfaces');
@@ -4604,7 +4604,7 @@ function assertWarningAliases(src) {
 	const productionWarnings = [
 		'nss_ecm_node_active', 'nss_ecm_node_parse_errors',
 		'pending', 'warmup', 'counter_reset', 'counter_skew',
-		'dae_runtime_prefers_bpf', 'bpf_unsupported', 'tc_clsact_unsupported',
+		'bpf_unsupported', 'tc_clsact_unsupported',
 		'bpf_tc_self_heal_failed', 'counter_anomaly', 'time_rollback',
 		'lan_topology_probe_error', 'flowtable_counter_probe_unavailable',
 		'flowtable_counter_missing', 'conntrack_routed_nat_only'

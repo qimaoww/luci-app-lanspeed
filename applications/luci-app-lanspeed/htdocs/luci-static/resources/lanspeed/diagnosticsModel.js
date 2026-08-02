@@ -65,7 +65,6 @@ var REASON_LABELS = {
 	forced_nss_ecm_node_unavailable: _('配置强制使用 NSS ECM node，但数据源不可用'),
 	forced_nss_ecm_bpf: _('配置强制使用 ECM+BPF 更新链路'),
 	forced_nss_ecm_bpf_unavailable: _('配置强制使用 ECM+BPF，但运行链路不可用'),
-	dae_runtime_prefers_bpf: _('检测到 dae/daed，优先使用 BPF'),
 	no_live_rate_collector: _('没有可用的实时速率采集器'),
 	forced_conntrack_netlink: _('配置强制使用 Conntrack Netlink'),
 	forced_conntrack_netlink_unavailable: _('配置强制使用 Conntrack Netlink，但数据源不可用'),

@@ -1081,7 +1081,10 @@ fn nss_presence_does_not_invent_the_firewall_hardware_offload_flag() {
     assert!(!report
         .warnings
         .contains(&"hardware_flow_offload_unsupported"));
-    assert!(!report.warnings.contains(&"dae_runtime_prefers_bpf"));
+    assert_eq!(
+        report.evidence.collector.rate_reason,
+        "nss_ecm_node_fallback"
+    );
     assert!(report.warnings.contains(&"nss_ecm_node_ecm_flows_only"));
     assert!(!report.warnings.contains(&"nss_bpf_slow_path_only"));
 }
