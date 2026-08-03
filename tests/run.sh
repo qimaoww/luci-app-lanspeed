@@ -116,6 +116,7 @@ run_node_check() {
 		"$SCRIPT_DIR/validate-lanspeed-packaging.js" \
 		"$SCRIPT_DIR/validate-lanspeed-diagnostics.js" \
 		"$SCRIPT_DIR/validate-lanspeed-status.js" \
+		"$SCRIPT_DIR/validate-lanspeed-client-control.js" \
 		"$SCRIPT_DIR/validate-lanspeed-ubus-lifecycle.js" \
 		"$SCRIPT_DIR/validate-release-version.js" \
 		"$SCRIPT_DIR/validate-lanspeed-geo.js" \
@@ -229,8 +230,12 @@ run_unit() {
 	run_logged "packaging" node "$SCRIPT_DIR/validate-lanspeed-packaging.js" || return $?
 	run_logged "diagnostics" node "$SCRIPT_DIR/validate-lanspeed-diagnostics.js" || return $?
 	run_logged "lanspeed-status" node "$SCRIPT_DIR/validate-lanspeed-status.js" || return $?
+	run_logged "lanspeed-client-control" node "$SCRIPT_DIR/validate-lanspeed-client-control.js" || return $?
 	run_logged "ubus-lifecycle" node "$SCRIPT_DIR/validate-lanspeed-ubus-lifecycle.js" || return $?
-	run_logged "release-version" env RUST_CARGO="$rust_cargo_path" \
+	run_logged "release-version" env \
+		PATH="$rust_toolchain_bin:$PATH" \
+		RUSTC="$rustc_bin" \
+		RUST_CARGO="$rust_cargo_path" \
 		node "$SCRIPT_DIR/validate-release-version.js" || return $?
 	run_logged "lanspeed-geo" node "$SCRIPT_DIR/validate-lanspeed-geo.js" || return $?
 	run_logged "lanspeed-modules" node "$SCRIPT_DIR/validate-lanspeed-modules.js" || return $?

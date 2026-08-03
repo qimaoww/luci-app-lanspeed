@@ -91,6 +91,7 @@ pub(crate) fn ecm_bpf_clients_response(
                 udp_dns_conns: counts.map(|sample| u64::from(sample.udp_dns_conns)),
                 udp_other_conns: counts.map(|sample| u64::from(sample.udp_other_conns)),
                 rate_meta: None,
+                control: None,
             }
         })
         .collect::<Vec<_>>();
@@ -143,6 +144,7 @@ pub(crate) fn ecm_bpf_clients_response(
             udp_dns_conns: counts.map(|sample| u64::from(sample.udp_dns_conns)),
             udp_other_conns: counts.map(|sample| u64::from(sample.udp_other_conns)),
             rate_meta: None,
+            control: None,
         });
     }
     if let Some(snapshot) = conntrack {
@@ -181,6 +183,7 @@ pub(crate) fn ecm_bpf_clients_response(
                 udp_dns_conns: Some(u64::from(sample.udp_dns_conns)),
                 udp_other_conns: Some(u64::from(sample.udp_other_conns)),
                 rate_meta: None,
+                control: None,
             });
         }
     }
@@ -270,6 +273,7 @@ pub(crate) fn window_clients(
                 udp_dns_conns: counts.map(|sample| u64::from(sample.udp_dns_conns)),
                 udp_other_conns: counts.map(|sample| u64::from(sample.udp_other_conns)),
                 rate_meta: None,
+                control: None,
             })
         })
         .collect::<Vec<_>>();

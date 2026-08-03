@@ -389,6 +389,29 @@ pub struct Client {
     pub udp_other_conns: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_meta: Option<ClientRateMeta>,
+    /// Runtime control state is intentionally compact. Persistent identity and
+    /// address data never appear here; the row already carries the identity
+    /// needed by the authenticated control RPC.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub control: Option<ClientControlSummary>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ClientControlSummary {
+    pub configured: bool,
+    #[serde(serialize_with = "saturated_u64")]
+    pub upload_bps: u64,
+    #[serde(serialize_with = "saturated_u64")]
+    pub download_bps: u64,
+    pub internet_disabled: bool,
+    pub shaping_supported: bool,
+    pub blocking_supported: bool,
+    #[serde(serialize_with = "saturated_u64")]
+    pub max_rate_bps: u64,
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub queue_overflow: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

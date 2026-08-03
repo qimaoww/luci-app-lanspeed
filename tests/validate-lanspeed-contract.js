@@ -13,7 +13,9 @@ const UBUS_METHODS = Object.freeze([
   'interfaces',
   'sysdevices',
   'diagnostics',
-  'client_connections'
+  'client_connections',
+  'client_control_set',
+  'client_control_delete'
 ]);
 const CLIENT_CONNECTION_LIMIT = 2048;
 
@@ -584,7 +586,8 @@ function validateAcl(acl) {
   /* The read side exposes every ubus method on the lanspeed object, including
    * sysdevices (added for the interface-config UI).  Read UCI access is
    * restricted to the lanspeed config. */
-  const expectedReadMethods = UBUS_METHODS.filter((method) => method !== 'reload');
+  const expectedReadMethods = UBUS_METHODS.filter((method) =>
+    method !== 'reload' && !method.startsWith('client_control_'));
   assert(app.read.ubus.lanspeed.length === expectedReadMethods.length,
     `ACL must grant exactly ${expectedReadMethods.length} lanspeed read methods, got ${app.read.ubus.lanspeed.length}`);
   for (const method of expectedReadMethods) {
@@ -600,8 +603,10 @@ function validateAcl(acl) {
 		assertObject(app.write, 'ACL write');
 		assertObject(app.write.ubus, 'ACL write.ubus');
 
-		assert(!Object.prototype.hasOwnProperty.call(app.write.ubus, 'lanspeed'),
-		  'ACL write.ubus must not grant direct lanspeed reload after adopting native apply');
+		assertArray(app.write.ubus.lanspeed, 'ACL write.ubus.lanspeed');
+		assert(sameStringSet(app.write.ubus.lanspeed,
+		  [ 'client_control_set', 'client_control_delete' ]),
+		  'ACL write.ubus.lanspeed must grant exactly the two authenticated client control methods');
 		assert(!Object.prototype.hasOwnProperty.call(app.write.ubus, 'rc'),
 		  'ACL write.ubus must not grant rc methods');
 		assertArray(app.write.ubus.luci, 'ACL write.ubus.luci');
@@ -895,6 +900,7 @@ assert(!schema.$defs.collectorMode.enum.includes('nss_ecm_direct'), 'schema must
 assert(!schema.$defs.collectorMode.enum.includes('nss_conntrack_sync'), 'schema must remove legacy status.collector_mode=nss_conntrack_sync');
 assert(schema.$defs.collectorMode.enum.includes('conntrack_netlink'), 'schema must allow status.collector_mode=conntrack_netlink');
 assert(schema.$defs.collectorMode.enum.includes('conntrack_procfs'), 'schema must allow status.collector_mode=conntrack_procfs');
+assert(schema.$defs.collectorMode.enum.includes('unsupported'), 'schema must allow an unavailable effective status.collector_mode');
 assert(schema.$defs.rateCollectorMode.enum.includes('auto'), 'schema must allow rate_collector_mode=auto');
 assert(schema.$defs.rateCollectorMode.enum.includes('bpf'), 'schema must allow rate_collector_mode=bpf');
 assert(schema.$defs.rateCollectorMode.enum.includes('nss_ecm_node'), 'schema must allow rate_collector_mode=nss_ecm_node');

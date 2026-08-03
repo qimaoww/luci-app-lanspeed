@@ -138,7 +138,9 @@ pub const fn before_reply_action(method: Method) -> BeforeReplyAction {
         | Method::Health
         | Method::Interfaces
         | Method::Sysdevices
-        | Method::Diagnostics => BeforeReplyAction::None,
+        | Method::Diagnostics
+        | Method::ClientControlSet
+        | Method::ClientControlDelete => BeforeReplyAction::None,
     }
 }
 
@@ -224,6 +226,7 @@ pub fn apply_conntrack_success(
             udp_dns_conns: Some(u64::from(sample.udp_dns_conns)),
             udp_other_conns: Some(u64::from(sample.udp_other_conns)),
             rate_meta: None,
+            control: None,
         });
     }
     overlaid
@@ -399,6 +402,7 @@ mod tests {
             udp_dns_conns: None,
             udp_other_conns: None,
             rate_meta: None,
+            control: None,
         });
         snapshot
     }

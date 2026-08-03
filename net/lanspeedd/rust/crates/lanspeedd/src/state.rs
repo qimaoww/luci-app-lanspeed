@@ -464,6 +464,11 @@ impl ResponseSnapshot {
                     "client_connections requires an identity_key request parameter",
                 ));
             }
+            Method::ClientControlSet | Method::ClientControlDelete => {
+                return Err(DaemonError::transport(
+                    "client control methods require request parameters",
+                ));
+            }
         })
     }
 
@@ -476,6 +481,9 @@ impl ResponseSnapshot {
             Method::ClientConnections => {
                 Ok(serde_json::to_value(self.client_connections(identity_key))?)
             }
+            Method::ClientControlSet | Method::ClientControlDelete => Err(DaemonError::transport(
+                "client control methods are handled by the production runtime",
+            )),
             _ => Err(DaemonError::transport(format!(
                 "{} does not accept request parameters",
                 method.name()

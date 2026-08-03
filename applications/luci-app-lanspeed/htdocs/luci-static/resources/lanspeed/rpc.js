@@ -25,6 +25,18 @@ var callClientConnections = rpc.declare({
 	params: [ 'identity_key' ],
 	expect: { '': {} }
 });
+var callClientControlSet = rpc.declare({
+	object: 'lanspeed',
+	method: 'client_control_set',
+	params: [ 'identity_key', 'upload_bps', 'download_bps', 'internet_disabled' ],
+	expect: { '': {} }
+});
+var callClientControlDelete = rpc.declare({
+	object: 'lanspeed',
+	method: 'client_control_delete',
+	params: [ 'identity_key' ],
+	expect: { '': {} }
+});
 var callOverview = rpc.declare({
 	object: 'lanspeed',
 	method: 'overview',
@@ -92,6 +104,8 @@ return baseclass.extend({
 	status:     callStatus,
 	clients:    callClients,
 	clientConnections: callClientConnections,
+	clientControlSet: callClientControlSet,
+	clientControlDelete: callClientControlDelete,
 	overview:   callOverview,
 	health:     callHealth,
 	interfaces: callInterfaces,

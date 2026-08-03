@@ -81,6 +81,21 @@ assert_metadata_field() {
 		fail "$label $field is '$actual', expected '$expected'"
 }
 
+assert_root_ownership() {
+	local label=$1
+	local metadata=$2
+	local unexpected
+
+	unexpected=$(jq -r '
+		.. | objects | .acl? |
+		select(type == "object") |
+		select(.user != "root" or .group != "root") |
+		"\(.user // "<missing>"):\(.group // "<missing>")"
+	' "$metadata" | LC_ALL=C sort -u)
+	[[ -z $unexpected ]] || \
+		fail "$label contains non-root packaged ownership: $unexpected"
+}
+
 dependency_name() {
 	local dependency=$1
 
@@ -141,12 +156,16 @@ assert_metadata_field LuCI "$luci_metadata" name luci-app-lanspeed
 assert_metadata_field LuCI "$luci_metadata" arch noarch
 assert_metadata_field LuCI "$luci_metadata" origin luci-app-lanspeed
 
+assert_root_ownership daemon "$daemon_metadata"
+assert_root_ownership BPF "$bpf_metadata"
+assert_root_ownership LuCI "$luci_metadata"
+
 assert_no_forbidden_dependencies daemon "$daemon_metadata"
 assert_no_forbidden_dependencies BPF "$bpf_metadata"
 assert_no_forbidden_dependencies LuCI "$luci_metadata"
 
 assert_dependencies daemon "$daemon_metadata" \
-	kmod-nf-conntrack-netlink libc libgcc1
+	conntrack kmod-nf-conntrack-netlink libc libgcc1 nftables tc-full
 assert_dependencies BPF "$bpf_metadata" \
 	kmod-sched-bpf lanspeedd libc tc-full
 assert_dependencies LuCI "$luci_metadata" \
@@ -171,11 +190,24 @@ extract_package daemon "$daemon_apk" "$daemon_root"
 extract_package BPF "$bpf_apk" "$bpf_root"
 extract_package LuCI "$luci_apk" "$luci_root"
 
+control_asset="$luci_root/www/luci-static/resources/lanspeed/clientControl.js"
+acl_asset="$luci_root/usr/share/rpcd/acl.d/luci-app-lanspeed.json"
+[[ -s $control_asset ]] || fail 'LuCI APK does not contain the realtime client control module'
+grep -q 'direction_verification_pending' "$control_asset" || \
+	fail 'LuCI APK client control module is stale'
+grep -q 'control live clients' "$acl_asset" || \
+	fail 'LuCI APK ACL does not grant the current client control contract'
+
 daemon="$daemon_root/usr/sbin/lanspeedd"
 [[ -s $daemon ]] || fail "daemon APK does not contain usr/sbin/lanspeedd"
 daemon_config="$daemon_root/etc/config/lanspeed"
 [[ -s $daemon_config ]] || fail "daemon APK does not contain etc/config/lanspeed"
 x86_migration="$daemon_root/etc/uci-defaults/95-lanspeed-x86-profile"
+
+if grep -aEq '/openwrt/(immortalwrt|libwrt)|/root/|/home/[[:alnum:]_.-]+/' \
+	"$daemon" "$bpf_root"/usr/lib/bpf/*.o; then
+	fail 'runtime artifacts contain a private build path or host account name'
+fi
 
 daemon_header=$("$readelf_tool" -hW "$daemon")
 grep -Eq 'Class:[[:space:]]+ELF64([[:space:]]|$)' <<<"$daemon_header" || \
@@ -224,6 +256,14 @@ case "$expected_arch" in
 		if grep -aEq 'qca_nss|qca-nss|/sys/(module|kernel/debug)/ecm|lanspeed-ebpf-ecm|nss:ecm_state|nss_ecm_bpf_runtime_unavailable|nss_ecm_bpf_tc_degraded|nss_not_present' "$daemon"; then
 			fail 'x86 daemon must not contain NSS/ECM probes, objects, or diagnostics'
 		fi
+		if grep -aq 'lanspeed_control_clients_0\|lanspeed_control_ingress' "$daemon" "$bpf_root/usr/lib/bpf/lanspeed-ebpf-fallback.o"; then
+			fail 'x86 client control must not depend on a BPF classifier or control maps'
+		fi
+		grep -aq 'lanspeed_control_io' "$daemon" || \
+			fail 'x86 daemon must contain the nft ingress client-control path'
+		if grep -aq 'lsifb0\|lanspeed-control-v1' "$daemon" "$bpf_root/usr/lib/bpf/lanspeed-ebpf-fallback.o"; then
+			fail 'x86 client control must not contain the retired IFB redirect path'
+		fi
 		READELF="$readelf_tool" LLVM_OBJDUMP="${LLVM_OBJDUMP:-llvm-objdump}" \
 			"$script_dir/validate-rust-ebpf-objects.sh" \
 			"$bpf_root/usr/lib/bpf/lanspeed-ebpf-kfunc.o" \
@@ -234,6 +274,9 @@ case "$expected_arch" in
 		[[ ! -e $x86_migration ]] || fail 'aarch64 daemon APK must not contain the x86 profile migration'
 		grep -q "option access_edge_mode 'active'" "$daemon_config" || \
 			fail 'aarch64 daemon configuration must retain the Access Edge default'
+		if grep -aq 'lanspeed_control_clients_0' "$daemon" "$bpf_root/usr/lib/bpf/lanspeed-ebpf-fallback.o"; then
+			fail 'aarch64 NSS packages must not contain the independent x86 control classifier'
+		fi
 		READELF="$readelf_tool" LLVM_OBJDUMP="${LLVM_OBJDUMP:-llvm-objdump}" \
 			"$script_dir/validate-rust-ebpf-objects.sh" \
 			"$bpf_root/usr/lib/bpf/lanspeed-ebpf-kfunc.o" \

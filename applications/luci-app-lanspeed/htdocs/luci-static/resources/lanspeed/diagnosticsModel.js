@@ -527,7 +527,7 @@ function validateStatusResponse(value) {
 		!enumValue(value.access_edge_mode, [ 'off', 'shadow', 'active' ]))
 		return failure('status.access_edge_mode', _('字段无效'));
 	if (hasOwn(value, 'collector_mode') && !enumValue(value.collector_mode,
-		[ 'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf', 'conntrack_netlink', 'conntrack_procfs' ]))
+		[ 'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf', 'conntrack_netlink', 'conntrack_procfs', 'unsupported' ]))
 		return failure('status.collector_mode', _('字段无效'));
 	if (!optionalIntegers(value, [ 'active_client_window_ms', 'active_client_min_bps', 'overview_window_samples' ],
 		{ active_client_window_ms: 1000, active_client_min_bps: 1, overview_window_samples: 2 }))
@@ -565,13 +565,25 @@ function validateClientsResponse(value) {
 	if (!hasOwn(value, 'clients')) return failure('clients.clients', _('字段缺失'));
 	var clientFields = [ 'mac', 'ips', 'identity_key', 'zone', 'interface', 'hostname', 'rx_bps',
 		'tx_bps', 'last_seen', 'sample_ms', 'rx_bytes', 'tx_bytes', 'collector_mode', 'confidence',
-		'warnings', 'tcp_conns', 'udp_conns', 'udp_dns_conns', 'udp_other_conns', 'rate_meta' ];
+		'warnings', 'tcp_conns', 'udp_conns', 'udp_dns_conns', 'udp_other_conns', 'rate_meta', 'control' ];
 	var clientRequired = [ 'mac', 'identity_key', 'zone', 'interface', 'ips', 'hostname', 'rx_bps',
 		'tx_bps', 'last_seen', 'collector_mode', 'confidence', 'warnings' ];
 	if (!Array.isArray(value.clients) || !value.clients.every(function(item, index) {
 		var metaIssue = hasOwn(item, 'rate_meta')
 			? validateRateMeta(item.rate_meta, 'clients.clients[' + index + '].rate_meta') : null;
-		return !metaIssue && onlyFields(item, clientFields) && !requireFields(item, clientRequired, 'client') &&
+		var control = item.control;
+		var controlValid = !hasOwn(item, 'control') || plainObject(control) &&
+			onlyFields(control, [ 'configured', 'upload_bps', 'download_bps', 'internet_disabled',
+				'shaping_supported', 'blocking_supported', 'max_rate_bps', 'state', 'reason', 'queue_overflow' ]) &&
+			!requireFields(control, [ 'configured', 'upload_bps', 'download_bps', 'internet_disabled',
+				'shaping_supported', 'blocking_supported', 'max_rate_bps', 'state', 'queue_overflow' ], 'control') &&
+			typeof control.configured === 'boolean' && typeof control.internet_disabled === 'boolean' &&
+			typeof control.shaping_supported === 'boolean' && typeof control.blocking_supported === 'boolean' &&
+			typeof control.queue_overflow === 'boolean' && nonNegativeInteger(control.upload_bps) &&
+			nonNegativeInteger(control.download_bps) && nonNegativeInteger(control.max_rate_bps) &&
+			enumValue(control.state, [ 'inactive', 'applied', 'pending_new_connections', 'verified', 'error', 'unsupported' ]) &&
+			(!hasOwn(control, 'reason') || boundedString(control.reason, 1, 160));
+		return !metaIssue && controlValid && onlyFields(item, clientFields) && !requireFields(item, clientRequired, 'client') &&
 			/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(item.mac || '') &&
 			boundedString(item.identity_key, 1, 160) && boundedString(item.zone, 1, 64) &&
 			boundedString(item.interface, 1, 160) && Array.isArray(item.ips) &&
@@ -1854,7 +1866,10 @@ function redactIpv6(text) {
 	});
 }
 function sanitizeReportText(value) {
-	var text = redactSensitiveAssignments(boundedText(value, 480))
+	var raw = String(value == null ? '' : value);
+	if (/(?:^|\W)client_control(?:\W|$)/i.test(raw))
+		return '[CLIENT CONTROL REDACTED]';
+	var text = redactSensitiveAssignments(boundedText(raw, 480))
 		.replace(/\b(?:command|file|uci|ubus|process|service|sysctl|probe):[^\s\u00b7,;)}\]]+/gi, '[SOURCE]')
 		.replace(/(^|[\s("'=])\/(?:[^\s,;)}\]]+)/g, '$1[PATH]')
 		.replace(/\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b/gi, '[MAC]')

@@ -1,6 +1,6 @@
 {
   "luci-app-lanspeed": {
-    "description": "Read LAN Speed status and update collector interface settings",
+    "description": "Read LAN Speed status, control live clients, and update collector settings",
     "read": {
       "ubus": {
         "lanspeed": [
@@ -24,6 +24,10 @@
     },
     "write": {
       "ubus": {
+        "lanspeed": [
+          "client_control_set",
+          "client_control_delete"
+        ],
         "luci": [
           "setInitAction"
         ],

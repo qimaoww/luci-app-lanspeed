@@ -1,4 +1,6 @@
 pub(crate) mod bpf_coverage;
+#[cfg(all(feature = "openwrt", feature = "nss-platform"))]
+pub mod control;
 pub mod ecm_bpf;
 pub mod ecm_node;
 #[cfg(any(feature = "openwrt", test))]

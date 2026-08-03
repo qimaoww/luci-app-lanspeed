@@ -386,7 +386,7 @@ fn assert_suspended_mode_switch_abort_is_rate_safe(old_mode: AttachMode, new_mod
     let suspended = old_runtime
         .suspend_for_replacement(&mut old_adapter)
         .unwrap();
-    assert_eq!(old_adapter.detached, LinkSpec::pair("br-lan", old_mode));
+    assert_eq!(old_adapter.detached, LinkSpec::all("br-lan", old_mode));
 
     old_runtime
         .attach_suspended(&mut old_adapter, &suspended, &["br-lan".into()], new_mode)
@@ -423,7 +423,10 @@ fn assert_suspended_mode_switch_abort_is_rate_safe(old_mode: AttachMode, new_mod
         .unwrap();
     assert_eq!(old.clients[0].tx_bytes, 52_000);
     assert_eq!(old.clients[0].tx_bps, 0);
-    assert_eq!(old_adapter.detached.len(), 4);
+    assert_eq!(
+        old_adapter.detached.len(),
+        LinkSpec::all("br-lan", old_mode).len() + LinkSpec::all("br-lan", new_mode).len()
+    );
 }
 
 #[test]
@@ -460,8 +463,8 @@ fn committed_suspended_mode_switch_detaches_each_hook_once() {
         drop(suspended);
 
         runtime.shutdown(&mut adapter).unwrap();
-        let mut expected = LinkSpec::pair("br-lan", old_mode).to_vec();
-        expected.extend(LinkSpec::pair("br-lan", new_mode));
+        let mut expected = LinkSpec::all("br-lan", old_mode);
+        expected.extend(LinkSpec::all("br-lan", new_mode));
         assert_eq!(adapter.detached, expected);
     }
 }
@@ -487,7 +490,10 @@ fn suspended_attach_rolls_back_when_a_later_hook_inspection_fails() {
         .unwrap_err();
 
     assert_eq!(error.kind(), AdapterErrorKind::AttachFailed);
-    assert_eq!(adapter.detached.len(), 3);
+    assert_eq!(
+        adapter.detached.len(),
+        LinkSpec::all("br-lan", AttachMode::Normal).len() + 1
+    );
     assert_eq!(
         adapter
             .hooks
@@ -539,7 +545,7 @@ fn suspended_attach_rollback_detach_failure_blocks_resume() {
     let suspended = runtime.suspend_for_replacement(&mut adapter).unwrap();
     adapter.inspect_count = 0;
     adapter.fail_inspect_at = Some(1);
-    adapter.fail_detach_at = Some(2);
+    adapter.fail_detach_at = Some(LinkSpec::all("br-lan", AttachMode::Normal).len());
 
     let error = runtime
         .attach_suspended(
@@ -599,7 +605,10 @@ fn suspended_mode_switch_creates_clsact_only_for_new_interfaces() {
         .unwrap();
 
     assert_eq!(adapter.clsact, ["br-lan", "lan2", "lan3"]);
-    assert_eq!(adapter.attached.len(), 8);
+    assert_eq!(
+        adapter.attached.len(),
+        4 * LinkSpec::all("br-lan", AttachMode::Normal).len()
+    );
     drop(suspended);
 }
 
@@ -701,8 +710,9 @@ fn partial_attach_rolls_back_only_the_owned_ingress_filter() {
 
 #[test]
 fn multi_interface_attach_is_one_transaction() {
+    let hooks_per_interface = LinkSpec::all("br-lan", AttachMode::Normal).len();
     let mut adapter = FakeAya {
-        fail_attach_at: Some(3),
+        fail_attach_at: Some(hooks_per_interface + 1),
         ..FakeAya::default()
     };
     let mut runtime = BpfRuntime::loaded_for_test();
@@ -713,7 +723,7 @@ fn multi_interface_attach_is_one_transaction() {
             AttachMode::Normal,
         )
         .is_err());
-    assert_eq!(adapter.detached.len(), 3);
+    assert_eq!(adapter.detached.len(), hooks_per_interface + 1);
     assert!(!runtime.is_attached());
 }
 
@@ -724,7 +734,7 @@ fn mode_switch_failure_cleans_new_links_and_preserves_the_old_pair() {
     runtime
         .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
         .unwrap();
-    adapter.fail_attach_at = Some(3);
+    adapter.fail_attach_at = Some(LinkSpec::all("br-lan", AttachMode::Normal).len() + 1);
     assert!(runtime
         .switch_mode(
             &mut adapter,
@@ -732,7 +742,7 @@ fn mode_switch_failure_cleans_new_links_and_preserves_the_old_pair() {
             AttachMode::EarlyPassthrough,
         )
         .is_err());
-    for spec in LinkSpec::pair("br-lan", AttachMode::Normal) {
+    for spec in LinkSpec::all("br-lan", AttachMode::Normal) {
         assert_eq!(adapter.hooks.get(&spec), Some(&HookState::Owned));
     }
     for spec in LinkSpec::pair("br-lan", AttachMode::EarlyPassthrough) {
@@ -1082,7 +1092,10 @@ fn an_existing_owned_orphan_is_atomically_replaced_without_a_detach_gap() {
     runtime
         .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
         .unwrap();
-    assert_eq!(adapter.attached.len(), 2);
+    assert_eq!(
+        adapter.attached.len(),
+        LinkSpec::all("br-lan", AttachMode::Normal).len()
+    );
     assert!(adapter.detached.is_empty());
     assert!(runtime.is_attached());
 }
@@ -1097,7 +1110,10 @@ fn repeated_attach_of_the_same_mode_is_idempotent() {
     runtime
         .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
         .unwrap();
-    assert_eq!(adapter.attached.len(), 2);
+    assert_eq!(
+        adapter.attached.len(),
+        LinkSpec::all("br-lan", AttachMode::Normal).len()
+    );
     assert!(adapter.detached.is_empty());
     assert!(runtime.is_attached());
 }
@@ -1123,14 +1139,17 @@ fn same_generation_reconfigure_retains_overlap_and_only_changes_interface_diff()
             AttachMode::Normal,
         )
         .unwrap();
-    assert_eq!(adapter.attached.len(), original_attaches + 2);
+    assert_eq!(
+        adapter.attached.len(),
+        original_attaches + LinkSpec::all("lan2", AttachMode::Normal).len()
+    );
     assert!(adapter.detached.is_empty(), "overlap must remain attached");
     runtime
         .switch_mode(&mut adapter, &["lan2".into()], AttachMode::Normal)
         .unwrap();
     assert_eq!(
         adapter.detached.len(),
-        2,
+        LinkSpec::all("br-lan", AttachMode::Normal).len(),
         "only removed br-lan hooks detach"
     );
     assert!(runtime.is_attached());
@@ -1152,7 +1171,10 @@ fn self_heal_restores_only_missing_owned_specs_and_shutdown_leaves_clsact_alone(
     runtime.shutdown(&mut adapter).unwrap();
 
     assert_eq!(adapter.forgotten, [missing]);
-    assert_eq!(adapter.detached.len(), 2);
+    assert_eq!(
+        adapter.detached.len(),
+        LinkSpec::all("br-lan", AttachMode::EarlyPassthrough).len()
+    );
     assert!(adapter.unloaded);
     assert_eq!(adapter.clsact, ["br-lan"]);
 }
@@ -1652,13 +1674,14 @@ fn shutdown_detach_failure_retains_cleanup_state_for_a_second_retry() {
         .unwrap();
     adapter.fail_detach = true;
     assert!(runtime.shutdown(&mut adapter).is_err());
-    assert_eq!(adapter.detached.len(), 2);
+    let hook_count = LinkSpec::all("br-lan", AttachMode::Normal).len();
+    assert_eq!(adapter.detached.len(), hook_count);
     assert!(!adapter.unloaded);
     assert!(runtime.runtime_health(10_000, 3_000).bpf_object_loaded);
     assert!(!runtime.is_attached());
     adapter.fail_detach = false;
     runtime.shutdown(&mut adapter).unwrap();
-    assert_eq!(adapter.detached.len(), 4);
+    assert_eq!(adapter.detached.len(), hook_count * 2);
     assert!(adapter.unloaded);
     assert!(!runtime.runtime_health(10_000, 3_000).bpf_object_loaded);
 }

@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "control": {
+    "configured": false,
+    "upload_bps": 0,
+    "download_bps": 0,
+    "internet_disabled": false,
+    "shaping_supported": true,
+    "blocking_supported": true,
+    "max_rate_bps": 100000000000,
+    "state": "inactive",
+    "queue_overflow": false
+  }
+}

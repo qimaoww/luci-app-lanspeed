@@ -4,30 +4,68 @@ use lanspeed_openwrt_sys::{
 use std::{
     cell::Cell,
     fs,
+    ops::{Deref, DerefMut},
+    path::PathBuf,
     process::{Child, Command, Stdio},
     rc::Rc,
     thread,
     time::{Duration, Instant},
 };
 
+struct ChildGuard(Child);
+
+impl Deref for ChildGuard {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for ChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+struct DirectoryGuard(PathBuf);
+
+impl Drop for DirectoryGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 fn spawn_ubusd(
     loader: &std::path::Path,
     library_path: &str,
     rootfs: &std::path::Path,
     socket: &std::path::Path,
-) -> Child {
+) -> ChildGuard {
     Command::new(loader)
         .args(["--library-path", library_path])
         .arg(rootfs.join("sbin/ubusd"))
         .args(["-s", socket.to_str().unwrap()])
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()
+        .map(ChildGuard)
         .unwrap()
 }
 
 #[test]
 fn pure_rust_server_registers_and_replies_to_real_ubusd() {
+    if unsafe { libc::geteuid() } != 0 {
+        eprintln!("skipped: isolated ubusd object publication requires root");
+        return;
+    }
     let Some(rootfs) = std::env::var_os("LANSPEED_OPENWRT_ROOTFS").map(std::path::PathBuf::from)
     else {
         eprintln!("skipped: LANSPEED_OPENWRT_ROOTFS is not set");
@@ -42,12 +80,14 @@ fn pure_rust_server_registers_and_replies_to_real_ubusd() {
     let directory = std::env::temp_dir().join(format!("lanspeed-ubus-wire-{}", std::process::id()));
     let socket = directory.join("ubus.sock");
     fs::create_dir_all(&directory).unwrap();
+    let _directory_guard = DirectoryGuard(directory.clone());
     let mut daemon = spawn_ubusd(&loader, &library_path, &rootfs, &socket);
     let deadline = Instant::now() + Duration::from_secs(3);
     while !socket.exists() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(10));
     }
     assert!(socket.exists(), "ubusd did not create its socket");
+    thread::sleep(Duration::from_millis(50));
 
     let method = UbusMethod::new("echo", |mut request| {
         let Some(value) = request.string("identity_key").ok().flatten() else {
@@ -128,5 +168,4 @@ fn pure_rust_server_registers_and_replies_to_real_ubusd() {
 
     let _ = daemon.kill();
     let _ = daemon.wait();
-    let _ = fs::remove_dir_all(directory);
 }

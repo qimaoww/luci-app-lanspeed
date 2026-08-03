@@ -24,6 +24,7 @@ use crate::{
         BeforeReplyAction, ClientConntrackPlan, ConntrackObservation, PeriodicConntrackPlan,
         CLIENT_CONNTRACK_CACHE_TTL_MS, NSS_CLIENT_CONNTRACK_CACHE_TTL_MS,
     },
+    control::{ClientControlDeleteRequest, ClientControlRequest, ControlCommand, ControlManager},
     daemon::{
         abort_reload_after_timer_failure, abort_reload_candidate, activate_runtime,
         collect_and_reschedule, commit_reload, install_control_or_shutdown, reconnect_and_register,
@@ -1121,6 +1122,7 @@ fn production_now_ms() -> Result<u64, DaemonError> {
 
 struct ProductionRuntime {
     config: RuntimeConfig,
+    control: ControlManager,
     adapter: SystemAyaAdapter,
     bpf: Option<Bpf>,
     bpf_error: Option<String>,
@@ -1206,6 +1208,7 @@ impl ProductionRuntime {
         process_tracker.refresh_if_due("/proc", production_now_ms()?);
         let mut preflight = probe.collect(&config, &RuntimeHealth::default(), ProbeMethod::Health);
         process_tracker.overlay_report(&mut preflight);
+        let control = ControlManager::load(&config)?;
         Ok(Self {
             bpf_collector: BpfSnapshotCollector::new(
                 config.max_clients,
@@ -1231,6 +1234,7 @@ impl ProductionRuntime {
             rate_owner: None,
             hostnames: HostnameCache::new(),
             adapter: SystemAyaAdapter::with_max_clients(config.max_clients),
+            control,
             config,
             bpf: None,
             bpf_error: None,
@@ -1479,6 +1483,11 @@ impl ProductionRuntime {
                 .details
                 .insert("identity_errors".into(), json!(identity_errors));
         }
+        // The hot clients RPC overlays fresh conntrack-only identities after
+        // the normal collection snapshot. It is not an authoritative identity
+        // inventory: decorating those rows must never withdraw a persistent
+        // rule or rebuild qdiscs between normal collection generations.
+        self.decorate_controls(&mut snapshot.clients);
         let totals = ConnectionTotals::new(
             snapshot.clients.tcp_conns_total.unwrap_or(0),
             snapshot.clients.udp_conns_total.unwrap_or(0),
@@ -1541,16 +1550,16 @@ impl ProductionRuntime {
     fn collect_inner(
         &mut self,
         method: ProbeMethod,
-        external_bpf: Option<(&mut Bpf, &mut SystemAyaAdapter)>,
+        mut external_bpf: Option<(&mut Bpf, &mut SystemAyaAdapter)>,
     ) -> Result<ResponseSnapshot, DaemonError> {
         let mut now_ms = production_now_ms()?;
         let (identities, identity_errors) = read_identities(&self.config, now_ms);
         let conntrack = self.conntrack_snapshot.clone();
         let overlay = connection_overlay(conntrack.as_deref());
         let freshness_ms = u64::from(self.config.refresh_interval_ms).saturating_mul(3);
-        let (bpf_snapshot, mut runtime_health, bpf_snapshot_fresh) = match external_bpf {
+        let (bpf_snapshot, mut runtime_health, bpf_snapshot_fresh) = match external_bpf.as_mut() {
             Some((runtime, adapter)) => match runtime.collect_snapshot_self_healing(
-                adapter,
+                &mut **adapter,
                 &mut self.bpf_collector,
                 &identities,
                 &overlay,
@@ -1689,6 +1698,7 @@ impl ProductionRuntime {
                 );
             }
         }
+        self.refresh_controls(&mut clients);
         let overview = self.update_overview(now_ms, &clients);
         let coverage = self
             .x86_coverage
@@ -2340,6 +2350,7 @@ impl ProductionRuntime {
                 );
             }
         }
+        self.refresh_controls(&mut clients);
         let overview = self.update_overview(now_ms, &clients);
         let coverage = match decision.rate {
             RateCollector::NssEcmNode | RateCollector::NssEcmBpf => {
@@ -2903,6 +2914,7 @@ impl ProductionRuntime {
                     udp_dns_conns: counts.map(|sample| u64::from(sample.udp_dns_conns)),
                     udp_other_conns: counts.map(|sample| u64::from(sample.udp_other_conns)),
                     rate_meta: None,
+                    control: None,
                 });
                 published_identity_keys.insert(identity_key);
             }
@@ -3452,6 +3464,37 @@ impl ProductionRuntime {
         )
     }
 
+    fn refresh_controls(&mut self, clients: &mut ClientsResponse) {
+        self.control.observe_clients(&clients.clients);
+        self.reconcile_control_state();
+        self.control.decorate_clients(&mut clients.clients);
+    }
+
+    fn decorate_controls(&self, clients: &mut ClientsResponse) {
+        self.control.decorate_clients(&mut clients.clients);
+    }
+
+    fn reconcile_control_state(&mut self) {
+        self.control.reconcile();
+    }
+
+    fn client_control_set(&mut self, request: ClientControlRequest) -> Result<Value, DaemonError> {
+        let identity_key = request.identity_key.clone();
+        let _ = self.control.set(request)?;
+        self.reconcile_control_state();
+        Ok(self.control.response(&identity_key))
+    }
+
+    fn client_control_delete(
+        &mut self,
+        request: ClientControlDeleteRequest,
+    ) -> Result<Value, DaemonError> {
+        let identity_key = request.identity_key.clone();
+        let _ = self.control.delete(request)?;
+        self.reconcile_control_state();
+        Ok(self.control.response(&identity_key))
+    }
+
     fn shutdown(&mut self) -> Result<(), DaemonError> {
         if self.shutdown_complete {
             return Ok(());
@@ -3461,6 +3504,9 @@ impl ProductionRuntime {
             if let Err(error) = runtime.shutdown(&mut self.adapter) {
                 failures.push(format!("TC-BPF shutdown: {error}"));
             }
+        }
+        if let Err(error) = self.control.cleanup() {
+            failures.push(format!("client control shutdown: {error}"));
         }
         #[cfg(feature = "nss-platform")]
         if let Err(error) = self.nss.shutdown() {
@@ -3630,6 +3676,16 @@ impl App {
             BeforeReplyAction::None => Ok(()),
             BeforeReplyAction::RefreshConnections => self.refresh_clients_connections(),
             BeforeReplyAction::Reload => self.reload(),
+        }
+    }
+    fn handle_control(&mut self, command: ControlCommand) -> Result<Value, DaemonError> {
+        let runtime = self
+            .runtime
+            .as_mut()
+            .ok_or_else(|| DaemonError::collection("runtime is not started"))?;
+        match command {
+            ControlCommand::Set(request) => runtime.client_control_set(request),
+            ControlCommand::Delete(request) => runtime.client_control_delete(request),
         }
     }
     fn schedule_reconnect(&self) {
@@ -4096,12 +4152,23 @@ pub fn run() -> Result<(), DaemonError> {
     }));
 
     let weak = Rc::downgrade(&app);
-    let object = ubus::object(snapshots, move |method| {
-        weak.upgrade()
-            .ok_or_else(|| DaemonError::reload("daemon stopped"))?
-            .borrow_mut()
-            .before_reply(method)
-    })?;
+    let control_weak = Rc::downgrade(&app);
+    let object = ubus::object(
+        snapshots,
+        move |method| {
+            weak.upgrade()
+                .ok_or_else(|| DaemonError::reload("daemon stopped"))?
+                .borrow_mut()
+                .before_reply(method)
+        },
+        move |command| {
+            control_weak
+                .upgrade()
+                .ok_or_else(|| DaemonError::reload("daemon stopped"))?
+                .borrow_mut()
+                .handle_control(command)
+        },
+    )?;
     let mut connection =
         UbusConnection::connect(None).map_err(|error| DaemonError::transport(error.to_string()))?;
     connection
@@ -5255,6 +5322,7 @@ mod tests {
             udp_dns_conns: None,
             udp_other_conns: None,
             rate_meta: Some(rate_meta),
+            control: None,
         };
         let clients = ClientsResponse {
             clients: vec![client.clone()],

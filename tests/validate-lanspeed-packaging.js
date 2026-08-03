@@ -59,6 +59,7 @@ const luciResources = [
 	'diagnosticsModel.js',
 	'diagnosticsView.js',
 	'clientConnections.js',
+	'clientControl.js',
 	'dhcpHostnames.js',
 	'clientDetailShell.js',
   'clientDetailStyle.js',
@@ -654,6 +655,11 @@ try {
   );
   assertMatch(pkgMakefile, /^PKG_BUILD_PARALLEL:=1$/m, 'Rust package build must enable OpenWrt parallel builds');
   assertMatch(pkgMakefile, /^RUST_PKG_LOCKED:=1$/m, 'Rust package build must keep Cargo.lock immutable');
+  assertNoMatch(
+    pkgMakefile,
+    /\+kmod-(?:ifb|qca-nss-drv-qdisc|qca-nss-ecm|sched-core)\b/,
+    'client control must not add IFB, NSS, ECM, or scheduler kernel package dependencies'
+  );
   assert(
     (pkgMakefile.match(/^\s*SOURCE:=lanspeedd$/gm) || []).length === 2,
     'daemon and BPF package metadata must use a stable origin without leaking the build path'
@@ -771,8 +777,8 @@ try {
     'x86 migration must remove the legacy dedicated-port option used by older releases');
   assertMatch(x86ProfileMigration, /nss_ecm_node\|nss_ecm_bpf[\s\S]*rate_collector_mode='bpf'/,
     'x86 migration must normalize retained forced NSS modes to BPF');
-  assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+libgcc \+kmod-nf-conntrack-netlink/,
-    'base daemon must retain verified LP64, libgcc_s runtime, and conntrack kernel constraints');
+  assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+libgcc \+kmod-nf-conntrack-netlink \+tc-full \+nftables \+conntrack/,
+    'base daemon must retain the original collector dependencies and client-control userspace tools');
   assertNoMatch(pkgMakefile, /\+libubox|\+libubus|\+libuci|\+libblobmsg-json/,
     'pure Rust userspace must not retain versioned OpenWrt library dependencies');
   assertNoMatch(
@@ -780,7 +786,7 @@ try {
     /DEPENDS:=\$\(RUST_ARCH_DEPENDS\)/,
     'base daemon must not advertise unverified 32-bit Rust targets'
   );
-  assertMatch(pkgMakefile, /define Package\/lanspeedd-bpf[\s\S]*DEPENDS:=@!BIG_ENDIAN \+lanspeedd \+tc-full \+kmod-sched-bpf/, 'BPF package must depend on the base daemon, full tc tooling, and TC BPF kernel support');
+  assertMatch(pkgMakefile, /define Package\/lanspeedd-bpf[\s\S]*DEPENDS:=@!BIG_ENDIAN \+lanspeedd \+tc-full \+kmod-sched-bpf/, 'BPF package must retain the original daemon, tc, and TC-BPF dependencies');
   assertNoMatch(pkgMakefile, /\+tc-tiny/, 'BPF package must not conflict with packages that depend on tc-full');
   assertMatch(
     luciMakefile,

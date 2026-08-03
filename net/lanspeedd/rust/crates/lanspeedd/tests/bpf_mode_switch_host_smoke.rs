@@ -1,4 +1,5 @@
 use std::{
+    env,
     path::{Path, PathBuf},
     process::{Command, Output},
 };
@@ -46,11 +47,16 @@ fn map_bytes(adapter: &mut SystemAyaAdapter) -> u64 {
 }
 
 fn object_paths() -> (PathBuf, PathBuf) {
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .unwrap();
-    let output = workspace.join("target/bpfel-unknown-none/release");
+    let output = env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .and_then(Path::parent)
+                .unwrap()
+                .join("target")
+        })
+        .join("bpfel-unknown-none/release");
     (
         output.join("lanspeed-ebpf-kfunc"),
         output.join("lanspeed-ebpf-fallback"),

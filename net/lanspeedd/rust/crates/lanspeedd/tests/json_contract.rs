@@ -177,6 +177,7 @@ fn fixture_snapshot() -> ResponseSnapshot {
                     rx_coverage_pct: Some(94),
                 }),
             }),
+            control: None,
         }],
         evidence: Some(evidence("clients")),
         tcp_conns_total: Some(2),
@@ -589,11 +590,15 @@ fn fixed_snapshot_methods_and_all_registered_methods_stay_distinct() {
         (Method::Diagnostics, "contract_version"),
     ];
     assert_eq!(Method::FIXED.len(), 8);
-    assert_eq!(Method::ALL.len(), 9);
+    assert_eq!(Method::ALL.len(), 11);
     assert_eq!(Method::ALL[..Method::FIXED.len()], Method::FIXED);
     assert_eq!(Method::ALL[8], Method::ClientConnections);
+    assert_eq!(Method::ALL[9], Method::ClientControlSet);
+    assert_eq!(Method::ALL[10], Method::ClientControlDelete);
     assert_eq!(Method::Diagnostics.name(), "diagnostics");
     assert_eq!(Method::ClientConnections.name(), "client_connections");
+    assert_eq!(Method::ClientControlSet.name(), "client_control_set");
+    assert_eq!(Method::ClientControlDelete.name(), "client_control_delete");
     assert_eq!(
         before_reply_action(Method::ClientConnections),
         BeforeReplyAction::RefreshConnections
@@ -604,6 +609,8 @@ fn fixed_snapshot_methods_and_all_registered_methods_stay_distinct() {
         assert!(value.get(required).is_some(), "{method:?}.{required}");
     }
     assert!(snapshot.response(Method::ClientConnections).is_err());
+    assert!(snapshot.response(Method::ClientControlSet).is_err());
+    assert!(snapshot.response(Method::ClientControlDelete).is_err());
 }
 
 #[test]

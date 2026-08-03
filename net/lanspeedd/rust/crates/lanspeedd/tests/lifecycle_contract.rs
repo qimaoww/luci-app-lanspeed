@@ -310,7 +310,7 @@ fn startup_connects_and_registers_before_stage_collect_publish_and_timer() {
         events.values(),
         [
             "connect",
-            "register:9",
+            "register:11",
             "stage:1",
             "collect:1",
             "collection_timer:1000"
@@ -344,6 +344,7 @@ fn client_connections_refreshes_before_loading_the_latest_snapshot() {
         udp_dns_conns: None,
         udp_other_conns: None,
         rate_meta: None,
+        control: None,
     });
     let refreshed = Arc::new(refreshed);
     let callback_snapshots = snapshots.clone();
@@ -450,7 +451,7 @@ fn startup_register_or_stage_failure_cleans_transport_in_reverse_order() {
     assert!(coordinator.start().is_err());
     assert_eq!(
         events.values(),
-        ["connect", "register:9", "transport_shutdown"]
+        ["connect", "register:11", "transport_shutdown"]
     );
 
     let events = Events::default();
@@ -459,7 +460,7 @@ fn startup_register_or_stage_failure_cleans_transport_in_reverse_order() {
     assert!(daemon.start().is_err());
     assert_eq!(
         events.values(),
-        ["connect", "register:9", "stage:1", "transport_shutdown"]
+        ["connect", "register:11", "stage:1", "transport_shutdown"]
     );
 }
 
@@ -694,7 +695,7 @@ fn disconnect_reconnects_after_one_second_and_reregisters_all_methods() {
     daemon.on_reconnect_tick().unwrap();
     assert!(events
         .values()
-        .ends_with(&["reconnect".into(), "register:9".into()]));
+        .ends_with(&["reconnect".into(), "register:11".into()]));
 }
 
 #[test]

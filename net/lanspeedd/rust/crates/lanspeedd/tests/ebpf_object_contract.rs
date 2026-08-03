@@ -20,14 +20,22 @@ use object::{
 const PACKET_SCRATCH_MAP_NAME: &str = "lanspeed_packet_prefix";
 const CONNTRACK_SCRATCH_MAP_NAME: &str = "lanspeed_conntrack_scratch";
 
-fn object_path() -> PathBuf {
-    env::var_os("LANSPEED_EBPF_OBJECT")
+fn target_object(name: &str) -> PathBuf {
+    env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../..")
-                .join("target/bpfel-unknown-none/release/lanspeed-ebpf")
+                .join("target")
         })
+        .join("bpfel-unknown-none/release")
+        .join(name)
+}
+
+fn object_path() -> PathBuf {
+    env::var_os("LANSPEED_EBPF_OBJECT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| target_object("lanspeed-ebpf"))
 }
 
 fn object_bytes() -> Vec<u8> {
@@ -43,11 +51,7 @@ fn object_bytes() -> Vec<u8> {
 fn fallback_object_path() -> PathBuf {
     env::var_os("LANSPEED_EBPF_FALLBACK_OBJECT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../..")
-                .join("target/bpfel-unknown-none/release/lanspeed-ebpf-fallback")
-        })
+        .unwrap_or_else(|| target_object("lanspeed-ebpf-fallback"))
 }
 
 fn fallback_object_bytes() -> Vec<u8> {
@@ -63,11 +67,7 @@ fn fallback_object_bytes() -> Vec<u8> {
 fn ecm_object_path() -> PathBuf {
     env::var_os("LANSPEED_EBPF_ECM_OBJECT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../..")
-                .join("target/bpfel-unknown-none/release/lanspeed-ebpf-ecm")
-        })
+        .unwrap_or_else(|| target_object("lanspeed-ebpf-ecm"))
 }
 
 fn ecm_object_bytes() -> Vec<u8> {

@@ -3,6 +3,7 @@
 'require lanspeed.vocab as vocab';
 'require lanspeed.format as fmt';
 'require lanspeed.clientConnections as clientConnections';
+'require lanspeed.clientControl as clientControl';
 'require lanspeed.version as lsVersion';
 'require lanspeed.statusIp as statusIp';
 'require lanspeed.statusCollector as statusCollector';
@@ -662,7 +663,8 @@ function refreshLive(viewState) {
 						  ].join(' · ')
 						: ''
 				}, typeof c.udp_conns === 'number' ? String(c.udp_conns) : '-'),
-				stateCell
+				stateCell,
+				clientControl.cell(viewState, c)
 			]);
 		}));
 	}

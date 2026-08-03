@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-lanspeed
-PKG_VERSION:=1.1.5
-PKG_RELEASE:=8
+PKG_VERSION:=1.1.6
+PKG_RELEASE:=1
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=
@@ -73,6 +73,7 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/diagnosticsModel.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsView.js \
 		./htdocs/luci-static/resources/lanspeed/clientConnections.js \
+		./htdocs/luci-static/resources/lanspeed/clientControl.js \
 		./htdocs/luci-static/resources/lanspeed/dhcpHostnames.js \
 		./htdocs/luci-static/resources/lanspeed/clientDetailShell.js \
 		./htdocs/luci-static/resources/lanspeed/clientDetailStyle.js \

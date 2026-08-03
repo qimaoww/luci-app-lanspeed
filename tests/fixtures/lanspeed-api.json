@@ -33,7 +33,7 @@
     "rate_collector_mode": "auto",
     "access_edge_mode": "active",
     "conn_collector_mode": "auto",
-    "version": "1.1.5-r8",
+    "version": "1.1.6-r1",
     "capabilities": {
       "bpf": false,
       "bpf_supported": false,
@@ -349,8 +349,8 @@
       }
     ],
     "versions": {
-      "daemon": "1.1.5-r8",
-      "package": "1.1.5-r8",
+      "daemon": "1.1.6-r1",
+      "package": "1.1.6-r1",
       "contract_version": 1,
       "schema_version": 1
     },

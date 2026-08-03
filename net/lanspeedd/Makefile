@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=lanspeedd
-PKG_VERSION:=1.1.5
-PKG_RELEASE:=8
+PKG_VERSION:=1.1.6
+PKG_RELEASE:=1
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=
@@ -40,7 +40,7 @@ define Package/lanspeedd
   CATEGORY:=Network
   TITLE:=LAN speed monitor daemon
   SOURCE:=lanspeedd
-  DEPENDS:=@(aarch64||x86_64) +libgcc +kmod-nf-conntrack-netlink
+  DEPENDS:=@(aarch64||x86_64) +libgcc +kmod-nf-conntrack-netlink +tc-full +nftables +conntrack
 endef
 
 define Package/lanspeedd/description

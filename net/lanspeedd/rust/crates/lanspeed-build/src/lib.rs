@@ -109,8 +109,11 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
             let userspace_target = env::var_os("LANSPEED_USERSPACE_TARGET")
                 .ok_or(BuildError::MissingUserspaceTarget)?;
             let mut command = Command::new(&cargo);
-            command.current_dir(&workspace).arg("build");
-            command.env_remove("RUSTC_BOOTSTRAP");
+            command
+                .current_dir(&workspace)
+                .args(["build", "-Z", "build-std=std,panic_unwind"]);
+            command.env("RUSTC_BOOTSTRAP", "1");
+            apply_path_remapping(&mut command, &workspace, &[]);
             command.args(["-p", "lanspeedd", "--release", "--target"]);
             let userspace_profile = BpfTargetArch::parse(&userspace_target)?;
             command.arg(&userspace_target);
@@ -202,11 +205,39 @@ fn build_ebpf_variant(
     command.arg("--target-dir").arg(&target_dir);
     command.env("RUSTC_BOOTSTRAP", "1");
     command.env("AYA_BPF_TARGET_ARCH", target_arch.aya_name());
+    apply_path_remapping(
+        &mut command,
+        workspace,
+        &["-Cdebuginfo=2", "-Clink-arg=--btf"],
+    );
     if let Some(linker) = env::var_os("BPF_LINKER") {
         command.env("CARGO_TARGET_BPFEL_UNKNOWN_NONE_LINKER", linker);
     }
     ensure_success(command.status()?, BuildTarget::Ebpf)?;
     Ok(target_dir.join("bpfel-unknown-none/release/lanspeed-ebpf"))
+}
+
+fn apply_path_remapping(command: &mut Command, workspace: &PathBuf, required_flags: &[&str]) {
+    let build_root = workspace
+        .ancestors()
+        .find(|path| path.join("rules.mk").is_file() && path.join("staging_dir").is_dir())
+        .unwrap_or(workspace);
+    let remap = format!(
+        "--remap-path-prefix={}=/lanspeed-build",
+        build_root.to_string_lossy()
+    );
+    let mut flags = env::var("RUSTFLAGS").unwrap_or_default();
+    for required in required_flags {
+        if !flags.is_empty() {
+            flags.push(' ');
+        }
+        flags.push_str(required);
+    }
+    if !flags.is_empty() {
+        flags.push(' ');
+    }
+    flags.push_str(&remap);
+    command.env("RUSTFLAGS", flags);
 }
 
 fn detect_rustc() -> Result<String, BuildError> {
@@ -476,5 +507,24 @@ mod tests {
             assert_eq!(arch.aya_name(), "aarch64");
         }
         assert!(BpfTargetArch::parse(OsStr::new("mips64")).is_err());
+    }
+
+    #[test]
+    fn child_rust_builds_remap_the_workspace_path() {
+        let workspace = PathBuf::from("/tmp/lanspeed-source");
+        let mut command = Command::new("true");
+        apply_path_remapping(
+            &mut command,
+            &workspace,
+            &["-Cdebuginfo=2", "-Clink-arg=--btf"],
+        );
+        let flags = command
+            .get_envs()
+            .find_map(|(key, value)| (key == "RUSTFLAGS").then_some(value.unwrap()))
+            .unwrap()
+            .to_string_lossy();
+        assert!(flags.contains("--remap-path-prefix=/tmp/lanspeed-source=/lanspeed-build"));
+        assert!(flags.contains("-Cdebuginfo=2"));
+        assert!(flags.contains("-Clink-arg=--btf"));
     }
 }

@@ -31,6 +31,12 @@
     },
     {
       "$ref": "#/$defs/client_connections"
+    },
+    {
+      "$ref": "#/$defs/client_control_set"
+    },
+    {
+      "$ref": "#/$defs/client_control_delete"
     }
   ],
   "$defs": {
@@ -121,7 +127,7 @@
     },
     "collectorMode": {
       "type": "string",
-      "enum": ["auto", "bpf", "nss_ecm_node", "nss_ecm_bpf", "conntrack_netlink", "conntrack_procfs"]
+      "enum": ["auto", "bpf", "nss_ecm_node", "nss_ecm_bpf", "conntrack_netlink", "conntrack_procfs", "unsupported"]
     },
     "rateCollectorMode": {
       "type": "string",
@@ -1160,6 +1166,49 @@
         "samples"
       ]
     },
+    "clientControlSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "configured": { "type": "boolean" },
+        "upload_bps": { "type": "integer", "minimum": 0 },
+        "download_bps": { "type": "integer", "minimum": 0 },
+        "internet_disabled": { "type": "boolean" },
+        "shaping_supported": { "type": "boolean" },
+        "blocking_supported": { "type": "boolean" },
+        "max_rate_bps": { "type": "integer", "minimum": 0 },
+        "state": {
+          "type": "string",
+          "enum": ["inactive", "applied", "pending_new_connections", "verified", "error", "unsupported"]
+        },
+        "reason": { "type": "string", "minLength": 1 },
+        "queue_overflow": { "type": "boolean" }
+      },
+      "required": [
+        "configured", "upload_bps", "download_bps", "internet_disabled",
+        "shaping_supported", "blocking_supported", "max_rate_bps", "state", "queue_overflow"
+      ]
+    },
+    "clientControlResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "control": { "$ref": "#/$defs/clientControlSummary" },
+        "error": { "type": "string", "minLength": 1 }
+      },
+      "required": ["ok"],
+      "oneOf": [
+        { "required": ["control"] },
+        { "required": ["error"] }
+      ]
+    },
+    "client_control_set": {
+      "$ref": "#/$defs/clientControlResponse"
+    },
+    "client_control_delete": {
+      "$ref": "#/$defs/clientControlResponse"
+    },
     "client": {
       "type": "object",
       "additionalProperties": false,
@@ -1251,6 +1300,9 @@
         },
         "rate_meta": {
           "$ref": "#/$defs/clientRateMeta"
+        },
+        "control": {
+          "$ref": "#/$defs/clientControlSummary"
         }
       },
       "required": [

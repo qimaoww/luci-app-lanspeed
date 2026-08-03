@@ -50,6 +50,7 @@ const EXPECTED_MODULES = [
 	'designSystemBootstrap.js',
 	'geoLocation.js',
 	'clientConnections.js',
+	'clientControl.js',
 	'clientDetailRefresh.js',
 	'clientDetailShell.js',
 	'clientDetailView.js',
@@ -188,6 +189,7 @@ const MODULE_REQUIRES = {
 	'designSystemBootstrap.js': [ 'baseclass' ],
 	'geoLocation.js': [ 'baseclass' ],
 	'clientConnections.js': [ 'baseclass', 'lanspeed.format' ],
+	'clientControl.js': [ 'baseclass', 'ui', 'lanspeed.rpc' ],
 	'clientDetailRefresh.js': [
 		'baseclass',
 		'lanspeed.format',
@@ -303,6 +305,7 @@ const MODULE_REQUIRES = {
 		'lanspeed.vocab',
 		'lanspeed.format',
 		'lanspeed.clientConnections',
+		'lanspeed.clientControl',
 		'lanspeed.version',
 		'lanspeed.statusIp',
 		'lanspeed.statusCollector'
@@ -2048,11 +2051,12 @@ function loadStatusRefreshModule(src, fakeWindow) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	const vocab = loadVocabModule(readModuleByName('vocab.js'));
 	return vm.compileFunction(src,
-		[ 'baseclass', 'vocab', 'fmt', 'clientConnections', 'lsVersion',
+		[ 'baseclass', 'vocab', 'fmt', 'clientConnections', 'clientControl', 'lsVersion',
 		  'statusIp', 'statusCollector', 'E', '_', 'window' ],
 		{ filename: 'resources/lanspeed/statusRefresh.js' })(
 			fakeBaseclass, vocab, {},
 			loadClientConnectionsModule(readModuleByName('clientConnections.js')),
+			{ cell: function() { return fakeElement('td'); } },
 			{ FULL_VERSION: 'test' }, {}, {}, fakeElement, fakeTranslate,
 			fakeWindow || { location: { pathname: '/admin/status/lanspeed/overview' } }
 		);
@@ -4894,7 +4898,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.5-r8';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.1.6-r1';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
@@ -4902,7 +4906,7 @@ function assertCacheAwareViewEntry(src, moduleName, label) {
 	    !src.includes('return view.extend({') ||
 	    !src.includes('return module.load();') ||
 	    !src.includes('return pageModule.render(data);')) {
-		fail(`${label} must load ${moduleName} through the 1.1.5 resource cache boundary`);
+		fail(`${label} must load ${moduleName} through the 1.1.6 resource cache boundary`);
 	}
 	if (src.includes('buildShell(') || src.includes('refreshLive(') || src.includes('loadAll()')) {
 		fail(`${label} must remain a cache-aware entry and not duplicate page logic`);
@@ -5705,7 +5709,8 @@ function assertStatusStyleModule(src) {
 		'.lanspeed-toolbar-right{',
 		'.lanspeed-sort-button{',
 		'.lanspeed-pagination{display:flex',
-		'.lanspeed-details>summary{display:flex'
+		'.lanspeed-details>summary{display:flex',
+		'.lanspeed-control-client{display:flex;flex-wrap:wrap'
 	].forEach(function(marker) {
 		if (!baseCss.includes(marker))
 			fail(`statusStyleBase.js must retain status information architecture: ${marker}`);
@@ -5724,7 +5729,12 @@ function assertStatusStyleModule(src) {
 		'.lanspeed-clients-card .lanspeed-table td[data-label]::before{content:attr(data-label);',
 		'.lanspeed-ifaces-table tbody>tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));',
 		'.lanspeed-ifaces-table tbody td[data-label]::before{content:attr(data-label);',
-		'.lanspeed-table[data-client-status="hidden"]{table-layout:fixed}'
+		'.lanspeed-table[data-client-status="hidden"]{table-layout:fixed}',
+		'.lanspeed-client-control-header{text-align:center}',
+		'.lanspeed-control-actions{display:grid;',
+		'grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch}',
+		'.lanspeed-control-button{width:100%}',
+		'.lanspeed-table[data-client-status="hidden"] td:nth-child(8){width:22%}'
 	].forEach(function(marker) {
 		if (!responsiveCss.includes(marker))
 			fail(`statusStyleResponsive.js must retain responsive status behavior: ${marker}`);
@@ -6799,7 +6809,7 @@ function matchingConfigStatus(values) {
 		max_clients: values.max_clients,
 		enable_bpf: values.enable_bpf === '1',
 		enable_conntrack_fallback: values.enable_conntrack_fallback === '1',
-		version: '1.1.5-r8',
+		version: '1.1.6-r1',
 		capabilities: { bpf: true, conntrack_fallback: true },
 		evidence: {
 			platform: { profile: 'nss_aarch64' },
@@ -6829,7 +6839,7 @@ function assertConfigFormBehavior(src) {
 	}, makeConfigIfaceStub(), model);
 	asyncChecks.push(validLoadForm.loadValues().then(function(values) {
 		if (values.pageState !== 'ready' || !values.rpc.status.ok ||
-			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.5-r8') {
+			values.rpc.status.phase !== 'success' || values.status.version !== '1.1.6-r1') {
 			fail('configForm.js must accept the complete status contract and retain capability evidence');
 		}
 	}).catch(function(error) {

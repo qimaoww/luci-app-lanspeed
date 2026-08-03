@@ -1,3 +1,5 @@
+#[cfg(all(feature = "openwrt", not(feature = "nss-platform")))]
+pub mod control;
 pub mod coverage;
 pub(crate) mod coverage_state;
 #[cfg(any(feature = "openwrt", test))]

@@ -47,6 +47,9 @@ static LICENSE: [u8; 4] = *b"GPL\0";
 #[cfg(feature = "tc")]
 #[classifier]
 pub fn lanspeed_ingress(ctx: TcContext) -> i32 {
+    #[cfg(feature = "x86-tc")]
+    return account_frame(ctx, DIR_TX, TC_ACT_UNSPEC);
+    #[cfg(not(feature = "x86-tc"))]
     account_frame(ctx, DIR_TX, TC_ACT_OK)
 }
 

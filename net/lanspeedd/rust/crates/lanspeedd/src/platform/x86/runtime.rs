@@ -138,6 +138,10 @@ impl LinkSpec {
         ]
     }
 
+    pub fn all(interface: &str, mode: AttachMode) -> Vec<Self> {
+        Self::pair(interface, mode).into_iter().collect()
+    }
+
     pub fn kernel_program_name(&self) -> &str {
         &self.program[..self.program.len().min(15)]
     }
@@ -498,7 +502,7 @@ impl<L> BpfRuntime<L> {
         }
         let desired_specs = desired_interfaces
             .iter()
-            .flat_map(|interface| LinkSpec::pair(interface, mode))
+            .flat_map(|interface| LinkSpec::all(interface, mode))
             .collect::<Vec<_>>();
         for spec in &desired_specs {
             let state = match adapter.inspect_hook(spec) {
@@ -564,7 +568,7 @@ impl<L> BpfRuntime<L> {
         let previous_specs = self.expected_specs.clone();
         let previous_mode = self.current_mode;
         adapter.ensure_clsact(interface)?;
-        let specs = LinkSpec::pair(interface, mode);
+        let specs = LinkSpec::all(interface, mode);
         let states = specs
             .iter()
             .map(|spec| adapter.inspect_hook(spec))
@@ -612,7 +616,7 @@ impl<L> BpfRuntime<L> {
                 }
             }
         }
-        for spec in LinkSpec::pair(interface, mode) {
+        for spec in LinkSpec::all(interface, mode) {
             if !self.expected_specs.contains(&spec) {
                 self.expected_specs.push(spec);
             }
@@ -661,7 +665,7 @@ impl<L> BpfRuntime<L> {
     ) -> Result<(), AdapterError> {
         let desired = interfaces
             .iter()
-            .flat_map(|interface| LinkSpec::pair(interface, new_mode))
+            .flat_map(|interface| LinkSpec::all(interface, new_mode))
             .collect::<Vec<_>>();
         if self.current_mode == Some(new_mode)
             && self.expected_specs.len() == desired.len()
@@ -729,7 +733,7 @@ impl<L> BpfRuntime<L> {
         }
         let mut desired_specs = interfaces
             .iter()
-            .flat_map(|interface| LinkSpec::pair(interface, desired_mode))
+            .flat_map(|interface| LinkSpec::all(interface, desired_mode))
             .collect::<Vec<_>>();
         desired_specs.sort();
         desired_specs.dedup();

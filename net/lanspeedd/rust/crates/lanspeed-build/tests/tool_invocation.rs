@@ -100,6 +100,7 @@ fn userspace_build_does_not_invoke_bpf_linker() {
     let cargo = tools.path().join("cargo");
     let marker = tools.path().join("bpf-linker-invoked");
     let cargo_args = tools.path().join("cargo-args");
+    let bootstrap = tools.path().join("cargo-bootstrap");
     let workspace = tools.path().join("workspace");
     fs::create_dir_all(&workspace).unwrap();
 
@@ -110,7 +111,7 @@ fn userspace_build_does_not_invoke_bpf_linker() {
     );
     write_executable(
         &cargo,
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CARGO_ARGS\"\nexit 0\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CARGO_ARGS\"\nprintf '%s\\n' \"${RUSTC_BOOTSTRAP-}\" > \"$BOOTSTRAP\"\nexit 0\n",
     );
 
     let mut variables = Environment::new();
@@ -119,6 +120,7 @@ fn userspace_build_does_not_invoke_bpf_linker() {
     variables.set("CARGO", &cargo);
     variables.set("MARKER", &marker);
     variables.set("CARGO_ARGS", &cargo_args);
+    variables.set("BOOTSTRAP", &bootstrap);
     variables.set("LANSPEED_BUILD_WORKSPACE", &workspace);
     variables.set("LANSPEED_USERSPACE_TARGET", "aarch64-unknown-linux-musl");
 
@@ -140,6 +142,12 @@ fn userspace_build_does_not_invoke_bpf_linker() {
         .collect::<Vec<_>>()
         .windows(2)
         .any(|pair| pair == ["--target", "aarch64-unknown-linux-musl"]));
+    assert!(args
+        .lines()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|pair| pair == ["-Z", "build-std=std,panic_unwind"]));
+    assert_eq!(fs::read_to_string(&bootstrap).unwrap().trim(), "1");
 
     assert!(matches!(
         build(BuildTarget::Ebpf),

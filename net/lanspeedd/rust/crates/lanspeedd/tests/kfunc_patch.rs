@@ -7,9 +7,14 @@ fn object_bytes() -> Vec<u8> {
     let path = env::var_os("LANSPEED_EBPF_OBJECT")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../..")
-                .join("target/bpfel-unknown-none/release/lanspeed-ebpf")
+            env::var_os("CARGO_TARGET_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("../..")
+                        .join("target")
+                })
+                .join("bpfel-unknown-none/release/lanspeed-ebpf")
         });
     fs::read(path).expect("build lanspeed-ebpf before this test")
 }

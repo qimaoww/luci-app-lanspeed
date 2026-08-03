@@ -1,6 +1,6 @@
 # luci-app-lanspeed
 
-`luci-app-lanspeed` 为 ImmortalWrt / OpenWrt 提供 LAN 客户端实时速率、接口吞吐、连接数、逐连接速率、诊断与配置页面。用户态服务 `lanspeedd` 使用 Rust/Aya，提供九个 ubus 方法；`lanspeedd-bpf` 安装目标架构对应的 eBPF 对象。
+`luci-app-lanspeed` 为 ImmortalWrt / OpenWrt 提供 LAN 客户端实时速率、接口吞吐、连接数、逐连接速率、诊断与配置页面。用户态服务 `lanspeedd` 使用 Rust/Aya，提供十一个 ubus 方法；`lanspeedd-bpf` 安装目标架构对应的 eBPF 对象。
 
 Qualcomm aarch64 NSS 配置中，客户端总速率优先来自只读 Access Edge：稳定观测到的有线客户端使用 netdev 64 位计数，Wi-Fi 使用 NL80211 station 计数。TC-BPF 观察 CPU 可见 LAN 边缘流量，在 NSS 设备上对应 CPU 慢路径；Qualcomm ECM kprobe 只记录已由 NSS callback context 证明的硬件增量，分类值不再与总速率相加。x86_64 使用独立的原生 TC-BPF 总速率路径，不编译、探测或展示 NSS/ECM/Access Edge。已验证 AP station 最高为 `unicast/full`，WDS、Mesh、共享下联与未验证组播保持 Partial。本项目按证据声明覆盖范围，不把未知字节强行二分为 NSS/非 NSS；它不是完整流量审计系统，不声明全流量绝对准确。
 
@@ -67,9 +67,11 @@ Qualcomm aarch64 NSS 设备自动按 ECM+BPF、ECM、BPF 选择健康后端，�
 - LAN 与观察接口吞吐；bridge 与 member 同时配置时只统计独立边界，避免重复计数。
 - CT-Netlink 连接统计，失败时回退 CT-Procfs；conntrack 只提供连接数、逐连接详情和目标 IP 元数据。
 - 客户端详情按远端 IP 聚合 TCP/UDP 连接，可展开实际连接并排序、分页、暂停刷新。
+- 实时客户端行可分别设置互联网上传/下载限速或禁用上网；路由器管理和 LAN/NAS 转发不受控制规则影响。
+- 控制规则永久保存。正常整形使用 BFIFO/NSSBFIFO 排队而不主动丢包；队列 `drops` 增长会明确报告溢出故障。
 - 浏览器按当前页查询公网 IP 地理位置；私网、保留地址和 Fake-IP 在本地分类。
 - 实时状态、运行诊断、LAN Speed 配置和客户端详情使用同一后端版本与 RPC 契约。
-- LuCI 显示完整包版本，例如 `1.1.5-r8`，并使用同一版本作为静态资源缓存键。
+- LuCI 显示完整包版本，例如 `1.1.6-r1`，并使用同一版本作为静态资源缓存键。
 - 诊断页独立校验六个 RPC 请求；NSS 配置分开展示总速率 owner、精准接入拓扑和 NSS/CPU 分类，x86 配置只展示 TC-BPF 与连接详情健康。
 - 配置页支持速率模式、连接模式、采样、活动阈值、IPv6 显示、接口采集/观察和严格输入校验。
 - aarch64 NSS 配置页支持 Access Edge `off/shadow/active`；x86 配置页不读取或展示 Access Edge/NSS 模式。
@@ -115,7 +117,7 @@ SDK_DIR=/openwrt/immortalwrt ENABLE_BPF=1 scripts/build-sdk.sh
 | `lanspeedd-bpf` | TC-BPF 对象；aarch64 包额外包含独立 NSS ECM kprobe 对象 |
 | `luci-app-lanspeed` | LuCI 实时状态、运行诊断、配置和客户端详情模块 |
 
-运行依赖包括 `libgcc`、`kmod-nf-conntrack-netlink`、`tc-full` 与 `kmod-sched-bpf`。daemon 的 ubus/blobmsg、uloop、UCI 与 CT-Netlink 用户态实现为 Rust，不要求目标固件提供相应客户端库 ABI；APK 架构、musl、内核 BPF/BTF 和 LuCI ABI 仍必须与目标固件匹配。
+原有实时统计依赖保持为 `libgcc`、`kmod-nf-conntrack-netlink`、`tc-full` 与 `kmod-sched-bpf`；客户端限速/禁网功能只追加 `nftables` 与 `conntrack` 用户态工具，不追加 IFB、NSS qdisc、ECM 或调度器内核模块包依赖。x86 上传由 nft netdev ingress 在 flowtable 前写入 classid，再在全部活动 WAN egress 的 HTB/BFIFO 排队；下载由自有 HTB 树的 u32 地址分类器处理。新功能不向现有测速 BPF 对象增加程序或映射，也不创建 IFB。Qualcomm NSS 所需 qdisc/ECM 必须由目标固件自带。缺失能力或任一目标队列已被其它服务占用时，运行时会禁用对应按钮并返回原因，不会安装模块或回退到另一平台路径。daemon 的 ubus/blobmsg、uloop、UCI 与 CT-Netlink 用户态实现为 Rust，不要求目标固件提供相应客户端库 ABI；APK 架构、musl、内核 BPF/BTF 和 LuCI ABI 仍必须与目标固件匹配。
 
 ## 支持范围
 
@@ -140,6 +142,7 @@ CONFIG_PACKAGE_kmod-nf-conntrack=y
 CONFIG_PACKAGE_kmod-nf-conntrack-netlink=y
 CONFIG_PACKAGE_kmod-sched-bpf=y
 CONFIG_PACKAGE_tc-full=y
+CONFIG_NET_SCH_HTB=y
 ```
 
 ECM+BPF 还要求可读的 `/sys/kernel/btf/ecm` 和受支持的 `ecm_db_connection_data_totals_update` / NSS callback symbol。ECM node 要求可读 `/dev/ecm_state` 与对应 debugfs 控制文件。
@@ -212,9 +215,15 @@ ubus call lanspeed interfaces
 ubus call lanspeed sysdevices
 ubus call lanspeed client_connections \
   '{"identity_key":"02:00:00:00:00:42@br-lan"}'
+ubus call lanspeed client_control_set \
+  '{"identity_key":"02:00:00:00:00:42@br-lan","upload_bps":"20000000","download_bps":"50000000","internet_disabled":"0"}'
+ubus call lanspeed client_control_delete \
+  '{"identity_key":"02:00:00:00:00:42@br-lan"}'
 ```
 
-九个 ubus 方法返回统一版本和结构化 evidence。状态 `mode` 为 `Full`、`Degraded` 或 `Unsupported`，`confidence` 为 `high`、`medium`、`low` 或 `unsupported`。`router_self` 标识路由器自身流量语义；连接详情的方向始终以客户端为准。
+十一个 ubus 方法返回统一版本和结构化 evidence。状态 `mode` 为 `Full`、`Degraded` 或 `Unsupported`，`confidence` 为 `high`、`medium`、`low` 或 `unsupported`。`router_self` 标识路由器自身流量语义；连接详情的方向始终以客户端为准。
+
+`client_control_set` 只接受十进制 bit/s 和 `0`/`1` 开关。x86 控制分类完全独立于测速 BPF：上传在 LAN nft ingress 写入 classid，并由全部活动 WAN egress 的 HTB/BFIFO 整形；下载在 LAN egress 的自有 HTB 树中按唯一客户端地址分类。NSS 使用 NSSHTB/NSSBFIFO 与 ECM 双向 QoS tag，新连接对应 class counter 增长后才显示“已验证生效”。最后一条限速解除后会清理自有队列；单纯禁网不安装整形队列。
 
 `client_connections` 返回当前 conntrack 快照：TCP 仅统计 ESTABLISHED + ASSURED，UDP 仅统计 ASSURED。每条连接的 `tx_bps` / `rx_bps` 使用相邻累计字节快照计算，新连接、计数器回退或时间回退不会生成虚假速率。
 

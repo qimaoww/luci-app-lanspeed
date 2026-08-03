@@ -41,6 +41,7 @@ fn client(identity_key: &str, tx_bps: u64) -> Client {
         udp_dns_conns: Some(7),
         udp_other_conns: Some(6),
         rate_meta: None,
+        control: None,
     }
 }
 
@@ -828,6 +829,8 @@ fn before_reply_policy_refreshes_only_clients_and_reload() {
         Method::Interfaces,
         Method::Sysdevices,
         Method::Diagnostics,
+        Method::ClientControlSet,
+        Method::ClientControlDelete,
     ] {
         assert_eq!(before_reply_action(method), BeforeReplyAction::None);
     }
