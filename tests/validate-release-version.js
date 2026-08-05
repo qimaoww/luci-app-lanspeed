@@ -15,7 +15,10 @@ const versionJs = fs.readFileSync(path.join(root, 'applications/luci-app-lanspee
 const workflow = fs.readFileSync(path.join(root, '.github/workflows/build-sdk.yml'), 'utf8');
 const sdkIdentityScript = fs.readFileSync(path.join(root, 'scripts/sdk-rust-identity.sh'), 'utf8');
 const ciWorkflow = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
-const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+const readme = [
+  fs.readFileSync(path.join(root, 'README.md'), 'utf8'),
+  fs.readFileSync(path.join(root, 'docs/guide/development.md'), 'utf8')
+].join('\n');
 const releaseScriptPath = path.join(root, 'scripts/release-version.sh');
 const releaseScript = fs.readFileSync(releaseScriptPath, 'utf8');
 const rustRoot = path.join(root, 'net/lanspeedd/rust');

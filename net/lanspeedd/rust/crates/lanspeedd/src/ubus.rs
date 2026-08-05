@@ -1,10 +1,8 @@
-use crate::{
-    control::{
-        parse_rate, parse_switch, ClientControlDeleteRequest, ClientControlRequest, ControlCommand,
-    },
-    error::DaemonError,
-    state::ResponseSnapshot,
+#[cfg(feature = "openwrt")]
+use crate::control::{
+    parse_rate, parse_switch, ClientControlDeleteRequest, ClientControlRequest, ControlCommand,
 };
+use crate::{error::DaemonError, state::ResponseSnapshot};
 use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -207,6 +205,7 @@ pub fn object(
     UbusObject::new("lanspeed", methods).map_err(|error| DaemonError::transport(error.to_string()))
 }
 
+#[cfg(feature = "openwrt")]
 fn control_error(error: &DaemonError) -> Value {
     let text = error.to_string();
     let known = [

@@ -9,6 +9,9 @@ lanspeed_test_output_init
 trap 'lanspeed_test_output_cleanup' EXIT
 
 README="$ROOT_DIR/README.md"
+GUIDE_DIR="$ROOT_DIR/docs/guide"
+GUIDE_FILES="$GUIDE_DIR/usage.md $GUIDE_DIR/platforms.md $GUIDE_DIR/operations.md $GUIDE_DIR/development.md"
+DOCUMENTATION="$README $GUIDE_FILES"
 MATRIX="$ROOT_DIR/docs/rust-compatibility-matrix.md"
 EVIDENCE_DIR="$LANSPEED_TEST_OUTPUT_DIR"
 EVIDENCE="$EVIDENCE_DIR/task-14-doc-check.txt"
@@ -22,20 +25,20 @@ log() {
 
 require_phrase() {
 	phrase="$1"
-	if grep -Fq -- "$phrase" "$README"; then
+	if grep -Fq -- "$phrase" $DOCUMENTATION; then
 		log "ok: $phrase"
 	else
-		log "missing: $phrase"
-		printf 'missing required README phrase: %s\n' "$phrase" >&2
+		log "missing documentation phrase: $phrase"
+		printf 'missing required documentation phrase: %s\n' "$phrase" >&2
 		exit 1
 	fi
 }
 
 reject_phrase() {
 	phrase="$1"
-	if grep -Fq -- "$phrase" "$README"; then
+	if grep -Fq -- "$phrase" $DOCUMENTATION; then
 		log "forbidden: $phrase"
-		printf 'forbidden README phrase present: %s\n' "$phrase" >&2
+		printf 'forbidden documentation phrase present: %s\n' "$phrase" >&2
 		exit 1
 	fi
 	log "absent: $phrase"
@@ -77,12 +80,33 @@ NODE
 	log "ok screenshot: $path"
 }
 
-log "README current-architecture checklist"
+log "multi-page documentation checklist"
+
+for page in $GUIDE_FILES; do
+	test -f "$page" || {
+		printf 'missing guide page: %s\n' "$page" >&2
+		exit 1
+	}
+done
+
+readme_lines="$(wc -l < "$README")"
+test "$readme_lines" -le 120 || {
+	printf 'README landing page is too long: %s lines\n' "$readme_lines" >&2
+	exit 1
+}
+
+for link in \
+	"docs/guide/usage.md" \
+	"docs/guide/platforms.md" \
+	"docs/guide/operations.md" \
+	"docs/guide/development.md"; do
+	grep -Fq -- "$link" "$README" || {
+		printf 'README missing guide link: %s\n' "$link" >&2
+		exit 1
+	}
+done
 
 for phrase in \
-	"CPU 可见 LAN 边缘流量" \
-	"不是完整流量审计系统" \
-	"不声明全流量绝对准确" \
 	"## 平台模块" \
 	'`platform/x86/`' \
 	'`platform/nss/`' \
