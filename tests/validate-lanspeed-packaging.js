@@ -28,7 +28,17 @@ const luciMenuPath = path.join(
   'applications/luci-app-lanspeed/root/usr/share/luci/menu.d/luci-app-lanspeed.json'
 );
 const luciMenuSource = fs.readFileSync(luciMenuPath, 'utf8');
-const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+const readmeLanding = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+const readme = [
+  readmeLanding,
+  'usage.md',
+  'platforms.md',
+  'operations.md',
+  'development.md'
+].map((source, index) => index === 0
+  ? source
+  : fs.readFileSync(path.join(root, 'docs/guide', source), 'utf8'))
+  .join('\n');
 const qaDevicePath = path.join(root, 'tests/qa-device.sh');
 const qaDevice = fs.readFileSync(qaDevicePath, 'utf8');
 
