@@ -164,8 +164,17 @@ assert_no_forbidden_dependencies daemon "$daemon_metadata"
 assert_no_forbidden_dependencies BPF "$bpf_metadata"
 assert_no_forbidden_dependencies LuCI "$luci_metadata"
 
-assert_dependencies daemon "$daemon_metadata" \
-	conntrack kmod-nf-conntrack-netlink libc libgcc1 nftables tc-full
+case "$expected_arch" in
+	x86_64)
+		assert_dependencies daemon "$daemon_metadata" \
+			conntrack ip kmod-ifb kmod-nf-conntrack-netlink kmod-sched kmod-sched-core \
+			libc libgcc1 nftables tc-full
+		;;
+	aarch64*)
+		assert_dependencies daemon "$daemon_metadata" \
+			kmod-nf-conntrack-netlink libc libgcc1
+		;;
+esac
 assert_dependencies BPF "$bpf_metadata" \
 	kmod-sched-bpf lanspeedd libc tc-full
 assert_dependencies LuCI "$luci_metadata" \
@@ -259,10 +268,12 @@ case "$expected_arch" in
 		if grep -aq 'lanspeed_control_clients_0\|lanspeed_control_ingress' "$daemon" "$bpf_root/usr/lib/bpf/lanspeed-ebpf-fallback.o"; then
 			fail 'x86 client control must not depend on a BPF classifier or control maps'
 		fi
-		grep -aq 'lanspeed_control_io' "$daemon" || \
-			fail 'x86 daemon must contain the nft ingress client-control path'
+		grep -aq 'ifb-lanspeed' "$daemon" || \
+			fail 'x86 daemon must contain the pre-proxy IFB client-control path'
+		grep -aq 'lanspeedd:x86-client-control:v1' "$daemon" || \
+			fail 'x86 daemon must mark ownership of its dedicated IFB'
 		if grep -aq 'lsifb0\|lanspeed-control-v1' "$daemon" "$bpf_root/usr/lib/bpf/lanspeed-ebpf-fallback.o"; then
-			fail 'x86 client control must not contain the retired IFB redirect path'
+			fail 'x86 client control must not contain the retired prototype IFB path'
 		fi
 		READELF="$readelf_tool" LLVM_OBJDUMP="${LLVM_OBJDUMP:-llvm-objdump}" \
 			"$script_dir/validate-rust-ebpf-objects.sh" \
@@ -276,6 +287,9 @@ case "$expected_arch" in
 			fail 'aarch64 daemon configuration must retain the Access Edge default'
 		if grep -aq 'lanspeed_control_clients_0' "$daemon" "$bpf_root/usr/lib/bpf/lanspeed-ebpf-fallback.o"; then
 			fail 'aarch64 NSS packages must not contain the independent x86 control classifier'
+		fi
+		if grep -aq 'ifb-lanspeed\|lanspeedd:x86-client-control:v1' "$daemon"; then
+			fail 'aarch64 NSS daemon must not contain the x86 IFB control implementation'
 		fi
 		READELF="$readelf_tool" LLVM_OBJDUMP="${LLVM_OBJDUMP:-llvm-objdump}" \
 			"$script_dir/validate-rust-ebpf-objects.sh" \

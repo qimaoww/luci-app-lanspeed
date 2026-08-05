@@ -24,7 +24,7 @@ use crate::{
         BeforeReplyAction, ClientConntrackPlan, ConntrackObservation, PeriodicConntrackPlan,
         CLIENT_CONNTRACK_CACHE_TTL_MS, NSS_CLIENT_CONNTRACK_CACHE_TTL_MS,
     },
-    control::{ClientControlDeleteRequest, ClientControlRequest, ControlCommand, ControlManager},
+    control::{ClientControlDeleteRequest, ClientControlRequest, ControlCommand},
     daemon::{
         abort_reload_after_timer_failure, abort_reload_candidate, activate_runtime,
         collect_and_reschedule, commit_reload, install_control_or_shutdown, reconnect_and_register,
@@ -74,6 +74,9 @@ use crate::{
     state::{ResponseSnapshot, CONNECTION_SEMANTICS, OVERVIEW_SAMPLE_SOURCE},
     ubus,
 };
+
+#[cfg(not(feature = "nss-platform"))]
+use crate::control::ControlManager;
 
 #[cfg(feature = "nss-platform")]
 use crate::config::RateCollectorMode;
@@ -1122,6 +1125,7 @@ fn production_now_ms() -> Result<u64, DaemonError> {
 
 struct ProductionRuntime {
     config: RuntimeConfig,
+    #[cfg(not(feature = "nss-platform"))]
     control: ControlManager,
     adapter: SystemAyaAdapter,
     bpf: Option<Bpf>,
@@ -1208,6 +1212,7 @@ impl ProductionRuntime {
         process_tracker.refresh_if_due("/proc", production_now_ms()?);
         let mut preflight = probe.collect(&config, &RuntimeHealth::default(), ProbeMethod::Health);
         process_tracker.overlay_report(&mut preflight);
+        #[cfg(not(feature = "nss-platform"))]
         let control = ControlManager::load(&config)?;
         Ok(Self {
             bpf_collector: BpfSnapshotCollector::new(
@@ -1234,6 +1239,7 @@ impl ProductionRuntime {
             rate_owner: None,
             hostnames: HostnameCache::new(),
             adapter: SystemAyaAdapter::with_max_clients(config.max_clients),
+            #[cfg(not(feature = "nss-platform"))]
             control,
             config,
             bpf: None,
@@ -3464,20 +3470,30 @@ impl ProductionRuntime {
         )
     }
 
+    #[cfg(not(feature = "nss-platform"))]
     fn refresh_controls(&mut self, clients: &mut ClientsResponse) {
         self.control.observe_clients(&clients.clients);
         self.reconcile_control_state();
         self.control.decorate_clients(&mut clients.clients);
     }
 
+    #[cfg(feature = "nss-platform")]
+    fn refresh_controls(&mut self, _clients: &mut ClientsResponse) {}
+
+    #[cfg(not(feature = "nss-platform"))]
     fn decorate_controls(&self, clients: &mut ClientsResponse) {
         self.control.decorate_clients(&mut clients.clients);
     }
 
+    #[cfg(feature = "nss-platform")]
+    fn decorate_controls(&self, _clients: &mut ClientsResponse) {}
+
+    #[cfg(not(feature = "nss-platform"))]
     fn reconcile_control_state(&mut self) {
         self.control.reconcile();
     }
 
+    #[cfg(not(feature = "nss-platform"))]
     fn client_control_set(&mut self, request: ClientControlRequest) -> Result<Value, DaemonError> {
         let identity_key = request.identity_key.clone();
         let _ = self.control.set(request)?;
@@ -3485,6 +3501,12 @@ impl ProductionRuntime {
         Ok(self.control.response(&identity_key))
     }
 
+    #[cfg(feature = "nss-platform")]
+    fn client_control_set(&mut self, _request: ClientControlRequest) -> Result<Value, DaemonError> {
+        Err(DaemonError::reload("client_control_x86_only"))
+    }
+
+    #[cfg(not(feature = "nss-platform"))]
     fn client_control_delete(
         &mut self,
         request: ClientControlDeleteRequest,
@@ -3493,6 +3515,14 @@ impl ProductionRuntime {
         let _ = self.control.delete(request)?;
         self.reconcile_control_state();
         Ok(self.control.response(&identity_key))
+    }
+
+    #[cfg(feature = "nss-platform")]
+    fn client_control_delete(
+        &mut self,
+        _request: ClientControlDeleteRequest,
+    ) -> Result<Value, DaemonError> {
+        Err(DaemonError::reload("client_control_x86_only"))
     }
 
     fn shutdown(&mut self) -> Result<(), DaemonError> {
@@ -3505,6 +3535,7 @@ impl ProductionRuntime {
                 failures.push(format!("TC-BPF shutdown: {error}"));
             }
         }
+        #[cfg(not(feature = "nss-platform"))]
         if let Err(error) = self.control.cleanup() {
             failures.push(format!("client control shutdown: {error}"));
         }

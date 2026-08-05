@@ -15,31 +15,42 @@ function reasonText(reason) {
 		rate_above_platform_maximum: _('速率超过当前平台安全上限。'),
 		invalid_switch: _('禁网开关参数无效。'),
 		lan_control_interface_unavailable: _('LAN 整形目标接口不可用。'),
-		htb_qdisc_unavailable: _('HTB 队列能力不可用。'),
 		qdisc_owned_by_external_service: _('目标接口正在由其它 QoS 服务管理。'),
-		nft_ingress_hook_unavailable: _('内核不支持用于上传分类的 nft ingress hook。'),
-		control_filter_capacity: _('受控地址数量超过下载分类容量。'),
-		control_filter_verification_failed: _('下载分类规则校验失败并已回滚。'),
-		control_topology_changed: _('WAN 路径已变化，正在重新应用限速。'),
+		ifb_qdisc_owned_by_external_service: _('上传整形接口正在由其它 QoS 服务管理。'),
+		download_qdisc_preflight_conflict: _('LAN 下载方向正在由其它 QoS 服务管理。'),
+		download_qdisc_stage_conflict: _('LAN 下载方向的队列状态在应用期间发生变化。'),
+		ifb_module_unavailable: _('缺少 x86 上传整形所需的 IFB 内核模块。'),
+		ifb_owned_by_external_service: _('LAN Speed 专用 IFB 正在由其它服务使用。'),
+		ifb_inspection_failed: _('无法核对 LAN Speed 专用 IFB。'),
+		sch_htb_unavailable: _('HTB 队列模块不可用。'),
+		sch_fq_unavailable: _('FQ 流队列模块不可用。'),
+		cls_u32_unavailable: _('TC 地址分类模块不可用。'),
+		cls_matchall_unavailable: _('TC 链跳转分类模块不可用。'),
+		act_mirred_unavailable: _('TC IFB 重定向模块不可用。'),
+		act_gact_unavailable: _('TC 禁网动作模块不可用。'),
+		ingress_qdisc_owned_by_external_service: _('LAN ingress 正在由其它 QoS 服务独占。'),
+		ingress_filter_owned_by_external_service: _('上传分类入口与其它 TC 规则冲突。'),
+		ingress_chain_owned_by_external_service: _('上传分类链与其它 TC 规则冲突。'),
+		ingress_filter_inspection_failed: _('无法读取上传分类规则。'),
+		ingress_filter_verification_failed: _('上传 IFB 分类校验失败并已回滚。'),
+		block_filter_owned_by_external_service: _('禁网入口与其它 TC 规则冲突。'),
+		block_chain_owned_by_external_service: _('禁网分类链与其它 TC 规则冲突。'),
+		block_filter_inspection_failed: _('无法读取禁网分类规则。'),
+		control_filter_capacity: _('受控地址数量超过 TC 分类容量。'),
+		control_topology_changed: _('IFB 整形路径已变化，正在重新应用限速。'),
 		qdisc_inspection_failed: _('无法读取目标接口的队列状态。'),
 		qdisc_inspection_invalid: _('目标接口返回了无效的队列状态。'),
 		conntrack_control_unavailable: _('连接跟踪清理工具不可用，无法安全执行即时禁网。'),
 		missing_tc: _('TC 队列工具不可用。'),
+		missing_ip: _('iproute2 接口管理工具不可用。'),
 		missing_nft: _('nftables 工具不可用。'),
 		missing_conntrack: _('连接跟踪清理工具不可用。'),
 		conntrack_cleanup_failed: _('无法清理该客户端的现有连接，控制规则已回滚。'),
 		invalid_rate_resolution: _('速率必须使用 TC 可精确表示的 8 bit/s 步进。'),
-		ecm_dscp_classifier_unavailable: _('ECM DSCP 分类器不可用。'),
-		nss_default_class_below_physical_link: _('NSS 默认高速队列无法覆盖物理链路速率。'),
-		nss_qdisc_module_unavailable: _('NSS 硬件队列模块不可用。'),
-		wan_status_unavailable: _('无法读取 WAN 运行状态。'),
-		wan_status_invalid: _('WAN 运行状态格式无效。'),
-		wan_device_unavailable: _('未找到可安全用于整形的 WAN 出口。'),
-		link_speed_unavailable: _('无法读取物理链路速率。'),
-		link_speed_invalid: _('物理链路速率无效。'),
+		interface_status_unavailable: _('无法读取系统接口状态。'),
 		queue_tree_verification_failed: _('队列树安装后校验失败，已回滚。'),
 		queue_stats_unavailable: _('无法读取整形队列统计。'),
-		new_connections_only: _('新建连接生效；现有 NSS 加速连接不会被错误标记为已生效。'),
+		traffic_verification_pending: _('已安装队列，正在用真实流量核对 IFB 上传与 LAN 下载方向。'),
 		direction_verification_pending: _('一个方向已验证，另一方向仍等待新连接流量。'),
 		queue_overflow: _('整形队列发生溢出，请降低持续负载或提高限速值。'),
 		control_rule_limit: _('客户端控制规则已达到安全上限。'),
@@ -192,8 +203,10 @@ function toggleBlock(viewState, client) {
 function stateLabel(control) {
 	if (!control || !control.configured) return '';
 	if (control.queue_overflow) return _('队列溢出');
+	if (control.state === 'pending_new_connections' && control.reason === 'traffic_verification_pending')
+		return _('等待流量验证');
 	if (control.internet_disabled && control.state === 'pending_new_connections')
-		return _('禁网已生效 · 限速待新连接');
+		return _('禁网已生效 · 限速待验证');
 	if (control.internet_disabled && control.state === 'verified')
 		return _('禁网与限速已验证');
 	if (control.internet_disabled && control.state === 'applied') return _('已禁用上网');

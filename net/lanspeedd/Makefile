@@ -13,6 +13,7 @@ RUST_PKG_LOCKED:=1
 LANSPEED_BUILD_BPF ?= $(if $(CONFIG_PACKAGE_lanspeedd-bpf),1,0)
 LANSPEED_BPF_ENABLED:=$(filter 1,$(LANSPEED_BUILD_BPF))
 LANSPEED_NSS_ECM_BPF_ENABLED:=$(filter aarch64,$(ARCH))
+LANSPEED_X86_CONTROL_DEPENDS:=+TARGET_x86:tc-full +TARGET_x86:ip +TARGET_x86:nftables +TARGET_x86:conntrack +TARGET_x86:kmod-ifb +TARGET_x86:kmod-sched-core +TARGET_x86:kmod-sched
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)$(if $(LANSPEED_BPF_ENABLED),-bpf,)
 
 BPF_LINKER_ARCHIVE:=bpf-linker-0.10.3-x86_64-unknown-linux-musl.tar.gz
@@ -40,11 +41,27 @@ define Package/lanspeedd
   CATEGORY:=Network
   TITLE:=LAN speed monitor daemon
   SOURCE:=lanspeedd
-  DEPENDS:=@(aarch64||x86_64) +libgcc +kmod-nf-conntrack-netlink +tc-full +nftables +conntrack
+  DEPENDS:=@(aarch64||x86_64) +libgcc +kmod-nf-conntrack-netlink $(LANSPEED_X86_CONTROL_DEPENDS)
 endef
 
 define Package/lanspeedd/description
  Rust/Aya daemon for LAN client speed monitoring.
+endef
+
+define Package/lanspeedd/postinst
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT:-}" ] && exit 0
+umask 077
+token_file=/var/run/lanspeedd.postinst-restart
+token="$$$$.$$(date +%s)"
+printf '%s\n' "$${token}" > "$${token_file}" || exit 0
+(
+	sleep 2
+	[ "$$(cat "$${token_file}" 2>/dev/null)" = "$${token}" ] || exit 0
+	rm -f "$${token_file}"
+	/etc/init.d/lanspeedd restart >/dev/null 2>&1 || true
+) &
+exit 0
 endef
 
 define Package/lanspeedd-bpf
@@ -59,6 +76,22 @@ define Package/lanspeedd-bpf/description
  Required Aya eBPF programs for luci-app-lanspeed Full mode support.
  The package installs architecture-matched kfunc and fallback TC-BPF objects.
  On aarch64 it additionally installs the isolated NSS ECM kprobe object.
+endef
+
+define Package/lanspeedd-bpf/postinst
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT:-}" ] && exit 0
+umask 077
+token_file=/var/run/lanspeedd.postinst-restart
+token="$$$$.$$(date +%s)"
+printf '%s\n' "$${token}" > "$${token_file}" || exit 0
+(
+	sleep 2
+	[ "$$(cat "$${token_file}" 2>/dev/null)" = "$${token}" ] || exit 0
+	rm -f "$${token_file}"
+	/etc/init.d/lanspeedd restart >/dev/null 2>&1 || true
+) &
+exit 0
 endef
 
 define Build/Prepare

@@ -655,10 +655,15 @@ try {
   );
   assertMatch(pkgMakefile, /^PKG_BUILD_PARALLEL:=1$/m, 'Rust package build must enable OpenWrt parallel builds');
   assertMatch(pkgMakefile, /^RUST_PKG_LOCKED:=1$/m, 'Rust package build must keep Cargo.lock immutable');
+  assertMatch(
+    pkgMakefile,
+    /LANSPEED_X86_CONTROL_DEPENDS:=\+TARGET_x86:tc-full \+TARGET_x86:ip \+TARGET_x86:nftables \+TARGET_x86:conntrack \+TARGET_x86:kmod-ifb \+TARGET_x86:kmod-sched-core \+TARGET_x86:kmod-sched/,
+    'x86 client control must request the IFB and scheduler modules only behind the x86 architecture gate'
+  );
   assertNoMatch(
     pkgMakefile,
-    /\+kmod-(?:ifb|qca-nss-drv-qdisc|qca-nss-ecm|sched-core)\b/,
-    'client control must not add IFB, NSS, ECM, or scheduler kernel package dependencies'
+    /\+kmod-(?:qca-nss-drv-qdisc|qca-nss-ecm)\b|sqm-scripts|qosify/,
+    'the x86 client shaper must not leak NSS dependencies or take ownership from external SQM/QoS services'
   );
   assert(
     (pkgMakefile.match(/^\s*SOURCE:=lanspeedd$/gm) || []).length === 2,
@@ -777,8 +782,10 @@ try {
     'x86 migration must remove the legacy dedicated-port option used by older releases');
   assertMatch(x86ProfileMigration, /nss_ecm_node\|nss_ecm_bpf[\s\S]*rate_collector_mode='bpf'/,
     'x86 migration must normalize retained forced NSS modes to BPF');
-  assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+libgcc \+kmod-nf-conntrack-netlink \+tc-full \+nftables \+conntrack/,
-    'base daemon must retain the original collector dependencies and client-control userspace tools');
+  assertMatch(pkgMakefile, /LANSPEED_X86_CONTROL_DEPENDS:=\+TARGET_x86:tc-full \+TARGET_x86:ip \+TARGET_x86:nftables \+TARGET_x86:conntrack \+TARGET_x86:kmod-ifb \+TARGET_x86:kmod-sched-core \+TARGET_x86:kmod-sched/,
+    'client-control userspace tools and kernel queue modules must be requested only by the x86 package');
+  assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+libgcc \+kmod-nf-conntrack-netlink \$\(LANSPEED_X86_CONTROL_DEPENDS\)/,
+    'base daemon must retain collector dependencies while keeping NSS free of x86 control tools');
   assertNoMatch(pkgMakefile, /\+libubox|\+libubus|\+libuci|\+libblobmsg-json/,
     'pure Rust userspace must not retain versioned OpenWrt library dependencies');
   assertNoMatch(
@@ -787,6 +794,24 @@ try {
     'base daemon must not advertise unverified 32-bit Rust targets'
   );
   assertMatch(pkgMakefile, /define Package\/lanspeedd-bpf[\s\S]*DEPENDS:=@!BIG_ENDIAN \+lanspeedd \+tc-full \+kmod-sched-bpf/, 'BPF package must retain the original daemon, tc, and TC-BPF dependencies');
+  for (const packageName of [ 'lanspeedd', 'lanspeedd-bpf' ]) {
+    const postinstMatch = new RegExp(
+      `^define Package\\/${packageName}\\/postinst\\n([\\s\\S]*?)^endef$`,
+      'm'
+    ).exec(pkgMakefile);
+    assert(postinstMatch, `${packageName} must define a post-install restart contract`);
+    const postinst = postinstMatch[1];
+    assertMatch(postinst, /\[ -n "\$\$\{IPKG_INSTROOT:-\}" \] && exit 0/,
+      `${packageName} staged-root installation must stay inert`);
+    assertMatch(postinst, /token_file=\/var\/run\/lanspeedd\.postinst-restart/,
+      `${packageName} restart debounce token must use root-owned runtime state`);
+    assertMatch(postinst, /sleep 2/,
+      `${packageName} must defer restart until the APK transaction has settled`);
+    assertMatch(postinst, /cat "\$\$\{token_file\}"[\s\S]*= "\$\$\{token\}"/,
+      `${packageName} must let only the final transaction hook restart the daemon`);
+    assertMatch(postinst, /\/etc\/init\.d\/lanspeedd restart/,
+      `${packageName} live installation must restart the daemon`);
+  }
   assertNoMatch(pkgMakefile, /\+tc-tiny/, 'BPF package must not conflict with packages that depend on tc-full');
   assertMatch(
     luciMakefile,

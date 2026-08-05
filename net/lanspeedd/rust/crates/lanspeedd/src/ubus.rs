@@ -33,6 +33,7 @@ impl Method {
         Self::Sysdevices,
         Self::Diagnostics,
     ];
+    #[cfg(not(feature = "nss-platform"))]
     pub const ALL: [Self; 11] = [
         Self::Status,
         Self::Clients,
@@ -45,6 +46,18 @@ impl Method {
         Self::ClientConnections,
         Self::ClientControlSet,
         Self::ClientControlDelete,
+    ];
+    #[cfg(feature = "nss-platform")]
+    pub const ALL: [Self; 9] = [
+        Self::Status,
+        Self::Clients,
+        Self::Overview,
+        Self::Health,
+        Self::Reload,
+        Self::Interfaces,
+        Self::Sysdevices,
+        Self::Diagnostics,
+        Self::ClientConnections,
     ];
     pub const fn name(self) -> &'static str {
         match self {
@@ -208,7 +221,6 @@ fn control_error(error: &DaemonError) -> Value {
         "rate_above_platform_maximum",
         "invalid_switch",
         "control_rule_limit",
-        "nss_qdisc_module_unavailable",
     ];
     let code = known
         .into_iter()

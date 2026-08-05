@@ -20,7 +20,6 @@ use crate::{
     model::{Client, ClientControlSummary},
 };
 
-pub const NSS_MAX_RATE_BPS: u64 = 4_000_000_000;
 pub const X86_MAX_RATE_BPS: u64 = 100_000_000_000;
 pub const MIN_RATE_BPS: u64 = 8_000;
 pub const MAX_CONTROL_RULES: usize = 64;
@@ -98,6 +97,7 @@ pub struct ApplyResult {
     pub queue_drop_counters: BTreeMap<String, u64>,
     pub class_counter_baselines: BTreeMap<String, u64>,
     pub verified_directions: BTreeMap<String, u8>,
+    pub verification_failures: BTreeMap<String, String>,
 }
 
 impl ApplyResult {
@@ -111,6 +111,7 @@ impl ApplyResult {
             queue_drop_counters: BTreeMap::new(),
             class_counter_baselines: BTreeMap::new(),
             verified_directions: BTreeMap::new(),
+            verification_failures: BTreeMap::new(),
         }
     }
 }
@@ -193,6 +194,13 @@ impl ControlManager {
     pub fn reconcile(&mut self) {
         let plan = self.plan();
         if !self.dirty {
+            // Observing absent counters after an apply rollback must not turn
+            // a concrete failure into a misleading "waiting for traffic"
+            // state.  Keep the error sticky until a topology change, reload,
+            // or explicit rule update marks the desired plan dirty again.
+            if self.result.state == "error" {
+                return;
+            }
             self.result = platform_observe(&plan, &self.result);
             if self.result.reason.as_deref() == Some("control_topology_changed") {
                 self.dirty = true;
@@ -208,6 +216,7 @@ impl ControlManager {
             queue_drop_counters: BTreeMap::new(),
             class_counter_baselines: BTreeMap::new(),
             verified_directions: BTreeMap::new(),
+            verification_failures: BTreeMap::new(),
         });
         self.dirty = false;
     }
@@ -387,6 +396,11 @@ impl ControlManager {
                 }
             }
         }
+        let verification_failure = self.result.verification_failures.get(identity_key);
+        if let Some(failure) = verification_failure {
+            state = "error".into();
+            reason = Some(failure.clone());
+        }
         if ambiguous {
             state = "error".into();
             reason = Some("ambiguous_identity".into());
@@ -404,7 +418,7 @@ impl ControlManager {
             max_rate_bps: platform_max_rate_bps(),
             state,
             reason,
-            queue_overflow: self.result.queue_overflow,
+            queue_overflow: verification_failure.map(String::as_str) == Some("queue_overflow"),
         }
     }
 }
@@ -414,26 +428,40 @@ fn public_control_error(error: &str) -> String {
         "identity_address_unavailable",
         "ambiguous_identity",
         "missing_tc",
+        "missing_ip",
         "missing_nft",
         "missing_conntrack",
         "conntrack_cleanup_failed",
+        "ifb_qdisc_owned_by_external_service",
+        "download_qdisc_preflight_conflict",
+        "download_qdisc_stage_conflict",
         "qdisc_owned_by_external_service",
         "qdisc_inspection_failed",
         "qdisc_inspection_invalid",
         "lan_control_interface_unavailable",
-        "htb_qdisc_unavailable",
-        "ecm_dscp_classifier_unavailable",
-        "nss_default_class_below_physical_link",
-        "nss_qdisc_module_unavailable",
-        "wan_status_unavailable",
-        "wan_status_invalid",
-        "wan_device_unavailable",
-        "link_speed_unavailable",
-        "link_speed_invalid",
+        "ifb_module_unavailable",
+        "ifb_owned_by_external_service",
+        "ifb_inspection_failed",
+        "sch_htb_unavailable",
+        "sch_fq_unavailable",
+        "cls_u32_unavailable",
+        "cls_matchall_unavailable",
+        "act_mirred_unavailable",
+        "act_gact_unavailable",
+        "ingress_qdisc_owned_by_external_service",
+        "ingress_filter_owned_by_external_service",
+        "ingress_chain_owned_by_external_service",
+        "ingress_filter_inspection_failed",
+        "ingress_filter_verification_failed",
+        "block_filter_owned_by_external_service",
+        "block_chain_owned_by_external_service",
+        "block_filter_inspection_failed",
+        "block_nft_owned_by_external_service",
+        "block_nft_inspection_failed",
+        "interface_status_unavailable",
         "queue_tree_verification_failed",
+        "queue_filter_verification_failed",
         "control_filter_capacity",
-        "control_filter_verification_failed",
-        "nft_ingress_hook_unavailable",
         "queue_stats_unavailable",
         "queue_overflow",
     ]
@@ -855,6 +883,7 @@ pub(crate) fn run_checked(program: &str, args: &[&str]) -> Result<(), DaemonErro
     )))
 }
 
+#[cfg(not(feature = "nss-platform"))]
 pub(crate) fn clear_conntrack_address(ip: IpAddr) -> Result<(), String> {
     let value = ip.to_string();
     let family = if ip.is_ipv4() { "ipv4" } else { "ipv6" };
@@ -873,6 +902,7 @@ pub(crate) fn clear_conntrack_address(ip: IpAddr) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(any(not(feature = "nss-platform"), test))]
 fn conntrack_delete_succeeded(success: bool, code: Option<i32>, diagnostic: &[u8]) -> bool {
     success
         || (code == Some(1)
@@ -881,6 +911,7 @@ fn conntrack_delete_succeeded(success: bool, code: Option<i32>, diagnostic: &[u8
                 .contains("0 flow entries"))
 }
 
+#[cfg(test)]
 pub(crate) fn queue_drops_increased(
     previous: &BTreeMap<String, u64>,
     current: &BTreeMap<String, u64>,
@@ -1055,13 +1086,13 @@ fn platform_observe(plan: &ControlPlan, previous: &ApplyResult) -> ApplyResult {
 }
 
 #[cfg(feature = "nss-platform")]
-fn platform_observe(plan: &ControlPlan, previous: &ApplyResult) -> ApplyResult {
-    crate::platform::nss::control::observe(plan, previous)
+fn platform_observe(_plan: &ControlPlan, previous: &ApplyResult) -> ApplyResult {
+    previous.clone()
 }
 
 #[cfg(feature = "nss-platform")]
-fn platform_apply(plan: &ControlPlan) -> Result<ApplyResult, String> {
-    crate::platform::nss::control::apply(plan)
+fn platform_apply(_plan: &ControlPlan) -> Result<ApplyResult, String> {
+    Err("client_control_x86_only".into())
 }
 
 #[cfg(not(feature = "nss-platform"))]
@@ -1070,8 +1101,8 @@ fn platform_cleanup(lan_device: &str) -> Result<(), String> {
 }
 
 #[cfg(feature = "nss-platform")]
-fn platform_cleanup(lan_device: &str) -> Result<(), String> {
-    crate::platform::nss::control::cleanup(lan_device)
+fn platform_cleanup(_lan_device: &str) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(not(feature = "nss-platform"))]
@@ -1091,17 +1122,17 @@ const fn platform_requires_upload_address() -> bool {
 
 #[cfg(feature = "nss-platform")]
 const fn platform_max_rate_bps() -> u64 {
-    NSS_MAX_RATE_BPS
+    0
 }
 
 #[cfg(feature = "nss-platform")]
 const fn platform_hard_max_rate_bps() -> u64 {
-    NSS_MAX_RATE_BPS
+    0
 }
 
 #[cfg(feature = "nss-platform")]
 const fn platform_requires_upload_address() -> bool {
-    true
+    false
 }
 
 #[cfg(test)]
@@ -1158,12 +1189,20 @@ mod tests {
         assert!(parse_identity_key("aa:bb:cc:dd:ee:01@lan").is_ok());
     }
 
+    #[cfg(not(feature = "nss-platform"))]
     #[test]
     fn decimal_rate_parser_is_strict() {
         assert_eq!(parse_rate(Some("8000".into())).unwrap(), 8_000);
         assert!(parse_rate(Some("8mbit".into())).is_err());
         assert!(parse_rate(Some("8000;reboot".into())).is_err());
         assert!(parse_rate(Some("8001".into())).is_err());
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn nss_build_rejects_x86_only_control_rates() {
+        assert_eq!(parse_rate(Some("0".into())).unwrap(), 0);
+        assert!(parse_rate(Some("8000".into())).is_err());
     }
 
     #[test]
@@ -1405,7 +1444,60 @@ mod tests {
     }
 
     #[test]
-    fn block_only_rule_does_not_inherit_another_clients_nss_pending_state() {
+    fn queue_overflow_is_not_reported_on_another_client() {
+        let first = "02:00:00:00:00:01@lan";
+        let second = "02:00:00:00:00:02@lan";
+        let mut manager = manager();
+        for (index, identity) in [first, second].into_iter().enumerate() {
+            manager.rules.insert(
+                identity.into(),
+                ControlRule {
+                    identity_key: identity.into(),
+                    mac: MacAddress::from_str(identity.split_once('@').unwrap().0).unwrap(),
+                    upload_bps: 10_000_000,
+                    download_bps: 0,
+                    internet_disabled: false,
+                    class_minor: FIRST_CLASS_MINOR + index as u16,
+                },
+            );
+        }
+        manager.result.state = "verified".into();
+        manager.result.reason = None;
+        manager.result.queue_overflow = true;
+        manager
+            .result
+            .verification_failures
+            .insert(first.into(), "queue_overflow".into());
+
+        let failed = manager.summary(first);
+        assert_eq!(failed.state, "error");
+        assert_eq!(failed.reason.as_deref(), Some("queue_overflow"));
+        assert!(failed.queue_overflow);
+
+        let unaffected = manager.summary(second);
+        assert_eq!(unaffected.state, "verified");
+        assert_eq!(unaffected.reason, None);
+        assert!(!unaffected.queue_overflow);
+    }
+
+    #[test]
+    fn failed_apply_state_is_not_hidden_by_counter_observation() {
+        let mut manager = manager();
+        manager.dirty = false;
+        manager.result.state = "error".into();
+        manager.result.reason = Some("queue_tree_verification_failed".into());
+
+        manager.reconcile();
+
+        assert_eq!(manager.result.state, "error");
+        assert_eq!(
+            manager.result.reason.as_deref(),
+            Some("queue_tree_verification_failed")
+        );
+    }
+
+    #[test]
+    fn block_only_rule_does_not_inherit_another_clients_pending_state() {
         let identity = "02:00:00:00:00:01@lan";
         let mut manager = manager();
         manager.rules.insert(
@@ -1420,16 +1512,9 @@ mod tests {
             },
         );
         manager.result.state = "pending_new_connections".into();
-        manager.result.reason = Some("new_connections_only".into());
+        manager.result.reason = Some("traffic_verification_pending".into());
         let summary = manager.summary(identity);
         assert_eq!(summary.state, "applied");
         assert_eq!(summary.reason, None);
-    }
-
-    #[cfg(feature = "nss-platform")]
-    #[test]
-    fn nss_u32_rate_limit_is_enforced() {
-        assert!(validate_rate(NSS_MAX_RATE_BPS).is_ok());
-        assert!(validate_rate(NSS_MAX_RATE_BPS + 1).is_err());
     }
 }

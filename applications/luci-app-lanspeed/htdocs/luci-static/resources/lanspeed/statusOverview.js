@@ -430,6 +430,7 @@ function createController(viewState, options) {
 		viewState.interfaces = normalized.interfaces;
 		viewState.uci = normalized.uci;
 		viewState.showClientStatus = normalized.showClientStatus;
+		viewState.showClientControl = !fmt.nssPlatform(normalized.status);
 		viewState.showIpv6 = normalized.showIpv6;
 		viewState.hidePrivateIpv6 = normalized.hidePrivateIpv6;
 		viewState.hideIpv6Ranges = normalized.hideIpv6Ranges;
@@ -546,6 +547,7 @@ return baseclass.extend({
 			interfaces: normalized.interfaces,
 			uci: normalized.uci,
 			showClientStatus: normalized.showClientStatus,
+			showClientControl: !fmt.nssPlatform(normalized.status),
 			showIpv6: normalized.showIpv6,
 			hidePrivateIpv6: normalized.hidePrivateIpv6,
 				hideIpv6Ranges: normalized.hideIpv6Ranges,

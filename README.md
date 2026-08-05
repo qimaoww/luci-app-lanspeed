@@ -67,8 +67,8 @@ Qualcomm aarch64 NSS 设备自动按 ECM+BPF、ECM、BPF 选择健康后端，�
 - LAN 与观察接口吞吐；bridge 与 member 同时配置时只统计独立边界，避免重复计数。
 - CT-Netlink 连接统计，失败时回退 CT-Procfs；conntrack 只提供连接数、逐连接详情和目标 IP 元数据。
 - 客户端详情按远端 IP 聚合 TCP/UDP 连接，可展开实际连接并排序、分页、暂停刷新。
-- 实时客户端行可分别设置互联网上传/下载限速或禁用上网；路由器管理和 LAN/NAS 转发不受控制规则影响。
-- 控制规则永久保存。正常整形使用 BFIFO/NSSBFIFO 排队而不主动丢包；队列 `drops` 增长会明确报告溢出故障。
+- x86 实时客户端行可分别设置互联网上传/下载限速或禁用上网；路由器管理和 LAN/NAS 转发不受控制规则影响。NSS 页面不显示客户端控制入口。
+- 控制规则永久保存。x86 上传在透明代理之前进入专用 IFB，上传与下载均使用 HTB + FQ 排队而不使用 police 主动丢包；队列 `drops` 增长会明确报告溢出故障。
 - 浏览器按当前页查询公网 IP 地理位置；私网、保留地址和 Fake-IP 在本地分类。
 - 实时状态、运行诊断、LAN Speed 配置和客户端详情使用同一后端版本与 RPC 契约。
 - LuCI 显示完整包版本，例如 `1.1.6-r1`，并使用同一版本作为静态资源缓存键。
@@ -117,7 +117,7 @@ SDK_DIR=/openwrt/immortalwrt ENABLE_BPF=1 scripts/build-sdk.sh
 | `lanspeedd-bpf` | TC-BPF 对象；aarch64 包额外包含独立 NSS ECM kprobe 对象 |
 | `luci-app-lanspeed` | LuCI 实时状态、运行诊断、配置和客户端详情模块 |
 
-原有实时统计依赖保持为 `libgcc`、`kmod-nf-conntrack-netlink`、`tc-full` 与 `kmod-sched-bpf`；客户端限速/禁网功能只追加 `nftables` 与 `conntrack` 用户态工具，不追加 IFB、NSS qdisc、ECM 或调度器内核模块包依赖。x86 上传由 nft netdev ingress 在 flowtable 前写入 classid，再在全部活动 WAN egress 的 HTB/BFIFO 排队；下载由自有 HTB 树的 u32 地址分类器处理。新功能不向现有测速 BPF 对象增加程序或映射，也不创建 IFB。Qualcomm NSS 所需 qdisc/ECM 必须由目标固件自带。缺失能力或任一目标队列已被其它服务占用时，运行时会禁用对应按钮并返回原因，不会安装模块或回退到另一平台路径。daemon 的 ubus/blobmsg、uloop、UCI 与 CT-Netlink 用户态实现为 Rust，不要求目标固件提供相应客户端库 ABI；APK 架构、musl、内核 BPF/BTF 和 LuCI ABI 仍必须与目标固件匹配。
+原有实时统计依赖保持为 `libgcc`、`kmod-nf-conntrack-netlink`、`tc-full` 与 `kmod-sched-bpf`。x86 客户端控制额外依赖 `ip`、`nftables`、`conntrack`、`kmod-ifb`、`kmod-sched-core` 和 `kmod-sched`；这些依赖由架构门隔离，不进入 aarch64/NSS 包。上传由 LAN ingress 的独立 TC 链选择受控客户端并重定向到自有 `ifb-lanspeed`，在透明代理和多 WAN 选路之前由单一 HTB + FQ 预算整形；下载由 LAN egress 的独立 HTB + FQ 树处理。新功能不修改现有测速 BPF 对象，也不使用 skb mark、WAN 根队列、NSS qdisc、ECM QoS tag 或 TUN。缺失能力或目标钩子被其它服务占用时，按钮会显示结构化原因，事务会删除精确匹配的自有对象并恢复系统默认队列。daemon 的 ubus/blobmsg、uloop、UCI 与 CT-Netlink 用户态实现为 Rust，不要求目标固件提供相应客户端库 ABI；APK 架构、musl、内核 BPF/BTF 和 LuCI ABI 仍必须与目标固件匹配。
 
 ## 支持范围
 
@@ -223,7 +223,7 @@ ubus call lanspeed client_control_delete \
 
 十一个 ubus 方法返回统一版本和结构化 evidence。状态 `mode` 为 `Full`、`Degraded` 或 `Unsupported`，`confidence` 为 `high`、`medium`、`low` 或 `unsupported`。`router_self` 标识路由器自身流量语义；连接详情的方向始终以客户端为准。
 
-`client_control_set` 只接受十进制 bit/s 和 `0`/`1` 开关。x86 控制分类完全独立于测速 BPF：上传在 LAN nft ingress 写入 classid，并由全部活动 WAN egress 的 HTB/BFIFO 整形；下载在 LAN egress 的自有 HTB 树中按唯一客户端地址分类。NSS 使用 NSSHTB/NSSBFIFO 与 ECM 双向 QoS tag，新连接对应 class counter 增长后才显示“已验证生效”。最后一条限速解除后会清理自有队列；单纯禁网不安装整形队列。
+`client_control_set` 只接受十进制 bit/s 和 `0`/`1` 开关。x86 控制与测速 BPF 模块彼此独立：上传先绕过路由器/LAN/NAS 目标，再在 LAN ingress 重定向到自有 IFB；下载在 LAN egress 按唯一客户端地址分类。两个方向分别观察自有 class counter，最后一条限速解除后会删除 ingress 跳转、IFB 和自有根队列；单纯禁网不安装整形队列。aarch64/NSS 构建不包含控制实现，控制 RPC 只返回 `client_control_x86_only`。
 
 `client_connections` 返回当前 conntrack 快照：TCP 仅统计 ESTABLISHED + ASSURED，UDP 仅统计 ASSURED。每条连接的 `tx_bps` / `rx_bps` 使用相邻累计字节快照计算，新连接、计数器回退或时间回退不会生成虚假速率。
 

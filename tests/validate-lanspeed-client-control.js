@@ -11,12 +11,23 @@ const source = fs.readFileSync(path.join(root,
   'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/clientControl.js'), 'utf8');
 const ebpfMain = fs.readFileSync(path.join(root,
   'net/lanspeedd/rust/crates/lanspeed-ebpf/src/main.rs'), 'utf8');
-const x86Control = fs.readFileSync(path.join(root,
-  'net/lanspeedd/rust/crates/lanspeedd/src/platform/x86/control.rs'), 'utf8');
+const x86ControlDir = path.join(root,
+  'net/lanspeedd/rust/crates/lanspeedd/src/platform/x86/control');
+const x86ControlModules = [ 'mod.rs', 'classifier.rs', 'firewall.rs', 'ifb.rs', 'shaper.rs', 'system.rs' ];
+const x86ControlByModule = Object.fromEntries(x86ControlModules.map((name) => [
+  name, fs.readFileSync(path.join(x86ControlDir, name), 'utf8')
+]));
+const x86Control = Object.values(x86ControlByModule).join('\n');
 const control = fs.readFileSync(path.join(root,
   'net/lanspeedd/rust/crates/lanspeedd/src/control.rs'), 'utf8');
 const production = fs.readFileSync(path.join(root,
   'net/lanspeedd/rust/crates/lanspeedd/src/production.rs'), 'utf8');
+const nssModule = fs.readFileSync(path.join(root,
+  'net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/mod.rs'), 'utf8');
+const statusOverview = fs.readFileSync(path.join(root,
+  'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/statusOverview.js'), 'utf8');
+const statusRefresh = fs.readFileSync(path.join(root,
+  'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/statusRefresh.js'), 'utf8');
 
 function translate(value) {
   const text = String(value);
@@ -54,37 +65,89 @@ function textOf(value) {
 async function main() {
   assert(!ebpfMain.includes('lanspeed_control_ingress') && !ebpfMain.includes('x86/control.rs'),
     'x86 client control must not add a BPF program to the existing rate object');
-  assert(x86Control.includes('add table netdev {CONTROL_NETDEV_TABLE}') &&
-    x86Control.includes('hook ingress device') &&
-    x86Control.includes('fn append_upload_mark_rules(') &&
-    x86Control.includes('meta mark 0 {family} saddr {address} meta mark set 0x{mark:08x}') &&
-    x86Control.includes('"match",') && x86Control.includes('"mark",') &&
-    x86Control.includes('UPLOAD_MARK_MASK'),
-    'x86 upload control must carry an isolated ingress mark into a WAN egress HTB filter');
-  assert(!x86Control.includes('upload_ingress meta priority set'),
-    'x86 upload control must not rely on skb priority surviving routing, flow offload, and PPPoE');
-  assert(x86Control.indexOf('nft_ingress_supported(&plan.lan_device)?') <
-    x86Control.indexOf('preflight_upload(&wan)?'),
-    'x86 upload control must preflight the nft ingress hook before replacing any qdisc');
-  assert(x86Control.includes('fn add_u32_filter(') && x86Control.includes('"dst"') &&
-    x86Control.includes('fn add_mark_filter('),
-    'x86 upload and download control must classify at their owned egress HTB trees');
-  assert(x86Control.includes('"quantum", &quantum') &&
-    x86Control.includes('fn control_quantum_from_mtu(') &&
-    x86Control.includes('MIN_CONTROL_QUANTUM_BYTES: u64 = 1_514'),
-    'x86 controlled HTB classes must use an MTU-sized quantum instead of the bursty default rate/r2q value');
-  assert(x86Control.includes('UPLOAD_QUEUE_WINDOW_SECONDS: u64 = 4') &&
-    x86Control.includes('fn x86_queue_bytes('),
-    'x86 upload BFIFO must absorb startup bursts without changing the NSS queue policy');
+  assert(!fs.existsSync(path.join(root,
+    'net/lanspeedd/rust/crates/lanspeedd/src/platform/x86/control.rs')) &&
+    fs.readdirSync(x86ControlDir).filter((name) => name.endsWith('.rs')).sort().join(',') ===
+      x86ControlModules.slice().sort().join(','),
+    'x86 client control must be a fixed modular implementation rather than a monolithic source file');
+  for (const name of [ 'classifier', 'firewall', 'ifb', 'shaper', 'system' ])
+    assert(x86ControlByModule['mod.rs'].includes(`mod ${name};`), `control/mod.rs must declare ${name}`);
+  assert(x86ControlByModule['ifb.rs'].includes('pub(crate) const DEVICE: &str = "ifb-lanspeed"') &&
+    x86ControlByModule['ifb.rs'].includes('lanspeedd:x86-client-control:v1') &&
+    x86ControlByModule['ifb.rs'].includes('ifb_owned_by_external_service'),
+    'the dedicated IFB must have a stable name and explicit ownership marker');
+  assert(x86ControlByModule['classifier.rs'].includes('"mirred"') &&
+    x86ControlByModule['classifier.rs'].includes('"redirect"') &&
+    x86ControlByModule['classifier.rs'].includes('ifb::DEVICE') &&
+    x86ControlByModule['classifier.rs'].includes('hook.local_field') === false &&
+    x86ControlByModule['classifier.rs'].indexOf('verify_chain(lan_device, rules)?') <
+      x86ControlByModule['classifier.rs'].indexOf('\n    activate(lan_device)'),
+    'upload classification must redirect to IFB only after the inactive chain verifies');
+  assert(x86ControlByModule['classifier.rs'].includes('const JUMP_PREF: u32 = 0xd020') &&
+    x86ControlByModule['firewall.rs'].includes('const JUMP_PREF: u32 = 0xd01f') &&
+    ebpfMain.includes('return account_frame(ctx, DIR_RX, TC_ACT_UNSPEC)') &&
+    x86ControlByModule['classifier.rs'].includes('rate-monitor BPF owns normal priority 0xc000'),
+    'x86 accounting must continue and run before block/redirect control filters');
+  assert(x86ControlByModule['classifier.rs'].includes('"dst"') &&
+    x86ControlByModule['classifier.rs'].includes('&["action", "pass"]') &&
+    x86ControlByModule['classifier.rs'].includes('"src"'),
+    'LAN/local destinations must pass before controlled source addresses redirect to IFB');
+  assert(x86ControlByModule['shaper.rs'].includes('Self::Upload => UPLOAD_HANDLE') &&
+    x86ControlByModule['shaper.rs'].includes('Self::Download => DOWNLOAD_HANDLE') &&
+    x86ControlByModule['shaper.rs'].includes('"htb"') &&
+    x86ControlByModule['shaper.rs'].includes('"fq"') &&
+    !x86ControlByModule['shaper.rs'].includes('"bfifo"') &&
+    !x86ControlByModule['shaper.rs'].includes('legacy_upload_tree') &&
+    !x86Control.includes('lanspeed_control_io') &&
+    !x86ControlByModule['shaper.rs'].includes('wan_devices'),
+    'x86 must use only the current pre-proxy IFB HTB/FQ budget and independent LAN download tree');
+  assert(/Direction::Upload => \{[\s\S]*?ensure_owned_virtual_root\(device, handle\)\?;[\s\S]*?cleanup_owned_root\(device, handle\)\?;[\s\S]*?"replace"/
+    .test(x86ControlByModule['shaper.rs']),
+    'updating an active upload rate must remove the owned HTB tree before replace can retain stale classes');
+  assert(x86ControlByModule['mod.rs'].indexOf('shaper::stage_upload(&upload)?') <
+    x86ControlByModule['mod.rs'].indexOf('classifier::install(&plan.lan_device') &&
+    x86ControlByModule['mod.rs'].indexOf('shaper::stage_download(&plan.lan_device, &download)?') <
+      x86ControlByModule['mod.rs'].indexOf('firewall::install(plan)?') &&
+    x86ControlByModule['mod.rs'].indexOf('firewall::install(plan)?') <
+      x86ControlByModule['mod.rs'].indexOf('shaper::activate_download(&plan.lan_device') &&
+    x86ControlByModule['mod.rs'].includes('fn rollback('),
+    'queue trees must stage before block/download/upload activation with rollback');
+  assert(x86ControlByModule['firewall.rs'].includes('Hook::Ingress') &&
+    x86ControlByModule['firewall.rs'].includes('Hook::Egress') &&
+    x86ControlByModule['firewall.rs'].includes('clear_conntrack_address') &&
+    x86ControlByModule['firewall.rs'].includes('"drop"') &&
+    x86ControlByModule['firewall.rs'].includes('NFT_OWNER_COMMENT') &&
+    x86ControlByModule['firewall.rs'].includes('block_nft_owned_by_external_service') &&
+    !x86ControlByModule['firewall.rs'].includes('fn delete_nft_tables'),
+    'block rules must cover proxy ingress and client egress while retaining targeted conntrack cleanup');
+  assert(x86ControlByModule['system.rs'].includes('Command::new(program)') &&
+    !x86ControlByModule['system.rs'].includes('sh -c') &&
+    !x86Control.includes('meta mark set') && !x86Control.includes('UPLOAD_MARK') &&
+    !x86Control.includes('nsshtb') && !x86Control.includes('qos_tag'),
+    'the modular x86 path must use argv-safe commands and contain no old WAN marks or NSS controls');
+  assert((x86ControlByModule['classifier.rs'].match(/if !output\.status\.success\(\)/g) || []).length >= 3 &&
+    x86ControlByModule['classifier.rs'].includes('return Err("ingress_filter_inspection_failed".into())') &&
+    (x86ControlByModule['firewall.rs'].match(/if !output\.status\.success\(\)/g) || []).length >= 2 &&
+    x86ControlByModule['firewall.rs'].includes('return Err("block_filter_inspection_failed".into())'),
+    'failed TC ownership queries must stop apply and cleanup instead of being treated as absent objects');
+  assert(control.includes('verification_failures') &&
+    x86ControlByModule['mod.rs'].includes('upload_class_bytes') &&
+    x86ControlByModule['mod.rs'].includes('download_class_bytes'),
+    'verification must use each direction\'s owned queue counters');
   assert(control.includes('CONTROL_DHCP_LEASES_PATH') &&
     control.includes('fn lease_addresses_from(') &&
     control.includes('merge_control_lease_addresses(&mut next'),
     'persistent controls must preinstall from an unexpired DHCP lease before the client sends traffic');
-  assert(!x86Control.includes('bpf_redirect') && !x86Control.toLowerCase().includes('ifb'),
-    'x86 client control must not contain BPF redirect or IFB paths');
   assert(!production.includes('x86_control_bpf_unavailable') &&
     !production.includes('replace_control_maps'),
     'x86 client control availability must be independent of the rate-monitor BPF runtime');
+  assert(!fs.existsSync(path.join(root,
+    'net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/control.rs')) &&
+    !nssModule.includes('mod control') &&
+    production.includes('#[cfg(not(feature = "nss-platform"))]\n    control: ControlManager') &&
+    statusOverview.includes('showClientControl: !fmt.nssPlatform(normalized.status)') &&
+    statusRefresh.includes("nssProfile ? [] : [ clientControl.cell(viewState, c) ]"),
+    'NSS builds and status rows must not expose the x86-only client-control implementation');
   const hotRefresh = production.match(/fn refresh_connections[\s\S]*?\n    fn collect\(/)?.[0] || '';
   assert(hotRefresh.includes('self.decorate_controls(&mut snapshot.clients);') &&
     !hotRefresh.includes('self.refresh_controls(&mut snapshot.clients);'),
@@ -120,6 +183,7 @@ async function main() {
     );
 
   assert.strictEqual(module.mbpsToBps('4000', 4_000_000_000), 4_000_000_000);
+  assert(String(module.reasonText('ifb_module_unavailable')).includes('IFB'));
   assert.throws(() => module.mbpsToBps('4000.1', 4_000_000_000));
   assert.throws(() => module.mbpsToBps('0.001', 4_000_000_000));
   assert.strictEqual(module.mbpsToBps('', 4_000_000_000), 0);

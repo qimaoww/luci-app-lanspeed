@@ -26,12 +26,10 @@ mod panic;
 
 #[cfg(feature = "tc")]
 use account::account_frame;
+#[cfg(feature = "nss-tc")]
+use aya_ebpf::bindings::TC_ACT_OK;
 #[cfg(feature = "tc")]
-use aya_ebpf::{
-    bindings::{TC_ACT_OK, TC_ACT_UNSPEC},
-    macros::classifier,
-    programs::TcContext,
-};
+use aya_ebpf::{bindings::TC_ACT_UNSPEC, macros::classifier, programs::TcContext};
 #[cfg(feature = "tc")]
 use lanspeed_common::{DIR_RX, DIR_TX};
 
@@ -56,6 +54,9 @@ pub fn lanspeed_ingress(ctx: TcContext) -> i32 {
 #[cfg(feature = "tc")]
 #[classifier]
 pub fn lanspeed_egress(ctx: TcContext) -> i32 {
+    #[cfg(feature = "x86-tc")]
+    return account_frame(ctx, DIR_RX, TC_ACT_UNSPEC);
+    #[cfg(not(feature = "x86-tc"))]
     account_frame(ctx, DIR_RX, TC_ACT_OK)
 }
 
