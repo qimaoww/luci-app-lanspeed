@@ -87,6 +87,33 @@ fn install_on(
     deactivate_on(hook, lan_device)?;
     clear_chain(hook, lan_device)?;
 
+    // Create the ownership marker before staging filters so a failure in any
+    // later command remains exactly and safely rollback-able.
+    let chain = CHAIN.to_string();
+    let terminal = TERMINAL_PREF.to_string();
+    let marker = format!("0x{CHAIN:x}");
+    system::run(
+        "tc",
+        &[
+            "filter",
+            "add",
+            "dev",
+            lan_device,
+            hook.as_str(),
+            "chain",
+            &chain,
+            "protocol",
+            "all",
+            "pref",
+            &terminal,
+            "handle",
+            &marker,
+            "matchall",
+            "action",
+            "pass",
+        ],
+    )?;
+
     let mut preference = LOCAL_PREF_START;
     for (address, prefix_len) in local_prefixes {
         add_u32(
@@ -117,36 +144,8 @@ fn install_on(
         }
     }
 
-    let chain = CHAIN.to_string();
-    let terminal = TERMINAL_PREF.to_string();
-    let marker = format!("0x{CHAIN:x}");
-    system::run(
-        "tc",
-        &[
-            "filter",
-            "add",
-            "dev",
-            lan_device,
-            hook.as_str(),
-            "chain",
-            &chain,
-            "protocol",
-            "all",
-            "pref",
-            &terminal,
-            "handle",
-            &marker,
-            "matchall",
-            "action",
-            "pass",
-        ],
-    )?;
     verify_chain(hook, lan_device, rules)?;
     activate_on(hook, lan_device)
-}
-
-pub(crate) fn deactivate(lan_device: &str) -> Result<(), String> {
-    deactivate_on(Hook::Ingress, lan_device)
 }
 
 fn deactivate_on(hook: Hook, lan_device: &str) -> Result<(), String> {
@@ -242,7 +241,12 @@ fn cleanup_on(hook: Hook, lan_device: &str) -> Result<(), String> {
         return Ok(());
     }
     deactivate_on(hook, lan_device)?;
-    clear_chain(hook, lan_device)
+    clear_chain(hook, lan_device)?;
+    if owned_on(hook, lan_device)? {
+        Err("ingress_filter_cleanup_failed".into())
+    } else {
+        Ok(())
+    }
 }
 
 fn activate_on(hook: Hook, lan_device: &str) -> Result<(), String> {

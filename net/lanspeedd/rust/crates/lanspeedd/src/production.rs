@@ -3469,20 +3469,35 @@ impl ProductionRuntime {
 
     #[cfg(not(feature = "nss-platform"))]
     fn refresh_controls(&mut self, clients: &mut ClientsResponse) {
-        let dae_preempted_devices = crate::probe::tc::dae_preempted_lan_ingress_interfaces(
-            &self.probe_report.facts.tc.filters,
-            &self.config.runtime_collect_ifnames(),
-        );
-        let dae_upload_devices =
-            if !dae_preempted_devices.is_empty() && self.probe_report.facts.proxy.dae {
-                crate::platform::x86::control::dae_upload_devices(&dae_preempted_devices)
-            } else {
-                BTreeSet::new()
-            };
-        self.control
-            .observe_preempted_upload_devices(dae_preempted_devices);
-        self.control
-            .observe_dae_upload_devices(dae_upload_devices);
+        let tc_topology_probe_failed = self
+            .probe_report
+            .evidence
+            .probe_failures
+            .iter()
+            .any(|failure| failure.source.starts_with("command:tc_filter_show"));
+        if tc_topology_probe_failed {
+            self.control.observe_dae_topology_failure(
+                self.probe_report.facts.proxy.dae,
+                self.config.runtime_collect_ifnames().into_iter().collect(),
+            );
+        } else {
+            let dae_preempted_devices = crate::probe::tc::dae_preempted_lan_ingress_interfaces(
+                &self.probe_report.facts.tc.filters,
+                &self.config.runtime_collect_ifnames(),
+            );
+            let dae_upload_devices =
+                if !dae_preempted_devices.is_empty() && self.probe_report.facts.proxy.dae {
+                    crate::platform::x86::control::dae_upload_devices(&dae_preempted_devices)
+                } else {
+                    BTreeSet::new()
+                };
+            self.control
+                .observe_dae_topology(
+                    self.probe_report.facts.proxy.dae,
+                    dae_preempted_devices,
+                    dae_upload_devices,
+                );
+        }
         self.control.observe_clients(&clients.clients);
         self.reconcile_control_state();
         self.control.decorate_clients(&mut clients.clients);

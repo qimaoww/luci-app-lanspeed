@@ -65,27 +65,35 @@ fn htb_burst_bytes(rate_bps: u64, quantum: u64) -> u64 {
         .clamp(quantum, MAX_QUEUE_BYTES)
 }
 
-pub(crate) fn preflight(
-    lan_device: &str,
+pub(crate) fn preflight_upload(
     upload: &[&ActiveRule],
+    local_prefixes: &[(IpAddr, u8)],
+) -> Result<(), String> {
+    preflight_modules()?;
+    validate_filter_capacity(local_prefixes, upload)?;
+    ifb::preflight()?;
+    if system::interface_exists(ifb::DEVICE) {
+        system::ensure_owned_virtual_root(ifb::DEVICE, UPLOAD_HANDLE)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn preflight_download(
+    lan_device: &str,
     download: &[&ActiveRule],
     local_prefixes: &[(IpAddr, u8)],
 ) -> Result<(), String> {
+    preflight_modules()?;
+    validate_filter_capacity(local_prefixes, download)?;
+    system::ensure_replaceable_root(lan_device, DOWNLOAD_HANDLE)
+        .map_err(|error| contextual_qdisc_error(error, "download_qdisc_preflight_conflict"))
+}
+
+fn preflight_modules() -> Result<(), String> {
     for module in ["sch_htb", "sch_fq", "cls_u32"] {
         if !system::module_available(module) {
             return Err(format!("{module}_unavailable"));
         }
-    }
-    validate_filter_capacity(local_prefixes, upload, download)?;
-    if !upload.is_empty() {
-        ifb::preflight()?;
-        if system::interface_exists(ifb::DEVICE) {
-            system::ensure_owned_virtual_root(ifb::DEVICE, UPLOAD_HANDLE)?;
-        }
-    }
-    if !download.is_empty() {
-        system::ensure_replaceable_root(lan_device, DOWNLOAD_HANDLE)
-            .map_err(|error| contextual_qdisc_error(error, "download_qdisc_preflight_conflict"))?;
     }
     Ok(())
 }
@@ -521,16 +529,10 @@ fn json_contains_string(value: &Value, expected: &str) -> bool {
 
 fn validate_filter_capacity(
     local_prefixes: &[(IpAddr, u8)],
-    upload: &[&ActiveRule],
-    download: &[&ActiveRule],
+    rules: &[&ActiveRule],
 ) -> Result<(), String> {
-    let client_filters = u32::try_from(
-        upload
-            .len()
-            .max(download.len())
-            .saturating_mul(CONTROL_PROTOCOLS.len()),
-    )
-    .unwrap_or(u32::MAX);
+    let client_filters =
+        u32::try_from(rules.len().saturating_mul(CONTROL_PROTOCOLS.len())).unwrap_or(u32::MAX);
     if LOCAL_FILTER_PREF_START + local_prefixes.len() as u32 >= CLIENT_FILTER_PREF_START
         || CLIENT_FILTER_PREF_START.saturating_add(client_filters) >= FILTER_PREF_END
     {

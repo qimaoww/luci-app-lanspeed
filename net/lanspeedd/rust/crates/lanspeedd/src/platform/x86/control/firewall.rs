@@ -1,4 +1,7 @@
-use std::net::IpAddr;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::IpAddr,
+};
 
 use serde_json::Value;
 
@@ -15,11 +18,19 @@ const JUMP_PREF: u32 = 0xd01f;
 const LOCAL_PREF_START: u32 = 100;
 const CLIENT_PREF_START: u32 = 10_000;
 const TERMINAL_PREF: u32 = 65_534;
+const CONTROL_PROTOCOLS: [&str; 2] = ["ip", "ipv6"];
 
 #[derive(Clone, Copy)]
 enum Hook {
     Ingress,
     Egress,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Ownership {
+    Absent,
+    Owned,
+    Foreign,
 }
 
 impl Hook {
@@ -56,84 +67,88 @@ pub(crate) fn preflight(plan: &ControlPlan) -> Result<(), String> {
             return Err(format!("{module}_unavailable"));
         }
     }
-    validate_capacity(&plan.local_prefixes, &plan.rules)?;
     ensure_nft_table_owned_or_absent()?;
-    for hook in [Hook::Ingress, Hook::Egress] {
-        ensure_jump_owned_or_absent(&plan.lan_device, hook)?;
-        ensure_chain_owned_or_absent(&plan.lan_device, hook)?;
+    for (device, rules) in ingress_rules_by_device(plan) {
+        preflight_tc_hook(device, Hook::Ingress, &plan.local_prefixes, &rules)?;
+    }
+    for (device, rules) in egress_rules_by_device(plan) {
+        preflight_tc_hook(device, Hook::Egress, &plan.local_prefixes, &rules)?;
     }
     Ok(())
 }
 
 pub(crate) fn install(plan: &ControlPlan) -> Result<(), String> {
     if !has_blocked_rules(&plan.rules) {
-        return cleanup(&plan.lan_device);
+        return cleanup(&control_devices(plan));
     }
     preflight(plan)?;
-    system::ensure_clsact(&plan.lan_device)?;
-    install_tc_hook(
-        &plan.lan_device,
-        Hook::Ingress,
-        &plan.local_prefixes,
-        &plan.rules,
-    )?;
-    if let Err(error) = install_tc_hook(
-        &plan.lan_device,
-        Hook::Egress,
-        &plan.local_prefixes,
-        &plan.rules,
-    ) {
-        let _ = cleanup_tc_hook(&plan.lan_device, Hook::Ingress);
-        return Err(error);
+    let ingress = ingress_rules_by_device(plan);
+    let egress = egress_rules_by_device(plan);
+    for (device, rules) in &ingress {
+        system::ensure_clsact(device)?;
+        install_tc_hook(device, Hook::Ingress, &plan.local_prefixes, rules)?;
+    }
+    for (device, rules) in &egress {
+        system::ensure_clsact(device)?;
+        install_tc_hook(device, Hook::Egress, &plan.local_prefixes, rules)?;
+    }
+    for device in control_devices(plan) {
+        if !ingress.contains_key(device.as_str()) {
+            cleanup_tc_hook(&device, Hook::Ingress)?;
+        }
+        if !egress.contains_key(device.as_str()) {
+            cleanup_tc_hook(&device, Hook::Egress)?;
+        }
     }
     if let Err(error) = install_nft(plan) {
-        let _ = cleanup_tc_hook(&plan.lan_device, Hook::Ingress);
-        let _ = cleanup_tc_hook(&plan.lan_device, Hook::Egress);
+        let _ = cleanup(&control_devices(plan));
         return Err(error);
     }
     clear_disabled_conntrack(&plan.rules)
 }
 
-pub(crate) fn cleanup(lan_device: &str) -> Result<(), String> {
-    let ingress = cleanup_tc_hook(lan_device, Hook::Ingress);
-    let egress = cleanup_tc_hook(lan_device, Hook::Egress);
-    let nft = cleanup_nft_table();
-    ingress.and(egress).and(nft)
+pub(crate) fn cleanup(devices: &BTreeSet<String>) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for device in devices {
+        for hook in [Hook::Ingress, Hook::Egress] {
+            if let Err(error) = cleanup_tc_hook(device, hook) {
+                errors.push(error);
+            }
+        }
+    }
+    if let Err(error) = cleanup_nft_table() {
+        errors.push(error);
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join(";"))
+    }
+}
+
+fn preflight_tc_hook(
+    device: &str,
+    hook: Hook,
+    local_prefixes: &[(IpAddr, u8)],
+    rules: &[&ActiveRule],
+) -> Result<(), String> {
+    if !system::valid_interface_name(device) || !system::interface_exists(device) {
+        return Err("lan_control_interface_unavailable".into());
+    }
+    validate_capacity(local_prefixes, rules)?;
+    ensure_jump_owned_or_absent(device, hook)?;
+    ensure_chain_owned_or_absent(device, hook)
 }
 
 fn install_tc_hook(
     device: &str,
     hook: Hook,
     local_prefixes: &[(IpAddr, u8)],
-    rules: &[ActiveRule],
+    rules: &[&ActiveRule],
 ) -> Result<(), String> {
     cleanup_tc_hook(device, hook)?;
-    let mut preference = LOCAL_PREF_START;
-    for (address, prefix_len) in local_prefixes {
-        add_u32(
-            device,
-            hook,
-            preference,
-            *address,
-            *prefix_len,
-            hook.local_field(),
-            "pass",
-        )?;
-        preference += 1;
-    }
-    preference = CLIENT_PREF_START;
-    for rule in rules.iter().filter(|rule| rule.internet_disabled) {
-        add_mac(
-            device,
-            hook,
-            preference,
-            &rule.mac.to_string(),
-            hook.client_field(),
-            "drop",
-        )?;
-        preference += 1;
-    }
-
+    // Publish the ownership marker before staging any rule. If a later
+    // command fails, rollback can still prove and remove the partial chain.
     let chain = CHAIN.to_string();
     let terminal = TERMINAL_PREF.to_string();
     let marker = format!("0x{CHAIN:x}");
@@ -158,6 +173,34 @@ fn install_tc_hook(
             "pass",
         ],
     )?;
+    let mut preference = LOCAL_PREF_START;
+    for (address, prefix_len) in local_prefixes {
+        add_u32(
+            device,
+            hook,
+            preference,
+            *address,
+            *prefix_len,
+            hook.local_field(),
+            "pass",
+        )?;
+        preference += 1;
+    }
+    preference = CLIENT_PREF_START;
+    for rule in rules.iter().filter(|rule| rule.internet_disabled) {
+        for protocol in CONTROL_PROTOCOLS {
+            add_mac(
+                device,
+                hook,
+                preference,
+                protocol,
+                &rule.mac.to_string(),
+                hook.client_field(),
+                "drop",
+            )?;
+            preference += 1;
+        }
+    }
     let jump = JUMP_PREF.to_string();
     system::run(
         "tc",
@@ -177,15 +220,28 @@ fn install_tc_hook(
             "chain",
             &chain,
         ],
-    )
+    )?;
+    if jump_ownership(device, hook)? == Ownership::Owned
+        && chain_ownership(device, hook)? == Ownership::Owned
+    {
+        Ok(())
+    } else {
+        Err("block_filter_verification_failed".into())
+    }
 }
 
 fn cleanup_tc_hook(device: &str, hook: Hook) -> Result<(), String> {
     if !system::interface_exists(device) || !system::has_qdisc(device, "clsact", None) {
         return Ok(());
     }
-    ensure_jump_owned_or_absent(device, hook)?;
-    ensure_chain_owned_or_absent(device, hook)?;
+    let jump_state = jump_ownership(device, hook)?;
+    let chain_state = chain_ownership(device, hook)?;
+    if jump_state != Ownership::Owned && chain_state != Ownership::Owned {
+        return Ok(());
+    }
+    if jump_state == Ownership::Foreign || chain_state == Ownership::Foreign {
+        return Err("block_filter_owned_by_external_service".into());
+    }
     let jump = JUMP_PREF.to_string();
     let chain = CHAIN.to_string();
     system::run_ignore_missing(
@@ -196,10 +252,23 @@ fn cleanup_tc_hook(device: &str, hook: Hook) -> Result<(), String> {
         "tc",
         &["filter", "del", "dev", device, hook.name(), "chain", &chain],
     );
-    Ok(())
+    if jump_ownership(device, hook)? == Ownership::Owned
+        || chain_ownership(device, hook)? == Ownership::Owned
+    {
+        Err("block_filter_cleanup_failed".into())
+    } else {
+        Ok(())
+    }
 }
 
 fn ensure_jump_owned_or_absent(device: &str, hook: Hook) -> Result<(), String> {
+    match jump_ownership(device, hook)? {
+        Ownership::Absent | Ownership::Owned => Ok(()),
+        Ownership::Foreign => Err("block_filter_owned_by_external_service".into()),
+    }
+}
+
+fn jump_ownership(device: &str, hook: Hook) -> Result<Ownership, String> {
     let preference = JUMP_PREF.to_string();
     let output = system::output(
         "tc",
@@ -219,18 +288,25 @@ fn ensure_jump_owned_or_absent(device: &str, hook: Hook) -> Result<(), String> {
         return Err("block_filter_inspection_failed".into());
     }
     if output.stdout == b"[]\n" || output.stdout == b"[]" {
-        return Ok(());
+        return Ok(Ownership::Absent);
     }
     let values: Vec<Value> = serde_json::from_slice(&output.stdout)
         .map_err(|_| "block_filter_inspection_failed".to_owned())?;
     if values.iter().any(|value| contains_goto_chain(value, CHAIN)) {
-        Ok(())
+        Ok(Ownership::Owned)
     } else {
-        Err("block_filter_owned_by_external_service".into())
+        Ok(Ownership::Foreign)
     }
 }
 
 fn ensure_chain_owned_or_absent(device: &str, hook: Hook) -> Result<(), String> {
+    match chain_ownership(device, hook)? {
+        Ownership::Absent | Ownership::Owned => Ok(()),
+        Ownership::Foreign => Err("block_chain_owned_by_external_service".into()),
+    }
+}
+
+fn chain_ownership(device: &str, hook: Hook) -> Result<Ownership, String> {
     let chain = CHAIN.to_string();
     let output = system::output(
         "tc",
@@ -250,7 +326,7 @@ fn ensure_chain_owned_or_absent(device: &str, hook: Hook) -> Result<(), String> 
         return Err("block_filter_inspection_failed".into());
     }
     if output.stdout == b"[]\n" || output.stdout == b"[]" {
-        return Ok(());
+        return Ok(Ownership::Absent);
     }
     let values: Vec<Value> = serde_json::from_slice(&output.stdout)
         .map_err(|_| "block_filter_inspection_failed".to_owned())?;
@@ -262,9 +338,9 @@ fn ensure_chain_owned_or_absent(device: &str, hook: Hook) -> Result<(), String> 
                 .and_then(Value::as_u64)
                 == Some(u64::from(CHAIN))
     }) {
-        Ok(())
+        Ok(Ownership::Owned)
     } else {
-        Err("block_chain_owned_by_external_service".into())
+        Ok(Ownership::Foreign)
     }
 }
 
@@ -328,6 +404,7 @@ fn add_mac(
     device: &str,
     hook: Hook,
     preference: u32,
+    protocol: &str,
     mac: &str,
     field: &str,
     verdict: &str,
@@ -345,7 +422,7 @@ fn add_mac(
             "chain",
             &chain,
             "protocol",
-            "all",
+            protocol,
             "pref",
             &preference,
             "u32",
@@ -510,14 +587,53 @@ fn clear_disabled_conntrack(rules: &[ActiveRule]) -> Result<(), String> {
     Ok(())
 }
 
+fn ingress_rules_by_device(plan: &ControlPlan) -> BTreeMap<&str, Vec<&ActiveRule>> {
+    let mut grouped = BTreeMap::<&str, Vec<_>>::new();
+    for rule in plan.rules.iter().filter(|rule| rule.internet_disabled) {
+        if rule.upload_before_proxy {
+            for device in &plan.dae_upload_devices {
+                grouped.entry(device.as_str()).or_default().push(rule);
+            }
+        } else {
+            grouped
+                .entry(rule.interface.as_str())
+                .or_default()
+                .push(rule);
+        }
+    }
+    grouped
+}
+
+fn egress_rules_by_device(plan: &ControlPlan) -> BTreeMap<&str, Vec<&ActiveRule>> {
+    let mut grouped = BTreeMap::<&str, Vec<_>>::new();
+    for rule in plan.rules.iter().filter(|rule| rule.internet_disabled) {
+        grouped
+            .entry(rule.interface.as_str())
+            .or_default()
+            .push(rule);
+    }
+    grouped
+}
+
+fn control_devices(plan: &ControlPlan) -> BTreeSet<String> {
+    plan.control_devices
+        .iter()
+        .chain(plan.rules.iter().map(|rule| &rule.interface))
+        .chain(plan.dae_upload_devices.iter())
+        .filter(|device| system::valid_interface_name(device))
+        .cloned()
+        .collect()
+}
+
 fn has_blocked_rules(rules: &[ActiveRule]) -> bool {
     rules.iter().any(|rule| rule.internet_disabled)
 }
 
-fn validate_capacity(local_prefixes: &[(IpAddr, u8)], rules: &[ActiveRule]) -> Result<(), String> {
+fn validate_capacity(local_prefixes: &[(IpAddr, u8)], rules: &[&ActiveRule]) -> Result<(), String> {
     let clients = rules.iter().filter(|rule| rule.internet_disabled).count();
     if LOCAL_PREF_START + local_prefixes.len() as u32 >= CLIENT_PREF_START
-        || CLIENT_PREF_START + clients as u32 >= TERMINAL_PREF
+        || CLIENT_PREF_START + clients.saturating_mul(CONTROL_PROTOCOLS.len()) as u32
+            >= TERMINAL_PREF
     {
         Err("control_filter_capacity".into())
     } else {
@@ -565,6 +681,27 @@ mod tests {
         );
         assert!(script.contains("ip daddr @blocked4 reject"));
         assert!(script.contains("ip6 daddr @blocked6 reject"));
+    }
+
+    #[test]
+    fn tc_blocking_matches_only_ipv4_and_ipv6_never_arp() {
+        assert_eq!(CONTROL_PROTOCOLS, ["ip", "ipv6"]);
+        assert!(!CONTROL_PROTOCOLS.contains(&"all"));
+    }
+
+    #[test]
+    fn tc_blocking_is_grouped_by_the_actual_client_edge() {
+        let mut plan = plan();
+        let mut guest = plan.rules[0].clone();
+        guest.identity_key = "02:00:00:00:00:02@guest".into();
+        guest.mac = "02:00:00:00:00:02".parse().unwrap();
+        guest.interface = "br-guest".into();
+        plan.rules.push(guest);
+        let ingress = ingress_rules_by_device(&plan);
+        let egress = egress_rules_by_device(&plan);
+        assert_eq!(ingress["br-lan"].len(), 1);
+        assert_eq!(ingress["br-guest"].len(), 1);
+        assert_eq!(egress["br-guest"].len(), 1);
     }
 
     #[test]

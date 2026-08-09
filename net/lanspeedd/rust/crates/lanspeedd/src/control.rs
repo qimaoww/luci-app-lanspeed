@@ -7,7 +7,7 @@ use std::{
     process::{Command, Stdio},
     str::FromStr,
     sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::Serialize;
@@ -29,6 +29,7 @@ const CONTROL_DHCP_LEASES_PATH: &str = "/tmp/dhcp.leases";
 const CONTROL_DHCP_LEASE_MAX_BYTES: u64 = 1024 * 1024;
 const CONTROL_DHCP_LEASE_MAX_LINES: usize = 4096;
 const CONTROL_DHCP_LEASE_MAX_LINE_BYTES: usize = 512;
+const LOCAL_PREFIX_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const FIRST_CLASS_MINOR: u16 = 0x100;
 const LAST_CLASS_MINOR: u16 = 0xfffe;
 const DEFAULT_FIFO_HANDLE_MINOR: u16 = 0x1000;
@@ -142,6 +143,12 @@ pub struct ControlManager {
     control_devices: BTreeSet<String>,
     preempted_upload_devices: BTreeSet<String>,
     dae_upload_devices: BTreeSet<String>,
+    dae_topology_known: bool,
+    dae_active: bool,
+    local_prefixes: Vec<(IpAddr, u8)>,
+    local_prefixes_ready: bool,
+    last_local_prefix_refresh: Option<Instant>,
+    max_rate_bps: u64,
     dirty: bool,
 }
 
@@ -165,6 +172,12 @@ impl ControlManager {
             control_devices,
             preempted_upload_devices: BTreeSet::new(),
             dae_upload_devices: BTreeSet::new(),
+            dae_topology_known: false,
+            dae_active: false,
+            local_prefixes: Vec::new(),
+            local_prefixes_ready: false,
+            last_local_prefix_refresh: None,
+            max_rate_bps: platform_max_rate_bps(),
             dirty: true,
         })
     }
@@ -197,7 +210,9 @@ impl ControlManager {
             }
             next.insert(client.identity_key.clone(), client);
         }
-        merge_control_lease_addresses(&mut next, control_lease_addresses(&self.rules));
+        if !self.rules.is_empty() {
+            merge_control_lease_addresses(&mut next, control_lease_addresses(&self.rules));
+        }
         let mut owners = BTreeMap::<IpAddr, BTreeSet<String>>::new();
         for client in next.values() {
             for ip in &client.ips {
@@ -237,7 +252,45 @@ impl ControlManager {
         }
     }
 
+    pub fn observe_dae_topology(
+        &mut self,
+        dae_active: bool,
+        preempted_devices: BTreeSet<String>,
+        upload_devices: BTreeSet<String>,
+    ) {
+        self.dae_topology_known = true;
+        self.dae_active = dae_active;
+        self.observe_preempted_upload_devices(preempted_devices);
+        self.observe_dae_upload_devices(upload_devices);
+    }
+
+    /// A failed read-only TC probe must not erase a previously proven DAE
+    /// topology. On the first failed probe, fail closed for DAE rather than
+    /// silently moving upload control behind its redirect.
+    pub fn observe_dae_topology_failure(
+        &mut self,
+        dae_active: bool,
+        candidate_devices: BTreeSet<String>,
+    ) {
+        if !dae_active {
+            return;
+        }
+        if self.dae_topology_known && self.dae_active {
+            return;
+        }
+        self.dae_active = true;
+        self.dae_topology_known = false;
+        self.observe_preempted_upload_devices(candidate_devices);
+        self.observe_dae_upload_devices(BTreeSet::new());
+    }
+
     pub fn reconcile(&mut self) {
+        let has_active_rules = !self.active_rules().is_empty();
+        let prefix_error = if has_active_rules {
+            self.refresh_local_prefixes().err()
+        } else {
+            None
+        };
         let plan = self.plan();
         if !self.dirty {
             // Observing absent counters after an apply rollback must not turn
@@ -253,11 +306,15 @@ impl ControlManager {
             }
             return;
         }
+        if let Some(error) = prefix_error {
+            self.result = failed_apply_result(&error, &self.result);
+            return;
+        }
         self.result = platform_apply(&plan).unwrap_or_else(|error| ApplyResult {
             state: "error".into(),
             reason: Some(public_control_error(&error)),
-            shaping_supported: false,
-            blocking_supported: false,
+            shaping_supported: self.result.shaping_supported,
+            blocking_supported: self.result.blocking_supported,
             queue_overflow: false,
             queue_drop_counters: BTreeMap::new(),
             class_counter_baselines: BTreeMap::new(),
@@ -286,7 +343,11 @@ impl ControlManager {
         {
             return Err(DaemonError::reload("control_rule_limit"));
         }
-        if live.ambiguous {
+        let relaxing_ambiguous_control = self
+            .rules
+            .get(&request.identity_key)
+            .is_some_and(|old| control_update_is_not_more_restrictive(old, &request));
+        if live.ambiguous && !relaxing_ambiguous_control {
             return Err(DaemonError::reload("ambiguous_identity"));
         }
         if live.ips.is_empty()
@@ -355,7 +416,7 @@ impl ControlManager {
             lan_device: self.lan_device.clone(),
             control_devices: control_devices.into_iter().collect(),
             dae_upload_devices: self.dae_upload_devices.iter().cloned().collect(),
-            local_prefixes: local_prefixes().unwrap_or_default(),
+            local_prefixes: self.local_prefixes.clone(),
             rules,
         }
     }
@@ -375,20 +436,23 @@ impl ControlManager {
                 {
                     return None;
                 }
+                let requires_control_interface =
+                    rule.upload_bps != 0 || rule.download_bps != 0 || rule.internet_disabled;
+                if requires_control_interface && live.interface.is_none() {
+                    return None;
+                }
                 let interface = live
                     .interface
                     .clone()
                     .unwrap_or_else(|| self.lan_device.clone());
-                if rule.upload_bps != 0 && live.interface.is_none() {
-                    return None;
-                }
+                let requires_upload_control = rule.upload_bps != 0 || rule.internet_disabled;
                 Some(ActiveRule {
                     identity_key: rule.identity_key.clone(),
                     mac: rule.mac,
-                    upload_before_proxy: rule.upload_bps != 0
+                    upload_before_proxy: requires_upload_control
                         && self.preempted_upload_devices.contains(&interface)
                         && !self.dae_upload_devices.is_empty(),
-                    upload_preempted: rule.upload_bps != 0
+                    upload_preempted: requires_upload_control
                         && self.preempted_upload_devices.contains(&interface)
                         && self.dae_upload_devices.is_empty(),
                     interface,
@@ -420,7 +484,7 @@ impl ControlManager {
             })
         });
         let interface_unavailable = rule.is_some_and(|rule| {
-            rule.upload_bps != 0
+            (rule.upload_bps != 0 || rule.download_bps != 0 || rule.internet_disabled)
                 && self
                     .live
                     .get(identity_key)
@@ -504,11 +568,66 @@ impl ControlManager {
             internet_disabled: rule.is_some_and(|rule| rule.internet_disabled),
             shaping_supported: self.result.shaping_supported && !ambiguous,
             blocking_supported: self.result.blocking_supported && !ambiguous,
-            max_rate_bps: platform_max_rate_bps(),
+            max_rate_bps: self.max_rate_bps,
             state,
             reason,
             queue_overflow: verification_failure.map(String::as_str) == Some("queue_overflow"),
         }
+    }
+
+    fn refresh_local_prefixes(&mut self) -> Result<(), String> {
+        let now = Instant::now();
+        if self
+            .last_local_prefix_refresh
+            .is_some_and(|last| now.saturating_duration_since(last) < LOCAL_PREFIX_REFRESH_INTERVAL)
+        {
+            return if self.local_prefixes_ready {
+                Ok(())
+            } else {
+                Err("local_network_unavailable".into())
+            };
+        }
+        self.last_local_prefix_refresh = Some(now);
+        match local_prefixes(&self.control_devices) {
+            Ok(prefixes) => {
+                if self.local_prefixes != prefixes {
+                    self.local_prefixes = prefixes;
+                    self.dirty = true;
+                }
+                self.local_prefixes_ready = true;
+                Ok(())
+            }
+            Err(_) => {
+                self.local_prefixes_ready = false;
+                Err("local_network_unavailable".into())
+            }
+        }
+    }
+}
+
+fn control_update_is_not_more_restrictive(
+    previous: &ControlRule,
+    request: &ClientControlRequest,
+) -> bool {
+    fn rate_relaxes(previous: u64, requested: u64) -> bool {
+        requested == 0 || (previous != 0 && requested >= previous)
+    }
+    (!request.internet_disabled || previous.internet_disabled)
+        && rate_relaxes(previous.upload_bps, request.upload_bps)
+        && rate_relaxes(previous.download_bps, request.download_bps)
+}
+
+fn failed_apply_result(error: &str, previous: &ApplyResult) -> ApplyResult {
+    ApplyResult {
+        state: "error".into(),
+        reason: Some(public_control_error(error)),
+        shaping_supported: previous.shaping_supported,
+        blocking_supported: previous.blocking_supported,
+        queue_overflow: false,
+        queue_drop_counters: BTreeMap::new(),
+        class_counter_baselines: BTreeMap::new(),
+        verified_directions: BTreeMap::new(),
+        verification_failures: BTreeMap::new(),
     }
 }
 
@@ -543,10 +662,13 @@ fn public_control_error(error: &str) -> String {
         "ingress_chain_owned_by_external_service",
         "ingress_filter_inspection_failed",
         "ingress_filter_verification_failed",
+        "ingress_filter_cleanup_failed",
         "dae_upload_preempts_control",
         "block_filter_owned_by_external_service",
         "block_chain_owned_by_external_service",
         "block_filter_inspection_failed",
+        "block_filter_verification_failed",
+        "block_filter_cleanup_failed",
         "block_nft_owned_by_external_service",
         "block_nft_inspection_failed",
         "interface_status_unavailable",
@@ -555,6 +677,8 @@ fn public_control_error(error: &str) -> String {
         "control_filter_capacity",
         "queue_stats_unavailable",
         "queue_overflow",
+        "local_network_unavailable",
+        "control_rollback_failed",
     ]
     .into_iter()
     .find(|code| error.contains(code))
@@ -728,8 +852,9 @@ fn valid_control_interface(value: &str) -> Option<String> {
     .then(|| value.to_owned())
 }
 
-fn control_requires_address(upload_bps: u64, download_bps: u64, _internet_disabled: bool) -> bool {
-    platform_requires_shaping_address() && (upload_bps != 0 || download_bps != 0)
+fn control_requires_address(upload_bps: u64, download_bps: u64, internet_disabled: bool) -> bool {
+    internet_disabled
+        || (platform_requires_shaping_address() && (upload_bps != 0 || download_bps != 0))
 }
 
 fn resolve_lan_device(config: &RuntimeConfig) -> String {
@@ -1019,7 +1144,7 @@ pub(crate) fn queue_drops_increased(
     })
 }
 
-fn local_prefixes() -> Result<Vec<(IpAddr, u8)>, String> {
+fn local_prefixes(control_devices: &BTreeSet<String>) -> Result<Vec<(IpAddr, u8)>, String> {
     let output = Command::new("ubus")
         .args(["call", "network.interface.lan", "status"])
         .output()
@@ -1095,32 +1220,61 @@ fn local_prefixes() -> Result<Vec<(IpAddr, u8)>, String> {
     // classifiers themselves). Keep IPv4/IPv6 discovery, router
     // advertisements, mDNS and other LAN multicast out of client shaping.
     prefixes.push(("224.0.0.0".parse().unwrap(), 4));
+    prefixes.push(("255.255.255.255".parse().unwrap(), 32));
     prefixes.push(("::1".parse().unwrap(), 128));
     prefixes.push(("fe80::".parse().unwrap(), 10));
     prefixes.push(("ff00::".parse().unwrap(), 8));
-    if let Ok(output) = Command::new("ip").args(["-j", "address", "show"]).output() {
-        if output.status.success() {
-            if let Ok(interfaces) = serde_json::from_slice::<Vec<Value>>(&output.stdout) {
-                for address in interfaces.iter().flat_map(|interface| {
-                    interface
-                        .get("addr_info")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                }) {
-                    let Some(ip) = address
-                        .get("local")
-                        .and_then(Value::as_str)
-                        .and_then(|value| value.parse::<IpAddr>().ok())
-                    else {
-                        continue;
-                    };
-                    prefixes.push((ip, if ip.is_ipv4() { 32 } else { 128 }));
-                }
+    let output = Command::new("ip")
+        .args(["-j", "address", "show"])
+        .output()
+        .map_err(|_| "interface_status_unavailable".to_owned())?;
+    if !output.status.success() {
+        return Err("interface_status_unavailable".into());
+    }
+    let interfaces = serde_json::from_slice::<Vec<Value>>(&output.stdout)
+        .map_err(|_| "interface_status_unavailable".to_owned())?;
+    append_interface_prefixes(&mut prefixes, &interfaces, control_devices);
+    Ok(collapse_prefixes(prefixes))
+}
+
+fn append_interface_prefixes(
+    prefixes: &mut Vec<(IpAddr, u8)>,
+    interfaces: &[Value],
+    control_devices: &BTreeSet<String>,
+) {
+    for interface in interfaces {
+        let controlled = interface
+            .get("ifname")
+            .and_then(Value::as_str)
+            .is_some_and(|name| control_devices.contains(name));
+        for address in interface
+            .get("addr_info")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(ip) = address
+                .get("local")
+                .and_then(Value::as_str)
+                .and_then(|value| value.parse::<IpAddr>().ok())
+            else {
+                continue;
+            };
+            let max = if ip.is_ipv4() { 32u64 } else { 128u64 };
+            // Every router address itself is local. For an observed LAN edge,
+            // the complete connected prefix is local too, so guest/VLAN NAS
+            // traffic never enters Internet shaping or blocking.
+            prefixes.push((ip, max as u8));
+            if controlled {
+                let prefix_len = address
+                    .get("prefixlen")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(max)
+                    .min(max) as u8;
+                prefixes.push((ip, prefix_len));
             }
         }
     }
-    Ok(collapse_prefixes(prefixes))
 }
 
 fn collapse_prefixes(prefixes: Vec<(IpAddr, u8)>) -> Vec<(IpAddr, u8)> {
@@ -1275,6 +1429,12 @@ mod tests {
             control_devices: BTreeSet::from(["br-lan".into()]),
             preempted_upload_devices: BTreeSet::new(),
             dae_upload_devices: BTreeSet::new(),
+            dae_topology_known: false,
+            dae_active: false,
+            local_prefixes: Vec::new(),
+            local_prefixes_ready: false,
+            last_local_prefix_refresh: None,
+            max_rate_bps: X86_MAX_RATE_BPS,
             dirty: false,
         }
     }
@@ -1284,6 +1444,36 @@ mod tests {
         assert_eq!(queue_bytes(8_000), MIN_QUEUE_BYTES);
         assert_eq!(queue_bytes(80_000_000), 5_000_000);
         assert_eq!(queue_bytes(u64::MAX), MAX_QUEUE_BYTES);
+    }
+
+    #[test]
+    fn ambiguous_identity_can_only_remove_or_relax_existing_control() {
+        let previous = ControlRule {
+            identity_key: "02:00:00:00:00:01@lan".into(),
+            mac: "02:00:00:00:00:01".parse().unwrap(),
+            upload_bps: 10_000_000,
+            download_bps: 20_000_000,
+            internet_disabled: true,
+            class_minor: FIRST_CLASS_MINOR,
+        };
+        let request = |upload_bps, download_bps, internet_disabled| ClientControlRequest {
+            identity_key: previous.identity_key.clone(),
+            upload_bps,
+            download_bps,
+            internet_disabled,
+        };
+        assert!(control_update_is_not_more_restrictive(
+            &previous,
+            &request(0, 0, false)
+        ));
+        assert!(control_update_is_not_more_restrictive(
+            &previous,
+            &request(20_000_000, 20_000_000, false)
+        ));
+        assert!(!control_update_is_not_more_restrictive(
+            &previous,
+            &request(8_000_000, 20_000_000, false)
+        ));
     }
 
     #[test]
@@ -1513,7 +1703,7 @@ mod tests {
     }
 
     #[test]
-    fn unexpired_dhcp_lease_preinstalls_a_persistent_control_rule() {
+    fn unexpired_dhcp_lease_recovers_address_but_waits_for_the_observed_edge() {
         let identity = "02:00:00:00:00:01@lan";
         let mut manager = manager();
         manager.rules.insert(
@@ -1537,15 +1727,19 @@ mod tests {
 
         merge_control_lease_addresses(&mut manager.live, leases);
 
-        assert_eq!(manager.plan().rules.len(), 1);
+        assert!(manager.plan().rules.is_empty());
         assert_eq!(
-            manager.plan().rules[0].ips,
+            manager.live[identity].ips,
             vec!["192.0.2.9".parse::<IpAddr>().unwrap()]
+        );
+        assert_eq!(
+            manager.summary(identity).reason.as_deref(),
+            Some("identity_interface_unavailable")
         );
     }
 
     #[test]
-    fn mac_block_rule_remains_active_without_an_ip_address() {
+    fn block_rule_waits_for_a_unique_ip_address() {
         let identity = "02:00:00:00:00:01@lan";
         let mut live = client(identity, "192.0.2.9");
         live.ips.clear();
@@ -1563,10 +1757,11 @@ mod tests {
             },
         );
         let plan = manager.plan();
-        assert_eq!(plan.rules.len(), 1);
-        assert_eq!(plan.rules[0].mac.to_string(), "02:00:00:00:00:01");
-        assert!(plan.rules[0].ips.is_empty());
-        assert_ne!(manager.summary(identity).state, "error");
+        assert!(plan.rules.is_empty());
+        assert_eq!(
+            manager.summary(identity).reason.as_deref(),
+            Some("identity_address_unavailable")
+        );
     }
 
     #[test]
@@ -1667,6 +1862,66 @@ mod tests {
             normalize_prefix("ff02::1".parse().unwrap(), 8),
             Some(("ff00::".parse().unwrap(), 8))
         );
+    }
+
+    #[test]
+    fn connected_prefixes_are_added_only_for_controlled_lan_edges() {
+        let interfaces = vec![
+            json!({
+                "ifname": "br-guest",
+                "addr_info": [
+                    { "local": "192.0.2.1", "prefixlen": 24 },
+                    { "local": "2001:db8:1::1", "prefixlen": 64 }
+                ]
+            }),
+            json!({
+                "ifname": "wan",
+                "addr_info": [{ "local": "198.51.100.2", "prefixlen": 24 }]
+            }),
+        ];
+        let mut prefixes = Vec::new();
+        append_interface_prefixes(
+            &mut prefixes,
+            &interfaces,
+            &BTreeSet::from(["br-guest".into()]),
+        );
+        let collapsed = collapse_prefixes(prefixes);
+        assert!(collapsed.contains(&("192.0.2.0".parse().unwrap(), 24)));
+        assert!(collapsed.contains(&("2001:db8:1::".parse().unwrap(), 64)));
+        assert!(collapsed.contains(&("198.51.100.2".parse().unwrap(), 32)));
+        assert!(!collapsed.contains(&("198.51.100.0".parse().unwrap(), 24)));
+    }
+
+    #[test]
+    fn failed_dae_probe_retains_last_proven_topology() {
+        let mut manager = manager();
+        manager.observe_dae_topology(
+            true,
+            BTreeSet::from(["br-lan".into()]),
+            BTreeSet::from(["lan2".into()]),
+        );
+        manager.observe_dae_topology_failure(true, BTreeSet::from(["br-guest".into()]));
+        assert_eq!(
+            manager.preempted_upload_devices,
+            BTreeSet::from(["br-lan".into()])
+        );
+        assert_eq!(manager.dae_upload_devices, BTreeSet::from(["lan2".into()]));
+    }
+
+    #[test]
+    fn first_probe_failure_after_dae_starts_fails_closed() {
+        let mut manager = manager();
+        manager.observe_dae_topology(false, BTreeSet::new(), BTreeSet::new());
+        manager.observe_dae_topology_failure(
+            true,
+            BTreeSet::from(["br-guest".into(), "br-lan".into()]),
+        );
+        assert!(!manager.dae_topology_known);
+        assert_eq!(
+            manager.preempted_upload_devices,
+            BTreeSet::from(["br-guest".into(), "br-lan".into()])
+        );
+        assert!(manager.dae_upload_devices.is_empty());
     }
 
     #[test]

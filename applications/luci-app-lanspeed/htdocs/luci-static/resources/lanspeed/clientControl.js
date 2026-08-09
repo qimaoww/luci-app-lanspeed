@@ -34,9 +34,12 @@ function reasonText(reason) {
 		ingress_chain_owned_by_external_service: _('上传分类链与其它 TC 规则冲突。'),
 		ingress_filter_inspection_failed: _('无法读取上传分类规则。'),
 		ingress_filter_verification_failed: _('上传 IFB 分类校验失败并已回滚。'),
+		ingress_filter_cleanup_failed: _('上传分类回滚校验失败，请重新检查。'),
 		block_filter_owned_by_external_service: _('禁网入口与其它 TC 规则冲突。'),
 		block_chain_owned_by_external_service: _('禁网分类链与其它 TC 规则冲突。'),
 		block_filter_inspection_failed: _('无法读取禁网分类规则。'),
+		block_filter_verification_failed: _('禁网分类安装后校验失败并已回滚。'),
+		block_filter_cleanup_failed: _('禁网分类回滚校验失败，请重新检查。'),
 		control_filter_capacity: _('受控地址数量超过 TC 分类容量。'),
 		control_topology_changed: _('IFB 整形路径已变化，正在重新应用限速。'),
 		qdisc_inspection_failed: _('无法读取目标接口的队列状态。'),
@@ -54,6 +57,8 @@ function reasonText(reason) {
 		traffic_verification_pending: _('已安装队列，正在用真实流量核对 IFB 上传与 LAN 下载方向。'),
 		direction_verification_pending: _('一个方向已验证，另一方向仍等待新连接流量。'),
 		queue_overflow: _('整形队列发生溢出，请降低持续负载或提高限速值。'),
+		local_network_unavailable: _('无法可靠读取本地网段，未应用可能误限 LAN/NAS 的规则。'),
+		control_rollback_failed: _('控制规则应用失败且自动回滚未完整完成，请重新检查。'),
 		control_rule_limit: _('客户端控制规则已达到安全上限。'),
 		control_apply_failed: _('控制规则应用失败，未启用不完整的数据路径。')
 	};
@@ -62,14 +67,16 @@ function reasonText(reason) {
 
 function bpsToMbps(value) {
 	value = Number(value) || 0;
-	return value > 0 ? String(Math.round(value / 100000) / 10) : '';
+	return value > 0 ? (value / 1000000).toFixed(6).replace(/0+$/, '').replace(/\.$/, '') : '';
 }
 
 function mbpsToBps(value, maximum) {
 	if (value === '' || value === null || value === undefined) return 0;
 	var number = Number(value);
 	if (!isFinite(number) || number < 0) throw new Error(_('请输入有效的非负速率。'));
-	var bps = Math.round(number * 1000000);
+	// The daemon and TC contract use an exact 8 bit/s resolution. Convert via
+	// 8-bit units so every value emitted by the UI is accepted by the backend.
+	var bps = Math.round(number * 125000) * 8;
 	if (bps !== 0 && bps < 8000) throw new Error(_('非零速率不能低于 0.008 Mbps。'));
 	if (bps > Number(maximum || 0))
 		throw new Error(_('超过当前平台上限 %s Mbps。').format(Number(maximum) / 1000000));
@@ -143,12 +150,12 @@ function openLimit(viewState, client) {
 	var control = client.control || {};
 	var identity = clientIdentity(client);
 	var upload = E('input', {
-		'type': 'number', 'min': '0', 'step': '0.1', 'inputmode': 'decimal',
+		'type': 'number', 'min': '0', 'step': '0.001', 'inputmode': 'decimal',
 		'class': 'cbi-input-text', 'value': bpsToMbps(control.upload_bps),
 		'placeholder': _('0 表示不限速')
 	});
 	var download = E('input', {
-		'type': 'number', 'min': '0', 'step': '0.1', 'inputmode': 'decimal',
+		'type': 'number', 'min': '0', 'step': '0.001', 'inputmode': 'decimal',
 		'class': 'cbi-input-text', 'value': bpsToMbps(control.download_bps),
 		'placeholder': _('0 表示不限速')
 	});
@@ -220,12 +227,13 @@ function stateLabel(control) {
 function cell(viewState, client) {
 	var control = client.control || {};
 	var busy = !!(viewState.controlBusy && viewState.controlBusy[client.identity_key]);
+	var hasLimit = Number(control.upload_bps) > 0 || Number(control.download_bps) > 0;
 	var limitAttrs = {
 		'type': 'button',
 		'class': 'cbi-button cbi-button-neutral lanspeed-control-button',
 		'title': control.shaping_supported === true ? _('设置独立上传、下载限速') : reasonText(control.reason)
 	};
-	if (busy || control.shaping_supported !== true) limitAttrs.disabled = 'disabled';
+	if (busy || (control.shaping_supported !== true && !hasLimit)) limitAttrs.disabled = 'disabled';
 	var limit = E('button', limitAttrs, busy ? _('处理中…') : _('限速'));
 	limit.addEventListener('click', function(event) {
 		if (event) event.preventDefault();
@@ -239,7 +247,7 @@ function cell(viewState, client) {
 		'title': control.blocking_supported === true ?
 			_('只禁用互联网访问，保留路由器和本地网络访问') : reasonText(control.reason)
 	};
-	if (busy || control.blocking_supported !== true) blockAttrs.disabled = 'disabled';
+	if (busy || (control.blocking_supported !== true && !blocked)) blockAttrs.disabled = 'disabled';
 	var block = E('button', blockAttrs, blocked ? _('恢复上网') : _('禁用上网'));
 	block.addEventListener('click', function(event) {
 		if (event) event.preventDefault();
