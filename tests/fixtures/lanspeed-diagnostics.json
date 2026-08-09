@@ -75,8 +75,8 @@
     }
   ],
   "versions": {
-    "daemon": "1.1.6-r1",
-    "package": "1.1.6-r1",
+    "daemon": "1.1.6-r2",
+    "package": "1.1.6-r2",
     "contract_version": 1,
     "schema_version": 1
   },
