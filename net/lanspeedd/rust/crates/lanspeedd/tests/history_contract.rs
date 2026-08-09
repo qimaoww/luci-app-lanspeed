@@ -41,6 +41,23 @@ fn counters(identity_key: &str, tx_bytes: u64, rx_bytes: u64, last_seen_ms: u64)
         identity_key: identity_key.to_owned(),
         tx_bytes,
         rx_bytes,
+        rx_packets: 0,
+        last_seen_ms,
+    }
+}
+
+fn counters_with_packets(
+    identity_key: &str,
+    tx_bytes: u64,
+    rx_bytes: u64,
+    rx_packets: u64,
+    last_seen_ms: u64,
+) -> ClientCounters {
+    ClientCounters {
+        identity_key: identity_key.to_owned(),
+        tx_bytes,
+        rx_bytes,
+        rx_packets,
         last_seen_ms,
     }
 }
@@ -79,6 +96,78 @@ fn upload_fixture_uses_the_exact_integer_delta_formula_and_three_slots() {
         "legacy C uses integer floor, not rounding"
     );
     assert!(fractional.warning.is_none());
+}
+
+#[test]
+fn continuous_download_uses_two_intervals_without_delaying_start_or_stop() {
+    let key = "02:00:00:00:00:01@lan";
+    let mut rates = RateBook::new(1, STALE_CLIENT_MS);
+
+    rates.update(0, [counters(key, 0, 0, 0)]);
+    let started = rates.update(1_000, [counters(key, 100_000_000, 100_000_000, 1_000)]);
+    assert_eq!(
+        (started.clients[0].tx_bps, started.clients[0].rx_bps),
+        (800_000_000, 800_000_000)
+    );
+
+    let burst = rates.update(2_000, [counters(key, 220_000_000, 220_000_000, 2_000)]);
+    assert_eq!(
+        burst.clients[0].tx_bps, 960_000_000,
+        "upload must retain the newest one-second delta"
+    );
+    assert_eq!(
+        burst.clients[0].rx_bps, 880_000_000,
+        "continuous RX should average both adjacent one-second windows"
+    );
+
+    let stopped = rates.update(3_000, [counters(key, 220_000_000, 220_000_000, 2_000)]);
+    assert_eq!(
+        (stopped.clients[0].tx_bps, stopped.clients[0].rx_bps),
+        (0, 0),
+        "an idle newest window must not retain a smoothed tail in either direction"
+    );
+}
+
+#[test]
+fn x86_download_display_removes_wire_headers_without_changing_upload() {
+    let key = "02:00:00:00:00:01@lan";
+    let mut rates = RateBook::new(1, STALE_CLIENT_MS);
+
+    rates.update(0, [counters_with_packets(key, 0, 0, 0, 0)]);
+    let update = rates.update(
+        1_000,
+        [counters_with_packets(key, 151_400, 151_400, 100, 1_000)],
+    );
+
+    assert_eq!(
+        update.clients[0].tx_bps, 1_211_200,
+        "upload retains the raw x86 TC byte domain"
+    );
+    assert_eq!(
+        update.clients[0].rx_bps, 1_158_400,
+        "download removes 66 wire-header bytes per expanded GSO segment"
+    );
+    assert_eq!(
+        update.clients[0].rx_bytes, 151_400,
+        "the raw cumulative byte counter must remain available unchanged"
+    );
+}
+
+#[test]
+fn x86_download_packet_counter_rollback_isolated_and_recovers() {
+    let key = "02:00:00:00:00:01@lan";
+    let mut rates = RateBook::new(1, STALE_CLIENT_MS);
+
+    rates.update(0, [counters_with_packets(key, 0, 1_000, 10, 0)]);
+    let rollback = rates.update(1_000, [counters_with_packets(key, 0, 2_000, 5, 1_000)]);
+    assert_eq!(rollback.clients[0].rx_bps, 0);
+    assert!(rollback.clients[0]
+        .warnings
+        .contains(&RateWarning::CounterAnomaly));
+
+    let recovered = rates.update(2_000, [counters_with_packets(key, 0, 3_000, 15, 2_000)]);
+    assert_eq!(recovered.clients[0].rx_bps, 6_680);
+    assert!(recovered.clients[0].warnings.is_empty());
 }
 
 #[test]

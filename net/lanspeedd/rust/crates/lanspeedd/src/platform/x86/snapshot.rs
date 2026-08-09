@@ -146,6 +146,7 @@ struct FoldedClient {
     ips: Vec<String>,
     tx_bytes: u64,
     rx_bytes: u64,
+    rx_packets: u64,
     last_seen_ms: u64,
     bpf_approx_tcp_tuples: u32,
     bpf_approx_udp_tuples: u32,
@@ -231,6 +232,7 @@ impl BpfSnapshotCollector {
                     ips: identity.ips.iter().take(4).cloned().collect(),
                     tx_bytes: 0,
                     rx_bytes: 0,
+                    rx_packets: 0,
                     last_seen_ms: 0,
                     bpf_approx_tcp_tuples: 0,
                     bpf_approx_udp_tuples: 0,
@@ -245,6 +247,7 @@ impl BpfSnapshotCollector {
                     .saturating_add(raw.counters.udp_conns);
             } else {
                 client.rx_bytes = client.rx_bytes.saturating_add(raw.counters.bytes);
+                client.rx_packets = client.rx_packets.saturating_add(raw.counters.packets);
             }
             let last_seen_ms = raw.counters.last_seen / 1_000_000;
             let last_seen_ms = if last_seen_ms == 0 {
@@ -269,6 +272,7 @@ impl BpfSnapshotCollector {
                 identity_key: client.identity_key.clone(),
                 tx_bytes: client.tx_bytes,
                 rx_bytes: client.rx_bytes,
+                rx_packets: client.rx_packets,
                 last_seen_ms: client.last_seen_ms,
             }),
         );

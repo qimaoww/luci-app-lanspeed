@@ -4,6 +4,12 @@ use serde_json::{Map, Value};
 pub const RATE_WINDOW_COUNT: usize = 3;
 pub const STALE_CLIENT_MS: u64 = 5_000;
 pub const RATE_BASELINE_RETENTION_MS: u64 = 60_000;
+// x86 TC observes qdisc wire length. A full-sized IPv4/TCP frame with the
+// timestamp option carries 66 bytes outside the application payload
+// (Ethernet 14 + IPv4 20 + TCP 32). Packet counts already expand GSO batches,
+// so subtracting this per observed segment aligns the displayed download rate
+// with application-level speed tests while raw byte counters remain untouched.
+pub const X86_RX_DISPLAY_HEADER_BYTES: u64 = 66;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RateWarning {
@@ -29,6 +35,7 @@ pub struct ClientCounters {
     pub identity_key: String,
     pub tx_bytes: u64,
     pub rx_bytes: u64,
+    pub rx_packets: u64,
     pub last_seen_ms: u64,
 }
 
@@ -96,6 +103,7 @@ struct CounterPoint {
     sample_ms: u64,
     tx_bytes: u64,
     rx_bytes: u64,
+    rx_packets: u64,
     last_seen_ms: u64,
 }
 
@@ -118,10 +126,14 @@ impl ClientState {
     }
 
     fn latest(&self) -> Option<CounterPoint> {
-        if self.count == 0 {
+        self.point_from_latest(0)
+    }
+
+    fn point_from_latest(&self, index_back: usize) -> Option<CounterPoint> {
+        if index_back >= self.count {
             None
         } else {
-            self.history[(self.head + RATE_WINDOW_COUNT - 1) % RATE_WINDOW_COUNT]
+            self.history[(self.head + RATE_WINDOW_COUNT - 1 - index_back) % RATE_WINDOW_COUNT]
         }
     }
 
@@ -178,6 +190,30 @@ impl RateBook {
             bps: u64::try_from(bps).unwrap_or(u64::MAX),
             warning: None,
         }
+    }
+
+    fn rx_display_rate(
+        current_bytes: u64,
+        previous_bytes: u64,
+        current_packets: u64,
+        previous_packets: u64,
+        delta_ms: u64,
+    ) -> RateDelta {
+        let Some(delta_bytes) = current_bytes.checked_sub(previous_bytes) else {
+            return RateDelta {
+                bps: 0,
+                warning: Some(RateWarning::CounterAnomaly),
+            };
+        };
+        let Some(delta_packets) = current_packets.checked_sub(previous_packets) else {
+            return RateDelta {
+                bps: 0,
+                warning: Some(RateWarning::CounterAnomaly),
+            };
+        };
+        let display_bytes =
+            delta_bytes.saturating_sub(delta_packets.saturating_mul(X86_RX_DISPLAY_HEADER_BYTES));
+        Self::rate_from_delta(display_bytes, 0, delta_ms)
     }
 
     pub fn update(
@@ -255,6 +291,7 @@ impl RateBook {
                 sample_ms: now_ms,
                 tx_bytes: sample.tx_bytes,
                 rx_bytes: sample.rx_bytes,
+                rx_packets: sample.rx_packets,
                 last_seen_ms: effective_last_seen,
             };
             if stale_for_output {
@@ -276,13 +313,38 @@ impl RateBook {
                 push_unique(&mut update.warnings, RateWarning::TimeRollback);
             }
             if let Some(previous) = previous {
-                let delta_ms = if rate_time_rollback {
+                let tx_delta_ms = if rate_time_rollback {
                     0
                 } else {
                     now_ms.checked_sub(previous.sample_ms).unwrap_or(0)
                 };
-                let tx = Self::rate_from_delta(sample.tx_bytes, previous.tx_bytes, delta_ms);
-                let rx = Self::rate_from_delta(sample.rx_bytes, previous.rx_bytes, delta_ms);
+                // The x86 client map is sampled once per refresh. Publishing
+                // only the newest download delta exposes one-second GRO and
+                // scheduler bursts that speed-test applications average over
+                // a longer interval. Use the preceding point only while RX
+                // advanced in both adjacent windows, keeping start and stop
+                // transitions immediate and leaving upload semantics intact.
+                let rx_baseline = state
+                    .point_from_latest(1)
+                    .filter(|earlier| {
+                        previous.sample_ms > earlier.sample_ms
+                            && sample.rx_bytes > previous.rx_bytes
+                            && previous.rx_bytes > earlier.rx_bytes
+                    })
+                    .unwrap_or(previous);
+                let rx_delta_ms = if rate_time_rollback {
+                    0
+                } else {
+                    now_ms.checked_sub(rx_baseline.sample_ms).unwrap_or(0)
+                };
+                let tx = Self::rate_from_delta(sample.tx_bytes, previous.tx_bytes, tx_delta_ms);
+                let rx = Self::rx_display_rate(
+                    sample.rx_bytes,
+                    rx_baseline.rx_bytes,
+                    sample.rx_packets,
+                    rx_baseline.rx_packets,
+                    rx_delta_ms,
+                );
                 client.tx_bps = tx.bps;
                 client.rx_bps = rx.bps;
                 for warning in [tx.warning, rx.warning].into_iter().flatten() {
