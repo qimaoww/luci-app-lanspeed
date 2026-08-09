@@ -18,6 +18,8 @@ const MAX_FLOW_PACKETS: u64 = 4_096;
 const LOCAL_FILTER_PREF_START: u32 = 40_000;
 const CLIENT_FILTER_PREF_START: u32 = 50_000;
 const FILTER_PREF_END: u32 = 65_000;
+const DAE_UPLOAD_COMPENSATION_NUMERATOR: u64 = 110;
+const DAE_UPLOAD_COMPENSATION_DENOMINATOR: u64 = 100;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Direction {
@@ -35,15 +37,14 @@ impl Direction {
 
     fn rate(self, rule: &ActiveRule) -> u64 {
         match self {
+            Self::Upload if rule.upload_before_proxy => rule
+                .upload_bps
+                .saturating_mul(DAE_UPLOAD_COMPENSATION_NUMERATOR)
+                .saturating_add(DAE_UPLOAD_COMPENSATION_DENOMINATOR - 1)
+                .saturating_div(DAE_UPLOAD_COMPENSATION_DENOMINATOR)
+                .min(X86_MAX_RATE_BPS),
             Self::Upload => rule.upload_bps,
             Self::Download => rule.download_bps,
-        }
-    }
-
-    fn address_field(self) -> &'static str {
-        match self {
-            Self::Upload => "src",
-            Self::Download => "dst",
         }
     }
 }
@@ -275,18 +276,18 @@ fn install_class_filters(
     let mut preference = CLIENT_FILTER_PREF_START;
     for rule in rules {
         let classid = format!("{major}:{:x}", rule.class_minor);
-        for address in &rule.ips {
-            add_u32_filter(
-                device,
-                &parent,
-                preference,
-                *address,
-                if address.is_ipv4() { 32 } else { 128 },
-                direction.address_field(),
-                &classid,
-            )?;
-            preference += 1;
-        }
+        add_mac_filter(
+            device,
+            &parent,
+            preference,
+            match direction {
+                Direction::Upload => "src",
+                Direction::Download => "dst",
+            },
+            &rule.mac.to_string(),
+            &classid,
+        )?;
+        preference += 1;
     }
     Ok(())
 }
@@ -326,6 +327,39 @@ fn add_u32_filter(
             field,
             &cidr,
             "flowid",
+            flowid,
+        ],
+    )
+}
+
+fn add_mac_filter(
+    device: &str,
+    parent: &str,
+    preference: u32,
+    field: &str,
+    mac: &str,
+    flowid: &str,
+) -> Result<(), String> {
+    let preference = preference.to_string();
+    system::run(
+        "tc",
+        &[
+            "filter",
+            "add",
+            "dev",
+            device,
+            "parent",
+            parent,
+            "protocol",
+            "all",
+            "pref",
+            &preference,
+            "u32",
+            "match",
+            "ether",
+            field,
+            mac,
+            "classid",
             flowid,
         ],
     )
@@ -460,11 +494,8 @@ fn validate_filter_capacity(
     upload: &[&ActiveRule],
     download: &[&ActiveRule],
 ) -> Result<(), String> {
-    let upload_addresses = upload.iter().map(|rule| rule.ips.len()).sum::<usize>();
-    let download_addresses = download.iter().map(|rule| rule.ips.len()).sum::<usize>();
     if LOCAL_FILTER_PREF_START + local_prefixes.len() as u32 >= CLIENT_FILTER_PREF_START
-        || CLIENT_FILTER_PREF_START + upload_addresses.max(download_addresses) as u32
-            >= FILTER_PREF_END
+        || CLIENT_FILTER_PREF_START + upload.len().max(download.len()) as u32 >= FILTER_PREF_END
     {
         Err("control_filter_capacity".into())
     } else {
@@ -501,6 +532,36 @@ mod tests {
     fn upload_and_download_use_distinct_owned_roots() {
         assert_eq!(Direction::Upload.handle(), "7a20:");
         assert_eq!(Direction::Download.handle(), "7a10:");
+    }
+
+    fn rule(upload_before_proxy: bool, upload_bps: u64, download_bps: u64) -> ActiveRule {
+        ActiveRule {
+            identity_key: "02:00:00:00:00:01@lan".into(),
+            mac: "02:00:00:00:00:01".parse().unwrap(),
+            interface: "br-lan".into(),
+            upload_before_proxy,
+            upload_preempted: false,
+            ips: Vec::new(),
+            upload_bps,
+            download_bps,
+            internet_disabled: false,
+            class_minor: 0x123,
+        }
+    }
+
+    #[test]
+    fn dae_upload_compensation_targets_application_rate_only() {
+        let dae = rule(true, 10_000_000, 10_000_000);
+        let direct = rule(false, 10_000_000, 10_000_000);
+        assert_eq!(Direction::Upload.rate(&dae), 11_000_000);
+        assert_eq!(Direction::Upload.rate(&direct), 10_000_000);
+        assert_eq!(Direction::Download.rate(&dae), 10_000_000);
+    }
+
+    #[test]
+    fn dae_upload_compensation_clamps_to_x86_limit() {
+        let rule = rule(true, X86_MAX_RATE_BPS, 0);
+        assert_eq!(Direction::Upload.rate(&rule), X86_MAX_RATE_BPS);
     }
 
     #[test]

@@ -30,21 +30,6 @@ pub(crate) fn interface_exists(device: &str) -> bool {
     valid_interface_name(device) && fs::metadata(format!("/sys/class/net/{device}")).is_ok()
 }
 
-pub(crate) fn link_kind(device: &str) -> Result<Option<String>, String> {
-    let value = json_output(
-        "ip",
-        &["-j", "-d", "link", "show", "dev", device],
-        "interface_inspection_failed",
-    )?;
-    Ok(value
-        .as_array()
-        .and_then(|items| items.first())
-        .and_then(|item| item.get("linkinfo"))
-        .and_then(|linkinfo| linkinfo.get("info_kind"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned))
-}
-
 pub(crate) fn module_available(prefix: &str) -> bool {
     fs::metadata(format!("/sys/module/{prefix}")).is_ok()
         || fs::read_dir("/lib/modules")

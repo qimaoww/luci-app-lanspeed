@@ -3473,20 +3473,16 @@ impl ProductionRuntime {
             &self.probe_report.facts.tc.filters,
             &self.config.runtime_collect_ifnames(),
         );
-        let dae_upload_device =
+        let dae_upload_devices =
             if !dae_preempted_devices.is_empty() && self.probe_report.facts.proxy.dae {
-                crate::platform::x86::control::dae_upload_path_available()
+                crate::platform::x86::control::dae_upload_devices(&dae_preempted_devices)
             } else {
-                None
+                BTreeSet::new()
             };
-        let preempted_upload_devices = if dae_upload_device.is_some() {
-            BTreeSet::new()
-        } else {
-            dae_preempted_devices
-        };
         self.control
-            .observe_preempted_upload_devices(preempted_upload_devices);
-        self.control.observe_dae_upload_device(dae_upload_device);
+            .observe_preempted_upload_devices(dae_preempted_devices);
+        self.control
+            .observe_dae_upload_devices(dae_upload_devices);
         self.control.observe_clients(&clients.clients);
         self.reconcile_control_state();
         self.control.decorate_clients(&mut clients.clients);

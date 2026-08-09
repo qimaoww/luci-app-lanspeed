@@ -1,4 +1,5 @@
 mod classifier;
+mod dae;
 mod firewall;
 mod ifb;
 mod shaper;
@@ -11,17 +12,10 @@ use std::{
 
 use crate::control::{ApplyResult, ControlPlan, X86_MAX_RATE_BPS};
 
-/// DAE's LAN redirect can be shaped without bypassing DAE only when it uses
-/// the host-side veth egress.  Netkit's `bpf_redirect_peer` jumps directly
-/// into the peer namespace and skips this qdisc, so callers must fail closed
-/// instead of reporting a partial upload limit.
-pub fn dae_upload_path_available() -> Option<String> {
-    const DAE_DEVICE: &str = "dae0";
-    if !system::interface_exists(DAE_DEVICE) {
-        return None;
-    }
-    (system::link_kind(DAE_DEVICE).ok().flatten().as_deref() == Some("veth"))
-        .then(|| DAE_DEVICE.to_owned())
+/// Resolve bridge-slave ingress devices that run before DAE's bridge-master
+/// redirect. An empty set means the complete pre-DAE path was not proven.
+pub fn dae_upload_devices(bridges: &BTreeSet<String>) -> BTreeSet<String> {
+    dae::upload_devices(bridges)
 }
 
 pub fn apply(plan: &ControlPlan) -> Result<ApplyResult, String> {
@@ -46,11 +40,7 @@ pub fn apply(plan: &ControlPlan) -> Result<ApplyResult, String> {
         .iter()
         .filter(|rule| rule.upload_bps != 0 && !rule.upload_preempted)
         .collect::<Vec<_>>();
-    let upload_by_device = upload_rules_by_device(&upload);
-    let dae_upload = plan
-        .dae_upload_device
-        .as_deref()
-        .map(|device| (device, upload.as_slice()));
+    let upload_by_device = upload_rules_by_device(plan, &upload);
     let download = plan
         .rules
         .iter()
@@ -65,9 +55,6 @@ pub fn apply(plan: &ControlPlan) -> Result<ApplyResult, String> {
     for (device, rules) in &upload_by_device {
         classifier::preflight(device, &plan.local_prefixes, rules)?;
     }
-    if let Some((device, rules)) = dae_upload {
-        classifier::preflight_egress(device, rules)?;
-    }
     firewall::preflight(plan)?;
 
     // Deactivate redirection before changing the IFB tree. The new jump is
@@ -75,15 +62,12 @@ pub fn apply(plan: &ControlPlan) -> Result<ApplyResult, String> {
     for device in control_devices(plan) {
         classifier::deactivate(&device)?;
     }
-    if let Some(device) = plan.dae_upload_device.as_deref() {
-        classifier::deactivate_egress(device)?;
-    } else {
-        cleanup_dae_upload_classifier(None)?;
-    }
+    // Remove the rejected legacy dae0->IFB redirect before touching queues.
+    // This is upgrade cleanup only; no DAE egress redirect is installed.
+    cleanup_legacy_dae_upload_objects()?;
     let staged = (|| {
         if upload.is_empty() {
             cleanup_upload_classifiers(plan)?;
-            cleanup_dae_upload_classifier(plan.dae_upload_device.as_deref())?;
             shaper::cleanup_upload()?;
             ifb::cleanup()?;
         } else {
@@ -101,9 +85,6 @@ pub fn apply(plan: &ControlPlan) -> Result<ApplyResult, String> {
         if !upload.is_empty() {
             for (device, rules) in &upload_by_device {
                 classifier::install(device, &plan.local_prefixes, rules)?;
-            }
-            if let Some(device) = plan.dae_upload_device.as_deref() {
-                classifier::install_egress(device, &upload)?;
             }
             for device in control_devices(plan) {
                 if !upload_by_device.contains_key(device.as_str()) {
@@ -237,7 +218,7 @@ pub fn cleanup(plan: &ControlPlan) -> Result<(), String> {
             errors.push(error);
         }
     }
-    if let Err(error) = cleanup_dae_upload_classifier(plan.dae_upload_device.as_deref()) {
+    if let Err(error) = cleanup_legacy_dae_upload_objects() {
         errors.push(error);
     }
     for result in [
@@ -309,7 +290,7 @@ fn probe(lan_device: &str) -> ApplyResult {
 
 fn rollback(plan: &ControlPlan) {
     let _ = cleanup_upload_classifiers(plan);
-    let _ = cleanup_dae_upload_classifier(plan.dae_upload_device.as_deref());
+    let _ = cleanup_legacy_dae_upload_objects();
     let _ = firewall::cleanup(&plan.lan_device);
     let _ = shaper::cleanup_download(&plan.lan_device);
     let _ = shaper::cleanup_upload();
@@ -317,14 +298,21 @@ fn rollback(plan: &ControlPlan) {
 }
 
 fn upload_rules_by_device<'a>(
+    plan: &'a ControlPlan,
     rules: &[&'a crate::control::ActiveRule],
 ) -> BTreeMap<&'a str, Vec<&'a crate::control::ActiveRule>> {
     let mut grouped = BTreeMap::<&str, Vec<_>>::new();
     for rule in rules {
-        grouped
-            .entry(rule.interface.as_str())
-            .or_default()
-            .push(*rule);
+        if rule.upload_before_proxy {
+            for device in &plan.dae_upload_devices {
+                grouped.entry(device.as_str()).or_default().push(*rule);
+            }
+        } else {
+            grouped
+                .entry(rule.interface.as_str())
+                .or_default()
+                .push(*rule);
+        }
     }
     grouped
 }
@@ -333,6 +321,7 @@ fn control_devices(plan: &ControlPlan) -> BTreeSet<String> {
     plan.control_devices
         .iter()
         .chain(plan.rules.iter().map(|rule| &rule.interface))
+        .chain(plan.dae_upload_devices.iter())
         .filter(|device| system::valid_interface_name(device))
         .cloned()
         .collect()
@@ -352,12 +341,8 @@ fn cleanup_upload_classifiers(plan: &ControlPlan) -> Result<(), String> {
     }
 }
 
-fn cleanup_dae_upload_classifier(active_device: Option<&str>) -> Result<(), String> {
-    let device = active_device.unwrap_or("dae0");
-    if system::interface_exists(device) {
-        classifier::cleanup_egress(device)?;
-    }
-    Ok(())
+fn cleanup_legacy_dae_upload_objects() -> Result<(), String> {
+    dae::cleanup_legacy_objects()
 }
 
 fn queue_drop_snapshot(plan: &ControlPlan) -> BTreeMap<String, u64> {
@@ -458,7 +443,9 @@ mod tests {
     fn upload_rule(identity: &str, interface: &str, minor: u16) -> crate::control::ActiveRule {
         crate::control::ActiveRule {
             identity_key: identity.into(),
+            mac: identity.split('@').next().unwrap().parse().unwrap(),
             interface: interface.into(),
+            upload_before_proxy: false,
             upload_preempted: false,
             ips: vec!["192.0.2.9".parse().unwrap()],
             upload_bps: 10_000_000,
@@ -473,10 +460,37 @@ mod tests {
         let first = upload_rule("02:00:00:00:00:01@lan", "br-lan", 0x101);
         let second = upload_rule("02:00:00:00:00:02@guest", "br-guest", 0x102);
         let third = upload_rule("02:00:00:00:00:03@guest", "br-guest", 0x103);
-        let grouped = upload_rules_by_device(&[&first, &second, &third]);
+        let plan = ControlPlan {
+            lan_device: "br-lan".into(),
+            control_devices: Vec::new(),
+            dae_upload_devices: Vec::new(),
+            local_prefixes: Vec::new(),
+            rules: Vec::new(),
+        };
+        let grouped = upload_rules_by_device(&plan, &[&first, &second, &third]);
 
         assert_eq!(grouped["br-lan"].len(), 1);
         assert_eq!(grouped["br-guest"].len(), 2);
+    }
+
+    #[test]
+    fn dae_upload_uses_bridge_slaves_before_the_proxy_hook() {
+        let mut rule = upload_rule("02:00:00:00:00:01@lan", "br-lan", 0x101);
+        rule.upload_before_proxy = true;
+        let plan = ControlPlan {
+            lan_device: "br-lan".into(),
+            control_devices: vec!["br-lan".into()],
+            dae_upload_devices: vec!["eth1".into(), "wlan0".into()],
+            local_prefixes: Vec::new(),
+            rules: vec![rule.clone()],
+        };
+        let grouped = upload_rules_by_device(&plan, &[&rule]);
+
+        assert!(!grouped.contains_key("br-lan"));
+        assert_eq!(grouped["eth1"].len(), 1);
+        assert_eq!(grouped["wlan0"].len(), 1);
+        assert!(control_devices(&plan).contains("eth1"));
+        assert!(control_devices(&plan).contains("wlan0"));
     }
 
     #[test]
@@ -485,7 +499,7 @@ mod tests {
         let plan = ControlPlan {
             lan_device: "br-lan".into(),
             control_devices: vec!["br-lan".into(), "br-iot".into()],
-            dae_upload_device: None,
+            dae_upload_devices: Vec::new(),
             local_prefixes: Vec::new(),
             rules: vec![rule],
         };

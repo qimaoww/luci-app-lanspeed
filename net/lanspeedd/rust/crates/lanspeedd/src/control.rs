@@ -78,9 +78,9 @@ pub struct LiveClient {
 pub struct ControlPlan {
     pub lan_device: String,
     pub control_devices: Vec<String>,
-    /// Host-side DAE veth egress.  Proxied LAN packets pass this hook after
-    /// DAE's LAN redirect; it shares the upload IFB with direct traffic.
-    pub dae_upload_device: Option<String>,
+    /// Bridge-slave ingress devices that feed a DAE-preempted LAN bridge.
+    /// Upload is shaped here before both DAE's direct and proxy branches.
+    pub dae_upload_devices: Vec<String>,
     pub local_prefixes: Vec<(IpAddr, u8)>,
     pub rules: Vec<ActiveRule>,
 }
@@ -88,7 +88,9 @@ pub struct ControlPlan {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ActiveRule {
     pub identity_key: String,
+    pub mac: MacAddress,
     pub interface: String,
+    pub upload_before_proxy: bool,
     pub upload_preempted: bool,
     pub ips: Vec<IpAddr>,
     pub upload_bps: u64,
@@ -139,7 +141,7 @@ pub struct ControlManager {
     lan_device: String,
     control_devices: BTreeSet<String>,
     preempted_upload_devices: BTreeSet<String>,
-    dae_upload_device: Option<String>,
+    dae_upload_devices: BTreeSet<String>,
     dirty: bool,
 }
 
@@ -162,7 +164,7 @@ impl ControlManager {
             lan_device,
             control_devices,
             preempted_upload_devices: BTreeSet::new(),
-            dae_upload_device: None,
+            dae_upload_devices: BTreeSet::new(),
             dirty: true,
         })
     }
@@ -224,10 +226,13 @@ impl ControlManager {
         }
     }
 
-    pub fn observe_dae_upload_device(&mut self, device: Option<String>) {
-        let device = device.filter(|device| valid_interface_name(device));
-        if self.dae_upload_device != device {
-            self.dae_upload_device = device;
+    pub fn observe_dae_upload_devices(&mut self, devices: BTreeSet<String>) {
+        let devices = devices
+            .into_iter()
+            .filter(|device| valid_interface_name(device))
+            .collect::<BTreeSet<_>>();
+        if self.dae_upload_devices != devices {
+            self.dae_upload_devices = devices;
             self.dirty = true;
         }
     }
@@ -349,7 +354,7 @@ impl ControlManager {
         ControlPlan {
             lan_device: self.lan_device.clone(),
             control_devices: control_devices.into_iter().collect(),
-            dae_upload_device: self.dae_upload_device.clone(),
+            dae_upload_devices: self.dae_upload_devices.iter().cloned().collect(),
             local_prefixes: local_prefixes().unwrap_or_default(),
             rules,
         }
@@ -379,8 +384,13 @@ impl ControlManager {
                 }
                 Some(ActiveRule {
                     identity_key: rule.identity_key.clone(),
+                    mac: rule.mac,
+                    upload_before_proxy: rule.upload_bps != 0
+                        && self.preempted_upload_devices.contains(&interface)
+                        && !self.dae_upload_devices.is_empty(),
                     upload_preempted: rule.upload_bps != 0
-                        && self.preempted_upload_devices.contains(&interface),
+                        && self.preempted_upload_devices.contains(&interface)
+                        && self.dae_upload_devices.is_empty(),
                     interface,
                     ips: live.ips.clone(),
                     upload_bps: rule.upload_bps,
@@ -418,6 +428,7 @@ impl ControlManager {
         });
         let upload_preempted = rule.is_some_and(|rule| {
             rule.upload_bps != 0
+                && self.dae_upload_devices.is_empty()
                 && self.live.get(identity_key).is_some_and(|client| {
                     client
                         .interface
@@ -717,10 +728,8 @@ fn valid_control_interface(value: &str) -> Option<String> {
     .then(|| value.to_owned())
 }
 
-fn control_requires_address(upload_bps: u64, download_bps: u64, internet_disabled: bool) -> bool {
-    download_bps != 0
-        || internet_disabled
-        || (platform_requires_upload_address() && upload_bps != 0)
+fn control_requires_address(upload_bps: u64, download_bps: u64, _internet_disabled: bool) -> bool {
+    platform_requires_shaping_address() && (upload_bps != 0 || download_bps != 0)
 }
 
 fn resolve_lan_device(config: &RuntimeConfig) -> String {
@@ -1203,8 +1212,8 @@ const fn platform_hard_max_rate_bps() -> u64 {
 }
 
 #[cfg(not(feature = "nss-platform"))]
-const fn platform_requires_upload_address() -> bool {
-    true
+const fn platform_requires_shaping_address() -> bool {
+    false
 }
 
 #[cfg(feature = "nss-platform")]
@@ -1218,7 +1227,7 @@ const fn platform_hard_max_rate_bps() -> u64 {
 }
 
 #[cfg(feature = "nss-platform")]
-const fn platform_requires_upload_address() -> bool {
+const fn platform_requires_shaping_address() -> bool {
     false
 }
 
@@ -1260,7 +1269,7 @@ mod tests {
             lan_device: "br-lan".into(),
             control_devices: BTreeSet::from(["br-lan".into()]),
             preempted_upload_devices: BTreeSet::new(),
-            dae_upload_device: None,
+            dae_upload_devices: BTreeSet::new(),
             dirty: false,
         }
     }
@@ -1444,7 +1453,7 @@ mod tests {
     }
 
     #[test]
-    fn supported_dae_veth_path_keeps_upload_rule_active() {
+    fn supported_dae_bridge_slave_path_keeps_upload_rule_active() {
         let identity = "02:00:00:00:00:01@lan";
         let mut manager = manager();
         manager.rules.insert(
@@ -1460,13 +1469,13 @@ mod tests {
         );
         manager.observe_clients(&[client(identity, "192.0.2.9")]);
         manager.observe_preempted_upload_devices(BTreeSet::from(["br-lan".into()]));
-        manager.observe_dae_upload_device(Some("dae0".into()));
-
         assert!(manager.plan().rules[0].upload_preempted);
-        manager.observe_preempted_upload_devices(BTreeSet::new());
+
+        manager.observe_dae_upload_devices(BTreeSet::from(["eth1".into()]));
         let plan = manager.plan();
-        assert_eq!(plan.dae_upload_device.as_deref(), Some("dae0"));
+        assert_eq!(plan.dae_upload_devices, vec!["eth1"]);
         assert!(!plan.rules[0].upload_preempted);
+        assert!(plan.rules[0].upload_before_proxy);
     }
 
     #[test]
@@ -1531,7 +1540,7 @@ mod tests {
     }
 
     #[test]
-    fn address_dependent_rule_is_isolated_until_the_client_has_an_ip() {
+    fn mac_block_rule_remains_active_without_an_ip_address() {
         let identity = "02:00:00:00:00:01@lan";
         let mut live = client(identity, "192.0.2.9");
         live.ips.clear();
@@ -1543,18 +1552,41 @@ mod tests {
                 identity_key: identity.into(),
                 mac: MacAddress::from_str("02:00:00:00:00:01").unwrap(),
                 upload_bps: 0,
+                download_bps: 0,
+                internet_disabled: true,
+                class_minor: FIRST_CLASS_MINOR,
+            },
+        );
+        let plan = manager.plan();
+        assert_eq!(plan.rules.len(), 1);
+        assert_eq!(plan.rules[0].mac.to_string(), "02:00:00:00:00:01");
+        assert!(plan.rules[0].ips.is_empty());
+        assert_ne!(manager.summary(identity).state, "error");
+    }
+
+    #[test]
+    fn mac_shaping_rule_remains_active_without_an_ip_address() {
+        let identity = "02:00:00:00:00:01@lan";
+        let mut live = client(identity, "192.0.2.9");
+        live.ips.clear();
+        let mut manager = manager();
+        manager.observe_clients(&[live]);
+        manager.rules.insert(
+            identity.into(),
+            ControlRule {
+                identity_key: identity.into(),
+                mac: MacAddress::from_str("02:00:00:00:00:01").unwrap(),
+                upload_bps: 8_000,
                 download_bps: 8_000,
                 internet_disabled: false,
                 class_minor: FIRST_CLASS_MINOR,
             },
         );
-        assert!(manager.plan().rules.is_empty());
-        let summary = manager.summary(identity);
-        assert_eq!(summary.state, "error");
-        assert_eq!(
-            summary.reason.as_deref(),
-            Some("identity_address_unavailable")
-        );
+        let plan = manager.plan();
+        assert_eq!(plan.rules.len(), 1);
+        assert_eq!(plan.rules[0].mac.to_string(), "02:00:00:00:00:01");
+        assert!(plan.rules[0].ips.is_empty());
+        assert_ne!(manager.summary(identity).state, "error");
     }
 
     #[test]

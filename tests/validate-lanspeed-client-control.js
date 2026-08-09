@@ -13,7 +13,7 @@ const ebpfMain = fs.readFileSync(path.join(root,
   'net/lanspeedd/rust/crates/lanspeed-ebpf/src/main.rs'), 'utf8');
 const x86ControlDir = path.join(root,
   'net/lanspeedd/rust/crates/lanspeedd/src/platform/x86/control');
-const x86ControlModules = [ 'mod.rs', 'classifier.rs', 'firewall.rs', 'ifb.rs', 'shaper.rs', 'system.rs' ];
+const x86ControlModules = [ 'mod.rs', 'classifier.rs', 'dae.rs', 'firewall.rs', 'ifb.rs', 'shaper.rs', 'system.rs' ];
 const x86ControlByModule = Object.fromEntries(x86ControlModules.map((name) => [
   name, fs.readFileSync(path.join(x86ControlDir, name), 'utf8')
 ]));
@@ -70,7 +70,7 @@ async function main() {
     fs.readdirSync(x86ControlDir).filter((name) => name.endsWith('.rs')).sort().join(',') ===
       x86ControlModules.slice().sort().join(','),
     'x86 client control must be a fixed modular implementation rather than a monolithic source file');
-  for (const name of [ 'classifier', 'firewall', 'ifb', 'shaper', 'system' ])
+  for (const name of [ 'classifier', 'dae', 'firewall', 'ifb', 'shaper', 'system' ])
     assert(x86ControlByModule['mod.rs'].includes(`mod ${name};`), `control/mod.rs must declare ${name}`);
   assert(x86ControlByModule['ifb.rs'].includes('pub(crate) const DEVICE: &str = "ifb-lanspeed"') &&
     x86ControlByModule['ifb.rs'].includes('lanspeedd:x86-client-control:v1') &&
@@ -80,11 +80,11 @@ async function main() {
     x86ControlByModule['classifier.rs'].includes('"redirect"') &&
     x86ControlByModule['classifier.rs'].includes('ifb::DEVICE') &&
     x86ControlByModule['classifier.rs'].includes('hook.local_field') === false &&
-    x86ControlByModule['classifier.rs'].includes('pub(crate) fn install_egress') &&
-    x86ControlByModule['classifier.rs'].includes('Hook::Egress') &&
+    !x86ControlByModule['classifier.rs'].includes('pub(crate) fn install_egress') &&
+    x86ControlByModule['classifier.rs'].includes('cleanup_legacy_dae_egress') &&
     x86ControlByModule['classifier.rs'].includes('verify_chain(hook, lan_device, rules)?') &&
     x86ControlByModule['classifier.rs'].includes('activate_on(hook, lan_device)'),
-    'upload classification must redirect to IFB only after the inactive chain verifies, including DAE egress');
+    'direct upload classification must redirect to IFB only after the inactive chain verifies, while legacy DAE redirects remain cleanup-only');
   assert(x86ControlByModule['classifier.rs'].includes('const JUMP_PREF: u32 = 0xd020') &&
     x86ControlByModule['firewall.rs'].includes('const JUMP_PREF: u32 = 0xd01f') &&
     ebpfMain.includes('return account_frame(ctx, DIR_RX, TC_ACT_UNSPEC)') &&
@@ -92,8 +92,12 @@ async function main() {
     'x86 accounting must continue and run before block/redirect control filters');
   assert(x86ControlByModule['classifier.rs'].includes('"dst"') &&
     x86ControlByModule['classifier.rs'].includes('&["action", "pass"]') &&
-    x86ControlByModule['classifier.rs'].includes('"src"'),
-    'LAN/local destinations must pass before controlled source addresses redirect to IFB');
+    x86ControlByModule['classifier.rs'].includes('"src"') &&
+    x86ControlByModule['classifier.rs'].includes('"ether"') &&
+    x86ControlByModule['shaper.rs'].includes('Direction::Download => "dst"') &&
+    x86ControlByModule['shaper.rs'].includes('"ether"') &&
+    !x86ControlByModule['shaper.rs'].includes('"cls_flower"'),
+    'LAN/local destinations must pass before MAC-based dual-stack control redirects to IFB');
   assert(x86ControlByModule['shaper.rs'].includes('Self::Upload => UPLOAD_HANDLE') &&
     x86ControlByModule['shaper.rs'].includes('Self::Download => DOWNLOAD_HANDLE') &&
     x86ControlByModule['shaper.rs'].includes('"htb"') &&
@@ -102,7 +106,18 @@ async function main() {
     !x86ControlByModule['shaper.rs'].includes('legacy_upload_tree') &&
     !x86Control.includes('lanspeed_control_io') &&
     !x86ControlByModule['shaper.rs'].includes('wan_devices'),
-    'x86 must use only the current pre-proxy IFB HTB/FQ budget and independent LAN download tree');
+    'x86 must use HTB/FQ for direct upload and independent LAN download trees');
+  assert(x86ControlByModule['shaper.rs'].includes('DAE_UPLOAD_COMPENSATION_NUMERATOR: u64 = 110') &&
+    x86ControlByModule['shaper.rs'].includes('Self::Upload if rule.upload_before_proxy') &&
+    x86ControlByModule['shaper.rs'].includes('Self::Download => rule.download_bps'),
+    'DAE pre-proxy upload must compensate wire overhead without changing direct upload or download');
+  assert(x86ControlByModule['dae.rs'].includes('/sys/class/net/{bridge}/brif') &&
+    x86ControlByModule['dae.rs'].includes('resolve_upload_devices(bridges, bridge_members)') &&
+    x86ControlByModule['dae.rs'].includes('return BTreeSet::new()') &&
+    !x86ControlByModule['shaper.rs'].includes('stage_native_upload') &&
+    !x86ControlByModule['dae.rs'].includes('mirred') &&
+    !x86ControlByModule['dae.rs'].includes('ifb::DEVICE'),
+    'DAE upload must resolve every bridge slave and must never queue or redirect on dae0');
   assert(/Direction::Upload => \{[\s\S]*?ensure_owned_virtual_root\(device, handle\)\?;[\s\S]*?cleanup_owned_root\(device, handle\)\?;[\s\S]*?"replace"/
     .test(x86ControlByModule['shaper.rs']),
     'updating an active upload rate must remove the owned HTB tree before replace can retain stale classes');
@@ -120,16 +135,23 @@ async function main() {
     x86ControlByModule['mod.rs'].includes('fn upload_rules_by_device') &&
     x86ControlByModule['mod.rs'].includes('for (device, rules) in &upload_by_device'),
     'upload shaping must bind each rule to the client interface observed by the rate collector');
-  assert(production.includes('observe_preempted_upload_devices(preempted_upload_devices)') &&
-    production.includes('observe_dae_upload_device(dae_upload_device)') &&
-    x86ControlByModule['mod.rs'].includes('dae_upload_device') &&
-    x86ControlByModule['mod.rs'].includes('classifier::install_egress(device, &upload)?') &&
+  assert(production.includes('observe_preempted_upload_devices(dae_preempted_devices)') &&
+    production.includes('observe_dae_upload_devices(dae_upload_devices)') &&
+    x86ControlByModule['mod.rs'].includes('rule.upload_before_proxy') &&
+    x86ControlByModule['mod.rs'].includes('for device in &plan.dae_upload_devices') &&
+    x86ControlByModule['mod.rs'].includes('cleanup_legacy_dae_upload_objects') &&
+    x86ControlByModule['dae.rs'].includes('classifier::legacy_dae_egress_owned(&device)?') &&
+    !x86ControlByModule['mod.rs'].includes('const LEGACY_DEVICE') &&
+    !x86ControlByModule['mod.rs'].includes('stage_native_upload') &&
+    !x86ControlByModule['mod.rs'].includes('classifier::install_egress') &&
     !x86ControlByModule['mod.rs'].includes('plan.upload_preempted && !upload.is_empty()') &&
     control.includes('dae_upload_preempts_control') &&
     !source.includes('dae_upload_preempts_control'),
-    'DAE upload must use the integrated egress path without a fallback UI label');
+    'DAE upload must shape once on bridge slaves before both direct and proxy branches without a fallback UI label');
   assert(x86ControlByModule['firewall.rs'].includes('Hook::Ingress') &&
     x86ControlByModule['firewall.rs'].includes('Hook::Egress') &&
+    x86ControlByModule['firewall.rs'].includes('"ether"') &&
+    x86ControlByModule['firewall.rs'].includes('&rule.mac.to_string()') &&
     x86ControlByModule['firewall.rs'].includes('clear_conntrack_address') &&
     x86ControlByModule['firewall.rs'].includes('"drop"') &&
     x86ControlByModule['firewall.rs'].includes('NFT_OWNER_COMMENT') &&

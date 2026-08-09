@@ -123,18 +123,15 @@ fn install_tc_hook(
     }
     preference = CLIENT_PREF_START;
     for rule in rules.iter().filter(|rule| rule.internet_disabled) {
-        for address in &rule.ips {
-            add_u32(
-                device,
-                hook,
-                preference,
-                *address,
-                if address.is_ipv4() { 32 } else { 128 },
-                hook.client_field(),
-                "drop",
-            )?;
-            preference += 1;
-        }
+        add_mac(
+            device,
+            hook,
+            preference,
+            &rule.mac.to_string(),
+            hook.client_field(),
+            "drop",
+        )?;
+        preference += 1;
     }
 
     let chain = CHAIN.to_string();
@@ -327,6 +324,41 @@ fn add_u32(
     )
 }
 
+fn add_mac(
+    device: &str,
+    hook: Hook,
+    preference: u32,
+    mac: &str,
+    field: &str,
+    verdict: &str,
+) -> Result<(), String> {
+    let chain = CHAIN.to_string();
+    let preference = preference.to_string();
+    system::run(
+        "tc",
+        &[
+            "filter",
+            "add",
+            "dev",
+            device,
+            hook.name(),
+            "chain",
+            &chain,
+            "protocol",
+            "all",
+            "pref",
+            &preference,
+            "u32",
+            "match",
+            "ether",
+            field,
+            mac,
+            "action",
+            verdict,
+        ],
+    )
+}
+
 fn install_nft(plan: &ControlPlan) -> Result<(), String> {
     let script = build_nft_script(plan, ensure_nft_table_owned_or_absent()?);
     system::run_script("nft", &["-f", "-"], &script)
@@ -483,13 +515,9 @@ fn has_blocked_rules(rules: &[ActiveRule]) -> bool {
 }
 
 fn validate_capacity(local_prefixes: &[(IpAddr, u8)], rules: &[ActiveRule]) -> Result<(), String> {
-    let addresses = rules
-        .iter()
-        .filter(|rule| rule.internet_disabled)
-        .map(|rule| rule.ips.len())
-        .sum::<usize>();
+    let clients = rules.iter().filter(|rule| rule.internet_disabled).count();
     if LOCAL_PREF_START + local_prefixes.len() as u32 >= CLIENT_PREF_START
-        || CLIENT_PREF_START + addresses as u32 >= TERMINAL_PREF
+        || CLIENT_PREF_START + clients as u32 >= TERMINAL_PREF
     {
         Err("control_filter_capacity".into())
     } else {
@@ -505,14 +533,16 @@ mod tests {
         ControlPlan {
             lan_device: "br-lan".into(),
             control_devices: vec!["br-lan".into()],
-            dae_upload_device: None,
+            dae_upload_devices: Vec::new(),
             local_prefixes: vec![
                 ("192.0.2.0".parse().unwrap(), 24),
                 ("2001:db8::".parse().unwrap(), 64),
             ],
             rules: vec![ActiveRule {
                 identity_key: "02:00:00:00:00:01@lan".into(),
+                mac: "02:00:00:00:00:01".parse().unwrap(),
                 interface: "br-lan".into(),
+                upload_before_proxy: false,
                 upload_preempted: false,
                 ips: vec!["192.0.2.9".parse().unwrap(), "2001:db8::9".parse().unwrap()],
                 upload_bps: 0,
