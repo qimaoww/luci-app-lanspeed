@@ -41,6 +41,10 @@ pub fn apply(plan: &ControlPlan) -> Result<ApplyResult, String> {
         .filter(|rule| rule.upload_bps != 0 && !rule.upload_preempted)
         .collect::<Vec<_>>();
     let upload_by_device = upload_rules_by_device(plan, &upload);
+    let active_upload_devices = upload_by_device
+        .keys()
+        .map(|device| (*device).to_owned())
+        .collect::<BTreeSet<_>>();
     let download = plan
         .rules
         .iter()
@@ -62,6 +66,10 @@ pub fn apply(plan: &ControlPlan) -> Result<ApplyResult, String> {
     for device in control_devices(plan) {
         classifier::deactivate(&device)?;
     }
+    // A proxy mode or bridge topology change can move the pre-proxy hook.
+    // Remove only classifiers carrying our exact ownership marker from
+    // devices that are no longer in the resolved upload path.
+    cleanup_obsolete_upload_classifiers(&active_upload_devices)?;
     // Remove the rejected legacy dae0->IFB redirect before touching queues.
     // This is upgrade cleanup only; no DAE egress redirect is installed.
     cleanup_legacy_dae_upload_objects()?;
@@ -221,6 +229,9 @@ pub fn cleanup(plan: &ControlPlan) -> Result<(), String> {
     if let Err(error) = cleanup_legacy_dae_upload_objects() {
         errors.push(error);
     }
+    if let Err(error) = cleanup_obsolete_upload_classifiers(&BTreeSet::new()) {
+        errors.push(error);
+    }
     for result in [
         firewall::cleanup(&plan.lan_device),
         shaper::cleanup_download(&plan.lan_device),
@@ -290,6 +301,7 @@ fn probe(lan_device: &str) -> ApplyResult {
 
 fn rollback(plan: &ControlPlan) {
     let _ = cleanup_upload_classifiers(plan);
+    let _ = cleanup_obsolete_upload_classifiers(&BTreeSet::new());
     let _ = cleanup_legacy_dae_upload_objects();
     let _ = firewall::cleanup(&plan.lan_device);
     let _ = shaper::cleanup_download(&plan.lan_device);
@@ -343,6 +355,10 @@ fn cleanup_upload_classifiers(plan: &ControlPlan) -> Result<(), String> {
 
 fn cleanup_legacy_dae_upload_objects() -> Result<(), String> {
     dae::cleanup_legacy_objects()
+}
+
+fn cleanup_obsolete_upload_classifiers(active_devices: &BTreeSet<String>) -> Result<(), String> {
+    dae::cleanup_obsolete_ingress_objects(active_devices)
 }
 
 fn queue_drop_snapshot(plan: &ControlPlan) -> BTreeMap<String, u64> {

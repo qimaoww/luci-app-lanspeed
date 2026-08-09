@@ -1091,8 +1091,13 @@ fn local_prefixes() -> Result<Vec<(IpAddr, u8)>, String> {
     }
     prefixes.push(("127.0.0.0".parse().unwrap(), 8));
     prefixes.push(("169.254.0.0".parse().unwrap(), 16));
+    // Link-local multicast (ARP is non-IP and is excluded by the x86
+    // classifiers themselves). Keep IPv4/IPv6 discovery, router
+    // advertisements, mDNS and other LAN multicast out of client shaping.
+    prefixes.push(("224.0.0.0".parse().unwrap(), 4));
     prefixes.push(("::1".parse().unwrap(), 128));
     prefixes.push(("fe80::".parse().unwrap(), 10));
+    prefixes.push(("ff00::".parse().unwrap(), 8));
     if let Ok(output) = Command::new("ip").args(["-j", "address", "show"]).output() {
         if output.status.success() {
             if let Ok(interfaces) = serde_json::from_slice::<Vec<Value>>(&output.stdout) {
@@ -1649,6 +1654,18 @@ mod tests {
                 ("192.0.2.0".parse().unwrap(), 24),
                 ("2001:db8::".parse().unwrap(), 64),
             ]
+        );
+    }
+
+    #[test]
+    fn multicast_prefixes_normalize_to_lan_control_domains() {
+        assert_eq!(
+            normalize_prefix("224.0.0.1".parse().unwrap(), 4),
+            Some(("224.0.0.0".parse().unwrap(), 4))
+        );
+        assert_eq!(
+            normalize_prefix("ff02::1".parse().unwrap(), 8),
+            Some(("ff00::".parse().unwrap(), 8))
         );
     }
 

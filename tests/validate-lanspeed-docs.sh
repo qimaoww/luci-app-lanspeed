@@ -83,6 +83,8 @@ NODE
 
 log "multi-page documentation checklist"
 
+require_phrase "本仓库所有代码及文档（包括本 README）均由 AI 生成。"
+
 test -f "$LICENSE" || {
 	printf 'missing root LICENSE file\n' >&2
 	exit 1
@@ -248,7 +250,6 @@ for forbidden in \
 	"former libuci" \
 	"回滚时三个包" \
 	"参考验收中" \
-	"本仓库所有代码及文档" \
 	"lanspeedd-bpf（可选）" \
 	"ENABLE_BPF=0" \
 	"--force-reinstall"; do

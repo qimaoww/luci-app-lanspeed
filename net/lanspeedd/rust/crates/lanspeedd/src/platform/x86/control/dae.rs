@@ -14,22 +14,49 @@ pub(super) fn upload_devices(bridges: &BTreeSet<String>) -> BTreeSet<String> {
 /// assuming the proxy interface name. A device is touched only after its
 /// exact LAN Speed egress jump or terminal chain marker is observed.
 pub(super) fn cleanup_legacy_objects() -> Result<(), String> {
-    let entries = fs::read_dir("/sys/class/net")
-        .map_err(|_| "ingress_filter_inspection_failed".to_owned())?;
-    for entry in entries {
-        let device = entry
-            .map_err(|_| "ingress_filter_inspection_failed".to_owned())?
-            .file_name()
-            .into_string()
-            .map_err(|_| "ingress_filter_inspection_failed".to_owned())?;
-        if !system::valid_interface_name(&device) || !classifier::legacy_dae_egress_owned(&device)?
-        {
+    for device in network_devices()? {
+        if !classifier::legacy_dae_egress_owned(&device)? {
             continue;
         }
         classifier::cleanup_legacy_dae_egress(&device)?;
         shaper::cleanup_owned_root(&device, shaper::UPLOAD_HANDLE)?;
     }
     Ok(())
+}
+
+/// Remove upload classifiers left on an interface that is no longer part of
+/// the resolved direct or pre-DAE path. Ownership is proven from the exact
+/// jump and terminal marker before anything is deleted; interface names are
+/// discovered at runtime and never guessed.
+pub(super) fn cleanup_obsolete_ingress_objects(
+    active_devices: &BTreeSet<String>,
+) -> Result<(), String> {
+    for device in network_devices()? {
+        if active_devices.contains(&device) || !classifier::ingress_owned(&device)? {
+            continue;
+        }
+        classifier::cleanup(&device)?;
+        shaper::cleanup_owned_root(&device, shaper::UPLOAD_HANDLE)?;
+    }
+    Ok(())
+}
+
+fn network_devices() -> Result<Vec<String>, String> {
+    let entries = fs::read_dir("/sys/class/net")
+        .map_err(|_| "ingress_filter_inspection_failed".to_owned())?;
+    let mut devices = Vec::new();
+    for entry in entries {
+        let device = entry
+            .map_err(|_| "ingress_filter_inspection_failed".to_owned())?
+            .file_name()
+            .into_string()
+            .map_err(|_| "ingress_filter_inspection_failed".to_owned())?;
+        if system::valid_interface_name(&device) {
+            devices.push(device);
+        }
+    }
+    devices.sort();
+    Ok(devices)
 }
 
 fn bridge_members(bridge: &str) -> Option<Vec<String>> {

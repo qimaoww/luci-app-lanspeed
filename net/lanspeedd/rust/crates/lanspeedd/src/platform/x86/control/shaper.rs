@@ -18,8 +18,12 @@ const MAX_FLOW_PACKETS: u64 = 4_096;
 const LOCAL_FILTER_PREF_START: u32 = 40_000;
 const CLIENT_FILTER_PREF_START: u32 = 50_000;
 const FILTER_PREF_END: u32 = 65_000;
-const DAE_UPLOAD_COMPENSATION_NUMERATOR: u64 = 110;
-const DAE_UPLOAD_COMPENSATION_DENOMINATOR: u64 = 100;
+const CONTROL_PROTOCOLS: [&str; 2] = ["ip", "ipv6"];
+const APPLICATION_RATE_NUMERATOR: u64 = 110;
+const APPLICATION_RATE_DENOMINATOR: u64 = 100;
+const HTB_BURST_WINDOW_MILLIS: u64 = 10;
+const MILLIS_PER_SECOND: u64 = 1_000;
+const BITS_PER_BYTE: u64 = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Direction {
@@ -36,17 +40,29 @@ impl Direction {
     }
 
     fn rate(self, rule: &ActiveRule) -> u64 {
-        match self {
-            Self::Upload if rule.upload_before_proxy => rule
-                .upload_bps
-                .saturating_mul(DAE_UPLOAD_COMPENSATION_NUMERATOR)
-                .saturating_add(DAE_UPLOAD_COMPENSATION_DENOMINATOR - 1)
-                .saturating_div(DAE_UPLOAD_COMPENSATION_DENOMINATOR)
-                .min(X86_MAX_RATE_BPS),
+        let configured = match self {
             Self::Upload => rule.upload_bps,
             Self::Download => rule.download_bps,
-        }
+        };
+        application_rate(configured)
     }
+}
+
+fn application_rate(configured_bps: u64) -> u64 {
+    configured_bps
+        .saturating_mul(APPLICATION_RATE_NUMERATOR)
+        .saturating_add(APPLICATION_RATE_DENOMINATOR - 1)
+        .saturating_div(APPLICATION_RATE_DENOMINATOR)
+        .min(X86_MAX_RATE_BPS)
+}
+
+fn htb_burst_bytes(rate_bps: u64, quantum: u64) -> u64 {
+    let denominator = BITS_PER_BYTE * MILLIS_PER_SECOND;
+    rate_bps
+        .saturating_mul(HTB_BURST_WINDOW_MILLIS)
+        .saturating_add(denominator - 1)
+        .saturating_div(denominator)
+        .clamp(quantum, MAX_QUEUE_BYTES)
 }
 
 pub(crate) fn preflight(
@@ -141,6 +157,7 @@ fn install_tree(device: &str, rules: &[&ActiveRule], direction: Direction) -> Re
     let high = X86_MAX_RATE_BPS.to_string();
     let default_class = format!("{major}:1");
     let default_quantum = MAX_QUANTUM_BYTES.to_string();
+    let default_burst = htb_burst_bytes(X86_MAX_RATE_BPS, MAX_QUANTUM_BYTES).to_string();
     system::run(
         "tc",
         &[
@@ -157,6 +174,10 @@ fn install_tree(device: &str, rules: &[&ActiveRule], direction: Direction) -> Re
             &high,
             "ceil",
             &high,
+            "burst",
+            &default_burst,
+            "cburst",
+            &default_quantum,
             "quantum",
             &default_quantum,
         ],
@@ -168,6 +189,7 @@ fn install_tree(device: &str, rules: &[&ActiveRule], direction: Direction) -> Re
     for rule in rules {
         let rate = direction.rate(rule);
         let rate_text = rate.to_string();
+        let burst_text = htb_burst_bytes(rate, quantum).to_string();
         let classid = format!("{major}:{:x}", rule.class_minor);
         system::run(
             "tc",
@@ -185,6 +207,10 @@ fn install_tree(device: &str, rules: &[&ActiveRule], direction: Direction) -> Re
                 &rate_text,
                 "ceil",
                 &rate_text,
+                "burst",
+                &burst_text,
+                "cburst",
+                &quantum_text,
                 "quantum",
                 &quantum_text,
             ],
@@ -276,18 +302,21 @@ fn install_class_filters(
     let mut preference = CLIENT_FILTER_PREF_START;
     for rule in rules {
         let classid = format!("{major}:{:x}", rule.class_minor);
-        add_mac_filter(
-            device,
-            &parent,
-            preference,
-            match direction {
-                Direction::Upload => "src",
-                Direction::Download => "dst",
-            },
-            &rule.mac.to_string(),
-            &classid,
-        )?;
-        preference += 1;
+        for protocol in CONTROL_PROTOCOLS {
+            add_mac_filter(
+                device,
+                &parent,
+                preference,
+                protocol,
+                match direction {
+                    Direction::Upload => "src",
+                    Direction::Download => "dst",
+                },
+                &rule.mac.to_string(),
+                &classid,
+            )?;
+            preference += 1;
+        }
     }
     Ok(())
 }
@@ -336,6 +365,7 @@ fn add_mac_filter(
     device: &str,
     parent: &str,
     preference: u32,
+    protocol: &str,
     field: &str,
     mac: &str,
     flowid: &str,
@@ -351,7 +381,7 @@ fn add_mac_filter(
             "parent",
             parent,
             "protocol",
-            "all",
+            protocol,
             "pref",
             &preference,
             "u32",
@@ -494,8 +524,15 @@ fn validate_filter_capacity(
     upload: &[&ActiveRule],
     download: &[&ActiveRule],
 ) -> Result<(), String> {
+    let client_filters = u32::try_from(
+        upload
+            .len()
+            .max(download.len())
+            .saturating_mul(CONTROL_PROTOCOLS.len()),
+    )
+    .unwrap_or(u32::MAX);
     if LOCAL_FILTER_PREF_START + local_prefixes.len() as u32 >= CLIENT_FILTER_PREF_START
-        || CLIENT_FILTER_PREF_START + upload.len().max(download.len()) as u32 >= FILTER_PREF_END
+        || CLIENT_FILTER_PREF_START.saturating_add(client_filters) >= FILTER_PREF_END
     {
         Err("control_filter_capacity".into())
     } else {
@@ -550,18 +587,32 @@ mod tests {
     }
 
     #[test]
-    fn dae_upload_compensation_targets_application_rate_only() {
+    fn application_rate_compensation_is_direction_and_proxy_independent() {
         let dae = rule(true, 10_000_000, 10_000_000);
         let direct = rule(false, 10_000_000, 10_000_000);
         assert_eq!(Direction::Upload.rate(&dae), 11_000_000);
-        assert_eq!(Direction::Upload.rate(&direct), 10_000_000);
-        assert_eq!(Direction::Download.rate(&dae), 10_000_000);
+        assert_eq!(Direction::Upload.rate(&direct), 11_000_000);
+        assert_eq!(Direction::Download.rate(&dae), 11_000_000);
     }
 
     #[test]
-    fn dae_upload_compensation_clamps_to_x86_limit() {
+    fn application_rate_compensation_clamps_to_x86_limit() {
         let rule = rule(true, X86_MAX_RATE_BPS, 0);
         assert_eq!(Direction::Upload.rate(&rule), X86_MAX_RATE_BPS);
+    }
+
+    #[test]
+    fn htb_burst_covers_ten_milliseconds_and_stays_bounded() {
+        assert_eq!(htb_burst_bytes(11_000_000, 1_514), 13_750);
+        assert_eq!(htb_burst_bytes(550_000_000, 1_514), 687_500);
+        assert_eq!(htb_burst_bytes(8_800, 1_514), 1_514);
+        assert_eq!(htb_burst_bytes(X86_MAX_RATE_BPS, 60_000), MAX_QUEUE_BYTES);
+    }
+
+    #[test]
+    fn class_filters_are_l3_only() {
+        assert_eq!(CONTROL_PROTOCOLS, ["ip", "ipv6"]);
+        assert!(!CONTROL_PROTOCOLS.contains(&"all"));
     }
 
     #[test]
