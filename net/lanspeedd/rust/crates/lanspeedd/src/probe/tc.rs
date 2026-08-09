@@ -124,7 +124,18 @@ pub fn parse_filter_json(
                         .and_then(Value::as_bool)
                 })
             };
-            let owner = owner(program_name.as_deref().unwrap_or_default());
+            /*
+             * tc-full exposes two different BPF names on current daed builds:
+             * `bpf_name` is the stable attachment name (for example
+             * `daed_lan_ingress_l2`), while `prog.name` is the truncated kernel
+             * program name (`tproxy_lan_ingr`). Keep the latter as the runtime
+             * program identity, but prefer the stable attachment name when
+             * determining ownership so the DAE upload path is not missed.
+             */
+            let owner_name = options
+                .and_then(|item| string_field(item, "bpf_name"))
+                .or_else(|| program_name.clone());
+            let owner = owner(owner_name.as_deref().unwrap_or_default());
             let chain = object.get("chain").and_then(value_u32).unwrap_or(0);
 
             Ok(TcFilterDetails {

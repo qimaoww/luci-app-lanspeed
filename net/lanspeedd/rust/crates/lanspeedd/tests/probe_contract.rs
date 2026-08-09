@@ -805,6 +805,28 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
     assert!(!has_owned_identity_collision(&filters));
     assert!(has_foreign_filters(&filters));
 
+    let daed_tc_full = parse_filter_json(
+        "br-lan",
+        "ingress",
+        r#"[
+          {"protocol":"all","pref":2,"kind":"bpf","chain":0,
+           "options":{"handle":"0x20230004","bpf_name":"daed_lan_ingress_l2",
+                      "direct-action":true,"not_in_hw":true,
+                      "prog":{"id":157,"name":"tproxy_lan_ingr"}}}
+        ]"#,
+    )
+    .unwrap();
+    assert_eq!(daed_tc_full.len(), 1);
+    assert_eq!(
+        daed_tc_full[0].program_name.as_deref(),
+        Some("tproxy_lan_ingr")
+    );
+    assert_eq!(daed_tc_full[0].filter.owner, "dae");
+    assert!(dae_preempts_lan_ingress(
+        &[daed_tc_full[0].filter.clone()],
+        &["br-lan".into()]
+    ));
+
     let owned_only = parse_filter_json(
         "eth1",
         "ingress",
