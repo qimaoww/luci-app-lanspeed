@@ -96,6 +96,10 @@ assert(validateReloadService(initScript), 'reload must immediately return after 
 assert(!/^stop_service\(\)/m.test(initScript), 'owned tc cleanup must not race a daemon that has not stopped yet');
 assert(/^\s*cleanup_lanspeed_tc_filters\s*$/m.test(shellFunctionBody(initScript, 'service_stopped')),
   'service_stopped must remove owned tc filters after procd has stopped the daemon');
+const startBody = shellFunctionBody(initScript, 'start_service');
+assert(/^\s*cleanup_lanspeed_tc_filters\s*$/m.test(startBody) &&
+  startBody.indexOf('cleanup_lanspeed_tc_filters') < startBody.indexOf('procd_open_instance'),
+  'startup must reclaim stale owned filters before launching a replacement daemon');
 const tcDeleteBody = shellFunctionBody(initScript, 'lanspeed_tc_delete_owned');
 assert(tcDeleteBody.includes('2>/dev/null') &&
   tcDeleteBody.includes('lanspeed_tc_filter_present') &&

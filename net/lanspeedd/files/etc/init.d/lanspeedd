@@ -121,6 +121,10 @@ cleanup_lanspeed_tc_filters() {
 }
 
 start_service() {
+	# A package upgrade can force-kill an older daemon before procd reaches
+	# service_stopped(). Reclaim only the exact reserved lanspeed identities
+	# before loading the new object so stale program IDs cannot block startup.
+	cleanup_lanspeed_tc_filters
 	procd_open_instance
 	procd_set_param command "$PROG"
 	procd_set_param respawn 3600 5 5
