@@ -88,6 +88,7 @@ SDK 构建与发布说明见[构建与发布](docs/guide/development.md)。
 
 安装依赖、内核选项及服务冲突处理见[部署与排障](docs/guide/operations.md)。
 
-## License
+## 许可证
 
-Apache-2.0
+除目录或文件明确另有声明外，本仓库自有代码采用 [Apache License 2.0](LICENSE)。
+`net/lanspeedd/rust/vendor/` 中的第三方依赖保留各自随附的许可证；eBPF 对象中的 `GPL` 字符串是提供给 Linux 内核的程序许可证标记，相关源码仍按其文件和包元数据声明授权。

@@ -9,6 +9,7 @@ lanspeed_test_output_init
 trap 'lanspeed_test_output_cleanup' EXIT
 
 README="$ROOT_DIR/README.md"
+LICENSE="$ROOT_DIR/LICENSE"
 GUIDE_DIR="$ROOT_DIR/docs/guide"
 GUIDE_FILES="$GUIDE_DIR/usage.md $GUIDE_DIR/platforms.md $GUIDE_DIR/operations.md $GUIDE_DIR/development.md"
 DOCUMENTATION="$README $GUIDE_FILES"
@@ -81,6 +82,29 @@ NODE
 }
 
 log "multi-page documentation checklist"
+
+test -f "$LICENSE" || {
+	printf 'missing root LICENSE file\n' >&2
+	exit 1
+}
+
+license_sha256="$(sha256sum "$LICENSE" | awk '{print $1}')"
+test "$license_sha256" = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30" || {
+	printf 'root LICENSE is not the canonical Apache License 2.0 text\n' >&2
+	exit 1
+}
+
+grep -Fq -- '[Apache License 2.0](LICENSE)' "$README" || {
+	printf 'README missing root license link\n' >&2
+	exit 1
+}
+
+grep -Fq -- '第三方依赖保留各自随附的许可证' "$README" || {
+	printf 'README missing third-party license boundary\n' >&2
+	exit 1
+}
+
+log "ok: canonical Apache License 2.0 and documented license boundaries"
 
 for page in $GUIDE_FILES; do
 	test -f "$page" || {
