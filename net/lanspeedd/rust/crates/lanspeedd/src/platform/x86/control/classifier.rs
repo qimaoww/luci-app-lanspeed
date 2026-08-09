@@ -14,7 +14,45 @@ const LOCAL_PREF_START: u32 = 100;
 const CLIENT_PREF_START: u32 = 10_000;
 const TERMINAL_PREF: u32 = 65_534;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Hook {
+    Ingress,
+    Egress,
+}
+
+impl Hook {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ingress => "ingress",
+            Self::Egress => "egress",
+        }
+    }
+
+    const fn jump_pref(self) -> u32 {
+        match self {
+            // Keep accounting first, then apply direct-LAN control.
+            Self::Ingress => JUMP_PREF,
+            // DAE fixtures use 0x6e on dae0 egress; shaping the host veth
+            // before that hook keeps the packet on the DAE path after IFB.
+            Self::Egress => 100,
+        }
+    }
+}
+
 pub(crate) fn preflight(
+    lan_device: &str,
+    local_prefixes: &[(IpAddr, u8)],
+    rules: &[&ActiveRule],
+) -> Result<(), String> {
+    preflight_on(Hook::Ingress, lan_device, local_prefixes, rules)
+}
+
+pub(crate) fn preflight_egress(device: &str, rules: &[&ActiveRule]) -> Result<(), String> {
+    preflight_on(Hook::Egress, device, &[], rules)
+}
+
+fn preflight_on(
+    hook: Hook,
     lan_device: &str,
     local_prefixes: &[(IpAddr, u8)],
     rules: &[&ActiveRule],
@@ -28,8 +66,8 @@ pub(crate) fn preflight(
         }
     }
     validate_capacity(local_prefixes, rules)?;
-    ensure_jump_owned_or_absent(lan_device)?;
-    ensure_chain_owned_or_absent(lan_device)
+    ensure_jump_owned_or_absent(hook, lan_device)?;
+    ensure_chain_owned_or_absent(hook, lan_device)
 }
 
 pub(crate) fn install(
@@ -37,14 +75,28 @@ pub(crate) fn install(
     local_prefixes: &[(IpAddr, u8)],
     rules: &[&ActiveRule],
 ) -> Result<(), String> {
-    preflight(lan_device, local_prefixes, rules)?;
+    install_on(Hook::Ingress, lan_device, local_prefixes, rules)
+}
+
+pub(crate) fn install_egress(device: &str, rules: &[&ActiveRule]) -> Result<(), String> {
+    install_on(Hook::Egress, device, &[], rules)
+}
+
+fn install_on(
+    hook: Hook,
+    lan_device: &str,
+    local_prefixes: &[(IpAddr, u8)],
+    rules: &[&ActiveRule],
+) -> Result<(), String> {
+    preflight_on(hook, lan_device, local_prefixes, rules)?;
     system::ensure_clsact(lan_device)?;
-    deactivate(lan_device)?;
-    clear_chain(lan_device)?;
+    deactivate_on(hook, lan_device)?;
+    clear_chain(hook, lan_device)?;
 
     let mut preference = LOCAL_PREF_START;
     for (address, prefix_len) in local_prefixes {
         add_u32(
+            hook,
             lan_device,
             preference,
             *address,
@@ -59,6 +111,7 @@ pub(crate) fn install(
     for rule in rules {
         for address in &rule.ips {
             add_u32(
+                hook,
                 lan_device,
                 preference,
                 *address,
@@ -76,20 +129,42 @@ pub(crate) fn install(
     system::run(
         "tc",
         &[
-            "filter", "add", "dev", lan_device, "ingress", "chain", &chain, "protocol", "all",
-            "pref", &terminal, "handle", &marker, "matchall", "action", "pass",
+            "filter",
+            "add",
+            "dev",
+            lan_device,
+            hook.as_str(),
+            "chain",
+            &chain,
+            "protocol",
+            "all",
+            "pref",
+            &terminal,
+            "handle",
+            &marker,
+            "matchall",
+            "action",
+            "pass",
         ],
     )?;
-    verify_chain(lan_device, rules)?;
-    activate(lan_device)
+    verify_chain(hook, lan_device, rules)?;
+    activate_on(hook, lan_device)
 }
 
 pub(crate) fn deactivate(lan_device: &str) -> Result<(), String> {
+    deactivate_on(Hook::Ingress, lan_device)
+}
+
+pub(crate) fn deactivate_egress(device: &str) -> Result<(), String> {
+    deactivate_on(Hook::Egress, device)
+}
+
+fn deactivate_on(hook: Hook, lan_device: &str) -> Result<(), String> {
     if !system::interface_exists(lan_device) || !system::has_qdisc(lan_device, "clsact", None) {
         return Ok(());
     }
-    ensure_jump_owned_or_absent(lan_device)?;
-    let preference = JUMP_PREF.to_string();
+    ensure_jump_owned_or_absent(hook, lan_device)?;
+    let preference = hook.jump_pref().to_string();
     system::run_ignore_missing(
         "tc",
         &[
@@ -97,7 +172,7 @@ pub(crate) fn deactivate(lan_device: &str) -> Result<(), String> {
             "del",
             "dev",
             lan_device,
-            "ingress",
+            hook.as_str(),
             "pref",
             &preference,
         ],
@@ -106,15 +181,23 @@ pub(crate) fn deactivate(lan_device: &str) -> Result<(), String> {
 }
 
 pub(crate) fn cleanup(lan_device: &str) -> Result<(), String> {
+    cleanup_on(Hook::Ingress, lan_device)
+}
+
+pub(crate) fn cleanup_egress(device: &str) -> Result<(), String> {
+    cleanup_on(Hook::Egress, device)
+}
+
+fn cleanup_on(hook: Hook, lan_device: &str) -> Result<(), String> {
     if !system::interface_exists(lan_device) || !system::has_qdisc(lan_device, "clsact", None) {
         return Ok(());
     }
-    deactivate(lan_device)?;
-    clear_chain(lan_device)
+    deactivate_on(hook, lan_device)?;
+    clear_chain(hook, lan_device)
 }
 
-fn activate(lan_device: &str) -> Result<(), String> {
-    let preference = JUMP_PREF.to_string();
+fn activate_on(hook: Hook, lan_device: &str) -> Result<(), String> {
+    let preference = hook.jump_pref().to_string();
     let chain = CHAIN.to_string();
     system::run(
         "tc",
@@ -123,7 +206,7 @@ fn activate(lan_device: &str) -> Result<(), String> {
             "add",
             "dev",
             lan_device,
-            "ingress",
+            hook.as_str(),
             "protocol",
             "all",
             "pref",
@@ -137,20 +220,26 @@ fn activate(lan_device: &str) -> Result<(), String> {
     )
 }
 
-fn clear_chain(lan_device: &str) -> Result<(), String> {
-    ensure_chain_owned_or_absent(lan_device)?;
+fn clear_chain(hook: Hook, lan_device: &str) -> Result<(), String> {
+    ensure_chain_owned_or_absent(hook, lan_device)?;
     let chain = CHAIN.to_string();
     system::run_ignore_missing(
         "tc",
         &[
-            "filter", "del", "dev", lan_device, "ingress", "chain", &chain,
+            "filter",
+            "del",
+            "dev",
+            lan_device,
+            hook.as_str(),
+            "chain",
+            &chain,
         ],
     );
     Ok(())
 }
 
-fn ensure_jump_owned_or_absent(lan_device: &str) -> Result<(), String> {
-    let preference = JUMP_PREF.to_string();
+fn ensure_jump_owned_or_absent(hook: Hook, lan_device: &str) -> Result<(), String> {
+    let preference = hook.jump_pref().to_string();
     let output = system::output(
         "tc",
         &[
@@ -160,7 +249,7 @@ fn ensure_jump_owned_or_absent(lan_device: &str) -> Result<(), String> {
             "show",
             "dev",
             lan_device,
-            "ingress",
+            hook.as_str(),
             "pref",
             &preference,
         ],
@@ -180,12 +269,20 @@ fn ensure_jump_owned_or_absent(lan_device: &str) -> Result<(), String> {
     }
 }
 
-fn ensure_chain_owned_or_absent(lan_device: &str) -> Result<(), String> {
+fn ensure_chain_owned_or_absent(hook: Hook, lan_device: &str) -> Result<(), String> {
     let chain = CHAIN.to_string();
     let output = system::output(
         "tc",
         &[
-            "-j", "-d", "filter", "show", "dev", lan_device, "ingress", "chain", &chain,
+            "-j",
+            "-d",
+            "filter",
+            "show",
+            "dev",
+            lan_device,
+            hook.as_str(),
+            "chain",
+            &chain,
         ],
     )?;
     if !output.status.success() {
@@ -225,6 +322,7 @@ fn contains_goto_chain(value: &Value, chain: u32) -> bool {
 }
 
 fn add_u32(
+    hook: Hook,
     device: &str,
     preference: u32,
     address: IpAddr,
@@ -245,7 +343,7 @@ fn add_u32(
         "add",
         "dev",
         device,
-        "ingress",
+        hook.as_str(),
         "chain",
         &chain,
         "protocol",
@@ -273,12 +371,20 @@ fn validate_capacity(local_prefixes: &[(IpAddr, u8)], rules: &[&ActiveRule]) -> 
     }
 }
 
-fn verify_chain(lan_device: &str, rules: &[&ActiveRule]) -> Result<(), String> {
+fn verify_chain(hook: Hook, lan_device: &str, rules: &[&ActiveRule]) -> Result<(), String> {
     let chain = CHAIN.to_string();
     let output = system::output(
         "tc",
         &[
-            "-j", "-d", "filter", "show", "dev", lan_device, "ingress", "chain", &chain,
+            "-j",
+            "-d",
+            "filter",
+            "show",
+            "dev",
+            lan_device,
+            hook.as_str(),
+            "chain",
+            &chain,
         ],
     )?;
     if !output.status.success() {
@@ -340,6 +446,8 @@ mod tests {
     fn capacity_keeps_local_and_client_ranges_separate() {
         let rule = ActiveRule {
             identity_key: "02:00:00:00:00:01@lan".into(),
+            interface: "br-lan".into(),
+            upload_preempted: false,
             ips: vec!["192.0.2.8".parse().unwrap()],
             upload_bps: 10_000_000,
             download_bps: 0,

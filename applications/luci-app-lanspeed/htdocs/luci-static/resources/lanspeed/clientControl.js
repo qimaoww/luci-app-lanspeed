@@ -9,6 +9,7 @@ function reasonText(reason) {
 		unknown_identity: _('客户端已离线或不在当前实时列表中。'),
 		ambiguous_identity: _('该地址同时归属于多个客户端，已拒绝操作。'),
 		identity_address_unavailable: _('尚未取得唯一的客户端 IP 地址。'),
+		identity_interface_unavailable: _('尚未确认该客户端实际经过的 LAN 接口。'),
 		invalid_rate: _('速率必须是十进制 bit/s。'),
 		missing_rate: _('缺少上传或下载速率。'),
 		rate_below_minimum: _('非零速率不能低于 0.008 Mbps。'),

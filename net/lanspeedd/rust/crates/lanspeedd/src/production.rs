@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::Path,
     rc::Rc,
@@ -123,9 +123,6 @@ use crate::{
         },
     },
 };
-#[cfg(feature = "nss-platform")]
-use std::collections::BTreeSet;
-
 #[cfg(all(test, feature = "nss-platform"))]
 use crate::platform::nss::fusion::add_traffic_counters;
 #[cfg(all(test, feature = "nss-platform"))]
@@ -3472,6 +3469,24 @@ impl ProductionRuntime {
 
     #[cfg(not(feature = "nss-platform"))]
     fn refresh_controls(&mut self, clients: &mut ClientsResponse) {
+        let dae_preempted_devices = crate::probe::tc::dae_preempted_lan_ingress_interfaces(
+            &self.probe_report.facts.tc.filters,
+            &self.config.runtime_collect_ifnames(),
+        );
+        let dae_upload_device =
+            if !dae_preempted_devices.is_empty() && self.probe_report.facts.proxy.dae {
+                crate::platform::x86::control::dae_upload_path_available()
+            } else {
+                None
+            };
+        let preempted_upload_devices = if dae_upload_device.is_some() {
+            BTreeSet::new()
+        } else {
+            dae_preempted_devices
+        };
+        self.control
+            .observe_preempted_upload_devices(preempted_upload_devices);
+        self.control.observe_dae_upload_device(dae_upload_device);
         self.control.observe_clients(&clients.clients);
         self.reconcile_control_state();
         self.control.decorate_clients(&mut clients.clients);

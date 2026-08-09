@@ -504,12 +504,16 @@ mod tests {
     fn plan() -> ControlPlan {
         ControlPlan {
             lan_device: "br-lan".into(),
+            control_devices: vec!["br-lan".into()],
+            dae_upload_device: None,
             local_prefixes: vec![
                 ("192.0.2.0".parse().unwrap(), 24),
                 ("2001:db8::".parse().unwrap(), 64),
             ],
             rules: vec![ActiveRule {
                 identity_key: "02:00:00:00:00:01@lan".into(),
+                interface: "br-lan".into(),
+                upload_preempted: false,
                 ips: vec!["192.0.2.9".parse().unwrap(), "2001:db8::9".parse().unwrap()],
                 upload_bps: 0,
                 download_bps: 0,

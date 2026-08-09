@@ -80,9 +80,11 @@ async function main() {
     x86ControlByModule['classifier.rs'].includes('"redirect"') &&
     x86ControlByModule['classifier.rs'].includes('ifb::DEVICE') &&
     x86ControlByModule['classifier.rs'].includes('hook.local_field') === false &&
-    x86ControlByModule['classifier.rs'].indexOf('verify_chain(lan_device, rules)?') <
-      x86ControlByModule['classifier.rs'].indexOf('\n    activate(lan_device)'),
-    'upload classification must redirect to IFB only after the inactive chain verifies');
+    x86ControlByModule['classifier.rs'].includes('pub(crate) fn install_egress') &&
+    x86ControlByModule['classifier.rs'].includes('Hook::Egress') &&
+    x86ControlByModule['classifier.rs'].includes('verify_chain(hook, lan_device, rules)?') &&
+    x86ControlByModule['classifier.rs'].includes('activate_on(hook, lan_device)'),
+    'upload classification must redirect to IFB only after the inactive chain verifies, including DAE egress');
   assert(x86ControlByModule['classifier.rs'].includes('const JUMP_PREF: u32 = 0xd020') &&
     x86ControlByModule['firewall.rs'].includes('const JUMP_PREF: u32 = 0xd01f') &&
     ebpfMain.includes('return account_frame(ctx, DIR_RX, TC_ACT_UNSPEC)') &&
@@ -105,13 +107,27 @@ async function main() {
     .test(x86ControlByModule['shaper.rs']),
     'updating an active upload rate must remove the owned HTB tree before replace can retain stale classes');
   assert(x86ControlByModule['mod.rs'].indexOf('shaper::stage_upload(&upload)?') <
-    x86ControlByModule['mod.rs'].indexOf('classifier::install(&plan.lan_device') &&
+    x86ControlByModule['mod.rs'].indexOf('classifier::install(device, &plan.local_prefixes, rules)?') &&
     x86ControlByModule['mod.rs'].indexOf('shaper::stage_download(&plan.lan_device, &download)?') <
       x86ControlByModule['mod.rs'].indexOf('firewall::install(plan)?') &&
     x86ControlByModule['mod.rs'].indexOf('firewall::install(plan)?') <
       x86ControlByModule['mod.rs'].indexOf('shaper::activate_download(&plan.lan_device') &&
     x86ControlByModule['mod.rs'].includes('fn rollback('),
     'queue trees must stage before block/download/upload activation with rollback');
+  assert(control.includes('pub interface: Option<String>') &&
+    control.includes('valid_control_interface(&client.interface)') &&
+    control.includes('control_devices.extend(rules.iter().map(|rule| rule.interface.clone()))') &&
+    x86ControlByModule['mod.rs'].includes('fn upload_rules_by_device') &&
+    x86ControlByModule['mod.rs'].includes('for (device, rules) in &upload_by_device'),
+    'upload shaping must bind each rule to the client interface observed by the rate collector');
+  assert(production.includes('observe_preempted_upload_devices(preempted_upload_devices)') &&
+    production.includes('observe_dae_upload_device(dae_upload_device)') &&
+    x86ControlByModule['mod.rs'].includes('dae_upload_device') &&
+    x86ControlByModule['mod.rs'].includes('classifier::install_egress(device, &upload)?') &&
+    !x86ControlByModule['mod.rs'].includes('plan.upload_preempted && !upload.is_empty()') &&
+    control.includes('dae_upload_preempts_control') &&
+    !source.includes('dae_upload_preempts_control'),
+    'DAE upload must use the integrated egress path without a fallback UI label');
   assert(x86ControlByModule['firewall.rs'].includes('Hook::Ingress') &&
     x86ControlByModule['firewall.rs'].includes('Hook::Egress') &&
     x86ControlByModule['firewall.rs'].includes('clear_conntrack_address') &&
@@ -137,7 +153,7 @@ async function main() {
   assert(control.includes('CONTROL_DHCP_LEASES_PATH') &&
     control.includes('fn lease_addresses_from(') &&
     control.includes('merge_control_lease_addresses(&mut next'),
-    'persistent controls must preinstall from an unexpired DHCP lease before the client sends traffic');
+    'persistent controls must recover safe address-dependent rules from unexpired DHCP leases');
   assert(!production.includes('x86_control_bpf_unavailable') &&
     !production.includes('replace_control_maps'),
     'x86 client control availability must be independent of the rate-monitor BPF runtime');
@@ -184,6 +200,8 @@ async function main() {
 
   assert.strictEqual(module.mbpsToBps('4000', 4_000_000_000), 4_000_000_000);
   assert(String(module.reasonText('ifb_module_unavailable')).includes('IFB'));
+  assert(!String(module.reasonText('dae_upload_preempts_control')).includes('DAE 当前'));
+  assert(String(module.reasonText('identity_interface_unavailable')).includes('LAN'));
   assert.throws(() => module.mbpsToBps('4000.1', 4_000_000_000));
   assert.throws(() => module.mbpsToBps('0.001', 4_000_000_000));
   assert.strictEqual(module.mbpsToBps('', 4_000_000_000), 0);

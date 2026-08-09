@@ -11,9 +11,22 @@ use std::{
 
 use crate::control::{ApplyResult, ControlPlan, X86_MAX_RATE_BPS};
 
+/// DAE's LAN redirect can be shaped without bypassing DAE only when it uses
+/// the host-side veth egress.  Netkit's `bpf_redirect_peer` jumps directly
+/// into the peer namespace and skips this qdisc, so callers must fail closed
+/// instead of reporting a partial upload limit.
+pub fn dae_upload_path_available() -> Option<String> {
+    const DAE_DEVICE: &str = "dae0";
+    if !system::interface_exists(DAE_DEVICE) {
+        return None;
+    }
+    (system::link_kind(DAE_DEVICE).ok().flatten().as_deref() == Some("veth"))
+        .then(|| DAE_DEVICE.to_owned())
+}
+
 pub fn apply(plan: &ControlPlan) -> Result<ApplyResult, String> {
     if plan.rules.is_empty() {
-        cleanup(&plan.lan_device)?;
+        cleanup(plan)?;
         return Ok(probe(&plan.lan_device));
     }
     if !system::valid_interface_name(&plan.lan_device)
@@ -31,8 +44,13 @@ pub fn apply(plan: &ControlPlan) -> Result<ApplyResult, String> {
     let upload = plan
         .rules
         .iter()
-        .filter(|rule| rule.upload_bps != 0)
+        .filter(|rule| rule.upload_bps != 0 && !rule.upload_preempted)
         .collect::<Vec<_>>();
+    let upload_by_device = upload_rules_by_device(&upload);
+    let dae_upload = plan
+        .dae_upload_device
+        .as_deref()
+        .map(|device| (device, upload.as_slice()));
     let download = plan
         .rules
         .iter()
@@ -44,17 +62,28 @@ pub fn apply(plan: &ControlPlan) -> Result<ApplyResult, String> {
         system::require_program("ip")?;
         shaper::preflight(&plan.lan_device, &upload, &download, &plan.local_prefixes)?;
     }
-    if !upload.is_empty() {
-        classifier::preflight(&plan.lan_device, &plan.local_prefixes, &upload)?;
+    for (device, rules) in &upload_by_device {
+        classifier::preflight(device, &plan.local_prefixes, rules)?;
+    }
+    if let Some((device, rules)) = dae_upload {
+        classifier::preflight_egress(device, rules)?;
     }
     firewall::preflight(plan)?;
 
     // Deactivate redirection before changing the IFB tree. The new jump is
     // installed only after every queue and filter has been verified.
-    classifier::deactivate(&plan.lan_device)?;
+    for device in control_devices(plan) {
+        classifier::deactivate(&device)?;
+    }
+    if let Some(device) = plan.dae_upload_device.as_deref() {
+        classifier::deactivate_egress(device)?;
+    } else {
+        cleanup_dae_upload_classifier(None)?;
+    }
     let staged = (|| {
         if upload.is_empty() {
-            classifier::cleanup(&plan.lan_device)?;
+            cleanup_upload_classifiers(plan)?;
+            cleanup_dae_upload_classifier(plan.dae_upload_device.as_deref())?;
             shaper::cleanup_upload()?;
             ifb::cleanup()?;
         } else {
@@ -70,12 +99,22 @@ pub fn apply(plan: &ControlPlan) -> Result<ApplyResult, String> {
             shaper::activate_download(&plan.lan_device, &download, &plan.local_prefixes)?;
         }
         if !upload.is_empty() {
-            classifier::install(&plan.lan_device, &plan.local_prefixes, &upload)?;
+            for (device, rules) in &upload_by_device {
+                classifier::install(device, &plan.local_prefixes, rules)?;
+            }
+            if let Some(device) = plan.dae_upload_device.as_deref() {
+                classifier::install_egress(device, &upload)?;
+            }
+            for device in control_devices(plan) {
+                if !upload_by_device.contains_key(device.as_str()) {
+                    classifier::cleanup(&device)?;
+                }
+            }
         }
         Ok::<(), String>(())
     })();
     if let Err(error) = staged {
-        rollback(&plan.lan_device);
+        rollback(plan);
         return Err(error);
     }
 
@@ -136,7 +175,9 @@ pub fn observe(plan: &ControlPlan, previous: &ApplyResult) -> ApplyResult {
 
     let current = verification_snapshot(plan);
     let expected = plan.rules.iter().fold(0usize, |count, rule| {
-        count + usize::from(rule.upload_bps != 0) + usize::from(rule.download_bps != 0)
+        count
+            + usize::from(rule.upload_bps != 0 && !rule.upload_preempted)
+            + usize::from(rule.download_bps != 0)
     });
     let mut verified = 0usize;
     for rule in &plan.rules {
@@ -146,6 +187,7 @@ pub fn observe(plan: &ControlPlan, previous: &ApplyResult) -> ApplyResult {
             .copied()
             .unwrap_or(0);
         let upload_verified = rule.upload_bps != 0
+            && !rule.upload_preempted
             && (previous_directions & 1 != 0
                 || verification_delta(
                     previous,
@@ -188,12 +230,19 @@ pub fn observe(plan: &ControlPlan, previous: &ApplyResult) -> ApplyResult {
     next
 }
 
-pub fn cleanup(lan_device: &str) -> Result<(), String> {
+pub fn cleanup(plan: &ControlPlan) -> Result<(), String> {
     let mut errors = Vec::new();
+    for device in control_devices(plan) {
+        if let Err(error) = classifier::cleanup(&device) {
+            errors.push(error);
+        }
+    }
+    if let Err(error) = cleanup_dae_upload_classifier(plan.dae_upload_device.as_deref()) {
+        errors.push(error);
+    }
     for result in [
-        classifier::cleanup(lan_device),
-        firewall::cleanup(lan_device),
-        shaper::cleanup_download(lan_device),
+        firewall::cleanup(&plan.lan_device),
+        shaper::cleanup_download(&plan.lan_device),
         shaper::cleanup_upload(),
         ifb::cleanup(),
     ] {
@@ -258,18 +307,67 @@ fn probe(lan_device: &str) -> ApplyResult {
     }
 }
 
-fn rollback(lan_device: &str) {
-    let _ = classifier::cleanup(lan_device);
-    let _ = firewall::cleanup(lan_device);
-    let _ = shaper::cleanup_download(lan_device);
+fn rollback(plan: &ControlPlan) {
+    let _ = cleanup_upload_classifiers(plan);
+    let _ = cleanup_dae_upload_classifier(plan.dae_upload_device.as_deref());
+    let _ = firewall::cleanup(&plan.lan_device);
+    let _ = shaper::cleanup_download(&plan.lan_device);
     let _ = shaper::cleanup_upload();
     let _ = ifb::cleanup();
+}
+
+fn upload_rules_by_device<'a>(
+    rules: &[&'a crate::control::ActiveRule],
+) -> BTreeMap<&'a str, Vec<&'a crate::control::ActiveRule>> {
+    let mut grouped = BTreeMap::<&str, Vec<_>>::new();
+    for rule in rules {
+        grouped
+            .entry(rule.interface.as_str())
+            .or_default()
+            .push(*rule);
+    }
+    grouped
+}
+
+fn control_devices(plan: &ControlPlan) -> BTreeSet<String> {
+    plan.control_devices
+        .iter()
+        .chain(plan.rules.iter().map(|rule| &rule.interface))
+        .filter(|device| system::valid_interface_name(device))
+        .cloned()
+        .collect()
+}
+
+fn cleanup_upload_classifiers(plan: &ControlPlan) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for device in control_devices(plan) {
+        if let Err(error) = classifier::cleanup(&device) {
+            errors.push(error);
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join(";"))
+    }
+}
+
+fn cleanup_dae_upload_classifier(active_device: Option<&str>) -> Result<(), String> {
+    let device = active_device.unwrap_or("dae0");
+    if system::interface_exists(device) {
+        classifier::cleanup_egress(device)?;
+    }
+    Ok(())
 }
 
 fn queue_drop_snapshot(plan: &ControlPlan) -> BTreeMap<String, u64> {
     let mut counters = BTreeMap::new();
     if let Ok(upload) = shaper::queue_drops(ifb::DEVICE) {
-        for rule in plan.rules.iter().filter(|rule| rule.upload_bps != 0) {
+        for rule in plan
+            .rules
+            .iter()
+            .filter(|rule| rule.upload_bps != 0 && !rule.upload_preempted)
+        {
             if let Some(count) = upload.get(&format!("{:x}:", rule.class_minor)) {
                 counters.insert(
                     verification_key(&rule.identity_key, "upload_queue_drops"),
@@ -294,7 +392,11 @@ fn queue_drop_snapshot(plan: &ControlPlan) -> BTreeMap<String, u64> {
 fn verification_snapshot(plan: &ControlPlan) -> BTreeMap<String, u64> {
     let mut counters = BTreeMap::new();
     if let Ok(upload) = shaper::class_bytes(ifb::DEVICE) {
-        for rule in plan.rules.iter().filter(|rule| rule.upload_bps != 0) {
+        for rule in plan
+            .rules
+            .iter()
+            .filter(|rule| rule.upload_bps != 0 && !rule.upload_preempted)
+        {
             if let Some(bytes) = upload.get(&format!("7a20:{:x}", rule.class_minor)) {
                 counters.insert(
                     verification_key(&rule.identity_key, "upload_class_bytes"),
@@ -352,6 +454,47 @@ fn queue_overflow_identities(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn upload_rule(identity: &str, interface: &str, minor: u16) -> crate::control::ActiveRule {
+        crate::control::ActiveRule {
+            identity_key: identity.into(),
+            interface: interface.into(),
+            upload_preempted: false,
+            ips: vec!["192.0.2.9".parse().unwrap()],
+            upload_bps: 10_000_000,
+            download_bps: 0,
+            internet_disabled: false,
+            class_minor: minor,
+        }
+    }
+
+    #[test]
+    fn upload_rules_are_grouped_by_their_observed_interfaces() {
+        let first = upload_rule("02:00:00:00:00:01@lan", "br-lan", 0x101);
+        let second = upload_rule("02:00:00:00:00:02@guest", "br-guest", 0x102);
+        let third = upload_rule("02:00:00:00:00:03@guest", "br-guest", 0x103);
+        let grouped = upload_rules_by_device(&[&first, &second, &third]);
+
+        assert_eq!(grouped["br-lan"].len(), 1);
+        assert_eq!(grouped["br-guest"].len(), 2);
+    }
+
+    #[test]
+    fn cleanup_devices_include_configured_and_live_edges() {
+        let rule = upload_rule("02:00:00:00:00:01@guest", "br-guest", 0x101);
+        let plan = ControlPlan {
+            lan_device: "br-lan".into(),
+            control_devices: vec!["br-lan".into(), "br-iot".into()],
+            dae_upload_device: None,
+            local_prefixes: Vec::new(),
+            rules: vec![rule],
+        };
+
+        assert_eq!(
+            control_devices(&plan),
+            BTreeSet::from(["br-guest".into(), "br-iot".into(), "br-lan".into()])
+        );
+    }
 
     #[test]
     fn queue_overflow_is_scoped_to_the_changed_client() {
