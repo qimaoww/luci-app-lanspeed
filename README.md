@@ -4,13 +4,13 @@
 > 
 `luci-app-lanspeed` 为 ImmortalWrt / OpenWrt 提供 LAN 客户端实时速率、连接详情、运行诊断与配置页面。当前版本为 `1.1.6-r3`。
 
-x86_64 使用独立 TC-BPF 路径，并支持客户端限速与禁网；Qualcomm aarch64 NSS 使用 Access Edge 提供客户端总速率，ECM/NSS 与 TC-BPF 只做路径分类。两套平台代码独立编译，不交叉探测或展示。
+x86_64 使用独立 TC-BPF 路径；Qualcomm aarch64 NSS 使用 Access Edge 提供客户端总速率，ECM/NSS 与 TC-BPF 只做路径分类。两套平台的测速和客户端控制代码独立编译，不交叉探测或回退。
 
 ## 快速导航
 
 | 层级 | 页面 | 主要内容 |
 |---|---|---|
-| 使用 | [使用指南](docs/guide/usage.md) | [界面入口](docs/guide/usage.md#界面入口) · [客户端控制](docs/guide/usage.md#x86-客户端控制) · [配置](docs/guide/usage.md#配置) · [ubus](docs/guide/usage.md#ubus-调试) |
+| 使用 | [使用指南](docs/guide/usage.md) | [界面入口](docs/guide/usage.md#界面入口) · [客户端控制](docs/guide/usage.md#客户端控制) · [配置](docs/guide/usage.md#配置) · [ubus](docs/guide/usage.md#ubus-调试) |
 | 原理 | [平台与采集](docs/guide/platforms.md) | [平台边界](docs/guide/platforms.md#平台模块) · [x86](docs/guide/platforms.md#x86tc-bpf) · [NSS](docs/guide/platforms.md#qualcomm-nss) · [融合语义](docs/guide/platforms.md#access-edge-与分类语义) |
 | 运维 | [部署与排障](docs/guide/operations.md) | [依赖](docs/guide/operations.md#运行依赖) · [内核配置](docs/guide/operations.md#内核配置) · [告警](docs/guide/operations.md#可见性与告警) · [排障](docs/guide/operations.md#故障排查) |
 | 开发 | [构建与发布](docs/guide/development.md) | [源码编译](docs/guide/development.md#安装与编译) · [测试](docs/guide/development.md#测试) · [项目结构](docs/guide/development.md#项目结构) · [发布](docs/guide/development.md#发布) |
@@ -19,7 +19,7 @@ x86_64 使用独立 TC-BPF 路径，并支持客户端限速与禁网；Qualcomm
 
 - 实时显示客户端上行、下行、连接数、主机名、地址和物理接入点。
 - 连接详情按远端 IP 聚合 TCP/UDP，可展开、排序、分页和暂停刷新。
-- x86 实时状态页支持独立上传/下载限速及禁用上网，LAN/NAS 和路由器管理流量不受影响。
+- 实时状态页支持独立上传/下载限速及禁用上网；x86 与 NSS 使用互不复用的平台实现。
 - NSS 总速率由 Access Edge 提供；ECM/NSS 与 TC-BPF 分类值不与总速率相加。
 - CT-Netlink 连接采集失败时回退 CT-Procfs；连接计数不参与客户端总速率。
 - 诊断页检查 RPC、BPF、ECM、Access Edge、接口和版本契约，并给出机器可读原因。
@@ -30,7 +30,7 @@ x86_64 使用独立 TC-BPF 路径，并支持客户端限速与禁网；Qualcomm
 | 目标 | 客户端总速率 | 客户端控制 | NSS/ECM |
 |---|---|---|---|
 | `x86_64` | 原生 TC-BPF | HTB + FQ；上传使用自有 IFB | 不编译、不探测、不展示 |
-| Qualcomm `aarch64` | Access Edge，必要时使用严格同窗回退 | 当前不提供 | ECM/NSS 与 TC-BPF 只做分类 |
+| Qualcomm `aarch64` | Access Edge，必要时使用严格同窗回退 | 每个客户端每个方向只有一个聚合执行器：下载在真实客户端出口使用 NSSHTB + NSSBFIFO，上传在真实客户端入口使用 NSS IGS 的 NSSHTB + NSSBFIFO；CPU/透明代理只被分类到同一队列 | ECM/NSS 与 TC-BPF 只做路径分类 |
 | 32 位 ARM、i386、MIPS | Unsupported | 不支持 | 不支持 |
 
 详细边界、采样窗口和融合公式见[平台与采集](docs/guide/platforms.md)。
@@ -76,6 +76,7 @@ SDK 构建与发布说明见[构建与发布](docs/guide/development.md)。
 - Wi-Fi station 与以太网计数口径不兼容时保留 `domain_mismatch`，不生成虚假覆盖率。
 - WDS、Mesh、共享下联和未验证组播只声明 Partial，不伪装为完整覆盖。
 - x86 控制不会覆盖外部 qdisc、IFB 或 nft 对象；冲突时拒绝应用并显示原因。
+- NSS 控制先按真实 N/S 同窗证明客户端身份和实际 hook；同一客户端同一方向只建立一个聚合队列。路径或可信 Access Edge 未证明时不发布限速分类。透明代理新建的 WAN socket 丢失客户端身份，因此不会在 WAN 侧反推归属。
 - 正常整形不主动丢包，但有限队列不能承诺任意持续超速下绝对零丢包；`drops` 增长会报告队列溢出。
 
 ## 包组成

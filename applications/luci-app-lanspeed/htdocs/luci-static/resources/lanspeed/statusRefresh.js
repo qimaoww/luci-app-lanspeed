@@ -70,7 +70,7 @@ function rpcErrorText(result) {
 
 function sampleSyncPending(viewState) {
 	var pair = viewState && viewState.livePair;
-	if (!pair || pair.retained === true || pair.aligned === true) return false;
+	if (!pair || pair.retained === true || pair.aligned === true || pair.renderable === true) return false;
 	return [
 		'pendingCoverageSampleMs',
 		'pendingClientSampleMs',
@@ -456,10 +456,10 @@ function refreshLive(viewState) {
 	var viewport = captureClientViewport(refs);
 	var status = viewState.status || {};
 	var nssProfile = fmt.nssPlatform(status);
-	viewState.showClientControl = !nssProfile;
-	if (refs.controlHeader) refs.controlHeader.hidden = nssProfile;
+	viewState.showClientControl = true;
+	if (refs.controlHeader) refs.controlHeader.hidden = false;
 	if (refs.clientsTable)
-		refs.clientsTable.setAttribute('data-client-control', nssProfile ? 'hidden' : 'shown');
+		refs.clientsTable.setAttribute('data-client-control', 'shown');
 	refreshIntervalControl(viewState, refs, status);
 	var clientsAll = fmt.asArray(viewState.clients && viewState.clients.clients);
 	var prefs = viewState.prefs;
@@ -667,8 +667,9 @@ function refreshLive(viewState) {
 						  ].join(' · ')
 						: ''
 				}, typeof c.udp_conns === 'number' ? String(c.udp_conns) : '-'),
-				stateCell
-			].concat(nssProfile ? [] : [ clientControl.cell(viewState, c) ]));
+				stateCell,
+				clientControl.cell(viewState, c)
+			]);
 		}));
 	}
 

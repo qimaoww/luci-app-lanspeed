@@ -10,6 +10,7 @@ use std::{
     os::unix::{fs::FileTypeExt, fs::OpenOptionsExt},
     path::Path,
     str::FromStr,
+    sync::Mutex,
     thread,
     time::{Duration, Instant},
 };
@@ -30,6 +31,7 @@ const SYNC_COUNTER_MAX_BYTES: u64 = 256;
 const SYNC_QUIET_MS: u64 = 20;
 const SYNC_POLL_MS: u64 = 5;
 const SYNC_SNAPSHOT_RETRIES: usize = 2;
+static OUTPUT_MASK_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NodeCounters {
@@ -356,8 +358,15 @@ fn parse_sync_counter(text: &str) -> io::Result<SyncRequestCounter> {
 }
 
 fn open_node_snapshot() -> io::Result<File> {
+    open_snapshot(NODE_OUTPUT_MASK)
+}
+
+pub(crate) fn open_snapshot(output_mask: &str) -> io::Result<File> {
+    let _guard = OUTPUT_MASK_LOCK
+        .lock()
+        .map_err(|_| io::Error::other("ECM state output-mask lock poisoned"))?;
     let old_mask = fs::read_to_string(OUTPUT_MASK_PATH)?;
-    fs::write(OUTPUT_MASK_PATH, NODE_OUTPUT_MASK)?;
+    fs::write(OUTPUT_MASK_PATH, output_mask)?;
     let opened = open_state_device();
     let restored = fs::write(OUTPUT_MASK_PATH, old_mask);
     match (opened, restored) {

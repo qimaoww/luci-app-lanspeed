@@ -24,6 +24,35 @@ const production = fs.readFileSync(path.join(root,
   'net/lanspeedd/rust/crates/lanspeedd/src/production.rs'), 'utf8');
 const nssModule = fs.readFileSync(path.join(root,
   'net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/mod.rs'), 'utf8');
+const ecmNode = fs.readFileSync(path.join(root,
+  'net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/ecm_node.rs'), 'utf8');
+const nssControlDir = path.join(root,
+  'net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/control');
+const nssControlModules = [
+  'mod.rs', 'capability.rs', 'classifier.rs', 'ecm_qos.rs', 'firewall.rs', 'legacy.rs', 'qdisc.rs',
+  'rollback.rs', 'shaper.rs', 'state.rs', 'system.rs', 'telemetry.rs', 'topology.rs'
+];
+const nssControlByModule = Object.fromEntries(nssControlModules.map((name) => [
+  name, fs.readFileSync(path.join(nssControlDir, name), 'utf8')
+]));
+const nssControl = Object.values(nssControlByModule).join('\n');
+const nssProductionControl = Object.values(nssControlByModule)
+  .map((value) => value.split('#[cfg(test)]')[0]).join('\n');
+const nssCpuPathDir = path.join(nssControlDir, 'cpu_path');
+const nssCpuPathModules = [
+  'mod.rs', 'block.rs', 'classifier.rs', 'ifb.rs', 'probe.rs', 'shaper.rs', 'tagger.rs'
+];
+const nssCpuPathByModule = Object.fromEntries(nssCpuPathModules.map((name) => [
+  name, fs.readFileSync(path.join(nssCpuPathDir, name), 'utf8')
+]));
+const nssCpuPath = Object.values(nssCpuPathByModule).join('\n');
+const nssCpuPathProduction = Object.values(nssCpuPathByModule)
+  .map((value) => value.split('#[cfg(test)]')[0]).join('\n');
+const nssKmodSource = fs.readFileSync(path.join(root,
+  'net/lanspeed-nss-control/src/lanspeed_nss_control.c'), 'utf8');
+const nssCpuBlockProduction = nssCpuPathByModule['block.rs'].split('#[cfg(test)]')[0];
+const nssCpuProbeProduction = nssCpuPathByModule['probe.rs'].split('#[cfg(test)]')[0];
+const daemonMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
 const statusOverview = fs.readFileSync(path.join(root,
   'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/statusOverview.js'), 'utf8');
 const statusRefresh = fs.readFileSync(path.join(root,
@@ -198,11 +227,142 @@ async function main() {
     'x86 client control availability must be independent of the rate-monitor BPF runtime');
   assert(!fs.existsSync(path.join(root,
     'net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/control.rs')) &&
-    !nssModule.includes('mod control') &&
-    production.includes('#[cfg(not(feature = "nss-platform"))]\n    control: ControlManager') &&
-    statusOverview.includes('showClientControl: !fmt.nssPlatform(normalized.status)') &&
-    statusRefresh.includes("nssProfile ? [] : [ clientControl.cell(viewState, c) ]"),
-    'NSS builds and status rows must not expose the x86-only client-control implementation');
+    fs.readdirSync(nssControlDir).filter((name) => name.endsWith('.rs')).sort().join(',') ===
+      nssControlModules.slice().sort().join(','),
+    'NSS client control must be a fixed modular implementation rather than a monolithic source file');
+  for (const name of [
+    'capability', 'classifier', 'cpu_path', 'ecm_qos', 'firewall', 'legacy', 'qdisc', 'rollback', 'shaper',
+    'state', 'system', 'telemetry', 'topology'
+  ])
+    assert(nssControlByModule['mod.rs'].includes(`mod ${name};`),
+      `NSS control/mod.rs must declare ${name}`);
+  assert(ecmNode.includes('pub(crate) fn open_snapshot') &&
+    ecmNode.includes('OUTPUT_MASK_LOCK') &&
+    nssControlByModule['ecm_qos.rs'].includes('NSS_ACCELERATED') &&
+    nssControlByModule['ecm_qos.rs'].includes('flow_qos_tag') &&
+    nssControlByModule['ecm_qos.rs'].includes('return_qos_tag') &&
+    nssControlByModule['telemetry.rs'].includes('ecm_qos::tagged_directions(plan)') &&
+    nssControlByModule['telemetry.rs'].includes('directions & bit != 0') &&
+    nssControlByModule['telemetry.rs'].includes('direction_counter_increased('),
+    'NSS verification must combine accelerated ECM QoS tags with owned class counters');
+  assert(nssModule.includes('#[cfg(feature = "nss-platform")]\npub(crate) mod control;') &&
+    production.includes('control: ControlManager') &&
+    !production.includes('client_control_x86_only') &&
+    statusOverview.includes('showClientControl: true') &&
+    statusRefresh.includes('clientControl.cell(viewState, c)') &&
+    !statusRefresh.includes("nssProfile ? [] : [ clientControl.cell(viewState, c) ]"),
+    'NSS builds and real-time status rows must expose their isolated client-control implementation');
+  assert(nssControlByModule['qdisc.rs'].includes('"nsshtb"') &&
+    nssControlByModule['qdisc.rs'].includes('"nssbfifo"') &&
+    nssControlByModule['qdisc.rs'].includes('"accel_mode",\n            "0"') &&
+    nssControlByModule['firewall.rs'].includes('meta priority set ip saddr map @upload4') &&
+    nssControlByModule['firewall.rs'].includes('meta priority set ip daddr map @download4') &&
+    nssControlByModule['firewall.rs'].includes('meta priority set ip6 saddr map @upload6') &&
+    nssControlByModule['firewall.rs'].includes('meta priority set ip6 daddr map @download6') &&
+    !nssControlByModule['qdisc.rs'].includes('"htb"') &&
+    !nssControlByModule['qdisc.rs'].includes('"fq_codel"'),
+    'NSS-visible directions must retain NSSHTB/NSSBFIFO and dual-stack QoS tags');
+  assert(fs.readdirSync(nssCpuPathDir).filter((name) => name.endsWith('.rs')).sort().join(',') ===
+      nssCpuPathModules.slice().sort().join(',') &&
+    nssCpuPathByModule['ifb.rs'].includes('DEVICE_PREFIX') &&
+    nssCpuPathByModule['ifb.rs'].includes('lanspeedd:nss-igs-upload:v3:') &&
+    nssCpuPathByModule['ifb.rs'].includes('IgsState::Published') &&
+    nssCpuPathByModule['ifb.rs'].includes('IgsState::Degraded') &&
+    !nssCpuPathByModule['ifb.rs'].includes('ifb-nss-lsu') &&
+    !nssCpuPathByModule['ifb.rs'].includes('ifb-nss-lsd') &&
+    nssCpuPathByModule['classifier.rs'].includes('Direction::Upload => "ingress"') === false &&
+    nssCpuPathByModule['mod.rs'].includes('shaper::stage(plan)') &&
+	    nssCpuPathByModule['mod.rs'].includes('classifier::install(plan)') &&
+	    nssCpuPathByModule['classifier.rs'].includes('ifb::publish') &&
+	    !nssCpuPathByModule['classifier.rs'].includes('"action",\n            "nssmirred"') &&
+	    nssCpuPathByModule['classifier.rs'].includes('const UPLOAD_CHAIN: u32 = 0x7e22') &&
+	    nssCpuPathByModule['classifier.rs'].includes('fn edge_ingress_mac_matches') &&
+	    nssCpuPathByModule['classifier.rs'].includes('mac_u32_matches(Direction::Download, rule.mac)') &&
+	    nssCpuPathByModule['classifier.rs'].includes('"action", "skbedit", "priority"') &&
+	    nssCpuPathByModule['classifier.rs'].includes('"action", "mirred", "egress"') &&
+	    nssCpuPathByModule['classifier.rs'].includes('exact_upload_redirect_actions') &&
+	    nssCpuPathByModule['classifier.rs'].indexOf('add_upload_prefix_pass(edge') <
+	      nssCpuPathByModule['classifier.rs'].indexOf('add_upload_redirect(edge') &&
+			nssCpuPathByModule['classifier.rs'].includes('"gact"') &&
+			nssCpuPathByModule['classifier.rs'].includes('"skbedit"') &&
+		nssCpuProbeProduction.includes('hook prerouting') &&
+		nssCpuProbeProduction.includes('hook postrouting') &&
+		nssCpuProbeProduction.includes('ip daddr @local4 return') &&
+		nssCpuProbeProduction.includes('ip saddr @local4 return') &&
+		nssCpuProbeProduction.includes('counter comment') &&
+		!nssCpuProbeProduction.includes(' redirect ') &&
+		!nssCpuProbeProduction.includes(' drop') &&
+		!nssCpuProbeProduction.includes(' reject') &&
+		nssCpuBlockProduction.includes('hook prerouting priority -30') &&
+		nssCpuBlockProduction.includes('hook postrouting priority -30') &&
+		nssCpuBlockProduction.indexOf('ip daddr @local4 return') <
+			nssCpuBlockProduction.indexOf('counter drop comment') &&
+		nssCpuBlockProduction.indexOf('ip saddr @local4 return') <
+			nssCpuBlockProduction.indexOf('counter drop comment') &&
+		nssCpuBlockProduction.includes('ether {mac_field}') &&
+		nssCpuBlockProduction.includes('{address_set} counter drop comment') &&
+		!nssCpuBlockProduction.includes(' reject') &&
+		!nssCpuBlockProduction.includes(' redirect ') &&
+	    nssCpuPathByModule['shaper.rs'].includes('"nsshtb"') &&
+	    nssCpuPathByModule['shaper.rs'].includes('"nssbfifo"') &&
+	    nssCpuPathByModule['shaper.rs'].includes('sync_igs_tree') &&
+	    nssCpuPathByModule['tagger.rs'].includes('tag_config') &&
+	    nssCpuPathByModule['tagger.rs'].includes('Record::Local') &&
+	    nssCpuPathByModule['tagger.rs'].includes('Record::Client') &&
+	    !nssCpuPathProduction.includes('police') &&
+	    !nssCpuPathProduction.includes('nft limit') &&
+    !nssCpuPathProduction.includes('platform::x86::control') &&
+    nssKmodSource.includes('NSS_IF_SET_IGS_NODE') &&
+    nssKmodSource.includes('nss_if_set_nexthop') &&
+    nssKmodSource.includes('NSS_IF_CLEAR_IGS_NODE') &&
+    nssKmodSource.includes('nss_if_reset_nexthop') &&
+    nssKmodSource.includes('LANSPEED_IGS_DEGRADED') &&
+    nssKmodSource.includes('igs_flow_qos_tag') &&
+    nssKmodSource.includes('igs_reply_qos_tag') &&
+	    nssKmodSource.includes('NF_IP_PRI_CONNTRACK + 2') &&
+	    nssControlByModule['capability.rs'].includes('"act_mirred"') &&
+	    nssKmodSource.indexOf('lanspeed_igs_config(edge, NSS_IF_SET_IGS_NODE') <
+      nssKmodSource.indexOf('nss_if_set_nexthop') &&
+    nssKmodSource.indexOf('nss_if_reset_nexthop') <
+      nssKmodSource.indexOf('lanspeed_igs_config(entry->edge, NSS_IF_CLEAR_IGS_NODE'),
+    'NSS CPU path must use one aggregate NSS IGS queue with transactional edge publication');
+  assert(control.includes('nss_proven_directions') &&
+    control.includes('nss_cpu_directions') &&
+    control.includes('nss_active_nss_directions') &&
+    control.includes('nss_active_cpu_directions') &&
+    production.includes('observe_nss_paths(nss_control_path_observations(') &&
+    nssControlByModule['telemetry.rs'].includes('plan.nss_direction_proven') &&
+    nssControlByModule['telemetry.rs'].includes('plan.nss_direction_uses_cpu') &&
+    nssControlByModule['telemetry.rs'].includes('active_executors_verified(') &&
+    nssControlByModule['telemetry.rs'].includes('cpu_path::verify(plan)') &&
+    nssControlByModule['telemetry.rs'].includes('firewall::verify(plan, true)'),
+    'each observed packet path must select one executor and reverify all owned objects');
+  const nssApply = nssControlByModule['mod.rs'];
+  const firstConntrackRefresh = nssApply.indexOf('classifier::refresh_connections(plan)');
+  const secondConntrackRefresh = nssApply.indexOf(
+    'classifier::refresh_connections(plan)', firstConntrackRefresh + 1);
+  assert(nssControlByModule['capability.rs'].includes('if needs_aggregate_executor(plan)') &&
+    nssControlByModule['firewall.rs'].includes('nss_direction_enabled(plan, rule') &&
+    nssApply.indexOf('classifier::preflight(plan)') < firstConntrackRefresh &&
+    nssApply.indexOf('cpu_path::quiesce(plan)') < firstConntrackRefresh &&
+    firstConntrackRefresh < nssApply.indexOf('shaper::stage(plan, topology)') &&
+    nssApply.indexOf('classifier::commit(plan)') < secondConntrackRefresh,
+    'NSS must clear old tags before queue mutation and refresh new flows after QoS maps commit');
+  assert(!nssProductionControl.includes('daed') && !nssProductionControl.includes('dae_') &&
+    production.includes('#[cfg(not(feature = "nss-platform"))]\n    fn refresh_controls') &&
+    production.includes('#[cfg(feature = "nss-platform")]\n    fn refresh_controls'),
+    'NSS control must remain independent of the x86 DAE topology and lifecycle path');
+  const nssTopologyProduction = nssControlByModule['topology.rs'].split('#[cfg(test)]')[0];
+  assert(nssTopologyProduction.includes('fn nss_edge_device') &&
+    nssTopologyProduction.includes('/sys/class/net/{device}/device') &&
+    nssTopologyProduction.includes('/sys/class/net/{device}/phy80211') &&
+    !nssTopologyProduction.includes('"wan"') &&
+    !nssTopologyProduction.includes('"br-lan"') &&
+    daemonMakefile.includes('LANSPEED_NSS_CONTROL_DEPENDS:=+TARGET_qualcommax:tc-full') &&
+    daemonMakefile.includes('TARGET_qualcommax:kmod-ifb') &&
+    daemonMakefile.includes('TARGET_qualcommax:kmod-sched-core') &&
+    daemonMakefile.includes('LANSPEED_X86_CONTROL_DEPENDS:=+TARGET_x86:tc-full +TARGET_x86:ip +TARGET_x86:nftables +TARGET_x86:conntrack +TARGET_x86:kmod-ifb +TARGET_x86:kmod-sched-core +TARGET_x86:kmod-sched'),
+    'NSS targets and hook devices must be dynamic while scheduler dependencies stay platform-scoped');
   const hotRefresh = production.match(/fn refresh_connections[\s\S]*?\n    fn collect\(/)?.[0] || '';
   assert(hotRefresh.includes('self.decorate_controls(&mut snapshot.clients);') &&
     !hotRefresh.includes('self.refresh_controls(&mut snapshot.clients);'),

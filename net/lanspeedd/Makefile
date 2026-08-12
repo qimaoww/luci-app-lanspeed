@@ -14,6 +14,7 @@ LANSPEED_BUILD_BPF ?= $(if $(CONFIG_PACKAGE_lanspeedd-bpf),1,0)
 LANSPEED_BPF_ENABLED:=$(filter 1,$(LANSPEED_BUILD_BPF))
 LANSPEED_NSS_ECM_BPF_ENABLED:=$(filter aarch64,$(ARCH))
 LANSPEED_X86_CONTROL_DEPENDS:=+TARGET_x86:tc-full +TARGET_x86:ip +TARGET_x86:nftables +TARGET_x86:conntrack +TARGET_x86:kmod-ifb +TARGET_x86:kmod-sched-core +TARGET_x86:kmod-sched
+LANSPEED_NSS_CONTROL_DEPENDS:=+TARGET_qualcommax:tc-full +TARGET_qualcommax:ip +TARGET_qualcommax:nftables +TARGET_qualcommax:conntrack +TARGET_qualcommax:kmod-ifb +TARGET_qualcommax:kmod-sched-core +TARGET_qualcommax:kmod-qca-nss-drv-igs +TARGET_qualcommax:kmod-lanspeed-nss-control
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)$(if $(LANSPEED_BPF_ENABLED),-bpf,)
 
 BPF_LINKER_ARCHIVE:=bpf-linker-0.10.3-x86_64-unknown-linux-musl.tar.gz
@@ -41,7 +42,7 @@ define Package/lanspeedd
   CATEGORY:=Network
   TITLE:=LAN speed monitor daemon
   SOURCE:=lanspeedd
-  DEPENDS:=@(aarch64||x86_64) +libgcc +kmod-nf-conntrack-netlink $(LANSPEED_X86_CONTROL_DEPENDS)
+  DEPENDS:=@(aarch64||x86_64) +libgcc +kmod-nf-conntrack-netlink $(LANSPEED_X86_CONTROL_DEPENDS) $(LANSPEED_NSS_CONTROL_DEPENDS)
 endef
 
 define Package/lanspeedd/description
@@ -131,8 +132,13 @@ define Package/lanspeedd/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/target/$(RUSTC_TARGET_ARCH)/release/lanspeedd $(1)/usr/sbin/lanspeedd
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/etc/init.d/lanspeedd $(1)/etc/init.d/lanspeedd
-	$(INSTALL_DIR) $(1)/etc/hotplug.d/iface
-	$(INSTALL_BIN) ./files/etc/hotplug.d/iface/90-lanspeedd $(1)/etc/hotplug.d/iface/90-lanspeedd
+	if [ "$(CONFIG_TARGET_qualcommax)" = "y" ]; then \
+		$(SED) '/procd_set_param respawn/a\	procd_set_param term_timeout 15' $(1)/etc/init.d/lanspeedd; \
+	fi
+	if [ "$(CONFIG_TARGET_qualcommax)" != "y" ]; then \
+		$(INSTALL_DIR) $(1)/etc/hotplug.d/iface; \
+		$(INSTALL_BIN) ./files/etc/hotplug.d/iface/90-lanspeedd $(1)/etc/hotplug.d/iface/90-lanspeedd; \
+	fi
 	$(INSTALL_DIR) $(1)/etc/config
 	if [ "$(ARCH)" = "x86_64" ]; then \
 		$(INSTALL_CONF) ./files/etc/config/lanspeed.x86 $(1)/etc/config/lanspeed; \

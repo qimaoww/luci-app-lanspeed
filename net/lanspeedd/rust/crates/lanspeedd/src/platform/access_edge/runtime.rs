@@ -317,7 +317,9 @@ impl AccessEdgeRuntime {
         // Ethernet trust is proved by the FDB source alone. Keep the public
         // snapshot conservative when Wi-Fi is stale, but do not demote an
         // independent wired attachment because an NL80211 dump failed.
-        let update = self.topology.reconcile(observations, self.topology_complete);
+        let update = self
+            .topology
+            .reconcile(observations, self.topology_complete);
         for key in update.removed.iter().chain(update.changed.iter()) {
             for direction in [Direction::Tx, Direction::Rx] {
                 for source in [RateSource::EdgePort, RateSource::EdgeWifi] {
@@ -543,7 +545,7 @@ impl AccessEdgeRuntime {
                     failure: Some(MuxFailure::CounterReset),
                     reason_codes: vec!["counter_reset".to_owned()],
                 }
-            },
+            }
             CounterUpdate::Segment(segment) => {
                 let history = self
                     .histories

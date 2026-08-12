@@ -21,6 +21,8 @@ use crate::{
 };
 
 pub const X86_MAX_RATE_BPS: u64 = 100_000_000_000;
+#[cfg(feature = "nss-platform")]
+pub const NSS_MAX_RATE_BPS: u64 = 4_000_000_000;
 pub const MIN_RATE_BPS: u64 = 8_000;
 pub const MAX_CONTROL_RULES: usize = 64;
 pub const MIN_QUEUE_BYTES: u64 = 256 * 1024;
@@ -30,8 +32,14 @@ const CONTROL_DHCP_LEASE_MAX_BYTES: u64 = 1024 * 1024;
 const CONTROL_DHCP_LEASE_MAX_LINES: usize = 4096;
 const CONTROL_DHCP_LEASE_MAX_LINE_BYTES: usize = 512;
 const LOCAL_PREFIX_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+#[cfg(not(feature = "nss-platform"))]
 const FIRST_CLASS_MINOR: u16 = 0x100;
+#[cfg(not(feature = "nss-platform"))]
 const LAST_CLASS_MINOR: u16 = 0xfffe;
+#[cfg(feature = "nss-platform")]
+const FIRST_CLASS_MINOR: u16 = 0x7c00;
+#[cfg(feature = "nss-platform")]
+const LAST_CLASS_MINOR: u16 = 0x7cff;
 const DEFAULT_FIFO_HANDLE_MINOR: u16 = 0x1000;
 static UCI_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -84,6 +92,77 @@ pub struct ControlPlan {
     pub dae_upload_devices: Vec<String>,
     pub local_prefixes: Vec<(IpAddr, u8)>,
     pub rules: Vec<ActiveRule>,
+    #[cfg(feature = "nss-platform")]
+    pub nss_proven_directions: BTreeMap<String, u8>,
+    #[cfg(feature = "nss-platform")]
+    pub nss_path_ready_directions: BTreeMap<String, u8>,
+    #[cfg(feature = "nss-platform")]
+    pub nss_cpu_directions: BTreeMap<String, u8>,
+    /// Directions currently observed on the accelerated NSS path. NSS and CPU
+    /// observations are path evidence for one aggregate edge executor; they
+    /// never authorize independent per-path rate buckets.
+    #[cfg(feature = "nss-platform")]
+    pub nss_active_nss_directions: BTreeMap<String, u8>,
+    #[cfg(feature = "nss-platform")]
+    pub nss_active_cpu_directions: BTreeMap<String, u8>,
+    #[cfg(feature = "nss-platform")]
+    pub conntrack_cleanup_ips: BTreeSet<IpAddr>,
+}
+
+#[cfg(feature = "nss-platform")]
+impl ControlPlan {
+    pub fn nss_direction_proven(&self, identity_key: &str, direction: u8) -> bool {
+        self.nss_proven_directions
+            .get(identity_key)
+            .is_some_and(|value| value & direction != 0)
+    }
+
+    pub fn nss_direction_path_ready(&self, identity_key: &str, direction: u8) -> bool {
+        self.nss_path_ready_directions
+            .get(identity_key)
+            .is_some_and(|value| value & direction != 0)
+    }
+
+    pub fn nss_direction_uses_cpu(&self, identity_key: &str, direction: u8) -> bool {
+        self.nss_cpu_directions
+            .get(identity_key)
+            .is_some_and(|value| value & direction != 0)
+    }
+
+    pub fn nss_direction_active_nss(&self, identity_key: &str, direction: u8) -> bool {
+        self.nss_active_nss_directions
+            .get(identity_key)
+            .is_some_and(|value| value & direction != 0)
+    }
+
+    pub fn nss_direction_active_cpu(&self, identity_key: &str, direction: u8) -> bool {
+        self.nss_active_cpu_directions
+            .get(identity_key)
+            .is_some_and(|value| value & direction != 0)
+    }
+}
+
+#[cfg(feature = "nss-platform")]
+pub const NSS_CPU_UPLOAD: u8 = 1;
+#[cfg(feature = "nss-platform")]
+pub const NSS_CPU_DOWNLOAD: u8 = 2;
+
+#[cfg(feature = "nss-platform")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NssPathObservation {
+    /// Directions backed by a current source-aligned path observation. NSS
+    /// startup may use one complete classifier epoch; it still requires an
+    /// independently installed Internet-only edge probe and fresh bytes.
+    pub valid_directions: u8,
+    /// Valid directions that carried Internet traffic in the current window.
+    pub active_directions: u8,
+    /// Active directions whose observed traffic is fully assigned to the
+    /// independently proven NSS and/or CPU paths.
+    pub proven_directions: u8,
+    /// Active traffic proven on the NSS accelerated path.
+    pub nss_directions: u8,
+    /// Active traffic proven on the trusted CPU path.
+    pub cpu_directions: u8,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -110,6 +189,10 @@ pub struct ApplyResult {
     pub queue_drop_counters: BTreeMap<String, u64>,
     pub class_counter_baselines: BTreeMap<String, u64>,
     pub verified_directions: BTreeMap<String, u8>,
+    #[cfg(feature = "nss-platform")]
+    pub nss_verified_directions: BTreeMap<String, u8>,
+    #[cfg(feature = "nss-platform")]
+    pub cpu_verified_directions: BTreeMap<String, u8>,
     pub verification_failures: BTreeMap<String, String>,
 }
 
@@ -124,6 +207,10 @@ impl ApplyResult {
             queue_drop_counters: BTreeMap::new(),
             class_counter_baselines: BTreeMap::new(),
             verified_directions: BTreeMap::new(),
+            #[cfg(feature = "nss-platform")]
+            nss_verified_directions: BTreeMap::new(),
+            #[cfg(feature = "nss-platform")]
+            cpu_verified_directions: BTreeMap::new(),
             verification_failures: BTreeMap::new(),
         }
     }
@@ -150,6 +237,24 @@ pub struct ControlManager {
     last_local_prefix_refresh: Option<Instant>,
     max_rate_bps: u64,
     dirty: bool,
+    #[cfg(feature = "nss-platform")]
+    nss_proven_directions: BTreeMap<String, u8>,
+    #[cfg(feature = "nss-platform")]
+    nss_path_ready_directions: BTreeMap<String, u8>,
+    #[cfg(feature = "nss-platform")]
+    nss_cpu_directions: BTreeMap<String, u8>,
+    #[cfg(feature = "nss-platform")]
+    nss_active_nss_directions: BTreeMap<String, u8>,
+    #[cfg(feature = "nss-platform")]
+    nss_active_cpu_directions: BTreeMap<String, u8>,
+    #[cfg(feature = "nss-platform")]
+    nss_attachment_generations: BTreeMap<String, (String, u64)>,
+    #[cfg(feature = "nss-platform")]
+    nss_reload_attachment_rebase_pending: bool,
+    #[cfg(feature = "nss-platform")]
+    conntrack_cleanup_ips: BTreeSet<IpAddr>,
+    #[cfg(feature = "nss-platform")]
+    pending_conntrack_identities: BTreeSet<String>,
 }
 
 impl ControlManager {
@@ -179,11 +284,249 @@ impl ControlManager {
             last_local_prefix_refresh: None,
             max_rate_bps: platform_max_rate_bps(),
             dirty: true,
+            #[cfg(feature = "nss-platform")]
+            nss_proven_directions: BTreeMap::new(),
+            #[cfg(feature = "nss-platform")]
+            nss_path_ready_directions: BTreeMap::new(),
+            #[cfg(feature = "nss-platform")]
+            nss_cpu_directions: BTreeMap::new(),
+            #[cfg(feature = "nss-platform")]
+            nss_active_nss_directions: BTreeMap::new(),
+            #[cfg(feature = "nss-platform")]
+            nss_active_cpu_directions: BTreeMap::new(),
+            #[cfg(feature = "nss-platform")]
+            nss_attachment_generations: BTreeMap::new(),
+            #[cfg(feature = "nss-platform")]
+            nss_reload_attachment_rebase_pending: false,
+            #[cfg(feature = "nss-platform")]
+            conntrack_cleanup_ips: BTreeSet::new(),
+            #[cfg(feature = "nss-platform")]
+            pending_conntrack_identities: BTreeSet::new(),
         })
+    }
+
+    /// Seed a read-only NSS reload candidate from the runtime that currently
+    /// owns the platform objects.  Path proof and verification are reusable
+    /// only when the persisted rules and LAN anchor are unchanged; the
+    /// candidate still runs a complete structural observation before commit.
+    #[cfg(feature = "nss-platform")]
+    pub(crate) fn inherit_nss_reload_state(&mut self, current: &Self) {
+        if self.rules != current.rules || self.lan_device != current.lan_device {
+            return;
+        }
+        self.live = current.live.clone();
+        self.result = current.result.clone();
+        self.control_devices
+            .extend(current.control_devices.iter().cloned());
+        self.preempted_upload_devices = current.preempted_upload_devices.clone();
+        self.dae_upload_devices = current.dae_upload_devices.clone();
+        self.dae_topology_known = current.dae_topology_known;
+        self.dae_active = current.dae_active;
+        self.local_prefixes = current.local_prefixes.clone();
+        self.local_prefixes_ready = current.local_prefixes_ready;
+        self.last_local_prefix_refresh = current.last_local_prefix_refresh;
+        self.dirty = current.dirty;
+        self.nss_proven_directions = current.nss_proven_directions.clone();
+        self.nss_path_ready_directions = current.nss_path_ready_directions.clone();
+        self.nss_cpu_directions = current.nss_cpu_directions.clone();
+        self.nss_active_nss_directions = current.nss_active_nss_directions.clone();
+        self.nss_active_cpu_directions = current.nss_active_cpu_directions.clone();
+        self.nss_attachment_generations = current.nss_attachment_generations.clone();
+        self.nss_reload_attachment_rebase_pending = true;
+        self.conntrack_cleanup_ips = current.conntrack_cleanup_ips.clone();
+        self.pending_conntrack_identities = current.pending_conntrack_identities.clone();
+    }
+
+    #[cfg(feature = "nss-platform")]
+    pub fn observe_nss_paths(&mut self, observations: BTreeMap<String, NssPathObservation>) {
+        let mut proven_next = BTreeMap::new();
+        let mut ready_next = BTreeMap::new();
+        let mut cpu_next = BTreeMap::new();
+        let mut active_nss_next = BTreeMap::new();
+        let mut active_cpu_next = BTreeMap::new();
+        for (identity_key, rule) in &self.rules {
+            let configured = (if rule.upload_bps != 0 {
+                NSS_CPU_UPLOAD
+            } else {
+                0
+            }) | (if rule.download_bps != 0 {
+                NSS_CPU_DOWNLOAD
+            } else {
+                0
+            });
+            let proven = self
+                .nss_proven_directions
+                .get(identity_key)
+                .copied()
+                .unwrap_or(0)
+                & configured;
+            let ready = self
+                .nss_path_ready_directions
+                .get(identity_key)
+                .copied()
+                .unwrap_or(0)
+                & configured;
+            let cpu = self
+                .nss_cpu_directions
+                .get(identity_key)
+                .copied()
+                .unwrap_or(0)
+                & configured;
+            if proven != 0 {
+                proven_next.insert(identity_key.clone(), proven);
+            }
+            let ready = ready & (proven | cpu);
+            if ready != 0 {
+                ready_next.insert(identity_key.clone(), ready);
+            }
+            if cpu != 0 {
+                cpu_next.insert(identity_key.clone(), cpu);
+            }
+            let nss_verified = self
+                .result
+                .nss_verified_directions
+                .get(identity_key)
+                .copied()
+                .unwrap_or(0);
+            let cpu_verified = self
+                .result
+                .cpu_verified_directions
+                .get(identity_key)
+                .copied()
+                .unwrap_or(0);
+            let pending_nss = self
+                .nss_active_nss_directions
+                .get(identity_key)
+                .copied()
+                .unwrap_or(0)
+                & configured
+                & !nss_verified;
+            let pending_cpu = self
+                .nss_active_cpu_directions
+                .get(identity_key)
+                .copied()
+                .unwrap_or(0)
+                & configured
+                & !cpu_verified;
+            if pending_nss != 0 {
+                active_nss_next.insert(identity_key.clone(), pending_nss);
+            }
+            if pending_cpu != 0 {
+                active_cpu_next.insert(identity_key.clone(), pending_cpu);
+            }
+        }
+        for (identity_key, rule) in &self.rules {
+            let Some(observation) = observations.get(identity_key) else {
+                // No current probe window means no traffic to classify. Keep
+                // a previously proven executor ready; structural observation
+                // still invalidates it when its owned objects disappear.
+                continue;
+            };
+            let configured = (if rule.upload_bps != 0 {
+                NSS_CPU_UPLOAD
+            } else {
+                0
+            }) | (if rule.download_bps != 0 {
+                NSS_CPU_DOWNLOAD
+            } else {
+                0
+            });
+            let valid = observation.valid_directions & (NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD);
+            let active = observation.active_directions & valid & configured;
+            let newly_proven = observation.proven_directions & active;
+            let newly_nss = observation.nss_directions & active;
+            let newly_cpu = observation.cpu_directions & active;
+            let proven = proven_next.get(identity_key).copied().unwrap_or(0);
+            let mut cpu = cpu_next.get(identity_key).copied().unwrap_or(0);
+            // Keep independently proven paths for the rule lifetime. A
+            // transparent-proxy flow and an accelerated direct flow can
+            // coexist, but both feed the same edge executor.
+            cpu |= newly_cpu;
+            cpu &= configured;
+            let mut direct = proven;
+            direct |= newly_nss;
+            direct &= configured;
+            let mut ready = ready_next.get(identity_key).copied().unwrap_or(0);
+            // Installing the queue changes the next edge-rate window by
+            // design. A post-shaping ratio can no longer disprove the hook
+            // identity that was established before publication. Attachment
+            // generation changes and complete structural observation are the
+            // authoritative invalidation signals.
+            ready |= newly_proven;
+            ready &= direct | cpu;
+            proven_next.remove(identity_key);
+            ready_next.remove(identity_key);
+            cpu_next.remove(identity_key);
+            if direct != 0 {
+                proven_next.insert(identity_key.clone(), direct);
+            }
+            if ready != 0 {
+                ready_next.insert(identity_key.clone(), ready);
+            }
+            if cpu != 0 {
+                cpu_next.insert(identity_key.clone(), cpu);
+            }
+            let nss_verified = self
+                .result
+                .nss_verified_directions
+                .get(identity_key)
+                .copied()
+                .unwrap_or(0);
+            let cpu_verified = self
+                .result
+                .cpu_verified_directions
+                .get(identity_key)
+                .copied()
+                .unwrap_or(0);
+            let active_nss = active_nss_next.get(identity_key).copied().unwrap_or(0)
+                | (newly_nss & !nss_verified);
+            let active_cpu = active_cpu_next.get(identity_key).copied().unwrap_or(0)
+                | (newly_cpu & !cpu_verified);
+            if active_nss != 0 {
+                active_nss_next.insert(identity_key.clone(), active_nss);
+            } else {
+                active_nss_next.remove(identity_key);
+            }
+            if active_cpu != 0 {
+                active_cpu_next.insert(identity_key.clone(), active_cpu);
+            } else {
+                active_cpu_next.remove(identity_key);
+            }
+        }
+        let executor_changed =
+            self.nss_proven_directions != proven_next || self.nss_cpu_directions != cpu_next;
+        self.nss_path_ready_directions = ready_next;
+        self.nss_active_nss_directions = active_nss_next;
+        self.nss_active_cpu_directions = active_cpu_next;
+        if executor_changed {
+            self.nss_proven_directions = proven_next;
+            self.nss_cpu_directions = cpu_next;
+            self.dirty = true;
+        }
     }
 
     pub fn observe_clients(&mut self, clients: &[Client]) {
         let previous_rules = self.active_rules();
+        #[cfg(feature = "nss-platform")]
+        let attachment_generations = clients
+            .iter()
+            .filter_map(|client| {
+                parse_identity_key(&client.identity_key).ok()?;
+                let meta = client.rate_meta.as_ref()?;
+                let attachment = meta.attachment.as_ref()?;
+                if !matches!(
+                    attachment.trust,
+                    crate::model::AttachmentTrust::AssociatedStation
+                        | crate::model::AttachmentTrust::ObservedExclusive
+                ) {
+                    return None;
+                }
+                Some((
+                    client.identity_key.clone(),
+                    (attachment.ifname.clone()?, meta.generation),
+                ))
+            })
+            .collect::<BTreeMap<_, _>>();
         let parsed = clients
             .iter()
             .filter_map(|client| {
@@ -195,9 +538,24 @@ impl ControlManager {
                     .collect::<Vec<_>>();
                 ips.sort_unstable();
                 ips.dedup();
+                #[cfg(feature = "nss-platform")]
+                let interface = client
+                    .rate_meta
+                    .as_ref()
+                    .and_then(|meta| meta.attachment.as_ref())
+                    .filter(|attachment| {
+                        matches!(
+                            attachment.trust,
+                            crate::model::AttachmentTrust::AssociatedStation
+                                | crate::model::AttachmentTrust::ObservedExclusive
+                        )
+                    })
+                    .and_then(|attachment| attachment.ifname.clone());
+                #[cfg(not(feature = "nss-platform"))]
+                let interface = valid_control_interface(&client.interface);
                 Some(LiveClient {
                     identity_key: client.identity_key.clone(),
-                    interface: valid_control_interface(&client.interface),
+                    interface,
                     ips,
                     ambiguous: false,
                 })
@@ -206,7 +564,16 @@ impl ControlManager {
         let mut next = BTreeMap::new();
         for client in parsed {
             if let Some(interface) = &client.interface {
-                self.control_devices.insert(interface.clone());
+                if self.control_devices.insert(interface.clone()) {
+                    #[cfg(feature = "nss-platform")]
+                    {
+                        // A new trusted edge may carry a LAN/NAS prefix that
+                        // is absent from the cached bypass set. Reprobe it
+                        // before publishing any existing control again.
+                        self.local_prefixes_ready = false;
+                        self.last_local_prefix_refresh = None;
+                    }
+                }
             }
             next.insert(client.identity_key.clone(), client);
         }
@@ -228,10 +595,100 @@ impl ControlManager {
                 .iter()
                 .any(|ip| owners.get(ip).is_some_and(|values| values.len() != 1));
         }
+        #[cfg(feature = "nss-platform")]
+        self.observe_nss_attachment_generations(attachment_generations);
         self.live = next;
-        if previous_rules != self.active_rules() {
+        #[cfg(feature = "nss-platform")]
+        let retired_identity_resolved = self.resolve_pending_conntrack_identities();
+        #[cfg(not(feature = "nss-platform"))]
+        let retired_identity_resolved = false;
+        if previous_rules != self.active_rules() || retired_identity_resolved {
             self.dirty = true;
         }
+    }
+
+    #[cfg(feature = "nss-platform")]
+    fn observe_nss_attachment_generations(&mut self, next: BTreeMap<String, (String, u64)>) {
+        let rebase = self.nss_reload_attachment_rebase_pending;
+        let changed = self
+            .rules
+            .keys()
+            .filter(|identity_key| {
+                let previous = self.nss_attachment_generations.get(*identity_key);
+                let current = next.get(*identity_key);
+                let reload_generation_only = rebase
+                    && previous.zip(current).is_some_and(
+                        |((previous_edge, _), (current_edge, _))| previous_edge == current_edge,
+                    );
+                previous != current
+                    && !reload_generation_only
+                    && (self.nss_proven_directions.contains_key(*identity_key)
+                        || self.nss_path_ready_directions.contains_key(*identity_key)
+                        || self.nss_cpu_directions.contains_key(*identity_key)
+                        || self.result.verified_directions.contains_key(*identity_key))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for identity_key in changed {
+            self.nss_proven_directions.remove(&identity_key);
+            self.nss_path_ready_directions.remove(&identity_key);
+            self.nss_cpu_directions.remove(&identity_key);
+            self.nss_active_nss_directions.remove(&identity_key);
+            self.nss_active_cpu_directions.remove(&identity_key);
+            self.result.verified_directions.remove(&identity_key);
+            self.result.nss_verified_directions.remove(&identity_key);
+            self.result.cpu_verified_directions.remove(&identity_key);
+            self.dirty = true;
+        }
+        self.nss_reload_attachment_rebase_pending = false;
+        self.nss_attachment_generations = next;
+    }
+
+    /// Structural observation clears queue verification before rebuilding the
+    /// owned objects. Re-arm only executors whose path and current attachment
+    /// were already proven, so fresh class-counter growth can verify the
+    /// rebuilt queue without inventing new path identity.
+    #[cfg(feature = "nss-platform")]
+    fn rearm_nss_executor_verification(&mut self) {
+        let mut active_nss = BTreeMap::new();
+        let mut active_cpu = BTreeMap::new();
+        for (identity_key, rule) in &self.rules {
+            let configured = (if rule.upload_bps != 0 {
+                NSS_CPU_UPLOAD
+            } else {
+                0
+            }) | (if rule.download_bps != 0 {
+                NSS_CPU_DOWNLOAD
+            } else {
+                0
+            });
+            let ready = self
+                .nss_path_ready_directions
+                .get(identity_key)
+                .copied()
+                .unwrap_or(0)
+                & configured;
+            let nss = self
+                .nss_proven_directions
+                .get(identity_key)
+                .copied()
+                .unwrap_or(0)
+                & ready;
+            let cpu = self
+                .nss_cpu_directions
+                .get(identity_key)
+                .copied()
+                .unwrap_or(0)
+                & ready;
+            if nss != 0 {
+                active_nss.insert(identity_key.clone(), nss);
+            }
+            if cpu != 0 {
+                active_cpu.insert(identity_key.clone(), cpu);
+            }
+        }
+        self.nss_active_nss_directions = active_nss;
+        self.nss_active_cpu_directions = active_cpu;
     }
 
     pub fn observe_preempted_upload_devices(&mut self, devices: BTreeSet<String>) {
@@ -292,6 +749,20 @@ impl ControlManager {
             None
         };
         let plan = self.plan();
+        #[cfg(feature = "nss-platform")]
+        if let Some(error) = prefix_error.as_deref() {
+            // A failed prefix refresh invalidates the local-access bypass. Do
+            // not keep an older verified queue alive against a changed LAN
+            // topology; remove only this platform's owned control objects and
+            // wait for fresh prefixes before rebuilding.
+            if self.result.state != "error" || self.result.reason.as_deref() != Some(error) {
+                let cleanup_error = crate::platform::nss::control::quiesce_prefix_loss(&plan).err();
+                self.result =
+                    failed_apply_result(cleanup_error.as_deref().unwrap_or(error), &self.result);
+            }
+            self.dirty = false;
+            return;
+        }
         if !self.dirty {
             // Observing absent counters after an apply rollback must not turn
             // a concrete failure into a misleading "waiting for traffic"
@@ -302,26 +773,66 @@ impl ControlManager {
             }
             self.result = platform_observe(&plan, &self.result);
             if self.result.reason.as_deref() == Some("control_topology_changed") {
+                #[cfg(feature = "nss-platform")]
+                self.rearm_nss_executor_verification();
                 self.dirty = true;
+                #[cfg(not(feature = "nss-platform"))]
+                return;
+            } else {
+                return;
             }
-            return;
         }
         if let Some(error) = prefix_error {
             self.result = failed_apply_result(&error, &self.result);
             return;
         }
-        self.result = platform_apply(&plan).unwrap_or_else(|error| ApplyResult {
-            state: "error".into(),
-            reason: Some(public_control_error(&error)),
-            shaping_supported: self.result.shaping_supported,
-            blocking_supported: self.result.blocking_supported,
-            queue_overflow: false,
-            queue_drop_counters: BTreeMap::new(),
-            class_counter_baselines: BTreeMap::new(),
-            verified_directions: BTreeMap::new(),
-            verification_failures: BTreeMap::new(),
-        });
+        match platform_apply(&plan) {
+            Ok(result) => {
+                self.result = result;
+                #[cfg(feature = "nss-platform")]
+                self.conntrack_cleanup_ips.clear();
+            }
+            Err(error) => {
+                self.result = ApplyResult {
+                    state: "error".into(),
+                    reason: Some(public_control_error(&error)),
+                    shaping_supported: self.result.shaping_supported,
+                    blocking_supported: self.result.blocking_supported,
+                    queue_overflow: false,
+                    queue_drop_counters: BTreeMap::new(),
+                    class_counter_baselines: BTreeMap::new(),
+                    verified_directions: BTreeMap::new(),
+                    #[cfg(feature = "nss-platform")]
+                    nss_verified_directions: BTreeMap::new(),
+                    #[cfg(feature = "nss-platform")]
+                    cpu_verified_directions: BTreeMap::new(),
+                    verification_failures: BTreeMap::new(),
+                };
+            }
+        }
         self.dirty = false;
+    }
+
+    /// Reload candidates must prove that every inherited NSS object still
+    /// exists without changing the live dataplane before the transaction is
+    /// committed.  A missing queue, filter, or nft object clears verification
+    /// and leaves the desired plan dirty for the new owner to rebuild.
+    #[cfg(feature = "nss-platform")]
+    pub(crate) fn observe_existing_nss_control(&mut self) {
+        let has_active_rules = !self.active_rules().is_empty();
+        if has_active_rules {
+            if let Err(error) = self.refresh_local_prefixes() {
+                self.result = failed_apply_result(&error, &self.result);
+                self.dirty = true;
+                return;
+            }
+        }
+        let observed = platform_observe(&self.plan(), &self.result);
+        if observed.reason.as_deref() == Some("control_topology_changed") {
+            self.rearm_nss_executor_verification();
+            self.dirty = true;
+        }
+        self.result = observed;
     }
 
     pub fn decorate_clients(&self, clients: &mut [Client]) {
@@ -389,6 +900,12 @@ impl ControlManager {
     pub fn delete(&mut self, request: ClientControlDeleteRequest) -> Result<Value, DaemonError> {
         parse_identity_key(&request.identity_key).map_err(DaemonError::reload)?;
         delete_rule(&request.identity_key)?;
+        #[cfg(feature = "nss-platform")]
+        if self.rules.contains_key(&request.identity_key) {
+            self.pending_conntrack_identities
+                .insert(request.identity_key.clone());
+            self.resolve_pending_conntrack_identities();
+        }
         self.rules.remove(&request.identity_key);
         self.dirty = true;
         Ok(json!(ControlRpcResponse {
@@ -399,6 +916,14 @@ impl ControlManager {
 
     pub fn cleanup(&mut self) -> Result<(), DaemonError> {
         platform_cleanup(&self.plan()).map_err(DaemonError::collection)
+    }
+
+    #[cfg(feature = "nss-platform")]
+    pub(crate) fn nss_path_probe_snapshot(
+        &self,
+        epoch_end_ms: u64,
+    ) -> Result<crate::platform::nss::control::PathProbeSnapshot, String> {
+        crate::platform::nss::control::path_probe_snapshot(&self.plan(), epoch_end_ms)
     }
 
     pub fn response(&self, identity_key: &str) -> Value {
@@ -418,6 +943,18 @@ impl ControlManager {
             dae_upload_devices: self.dae_upload_devices.iter().cloned().collect(),
             local_prefixes: self.local_prefixes.clone(),
             rules,
+            #[cfg(feature = "nss-platform")]
+            nss_proven_directions: self.nss_proven_directions.clone(),
+            #[cfg(feature = "nss-platform")]
+            nss_path_ready_directions: self.nss_path_ready_directions.clone(),
+            #[cfg(feature = "nss-platform")]
+            nss_cpu_directions: self.nss_cpu_directions.clone(),
+            #[cfg(feature = "nss-platform")]
+            nss_active_nss_directions: self.nss_active_nss_directions.clone(),
+            #[cfg(feature = "nss-platform")]
+            nss_active_cpu_directions: self.nss_active_cpu_directions.clone(),
+            #[cfg(feature = "nss-platform")]
+            conntrack_cleanup_ips: self.conntrack_cleanup_ips.clone(),
         }
     }
 
@@ -464,6 +1001,23 @@ impl ControlManager {
                 })
             })
             .collect()
+    }
+
+    #[cfg(feature = "nss-platform")]
+    fn resolve_pending_conntrack_identities(&mut self) -> bool {
+        let resolved = self
+            .pending_conntrack_identities
+            .iter()
+            .filter_map(|identity_key| {
+                let ips = deleted_rule_conntrack_ips(self.live.get(identity_key));
+                (!ips.is_empty()).then(|| (identity_key.clone(), ips))
+            })
+            .collect::<Vec<_>>();
+        for (identity_key, ips) in &resolved {
+            self.pending_conntrack_identities.remove(identity_key);
+            self.conntrack_cleanup_ips.extend(ips.iter().copied());
+        }
+        !resolved.is_empty()
     }
 
     fn summary(&self, identity_key: &str) -> ClientControlSummary {
@@ -590,7 +1144,11 @@ impl ControlManager {
         self.last_local_prefix_refresh = Some(now);
         match local_prefixes(&self.control_devices) {
             Ok(prefixes) => {
-                if self.local_prefixes != prefixes {
+                #[cfg(feature = "nss-platform")]
+                let recovered_after_probe_failure = !self.local_prefixes_ready;
+                #[cfg(not(feature = "nss-platform"))]
+                let recovered_after_probe_failure = false;
+                if self.local_prefixes != prefixes || recovered_after_probe_failure {
                     self.local_prefixes = prefixes;
                     self.dirty = true;
                 }
@@ -603,6 +1161,14 @@ impl ControlManager {
             }
         }
     }
+}
+
+#[cfg(feature = "nss-platform")]
+fn deleted_rule_conntrack_ips(client: Option<&LiveClient>) -> Vec<IpAddr> {
+    client
+        .filter(|client| !client.ambiguous)
+        .map(|client| client.ips.clone())
+        .unwrap_or_default()
 }
 
 fn control_update_is_not_more_restrictive(
@@ -627,6 +1193,10 @@ fn failed_apply_result(error: &str, previous: &ApplyResult) -> ApplyResult {
         queue_drop_counters: BTreeMap::new(),
         class_counter_baselines: BTreeMap::new(),
         verified_directions: BTreeMap::new(),
+        #[cfg(feature = "nss-platform")]
+        nss_verified_directions: BTreeMap::new(),
+        #[cfg(feature = "nss-platform")]
+        cpu_verified_directions: BTreeMap::new(),
         verification_failures: BTreeMap::new(),
     }
 }
@@ -640,6 +1210,7 @@ fn public_control_error(error: &str) -> String {
         "missing_ip",
         "missing_nft",
         "missing_conntrack",
+        "missing_ubus",
         "conntrack_cleanup_failed",
         "ifb_qdisc_owned_by_external_service",
         "download_qdisc_preflight_conflict",
@@ -679,9 +1250,84 @@ fn public_control_error(error: &str) -> String {
         "queue_overflow",
         "local_network_unavailable",
         "control_rollback_failed",
+        "nss_control_rollback_failed",
+        "nss_control_command_timeout",
+        "nss_ecm_dscp_unavailable",
+        "nss_qdisc_unavailable",
+        "nss_wan_topology_invalid",
+        "nss_netifd_topology_unavailable",
+        "nss_fw4_topology_unavailable",
+        "nss_wan_interface_unavailable",
+        "nss_upload_edge_unavailable",
+        "nss_download_edge_unavailable",
+        "nss_download_edge_invalid",
+        "nss_default_class_capacity_exceeded",
+        "nss_qdisc_owned_by_external_service",
+        "nss_qdisc_apply_failed",
+        "nss_qdisc_inspection_failed",
+        "nss_qdisc_verification_failed",
+        "nss_control_firewall_owned_by_external_service",
+        "nss_control_firewall_inspection_failed",
+        "nss_control_firewall_failed",
+        "cpu_path_block_interface_unavailable",
+        "cpu_path_block_owned_by_external_service",
+        "cpu_path_block_inspection_failed",
+        "cpu_path_block_apply_failed",
+        "cpu_path_block_missing",
+        "cpu_path_block_stale",
+        "cpu_path_block_cleanup_failed",
+        "cpu_path_probe_interface_unavailable",
+        "cpu_path_probe_owned_by_external_service",
+        "cpu_path_probe_inspection_failed",
+        "cpu_path_probe_apply_failed",
+        "cpu_path_probe_missing",
+        "cpu_path_probe_stale",
+        "cpu_path_probe_cleanup_failed",
+        "cpu_path_classifier_owned_by_external_service",
+        "cpu_path_classifier_inspection_failed",
+        "cpu_path_classifier_verification_failed",
+        "cpu_path_classifier_cleanup_failed",
+        "cpu_path_classifier_missing",
+        "cpu_path_classifier_stale",
+        "cpu_path_qdisc_owned_by_external_service",
+        "cpu_path_qdisc_verification_failed",
+        "cpu_path_qdisc_inspection_failed",
+        "cpu_path_class_inspection_failed",
+        "cpu_path_filter_owned_by_external_service",
+        "cpu_path_filter_inspection_failed",
+        "cpu_path_filter_verification_failed",
+        "cpu_path_filter_cleanup_failed",
+        "act_nssmirred_unavailable",
+        "act_skbedit_unavailable",
+        "nss_igs_ifb_name_collision",
+        "nss_igs_capacity_exceeded",
+        "nss_igs_tag_capacity_exceeded",
+        "nss_igs_tag_config_failed",
+        "nss_igs_tag_config_inspection_failed",
+        "nss_igs_tag_config_verification_failed",
+        "nss_igs_ifb_owned_by_external_service",
+        "nss_igs_ifb_inspection_failed",
+        "nss_igs_ifb_missing",
+        "nss_igs_ifb_stale",
+        "nss_igs_mapping_owned_by_external_service",
+        "nss_igs_mapping_inspection_failed",
+        "nss_igs_mapping_verification_failed",
+        "nss_igs_mapping_missing",
+        "nss_igs_mapping_stale",
+        "nss_igs_filter_owned_by_external_service",
+        "nss_igs_filter_inspection_failed",
+        "nss_igs_filter_verification_failed",
+        "lanspeed_nss_control_unavailable",
+        "nss_igs_stage_missing",
+        "nss_igs_stage_inspection_failed",
+        "nss_igs_stage_failed",
+        "nss_igs_publish_failed",
+        "nss_igs_unpublish_failed",
+        "nss_igs_unstage_failed",
     ]
     .into_iter()
-    .find(|code| error.contains(code))
+    .filter(|code| error.contains(code))
+    .max_by_key(|code| code.len())
     .unwrap_or("control_apply_failed")
     .to_owned()
 }
@@ -846,6 +1492,7 @@ fn valid_interface_name(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
 }
 
+#[cfg(not(feature = "nss-platform"))]
 fn valid_control_interface(value: &str) -> Option<String> {
     (valid_interface_name(value)
         && !crate::identity::filter::ifname_is_excluded_identity_source(value))
@@ -857,6 +1504,7 @@ fn control_requires_address(upload_bps: u64, download_bps: u64, internet_disable
         || (platform_requires_shaping_address() && (upload_bps != 0 || download_bps != 0))
 }
 
+#[cfg(not(feature = "nss-platform"))]
 fn resolve_lan_device(config: &RuntimeConfig) -> String {
     let discovered = Command::new("ubus")
         .args(["call", "network.interface.lan", "status"])
@@ -880,6 +1528,18 @@ fn resolve_lan_device(config: &RuntimeConfig) -> String {
                 .find(|device| valid_interface_name(device))
         })
         .unwrap_or_else(|| "br-lan".into())
+}
+
+#[cfg(feature = "nss-platform")]
+fn resolve_lan_device(config: &RuntimeConfig) -> String {
+    // NSS control never guesses a conventional LAN name. Active rules use a
+    // trusted Access Edge attachment; this value only seeds prefix discovery
+    // before the first live client snapshot arrives.
+    config
+        .runtime_collect_ifnames()
+        .into_iter()
+        .find(|device| valid_interface_name(device))
+        .unwrap_or_default()
 }
 
 fn section_name(identity_key: &str) -> String {
@@ -1104,7 +1764,6 @@ pub(crate) fn run_checked(program: &str, args: &[&str]) -> Result<(), DaemonErro
     )))
 }
 
-#[cfg(not(feature = "nss-platform"))]
 pub(crate) fn clear_conntrack_address(ip: IpAddr) -> Result<(), String> {
     let value = ip.to_string();
     let family = if ip.is_ipv4() { "ipv4" } else { "ipv6" };
@@ -1123,7 +1782,6 @@ pub(crate) fn clear_conntrack_address(ip: IpAddr) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(any(not(feature = "nss-platform"), test))]
 fn conntrack_delete_succeeded(success: bool, code: Option<i32>, diagnostic: &[u8]) -> bool {
     success
         || (code == Some(1)
@@ -1144,6 +1802,7 @@ pub(crate) fn queue_drops_increased(
     })
 }
 
+#[cfg(not(feature = "nss-platform"))]
 fn local_prefixes(control_devices: &BTreeSet<String>) -> Result<Vec<(IpAddr, u8)>, String> {
     let output = Command::new("ubus")
         .args(["call", "network.interface.lan", "status"])
@@ -1154,6 +1813,81 @@ fn local_prefixes(control_devices: &BTreeSet<String>) -> Result<Vec<(IpAddr, u8)
     }
     let value: Value = serde_json::from_slice(&output.stdout).map_err(|_| "lan_status_invalid")?;
     let mut prefixes = Vec::new();
+    append_netifd_prefixes(&mut prefixes, &value);
+    finish_local_prefixes(prefixes, control_devices)
+}
+
+#[cfg(feature = "nss-platform")]
+fn local_prefixes(control_devices: &BTreeSet<String>) -> Result<Vec<(IpAddr, u8)>, String> {
+    let output = Command::new("ubus")
+        .args(["call", "network.interface", "dump"])
+        .output()
+        .map_err(|_| "lan_status_unavailable".to_owned())?;
+    if !output.status.success() {
+        return Err("lan_status_unavailable".into());
+    }
+    let value: Value =
+        serde_json::from_slice(&output.stdout).map_err(|_| "lan_status_invalid".to_owned())?;
+    let prefix_devices = nss_prefix_devices(control_devices);
+    let mut prefixes = Vec::new();
+    let mut matched = false;
+    for interface in value
+        .get("interface")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let controlled = ["device", "l3_device"].into_iter().any(|key| {
+            interface
+                .get(key)
+                .and_then(Value::as_str)
+                .is_some_and(|device| prefix_devices.contains(device))
+        });
+        if controlled {
+            append_netifd_prefixes(&mut prefixes, interface);
+            matched = true;
+        }
+    }
+    if !matched {
+        return Err("local_network_unavailable".into());
+    }
+    append_nss_private_prefixes(&mut prefixes);
+    finish_local_prefixes(prefixes, control_devices)
+}
+
+#[cfg(feature = "nss-platform")]
+fn nss_prefix_devices(control_devices: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut devices = control_devices.clone();
+    for device in control_devices {
+        let Some(master) = fs::read_link(format!("/sys/class/net/{device}/master"))
+            .ok()
+            .and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .filter(|master| valid_interface_name(master))
+        else {
+            continue;
+        };
+        devices.insert(master);
+    }
+    devices
+}
+
+#[cfg(feature = "nss-platform")]
+fn append_nss_private_prefixes(prefixes: &mut Vec<(IpAddr, u8)>) {
+    // A private upstream subnet is still LAN/NAS, even when netifd exposes it
+    // through an Internet-zone interface. The nft rule requires both ends to
+    // be local, so these prefixes do not bypass control for public traffic.
+    prefixes.extend([
+        ("10.0.0.0".parse().unwrap(), 8),
+        ("172.16.0.0".parse().unwrap(), 12),
+        ("192.168.0.0".parse().unwrap(), 16),
+        ("fc00::".parse().unwrap(), 7),
+    ]);
+}
+
+fn append_netifd_prefixes(prefixes: &mut Vec<(IpAddr, u8)>, value: &Value) {
     for key in [
         "ipv4-address",
         "ipv6-address",
@@ -1214,6 +1948,12 @@ fn local_prefixes(control_devices: &BTreeSet<String>) -> Result<Vec<(IpAddr, u8)
             prefixes.push((address, mask as u8));
         }
     }
+}
+
+fn finish_local_prefixes(
+    mut prefixes: Vec<(IpAddr, u8)>,
+    control_devices: &BTreeSet<String>,
+) -> Result<Vec<(IpAddr, u8)>, String> {
     prefixes.push(("127.0.0.0".parse().unwrap(), 8));
     prefixes.push(("169.254.0.0".parse().unwrap(), 16));
     // Link-local multicast (ARP is non-IP and is excluded by the x86
@@ -1341,13 +2081,13 @@ fn platform_observe(plan: &ControlPlan, previous: &ApplyResult) -> ApplyResult {
 }
 
 #[cfg(feature = "nss-platform")]
-fn platform_observe(_plan: &ControlPlan, previous: &ApplyResult) -> ApplyResult {
-    previous.clone()
+fn platform_observe(plan: &ControlPlan, previous: &ApplyResult) -> ApplyResult {
+    crate::platform::nss::control::observe(plan, previous)
 }
 
 #[cfg(feature = "nss-platform")]
-fn platform_apply(_plan: &ControlPlan) -> Result<ApplyResult, String> {
-    Err("client_control_x86_only".into())
+fn platform_apply(plan: &ControlPlan) -> Result<ApplyResult, String> {
+    crate::platform::nss::control::apply(plan)
 }
 
 #[cfg(not(feature = "nss-platform"))]
@@ -1356,8 +2096,8 @@ fn platform_cleanup(plan: &ControlPlan) -> Result<(), String> {
 }
 
 #[cfg(feature = "nss-platform")]
-fn platform_cleanup(_plan: &ControlPlan) -> Result<(), String> {
-    Ok(())
+fn platform_cleanup(plan: &ControlPlan) -> Result<(), String> {
+    crate::platform::nss::control::cleanup(plan)
 }
 
 #[cfg(not(feature = "nss-platform"))]
@@ -1376,18 +2116,18 @@ const fn platform_requires_shaping_address() -> bool {
 }
 
 #[cfg(feature = "nss-platform")]
-const fn platform_max_rate_bps() -> u64 {
-    0
+fn platform_max_rate_bps() -> u64 {
+    crate::platform::nss::control::max_rate_bps()
 }
 
 #[cfg(feature = "nss-platform")]
 const fn platform_hard_max_rate_bps() -> u64 {
-    0
+    NSS_MAX_RATE_BPS
 }
 
 #[cfg(feature = "nss-platform")]
 const fn platform_requires_shaping_address() -> bool {
-    false
+    true
 }
 
 #[cfg(test)]
@@ -1415,8 +2155,36 @@ mod tests {
             udp_conns: None,
             udp_dns_conns: None,
             udp_other_conns: None,
-            rate_meta: None,
+            rate_meta: {
+                #[cfg(feature = "nss-platform")]
+                {
+                    Some(crate::model::ClientRateMeta {
+                        attachment: Some(crate::model::RateAttachment {
+                            kind: crate::model::AttachmentKind::Ethernet,
+                            ifname: Some("br-lan".into()),
+                            trust: crate::model::AttachmentTrust::ObservedExclusive,
+                        }),
+                        ..Default::default()
+                    })
+                }
+                #[cfg(not(feature = "nss-platform"))]
+                {
+                    None
+                }
+            },
             control: None,
+        }
+    }
+
+    fn set_client_interface(client: &mut Client, interface: &str) {
+        client.interface = interface.into();
+        #[cfg(feature = "nss-platform")]
+        if let Some(attachment) = client
+            .rate_meta
+            .as_mut()
+            .and_then(|meta| meta.attachment.as_mut())
+        {
+            attachment.ifname = Some(interface.into());
         }
     }
 
@@ -1434,9 +2202,101 @@ mod tests {
             local_prefixes: Vec::new(),
             local_prefixes_ready: false,
             last_local_prefix_refresh: None,
-            max_rate_bps: X86_MAX_RATE_BPS,
+            max_rate_bps: platform_max_rate_bps(),
             dirty: false,
+            #[cfg(feature = "nss-platform")]
+            nss_proven_directions: BTreeMap::new(),
+            #[cfg(feature = "nss-platform")]
+            nss_path_ready_directions: BTreeMap::new(),
+            #[cfg(feature = "nss-platform")]
+            nss_cpu_directions: BTreeMap::new(),
+            #[cfg(feature = "nss-platform")]
+            nss_active_nss_directions: BTreeMap::new(),
+            #[cfg(feature = "nss-platform")]
+            nss_active_cpu_directions: BTreeMap::new(),
+            #[cfg(feature = "nss-platform")]
+            nss_attachment_generations: BTreeMap::new(),
+            #[cfg(feature = "nss-platform")]
+            nss_reload_attachment_rebase_pending: false,
+            #[cfg(feature = "nss-platform")]
+            conntrack_cleanup_ips: BTreeSet::new(),
+            #[cfg(feature = "nss-platform")]
+            pending_conntrack_identities: BTreeSet::new(),
         }
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn nss_reload_inherits_only_an_unchanged_control_plan() {
+        let identity = "02:00:00:00:00:01@lan";
+        let rule = ControlRule {
+            identity_key: identity.into(),
+            mac: MacAddress::from_str("02:00:00:00:00:01").unwrap(),
+            upload_bps: 10_000_000,
+            download_bps: 100_000_000,
+            internet_disabled: false,
+            class_minor: FIRST_CLASS_MINOR,
+        };
+        let mut current = manager();
+        current.rules.insert(identity.into(), rule.clone());
+        current.live.insert(
+            identity.into(),
+            LiveClient {
+                identity_key: identity.into(),
+                interface: Some("edge0".into()),
+                ips: vec!["192.0.2.9".parse().unwrap()],
+                ambiguous: false,
+            },
+        );
+        current.result.state = "verified".into();
+        current.dirty = false;
+        current
+            .nss_proven_directions
+            .insert(identity.into(), NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD);
+        current
+            .nss_path_ready_directions
+            .insert(identity.into(), NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD);
+        current
+            .nss_cpu_directions
+            .insert(identity.into(), NSS_CPU_DOWNLOAD);
+        current
+            .nss_attachment_generations
+            .insert(identity.into(), ("edge0".into(), 7));
+
+        let mut candidate = manager();
+        candidate.rules.insert(identity.into(), rule.clone());
+        candidate.inherit_nss_reload_state(&current);
+        assert_eq!(candidate.result.state, "verified");
+        assert_eq!(candidate.live, current.live);
+        assert_eq!(
+            candidate.nss_proven_directions.get(identity),
+            Some(&(NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD))
+        );
+        assert_eq!(
+            candidate.nss_cpu_directions.get(identity),
+            Some(&NSS_CPU_DOWNLOAD)
+        );
+        assert!(candidate.nss_reload_attachment_rebase_pending);
+        assert!(!candidate.dirty);
+
+        let mut changed_rule = manager();
+        changed_rule.rules.insert(
+            identity.into(),
+            ControlRule {
+                upload_bps: 20_000_000,
+                ..rule.clone()
+            },
+        );
+        changed_rule.inherit_nss_reload_state(&current);
+        assert_eq!(changed_rule.result.state, "inactive");
+        assert!(changed_rule.nss_proven_directions.is_empty());
+
+        let mut changed_lan = manager();
+        changed_lan.rules.insert(identity.into(), rule);
+        changed_lan.lan_device = "other-lan".into();
+        changed_lan.inherit_nss_reload_state(&current);
+        assert_eq!(changed_lan.result.state, "inactive");
+        assert!(changed_lan.live.is_empty());
     }
 
     #[test]
@@ -1494,9 +2354,58 @@ mod tests {
 
     #[cfg(feature = "nss-platform")]
     #[test]
-    fn nss_build_rejects_x86_only_control_rates() {
+    fn nss_build_accepts_only_its_u32_safe_rate_range() {
         assert_eq!(parse_rate(Some("0".into())).unwrap(), 0);
-        assert!(parse_rate(Some("8000".into())).is_err());
+        assert_eq!(parse_rate(Some("8000".into())).unwrap(), 8_000);
+        assert_eq!(
+            parse_rate(Some(NSS_MAX_RATE_BPS.to_string())).unwrap(),
+            NSS_MAX_RATE_BPS
+        );
+        assert!(parse_rate(Some((NSS_MAX_RATE_BPS + 8).to_string())).is_err());
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn retired_conntrack_cleanup_requires_unique_live_ownership() {
+        let unique = LiveClient {
+            identity_key: "02:00:00:00:00:09@lan".into(),
+            interface: Some("edge-test0".into()),
+            ips: vec!["192.0.2.9".parse().unwrap(), "2001:db8::9".parse().unwrap()],
+            ambiguous: false,
+        };
+        assert_eq!(deleted_rule_conntrack_ips(Some(&unique)), unique.ips);
+        let ambiguous = LiveClient {
+            ambiguous: true,
+            ..unique
+        };
+        assert!(deleted_rule_conntrack_ips(Some(&ambiguous)).is_empty());
+        assert!(deleted_rule_conntrack_ips(None).is_empty());
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn ambiguous_retired_identity_waits_until_ownership_is_unique() {
+        let identity = "02:00:00:00:00:09@lan";
+        let mut manager = manager();
+        let mut live = LiveClient {
+            identity_key: identity.into(),
+            interface: Some("edge-test0".into()),
+            ips: vec!["192.0.2.9".parse().unwrap()],
+            ambiguous: true,
+        };
+        manager.live.insert(identity.into(), live.clone());
+        manager.pending_conntrack_identities.insert(identity.into());
+        assert!(!manager.resolve_pending_conntrack_identities());
+        assert!(manager.conntrack_cleanup_ips.is_empty());
+
+        live.ambiguous = false;
+        manager.live.insert(identity.into(), live);
+        assert!(manager.resolve_pending_conntrack_identities());
+        assert!(manager.pending_conntrack_identities.is_empty());
+        assert_eq!(
+            manager.conntrack_cleanup_ips,
+            BTreeSet::from(["192.0.2.9".parse().unwrap()])
+        );
     }
 
     #[test]
@@ -1549,7 +2458,7 @@ mod tests {
         let identity = "02:00:00:00:00:01@guest";
         let mut observed = client(identity, "192.0.2.9");
         observed.zone = "guest".into();
-        observed.interface = "br-guest".into();
+        set_client_interface(&mut observed, "br-guest");
         let mut manager = manager();
         manager.rules.insert(
             identity.into(),
@@ -1571,11 +2480,48 @@ mod tests {
         assert!(plan.control_devices.contains(&"br-guest".into()));
     }
 
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn nss_control_ignores_untrusted_generic_interface_fields() {
+        let identity = "02:00:00:00:00:01@guest";
+        let mut observed = client(identity, "192.0.2.9");
+        observed.interface = "proxy-edge".into();
+        observed
+            .rate_meta
+            .as_mut()
+            .and_then(|meta| meta.attachment.as_mut())
+            .unwrap()
+            .ifname = Some("trusted-edge".into());
+        let mut manager = manager();
+        manager.local_prefixes_ready = true;
+        manager.last_local_prefix_refresh = Some(Instant::now());
+        manager.rules.insert(
+            identity.into(),
+            ControlRule {
+                identity_key: identity.into(),
+                mac: MacAddress::from_str("02:00:00:00:00:01").unwrap(),
+                upload_bps: 10_000_000,
+                download_bps: 0,
+                internet_disabled: false,
+                class_minor: FIRST_CLASS_MINOR,
+            },
+        );
+
+        manager.observe_clients(&[observed]);
+        let plan = manager.plan();
+
+        assert_eq!(plan.rules[0].interface, "trusted-edge");
+        assert!(plan.control_devices.contains(&"trusted-edge".into()));
+        assert!(!plan.control_devices.contains(&"proxy-edge".into()));
+        assert!(!manager.local_prefixes_ready);
+        assert!(manager.last_local_prefix_refresh.is_none());
+    }
+
     #[test]
     fn controlled_client_interface_change_dirties_the_plan() {
         let identity = "02:00:00:00:00:01@guest";
         let mut observed = client(identity, "192.0.2.9");
-        observed.interface = "br-guest".into();
+        set_client_interface(&mut observed, "br-guest");
         let mut manager = manager();
         manager.rules.insert(
             identity.into(),
@@ -1591,18 +2537,19 @@ mod tests {
         manager.observe_clients(std::slice::from_ref(&observed));
         manager.dirty = false;
 
-        observed.interface = "br-iot".into();
+        set_client_interface(&mut observed, "br-iot");
         manager.observe_clients(&[observed]);
 
         assert!(manager.dirty);
         assert_eq!(manager.plan().rules[0].interface, "br-iot");
     }
 
+    #[cfg(not(feature = "nss-platform"))]
     #[test]
     fn excluded_upload_interface_fails_closed() {
         let identity = "02:00:00:00:00:01@lan";
         let mut observed = client(identity, "192.0.2.9");
-        observed.interface = "dae0".into();
+        set_client_interface(&mut observed, "dae0");
         let mut manager = manager();
         manager.rules.insert(
             identity.into(),
@@ -1764,6 +2711,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "nss-platform"))]
     #[test]
     fn mac_shaping_rule_remains_active_without_an_ip_address() {
         let identity = "02:00:00:00:00:01@lan";
@@ -1852,6 +2800,17 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn nss_private_upstream_networks_remain_local() {
+        let mut prefixes = Vec::new();
+        append_nss_private_prefixes(&mut prefixes);
+        assert!(prefixes.contains(&("10.0.0.0".parse().unwrap(), 8)));
+        assert!(prefixes.contains(&("172.16.0.0".parse().unwrap(), 12)));
+        assert!(prefixes.contains(&("192.168.0.0".parse().unwrap(), 16)));
+        assert!(prefixes.contains(&("fc00::".parse().unwrap(), 7)));
+    }
+
     #[test]
     fn multicast_prefixes_normalize_to_lan_control_domains() {
         assert_eq!(
@@ -1931,6 +2890,10 @@ mod tests {
         assert_eq!(
             public_control_error("secret unexpected stderr"),
             "control_apply_failed"
+        );
+        assert_eq!(
+            public_control_error("cpu_path_qdisc_owned_by_external_service"),
+            "cpu_path_qdisc_owned_by_external_service"
         );
     }
 
@@ -2039,5 +3002,437 @@ mod tests {
         let summary = manager.summary(identity);
         assert_eq!(summary.state, "applied");
         assert_eq!(summary.reason, None);
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn nss_path_evidence_retains_both_inputs_to_one_aggregate_executor() {
+        let identity = "02:00:00:00:00:01@lan";
+        let mut manager = manager();
+        manager.rules.insert(
+            identity.into(),
+            ControlRule {
+                identity_key: identity.into(),
+                mac: MacAddress::from_str("02:00:00:00:00:01").unwrap(),
+                upload_bps: 10_000_000,
+                download_bps: 0,
+                internet_disabled: false,
+                class_minor: FIRST_CLASS_MINOR,
+            },
+        );
+
+        manager.observe_nss_paths(BTreeMap::from([(
+            "02:00:00:00:00:02@lan".into(),
+            NssPathObservation {
+                valid_directions: NSS_CPU_UPLOAD,
+                active_directions: NSS_CPU_UPLOAD,
+                proven_directions: NSS_CPU_UPLOAD,
+                nss_directions: 0,
+                cpu_directions: NSS_CPU_UPLOAD,
+            },
+        )]));
+        assert!(!manager.dirty);
+        assert!(manager.nss_proven_directions.is_empty());
+
+        manager.observe_nss_paths(BTreeMap::from([(
+            identity.into(),
+            NssPathObservation {
+                valid_directions: NSS_CPU_UPLOAD,
+                active_directions: NSS_CPU_UPLOAD,
+                proven_directions: NSS_CPU_UPLOAD,
+                nss_directions: 0,
+                cpu_directions: NSS_CPU_UPLOAD,
+            },
+        )]));
+        assert!(manager.dirty);
+        assert!(manager.nss_proven_directions.is_empty());
+        assert_eq!(
+            manager.nss_cpu_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+        assert_eq!(
+            manager.nss_path_ready_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+
+        manager.dirty = false;
+        manager.observe_nss_paths(BTreeMap::from([(
+            identity.into(),
+            NssPathObservation {
+                valid_directions: NSS_CPU_UPLOAD,
+                ..Default::default()
+            },
+        )]));
+        assert!(!manager.dirty);
+        assert_eq!(
+            manager.nss_cpu_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+        assert_eq!(
+            manager.nss_path_ready_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+
+        manager.observe_nss_paths(BTreeMap::new());
+        assert!(!manager.dirty);
+        assert_eq!(
+            manager.nss_cpu_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+        assert_eq!(
+            manager.nss_path_ready_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+
+        manager.observe_nss_paths(BTreeMap::from([(
+            identity.into(),
+            NssPathObservation {
+                valid_directions: NSS_CPU_UPLOAD,
+                active_directions: NSS_CPU_UPLOAD,
+                ..Default::default()
+            },
+        )]));
+        assert!(!manager.dirty);
+        assert_eq!(
+            manager.nss_path_ready_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+        assert_eq!(
+            manager.nss_cpu_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+
+        manager.observe_nss_paths(BTreeMap::from([(
+            identity.into(),
+            NssPathObservation {
+                valid_directions: NSS_CPU_UPLOAD,
+                active_directions: NSS_CPU_UPLOAD,
+                proven_directions: NSS_CPU_UPLOAD,
+                nss_directions: NSS_CPU_UPLOAD,
+                cpu_directions: 0,
+            },
+        )]));
+        assert!(manager.dirty);
+        assert_eq!(
+            manager.nss_proven_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+        assert_eq!(
+            manager.nss_path_ready_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+        assert_eq!(
+            manager.nss_cpu_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+        assert_eq!(
+            manager.nss_active_nss_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+
+        manager.dirty = false;
+        manager.observe_nss_paths(BTreeMap::from([(
+            identity.into(),
+            NssPathObservation {
+                valid_directions: NSS_CPU_UPLOAD,
+                active_directions: NSS_CPU_UPLOAD,
+                proven_directions: NSS_CPU_UPLOAD,
+                nss_directions: NSS_CPU_UPLOAD,
+                cpu_directions: NSS_CPU_UPLOAD,
+            },
+        )]));
+        assert!(!manager.dirty);
+        assert_eq!(
+            manager.nss_active_nss_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+        assert_eq!(
+            manager.nss_active_cpu_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+
+        manager.observe_nss_paths(BTreeMap::from([(
+            identity.into(),
+            NssPathObservation {
+                valid_directions: NSS_CPU_UPLOAD,
+                active_directions: NSS_CPU_UPLOAD,
+                ..Default::default()
+            },
+        )]));
+        assert_eq!(
+            manager.nss_path_ready_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+        assert_eq!(
+            manager.nss_proven_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+        assert_eq!(
+            manager.nss_cpu_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn nss_path_feedback_latches_until_counter_verification() {
+        let identity = "02:00:00:00:00:01@lan";
+        let mut manager = manager();
+        manager.rules.insert(
+            identity.into(),
+            ControlRule {
+                identity_key: identity.into(),
+                mac: MacAddress::from_str("02:00:00:00:00:01").unwrap(),
+                upload_bps: 10_000_000,
+                download_bps: 0,
+                internet_disabled: false,
+                class_minor: FIRST_CLASS_MINOR,
+            },
+        );
+        manager.observe_nss_paths(BTreeMap::from([(
+            identity.into(),
+            NssPathObservation {
+                valid_directions: NSS_CPU_UPLOAD,
+                active_directions: NSS_CPU_UPLOAD,
+                proven_directions: NSS_CPU_UPLOAD,
+                cpu_directions: NSS_CPU_UPLOAD,
+                ..Default::default()
+            },
+        )]));
+        manager.observe_nss_paths(BTreeMap::from([(
+            identity.into(),
+            NssPathObservation {
+                valid_directions: NSS_CPU_UPLOAD,
+                active_directions: NSS_CPU_UPLOAD,
+                ..Default::default()
+            },
+        )]));
+        assert_eq!(
+            manager.nss_path_ready_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+        assert_eq!(
+            manager.nss_active_cpu_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+
+        manager
+            .result
+            .cpu_verified_directions
+            .insert(identity.into(), NSS_CPU_UPLOAD);
+        manager.observe_nss_paths(BTreeMap::new());
+        assert!(manager.nss_active_cpu_directions.is_empty());
+        assert_eq!(
+            manager.nss_path_ready_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn structural_rebuild_rearms_only_previously_proven_executors() {
+        let identity = "02:00:00:00:00:01@lan";
+        let mut manager = manager();
+        manager.rules.insert(
+            identity.into(),
+            ControlRule {
+                identity_key: identity.into(),
+                mac: MacAddress::from_str("02:00:00:00:00:01").unwrap(),
+                upload_bps: 10_000_000,
+                download_bps: 100_000_000,
+                internet_disabled: false,
+                class_minor: FIRST_CLASS_MINOR,
+            },
+        );
+        let directions = NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD;
+        manager
+            .nss_attachment_generations
+            .insert(identity.into(), ("edge0".into(), 7));
+        manager
+            .nss_proven_directions
+            .insert(identity.into(), NSS_CPU_DOWNLOAD);
+        manager
+            .nss_cpu_directions
+            .insert(identity.into(), NSS_CPU_UPLOAD);
+        manager
+            .nss_path_ready_directions
+            .insert(identity.into(), directions);
+
+        manager.rearm_nss_executor_verification();
+        assert_eq!(
+            manager.nss_active_nss_directions.get(identity),
+            Some(&NSS_CPU_DOWNLOAD)
+        );
+        assert_eq!(
+            manager.nss_active_cpu_directions.get(identity),
+            Some(&NSS_CPU_UPLOAD)
+        );
+
+        manager.observe_nss_attachment_generations(BTreeMap::from([(
+            identity.into(),
+            ("edge1".into(), 8),
+        )]));
+        manager.rearm_nss_executor_verification();
+        assert!(manager.nss_active_nss_directions.is_empty());
+        assert!(manager.nss_active_cpu_directions.is_empty());
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn attachment_generation_change_invalidates_all_nss_path_proof() {
+        let identity = "02:00:00:00:00:01@lan";
+        let mut manager = manager();
+        manager.rules.insert(
+            identity.into(),
+            ControlRule {
+                identity_key: identity.into(),
+                mac: MacAddress::from_str("02:00:00:00:00:01").unwrap(),
+                upload_bps: 10_000_000,
+                download_bps: 100_000_000,
+                internet_disabled: false,
+                class_minor: FIRST_CLASS_MINOR,
+            },
+        );
+        let directions = NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD;
+        manager
+            .nss_attachment_generations
+            .insert(identity.into(), ("edge0".into(), 7));
+        manager
+            .nss_proven_directions
+            .insert(identity.into(), directions);
+        manager
+            .nss_path_ready_directions
+            .insert(identity.into(), directions);
+        manager
+            .nss_cpu_directions
+            .insert(identity.into(), directions);
+        manager
+            .nss_active_nss_directions
+            .insert(identity.into(), directions);
+        manager
+            .nss_active_cpu_directions
+            .insert(identity.into(), directions);
+        manager
+            .result
+            .verified_directions
+            .insert(identity.into(), directions);
+        manager
+            .result
+            .nss_verified_directions
+            .insert(identity.into(), directions);
+        manager
+            .result
+            .cpu_verified_directions
+            .insert(identity.into(), directions);
+        manager.dirty = false;
+
+        manager.observe_nss_attachment_generations(BTreeMap::from([(
+            identity.into(),
+            ("edge0".into(), 8),
+        )]));
+        assert!(manager.dirty);
+        assert!(manager.nss_proven_directions.is_empty());
+        assert!(manager.nss_path_ready_directions.is_empty());
+        assert!(manager.nss_cpu_directions.is_empty());
+        assert!(manager.nss_active_nss_directions.is_empty());
+        assert!(manager.nss_active_cpu_directions.is_empty());
+        assert!(manager.result.verified_directions.is_empty());
+        assert!(manager.result.nss_verified_directions.is_empty());
+        assert!(manager.result.cpu_verified_directions.is_empty());
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn reload_rebases_only_the_first_generation_on_the_same_attachment() {
+        let identity = "02:00:00:00:00:01@lan";
+        let mut current = manager();
+        current.rules.insert(
+            identity.into(),
+            ControlRule {
+                identity_key: identity.into(),
+                mac: MacAddress::from_str("02:00:00:00:00:01").unwrap(),
+                upload_bps: 10_000_000,
+                download_bps: 100_000_000,
+                internet_disabled: false,
+                class_minor: FIRST_CLASS_MINOR,
+            },
+        );
+        let directions = NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD;
+        current
+            .nss_attachment_generations
+            .insert(identity.into(), ("edge0".into(), 7));
+        current
+            .nss_proven_directions
+            .insert(identity.into(), directions);
+        current
+            .nss_path_ready_directions
+            .insert(identity.into(), directions);
+        current
+            .result
+            .verified_directions
+            .insert(identity.into(), directions);
+
+        let mut candidate = manager();
+        candidate.rules = current.rules.clone();
+        candidate.inherit_nss_reload_state(&current);
+        candidate.observe_nss_attachment_generations(BTreeMap::from([(
+            identity.into(),
+            ("edge0".into(), 8),
+        )]));
+        assert!(!candidate.nss_reload_attachment_rebase_pending);
+        assert_eq!(
+            candidate.nss_proven_directions.get(identity),
+            Some(&directions)
+        );
+        assert_eq!(
+            candidate.result.verified_directions.get(identity),
+            Some(&directions)
+        );
+
+        candidate.observe_nss_attachment_generations(BTreeMap::from([(
+            identity.into(),
+            ("edge0".into(), 9),
+        )]));
+        assert!(candidate.nss_proven_directions.is_empty());
+        assert!(candidate.result.verified_directions.is_empty());
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn reload_attachment_rebase_rejects_a_changed_or_missing_edge() {
+        let identity = "02:00:00:00:00:01@lan";
+        for next in [
+            BTreeMap::from([(identity.into(), ("edge1".into(), 8))]),
+            BTreeMap::new(),
+        ] {
+            let mut current = manager();
+            current.rules.insert(
+                identity.into(),
+                ControlRule {
+                    identity_key: identity.into(),
+                    mac: MacAddress::from_str("02:00:00:00:00:01").unwrap(),
+                    upload_bps: 10_000_000,
+                    download_bps: 100_000_000,
+                    internet_disabled: false,
+                    class_minor: FIRST_CLASS_MINOR,
+                },
+            );
+            current
+                .nss_attachment_generations
+                .insert(identity.into(), ("edge0".into(), 7));
+            current
+                .nss_proven_directions
+                .insert(identity.into(), NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD);
+            current
+                .result
+                .verified_directions
+                .insert(identity.into(), NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD);
+            let mut candidate = manager();
+            candidate.rules = current.rules.clone();
+            candidate.inherit_nss_reload_state(&current);
+            candidate.observe_nss_attachment_generations(next);
+            assert!(candidate.nss_proven_directions.is_empty());
+            assert!(candidate.result.verified_directions.is_empty());
+        }
     }
 }

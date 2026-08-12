@@ -468,6 +468,42 @@ async function testLiveSamplePairing(context, fmt) {
 	assert.strictEqual(coldStraddle.livePair.retained, false,
 		'a cold start must not expose any part of a mismatched metric set');
 
+	const loadNssStatus = rpc.status;
+	const loadNssClients = rpc.clients;
+	const loadNssInterfaces = rpc.interfaces;
+	let nssInterfaceCalls = 0;
+	rpc.status = function() {
+		return Promise.resolve({
+			access_edge_mode: 'active',
+			evidence: { platform: { profile: 'nss_aarch64' }, access_edge: { sample_ms: 6000 } },
+			coverage: { quality: 'ok', tx_pct: 99, rx_pct: 99 }
+		});
+	};
+	rpc.clients = function() {
+		return Promise.resolve({
+			clients: [ {
+				collector_mode: 'access_edge', sample_ms: 6000,
+				tx_bps: 222, rx_bps: 222,
+				rate_meta: { tx: { source: 'edge_port' }, rx: { source: 'edge_port' } }
+			} ],
+			evidence: { access_edge: { sample_ms: 6000 } }
+		});
+	};
+	rpc.interfaces = function() {
+		nssInterfaceCalls++;
+		return loadNssInterfaces();
+	};
+	const coldNssEdge = await overview.loadAll(null, clock);
+	assert.strictEqual(coldNssEdge.livePair.aligned, false);
+	assert.strictEqual(coldNssEdge.livePair.renderable, true,
+		'an NSS Access Edge cold start must render its valid client batch while independent clocks align');
+	assert.strictEqual(coldNssEdge.clients.clients[0].tx_bps, 222);
+	assert.strictEqual(nssInterfaceCalls, 1,
+		'a renderable NSS Access Edge batch must not repeat every live RPC before first paint');
+	rpc.status = loadNssStatus;
+	rpc.clients = loadNssClients;
+	rpc.interfaces = loadNssInterfaces;
+
 	emptyClients = true;
 	statusSampleMs = 8000;
 	interfaceSampleMs = 8000;

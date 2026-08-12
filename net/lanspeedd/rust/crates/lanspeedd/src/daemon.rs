@@ -51,27 +51,110 @@ impl SignalBridge {
 
 #[cfg(feature = "openwrt")]
 pub struct UloopSignalBridge {
+    #[cfg(not(feature = "nss-platform"))]
     _sigint: lanspeed_openwrt_sys::Signal,
+    #[cfg(not(feature = "nss-platform"))]
     _sigterm: lanspeed_openwrt_sys::Signal,
+    #[cfg(feature = "nss-platform")]
+    _sigint: ImmediateStopSignal,
+    #[cfg(feature = "nss-platform")]
+    _sigterm: ImmediateStopSignal,
 }
 
 #[cfg(feature = "openwrt")]
 impl UloopSignalBridge {
     pub fn install() -> Result<Self, DaemonError> {
-        let sigint = lanspeed_openwrt_sys::Signal::new(
-            libc::SIGINT,
-            lanspeed_openwrt_sys::UloopGuard::request_stop,
-        )
-        .map_err(|error| DaemonError::platform(error.to_string()))?;
-        let sigterm = lanspeed_openwrt_sys::Signal::new(
-            libc::SIGTERM,
-            lanspeed_openwrt_sys::UloopGuard::request_stop,
-        )
-        .map_err(|error| DaemonError::platform(error.to_string()))?;
-        Ok(Self {
-            _sigint: sigint,
-            _sigterm: sigterm,
-        })
+        #[cfg(not(feature = "nss-platform"))]
+        {
+            let sigint = lanspeed_openwrt_sys::Signal::new(
+                libc::SIGINT,
+                lanspeed_openwrt_sys::UloopGuard::request_stop,
+            )
+            .map_err(|error| DaemonError::platform(error.to_string()))?;
+            let sigterm = lanspeed_openwrt_sys::Signal::new(
+                libc::SIGTERM,
+                lanspeed_openwrt_sys::UloopGuard::request_stop,
+            )
+            .map_err(|error| DaemonError::platform(error.to_string()))?;
+            Ok(Self {
+                _sigint: sigint,
+                _sigterm: sigterm,
+            })
+        }
+        #[cfg(feature = "nss-platform")]
+        {
+            Ok(Self {
+                _sigint: ImmediateStopSignal::install(libc::SIGINT)?,
+                _sigterm: ImmediateStopSignal::install(libc::SIGTERM)?,
+            })
+        }
+    }
+}
+
+#[cfg(all(feature = "openwrt", feature = "nss-platform"))]
+struct ImmediateStopSignal {
+    signal: libc::c_int,
+    previous: libc::sigaction,
+}
+
+#[cfg(all(feature = "openwrt", feature = "nss-platform"))]
+impl ImmediateStopSignal {
+    fn install(signal: libc::c_int) -> Result<Self, DaemonError> {
+        unsafe extern "C" fn request_stop(_signal: libc::c_int) {
+            // The NSS collection turn can take several seconds. Set the uloop
+            // stop flag in the signal handler so an already-due collection
+            // timer cannot run before graceful shutdown begins.
+            lanspeed_openwrt_sys::UloopGuard::request_stop();
+        }
+
+        let mut action = unsafe { core::mem::zeroed::<libc::sigaction>() };
+        action.sa_sigaction = request_stop as *const () as usize;
+        action.sa_flags = 0;
+        unsafe { libc::sigemptyset(&mut action.sa_mask) };
+        let mut previous = unsafe { core::mem::zeroed::<libc::sigaction>() };
+        if unsafe { libc::sigaction(signal, &action, &mut previous) } != 0 {
+            return Err(DaemonError::platform(
+                std::io::Error::last_os_error().to_string(),
+            ));
+        }
+        Ok(Self { signal, previous })
+    }
+}
+
+#[cfg(all(feature = "openwrt", feature = "nss-platform"))]
+impl Drop for ImmediateStopSignal {
+    fn drop(&mut self) {
+        unsafe { libc::sigaction(self.signal, &self.previous, core::ptr::null_mut()) };
+    }
+}
+
+#[cfg(all(test, feature = "openwrt", feature = "nss-platform"))]
+mod nss_signal_tests {
+    use std::{cell::Cell, rc::Rc, sync::Mutex};
+
+    use super::ImmediateStopSignal;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn stop_signal_prevents_an_already_due_collection_turn() {
+        let _lock = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let collections = Rc::new(Cell::new(0));
+        let observed = Rc::clone(&collections);
+        let timer = lanspeed_openwrt_sys::Timer::new(move || {
+            observed.set(observed.get() + 1);
+            lanspeed_openwrt_sys::UloopGuard::request_stop();
+        });
+        timer.schedule(0).unwrap();
+        let mut event_loop = lanspeed_openwrt_sys::UloopGuard::init().unwrap();
+        let _signal = ImmediateStopSignal::install(libc::SIGUSR1).unwrap();
+
+        assert_eq!(unsafe { libc::raise(libc::SIGUSR1) }, 0);
+        event_loop.run().unwrap();
+
+        assert_eq!(collections.get(), 0);
     }
 }
 

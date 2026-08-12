@@ -7,6 +7,10 @@ const path = require('path');
 
 const root = path.resolve(__dirname, '..');
 const pkgMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
+const nssControlKmodMakefile = fs.readFileSync(path.join(root,
+  'net/lanspeed-nss-control/Makefile'), 'utf8');
+const nssControlKmodSource = fs.readFileSync(path.join(root,
+  'net/lanspeed-nss-control/src/lanspeed_nss_control.c'), 'utf8');
 const buildDriver = fs.readFileSync(
   path.join(root, 'net/lanspeedd/rust/crates/lanspeed-build/src/lib.rs'),
   'utf8'
@@ -14,6 +18,10 @@ const buildDriver = fs.readFileSync(
 const cargoConfig = fs.readFileSync(path.join(root, 'net/lanspeedd/rust/.cargo/config.toml'), 'utf8');
 const x86ProfileMigration = fs.readFileSync(
   path.join(root, 'net/lanspeedd/files/etc/uci-defaults/95-lanspeed-x86-profile'),
+  'utf8'
+);
+const initScript = fs.readFileSync(
+  path.join(root, 'net/lanspeedd/files/etc/init.d/lanspeedd'),
   'utf8'
 );
 const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/Makefile'), 'utf8');
@@ -670,6 +678,43 @@ try {
     /LANSPEED_X86_CONTROL_DEPENDS:=\+TARGET_x86:tc-full \+TARGET_x86:ip \+TARGET_x86:nftables \+TARGET_x86:conntrack \+TARGET_x86:kmod-ifb \+TARGET_x86:kmod-sched-core \+TARGET_x86:kmod-sched/,
     'x86 client control must request the IFB and scheduler modules only behind the x86 architecture gate'
   );
+  assertMatch(
+    pkgMakefile,
+    /LANSPEED_NSS_CONTROL_DEPENDS:=\+TARGET_qualcommax:tc-full \+TARGET_qualcommax:ip \+TARGET_qualcommax:nftables \+TARGET_qualcommax:conntrack \+TARGET_qualcommax:kmod-ifb \+TARGET_qualcommax:kmod-sched-core \+TARGET_qualcommax:kmod-qca-nss-drv-igs \+TARGET_qualcommax:kmod-lanspeed-nss-control/,
+    'NSS client control must request its CPU-path modules only behind the qualcommax architecture gate'
+  );
+  assertMatch(nssControlKmodMakefile, /^PKG_VERSION:=1\.1\.6$/m,
+    'NSS control kmod must stay on the daemon version');
+  assertMatch(nssControlKmodMakefile, /^PKG_RELEASE:=3$/m,
+    'NSS control kmod must stay on release 3');
+  assertMatch(nssControlKmodMakefile,
+    /^  DEPENDS:=@TARGET_qualcommax \+kmod-ifb \+kmod-qca-nss-drv \+kmod-qca-nss-drv-igs$/m,
+    'NSS control kmod must be packaged only for qualcommax with verified IGS dependencies');
+  assertMatch(nssControlKmodMakefile, /^  SOURCE:=lanspeed-nss-control$/m,
+    'NSS control kmod package metadata must not expose a local build path');
+  assertMatch(nssControlKmodMakefile,
+    /define Package\/kmod-lanspeed-nss-control\/postinst[\s\S]*chown 0:0[\s\S]*kmod-lanspeed-nss-control\.list[\s\S]*lanspeed_nss_control\.ko[\s\S]*chmod 0644/,
+    'NSS control kmod must normalize installed module metadata to root-owned mode 0644');
+  assertNoMatch(nssControlKmodMakefile, /TARGET_x86|platform\/x86/,
+    'NSS control kmod must not change or import the x86 platform');
+  assert(nssControlKmodSource.includes('module_param_cb(stage') &&
+    nssControlKmodSource.includes('module_param_cb(publish') &&
+    nssControlKmodSource.includes('module_param_cb(unpublish') &&
+    nssControlKmodSource.includes('module_param_cb(unstage') &&
+    nssControlKmodSource.includes('LANSPEED_IGS_DEGRADED') &&
+    nssControlKmodSource.indexOf('NSS_IF_SET_IGS_NODE') <
+      nssControlKmodSource.indexOf('nss_if_set_nexthop') &&
+    nssControlKmodSource.indexOf('nss_if_reset_nexthop') <
+      nssControlKmodSource.indexOf('NSS_IF_CLEAR_IGS_NODE',
+        nssControlKmodSource.indexOf('nss_if_reset_nexthop')),
+    'NSS control kmod must stage queues before transactional publish and reset before clear');
+  assert(
+    nssControlKmodSource.includes('rtnl_dereference(entry->dev->qdisc)') &&
+      nssControlKmodSource.includes('rtnl_dereference(queue->qdisc_sleeping)') &&
+      nssControlKmodSource.includes('qdisc->handle') &&
+      nssControlKmodSource.includes('error = -EBUSY'),
+    'NSS control kmod must reject unstage while a device-root or queue-root qdisc still owns the IGS device'
+  );
   assertNoMatch(
     pkgMakefile,
     /\+kmod-(?:qca-nss-drv-qdisc|qca-nss-ecm)\b|sqm-scripts|qosify/,
@@ -784,6 +829,18 @@ try {
     /if \[ "\$\(ARCH\)" = "x86_64" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/etc\/uci-defaults; \\\s*\$\(INSTALL_BIN\) \.\/files\/etc\/uci-defaults\/95-lanspeed-x86-profile \$\(1\)\/etc\/uci-defaults\/95-lanspeed-x86-profile; \\\s*fi/,
     'x86 package must install its profile migration only behind the architecture gate'
   );
+  assertMatch(
+    pkgMakefile,
+    /if \[ "\$\(CONFIG_TARGET_qualcommax\)" = "y" \]; then \\\s*\$\(SED\) '\/procd_set_param respawn\/a\\\tprocd_set_param term_timeout 15' \$\(1\)\/etc\/init\.d\/lanspeedd; \\\s*fi/,
+    'only the qualcommax package may extend procd shutdown for NSS cleanup and BPF RCU detach'
+  );
+  assertMatch(
+    pkgMakefile,
+    /if \[ "\$\(CONFIG_TARGET_qualcommax\)" != "y" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/etc\/hotplug\.d\/iface; \\\s*\$\(INSTALL_BIN\) \.\/files\/etc\/hotplug\.d\/iface\/90-lanspeedd \$\(1\)\/etc\/hotplug\.d\/iface\/90-lanspeedd; \\\s*fi/,
+    'qualcommax must use only procd reload triggers while x86 retains its existing hotplug entry'
+  );
+  assertNoMatch(initScript, /procd_set_param term_timeout/,
+    'the shared init source must retain the x86 default termination timeout');
   assertMatch(x86ProfileMigration, /uci -q delete lanspeed\.main\.access_edge_mode/,
     'x86 migration must remove a retained Access Edge option');
   assertMatch(x86ProfileMigration, /uci -q delete lanspeed\.main\.single_client_ports/,
@@ -794,8 +851,10 @@ try {
     'x86 migration must normalize retained forced NSS modes to BPF');
   assertMatch(pkgMakefile, /LANSPEED_X86_CONTROL_DEPENDS:=\+TARGET_x86:tc-full \+TARGET_x86:ip \+TARGET_x86:nftables \+TARGET_x86:conntrack \+TARGET_x86:kmod-ifb \+TARGET_x86:kmod-sched-core \+TARGET_x86:kmod-sched/,
     'client-control userspace tools and kernel queue modules must be requested only by the x86 package');
-  assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+libgcc \+kmod-nf-conntrack-netlink \$\(LANSPEED_X86_CONTROL_DEPENDS\)/,
-    'base daemon must retain collector dependencies while keeping NSS free of x86 control tools');
+  assertMatch(pkgMakefile, /LANSPEED_NSS_CONTROL_DEPENDS:=\+TARGET_qualcommax:tc-full \+TARGET_qualcommax:ip \+TARGET_qualcommax:nftables \+TARGET_qualcommax:conntrack \+TARGET_qualcommax:kmod-ifb \+TARGET_qualcommax:kmod-sched-core \+TARGET_qualcommax:kmod-qca-nss-drv-igs \+TARGET_qualcommax:kmod-lanspeed-nss-control/,
+    'NSS client control must package only its verified CPU-path kernel dependencies');
+  assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+libgcc \+kmod-nf-conntrack-netlink \$\(LANSPEED_X86_CONTROL_DEPENDS\) \$\(LANSPEED_NSS_CONTROL_DEPENDS\)/,
+    'base daemon must retain collector dependencies and append isolated platform controls');
   assertNoMatch(pkgMakefile, /\+libubox|\+libubus|\+libuci|\+libblobmsg-json/,
     'pure Rust userspace must not retain versioned OpenWrt library dependencies');
   assertNoMatch(

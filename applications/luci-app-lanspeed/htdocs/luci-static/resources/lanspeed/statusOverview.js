@@ -172,6 +172,12 @@ function livePair(data) {
 	};
 }
 
+function nssAccessEdgeRenderable(data, pair) {
+	return fmt.nssPlatform(data && data.status) &&
+		String(data && data.status && data.status.access_edge_mode || '') === 'active' &&
+		pair && pair.hasClientRates === true;
+}
+
 /*
  * Coverage, clients, and interfaces are separate ubus calls over one atomic
  * daemon snapshot. A collection may publish between the calls, so hold the
@@ -186,27 +192,30 @@ function alignLiveSamples(next, previous) {
 
 	var oldPair = previous && previous.livePair || livePair(previous);
 	var canRetain = !!(previous && oldPair.aligned !== false);
+	var renderColdNssEdge = !canRetain && nssAccessEdgeRenderable(next, pair);
 	if (canRetain) {
 		next.status = previousValue(previous, 'status');
 		next.clients = previousValue(previous, 'clients');
 		next.interfaces = previousValue(previous, 'interfaces');
 	}
-	else {
+	else if (!renderColdNssEdge) {
 		var status = Object.assign({}, next.status || {});
 		status.coverage = null;
 		next.status = status;
 		next.clients = emptySource('clients');
 		next.interfaces = emptySource('interfaces');
 	}
+	var visiblePair = renderColdNssEdge ? pair : oldPair;
 	next.livePair = {
-		coverageSampleMs: oldPair.coverageSampleMs,
-		clientSampleMs: oldPair.clientSampleMs,
-		interfaceSampleMs: oldPair.interfaceSampleMs,
-		sampleMs: oldPair.sampleMs,
-		aligned: oldPair.aligned,
-		hasCoverage: oldPair.hasCoverage,
-		hasClientRates: oldPair.hasClientRates,
+		coverageSampleMs: visiblePair.coverageSampleMs,
+		clientSampleMs: visiblePair.clientSampleMs,
+		interfaceSampleMs: visiblePair.interfaceSampleMs,
+		sampleMs: visiblePair.sampleMs,
+		aligned: visiblePair.aligned,
+		hasCoverage: visiblePair.hasCoverage,
+		hasClientRates: visiblePair.hasClientRates,
 		retained: canRetain,
+		renderable: renderColdNssEdge,
 		pendingCoverageSampleMs: pair.coverageSampleMs,
 		pendingClientSampleMs: pair.clientSampleMs,
 		pendingInterfaceSampleMs: pair.interfaceSampleMs
@@ -290,7 +299,7 @@ function loadAll(previous, clock) {
 		var liveSucceeded = LIVE_SOURCE_KEYS.every(function(key) {
 			return next.rpc[key] && next.rpc[key].ok === true;
 		});
-		if (pair.aligned !== false || !liveSucceeded)
+		if (pair.aligned !== false || !liveSucceeded || nssAccessEdgeRenderable(next, pair))
 			return alignLiveSamples(next, previous);
 
 		/* Every collector can publish between the three live RPC replies. Retry the
@@ -430,7 +439,7 @@ function createController(viewState, options) {
 		viewState.interfaces = normalized.interfaces;
 		viewState.uci = normalized.uci;
 		viewState.showClientStatus = normalized.showClientStatus;
-		viewState.showClientControl = !fmt.nssPlatform(normalized.status);
+		viewState.showClientControl = true;
 		viewState.showIpv6 = normalized.showIpv6;
 		viewState.hidePrivateIpv6 = normalized.hidePrivateIpv6;
 		viewState.hideIpv6Ranges = normalized.hideIpv6Ranges;
@@ -547,7 +556,7 @@ return baseclass.extend({
 			interfaces: normalized.interfaces,
 			uci: normalized.uci,
 			showClientStatus: normalized.showClientStatus,
-			showClientControl: !fmt.nssPlatform(normalized.status),
+			showClientControl: true,
 			showIpv6: normalized.showIpv6,
 			hidePrivateIpv6: normalized.hidePrivateIpv6,
 				hideIpv6Ranges: normalized.hideIpv6Ranges,

@@ -31,7 +31,6 @@ impl Method {
         Self::Sysdevices,
         Self::Diagnostics,
     ];
-    #[cfg(not(feature = "nss-platform"))]
     pub const ALL: [Self; 11] = [
         Self::Status,
         Self::Clients,
@@ -44,18 +43,6 @@ impl Method {
         Self::ClientConnections,
         Self::ClientControlSet,
         Self::ClientControlDelete,
-    ];
-    #[cfg(feature = "nss-platform")]
-    pub const ALL: [Self; 9] = [
-        Self::Status,
-        Self::Clients,
-        Self::Overview,
-        Self::Health,
-        Self::Reload,
-        Self::Interfaces,
-        Self::Sysdevices,
-        Self::Diagnostics,
-        Self::ClientConnections,
     ];
     pub const fn name(self) -> &'static str {
         match self {
@@ -226,4 +213,16 @@ fn control_error(error: &DaemonError) -> Value {
         .find(|code| text.contains(code))
         .unwrap_or("control_apply_failed");
     serde_json::json!({ "ok": false, "error": code })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Method;
+
+    #[test]
+    fn every_platform_registers_both_client_control_methods() {
+        assert!(Method::ALL.contains(&Method::ClientControlSet));
+        assert!(Method::ALL.contains(&Method::ClientControlDelete));
+        assert_eq!(Method::ALL.len(), 11);
+    }
 }

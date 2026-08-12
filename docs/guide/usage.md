@@ -13,17 +13,18 @@
 
 诊断页独立校验六个 RPC 请求。NSS 页面分开展示总速率 owner、精准接入拓扑和 NSS/CPU 分类；x86 页面只展示 TC-BPF 与连接详情健康。
 
-## x86 客户端控制
+## 客户端控制
 
 实时客户端行可以设置独立上传、下载 Mbps，或禁用/恢复上网。规则永久保存；设备离线后不提供额外管理页，再次出现时可以继续修改，后台也可使用 `client_control_delete` 删除。
 
-- 上传从 LAN ingress 重定向到自有 `ifb-lanspeed`，由 HTB + FQ 整形。
-- 下载在 LAN egress 由独立 HTB + FQ 树整形。
+- x86 上传从 LAN ingress 重定向到自有 `ifb-lanspeed`，下载在 LAN egress 整形；两个方向使用 HTB + FQ。
+- NSS 先用实时 N/S 分类分别确认上传、下载的真实数据路径；每个方向只进入一个整形执行器。
+- NSS 下载在真实客户端出口使用 NSSHTB + NSSBFIFO，上传在真实客户端入口的 NSS IGS IFB 使用 NSSHTB + NSSBFIFO；透明代理/CPU 流量只被分类到同一个客户端方向队列，不按代理或 TUN 接口名适配。
 - 路由器管理和 LAN/NAS 流量优先放行。
 - 正常整形不使用 police 主动丢包；队列 `drops` 增长会报告 `queue_overflow`。
-- 单纯禁网不安装整形队列；最后一条限速解除后会清理自有 ingress 跳转、IFB 和根队列。
+- 单纯禁网不安装整形队列；最后一条限速解除后会清理对应平台的自有分类器和根队列。
 - 地址归属不唯一时返回 `ambiguous_identity`，不会清理可能属于其他设备的 conntrack。
-- aarch64/NSS 不显示控制入口，控制 RPC 返回 `client_control_x86_only`。
+- NSS 新规则先显示“等待路径确认”；实际 hook 和唯一执行器证明后才创建队列，随后以对应 class counter 增长确认“已验证生效”。缺少完整路径、唯一地址或可信客户端出口时不显示已生效。
 
 控制与测速 BPF 相互独立：测速 BPF 先计数，控制分类器随后处理，因此重定向不会破坏 RateMux 或客户端实时速率。
 

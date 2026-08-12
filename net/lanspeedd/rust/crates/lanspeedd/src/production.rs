@@ -75,14 +75,25 @@ use crate::{
     ubus,
 };
 
-#[cfg(not(feature = "nss-platform"))]
 use crate::control::ControlManager;
+
+#[cfg(feature = "nss-platform")]
+use crate::control::{NssPathObservation, NSS_CPU_DOWNLOAD, NSS_CPU_UPLOAD};
 
 #[cfg(feature = "nss-platform")]
 use crate::config::RateCollectorMode;
 
+#[cfg(all(test, feature = "nss-platform"))]
+use crate::platform::nss::fusion::add_traffic_counters;
+#[cfg(all(test, feature = "nss-platform"))]
+use crate::platform::nss::{
+    output::{coverage_response, nss_rate_coverage_values},
+    window::{CoverageWindow, EcmBpfRateBatch, RateWindowValue},
+};
 #[cfg(feature = "nss-platform")]
 use crate::platform::x86::snapshot::BpfSnapshot;
+#[cfg(all(test, feature = "nss-platform"))]
+use crate::probe::Confidence as ProbeConfidence;
 #[cfg(feature = "nss-platform")]
 use crate::{
     connection_details::{TrafficClassification, TrafficClassificationDirection},
@@ -106,6 +117,7 @@ use crate::{
         counters::TrafficCounters,
         nss::{
             bpf_coverage::NssBpfCoverage,
+            control::{PathProbeBook, PathProbeWindow},
             ecm_bpf::EcmBpfSnapshot,
             evidence::{apply_ecm_bpf_evidence, apply_nss_snapshot_evidence},
             fusion::{
@@ -123,21 +135,14 @@ use crate::{
         },
     },
 };
-#[cfg(all(test, feature = "nss-platform"))]
-use crate::platform::nss::fusion::add_traffic_counters;
-#[cfg(all(test, feature = "nss-platform"))]
-use crate::platform::nss::{
-    output::{coverage_response, nss_rate_coverage_values},
-    window::{CoverageWindow, EcmBpfRateBatch, RateWindowValue},
-};
-#[cfg(all(test, feature = "nss-platform"))]
-use crate::probe::Confidence as ProbeConfidence;
 
 const RECONNECT_MS: u32 = 1_000;
 // Kept as a policy/timer constant so the x86 build does not need to link the
 // NSS platform module merely to compile common scheduling code.
 const ACCESS_EDGE_INTERVAL_MS: u64 = 1_000;
 const CLASSIFIER_INTERVAL_MS: u64 = 2_000;
+#[cfg(feature = "nss-platform")]
+const CPU_PATH_PROBE_READ_END_SKEW_MS: u64 = 250;
 const INTERNAL_BPF_SELF_HEAL_REASON: &str = "production.collect.internal";
 const EXTERNAL_BPF_SELF_HEAL_REASON: &str = "production.collect.external";
 const INTERFACE_NOTE: &str = "Per-interface totals from one kernel net-device pass with sysfs fallback; reflect hardware-offloaded and hardware-switched traffic too.";
@@ -1122,7 +1127,6 @@ fn production_now_ms() -> Result<u64, DaemonError> {
 
 struct ProductionRuntime {
     config: RuntimeConfig,
-    #[cfg(not(feature = "nss-platform"))]
     control: ControlManager,
     adapter: SystemAyaAdapter,
     bpf: Option<Bpf>,
@@ -1141,6 +1145,10 @@ struct ProductionRuntime {
     classifier_epoch_id: u64,
     #[cfg(feature = "nss-platform")]
     next_classifier_deadline_ms: u64,
+    #[cfg(feature = "nss-platform")]
+    cpu_path_probe_book: PathProbeBook,
+    #[cfg(feature = "nss-platform")]
+    cpu_path_probe_windows: BTreeMap<String, PathProbeWindow>,
     conntrack_snapshot: Option<Arc<CollectedSnapshot>>,
     connection_rates: ConnectionRateBook,
     conntrack_observation: ConntrackObservation,
@@ -1155,6 +1163,11 @@ struct ProductionRuntime {
     interface_rates: InterfaceRateBook,
     rate_owner: Option<RateCollector>,
     hostnames: HostnameCache,
+    /// Only the committed NSS runtime may mutate or remove shared client
+    /// control objects. Reload candidates inspect them read-only until the
+    /// ownership handoff is committed.
+    #[cfg(feature = "nss-platform")]
+    control_platform_owner: bool,
     shutdown_complete: bool,
 }
 
@@ -1170,6 +1183,10 @@ struct RuntimeCheckpoint {
     classifier_epoch_id: u64,
     #[cfg(feature = "nss-platform")]
     next_classifier_deadline_ms: u64,
+    #[cfg(feature = "nss-platform")]
+    cpu_path_probe_book: PathProbeBook,
+    #[cfg(feature = "nss-platform")]
+    cpu_path_probe_windows: BTreeMap<String, PathProbeWindow>,
     overview: OverviewRing,
     x86_coverage: X86Coverage,
     #[cfg(feature = "nss-platform")]
@@ -1209,7 +1226,6 @@ impl ProductionRuntime {
         process_tracker.refresh_if_due("/proc", production_now_ms()?);
         let mut preflight = probe.collect(&config, &RuntimeHealth::default(), ProbeMethod::Health);
         process_tracker.overlay_report(&mut preflight);
-        #[cfg(not(feature = "nss-platform"))]
         let control = ControlManager::load(&config)?;
         Ok(Self {
             bpf_collector: BpfSnapshotCollector::new(
@@ -1226,6 +1242,10 @@ impl ProductionRuntime {
             classifier_epoch_id: 0,
             #[cfg(feature = "nss-platform")]
             next_classifier_deadline_ms: 0,
+            #[cfg(feature = "nss-platform")]
+            cpu_path_probe_book: PathProbeBook::default(),
+            #[cfg(feature = "nss-platform")]
+            cpu_path_probe_windows: BTreeMap::new(),
             conntrack_snapshot: None,
             connection_rates: ConnectionRateBook::default(),
             conntrack_observation: ConntrackObservation::default(),
@@ -1236,12 +1256,13 @@ impl ProductionRuntime {
             rate_owner: None,
             hostnames: HostnameCache::new(),
             adapter: SystemAyaAdapter::with_max_clients(config.max_clients),
-            #[cfg(not(feature = "nss-platform"))]
             control,
             config,
             bpf: None,
             bpf_error: None,
             bpf_error_stage: None,
+            #[cfg(feature = "nss-platform")]
+            control_platform_owner: true,
             overview: OverviewRing::new(),
             x86_coverage: X86Coverage::default(),
             #[cfg(feature = "nss-platform")]
@@ -1281,6 +1302,23 @@ impl ProductionRuntime {
     }
 
     fn activate_new_bpf(&mut self) -> Result<(), DaemonError> {
+        let interfaces = collect_ifnames(&self.config);
+        #[cfg(feature = "nss-platform")]
+        let recovered_orphan_slots = if self.config.enable_bpf && !interfaces.is_empty() {
+            crate::platform::nss::control::recover_classifier_slots(&interfaces)
+                .map_err(DaemonError::platform)?
+        } else {
+            false
+        };
+        #[cfg(not(feature = "nss-platform"))]
+        let recovered_orphan_slots = false;
+        if recovered_orphan_slots {
+            let mut report =
+                self.probe
+                    .collect(&self.config, &RuntimeHealth::default(), ProbeMethod::Health);
+            self.process_tracker.overlay_report(&mut report);
+            self.probe_report = Arc::new(report);
+        }
         if !self.config.enable_bpf
             || !matches!(
                 self.config.rate_collector_mode,
@@ -1288,11 +1326,10 @@ impl ProductionRuntime {
                     | crate::config::RateCollectorMode::Bpf
                     | crate::config::RateCollectorMode::NssEcmBpf
             )
-            || !self.probe_report.facts.tc.safe_attach
+            || (!self.probe_report.facts.tc.safe_attach && !recovered_orphan_slots)
         {
             return Ok(());
         }
-        let interfaces = collect_ifnames(&self.config);
         if interfaces.is_empty() {
             self.bpf_error = None;
             self.bpf_error_stage = None;
@@ -1340,6 +1377,10 @@ impl ProductionRuntime {
             classifier_epoch_id: self.classifier_epoch_id,
             #[cfg(feature = "nss-platform")]
             next_classifier_deadline_ms: self.next_classifier_deadline_ms,
+            #[cfg(feature = "nss-platform")]
+            cpu_path_probe_book: self.cpu_path_probe_book.clone(),
+            #[cfg(feature = "nss-platform")]
+            cpu_path_probe_windows: self.cpu_path_probe_windows.clone(),
             overview: self.overview.clone(),
             x86_coverage: self.x86_coverage.clone(),
             #[cfg(feature = "nss-platform")]
@@ -1368,6 +1409,8 @@ impl ProductionRuntime {
             self.classification_results = checkpoint.classification_results;
             self.classifier_epoch_id = checkpoint.classifier_epoch_id;
             self.next_classifier_deadline_ms = checkpoint.next_classifier_deadline_ms;
+            self.cpu_path_probe_book = checkpoint.cpu_path_probe_book;
+            self.cpu_path_probe_windows = checkpoint.cpu_path_probe_windows;
         }
         self.overview = checkpoint.overview;
         self.x86_coverage = checkpoint.x86_coverage;
@@ -1485,6 +1528,19 @@ impl ProductionRuntime {
                 .get_or_insert_default()
                 .details
                 .insert("identity_errors".into(), json!(identity_errors));
+        }
+        #[cfg(feature = "nss-platform")]
+        {
+            // A hot clients/client_connections RPC is also a control
+            // observation. Audit every owned NSS queue, filter, nft object,
+            // and IGS mapping before copying control state into this response.
+            // Use the last authoritative client/attachment inventory: the
+            // conntrack overlay below may contain transient connection-only
+            // rows and must not become topology authority. If an owned object
+            // disappeared, reconcile clears verification and transactionally
+            // rebuilds it in this same request, so stale `verified` is never
+            // returned for one extra polling interval.
+            self.reconcile_control_state();
         }
         // The hot clients RPC overlays fresh conntrack-only identities after
         // the normal collection snapshot. It is not an authoritative identity
@@ -2673,6 +2729,8 @@ impl ProductionRuntime {
         if self.config.access_edge_mode == AccessEdgeMode::Off {
             self.access_edge.clear_classification();
             self.classification_results.clear();
+            self.cpu_path_probe_book.clear();
+            self.cpu_path_probe_windows.clear();
             return;
         }
         let ecm_map_loss = ecm
@@ -2725,6 +2783,8 @@ impl ProductionRuntime {
                     // evidence, not permission to retain an older Aligned
                     // comparison. The next valid epoch must warm up again.
                     self.access_edge.clear_classification();
+                    self.cpu_path_probe_book.clear();
+                    self.cpu_path_probe_windows.clear();
                     let mut identity_keys = identities
                         .iter()
                         .map(|identity| identity.key.to_string())
@@ -2743,6 +2803,19 @@ impl ProductionRuntime {
                     return;
                 }
             };
+        let probe_reference_end_ms = slow_read_end_ms.or(ecm_read_end_ms).unwrap_or(end_ms);
+        match self.control.nss_path_probe_snapshot(end_ms) {
+            Ok(snapshot)
+                if snapshot.read_end_ms().abs_diff(probe_reference_end_ms)
+                    <= CPU_PATH_PROBE_READ_END_SKEW_MS =>
+            {
+                self.cpu_path_probe_book.push(snapshot);
+            }
+            _ => {
+                self.cpu_path_probe_book.clear();
+                self.cpu_path_probe_windows.clear();
+            }
+        }
         self.classifier_epoch_id = self.classifier_epoch_id.saturating_add(1);
         let sources_complete = ecm_window.is_some() && slow_window.is_some();
         let edge_clients = self.access_edge.latest().clients.clone();
@@ -2763,6 +2836,7 @@ impl ProductionRuntime {
         }
 
         let mut active_results = BTreeMap::new();
+        let mut active_probe_windows = BTreeMap::new();
         for identity_key in identity_keys {
             let identity = identities_by_key.get(&identity_key).copied();
             let edge = identity.and_then(|identity| {
@@ -2835,9 +2909,22 @@ impl ProductionRuntime {
                 rx: direction(EdgeDirection::Rx),
             };
             let result = self.access_edge.update_classification(&identity_key, epoch);
+            if let (Some(identity), Some(edge), Some(window_start_ms), Some(window_end_ms)) =
+                (identity, edge, result.window_start_ms, result.window_end_ms)
+            {
+                if let Some(window) = self.cpu_path_probe_book.window(
+                    &edge.attachment.point.ifname,
+                    &identity.key.mac.to_string(),
+                    window_start_ms,
+                    window_end_ms,
+                ) {
+                    active_probe_windows.insert(identity_key.clone(), window);
+                }
+            }
             active_results.insert(identity_key, result);
         }
         self.classification_results = active_results;
+        self.cpu_path_probe_windows = active_probe_windows;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3491,12 +3578,11 @@ impl ProductionRuntime {
                 } else {
                     BTreeSet::new()
                 };
-            self.control
-                .observe_dae_topology(
-                    self.probe_report.facts.proxy.dae,
-                    dae_preempted_devices,
-                    dae_upload_devices,
-                );
+            self.control.observe_dae_topology(
+                self.probe_report.facts.proxy.dae,
+                dae_preempted_devices,
+                dae_upload_devices,
+            );
         }
         self.control.observe_clients(&clients.clients);
         self.reconcile_control_state();
@@ -3504,22 +3590,31 @@ impl ProductionRuntime {
     }
 
     #[cfg(feature = "nss-platform")]
-    fn refresh_controls(&mut self, _clients: &mut ClientsResponse) {}
+    fn refresh_controls(&mut self, clients: &mut ClientsResponse) {
+        self.control
+            .observe_nss_paths(nss_control_path_observations(
+                &clients.clients,
+                &self.classification_results,
+                &self.cpu_path_probe_windows,
+            ));
+        self.control.observe_clients(&clients.clients);
+        self.reconcile_control_state();
+        self.control.decorate_clients(&mut clients.clients);
+    }
 
-    #[cfg(not(feature = "nss-platform"))]
     fn decorate_controls(&self, clients: &mut ClientsResponse) {
         self.control.decorate_clients(&mut clients.clients);
     }
 
-    #[cfg(feature = "nss-platform")]
-    fn decorate_controls(&self, _clients: &mut ClientsResponse) {}
-
-    #[cfg(not(feature = "nss-platform"))]
     fn reconcile_control_state(&mut self) {
+        #[cfg(feature = "nss-platform")]
+        if !self.control_platform_owner {
+            self.control.observe_existing_nss_control();
+            return;
+        }
         self.control.reconcile();
     }
 
-    #[cfg(not(feature = "nss-platform"))]
     fn client_control_set(&mut self, request: ClientControlRequest) -> Result<Value, DaemonError> {
         let identity_key = request.identity_key.clone();
         let _ = self.control.set(request)?;
@@ -3527,12 +3622,6 @@ impl ProductionRuntime {
         Ok(self.control.response(&identity_key))
     }
 
-    #[cfg(feature = "nss-platform")]
-    fn client_control_set(&mut self, _request: ClientControlRequest) -> Result<Value, DaemonError> {
-        Err(DaemonError::reload("client_control_x86_only"))
-    }
-
-    #[cfg(not(feature = "nss-platform"))]
     fn client_control_delete(
         &mut self,
         request: ClientControlDeleteRequest,
@@ -3541,14 +3630,6 @@ impl ProductionRuntime {
         let _ = self.control.delete(request)?;
         self.reconcile_control_state();
         Ok(self.control.response(&identity_key))
-    }
-
-    #[cfg(feature = "nss-platform")]
-    fn client_control_delete(
-        &mut self,
-        _request: ClientControlDeleteRequest,
-    ) -> Result<Value, DaemonError> {
-        Err(DaemonError::reload("client_control_x86_only"))
     }
 
     fn shutdown(&mut self) -> Result<(), DaemonError> {
@@ -3566,6 +3647,12 @@ impl ProductionRuntime {
             failures.push(format!("client control shutdown: {error}"));
         }
         #[cfg(feature = "nss-platform")]
+        if self.control_platform_owner {
+            if let Err(error) = self.control.cleanup() {
+                failures.push(format!("client control shutdown: {error}"));
+            }
+        }
+        #[cfg(feature = "nss-platform")]
         if let Err(error) = self.nss.shutdown() {
             failures.push(format!("ECM+BPF shutdown: {error}"));
         }
@@ -3575,6 +3662,164 @@ impl ProductionRuntime {
         self.shutdown_complete = true;
         Ok(())
     }
+}
+
+#[cfg(feature = "nss-platform")]
+fn nss_control_path_observations(
+    clients: &[Client],
+    results: &BTreeMap<String, ClassificationResult>,
+    probe_windows: &BTreeMap<String, PathProbeWindow>,
+) -> BTreeMap<String, NssPathObservation> {
+    clients
+        .iter()
+        .filter(|client| {
+            client
+                .rate_meta
+                .as_ref()
+                .and_then(|meta| meta.attachment.as_ref())
+                .is_some_and(|attachment| {
+                    attachment.ifname.is_some()
+                        && matches!(
+                            attachment.trust,
+                            ModelAttachmentTrust::AssociatedStation
+                                | ModelAttachmentTrust::ObservedExclusive
+                        )
+                })
+        })
+        .filter_map(|client| {
+            let result = results.get(&client.identity_key)?;
+            let mut observation = NssPathObservation::default();
+            for (bit, state, direction, probe) in [
+                (
+                    NSS_CPU_UPLOAD,
+                    result.tx_state,
+                    result.tx,
+                    probe_windows
+                        .get(&client.identity_key)
+                        .and_then(|window| window.upload),
+                ),
+                (
+                    NSS_CPU_DOWNLOAD,
+                    result.rx_state,
+                    result.rx,
+                    probe_windows
+                        .get(&client.identity_key)
+                        .and_then(|window| window.download),
+                ),
+            ] {
+                let (valid, active, proven, nss, cpu) = nss_control_direction_path(
+                    state,
+                    result.classifier_window_ms,
+                    result.comparison_window_ms,
+                    direction,
+                    probe,
+                );
+                if valid {
+                    observation.valid_directions |= bit;
+                }
+                if active {
+                    observation.active_directions |= bit;
+                }
+                if proven {
+                    observation.proven_directions |= bit;
+                }
+                if nss {
+                    observation.nss_directions |= bit;
+                }
+                if cpu {
+                    observation.cpu_directions |= bit;
+                }
+            }
+            Some((client.identity_key.clone(), observation))
+        })
+        .collect()
+}
+
+#[cfg(feature = "nss-platform")]
+fn nss_control_direction_path(
+    state: ClassificationState,
+    classifier_window_ms: Option<u64>,
+    comparison_window_ms: Option<u64>,
+    direction: crate::platform::access_edge::DirectionClassification,
+    probe: Option<crate::platform::nss::control::PathProbeDirectionWindow>,
+) -> (bool, bool, bool, bool, bool) {
+    let complete_window = matches!(
+        state,
+        ClassificationState::Aligned | ClassificationState::CounterSkew
+    ) && comparison_window_ms.is_some();
+    let complete_warmup_epoch = state == ClassificationState::Warmup
+        && comparison_window_ms.is_none()
+        && classifier_window_ms.is_some_and(|window| window != 0)
+        && direction.edge_bps.is_some();
+    if (!complete_window && !complete_warmup_epoch) || direction.edge_bps.is_none() {
+        return (false, false, false, false, false);
+    }
+    let (Some(edge), Some(nss), Some(slow), Some(probe)) = (
+        direction.edge_bps,
+        direction.nss_bps,
+        direction.slow_bps,
+        probe,
+    ) else {
+        return (false, false, false, false, false);
+    };
+    let active = edge != 0 || nss != 0 || slow != 0 || probe.bps != 0;
+    if !active {
+        return (true, false, false, false, false);
+    }
+    const MIN_PROBE_BYTES: u64 = 64 * 1024;
+    const MIN_PROBE_SLOW_PERCENT: u64 = 75;
+    const MAX_PROBE_SLOW_PERCENT: u64 = 125;
+    const MAX_PATH_SHARE_PERCENT: u64 = 125;
+    let evidence_window_ms = comparison_window_ms.or(classifier_window_ms).unwrap_or(0);
+    let probe_matches_cpu_path = probe.bytes >= MIN_PROBE_BYTES
+        && edge != 0
+        && slow != 0
+        && u128::from(probe.bps).saturating_mul(100)
+            >= u128::from(slow).saturating_mul(MIN_PROBE_SLOW_PERCENT as u128)
+        && u128::from(probe.bps).saturating_mul(100)
+            <= u128::from(slow).saturating_mul(MAX_PROBE_SLOW_PERCENT as u128)
+        && u128::from(slow).saturating_mul(100)
+            <= u128::from(edge).saturating_mul(MAX_PATH_SHARE_PERCENT as u128);
+
+    // Access Edge deliberately includes LAN/NAS and router-local frames, while
+    // the CPU probe below counts Internet traffic only. Requiring N+S to cover
+    // the complete edge therefore deadlocks startup whenever local traffic is
+    // active. A current, source-aligned epoch is sufficient to prove each
+    // independently observed Internet executor: the bridge probe proves the
+    // CPU hook and an ECM hardware delta proves the NSS path. Both are later
+    // published into the same aggregate edge queue, never separate buckets.
+    // CounterSkew is excluded from NSS proof because it may duplicate proxy
+    // bytes; it remains acceptable for independently probed CPU-only traffic.
+    let nss_matches_direct_path = (complete_window || complete_warmup_epoch)
+        && matches!(
+            state,
+            ClassificationState::Aligned | ClassificationState::Warmup
+        )
+        && edge != 0
+        && nss != 0
+        && observed_bytes(nss, evidence_window_ms) >= MIN_PROBE_BYTES
+        && u128::from(nss).saturating_mul(100)
+            <= u128::from(edge).saturating_mul(MAX_PATH_SHARE_PERCENT as u128);
+
+    // A direction becomes publishable after at least one actual Internet
+    // executor is proven. If the other executor appears later, ControlManager
+    // adds it to this same direction, reapplies transactionally, and requires
+    // fresh aggregate class growth before returning to `verified`.
+    let fully_proven = probe_matches_cpu_path || nss_matches_direct_path;
+
+    (
+        true,
+        true,
+        fully_proven,
+        nss_matches_direct_path,
+        probe_matches_cpu_path,
+    )
+}
+
+#[cfg(feature = "nss-platform")]
+fn observed_bytes(bps: u64, window_ms: u64) -> u64 {
+    let bytes = u128::from(bps).saturating_mul(u128::from(window_ms)) / 8_000;
+    bytes.min(u128::from(u64::MAX)) as u64
 }
 
 impl Drop for ProductionRuntime {
@@ -3728,10 +3973,32 @@ impl App {
         self.state.publish_runtime_snapshot(snapshot);
         Ok(())
     }
+    #[cfg(feature = "nss-platform")]
+    fn refresh_clients_control_state(&mut self) -> Result<(), DaemonError> {
+        let mut snapshot = (*self.state.snapshot()).clone();
+        let runtime = self
+            .runtime
+            .as_mut()
+            .ok_or_else(|| DaemonError::collection("runtime is not started"))?;
+        // Keep the clients RPC as a structural control observation, but do not
+        // publish a second conntrack overlay between the status and interfaces
+        // reads that form one LuCI refresh. Connection details retain their
+        // explicit hot refresh path below.
+        runtime.reconcile_control_state();
+        runtime.decorate_controls(&mut snapshot.clients);
+        self.state.publish_runtime_snapshot(snapshot);
+        Ok(())
+    }
     fn before_reply(&mut self, method: ubus::Method) -> Result<(), DaemonError> {
         match before_reply_action(method) {
             BeforeReplyAction::None => Ok(()),
-            BeforeReplyAction::RefreshConnections => self.refresh_clients_connections(),
+            BeforeReplyAction::RefreshConnections => {
+                #[cfg(feature = "nss-platform")]
+                if method == ubus::Method::Clients {
+                    return self.refresh_clients_control_state();
+                }
+                self.refresh_clients_connections()
+            }
             BeforeReplyAction::Reload => self.reload(),
         }
     }
@@ -3807,9 +4074,14 @@ impl App {
         let mut candidate =
             ProductionRuntime::prepare_with_process_tracker(config.clone(), process_tracker)?;
         #[cfg(feature = "nss-platform")]
-        candidate
-            .access_edge
-            .advance_attachment_generation_floor(attachment_generation_floor);
+        {
+            let current = self.runtime.as_ref().unwrap();
+            candidate.control.inherit_nss_reload_state(&current.control);
+            candidate.control_platform_owner = false;
+            candidate
+                .access_edge
+                .advance_attachment_generation_floor(attachment_generation_floor);
+        }
         #[cfg(feature = "nss-platform")]
         candidate
             .nss
@@ -4088,6 +4360,14 @@ impl App {
                 candidate.bpf = current.bpf.take();
                 cleanup
             });
+        #[cfg(feature = "nss-platform")]
+        {
+            // From this point commit_reload cannot reject the candidate. Give
+            // it cleanup authority before the old runtime is retired, and
+            // make the old shutdown preserve the shared dataplane objects.
+            candidate.control_platform_owner = true;
+            self.runtime.as_mut().unwrap().control_platform_owner = false;
+        }
         commit_reload(
             &mut self.state,
             &mut self.runtime,
@@ -4732,6 +5012,301 @@ fn record_fatal_cleanup(
 #[cfg(all(test, feature = "nss-platform"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nss_control_path_requires_a_current_nonempty_classifier_epoch() {
+        use crate::platform::access_edge::DirectionClassification;
+        use crate::platform::nss::control::PathProbeDirectionWindow;
+
+        let direction = DirectionClassification {
+            edge_bps: Some(10_000_000),
+            nss_bps: Some(9_900_000),
+            slow_bps: Some(100_000),
+            unclassified_bps: Some(0),
+            coverage_pct: Some(100),
+        };
+        assert_eq!(
+            nss_control_direction_path(
+                ClassificationState::Aligned,
+                Some(2_000),
+                Some(6_000),
+                direction,
+                Some(PathProbeDirectionWindow {
+                    bytes: 100_000,
+                    bps: 100_000,
+                }),
+            ),
+            (true, true, true, true, true)
+        );
+        assert_eq!(
+            nss_control_direction_path(
+                ClassificationState::Warmup,
+                Some(2_000),
+                Some(6_000),
+                direction,
+                None,
+            ),
+            (false, false, false, false, false)
+        );
+
+        let quiet = DirectionClassification {
+            edge_bps: Some(120_000),
+            nss_bps: Some(100_000),
+            slow_bps: Some(20_000),
+            unclassified_bps: Some(0),
+            coverage_pct: Some(100),
+        };
+        assert_eq!(
+            nss_control_direction_path(
+                ClassificationState::Aligned,
+                Some(2_000),
+                Some(6_000),
+                quiet,
+                Some(PathProbeDirectionWindow {
+                    bytes: 80_000,
+                    bps: 20_000,
+                }),
+            ),
+            (true, true, true, true, true)
+        );
+
+        let incomplete = DirectionClassification {
+            edge_bps: Some(10_000_000),
+            nss_bps: Some(7_000_000),
+            slow_bps: Some(1_000_000),
+            unclassified_bps: Some(2_000_000),
+            coverage_pct: Some(80),
+        };
+        assert_eq!(
+            nss_control_direction_path(
+                ClassificationState::Aligned,
+                Some(2_000),
+                Some(6_000),
+                incomplete,
+                None,
+            ),
+            (false, false, false, false, false)
+        );
+    }
+
+    #[test]
+    fn nss_control_path_requires_internet_probe_for_mixed_sources() {
+        use crate::platform::access_edge::DirectionClassification;
+        use crate::platform::nss::control::PathProbeDirectionWindow;
+
+        let direction = DirectionClassification {
+            edge_bps: Some(20_000_000),
+            nss_bps: Some(18_000_000),
+            slow_bps: Some(2_000_000),
+            unclassified_bps: Some(0),
+            coverage_pct: Some(100),
+        };
+        assert_eq!(
+            nss_control_direction_path(
+                ClassificationState::Aligned,
+                Some(2_000),
+                Some(6_000),
+                direction,
+                Some(PathProbeDirectionWindow {
+                    bytes: 2_000_000,
+                    bps: 2_000_000,
+                }),
+            ),
+            (true, true, true, true, true)
+        );
+
+        let cpu = DirectionClassification {
+            edge_bps: Some(10_000_000),
+            nss_bps: Some(5_000_000),
+            slow_bps: Some(5_000_000),
+            unclassified_bps: Some(0),
+            coverage_pct: Some(100),
+        };
+        assert_eq!(
+            nss_control_direction_path(
+                ClassificationState::Aligned,
+                Some(2_000),
+                Some(6_000),
+                cpu,
+                Some(PathProbeDirectionWindow {
+                    bytes: 4_000_000,
+                    bps: 5_000_000,
+                }),
+            ),
+            (true, true, true, true, true)
+        );
+
+        let pure_cpu = DirectionClassification {
+            edge_bps: Some(10_000_000),
+            nss_bps: Some(0),
+            slow_bps: Some(10_000_000),
+            unclassified_bps: Some(0),
+            coverage_pct: Some(100),
+        };
+        assert_eq!(
+            nss_control_direction_path(
+                ClassificationState::Aligned,
+                Some(2_000),
+                Some(6_000),
+                pure_cpu,
+                Some(PathProbeDirectionWindow {
+                    bytes: 7_500_000,
+                    bps: 10_000_000,
+                }),
+            ),
+            (true, true, true, false, true)
+        );
+        assert_eq!(
+            nss_control_direction_path(
+                ClassificationState::Warmup,
+                Some(2_000),
+                None,
+                pure_cpu,
+                Some(PathProbeDirectionWindow {
+                    bytes: 2_500_000,
+                    bps: 10_000_000,
+                }),
+            ),
+            (true, true, true, false, true)
+        );
+
+        let rounded_cpu = DirectionClassification {
+            edge_bps: Some(100_000_000),
+            nss_bps: Some(0),
+            slow_bps: Some(99_500_000),
+            unclassified_bps: Some(500_000),
+            coverage_pct: Some(99),
+        };
+        assert_eq!(
+            nss_control_direction_path(
+                ClassificationState::Aligned,
+                Some(2_000),
+                Some(6_000),
+                rounded_cpu,
+                Some(PathProbeDirectionWindow {
+                    bytes: 74_625_000,
+                    bps: 99_500_000,
+                }),
+            ),
+            (true, true, true, false, true)
+        );
+        assert_eq!(
+            nss_control_direction_path(
+                ClassificationState::Aligned,
+                Some(2_000),
+                Some(6_000),
+                DirectionClassification {
+                    slow_bps: Some(97_000_000),
+                    unclassified_bps: Some(3_000_000),
+                    coverage_pct: Some(97),
+                    ..rounded_cpu
+                },
+                Some(PathProbeDirectionWindow {
+                    bytes: 72_750_000,
+                    bps: 97_000_000,
+                }),
+            ),
+            (true, true, true, false, true)
+        );
+
+        let duplicated_proxy = DirectionClassification {
+            edge_bps: Some(100_000_000),
+            nss_bps: Some(100_000_000),
+            slow_bps: Some(100_000_000),
+            unclassified_bps: None,
+            coverage_pct: None,
+        };
+        assert_eq!(
+            nss_control_direction_path(
+                ClassificationState::CounterSkew,
+                Some(2_000),
+                Some(6_000),
+                duplicated_proxy,
+                Some(PathProbeDirectionWindow {
+                    bytes: 75_000_000,
+                    bps: 100_000_000,
+                }),
+            ),
+            (true, true, true, false, true)
+        );
+        assert_eq!(
+            nss_control_direction_path(
+                ClassificationState::CounterSkew,
+                Some(2_000),
+                Some(6_000),
+                duplicated_proxy,
+                Some(PathProbeDirectionWindow {
+                    bytes: 7_500_000,
+                    bps: 10_000_000,
+                }),
+            ),
+            (true, true, false, false, false)
+        );
+
+        let direct = DirectionClassification {
+            edge_bps: Some(20_000_000),
+            nss_bps: Some(20_000_000),
+            slow_bps: Some(0),
+            unclassified_bps: Some(0),
+            coverage_pct: Some(100),
+        };
+        assert_eq!(
+            nss_control_direction_path(
+                ClassificationState::Aligned,
+                Some(2_000),
+                Some(6_000),
+                direct,
+                Some(PathProbeDirectionWindow { bytes: 0, bps: 0 }),
+            ),
+            (true, true, true, true, false)
+        );
+    }
+
+    #[test]
+    fn nss_control_startup_proof_excludes_unclassified_local_edge_traffic() {
+        use crate::platform::access_edge::DirectionClassification;
+        use crate::platform::nss::control::PathProbeDirectionWindow;
+
+        // The edge also carries 70 Mbps of LAN/NAS/router-local traffic. It
+        // must not prevent the independently Internet-only CPU probe and ECM
+        // hardware sample from proving the shared edge executor.
+        let with_local_traffic = DirectionClassification {
+            edge_bps: Some(100_000_000),
+            nss_bps: Some(20_000_000),
+            slow_bps: Some(10_000_000),
+            unclassified_bps: Some(70_000_000),
+            coverage_pct: Some(30),
+        };
+        assert_eq!(
+            nss_control_direction_path(
+                ClassificationState::Warmup,
+                Some(2_000),
+                None,
+                with_local_traffic,
+                Some(PathProbeDirectionWindow {
+                    bytes: 2_500_000,
+                    bps: 10_000_000,
+                }),
+            ),
+            (true, true, true, true, true)
+        );
+
+        // A structural hook with no new Internet bytes is not path proof.
+        assert_eq!(
+            nss_control_direction_path(
+                ClassificationState::Warmup,
+                Some(2_000),
+                None,
+                DirectionClassification {
+                    nss_bps: Some(0),
+                    slow_bps: Some(0),
+                    ..with_local_traffic
+                },
+                Some(PathProbeDirectionWindow { bytes: 0, bps: 0 }),
+            ),
+            (true, true, false, false, false)
+        );
+    }
     use crate::platform::nss::ecm_bpf::EcmBpfClientSample;
 
     #[derive(Default)]

@@ -162,7 +162,14 @@ resolve_bpf_linker() {
 		return 1
 	fi
 
-	tool_dir="$ROOT/net/lanspeedd/rust/target/test-tools/bpf-linker-0.10.3"
+	tool_dir="${CARGO_TARGET_DIR:-$EVIDENCE_DIR}/test-tools/bpf-linker-0.10.3"
+	candidate="$tool_dir/bpf-linker"
+	if [ -x "$candidate" ] &&
+		[ "$("$candidate" --version 2>/dev/null || true)" = "bpf-linker 0.10.3" ]; then
+		printf '%s\n' "$candidate"
+		return 0
+	fi
+	rm -rf -- "$tool_dir"
 	mkdir -p "$tool_dir"
 	tar -C "$tool_dir" -xzf "$archive"
 	candidate=$(find "$tool_dir" -type f -name bpf-linker -perm -u+x -print | head -n 1)

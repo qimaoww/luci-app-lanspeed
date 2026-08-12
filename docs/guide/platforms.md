@@ -13,7 +13,7 @@ x86/TC-BPF 与 Qualcomm NSS 使用独立编译配置和生产采集循环，只�
 | Access Edge | `platform/access_edge/` | 无 | Bridge FDB、NL80211 station 与 netdev 计数 |
 | 公共层 | `platform/counters.rs`、RPC 模型 | `lanspeed-common` | 无平台计数结构与统一响应契约 |
 
-`platform/x86` 与 `platform/nss` 双向零引用。x86_64 用户态构建不包含 NSS、ECM、Access Edge、分类窗口或 RateMux；NSS 融合层不接收 x86 类型。eBPF 分别启用 `x86-tc` 与 `nss-tc` 源入口，x86_64 构建不会安装 ECM 对象，也不会探测 NSS 文件族。
+`platform/x86` 与 `platform/nss` 双向零引用。x86_64 用户态构建不包含 NSS、ECM、Access Edge、分类窗口或 RateMux；NSS 融合层不接收 x86 类型。客户端控制分别位于 `platform/x86/control/` 与 `platform/nss/control/`；NSS 的 CPU 执行器只位于 `platform/nss/control/cpu_path/`，不导入、调用或编译 x86 控制。eBPF 分别启用 `x86-tc` 与 `nss-tc` 源入口，x86_64 构建不会安装 ECM 对象，也不会探测 NSS 文件族。
 
 ## Access Edge 与分类语义
 
@@ -57,7 +57,13 @@ Qualcomm aarch64 NSS 设备自动按 ECM+BPF、ECM、BPF 选择健康后端，�
 - 覆盖率进入 `pending`，不会阻塞逐客户端速率。
 - 物理 LAN MIB 只负责覆盖率验证和窗口预算，不复制客户端速率，也不插值或生成假值。
 
-当前 NSS 构建不包含客户端限速与禁网实现。
+### 客户端控制链路
+
+NSS 控制使用实时 Access Edge 与严格同窗 N/S 分类为每个客户端、每个方向选择一个聚合执行器。窗口完整且流量足够时，下载树安装到 Access Edge 确认的真实客户端出口，直连 ECM classid 与 CPU egress `skbedit` 共同选择同一 NSSHTB + NSSBFIFO 根树；上传在真实客户端入口建立一个每边共享的 NSS IGS IFB，按源 MAC 在同一 NSSHTB + NSSBFIFO 树内分 class，NSS 直连和透明代理接管前后的入口流量不再各自拥有独立上限。透明代理新建的 WAN socket 不再携带客户端身份，因此从不在 WAN 侧把它反推为某个客户端。
+
+路径未证明时保持 `nss_path_identity_pending`，不创建 class、不重定向，也不写 QoS map。应用按“能力与所有权预检 → 暂停旧 QoS tag → 创建并验证唯一队列 → 发布边缘重定向或原子 nft 映射 → 精确清理所需客户端 conntrack”执行。每次状态观察都会重新核验自有 nft、队列与 filter；对象被删除后立即撤销 verified 并事务重建。失败只回滚带专用 handle、chain、IFB alias 或 nft comment 的对象。
+
+本地目的前缀在上传 ingress 先放行，本地来源前缀在下载 egress 先放行；路由器管理、LAN/NAS、客户端间与非 IP 流量不进入整形。禁网在实际客户端边缘的 ingress/egress 都安装 drop，并由 nft forward 规则补强；限速不使用 police、nft limit 或丢包模拟。NSS/CPU class counter 与 queue drops 只验证控制，不进入 Access Edge、RateMux 或客户端总速率。
 
 ## 支持范围
 

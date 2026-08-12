@@ -172,7 +172,9 @@ case "$expected_arch" in
 		;;
 	aarch64*)
 		assert_dependencies daemon "$daemon_metadata" \
-			kmod-nf-conntrack-netlink libc libgcc1
+			conntrack ip kmod-ifb kmod-lanspeed-nss-control kmod-nf-conntrack-netlink \
+			kmod-qca-nss-drv-igs kmod-sched-core \
+			libc libgcc1 nftables tc-full
 		;;
 esac
 assert_dependencies BPF "$bpf_metadata" \
@@ -204,6 +206,8 @@ acl_asset="$luci_root/usr/share/rpcd/acl.d/luci-app-lanspeed.json"
 [[ -s $control_asset ]] || fail 'LuCI APK does not contain the realtime client control module'
 grep -q 'direction_verification_pending' "$control_asset" || \
 	fail 'LuCI APK client control module is stale'
+grep -q 'nss_path_identity_pending' "$control_asset" || \
+	fail 'LuCI APK client control module lacks NSS path verification state'
 grep -q 'control live clients' "$acl_asset" || \
 	fail 'LuCI APK ACL does not grant the current client control contract'
 
@@ -291,6 +295,17 @@ case "$expected_arch" in
 		if grep -aq 'ifb-lanspeed\|lanspeedd:x86-client-control:v1' "$daemon"; then
 			fail 'aarch64 NSS daemon must not contain the x86 IFB control implementation'
 		fi
+		for marker in \
+			'lanspeedd:nss-client-control:v2' \
+			'lanspeed_nss_control' \
+			'lanspeedd:nss-cpu-upload:v2' \
+			'lanspeedd:nss-cpu-download:v2' \
+			'nsshtb' \
+			'nssbfifo' \
+			'qca_nss_qdisc'; do
+			grep -aq "$marker" "$daemon" || \
+				fail "aarch64 NSS daemon is missing modular client-control marker: $marker"
+		done
 		READELF="$readelf_tool" LLVM_OBJDUMP="${LLVM_OBJDUMP:-llvm-objdump}" \
 			"$script_dir/validate-rust-ebpf-objects.sh" \
 			"$bpf_root/usr/lib/bpf/lanspeed-ebpf-kfunc.o" \

@@ -74,6 +74,8 @@ grep -F "./scripts/feeds install -p lanspeed luci-app-lanspeed" "$DRY_RUN_EVIDEN
 grep -F "make defconfig" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "make package/lanspeedd/compile V=s" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "make package/luci-app-lanspeed/compile V=s" "$DRY_RUN_EVIDENCE" >/dev/null
+grep -F "package APK files through an isolated root-only user database" "$DRY_RUN_EVIDENCE" >/dev/null
+grep -F "FAKEROOT=$ROOT/scripts/apk-userns-fakeroot.sh" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "./scripts/feeds install -p lanspeed lanspeedd-bpf" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "select CONFIG_PACKAGE_lanspeedd=m before compiling package/lanspeedd/compile" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "disable CONFIG_PACKAGE_lanspeedd-bpf before compiling package/lanspeedd/compile" "$DRY_RUN_EVIDENCE" >/dev/null

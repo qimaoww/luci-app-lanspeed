@@ -6,7 +6,11 @@
 
 原有实时统计依赖为 `libgcc`、`kmod-nf-conntrack-netlink`、`tc-full` 和 `kmod-sched-bpf`。
 
-x86 客户端控制额外依赖 `ip`、`nftables`、`conntrack`、`kmod-ifb`、`kmod-sched-core` 与 `kmod-sched`；架构门保证这些依赖不进入 aarch64/NSS 包。缺少能力或目标钩子被其他服务占用时，控制按钮会显示结构化原因，不会覆盖外部对象。
+x86 客户端控制额外依赖 `ip`、`nftables`、`conntrack`、`kmod-ifb`、`kmod-sched-core` 与 `kmod-sched`；这些依赖保持原有 x86 条件，不被 NSS 实现复用。缺少能力或目标钩子被其他服务占用时，控制按钮会显示结构化原因，不会覆盖外部对象。
+
+NSS 客户端控制依赖 `tc-full`、`ip`、`nftables`、`conntrack`、`kmod-ifb`、`kmod-sched-core`、`kmod-qca-nss-drv-igs` 与 NSS 专属 `kmod-lanspeed-nss-control`。直连方向还要求固件已有 `qca_nss_qdisc`、NSSHTB/NSSBFIFO 和已启用的 ECM DSCP classifier；`platform/nss/control/cpu_path/` 只负责证明身份、建立每边一个聚合 IGS IFB、上传 MAC 分类和下载 egress classid，不导入或调用 x86 控制代码。CPU/透明代理流量与 NSS 直连流量进入同一客户端方向队列。
+
+Qualcomm NSSHTB 根不接受 TC filter。直连 class 只能由 nft `meta priority` 与 ECM QoS tag 选择；u32/mirred 仅安装在已证明保留客户端 MAC 的普通边缘 clsact 与 LAN Speed 专属 IFB。不要在 NSSHTB 根追加 matchall/u32 链。
 
 三个安装包的职责：
 
@@ -71,7 +75,8 @@ ECM+BPF 还要求可读的 `/sys/kernel/btf/ecm` 和受支持的 `ecm_db_connect
 | 速率长时间为 0 | 检查 `effective_collector`、map/state 和 `sample_ms` |
 | OpenClash 或 dae/daed 共存 | 检查 TC hook、NSS state 和诊断 evidence |
 | 覆盖率低 | 检查 offload、旁路路径、LAN-to-LAN、IFB/TUN 和接口边界 |
-| 限速应用失败 | 检查外部 qdisc/IFB 所有权及 HTB、FQ、u32、mirred 模块 |
+| x86 限速应用失败 | 检查外部 qdisc/IFB 所有权及 HTB、FQ、u32、mirred 模块 |
+| NSS 限速应用失败 | 检查路径确认状态、真实 WAN/Access Edge、NSS 根或专属 IFB 队列所有权和结构化原因 |
 | `queue_overflow` | 检查自有 qdisc 的 drops、链路拥塞和队列容量 |
 
-控制失败后，具体错误会保持到规则或拓扑发生变化，不会被“等待流量验证”覆盖。清理只匹配本服务的 handle、chain、IFB alias 与 nft comment。
+控制失败后，具体错误会保持到规则或拓扑发生变化，不会被“等待流量验证”覆盖。清理只匹配本服务的平台专用 handle、chain、IFB alias 与 nft comment。

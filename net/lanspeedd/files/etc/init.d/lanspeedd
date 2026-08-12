@@ -141,6 +141,15 @@ reload_service() {
 	if ubus call lanspeed reload >/dev/null 2>&1; then
 		return 0
 	fi
+	# NSS reload is transactional: the old daemon and its proven queues still
+	# own the live dataplane when the RPC fails.  Restarting here would run the
+	# stop/start cleanup against that owner and can remove hooks underneath the
+	# failed transaction.  Keep the intact runtime; procd respawn still handles
+	# an actually exited daemon.  x86 retains its historical restart fallback.
+	if [ -d /sys/module/lanspeed_nss_control ]; then
+		logger -p daemon.warn -t "$NAME" "transactional NSS reload failed; preserving current dataplane"
+		return 1
+	fi
 	restart
 }
 

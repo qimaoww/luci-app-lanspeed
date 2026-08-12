@@ -3976,6 +3976,8 @@ function assertStatusRefreshSortingInteraction(src) {
 		pendingInterfaceSampleMs: 2000
 	    } }) ||
 	    mod.sampleSyncPending({ livePair: { aligned: true, retained: false } }) ||
+	    mod.sampleSyncPending({ livePair: { aligned: false, retained: false, renderable: true,
+		pendingClientSampleMs: 1000 } }) ||
 	    mod.sampleSyncPending({ livePair: {
 		aligned: false,
 		retained: true,

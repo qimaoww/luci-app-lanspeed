@@ -34,8 +34,8 @@ SDK_DIR=/openwrt/immortalwrt ENABLE_BPF=1 scripts/build-sdk.sh
 applications/luci-app-lanspeed/               LuCI 页面、模型和 RPC
 net/lanspeedd/rust/crates/lanspeedd/src/
   platform/access_edge/                        NSS 接入拓扑、Edge 计数和 RateMux
-  platform/x86/                                x86 TC-BPF 与客户端控制
-  platform/nss/                                NSS/ECM 分类与融合
+  platform/x86/                                x86 TC-BPF 与独立客户端控制
+  platform/nss/                                NSS/ECM 分类、融合与独立混合路径控制
   collectors/conntrack/                        连接元数据
 net/lanspeedd/rust/crates/lanspeed-ebpf/src/
   x86/                                         x86 TC accounting

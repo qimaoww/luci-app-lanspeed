@@ -16,6 +16,7 @@ SDK_FEEDS_HASH=${SDK_FEEDS_HASH:-}
 SDK_RUST_VERSION=${SDK_RUST_VERSION:-}
 SDK_RUST_RECIPE_HASH=${SDK_RUST_RECIPE_HASH:-}
 SDK_RUST_IDENTITY_SCRIPT="$REPO_ROOT/scripts/sdk-rust-identity.sh"
+APK_USERNS_FAKEROOT="$REPO_ROOT/scripts/apk-userns-fakeroot.sh"
 
 die() {
 	printf '%s\n' "error: $*" >&2
@@ -363,6 +364,10 @@ refresh_sdk_config() {
 
 compile_package() {
 	package=$1
+	fakeroot_arg=
+	if [ -n "${PACKAGE_FAKEROOT:-}" ]; then
+		fakeroot_arg="FAKEROOT=$PACKAGE_FAKEROOT"
+	fi
 	if [ "$package" = "lanspeedd" ]; then
 		if [ "$ENABLE_BPF" = 1 ]; then
 			bpf_package_config=m
@@ -371,10 +376,36 @@ compile_package() {
 			bpf_package_config=
 			base_package_config=m
 		fi
-		run_in_sdk make "package/$package/compile" V=s "LANSPEED_BUILD_BPF=$ENABLE_BPF" "CONFIG_PACKAGE_lanspeedd=$base_package_config" "CONFIG_PACKAGE_lanspeedd-bpf=$bpf_package_config"
+		if [ -n "$fakeroot_arg" ]; then
+			run_in_sdk make "package/$package/compile" V=s "LANSPEED_BUILD_BPF=$ENABLE_BPF" "CONFIG_PACKAGE_lanspeedd=$base_package_config" "CONFIG_PACKAGE_lanspeedd-bpf=$bpf_package_config" "$fakeroot_arg"
+		else
+			run_in_sdk make "package/$package/compile" V=s "LANSPEED_BUILD_BPF=$ENABLE_BPF" "CONFIG_PACKAGE_lanspeedd=$base_package_config" "CONFIG_PACKAGE_lanspeedd-bpf=$bpf_package_config"
+		fi
 	else
-		run_in_sdk make "package/$package/compile" V=s
+		if [ -n "$fakeroot_arg" ]; then
+			run_in_sdk make "package/$package/compile" V=s "$fakeroot_arg"
+		else
+			run_in_sdk make "package/$package/compile" V=s
+		fi
 	fi
+}
+
+configure_package_fakeroot() {
+	PACKAGE_FAKEROOT=
+	if [ "$DRY_RUN" = 1 ]; then
+		PACKAGE_FAKEROOT=$APK_USERNS_FAKEROOT
+		printf '+ package APK files through an isolated root-only user database\n'
+		return 0
+	fi
+	grep -q '^CONFIG_USE_APK=y$' "$SDK_PATH/.config" 2>/dev/null || return 0
+	[ "$(id -u)" -ne 0 ] || return 0
+	[ -x "$APK_USERNS_FAKEROOT" ] || \
+		die "APK user namespace wrapper is missing or not executable"
+	command -v unshare >/dev/null 2>&1 || \
+		die "APK packaging as a non-root user requires unshare"
+	unshare -Ur true >/dev/null 2>&1 || \
+		die "APK packaging cannot create an unprivileged root user namespace"
+	PACKAGE_FAKEROOT=$APK_USERNS_FAKEROOT
 }
 
 set_config_module() {
@@ -473,6 +504,7 @@ main() {
 	done
 	configure_packages
 	refresh_sdk_config
+	configure_package_fakeroot
 	for package in $COMPILE_PACKAGES; do
 		compile_package "$package"
 	done
