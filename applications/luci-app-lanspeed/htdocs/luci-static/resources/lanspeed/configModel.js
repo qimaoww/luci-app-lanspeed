@@ -1,5 +1,6 @@
 'use strict';
 'require baseclass';
+'require lanspeed.configPlatform as configPlatform';
 
 /*
  * The configuration page has two consumers of the same contract: the UCI
@@ -404,28 +405,15 @@ function capabilityState(status, values) {
 }
 
 function platformProfile(status) {
-	var evidence = status && status.evidence || {};
-	var platform = evidence.platform || {};
-	if (platform.profile !== undefined && platform.profile !== null && platform.profile !== '') {
-		if (platform.profile === 'nss_aarch64' || platform.profile === 'x86_tc_bpf')
-			return platform.profile;
-		return 'unknown';
-	}
-	if (platform.target_arch !== undefined && platform.target_arch !== null && platform.target_arch !== '') {
-		if (String(platform.target_arch) === 'aarch64' && platform.nss_compiled !== false)
-			return 'nss_aarch64';
-		if (String(platform.target_arch) === 'x86_64' || platform.nss_compiled === false)
-			return 'x86_tc_bpf';
-	}
-	return 'unknown';
+	return configPlatform.profile(status);
 }
 
 function isNssPlatform(status) {
-	return platformProfile(status) === 'nss_aarch64';
+	return configPlatform.isNss(status);
 }
 
 function isX86Platform(status) {
-	return platformProfile(status) === 'x86_tc_bpf';
+	return configPlatform.isX86(status);
 }
 
 function validate(values, status, interfaceState) {
@@ -511,14 +499,14 @@ function modeChoices(kind, status, values) {
 	var nssKnownAbsent = kind === 'rate' && !isNssPlatform(status);
 	return source.filter(function(item) {
 		var nssMode = item.value === 'nss_ecm_node' || item.value === 'nss_ecm_bpf';
-		return !nssKnownAbsent || !nssMode || item.value === selected;
+		return kind !== 'rate' || configPlatform.supportsRateMode(status, item.value) ||
+			(!nssKnownAbsent && nssMode) || item.value === selected;
 	}).map(function(item) {
 		var cap = item.capability ? caps[item.capability] : caps.auto;
 		return {
 			value: item.value,
 			label: kind === 'rate' && item.value === 'auto'
-				? (isX86Platform(status) ? _('自动（TC-BPF 推荐）') :
-					(isNssPlatform(status) ? item.label : _('自动')))
+				? configPlatform.autoLabel(status, item.label)
 				: item.label,
 			disabled: !!(cap && cap.known && !cap.allowed),
 			reason: cap && cap.reason,

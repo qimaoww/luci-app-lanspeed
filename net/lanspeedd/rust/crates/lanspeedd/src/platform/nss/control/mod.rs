@@ -189,12 +189,7 @@ mod tests {
             dae_upload_devices: Vec::new(),
             local_prefixes: Vec::new(),
             rules: Vec::new(),
-            nss_proven_directions: Default::default(),
-            nss_path_ready_directions: Default::default(),
-            nss_cpu_directions: Default::default(),
-            nss_active_nss_directions: Default::default(),
-            nss_active_cpu_directions: Default::default(),
-            conntrack_cleanup_ips: Default::default(),
+            nss: crate::control::nss_state::NssControlPlan::default(),
         }
     }
 

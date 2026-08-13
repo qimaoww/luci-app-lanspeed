@@ -48,6 +48,16 @@ try {
     'net/lanspeedd/rust/crates/lanspeedd/Cargo.toml',
     'net/lanspeedd/rust/crates/lanspeed-build/Cargo.toml',
     'net/lanspeedd/rust/crates/lanspeed-ebpf/src/atomics.rs',
+    'net/lanspeedd/rust/crates/lanspeed-ebpf/src/x86/mod.rs',
+    'net/lanspeedd/rust/crates/lanspeed-ebpf/src/x86/accounting.rs',
+    'net/lanspeedd/rust/crates/lanspeed-ebpf/src/x86/connections.rs',
+    'net/lanspeedd/rust/crates/lanspeed-ebpf/src/nss/mod.rs',
+    'net/lanspeedd/rust/crates/lanspeed-ebpf/src/nss/account.rs',
+    'net/lanspeedd/rust/crates/lanspeed-ebpf/src/nss/conntrack.rs',
+    'net/lanspeedd/rust/crates/lanspeed-ebpf/src/nss/ecm.rs',
+    'net/lanspeedd/rust/crates/lanspeedd/src/control/platform.rs',
+    'net/lanspeedd/rust/crates/lanspeedd/src/control/nss_state.rs',
+    'net/lanspeedd/rust/crates/lanspeedd/src/production/system.rs',
     'scripts/sdk-rust-identity.sh',
     'scripts/build-sdk.sh',
     'tests/validate-lanspeed-openwrt-compile.sh',
@@ -117,6 +127,25 @@ try {
   const atomicsSource = fs.readFileSync(
     path.join(lanspeeddRoot, 'rust/crates/lanspeed-ebpf/src/atomics.rs'),
     'utf8'
+  );
+
+  const ebpfMain = fs.readFileSync(
+    path.join(lanspeeddRoot, 'rust/crates/lanspeed-ebpf/src/main.rs'),
+    'utf8'
+  );
+  assert(
+    ebpfMain.includes('mod x86;') && ebpfMain.includes('mod nss;') &&
+      !ebpfMain.includes('#[path = "x86/') && !ebpfMain.includes('#[path = "nss/'),
+    'eBPF entry must use explicit x86 and NSS platform modules without path aliases'
+  );
+  const controlPlatform = fs.readFileSync(
+    path.join(lanspeeddRoot, 'rust/crates/lanspeedd/src/control/platform.rs'),
+    'utf8'
+  );
+  assert(
+    controlPlatform.includes('crate::platform::x86::control::apply(plan)') &&
+      controlPlatform.includes('crate::platform::nss::control::apply(plan)'),
+    'client control platform dispatch must remain isolated in control/platform.rs'
   );
   for (const marker of [
     'rustversion::before(1.89)',

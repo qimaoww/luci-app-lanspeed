@@ -748,9 +748,14 @@ function loadShellAndRefresh(context, fmt) {
 	], { filename: 'resources/lanspeed/statusShell.js', parsingContext: context })(
 		baseclass, fmt, { applyRoot: function() {} }, { CSS: '' }, fakeElement, translate
 	);
+	const rateMeta = vm.compileFunction(readModule('statusRateMeta.js'), [
+		'baseclass', 'E', '_'
+	], { filename: 'resources/lanspeed/statusRateMeta.js', parsingContext: context })(
+		baseclass, fakeElement, translate
+	);
 	const refresh = vm.compileFunction(readModule('statusRefresh.js'), [
 		'baseclass', 'vocab', 'fmt', 'clientConnections', 'clientControl', 'lsVersion',
-		'statusIp', 'statusCollector', 'E', '_', 'window'
+		'statusIp', 'statusCollector', 'statusRateMeta', 'E', '_', 'window'
 	], { filename: 'resources/lanspeed/statusRefresh.js', parsingContext: context })(
 		baseclass,
 		{
@@ -771,7 +776,7 @@ function loadShellAndRefresh(context, fmt) {
 			effectiveCollector: function() { return 'bpf'; },
 			collectorClass: function() { return 'label label-success'; },
 			collectorLabel: function() { return 'BPF'; }
-		},
+		}, rateMeta,
 		fakeElement,
 		translate,
 		context.window

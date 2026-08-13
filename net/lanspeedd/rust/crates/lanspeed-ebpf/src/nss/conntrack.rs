@@ -14,7 +14,7 @@ use lanspeed_common::{
     LanspeedConnKey, LanspeedCounters,
 };
 
-use crate::account::LANSPEED_SEEN_CONNS;
+use super::account::LANSPEED_SEEN_CONNS;
 use crate::atomics::add_u32;
 
 #[repr(C)]

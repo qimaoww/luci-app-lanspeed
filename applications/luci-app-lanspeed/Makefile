@@ -49,6 +49,9 @@ define Package/luci-app-lanspeed/install
 	$(INSTALL_DATA) \
 		./htdocs/luci-static/resources/lanspeed/configForm.js \
 		./htdocs/luci-static/resources/lanspeed/configModel.js \
+		./htdocs/luci-static/resources/lanspeed/configPlatform.js \
+		./htdocs/luci-static/resources/lanspeed/configPlatformX86.js \
+		./htdocs/luci-static/resources/lanspeed/configPlatformNss.js \
 		./htdocs/luci-static/resources/lanspeed/configStyle.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleArgon.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleAurora.js \
@@ -71,9 +74,14 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleBootstrap.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleResponsive.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsModel.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsReport.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsView.js \
 		./htdocs/luci-static/resources/lanspeed/clientConnections.js \
 		./htdocs/luci-static/resources/lanspeed/clientControl.js \
+		./htdocs/luci-static/resources/lanspeed/clientControlReasons.js \
+		./htdocs/luci-static/resources/lanspeed/clientControlReasonsShared.js \
+		./htdocs/luci-static/resources/lanspeed/clientControlReasonsX86.js \
+		./htdocs/luci-static/resources/lanspeed/clientControlReasonsNss.js \
 		./htdocs/luci-static/resources/lanspeed/dhcpHostnames.js \
 		./htdocs/luci-static/resources/lanspeed/clientDetailShell.js \
 		./htdocs/luci-static/resources/lanspeed/clientDetailStyle.js \
@@ -84,12 +92,14 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/clientDetailStyleResponsive.js \
 		./htdocs/luci-static/resources/lanspeed/clientDetailRefresh.js \
 		./htdocs/luci-static/resources/lanspeed/clientDetailView.js \
+		./htdocs/luci-static/resources/lanspeed/moduleManifest.js \
 		./htdocs/luci-static/resources/lanspeed/format.js \
 		./htdocs/luci-static/resources/lanspeed/geoLocation.js \
 		./htdocs/luci-static/resources/lanspeed/ifaceConfig.js \
 		./htdocs/luci-static/resources/lanspeed/rpc.js \
 		./htdocs/luci-static/resources/lanspeed/statusCollector.js \
 		./htdocs/luci-static/resources/lanspeed/statusIp.js \
+		./htdocs/luci-static/resources/lanspeed/statusRateMeta.js \
 		./htdocs/luci-static/resources/lanspeed/statusRefresh.js \
 		./htdocs/luci-static/resources/lanspeed/statusShell.js \
 		./htdocs/luci-static/resources/lanspeed/statusStyle.js \

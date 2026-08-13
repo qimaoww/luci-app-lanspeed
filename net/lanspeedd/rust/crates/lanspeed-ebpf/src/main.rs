@@ -7,31 +7,23 @@
 #[cfg(all(feature = "x86-tc", feature = "nss-tc"))]
 compile_error!("x86-tc and nss-tc are mutually exclusive");
 
-#[cfg(feature = "x86-tc")]
-#[path = "x86/account.rs"]
-mod account;
-#[cfg(feature = "nss-tc")]
-#[path = "nss/account.rs"]
-mod account;
 mod atomics;
-#[cfg(all(feature = "x86-tc", feature = "conntrack-kfunc"))]
-#[path = "x86/conntrack.rs"]
-mod conntrack;
-#[cfg(all(feature = "nss-tc", feature = "conntrack-kfunc"))]
-#[path = "nss/conntrack.rs"]
-mod conntrack;
-#[cfg(feature = "nss-ecm")]
+#[cfg(any(feature = "nss-tc", feature = "nss-ecm"))]
 mod nss;
 mod panic;
+#[cfg(feature = "x86-tc")]
+mod x86;
 
-#[cfg(feature = "tc")]
-use account::account_frame;
 #[cfg(feature = "nss-tc")]
 use aya_ebpf::bindings::TC_ACT_OK;
 #[cfg(feature = "tc")]
 use aya_ebpf::{bindings::TC_ACT_UNSPEC, macros::classifier, programs::TcContext};
 #[cfg(feature = "tc")]
 use lanspeed_common::{DIR_RX, DIR_TX};
+#[cfg(feature = "nss-tc")]
+use nss::account_frame;
+#[cfg(feature = "x86-tc")]
+use x86::account_frame;
 
 #[cfg(feature = "nss-ecm")]
 pub use nss::{lanspeed_ecm_nss_enter, lanspeed_ecm_nss_exit, lanspeed_ecm_update};

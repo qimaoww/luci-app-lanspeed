@@ -376,8 +376,26 @@ async function main() {
     document: { querySelector: () => null },
     window: { setTimeout: (callback) => callback() }
   });
+  const sharedReasons = vm.compileFunction(
+    fs.readFileSync(path.join(root,
+      'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/clientControlReasonsShared.js'), 'utf8'),
+    [ 'baseclass', '_' ], { parsingContext: context })({ extend: (value) => value }, translate);
+  const x86Reasons = vm.compileFunction(
+    fs.readFileSync(path.join(root,
+      'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/clientControlReasonsX86.js'), 'utf8'),
+    [ 'baseclass', '_' ], { parsingContext: context })({ extend: (value) => value }, translate);
+  const nssReasons = vm.compileFunction(
+    fs.readFileSync(path.join(root,
+      'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/clientControlReasonsNss.js'), 'utf8'),
+    [ 'baseclass', '_' ], { parsingContext: context })({ extend: (value) => value }, translate);
+  const controlReasons = vm.compileFunction(
+    fs.readFileSync(path.join(root,
+      'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/clientControlReasons.js'), 'utf8'),
+    [ 'baseclass', 'sharedReasons', 'x86Reasons', 'nssReasons', '_' ],
+    { parsingContext: context })(
+      { extend: (value) => value }, sharedReasons, x86Reasons, nssReasons, translate);
   const module = vm.compileFunction(source,
-    [ 'baseclass', 'ui', 'lsRpc', 'E', '_', 'document', 'window' ],
+    [ 'baseclass', 'ui', 'lsRpc', 'controlReasons', 'E', '_', 'document', 'window' ],
     { filename: 'resources/lanspeed/clientControl.js', parsingContext: context })(
       { extend: (value) => value },
       {
@@ -391,6 +409,7 @@ async function main() {
           return Promise.resolve({ ok: true });
         }
       },
+      controlReasons,
       element,
       translate,
       context.document,

@@ -200,7 +200,7 @@ fn production_adapter_uses_only_explicit_legacy_netlink_attach() {
 #[test]
 fn production_sampling_uses_the_same_boot_monotonic_epoch_as_bpf() {
     let production = include_str!("../src/production.rs");
-    let ebpf = include_str!("../../lanspeed-ebpf/src/x86/account.rs");
+    let ebpf = include_str!("../../lanspeed-ebpf/src/x86/accounting.rs");
 
     assert!(
         ebpf.contains("bpf_ktime_get_ns()"),

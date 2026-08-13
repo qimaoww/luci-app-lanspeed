@@ -74,10 +74,15 @@ const statusCollector = {
     return ({ access_edge: '自动精准', bpf: 'BPF', conntrack_netlink: 'CT-Netlink', unsupported: '不可用' })[value] || String(value || '-');
   }
 };
+const report = vm.compileFunction(readModule('diagnosticsReport.js'),
+  [ 'baseclass', '_' ],
+  { filename: 'diagnosticsReport.js', parsingContext: context })(
+    baseclass, translate
+  );
 const model = vm.compileFunction(readModule('diagnosticsModel.js'),
-  [ 'baseclass', 'vocab', 'statusCollector', '_' ],
+  [ 'baseclass', 'vocab', 'statusCollector', 'diagnosticsReport', '_' ],
   { filename: 'diagnosticsModel.js', parsingContext: context })(
-    baseclass, vocab, statusCollector, translate
+    baseclass, vocab, statusCollector, report, translate
   );
 
 function fakeElement(tag, attrs, children) {
@@ -194,10 +199,19 @@ function loadVocabulary() {
 }
 
 function loadRefresh(vocabulary) {
+	const sharedReasons = vm.compileFunction(readModule('clientControlReasonsShared.js'),
+	  [ 'baseclass', '_' ], { parsingContext: context })(baseclass, translate);
+	const x86Reasons = vm.compileFunction(readModule('clientControlReasonsX86.js'),
+	  [ 'baseclass', '_' ], { parsingContext: context })(baseclass, translate);
+	const nssReasons = vm.compileFunction(readModule('clientControlReasonsNss.js'),
+	  [ 'baseclass', '_' ], { parsingContext: context })(baseclass, translate);
+	const controlReasons = vm.compileFunction(readModule('clientControlReasons.js'),
+	  [ 'baseclass', 'sharedReasons', 'x86Reasons', 'nssReasons', '_' ],
+	  { parsingContext: context })(baseclass, sharedReasons, x86Reasons, nssReasons, translate);
 	const clientControl = vm.compileFunction(readModule('clientControl.js'),
-	  [ 'baseclass', 'ui', 'lsRpc', '_' ],
+	  [ 'baseclass', 'ui', 'lsRpc', 'controlReasons', '_' ],
 	  { filename: 'clientControl.js', parsingContext: context })(
-	    baseclass, {}, {}, translate
+	    baseclass, {}, {}, controlReasons, translate
 	  );
   return vm.compileFunction(readModule('diagnosticsRefresh.js'),
     [ 'baseclass', 'fmt', 'vocab', 'lsVersion', 'statusCollector', 'diagnosticsModel', 'clientControl', 'E', '_' ],

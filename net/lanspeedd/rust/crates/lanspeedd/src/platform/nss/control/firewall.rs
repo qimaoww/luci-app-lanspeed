@@ -590,18 +590,17 @@ mod tests {
             control_devices: vec!["router-lan".into(), "edge-test0".into()],
             dae_upload_devices: Vec::new(),
             local_prefixes: vec![("192.0.2.0".parse().unwrap(), 24)],
-            nss_proven_directions: std::collections::BTreeMap::from([(
-                "02:00:00:00:00:01@lan".into(),
-                NSS_CPU_DOWNLOAD,
-            )]),
-            nss_path_ready_directions: std::collections::BTreeMap::from([(
-                "02:00:00:00:00:01@lan".into(),
-                NSS_CPU_DOWNLOAD,
-            )]),
-            nss_cpu_directions: Default::default(),
-            nss_active_nss_directions: Default::default(),
-            nss_active_cpu_directions: Default::default(),
-            conntrack_cleanup_ips: Default::default(),
+            nss: crate::control::nss_state::NssControlPlan {
+                nss_proven_directions: std::collections::BTreeMap::from([(
+                    "02:00:00:00:00:01@lan".into(),
+                    NSS_CPU_DOWNLOAD,
+                )]),
+                nss_path_ready_directions: std::collections::BTreeMap::from([(
+                    "02:00:00:00:00:01@lan".into(),
+                    NSS_CPU_DOWNLOAD,
+                )]),
+                ..Default::default()
+            },
             rules: vec![ActiveRule {
                 identity_key: "02:00:00:00:00:01@lan".into(),
                 mac: "02:00:00:00:00:01".parse().unwrap(),

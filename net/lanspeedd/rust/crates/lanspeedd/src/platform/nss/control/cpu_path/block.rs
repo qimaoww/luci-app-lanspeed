@@ -464,12 +464,7 @@ mod tests {
                 upload_before_proxy: false,
                 upload_preempted: false,
             }],
-            nss_proven_directions: BTreeMap::new(),
-            nss_path_ready_directions: BTreeMap::new(),
-            nss_cpu_directions: BTreeMap::new(),
-            nss_active_nss_directions: BTreeMap::new(),
-            nss_active_cpu_directions: BTreeMap::new(),
-            conntrack_cleanup_ips: BTreeSet::new(),
+            nss: crate::control::nss_state::NssControlPlan::default(),
         }
     }
 

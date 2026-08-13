@@ -39,8 +39,10 @@ const configViewFile = path.join(resDir, 'view/lanspeed/config.js');
 const statusViewFile = path.join(modDir, 'statusView.js');
 const daemonMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
 const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/Makefile'), 'utf8');
+const moduleManifestFile = path.join(modDir, 'moduleManifest.js');
 
 const EXPECTED_MODULES = [
+	'moduleManifest.js',
 	'vocab.js',
 	'format.js',
 	'designSystem.js',
@@ -51,6 +53,10 @@ const EXPECTED_MODULES = [
 	'geoLocation.js',
 	'clientConnections.js',
 	'clientControl.js',
+	'clientControlReasons.js',
+	'clientControlReasonsShared.js',
+	'clientControlReasonsX86.js',
+	'clientControlReasonsNss.js',
 	'clientDetailRefresh.js',
 	'clientDetailShell.js',
 	'clientDetailView.js',
@@ -69,6 +75,7 @@ const EXPECTED_MODULES = [
 	'diagnosticsStyleBootstrap.js',
 	'diagnosticsStyleResponsive.js',
 	'diagnosticsModel.js',
+	'diagnosticsReport.js',
 	'diagnosticsView.js',
 	'rpc.js',
 	'ifaceConfig.js',
@@ -83,6 +90,7 @@ const EXPECTED_MODULES = [
 	'statusView.js',
 	'statusIp.js',
 	'statusCollector.js',
+	'statusRateMeta.js',
 	'statusOverview.js',
 	'statusShell.js',
 	'statusRefresh.js',
@@ -94,6 +102,9 @@ const EXPECTED_MODULES = [
 	'configStyleShared.js',
 	'configStyleResponsive.js',
 	'configModel.js',
+	'configPlatform.js',
+	'configPlatformX86.js',
+	'configPlatformNss.js',
 	'configForm.js',
 	'configView.js'
 ];
@@ -174,6 +185,7 @@ function readMakeVar(source, name, fileLabel) {
 }
 
 const MODULE_REQUIRES = {
+	'moduleManifest.js': [ 'baseclass' ],
 	'vocab.js': [ 'baseclass' ],
 	'format.js': [ 'baseclass' ],
 	'designSystem.js': [
@@ -189,7 +201,16 @@ const MODULE_REQUIRES = {
 	'designSystemBootstrap.js': [ 'baseclass' ],
 	'geoLocation.js': [ 'baseclass' ],
 	'clientConnections.js': [ 'baseclass', 'lanspeed.format' ],
-	'clientControl.js': [ 'baseclass', 'ui', 'lanspeed.rpc' ],
+	'clientControl.js': [ 'baseclass', 'ui', 'lanspeed.rpc', 'lanspeed.clientControlReasons' ],
+	'clientControlReasons.js': [
+		'baseclass',
+		'lanspeed.clientControlReasonsShared',
+		'lanspeed.clientControlReasonsX86',
+		'lanspeed.clientControlReasonsNss'
+	],
+	'clientControlReasonsShared.js': [ 'baseclass' ],
+	'clientControlReasonsX86.js': [ 'baseclass' ],
+	'clientControlReasonsNss.js': [ 'baseclass' ],
 	'clientDetailRefresh.js': [
 		'baseclass',
 		'lanspeed.format',
@@ -251,7 +272,8 @@ const MODULE_REQUIRES = {
 	'diagnosticsStyleArgon.js': [ 'baseclass' ],
 	'diagnosticsStyleBootstrap.js': [ 'baseclass' ],
 	'diagnosticsStyleResponsive.js': [ 'baseclass' ],
-	'diagnosticsModel.js': [ 'baseclass', 'lanspeed.vocab', 'lanspeed.statusCollector' ],
+	'diagnosticsModel.js': [ 'baseclass', 'lanspeed.vocab', 'lanspeed.statusCollector', 'lanspeed.diagnosticsReport' ],
+	'diagnosticsReport.js': [ 'baseclass' ],
 	'diagnosticsView.js': [
 		'baseclass',
 		'lanspeed.rpc',
@@ -262,7 +284,10 @@ const MODULE_REQUIRES = {
 	],
 	'rpc.js': [ 'baseclass', 'rpc' ],
 	'ifaceConfig.js': [ 'baseclass', 'lanspeed.format', 'lanspeed.rpc', 'lanspeed.configModel' ],
-	'configModel.js': [ 'baseclass' ],
+	'configModel.js': [ 'baseclass', 'lanspeed.configPlatform' ],
+	'configPlatform.js': [ 'baseclass', 'lanspeed.configPlatformX86', 'lanspeed.configPlatformNss' ],
+	'configPlatformX86.js': [ 'baseclass' ],
+	'configPlatformNss.js': [ 'baseclass' ],
 	'theme.js': [ 'baseclass' ],
 	'version.js': [ 'baseclass' ],
 	'statusStyle.js': [
@@ -287,6 +312,7 @@ const MODULE_REQUIRES = {
 	],
 	'statusIp.js': [ 'baseclass', 'lanspeed.format' ],
 	'statusCollector.js': [ 'baseclass' ],
+	'statusRateMeta.js': [ 'baseclass' ],
 	'statusOverview.js': [
 		'baseclass',
 		'lanspeed.format',
@@ -309,7 +335,8 @@ const MODULE_REQUIRES = {
 		'lanspeed.clientControl',
 		'lanspeed.version',
 		'lanspeed.statusIp',
-		'lanspeed.statusCollector'
+		'lanspeed.statusCollector',
+		'lanspeed.statusRateMeta'
 	],
 	'configStyle.js': [
 		'baseclass',
@@ -327,7 +354,7 @@ const MODULE_REQUIRES = {
 	'configStyleBootstrap.js': [ 'baseclass' ],
 	'configStyleShared.js': [ 'baseclass' ],
 	'configStyleResponsive.js': [ 'baseclass' ],
-	'configForm.js': [ 'baseclass', 'uci', 'lanspeed.rpc', 'lanspeed.ifaceConfig', 'lanspeed.configModel' ],
+	'configForm.js': [ 'baseclass', 'uci', 'lanspeed.rpc', 'lanspeed.ifaceConfig', 'lanspeed.configModel', 'lanspeed.configPlatform' ],
 	'configView.js': EXPECTED_CONFIG_MODULE_REQUIRES
 };
 
@@ -354,6 +381,17 @@ function readModule(absPath) {
 function readModuleByName(name) {
 	const p = path.join(modDir, name);
 	return fs.existsSync(p) ? readModule(p) : '';
+}
+
+function assertManifestCoverage() {
+	const manifest = readModule(moduleManifestFile);
+	const listed = [...manifest.matchAll(/'([^']+\.js)'/g)].map((match) => match[1]);
+	const actual = fs.readdirSync(modDir).filter((name) => name.endsWith('.js'));
+	const listedSet = new Set(listed);
+	actual.forEach((name) => {
+		if (!listedSet.has(name)) fail(`moduleManifest.js must list ${name}`);
+	});
+	if (listed.length !== listedSet.size) fail('moduleManifest.js must not list duplicate modules');
 }
 
 function styleSources(entryName, parts) {
@@ -1972,9 +2010,27 @@ function assertClientConnectionsModule(src) {
 
 function loadConfigModelModule(src) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
-	return vm.compileFunction(src, [ 'baseclass', '_' ], {
+	const x86Platform = vm.compileFunction(readModuleByName('configPlatformX86.js'),
+		[ 'baseclass', '_' ])(fakeBaseclass, fakeTranslate);
+	const nssPlatform = vm.compileFunction(readModuleByName('configPlatformNss.js'),
+		[ 'baseclass', '_' ])(fakeBaseclass, fakeTranslate);
+	const configPlatform = vm.compileFunction(readModuleByName('configPlatform.js'),
+		[ 'baseclass', 'x86Platform', 'nssPlatform', '_' ])(
+			fakeBaseclass, x86Platform, nssPlatform, fakeTranslate);
+	return vm.compileFunction(src, [ 'baseclass', 'configPlatform', '_' ], {
 		filename: 'resources/lanspeed/configModel.js'
-	})(fakeBaseclass, fakeTranslate);
+	})(fakeBaseclass, configPlatform, fakeTranslate);
+}
+
+function loadConfigPlatformModule() {
+	const fakeBaseclass = { extend: function(value) { return value; } };
+	const x86Platform = vm.compileFunction(readModuleByName('configPlatformX86.js'),
+		[ 'baseclass', '_' ])(fakeBaseclass, fakeTranslate);
+	const nssPlatform = vm.compileFunction(readModuleByName('configPlatformNss.js'),
+		[ 'baseclass', '_' ])(fakeBaseclass, fakeTranslate);
+	return vm.compileFunction(readModuleByName('configPlatform.js'),
+		[ 'baseclass', 'x86Platform', 'nssPlatform', '_' ])(
+			fakeBaseclass, x86Platform, nssPlatform, fakeTranslate);
 }
 
 function loadIfaceConfigModule(src, lsRpc, configModel) {
@@ -1995,10 +2051,11 @@ function loadIfaceConfigModule(src, lsRpc, configModel) {
 function loadConfigFormModule(src, uci, lsRpc, ifaceCfg, configModel) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	return vm.compileFunction(src,
-		[ 'baseclass', 'uci', 'lsRpc', 'ifaceCfg', 'cfgModel', 'E', '_', 'window' ],
+		[ 'baseclass', 'uci', 'lsRpc', 'ifaceCfg', 'cfgModel', 'configPlatform', 'E', '_', 'window' ],
 		{ filename: 'resources/lanspeed/configForm.js' })(
 			fakeBaseclass, uci, lsRpc, ifaceCfg,
 			configModel || loadConfigModelModule(readModuleByName('configModel.js')),
+			loadConfigPlatformModule(),
 			fakeElement, fakeTranslate,
 			{ setTimeout: function(handler) { handler(); } }
 		);
@@ -2051,14 +2108,16 @@ function nextDetailSort(state, sortKey) {
 function loadStatusRefreshModule(src, fakeWindow) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	const vocab = loadVocabModule(readModuleByName('vocab.js'));
+	const rateMeta = vm.compileFunction(readModuleByName('statusRateMeta.js'),
+		[ 'baseclass', 'E', '_' ])(fakeBaseclass, fakeElement, fakeTranslate);
 	return vm.compileFunction(src,
 		[ 'baseclass', 'vocab', 'fmt', 'clientConnections', 'clientControl', 'lsVersion',
-		  'statusIp', 'statusCollector', 'E', '_', 'window' ],
+		  'statusIp', 'statusCollector', 'statusRateMeta', 'E', '_', 'window' ],
 		{ filename: 'resources/lanspeed/statusRefresh.js' })(
 			fakeBaseclass, vocab, {},
 			loadClientConnectionsModule(readModuleByName('clientConnections.js')),
 			{ cell: function() { return fakeElement('td'); } },
-			{ FULL_VERSION: 'test' }, {}, {}, fakeElement, fakeTranslate,
+			{ FULL_VERSION: 'test' }, {}, {}, rateMeta, fakeElement, fakeTranslate,
 			fakeWindow || { location: { pathname: '/admin/status/lanspeed/overview' } }
 		);
 }
@@ -6040,20 +6099,15 @@ function assertDiagnosticsModelModule(src) {
 		if (!src.includes(marker))
 			fail(`lanspeed/diagnosticsModel.js must expose ${marker}`);
 	});
-		if (!src.includes('[0-9a-f]{2}[:-]') ||
-		    !src.includes("'[MAC]'") ||
-		    !src.includes("replace(/\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b/g, '[IP]')") ||
-		    !src.includes("'[HOST]'") ||
-		    !src.includes('function rpcReportErrorText') ||
+		if (!src.includes('function rpcReportErrorText') ||
 		    !src.includes('function probeFailureBundle') ||
 		    !src.includes('if (!progressRpcOk(rpc, key)) return;') ||
 	    !src.includes('evidence && health.evidence.probe_failures') ||
 	    !src.includes("quality === 'low_traffic'") ||
 	    !src.includes('低流量实测：上行 %s · 下行 %s') ||
 	    !src.includes("quality === 'counter_skew'") ||
-	    !src.includes("badge = _('重新对齐')") ||
-	    !src.includes("_('隐私说明')")) {
-		fail('lanspeed/diagnosticsModel.js must parse structured probe failures and redact copied reports');
+	    !src.includes("badge = _('重新对齐')")) {
+		fail('lanspeed/diagnosticsModel.js must parse structured probe failures');
 	}
 	if (!src.includes("status && status.rate_collector_mode || '') === 'auto'") ||
 	    !src.includes("status && status.access_edge_mode || '') === 'active'") ||
@@ -6068,6 +6122,17 @@ function assertDiagnosticsModelModule(src) {
 	    !src.includes("classification_domain_mismatch")) {
 		fail('lanspeed/diagnosticsModel.js must diagnose the precise-rate and verifiable-classification scheme without summing E/N/S');
 	}
+}
+
+function assertDiagnosticsReportModule(src) {
+	if (!src.includes('function sanitizeReportText') ||
+	    !src.includes('[CLIENT CONTROL REDACTED]') ||
+	    !src.includes("'[MAC]'") ||
+	    !src.includes("'[IP]'") ||
+	    !src.includes("'[HOST]'") ||
+	    !src.includes('function validIpv6') ||
+	    !src.includes('sanitizeReportText: sanitizeReportText'))
+		fail('lanspeed/diagnosticsReport.js must own bounded report redaction and address sanitization');
 }
 
 function assertDiagnosticsViewModule(src) {
@@ -7344,6 +7409,9 @@ EXPECTED_MODULES.forEach(function(name) {
 	if (name === 'diagnosticsModel.js') {
 		assertDiagnosticsModelModule(src);
 	}
+	if (name === 'diagnosticsReport.js') {
+		assertDiagnosticsReportModule(src);
+	}
 	if (name === 'diagnosticsView.js') {
 		assertDiagnosticsViewModule(src);
 	}
@@ -7377,6 +7445,7 @@ EXPECTED_MODULES.forEach(function(name) {
 			assertConfigModelRewrite(src);
 		}
 });
+assertManifestCoverage();
 
 assertStyleAggregation();
 assertProductDesignSystem();

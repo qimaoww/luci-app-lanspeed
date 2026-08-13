@@ -1739,12 +1739,7 @@ mod tests {
                 dae_upload_devices: Vec::new(),
                 local_prefixes: Vec::new(),
                 rules: Vec::new(),
-                nss_proven_directions: BTreeMap::new(),
-                nss_path_ready_directions: BTreeMap::new(),
-                nss_cpu_directions: BTreeMap::new(),
-                nss_active_nss_directions: BTreeMap::new(),
-                nss_active_cpu_directions: BTreeMap::new(),
-                conntrack_cleanup_ips: Default::default(),
+                nss: crate::control::nss_state::NssControlPlan::default(),
             })
             .get(edge),
             None

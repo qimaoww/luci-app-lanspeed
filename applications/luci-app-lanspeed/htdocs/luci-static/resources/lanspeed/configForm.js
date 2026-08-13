@@ -4,6 +4,7 @@
 'require lanspeed.rpc as lsRpc';
 'require lanspeed.ifaceConfig as ifaceCfg';
 'require lanspeed.configModel as cfgModel';
+'require lanspeed.configPlatform as configPlatform';
 
 var FIELD_NAMES = cfgModel.FIELDS.map(function(field) { return field.name; });
 var REMOVED_UCI_FIELDS = cfgModel.REMOVED_UCI_FIELDS || [];
@@ -21,17 +22,6 @@ var REQUIRED_STATUS_CAPABILITIES = [ 'bpf', 'conntrack_fallback' ];
 
 function text(value) {
 	return value === undefined || value === null ? '' : String(value);
-}
-
-function platformValues(status, values) {
-	values = cloneValues(values || {});
-	if (cfgModel.isX86Platform(status)) {
-		values.access_edge_mode = 'off';
-		if (values.rate_collector_mode === 'nss_ecm_node' ||
-			values.rate_collector_mode === 'nss_ecm_bpf')
-			values.rate_collector_mode = 'bpf';
-	}
-	return values;
 }
 
 function cloneValues(values) {
@@ -413,7 +403,7 @@ function interfacePlanFor(viewState) {
 }
 
 function validateForm(viewState) {
-	var values = platformValues(viewState.runtimeStatus, readForm(viewState));
+	var values = configPlatform.normalizeValues(viewState.runtimeStatus, readForm(viewState));
 	var interfacePlan = interfacePlanFor(viewState);
 	if (interfacePlan.desired)
 		LIST_FIELDS.forEach(function(name) { values[name] = cloneValues(interfacePlan.desired[name] || []); });
@@ -465,7 +455,7 @@ function updateDependencies(viewState) {
 	var rangesEnabled = !busy && values.show_ipv6 === '1' && values.hide_private_ipv6 === '1';
 	refs.inputs.hide_private_ipv6.disabled = busy || values.show_ipv6 !== '1';
 	if (refs.inputs.access_edge_mode)
-		refs.inputs.access_edge_mode.disabled = busy || !cfgModel.isNssPlatform(viewState.runtimeStatus);
+		refs.inputs.access_edge_mode.disabled = busy || !configPlatform.formPolicy(viewState.runtimeStatus).showAccessEdge;
 	refs.hideIpv6RangeInput.disabled = !rangesEnabled;
 	refs.addRangeBtn.disabled = !rangesEnabled;
 	(refs.rangeRemoveButtons || []).forEach(function(button) { button.disabled = !rangesEnabled; });
@@ -485,7 +475,7 @@ function formChanged(viewState) {
 
 function fillForm(viewState, values) {
 	var refs = viewState.daemonRefs;
-	values = platformValues(viewState.runtimeStatus, cfgModel.normalize(values || cfgModel.DEFAULTS).values);
+	values = configPlatform.normalizeValues(viewState.runtimeStatus, cfgModel.normalize(values || cfgModel.DEFAULTS).values);
 	NUMBER_FIELDS.forEach(function(name) { refs.inputs[name].value = String(values[name]); });
 	refs.inputs.rate_collector_mode.value = values.rate_collector_mode;
 	if (refs.inputs.access_edge_mode)
@@ -506,45 +496,21 @@ function fillForm(viewState, values) {
 
 function applyRuntimeInfo(viewState, status) {
 	var refs = viewState.daemonRefs;
-	var evidence = status && status.evidence || {};
-	var collector = evidence.collector || {};
-	var effectiveRate = collector.primary_source || evidence.effective_collector || _('未知');
-	var effectiveConnection = collector.effective_connection_collector || _('未知');
-	var rateLabels = {
-		bpf: _('仅 CPU 路径（BPF）'),
-		nss_ecm_node: _('仅 NSS 加速（ECM）'),
-		nss_ecm_bpf: _('NSS + CPU 路径（ECM+BPF）'),
-		unsupported: _('不可用')
-	};
-	var connectionLabels = {
-		conntrack_netlink: _('内核连接接口'),
-		conntrack_procfs: _('兼容连接接口'),
-		unsupported: _('不可用')
-	};
-	var rateLabel = rateLabels[String(effectiveRate)] || String(effectiveRate);
-	var connectionLabel = connectionLabels[String(effectiveConnection)] || String(effectiveConnection);
-	if (cfgModel.isNssPlatform(status) && String(status && status.rate_collector_mode || '') === 'auto' &&
-	    String(status && status.access_edge_mode || '') === 'active') {
-		refs.runtimeInfo.textContent = _('当前运行：总速率 精准接入点 · 分类 %s · 连接 %s')
-			.format(rateLabel, connectionLabel);
-	} else {
-		refs.runtimeInfo.textContent = _('当前运行：网速 %s · 连接 %s').format(rateLabel, connectionLabel);
-	}
+	refs.runtimeInfo.textContent = configPlatform.runtimeInfo(status);
 	refs.runtimeInfo.setAttribute('data-state', viewState.loadData && viewState.loadData.rpc.status.ok ? 'ready' : 'degraded');
 }
 
 function buildDaemonSection(data, viewState) {
 	data = data || {};
-	var values = platformValues(data.status || {}, cfgModel.normalize(data.values || data).values);
+	var values = configPlatform.normalizeValues(data.status || {}, cfgModel.normalize(data.values || data).values);
 	var refs = { fields: {}, inputs: {}, rangeRemoveButtons: [] };
 	var rows = [];
 	viewState = viewState || {};
 	viewState.daemonRefs = refs;
 	viewState.loadData = data;
 	viewState.runtimeStatus = data.status || {};
-	viewState.platformProfile = cfgModel.platformProfile(viewState.runtimeStatus);
-	viewState.nssPlatform = cfgModel.isNssPlatform(viewState.runtimeStatus);
-	viewState.x86Platform = cfgModel.isX86Platform(viewState.runtimeStatus);
+	viewState.platformProfile = configPlatform.profile(viewState.runtimeStatus);
+	viewState.platformPolicy = configPlatform.formPolicy(viewState.runtimeStatus);
 	viewState.originalRaw = cloneValues(data.raw || data.values || data);
 	viewState.initialValues = cloneValues(values);
 	viewState.currentValues = cloneValues(values);
@@ -556,7 +522,7 @@ function buildDaemonSection(data, viewState) {
 	NUMBER_FIELDS.forEach(function(name) { refs.inputs[name] = numberInput(name, values[name]); });
 	refs.inputs.rate_collector_mode = choiceSelect('rate_collector_mode',
 		cfgModel.modeChoices('rate', viewState.runtimeStatus, values), values.rate_collector_mode);
-	if (viewState.nssPlatform) {
+	if (viewState.platformPolicy.showAccessEdge) {
 		refs.inputs.access_edge_mode = choiceSelect('access_edge_mode',
 			cfgModel.ACCESS_EDGE_MODES, values.access_edge_mode);
 	}
@@ -584,27 +550,18 @@ function buildDaemonSection(data, viewState) {
 	]);
 
 	rows.push(rowFor(viewState, 'rate_collector_mode', _('客户端网速模式'), refs.inputs.rate_collector_mode,
-		viewState.nssPlatform
-			? _('推荐“自动精准”：优先显示每个客户端接入口的总速率；NSS 与 CPU 检测用于流量分类，并在总速率不可用时降级显示。手动模式只显示所选路径能看到的流量。')
-			: (viewState.x86Platform ? _('x86 使用原生 TC-BPF 客户端总速率。') :
-				_('平台状态暂不可用；当前架构专用配置将保持不变。'))));
-	if (viewState.nssPlatform)
+			viewState.platformPolicy.rateHint));
+	if (viewState.platformPolicy.showAccessEdge)
 		rows.push(rowFor(viewState, 'access_edge_mode', _('客户端总速率'), refs.inputs.access_edge_mode,
-			_('“精准总速率”在自动模式中使用有线端口或无线客户端计数；“仅后台验证”只采集核对，不改变页面速率；“关闭”完全停用。')));
+				viewState.platformPolicy.accessEdgeHint));
 	rows.push(rowFor(viewState, 'conn_collector_mode', _('连接详情来源'), refs.inputs.conn_collector_mode,
-		viewState.nssPlatform
-			? _('自动优先使用 CT-Netlink；仅在旧系统不支持时使用 Procfs。此设置只影响连接详情，不参与客户端总速率融合。')
-			: _('自动优先使用 CT-Netlink；仅在旧系统不支持时使用 Procfs。此设置只影响连接详情，不参与 TC-BPF 客户端总速率。')));
+			viewState.platformPolicy.connectionHint));
 	rows.push(rowFor(viewState, 'enable_bpf', _('启用 CPU 流量检测（BPF）'), refs.toggleWrap.enable_bpf,
-		viewState.nssPlatform
-			? _('用于识别经过 CPU 的流量，并作为自动精准模式的降级来源；关闭后相关手动模式不可选。')
-			: (viewState.x86Platform ? _('x86 客户端总速率唯一来源；关闭后实时网速不可用。') :
-				_('当前平台状态不可用；保持现有 BPF 设置。'))));
+			viewState.platformPolicy.bpfHint));
 	rows.push(rowFor(viewState, 'enable_conntrack_fallback', _('允许兼容连接详情'), refs.toggleWrap.enable_conntrack_fallback,
 		_('只用于读取客户端连接详情，不参与客户端网速计算。')));
 	rows.push(rowFor(viewState, 'refresh_interval_ms', _('采样间隔'), refs.inputs.refresh_interval_ms,
-		viewState.nssPlatform ? _('BPF 不限制采样周期；ECM 与 ECM+BPF 固定使用 2000 ms。') :
-			(viewState.x86Platform ? _('x86 TC-BPF 按配置周期采样。') : _('按当前运行配置采样。'))));
+			viewState.platformPolicy.refreshHint));
 	rows.push(rowFor(viewState, 'overview_window_samples', _('历史采样点'), refs.inputs.overview_window_samples,
 		_('内存中保留的概览样本数，范围 2 到 240。')));
 	rows.push(rowFor(viewState, 'max_clients', _('客户端上限'), refs.inputs.max_clients,
@@ -627,7 +584,7 @@ function buildDaemonSection(data, viewState) {
 	refs.resetDefaultsBtn = E('button', { 'type': 'button', 'class': 'cbi-button' }, _('恢复运行参数默认值'));
 	refs.resetDefaultsBtn.addEventListener('click', function() {
 		var defaults = cloneValues(cfgModel.DEFAULTS);
-		defaults = platformValues(viewState.runtimeStatus, defaults);
+			defaults = configPlatform.normalizeValues(viewState.runtimeStatus, defaults);
 		LIST_FIELDS.forEach(function(name) { defaults[name] = cloneValues((viewState.ifaceOriginal || {})[name] || []); });
 		fillForm(viewState, defaults);
 		formChanged(viewState);
@@ -759,14 +716,7 @@ function rollbackOwnedValues(snapshot, sectionMissing) {
 
 function platformPatch(viewState, values) {
 	var patch = cfgModel.buildUciPatch(values, viewState.originalRaw || {});
-	if (!cfgModel.isNssPlatform(viewState.runtimeStatus))
-		delete patch.set.access_edge_mode;
-	if (cfgModel.isX86Platform(viewState.runtimeStatus)) {
-		if ((viewState.originalRaw || {}).access_edge_mode !== undefined &&
-			patch.unset.indexOf('access_edge_mode') === -1)
-			patch.unset.push('access_edge_mode');
-	}
-	return patch;
+	return configPlatform.applyPatchPolicy(viewState.runtimeStatus, viewState.originalRaw, patch);
 }
 
 function prepareSave(viewState) {
@@ -904,7 +854,7 @@ function resetAllSettings(viewState) {
 function statusMatches(status, values) {
 	if (statusContractIssue(status)) return false;
 	return status.rate_collector_mode === values.rate_collector_mode &&
-		(!cfgModel.isNssPlatform(status) || status.access_edge_mode === values.access_edge_mode) &&
+		(!configPlatform.formPolicy(status).showAccessEdge || status.access_edge_mode === values.access_edge_mode) &&
 		status.conn_collector_mode === values.conn_collector_mode &&
 		Number(status.refresh_interval_ms) === Number(values.refresh_interval_ms) &&
 		Number(status.active_client_window_ms) === Number(values.active_client_window_ms) &&

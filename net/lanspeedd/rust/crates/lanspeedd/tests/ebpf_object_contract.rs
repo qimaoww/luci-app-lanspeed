@@ -86,9 +86,9 @@ fn objects_are_fresh_for_the_accounting_sources() {
     let sources = [
         workspace.join("crates/lanspeed-common/src/accounting.rs"),
         workspace.join("crates/lanspeed-common/src/packet.rs"),
-        workspace.join("crates/lanspeed-ebpf/src/x86/account.rs"),
+        workspace.join("crates/lanspeed-ebpf/src/x86/accounting.rs"),
         workspace.join("crates/lanspeed-ebpf/src/atomics.rs"),
-        workspace.join("crates/lanspeed-ebpf/src/x86/conntrack.rs"),
+        workspace.join("crates/lanspeed-ebpf/src/x86/connections.rs"),
     ];
 
     for object in [object_path(), fallback_object_path()] {
@@ -118,7 +118,7 @@ fn objects_are_fresh_for_the_accounting_sources() {
     for source in [
         workspace.join("crates/lanspeed-common/src/lib.rs"),
         workspace.join("crates/lanspeed-ebpf/src/atomics.rs"),
-        workspace.join("crates/lanspeed-ebpf/src/nss/mod.rs"),
+        workspace.join("crates/lanspeed-ebpf/src/nss/ecm.rs"),
         workspace.join("crates/lanspeed-ebpf/src/main.rs"),
     ] {
         let source_time = fs::metadata(&source)
@@ -463,7 +463,7 @@ fn aarch64_ecm_object_is_isolated_from_tc_and_uses_aarch64_probe_registers() {
 #[test]
 fn classifier_guards_short_frames_before_ethernet_load() {
     let source = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../lanspeed-ebpf/src/x86/account.rs"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../lanspeed-ebpf/src/x86/accounting.rs"),
     )
     .unwrap();
     let guard = source
@@ -478,7 +478,7 @@ fn classifier_guards_short_frames_before_ethernet_load() {
 #[test]
 fn conntrack_prefix_load_uses_the_guarded_nonzero_frame_length() {
     let source = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../lanspeed-ebpf/src/x86/account.rs"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../lanspeed-ebpf/src/x86/accounting.rs"),
     )
     .unwrap();
     assert!(source.contains("let frame_len = ctx.len();"));
@@ -925,7 +925,7 @@ fn production_object_stays_within_kernel_stack_budget() {
 
 #[test]
 fn packet_prefix_covers_maximum_ipv4_and_tcp_headers() {
-    let source = include_str!("../../lanspeed-ebpf/src/x86/account.rs");
+    let source = include_str!("../../lanspeed-ebpf/src/x86/accounting.rs");
     assert!(
         source.contains("const PACKET_PREFIX_LEN: usize = 142;"),
         "Ethernet(14)+two VLAN tags(8)+IPv4(60)+TCP(60) requires a 142-byte prefix"
@@ -934,7 +934,7 @@ fn packet_prefix_covers_maximum_ipv4_and_tcp_headers() {
 
 #[test]
 fn classifier_applies_gso_metadata_to_every_counter_update_path() {
-    let source = include_str!("../../lanspeed-ebpf/src/x86/account.rs");
+    let source = include_str!("../../lanspeed-ebpf/src/x86/accounting.rs");
     let compact_source = source.split_whitespace().collect::<String>();
 
     assert!(source.contains("(*skb).wire_len"));

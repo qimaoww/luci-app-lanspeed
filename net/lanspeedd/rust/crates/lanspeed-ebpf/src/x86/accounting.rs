@@ -17,7 +17,7 @@ use lanspeed_common::{
 use crate::atomics::add_u64;
 
 #[cfg(feature = "conntrack-kfunc")]
-use crate::conntrack::try_count_connection;
+use super::connections::try_count_connection;
 #[cfg(feature = "conntrack-kfunc")]
 use lanspeed_common::{LanspeedConnKey, MAX_CONN_TUPLES};
 

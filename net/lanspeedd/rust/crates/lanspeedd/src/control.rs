@@ -20,6 +20,13 @@ use crate::{
     model::{Client, ClientControlSummary, ClientsResponse},
 };
 
+#[cfg(feature = "nss-platform")]
+pub(crate) mod nss_state;
+mod platform;
+
+#[cfg(feature = "nss-platform")]
+use nss_state::{NssControlPlan, NssControlState};
+
 pub const X86_MAX_RATE_BPS: u64 = 100_000_000_000;
 #[cfg(feature = "nss-platform")]
 pub const NSS_MAX_RATE_BPS: u64 = 4_000_000_000;
@@ -93,52 +100,29 @@ pub struct ControlPlan {
     pub local_prefixes: Vec<(IpAddr, u8)>,
     pub rules: Vec<ActiveRule>,
     #[cfg(feature = "nss-platform")]
-    pub nss_proven_directions: BTreeMap<String, u8>,
-    #[cfg(feature = "nss-platform")]
-    pub nss_path_ready_directions: BTreeMap<String, u8>,
-    #[cfg(feature = "nss-platform")]
-    pub nss_cpu_directions: BTreeMap<String, u8>,
-    /// Directions currently observed on the accelerated NSS path. NSS and CPU
-    /// observations are path evidence for one aggregate edge executor; they
-    /// never authorize independent per-path rate buckets.
-    #[cfg(feature = "nss-platform")]
-    pub nss_active_nss_directions: BTreeMap<String, u8>,
-    #[cfg(feature = "nss-platform")]
-    pub nss_active_cpu_directions: BTreeMap<String, u8>,
-    #[cfg(feature = "nss-platform")]
-    pub conntrack_cleanup_ips: BTreeSet<IpAddr>,
+    pub nss: NssControlPlan,
 }
 
 #[cfg(feature = "nss-platform")]
 impl ControlPlan {
     pub fn nss_direction_proven(&self, identity_key: &str, direction: u8) -> bool {
-        self.nss_proven_directions
-            .get(identity_key)
-            .is_some_and(|value| value & direction != 0)
+        self.nss.direction_proven(identity_key, direction)
     }
 
     pub fn nss_direction_path_ready(&self, identity_key: &str, direction: u8) -> bool {
-        self.nss_path_ready_directions
-            .get(identity_key)
-            .is_some_and(|value| value & direction != 0)
+        self.nss.direction_path_ready(identity_key, direction)
     }
 
     pub fn nss_direction_uses_cpu(&self, identity_key: &str, direction: u8) -> bool {
-        self.nss_cpu_directions
-            .get(identity_key)
-            .is_some_and(|value| value & direction != 0)
+        self.nss.direction_uses_cpu(identity_key, direction)
     }
 
     pub fn nss_direction_active_nss(&self, identity_key: &str, direction: u8) -> bool {
-        self.nss_active_nss_directions
-            .get(identity_key)
-            .is_some_and(|value| value & direction != 0)
+        self.nss.direction_active_nss(identity_key, direction)
     }
 
     pub fn nss_direction_active_cpu(&self, identity_key: &str, direction: u8) -> bool {
-        self.nss_active_cpu_directions
-            .get(identity_key)
-            .is_some_and(|value| value & direction != 0)
+        self.nss.direction_active_cpu(identity_key, direction)
     }
 }
 
@@ -238,23 +222,7 @@ pub struct ControlManager {
     max_rate_bps: u64,
     dirty: bool,
     #[cfg(feature = "nss-platform")]
-    nss_proven_directions: BTreeMap<String, u8>,
-    #[cfg(feature = "nss-platform")]
-    nss_path_ready_directions: BTreeMap<String, u8>,
-    #[cfg(feature = "nss-platform")]
-    nss_cpu_directions: BTreeMap<String, u8>,
-    #[cfg(feature = "nss-platform")]
-    nss_active_nss_directions: BTreeMap<String, u8>,
-    #[cfg(feature = "nss-platform")]
-    nss_active_cpu_directions: BTreeMap<String, u8>,
-    #[cfg(feature = "nss-platform")]
-    nss_attachment_generations: BTreeMap<String, (String, u64)>,
-    #[cfg(feature = "nss-platform")]
-    nss_reload_attachment_rebase_pending: bool,
-    #[cfg(feature = "nss-platform")]
-    conntrack_cleanup_ips: BTreeSet<IpAddr>,
-    #[cfg(feature = "nss-platform")]
-    pending_conntrack_identities: BTreeSet<String>,
+    nss: NssControlState,
 }
 
 impl ControlManager {
@@ -282,26 +250,10 @@ impl ControlManager {
             local_prefixes: Vec::new(),
             local_prefixes_ready: false,
             last_local_prefix_refresh: None,
-            max_rate_bps: platform_max_rate_bps(),
+            max_rate_bps: platform::max_rate_bps(),
             dirty: true,
             #[cfg(feature = "nss-platform")]
-            nss_proven_directions: BTreeMap::new(),
-            #[cfg(feature = "nss-platform")]
-            nss_path_ready_directions: BTreeMap::new(),
-            #[cfg(feature = "nss-platform")]
-            nss_cpu_directions: BTreeMap::new(),
-            #[cfg(feature = "nss-platform")]
-            nss_active_nss_directions: BTreeMap::new(),
-            #[cfg(feature = "nss-platform")]
-            nss_active_cpu_directions: BTreeMap::new(),
-            #[cfg(feature = "nss-platform")]
-            nss_attachment_generations: BTreeMap::new(),
-            #[cfg(feature = "nss-platform")]
-            nss_reload_attachment_rebase_pending: false,
-            #[cfg(feature = "nss-platform")]
-            conntrack_cleanup_ips: BTreeSet::new(),
-            #[cfg(feature = "nss-platform")]
-            pending_conntrack_identities: BTreeSet::new(),
+            nss: NssControlState::default(),
         })
     }
 
@@ -771,7 +723,7 @@ impl ControlManager {
             if self.result.state == "error" {
                 return;
             }
-            self.result = platform_observe(&plan, &self.result);
+            self.result = platform::observe(&plan, &self.result);
             if self.result.reason.as_deref() == Some("control_topology_changed") {
                 #[cfg(feature = "nss-platform")]
                 self.rearm_nss_executor_verification();
@@ -786,7 +738,7 @@ impl ControlManager {
             self.result = failed_apply_result(&error, &self.result);
             return;
         }
-        match platform_apply(&plan) {
+        match platform::apply(&plan) {
             Ok(result) => {
                 self.result = result;
                 #[cfg(feature = "nss-platform")]
@@ -827,7 +779,7 @@ impl ControlManager {
                 return;
             }
         }
-        let observed = platform_observe(&self.plan(), &self.result);
+        let observed = platform::observe(&self.plan(), &self.result);
         if observed.reason.as_deref() == Some("control_topology_changed") {
             self.rearm_nss_executor_verification();
             self.dirty = true;
@@ -1047,7 +999,7 @@ impl ControlManager {
     }
 
     pub fn cleanup(&mut self) -> Result<(), DaemonError> {
-        platform_cleanup(&self.plan()).map_err(DaemonError::collection)
+        platform::cleanup(&self.plan()).map_err(DaemonError::collection)
     }
 
     #[cfg(feature = "nss-platform")]
@@ -1076,17 +1028,7 @@ impl ControlManager {
             local_prefixes: self.local_prefixes.clone(),
             rules,
             #[cfg(feature = "nss-platform")]
-            nss_proven_directions: self.nss_proven_directions.clone(),
-            #[cfg(feature = "nss-platform")]
-            nss_path_ready_directions: self.nss_path_ready_directions.clone(),
-            #[cfg(feature = "nss-platform")]
-            nss_cpu_directions: self.nss_cpu_directions.clone(),
-            #[cfg(feature = "nss-platform")]
-            nss_active_nss_directions: self.nss_active_nss_directions.clone(),
-            #[cfg(feature = "nss-platform")]
-            nss_active_cpu_directions: self.nss_active_cpu_directions.clone(),
-            #[cfg(feature = "nss-platform")]
-            conntrack_cleanup_ips: self.conntrack_cleanup_ips.clone(),
+            nss: self.nss.plan(),
         }
     }
 
@@ -1594,7 +1536,7 @@ fn validate_rate(rate: u64) -> Result<(), DaemonError> {
     if rate % 8 != 0 {
         return Err(DaemonError::reload("invalid_rate_resolution"));
     }
-    if rate > platform_max_rate_bps() {
+    if rate > platform::max_rate_bps() {
         return Err(DaemonError::reload("rate_above_platform_maximum"));
     }
     Ok(())
@@ -1607,7 +1549,7 @@ fn validate_persisted_rate(rate: u64) -> Result<(), DaemonError> {
     if rate % 8 != 0 {
         return Err(DaemonError::reload("invalid_rate_resolution"));
     }
-    if rate > platform_hard_max_rate_bps() {
+    if rate > platform::HARD_MAX_RATE_BPS {
         return Err(DaemonError::reload("rate_above_platform_maximum"));
     }
     Ok(())
@@ -1649,7 +1591,7 @@ fn valid_control_interface(value: &str) -> Option<String> {
 
 fn control_requires_address(upload_bps: u64, download_bps: u64, internet_disabled: bool) -> bool {
     internet_disabled
-        || (platform_requires_shaping_address() && (upload_bps != 0 || download_bps != 0))
+        || (platform::REQUIRES_SHAPING_ADDRESS && (upload_bps != 0 || download_bps != 0))
 }
 
 #[cfg(not(feature = "nss-platform"))]
@@ -2218,66 +2160,6 @@ fn prefix_contains(prefix: (IpAddr, u8), address: IpAddr) -> bool {
     network == prefix.0
 }
 
-#[cfg(not(feature = "nss-platform"))]
-fn platform_apply(plan: &ControlPlan) -> Result<ApplyResult, String> {
-    crate::platform::x86::control::apply(plan)
-}
-
-#[cfg(not(feature = "nss-platform"))]
-fn platform_observe(plan: &ControlPlan, previous: &ApplyResult) -> ApplyResult {
-    crate::platform::x86::control::observe(plan, previous)
-}
-
-#[cfg(feature = "nss-platform")]
-fn platform_observe(plan: &ControlPlan, previous: &ApplyResult) -> ApplyResult {
-    crate::platform::nss::control::observe(plan, previous)
-}
-
-#[cfg(feature = "nss-platform")]
-fn platform_apply(plan: &ControlPlan) -> Result<ApplyResult, String> {
-    crate::platform::nss::control::apply(plan)
-}
-
-#[cfg(not(feature = "nss-platform"))]
-fn platform_cleanup(plan: &ControlPlan) -> Result<(), String> {
-    crate::platform::x86::control::cleanup(plan)
-}
-
-#[cfg(feature = "nss-platform")]
-fn platform_cleanup(plan: &ControlPlan) -> Result<(), String> {
-    crate::platform::nss::control::cleanup(plan)
-}
-
-#[cfg(not(feature = "nss-platform"))]
-fn platform_max_rate_bps() -> u64 {
-    crate::platform::x86::control::max_rate_bps()
-}
-
-#[cfg(not(feature = "nss-platform"))]
-const fn platform_hard_max_rate_bps() -> u64 {
-    X86_MAX_RATE_BPS
-}
-
-#[cfg(not(feature = "nss-platform"))]
-const fn platform_requires_shaping_address() -> bool {
-    false
-}
-
-#[cfg(feature = "nss-platform")]
-fn platform_max_rate_bps() -> u64 {
-    crate::platform::nss::control::max_rate_bps()
-}
-
-#[cfg(feature = "nss-platform")]
-const fn platform_hard_max_rate_bps() -> u64 {
-    NSS_MAX_RATE_BPS
-}
-
-#[cfg(feature = "nss-platform")]
-const fn platform_requires_shaping_address() -> bool {
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2350,26 +2232,10 @@ mod tests {
             local_prefixes: Vec::new(),
             local_prefixes_ready: false,
             last_local_prefix_refresh: None,
-            max_rate_bps: platform_max_rate_bps(),
+            max_rate_bps: platform::max_rate_bps(),
             dirty: false,
             #[cfg(feature = "nss-platform")]
-            nss_proven_directions: BTreeMap::new(),
-            #[cfg(feature = "nss-platform")]
-            nss_path_ready_directions: BTreeMap::new(),
-            #[cfg(feature = "nss-platform")]
-            nss_cpu_directions: BTreeMap::new(),
-            #[cfg(feature = "nss-platform")]
-            nss_active_nss_directions: BTreeMap::new(),
-            #[cfg(feature = "nss-platform")]
-            nss_active_cpu_directions: BTreeMap::new(),
-            #[cfg(feature = "nss-platform")]
-            nss_attachment_generations: BTreeMap::new(),
-            #[cfg(feature = "nss-platform")]
-            nss_reload_attachment_rebase_pending: false,
-            #[cfg(feature = "nss-platform")]
-            conntrack_cleanup_ips: BTreeSet::new(),
-            #[cfg(feature = "nss-platform")]
-            pending_conntrack_identities: BTreeSet::new(),
+            nss: NssControlState::default(),
         }
     }
 

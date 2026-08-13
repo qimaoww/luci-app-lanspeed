@@ -55,7 +55,7 @@
   },
   "bpf_model": {
     "source_by_platform": {
-      "x86_64": "rust/crates/lanspeed-ebpf/src/x86/account.rs",
+      "x86_64": "rust/crates/lanspeed-ebpf/src/x86/accounting.rs",
       "aarch64_nss": "rust/crates/lanspeed-ebpf/src/nss/account.rs"
     },
     "feature_by_platform": {
@@ -115,7 +115,7 @@
   "ecm_bpf_model": {
     "collector_mode": "nss_ecm_bpf",
     "userspace_source": "rust/crates/lanspeedd/src/platform/nss/ecm_bpf.rs",
-    "program_source": "rust/crates/lanspeed-ebpf/src/nss/mod.rs",
+    "program_source": "rust/crates/lanspeed-ebpf/src/nss/ecm.rs",
     "tc_program_source": "rust/crates/lanspeed-ebpf/src/nss/account.rs",
     "object": "/usr/lib/bpf/lanspeed-ebpf-ecm",
     "object_role": "isolated_nss_hardware_context_kprobe",

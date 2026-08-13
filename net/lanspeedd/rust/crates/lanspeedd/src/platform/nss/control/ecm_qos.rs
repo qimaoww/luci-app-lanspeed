@@ -165,18 +165,17 @@ mod tests {
             control_devices: vec!["edge0".into()],
             dae_upload_devices: Vec::new(),
             local_prefixes: vec![("10.0.0.0".parse().unwrap(), 8)],
-            nss_proven_directions: BTreeMap::from([(
-                "02:00:00:00:00:09@lan".into(),
-                crate::control::NSS_CPU_UPLOAD | crate::control::NSS_CPU_DOWNLOAD,
-            )]),
-            nss_path_ready_directions: BTreeMap::from([(
-                "02:00:00:00:00:09@lan".into(),
-                crate::control::NSS_CPU_UPLOAD | crate::control::NSS_CPU_DOWNLOAD,
-            )]),
-            nss_cpu_directions: BTreeMap::new(),
-            nss_active_nss_directions: BTreeMap::new(),
-            nss_active_cpu_directions: BTreeMap::new(),
-            conntrack_cleanup_ips: Default::default(),
+            nss: crate::control::nss_state::NssControlPlan {
+                nss_proven_directions: BTreeMap::from([(
+                    "02:00:00:00:00:09@lan".into(),
+                    crate::control::NSS_CPU_UPLOAD | crate::control::NSS_CPU_DOWNLOAD,
+                )]),
+                nss_path_ready_directions: BTreeMap::from([(
+                    "02:00:00:00:00:09@lan".into(),
+                    crate::control::NSS_CPU_UPLOAD | crate::control::NSS_CPU_DOWNLOAD,
+                )]),
+                ..Default::default()
+            },
             rules: vec![ActiveRule {
                 identity_key: "02:00:00:00:00:09@lan".into(),
                 mac: "02:00:00:00:00:09".parse::<MacAddress>().unwrap(),
