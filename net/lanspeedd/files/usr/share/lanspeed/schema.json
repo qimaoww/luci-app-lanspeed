@@ -1189,6 +1189,37 @@
         "shaping_supported", "blocking_supported", "max_rate_bps", "state", "queue_overflow"
       ]
     },
+    "nssControlEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state": { "type": "string", "enum": ["inactive", "pending", "verified", "error", "unavailable"] },
+        "reason_code": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_-]{1,64}$" },
+        "detail_code": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_-]{1,64}$" },
+        "shaping_supported": { "type": "boolean" },
+        "blocking_supported": { "type": "boolean" },
+        "configured_clients": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "active_clients": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "effective_clients": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "pending_clients": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "error_clients": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "queue_overflow_clients": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "rate_limited_clients": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "internet_disabled_clients": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "block_active_clients": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "required_directions": { "type": "integer", "minimum": 0, "maximum": 128 },
+        "verified_directions": { "type": "integer", "minimum": 0, "maximum": 128 },
+        "nss_verified_directions": { "type": "integer", "minimum": 0, "maximum": 128 },
+        "cpu_verified_directions": { "type": "integer", "minimum": 0, "maximum": 128 }
+      },
+      "required": [
+        "state", "reason_code", "detail_code", "shaping_supported", "blocking_supported",
+        "configured_clients", "active_clients", "effective_clients", "pending_clients",
+        "error_clients", "queue_overflow_clients", "rate_limited_clients",
+        "internet_disabled_clients", "block_active_clients", "required_directions",
+        "verified_directions", "nss_verified_directions", "cpu_verified_directions"
+      ]
+    },
     "clientControlResponse": {
       "type": "object",
       "additionalProperties": false,
@@ -1551,7 +1582,11 @@
           }
         },
         "evidence": {
-          "$ref": "#/$defs/evidence"
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "nss_control": { "$ref": "#/$defs/nssControlEvidence" }
+          }
         },
         "tcp_conns_total": {
           "type": "integer",

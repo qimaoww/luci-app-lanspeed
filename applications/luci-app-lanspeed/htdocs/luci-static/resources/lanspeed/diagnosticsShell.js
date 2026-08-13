@@ -147,6 +147,22 @@ function buildPipelineSection(refs) {
 	return section;
 }
 
+function buildControlSection(refs) {
+	refs.controlSummary = E('span', { 'class': 'sum lanspeed-diagnostics-control-summary' }, _('等待 NSS 控制证据'));
+	refs.controlPipeline = E('ol', { 'class': 'lanspeed-diagnostics-pipeline lanspeed-diagnostics-control-pipeline' }, [
+		stage(refs, 'controlCapability', _('控制能力')),
+		stage(refs, 'controlPath', _('混合路径证明')),
+		stage(refs, 'controlQueue', _('聚合整形队列')),
+		stage(refs, 'controlBlock', _('互联网禁用'))
+	]);
+	var section = E('section', { 'class': 'cbi-section lanspeed-diagnostics-control-section' }, [
+		sectionHeader(_('NSS 客户端控制'), refs.controlSummary, '', []),
+		E('div', { 'class': 'lanspeed-body lanspeed-diagnostics-pipeline-body' }, [ refs.controlPipeline ])
+	]);
+	refs.controlSection = section;
+	return section;
+}
+
 function buildHealthSection(refs) {
 	refs.healthSummary = E('span', { 'class': 'sum lanspeed-diagnostics-health-summary' }, _('等待接口响应'));
 	refs.interfacesBody = E('tbody', {});
@@ -266,6 +282,7 @@ function buildShell(viewState) {
 
 return baseclass.extend({
 	buildPipelineSection: buildPipelineSection,
+	buildControlSection: buildControlSection,
 	buildShell: function(viewState) {
 		return buildShell(viewState);
 	}

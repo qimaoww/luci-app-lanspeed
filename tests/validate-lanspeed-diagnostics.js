@@ -47,8 +47,12 @@ const vocab = {
       'tc_unavailable', 'tc_unsupported', 'bpf_unavailable', 'tc_conflict',
       'tc_attach_failed', 'tc_attach_not_ready', 'runtime_not_ready',
       'bpf_runtime_not_ready', 'bpf_not_selected', 'map_not_started',
-      'conntrack_unavailable', 'nss_ecm_node_parse_errors', 'conntrack_parse_errors',
-      'nss_not_present', 'lan_topology_probe_error' ].includes(id);
+      'conntrack_unavailable', 'conntrack_not_sampled', 'conntrack_read_failed',
+      'nss_ecm_node_parse_errors', 'conntrack_parse_errors',
+      'nss_not_present', 'nss_control_not_configured', 'nss_control_verification_pending',
+	  'nss_control_executor_failed', 'nss_control_no_active_client',
+	  'nss_client_control_unavailable', 'nss_control_diagnostics_unavailable',
+	  'lan_topology_probe_error' ].includes(id);
   },
   warningClass(id) {
     id = this.normalizeWarningId(id);
@@ -190,11 +194,16 @@ function loadVocabulary() {
 }
 
 function loadRefresh(vocabulary) {
+	const clientControl = vm.compileFunction(readModule('clientControl.js'),
+	  [ 'baseclass', 'ui', 'lsRpc', '_' ],
+	  { filename: 'clientControl.js', parsingContext: context })(
+	    baseclass, {}, {}, translate
+	  );
   return vm.compileFunction(readModule('diagnosticsRefresh.js'),
-    [ 'baseclass', 'fmt', 'vocab', 'lsVersion', 'statusCollector', 'diagnosticsModel', 'E', '_' ],
+    [ 'baseclass', 'fmt', 'vocab', 'lsVersion', 'statusCollector', 'diagnosticsModel', 'clientControl', 'E', '_' ],
     { filename: 'diagnosticsRefresh.js', parsingContext: context })(
       baseclass, format, vocabulary || vocab, { FULL_VERSION: '1.1.6-r3' }, statusCollector, model,
-      fakeElement, translate
+      clientControl, fakeElement, translate
     );
 }
 
@@ -325,6 +334,20 @@ function healthyClients() {
       truncated: false, current_truncated: false, map_loss: false }
   };
   value.evidence.ecm_bpf = { collector_min_interval_ms: 2000 };
+	value.clients[0].control = {
+	  configured: true, upload_bps: 10_000_000, download_bps: 100_000_000,
+	  internet_disabled: true, shaping_supported: true, blocking_supported: true,
+	  max_rate_bps: 4_000_000_000, state: 'verified', queue_overflow: false
+	};
+	value.evidence.nss_control = {
+	  state: 'verified', reason_code: null, detail_code: null,
+	  shaping_supported: true, blocking_supported: true,
+	  configured_clients: 1, active_clients: 1, effective_clients: 1,
+	  pending_clients: 0, error_clients: 0, queue_overflow_clients: 0,
+	  rate_limited_clients: 1, internet_disabled_clients: 1, block_active_clients: 1,
+	  required_directions: 2, verified_directions: 2,
+	  nss_verified_directions: 2, cpu_verified_directions: 1
+	};
   return value;
 }
 
@@ -369,6 +392,14 @@ function applyRefs(state, shell, refresh) {
       return section;
     };
   }
+	if (typeof state.mountControl !== 'function') {
+	  state.mountControl = function() {
+	    if (this.refs.controlSection) return this.refs.controlSection;
+	    const section = shell.buildControlSection(this.refs);
+	    this.refs.root.insertBefore(section, this.refs.healthSection);
+	    return section;
+	  };
+	}
   refresh.refresh(state);
   return built;
 }
@@ -520,6 +551,15 @@ async function testStrictContracts() {
   const badClientShape = healthyClients();
   badClientShape.clients[0].private_field = 'must reject';
   assert.strictEqual(model.validateRuntimeResponse(badClientShape, 'clients').valid, false);
+	const badControlEvidence = healthyClients();
+	badControlEvidence.evidence.nss_control.verified_directions = 3;
+	assert.strictEqual(model.validateRuntimeResponse(badControlEvidence, 'clients').valid, false,
+	  'NSS control verification counts must not exceed required directions');
+	const falseVerifiedControl = healthyClients();
+	falseVerifiedControl.evidence.nss_control.state = 'verified';
+	falseVerifiedControl.evidence.nss_control.pending_clients = 1;
+	assert.strictEqual(model.validateRuntimeResponse(falseVerifiedControl, 'clients').valid, false,
+	  'a verified NSS control aggregate cannot retain pending clients');
   const badRateReason = clone(futureRateSource);
   badRateReason.clients[0].rate_meta.reason_codes = [ 'contains spaces' ];
   assert.strictEqual(model.validateRuntimeResponse(badRateReason, 'clients').valid, false);
@@ -560,6 +600,17 @@ async function testResourceStateMachine() {
   assert.strictEqual(goodClassification.verificationText, '有线 2/2 方向已核对');
   assert.strictEqual(goodClassification.coverageText, '上行最低 96% · 下行最低 94%');
   assert.strictEqual(model.integrityStateWithRpc(good).state, 'good');
+	const goodControl = model.nssControlStateWithRpc(good);
+	assert.strictEqual(goodControl.state, 'good');
+	assert.strictEqual(goodControl.verifiedDirections, 2);
+	assert.strictEqual(goodControl.nssVerifiedDirections, 2);
+	assert.strictEqual(goodControl.cpuVerifiedDirections, 1);
+	assert.strictEqual(goodControl.blockActiveClients, 1);
+	const controlReport = model.buildReport(good, '1.1.6-r3');
+	assert(controlReport.includes('NSS 客户端控制') && controlReport.includes('NSS 2 · CPU 1'),
+	  'the redacted report must include NSS control executor counts');
+	assert(!controlReport.includes(good.clients.clients[0].identity_key),
+	  'the NSS control report must not expose client identity');
   assert.strictEqual(model.pathStateWithRpc(good).rateSource, 'access_edge');
   assert.strictEqual(model.pathStateWithRpc(good).classifierSource, 'bpf');
 
@@ -980,8 +1031,8 @@ async function testDomAndPresenter() {
   good.reload = () => Promise.resolve();
   good.copyReport = () => Promise.resolve();
   const goodBuilt = applyRefs(good, shell, refresh);
-  assert.strictEqual(findAllByClass(goodBuilt.root, 'cbi-section').length, 4,
-    'an explicit NSS platform must mount the precise-rate pipeline');
+  assert.strictEqual(findAllByClass(goodBuilt.root, 'cbi-section').length, 5,
+	'an explicit NSS platform must mount the precise-rate and client-control pipelines');
   assert.strictEqual(goodBuilt.refs.root.getAttribute('data-page-state'), 'ready');
   assert.strictEqual(goodBuilt.refs.root.getAttribute('aria-busy'), 'false');
   assert.strictEqual(goodBuilt.refs.btnRefresh.disabled, false);
@@ -1003,11 +1054,16 @@ async function testDomAndPresenter() {
   assert.strictEqual(goodBuilt.refs.edgeEvidence.children.length, 4);
   assert.strictEqual(goodBuilt.refs.classificationEvidence.children.length, 6);
   assert.strictEqual(goodBuilt.refs.pipeline.children.length, 3);
+	assert.strictEqual(goodBuilt.refs.controlPipeline.children.length, 4);
+	assert.strictEqual(goodBuilt.refs.controlSummary.textContent, '已验证 · 1/1 个活动客户端已生效');
+	assert.strictEqual(goodBuilt.refs.controlPathValue.textContent, '2/2 个方向');
+	assert.strictEqual(goodBuilt.refs.controlQueueValue.textContent, '1/1 个客户端已生效');
+	assert.strictEqual(goodBuilt.refs.controlBlockValue.textContent, '1/1 个客户端');
   assert.strictEqual(goodBuilt.refs.pipelineSummary.textContent, '总速率 2/2 方向 · 分类 1/1 客户端');
   assert.strictEqual(goodBuilt.refs.interfacesBody.children.length, 1);
   assert.strictEqual(goodBuilt.refs.interfacesBody.children[0].children[3].textContent, '500 毫秒',
     'interface sample timestamps must render as age relative to the interface clock');
-  assert.strictEqual(goodBuilt.refs.subsystemsBody.children.length, 7);
+  assert.strictEqual(goodBuilt.refs.subsystemsBody.children.length, 8);
   const nssRow = goodBuilt.refs.subsystemsBody.children.find((row) =>
     row.children[0] && row.children[0].textContent === 'NSS 加速识别');
   assert(nssRow, 'diagnostics must retain the optional NSS subsystem row');
@@ -1035,7 +1091,9 @@ async function testDomAndPresenter() {
   assert.strictEqual(findAllByClass(x86Built.root, 'cbi-section').length, 3,
     'x86 diagnostics must contain only base diagnostics, interface health, and support sections');
   assert.strictEqual(findByClass(x86Built.root, 'lanspeed-diagnostics-pipeline-section'), null);
+	assert.strictEqual(findByClass(x86Built.root, 'lanspeed-diagnostics-control-section'), null);
   assert.strictEqual(x86Built.refs.pipelineSection, null);
+	assert.strictEqual(x86Built.refs.controlSection, null);
   assert.strictEqual(x86Built.refs.intro.textContent, 'x86 使用原生 TC-BPF 客户端总速率。');
   assert(x86Built.refs.subsystemsBody.children.some((row) =>
     row.children[0] && row.children[0].textContent === '客户端身份识别') &&
@@ -1084,7 +1142,8 @@ async function testSubsystemCodeContracts() {
   const refresh = loadRefresh(vocabulary);
   const labels = {
     bpf: 'CPU 慢路径检测（BPF）', tc: 'CPU 路径挂载（TC）', bpf_map: '分类映射表',
-    conntrack: '连接跟踪', nss: 'NSS 加速识别', identity: '客户端接入归属'
+    conntrack: '连接跟踪', nss: 'NSS 加速识别', nss_control: 'NSS 客户端控制',
+	identity: '客户端接入归属'
   };
   const cases = [
     { id: 'bpf', state: 'disabled', code: 'bpf_disabled', rowState: 'neutral' },
@@ -1104,9 +1163,14 @@ async function testSubsystemCodeContracts() {
     { id: 'bpf_map', state: 'degraded', code: 'map_read_failed', rowState: 'warning' },
     { id: 'bpf_map', state: 'unavailable', code: 'map_not_started', rowState: 'bad' },
     { id: 'conntrack', state: 'unavailable', code: 'conntrack_unavailable', rowState: 'bad' },
+    { id: 'conntrack', state: 'unavailable', code: 'conntrack_read_failed', rowState: 'bad' },
+    { id: 'conntrack', state: 'unavailable', code: 'conntrack_not_sampled', rowState: 'bad' },
     { id: 'conntrack', state: 'degraded', code: 'nss_ecm_node_parse_errors', rowState: 'warning' },
     { id: 'conntrack', state: 'degraded', code: 'conntrack_parse_errors', rowState: 'warning' },
     { id: 'nss', state: 'disabled', code: 'nss_not_present', rowState: 'neutral' },
+	{ id: 'nss_control', state: 'disabled', code: 'nss_control_not_configured', rowState: 'neutral' },
+	{ id: 'nss_control', state: 'degraded', code: 'nss_control_verification_pending', rowState: 'warning' },
+	{ id: 'nss_control', state: 'unavailable', code: 'nss_control_executor_failed', rowState: 'bad' },
     { id: 'identity', state: 'degraded', code: 'lan_topology_probe_error', rowState: 'warning' }
   ];
   const newlyCoveredText = {
@@ -1114,9 +1178,22 @@ async function testSubsystemCodeContracts() {
     bpf_not_selected: '当前未选择 BPF 实时速率采集路径，该组件不参与本次采集。',
     tc_attach_not_ready: 'TC 挂载尚未就绪，BPF 实时采集可能正在启动或恢复。',
     conntrack_parse_errors: '部分 Conntrack 记录无法解析，连接统计可能不完整。',
+    conntrack_not_sampled: 'NSS 速率路径不会在周期采集中读取 Conntrack；诊断请求会单独执行只读检查。',
+    conntrack_read_failed: 'Conntrack 读取失败；请检查 ctnetlink、nf_conntrack_netlink 和 Procfs 回退。',
     nss_not_present: '当前设备未检测到 NSS，该组件不适用。',
+	nss_control_not_configured: '当前没有配置 NSS 客户端限速或禁网规则。',
+	nss_control_verification_pending: 'NSS 客户端控制已建立结构，正在等待实际路径和队列计数验证。',
+	nss_control_executor_failed: 'NSS 客户端控制的队列、分类器、nft 或路径验证失败。',
     runtime_not_ready: 'BPF 平台能力可用，但当前运行链路仍在启动或恢复。'
   };
+
+  const nssNotSampledValues = payloads();
+  nssNotSampledValues.diagnostics.connection.state = 'unavailable';
+  nssNotSampledValues.diagnostics.connection.source = null;
+  nssNotSampledValues.diagnostics.subsystems.find((item) => item.id === 'conntrack').code = 'conntrack_not_sampled';
+  nssNotSampledValues.data_path = nssNotSampledValues.diagnostics.data_path;
+  const nssNotSampled = model.normalizeResults(await settled(nssNotSampledValues), null, 22900, 10);
+  assert.strictEqual(model.connectionStateWithRpc(nssNotSampled).reasonCode, 'conntrack_not_sampled');
 
   Object.keys(newlyCoveredText).forEach((code) => {
     assert.strictEqual(vocabulary.hasWarning(code), true, `${code} must be a known public diagnostic code`);

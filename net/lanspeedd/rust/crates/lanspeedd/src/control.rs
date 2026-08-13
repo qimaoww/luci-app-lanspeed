@@ -17,7 +17,7 @@ use crate::{
     config::RuntimeConfig,
     error::DaemonError,
     identity::MacAddress,
-    model::{Client, ClientControlSummary},
+    model::{Client, ClientControlSummary, ClientsResponse},
 };
 
 pub const X86_MAX_RATE_BPS: u64 = 100_000_000_000;
@@ -841,6 +841,138 @@ impl ControlManager {
         }
     }
 
+    pub fn decorate_response(&self, response: &mut ClientsResponse) {
+        self.decorate_clients(&mut response.clients);
+        #[cfg(feature = "nss-platform")]
+        response
+            .evidence
+            .get_or_insert_default()
+            .details
+            .insert("nss_control".into(), self.nss_control_diagnostics());
+    }
+
+    #[cfg(feature = "nss-platform")]
+    fn nss_control_diagnostics(&self) -> Value {
+        let mut active_clients = 0usize;
+        let mut effective_clients = 0usize;
+        let mut pending_clients = 0usize;
+        let mut error_clients = 0usize;
+        let mut queue_overflow_clients = 0usize;
+        let mut rate_limited_clients = 0usize;
+        let mut internet_disabled_clients = 0usize;
+        let mut block_active_clients = 0usize;
+        let mut required_directions = 0u32;
+        let mut verified_directions = 0u32;
+        let mut nss_verified_directions = 0u32;
+        let mut cpu_verified_directions = 0u32;
+        let mut pending_reason = None;
+        let mut error_detail = None;
+
+        for (identity_key, rule) in &self.rules {
+            rate_limited_clients += usize::from(rule.upload_bps != 0 || rule.download_bps != 0);
+            internet_disabled_clients += usize::from(rule.internet_disabled);
+            let Some(_) = self.live.get(identity_key) else {
+                continue;
+            };
+            active_clients += 1;
+            let summary = self.summary(identity_key);
+            let required = u8::from(rule.upload_bps != 0) | (u8::from(rule.download_bps != 0) << 1);
+            let verified = self
+                .result
+                .verified_directions
+                .get(identity_key)
+                .copied()
+                .unwrap_or(0)
+                & required;
+            required_directions += required.count_ones();
+            verified_directions += verified.count_ones();
+            nss_verified_directions += (self
+                .result
+                .nss_verified_directions
+                .get(identity_key)
+                .copied()
+                .unwrap_or(0)
+                & required)
+                .count_ones();
+            cpu_verified_directions += (self
+                .result
+                .cpu_verified_directions
+                .get(identity_key)
+                .copied()
+                .unwrap_or(0)
+                & required)
+                .count_ones();
+            if rule.internet_disabled
+                && matches!(
+                    summary.state.as_str(),
+                    "applied" | "verified" | "pending_new_connections"
+                )
+            {
+                block_active_clients += 1;
+            }
+            if summary.queue_overflow {
+                queue_overflow_clients += 1;
+            }
+            match summary.state.as_str() {
+                "verified" | "applied" => effective_clients += 1,
+                "error" | "unsupported" => {
+                    error_clients += 1;
+                    if error_detail.is_none() {
+                        error_detail = summary.reason.clone();
+                    }
+                }
+                _ => {
+                    pending_clients += 1;
+                    if pending_reason.is_none() {
+                        pending_reason = summary.reason.clone();
+                    }
+                }
+            }
+        }
+
+        let configured_clients = self.rules.len();
+        let supported = self.result.shaping_supported || self.result.blocking_supported;
+        let (state, reason_code) = if !supported {
+            ("unavailable", Some("nss_client_control_unavailable"))
+        } else if configured_clients == 0 {
+            ("inactive", Some("nss_control_not_configured"))
+        } else if error_clients != 0 {
+            ("error", Some("nss_control_executor_failed"))
+        } else if active_clients == 0 {
+            ("inactive", Some("nss_control_no_active_client"))
+        } else if pending_clients != 0 || verified_directions < required_directions {
+            (
+                "pending",
+                pending_reason
+                    .as_deref()
+                    .and_then(safe_control_diagnostic_code)
+                    .or(Some("nss_control_verification_pending")),
+            )
+        } else {
+            ("verified", None)
+        };
+        json!({
+            "state": state,
+            "reason_code": reason_code,
+            "detail_code": error_detail.as_deref().and_then(safe_control_diagnostic_code),
+            "shaping_supported": self.result.shaping_supported,
+            "blocking_supported": self.result.blocking_supported,
+            "configured_clients": configured_clients,
+            "active_clients": active_clients,
+            "effective_clients": effective_clients,
+            "pending_clients": pending_clients,
+            "error_clients": error_clients,
+            "queue_overflow_clients": queue_overflow_clients,
+            "rate_limited_clients": rate_limited_clients,
+            "internet_disabled_clients": internet_disabled_clients,
+            "block_active_clients": block_active_clients,
+            "required_directions": required_directions,
+            "verified_directions": verified_directions,
+            "nss_verified_directions": nss_verified_directions,
+            "cpu_verified_directions": cpu_verified_directions,
+        })
+    }
+
     pub fn set(&mut self, request: ClientControlRequest) -> Result<Value, DaemonError> {
         let (mac, _) = parse_identity_key(&request.identity_key)
             .map_err(|reason| DaemonError::reload(reason))?;
@@ -1330,6 +1462,22 @@ fn public_control_error(error: &str) -> String {
     .max_by_key(|code| code.len())
     .unwrap_or("control_apply_failed")
     .to_owned()
+}
+
+#[cfg(feature = "nss-platform")]
+fn safe_control_diagnostic_code(code: &str) -> Option<&str> {
+    let code = safe_control_reason(code)?;
+    Some(code)
+}
+
+#[cfg(feature = "nss-platform")]
+fn safe_control_reason(code: &str) -> Option<&str> {
+    (!code.is_empty()
+        && code.len() <= 64
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')))
+    .then_some(code)
 }
 
 fn control_lease_addresses(rules: &BTreeMap<String, ControlRule>) -> BTreeMap<String, Vec<IpAddr>> {
@@ -2223,6 +2371,98 @@ mod tests {
             #[cfg(feature = "nss-platform")]
             pending_conntrack_identities: BTreeSet::new(),
         }
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn nss_control_diagnostics_aggregate_executors_without_identity() {
+        let identity = "02:00:00:00:00:01@lan";
+        let mut manager = manager();
+        manager.rules.insert(
+            identity.into(),
+            ControlRule {
+                identity_key: identity.into(),
+                mac: MacAddress::from_str("02:00:00:00:00:01").unwrap(),
+                upload_bps: 10_000_000,
+                download_bps: 100_000_000,
+                internet_disabled: true,
+                class_minor: FIRST_CLASS_MINOR,
+            },
+        );
+        manager.live.insert(
+            identity.into(),
+            LiveClient {
+                identity_key: identity.into(),
+                interface: Some("edge0".into()),
+                ips: vec!["192.0.2.9".parse().unwrap()],
+                ambiguous: false,
+            },
+        );
+        manager.result.state = "verified".into();
+        manager
+            .result
+            .verified_directions
+            .insert(identity.into(), NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD);
+        manager
+            .result
+            .nss_verified_directions
+            .insert(identity.into(), NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD);
+        manager
+            .result
+            .cpu_verified_directions
+            .insert(identity.into(), NSS_CPU_DOWNLOAD);
+
+        let diagnostics = manager.nss_control_diagnostics();
+        assert_eq!(diagnostics["state"], "verified");
+        assert_eq!(diagnostics["configured_clients"], 1);
+        assert_eq!(diagnostics["effective_clients"], 1);
+        assert_eq!(diagnostics["required_directions"], 2);
+        assert_eq!(diagnostics["verified_directions"], 2);
+        assert_eq!(diagnostics["nss_verified_directions"], 2);
+        assert_eq!(diagnostics["cpu_verified_directions"], 1);
+        assert_eq!(diagnostics["block_active_clients"], 1);
+        assert!(!diagnostics.to_string().contains(identity));
+        assert!(!diagnostics.to_string().contains("192.0.2.9"));
+        assert!(!diagnostics.to_string().contains("edge0"));
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn nss_control_diagnostics_never_treat_queue_overflow_as_verified() {
+        let identity = "02:00:00:00:00:01@lan";
+        let mut manager = manager();
+        manager.rules.insert(
+            identity.into(),
+            ControlRule {
+                identity_key: identity.into(),
+                mac: MacAddress::from_str("02:00:00:00:00:01").unwrap(),
+                upload_bps: 10_000_000,
+                download_bps: 0,
+                internet_disabled: false,
+                class_minor: FIRST_CLASS_MINOR,
+            },
+        );
+        manager.live.insert(
+            identity.into(),
+            LiveClient {
+                identity_key: identity.into(),
+                interface: Some("edge0".into()),
+                ips: vec!["192.0.2.9".parse().unwrap()],
+                ambiguous: false,
+            },
+        );
+        manager.result.state = "verified".into();
+        manager
+            .result
+            .verification_failures
+            .insert(identity.into(), "queue_overflow".into());
+
+        let diagnostics = manager.nss_control_diagnostics();
+        assert_eq!(diagnostics["state"], "error");
+        assert_eq!(diagnostics["reason_code"], "nss_control_executor_failed");
+        assert_eq!(diagnostics["detail_code"], "queue_overflow");
+        assert_eq!(diagnostics["queue_overflow_clients"], 1);
+        assert_eq!(diagnostics["effective_clients"], 0);
     }
 
     #[cfg(feature = "nss-platform")]

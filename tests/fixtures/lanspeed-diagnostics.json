@@ -64,6 +64,11 @@
       "code": "nss_not_present"
     },
     {
+      "id": "nss_control",
+      "state": "disabled",
+      "code": "nss_control_not_configured"
+    },
+    {
       "id": "identity",
       "state": "healthy",
       "code": null

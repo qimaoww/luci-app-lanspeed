@@ -270,7 +270,11 @@ impl ResponseSnapshot {
         }
         let effective_rate = evidence_code(&self.status.evidence, "effective_collector")
             .unwrap_or_else(|| "unsupported".into());
-        let reason_code = nested_evidence_code(&self.status.evidence, "collector", "rate_reason");
+        let rate_reason_code =
+            nested_evidence_code(&self.status.evidence, "collector", "rate_reason");
+        #[cfg(feature = "nss-platform")]
+        let connection_reason_code =
+            nested_evidence_code(&self.status.evidence, "collector", "connection_reason");
         let effective_connection = self
             .clients
             .conn_source
@@ -284,9 +288,20 @@ impl ResponseSnapshot {
                 )
             })
             .unwrap_or_else(|| "unsupported".into());
-        let fallback_active = reason_code
+        let fallback_active = rate_reason_code
             .as_deref()
             .is_some_and(|value| value.contains("fallback"));
+        // Keep the x86 response semantics unchanged.  NSS diagnostics need
+        // the connection-specific reason because the NSS rate loop can
+        // intentionally skip conntrack while the read-only detail path fails.
+        #[cfg(feature = "nss-platform")]
+        let reason_code = if effective_connection == "unsupported" {
+            connection_reason_code.or(rate_reason_code)
+        } else {
+            rate_reason_code
+        };
+        #[cfg(not(feature = "nss-platform"))]
+        let reason_code = rate_reason_code;
         let interfaces = diagnostic_interfaces(&self.interfaces);
         let connection = diagnostic_connection(&self.clients);
         let collection_state = collection.state;
@@ -623,6 +638,41 @@ fn diagnostic_connection(response: &ClientsResponse) -> DiagnosticConnection {
     }
 }
 
+#[cfg(feature = "nss-platform")]
+fn diagnostic_connection_code(
+    snapshot: &ResponseSnapshot,
+    connection: &DiagnosticConnection,
+) -> Option<String> {
+    if connection.state == DiagnosticHealthState::Healthy {
+        return None;
+    }
+    if connection.state == DiagnosticHealthState::Degraded {
+        return Some(if connection.source.as_deref() == Some("nss_ecm_node") {
+            "nss_ecm_node_parse_errors".into()
+        } else {
+            "conntrack_parse_errors".into()
+        });
+    }
+    if snapshot
+        .clients
+        .evidence
+        .as_ref()
+        .and_then(|evidence| evidence.details.get("conntrack_status"))
+        .and_then(Value::as_str)
+        == Some("unavailable")
+    {
+        return Some("conntrack_read_failed".into());
+    }
+    if matches!(
+        evidence_code(&snapshot.status.evidence, "effective_collector").as_deref(),
+        Some("nss_ecm_node" | "nss_ecm_bpf")
+    ) {
+        return Some("conntrack_not_sampled".into());
+    }
+    nested_evidence_code(&snapshot.status.evidence, "collector", "connection_reason")
+        .or_else(|| Some("conntrack_unavailable".into()))
+}
+
 #[cfg(not(feature = "nss-platform"))]
 fn diagnostic_connection(response: &ClientsResponse) -> DiagnosticConnection {
     let source = response.conn_source.as_deref().and_then(safe_code);
@@ -863,7 +913,7 @@ fn diagnostic_subsystems(snapshot: &ResponseSnapshot) -> Vec<DiagnosticSubsystem
         ),
         _ => (
             DiagnosticHealthState::Unavailable,
-            Some("conntrack_unavailable".into()),
+            diagnostic_connection_code(snapshot, &connection),
         ),
     };
     let identity = if snapshot
@@ -897,8 +947,50 @@ fn diagnostic_subsystems(snapshot: &ResponseSnapshot) -> Vec<DiagnosticSubsystem
             )
         };
         subsystems.insert(4, subsystem("nss", nss));
+        subsystems.insert(5, diagnostic_nss_control_subsystem(snapshot));
     }
     subsystems
+}
+
+#[cfg(feature = "nss-platform")]
+fn diagnostic_nss_control_subsystem(snapshot: &ResponseSnapshot) -> DiagnosticSubsystem {
+    let control = snapshot
+        .clients
+        .evidence
+        .as_ref()
+        .and_then(|evidence| evidence.details.get("nss_control"))
+        .and_then(Value::as_object);
+    let state = control
+        .and_then(|value| value.get("state"))
+        .and_then(Value::as_str);
+    let reason = control
+        .and_then(|value| value.get("reason_code"))
+        .and_then(Value::as_str)
+        .and_then(safe_code);
+    let value = match state {
+        Some("verified") => (DiagnosticHealthState::Healthy, None),
+        Some("inactive") => (
+            DiagnosticHealthState::Disabled,
+            Some(reason.unwrap_or_else(|| "nss_control_not_configured".into())),
+        ),
+        Some("pending") => (
+            DiagnosticHealthState::Degraded,
+            Some(reason.unwrap_or_else(|| "nss_control_verification_pending".into())),
+        ),
+        Some("error") => (
+            DiagnosticHealthState::Unavailable,
+            Some(reason.unwrap_or_else(|| "nss_control_executor_failed".into())),
+        ),
+        Some("unavailable") => (
+            DiagnosticHealthState::Unavailable,
+            Some(reason.unwrap_or_else(|| "nss_client_control_unavailable".into())),
+        ),
+        _ => (
+            DiagnosticHealthState::Unavailable,
+            Some("nss_control_diagnostics_unavailable".into()),
+        ),
+    };
+    subsystem("nss_control", value)
 }
 
 #[cfg(not(feature = "nss-platform"))]
@@ -1101,6 +1193,35 @@ fn diagnostic_alerts(
         });
     }
     #[cfg(feature = "nss-platform")]
+    if let Some(control) = snapshot
+        .clients
+        .evidence
+        .as_ref()
+        .and_then(|evidence| evidence.details.get("nss_control"))
+        .and_then(Value::as_object)
+    {
+        let state = control.get("state").and_then(Value::as_str);
+        if matches!(state, Some("error" | "unavailable")) {
+            let id = control
+                .get("reason_code")
+                .and_then(Value::as_str)
+                .and_then(safe_code)
+                .unwrap_or_else(|| "nss_control_executor_failed".into());
+            alerts.push(DiagnosticAlert {
+                severity: if state == Some("error") {
+                    "critical"
+                } else {
+                    "warning"
+                }
+                .into(),
+                component: "nss_control".into(),
+                message_public: alert_public_message(&id).into(),
+                id,
+                state: "active".into(),
+            });
+        }
+    }
+    #[cfg(feature = "nss-platform")]
     let tc_bpf_relevant = {
         let effective_rate = evidence_code(&snapshot.status.evidence, "effective_collector")
             .unwrap_or_else(|| "unsupported".into());
@@ -1256,6 +1377,12 @@ fn alert_public_message(id: &str) -> &'static str {
         "conntrack_unavailable" => "No supported conntrack source is currently available.",
         "conntrack_parse_errors" => "Some conntrack entries could not be parsed.",
         "lan_topology_probe_error" => "LAN topology evidence is incomplete.",
+        "nss_control_executor_failed" => {
+            "The NSS client-control queue, classifier, firewall, or path verification failed."
+        }
+        "nss_client_control_unavailable" => {
+            "The required NSS client-control capability is unavailable."
+        }
         "asymmetric_path_possible" => "The observed traffic path may be asymmetric.",
         _ => "A structured LAN Speed diagnostic condition is active.",
     }
@@ -1525,6 +1652,42 @@ mod diagnostics_tests {
             .expect("missing connection subsystem");
         assert_eq!(subsystem.state, DiagnosticHealthState::Degraded);
         assert_eq!(subsystem.code.as_deref(), Some("nss_ecm_node_parse_errors"));
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn nss_without_a_connection_snapshot_exposes_sampling_reason() {
+        let mut snapshot = ResponseSnapshot::unsupported("test");
+        snapshot.status.evidence.details.insert(
+            "effective_collector".into(),
+            Value::String("nss_ecm_node".into()),
+        );
+
+        let diagnostics = snapshot.diagnostics_at(0);
+        let subsystem = diagnostics
+            .subsystems
+            .iter()
+            .find(|subsystem| subsystem.id == "conntrack")
+            .expect("missing connection subsystem");
+        assert_eq!(subsystem.state, DiagnosticHealthState::Unavailable);
+        assert_eq!(subsystem.code.as_deref(), Some("conntrack_not_sampled"));
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn nss_control_diagnostic_subsystem_is_not_healthy_without_evidence() {
+        let snapshot = ResponseSnapshot::unsupported("test");
+        let diagnostics = snapshot.diagnostics_at(0);
+        let subsystem = diagnostics
+            .subsystems
+            .iter()
+            .find(|subsystem| subsystem.id == "nss_control")
+            .expect("missing NSS control subsystem");
+        assert_eq!(subsystem.state, DiagnosticHealthState::Unavailable);
+        assert_eq!(
+            subsystem.code.as_deref(),
+            Some("nss_control_diagnostics_unavailable")
+        );
     }
 
     #[cfg(feature = "nss-platform")]

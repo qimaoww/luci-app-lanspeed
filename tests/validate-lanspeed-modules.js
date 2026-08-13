@@ -229,7 +229,8 @@ const MODULE_REQUIRES = {
 		'lanspeed.format',
 		'lanspeed.version',
 		'lanspeed.statusCollector',
-		'lanspeed.diagnosticsModel'
+		'lanspeed.diagnosticsModel',
+		'lanspeed.clientControl'
 	],
 	'diagnosticsShell.js': [
 		'baseclass',
@@ -5985,7 +5986,7 @@ function assertDiagnosticsShellModule(src) {
 	    !src.includes("sectionHeader(_('运行诊断')")) {
 		fail('lanspeed/diagnosticsShell.js must own the independent diagnostics page DOM');
 	}
-	if ((src.match(/'class': 'cbi-section/g) || []).length !== 4 ||
+	if ((src.match(/'class': 'cbi-section/g) || []).length !== 5 ||
 	    src.includes('lanspeed-diagnostic-card') || src.includes("stage(refs, 'integrity'")) {
 		fail('lanspeed/diagnosticsShell.js must expose four peer task sections without nested cards');
 	}
@@ -5997,6 +5998,7 @@ function assertDiagnosticsRefreshModule(src) {
 	    !src.includes('diagnosticsModel.rateOwnerStateWithRpc(viewState)') ||
 	    !src.includes('diagnosticsModel.accessEdgeStateWithRpc(viewState)') ||
 	    !src.includes('diagnosticsModel.classificationStateWithRpc(viewState)') ||
+	    !src.includes('diagnosticsModel.nssControlStateWithRpc(viewState)') ||
 	    !src.includes('diagnosticsModel.connectionStateWithRpc(') ||
 	    !src.includes('diagnosticsModel.interfaceStateWithRpc(viewState)') ||
 	    !src.includes('diagnosticsModel.warningGroups(status, health, rpcData, diagnostics)') ||
@@ -6008,7 +6010,7 @@ function assertDiagnosticsRefreshModule(src) {
 	    !src.includes('renderWarnings(refs, viewState.status') ||
 	    !src.includes("'data-label': _('结果')") ||
 	    !src.includes('lsVersion.FULL_VERSION')) {
-		fail('lanspeed/diagnosticsRefresh.js must render total-rate, Access Edge, classification, RPC and health states');
+		fail('lanspeed/diagnosticsRefresh.js must render total-rate, Access Edge, classification, NSS control, RPC and health states');
 	}
 	if (!src.includes("rateEvidence[_('客户端采集覆盖率')]") || !src.includes("rateEvidence[_('范围')]") ||
 	    !src.includes("classificationEvidence[_('覆盖率')]") ||
@@ -6024,6 +6026,7 @@ function assertDiagnosticsModelModule(src) {
 			'rateOwnerStateWithRpc: rateOwnerStateWithRpc',
 			'accessEdgeStateWithRpc: accessEdgeStateWithRpc',
 			'classificationStateWithRpc: classificationStateWithRpc',
+			'nssControlStateWithRpc: nssControlStateWithRpc',
 			'integrityStateWithRpc: integrityStateWithRpc',
 			'dataPathState: dataPathState',
 			'connectionState: connectionState',

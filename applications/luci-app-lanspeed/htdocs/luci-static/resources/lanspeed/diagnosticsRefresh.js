@@ -5,6 +5,7 @@
 'require lanspeed.version as lsVersion';
 'require lanspeed.statusCollector as statusCollector';
 'require lanspeed.diagnosticsModel as diagnosticsModel';
+'require lanspeed.clientControl as clientControl';
 
 function stateClass(state) {
 	return state === 'good' ? 'label-success' : state === 'warning' || state === 'degraded' || state === 'partial'
@@ -21,7 +22,8 @@ function phaseLabel(phase) {
 
 var SUBSYSTEM_LABELS = {
 	bpf: _('CPU 慢路径检测（BPF）'), tc: _('CPU 路径挂载（TC）'), bpf_map: _('分类映射表'),
-	conntrack: _('连接跟踪'), nss: _('NSS 加速识别'), identity: _('客户端接入归属'), ubus: _('RPC 服务')
+	conntrack: _('连接跟踪'), nss: _('NSS 加速识别'), nss_control: _('NSS 客户端控制'),
+	identity: _('客户端接入归属'), ubus: _('RPC 服务')
 };
 
 function subsystemLabel(id, nssPlatform) {
@@ -34,13 +36,19 @@ var NEUTRAL_DISABLED_SUBSYSTEM_CODES = {
 	bpf_disabled: true,
 	bpf_not_selected: true,
 	tc_bpf_not_selected: true,
-	nss_not_present: true
+	nss_not_present: true,
+	nss_control_not_configured: true,
+	nss_control_no_active_client: true
 };
 
 function subsystemCodeText(code) {
 	if (!code) return '-';
 	if (typeof vocab.hasWarning === 'function' && vocab.hasWarning(code) &&
 		typeof vocab.warningText === 'function') return vocab.warningText(code);
+	if (typeof clientControl.reasonText === 'function') {
+		var text = clientControl.reasonText(code);
+		if (text && !String(text).startsWith(_('控制不可用：'))) return text;
+	}
 	return _('未识别的诊断代码：%s').format(String(code));
 }
 
@@ -226,6 +234,73 @@ function renderPipeline(refs, viewState) {
 	return { rate: rate, edge: edge, classification: classification };
 }
 
+function renderControl(refs, viewState) {
+	var nssPlatform = fmt.nssPlatform(viewState && viewState.status);
+	if (!nssPlatform) {
+		if (refs.controlSection && refs.controlSection.parentNode)
+			refs.controlSection.parentNode.removeChild(refs.controlSection);
+		refs.controlSection = null;
+		return null;
+	}
+	if (!refs.controlSection && viewState && typeof viewState.mountControl === 'function')
+		viewState.mountControl();
+	if (!refs.controlSection)
+		return null;
+	var control = diagnosticsModel.nssControlStateWithRpc(viewState);
+	var capabilityState = control.shapingSupported || control.blockingSupported ? 'good' : 'bad';
+	var pathState = control.requiredDirections === 0 ? 'neutral' :
+		control.verifiedDirections === control.requiredDirections ? 'good' :
+		control.errorClients ? 'bad' : 'warning';
+	var queueState = control.queueOverflowClients || control.errorClients ? 'bad' :
+		control.requiredDirections && control.verifiedDirections < control.requiredDirections ? 'warning' :
+		control.requiredDirections ? 'good' : 'neutral';
+	var blockState = control.internetDisabledClients === 0 ? 'neutral' :
+		control.blockActiveClients === control.internetDisabledClients && !control.errorClients ? 'good' : 'bad';
+	/* A failed or retained clients RPC must never leave a green stage behind.
+	 * The evidence may be a structurally valid older snapshot, but it is not a
+	 * current proof that can be shown as effective. */
+	if (control.state === 'bad') {
+		capabilityState = pathState = queueState = blockState = 'bad';
+	} else if (control.state === 'warning') {
+		if (capabilityState === 'good') capabilityState = 'warning';
+		if (pathState === 'good') pathState = 'warning';
+		if (queueState === 'good') queueState = 'warning';
+		if (blockState === 'good') blockState = 'warning';
+	}
+	var capabilityEvidence = {}, queueEvidence = {}, blockEvidence = {};
+	capabilityEvidence[_('限速客户端')] = control.rateLimitedClients;
+	capabilityEvidence[_('禁网客户端')] = control.internetDisabledClients;
+	queueEvidence[_('等待')] = control.pendingClients;
+	queueEvidence[_('错误')] = control.errorClients;
+	queueEvidence[_('溢出')] = control.queueOverflowClients;
+	blockEvidence[_('诊断码')] = subsystemCodeText(control.detailCode || control.reasonCode);
+	setStage(refs, 'controlCapability', capabilityState,
+		capabilityState === 'good' ? _('可用') : _('不可用'),
+		_('限速 %s · 禁网 %s').format(control.shapingSupported ? _('可用') : _('不可用'),
+			control.blockingSupported ? _('可用') : _('不可用')),
+		'', _('%d 个规则 · %d 个活动客户端').format(control.configuredClients, control.activeClients),
+		capabilityEvidence);
+	setStage(refs, 'controlPath', pathState,
+		pathState === 'good' ? _('已证明') : pathState === 'bad' ? _('失败') :
+			pathState === 'warning' ? _('等待证明') : _('无需证明'),
+		_('%d/%d 个方向').format(control.verifiedDirections, control.requiredDirections),
+		'', _('每个方向只进入一个聚合执行器'), {
+			NSS: control.nssVerifiedDirections,
+			CPU: control.cpuVerifiedDirections
+		});
+	setStage(refs, 'controlQueue', queueState,
+		queueState === 'good' ? _('完整') : queueState === 'bad' ? _('异常') :
+			queueState === 'warning' ? _('等待计数') : _('未启用'),
+		_('%d/%d 个客户端已生效').format(control.effectiveClients, control.activeClients),
+		'', _('只以 drops 增长报告队列溢出'), queueEvidence);
+	setStage(refs, 'controlBlock', blockState,
+		blockState === 'good' ? _('已生效') : blockState === 'bad' ? _('异常') : _('未配置'),
+		_('%d/%d 个客户端').format(control.blockActiveClients, control.internetDisabledClients),
+		'', _('仅禁用互联网，路由器与 LAN/NAS 先放行'), blockEvidence);
+	refs.controlSummary.textContent = control.badge + ' · ' + control.value;
+	return control;
+}
+
 function renderPlatformIntro(refs, viewState) {
 	if (!refs.intro) return;
 	var platform = viewState && viewState.status && viewState.status.evidence &&
@@ -289,7 +364,7 @@ function renderSubsystems(refs, viewState) {
 	var c = contract(viewState);
 	var nssPlatform = fmt.nssPlatform(viewState && viewState.status);
 	var rows = (c.usable ? c.data.subsystems : []).filter(function(item) {
-		return nssPlatform || String(item && item.id || '') !== 'nss';
+		return nssPlatform || [ 'nss', 'nss_control' ].indexOf(String(item && item.id || '')) === -1;
 	}).map(function(item) {
 		var state = subsystemRowState(item.state, item.code);
 		return E('tr', { 'data-state': state }, [
@@ -377,6 +452,7 @@ function refresh(viewState) {
 		statusCollector.effectiveCollector(viewState.status, viewState.clients), viewState.diagnostics,
 		viewState.clients);
 	var pipeline = renderPipeline(refs, viewState);
+	var control = renderControl(refs, viewState);
 	var rpcState = renderRpcChecks(refs, viewState);
 	var interfaces = renderInterfaces(refs, viewState);
 	renderSubsystems(refs, viewState);
@@ -387,7 +463,7 @@ function refresh(viewState) {
 		(state === 'loading' ? _('上次检查 %s · 正在重新检查').format(new Date(viewState.checkedAt).toLocaleTimeString()) :
 			_('检查于 %s').format(new Date(viewState.checkedAt).toLocaleTimeString())) : _('尚未完成检查');
 	refs.root.setAttribute('aria-busy', state === 'loading' ? 'true' : 'false');
-	return { state: state, cardState: cardState, pipeline: pipeline, rpc: rpcState,
+	return { state: state, cardState: cardState, pipeline: pipeline, control: control, rpc: rpcState,
 		interfaces: interfaces, warnings: warnings };
 }
 

@@ -71,12 +71,15 @@ var REASON_LABELS = {
 	forced_conntrack_procfs: _('配置强制使用 Conntrack Procfs'),
 	forced_conntrack_procfs_unavailable: _('配置强制使用 Conntrack Procfs，但数据源不可用'),
 	conntrack_unavailable: _('Conntrack Netlink 与 Procfs 均不可用'),
+	conntrack_not_sampled: _('NSS 周期采集跳过 Conntrack，诊断请求会单独读取'),
+	conntrack_read_failed: _('Conntrack 读取失败，请检查 Netlink、模块和 Procfs 回退'),
 	state_unavailable_or_unreadable: _('运行状态不可读取'),
 	unsupported: _('没有受支持的数据源')
 };
 var SUBSYSTEM_LABELS = {
 	bpf: _('CPU 慢路径检测（BPF）'), tc: _('CPU 路径挂载（TC）'), bpf_map: _('分类映射表'),
-	conntrack: _('连接跟踪'), nss: _('NSS 加速识别'), identity: _('客户端接入归属'), ubus: _('RPC 服务')
+	conntrack: _('连接跟踪'), nss: _('NSS 加速识别'), nss_control: _('NSS 客户端控制'),
+	identity: _('客户端接入归属'), ubus: _('RPC 服务')
 };
 var HEALTH_REPORT_LABELS = {
 	healthy: _('正常'), degraded: _('降级'), unavailable: _('不可用'), disabled: _('未启用')
@@ -601,6 +604,38 @@ function validateClientsResponse(value) {
 		'nss_ecm_nodes_seen', 'nss_ecm_nodes_matched', 'nss_ecm_node_parse_errors' ];
 	if (!optionalIntegers(value, counters)) return failure('clients', _('连接计数字段无效'));
 	if (hasOwn(value, 'evidence') && !plainObject(value.evidence)) return failure('clients.evidence', _('字段无效'));
+	if (plainObject(value.evidence) && hasOwn(value.evidence, 'nss_control')) {
+		var controlEvidence = value.evidence.nss_control;
+		var controlFields = [ 'state', 'reason_code', 'detail_code', 'shaping_supported',
+			'blocking_supported', 'configured_clients', 'active_clients', 'effective_clients',
+			'pending_clients', 'error_clients', 'queue_overflow_clients', 'rate_limited_clients',
+			'internet_disabled_clients', 'block_active_clients', 'required_directions',
+			'verified_directions', 'nss_verified_directions', 'cpu_verified_directions' ];
+		var controlCounters = controlFields.slice(5);
+		var classifiedClients = controlEvidence && (controlEvidence.effective_clients +
+			controlEvidence.pending_clients + controlEvidence.error_clients);
+		if (!plainObject(controlEvidence) || !onlyFields(controlEvidence, controlFields) ||
+			requireFields(controlEvidence, controlFields, 'clients.evidence.nss_control') ||
+			!enumValue(controlEvidence.state, [ 'inactive', 'pending', 'verified', 'error', 'unavailable' ]) ||
+			!(controlEvidence.reason_code === null || codeString(controlEvidence.reason_code, false)) ||
+			!(controlEvidence.detail_code === null || codeString(controlEvidence.detail_code, false)) ||
+			typeof controlEvidence.shaping_supported !== 'boolean' ||
+			typeof controlEvidence.blocking_supported !== 'boolean' ||
+			!controlCounters.every(function(field) { return nonNegativeInteger(controlEvidence[field]); }) ||
+			controlEvidence.active_clients > controlEvidence.configured_clients ||
+			classifiedClients !== controlEvidence.active_clients ||
+			controlEvidence.queue_overflow_clients > controlEvidence.error_clients ||
+			controlEvidence.rate_limited_clients > controlEvidence.configured_clients ||
+			controlEvidence.internet_disabled_clients > controlEvidence.configured_clients ||
+			controlEvidence.block_active_clients > controlEvidence.internet_disabled_clients ||
+			controlEvidence.verified_directions > controlEvidence.required_directions ||
+			controlEvidence.nss_verified_directions > controlEvidence.required_directions ||
+			controlEvidence.cpu_verified_directions > controlEvidence.required_directions ||
+			(controlEvidence.state === 'verified' &&
+				(controlEvidence.error_clients !== 0 || controlEvidence.pending_clients !== 0 ||
+				 controlEvidence.verified_directions !== controlEvidence.required_directions)))
+			return failure('clients.evidence.nss_control', _('字段或计数关系无效'));
+	}
 	if (hasOwn(value, 'conn_source') &&
 		!enumValue(value.conn_source, [ 'conntrack', 'conntrack_netlink', 'conntrack_procfs' ]))
 		return failure('clients.conn_source', _('连接数据源无效'));
@@ -1293,6 +1328,81 @@ function classificationStateWithRpc(viewState) {
 		comparisonWindowMs: comparisonWindowMs };
 }
 
+function nssControlStateWithRpc(viewState) {
+	viewState = viewState || {};
+	if (!nssPlatform(viewState.status || {})) return {
+		state: 'neutral', badge: _('不适用'), value: _('x86 客户端控制'),
+		description: _('x86 构建不包含 NSS 混合路径控制诊断。'), meta: _('编译期已排除'),
+		configuredClients: 0, activeClients: 0, effectiveClients: 0, pendingClients: 0,
+		errorClients: 0, queueOverflowClients: 0, rateLimitedClients: 0,
+		internetDisabledClients: 0, blockActiveClients: 0, requiredDirections: 0,
+		verifiedDirections: 0, nssVerifiedDirections: 0, cpuVerifiedDirections: 0,
+		reasonCode: null, detailCode: null, shapingSupported: false, blockingSupported: false
+	};
+	var clients = viewState.clients || {};
+	var evidence = clients.evidence && clients.evidence.nss_control;
+	var rpc = rpcState(viewState, 'clients');
+	if (!plainObject(evidence)) return {
+		state: rpc.state === 'failed' || rpc.state === 'invalid' || rpc.state === 'missing' ? 'bad' : 'warning',
+		badge: rpc.state === 'loading' ? _('检查中') : _('证据缺失'), value: _('尚未确认'),
+		description: _('尚未收到 NSS 客户端控制的队列、分类器和路径验证汇总。'),
+		meta: _('等待 clients 控制证据'), configuredClients: 0, activeClients: 0,
+		effectiveClients: 0, pendingClients: 0, errorClients: 0, queueOverflowClients: 0,
+		rateLimitedClients: 0, internetDisabledClients: 0, blockActiveClients: 0,
+		requiredDirections: 0, verifiedDirections: 0, nssVerifiedDirections: 0,
+		cpuVerifiedDirections: 0, reasonCode: 'nss_control_diagnostics_unavailable', detailCode: null,
+		shapingSupported: false, blockingSupported: false
+	};
+	var rawState = String(evidence.state || 'unavailable');
+	var state = rawState === 'verified' ? 'good' : rawState === 'error' || rawState === 'unavailable' ? 'bad' :
+		rawState === 'inactive' ? 'neutral' : 'warning';
+	var badge = ({ verified: _('已验证'), error: _('执行失败'), unavailable: _('不可用'),
+		inactive: _('未启用'), pending: _('等待验证') })[rawState] || _('未知');
+	var configured = Number(evidence.configured_clients) || 0;
+	var active = Number(evidence.active_clients) || 0;
+	var effective = Number(evidence.effective_clients) || 0;
+	var pending = Number(evidence.pending_clients) || 0;
+	var errors = Number(evidence.error_clients) || 0;
+	var required = Number(evidence.required_directions) || 0;
+	var verified = Number(evidence.verified_directions) || 0;
+	var reasonCode = evidence.reason_code === null ? null : String(evidence.reason_code || '');
+	var detailCode = evidence.detail_code === null ? null : String(evidence.detail_code || '');
+	var description = rawState === 'verified'
+		? _('所有活动控制客户端的完整队列、分类器、nft 所有权和真实流量方向均已验证。')
+		: rawState === 'inactive' ? (configured
+			? _('已保存控制规则，但当前没有可验证的在线客户端。')
+			: _('当前没有配置客户端限速或禁网规则。'))
+		: rawState === 'pending' ? _('队列结构已观察，仍在等待实际 NSS/CPU 路径及流量计数证明。')
+		: _('NSS 客户端控制执行器不完整或校验失败；未把该状态报告为已生效。');
+	if (rpc.state === 'retained') {
+		state = worseState(state, 'warning'); badge = _('沿用旧值');
+		description += ' ' + _('当前显示最近一次成功 RPC 结果。');
+	} else if (rpc.state === 'loading') {
+		state = 'warning'; badge = _('检查中');
+	} else if (rpc.state === 'failed' || rpc.state === 'invalid' || rpc.state === 'missing') {
+		state = 'bad'; badge = _('不可用'); description = _('客户端 RPC 没有返回可验证的控制状态。');
+	}
+	return {
+		state: state, badge: badge,
+		value: configured ? _('%d/%d 个活动客户端已生效').format(effective, active) : _('没有控制规则'),
+		description: description,
+		meta: _('%d/%d 个限速方向已验证 · NSS %d · CPU %d').format(verified, required,
+			Number(evidence.nss_verified_directions) || 0, Number(evidence.cpu_verified_directions) || 0),
+		configuredClients: configured, activeClients: active, effectiveClients: effective,
+		pendingClients: pending, errorClients: errors,
+		queueOverflowClients: Number(evidence.queue_overflow_clients) || 0,
+		rateLimitedClients: Number(evidence.rate_limited_clients) || 0,
+		internetDisabledClients: Number(evidence.internet_disabled_clients) || 0,
+		blockActiveClients: Number(evidence.block_active_clients) || 0,
+		requiredDirections: required, verifiedDirections: verified,
+		nssVerifiedDirections: Number(evidence.nss_verified_directions) || 0,
+		cpuVerifiedDirections: Number(evidence.cpu_verified_directions) || 0,
+		reasonCode: reasonCode, detailCode: detailCode,
+		shapingSupported: evidence.shaping_supported === true,
+		blockingSupported: evidence.blocking_supported === true
+	};
+}
+
 function integrityStateWithRpc(viewState) {
 	viewState = viewState || {};
 	var clients = viewState.clients || {}, facts = collectRateFacts(clients);
@@ -1495,6 +1605,20 @@ function contractPathState(viewState) {
 		configuredConnection: path.configured_connection, rateReason: path.reason_code || '',
 		connectionReason: path.reason_code || '' };
 }
+function diagnosticConnectionCode(viewState) {
+	var contract = diagnosticsContractState(viewState);
+	if (!contract.usable) return null;
+	var subsystem = asArray(contract.data.subsystems).find(function(item) {
+		return item && item.id === 'conntrack';
+	});
+	if (subsystem && subsystem.code) return String(subsystem.code);
+	var clients = viewState && viewState.clients || {};
+	if (clients.evidence && clients.evidence.details &&
+		clients.evidence.details.conntrack_status === 'unavailable')
+		return 'conntrack_read_failed';
+	return contract.data.data_path.effective_connection === 'unsupported' ?
+		contract.data.data_path.reason_code : null;
+}
 function connectionState(clients, status) {
 	clients = clients || {}; status = status || {};
 	var source = clients.conn_source || clients.conn_collector_mode || '';
@@ -1505,26 +1629,32 @@ function connectionState(clients, status) {
 	var state = !source || source === 'unsupported' ? 'bad' : (!knownCollector(source) ? 'warning' : 'good');
 	if (seen !== null && matched !== null && matched > seen) state = 'bad';
 	else if (errors > 10) state = 'bad'; else if (errors || pct !== null && pct < 70 || seen === null || matched === null) state = 'warning';
+	var reasonCode = !source || source === 'unsupported' ?
+		(status.evidence && status.evidence.collector && status.evidence.collector.connection_reason) ||
+		(clients.evidence && clients.evidence.details && clients.evidence.details.conntrack_status === 'unavailable' ? 'conntrack_read_failed' : null) : null;
 	return { state: state, badge: state === 'good' ? _('正常') : (state === 'bad' ? _('不可用') : _('需关注')),
 		value: source ? collectorDisplayLabel(source) : '-',
-		description: seen !== null && matched !== null ? _('%d / %d 条已匹配 · %d 个解析错误').format(matched, seen, errors) : _('连接统计不完整。'),
+		description: seen !== null && matched !== null ? _('%d / %d 条已匹配 · %d 个解析错误').format(matched, seen, errors) :
+			(reasonCode ? reasonText(reasonCode) : _('连接统计不完整。')),
 		meta: _('TCP %d · UDP %d').format(Math.max(0, Number(clients.tcp_conns_total) || 0), Math.max(0, Number(clients.udp_conns_total) || 0)),
-		source: source, seen: seen, matched: matched, matchPct: pct, parseErrors: errors };
+		source: source, seen: seen, matched: matched, matchPct: pct, parseErrors: errors, reasonCode: reasonCode };
 }
 function contractConnectionState(viewState) {
 	var contract = diagnosticsContractState(viewState);
 	if (!contract.usable) return null;
 	var connection = contract.data.connection, state = connection.state === 'healthy' ? 'good' :
 		(connection.state === 'degraded' ? 'warning' : 'bad');
+	var reasonCode = diagnosticConnectionCode(viewState);
 	if (contract.retained && state === 'good') state = 'warning';
 	var seen = connection.entries_seen, matched = connection.entries_matched;
 	var pct = seen !== null && seen > 0 && matched !== null ? matched * 100 / seen : null;
 	return { state: state, badge: state === 'good' ? _('正常') : (state === 'bad' ? _('不可用') : _('需关注')),
 		value: connection.source ? collectorDisplayLabel(connection.source) : '-',
-		description: seen !== null && matched !== null ? _('%d / %d 条已匹配').format(matched, seen) : _('后端未返回连接条目统计。'),
+		description: seen !== null && matched !== null ? _('%d / %d 条已匹配').format(matched, seen) :
+			(reasonCode ? reasonText(reasonCode) : _('后端未返回连接条目统计。')),
 		meta: connection.parse_errors ? _('%d 个解析错误').format(connection.parse_errors) : _('诊断契约'),
 		source: connection.source || '', seen: seen, matched: matched, matchPct: pct,
-		parseErrors: connection.parse_errors || 0 };
+		parseErrors: connection.parse_errors || 0, reasonCode: reasonCode };
 }
 function connectionStateWithRpc(viewState) {
 	var rpc = rpcState(viewState, 'clients'), base = contractConnectionState(viewState) ||
@@ -1933,7 +2063,8 @@ function subsystemReportText(item, isNssPlatform) {
 function buildReport(viewState, frontendVersion) {
 	viewState = viewState || {};
 	var runtime = viewState.status || {}, rate = rateOwnerStateWithRpc(viewState), edge = accessEdgeStateWithRpc(viewState),
-		classification = classificationStateWithRpc(viewState), integrity = integrityStateWithRpc(viewState),
+		classification = classificationStateWithRpc(viewState), control = nssControlStateWithRpc(viewState),
+		integrity = integrityStateWithRpc(viewState),
 		freshness = freshnessState(viewState, viewState.progress), connections = connectionStateWithRpc(viewState),
 		interfaces = interfaceStateWithRpc(viewState),
 		versions = versionStateWithRpc(viewState, runtime.version, frontendVersion), groups = warningGroups(viewState.status, viewState.health, viewState.rpc, viewState.diagnostics),
@@ -1969,7 +2100,15 @@ function buildReport(viewState, frontendVersion) {
 			_('NSS/CPU 流量分类') + ': ' + stateLabel(classification.state) + ' · ' + reportField(classification.value),
 			'- ' + _('分类状态') + ': ' + reportField(classification.stateText),
 			'- ' + _('最低分类覆盖率') + ': ' + reportField(classification.coverageText),
-			'- ' + _('分类映射') + ': ' + reportField(classification.maps.detailText));
+			'- ' + _('分类映射') + ': ' + reportField(classification.maps.detailText),
+			_('NSS 客户端控制') + ': ' + stateLabel(control.state) + ' · ' + reportField(control.value),
+			'- ' + _('控制客户端') + ': ' + reportField(control.configuredClients),
+			'- ' + _('限速方向') + ': ' + reportField(control.verifiedDirections) + '/' + reportField(control.requiredDirections),
+			'- ' + _('执行器证明') + ': NSS ' + reportField(control.nssVerifiedDirections) + ' · CPU ' + reportField(control.cpuVerifiedDirections),
+			'- ' + _('禁网') + ': ' + reportField(control.blockActiveClients) + '/' + reportField(control.internetDisabledClients),
+			'- ' + _('等待 / 错误 / 队列溢出') + ': ' + reportField(control.pendingClients) + ' / ' +
+				reportField(control.errorClients) + ' / ' + reportField(control.queueOverflowClients),
+			'- ' + _('控制诊断码') + ': ' + reportField(control.detailCode || control.reasonCode));
 	} else {
 		lines.push(
 			_('架构路径') + ': x86 TC-BPF');
@@ -1985,7 +2124,7 @@ function buildReport(viewState, frontendVersion) {
 	if (contract.usable) {
 		lines.push(_('子系统状态') + ':');
 		asArray(contract.data.subsystems).forEach(function(item) {
-			if (!nssPlatform(runtime) && String(item && item.id || '') === 'nss') return;
+			if (!nssPlatform(runtime) && [ 'nss', 'nss_control' ].indexOf(String(item && item.id || '')) !== -1) return;
 			lines.push('- ' + subsystemReportText(item, nssPlatform(runtime)));
 		});
 		lines.push('');
@@ -2025,7 +2164,8 @@ return baseclass.extend({
 	sampleClock: sampleClock, assessProgress: assessProgress,
 	coverageState: coverageState, freshnessState: freshnessState, qualityState: qualityState,
 	rateOwnerStateWithRpc: rateOwnerStateWithRpc, accessEdgeStateWithRpc: accessEdgeStateWithRpc,
-	classificationStateWithRpc: classificationStateWithRpc, integrityStateWithRpc: integrityStateWithRpc,
+	classificationStateWithRpc: classificationStateWithRpc, nssControlStateWithRpc: nssControlStateWithRpc,
+	integrityStateWithRpc: integrityStateWithRpc,
 	dataPathState: dataPathState, connectionState: connectionState, interfaceState: interfaceState,
 	versionState: versionState, pathStateWithRpc: pathStateWithRpc, connectionStateWithRpc: connectionStateWithRpc,
 	interfaceStateWithRpc: interfaceStateWithRpc, versionStateWithRpc: versionStateWithRpc,
