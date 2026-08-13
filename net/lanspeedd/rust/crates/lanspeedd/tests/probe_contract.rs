@@ -914,7 +914,6 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
 }
 
 #[test]
-#[cfg(feature = "nss-platform")]
 fn installed_proxy_configuration_does_not_create_runtime_path_warnings() {
     let mut config = RuntimeConfig::default();
     config.interface_include.push("br-lan".into());

@@ -743,14 +743,8 @@ pub fn assess(
         push_unique(&mut warnings, "fullcone_detected");
         push_unique(&mut warnings, "fullcone_nat_enabled");
     }
-    #[cfg(feature = "nss-platform")]
     let openclash_path_active = facts.proxy.openclash_runtime_active;
-    #[cfg(not(feature = "nss-platform"))]
-    let openclash_path_active = facts.proxy.openclash;
-    #[cfg(feature = "nss-platform")]
     let dae_path_active = facts.proxy.dae_runtime_path_active;
-    #[cfg(not(feature = "nss-platform"))]
-    let dae_path_active = facts.proxy.dae;
     if openclash_path_active {
         push_unique(&mut warnings, "openclash_detected");
     }

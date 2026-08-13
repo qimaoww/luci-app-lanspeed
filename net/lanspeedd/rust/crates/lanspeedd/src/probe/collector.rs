@@ -1074,23 +1074,13 @@ where
     }
 
     fn collect_ubus(&mut self, o: &mut ProbeObservations, evidence: &mut CollectedEvidence) {
-        #[cfg(feature = "nss-platform")]
         let mut queries = vec![UbusQuery::NetworkLanStatus];
-        #[cfg(feature = "nss-platform")]
-        {
-            if o.uci.openclash {
-                queries.push(UbusQuery::ServiceOpenClash);
-            }
-            if o.uci.dae || o.uci.daed {
-                queries.extend([UbusQuery::ServiceDae, UbusQuery::ServiceDaed]);
-            }
+        if o.uci.openclash {
+            queries.push(UbusQuery::ServiceOpenClash);
         }
-        #[cfg(not(feature = "nss-platform"))]
-        let queries = vec![
-            UbusQuery::NetworkLanStatus,
-            UbusQuery::ServiceDae,
-            UbusQuery::ServiceDaed,
-        ];
+        if o.uci.dae || o.uci.daed {
+            queries.extend([UbusQuery::ServiceDae, UbusQuery::ServiceDaed]);
+        }
         for query in queries {
             match self.ubus.query(query) {
                 Ok(result) => {

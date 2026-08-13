@@ -217,14 +217,8 @@ impl DaeProcessTracker {
         let static_dae = has_static_dae_evidence(report);
         let dae_detected = static_dae || active;
         let runtime_path_active = active && !report.evidence.proxy.dae.tc_filters.is_empty();
-        #[cfg(feature = "nss-platform")]
         let warning_active = runtime_path_active;
-        #[cfg(not(feature = "nss-platform"))]
-        let warning_active = dae_detected;
-        #[cfg(feature = "nss-platform")]
         let openclash_path_active = report.facts.proxy.openclash_runtime_active;
-        #[cfg(not(feature = "nss-platform"))]
-        let openclash_path_active = report.facts.proxy.openclash;
         report.facts.proxy.dae_process = self.state.dae;
         report.facts.proxy.daed_process = self.state.daed;
         report.facts.proxy.runtime_active = active;
