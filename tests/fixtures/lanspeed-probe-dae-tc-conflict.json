@@ -38,6 +38,7 @@
     "nlbwmon": false
   },
   "dae": {
+    "dae_process": true,
     "dae_service": true,
     "daed_service": false,
     "dae0": true,

@@ -45,6 +45,7 @@ pub enum ReadOnlyCommand {
     IpRuleShow,
     IpRouteShow,
     UbusNetworkLanStatus,
+    UbusServiceOpenClash,
     UbusServiceDae,
     UbusServiceDaed,
 }
@@ -57,7 +58,10 @@ impl ReadOnlyCommand {
             Self::TcFilterHelp | Self::TcQdiscHelp | Self::TcQdiscShow | Self::TcFilterShow => "tc",
             Self::NftListFlowtables | Self::NftDaeDnsUdp53 => "nft",
             Self::IpRuleShow | Self::IpRouteShow => "ip",
-            Self::UbusNetworkLanStatus | Self::UbusServiceDae | Self::UbusServiceDaed => "ubus",
+            Self::UbusNetworkLanStatus
+            | Self::UbusServiceOpenClash
+            | Self::UbusServiceDae
+            | Self::UbusServiceDaed => "ubus",
         }
     }
 
@@ -72,6 +76,7 @@ impl ReadOnlyCommand {
             Self::NftDaeDnsUdp53 => &["list", "ruleset"],
             Self::IpRuleShow => &["rule", "show"],
             Self::UbusNetworkLanStatus => &["call", "network.interface.lan", "status"],
+            Self::UbusServiceOpenClash => &["call", "service", "list", "{\"name\":\"openclash\"}"],
             Self::UbusServiceDae => &["call", "service", "list", "{\"name\":\"dae\"}"],
             Self::UbusServiceDaed => &["call", "service", "list", "{\"name\":\"daed\"}"],
             Self::IpRouteShow => &[],
@@ -123,6 +128,7 @@ impl ReadOnlyCommand {
             Self::IpRuleShow => "ip_rule_show".into(),
             Self::IpRouteShow => "ip_route_table_2023".into(),
             Self::UbusNetworkLanStatus => "ubus_network_lan_status".into(),
+            Self::UbusServiceOpenClash => "ubus_service_openclash".into(),
             Self::UbusServiceDae => "ubus_service_dae".into(),
             Self::UbusServiceDaed => "ubus_service_daed".into(),
         }
@@ -386,6 +392,7 @@ pub fn validate_read_only_args(command: ReadOnlyCommand, args: &[&str]) -> io::R
                 && args[2].bytes().all(|byte| byte.is_ascii_digit())
         }
         ReadOnlyCommand::UbusNetworkLanStatus
+        | ReadOnlyCommand::UbusServiceOpenClash
         | ReadOnlyCommand::UbusServiceDae
         | ReadOnlyCommand::UbusServiceDaed => args.is_empty(),
         _ => args.is_empty(),

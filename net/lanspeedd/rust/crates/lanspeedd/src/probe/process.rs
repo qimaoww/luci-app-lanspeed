@@ -216,10 +216,20 @@ impl DaeProcessTracker {
         let active = self.active();
         let static_dae = has_static_dae_evidence(report);
         let dae_detected = static_dae || active;
+        let runtime_path_active = active && !report.evidence.proxy.dae.tc_filters.is_empty();
+        #[cfg(feature = "nss-platform")]
+        let warning_active = runtime_path_active;
+        #[cfg(not(feature = "nss-platform"))]
+        let warning_active = dae_detected;
+        #[cfg(feature = "nss-platform")]
+        let openclash_path_active = report.facts.proxy.openclash_runtime_active;
+        #[cfg(not(feature = "nss-platform"))]
+        let openclash_path_active = report.facts.proxy.openclash;
         report.facts.proxy.dae_process = self.state.dae;
         report.facts.proxy.daed_process = self.state.daed;
         report.facts.proxy.runtime_active = active;
         report.facts.proxy.dae = dae_detected;
+        report.facts.proxy.dae_runtime_path_active = runtime_path_active;
         report.capabilities.dae = dae_detected;
 
         let dae = &mut report.evidence.proxy.dae;
@@ -236,10 +246,10 @@ impl DaeProcessTracker {
                 && *warning != "dae_detected"
         });
         report.conflicts.retain(|item| item.id != "proxy_stack");
-        if dae_detected {
+        if warning_active {
             super::push_unique(&mut report.warnings, "dae_detected");
         }
-        if report.facts.proxy.openclash || dae_detected || report.facts.homeproxy {
+        if openclash_path_active || warning_active || report.facts.homeproxy {
             report.conflicts.push(super::conflict_item("proxy_stack"));
         }
         if self.last_error.is_some() {

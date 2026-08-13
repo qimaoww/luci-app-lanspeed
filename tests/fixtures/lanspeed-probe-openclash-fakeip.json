@@ -28,6 +28,7 @@
     "nlbwmon": false
   },
   "openclash": {
+    "running": true,
     "section": "config",
     "en_mode": "fake-ip",
     "enable_redirect_dns": true,

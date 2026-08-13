@@ -92,8 +92,9 @@ const PUBLIC_UCI_SOURCES: [&str; 9] = [
     "uci:dhcp",
 ];
 
-const PUBLIC_UBUS_SOURCES: [&str; 3] = [
+const PUBLIC_UBUS_SOURCES: [&str; 4] = [
     "ubus:network.interface.lan",
+    "ubus:service.openclash",
     "ubus:service.dae",
     "ubus:service.daed",
 ];

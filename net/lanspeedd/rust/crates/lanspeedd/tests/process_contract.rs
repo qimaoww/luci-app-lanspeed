@@ -286,9 +286,19 @@ fn process_only_start_and_stop_synchronize_all_derived_dae_state() {
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     let mut tracker = DaeProcessTracker::default();
+    let mut observations = ProbeObservations::default();
+    observations.tc.filters.push(lanspeedd::probe::TcFilter {
+        interface: "br-lan".into(),
+        direction: "ingress".into(),
+        chain: 0,
+        pref: 2,
+        handle: "0x2023".into(),
+        owner: "dae".into(),
+        source: "test".into(),
+    });
     let mut report = assess(
         &RuntimeConfig::default(),
-        ProbeObservations::default(),
+        observations,
         &RuntimeHealth::default(),
     );
 
@@ -304,9 +314,9 @@ fn process_only_start_and_stop_synchronize_all_derived_dae_state() {
     fs::remove_dir_all(root.join("500")).unwrap();
     assert!(tracker.refresh(&root));
     tracker.overlay_report(&mut report);
-    assert!(!report.facts.proxy.dae);
-    assert!(!report.capabilities.dae);
-    assert!(!report.evidence.proxy.dae.installed);
+    assert!(report.facts.proxy.dae);
+    assert!(report.capabilities.dae);
+    assert!(report.evidence.proxy.dae.installed);
     assert!(!report.warnings.contains(&"dae_detected"));
     assert!(!report.conflicts.iter().any(|item| item.id == "proxy_stack"));
 
@@ -314,7 +324,7 @@ fn process_only_start_and_stop_synchronize_all_derived_dae_state() {
 }
 
 #[test]
-fn process_stop_preserves_non_process_dae_detection() {
+fn process_stop_keeps_static_dae_installation_without_runtime_warning() {
     let root = proc_root("static-state");
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
@@ -337,8 +347,8 @@ fn process_stop_preserves_non_process_dae_detection() {
     assert!(report.facts.proxy.dae);
     assert!(report.capabilities.dae);
     assert!(report.evidence.proxy.dae.installed);
-    assert!(report.warnings.contains(&"dae_detected"));
-    assert!(report.conflicts.iter().any(|item| item.id == "proxy_stack"));
+    assert!(!report.warnings.contains(&"dae_detected"));
+    assert!(!report.conflicts.iter().any(|item| item.id == "proxy_stack"));
     fs::remove_dir_all(root).unwrap();
 }
 

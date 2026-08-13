@@ -77,6 +77,7 @@ pub struct UciPackageSnapshot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UbusQuery {
     NetworkLanStatus,
+    ServiceOpenClash,
     ServiceDae,
     ServiceDaed,
 }
@@ -84,6 +85,7 @@ impl UbusQuery {
     pub const fn object(self) -> &'static str {
         match self {
             Self::NetworkLanStatus => "network.interface.lan",
+            Self::ServiceOpenClash => "service.openclash",
             Self::ServiceDae => "service.dae",
             Self::ServiceDaed => "service.daed",
         }
@@ -217,6 +219,7 @@ impl UbusSource for SystemUbusSource {
     fn query(&mut self, query: UbusQuery) -> Result<UbusProbeResult, Self::Error> {
         let command = match query {
             UbusQuery::NetworkLanStatus => ReadOnlyCommand::UbusNetworkLanStatus,
+            UbusQuery::ServiceOpenClash => ReadOnlyCommand::UbusServiceOpenClash,
             UbusQuery::ServiceDae => ReadOnlyCommand::UbusServiceDae,
             UbusQuery::ServiceDaed => ReadOnlyCommand::UbusServiceDaed,
         };
@@ -1071,11 +1074,24 @@ where
     }
 
     fn collect_ubus(&mut self, o: &mut ProbeObservations, evidence: &mut CollectedEvidence) {
-        for query in [
+        #[cfg(feature = "nss-platform")]
+        let mut queries = vec![UbusQuery::NetworkLanStatus];
+        #[cfg(feature = "nss-platform")]
+        {
+            if o.uci.openclash {
+                queries.push(UbusQuery::ServiceOpenClash);
+            }
+            if o.uci.dae || o.uci.daed {
+                queries.extend([UbusQuery::ServiceDae, UbusQuery::ServiceDaed]);
+            }
+        }
+        #[cfg(not(feature = "nss-platform"))]
+        let queries = vec![
             UbusQuery::NetworkLanStatus,
             UbusQuery::ServiceDae,
             UbusQuery::ServiceDaed,
-        ] {
+        ];
+        for query in queries {
             match self.ubus.query(query) {
                 Ok(result) => {
                     let failed = result.exit_code != 0 || result.timed_out || result.truncated;
@@ -1100,15 +1116,19 @@ where
                         o.ubus.network_lan_exit_code = result.exit_code;
                         o.lan_probe_error |= failed;
                     } else {
-                        let present = result.output.contains(if query == UbusQuery::ServiceDae {
-                            "dae"
-                        } else {
-                            "daed"
-                        });
+                        let service_name = match query {
+                            UbusQuery::ServiceOpenClash => "openclash",
+                            UbusQuery::ServiceDae => "dae",
+                            UbusQuery::ServiceDaed => "daed",
+                            UbusQuery::NetworkLanStatus => "",
+                        };
+                        let present = result.output.contains(service_name);
                         let running = present
                             && (result.output.contains("\"running\": true")
                                 || result.output.contains("\"running\":true"));
-                        if query == UbusQuery::ServiceDae {
+                        if query == UbusQuery::ServiceOpenClash {
+                            o.proxy.openclash_running = running;
+                        } else if query == UbusQuery::ServiceDae {
                             o.proxy.dae_service = present;
                             o.proxy.dae_running = running;
                         } else {

@@ -44,8 +44,10 @@ pub fn evaluate(
         || observation.dae_dns_udp53
         || dae_filter;
     let runtime_active = observation.dae_process || observation.daed_process;
+    let runtime_path_active = runtime_active && dae_filter;
     let facts = ProxyFacts {
         openclash: observation.openclash_installed,
+        openclash_runtime_active: observation.openclash_installed && observation.openclash_running,
         openclash_fake_ip: fake_ip,
         openclash_tun_mix: tun_mix,
         openclash_redirect_dns: observation.openclash_installed
@@ -58,6 +60,7 @@ pub fn evaluate(
         openclash_udp_proxy: observation.openclash_installed && observation.openclash_udp_proxy,
         openclash_ipv6: observation.openclash_installed && observation.openclash_ipv6,
         dae,
+        dae_runtime_path_active: runtime_path_active,
         dae_running: observation.dae_running,
         daed_running: observation.daed_running,
         dae_process: observation.dae_process,

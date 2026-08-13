@@ -178,6 +178,7 @@ pub struct TcObservations {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProxyObservation {
     pub openclash_installed: bool,
+    pub openclash_running: bool,
     pub openclash_section: Option<String>,
     pub dhcp_loaded: bool,
     pub openclash_en_mode: Option<String>,
@@ -281,6 +282,7 @@ pub struct FileFacts {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProxyFacts {
     pub openclash: bool,
+    pub openclash_runtime_active: bool,
     pub openclash_fake_ip: bool,
     pub openclash_tun_mix: bool,
     pub openclash_redirect_dns: bool,
@@ -289,6 +291,7 @@ pub struct ProxyFacts {
     pub openclash_udp_proxy: bool,
     pub openclash_ipv6: bool,
     pub dae: bool,
+    pub dae_runtime_path_active: bool,
     pub dae_running: bool,
     pub daed_running: bool,
     pub dae_process: bool,
@@ -740,22 +743,30 @@ pub fn assess(
         push_unique(&mut warnings, "fullcone_detected");
         push_unique(&mut warnings, "fullcone_nat_enabled");
     }
-    if facts.proxy.openclash {
+    #[cfg(feature = "nss-platform")]
+    let openclash_path_active = facts.proxy.openclash_runtime_active;
+    #[cfg(not(feature = "nss-platform"))]
+    let openclash_path_active = facts.proxy.openclash;
+    #[cfg(feature = "nss-platform")]
+    let dae_path_active = facts.proxy.dae_runtime_path_active;
+    #[cfg(not(feature = "nss-platform"))]
+    let dae_path_active = facts.proxy.dae;
+    if openclash_path_active {
         push_unique(&mut warnings, "openclash_detected");
     }
-    if facts.proxy.openclash_fake_ip {
+    if openclash_path_active && facts.proxy.openclash_fake_ip {
         push_unique(&mut warnings, "openclash_fake_ip_low_remote_confidence");
     }
-    if facts.proxy.openclash_tun_mix {
+    if openclash_path_active && facts.proxy.openclash_tun_mix {
         push_unique(&mut warnings, "openclash_tun_conntrack_low_confidence");
     }
-    if !facts.proxy.openclash_dns_chain_complete {
+    if openclash_path_active && !facts.proxy.openclash_dns_chain_complete {
         push_unique(&mut warnings, "openclash_dns_chain_incomplete");
     }
-    if facts.proxy.openclash_router_self_proxy {
+    if openclash_path_active && facts.proxy.openclash_router_self_proxy {
         push_unique(&mut warnings, "openclash_router_self_proxy_detected");
     }
-    if facts.proxy.dae {
+    if dae_path_active {
         push_unique(&mut warnings, "dae_detected");
     }
     if probe_error {
@@ -795,7 +806,7 @@ pub fn assess(
     if facts.sqm || facts.qosify || facts.files.ifb {
         conflicts.push(conflict_item("existing_qos"));
     }
-    if facts.proxy.openclash || facts.proxy.dae || facts.homeproxy {
+    if openclash_path_active || dae_path_active || facts.homeproxy {
         conflicts.push(conflict_item("proxy_stack"));
     }
     let decision = crate::policy::select_collectors(config, &facts, runtime);

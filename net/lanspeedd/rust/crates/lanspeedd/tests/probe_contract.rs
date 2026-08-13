@@ -192,6 +192,7 @@ fn observations(value: &Value) -> (RuntimeConfig, ProbeObservations) {
         },
         proxy: ProxyObservation {
             openclash_installed,
+            openclash_running: flag(value, &["openclash", "running"]),
             openclash_section: text(value, &["openclash", "section"]),
             dhcp_loaded: flag(value, &["openclash", "dhcp_loaded"]),
             openclash_en_mode: text(value, &["openclash", "en_mode"]),
@@ -739,6 +740,7 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
     )
     .is_err());
     assert!(validate_read_only_args(ReadOnlyCommand::UbusNetworkLanStatus, &[]).is_ok());
+    assert!(validate_read_only_args(ReadOnlyCommand::UbusServiceOpenClash, &[]).is_ok());
     assert!(validate_read_only_args(ReadOnlyCommand::UbusServiceDae, &[]).is_ok());
     assert!(validate_read_only_args(ReadOnlyCommand::UbusServiceDaed, &[]).is_ok());
     assert!(validate_read_only_args(ReadOnlyCommand::UbusServiceDae, &["start"]).is_err());
@@ -909,6 +911,38 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
     }];
     assert!(!has_owned_identity_collision(&chained));
     assert!(!dae_preempts_lan_ingress(&chained, &["eth1".into()]));
+}
+
+#[test]
+#[cfg(feature = "nss-platform")]
+fn installed_proxy_configuration_does_not_create_runtime_path_warnings() {
+    let mut config = RuntimeConfig::default();
+    config.interface_include.push("br-lan".into());
+    let mut observations = ProbeObservations::default();
+    observations.uci.openclash = true;
+    observations.proxy.openclash_installed = true;
+    observations.proxy.openclash_en_mode = Some("fake-ip".into());
+    observations.proxy.openclash_redirect_dns = true;
+    observations.uci.daed = true;
+    observations.tc.filters.push(TcFilter {
+        interface: "br-lan".into(),
+        direction: "ingress".into(),
+        chain: 0,
+        pref: 2,
+        handle: "0x2023".into(),
+        owner: "dae".into(),
+        source: "test".into(),
+    });
+
+    let report = assess(&config, observations, &ProbeRuntimeHealth::default());
+    assert!(report.capabilities.openclash);
+    assert!(report.capabilities.dae);
+    assert!(!report.warnings.contains(&"openclash_detected"));
+    assert!(!report
+        .warnings
+        .contains(&"openclash_fake_ip_low_remote_confidence"));
+    assert!(!report.warnings.contains(&"dae_detected"));
+    assert!(!report.conflicts.iter().any(|item| item.id == "proxy_stack"));
 }
 
 #[test]

@@ -28,6 +28,7 @@
     "nlbwmon": false
   },
   "openclash": {
+    "running": true,
     "section": "config",
     "en_mode": "tun-mix",
     "enable_redirect_dns": true,
