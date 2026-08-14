@@ -17,6 +17,7 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/mutex.h>
+#include <linux/refcount.h>
 #include <linux/netfilter.h>
 #include <linux/netfilter_bridge.h>
 #include <linux/netfilter_ipv4.h>
@@ -91,14 +92,111 @@ struct lanspeed_peer_config {
 
 static LIST_HEAD(lanspeed_igs_entries);
 static DEFINE_MUTEX(lanspeed_igs_lock);
-static DECLARE_COMPLETION(lanspeed_igs_completion);
-static enum nss_cmn_response lanspeed_igs_response;
-static DECLARE_COMPLETION(lanspeed_wifi_completion);
-static enum nss_cmn_response lanspeed_wifi_response;
 static DEFINE_SPINLOCK(lanspeed_tag_lock);
 static struct lanspeed_tag_config lanspeed_tags;
 static struct net_device *lanspeed_edges[LANSPEED_MAX_EDGE_DEVICES];
 static u16 lanspeed_edge_count;
+
+struct lanspeed_ack_txn {
+	struct completion done;
+	refcount_t refs;
+	atomic_t completed;
+	enum nss_cmn_response response;
+	u64 cookie;
+	void *message;
+};
+
+static atomic64_t lanspeed_ack_cookie = ATOMIC64_INIT(0);
+static atomic64_t lanspeed_ack_received = ATOMIC64_INIT(0);
+static atomic64_t lanspeed_ack_timeout = ATOMIC64_INIT(0);
+static atomic64_t lanspeed_ack_late = ATOMIC64_INIT(0);
+
+static void lanspeed_ack_put(struct lanspeed_ack_txn *txn)
+{
+	if (refcount_dec_and_test(&txn->refs))
+		kfree(txn);
+}
+
+static struct lanspeed_ack_txn *lanspeed_ack_alloc(void)
+{
+	struct lanspeed_ack_txn *txn;
+
+	txn = kzalloc(sizeof(*txn), GFP_KERNEL);
+	if (!txn)
+		return NULL;
+	init_completion(&txn->done);
+	refcount_set(&txn->refs, 2);
+	atomic_set(&txn->completed, 0);
+	txn->response = NSS_CMN_RESPONSE_LAST;
+	txn->cookie = atomic64_inc_return(&lanspeed_ack_cookie);
+	return txn;
+}
+
+static void lanspeed_ack_bind_message(struct lanspeed_ack_txn *txn,
+					      void *message)
+{
+	txn->message = message;
+}
+
+static void lanspeed_ack_release_message(struct lanspeed_ack_txn *txn)
+{
+	void *message = xchg(&txn->message, NULL);
+
+	kfree(message);
+}
+
+static void lanspeed_ack_callback(void *app_data, struct nss_cmn_msg *message)
+{
+	struct lanspeed_ack_txn *txn = app_data;
+
+	if (!txn)
+		return;
+	if (atomic_cmpxchg(&txn->completed, 0, 1) == 0) {
+		txn->response = message->response;
+		lanspeed_ack_release_message(txn);
+		atomic64_inc(&lanspeed_ack_received);
+		complete(&txn->done);
+	} else {
+		atomic64_inc(&lanspeed_ack_late);
+		lanspeed_ack_release_message(txn);
+	}
+	lanspeed_ack_put(txn);
+}
+
+static int lanspeed_ack_wait(struct lanspeed_ack_txn *txn)
+{
+	if (!wait_for_completion_timeout(&txn->done,
+					msecs_to_jiffies(NSS_IF_TX_TIMEOUT))) {
+		if (atomic_cmpxchg(&txn->completed, 0, 1) == 0)
+			atomic64_inc(&lanspeed_ack_timeout);
+		return -ETIMEDOUT;
+	}
+	return txn->response == NSS_CMN_RESPONSE_ACK ? 0 : -EIO;
+}
+
+static void lanspeed_ack_abort(struct lanspeed_ack_txn *txn)
+{
+	if (atomic_cmpxchg(&txn->completed, 0, 1) == 0) {
+		lanspeed_ack_release_message(txn);
+		lanspeed_ack_put(txn);
+	}
+}
+
+static int lanspeed_ack_stats_get(char *buffer,
+					  const struct kernel_param *kp)
+{
+	return scnprintf(buffer, PAGE_SIZE, "v1 received=%lld timeout=%lld late=%lld\n",
+			 (long long)atomic64_read(&lanspeed_ack_received),
+			 (long long)atomic64_read(&lanspeed_ack_timeout),
+			 (long long)atomic64_read(&lanspeed_ack_late));
+}
+
+static const struct kernel_param_ops lanspeed_ack_stats_ops = {
+	.get = lanspeed_ack_stats_get,
+};
+
+module_param_cb(ack_stats, &lanspeed_ack_stats_ops, NULL, 0444);
+MODULE_PARM_DESC(ack_stats, "LAN Speed NSS ACK transaction telemetry");
 
 static struct lanspeed_igs_entry *lanspeed_igs_find_edge(struct net_device *edge);
 
@@ -113,37 +211,35 @@ static bool lanspeed_edge_is_vap(int32_t edge_if_num)
 					      edge_if_num) == NSS_DYNAMIC_INTERFACE_TYPE_VAP;
 }
 
-static void lanspeed_wifi_callback(void *app_data, struct nss_cmn_msg *message)
-{
-	lanspeed_wifi_response = message->response;
-	complete(&lanspeed_wifi_completion);
-}
-
 static nss_tx_status_t lanspeed_wifi_set_nexthop(int32_t edge_if_num,
 						  int32_t igs_if_num)
 {
 	struct nss_wifi_vdev_msg *message;
+	struct lanspeed_ack_txn *txn;
 	nss_tx_status_t status;
 
 	message = kzalloc(sizeof(*message), GFP_KERNEL);
 	if (!message)
 		return NSS_TX_FAILURE;
+	txn = lanspeed_ack_alloc();
+	if (!txn) {
+		kfree(message);
+		return NSS_TX_FAILURE;
+	}
+	lanspeed_ack_bind_message(txn, message);
 	message->msg.next_hop.ifnumber = igs_if_num;
-	reinit_completion(&lanspeed_wifi_completion);
-	lanspeed_wifi_response = NSS_CMN_RESPONSE_LAST;
 	nss_cmn_msg_init(&message->cm, edge_if_num,
 			 NSS_WIFI_VDEV_SET_NEXT_HOP,
 			 sizeof(message->msg.next_hop),
-			 lanspeed_wifi_callback, NULL);
+			 lanspeed_ack_callback, txn);
 	status = nss_wifi_vdev_tx_msg(nss_wifili_get_context(), message);
-	if (status == NSS_TX_SUCCESS &&
-	    !wait_for_completion_timeout(&lanspeed_wifi_completion,
-					 msecs_to_jiffies(NSS_IF_TX_TIMEOUT)))
+	if (status != NSS_TX_SUCCESS) {
+		lanspeed_ack_abort(txn);
 		status = NSS_TX_FAILURE;
-	if (status == NSS_TX_SUCCESS &&
-	    lanspeed_wifi_response != NSS_CMN_RESPONSE_ACK)
+	} else if (lanspeed_ack_wait(txn)) {
 		status = NSS_TX_FAILURE;
-	kfree(message);
+	}
+	lanspeed_ack_put(txn);
 	return status;
 }
 
@@ -153,28 +249,32 @@ static nss_tx_status_t lanspeed_wifi_set_peer_nexthop(int32_t edge_if_num,
 {
 	struct nss_wifi_vdev_set_peer_next_hop_msg *next_hop;
 	struct nss_wifi_vdev_msg *message;
+	struct lanspeed_ack_txn *txn;
 	nss_tx_status_t status;
 
 	message = kzalloc(sizeof(*message), GFP_KERNEL);
 	if (!message)
 		return NSS_TX_FAILURE;
+	txn = lanspeed_ack_alloc();
+	if (!txn) {
+		kfree(message);
+		return NSS_TX_FAILURE;
+	}
+	lanspeed_ack_bind_message(txn, message);
 	next_hop = &message->msg.vdev_set_peer_next_hp;
 	ether_addr_copy(next_hop->peer_mac_addr, peer);
 	next_hop->if_num = next_hop_if_num;
-	reinit_completion(&lanspeed_wifi_completion);
-	lanspeed_wifi_response = NSS_CMN_RESPONSE_LAST;
 	nss_cmn_msg_init(&message->cm, edge_if_num,
 			 NSS_WIFI_VDEV_SET_PEER_NEXT_HOP,
-			 sizeof(*next_hop), lanspeed_wifi_callback, NULL);
+			 sizeof(*next_hop), lanspeed_ack_callback, txn);
 	status = nss_wifi_vdev_tx_msg(nss_wifili_get_context(), message);
-	if (status == NSS_TX_SUCCESS &&
-	    !wait_for_completion_timeout(&lanspeed_wifi_completion,
-					 msecs_to_jiffies(NSS_IF_TX_TIMEOUT)))
+	if (status != NSS_TX_SUCCESS) {
+		lanspeed_ack_abort(txn);
 		status = NSS_TX_FAILURE;
-	if (status == NSS_TX_SUCCESS &&
-	    lanspeed_wifi_response != NSS_CMN_RESPONSE_ACK)
+	} else if (lanspeed_ack_wait(txn)) {
 		status = NSS_TX_FAILURE;
-	kfree(message);
+	}
+	lanspeed_ack_put(txn);
 	return status;
 }
 
@@ -470,13 +570,6 @@ static int lanspeed_ifname(const char *value, char name[IFNAMSIZ])
 	return 0;
 }
 
-static void lanspeed_igs_config_callback(void *app_data,
-					struct nss_if_msg *message)
-{
-	lanspeed_igs_response = message->cm.response;
-	complete(&lanspeed_igs_completion);
-}
-
 static int lanspeed_pair(const char *value, char ifb[IFNAMSIZ],
 			  char edge[IFNAMSIZ])
 {
@@ -766,30 +859,43 @@ static void lanspeed_igs_unregister(struct lanspeed_igs_entry *entry)
 static int lanspeed_igs_config(struct net_device *edge, u32 type,
 				       int32_t igs_num)
 {
-	struct nss_if_msg message;
+	struct nss_if_msg *message;
+	struct lanspeed_ack_txn *txn;
 	int32_t edge_if_num;
 	nss_tx_status_t status;
 
 	edge_if_num = nss_cmn_get_interface_number_by_dev(edge);
 	if (edge_if_num < 0)
 		return -ENODEV;
+	txn = lanspeed_ack_alloc();
+	if (!txn)
+		return -ENOMEM;
+	message = kzalloc(sizeof(*message), GFP_KERNEL);
+	if (!message) {
+		lanspeed_ack_abort(txn);
+		lanspeed_ack_put(txn);
+		return -ENOMEM;
+	}
+	lanspeed_ack_bind_message(txn, message);
 	/* nss_cmn_msg_sync_init leaves the callback NULL.  NSS therefore never
 	 * completes its wait for SET/CLEAR_IGS_NODE.  Use the same callback-driven
 	 * synchronous transaction as the vendor nssmirred IFB helper. */
-	reinit_completion(&lanspeed_igs_completion);
-	lanspeed_igs_response = NSS_CMN_RESPONSE_LAST;
-	nss_cmn_msg_init(&message.cm, edge_if_num, type,
-				 sizeof(struct nss_if_igs_config),
-				 lanspeed_igs_config_callback, NULL);
-	message.msg.config_igs.igs_num = igs_num;
-	status = nss_if_tx_msg(nss_igs_get_context(), &message);
-	if (status != NSS_TX_SUCCESS)
+	nss_cmn_msg_init(&message->cm, edge_if_num, type,
+			 sizeof(struct nss_if_igs_config),
+			 lanspeed_ack_callback, txn);
+	message->msg.config_igs.igs_num = igs_num;
+	status = nss_if_tx_msg(nss_igs_get_context(), message);
+	if (status != NSS_TX_SUCCESS) {
+		lanspeed_ack_abort(txn);
+		lanspeed_ack_put(txn);
 		return -EIO;
-	if (!wait_for_completion_timeout(&lanspeed_igs_completion,
-					msecs_to_jiffies(NSS_IF_TX_TIMEOUT)))
-		return -ETIMEDOUT;
-	if (lanspeed_igs_response != NSS_CMN_RESPONSE_ACK)
-		return -EIO;
+	}
+	status = lanspeed_ack_wait(txn);
+	if (status) {
+		lanspeed_ack_put(txn);
+		return status;
+	}
+	lanspeed_ack_put(txn);
 	return 0;
 }
 
