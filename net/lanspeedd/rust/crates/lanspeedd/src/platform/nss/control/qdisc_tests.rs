@@ -143,6 +143,16 @@ mod tests {
     }
 
     #[test]
+    fn unknown_edge_speed_keeps_default_class_available() {
+        assert_eq!(default_class_rate_for_speed(Some(-1)), Ok(NSS_MAX_RATE_BPS));
+        assert_eq!(default_class_rate_for_speed(None), Ok(NSS_MAX_RATE_BPS));
+        assert_eq!(
+            default_class_rate_for_speed(Some(10_000)),
+            Err("nss_default_class_capacity_exceeded".into())
+        );
+    }
+
+    #[test]
     fn nss_burst_covers_ten_milliseconds_and_is_bounded() {
         assert_eq!(burst_bytes(8_000), MIN_BURST_BYTES);
         assert_eq!(burst_bytes(11_000_000), 13_750);

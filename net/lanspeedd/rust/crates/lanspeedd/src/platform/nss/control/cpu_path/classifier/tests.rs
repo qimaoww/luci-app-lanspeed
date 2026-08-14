@@ -217,6 +217,30 @@ mod tests {
     }
 
     #[test]
+    fn cpu_input_counter_sums_ipv4_and_ipv6_action_bytes() {
+        let values = vec![
+            json!({
+                "protocol": "ip",
+                "pref": UPLOAD_CLIENT_PREF_START,
+                "kind": "u32",
+                "options": {"actions": [{"kind": "skbedit", "stats": {"bytes": 123}}]}
+            }),
+            json!({
+                "protocol": "ipv6",
+                "pref": UPLOAD_CLIENT_PREF_START + 1,
+                "kind": "u32",
+                "options": {"actions": [{"kind": "skbedit", "stats": {"bytes": 456}}]}
+            }),
+        ];
+        let mut pref = UPLOAD_CLIENT_PREF_START;
+        assert_eq!(
+            protocol_action_bytes(&values, &mut pref, "skbedit").unwrap(),
+            579
+        );
+        assert_eq!(pref, UPLOAD_CLIENT_PREF_START + 2);
+    }
+
+    #[test]
     fn orphaned_download_chain_requires_only_lanspeed_entries() {
         let values = vec![
             json!({

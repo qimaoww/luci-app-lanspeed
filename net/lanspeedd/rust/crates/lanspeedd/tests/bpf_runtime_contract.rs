@@ -261,7 +261,8 @@ fn production_refreshes_dae_processes_before_bpf_map_reads_and_reloads_mode_tran
 fn production_rust_has_no_pidof_probe_path_and_publishes_dae_and_nss_alias_evidence() {
     let commands = include_str!("../src/probe/commands.rs");
     let collector = include_str!("../src/probe/collector.rs");
-    let production = include_str!("../src/production.rs");
+    let production_adapter = include_str!("../src/production/evidence.rs");
+    let process = include_str!("../src/probe/process.rs");
     let nss_evidence = include_str!("../src/production_evidence.rs");
 
     assert!(!commands.contains("Pidof"));
@@ -269,16 +270,17 @@ fn production_rust_has_no_pidof_probe_path_and_publishes_dae_and_nss_alias_evide
     assert!(!collector.contains("Pidof"));
     assert!(!collector.contains("pidof"));
     for field in [
-        "\"running\"",
-        "\"process\"",
-        "\"runtime_active\"",
-        "\"process_probe_error\"",
+        "dae_process",
+        "daed_process",
+        "runtime_active",
+        "process_probe_error",
     ] {
         assert!(
-            production.contains(field),
+            process.contains(field),
             "missing production evidence field {field}"
         );
     }
+    assert!(process.contains("let warning_active = runtime_path_active;"));
     for field in [
         "\"present\"",
         "\"ecm_active\"",
@@ -318,7 +320,7 @@ fn production_rust_has_no_pidof_probe_path_and_publishes_dae_and_nss_alias_evide
             "missing production evidence field {field}"
         );
     }
-    assert!(production.contains("production_evidence::nss_details("));
+    assert!(production_adapter.contains("production_evidence::nss_details("));
     assert!(nss_evidence.contains("single_ecm_node_owner"));
 }
 

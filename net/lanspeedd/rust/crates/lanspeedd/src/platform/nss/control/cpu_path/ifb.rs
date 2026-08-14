@@ -2,12 +2,15 @@ use std::{collections::BTreeSet, fs};
 
 use serde_json::Value;
 
+use crate::identity::MacAddress;
+
 use super::system;
 
 const DEVICE_PREFIX: &str = "lsu";
 const ALIAS_PREFIX: &str = "lanspeedd:nss-igs-upload:v3:";
 const CONTROL_ROOT: &str = "/sys/module/lanspeed_nss_control/parameters";
 const MAX_IGS_EDGES: usize = 8;
+const MAX_WIFI_PEERS: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum IgsState {
@@ -137,6 +140,64 @@ pub(super) fn publish(edge: &str) -> Result<(), String> {
         Some(IgsState::Degraded) => Err("nss_igs_unpublish_failed".into()),
         None => Err("nss_igs_stage_missing".into()),
     }
+}
+
+pub(super) fn sync_peers(edge: &str, desired: &BTreeSet<MacAddress>) -> Result<(), String> {
+    let desired = if wireless_edge(edge) {
+        if desired.len() > MAX_WIFI_PEERS {
+            return Err("nss_igs_wifi_peer_capacity_exceeded".into());
+        }
+        desired.clone()
+    } else {
+        BTreeSet::new()
+    };
+    if desired.is_empty() && !wireless_edge(edge) {
+        return verify_peers(edge, &desired);
+    }
+    let name = device(edge);
+    if state(&name)? != Some(IgsState::Published) || published_edge(&name)?.as_deref() != Some(edge)
+    {
+        return Err("nss_igs_wifi_peer_mapping_missing".into());
+    }
+    let mut request = format!("v1 {name}");
+    for peer in &desired {
+        request.push(' ');
+        request.push_str(&peer.to_string());
+    }
+    control("peer_sync", &request)?;
+    verify_peers(edge, &desired)
+}
+
+pub(super) fn verify_peers(edge: &str, desired: &BTreeSet<MacAddress>) -> Result<(), String> {
+    let expected = if wireless_edge(edge) {
+        desired.clone()
+    } else {
+        BTreeSet::new()
+    };
+    let name = device(edge);
+    let text = fs::read_to_string(format!("{CONTROL_ROOT}/peer_status"))
+        .map_err(|_| "nss_igs_wifi_peer_inspection_failed".to_owned())?;
+    let mut actual = BTreeSet::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
+        if fields.len() != 2 || !system::valid_interface_name(fields[0]) {
+            return Err("nss_igs_wifi_peer_inspection_failed".into());
+        }
+        let peer = fields[1]
+            .parse::<MacAddress>()
+            .map_err(|_| "nss_igs_wifi_peer_inspection_failed".to_owned())?;
+        if fields[0] == name && !actual.insert(peer) {
+            return Err("nss_igs_wifi_peer_inspection_failed".into());
+        }
+    }
+    (actual == expected)
+        .then_some(())
+        .ok_or_else(|| "nss_igs_wifi_peer_mapping_missing".into())
+}
+
+fn wireless_edge(edge: &str) -> bool {
+    fs::metadata(format!("/sys/class/net/{edge}/phy80211")).is_ok()
+        || fs::metadata(format!("/sys/class/net/{edge}/wireless")).is_ok()
 }
 
 pub(super) fn unpublish(edge: &str) -> Result<(), String> {

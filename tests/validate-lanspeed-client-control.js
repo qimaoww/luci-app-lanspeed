@@ -44,7 +44,7 @@ const nssProductionControl = Object.values(nssControlByModule)
   .map((value) => value.split('#[cfg(test)]')[0]).join('\n');
 const nssCpuPathDir = path.join(nssControlDir, 'cpu_path');
 const nssCpuPathModules = [
-  'mod.rs', 'block.rs', 'classifier.rs', 'ifb.rs', 'probe.rs', 'shaper.rs', 'tagger.rs'
+  'mod.rs', 'block.rs', 'bridge.rs', 'classifier.rs', 'ifb.rs', 'probe.rs', 'shaper.rs', 'tagger.rs'
 ];
 const nssCpuPathByModule = Object.fromEntries(nssCpuPathModules.map((name) => [
   name, fs.readFileSync(path.join(nssCpuPathDir, name), 'utf8')
@@ -54,6 +54,10 @@ const nssCpuPathProduction = Object.values(nssCpuPathByModule)
   .map((value) => value.split('#[cfg(test)]')[0]).join('\n');
 const nssKmodSource = fs.readFileSync(path.join(root,
   'net/lanspeed-nss-control/src/lanspeed_nss_control.c'), 'utf8');
+const nssPublishEntry = nssKmodSource.match(
+  /static int lanspeed_igs_publish_entry[\s\S]*?(?=\nstatic int lanspeed_igs_unpublish_entry)/)?.[0] || '';
+const nssUnpublishEntry = nssKmodSource.match(
+  /static int lanspeed_igs_unpublish_entry[\s\S]*?(?=\nstatic void lanspeed_igs_forget_edge)/)?.[0] || '';
 const nssCpuBlockProduction = nssCpuPathByModule['block.rs'].split('#[cfg(test)]')[0];
 const nssCpuProbeProduction = nssCpuPathByModule['probe.rs'].split('#[cfg(test)]')[0];
 const daemonMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
@@ -309,6 +313,10 @@ async function main() {
 		nssCpuBlockProduction.includes('{address_set} counter drop comment') &&
 		!nssCpuBlockProduction.includes(' reject') &&
 		!nssCpuBlockProduction.includes(' redirect ') &&
+	    nssCpuPathByModule['bridge.rs'].includes('hook postrouting priority -15') &&
+	    nssCpuPathByModule['bridge.rs'].includes('ip saddr @local4 ip daddr @local4 return') &&
+	    nssCpuPathByModule['bridge.rs'].includes('ip6 saddr @local6 ip6 daddr @local6 return') &&
+	    nssCpuPathByModule['bridge.rs'].includes('meta priority set') &&
 	    nssCpuPathByModule['shaper.rs'].includes('"nsshtb"') &&
 	    nssCpuPathByModule['shaper.rs'].includes('"nssbfifo"') &&
 	    nssCpuPathByModule['shaper.rs'].includes('sync_igs_tree') &&
@@ -320,6 +328,9 @@ async function main() {
     !nssCpuPathProduction.includes('platform::x86::control') &&
     nssKmodSource.includes('NSS_IF_SET_IGS_NODE') &&
     nssKmodSource.includes('nss_if_set_nexthop') &&
+    nssKmodSource.includes('NSS_WIFI_VDEV_SET_NEXT_HOP') &&
+    nssKmodSource.includes('wait_for_completion_timeout(&lanspeed_wifi_completion') &&
+    nssKmodSource.includes('lanspeed_wifi_response != NSS_CMN_RESPONSE_ACK') &&
     nssKmodSource.includes('NSS_IF_CLEAR_IGS_NODE') &&
     nssKmodSource.includes('nss_if_reset_nexthop') &&
     nssKmodSource.includes('LANSPEED_IGS_DEGRADED') &&
@@ -327,10 +338,10 @@ async function main() {
     nssKmodSource.includes('igs_reply_qos_tag') &&
 	    nssKmodSource.includes('NF_IP_PRI_CONNTRACK + 2') &&
 	    nssControlByModule['capability.rs'].includes('"act_mirred"') &&
-	    nssKmodSource.indexOf('lanspeed_igs_config(edge, NSS_IF_SET_IGS_NODE') <
-      nssKmodSource.indexOf('nss_if_set_nexthop') &&
-    nssKmodSource.indexOf('nss_if_reset_nexthop') <
-      nssKmodSource.indexOf('lanspeed_igs_config(entry->edge, NSS_IF_CLEAR_IGS_NODE'),
+	    nssPublishEntry.indexOf('NSS_IF_SET_IGS_NODE') <
+      nssPublishEntry.indexOf('status = lanspeed_set_nexthop') &&
+    nssUnpublishEntry.indexOf('lanspeed_reset_nexthop') <
+      nssUnpublishEntry.indexOf('NSS_IF_CLEAR_IGS_NODE'),
     'NSS CPU path must use one aggregate NSS IGS queue with transactional edge publication');
   assert(control.includes('nss_proven_directions') &&
     control.includes('nss_cpu_directions') &&

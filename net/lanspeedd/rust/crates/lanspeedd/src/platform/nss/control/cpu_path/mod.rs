@@ -1,4 +1,5 @@
 mod block;
+mod bridge;
 mod classifier;
 mod ifb;
 mod probe;
@@ -57,6 +58,7 @@ pub(super) fn preflight(plan: &ControlPlan) -> Result<(), String> {
         return Ok(());
     }
     block::preflight(plan)?;
+    bridge::preflight(plan)?;
     probe::preflight(plan)?;
     tagger::preflight(plan)?;
     if Direction::ALL
@@ -83,6 +85,12 @@ pub(super) fn stage(plan: &ControlPlan) -> Result<(), String> {
     // Build and verify the queue before publishing any redirect. A partial
     // setup cannot steal packets from the LAN edge.
     shaper::stage(plan)?;
+    if let Err(error) = bridge::sync(plan) {
+        return match shaper::cleanup_unpublished() {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(format!("{error};{cleanup_error}")),
+        };
+    }
     if let Err(error) = tagger::sync(plan) {
         return match shaper::cleanup_unpublished() {
             Ok(()) => Err(error),
@@ -108,6 +116,7 @@ pub(super) fn quiesce(plan: &ControlPlan) -> Result<(), String> {
 
 pub(super) fn verify(plan: &ControlPlan) -> Result<(), String> {
     block::verify(plan)?;
+    bridge::verify(plan)?;
     probe::verify(plan)?;
     shaper::verify(plan)?;
     tagger::verify(plan)?;
@@ -161,7 +170,10 @@ pub(super) fn owned_shaper_devices() -> Result<BTreeSet<String>, String> {
 }
 
 pub(super) fn class_snapshot(plan: &ControlPlan) -> Result<BTreeMap<String, u64>, String> {
-    shaper::class_bytes(plan)
+    let mut snapshot = shaper::class_bytes(plan)?;
+    snapshot.extend(classifier::input_bytes(plan)?);
+    snapshot.extend(shaper::nss_input_bytes(plan)?);
+    Ok(snapshot)
 }
 
 pub(super) fn drop_snapshot(plan: &ControlPlan) -> Result<BTreeMap<String, u64>, String> {

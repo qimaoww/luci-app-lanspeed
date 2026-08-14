@@ -436,8 +436,6 @@ fn walk_objects(value: &Value) -> Box<dyn Iterator<Item = &serde_json::Map<Strin
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
-
     use super::*;
 
     fn plan(disabled: bool) -> ControlPlan {

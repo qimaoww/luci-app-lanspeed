@@ -106,7 +106,7 @@ pub(super) fn observe(plan: &ControlPlan, previous: &ApplyResult) -> ApplyResult
             let nss_tagged = tagged_directions
                 .get(&rule.identity_key)
                 .is_some_and(|directions| directions & bit != 0);
-            let aggregate_increased = executor_counter_increased(
+            let aggregate_delta = executor_counter_delta(
                 &current_classes,
                 &previous.class_counter_baselines,
                 rule,
@@ -114,10 +114,32 @@ pub(super) fn observe(plan: &ControlPlan, previous: &ApplyResult) -> ApplyResult
                 "aggregate",
                 "class_bytes",
             );
-            if active_nss && aggregate_increased && (direction == Direction::Upload || nss_tagged) {
+            let cpu_input_delta = executor_counter_delta(
+                &current_classes,
+                &previous.class_counter_baselines,
+                rule,
+                direction,
+                "cpu",
+                "input_bytes",
+            );
+            let nss_input_delta = executor_counter_delta(
+                &current_classes,
+                &previous.class_counter_baselines,
+                rule,
+                direction,
+                "nss",
+                "input_bytes",
+            );
+            let nss_input_proven = match direction {
+                Direction::Upload => {
+                    upload_nss_input_proven(aggregate_delta, cpu_input_delta, nss_input_delta)
+                }
+                Direction::Download => aggregate_delta != 0 && nss_tagged,
+            };
+            if active_nss && nss_input_proven {
                 nss_verified |= bit;
             }
-            if active_cpu && aggregate_increased {
+            if active_cpu && aggregate_delta != 0 && cpu_input_delta != 0 {
                 cpu_verified |= bit;
             }
             if known_nss || known_cpu {
@@ -398,22 +420,32 @@ fn direction_counter_increased(
     })
 }
 
-fn executor_counter_increased(
+fn executor_counter_delta(
     current: &BTreeMap<String, u64>,
     previous: &BTreeMap<String, u64>,
     rule: &ActiveRule,
     direction: Direction,
     executor: &str,
     suffix: &str,
-) -> bool {
+) -> u64 {
     let prefix = format!("{}/{}/{executor}/", rule.identity_key, direction.name());
-    current.iter().any(|(key, count)| {
-        key.starts_with(&prefix)
-            && key.ends_with(suffix)
-            && previous
+    current
+        .iter()
+        .filter(|(key, _)| key.starts_with(&prefix) && key.ends_with(suffix))
+        .filter_map(|(key, count)| {
+            previous
                 .get(key)
-                .is_some_and(|previous_count| count > previous_count)
-    })
+                .map(|previous_count| count.saturating_sub(*previous_count))
+        })
+        .fold(0u64, u64::saturating_add)
+}
+
+fn upload_nss_input_proven(aggregate_delta: u64, cpu_delta: u64, igs_delta: u64) -> bool {
+    const MIN_PROOF_BYTES: u64 = 64 * 1024;
+    let hardware_delta = aggregate_delta.saturating_sub(cpu_delta);
+    igs_delta >= MIN_PROOF_BYTES
+        && hardware_delta >= MIN_PROOF_BYTES
+        && u128::from(hardware_delta).saturating_mul(4) >= u128::from(aggregate_delta)
 }
 
 fn active_executors_verified(
@@ -447,5 +479,12 @@ mod tests {
                       Sent 12345 bytes 9 pkt (dropped 3, overlimits 2 requeues 0)\n";
         assert_eq!(class_bytes(classes, "7d00:123"), Some(12345));
         assert_eq!(qdisc_drops(qdiscs, "7d00:123", "8001:"), Some(3));
+    }
+
+    #[test]
+    fn upload_nss_proof_excludes_cpu_only_aggregate_bytes() {
+        assert!(!upload_nss_input_proven(4_000_000, 3_950_000, 2_000_000));
+        assert!(!upload_nss_input_proven(4_000_000, 0, 0));
+        assert!(upload_nss_input_proven(4_000_000, 250_000, 3_900_000));
     }
 }

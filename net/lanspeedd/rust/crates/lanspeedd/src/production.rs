@@ -2720,6 +2720,11 @@ fn nss_control_path_observations(
         })
         .filter_map(|client| {
             let result = results.get(&client.identity_key)?;
+            let wifi_attachment = client
+                .rate_meta
+                .as_ref()
+                .and_then(|meta| meta.attachment.as_ref())
+                .is_some_and(|attachment| attachment.kind == ModelAttachmentKind::Wifi);
             let mut observation = NssPathObservation::default();
             for (bit, state, direction, probe) in [
                 (
@@ -2739,12 +2744,13 @@ fn nss_control_path_observations(
                         .and_then(|window| window.download),
                 ),
             ] {
-                let (valid, active, proven, nss, cpu) = nss_control_direction_path(
+                let (valid, active, proven, nss, cpu) = nss_control_direction_path_for_attachment(
                     state,
                     result.classifier_window_ms,
                     result.comparison_window_ms,
                     direction,
                     probe,
+                    wifi_attachment,
                 );
                 if valid {
                     observation.valid_directions |= bit;
@@ -2767,7 +2773,7 @@ fn nss_control_path_observations(
         .collect()
 }
 
-#[cfg(feature = "nss-platform")]
+#[cfg(all(feature = "nss-platform", test))]
 fn nss_control_direction_path(
     state: ClassificationState,
     classifier_window_ms: Option<u64>,
@@ -2775,26 +2781,52 @@ fn nss_control_direction_path(
     direction: crate::platform::access_edge::DirectionClassification,
     probe: Option<crate::platform::nss::control::PathProbeDirectionWindow>,
 ) -> (bool, bool, bool, bool, bool) {
+    nss_control_direction_path_for_attachment(
+        state,
+        classifier_window_ms,
+        comparison_window_ms,
+        direction,
+        probe,
+        false,
+    )
+}
+
+#[cfg(feature = "nss-platform")]
+fn nss_control_direction_path_for_attachment(
+    state: ClassificationState,
+    classifier_window_ms: Option<u64>,
+    comparison_window_ms: Option<u64>,
+    direction: crate::platform::access_edge::DirectionClassification,
+    probe: Option<crate::platform::nss::control::PathProbeDirectionWindow>,
+    wifi_attachment: bool,
+) -> (bool, bool, bool, bool, bool) {
     let complete_window = matches!(
         state,
         ClassificationState::Aligned | ClassificationState::CounterSkew
     ) && comparison_window_ms.is_some();
+    let wifi_domain_window = wifi_attachment
+        && state == ClassificationState::DomainMismatch
+        && comparison_window_ms.is_some();
     let complete_warmup_epoch = state == ClassificationState::Warmup
         && comparison_window_ms.is_none()
         && classifier_window_ms.is_some_and(|window| window != 0)
         && direction.edge_bps.is_some();
-    if (!complete_window && !complete_warmup_epoch) || direction.edge_bps.is_none() {
+    if (!complete_window && !wifi_domain_window && !complete_warmup_epoch)
+        || direction.edge_bps.is_none()
+    {
         return (false, false, false, false, false);
     }
-    let (Some(edge), Some(nss), Some(slow), Some(probe)) = (
-        direction.edge_bps,
-        direction.nss_bps,
-        direction.slow_bps,
-        probe,
-    ) else {
+    let (Some(edge), Some(nss), Some(slow)) =
+        (direction.edge_bps, direction.nss_bps, direction.slow_bps)
+    else {
         return (false, false, false, false, false);
     };
-    let active = edge != 0 || nss != 0 || slow != 0 || probe.bps != 0;
+    if !wifi_attachment && probe.is_none() {
+        return (false, false, false, false, false);
+    }
+    let probe_bps = probe.map_or(0, |value| value.bps);
+    let probe_bytes = probe.map_or(0, |value| value.bytes);
+    let active = edge != 0 || nss != 0 || slow != 0 || probe_bps != 0;
     if !active {
         return (true, false, false, false, false);
     }
@@ -2803,15 +2835,16 @@ fn nss_control_direction_path(
     const MAX_PROBE_SLOW_PERCENT: u64 = 125;
     const MAX_PATH_SHARE_PERCENT: u64 = 125;
     let evidence_window_ms = comparison_window_ms.or(classifier_window_ms).unwrap_or(0);
-    let probe_matches_cpu_path = probe.bytes >= MIN_PROBE_BYTES
+    let probe_matches_cpu_path = probe_bytes >= MIN_PROBE_BYTES
         && edge != 0
         && slow != 0
-        && u128::from(probe.bps).saturating_mul(100)
+        && u128::from(probe_bps).saturating_mul(100)
             >= u128::from(slow).saturating_mul(MIN_PROBE_SLOW_PERCENT as u128)
-        && u128::from(probe.bps).saturating_mul(100)
+        && u128::from(probe_bps).saturating_mul(100)
             <= u128::from(slow).saturating_mul(MAX_PROBE_SLOW_PERCENT as u128)
-        && u128::from(slow).saturating_mul(100)
-            <= u128::from(edge).saturating_mul(MAX_PATH_SHARE_PERCENT as u128);
+        && (wifi_attachment
+            || u128::from(slow).saturating_mul(100)
+                <= u128::from(edge).saturating_mul(MAX_PATH_SHARE_PERCENT as u128));
 
     // Access Edge deliberately includes LAN/NAS and router-local frames, while
     // the CPU probe below counts Internet traffic only. Requiring N+S to cover
@@ -2822,16 +2855,20 @@ fn nss_control_direction_path(
     // published into the same aggregate edge queue, never separate buckets.
     // CounterSkew is excluded from NSS proof because it may duplicate proxy
     // bytes; it remains acceptable for independently probed CPU-only traffic.
-    let nss_matches_direct_path = (complete_window || complete_warmup_epoch)
-        && matches!(
-            state,
-            ClassificationState::Aligned | ClassificationState::Warmup
-        )
-        && edge != 0
-        && nss != 0
-        && observed_bytes(nss, evidence_window_ms) >= MIN_PROBE_BYTES
-        && u128::from(nss).saturating_mul(100)
-            <= u128::from(edge).saturating_mul(MAX_PATH_SHARE_PERCENT as u128);
+    let nss_matches_direct_path = if wifi_domain_window {
+        edge != 0 && nss != 0 && observed_bytes(nss, evidence_window_ms) >= MIN_PROBE_BYTES
+    } else {
+        (complete_window || complete_warmup_epoch)
+            && matches!(
+                state,
+                ClassificationState::Aligned | ClassificationState::Warmup
+            )
+            && edge != 0
+            && nss != 0
+            && observed_bytes(nss, evidence_window_ms) >= MIN_PROBE_BYTES
+            && u128::from(nss).saturating_mul(100)
+                <= u128::from(edge).saturating_mul(MAX_PATH_SHARE_PERCENT as u128)
+    };
 
     // A direction becomes publishable after at least one actual Internet
     // executor is proven. If the other executor appears later, ControlManager
@@ -3688,6 +3725,7 @@ fn version() -> String {
     system::version()
 }
 
+#[cfg(test)]
 fn version_from(version: Option<&str>, release: Option<&str>) -> String {
     system::version_from(version, release)
 }

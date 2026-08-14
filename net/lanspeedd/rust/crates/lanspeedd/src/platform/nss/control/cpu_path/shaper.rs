@@ -12,6 +12,7 @@ const FILTER_CHAIN: u32 = 0x7e60;
 const FILTER_JUMP_PREF: u32 = 0xd060;
 const FILTER_LOCAL_PREF_START: u32 = 100;
 const FILTER_TERMINAL_PREF: u32 = 65_534;
+const NSS_IGS_STATS: &str = "/sys/kernel/debug/qca-nss-drv/stats/igs";
 
 pub(super) fn preflight(plan: &ControlPlan) -> Result<(), String> {
     let grouped = grouped_rules(plan);
@@ -104,6 +105,8 @@ pub(super) fn verify(plan: &ControlPlan) -> Result<(), String> {
         }
         let device = ifb::device(edge);
         qdisc::verify_igs_tree(&device, rules)?;
+        let peers = rules.iter().map(|rule| rule.mac).collect::<BTreeSet<_>>();
+        ifb::verify_peers(edge, &peers)?;
     }
     for (_, edge) in ifb::owned_interfaces()? {
         if !active.contains(&edge) {
@@ -150,6 +153,48 @@ pub(super) fn class_bytes(plan: &ControlPlan) -> Result<BTreeMap<String, u64>, S
         }
     }
     Ok(snapshot)
+}
+
+/// NSS IGS receive bytes prove that the physical edge actually entered the
+/// hardware ingress shaper. These counters are verification-only.
+pub(super) fn nss_input_bytes(plan: &ControlPlan) -> Result<BTreeMap<String, u64>, String> {
+    let text = std::fs::read_to_string(NSS_IGS_STATS)
+        .map_err(|_| "nss_igs_counter_unavailable".to_owned())?;
+    let mut snapshot = BTreeMap::new();
+    for (edge, rules) in grouped_rules(plan) {
+        let device = ifb::device(&edge);
+        let bytes =
+            igs_rx_bytes(&text, &device).ok_or_else(|| "nss_igs_counter_unavailable".to_owned())?;
+        for rule in rules {
+            snapshot.insert(
+                format!("{}/upload/nss/{device}/input_bytes", rule.identity_key),
+                bytes,
+            );
+        }
+    }
+    Ok(snapshot)
+}
+
+fn igs_rx_bytes(text: &str, device: &str) -> Option<u64> {
+    let mut selected = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some((_, netdevice)) = trimmed.split_once("netdevice=") {
+            selected = netdevice.trim() == device;
+            continue;
+        }
+        if !selected || !trimmed.contains("_rx_byts") {
+            continue;
+        }
+        return trimmed
+            .split_once('=')?
+            .1
+            .split_ascii_whitespace()
+            .next()?
+            .parse()
+            .ok();
+    }
+    None
 }
 
 pub(super) fn queue_drops(plan: &ControlPlan) -> Result<BTreeMap<String, u64>, String> {
@@ -201,6 +246,21 @@ fn grouped_rules(plan: &ControlPlan) -> BTreeMap<String, Vec<&ActiveRule>> {
             .push(rule);
     }
     grouped
+}
+
+#[cfg(test)]
+mod counter_tests {
+    use super::igs_rx_bytes;
+
+    #[test]
+    fn parses_igs_bytes_for_the_exact_dynamic_device() {
+        let text = "0. nss interface id=34, netdevice=lsu11111111\n\
+                    \tigs[0]_rx_byts = 123 common\n\
+                    1. nss interface id=35, netdevice=lsu22222222\n\
+                    \tigs[1]_rx_byts = 456 common\n";
+        assert_eq!(igs_rx_bytes(text, "lsu22222222"), Some(456));
+        assert_eq!(igs_rx_bytes(text, "lsu33333333"), None);
+    }
 }
 
 fn cleanup_obsolete(active: &BTreeSet<String>) -> Result<(), String> {

@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, net::IpAddr, str};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::IpAddr,
+    str,
+};
 
 use serde_json::Value;
 
@@ -224,6 +228,107 @@ pub(super) fn cleanup() -> Result<(), String> {
     Ok(())
 }
 
+/// Per-client Internet classifier counters prove CPU-path participation only.
+/// They are control evidence and must never be merged into RateMux.
+pub(super) fn input_bytes(plan: &ControlPlan) -> Result<BTreeMap<String, u64>, String> {
+    let mut snapshot = BTreeMap::new();
+    for (edge, rules) in upload_rules(plan) {
+        let values = counter_values(&edge, "ingress", UPLOAD_CHAIN)?;
+        let mut pref = UPLOAD_CLIENT_PREF_START;
+        for rule in rules.iter().filter(|rule| {
+            rule.upload_bps != 0
+                && plan.nss_direction_path_ready(&rule.identity_key, NSS_CPU_UPLOAD)
+        }) {
+            let bytes = protocol_action_bytes(&values, &mut pref, "skbedit")?;
+            snapshot.insert(
+                format!("{}/upload/cpu/{edge}/input_bytes", rule.identity_key),
+                bytes,
+            );
+        }
+    }
+    for (edge, rules) in download_rules(plan) {
+        let values = counter_values(&edge, "egress", DOWNLOAD_CHAIN)?;
+        let mut pref = CLIENT_PREF_START;
+        for rule in rules.iter().filter(|rule| {
+            rule.download_bps != 0
+                && plan.nss_direction_path_ready(&rule.identity_key, NSS_CPU_DOWNLOAD)
+        }) {
+            let bytes = protocol_action_bytes(&values, &mut pref, "skbedit")?;
+            snapshot.insert(
+                format!("{}/download/cpu/{edge}/input_bytes", rule.identity_key),
+                bytes,
+            );
+        }
+    }
+    Ok(snapshot)
+}
+
+fn counter_values(edge: &str, hook: &str, chain: u32) -> Result<Vec<Value>, String> {
+    if !system::interface_exists(edge) || !system::has_qdisc(edge, "clsact", None)? {
+        return Err("cpu_path_counter_unavailable".into());
+    }
+    let output = system::output(
+        "tc",
+        &[
+            "-j",
+            "-s",
+            "-d",
+            "filter",
+            "show",
+            "dev",
+            edge,
+            hook,
+            "chain",
+            &chain.to_string(),
+        ],
+    )?;
+    if !output.status.success() {
+        return Err("cpu_path_counter_unavailable".into());
+    }
+    system::tc_filter_values(&output.stdout, "cpu_path_counter_unavailable")
+}
+
+fn protocol_action_bytes(
+    values: &[Value],
+    pref: &mut u32,
+    action_kind: &str,
+) -> Result<u64, String> {
+    let mut total = 0u64;
+    for protocol in PROTOCOLS {
+        let matches = values
+            .iter()
+            .filter(|value| {
+                value.get("kind").and_then(Value::as_str) == Some("u32")
+                    && value.get("pref").and_then(Value::as_u64) == Some(u64::from(*pref))
+                    && value.get("protocol").and_then(Value::as_str) == Some(protocol)
+            })
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            return Err("cpu_path_counter_unavailable".into());
+        }
+        let actions = matches[0]
+            .get("options")
+            .and_then(|options| options.get("actions"))
+            .and_then(Value::as_array)
+            .ok_or_else(|| "cpu_path_counter_unavailable".to_owned())?;
+        let matching = actions
+            .iter()
+            .filter(|action| action.get("kind").and_then(Value::as_str) == Some(action_kind))
+            .collect::<Vec<_>>();
+        if matching.len() != 1 {
+            return Err("cpu_path_counter_unavailable".into());
+        }
+        let bytes = matching[0]
+            .get("stats")
+            .and_then(|stats| stats.get("bytes"))
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "cpu_path_counter_unavailable".to_owned())?;
+        total = total.saturating_add(bytes);
+        *pref = pref.saturating_add(1);
+    }
+    Ok(total)
+}
+
 fn upload_edges(plan: &ControlPlan) -> BTreeMap<String, String> {
     plan.rules
         .iter()
@@ -329,6 +434,7 @@ fn sync_upload_mappings(plan: &ControlPlan) -> Result<Vec<String>, String> {
     }
     let mut published = Vec::new();
     for (edge, device) in desired {
+        let peers = upload_peer_macs(plan, &edge);
         let operation = (|| {
             if ifb::device(&edge) != device {
                 return Err("nss_igs_mapping_verification_failed".to_owned());
@@ -337,9 +443,15 @@ fn sync_upload_mappings(plan: &ControlPlan) -> Result<Vec<String>, String> {
             let was_published = ifb::state(&device)? == Some(ifb::IgsState::Published);
             let result = ifb::publish(&edge);
             if !was_published {
-                published.push(edge);
+                published.push(edge.clone());
             }
             result?;
+            if let Err(error) = ifb::sync_peers(&edge, &peers) {
+                return match ifb::unpublish(&edge) {
+                    Ok(()) => Err(error),
+                    Err(cleanup_error) => Err(format!("{error};{cleanup_error}")),
+                };
+            }
             Ok(())
         })();
         if let Err(error) = operation {
@@ -350,6 +462,18 @@ fn sync_upload_mappings(plan: &ControlPlan) -> Result<Vec<String>, String> {
         }
     }
     Ok(published)
+}
+
+fn upload_peer_macs(plan: &ControlPlan, edge: &str) -> BTreeSet<crate::identity::MacAddress> {
+    plan.rules
+        .iter()
+        .filter(|rule| {
+            rule.interface == edge
+                && rule.upload_bps != 0
+                && plan.nss_direction_path_ready(&rule.identity_key, NSS_CPU_UPLOAD)
+        })
+        .map(|rule| rule.mac)
+        .collect()
 }
 
 fn rollback_publications(edges: &[String]) -> Result<(), String> {

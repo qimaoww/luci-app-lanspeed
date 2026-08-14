@@ -294,6 +294,53 @@ fn nss_control_startup_proof_excludes_unclassified_local_edge_traffic() {
         (true, true, false, false, false)
     );
 }
+
+#[test]
+fn nss_control_path_proves_wifi_identity_without_cross_domain_subtraction() {
+    use crate::platform::access_edge::DirectionClassification;
+    use crate::platform::nss::control::PathProbeDirectionWindow;
+
+    let direct = DirectionClassification {
+        edge_bps: Some(100_000_000),
+        nss_bps: Some(90_000_000),
+        slow_bps: Some(10_000_000),
+        unclassified_bps: None,
+        coverage_pct: None,
+    };
+    assert_eq!(
+        nss_control_direction_path_for_attachment(
+            ClassificationState::DomainMismatch,
+            Some(2_000),
+            Some(6_000),
+            direct,
+            None,
+            true,
+        ),
+        (true, true, true, true, false)
+    );
+
+    let cpu = DirectionClassification {
+        edge_bps: Some(100_000_000),
+        nss_bps: Some(0),
+        slow_bps: Some(100_000_000),
+        unclassified_bps: None,
+        coverage_pct: None,
+    };
+    assert_eq!(
+        nss_control_direction_path_for_attachment(
+            ClassificationState::DomainMismatch,
+            Some(2_000),
+            Some(6_000),
+            cpu,
+            Some(PathProbeDirectionWindow {
+                bytes: 75_000_000,
+                bps: 100_000_000,
+            }),
+            true,
+        ),
+        (true, true, true, false, true)
+    );
+}
 use crate::platform::nss::ecm_bpf::EcmBpfClientSample;
 
 #[derive(Default)]

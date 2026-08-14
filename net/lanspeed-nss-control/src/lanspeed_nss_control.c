@@ -9,13 +9,16 @@
 
 #include <linux/if.h>
 #include <linux/completion.h>
+#include <linux/etherdevice.h>
 #include <linux/inet.h>
+#include <linux/if_vlan.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/mutex.h>
 #include <linux/netfilter.h>
+#include <linux/netfilter_bridge.h>
 #include <linux/netfilter_ipv4.h>
 #include <linux/netdevice.h>
 #include <linux/rtnetlink.h>
@@ -39,16 +42,21 @@ enum lanspeed_igs_state {
 	LANSPEED_IGS_DEGRADED,
 };
 
+#define LANSPEED_MAX_WIFI_PEERS 64
+
 struct lanspeed_igs_entry {
 	struct list_head list;
 	struct net_device *dev;
 	struct net_device *edge;
 	int if_num;
 	enum lanspeed_igs_state state;
+	u16 peer_count;
+	u8 peers[LANSPEED_MAX_WIFI_PEERS][ETH_ALEN];
 };
 
 #define LANSPEED_MAX_TAG_ADDRESSES 64
 #define LANSPEED_MAX_LOCAL_PREFIXES 64
+#define LANSPEED_MAX_EDGE_DEVICES 64
 
 struct lanspeed_tag_address {
 	u8 family;
@@ -75,12 +83,165 @@ struct lanspeed_tag_config {
 	struct lanspeed_local_prefix prefixes[LANSPEED_MAX_LOCAL_PREFIXES];
 };
 
+struct lanspeed_peer_config {
+	char ifb[IFNAMSIZ];
+	u16 count;
+	u8 peers[LANSPEED_MAX_WIFI_PEERS][ETH_ALEN];
+};
+
 static LIST_HEAD(lanspeed_igs_entries);
 static DEFINE_MUTEX(lanspeed_igs_lock);
 static DECLARE_COMPLETION(lanspeed_igs_completion);
 static enum nss_cmn_response lanspeed_igs_response;
+static DECLARE_COMPLETION(lanspeed_wifi_completion);
+static enum nss_cmn_response lanspeed_wifi_response;
 static DEFINE_SPINLOCK(lanspeed_tag_lock);
 static struct lanspeed_tag_config lanspeed_tags;
+static struct net_device *lanspeed_edges[LANSPEED_MAX_EDGE_DEVICES];
+static u16 lanspeed_edge_count;
+
+static struct lanspeed_igs_entry *lanspeed_igs_find_edge(struct net_device *edge);
+
+/*
+ * NSS VAPs use the Wi-Fi vdev nexthop message, not the generic interface
+ * message used by wired edges.  Detect the dynamic type from the driver's
+ * Wi-Fi context so edge selection stays dynamic and covers every VAP name.
+ */
+static bool lanspeed_edge_is_vap(int32_t edge_if_num)
+{
+	return nss_dynamic_interface_get_type(nss_wifili_get_context(),
+					      edge_if_num) == NSS_DYNAMIC_INTERFACE_TYPE_VAP;
+}
+
+static void lanspeed_wifi_callback(void *app_data, struct nss_cmn_msg *message)
+{
+	lanspeed_wifi_response = message->response;
+	complete(&lanspeed_wifi_completion);
+}
+
+static nss_tx_status_t lanspeed_wifi_set_nexthop(int32_t edge_if_num,
+						  int32_t igs_if_num)
+{
+	struct nss_wifi_vdev_msg *message;
+	nss_tx_status_t status;
+
+	message = kzalloc(sizeof(*message), GFP_KERNEL);
+	if (!message)
+		return NSS_TX_FAILURE;
+	message->msg.next_hop.ifnumber = igs_if_num;
+	reinit_completion(&lanspeed_wifi_completion);
+	lanspeed_wifi_response = NSS_CMN_RESPONSE_LAST;
+	nss_cmn_msg_init(&message->cm, edge_if_num,
+			 NSS_WIFI_VDEV_SET_NEXT_HOP,
+			 sizeof(message->msg.next_hop),
+			 lanspeed_wifi_callback, NULL);
+	status = nss_wifi_vdev_tx_msg(nss_wifili_get_context(), message);
+	if (status == NSS_TX_SUCCESS &&
+	    !wait_for_completion_timeout(&lanspeed_wifi_completion,
+					 msecs_to_jiffies(NSS_IF_TX_TIMEOUT)))
+		status = NSS_TX_FAILURE;
+	if (status == NSS_TX_SUCCESS &&
+	    lanspeed_wifi_response != NSS_CMN_RESPONSE_ACK)
+		status = NSS_TX_FAILURE;
+	kfree(message);
+	return status;
+}
+
+static nss_tx_status_t lanspeed_wifi_set_peer_nexthop(int32_t edge_if_num,
+						       const u8 peer[ETH_ALEN],
+						       int32_t next_hop_if_num)
+{
+	struct nss_wifi_vdev_set_peer_next_hop_msg *next_hop;
+	struct nss_wifi_vdev_msg *message;
+	nss_tx_status_t status;
+
+	message = kzalloc(sizeof(*message), GFP_KERNEL);
+	if (!message)
+		return NSS_TX_FAILURE;
+	next_hop = &message->msg.vdev_set_peer_next_hp;
+	ether_addr_copy(next_hop->peer_mac_addr, peer);
+	next_hop->if_num = next_hop_if_num;
+	reinit_completion(&lanspeed_wifi_completion);
+	lanspeed_wifi_response = NSS_CMN_RESPONSE_LAST;
+	nss_cmn_msg_init(&message->cm, edge_if_num,
+			 NSS_WIFI_VDEV_SET_PEER_NEXT_HOP,
+			 sizeof(*next_hop), lanspeed_wifi_callback, NULL);
+	status = nss_wifi_vdev_tx_msg(nss_wifili_get_context(), message);
+	if (status == NSS_TX_SUCCESS &&
+	    !wait_for_completion_timeout(&lanspeed_wifi_completion,
+					 msecs_to_jiffies(NSS_IF_TX_TIMEOUT)))
+		status = NSS_TX_FAILURE;
+	if (status == NSS_TX_SUCCESS &&
+	    lanspeed_wifi_response != NSS_CMN_RESPONSE_ACK)
+		status = NSS_TX_FAILURE;
+	kfree(message);
+	return status;
+}
+
+static nss_tx_status_t lanspeed_set_nexthop(int32_t edge_if_num,
+					    int32_t igs_if_num)
+{
+	if (lanspeed_edge_is_vap(edge_if_num))
+		return lanspeed_wifi_set_nexthop(edge_if_num, igs_if_num);
+	return nss_if_set_nexthop(nss_igs_get_context(), edge_if_num, igs_if_num);
+}
+
+static nss_tx_status_t lanspeed_reset_nexthop(int32_t edge_if_num)
+{
+	if (lanspeed_edge_is_vap(edge_if_num))
+		return nss_if_reset_nexthop(nss_wifili_get_context(), edge_if_num);
+	return nss_if_reset_nexthop(nss_igs_get_context(), edge_if_num);
+}
+
+static bool lanspeed_edge_add(struct net_device *edge)
+{
+	u16 index;
+
+	spin_lock_bh(&lanspeed_tag_lock);
+	for (index = 0; index < lanspeed_edge_count; index++) {
+		if (lanspeed_edges[index] == edge) {
+			spin_unlock_bh(&lanspeed_tag_lock);
+			return true;
+		}
+	}
+	if (lanspeed_edge_count >= LANSPEED_MAX_EDGE_DEVICES) {
+		spin_unlock_bh(&lanspeed_tag_lock);
+		return false;
+	}
+	lanspeed_edges[lanspeed_edge_count++] = edge;
+	spin_unlock_bh(&lanspeed_tag_lock);
+	return true;
+}
+
+static void lanspeed_edge_del(struct net_device *edge)
+{
+	u16 index;
+
+	spin_lock_bh(&lanspeed_tag_lock);
+	for (index = 0; index < lanspeed_edge_count; index++) {
+		if (lanspeed_edges[index] != edge)
+			continue;
+		lanspeed_edges[index] = lanspeed_edges[--lanspeed_edge_count];
+		break;
+	}
+	spin_unlock_bh(&lanspeed_tag_lock);
+}
+
+static bool lanspeed_edge_published(struct net_device *edge)
+{
+	u16 index;
+	bool found = false;
+
+	spin_lock_bh(&lanspeed_tag_lock);
+	for (index = 0; index < lanspeed_edge_count; index++) {
+		if (lanspeed_edges[index] == edge) {
+			found = true;
+			break;
+		}
+	}
+	spin_unlock_bh(&lanspeed_tag_lock);
+	return found;
+}
 
 static int lanspeed_netdev_event(struct notifier_block *notifier,
 				unsigned long event, void *data);
@@ -159,12 +320,31 @@ static u16 lanspeed_tag_v6(const struct in6_addr *address,
 	return 0;
 }
 
-static unsigned int lanspeed_tag_hook(void *priv, struct sk_buff *skb,
-				       const struct nf_hook_state *state)
+static void lanspeed_apply_qos_tag(struct sk_buff *skb, u16 qos_tag)
 {
 	struct nf_ct_dscpremark_ext *extension;
 	enum ip_conntrack_info ctinfo;
 	struct nf_conn *ct;
+	if (!qos_tag)
+		return;
+
+	ct = nf_ct_get(skb, &ctinfo);
+	if (!ct)
+		return;
+	extension = nf_ct_dscpremark_ext_find(ct);
+	if (!extension)
+		return;
+	spin_lock_bh(&ct->lock);
+	if (CTINFO2DIR(ctinfo) == IP_CT_DIR_ORIGINAL)
+		extension->igs_flow_qos_tag = qos_tag;
+	else
+		extension->igs_reply_qos_tag = qos_tag;
+	spin_unlock_bh(&ct->lock);
+}
+
+static unsigned int lanspeed_tag_hook(void *priv, struct sk_buff *skb,
+					      const struct nf_hook_state *state)
+{
 	u16 qos_tag = 0;
 
 	spin_lock_bh(&lanspeed_tag_lock);
@@ -187,21 +367,47 @@ static unsigned int lanspeed_tag_hook(void *priv, struct sk_buff *skb,
 	}
 unlock:
 	spin_unlock_bh(&lanspeed_tag_lock);
-	if (!qos_tag)
+	lanspeed_apply_qos_tag(skb, qos_tag);
+	return NF_ACCEPT;
+}
+
+static unsigned int lanspeed_bridge_tag_hook(void *priv, struct sk_buff *skb,
+					     const struct nf_hook_state *state)
+{
+	__be16 protocol;
+	u16 qos_tag = 0;
+
+	/* Only dynamically published LAN edges may establish client identity.
+	 * This keeps spoofed client addresses arriving from WAN out of the tag
+	 * path while allowing the actual Wi-Fi and wired NSS ingress edges.
+	 */
+	if (!state->in || !lanspeed_edge_published(state->in))
 		return NF_ACCEPT;
 
-	ct = nf_ct_get(skb, &ctinfo);
-	if (!ct)
-		return NF_ACCEPT;
-	extension = nf_ct_dscpremark_ext_find(ct);
-	if (!extension)
-		return NF_ACCEPT;
-	spin_lock_bh(&ct->lock);
-	if (CTINFO2DIR(ctinfo) == IP_CT_DIR_ORIGINAL)
-		extension->igs_flow_qos_tag = qos_tag;
-	else
-		extension->igs_reply_qos_tag = qos_tag;
-	spin_unlock_bh(&ct->lock);
+	protocol = vlan_get_protocol(skb);
+	if (protocol == htons(ETH_P_IP)) {
+		const struct iphdr *header;
+
+		if (!pskb_network_may_pull(skb, sizeof(*header)))
+			return NF_ACCEPT;
+		header = ip_hdr(skb);
+		spin_lock_bh(&lanspeed_tag_lock);
+		if (!lanspeed_local_v4(header->daddr, &lanspeed_tags))
+			qos_tag = lanspeed_tag_v4(header->saddr, &lanspeed_tags);
+		spin_unlock_bh(&lanspeed_tag_lock);
+	} else if (protocol == htons(ETH_P_IPV6)) {
+		const struct ipv6hdr *header;
+
+		if (!pskb_network_may_pull(skb, sizeof(*header)))
+			return NF_ACCEPT;
+		header = ipv6_hdr(skb);
+		spin_lock_bh(&lanspeed_tag_lock);
+		if (!lanspeed_local_v6(&header->daddr, &lanspeed_tags))
+			qos_tag = lanspeed_tag_v6(&header->saddr, &lanspeed_tags);
+		spin_unlock_bh(&lanspeed_tag_lock);
+	}
+
+	lanspeed_apply_qos_tag(skb, qos_tag);
 	return NF_ACCEPT;
 }
 
@@ -216,6 +422,12 @@ static struct nf_hook_ops lanspeed_tag_hooks[] = {
 		.hook = lanspeed_tag_hook,
 		.pf = NFPROTO_IPV6,
 		.hooknum = NF_INET_PRE_ROUTING,
+		.priority = NF_IP_PRI_CONNTRACK + 2,
+	},
+	{
+		.hook = lanspeed_bridge_tag_hook,
+		.pf = NFPROTO_BRIDGE,
+		.hooknum = NF_BR_PRE_ROUTING,
 		.priority = NF_IP_PRI_CONNTRACK + 2,
 	},
 };
@@ -286,6 +498,56 @@ static int lanspeed_pair(const char *value, char ifb[IFNAMSIZ],
 	    strscpy(edge, edge_name, IFNAMSIZ) < 0)
 		return -EINVAL;
 	return 0;
+}
+
+static bool lanspeed_peer_contains(const u8 peers[][ETH_ALEN], u16 count,
+				   const u8 peer[ETH_ALEN])
+{
+	u16 index;
+
+	for (index = 0; index < count; index++) {
+		if (ether_addr_equal(peers[index], peer))
+			return true;
+	}
+	return false;
+}
+
+static int lanspeed_peer_config_parse(const char *value,
+				       struct lanspeed_peer_config *config)
+{
+	char *input;
+	char *cursor;
+	char *field;
+	int error = -EINVAL;
+
+	input = kstrndup(value, PAGE_SIZE, GFP_KERNEL);
+	if (!input)
+		return -ENOMEM;
+	cursor = strim(input);
+	field = strsep(&cursor, " \t");
+	if (!field || strcmp(field, "v1"))
+		goto out;
+	do {
+		field = strsep(&cursor, " \t");
+	} while (field && !*field);
+	if (!field || strscpy(config->ifb, field, IFNAMSIZ) < 0)
+		goto out;
+	while (cursor) {
+		field = strsep(&cursor, " \t");
+		if (!field || !*field)
+			continue;
+		if (config->count >= LANSPEED_MAX_WIFI_PEERS ||
+		    !mac_pton(field, config->peers[config->count]) ||
+		    !is_valid_ether_addr(config->peers[config->count]) ||
+		    lanspeed_peer_contains(config->peers, config->count,
+					    config->peers[config->count]))
+			goto out;
+		config->count++;
+	}
+	error = 0;
+out:
+	kfree(input);
+	return error;
 }
 
 static bool lanspeed_tag_address_duplicate(const struct lanspeed_tag_config *config,
@@ -527,6 +789,84 @@ static int lanspeed_igs_config(struct net_device *edge, u32 type,
 	return 0;
 }
 
+static int lanspeed_peer_config_apply(struct lanspeed_igs_entry *entry,
+				       const struct lanspeed_peer_config *desired)
+{
+	int32_t edge_if_num;
+	u16 index;
+	u16 rollback;
+
+	if (entry->state != LANSPEED_IGS_PUBLISHED || !entry->edge)
+		return -EINVAL;
+	edge_if_num = nss_cmn_get_interface_number_by_dev(entry->edge);
+	if (edge_if_num < 0 || !lanspeed_edge_is_vap(edge_if_num))
+		return -ENODEV;
+
+	/* Reassert every desired peer even when it is cached locally. A station
+	 * reconnect deletes and recreates the NSS peer without recreating the VAP
+	 * netdevice, so a cached peer binding alone is not proof of ownership. */
+	for (index = 0; index < desired->count; index++) {
+		if (lanspeed_wifi_set_peer_nexthop(edge_if_num,
+				desired->peers[index], entry->if_num) == NSS_TX_SUCCESS)
+			continue;
+		for (rollback = 0; rollback < index; rollback++) {
+			if (!lanspeed_peer_contains(entry->peers, entry->peer_count,
+						    desired->peers[rollback]))
+				lanspeed_wifi_set_peer_nexthop(edge_if_num,
+					desired->peers[rollback], NSS_ETH_RX_INTERFACE);
+		}
+		return -EIO;
+	}
+
+	for (index = 0; index < entry->peer_count; index++) {
+		if (lanspeed_peer_contains(desired->peers, desired->count,
+					    entry->peers[index]))
+			continue;
+		if (lanspeed_wifi_set_peer_nexthop(edge_if_num, entry->peers[index],
+						    NSS_ETH_RX_INTERFACE) == NSS_TX_SUCCESS)
+			continue;
+		for (rollback = 0; rollback < entry->peer_count; rollback++)
+			lanspeed_wifi_set_peer_nexthop(edge_if_num, entry->peers[rollback],
+						 entry->if_num);
+		for (rollback = 0; rollback < desired->count; rollback++) {
+			if (!lanspeed_peer_contains(entry->peers, entry->peer_count,
+						    desired->peers[rollback]))
+				lanspeed_wifi_set_peer_nexthop(edge_if_num,
+					desired->peers[rollback], NSS_ETH_RX_INTERFACE);
+		}
+		return -EIO;
+	}
+
+	entry->peer_count = desired->count;
+	memcpy(entry->peers, desired->peers,
+	       desired->count * sizeof(desired->peers[0]));
+	return 0;
+}
+
+static int lanspeed_peer_config_reset(struct lanspeed_igs_entry *entry)
+{
+	int32_t edge_if_num;
+	u16 index;
+	bool failed = false;
+
+	if (!entry->peer_count)
+		return 0;
+	if (!entry->edge)
+		return -ENODEV;
+	edge_if_num = nss_cmn_get_interface_number_by_dev(entry->edge);
+	if (edge_if_num < 0 || !lanspeed_edge_is_vap(edge_if_num))
+		return -ENODEV;
+	for (index = 0; index < entry->peer_count; index++) {
+		if (lanspeed_wifi_set_peer_nexthop(edge_if_num, entry->peers[index],
+						    NSS_ETH_RX_INTERFACE) != NSS_TX_SUCCESS)
+			failed = true;
+	}
+	if (failed)
+		return -EIO;
+	entry->peer_count = 0;
+	return 0;
+}
+
 static int lanspeed_igs_publish_entry(struct lanspeed_igs_entry *entry,
 					      struct net_device *edge)
 {
@@ -543,14 +883,24 @@ static int lanspeed_igs_publish_entry(struct lanspeed_igs_entry *entry,
 	/* Retain the edge and expose a degraded state until both messages commit. */
 	entry->edge = edge;
 	entry->state = LANSPEED_IGS_DEGRADED;
-	status = nss_if_set_nexthop(nss_igs_get_context(),
-			nss_cmn_get_interface_number_by_dev(edge), entry->if_num);
+	status = lanspeed_set_nexthop(nss_cmn_get_interface_number_by_dev(edge),
+			entry->if_num);
 	if (status != NSS_TX_SUCCESS) {
 		/* Clear the first message. If that fails, keep DEGRADED so a later
 		 * observe/reload can retry the precise cleanup instead of claiming staged. */
 		if (!lanspeed_igs_config(edge, NSS_IF_CLEAR_IGS_NODE, entry->if_num)) {
 			entry->edge = NULL;
 			entry->state = LANSPEED_IGS_STAGED;
+		}
+		return -EIO;
+	}
+	if (!lanspeed_edge_add(edge)) {
+		lanspeed_reset_nexthop(nss_cmn_get_interface_number_by_dev(edge));
+		if (!lanspeed_igs_config(edge, NSS_IF_CLEAR_IGS_NODE,
+					 entry->if_num)) {
+			entry->edge = NULL;
+			entry->state = LANSPEED_IGS_STAGED;
+			return -ENOSPC;
 		}
 		return -EIO;
 	}
@@ -570,8 +920,10 @@ static int lanspeed_igs_unpublish_entry(struct lanspeed_igs_entry *entry)
 	edge_if_num = nss_cmn_get_interface_number_by_dev(entry->edge);
 	if (edge_if_num < 0)
 		return -ENODEV;
+	if (lanspeed_peer_config_reset(entry))
+		return -EIO;
 	if (entry->state == LANSPEED_IGS_PUBLISHED &&
-	    nss_if_reset_nexthop(nss_igs_get_context(), edge_if_num) !=
+	    lanspeed_reset_nexthop(edge_if_num) !=
 	    NSS_TX_SUCCESS)
 		return -EIO;
 	error = lanspeed_igs_config(entry->edge, NSS_IF_CLEAR_IGS_NODE,
@@ -580,6 +932,7 @@ static int lanspeed_igs_unpublish_entry(struct lanspeed_igs_entry *entry)
 		entry->state = LANSPEED_IGS_DEGRADED;
 		return error;
 	}
+	lanspeed_edge_del(entry->edge);
 	dev_put(entry->edge);
 	entry->edge = NULL;
 	entry->state = LANSPEED_IGS_STAGED;
@@ -595,11 +948,14 @@ static void lanspeed_igs_forget_edge(struct lanspeed_igs_entry *entry)
 		return;
 	edge_if_num = nss_cmn_get_interface_number_by_dev(entry->edge);
 	if (edge_if_num >= 0) {
+		lanspeed_peer_config_reset(entry);
 		if (entry->state == LANSPEED_IGS_PUBLISHED)
-			nss_if_reset_nexthop(nss_igs_get_context(), edge_if_num);
+			lanspeed_reset_nexthop(edge_if_num);
 		lanspeed_igs_config(entry->edge, NSS_IF_CLEAR_IGS_NODE,
 					    entry->if_num);
 	}
+	entry->peer_count = 0;
+	lanspeed_edge_del(entry->edge);
 	dev_put(entry->edge);
 	entry->edge = NULL;
 	entry->state = LANSPEED_IGS_STAGED;
@@ -811,6 +1167,55 @@ out:
 	return error;
 }
 
+static int lanspeed_peer_sync_set(const char *value,
+				   const struct kernel_param *kp)
+{
+	struct lanspeed_peer_config *config;
+	struct lanspeed_igs_entry *entry;
+	int error;
+
+	config = kzalloc(sizeof(*config), GFP_KERNEL);
+	if (!config)
+		return -ENOMEM;
+	error = lanspeed_peer_config_parse(value, config);
+	if (error)
+		goto out;
+	mutex_lock(&lanspeed_igs_lock);
+	entry = lanspeed_igs_find(config->ifb);
+	if (!entry) {
+		error = -ENOENT;
+		goto unlock;
+	}
+	error = lanspeed_peer_config_apply(entry, config);
+unlock:
+	mutex_unlock(&lanspeed_igs_lock);
+out:
+	kfree(config);
+	return error;
+}
+
+static int lanspeed_peer_status_get(char *buffer,
+				     const struct kernel_param *kp)
+{
+	struct lanspeed_igs_entry *entry;
+	int length = 0;
+	u16 index;
+
+	mutex_lock(&lanspeed_igs_lock);
+	list_for_each_entry(entry, &lanspeed_igs_entries, list) {
+		for (index = 0; index < entry->peer_count; index++) {
+			length += scnprintf(buffer + length, PAGE_SIZE - length,
+					    "%s %pM\n", entry->dev->name,
+					    entry->peers[index]);
+			if (length >= PAGE_SIZE - 1)
+				goto out;
+		}
+	}
+out:
+	mutex_unlock(&lanspeed_igs_lock);
+	return length;
+}
+
 static int lanspeed_status_get(char *buffer, const struct kernel_param *kp)
 {
 	struct lanspeed_igs_entry *entry;
@@ -846,6 +1251,12 @@ static const struct kernel_param_ops lanspeed_unstage_ops = {
 static const struct kernel_param_ops lanspeed_status_ops = {
 	.get = lanspeed_status_get,
 };
+static const struct kernel_param_ops lanspeed_peer_sync_ops = {
+	.set = lanspeed_peer_sync_set,
+};
+static const struct kernel_param_ops lanspeed_peer_status_ops = {
+	.get = lanspeed_peer_status_get,
+};
 static const struct kernel_param_ops lanspeed_tag_config_ops = {
 	.set = lanspeed_tag_config_set,
 	.get = lanspeed_tag_config_get,
@@ -861,6 +1272,10 @@ module_param_cb(unstage, &lanspeed_unstage_ops, NULL, 0200);
 MODULE_PARM_DESC(unstage, "Unregister an unpublished staged IGS node");
 module_param_cb(status, &lanspeed_status_ops, NULL, 0400);
 MODULE_PARM_DESC(status, "List staged, published, and degraded LAN Speed IGS nodes");
+module_param_cb(peer_sync, &lanspeed_peer_sync_ops, NULL, 0200);
+MODULE_PARM_DESC(peer_sync, "Atomically rebind LAN Speed-owned Wi-Fi peers to an IGS node");
+module_param_cb(peer_status, &lanspeed_peer_status_ops, NULL, 0400);
+MODULE_PARM_DESC(peer_status, "List LAN Speed-owned Wi-Fi peer nexthop bindings");
 module_param_cb(tag_config, &lanspeed_tag_config_ops, NULL, 0600);
 MODULE_PARM_DESC(tag_config, "Atomically replace LAN Speed ingress QoS tag ownership");
 

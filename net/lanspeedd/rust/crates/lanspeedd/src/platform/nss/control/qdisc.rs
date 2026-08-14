@@ -895,13 +895,24 @@ fn default_class_rate_bps(device: &str) -> Result<u64, String> {
     if std::fs::metadata(format!("/sys/class/net/{device}/phy80211")).is_ok() {
         return Ok(NSS_MAX_RATE_BPS);
     }
-    let physical_rate = std::fs::read_to_string(format!("/sys/class/net/{device}/speed"))
+    let speed = std::fs::read_to_string(format!("/sys/class/net/{device}/speed"))
         .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .and_then(|speed_mbps| speed_mbps.checked_mul(1_000_000))
-        .filter(|rate| *rate != 0 && *rate < NSS_MAX_RATE_BPS)
-        .ok_or_else(|| "nss_default_class_capacity_exceeded".to_owned())?;
-    debug_assert!(NSS_MAX_RATE_BPS > physical_rate);
+        .and_then(|value| value.trim().parse::<i64>().ok());
+    default_class_rate_for_speed(speed)
+}
+
+fn default_class_rate_for_speed(speed_mbps: Option<i64>) -> Result<u64, String> {
+    if let Some(speed_mbps) = speed_mbps.filter(|speed| *speed > 0) {
+        let physical_rate = (speed_mbps as u64)
+            .checked_mul(1_000_000)
+            .ok_or_else(|| "nss_default_class_capacity_exceeded".to_owned())?;
+        if physical_rate > NSS_MAX_RATE_BPS {
+            return Err("nss_default_class_capacity_exceeded".to_owned());
+        }
+    }
+    // Some NSS edge drivers report -1 or leave speed unreadable. That is an
+    // unknown link rate, not proof that the default pass-through class is too
+    // small. Keep the NSS maximum as the non-client default in that case.
     Ok(NSS_MAX_RATE_BPS)
 }
 
