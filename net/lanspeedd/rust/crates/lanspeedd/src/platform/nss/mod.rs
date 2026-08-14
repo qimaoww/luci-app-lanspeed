@@ -12,6 +12,8 @@ pub(crate) mod fast_rate;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod fast_rate_store;
 #[cfg(any(feature = "openwrt", test))]
+pub(crate) mod fast_rate_wakeup;
+#[cfg(any(feature = "openwrt", test))]
 pub(crate) mod fast_s_timer;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod fusion;
