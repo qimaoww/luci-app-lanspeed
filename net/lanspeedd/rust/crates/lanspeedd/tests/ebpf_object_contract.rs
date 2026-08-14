@@ -7,8 +7,11 @@ use std::{
 use aya_obj::{generated::bpf_map_type, obj::ProgramSection, Object};
 use lanspeed_common::{
     CLIENTS_MAP_NAME, ECM_CLIENTS_MAP_NAME, ECM_EVENT_RINGBUF_MAP_NAME, ECM_EVENT_STATS_MAP_NAME,
-    ECM_LAYOUT_MAP_NAME, ECM_NSS_CONTEXT_MAP_NAME, ECM_NSS_ENTER_PROGRAM_NAME,
-    ECM_NSS_EXIT_PROGRAM_NAME, ECM_SOURCE_STATS_MAP_NAME, ECM_UPDATE_PROGRAM_NAME,
+    ECM_LAYOUT_MAP_NAME, ECM_NSS_CONTEXT_MAP_NAME, ECM_NSS_ENTER_NETDEV_V4_PROGRAM_NAME,
+    ECM_NSS_ENTER_NETDEV_V6_PROGRAM_NAME, ECM_NSS_ENTER_SYNC_MANY_V4_PROGRAM_NAME,
+    ECM_NSS_ENTER_SYNC_MANY_V6_PROGRAM_NAME, ECM_NSS_EXIT_NETDEV_V4_PROGRAM_NAME,
+    ECM_NSS_EXIT_NETDEV_V6_PROGRAM_NAME, ECM_NSS_EXIT_SYNC_MANY_V4_PROGRAM_NAME,
+    ECM_NSS_EXIT_SYNC_MANY_V6_PROGRAM_NAME, ECM_SOURCE_STATS_MAP_NAME, ECM_UPDATE_PROGRAM_NAME,
     EGRESS_EARLY_PROGRAM_NAME, EGRESS_PROGRAM_NAME, INGRESS_EARLY_PROGRAM_NAME,
     INGRESS_PROGRAM_NAME, MAX_CLIENTS, MAX_CONN_TUPLES, MAX_ECM_NSS_CONTEXTS, SEEN_CONNS_MAP_NAME,
 };
@@ -396,8 +399,14 @@ fn aarch64_ecm_object_is_isolated_from_tc_and_uses_aarch64_probe_registers() {
             .map(String::as_str)
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([
-            ECM_NSS_ENTER_PROGRAM_NAME,
-            ECM_NSS_EXIT_PROGRAM_NAME,
+            ECM_NSS_ENTER_NETDEV_V4_PROGRAM_NAME,
+            ECM_NSS_ENTER_NETDEV_V6_PROGRAM_NAME,
+            ECM_NSS_ENTER_SYNC_MANY_V4_PROGRAM_NAME,
+            ECM_NSS_ENTER_SYNC_MANY_V6_PROGRAM_NAME,
+            ECM_NSS_EXIT_NETDEV_V4_PROGRAM_NAME,
+            ECM_NSS_EXIT_NETDEV_V6_PROGRAM_NAME,
+            ECM_NSS_EXIT_SYNC_MANY_V4_PROGRAM_NAME,
+            ECM_NSS_EXIT_SYNC_MANY_V6_PROGRAM_NAME,
             ECM_UPDATE_PROGRAM_NAME,
         ])
     );
@@ -405,14 +414,28 @@ fn aarch64_ecm_object_is_isolated_from_tc_and_uses_aarch64_probe_registers() {
         parsed.programs[ECM_UPDATE_PROGRAM_NAME].section,
         ProgramSection::KProbe
     ));
-    assert!(matches!(
-        parsed.programs[ECM_NSS_ENTER_PROGRAM_NAME].section,
-        ProgramSection::KProbe
-    ));
-    assert!(matches!(
-        parsed.programs[ECM_NSS_EXIT_PROGRAM_NAME].section,
-        ProgramSection::KRetProbe
-    ));
+    for program in [
+        ECM_NSS_ENTER_NETDEV_V4_PROGRAM_NAME,
+        ECM_NSS_ENTER_NETDEV_V6_PROGRAM_NAME,
+        ECM_NSS_ENTER_SYNC_MANY_V4_PROGRAM_NAME,
+        ECM_NSS_ENTER_SYNC_MANY_V6_PROGRAM_NAME,
+    ] {
+        assert!(matches!(
+            parsed.programs[program].section,
+            ProgramSection::KProbe
+        ));
+    }
+    for program in [
+        ECM_NSS_EXIT_NETDEV_V4_PROGRAM_NAME,
+        ECM_NSS_EXIT_NETDEV_V6_PROGRAM_NAME,
+        ECM_NSS_EXIT_SYNC_MANY_V4_PROGRAM_NAME,
+        ECM_NSS_EXIT_SYNC_MANY_V6_PROGRAM_NAME,
+    ] {
+        assert!(matches!(
+            parsed.programs[program].section,
+            ProgramSection::KRetProbe
+        ));
+    }
 
     let clients = &parsed.maps[ECM_CLIENTS_MAP_NAME];
     assert_eq!(

@@ -12,8 +12,9 @@ use aya_ebpf::{
 };
 use lanspeed_common::{
     packet::is_valid_client_mac, EcmCounters, EcmCountersUpdatedEvent, EcmEventStats, EcmKey,
-    EcmLayout, EcmNssContext, EcmSourceStats, DIR_RX, DIR_TX, ECM_EVENT_RINGBUF_BYTES, MAX_CLIENTS,
-    MAX_ECM_NSS_CONTEXTS,
+    EcmLayout, EcmNssContext, EcmSourceStats, DIR_RX, DIR_TX, ECM_EVENT_RINGBUF_BYTES,
+    ECM_SOURCE_NETDEV_V4, ECM_SOURCE_NETDEV_V6, ECM_SOURCE_SYNC_MANY_V4, ECM_SOURCE_SYNC_MANY_V6,
+    MAX_CLIENTS, MAX_ECM_NSS_CONTEXTS,
 };
 
 use crate::atomics::add_u64;
@@ -40,14 +41,50 @@ pub static LANSPEED_ECM_EVENT_RINGBUF: RingBuf =
 pub static LANSPEED_ECM_EVENT_STATS: Array<EcmEventStats> = Array::with_max_entries(1, 0);
 
 #[kprobe]
-pub fn lanspeed_ecm_nss_enter(_ctx: ProbeContext) -> u32 {
-    update_nss_context(true);
+pub fn lanspeed_ecm_nss_enter_sync_many_v4(_ctx: ProbeContext) -> u32 {
+    update_nss_context(true, ECM_SOURCE_SYNC_MANY_V4);
     0
 }
 
 #[kretprobe]
-pub fn lanspeed_ecm_nss_exit(_ctx: RetProbeContext) -> u32 {
-    update_nss_context(false);
+pub fn lanspeed_ecm_nss_exit_sync_many_v4(_ctx: RetProbeContext) -> u32 {
+    update_nss_context(false, ECM_SOURCE_SYNC_MANY_V4);
+    0
+}
+
+#[kprobe]
+pub fn lanspeed_ecm_nss_enter_sync_many_v6(_ctx: ProbeContext) -> u32 {
+    update_nss_context(true, ECM_SOURCE_SYNC_MANY_V6);
+    0
+}
+
+#[kretprobe]
+pub fn lanspeed_ecm_nss_exit_sync_many_v6(_ctx: RetProbeContext) -> u32 {
+    update_nss_context(false, ECM_SOURCE_SYNC_MANY_V6);
+    0
+}
+
+#[kprobe]
+pub fn lanspeed_ecm_nss_enter_netdev_v4(_ctx: ProbeContext) -> u32 {
+    update_nss_context(true, ECM_SOURCE_NETDEV_V4);
+    0
+}
+
+#[kretprobe]
+pub fn lanspeed_ecm_nss_exit_netdev_v4(_ctx: RetProbeContext) -> u32 {
+    update_nss_context(false, ECM_SOURCE_NETDEV_V4);
+    0
+}
+
+#[kprobe]
+pub fn lanspeed_ecm_nss_enter_netdev_v6(_ctx: ProbeContext) -> u32 {
+    update_nss_context(true, ECM_SOURCE_NETDEV_V6);
+    0
+}
+
+#[kretprobe]
+pub fn lanspeed_ecm_nss_exit_netdev_v6(_ctx: RetProbeContext) -> u32 {
+    update_nss_context(false, ECM_SOURCE_NETDEV_V6);
     0
 }
 
@@ -112,7 +149,7 @@ fn try_ecm_update(ctx: &ProbeContext) {
 }
 
 #[inline(always)]
-fn update_nss_context(enter: bool) {
+fn update_nss_context(enter: bool, source_id: u8) {
     // Entry and return probes can run on different CPUs after task migration.
     // Track nesting by pid_tgid so an old CPU cannot retain a false NSS context
     // and classify unrelated ECM slow-path updates as hardware increments.
@@ -126,7 +163,11 @@ fn update_nss_context(enter: bool) {
         let next = EcmNssContext {
             depth: current.depth.saturating_add(1),
             dirty: if current.depth == 0 { 0 } else { current.dirty },
-            source_id: current.source_id,
+            source_id: if current.depth == 0 {
+                source_id
+            } else {
+                current.source_id
+            },
             reserved: 0,
         };
         let _ = LANSPEED_ECM_NSS_CONTEXT.insert(&task, &next, 0);

@@ -82,7 +82,11 @@ kfunc_disassembly=$("$objdump_bin" -d "$kfunc_object")
 grep -Eq 'lock[[:space:]]+\*\(u32 \*\).*\+= r[0-9]+' <<<"$kfunc_disassembly" || \
 	fail 'kfunc object has no 32-bit BPF atomic add instruction'
 for forbidden in \
-	lanspeed_ecm_update lanspeed_ecm_nss_enter lanspeed_ecm_nss_exit \
+	lanspeed_ecm_update \
+	lanspeed_ecm_nss_enter_sync_many_v4 lanspeed_ecm_nss_exit_sync_many_v4 \
+	lanspeed_ecm_nss_enter_sync_many_v6 lanspeed_ecm_nss_exit_sync_many_v6 \
+	lanspeed_ecm_nss_enter_netdev_v4 lanspeed_ecm_nss_exit_netdev_v4 \
+	lanspeed_ecm_nss_enter_netdev_v6 lanspeed_ecm_nss_exit_netdev_v6 \
 	lanspeed_ecm_clients lanspeed_ecm_layout lanspeed_ecm_nss_context \
 	lanspeed_ecm_source_stats lanspeed_ecm_event_ringbuf lanspeed_ecm_event_stats; do
 	if has_symbol "$kfunc_symbols" "$forbidden"; then
@@ -98,7 +102,11 @@ for forbidden_map in lanspeed_conntrack_scratch lanspeed_seen_conns; do
 	fi
 done
 for forbidden in \
-	lanspeed_ecm_update lanspeed_ecm_nss_enter lanspeed_ecm_nss_exit \
+	lanspeed_ecm_update \
+	lanspeed_ecm_nss_enter_sync_many_v4 lanspeed_ecm_nss_exit_sync_many_v4 \
+	lanspeed_ecm_nss_enter_sync_many_v6 lanspeed_ecm_nss_exit_sync_many_v6 \
+	lanspeed_ecm_nss_enter_netdev_v4 lanspeed_ecm_nss_exit_netdev_v4 \
+	lanspeed_ecm_nss_enter_netdev_v6 lanspeed_ecm_nss_exit_netdev_v6 \
 	lanspeed_ecm_clients lanspeed_ecm_layout lanspeed_ecm_nss_context \
 	lanspeed_ecm_source_stats lanspeed_ecm_event_ringbuf lanspeed_ecm_event_stats; do
 	if has_symbol "$fallback_symbols" "$forbidden"; then
@@ -134,7 +142,11 @@ if [[ -n $ecm_object ]]; then
 
 	ecm_symbols=$("$readelf_bin" -sW "$ecm_object")
 	for required in \
-		lanspeed_ecm_update lanspeed_ecm_nss_enter lanspeed_ecm_nss_exit \
+		lanspeed_ecm_update \
+		lanspeed_ecm_nss_enter_sync_many_v4 lanspeed_ecm_nss_exit_sync_many_v4 \
+		lanspeed_ecm_nss_enter_sync_many_v6 lanspeed_ecm_nss_exit_sync_many_v6 \
+		lanspeed_ecm_nss_enter_netdev_v4 lanspeed_ecm_nss_exit_netdev_v4 \
+		lanspeed_ecm_nss_enter_netdev_v6 lanspeed_ecm_nss_exit_netdev_v6 \
 		lanspeed_ecm_clients lanspeed_ecm_layout lanspeed_ecm_nss_context \
 		lanspeed_ecm_source_stats lanspeed_ecm_event_ringbuf lanspeed_ecm_event_stats; do
 		has_symbol "$ecm_symbols" "$required" || fail "ECM object is missing symbol $required"

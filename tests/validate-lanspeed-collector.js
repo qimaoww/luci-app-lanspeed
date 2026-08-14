@@ -189,6 +189,8 @@ assert(JSON.stringify(model.ecm_bpf_model.map_key) ===
   model.ecm_bpf_model.event_hint.map === 'lanspeed_ecm_event_ringbuf' &&
   model.ecm_bpf_model.event_hint.semantics === 'counter_update_hint_only' &&
   model.ecm_bpf_model.event_hint.round_end === 0 &&
+  JSON.stringify(model.ecm_bpf_model.event_hint.sources) ===
+    JSON.stringify(['ECM_SYNC_MANY_V4', 'ECM_SYNC_MANY_V6', 'ECM_NETDEV_V4', 'ECM_NETDEV_V6']) &&
   model.ecm_bpf_model.event_hint.drop_effect === 'telemetry_only' &&
   model.ecm_bpf_model.classification_role === 'N_nss_identified_only' &&
   model.ecm_bpf_model.active_auto_misaligned_rate_fallback === 'forbidden',
@@ -504,8 +506,9 @@ assert(ecm.includes('unique_mac_owners'), 'ECM nodes must map only to unique MAC
 assert(ecm.includes('time_added') && ecm.includes('generation'), 'ECM node generations must be explicit');
 assert(ecmBpf.includes('EcmBpfRuntime') &&
   ecmBpf.includes('program.attach(ECM_UPDATE_FUNCTION, 0)') &&
-  ecmBpf.includes('ECM_NSS_ENTER_PROGRAM_NAME') &&
-  ecmBpf.includes('ECM_NSS_EXIT_PROGRAM_NAME') &&
+  ecmBpf.includes('attach_nss_context_links') &&
+  ecmBpf.includes('ECM_NSS_ENTER_SYNC_MANY_V4_PROGRAM_NAME') &&
+  ecmBpf.includes('ECM_NSS_EXIT_NETDEV_V6_PROGRAM_NAME') &&
   ecmBpf.includes('resolve_ecm_layout()'),
   'ECM+BPF userspace must resolve BTF and attach totals plus NSS context probes');
 assert(ecmBpfProgram.includes('ecm_db_connection_data_totals_update') &&

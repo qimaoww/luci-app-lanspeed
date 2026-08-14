@@ -121,7 +121,17 @@
     "object_role": "isolated_nss_hardware_context_kprobe",
     "tc_bpf_object": "/usr/lib/bpf/lanspeed-ebpf-fallback",
     "target_arch": "aarch64",
-    "programs": ["lanspeed_ecm_nss_enter", "lanspeed_ecm_nss_exit", "lanspeed_ecm_update"],
+    "programs": [
+      "lanspeed_ecm_nss_enter_sync_many_v4",
+      "lanspeed_ecm_nss_exit_sync_many_v4",
+      "lanspeed_ecm_nss_enter_sync_many_v6",
+      "lanspeed_ecm_nss_exit_sync_many_v6",
+      "lanspeed_ecm_nss_enter_netdev_v4",
+      "lanspeed_ecm_nss_exit_netdev_v4",
+      "lanspeed_ecm_nss_enter_netdev_v6",
+      "lanspeed_ecm_nss_exit_netdev_v6",
+      "lanspeed_ecm_update"
+    ],
     "attach": {
       "totals": "kprobe:ecm_db_connection_data_totals_update",
       "nss_context": [
@@ -167,6 +177,12 @@
       "map": "lanspeed_ecm_event_ringbuf",
       "semantics": "counter_update_hint_only",
       "round_end": 0,
+      "sources": [
+        "ECM_SYNC_MANY_V4",
+        "ECM_SYNC_MANY_V6",
+        "ECM_NETDEV_V4",
+        "ECM_NETDEV_V6"
+      ],
       "drop_effect": "telemetry_only"
     },
     "classification_role": "N_nss_identified_only",

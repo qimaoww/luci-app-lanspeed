@@ -26,7 +26,12 @@ use nss::account_frame;
 use x86::account_frame;
 
 #[cfg(feature = "nss-ecm")]
-pub use nss::{lanspeed_ecm_nss_enter, lanspeed_ecm_nss_exit, lanspeed_ecm_update};
+pub use nss::{
+    lanspeed_ecm_nss_enter_netdev_v4, lanspeed_ecm_nss_enter_netdev_v6,
+    lanspeed_ecm_nss_enter_sync_many_v4, lanspeed_ecm_nss_enter_sync_many_v6,
+    lanspeed_ecm_nss_exit_netdev_v4, lanspeed_ecm_nss_exit_netdev_v6,
+    lanspeed_ecm_nss_exit_sync_many_v4, lanspeed_ecm_nss_exit_sync_many_v6, lanspeed_ecm_update,
+};
 
 #[link_section = "license"]
 #[no_mangle]

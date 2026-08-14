@@ -13,7 +13,12 @@ mod conntrack;
 mod ecm;
 
 #[cfg(feature = "nss-ecm")]
-pub use ecm::{lanspeed_ecm_nss_enter, lanspeed_ecm_nss_exit, lanspeed_ecm_update};
+pub use ecm::{
+    lanspeed_ecm_nss_enter_netdev_v4, lanspeed_ecm_nss_enter_netdev_v6,
+    lanspeed_ecm_nss_enter_sync_many_v4, lanspeed_ecm_nss_enter_sync_many_v6,
+    lanspeed_ecm_nss_exit_netdev_v4, lanspeed_ecm_nss_exit_netdev_v6,
+    lanspeed_ecm_nss_exit_sync_many_v4, lanspeed_ecm_nss_exit_sync_many_v6, lanspeed_ecm_update,
+};
 
 #[cfg(feature = "nss-tc")]
 pub(crate) use account::account_frame;

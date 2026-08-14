@@ -14,8 +14,12 @@ use aya::{
 use lanspeed_common::{
     EcmCounters, EcmCountersUpdatedEvent, EcmEventStats, EcmKey, EcmLayout, EcmSourceStats, DIR_RX,
     DIR_TX, ECM_CLIENTS_MAP_NAME, ECM_EVENT_RINGBUF_MAP_NAME, ECM_EVENT_STATS_MAP_NAME,
-    ECM_LAYOUT_MAP_NAME, ECM_NSS_ENTER_PROGRAM_NAME, ECM_NSS_EXIT_PROGRAM_NAME,
-    ECM_SOURCE_STATS_MAP_NAME, ECM_UPDATE_PROGRAM_NAME, MAX_CLIENTS,
+    ECM_LAYOUT_MAP_NAME, ECM_NSS_ENTER_NETDEV_V4_PROGRAM_NAME,
+    ECM_NSS_ENTER_NETDEV_V6_PROGRAM_NAME, ECM_NSS_ENTER_SYNC_MANY_V4_PROGRAM_NAME,
+    ECM_NSS_ENTER_SYNC_MANY_V6_PROGRAM_NAME, ECM_NSS_EXIT_NETDEV_V4_PROGRAM_NAME,
+    ECM_NSS_EXIT_NETDEV_V6_PROGRAM_NAME, ECM_NSS_EXIT_SYNC_MANY_V4_PROGRAM_NAME,
+    ECM_NSS_EXIT_SYNC_MANY_V6_PROGRAM_NAME, ECM_SOURCE_STATS_MAP_NAME, ECM_UPDATE_PROGRAM_NAME,
+    MAX_CLIENTS,
 };
 
 use crate::{
@@ -51,11 +55,34 @@ const BTF_KIND_VAR: u32 = 14;
 const BTF_KIND_DATASEC: u32 = 15;
 const BTF_KIND_DECL_TAG: u32 = 17;
 const BTF_KIND_ENUM64: u32 = 19;
-const NSS_SYNC_CALLBACKS: [&str; 4] = [
-    "ecm_nss_ipv4_connection_sync_many_callback",
-    "ecm_nss_ipv4_net_dev_callback",
-    "ecm_nss_ipv6_connection_sync_many_callback",
-    "ecm_nss_ipv6_net_dev_callback",
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NssCallbackSpec {
+    symbol: &'static str,
+    enter_program: &'static str,
+    exit_program: &'static str,
+}
+
+const NSS_CALLBACK_SPECS: [NssCallbackSpec; 4] = [
+    NssCallbackSpec {
+        symbol: "ecm_nss_ipv4_connection_sync_many_callback",
+        enter_program: ECM_NSS_ENTER_SYNC_MANY_V4_PROGRAM_NAME,
+        exit_program: ECM_NSS_EXIT_SYNC_MANY_V4_PROGRAM_NAME,
+    },
+    NssCallbackSpec {
+        symbol: "ecm_nss_ipv6_connection_sync_many_callback",
+        enter_program: ECM_NSS_ENTER_SYNC_MANY_V6_PROGRAM_NAME,
+        exit_program: ECM_NSS_EXIT_SYNC_MANY_V6_PROGRAM_NAME,
+    },
+    NssCallbackSpec {
+        symbol: "ecm_nss_ipv4_net_dev_callback",
+        enter_program: ECM_NSS_ENTER_NETDEV_V4_PROGRAM_NAME,
+        exit_program: ECM_NSS_EXIT_NETDEV_V4_PROGRAM_NAME,
+    },
+    NssCallbackSpec {
+        symbol: "ecm_nss_ipv6_net_dev_callback",
+        enter_program: ECM_NSS_ENTER_NETDEV_V6_PROGRAM_NAME,
+        exit_program: ECM_NSS_EXIT_NETDEV_V6_PROGRAM_NAME,
+    },
 ];
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -556,8 +583,8 @@ pub struct EcmBpfCollectionCheckpoint {
 pub struct EcmBpfRuntime {
     ebpf: Option<Ebpf>,
     update_link: Option<KProbeLinkId>,
-    nss_enter_links: Vec<KProbeLinkId>,
-    nss_exit_links: Vec<KProbeLinkId>,
+    nss_enter_links: Vec<(String, KProbeLinkId)>,
+    nss_exit_links: Vec<(String, KProbeLinkId)>,
     nss_context_callbacks: Vec<String>,
     event_ringbuf: Option<RingBuf<Map>>,
     layout: EcmLayout,
@@ -580,16 +607,23 @@ pub struct EcmBpfRuntime {
 }
 
 pub fn available_nss_context_callbacks(path: impl AsRef<Path>) -> Result<Vec<String>, String> {
+    Ok(available_nss_callback_specs(path)?
+        .into_iter()
+        .map(|spec| spec.symbol.to_owned())
+        .collect())
+}
+
+fn available_nss_callback_specs(path: impl AsRef<Path>) -> Result<Vec<NssCallbackSpec>, String> {
     let contents = fs::read_to_string(path.as_ref())
         .map_err(|error| format!("read {}: {error}", path.as_ref().display()))?;
     let available = contents
         .lines()
         .filter_map(|line| line.split_whitespace().nth(2))
         .collect::<BTreeSet<_>>();
-    let callbacks = NSS_SYNC_CALLBACKS
+    let callbacks = NSS_CALLBACK_SPECS
         .iter()
-        .filter(|name| available.contains(**name))
-        .map(|name| (*name).to_owned())
+        .copied()
+        .filter(|spec| available.contains(spec.symbol))
         .collect::<Vec<_>>();
     if callbacks.is_empty() {
         return Err("no supported ECM NSS callback symbol found".into());
@@ -667,73 +701,18 @@ impl EcmBpfRuntime {
                 })
             })
             .transpose()?;
-        let nss_context_callbacks =
-            available_nss_context_callbacks(KALLSYMS_PATH).map_err(|error| {
-                EcmBpfRuntimeError::new(
-                    ECM_BPF_ATTACH_STAGE,
-                    format!("resolve NSS callback symbols: {error}"),
-                )
-            })?;
-        let nss_exit_links = {
-            let program: &mut KProbe = ebpf
-                .program_mut(ECM_NSS_EXIT_PROGRAM_NAME)
-                .ok_or_else(|| {
-                    EcmBpfRuntimeError::new(
-                        ECM_BPF_PROGRAM_LOAD_STAGE,
-                        format!("{ECM_NSS_EXIT_PROGRAM_NAME} missing"),
-                    )
-                })?
-                .try_into()
-                .map_err(|error: aya::programs::ProgramError| {
-                    EcmBpfRuntimeError::new(ECM_BPF_PROGRAM_LOAD_STAGE, error.to_string())
-                })?;
-            program.load().map_err(|error| {
-                EcmBpfRuntimeError::new(
-                    ECM_BPF_PROGRAM_LOAD_STAGE,
-                    format!("load {ECM_NSS_EXIT_PROGRAM_NAME}: {error}"),
-                )
-            })?;
-            let mut links = Vec::with_capacity(nss_context_callbacks.len());
-            for symbol in &nss_context_callbacks {
-                links.push(program.attach(symbol, 0).map_err(|error| {
-                    EcmBpfRuntimeError::new(
-                        ECM_BPF_ATTACH_STAGE,
-                        format!("attach {ECM_NSS_EXIT_PROGRAM_NAME} to {symbol}: {error}"),
-                    )
-                })?);
-            }
-            links
-        };
-        let nss_enter_links = {
-            let program: &mut KProbe = ebpf
-                .program_mut(ECM_NSS_ENTER_PROGRAM_NAME)
-                .ok_or_else(|| {
-                    EcmBpfRuntimeError::new(
-                        ECM_BPF_PROGRAM_LOAD_STAGE,
-                        format!("{ECM_NSS_ENTER_PROGRAM_NAME} missing"),
-                    )
-                })?
-                .try_into()
-                .map_err(|error: aya::programs::ProgramError| {
-                    EcmBpfRuntimeError::new(ECM_BPF_PROGRAM_LOAD_STAGE, error.to_string())
-                })?;
-            program.load().map_err(|error| {
-                EcmBpfRuntimeError::new(
-                    ECM_BPF_PROGRAM_LOAD_STAGE,
-                    format!("load {ECM_NSS_ENTER_PROGRAM_NAME}: {error}"),
-                )
-            })?;
-            let mut links = Vec::with_capacity(nss_context_callbacks.len());
-            for symbol in &nss_context_callbacks {
-                links.push(program.attach(symbol, 0).map_err(|error| {
-                    EcmBpfRuntimeError::new(
-                        ECM_BPF_ATTACH_STAGE,
-                        format!("attach {ECM_NSS_ENTER_PROGRAM_NAME} to {symbol}: {error}"),
-                    )
-                })?);
-            }
-            links
-        };
+        let nss_callback_specs = available_nss_callback_specs(KALLSYMS_PATH).map_err(|error| {
+            EcmBpfRuntimeError::new(
+                ECM_BPF_ATTACH_STAGE,
+                format!("resolve NSS callback symbols: {error}"),
+            )
+        })?;
+        let nss_context_callbacks = nss_callback_specs
+            .iter()
+            .map(|spec| spec.symbol.to_owned())
+            .collect::<Vec<_>>();
+        let nss_exit_links = attach_nss_context_links(&mut ebpf, &nss_callback_specs, false)?;
+        let nss_enter_links = attach_nss_context_links(&mut ebpf, &nss_callback_specs, true)?;
         let update_link = {
             let program: &mut KProbe = ebpf
                 .program_mut(ECM_UPDATE_PROGRAM_NAME)
@@ -1053,12 +1032,14 @@ impl EcmBpfRuntime {
             self.nss_context_callbacks.clear();
             return Ok(());
         };
-        let mut first_error = detach_kprobe_links(
-            ebpf,
-            ECM_NSS_ENTER_PROGRAM_NAME,
-            std::mem::take(&mut self.nss_enter_links),
-        )
-        .err();
+        let mut first_error = None;
+        for (program_name, link) in std::mem::take(&mut self.nss_enter_links) {
+            if let Err(error) = detach_kprobe_links(ebpf, &program_name, vec![link]) {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
         if let Some(link) = self.update_link.take() {
             if let Err(error) = detach_kprobe_links(ebpf, ECM_UPDATE_PROGRAM_NAME, vec![link]) {
                 if first_error.is_none() {
@@ -1066,13 +1047,11 @@ impl EcmBpfRuntime {
                 }
             }
         }
-        if let Err(error) = detach_kprobe_links(
-            ebpf,
-            ECM_NSS_EXIT_PROGRAM_NAME,
-            std::mem::take(&mut self.nss_exit_links),
-        ) {
-            if first_error.is_none() {
-                first_error = Some(error);
+        for (program_name, link) in std::mem::take(&mut self.nss_exit_links) {
+            if let Err(error) = detach_kprobe_links(ebpf, &program_name, vec![link]) {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
             }
         }
         self.nss_context_callbacks.clear();
@@ -1083,6 +1062,47 @@ impl EcmBpfRuntime {
             Ok(())
         }
     }
+}
+
+fn attach_nss_context_links(
+    ebpf: &mut Ebpf,
+    specs: &[NssCallbackSpec],
+    entering: bool,
+) -> Result<Vec<(String, KProbeLinkId)>, EcmBpfRuntimeError> {
+    let mut links = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let program_name = if entering {
+            spec.enter_program
+        } else {
+            spec.exit_program
+        };
+        let program: &mut KProbe = ebpf
+            .program_mut(program_name)
+            .ok_or_else(|| {
+                EcmBpfRuntimeError::new(
+                    ECM_BPF_PROGRAM_LOAD_STAGE,
+                    format!("{program_name} missing"),
+                )
+            })?
+            .try_into()
+            .map_err(|error: aya::programs::ProgramError| {
+                EcmBpfRuntimeError::new(ECM_BPF_PROGRAM_LOAD_STAGE, error.to_string())
+            })?;
+        program.load().map_err(|error| {
+            EcmBpfRuntimeError::new(
+                ECM_BPF_PROGRAM_LOAD_STAGE,
+                format!("load {program_name}: {error}"),
+            )
+        })?;
+        let link = program.attach(spec.symbol, 0).map_err(|error| {
+            EcmBpfRuntimeError::new(
+                ECM_BPF_ATTACH_STAGE,
+                format!("attach {program_name} to {}: {error}", spec.symbol),
+            )
+        })?;
+        links.push((program_name.to_owned(), link));
+    }
+    Ok(links)
 }
 
 fn same_nss_source_generation(before: EcmSourceStats, after: EcmSourceStats) -> bool {

@@ -17,8 +17,19 @@ pub const EGRESS_PROGRAM_NAME: &str = "lanspeed_egress";
 pub const INGRESS_EARLY_PROGRAM_NAME: &str = "lanspeed_ingress_early";
 pub const EGRESS_EARLY_PROGRAM_NAME: &str = "lanspeed_egress_early";
 pub const ECM_UPDATE_PROGRAM_NAME: &str = "lanspeed_ecm_update";
-pub const ECM_NSS_ENTER_PROGRAM_NAME: &str = "lanspeed_ecm_nss_enter";
-pub const ECM_NSS_EXIT_PROGRAM_NAME: &str = "lanspeed_ecm_nss_exit";
+pub const ECM_NSS_ENTER_SYNC_MANY_V4_PROGRAM_NAME: &str = "lanspeed_ecm_nss_enter_sync_many_v4";
+pub const ECM_NSS_EXIT_SYNC_MANY_V4_PROGRAM_NAME: &str = "lanspeed_ecm_nss_exit_sync_many_v4";
+pub const ECM_NSS_ENTER_SYNC_MANY_V6_PROGRAM_NAME: &str = "lanspeed_ecm_nss_enter_sync_many_v6";
+pub const ECM_NSS_EXIT_SYNC_MANY_V6_PROGRAM_NAME: &str = "lanspeed_ecm_nss_exit_sync_many_v6";
+pub const ECM_NSS_ENTER_NETDEV_V4_PROGRAM_NAME: &str = "lanspeed_ecm_nss_enter_netdev_v4";
+pub const ECM_NSS_EXIT_NETDEV_V4_PROGRAM_NAME: &str = "lanspeed_ecm_nss_exit_netdev_v4";
+pub const ECM_NSS_ENTER_NETDEV_V6_PROGRAM_NAME: &str = "lanspeed_ecm_nss_enter_netdev_v6";
+pub const ECM_NSS_EXIT_NETDEV_V6_PROGRAM_NAME: &str = "lanspeed_ecm_nss_exit_netdev_v6";
+
+pub const ECM_SOURCE_SYNC_MANY_V4: u8 = 1;
+pub const ECM_SOURCE_SYNC_MANY_V6: u8 = 2;
+pub const ECM_SOURCE_NETDEV_V4: u8 = 3;
+pub const ECM_SOURCE_NETDEV_V6: u8 = 4;
 
 pub const MAX_CLIENTS: u32 = 2048;
 pub const MAX_CONN_TUPLES: u32 = 8192;

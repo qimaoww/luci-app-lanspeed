@@ -93,10 +93,16 @@ mod tests {
         assert_eq!(
             callbacks,
             [
-                "ecm_nss_ipv4_net_dev_callback",
                 "ecm_nss_ipv6_connection_sync_many_callback",
+                "ecm_nss_ipv4_net_dev_callback",
             ]
         );
+
+        let specs = available_nss_callback_specs(&path).unwrap();
+        assert_eq!(specs[0].enter_program, ECM_NSS_ENTER_SYNC_MANY_V6_PROGRAM_NAME);
+        assert_eq!(specs[0].exit_program, ECM_NSS_EXIT_SYNC_MANY_V6_PROGRAM_NAME);
+        assert_eq!(specs[1].enter_program, ECM_NSS_ENTER_NETDEV_V4_PROGRAM_NAME);
+        assert_eq!(specs[1].exit_program, ECM_NSS_EXIT_NETDEV_V4_PROGRAM_NAME);
     }
 
     #[test]
