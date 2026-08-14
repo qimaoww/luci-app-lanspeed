@@ -32,6 +32,18 @@ mod tests {
         assert!(decode_event_hint(round_end_bytes).is_none());
     }
 
+    #[test]
+    fn event_telemetry_buckets_unknown_sources_and_realistic_cadence() {
+        assert_eq!(event_source_bucket(0), 0);
+        assert_eq!(event_source_bucket(4), 4);
+        assert_eq!(event_source_bucket(9), 0);
+        assert_eq!(event_interval_bucket(250_000_000), 0);
+        assert_eq!(event_interval_bucket(500_000_000), 1);
+        assert_eq!(event_interval_bucket(1_000_000_000), 2);
+        assert_eq!(event_interval_bucket(2_000_000_000), 3);
+        assert_eq!(event_interval_bucket(2_000_000_001), 4);
+    }
+
     fn identities() -> IdentityTable {
         let mut identities = IdentityTable::new(4);
         identities

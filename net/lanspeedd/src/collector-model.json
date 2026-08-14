@@ -183,6 +183,15 @@
         "ECM_NETDEV_V4",
         "ECM_NETDEV_V6"
       ],
+      "telemetry": [
+        "event_emit",
+        "event_received",
+        "event_coalesced",
+        "ringbuf_reserve_fail",
+        "source_distribution",
+        "callback_interval_histogram",
+        "last_event_age"
+      ],
       "drop_effect": "telemetry_only"
     },
     "classification_role": "N_nss_identified_only",

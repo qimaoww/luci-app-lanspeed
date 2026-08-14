@@ -191,6 +191,9 @@ assert(JSON.stringify(model.ecm_bpf_model.map_key) ===
   model.ecm_bpf_model.event_hint.round_end === 0 &&
   JSON.stringify(model.ecm_bpf_model.event_hint.sources) ===
     JSON.stringify(['ECM_SYNC_MANY_V4', 'ECM_SYNC_MANY_V6', 'ECM_NETDEV_V4', 'ECM_NETDEV_V6']) &&
+  JSON.stringify(model.ecm_bpf_model.event_hint.telemetry) ===
+    JSON.stringify(['event_emit', 'event_received', 'event_coalesced', 'ringbuf_reserve_fail',
+      'source_distribution', 'callback_interval_histogram', 'last_event_age']) &&
   model.ecm_bpf_model.event_hint.drop_effect === 'telemetry_only' &&
   model.ecm_bpf_model.classification_role === 'N_nss_identified_only' &&
   model.ecm_bpf_model.active_auto_misaligned_rate_fallback === 'forbidden',

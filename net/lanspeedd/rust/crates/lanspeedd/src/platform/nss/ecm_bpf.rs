@@ -45,6 +45,8 @@ pub const ECM_EVENT_CLOCK_MAX_LAG_MS: u64 = 1_500;
 pub const ECM_EVENT_RATE_MAX_WINDOW_MS: u64 = 5_000;
 const RATE_MEDIAN_SAMPLES: usize = 3;
 const ECM_MAP_STABLE_READ_ATTEMPTS: usize = 3;
+const EVENT_SOURCE_BUCKETS: usize = 5;
+const EVENT_INTERVAL_BUCKETS: usize = 5;
 const BTF_KIND_INT: u32 = 1;
 const BTF_KIND_ARRAY: u32 = 3;
 const BTF_KIND_STRUCT: u32 = 4;
@@ -546,9 +548,13 @@ pub struct EcmBpfHealth {
     pub source_stats: EcmSourceStats,
     pub event_stats: EcmEventStats,
     pub event_received: u64,
+    pub event_coalesced: u64,
     pub event_invalid: u64,
+    pub event_source_counts: [u64; EVENT_SOURCE_BUCKETS],
+    pub event_interval_histogram: [u64; EVENT_INTERVAL_BUCKETS],
     pub event_last_timestamp_ns: Option<u64>,
     pub event_last_sequence: Option<u64>,
+    pub event_last_age_ms: Option<u64>,
     pub layout: Option<EcmLayout>,
     pub error_stage: Option<&'static str>,
     pub error: Option<String>,
@@ -566,7 +572,10 @@ pub struct EcmBpfCollectionCheckpoint {
     source_stats: EcmSourceStats,
     event_stats: EcmEventStats,
     event_received: u64,
+    event_coalesced: u64,
     event_invalid: u64,
+    event_source_counts: [u64; EVENT_SOURCE_BUCKETS],
+    event_interval_histogram: [u64; EVENT_INTERVAL_BUCKETS],
     event_last_timestamp_ns: Option<u64>,
     event_last_sequence: Option<u64>,
     last_error_stage: Option<&'static str>,
@@ -599,7 +608,10 @@ pub struct EcmBpfRuntime {
     source_stats: EcmSourceStats,
     event_stats: EcmEventStats,
     event_received: u64,
+    event_coalesced: u64,
     event_invalid: u64,
+    event_source_counts: [u64; EVENT_SOURCE_BUCKETS],
+    event_interval_histogram: [u64; EVENT_INTERVAL_BUCKETS],
     event_last_timestamp_ns: Option<u64>,
     event_last_sequence: Option<u64>,
     last_error_stage: Option<&'static str>,
@@ -758,7 +770,10 @@ impl EcmBpfRuntime {
             source_stats: EcmSourceStats::default(),
             event_stats: EcmEventStats::default(),
             event_received: 0,
+            event_coalesced: 0,
             event_invalid: 0,
+            event_source_counts: [0; EVENT_SOURCE_BUCKETS],
+            event_interval_histogram: [0; EVENT_INTERVAL_BUCKETS],
             event_last_timestamp_ns: None,
             event_last_sequence: None,
             last_error_stage: None,
@@ -781,7 +796,10 @@ impl EcmBpfRuntime {
             source_stats: self.source_stats,
             event_stats: self.event_stats,
             event_received: self.event_received,
+            event_coalesced: self.event_coalesced,
             event_invalid: self.event_invalid,
+            event_source_counts: self.event_source_counts,
+            event_interval_histogram: self.event_interval_histogram,
             event_last_timestamp_ns: self.event_last_timestamp_ns,
             event_last_sequence: self.event_last_sequence,
             last_error_stage: self.last_error_stage,
@@ -805,7 +823,10 @@ impl EcmBpfRuntime {
         self.source_stats = checkpoint.source_stats;
         self.event_stats = checkpoint.event_stats;
         self.event_received = checkpoint.event_received;
+        self.event_coalesced = checkpoint.event_coalesced;
         self.event_invalid = checkpoint.event_invalid;
+        self.event_source_counts = checkpoint.event_source_counts;
+        self.event_interval_histogram = checkpoint.event_interval_histogram;
         self.event_last_timestamp_ns = checkpoint.event_last_timestamp_ns;
         self.event_last_sequence = checkpoint.event_last_sequence;
         self.last_error_stage = checkpoint.last_error_stage;
@@ -938,6 +959,10 @@ impl EcmBpfRuntime {
     fn drain_event_hints(&mut self) {
         let mut received = 0u64;
         let mut invalid = 0u64;
+        let mut coalesced = 0u64;
+        let mut source_counts = [0u64; EVENT_SOURCE_BUCKETS];
+        let mut interval_histogram = [0u64; EVENT_INTERVAL_BUCKETS];
+        let mut previous_timestamp_ns = self.event_last_timestamp_ns;
         let mut last = None;
         if let Some(ringbuf) = self.event_ringbuf.as_mut() {
             while let Some(item) = ringbuf.next() {
@@ -951,11 +976,36 @@ impl EcmBpfRuntime {
                     continue;
                 };
                 received = received.saturating_add(1);
+                if received > 1 {
+                    coalesced = coalesced.saturating_add(1);
+                }
+                source_counts[event_source_bucket(event.source)] =
+                    source_counts[event_source_bucket(event.source)].saturating_add(1);
+                if let Some(previous) = previous_timestamp_ns {
+                    if event.timestamp_ns > previous {
+                        interval_histogram[event_interval_bucket(event.timestamp_ns - previous)] =
+                            interval_histogram
+                                [event_interval_bucket(event.timestamp_ns - previous)]
+                            .saturating_add(1);
+                    }
+                }
+                previous_timestamp_ns = Some(event.timestamp_ns);
                 last = Some(event);
             }
         }
         self.event_received = self.event_received.saturating_add(received);
+        self.event_coalesced = self.event_coalesced.saturating_add(coalesced);
         self.event_invalid = self.event_invalid.saturating_add(invalid);
+        for (current, added) in self.event_source_counts.iter_mut().zip(source_counts) {
+            *current = current.saturating_add(added);
+        }
+        for (current, added) in self
+            .event_interval_histogram
+            .iter_mut()
+            .zip(interval_histogram)
+        {
+            *current = current.saturating_add(added);
+        }
         if let Some(event) = last {
             self.event_last_timestamp_ns = Some(event.timestamp_ns);
             self.event_last_sequence = Some(event.sequence);
@@ -985,9 +1035,15 @@ impl EcmBpfRuntime {
             source_stats: self.source_stats,
             event_stats: self.event_stats,
             event_received: self.event_received,
+            event_coalesced: self.event_coalesced,
             event_invalid: self.event_invalid,
+            event_source_counts: self.event_source_counts,
+            event_interval_histogram: self.event_interval_histogram,
             event_last_timestamp_ns: self.event_last_timestamp_ns,
             event_last_sequence: self.event_last_sequence,
+            event_last_age_ms: self
+                .event_last_timestamp_ns
+                .map(|timestamp_ns| now_ms.saturating_sub(timestamp_ns.saturating_div(1_000_000))),
             layout: Some(self.layout),
             error_stage: self.last_error_stage,
             error: self.last_error.clone(),
@@ -1016,9 +1072,13 @@ impl EcmBpfRuntime {
         runtime.ecm_bpf_source_stats = health.source_stats;
         runtime.ecm_bpf_event_stats = health.event_stats;
         runtime.ecm_bpf_event_received = health.event_received;
+        runtime.ecm_bpf_event_coalesced = health.event_coalesced;
         runtime.ecm_bpf_event_invalid = health.event_invalid;
+        runtime.ecm_bpf_event_source_counts = health.event_source_counts;
+        runtime.ecm_bpf_event_interval_histogram = health.event_interval_histogram;
         runtime.ecm_bpf_event_last_timestamp_ns = health.event_last_timestamp_ns;
         runtime.ecm_bpf_event_last_sequence = health.event_last_sequence;
+        runtime.ecm_bpf_event_last_age_ms = health.event_last_age_ms;
         runtime.ecm_bpf_layout = health.layout;
         runtime.ecm_bpf_error_stage = health.error_stage.map(str::to_owned);
         runtime.ecm_bpf_runtime_error = health.error;
@@ -1118,6 +1178,23 @@ fn decode_event_hint(bytes: &[u8]) -> Option<EcmCountersUpdatedEvent> {
     // The callback boundary cannot prove a complete vendor sync round.
     let event = unsafe { ptr::read_unaligned(bytes.as_ptr().cast::<EcmCountersUpdatedEvent>()) };
     (event.round_end == 0).then_some(event)
+}
+
+fn event_source_bucket(source: u8) -> usize {
+    let source = usize::from(source);
+    (source < EVENT_SOURCE_BUCKETS)
+        .then_some(source)
+        .unwrap_or(0)
+}
+
+fn event_interval_bucket(interval_ns: u64) -> usize {
+    match interval_ns {
+        0..=250_000_000 => 0,
+        250_000_001..=500_000_000 => 1,
+        500_000_001..=1_000_000_000 => 2,
+        1_000_000_001..=2_000_000_000 => 3,
+        _ => 4,
+    }
 }
 
 fn detach_kprobe_links(
