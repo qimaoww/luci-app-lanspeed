@@ -5355,7 +5355,7 @@ function assertStatusViewSourceOnlyState(src) {
 	}
 	if (!src.includes("lsRpc.uciGet('lanspeed', 'main')") ||
 	    !src.includes("var SOURCE_KEYS = [ 'status', 'clients', 'interfaces', 'uci' ]") ||
-	    !src.includes('sourceSettled(key, loaders[key], previous, clock)') ||
+	    !src.includes('sourceSettled(key, loaders[key], previous, clock, timeoutMs)') ||
 	    !src.includes('show_ipv6') ||
 	    !src.includes('hide_private_ipv6') ||
 	    !src.includes('hide_ipv6_ranges')) {

@@ -9,6 +9,7 @@
 var SOURCE_KEYS = [ 'status', 'clients', 'interfaces', 'uci' ];
 var LIVE_SOURCE_KEYS = [ 'status', 'clients', 'interfaces' ];
 var ACCESS_EDGE_SAMPLE_SKEW_MS = 50;
+var LIVE_RPC_TIMEOUT_MS = 2500;
 var SOURCE_LABELS = {
 	status: 'status',
 	clients: 'clients',
@@ -223,39 +224,62 @@ function alignLiveSamples(next, previous) {
 	return next;
 }
 
-function sourceSettled(key, loader, previous, clock) {
+function sourceSettled(key, loader, previous, clock, timeoutMs) {
 	var startedAt = clock();
-	return Promise.resolve().then(function() {
-		return loader();
-	}).then(function(value) {
-		if (!sourceIsValid(key, value)) throw invalidResponseError(key);
-		var checkedAt = clock();
-		return {
-			key: key,
-			value: value,
-			rpc: {
-				ok: true,
-				retained: false,
-				error: null,
-				checkedAt: checkedAt >= startedAt ? checkedAt : startedAt,
-				lastSuccessAt: checkedAt >= startedAt ? checkedAt : startedAt
+	var requestedTimeout = Number(timeoutMs);
+	var timeout = isFinite(requestedTimeout) && requestedTimeout > 0
+		? requestedTimeout : LIVE_RPC_TIMEOUT_MS;
+	return new Promise(function(resolve) {
+		var settled = false;
+		var timer = setTimeout(function() {
+			var error = new Error('实时数据请求超时: ' + key);
+			error.code = 'TIMEOUT';
+			finishError(error);
+		}, timeout);
+
+		function finish(result) {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolve(result);
+		}
+
+		function finishError(error) {
+			var checkedAt = clock();
+			var old = previous && previous.rpc && previous.rpc[key];
+			var retained = hasPreviousSuccess(previous, key);
+			finish({
+				key: key,
+				value: retained ? previousValue(previous, key) : emptySource(key),
+				rpc: {
+					ok: false,
+					retained: retained,
+					error: errorObject(error),
+					checkedAt: checkedAt >= startedAt ? checkedAt : startedAt,
+					lastSuccessAt: retained && old ? Number(old.lastSuccessAt) || 0 : 0
+				}
+			});
+		}
+
+		Promise.resolve().then(loader).then(function(value) {
+			try {
+				if (!sourceIsValid(key, value)) throw invalidResponseError(key);
+				var checkedAt = clock();
+				finish({
+					key: key,
+					value: value,
+					rpc: {
+						ok: true,
+						retained: false,
+						error: null,
+						checkedAt: checkedAt >= startedAt ? checkedAt : startedAt,
+						lastSuccessAt: checkedAt >= startedAt ? checkedAt : startedAt
+					}
+				});
+			} catch (error) {
+				finishError(error);
 			}
-		};
-	}).catch(function(error) {
-		var checkedAt = clock();
-		var old = previous && previous.rpc && previous.rpc[key];
-		var retained = hasPreviousSuccess(previous, key);
-		return {
-			key: key,
-			value: retained ? previousValue(previous, key) : emptySource(key),
-			rpc: {
-				ok: false,
-				retained: retained,
-				error: errorObject(error),
-				checkedAt: checkedAt >= startedAt ? checkedAt : startedAt,
-				lastSuccessAt: retained && old ? Number(old.lastSuccessAt) || 0 : 0
-			}
-		};
+		}, finishError);
 	});
 }
 
@@ -282,7 +306,7 @@ function loadUiConfig() {
 	return lsRpc.uciGet('lanspeed', 'main');
 }
 
-function loadAll(previous, clock) {
+function loadAll(previous, clock, timeoutMs) {
 	clock = clock || function() { return Date.now(); };
 	var loaders = {
 		status: function() { return lsRpc.status(); },
@@ -292,7 +316,7 @@ function loadAll(previous, clock) {
 	};
 	var startedAt = clock();
 	return Promise.all(SOURCE_KEYS.map(function(key) {
-		return sourceSettled(key, loaders[key], previous, clock);
+		return sourceSettled(key, loaders[key], previous, clock, timeoutMs);
 	})).then(function(results) {
 		var next = aggregateResults(results, startedAt);
 		var pair = livePair(next);
@@ -307,7 +331,7 @@ function loadAll(previous, clock) {
 		 * an empty page. UCI is retained from the first round. */
 		var uciResult = results.filter(function(result) { return result.key === 'uci'; })[0];
 		return Promise.all(LIVE_SOURCE_KEYS.map(function(key) {
-			return sourceSettled(key, loaders[key], next, clock);
+			return sourceSettled(key, loaders[key], next, clock, timeoutMs);
 		})).then(function(retried) {
 			if (uciResult) retried.push(uciResult);
 			var recovered = aggregateResults(retried, startedAt);

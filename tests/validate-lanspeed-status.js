@@ -297,6 +297,16 @@ async function testIndependentRpcSettlement(context, fmt) {
 	assert.strictEqual(malformed.rpc.status.ok, true);
 	assert.strictEqual(malformed.rpc.clients.ok, false);
 	assert.strictEqual(malformed.rpc.clients.error.code, 'INVALID_RESPONSE');
+
+	rpc.status = function() { return new Promise(function() {}); };
+	rpc.clients = function() { return Promise.resolve({ clients: [] }); };
+	rpc.interfaces = function() { return Promise.resolve({ interfaces: [] }); };
+	rpc.uciGet = function() { return Promise.resolve({}); };
+	const timedOut = await overview.loadAll(null, clock, 5);
+	assert.strictEqual(timedOut.rpc.status.ok, false,
+		'a hung live RPC must settle instead of stopping the refresh controller');
+	assert.strictEqual(timedOut.rpc.status.error.code, 'TIMEOUT');
+	assert.strictEqual(timedOut.rpc.clients.ok, true);
 }
 
 async function testLiveSamplePairing(context, fmt) {
