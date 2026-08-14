@@ -1,7 +1,8 @@
 use core::mem::{align_of, offset_of, size_of};
 
 use lanspeed_common::{
-    EcmCountersUpdatedEvent, EcmEventStats, EcmNssContext, LanspeedConnKey, LanspeedCounters,
+    EcmCountersUpdatedEvent, EcmEventStats, EcmNssContext, FastCounterValue, LanspeedConnKey,
+    LanspeedCounters,
     LanspeedKey, CLIENTS_MAP_NAME, DIR_RX, DIR_TX, EGRESS_EARLY_PROGRAM_NAME, EGRESS_PROGRAM_NAME,
     INGRESS_EARLY_PROGRAM_NAME, INGRESS_PROGRAM_NAME, MAX_CLIENTS, MAX_CONN_TUPLES,
     SEEN_CONNS_MAP_NAME,
@@ -50,6 +51,18 @@ fn ecm_event_layout_matches_ringbuf_abi() {
     assert_eq!(offset_of!(EcmCountersUpdatedEvent, reserved), 18);
     assert_eq!(size_of::<EcmEventStats>(), 16);
     assert_eq!(align_of::<EcmEventStats>(), 8);
+}
+
+#[test]
+fn fast_counter_layout_matches_stable_read_abi() {
+    assert_eq!(size_of::<FastCounterValue>(), 40);
+    assert_eq!(align_of::<FastCounterValue>(), 8);
+    assert_eq!(offset_of!(FastCounterValue, abi_version), 0);
+    assert_eq!(offset_of!(FastCounterValue, reset_generation), 4);
+    assert_eq!(offset_of!(FastCounterValue, seq), 8);
+    assert_eq!(offset_of!(FastCounterValue, bytes), 16);
+    assert_eq!(offset_of!(FastCounterValue, packets), 24);
+    assert_eq!(offset_of!(FastCounterValue, last_seen_ns), 32);
 }
 
 #[test]

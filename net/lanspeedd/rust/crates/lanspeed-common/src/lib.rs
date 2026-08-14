@@ -11,6 +11,7 @@ pub const ECM_NSS_CONTEXT_MAP_NAME: &str = "lanspeed_ecm_nss_context";
 pub const ECM_SOURCE_STATS_MAP_NAME: &str = "lanspeed_ecm_source_stats";
 pub const ECM_EVENT_RINGBUF_MAP_NAME: &str = "lanspeed_ecm_event_ringbuf";
 pub const ECM_EVENT_STATS_MAP_NAME: &str = "lanspeed_ecm_event_stats";
+pub const FAST_COUNTERS_MAP_NAME: &str = "lanspeed_fast_counters";
 
 pub const INGRESS_PROGRAM_NAME: &str = "lanspeed_ingress";
 pub const EGRESS_PROGRAM_NAME: &str = "lanspeed_egress";
@@ -35,6 +36,8 @@ pub const MAX_CLIENTS: u32 = 2048;
 pub const MAX_CONN_TUPLES: u32 = 8192;
 pub const MAX_ECM_NSS_CONTEXTS: u32 = 4096;
 pub const ECM_EVENT_RINGBUF_BYTES: u32 = 64 * 1024;
+pub const FAST_COUNTER_ABI_VERSION: u32 = 1;
+pub const FAST_COUNTERS_MAP_CAPACITY: u32 = MAX_CLIENTS;
 
 pub const DIR_TX: u8 = 1;
 pub const DIR_RX: u8 = 2;
@@ -162,6 +165,23 @@ pub struct EcmEventStats {
     pub ringbuf_reserve_fail: u64,
 }
 
+/// Stable-read ABI for the FastN/FastS counter plane.
+///
+/// Writers publish an odd `seq` before changing the three counter fields and
+/// an even `seq` after the write. Readers must observe the same even sequence
+/// in two bounded lookups before accepting the value. `reset_generation`
+/// changes on BPF reload or counter reset and is never inferred from bytes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C, align(8))]
+pub struct FastCounterValue {
+    pub abi_version: u32,
+    pub reset_generation: u32,
+    pub seq: u64,
+    pub bytes: u64,
+    pub packets: u64,
+    pub last_seen_ns: u64,
+}
+
 /// Connection-deduplication key matching `struct lanspeed_conn_key`.
 ///
 /// Every field is naturally contiguous under `repr(C)`: the six-byte MAC and
@@ -227,5 +247,13 @@ const _: [(); 24] = [(); core::mem::size_of::<EcmCountersUpdatedEvent>()];
 const _: [(); 8] = [(); core::mem::align_of::<EcmCountersUpdatedEvent>()];
 const _: [(); 16] = [(); core::mem::size_of::<EcmEventStats>()];
 const _: [(); 8] = [(); core::mem::align_of::<EcmEventStats>()];
+const _: [(); 40] = [(); core::mem::size_of::<FastCounterValue>()];
+const _: [(); 8] = [(); core::mem::align_of::<FastCounterValue>()];
+const _: [(); 0] = [(); core::mem::offset_of!(FastCounterValue, abi_version)];
+const _: [(); 4] = [(); core::mem::offset_of!(FastCounterValue, reset_generation)];
+const _: [(); 8] = [(); core::mem::offset_of!(FastCounterValue, seq)];
+const _: [(); 16] = [(); core::mem::offset_of!(FastCounterValue, bytes)];
+const _: [(); 24] = [(); core::mem::offset_of!(FastCounterValue, packets)];
+const _: [(); 32] = [(); core::mem::offset_of!(FastCounterValue, last_seen_ns)];
 const _: [(); 28] = [(); core::mem::size_of::<LanspeedConnKey>()];
 const _: [(); 2] = [(); core::mem::align_of::<LanspeedConnKey>()];
