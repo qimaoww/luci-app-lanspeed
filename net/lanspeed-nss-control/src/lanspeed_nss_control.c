@@ -124,8 +124,10 @@ static atomic64_t lanspeed_ack_late = ATOMIC64_INIT(0);
 
 static void lanspeed_ack_put(struct lanspeed_ack_txn *txn)
 {
-	if (refcount_dec_and_test(&txn->refs))
+	if (refcount_dec_and_test(&txn->refs)) {
+		module_put(THIS_MODULE);
 		kfree(txn);
+	}
 }
 
 static struct lanspeed_ack_txn *lanspeed_ack_alloc(void)
@@ -135,6 +137,10 @@ static struct lanspeed_ack_txn *lanspeed_ack_alloc(void)
 	txn = kzalloc(sizeof(*txn), GFP_KERNEL);
 	if (!txn)
 		return NULL;
+	if (!try_module_get(THIS_MODULE)) {
+		kfree(txn);
+		return NULL;
+	}
 	init_completion(&txn->done);
 	refcount_set(&txn->refs, 2);
 	atomic_set(&txn->completed, 0);
