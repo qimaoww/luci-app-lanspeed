@@ -155,6 +155,33 @@
       "pointer_size": 8
     },
     "maps": ["lanspeed_ecm_clients", "lanspeed_ecm_nss_context", "lanspeed_ecm_source_stats"],
+    "fast_counter": {
+      "map": "lanspeed_fast_counters",
+      "writer_sources": [
+        "rust/crates/lanspeed-ebpf/src/nss/account.rs",
+        "rust/crates/lanspeed-ebpf/src/x86/accounting.rs"
+      ],
+      "map_type": "percpu_hash",
+      "value": [
+        "abi_version",
+        "reset_generation",
+        "seq",
+        "bytes",
+        "packets",
+        "last_seen_ns"
+      ],
+      "abi_version": 1,
+      "stable_read": {
+        "lookups_per_cpu": 2,
+        "require_even_equal_seq": true,
+        "bounded_retries": 3,
+        "partial_cpu_read": "invalid_window",
+        "cpu_count_change": "invalid_window",
+        "reset_generation_change": "rebaseline"
+      },
+      "aggregation": "sum_bytes_packets_max_last_seen",
+      "formal_rate_owner": false
+    },
     "map_key": ["client_mac", "direction"],
     "map_abi": "EcmKey_v1_with_connection_and_generation_zeroed",
     "map_capacity": "at_least_2_times_max_clients",
@@ -193,6 +220,14 @@
         "last_event_age"
       ],
       "drop_effect": "telemetry_only"
+    },
+    "fast_rate_plane": {
+      "fixed_timer_ms": 1000,
+      "event_debounce_ms": 20,
+      "event_is_hint_only": true,
+      "same_window_required": true,
+      "max_read_end_skew_ms": 250,
+      "shadow_only_until_real_machine_validation": true
     },
     "classification_role": "N_nss_identified_only",
     "active_auto_misaligned_rate_fallback": "forbidden",

@@ -37,8 +37,8 @@ struct PacketPrefix {
 pub static LANSPEED_CLIENTS: LruHashMap<LanspeedKey, LanspeedCounters> =
     LruHashMap::with_max_entries(MAX_CLIENTS, 0);
 
-/// x86 has its own FastS writer; it intentionally does not share NSS probe or
-/// accounting code even though the stable map ABI is platform-neutral.
+/// x86 has its own FastS writer; it intentionally keeps its packet accounting
+/// implementation local even though the stable map ABI is platform-neutral.
 #[map(name = "lanspeed_fast_counters")]
 static LANSPEED_FAST_COUNTERS: PerCpuHashMap<LanspeedKey, FastCounterValue> =
     PerCpuHashMap::with_max_entries(FAST_COUNTERS_MAP_CAPACITY, 0);
