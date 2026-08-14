@@ -104,7 +104,9 @@ const x86Ebpf = collectFiles('net/lanspeedd/rust/crates/lanspeed-ebpf/src/x86')
   .map((file) => fs.readFileSync(file, 'utf8')).join('\n');
 const nssEbpf = collectFiles('net/lanspeedd/rust/crates/lanspeed-ebpf/src/nss')
   .map((file) => fs.readFileSync(file, 'utf8')).join('\n');
-const production = read('net/lanspeedd/rust/crates/lanspeedd/src/production.rs');
+const production = `${read('net/lanspeedd/rust/crates/lanspeedd/src/production.rs')}\n${read(
+  'net/lanspeedd/rust/crates/lanspeedd/src/production/rate_helpers.rs'
+)}`;
 const policy = read('net/lanspeedd/rust/crates/lanspeedd/src/policy.rs');
 const config = read('net/lanspeedd/rust/crates/lanspeedd/src/config.rs');
 const probeCollector = read('net/lanspeedd/rust/crates/lanspeedd/src/probe/collector.rs');

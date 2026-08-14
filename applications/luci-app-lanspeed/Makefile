@@ -73,8 +73,12 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleBase.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleBootstrap.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleResponsive.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsSchema.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsResources.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsStates.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsModel.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsReport.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsReportModel.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsView.js \
 		./htdocs/luci-static/resources/lanspeed/clientConnections.js \
 		./htdocs/luci-static/resources/lanspeed/clientControl.js \

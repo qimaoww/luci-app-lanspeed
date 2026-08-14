@@ -217,12 +217,20 @@ try {
     path.join(lanspeeddRoot, 'rust/crates/lanspeed-openwrt-sys/src/pure_ubus.rs'),
     'utf8'
   );
+  const ubusTests = fs.readFileSync(
+    path.join(lanspeeddRoot, 'rust/crates/lanspeed-openwrt-sys/src/pure_ubus_tests.rs'),
+    'utf8'
+  );
   const uloopSource = fs.readFileSync(
     path.join(lanspeeddRoot, 'rust/crates/lanspeed-openwrt-sys/src/pure_uloop.rs'),
     'utf8'
   );
   const uciSource = fs.readFileSync(
     path.join(lanspeeddRoot, 'rust/crates/lanspeed-openwrt-sys/src/pure_uci.rs'),
+    'utf8'
+  );
+  const uciTests = fs.readFileSync(
+    path.join(lanspeeddRoot, 'rust/crates/lanspeed-openwrt-sys/src/pure_uci_tests.rs'),
     'utf8'
   );
   assert(
@@ -245,7 +253,7 @@ try {
     'hup_after_frame_budget_drains_buffer_before_notifying_loss'
   ]) {
     assert(
-      ubusSource.includes(requiredUbusTest),
+      `${ubusSource}\n${ubusTests}`.includes(requiredUbusTest),
       `pure Rust ubus must retain ${requiredUbusTest}`
     );
   }
@@ -269,13 +277,13 @@ try {
   assert(
     uciSource.includes('DEFAULT_CONF2DIR: &str = "/var/run/uci"') &&
       uciSource.includes('DEFAULT_SAVEDIR: &str = "/tmp/.uci"') &&
-      uciSource.includes('conf2_override_and_saved_delta_match_libuci_read_semantics') &&
-      uciSource.includes('non_utf8_values_match_the_former_libuci_lossy_string_contract') &&
-      uciSource.includes('command_abbreviations_and_empty_arguments_match_libuci') &&
-      uciSource.includes('bounded_reader_rejects_fifos_and_files_over_the_limit') &&
-      uciSource.includes('multiline_delta_and_strict_single_argument_rules_match_libuci') &&
-      uciSource.includes('delta_rename_allows_duplicates_and_makes_sections_named') &&
-      uciSource.includes('delta_list_index_removal_matches_sscanf_prefix_semantics'),
+    `${uciSource}\n${uciTests}`.includes('conf2_override_and_saved_delta_match_libuci_read_semantics') &&
+      `${uciSource}\n${uciTests}`.includes('non_utf8_values_match_the_former_libuci_lossy_string_contract') &&
+      `${uciSource}\n${uciTests}`.includes('command_abbreviations_and_empty_arguments_match_libuci') &&
+      `${uciSource}\n${uciTests}`.includes('bounded_reader_rejects_fifos_and_files_over_the_limit') &&
+      `${uciSource}\n${uciTests}`.includes('multiline_delta_and_strict_single_argument_rules_match_libuci') &&
+      `${uciSource}\n${uciTests}`.includes('delta_rename_allows_duplicates_and_makes_sections_named') &&
+      `${uciSource}\n${uciTests}`.includes('delta_list_index_removal_matches_sscanf_prefix_semantics'),
     'pure Rust UCI must retain libuci syntax, overlay, bounded-read, delta, and legacy byte compatibility tests'
   );
 

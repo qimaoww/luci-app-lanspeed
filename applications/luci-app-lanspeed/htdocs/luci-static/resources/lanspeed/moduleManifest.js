@@ -31,7 +31,9 @@ var MODULE_GROUPS = {
 		'diagnosticsRefresh.js', 'diagnosticsShell.js', 'diagnosticsStyle.js',
 		'diagnosticsStyleBase.js', 'diagnosticsStyleAurora.js',
 		'diagnosticsStyleArgon.js', 'diagnosticsStyleBootstrap.js',
-		'diagnosticsStyleResponsive.js', 'diagnosticsModel.js', 'diagnosticsReport.js', 'diagnosticsView.js'
+		'diagnosticsStyleResponsive.js', 'diagnosticsSchema.js', 'diagnosticsResources.js',
+		'diagnosticsStates.js', 'diagnosticsModel.js', 'diagnosticsReport.js',
+		'diagnosticsReportModel.js', 'diagnosticsView.js'
 	],
 	config: [
 		'ifaceConfig.js', 'configPlatform.js', 'configPlatformX86.js', 'configPlatformNss.js',

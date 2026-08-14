@@ -13,7 +13,10 @@ const ebpfMain = fs.readFileSync(path.join(root,
   'net/lanspeedd/rust/crates/lanspeed-ebpf/src/main.rs'), 'utf8');
 const x86ControlDir = path.join(root,
   'net/lanspeedd/rust/crates/lanspeedd/src/platform/x86/control');
-const x86ControlModules = [ 'mod.rs', 'classifier.rs', 'dae.rs', 'firewall.rs', 'ifb.rs', 'shaper.rs', 'system.rs' ];
+const x86ControlModules = [
+  'mod.rs', 'classifier.rs', 'classifier_tests.rs', 'dae.rs', 'firewall.rs',
+  'firewall_tests.rs', 'ifb.rs', 'shaper.rs', 'shaper_tests.rs', 'system.rs', 'tests.rs'
+];
 const x86ControlByModule = Object.fromEntries(x86ControlModules.map((name) => [
   name, fs.readFileSync(path.join(x86ControlDir, name), 'utf8')
 ]));
@@ -30,7 +33,8 @@ const nssControlDir = path.join(root,
   'net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/control');
 const nssControlModules = [
   'mod.rs', 'capability.rs', 'classifier.rs', 'ecm_qos.rs', 'firewall.rs', 'legacy.rs', 'qdisc.rs',
-  'rollback.rs', 'shaper.rs', 'state.rs', 'system.rs', 'telemetry.rs', 'topology.rs'
+  'firewall_tests.rs', 'qdisc_tests.rs', 'rollback.rs', 'shaper.rs', 'state.rs',
+  'system.rs', 'system_tests.rs', 'telemetry.rs', 'topology.rs'
 ];
 const nssControlByModule = Object.fromEntries(nssControlModules.map((name) => [
   name, fs.readFileSync(path.join(nssControlDir, name), 'utf8')
@@ -227,8 +231,9 @@ async function main() {
     'x86 client control availability must be independent of the rate-monitor BPF runtime');
   assert(!fs.existsSync(path.join(root,
     'net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/control.rs')) &&
-    fs.readdirSync(nssControlDir).filter((name) => name.endsWith('.rs')).sort().join(',') ===
-      nssControlModules.slice().sort().join(','),
+    fs.readdirSync(nssControlDir)
+      .filter((name) => name.endsWith('.rs') && !name.endsWith('_tests.rs'))
+      .sort().join(',') === nssControlModules.filter((name) => !name.endsWith('_tests.rs')).slice().sort().join(','),
     'NSS client control must be a fixed modular implementation rather than a monolithic source file');
   for (const name of [
     'capability', 'classifier', 'cpu_path', 'ecm_qos', 'firewall', 'legacy', 'qdisc', 'rollback', 'shaper',
@@ -262,7 +267,8 @@ async function main() {
     !nssControlByModule['qdisc.rs'].includes('"htb"') &&
     !nssControlByModule['qdisc.rs'].includes('"fq_codel"'),
     'NSS-visible directions must retain NSSHTB/NSSBFIFO and dual-stack QoS tags');
-  assert(fs.readdirSync(nssCpuPathDir).filter((name) => name.endsWith('.rs')).sort().join(',') ===
+  assert(fs.readdirSync(nssCpuPathDir)
+      .filter((name) => name.endsWith('.rs') && !name.endsWith('_tests.rs')).sort().join(',') ===
       nssCpuPathModules.slice().sort().join(',') &&
     nssCpuPathByModule['ifb.rs'].includes('DEVICE_PREFIX') &&
     nssCpuPathByModule['ifb.rs'].includes('lanspeedd:nss-igs-upload:v3:') &&

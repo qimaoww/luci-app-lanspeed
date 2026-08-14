@@ -78,8 +78,12 @@ const luciResources = [
   'diagnosticsStyleBase.js',
   'diagnosticsStyleBootstrap.js',
   'diagnosticsStyleResponsive.js',
+	'diagnosticsSchema.js',
+	'diagnosticsResources.js',
+	'diagnosticsStates.js',
 	'diagnosticsModel.js',
 	'diagnosticsReport.js',
+	'diagnosticsReportModel.js',
 	'diagnosticsView.js',
 	'clientConnections.js',
 	'clientControl.js',
@@ -696,7 +700,7 @@ try {
   assertMatch(nssControlKmodMakefile, /^PKG_VERSION:=1\.1\.6$/m,
     'NSS control kmod must stay on the daemon version');
   assertMatch(nssControlKmodMakefile, /^PKG_RELEASE:=3$/m,
-    'NSS control kmod must stay on release 3');
+    'NSS control kmod must stay on release 4');
   assertMatch(nssControlKmodMakefile,
     /^  DEPENDS:=@TARGET_qualcommax \+kmod-ifb \+kmod-qca-nss-drv \+kmod-qca-nss-drv-igs$/m,
     'NSS control kmod must be packaged only for qualcommax with verified IGS dependencies');

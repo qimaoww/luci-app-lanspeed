@@ -571,20 +571,6 @@ fn percentage(numerator: u64, denominator: u64) -> Option<u8> {
     u8::try_from(value).ok()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::sample_clock_within;
-
-    #[test]
-    fn active_edge_clock_allows_only_bounded_read_skew() {
-        assert!(sample_clock_within(Some(12_004), Some(12_000), 50));
-        assert!(sample_clock_within(Some(12_000), Some(12_000), 0));
-        assert!(!sample_clock_within(Some(12_051), Some(12_000), 50));
-        assert!(sample_clock_within(None, Some(12_000), 50));
-        assert!(!sample_clock_within(Some(12_000), None, 50));
-    }
-}
-
 pub(crate) fn coverage_evidence(coverage: &CoverageWindow, source: &str) -> Value {
     json!({
         "source": source,
@@ -748,3 +734,7 @@ pub(crate) fn ecm_bpf_coverage_merge_evidence(value: EcmBpfCoverageMerge) -> Val
         "merge": "aligned_source_disjoint_raw_delta_sum",
     })
 }
+
+#[cfg(test)]
+#[path = "output_tests.rs"]
+mod tests;

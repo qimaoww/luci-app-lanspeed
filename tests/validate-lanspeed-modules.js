@@ -74,8 +74,12 @@ const EXPECTED_MODULES = [
 	'diagnosticsStyleArgon.js',
 	'diagnosticsStyleBootstrap.js',
 	'diagnosticsStyleResponsive.js',
+	'diagnosticsSchema.js',
+	'diagnosticsResources.js',
+	'diagnosticsStates.js',
 	'diagnosticsModel.js',
 	'diagnosticsReport.js',
+	'diagnosticsReportModel.js',
 	'diagnosticsView.js',
 	'rpc.js',
 	'ifaceConfig.js',
@@ -272,8 +276,12 @@ const MODULE_REQUIRES = {
 	'diagnosticsStyleArgon.js': [ 'baseclass' ],
 	'diagnosticsStyleBootstrap.js': [ 'baseclass' ],
 	'diagnosticsStyleResponsive.js': [ 'baseclass' ],
-	'diagnosticsModel.js': [ 'baseclass', 'lanspeed.vocab', 'lanspeed.statusCollector', 'lanspeed.diagnosticsReport' ],
+	'diagnosticsSchema.js': [ 'baseclass' ],
+	'diagnosticsResources.js': [ 'baseclass', 'lanspeed.diagnosticsSchema' ],
+	'diagnosticsStates.js': [ 'baseclass', 'lanspeed.diagnosticsSchema', 'lanspeed.diagnosticsResources', 'lanspeed.vocab', 'lanspeed.statusCollector' ],
+	'diagnosticsModel.js': [ 'baseclass', 'lanspeed.diagnosticsSchema', 'lanspeed.diagnosticsResources', 'lanspeed.diagnosticsStates', 'lanspeed.diagnosticsReportModel' ],
 	'diagnosticsReport.js': [ 'baseclass' ],
+	'diagnosticsReportModel.js': [ 'baseclass', 'lanspeed.diagnosticsSchema', 'lanspeed.diagnosticsResources', 'lanspeed.diagnosticsStates', 'lanspeed.vocab', 'lanspeed.diagnosticsReport' ],
 	'diagnosticsView.js': [
 		'baseclass',
 		'lanspeed.rpc',
@@ -7407,7 +7415,11 @@ EXPECTED_MODULES.forEach(function(name) {
 		assertDiagnosticsRefreshModule(src);
 	}
 	if (name === 'diagnosticsModel.js') {
-		assertDiagnosticsModelModule(src);
+		const diagnosticSources = [
+			'diagnosticsSchema.js', 'diagnosticsResources.js', 'diagnosticsStates.js',
+			'diagnosticsReportModel.js'
+		].map(function(part) { return readModuleByName(part); }).join('\n');
+		assertDiagnosticsModelModule(src + '\n' + diagnosticSources);
 	}
 	if (name === 'diagnosticsReport.js') {
 		assertDiagnosticsReportModule(src);
