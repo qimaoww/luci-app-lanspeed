@@ -161,7 +161,7 @@
     "conntrack_rate_overlay": false,
     "deduplication": "nss_callback_context_excludes_ecm_slow_path_before_aligned_raw_delta_fusion",
     "nss_context_key": "pid_tgid",
-    "nss_context_value": "nested_callback_depth",
+    "nss_context_value": "nested_callback_depth_dirty_source_id",
     "classification_role": "N_nss_identified_only",
     "active_auto_misaligned_rate_fallback": "forbidden",
     "read_only": true

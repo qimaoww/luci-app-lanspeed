@@ -11,8 +11,8 @@ use aya_ebpf::{
     programs::{ProbeContext, RetProbeContext},
 };
 use lanspeed_common::{
-    packet::is_valid_client_mac, EcmCounters, EcmKey, EcmLayout, EcmSourceStats, DIR_RX, DIR_TX,
-    MAX_CLIENTS, MAX_ECM_NSS_CONTEXTS,
+    packet::is_valid_client_mac, EcmCounters, EcmKey, EcmLayout, EcmNssContext, EcmSourceStats,
+    DIR_RX, DIR_TX, MAX_CLIENTS, MAX_ECM_NSS_CONTEXTS,
 };
 
 use crate::atomics::add_u64;
@@ -28,7 +28,7 @@ pub static LANSPEED_ECM_LAYOUT: Array<EcmLayout> = Array::with_max_entries(1, 0)
 pub static LANSPEED_ECM_SOURCE_STATS: Array<EcmSourceStats> = Array::with_max_entries(1, 0);
 
 #[map(name = "lanspeed_ecm_nss_context")]
-pub static LANSPEED_ECM_NSS_CONTEXT: LruHashMap<u64, u32> =
+pub static LANSPEED_ECM_NSS_CONTEXT: LruHashMap<u64, EcmNssContext> =
     LruHashMap::with_max_entries(MAX_ECM_NSS_CONTEXTS, 0);
 
 #[kprobe]
@@ -91,11 +91,15 @@ fn try_ecm_update(ctx: &ProbeContext) {
         (to_mac, from_mac)
     };
     let now = unsafe { bpf_ktime_get_ns() };
+    let mut accounted = false;
     if let Some(mac) = sender {
-        account(connection, generation, mac, DIR_TX, bytes, packets, now);
+        accounted |= account(connection, generation, mac, DIR_TX, bytes, packets, now);
     }
     if let Some(mac) = receiver {
-        account(connection, generation, mac, DIR_RX, bytes, packets, now);
+        accounted |= account(connection, generation, mac, DIR_RX, bytes, packets, now);
+    }
+    if accounted {
+        mark_nss_context_dirty();
     }
 }
 
@@ -107,15 +111,33 @@ fn update_nss_context(enter: bool) {
     let task = bpf_get_current_pid_tgid();
     let current = LANSPEED_ECM_NSS_CONTEXT
         .get_ptr(&task)
-        .map_or(0, |depth| unsafe { depth.read_volatile() });
+        .map_or(EcmNssContext::default(), |context| unsafe {
+            context.read_volatile()
+        });
     if enter {
-        let next = current.saturating_add(1);
+        let next = EcmNssContext {
+            depth: current.depth.saturating_add(1),
+            dirty: if current.depth == 0 { 0 } else { current.dirty },
+            source_id: current.source_id,
+            reserved: 0,
+        };
         let _ = LANSPEED_ECM_NSS_CONTEXT.insert(&task, &next, 0);
-    } else if current > 1 {
-        let next = current - 1;
+    } else if current.depth > 1 {
+        let next = EcmNssContext {
+            depth: current.depth - 1,
+            ..current
+        };
         let _ = LANSPEED_ECM_NSS_CONTEXT.insert(&task, &next, 0);
-    } else if current == 1 {
-        let _ = LANSPEED_ECM_NSS_CONTEXT.remove(&task);
+    } else if current.depth == 1 {
+        if current.dirty == 0 {
+            let _ = LANSPEED_ECM_NSS_CONTEXT.remove(&task);
+        } else {
+            let next = EcmNssContext {
+                depth: 0,
+                ..current
+            };
+            let _ = LANSPEED_ECM_NSS_CONTEXT.insert(&task, &next, 0);
+        }
     }
 }
 
@@ -124,7 +146,18 @@ fn nss_context_active() -> bool {
     let task = bpf_get_current_pid_tgid();
     LANSPEED_ECM_NSS_CONTEXT
         .get_ptr(&task)
-        .is_some_and(|depth| unsafe { depth.read_volatile() != 0 })
+        .is_some_and(|context| unsafe { context.read_volatile().depth != 0 })
+}
+
+#[inline(always)]
+fn mark_nss_context_dirty() {
+    let task = bpf_get_current_pid_tgid();
+    let Some(context) = LANSPEED_ECM_NSS_CONTEXT.get_ptr_mut(&task) else {
+        return;
+    };
+    unsafe {
+        (*context).dirty = 1;
+    }
 }
 
 #[inline(always)]
@@ -170,7 +203,7 @@ fn account(
     bytes: u64,
     packets: u64,
     now: u64,
-) {
+) -> bool {
     // Keep the existing EcmKey ABI so a new object can be loaded by old and
     // new userspace, but aggregate the hot map by MAC + client direction.
     // Per-connection keys multiplied occupancy by the flow count and made LRU
@@ -190,6 +223,7 @@ fn account(
             add_u64(addr_of_mut!((*value).bytes), bytes);
             add_u64(addr_of_mut!((*value).packets), packets);
             addr_of_mut!((*value).last_seen).write_volatile(now);
+            true
         },
         None => {
             let initial = EcmCounters {
@@ -199,16 +233,19 @@ fn account(
             };
             if LANSPEED_ECM_CLIENTS
                 .insert(&key, &initial, BPF_NOEXIST as u64)
-                .is_err()
+                .is_ok()
             {
-                if let Some(value) = LANSPEED_ECM_CLIENTS.get_ptr_mut(&key) {
-                    unsafe {
-                        add_u64(addr_of_mut!((*value).bytes), bytes);
-                        add_u64(addr_of_mut!((*value).packets), packets);
-                        addr_of_mut!((*value).last_seen).write_volatile(now);
-                    }
-                }
+                return true;
             }
+            if let Some(value) = LANSPEED_ECM_CLIENTS.get_ptr_mut(&key) {
+                unsafe {
+                    add_u64(addr_of_mut!((*value).bytes), bytes);
+                    add_u64(addr_of_mut!((*value).packets), packets);
+                    addr_of_mut!((*value).last_seen).write_volatile(now);
+                }
+                return true;
+            }
+            false
         }
     }
 }

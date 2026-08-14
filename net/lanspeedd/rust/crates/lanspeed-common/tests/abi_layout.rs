@@ -1,8 +1,8 @@
 use core::mem::{align_of, offset_of, size_of};
 
 use lanspeed_common::{
-    LanspeedConnKey, LanspeedCounters, LanspeedKey, CLIENTS_MAP_NAME, DIR_RX, DIR_TX,
-    EGRESS_EARLY_PROGRAM_NAME, EGRESS_PROGRAM_NAME, INGRESS_EARLY_PROGRAM_NAME,
+    EcmNssContext, LanspeedConnKey, LanspeedCounters, LanspeedKey, CLIENTS_MAP_NAME, DIR_RX,
+    DIR_TX, EGRESS_EARLY_PROGRAM_NAME, EGRESS_PROGRAM_NAME, INGRESS_EARLY_PROGRAM_NAME,
     INGRESS_PROGRAM_NAME, MAX_CLIENTS, MAX_CONN_TUPLES, SEEN_CONNS_MAP_NAME,
 };
 
@@ -26,6 +26,16 @@ fn counter_layout_matches_bpf_abi() {
     assert_eq!(offset_of!(LanspeedCounters, last_seen), 16);
     assert_eq!(offset_of!(LanspeedCounters, tcp_conns), 24);
     assert_eq!(offset_of!(LanspeedCounters, udp_conns), 28);
+}
+
+#[test]
+fn ecm_nss_context_layout_matches_dirty_tracking_abi() {
+    assert_eq!(size_of::<EcmNssContext>(), 8);
+    assert_eq!(align_of::<EcmNssContext>(), 4);
+    assert_eq!(offset_of!(EcmNssContext, depth), 0);
+    assert_eq!(offset_of!(EcmNssContext, dirty), 4);
+    assert_eq!(offset_of!(EcmNssContext, source_id), 5);
+    assert_eq!(offset_of!(EcmNssContext, reserved), 6);
 }
 
 #[test]

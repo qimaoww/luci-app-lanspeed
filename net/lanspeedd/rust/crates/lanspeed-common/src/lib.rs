@@ -111,6 +111,22 @@ pub struct EcmSourceStats {
     pub slow_path_updates: u64,
 }
 
+/// Per-task state for the ECM NSS callback boundary.
+///
+/// `depth` tracks nested callbacks. `dirty` is set only after the totals
+/// update probe successfully accounts at least one valid client counter while
+/// inside the callback. `source_id` is reserved for the source-specific
+/// callback programs; the initial ABI uses zero until those programs are
+/// attached independently.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C, align(4))]
+pub struct EcmNssContext {
+    pub depth: u32,
+    pub dirty: u8,
+    pub source_id: u8,
+    pub reserved: u16,
+}
+
 /// Connection-deduplication key matching `struct lanspeed_conn_key`.
 ///
 /// Every field is naturally contiguous under `repr(C)`: the six-byte MAC and
@@ -170,5 +186,7 @@ const _: [(); 24] = [(); core::mem::size_of::<EcmCounters>()];
 const _: [(); 8] = [(); core::mem::align_of::<EcmCounters>()];
 const _: [(); 48] = [(); core::mem::size_of::<EcmSourceStats>()];
 const _: [(); 8] = [(); core::mem::align_of::<EcmSourceStats>()];
+const _: [(); 8] = [(); core::mem::size_of::<EcmNssContext>()];
+const _: [(); 4] = [(); core::mem::align_of::<EcmNssContext>()];
 const _: [(); 28] = [(); core::mem::size_of::<LanspeedConnKey>()];
 const _: [(); 2] = [(); core::mem::align_of::<LanspeedConnKey>()];

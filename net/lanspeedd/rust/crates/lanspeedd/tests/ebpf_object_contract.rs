@@ -428,7 +428,7 @@ fn aarch64_ecm_object_is_isolated_from_tc_and_uses_aarch64_probe_registers() {
         context.map_type(),
         bpf_map_type::BPF_MAP_TYPE_LRU_HASH as u32
     );
-    assert_eq!((context.key_size(), context.value_size()), (8, 4));
+    assert_eq!((context.key_size(), context.value_size()), (8, 8));
     assert_eq!(context.max_entries(), MAX_ECM_NSS_CONTEXTS);
     let source_stats = &parsed.maps[ECM_SOURCE_STATS_MAP_NAME];
     assert_eq!(

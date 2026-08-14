@@ -184,7 +184,7 @@ assert(JSON.stringify(model.ecm_bpf_model.map_key) ===
   model.ecm_bpf_model.map_abi === 'EcmKey_v1_with_connection_and_generation_zeroed' &&
   model.ecm_bpf_model.map_capacity === 'at_least_2_times_max_clients' &&
   model.ecm_bpf_model.nss_context_key === 'pid_tgid' &&
-  model.ecm_bpf_model.nss_context_value === 'nested_callback_depth' &&
+  model.ecm_bpf_model.nss_context_value === 'nested_callback_depth_dirty_source_id' &&
   model.ecm_bpf_model.classification_role === 'N_nss_identified_only' &&
   model.ecm_bpf_model.active_auto_misaligned_rate_fallback === 'forbidden',
   'ECM hot accounting must aggregate by MAC+direction and use task-scoped NSS context');
