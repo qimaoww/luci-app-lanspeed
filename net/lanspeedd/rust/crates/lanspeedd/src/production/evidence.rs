@@ -191,6 +191,7 @@ pub(super) fn mode(value: ProbeMode) -> Mode {
     }
 }
 
+#[cfg(feature = "nss-platform")]
 pub(super) fn conntrack_mode(value: ConnectionCollectorMode) -> ConntrackMode {
     match value {
         ConnectionCollectorMode::Auto => ConntrackMode::Auto,

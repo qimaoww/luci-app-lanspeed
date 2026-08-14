@@ -12,14 +12,12 @@ use serde_json::{json, Value};
 
 use crate::{
     clock::monotonic_millis,
-    collectors::conntrack::{self, CollectedSnapshot, CollectorMode as ConntrackMode},
-    config::{AccessEdgeMode, ConnectionCollectorMode, RuntimeConfig, SysfsInterfaceEligibility},
+    collectors::conntrack::CollectedSnapshot,
+    config::{AccessEdgeMode, RuntimeConfig, SysfsInterfaceEligibility},
     connection_details::ConnectionRateBook,
     connections::{
-        apply_conntrack_failure, apply_conntrack_success, before_reply_action,
-        client_conntrack_plan, periodic_conntrack_plan, publish_connection_details,
-        BeforeReplyAction, ClientConntrackPlan, ConntrackObservation, PeriodicConntrackPlan,
-        CLIENT_CONNTRACK_CACHE_TTL_MS, NSS_CLIENT_CONNTRACK_CACHE_TTL_MS,
+        periodic_conntrack_plan, publish_connection_details, ConntrackObservation,
+        PeriodicConntrackPlan,
     },
     control::{ClientControlDeleteRequest, ClientControlRequest, ControlCommand},
     daemon::{
@@ -73,6 +71,12 @@ use crate::{
 };
 
 use crate::control::ControlManager;
+
+#[cfg(feature = "nss-platform")]
+use crate::config::ConnectionCollectorMode;
+
+#[cfg(feature = "nss-platform")]
+use crate::collectors::conntrack::{self, CollectorMode as ConntrackMode};
 
 mod evidence;
 mod rate_helpers;
@@ -465,6 +469,7 @@ impl ProductionRuntime {
         self.bpf_error_stage = checkpoint.bpf_error_stage;
     }
 
+    #[cfg(feature = "nss-platform")]
     fn read_conntrack(
         &mut self,
         identities: &IdentityTable,
@@ -514,83 +519,6 @@ impl ProductionRuntime {
     fn apply_conntrack_health(&self, runtime_health: &mut RuntimeHealth) {
         self.conntrack_observation
             .apply_runtime_health(self.conntrack_snapshot.is_some(), runtime_health);
-    }
-
-    fn refresh_connections(
-        &mut self,
-        base: &ResponseSnapshot,
-    ) -> Result<ResponseSnapshot, DaemonError> {
-        let now_ms = production_now_ms()?;
-        let defer_connection_rates = matches!(
-            self.rate_owner,
-            Some(RateCollector::NssEcmNode | RateCollector::NssEcmBpf)
-        );
-        let plan = client_conntrack_plan(
-            now_ms,
-            self.conntrack_observation.last_attempt_ms,
-            self.conntrack_snapshot.is_some(),
-            if defer_connection_rates {
-                NSS_CLIENT_CONNTRACK_CACHE_TTL_MS
-            } else {
-                CLIENT_CONNTRACK_CACHE_TTL_MS
-            },
-        );
-        let cached = if plan == ClientConntrackPlan::ReuseCached {
-            self.conntrack_snapshot.as_ref().map(|collected| {
-                apply_conntrack_success(base, collected, self.config.conn_collector_mode.as_str())
-            })
-        } else {
-            None
-        };
-        let (mut snapshot, identity_errors) = if let Some(snapshot) = cached {
-            (snapshot, Vec::new())
-        } else {
-            let (identities, identity_errors) = read_identities(&self.config, now_ms);
-            let snapshot = match self.read_conntrack(&identities, now_ms, defer_connection_rates) {
-                Ok(collected) => apply_conntrack_success(
-                    base,
-                    &collected,
-                    self.config.conn_collector_mode.as_str(),
-                ),
-                Err(error) => apply_conntrack_failure(base, &error),
-            };
-            (snapshot, identity_errors)
-        };
-        if !identity_errors.is_empty() {
-            snapshot
-                .clients
-                .evidence
-                .get_or_insert_default()
-                .details
-                .insert("identity_errors".into(), json!(identity_errors));
-        }
-        #[cfg(feature = "nss-platform")]
-        {
-            // A hot clients/client_connections RPC is also a control
-            // observation. Audit every owned NSS queue, filter, nft object,
-            // and IGS mapping before copying control state into this response.
-            // Use the last authoritative client/attachment inventory: the
-            // conntrack overlay below may contain transient connection-only
-            // rows and must not become topology authority. If an owned object
-            // disappeared, reconcile clears verification and transactionally
-            // rebuilds it in this same request, so stale `verified` is never
-            // returned for one extra polling interval.
-            self.reconcile_control_state();
-        }
-        // The hot clients RPC overlays fresh conntrack-only identities after
-        // the normal collection snapshot. It is not an authoritative identity
-        // inventory: decorating those rows must never withdraw a persistent
-        // rule or rebuild qdiscs between normal collection generations.
-        self.decorate_controls(&mut snapshot.clients);
-        let totals = ConnectionTotals::new(
-            snapshot.clients.tcp_conns_total.unwrap_or(0),
-            snapshot.clients.udp_conns_total.unwrap_or(0),
-            snapshot.clients.udp_dns_conns_total.unwrap_or(0),
-            snapshot.clients.udp_other_conns_total.unwrap_or(0),
-        );
-        self.overview
-            .replace_latest_connections_and_client_count(totals, snapshot.clients.clients.len());
-        Ok(snapshot)
     }
 
     fn collect(&mut self, method: ProbeMethod) -> Result<ResponseSnapshot, DaemonError> {
@@ -2666,10 +2594,6 @@ impl ProductionRuntime {
         self.control.decorate_response(clients);
     }
 
-    fn decorate_controls(&self, clients: &mut ClientsResponse) {
-        self.control.decorate_response(clients);
-    }
-
     fn reconcile_control_state(&mut self) {
         #[cfg(feature = "nss-platform")]
         if !self.control_platform_owner {
@@ -3057,50 +2981,11 @@ impl App {
             self.last_error = Some(error.to_string());
         }
     }
-    fn refresh_clients_connections(&mut self) -> Result<(), DaemonError> {
-        let base = self.state.snapshot();
-        let runtime = self
-            .runtime
-            .as_mut()
-            .ok_or_else(|| DaemonError::collection("runtime is not started"))?;
-        let checkpoint = runtime.checkpoint();
-        let snapshot = match runtime.refresh_connections(&base) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                runtime.restore(checkpoint);
-                return Err(error);
-            }
-        };
-        self.state.publish_runtime_snapshot(snapshot);
-        Ok(())
-    }
-    #[cfg(feature = "nss-platform")]
-    fn refresh_clients_control_state(&mut self) -> Result<(), DaemonError> {
-        let mut snapshot = (*self.state.snapshot()).clone();
-        let runtime = self
-            .runtime
-            .as_mut()
-            .ok_or_else(|| DaemonError::collection("runtime is not started"))?;
-        // Keep the clients RPC as a structural control observation, but do not
-        // publish a second conntrack overlay between the status and interfaces
-        // reads that form one LuCI refresh. Connection details retain their
-        // explicit hot refresh path below.
-        runtime.reconcile_control_state();
-        runtime.decorate_controls(&mut snapshot.clients);
-        self.state.publish_runtime_snapshot(snapshot);
-        Ok(())
-    }
     fn before_reply(&mut self, method: ubus::Method) -> Result<(), DaemonError> {
-        match before_reply_action(method) {
-            BeforeReplyAction::None | BeforeReplyAction::CacheOnly => Ok(()),
-            BeforeReplyAction::RefreshConnections => {
-                #[cfg(feature = "nss-platform")]
-                if method == ubus::Method::Clients {
-                    return self.refresh_clients_control_state();
-                }
-                self.refresh_clients_connections()
-            }
-            BeforeReplyAction::Reload => self.reload(),
+        if method == ubus::Method::Reload {
+            self.reload()
+        } else {
+            Ok(())
         }
     }
     fn handle_control(&mut self, command: ControlCommand) -> Result<Value, DaemonError> {

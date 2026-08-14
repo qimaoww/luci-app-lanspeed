@@ -126,7 +126,6 @@ impl ConntrackObservation {
 pub enum BeforeReplyAction {
     None,
     CacheOnly,
-    RefreshConnections,
     Reload,
 }
 
