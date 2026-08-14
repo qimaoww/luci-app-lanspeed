@@ -20,11 +20,11 @@ pub(crate) mod fast_rate_worker;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod fast_s_timer;
 #[cfg(any(feature = "openwrt", test))]
-pub(crate) mod rate_mux;
-#[cfg(any(feature = "openwrt", test))]
 pub(crate) mod fusion;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod output;
+#[cfg(any(feature = "openwrt", test))]
+pub(crate) mod rate_mux;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod runtime;
 pub(crate) mod tc_snapshot;

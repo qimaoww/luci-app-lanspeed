@@ -64,7 +64,9 @@ impl FastRateWakeupBook {
     }
 
     pub(crate) fn poll(&mut self, now_ms: u64) -> Option<FastRateWakeup> {
-        let event_hint = self.event_deadline_ms.is_some_and(|deadline| now_ms >= deadline);
+        let event_hint = self
+            .event_deadline_ms
+            .is_some_and(|deadline| now_ms >= deadline);
         if !event_hint && !self.fixed_timer_pending {
             return None;
         }
@@ -84,9 +86,7 @@ impl FastRateWakeupBook {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        FastRateWakeup, FastRateWakeupBook, FAST_RATE_DEBOUNCE_MS,
-    };
+    use super::{FastRateWakeup, FastRateWakeupBook, FAST_RATE_DEBOUNCE_MS};
 
     #[test]
     fn event_hints_are_debounced_and_coalesced() {

@@ -62,18 +62,12 @@ impl FastRateStore {
         };
         if let Some(previous) = self.latest {
             if previous.fast_total_bps != 0 && sample.fast_total_bps == 0 {
-                self.telemetry.last_zero_latency_ms = Some(
-                    sample
-                        .sample_ms
-                        .saturating_sub(previous.sample_ms),
-                );
+                self.telemetry.last_zero_latency_ms =
+                    Some(sample.sample_ms.saturating_sub(previous.sample_ms));
             }
             if previous.fast_total_bps == 0 && sample.fast_total_bps != 0 {
-                self.telemetry.last_rise_latency_ms = Some(
-                    sample
-                        .sample_ms
-                        .saturating_sub(previous.sample_ms),
-                );
+                self.telemetry.last_rise_latency_ms =
+                    Some(sample.sample_ms.saturating_sub(previous.sample_ms));
             }
         }
         self.telemetry.valid_windows = self.telemetry.valid_windows.saturating_add(1);
@@ -90,10 +84,7 @@ impl FastRateStore {
         self.telemetry.last_invalid_ms = Some(sample_ms);
     }
 
-    pub(crate) fn compare_with_edge(
-        &self,
-        edge_bps: Option<u64>,
-    ) -> Option<FastShadowComparison> {
+    pub(crate) fn compare_with_edge(&self, edge_bps: Option<u64>) -> Option<FastShadowComparison> {
         self.latest.map(|sample| FastShadowComparison {
             edge_bps,
             fast_n_bps: sample.fast_n_bps,

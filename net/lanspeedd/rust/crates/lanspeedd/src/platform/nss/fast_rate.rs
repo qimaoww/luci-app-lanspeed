@@ -178,8 +178,7 @@ fn read_end_skew(n_end_ms: u64, s_end_ms: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        FastCounterSample, FastRateCoordinator, FastWindowError,
-        FAST_WINDOW_MAX_READ_END_SKEW_MS,
+        FastCounterSample, FastRateCoordinator, FastWindowError, FAST_WINDOW_MAX_READ_END_SKEW_MS,
     };
 
     fn sample(sample_ms: u64, read_end_ms: u64, bytes: u64, packets: u64) -> FastCounterSample {
@@ -282,6 +281,9 @@ mod tests {
             coordinator.finish(sample(2_000, 2_010, 1, 1), sample(2_000, 2_010, 1, 1)),
             Err(FastWindowError::TimeDidNotAdvance)
         );
-        assert_eq!(coordinator.max_read_end_skew_ms(), FAST_WINDOW_MAX_READ_END_SKEW_MS);
+        assert_eq!(
+            coordinator.max_read_end_skew_ms(),
+            FAST_WINDOW_MAX_READ_END_SKEW_MS
+        );
     }
 }

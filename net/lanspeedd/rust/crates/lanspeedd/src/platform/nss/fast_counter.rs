@@ -132,9 +132,8 @@ pub(crate) fn aggregate_per_cpu(
     }
     let mut aggregate = FastCounterAggregate::default();
     for (cpu, (before, after)) in first.iter().zip(second).enumerate() {
-        let value = validate_stable_pair(*before, *after).map_err(|error| {
-            FastSReadError::CpuValueUnstable { cpu, error }
-        })?;
+        let value = validate_stable_pair(*before, *after)
+            .map_err(|error| FastSReadError::CpuValueUnstable { cpu, error })?;
         if cpu == 0 {
             aggregate.abi_version = value.abi_version;
             aggregate.reset_generation = value.reset_generation;
@@ -275,8 +274,8 @@ mod tests {
     #[test]
     fn retries_are_bounded_and_do_not_accept_a_torn_value() {
         let mut reads = vec![value(1), value(2), value(3), value(5), value(6), value(7)];
-        let error = read_stable(FAST_COUNTER_READ_RETRIES, || Ok::<_, ()>(reads.remove(0)))
-            .unwrap_err();
+        let error =
+            read_stable(FAST_COUNTER_READ_RETRIES, || Ok::<_, ()>(reads.remove(0))).unwrap_err();
         assert_eq!(
             error,
             FastCounterReadError::Unstable {
@@ -375,10 +374,12 @@ mod tests {
         let mut reader = FastNReader::default();
         assert_eq!(
             reader.read(value(3), value(3)),
-            Err(FastNReadError::Unstable(StableReadError::SequenceUnstable {
-                first: 3,
-                second: 3,
-            }))
+            Err(FastNReadError::Unstable(
+                StableReadError::SequenceUnstable {
+                    first: 3,
+                    second: 3,
+                }
+            ))
         );
         assert_eq!(
             reader.read(value(4), value(4)).unwrap(),

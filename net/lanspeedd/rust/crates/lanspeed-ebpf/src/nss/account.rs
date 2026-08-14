@@ -11,8 +11,8 @@ use aya_ebpf::{
 use lanspeed_common::{
     accounting::tc_frame_accounting,
     packet::{gro_repeated_header_len, is_valid_client_mac, vlan_zone},
-    FastCounterValue, LanspeedCounters, LanspeedKey, DIR_TX, FAST_COUNTER_ABI_VERSION,
-    FAST_COUNTERS_MAP_CAPACITY, MAX_CLIENTS,
+    FastCounterValue, LanspeedCounters, LanspeedKey, DIR_TX, FAST_COUNTERS_MAP_CAPACITY,
+    FAST_COUNTER_ABI_VERSION, MAX_CLIENTS,
 };
 
 use crate::atomics::add_u64;

@@ -226,7 +226,10 @@ fn production_tc_object_has_exact_maps_programs_and_license() {
         fast_counters.map_type(),
         bpf_map_type::BPF_MAP_TYPE_PERCPU_HASH as u32
     );
-    assert_eq!((fast_counters.key_size(), fast_counters.value_size()), (16, 40));
+    assert_eq!(
+        (fast_counters.key_size(), fast_counters.value_size()),
+        (16, 40)
+    );
     assert_eq!(fast_counters.max_entries(), FAST_COUNTERS_MAP_CAPACITY);
 
     let seen = &object.maps[SEEN_CONNS_MAP_NAME];
@@ -360,7 +363,10 @@ fn fallback_object_preserves_abi_without_kfunc_relocations() {
         fast_counters.map_type(),
         bpf_map_type::BPF_MAP_TYPE_PERCPU_HASH as u32
     );
-    assert_eq!((fast_counters.key_size(), fast_counters.value_size()), (16, 40));
+    assert_eq!(
+        (fast_counters.key_size(), fast_counters.value_size()),
+        (16, 40)
+    );
     assert_eq!(fast_counters.max_entries(), FAST_COUNTERS_MAP_CAPACITY);
     let packet_scratch = &parsed.maps[PACKET_SCRATCH_MAP_NAME];
     assert_eq!(

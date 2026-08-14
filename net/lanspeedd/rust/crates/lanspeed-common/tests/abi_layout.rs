@@ -2,10 +2,9 @@ use core::mem::{align_of, offset_of, size_of};
 
 use lanspeed_common::{
     EcmCountersUpdatedEvent, EcmEventStats, EcmNssContext, FastCounterValue, LanspeedConnKey,
-    LanspeedCounters,
-    LanspeedKey, CLIENTS_MAP_NAME, DIR_RX, DIR_TX, EGRESS_EARLY_PROGRAM_NAME, EGRESS_PROGRAM_NAME,
-    INGRESS_EARLY_PROGRAM_NAME, INGRESS_PROGRAM_NAME, MAX_CLIENTS, MAX_CONN_TUPLES,
-    SEEN_CONNS_MAP_NAME,
+    LanspeedCounters, LanspeedKey, CLIENTS_MAP_NAME, DIR_RX, DIR_TX, EGRESS_EARLY_PROGRAM_NAME,
+    EGRESS_PROGRAM_NAME, INGRESS_EARLY_PROGRAM_NAME, INGRESS_PROGRAM_NAME, MAX_CLIENTS,
+    MAX_CONN_TUPLES, SEEN_CONNS_MAP_NAME,
 };
 
 #[test]

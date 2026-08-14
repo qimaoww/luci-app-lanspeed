@@ -87,7 +87,7 @@ impl FastSTimer {
 
 #[cfg(test)]
 mod tests {
-    use super::{FastSTimer, FastSTick, FAST_S_INTERVAL_MS};
+    use super::{FastSTick, FastSTimer, FAST_S_INTERVAL_MS};
 
     #[test]
     fn starts_with_an_immediate_fixed_tick() {

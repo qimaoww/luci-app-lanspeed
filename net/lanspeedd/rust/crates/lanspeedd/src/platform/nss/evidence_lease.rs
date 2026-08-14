@@ -37,8 +37,10 @@ pub(crate) fn e_usability(observation: EdgeObservation) -> EUsability {
     if authority {
         return EUsability::Authority;
     }
-    if matches!(observation.coverage, Coverage::Unavailable | Coverage::Degraded)
-        || matches!(observation.scope, TrafficScope::None)
+    if matches!(
+        observation.coverage,
+        Coverage::Unavailable | Coverage::Degraded
+    ) || matches!(observation.scope, TrafficScope::None)
     {
         EUsability::TransientEUnavailable
     } else {
@@ -143,7 +145,12 @@ pub(crate) fn lease_invalidation(
 mod tests {
     use super::*;
 
-    fn edge(kind: EdgeKind, unique: bool, coverage: Coverage, scope: TrafficScope) -> EdgeObservation {
+    fn edge(
+        kind: EdgeKind,
+        unique: bool,
+        coverage: Coverage,
+        scope: TrafficScope,
+    ) -> EdgeObservation {
         EdgeObservation {
             kind,
             unique,
@@ -177,19 +184,39 @@ mod tests {
     #[test]
     fn e_authority_distinguishes_wifi_and_wired_rules() {
         assert_eq!(
-            e_usability(edge(EdgeKind::Wifi, true, Coverage::Full, TrafficScope::Unicast)),
+            e_usability(edge(
+                EdgeKind::Wifi,
+                true,
+                Coverage::Full,
+                TrafficScope::Unicast
+            )),
             EUsability::Authority
         );
         assert_eq!(
-            e_usability(edge(EdgeKind::Wifi, true, Coverage::Partial, TrafficScope::Unicast)),
+            e_usability(edge(
+                EdgeKind::Wifi,
+                true,
+                Coverage::Partial,
+                TrafficScope::Unicast
+            )),
             EUsability::StructuralEUnavailable
         );
         assert_eq!(
-            e_usability(edge(EdgeKind::Port, true, Coverage::Partial, TrafficScope::AllFrames)),
+            e_usability(edge(
+                EdgeKind::Port,
+                true,
+                Coverage::Partial,
+                TrafficScope::AllFrames
+            )),
             EUsability::Authority
         );
         assert_eq!(
-            e_usability(edge(EdgeKind::Port, false, Coverage::Full, TrafficScope::AllFrames)),
+            e_usability(edge(
+                EdgeKind::Port,
+                false,
+                Coverage::Full,
+                TrafficScope::AllFrames
+            )),
             EUsability::StructuralEUnavailable
         );
     }
@@ -197,11 +224,21 @@ mod tests {
     #[test]
     fn transient_edge_failure_is_not_structural_ambiguity() {
         assert_eq!(
-            e_usability(edge(EdgeKind::Port, true, Coverage::Unavailable, TrafficScope::AllFrames)),
+            e_usability(edge(
+                EdgeKind::Port,
+                true,
+                Coverage::Unavailable,
+                TrafficScope::AllFrames
+            )),
             EUsability::TransientEUnavailable
         );
         assert_eq!(
-            e_usability(edge(EdgeKind::Port, true, Coverage::Partial, TrafficScope::RoutedObserved)),
+            e_usability(edge(
+                EdgeKind::Port,
+                true,
+                Coverage::Partial,
+                TrafficScope::RoutedObserved
+            )),
             EUsability::StructuralEUnavailable
         );
     }
@@ -225,15 +262,39 @@ mod tests {
         let mut changed = generations();
         changed.nss_map_generation += 1;
         assert_eq!(
-            lease_invalidation(&value, changed, ByteDomain::L2NoFcs, true, false, false, false),
+            lease_invalidation(
+                &value,
+                changed,
+                ByteDomain::L2NoFcs,
+                true,
+                false,
+                false,
+                false
+            ),
             Some(LeaseInvalidation::NssMapGeneration)
         );
         assert_eq!(
-            lease_invalidation(&value, generations(), ByteDomain::L2NoFcs, true, true, false, false),
+            lease_invalidation(
+                &value,
+                generations(),
+                ByteDomain::L2NoFcs,
+                true,
+                true,
+                false,
+                false
+            ),
             Some(LeaseInvalidation::CounterReset)
         );
         assert_eq!(
-            lease_invalidation(&value, generations(), ByteDomain::L2NoFcs, false, false, false, false),
+            lease_invalidation(
+                &value,
+                generations(),
+                ByteDomain::L2NoFcs,
+                false,
+                false,
+                false,
+                false
+            ),
             Some(LeaseInvalidation::NsOverlap)
         );
     }

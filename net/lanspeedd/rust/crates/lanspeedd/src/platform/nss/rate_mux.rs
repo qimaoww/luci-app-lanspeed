@@ -22,10 +22,7 @@ pub(crate) fn select_rate_view(
     if e == EUsability::TransientEUnavailable && lease_valid && fast_window_valid {
         return RateView::RoutedLeaseSubstitute;
     }
-    if e == EUsability::StructuralEUnavailable
-        && explicit_internet_view
-        && fast_window_valid
-    {
+    if e == EUsability::StructuralEUnavailable && explicit_internet_view && fast_window_valid {
         return RateView::RoutedInternet;
     }
     RateView::Unavailable
