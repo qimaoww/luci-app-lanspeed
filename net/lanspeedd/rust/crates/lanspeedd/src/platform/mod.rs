@@ -1,6 +1,7 @@
 #[cfg(feature = "nss-platform")]
 pub mod access_edge;
 pub mod counters;
+pub(crate) mod fast_counter_map;
 #[cfg(feature = "nss-platform")]
 pub mod nss;
 pub mod profile;

@@ -86,6 +86,9 @@ use rate_helpers::*;
 use crate::control::{NssPathObservation, NSS_CPU_DOWNLOAD, NSS_CPU_UPLOAD};
 
 #[cfg(feature = "nss-platform")]
+use crate::platform::x86::runtime::AyaAdapter;
+
+#[cfg(feature = "nss-platform")]
 use crate::config::RateCollectorMode;
 
 #[cfg(all(test, feature = "nss-platform"))]
@@ -1040,50 +1043,17 @@ impl ProductionRuntime {
             u64::from(self.config.refresh_interval_ms).saturating_mul(3)
         };
         let nss_freshness_ms = nss_snapshot_freshness_ms(self.config.refresh_interval_ms);
-        let (bpf_snapshot, mut runtime_health, bpf_snapshot_fresh) = match external_bpf {
-            Some((runtime, adapter)) => {
-                let (snapshot, fresh) = if classifier_map_read_due {
-                    match runtime.collect_snapshot_self_healing(
-                        adapter,
-                        &mut self.bpf_collector,
-                        &identities,
-                        &overlay,
-                        now_ms,
-                        EXTERNAL_BPF_SELF_HEAL_REASON,
-                    ) {
-                        Ok(snapshot) => {
-                            self.bpf_error = None;
-                            self.bpf_error_stage = None;
-                            (Some(snapshot), true)
-                        }
-                        Err(error) => {
-                            self.bpf_error_stage = Some(bpf_error_stage(error.kind()));
-                            self.bpf_error = Some(error.to_string());
-                            (self.bpf_collector.last_complete().cloned(), false)
-                        }
-                    }
-                } else {
-                    (self.bpf_collector.last_complete().cloned(), false)
-                };
-                let health_now_ms = snapshot
-                    .as_ref()
-                    .map_or(now_ms, |snapshot| now_ms.max(snapshot.sample_ms));
-                (
-                    snapshot,
-                    runtime.runtime_health(health_now_ms, bpf_freshness_ms),
-                    fresh,
-                )
-            }
-            None => match self.bpf.as_mut() {
-                Some(runtime) => {
+        let (bpf_snapshot, mut runtime_health, bpf_snapshot_fresh, fast_s_read, fast_s_read_failed) =
+            match external_bpf {
+                Some((runtime, adapter)) => {
                     let (snapshot, fresh) = if classifier_map_read_due {
                         match runtime.collect_snapshot_self_healing(
-                            &mut self.adapter,
+                            adapter,
                             &mut self.bpf_collector,
                             &identities,
                             &overlay,
                             now_ms,
-                            INTERNAL_BPF_SELF_HEAL_REASON,
+                            EXTERNAL_BPF_SELF_HEAL_REASON,
                         ) {
                             Ok(snapshot) => {
                                 self.bpf_error = None;
@@ -1099,6 +1069,14 @@ impl ProductionRuntime {
                     } else {
                         (self.bpf_collector.last_complete().cloned(), false)
                     };
+                    let (fast_s_read, fast_s_read_failed) = if self.probe_report.facts.nss.present {
+                        match adapter.read_fast_counters() {
+                            Ok(read) => (Some(read), false),
+                            Err(_) => (None, true),
+                        }
+                    } else {
+                        (None, false)
+                    };
                     let health_now_ms = snapshot
                         .as_ref()
                         .map_or(now_ms, |snapshot| now_ms.max(snapshot.sample_ms));
@@ -1106,11 +1084,58 @@ impl ProductionRuntime {
                         snapshot,
                         runtime.runtime_health(health_now_ms, bpf_freshness_ms),
                         fresh,
+                        fast_s_read,
+                        fast_s_read_failed,
                     )
                 }
-                None => (None, RuntimeHealth::default(), false),
-            },
-        };
+                None => match self.bpf.as_mut() {
+                    Some(runtime) => {
+                        let (snapshot, fresh) = if classifier_map_read_due {
+                            match runtime.collect_snapshot_self_healing(
+                                &mut self.adapter,
+                                &mut self.bpf_collector,
+                                &identities,
+                                &overlay,
+                                now_ms,
+                                INTERNAL_BPF_SELF_HEAL_REASON,
+                            ) {
+                                Ok(snapshot) => {
+                                    self.bpf_error = None;
+                                    self.bpf_error_stage = None;
+                                    (Some(snapshot), true)
+                                }
+                                Err(error) => {
+                                    self.bpf_error_stage = Some(bpf_error_stage(error.kind()));
+                                    self.bpf_error = Some(error.to_string());
+                                    (self.bpf_collector.last_complete().cloned(), false)
+                                }
+                            }
+                        } else {
+                            (self.bpf_collector.last_complete().cloned(), false)
+                        };
+                        let (fast_s_read, fast_s_read_failed) =
+                            if self.probe_report.facts.nss.present {
+                                match self.adapter.read_fast_counters() {
+                                    Ok(read) => (Some(read), false),
+                                    Err(_) => (None, true),
+                                }
+                            } else {
+                                (None, false)
+                            };
+                        let health_now_ms = snapshot
+                            .as_ref()
+                            .map_or(now_ms, |snapshot| now_ms.max(snapshot.sample_ms));
+                        (
+                            snapshot,
+                            runtime.runtime_health(health_now_ms, bpf_freshness_ms),
+                            fresh,
+                            fast_s_read,
+                            fast_s_read_failed,
+                        )
+                    }
+                    None => (None, RuntimeHealth::default(), false, None, false),
+                },
+            };
         if runtime_health.bpf_object_loaded {
             runtime_health.bpf_map_capacity = self.config.max_clients.saturating_mul(4);
         }
@@ -1121,6 +1146,13 @@ impl ProductionRuntime {
         };
         if let Some(snapshot) = bpf_snapshot.as_ref() {
             now_ms = now_ms.max(snapshot.sample_ms);
+        }
+        if fast_s_read_failed {
+            self.nss.record_fast_s_read_failure();
+        }
+        if let Some(read) = fast_s_read {
+            let fast_s_snapshot = self.nss.collect_fast_s(read, now_ms);
+            now_ms = now_ms.max(fast_s_snapshot.sample_ms);
         }
         let (ecm_bpf_snapshot, ecm_bpf_snapshot_fresh) = self.nss.collect_ecm_bpf(
             &identities,

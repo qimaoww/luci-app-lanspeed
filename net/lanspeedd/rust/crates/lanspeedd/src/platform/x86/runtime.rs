@@ -31,10 +31,9 @@ use crate::{
 pub const PRIMARY_OBJECT_PATH: &str = "/usr/lib/bpf/lanspeed-ebpf-kfunc";
 pub const FALLBACK_OBJECT_PATH: &str = "/usr/lib/bpf/lanspeed-ebpf-fallback";
 
-use super::snapshot::{
-    BpfSnapshot, BpfSnapshotCollector, ConnectionOverlay, FastCounterMapRead, MapRead,
-};
+use super::snapshot::{BpfSnapshot, BpfSnapshotCollector, ConnectionOverlay, MapRead};
 use super::tc_monitor::TcTopologyMonitor;
+use crate::platform::fast_counter_map::{FastCounterMapRead, RawFastCounterSample};
 
 pub const NORMAL_PRIORITY: u16 = 49_152;
 pub const NORMAL_HANDLE: u16 = 0x1eed;
@@ -1747,7 +1746,7 @@ impl AyaAdapter for SystemAyaAdapter {
                 .iter()
                 .map(|value| value.0)
                 .collect();
-            entries.push(super::snapshot::RawFastCounterSample {
+            entries.push(RawFastCounterSample {
                 key: key.0,
                 first,
                 second,

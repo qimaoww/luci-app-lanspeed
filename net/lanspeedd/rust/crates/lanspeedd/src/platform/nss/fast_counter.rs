@@ -39,7 +39,7 @@ pub(crate) struct FastCounterAggregate {
     pub last_seen_ns: u64,
 }
 
-#[derive(Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct FastSReader {
     last_reset_generation: Option<u32>,
 }
