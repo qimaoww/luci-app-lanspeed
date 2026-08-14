@@ -50,6 +50,7 @@ mod production_evidence;
 pub mod rate;
 pub mod state;
 pub mod ubus;
+pub mod workers;
 
 pub const fn is_fresh(now_ms: u64, sample_ms: u64, limit_ms: u64) -> bool {
     sample_ms <= now_ms && now_ms - sample_ms <= limit_ms
