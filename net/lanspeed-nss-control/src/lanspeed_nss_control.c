@@ -18,6 +18,7 @@
 #include <linux/moduleparam.h>
 #include <linux/mutex.h>
 #include <linux/refcount.h>
+#include <linux/rcupdate.h>
 #include <linux/netfilter.h>
 #include <linux/netfilter_bridge.h>
 #include <linux/netfilter_ipv4.h>
@@ -78,6 +79,7 @@ struct lanspeed_local_prefix {
 };
 
 struct lanspeed_tag_config {
+	struct rcu_head rcu;
 	u16 address_count;
 	u16 prefix_count;
 	struct lanspeed_tag_address addresses[LANSPEED_MAX_TAG_ADDRESSES];
@@ -92,8 +94,10 @@ struct lanspeed_peer_config {
 
 static LIST_HEAD(lanspeed_igs_entries);
 static DEFINE_MUTEX(lanspeed_igs_lock);
-static DEFINE_SPINLOCK(lanspeed_tag_lock);
-static struct lanspeed_tag_config lanspeed_tags;
+static DEFINE_SPINLOCK(lanspeed_edge_lock);
+static struct lanspeed_tag_config lanspeed_empty_tags;
+static struct lanspeed_tag_config __rcu *lanspeed_tags = &lanspeed_empty_tags;
+static DEFINE_MUTEX(lanspeed_tag_update_lock);
 static struct net_device *lanspeed_edges[LANSPEED_MAX_EDGE_DEVICES];
 static u16 lanspeed_edge_count;
 
@@ -301,19 +305,19 @@ static bool lanspeed_edge_add(struct net_device *edge)
 {
 	u16 index;
 
-	spin_lock_bh(&lanspeed_tag_lock);
+	spin_lock_bh(&lanspeed_edge_lock);
 	for (index = 0; index < lanspeed_edge_count; index++) {
 		if (lanspeed_edges[index] == edge) {
-			spin_unlock_bh(&lanspeed_tag_lock);
+			spin_unlock_bh(&lanspeed_edge_lock);
 			return true;
 		}
 	}
 	if (lanspeed_edge_count >= LANSPEED_MAX_EDGE_DEVICES) {
-		spin_unlock_bh(&lanspeed_tag_lock);
+		spin_unlock_bh(&lanspeed_edge_lock);
 		return false;
 	}
 	lanspeed_edges[lanspeed_edge_count++] = edge;
-	spin_unlock_bh(&lanspeed_tag_lock);
+	spin_unlock_bh(&lanspeed_edge_lock);
 	return true;
 }
 
@@ -321,14 +325,14 @@ static void lanspeed_edge_del(struct net_device *edge)
 {
 	u16 index;
 
-	spin_lock_bh(&lanspeed_tag_lock);
+	spin_lock_bh(&lanspeed_edge_lock);
 	for (index = 0; index < lanspeed_edge_count; index++) {
 		if (lanspeed_edges[index] != edge)
 			continue;
 		lanspeed_edges[index] = lanspeed_edges[--lanspeed_edge_count];
 		break;
 	}
-	spin_unlock_bh(&lanspeed_tag_lock);
+	spin_unlock_bh(&lanspeed_edge_lock);
 }
 
 static bool lanspeed_edge_published(struct net_device *edge)
@@ -336,14 +340,14 @@ static bool lanspeed_edge_published(struct net_device *edge)
 	u16 index;
 	bool found = false;
 
-	spin_lock_bh(&lanspeed_tag_lock);
+	spin_lock_bh(&lanspeed_edge_lock);
 	for (index = 0; index < lanspeed_edge_count; index++) {
 		if (lanspeed_edges[index] == edge) {
 			found = true;
 			break;
 		}
 	}
-	spin_unlock_bh(&lanspeed_tag_lock);
+	spin_unlock_bh(&lanspeed_edge_lock);
 	return found;
 }
 
@@ -449,28 +453,32 @@ static void lanspeed_apply_qos_tag(struct sk_buff *skb, u16 qos_tag)
 static unsigned int lanspeed_tag_hook(void *priv, struct sk_buff *skb,
 					      const struct nf_hook_state *state)
 {
+	const struct lanspeed_tag_config *config;
 	u16 qos_tag = 0;
 
-	spin_lock_bh(&lanspeed_tag_lock);
+	rcu_read_lock();
+	config = rcu_dereference(lanspeed_tags);
+	if (!config)
+		goto unlock;
 	if (state->pf == NFPROTO_IPV4) {
 		const struct iphdr *header;
 
 		if (!pskb_network_may_pull(skb, sizeof(*header)))
 			goto unlock;
 		header = ip_hdr(skb);
-		if (!lanspeed_local_v4(header->daddr, &lanspeed_tags))
-			qos_tag = lanspeed_tag_v4(header->saddr, &lanspeed_tags);
+		if (!lanspeed_local_v4(header->daddr, config))
+			qos_tag = lanspeed_tag_v4(header->saddr, config);
 	} else if (state->pf == NFPROTO_IPV6) {
 		const struct ipv6hdr *header;
 
 		if (!pskb_network_may_pull(skb, sizeof(*header)))
 			goto unlock;
 		header = ipv6_hdr(skb);
-		if (!lanspeed_local_v6(&header->daddr, &lanspeed_tags))
-			qos_tag = lanspeed_tag_v6(&header->saddr, &lanspeed_tags);
+		if (!lanspeed_local_v6(&header->daddr, config))
+			qos_tag = lanspeed_tag_v6(&header->saddr, config);
 	}
 unlock:
-	spin_unlock_bh(&lanspeed_tag_lock);
+	rcu_read_unlock();
 	lanspeed_apply_qos_tag(skb, qos_tag);
 	return NF_ACCEPT;
 }
@@ -478,6 +486,7 @@ unlock:
 static unsigned int lanspeed_bridge_tag_hook(void *priv, struct sk_buff *skb,
 					     const struct nf_hook_state *state)
 {
+	const struct lanspeed_tag_config *config;
 	__be16 protocol;
 	u16 qos_tag = 0;
 
@@ -488,29 +497,31 @@ static unsigned int lanspeed_bridge_tag_hook(void *priv, struct sk_buff *skb,
 	if (!state->in || !lanspeed_edge_published(state->in))
 		return NF_ACCEPT;
 
+	rcu_read_lock();
+	config = rcu_dereference(lanspeed_tags);
+	if (!config)
+		goto unlock;
 	protocol = vlan_get_protocol(skb);
 	if (protocol == htons(ETH_P_IP)) {
 		const struct iphdr *header;
 
 		if (!pskb_network_may_pull(skb, sizeof(*header)))
-			return NF_ACCEPT;
+			goto unlock;
 		header = ip_hdr(skb);
-		spin_lock_bh(&lanspeed_tag_lock);
-		if (!lanspeed_local_v4(header->daddr, &lanspeed_tags))
-			qos_tag = lanspeed_tag_v4(header->saddr, &lanspeed_tags);
-		spin_unlock_bh(&lanspeed_tag_lock);
+		if (!lanspeed_local_v4(header->daddr, config))
+			qos_tag = lanspeed_tag_v4(header->saddr, config);
 	} else if (protocol == htons(ETH_P_IPV6)) {
 		const struct ipv6hdr *header;
 
 		if (!pskb_network_may_pull(skb, sizeof(*header)))
-			return NF_ACCEPT;
+			goto unlock;
 		header = ipv6_hdr(skb);
-		spin_lock_bh(&lanspeed_tag_lock);
-		if (!lanspeed_local_v6(&header->daddr, &lanspeed_tags))
-			qos_tag = lanspeed_tag_v6(&header->saddr, &lanspeed_tags);
-		spin_unlock_bh(&lanspeed_tag_lock);
+		if (!lanspeed_local_v6(&header->daddr, config))
+			qos_tag = lanspeed_tag_v6(&header->saddr, config);
 	}
 
+	unlock:
+	rcu_read_unlock();
 	lanspeed_apply_qos_tag(skb, qos_tag);
 	return NF_ACCEPT;
 }
@@ -738,9 +749,18 @@ static int lanspeed_tag_record(struct lanspeed_tag_config *config, char *record)
 	return 0;
 }
 
+static void lanspeed_tag_config_free(struct rcu_head *rcu)
+{
+	struct lanspeed_tag_config *config;
+
+	config = container_of(rcu, struct lanspeed_tag_config, rcu);
+	kfree(config);
+}
+
 static int lanspeed_tag_config_set(const char *value,
 				    const struct kernel_param *kp)
 {
+	struct lanspeed_tag_config *old;
 	struct lanspeed_tag_config *config;
 	char *input;
 	char *cursor;
@@ -768,9 +788,14 @@ static int lanspeed_tag_config_set(const char *value,
 			goto free_config;
 		}
 	}
-	spin_lock_bh(&lanspeed_tag_lock);
-	lanspeed_tags = *config;
-	spin_unlock_bh(&lanspeed_tag_lock);
+	mutex_lock(&lanspeed_tag_update_lock);
+	old = rcu_dereference_protected(lanspeed_tags,
+					lockdep_is_held(&lanspeed_tag_update_lock));
+	rcu_assign_pointer(lanspeed_tags, config);
+	mutex_unlock(&lanspeed_tag_update_lock);
+	if (old != &lanspeed_empty_tags)
+		call_rcu(&old->rcu, lanspeed_tag_config_free);
+	config = NULL;
 free_config:
 	kfree(config);
 free_input:
@@ -787,9 +812,13 @@ static int lanspeed_tag_config_get(char *buffer, const struct kernel_param *kp)
 	config = kmalloc(sizeof(*config), GFP_KERNEL);
 	if (!config)
 		return -ENOMEM;
-	spin_lock_bh(&lanspeed_tag_lock);
-	*config = lanspeed_tags;
-	spin_unlock_bh(&lanspeed_tag_lock);
+	rcu_read_lock();
+	{
+		const struct lanspeed_tag_config *active = rcu_dereference(lanspeed_tags);
+
+		*config = *active;
+	}
+	rcu_read_unlock();
 	length += scnprintf(buffer + length, PAGE_SIZE - length, "v1");
 	for (index = 0; index < config->prefix_count && length < PAGE_SIZE - 1; index++) {
 		const struct lanspeed_local_prefix *prefix = &config->prefixes[index];
@@ -1405,6 +1434,7 @@ static int __init lanspeed_nss_control_init(void)
 
 static void __exit lanspeed_nss_control_exit(void)
 {
+	struct lanspeed_tag_config *old_tags;
 	struct lanspeed_igs_entry *entry, *next;
 
 	nf_unregister_net_hooks(&init_net, lanspeed_tag_hooks,
@@ -1418,6 +1448,14 @@ static void __exit lanspeed_nss_control_exit(void)
 			lanspeed_igs_unregister(entry);
 	}
 	mutex_unlock(&lanspeed_igs_lock);
+	mutex_lock(&lanspeed_tag_update_lock);
+	old_tags = rcu_dereference_protected(lanspeed_tags,
+					      lockdep_is_held(&lanspeed_tag_update_lock));
+	rcu_assign_pointer(lanspeed_tags, &lanspeed_empty_tags);
+	mutex_unlock(&lanspeed_tag_update_lock);
+	if (old_tags != &lanspeed_empty_tags)
+		call_rcu(&old_tags->rcu, lanspeed_tag_config_free);
+	rcu_barrier();
 }
 
 module_init(lanspeed_nss_control_init);
