@@ -7,7 +7,7 @@ use std::{
 };
 
 use aya::{
-    maps::{Array, HashMap, Map, RingBuf},
+    maps::{Array, HashMap, MapData, RingBuf},
     programs::{kprobe::KProbeLinkId, KProbe},
     Ebpf, EbpfLoader, Pod,
 };
@@ -595,7 +595,7 @@ pub struct EcmBpfRuntime {
     nss_enter_links: Vec<(String, KProbeLinkId)>,
     nss_exit_links: Vec<(String, KProbeLinkId)>,
     nss_context_callbacks: Vec<String>,
-    event_ringbuf: Option<RingBuf<Map>>,
+    event_ringbuf: Option<RingBuf<MapData>>,
     layout: EcmLayout,
     map_read_attempted: bool,
     last_map_read_ok: bool,
@@ -952,7 +952,7 @@ impl EcmBpfRuntime {
         };
         Array::<_, EventStatsValue>::try_from(event_map)
             .ok()
-            .and_then(|mut stats| stats.get(&0, 0).ok())
+            .and_then(|stats| stats.get(&0, 0).ok())
             .map_or(EcmEventStats::default(), |value| value.0)
     }
 

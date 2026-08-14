@@ -100,8 +100,6 @@ mod tests {
         .unwrap();
 
         let callbacks = available_nss_context_callbacks(&path).unwrap();
-        fs::remove_file(path).unwrap();
-
         assert_eq!(
             callbacks,
             [
@@ -115,6 +113,7 @@ mod tests {
         assert_eq!(specs[0].exit_program, ECM_NSS_EXIT_SYNC_MANY_V6_PROGRAM_NAME);
         assert_eq!(specs[1].enter_program, ECM_NSS_ENTER_NETDEV_V4_PROGRAM_NAME);
         assert_eq!(specs[1].exit_program, ECM_NSS_EXIT_NETDEV_V4_PROGRAM_NAME);
+        fs::remove_file(&path).unwrap();
     }
 
     #[test]
