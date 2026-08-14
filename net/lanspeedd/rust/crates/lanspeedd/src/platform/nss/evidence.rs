@@ -110,6 +110,18 @@ pub(crate) fn apply_ecm_bpf_evidence(
             "cumulative_bytes": "ecm_hardware_map_only",
             "deduplication": "kernel_call_context_separates_hardware_from_slow_path_before_raw_window_fusion",
             "nss_context_callbacks": runtime.ecm_bpf_nss_context_callbacks,
+            "event_hint": {
+                "name": "ECM_COUNTERS_UPDATED",
+                "semantics": "counter_update_hint_only",
+                "round_end": 0,
+                "received": runtime.ecm_bpf_event_received,
+                "invalid": runtime.ecm_bpf_event_invalid,
+                "last_timestamp_ns": runtime.ecm_bpf_event_last_timestamp_ns,
+                "last_sequence": runtime.ecm_bpf_event_last_sequence,
+                "event_emit": runtime.ecm_bpf_event_stats.event_emit,
+                "ringbuf_reserve_fail": runtime.ecm_bpf_event_stats.ringbuf_reserve_fail,
+                "drop_effect": "telemetry_only",
+            },
             "source_stats": {
                 "nss_bytes": runtime.ecm_bpf_source_stats.nss_bytes,
                 "nss_packets": runtime.ecm_bpf_source_stats.nss_packets,

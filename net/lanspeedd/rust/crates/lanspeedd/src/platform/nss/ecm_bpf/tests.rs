@@ -3,6 +3,35 @@ mod tests {
     use super::*;
     use crate::identity::{IdentityObservation, ObservationSource};
 
+    #[test]
+    fn event_hint_decoder_accepts_only_fixed_size_non_round_end_events() {
+        let event = EcmCountersUpdatedEvent {
+            timestamp_ns: 10,
+            sequence: 4,
+            source: 2,
+            round_end: 0,
+            reserved: [0; 6],
+        };
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                (&event as *const EcmCountersUpdatedEvent).cast::<u8>(),
+                std::mem::size_of::<EcmCountersUpdatedEvent>(),
+            )
+        };
+        assert_eq!(decode_event_hint(bytes), Some(event));
+        assert!(decode_event_hint(&bytes[..bytes.len() - 1]).is_none());
+
+        let mut round_end = event;
+        round_end.round_end = 1;
+        let round_end_bytes = unsafe {
+            std::slice::from_raw_parts(
+                (&round_end as *const EcmCountersUpdatedEvent).cast::<u8>(),
+                std::mem::size_of::<EcmCountersUpdatedEvent>(),
+            )
+        };
+        assert!(decode_event_hint(round_end_bytes).is_none());
+    }
+
     fn identities() -> IdentityTable {
         let mut identities = IdentityTable::new(4);
         identities

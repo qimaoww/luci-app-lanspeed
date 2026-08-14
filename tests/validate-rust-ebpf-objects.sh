@@ -83,7 +83,8 @@ grep -Eq 'lock[[:space:]]+\*\(u32 \*\).*\+= r[0-9]+' <<<"$kfunc_disassembly" || 
 	fail 'kfunc object has no 32-bit BPF atomic add instruction'
 for forbidden in \
 	lanspeed_ecm_update lanspeed_ecm_nss_enter lanspeed_ecm_nss_exit \
-	lanspeed_ecm_clients lanspeed_ecm_layout lanspeed_ecm_nss_context lanspeed_ecm_source_stats; do
+	lanspeed_ecm_clients lanspeed_ecm_layout lanspeed_ecm_nss_context \
+	lanspeed_ecm_source_stats lanspeed_ecm_event_ringbuf lanspeed_ecm_event_stats; do
 	if has_symbol "$kfunc_symbols" "$forbidden"; then
 		fail "kfunc TC object unexpectedly contains ECM symbol $forbidden"
 	fi
@@ -98,7 +99,8 @@ for forbidden_map in lanspeed_conntrack_scratch lanspeed_seen_conns; do
 done
 for forbidden in \
 	lanspeed_ecm_update lanspeed_ecm_nss_enter lanspeed_ecm_nss_exit \
-	lanspeed_ecm_clients lanspeed_ecm_layout lanspeed_ecm_nss_context lanspeed_ecm_source_stats; do
+	lanspeed_ecm_clients lanspeed_ecm_layout lanspeed_ecm_nss_context \
+	lanspeed_ecm_source_stats lanspeed_ecm_event_ringbuf lanspeed_ecm_event_stats; do
 	if has_symbol "$fallback_symbols" "$forbidden"; then
 		fail "fallback TC object unexpectedly contains ECM symbol $forbidden"
 	fi
@@ -133,7 +135,8 @@ if [[ -n $ecm_object ]]; then
 	ecm_symbols=$("$readelf_bin" -sW "$ecm_object")
 	for required in \
 		lanspeed_ecm_update lanspeed_ecm_nss_enter lanspeed_ecm_nss_exit \
-		lanspeed_ecm_clients lanspeed_ecm_layout lanspeed_ecm_nss_context lanspeed_ecm_source_stats; do
+		lanspeed_ecm_clients lanspeed_ecm_layout lanspeed_ecm_nss_context \
+		lanspeed_ecm_source_stats lanspeed_ecm_event_ringbuf lanspeed_ecm_event_stats; do
 		has_symbol "$ecm_symbols" "$required" || fail "ECM object is missing symbol $required"
 	done
 	for forbidden in \

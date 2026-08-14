@@ -6,11 +6,11 @@ use std::{
 
 use aya_obj::{generated::bpf_map_type, obj::ProgramSection, Object};
 use lanspeed_common::{
-    CLIENTS_MAP_NAME, ECM_CLIENTS_MAP_NAME, ECM_LAYOUT_MAP_NAME, ECM_NSS_CONTEXT_MAP_NAME,
-    ECM_NSS_ENTER_PROGRAM_NAME, ECM_NSS_EXIT_PROGRAM_NAME, ECM_SOURCE_STATS_MAP_NAME,
-    ECM_UPDATE_PROGRAM_NAME, EGRESS_EARLY_PROGRAM_NAME, EGRESS_PROGRAM_NAME,
-    INGRESS_EARLY_PROGRAM_NAME, INGRESS_PROGRAM_NAME, MAX_CLIENTS, MAX_CONN_TUPLES,
-    MAX_ECM_NSS_CONTEXTS, SEEN_CONNS_MAP_NAME,
+    CLIENTS_MAP_NAME, ECM_CLIENTS_MAP_NAME, ECM_EVENT_RINGBUF_MAP_NAME, ECM_EVENT_STATS_MAP_NAME,
+    ECM_LAYOUT_MAP_NAME, ECM_NSS_CONTEXT_MAP_NAME, ECM_NSS_ENTER_PROGRAM_NAME,
+    ECM_NSS_EXIT_PROGRAM_NAME, ECM_SOURCE_STATS_MAP_NAME, ECM_UPDATE_PROGRAM_NAME,
+    EGRESS_EARLY_PROGRAM_NAME, EGRESS_PROGRAM_NAME, INGRESS_EARLY_PROGRAM_NAME,
+    INGRESS_PROGRAM_NAME, MAX_CLIENTS, MAX_CONN_TUPLES, MAX_ECM_NSS_CONTEXTS, SEEN_CONNS_MAP_NAME,
 };
 use object::{
     Object as _, ObjectSection as _, ObjectSymbol as _, RelocationTarget, SectionIndex,
@@ -382,6 +382,8 @@ fn aarch64_ecm_object_is_isolated_from_tc_and_uses_aarch64_probe_registers() {
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([
             ECM_CLIENTS_MAP_NAME,
+            ECM_EVENT_RINGBUF_MAP_NAME,
+            ECM_EVENT_STATS_MAP_NAME,
             ECM_LAYOUT_MAP_NAME,
             ECM_NSS_CONTEXT_MAP_NAME,
             ECM_SOURCE_STATS_MAP_NAME,
@@ -440,6 +442,19 @@ fn aarch64_ecm_object_is_isolated_from_tc_and_uses_aarch64_probe_registers() {
         (4, 48)
     );
     assert_eq!(source_stats.max_entries(), 1);
+    let event_ringbuf = &parsed.maps[ECM_EVENT_RINGBUF_MAP_NAME];
+    assert_eq!(
+        event_ringbuf.map_type(),
+        bpf_map_type::BPF_MAP_TYPE_RINGBUF as u32
+    );
+    assert_eq!(event_ringbuf.max_entries(), 64 * 1024);
+    let event_stats = &parsed.maps[ECM_EVENT_STATS_MAP_NAME];
+    assert_eq!(
+        event_stats.map_type(),
+        bpf_map_type::BPF_MAP_TYPE_ARRAY as u32
+    );
+    assert_eq!((event_stats.key_size(), event_stats.value_size()), (4, 16));
+    assert_eq!(event_stats.max_entries(), 1);
 
     let elf = object::File::parse(bytes.as_slice()).expect("object crate must parse ECM ELF");
     let section = elf

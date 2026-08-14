@@ -1,16 +1,19 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt, fs, io,
+    mem::size_of,
     path::Path,
+    ptr,
 };
 
 use aya::{
-    maps::{Array, HashMap},
+    maps::{Array, HashMap, Map, RingBuf},
     programs::{kprobe::KProbeLinkId, KProbe},
     Ebpf, EbpfLoader, Pod,
 };
 use lanspeed_common::{
-    EcmCounters, EcmKey, EcmLayout, EcmSourceStats, DIR_RX, DIR_TX, ECM_CLIENTS_MAP_NAME,
+    EcmCounters, EcmCountersUpdatedEvent, EcmEventStats, EcmKey, EcmLayout, EcmSourceStats, DIR_RX,
+    DIR_TX, ECM_CLIENTS_MAP_NAME, ECM_EVENT_RINGBUF_MAP_NAME, ECM_EVENT_STATS_MAP_NAME,
     ECM_LAYOUT_MAP_NAME, ECM_NSS_ENTER_PROGRAM_NAME, ECM_NSS_EXIT_PROGRAM_NAME,
     ECM_SOURCE_STATS_MAP_NAME, ECM_UPDATE_PROGRAM_NAME, MAX_CLIENTS,
 };
@@ -493,6 +496,12 @@ struct SourceStatsValue(EcmSourceStats);
 
 unsafe impl Pod for SourceStatsValue {}
 
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+struct EventStatsValue(EcmEventStats);
+
+unsafe impl Pod for EventStatsValue {}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EcmBpfHealth {
     pub object_loaded: bool,
@@ -508,6 +517,11 @@ pub struct EcmBpfHealth {
     pub map_iteration_truncated: bool,
     pub nss_context_callbacks: Vec<String>,
     pub source_stats: EcmSourceStats,
+    pub event_stats: EcmEventStats,
+    pub event_received: u64,
+    pub event_invalid: u64,
+    pub event_last_timestamp_ns: Option<u64>,
+    pub event_last_sequence: Option<u64>,
     pub layout: Option<EcmLayout>,
     pub error_stage: Option<&'static str>,
     pub error: Option<String>,
@@ -523,6 +537,11 @@ pub struct EcmBpfCollectionCheckpoint {
     matched_entries: usize,
     map_iteration_truncated: bool,
     source_stats: EcmSourceStats,
+    event_stats: EcmEventStats,
+    event_received: u64,
+    event_invalid: u64,
+    event_last_timestamp_ns: Option<u64>,
+    event_last_sequence: Option<u64>,
     last_error_stage: Option<&'static str>,
     last_error: Option<String>,
     collector: EcmBpfSnapshotCollector,
@@ -540,6 +559,7 @@ pub struct EcmBpfRuntime {
     nss_enter_links: Vec<KProbeLinkId>,
     nss_exit_links: Vec<KProbeLinkId>,
     nss_context_callbacks: Vec<String>,
+    event_ringbuf: Option<RingBuf<Map>>,
     layout: EcmLayout,
     map_read_attempted: bool,
     last_map_read_ok: bool,
@@ -550,6 +570,11 @@ pub struct EcmBpfRuntime {
     matched_entries: usize,
     map_iteration_truncated: bool,
     source_stats: EcmSourceStats,
+    event_stats: EcmEventStats,
+    event_received: u64,
+    event_invalid: u64,
+    event_last_timestamp_ns: Option<u64>,
+    event_last_sequence: Option<u64>,
     last_error_stage: Option<&'static str>,
     last_error: Option<String>,
 }
@@ -634,6 +659,14 @@ impl EcmBpfRuntime {
                 )
             })?;
         }
+        let event_ringbuf = ebpf
+            .take_map(ECM_EVENT_RINGBUF_MAP_NAME)
+            .map(|map| {
+                RingBuf::try_from(map).map_err(|error| {
+                    EcmBpfRuntimeError::new(ECM_BPF_MAP_READ_STAGE, error.to_string())
+                })
+            })
+            .transpose()?;
         let nss_context_callbacks =
             available_nss_context_callbacks(KALLSYMS_PATH).map_err(|error| {
                 EcmBpfRuntimeError::new(
@@ -733,6 +766,7 @@ impl EcmBpfRuntime {
             nss_enter_links,
             nss_exit_links,
             nss_context_callbacks,
+            event_ringbuf,
             layout,
             map_read_attempted: false,
             last_map_read_ok: false,
@@ -743,6 +777,11 @@ impl EcmBpfRuntime {
             matched_entries: 0,
             map_iteration_truncated: false,
             source_stats: EcmSourceStats::default(),
+            event_stats: EcmEventStats::default(),
+            event_received: 0,
+            event_invalid: 0,
+            event_last_timestamp_ns: None,
+            event_last_sequence: None,
             last_error_stage: None,
             last_error: None,
         })
@@ -761,6 +800,11 @@ impl EcmBpfRuntime {
             matched_entries: self.matched_entries,
             map_iteration_truncated: self.map_iteration_truncated,
             source_stats: self.source_stats,
+            event_stats: self.event_stats,
+            event_received: self.event_received,
+            event_invalid: self.event_invalid,
+            event_last_timestamp_ns: self.event_last_timestamp_ns,
+            event_last_sequence: self.event_last_sequence,
             last_error_stage: self.last_error_stage,
             last_error: self.last_error.clone(),
             collector: collector.clone(),
@@ -780,6 +824,11 @@ impl EcmBpfRuntime {
         self.matched_entries = checkpoint.matched_entries;
         self.map_iteration_truncated = checkpoint.map_iteration_truncated;
         self.source_stats = checkpoint.source_stats;
+        self.event_stats = checkpoint.event_stats;
+        self.event_received = checkpoint.event_received;
+        self.event_invalid = checkpoint.event_invalid;
+        self.event_last_timestamp_ns = checkpoint.event_last_timestamp_ns;
+        self.event_last_sequence = checkpoint.event_last_sequence;
         self.last_error_stage = checkpoint.last_error_stage;
         self.last_error = checkpoint.last_error;
         *collector = checkpoint.collector;
@@ -792,6 +841,8 @@ impl EcmBpfRuntime {
         now_ms: u64,
     ) -> Result<EcmBpfSnapshot, EcmBpfRuntimeError> {
         self.map_read_attempted = true;
+        self.drain_event_hints();
+        self.event_stats = self.read_event_stats();
         let (read, source_stats) = match self.read_maps() {
             Ok(read) => read,
             Err(error) => {
@@ -891,6 +942,47 @@ impl EcmBpfRuntime {
         Ok(source_stats)
     }
 
+    fn read_event_stats(&self) -> EcmEventStats {
+        let Some(event_map) = self
+            .ebpf
+            .as_ref()
+            .and_then(|ebpf| ebpf.map(ECM_EVENT_STATS_MAP_NAME))
+        else {
+            return EcmEventStats::default();
+        };
+        Array::<_, EventStatsValue>::try_from(event_map)
+            .ok()
+            .and_then(|mut stats| stats.get(&0, 0).ok())
+            .map_or(EcmEventStats::default(), |value| value.0)
+    }
+
+    fn drain_event_hints(&mut self) {
+        let mut received = 0u64;
+        let mut invalid = 0u64;
+        let mut last = None;
+        if let Some(ringbuf) = self.event_ringbuf.as_mut() {
+            while let Some(item) = ringbuf.next() {
+                // RingBufItem is a byte slice whose lifetime is tied to the
+                // consumer position. Copy before dropping it so the ring can
+                // immediately advance to the next hint.
+                let event = decode_event_hint(&item);
+                drop(item);
+                let Some(event) = event else {
+                    invalid = invalid.saturating_add(1);
+                    continue;
+                };
+                received = received.saturating_add(1);
+                last = Some(event);
+            }
+        }
+        self.event_received = self.event_received.saturating_add(received);
+        self.event_invalid = self.event_invalid.saturating_add(invalid);
+        if let Some(event) = last {
+            self.event_last_timestamp_ns = Some(event.timestamp_ns);
+            self.event_last_sequence = Some(event.sequence);
+        }
+    }
+
     pub fn health(&self, now_ms: u64, freshness_ms: u64) -> EcmBpfHealth {
         let fresh_snapshot = self.last_complete_snapshot_ms.is_some_and(|sample_ms| {
             sample_ms <= now_ms && (freshness_ms == 0 || now_ms - sample_ms <= freshness_ms)
@@ -912,6 +1004,11 @@ impl EcmBpfRuntime {
             map_iteration_truncated: self.map_iteration_truncated,
             nss_context_callbacks: self.nss_context_callbacks.clone(),
             source_stats: self.source_stats,
+            event_stats: self.event_stats,
+            event_received: self.event_received,
+            event_invalid: self.event_invalid,
+            event_last_timestamp_ns: self.event_last_timestamp_ns,
+            event_last_sequence: self.event_last_sequence,
             layout: Some(self.layout),
             error_stage: self.last_error_stage,
             error: self.last_error.clone(),
@@ -938,6 +1035,11 @@ impl EcmBpfRuntime {
         runtime.ecm_bpf_map_iteration_truncated = health.map_iteration_truncated;
         runtime.ecm_bpf_nss_context_callbacks = health.nss_context_callbacks;
         runtime.ecm_bpf_source_stats = health.source_stats;
+        runtime.ecm_bpf_event_stats = health.event_stats;
+        runtime.ecm_bpf_event_received = health.event_received;
+        runtime.ecm_bpf_event_invalid = health.event_invalid;
+        runtime.ecm_bpf_event_last_timestamp_ns = health.event_last_timestamp_ns;
+        runtime.ecm_bpf_event_last_sequence = health.event_last_sequence;
         runtime.ecm_bpf_layout = health.layout;
         runtime.ecm_bpf_error_stage = health.error_stage.map(str::to_owned);
         runtime.ecm_bpf_runtime_error = health.error;
@@ -987,6 +1089,15 @@ fn same_nss_source_generation(before: EcmSourceStats, after: EcmSourceStats) -> 
     before.nss_updates == after.nss_updates
         && before.nss_bytes == after.nss_bytes
         && before.nss_packets == after.nss_packets
+}
+
+fn decode_event_hint(bytes: &[u8]) -> Option<EcmCountersUpdatedEvent> {
+    if bytes.len() != size_of::<EcmCountersUpdatedEvent>() {
+        return None;
+    }
+    // The callback boundary cannot prove a complete vendor sync round.
+    let event = unsafe { ptr::read_unaligned(bytes.as_ptr().cast::<EcmCountersUpdatedEvent>()) };
+    (event.round_end == 0).then_some(event)
 }
 
 fn detach_kprobe_links(

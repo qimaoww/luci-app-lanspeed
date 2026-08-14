@@ -9,6 +9,8 @@ pub const ECM_CLIENTS_MAP_NAME: &str = "lanspeed_ecm_clients";
 pub const ECM_LAYOUT_MAP_NAME: &str = "lanspeed_ecm_layout";
 pub const ECM_NSS_CONTEXT_MAP_NAME: &str = "lanspeed_ecm_nss_context";
 pub const ECM_SOURCE_STATS_MAP_NAME: &str = "lanspeed_ecm_source_stats";
+pub const ECM_EVENT_RINGBUF_MAP_NAME: &str = "lanspeed_ecm_event_ringbuf";
+pub const ECM_EVENT_STATS_MAP_NAME: &str = "lanspeed_ecm_event_stats";
 
 pub const INGRESS_PROGRAM_NAME: &str = "lanspeed_ingress";
 pub const EGRESS_PROGRAM_NAME: &str = "lanspeed_egress";
@@ -21,6 +23,7 @@ pub const ECM_NSS_EXIT_PROGRAM_NAME: &str = "lanspeed_ecm_nss_exit";
 pub const MAX_CLIENTS: u32 = 2048;
 pub const MAX_CONN_TUPLES: u32 = 8192;
 pub const MAX_ECM_NSS_CONTEXTS: u32 = 4096;
+pub const ECM_EVENT_RINGBUF_BYTES: u32 = 64 * 1024;
 
 pub const DIR_TX: u8 = 1;
 pub const DIR_RX: u8 = 2;
@@ -127,6 +130,27 @@ pub struct EcmNssContext {
     pub reserved: u16,
 }
 
+/// A callback-boundary hint. It never claims that a complete NSS round ended;
+/// `round_end` therefore remains zero until a stable vendor completion signal
+/// exists.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C, align(8))]
+pub struct EcmCountersUpdatedEvent {
+    pub timestamp_ns: u64,
+    pub sequence: u64,
+    pub source: u8,
+    pub round_end: u8,
+    pub reserved: [u8; 6],
+}
+
+/// Kernel-side counters for the best-effort event hint channel.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C, align(8))]
+pub struct EcmEventStats {
+    pub event_emit: u64,
+    pub ringbuf_reserve_fail: u64,
+}
+
 /// Connection-deduplication key matching `struct lanspeed_conn_key`.
 ///
 /// Every field is naturally contiguous under `repr(C)`: the six-byte MAC and
@@ -188,5 +212,9 @@ const _: [(); 48] = [(); core::mem::size_of::<EcmSourceStats>()];
 const _: [(); 8] = [(); core::mem::align_of::<EcmSourceStats>()];
 const _: [(); 8] = [(); core::mem::size_of::<EcmNssContext>()];
 const _: [(); 4] = [(); core::mem::align_of::<EcmNssContext>()];
+const _: [(); 24] = [(); core::mem::size_of::<EcmCountersUpdatedEvent>()];
+const _: [(); 8] = [(); core::mem::align_of::<EcmCountersUpdatedEvent>()];
+const _: [(); 16] = [(); core::mem::size_of::<EcmEventStats>()];
+const _: [(); 8] = [(); core::mem::align_of::<EcmEventStats>()];
 const _: [(); 28] = [(); core::mem::size_of::<LanspeedConnKey>()];
 const _: [(); 2] = [(); core::mem::align_of::<LanspeedConnKey>()];

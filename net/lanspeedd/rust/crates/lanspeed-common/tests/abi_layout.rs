@@ -1,9 +1,10 @@
 use core::mem::{align_of, offset_of, size_of};
 
 use lanspeed_common::{
-    EcmNssContext, LanspeedConnKey, LanspeedCounters, LanspeedKey, CLIENTS_MAP_NAME, DIR_RX,
-    DIR_TX, EGRESS_EARLY_PROGRAM_NAME, EGRESS_PROGRAM_NAME, INGRESS_EARLY_PROGRAM_NAME,
-    INGRESS_PROGRAM_NAME, MAX_CLIENTS, MAX_CONN_TUPLES, SEEN_CONNS_MAP_NAME,
+    EcmCountersUpdatedEvent, EcmEventStats, EcmNssContext, LanspeedConnKey, LanspeedCounters,
+    LanspeedKey, CLIENTS_MAP_NAME, DIR_RX, DIR_TX, EGRESS_EARLY_PROGRAM_NAME, EGRESS_PROGRAM_NAME,
+    INGRESS_EARLY_PROGRAM_NAME, INGRESS_PROGRAM_NAME, MAX_CLIENTS, MAX_CONN_TUPLES,
+    SEEN_CONNS_MAP_NAME,
 };
 
 #[test]
@@ -36,6 +37,19 @@ fn ecm_nss_context_layout_matches_dirty_tracking_abi() {
     assert_eq!(offset_of!(EcmNssContext, dirty), 4);
     assert_eq!(offset_of!(EcmNssContext, source_id), 5);
     assert_eq!(offset_of!(EcmNssContext, reserved), 6);
+}
+
+#[test]
+fn ecm_event_layout_matches_ringbuf_abi() {
+    assert_eq!(size_of::<EcmCountersUpdatedEvent>(), 24);
+    assert_eq!(align_of::<EcmCountersUpdatedEvent>(), 8);
+    assert_eq!(offset_of!(EcmCountersUpdatedEvent, timestamp_ns), 0);
+    assert_eq!(offset_of!(EcmCountersUpdatedEvent, sequence), 8);
+    assert_eq!(offset_of!(EcmCountersUpdatedEvent, source), 16);
+    assert_eq!(offset_of!(EcmCountersUpdatedEvent, round_end), 17);
+    assert_eq!(offset_of!(EcmCountersUpdatedEvent, reserved), 18);
+    assert_eq!(size_of::<EcmEventStats>(), 16);
+    assert_eq!(align_of::<EcmEventStats>(), 8);
 }
 
 #[test]

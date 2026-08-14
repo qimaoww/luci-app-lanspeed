@@ -6,7 +6,7 @@ pub mod proxy;
 pub mod tc;
 
 use crate::config::RuntimeConfig;
-use lanspeed_common::{EcmLayout, EcmSourceStats};
+use lanspeed_common::{EcmEventStats, EcmLayout, EcmSourceStats};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
@@ -74,6 +74,11 @@ pub struct RuntimeHealth {
     pub ecm_bpf_map_iteration_truncated: bool,
     pub ecm_bpf_nss_context_callbacks: Vec<String>,
     pub ecm_bpf_source_stats: EcmSourceStats,
+    pub ecm_bpf_event_stats: EcmEventStats,
+    pub ecm_bpf_event_received: u64,
+    pub ecm_bpf_event_invalid: u64,
+    pub ecm_bpf_event_last_timestamp_ns: Option<u64>,
+    pub ecm_bpf_event_last_sequence: Option<u64>,
     pub ecm_bpf_layout: Option<EcmLayout>,
     pub ecm_bpf_error_stage: Option<String>,
     pub ecm_bpf_runtime_error: Option<String>,
@@ -116,6 +121,11 @@ impl Default for RuntimeHealth {
             ecm_bpf_map_iteration_truncated: false,
             ecm_bpf_nss_context_callbacks: Vec::new(),
             ecm_bpf_source_stats: EcmSourceStats::default(),
+            ecm_bpf_event_stats: EcmEventStats::default(),
+            ecm_bpf_event_received: 0,
+            ecm_bpf_event_invalid: 0,
+            ecm_bpf_event_last_timestamp_ns: None,
+            ecm_bpf_event_last_sequence: None,
             ecm_bpf_layout: None,
             ecm_bpf_error_stage: None,
             ecm_bpf_runtime_error: None,

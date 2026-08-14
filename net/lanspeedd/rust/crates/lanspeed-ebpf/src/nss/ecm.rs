@@ -1,4 +1,4 @@
-use core::ptr::addr_of_mut;
+use core::ptr::{addr_of, addr_of_mut};
 
 use aya_ebpf::{
     bindings::BPF_NOEXIST,
@@ -7,12 +7,13 @@ use aya_ebpf::{
         bpf_probe_read_kernel_buf,
     },
     macros::{kprobe, kretprobe, map},
-    maps::{Array, LruHashMap},
+    maps::{Array, LruHashMap, RingBuf},
     programs::{ProbeContext, RetProbeContext},
 };
 use lanspeed_common::{
-    packet::is_valid_client_mac, EcmCounters, EcmKey, EcmLayout, EcmNssContext, EcmSourceStats,
-    DIR_RX, DIR_TX, MAX_CLIENTS, MAX_ECM_NSS_CONTEXTS,
+    packet::is_valid_client_mac, EcmCounters, EcmCountersUpdatedEvent, EcmEventStats, EcmKey,
+    EcmLayout, EcmNssContext, EcmSourceStats, DIR_RX, DIR_TX, ECM_EVENT_RINGBUF_BYTES, MAX_CLIENTS,
+    MAX_ECM_NSS_CONTEXTS,
 };
 
 use crate::atomics::add_u64;
@@ -30,6 +31,13 @@ pub static LANSPEED_ECM_SOURCE_STATS: Array<EcmSourceStats> = Array::with_max_en
 #[map(name = "lanspeed_ecm_nss_context")]
 pub static LANSPEED_ECM_NSS_CONTEXT: LruHashMap<u64, EcmNssContext> =
     LruHashMap::with_max_entries(MAX_ECM_NSS_CONTEXTS, 0);
+
+#[map(name = "lanspeed_ecm_event_ringbuf")]
+pub static LANSPEED_ECM_EVENT_RINGBUF: RingBuf =
+    RingBuf::with_byte_size(ECM_EVENT_RINGBUF_BYTES, 0);
+
+#[map(name = "lanspeed_ecm_event_stats")]
+pub static LANSPEED_ECM_EVENT_STATS: Array<EcmEventStats> = Array::with_max_entries(1, 0);
 
 #[kprobe]
 pub fn lanspeed_ecm_nss_enter(_ctx: ProbeContext) -> u32 {
@@ -132,11 +140,42 @@ fn update_nss_context(enter: bool) {
         if current.dirty == 0 {
             let _ = LANSPEED_ECM_NSS_CONTEXT.remove(&task);
         } else {
+            emit_counters_updated_event(current);
             let next = EcmNssContext {
                 depth: 0,
                 ..current
             };
             let _ = LANSPEED_ECM_NSS_CONTEXT.insert(&task, &next, 0);
+        }
+    }
+}
+
+#[inline(always)]
+fn emit_counters_updated_event(context: EcmNssContext) {
+    let Some(mut entry) = LANSPEED_ECM_EVENT_RINGBUF.reserve(0) else {
+        if let Some(stats) = LANSPEED_ECM_EVENT_STATS.get_ptr_mut(0) {
+            unsafe {
+                add_u64(addr_of_mut!((*stats).ringbuf_reserve_fail), 1);
+            }
+        }
+        return;
+    };
+    let sequence = LANSPEED_ECM_SOURCE_STATS
+        .get_ptr(0)
+        .map_or(0, |stats| unsafe {
+            addr_of!((*stats).nss_updates).read_volatile()
+        });
+    entry.write(EcmCountersUpdatedEvent {
+        timestamp_ns: unsafe { bpf_ktime_get_ns() },
+        sequence,
+        source: context.source_id,
+        round_end: 0,
+        reserved: [0; 6],
+    });
+    entry.submit(0);
+    if let Some(stats) = LANSPEED_ECM_EVENT_STATS.get_ptr_mut(0) {
+        unsafe {
+            add_u64(addr_of_mut!((*stats).event_emit), 1);
         }
     }
 }
