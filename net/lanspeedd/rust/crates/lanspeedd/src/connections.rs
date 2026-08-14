@@ -125,20 +125,22 @@ impl ConntrackObservation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BeforeReplyAction {
     None,
+    CacheOnly,
     RefreshConnections,
     Reload,
 }
 
 pub const fn before_reply_action(method: Method) -> BeforeReplyAction {
     match method {
-        Method::Clients | Method::ClientConnections => BeforeReplyAction::RefreshConnections,
+        Method::Clients | Method::ClientConnections | Method::Diagnostics => {
+            BeforeReplyAction::CacheOnly
+        }
         Method::Reload => BeforeReplyAction::Reload,
         Method::Status
         | Method::Overview
         | Method::Health
         | Method::Interfaces
         | Method::Sysdevices
-        | Method::Diagnostics
         | Method::ClientControlSet
         | Method::ClientControlDelete => BeforeReplyAction::None,
     }

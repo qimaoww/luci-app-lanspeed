@@ -3059,19 +3059,8 @@ impl App {
         Ok(())
     }
     fn before_reply(&mut self, method: ubus::Method) -> Result<(), DaemonError> {
-        #[cfg(feature = "nss-platform")]
-        if method == ubus::Method::Diagnostics {
-            // NSS intentionally skips periodic conntrack reads so conntrack
-            // never becomes a client-rate owner.  Diagnostics still needs an
-            // explicit, cached read-only snapshot to distinguish "not part of
-            // the NSS rate loop" from an actually unavailable conntrack
-            // source.  The existing refresh path is cache-coalesced and does
-            // not touch the NSS/CPU RateMux.
-            self.refresh_clients_connections()?;
-            return self.refresh_clients_control_state();
-        }
         match before_reply_action(method) {
-            BeforeReplyAction::None => Ok(()),
+            BeforeReplyAction::None | BeforeReplyAction::CacheOnly => Ok(()),
             BeforeReplyAction::RefreshConnections => {
                 #[cfg(feature = "nss-platform")]
                 if method == ubus::Method::Clients {

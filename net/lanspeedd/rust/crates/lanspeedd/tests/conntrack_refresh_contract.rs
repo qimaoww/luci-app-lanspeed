@@ -813,10 +813,18 @@ fn attempted_observation_propagates_success_failure_and_skipped_state() {
 }
 
 #[test]
-fn before_reply_policy_refreshes_only_clients_and_reload() {
+fn before_reply_policy_keeps_read_requests_cache_only() {
     assert_eq!(
         before_reply_action(Method::Clients),
-        BeforeReplyAction::RefreshConnections
+        BeforeReplyAction::CacheOnly
+    );
+    assert_eq!(
+        before_reply_action(Method::ClientConnections),
+        BeforeReplyAction::CacheOnly
+    );
+    assert_eq!(
+        before_reply_action(Method::Diagnostics),
+        BeforeReplyAction::CacheOnly
     );
     assert_eq!(
         before_reply_action(Method::Reload),
@@ -828,7 +836,6 @@ fn before_reply_policy_refreshes_only_clients_and_reload() {
         Method::Health,
         Method::Interfaces,
         Method::Sysdevices,
-        Method::Diagnostics,
         Method::ClientControlSet,
         Method::ClientControlDelete,
     ] {

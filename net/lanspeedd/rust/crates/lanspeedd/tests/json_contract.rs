@@ -601,7 +601,7 @@ fn fixed_snapshot_methods_and_all_registered_methods_stay_distinct() {
     assert_eq!(Method::ClientControlDelete.name(), "client_control_delete");
     assert_eq!(
         before_reply_action(Method::ClientConnections),
-        BeforeReplyAction::RefreshConnections
+        BeforeReplyAction::CacheOnly
     );
     assert_eq!(Method::FIXED, expected.map(|(method, _required)| method));
     for (method, required) in expected {
