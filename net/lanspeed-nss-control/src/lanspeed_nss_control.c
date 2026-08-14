@@ -94,12 +94,19 @@ struct lanspeed_peer_config {
 
 static LIST_HEAD(lanspeed_igs_entries);
 static DEFINE_MUTEX(lanspeed_igs_lock);
-static DEFINE_SPINLOCK(lanspeed_edge_lock);
 static struct lanspeed_tag_config lanspeed_empty_tags;
 static struct lanspeed_tag_config __rcu *lanspeed_tags = &lanspeed_empty_tags;
 static DEFINE_MUTEX(lanspeed_tag_update_lock);
-static struct net_device *lanspeed_edges[LANSPEED_MAX_EDGE_DEVICES];
-static u16 lanspeed_edge_count;
+
+struct lanspeed_trusted_ingress {
+	struct rcu_head rcu;
+	u16 count;
+	struct net_device *edges[LANSPEED_MAX_EDGE_DEVICES];
+};
+
+static struct lanspeed_trusted_ingress lanspeed_empty_ingress;
+static struct lanspeed_trusted_ingress __rcu *lanspeed_trusted_ingress =
+	&lanspeed_empty_ingress;
 
 struct lanspeed_ack_txn {
 	struct completion done;
@@ -301,54 +308,95 @@ static nss_tx_status_t lanspeed_reset_nexthop(int32_t edge_if_num)
 	return nss_if_reset_nexthop(nss_igs_get_context(), edge_if_num);
 }
 
-static bool lanspeed_edge_add(struct net_device *edge)
+static void lanspeed_trusted_ingress_free(struct rcu_head *rcu)
 {
+	struct lanspeed_trusted_ingress *set;
 	u16 index;
 
-	spin_lock_bh(&lanspeed_edge_lock);
-	for (index = 0; index < lanspeed_edge_count; index++) {
-		if (lanspeed_edges[index] == edge) {
-			spin_unlock_bh(&lanspeed_edge_lock);
+	set = container_of(rcu, struct lanspeed_trusted_ingress, rcu);
+	for (index = 0; index < set->count; index++)
+		dev_put(set->edges[index]);
+	kfree(set);
+}
+
+static bool lanspeed_edge_add(struct net_device *edge)
+{
+	struct lanspeed_trusted_ingress *old;
+	struct lanspeed_trusted_ingress *set;
+	u16 index;
+
+	old = rcu_dereference_protected(lanspeed_trusted_ingress,
+					lockdep_is_held(&lanspeed_igs_lock));
+	for (index = 0; index < old->count; index++) {
+		if (old->edges[index] == edge)
 			return true;
-		}
 	}
-	if (lanspeed_edge_count >= LANSPEED_MAX_EDGE_DEVICES) {
-		spin_unlock_bh(&lanspeed_edge_lock);
+	if (old->count >= LANSPEED_MAX_EDGE_DEVICES)
 		return false;
+	set = kzalloc(sizeof(*set), GFP_KERNEL);
+	if (!set)
+		return false;
+	for (index = 0; index < old->count; index++) {
+		set->edges[index] = old->edges[index];
+		dev_hold(set->edges[index]);
 	}
-	lanspeed_edges[lanspeed_edge_count++] = edge;
-	spin_unlock_bh(&lanspeed_edge_lock);
+	set->edges[old->count] = edge;
+	dev_hold(edge);
+	set->count = old->count + 1;
+	rcu_assign_pointer(lanspeed_trusted_ingress, set);
+	if (old != &lanspeed_empty_ingress)
+		call_rcu(&old->rcu, lanspeed_trusted_ingress_free);
 	return true;
 }
 
-static void lanspeed_edge_del(struct net_device *edge)
+static bool lanspeed_edge_del(struct net_device *edge)
 {
+	struct lanspeed_trusted_ingress *old;
+	struct lanspeed_trusted_ingress *set;
 	u16 index;
+	u16 output = 0;
 
-	spin_lock_bh(&lanspeed_edge_lock);
-	for (index = 0; index < lanspeed_edge_count; index++) {
-		if (lanspeed_edges[index] != edge)
+	old = rcu_dereference_protected(lanspeed_trusted_ingress,
+					lockdep_is_held(&lanspeed_igs_lock));
+	for (index = 0; index < old->count; index++) {
+		if (old->edges[index] == edge)
 			continue;
-		lanspeed_edges[index] = lanspeed_edges[--lanspeed_edge_count];
-		break;
+		output++;
 	}
-	spin_unlock_bh(&lanspeed_edge_lock);
+	if (output == old->count)
+		return true;
+	set = kzalloc(sizeof(*set), GFP_KERNEL);
+	if (!set)
+		return false;
+	output = 0;
+	for (index = 0; index < old->count; index++) {
+		if (old->edges[index] == edge)
+			continue;
+		set->edges[output++] = old->edges[index];
+		dev_hold(set->edges[output - 1]);
+	}
+	set->count = output;
+	rcu_assign_pointer(lanspeed_trusted_ingress, set);
+	if (old != &lanspeed_empty_ingress)
+		call_rcu(&old->rcu, lanspeed_trusted_ingress_free);
+	return true;
 }
 
 static bool lanspeed_edge_published(struct net_device *edge)
 {
+	const struct lanspeed_trusted_ingress *set;
 	u16 index;
-	bool found = false;
 
-	spin_lock_bh(&lanspeed_edge_lock);
-	for (index = 0; index < lanspeed_edge_count; index++) {
-		if (lanspeed_edges[index] == edge) {
-			found = true;
-			break;
+	rcu_read_lock();
+	set = rcu_dereference(lanspeed_trusted_ingress);
+	for (index = 0; index < set->count; index++) {
+		if (set->edges[index] == edge) {
+			rcu_read_unlock();
+			return true;
 		}
 	}
-	spin_unlock_bh(&lanspeed_edge_lock);
-	return found;
+	rcu_read_unlock();
+	return false;
 }
 
 static int lanspeed_netdev_event(struct notifier_block *notifier,
@@ -1071,7 +1119,10 @@ static int lanspeed_igs_unpublish_entry(struct lanspeed_igs_entry *entry)
 		entry->state = LANSPEED_IGS_DEGRADED;
 		return error;
 	}
-	lanspeed_edge_del(entry->edge);
+	if (!lanspeed_edge_del(entry->edge)) {
+		entry->state = LANSPEED_IGS_DEGRADED;
+		return -ENOMEM;
+	}
 	dev_put(entry->edge);
 	entry->edge = NULL;
 	entry->state = LANSPEED_IGS_STAGED;
@@ -1094,7 +1145,8 @@ static void lanspeed_igs_forget_edge(struct lanspeed_igs_entry *entry)
 					    entry->if_num);
 	}
 	entry->peer_count = 0;
-	lanspeed_edge_del(entry->edge);
+	if (!lanspeed_edge_del(entry->edge))
+		return;
 	dev_put(entry->edge);
 	entry->edge = NULL;
 	entry->state = LANSPEED_IGS_STAGED;
@@ -1435,6 +1487,7 @@ static int __init lanspeed_nss_control_init(void)
 static void __exit lanspeed_nss_control_exit(void)
 {
 	struct lanspeed_tag_config *old_tags;
+	struct lanspeed_trusted_ingress *old_ingress;
 	struct lanspeed_igs_entry *entry, *next;
 
 	nf_unregister_net_hooks(&init_net, lanspeed_tag_hooks,
@@ -1455,6 +1508,13 @@ static void __exit lanspeed_nss_control_exit(void)
 	mutex_unlock(&lanspeed_tag_update_lock);
 	if (old_tags != &lanspeed_empty_tags)
 		call_rcu(&old_tags->rcu, lanspeed_tag_config_free);
+	mutex_lock(&lanspeed_igs_lock);
+	old_ingress = rcu_dereference_protected(lanspeed_trusted_ingress,
+						lockdep_is_held(&lanspeed_igs_lock));
+	RCU_INIT_POINTER(lanspeed_trusted_ingress, &lanspeed_empty_ingress);
+	mutex_unlock(&lanspeed_igs_lock);
+	if (old_ingress != &lanspeed_empty_ingress)
+		call_rcu(&old_ingress->rcu, lanspeed_trusted_ingress_free);
 	rcu_barrier();
 }
 
