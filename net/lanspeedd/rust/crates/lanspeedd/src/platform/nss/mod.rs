@@ -6,6 +6,8 @@ pub mod ecm_node;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod evidence;
 #[cfg(any(feature = "openwrt", test))]
+pub(crate) mod evidence_lease;
+#[cfg(any(feature = "openwrt", test))]
 pub(crate) mod fast_counter;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod fast_rate;
@@ -17,6 +19,8 @@ pub(crate) mod fast_rate_wakeup;
 pub(crate) mod fast_rate_worker;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod fast_s_timer;
+#[cfg(any(feature = "openwrt", test))]
+pub(crate) mod rate_mux;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod fusion;
 #[cfg(any(feature = "openwrt", test))]
