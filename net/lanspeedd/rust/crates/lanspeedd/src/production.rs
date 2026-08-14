@@ -1577,6 +1577,22 @@ impl ProductionRuntime {
                 conntrack_generation_evidence(snapshot),
             );
         }
+        if let Some(fast_s) = self.nss.fast_s_snapshot() {
+            status_evidence.details.insert(
+                "fast_s_shadow".into(),
+                json!({
+                    "sample_ms": fast_s.sample_ms,
+                    "map_entries": fast_s.map_entries,
+                    "valid_entries": fast_s.valid_entries,
+                    "invalid_entries": fast_s.invalid_entries,
+                    "truncated": fast_s.truncated,
+                    "invalid_reads": self.nss.fast_s_invalid_reads(),
+                    "truncated_reads": self.nss.fast_s_truncated_reads(),
+                    "read_failures": self.nss.fast_s_read_failures(),
+                    "formal_rate_owner": false,
+                }),
+            );
+        }
         let version = version();
         let status = StatusResponse {
             mode,

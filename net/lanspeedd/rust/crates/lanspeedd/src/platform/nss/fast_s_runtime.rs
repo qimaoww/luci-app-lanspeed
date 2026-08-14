@@ -47,6 +47,7 @@ pub(crate) struct FastSSnapshot {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct FastSRuntime {
     readers: BTreeMap<FastSKey, FastSReader>,
+    last_snapshot: Option<FastSSnapshot>,
     invalid_reads: u64,
     truncated_reads: u64,
     read_failures: u64,
@@ -63,6 +64,7 @@ impl FastSRuntime {
                 truncated: true,
                 ..FastSSnapshot::default()
             };
+            self.last_snapshot = Some(snapshot.clone());
             return snapshot;
         }
 
@@ -98,7 +100,12 @@ impl FastSRuntime {
             truncated: false,
             entries,
         };
+        self.last_snapshot = Some(snapshot.clone());
         snapshot
+    }
+
+    pub(crate) fn last_snapshot(&self) -> Option<&FastSSnapshot> {
+        self.last_snapshot.as_ref()
     }
 
     pub(crate) const fn invalid_reads(&self) -> u64 {

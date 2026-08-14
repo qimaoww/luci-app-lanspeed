@@ -134,6 +134,22 @@ impl NssRuntime {
         self.fast_s.record_read_failure();
     }
 
+    pub(crate) fn fast_s_snapshot(&self) -> Option<&FastSSnapshot> {
+        self.fast_s.last_snapshot()
+    }
+
+    pub(crate) const fn fast_s_read_failures(&self) -> u64 {
+        self.fast_s.read_failures()
+    }
+
+    pub(crate) const fn fast_s_invalid_reads(&self) -> u64 {
+        self.fast_s.invalid_reads()
+    }
+
+    pub(crate) const fn fast_s_truncated_reads(&self) -> u64 {
+        self.fast_s.truncated_reads()
+    }
+
     pub(crate) fn collect_ecm_bpf(
         &mut self,
         identities: &IdentityTable,
