@@ -24,6 +24,12 @@ pub(crate) enum FastSReadError {
     ResetGenerationChanged { previous: u32, current: u32 },
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum FastNReadError {
+    Unstable(StableReadError),
+    ResetGenerationChanged { previous: u32, current: u32 },
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct FastCounterAggregate {
     pub abi_version: u32,
@@ -35,6 +41,11 @@ pub(crate) struct FastCounterAggregate {
 
 #[derive(Debug, Default, Eq, PartialEq)]
 pub(crate) struct FastSReader {
+    last_reset_generation: Option<u32>,
+}
+
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(crate) struct FastNReader {
     last_reset_generation: Option<u32>,
 }
 
@@ -162,6 +173,34 @@ impl FastSReader {
     }
 }
 
+impl FastNReader {
+    pub(crate) fn read(
+        &mut self,
+        first: FastCounterValue,
+        second: FastCounterValue,
+    ) -> Result<FastCounterAggregate, FastNReadError> {
+        let value = validate_stable_pair(first, second).map_err(FastNReadError::Unstable)?;
+        if let Some(previous) = self.last_reset_generation {
+            if previous != value.reset_generation {
+                self.last_reset_generation = Some(value.reset_generation);
+                return Err(FastNReadError::ResetGenerationChanged {
+                    previous,
+                    current: value.reset_generation,
+                });
+            }
+        } else {
+            self.last_reset_generation = Some(value.reset_generation);
+        }
+        Ok(FastCounterAggregate {
+            abi_version: value.abi_version,
+            reset_generation: value.reset_generation,
+            bytes: value.bytes,
+            packets: value.packets,
+            last_seen_ns: value.last_seen_ns,
+        })
+    }
+}
+
 pub(crate) fn generation_changed(previous: Option<u32>, current: u32) -> bool {
     previous.is_some_and(|generation| generation != current)
 }
@@ -170,8 +209,8 @@ pub(crate) fn generation_changed(previous: Option<u32>, current: u32) -> bool {
 mod tests {
     use super::{
         aggregate_per_cpu, generation_changed, read_stable, validate_stable_pair,
-        FastCounterAggregate, FastCounterReadError, FastSReadError, FastSReader, StableReadError,
-        FAST_COUNTER_READ_RETRIES,
+        FastCounterAggregate, FastCounterReadError, FastNReadError, FastNReader, FastSReadError,
+        FastSReader, StableReadError, FAST_COUNTER_READ_RETRIES,
     };
     use lanspeed_common::{FastCounterValue, FAST_COUNTER_ABI_VERSION};
 
@@ -329,5 +368,36 @@ mod tests {
             })
         );
         assert!(reader.read(&[reset], &[reset]).is_ok());
+    }
+
+    #[test]
+    fn fast_n_reader_uses_the_same_stable_protocol_and_rebaselines() {
+        let mut reader = FastNReader::default();
+        assert_eq!(
+            reader.read(value(3), value(3)),
+            Err(FastNReadError::Unstable(StableReadError::SequenceUnstable {
+                first: 3,
+                second: 3,
+            }))
+        );
+        assert_eq!(
+            reader.read(value(4), value(4)).unwrap(),
+            FastCounterAggregate {
+                abi_version: FAST_COUNTER_ABI_VERSION,
+                reset_generation: 7,
+                bytes: 10,
+                packets: 2,
+                last_seen_ns: 50,
+            }
+        );
+        let mut reset = value(4);
+        reset.reset_generation = 9;
+        assert_eq!(
+            reader.read(reset, reset),
+            Err(FastNReadError::ResetGenerationChanged {
+                previous: 7,
+                current: 9,
+            })
+        );
     }
 }
