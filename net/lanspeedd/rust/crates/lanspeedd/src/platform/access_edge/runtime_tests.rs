@@ -19,6 +19,7 @@ mod tests {
             source_generation: 1,
             fresh_frame: true,
             provider_complete: true,
+            direct_client: kind == AttachmentKind::Wifi,
         }
     }
 

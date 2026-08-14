@@ -459,6 +459,39 @@ fn nss_control_ignores_untrusted_generic_interface_fields() {
     assert!(manager.last_local_prefix_refresh.is_none());
 }
 
+#[cfg(feature = "nss-platform")]
+#[test]
+fn nss_control_rejects_unproven_wifi_attachment() {
+    let identity = "02:00:00:00:00:01@guest";
+    let mut observed = client(identity, "192.0.2.9");
+    let attachment = observed
+        .rate_meta
+        .as_mut()
+        .and_then(|meta| meta.attachment.as_mut())
+        .unwrap();
+    attachment.kind = crate::model::AttachmentKind::Wifi;
+    attachment.ifname = Some("phy1-ap0".into());
+    attachment.trust = crate::model::AttachmentTrust::Unknown;
+
+    let mut manager = manager();
+    manager.rules.insert(
+        identity.into(),
+        ControlRule {
+            identity_key: identity.into(),
+            mac: MacAddress::from_str("02:00:00:00:00:01").unwrap(),
+            upload_bps: 10_000_000,
+            download_bps: 0,
+            internet_disabled: false,
+            class_minor: FIRST_CLASS_MINOR,
+        },
+    );
+
+    manager.observe_clients(&[observed]);
+
+    assert!(manager.plan().rules.is_empty());
+    assert!(!manager.control_devices.contains("phy1-ap0"));
+}
+
 #[test]
 fn controlled_client_interface_change_dirties_the_plan() {
     let identity = "02:00:00:00:00:01@guest";

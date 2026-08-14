@@ -2,8 +2,8 @@
 /*
  * Stage and publish a LAN Speed-owned IFB as a QCA NSS ingress-shaper node.
  * Userspace builds and verifies NSSHTB before this module atomically publishes
- * the physical-interface nexthop. Keeping the NSS transaction here avoids the
- * half-published window in the vendor nssmirred action. Rate policy and client
+ * the physical-interface or Wi-Fi peer nexthop. Keeping the NSS transaction here
+ * avoids the half-published window in the vendor nssmirred action. Rate policy and client
  * identity stay in lanspeedd; this module only owns the NSS redirect lifecycle.
  */
 
@@ -181,8 +181,12 @@ static nss_tx_status_t lanspeed_wifi_set_peer_nexthop(int32_t edge_if_num,
 static nss_tx_status_t lanspeed_set_nexthop(int32_t edge_if_num,
 					    int32_t igs_if_num)
 {
-	if (lanspeed_edge_is_vap(edge_if_num))
-		return lanspeed_wifi_set_nexthop(edge_if_num, igs_if_num);
+	if (lanspeed_edge_is_vap(edge_if_num)) {
+		/* Keep the VAP default path unchanged. Only peers selected by
+		 * peer_sync may enter the LAN Speed IGS node; sending the IGS
+		 * interface here would redirect every station on the VAP. */
+		return lanspeed_wifi_set_nexthop(edge_if_num, NSS_ETH_RX_INTERFACE);
+	}
 	return nss_if_set_nexthop(nss_igs_get_context(), edge_if_num, igs_if_num);
 }
 

@@ -730,6 +730,8 @@ try {
   assert(
     nssControlKmodSource.includes('NSS_DYNAMIC_INTERFACE_TYPE_VAP') &&
       nssControlKmodSource.includes('NSS_WIFI_VDEV_SET_NEXT_HOP') &&
+      nssControlKmodSource.includes('return lanspeed_wifi_set_nexthop(edge_if_num, NSS_ETH_RX_INTERFACE);') &&
+      nssControlKmodSource.includes('Only peers selected by') &&
       nssControlKmodSource.includes('wait_for_completion_timeout(&lanspeed_wifi_completion') &&
       nssControlKmodSource.includes('lanspeed_wifi_response != NSS_CMN_RESPONSE_ACK'),
     'NSS control kmod must use the acknowledged Wi-Fi vdev nexthop transaction for dynamic VAP edges'

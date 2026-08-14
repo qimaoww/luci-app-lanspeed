@@ -329,6 +329,8 @@ async function main() {
     nssKmodSource.includes('NSS_IF_SET_IGS_NODE') &&
     nssKmodSource.includes('nss_if_set_nexthop') &&
     nssKmodSource.includes('NSS_WIFI_VDEV_SET_NEXT_HOP') &&
+    nssKmodSource.includes('return lanspeed_wifi_set_nexthop(edge_if_num, NSS_ETH_RX_INTERFACE);') &&
+    nssKmodSource.includes('Only peers selected by') &&
     nssKmodSource.includes('wait_for_completion_timeout(&lanspeed_wifi_completion') &&
     nssKmodSource.includes('lanspeed_wifi_response != NSS_CMN_RESPONSE_ACK') &&
     nssKmodSource.includes('NSS_IF_CLEAR_IGS_NODE') &&

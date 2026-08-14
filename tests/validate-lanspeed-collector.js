@@ -215,6 +215,8 @@ assert(edgeModel.topology.fdb_primary === 'RTM_GETNEIGH_AF_BRIDGE' &&
   accessEdgeWifi.includes('const NL80211_STA_INFO_ASSOC_AT_BOOTTIME: u16 = 42;') &&
   accessEdgeWifi.includes('pub const NL80211_IFTYPE_WDS: u32 = 5;') &&
   accessEdgeWifi.includes('pub const NL80211_IFTYPE_MESH_POINT: u32 = 7;') &&
+  accessEdgeTopology.includes('direct_client: station.proves_direct_client_interface()') &&
+  accessEdgeTopology.includes('AttachmentTrust::Unknown') &&
   accessEdgeRuntime.includes('wifi_shared_or_unproven_interface') &&
   accessEdgeRuntime.includes('inherit_unambiguous_fdb_vlan(') &&
   !accessEdgeWifi.includes('Command::new("iw")'),

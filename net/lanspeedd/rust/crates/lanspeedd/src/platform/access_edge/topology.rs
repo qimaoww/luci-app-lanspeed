@@ -65,6 +65,10 @@ pub struct AttachmentObservation {
     /// attachment. One failed bridge dump must not demote attachments proved
     /// by another complete bridge dump.
     pub provider_complete: bool,
+    /// True only when nl80211 proved that this station is a direct AP client.
+    /// WDS, Mesh, and unknown interface types remain hints and must not become
+    /// trusted single-client control edges.
+    pub direct_client: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -277,6 +281,7 @@ where
                 source_generation: 0,
                 fresh_frame: true,
                 provider_complete: snapshot.complete,
+                direct_client: false,
             }
         })
         .collect()
@@ -302,6 +307,7 @@ pub fn observations_from_stations(snapshot: &StationCounterSnapshot) -> Vec<Atta
             source_generation: station.association_generation,
             fresh_frame: true,
             provider_complete: snapshot.complete,
+            direct_client: station.proves_direct_client_interface(),
         })
         .collect()
 }
@@ -315,7 +321,11 @@ fn attachment_trust(
         return AttachmentTrust::Unknown;
     }
     if selected.point.kind == AttachmentKind::Wifi {
-        return AttachmentTrust::AssociatedStation;
+        return if selected.direct_client {
+            AttachmentTrust::AssociatedStation
+        } else {
+            AttachmentTrust::Unknown
+        };
     }
     if !selected.provider_complete {
         return AttachmentTrust::Unknown;
@@ -532,6 +542,38 @@ mod tests {
         assert_eq!(update.active[0].trust, AttachmentTrust::AssociatedStation);
         assert!(!update.active[0].ambiguous);
         assert_eq!(update.active[0].source_generation, 3);
+    }
+
+    #[test]
+    fn unproven_wifi_station_is_not_trusted_for_control() {
+        for iftype in [
+            Some(crate::platform::access_edge::nl80211::NL80211_IFTYPE_WDS),
+            Some(crate::platform::access_edge::nl80211::NL80211_IFTYPE_MESH_POINT),
+            None,
+        ] {
+            let snapshot = StationCounterSnapshot {
+                stations: vec![StationCounterSample {
+                    mac: [0x02, 1, 2, 3, 4, 5],
+                    ifindex: 7,
+                    ifname: "phy1-ap0".into(),
+                    bridge_ifindex: Some(10),
+                    vlan_id: None,
+                    iftype,
+                    association_generation: 1,
+                    association_started_ns: Some(1_000),
+                    connected_time_s: Some(5),
+                    counters: LinkCounters::default(),
+                    rx_byte_width: StationByteCounterWidth::Bits64,
+                    tx_byte_width: StationByteCounterWidth::Bits64,
+                }],
+                read_begin_ms: 1,
+                read_end_ms: 2,
+                complete: true,
+            };
+            let update =
+                TopologyTable::new().reconcile(observations_from_stations(&snapshot), true);
+            assert_eq!(update.active[0].trust, AttachmentTrust::Unknown);
+        }
     }
 
     #[test]
