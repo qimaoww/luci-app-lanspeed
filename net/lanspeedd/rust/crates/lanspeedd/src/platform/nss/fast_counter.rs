@@ -16,6 +16,29 @@ pub(crate) enum StableReadError {
 }
 
 #[derive(Debug, Eq, PartialEq)]
+pub(crate) enum FastSReadError {
+    NoCpuValues,
+    CpuCountChanged { first: usize, second: usize },
+    CpuValueUnstable { cpu: usize, error: StableReadError },
+    CpuGenerationMismatch { expected: u32, actual: u32 },
+    ResetGenerationChanged { previous: u32, current: u32 },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct FastCounterAggregate {
+    pub abi_version: u32,
+    pub reset_generation: u32,
+    pub bytes: u64,
+    pub packets: u64,
+    pub last_seen_ns: u64,
+}
+
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(crate) struct FastSReader {
+    last_reset_generation: Option<u32>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) enum FastCounterReadError<E> {
     Source(E),
     Unstable {
@@ -81,6 +104,64 @@ pub(crate) fn read_stable<E>(
     })
 }
 
+/// Aggregate two PerCPU snapshots only after every CPU has a stable pair.
+/// `first` and `second` represent the two kernel lookups of the same key.
+pub(crate) fn aggregate_per_cpu(
+    first: &[FastCounterValue],
+    second: &[FastCounterValue],
+) -> Result<FastCounterAggregate, FastSReadError> {
+    if first.is_empty() {
+        return Err(FastSReadError::NoCpuValues);
+    }
+    if first.len() != second.len() {
+        return Err(FastSReadError::CpuCountChanged {
+            first: first.len(),
+            second: second.len(),
+        });
+    }
+    let mut aggregate = FastCounterAggregate::default();
+    for (cpu, (before, after)) in first.iter().zip(second).enumerate() {
+        let value = validate_stable_pair(*before, *after).map_err(|error| {
+            FastSReadError::CpuValueUnstable { cpu, error }
+        })?;
+        if cpu == 0 {
+            aggregate.abi_version = value.abi_version;
+            aggregate.reset_generation = value.reset_generation;
+        } else if value.reset_generation != aggregate.reset_generation {
+            return Err(FastSReadError::CpuGenerationMismatch {
+                expected: aggregate.reset_generation,
+                actual: value.reset_generation,
+            });
+        }
+        aggregate.bytes = aggregate.bytes.saturating_add(value.bytes);
+        aggregate.packets = aggregate.packets.saturating_add(value.packets);
+        aggregate.last_seen_ns = aggregate.last_seen_ns.max(value.last_seen_ns);
+    }
+    Ok(aggregate)
+}
+
+impl FastSReader {
+    pub(crate) fn read(
+        &mut self,
+        first: &[FastCounterValue],
+        second: &[FastCounterValue],
+    ) -> Result<FastCounterAggregate, FastSReadError> {
+        let aggregate = aggregate_per_cpu(first, second)?;
+        if let Some(previous) = self.last_reset_generation {
+            if previous != aggregate.reset_generation {
+                self.last_reset_generation = Some(aggregate.reset_generation);
+                return Err(FastSReadError::ResetGenerationChanged {
+                    previous,
+                    current: aggregate.reset_generation,
+                });
+            }
+        } else {
+            self.last_reset_generation = Some(aggregate.reset_generation);
+        }
+        Ok(aggregate)
+    }
+}
+
 pub(crate) fn generation_changed(previous: Option<u32>, current: u32) -> bool {
     previous.is_some_and(|generation| generation != current)
 }
@@ -88,8 +169,9 @@ pub(crate) fn generation_changed(previous: Option<u32>, current: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        generation_changed, read_stable, validate_stable_pair, FastCounterReadError,
-        StableReadError, FAST_COUNTER_READ_RETRIES,
+        aggregate_per_cpu, generation_changed, read_stable, validate_stable_pair,
+        FastCounterAggregate, FastCounterReadError, FastSReadError, FastSReader, StableReadError,
+        FAST_COUNTER_READ_RETRIES,
     };
     use lanspeed_common::{FastCounterValue, FAST_COUNTER_ABI_VERSION};
 
@@ -185,5 +267,67 @@ mod tests {
         assert!(!generation_changed(None, 3));
         assert!(!generation_changed(Some(3), 3));
         assert!(generation_changed(Some(3), 4));
+    }
+
+    #[test]
+    fn aggregates_each_cpu_and_takes_the_latest_seen_timestamp() {
+        let mut first = [value(2), value(4)];
+        first[0].bytes = 20;
+        first[0].packets = 4;
+        first[0].last_seen_ns = 100;
+        first[1].bytes = 30;
+        first[1].packets = 6;
+        first[1].last_seen_ns = 90;
+        let second = first;
+        let aggregate = aggregate_per_cpu(&first, &second).unwrap();
+        assert_eq!(
+            aggregate,
+            FastCounterAggregate {
+                abi_version: FAST_COUNTER_ABI_VERSION,
+                reset_generation: 7,
+                bytes: 50,
+                packets: 10,
+                last_seen_ns: 100,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_partial_cpu_reads_and_cross_cpu_generation_mismatch() {
+        assert_eq!(
+            aggregate_per_cpu(&[value(2)], &[]),
+            Err(FastSReadError::CpuCountChanged {
+                first: 1,
+                second: 0,
+            })
+        );
+        let mut first = [value(2), value(4)];
+        first[1].reset_generation = 8;
+        let second = first;
+        assert_eq!(
+            aggregate_per_cpu(&first, &second),
+            Err(FastSReadError::CpuGenerationMismatch {
+                expected: 7,
+                actual: 8,
+            })
+        );
+    }
+
+    #[test]
+    fn reader_rebaselines_after_a_reset_generation_change() {
+        let first = [value(2)];
+        let second = [value(2)];
+        let mut reader = FastSReader::default();
+        assert!(reader.read(&first, &second).is_ok());
+        let mut reset = value(2);
+        reset.reset_generation = 8;
+        assert_eq!(
+            reader.read(&[reset], &[reset]),
+            Err(FastSReadError::ResetGenerationChanged {
+                previous: 7,
+                current: 8,
+            })
+        );
+        assert!(reader.read(&[reset], &[reset]).is_ok());
     }
 }
