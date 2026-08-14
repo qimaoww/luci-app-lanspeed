@@ -16,8 +16,8 @@ const NSS_MIN_QUEUE_BYTES: u64 = 8 * 1514;
 const NSS_MAX_QUEUE_BYTES: u64 = 16 * 1024 * 1024;
 const MIN_BURST_BYTES: u64 = 6 * 1514;
 const MAX_BURST_BYTES: u64 = 1024 * 1024;
-const PAYLOAD_RATE_NUMERATOR: u64 = 110;
-const PAYLOAD_RATE_DENOMINATOR: u64 = 100;
+const NSS_RATE_COMPENSATION_NUMERATOR: u64 = 110;
+const NSS_RATE_COMPENSATION_DENOMINATOR: u64 = 100;
 const BURST_WINDOW_MILLIS: u64 = 10;
 const BITS_PER_MILLISECOND_BYTE: u64 = 8_000;
 
@@ -947,10 +947,21 @@ fn burst_bytes(rate_bps: u64) -> u64 {
 }
 
 fn payload_rate(configured_bps: u64) -> u64 {
+    payload_rate_with_compensation(
+        configured_bps,
+        NSS_RATE_COMPENSATION_NUMERATOR,
+        NSS_RATE_COMPENSATION_DENOMINATOR,
+    )
+}
+
+fn payload_rate_with_compensation(configured_bps: u64, numerator: u64, denominator: u64) -> u64 {
+    if denominator == 0 {
+        return NSS_MAX_RATE_BPS;
+    }
     configured_bps
-        .saturating_mul(PAYLOAD_RATE_NUMERATOR)
-        .saturating_add(PAYLOAD_RATE_DENOMINATOR - 1)
-        .saturating_div(PAYLOAD_RATE_DENOMINATOR)
+        .saturating_mul(numerator)
+        .saturating_add(denominator - 1)
+        .saturating_div(denominator)
         .min(NSS_MAX_RATE_BPS)
 }
 

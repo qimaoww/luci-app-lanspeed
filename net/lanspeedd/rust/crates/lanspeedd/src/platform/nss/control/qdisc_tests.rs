@@ -143,6 +143,13 @@ mod tests {
     }
 
     #[test]
+    fn nss_rate_compensation_is_a_replaceable_parameter() {
+        assert_eq!(payload_rate_with_compensation(100_000_000, 110, 100), 110_000_000);
+        assert_eq!(payload_rate_with_compensation(100_000_000, 100, 100), 100_000_000);
+        assert_eq!(payload_rate_with_compensation(100_000_000, 0, 0), NSS_MAX_RATE_BPS);
+    }
+
+    #[test]
     fn unknown_edge_speed_keeps_default_class_available() {
         assert_eq!(default_class_rate_for_speed(Some(-1)), Ok(NSS_MAX_RATE_BPS));
         assert_eq!(default_class_rate_for_speed(None), Ok(NSS_MAX_RATE_BPS));
