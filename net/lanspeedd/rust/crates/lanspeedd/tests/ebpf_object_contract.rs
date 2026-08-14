@@ -12,8 +12,9 @@ use lanspeed_common::{
     ECM_NSS_ENTER_SYNC_MANY_V6_PROGRAM_NAME, ECM_NSS_EXIT_NETDEV_V4_PROGRAM_NAME,
     ECM_NSS_EXIT_NETDEV_V6_PROGRAM_NAME, ECM_NSS_EXIT_SYNC_MANY_V4_PROGRAM_NAME,
     ECM_NSS_EXIT_SYNC_MANY_V6_PROGRAM_NAME, ECM_SOURCE_STATS_MAP_NAME, ECM_UPDATE_PROGRAM_NAME,
-    EGRESS_EARLY_PROGRAM_NAME, EGRESS_PROGRAM_NAME, INGRESS_EARLY_PROGRAM_NAME,
-    INGRESS_PROGRAM_NAME, MAX_CLIENTS, MAX_CONN_TUPLES, MAX_ECM_NSS_CONTEXTS, SEEN_CONNS_MAP_NAME,
+    EGRESS_EARLY_PROGRAM_NAME, EGRESS_PROGRAM_NAME, FAST_COUNTERS_MAP_CAPACITY,
+    FAST_COUNTERS_MAP_NAME, INGRESS_EARLY_PROGRAM_NAME, INGRESS_PROGRAM_NAME, MAX_CLIENTS,
+    MAX_CONN_TUPLES, MAX_ECM_NSS_CONTEXTS, SEEN_CONNS_MAP_NAME,
 };
 use object::{
     Object as _, ObjectSection as _, ObjectSymbol as _, RelocationTarget, SectionIndex,
@@ -205,6 +206,7 @@ fn production_tc_object_has_exact_maps_programs_and_license() {
         BTreeSet::from([
             CLIENTS_MAP_NAME,
             CONNTRACK_SCRATCH_MAP_NAME,
+            FAST_COUNTERS_MAP_NAME,
             PACKET_SCRATCH_MAP_NAME,
             SEEN_CONNS_MAP_NAME,
         ])
@@ -218,6 +220,14 @@ fn production_tc_object_has_exact_maps_programs_and_license() {
     assert_eq!(clients.key_size(), 16);
     assert_eq!(clients.value_size(), 32);
     assert_eq!(clients.max_entries(), MAX_CLIENTS);
+
+    let fast_counters = &object.maps[FAST_COUNTERS_MAP_NAME];
+    assert_eq!(
+        fast_counters.map_type(),
+        bpf_map_type::BPF_MAP_TYPE_PERCPU_HASH as u32
+    );
+    assert_eq!((fast_counters.key_size(), fast_counters.value_size()), (16, 40));
+    assert_eq!(fast_counters.max_entries(), FAST_COUNTERS_MAP_CAPACITY);
 
     let seen = &object.maps[SEEN_CONNS_MAP_NAME];
     assert_eq!(seen.map_type(), bpf_map_type::BPF_MAP_TYPE_LRU_HASH as u32);
@@ -319,7 +329,11 @@ fn fallback_object_preserves_abi_without_kfunc_relocations() {
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from([CLIENTS_MAP_NAME, PACKET_SCRATCH_MAP_NAME,])
+        BTreeSet::from([
+            CLIENTS_MAP_NAME,
+            FAST_COUNTERS_MAP_NAME,
+            PACKET_SCRATCH_MAP_NAME,
+        ])
     );
     assert_eq!(
         parsed
@@ -341,6 +355,13 @@ fn fallback_object_preserves_abi_without_kfunc_relocations() {
     );
     assert_eq!((clients.key_size(), clients.value_size()), (16, 32));
     assert_eq!(clients.max_entries(), MAX_CLIENTS);
+    let fast_counters = &parsed.maps[FAST_COUNTERS_MAP_NAME];
+    assert_eq!(
+        fast_counters.map_type(),
+        bpf_map_type::BPF_MAP_TYPE_PERCPU_HASH as u32
+    );
+    assert_eq!((fast_counters.key_size(), fast_counters.value_size()), (16, 40));
+    assert_eq!(fast_counters.max_entries(), FAST_COUNTERS_MAP_CAPACITY);
     let packet_scratch = &parsed.maps[PACKET_SCRATCH_MAP_NAME];
     assert_eq!(
         packet_scratch.map_type(),

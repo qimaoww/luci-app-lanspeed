@@ -63,7 +63,7 @@ validate_common() {
 		has_symbol "$symbols" "$program" || \
 			fail "$label object is missing classifier program $program"
 	done
-	for map in lanspeed_clients lanspeed_packet_prefix; do
+	for map in lanspeed_clients lanspeed_fast_counters lanspeed_packet_prefix; do
 		has_symbol "$symbols" "$map" || fail "$label object is missing map $map"
 	done
 
@@ -153,7 +153,8 @@ if [[ -n $ecm_object ]]; then
 	done
 	for forbidden in \
 		lanspeed_ingress lanspeed_egress lanspeed_ingress_early lanspeed_egress_early \
-		lanspeed_clients lanspeed_packet_prefix lanspeed_conntrack_scratch lanspeed_seen_conns; do
+		lanspeed_clients lanspeed_fast_counters lanspeed_packet_prefix \
+		lanspeed_conntrack_scratch lanspeed_seen_conns; do
 		if has_symbol "$ecm_symbols" "$forbidden"; then
 			fail "ECM object unexpectedly contains TC symbol $forbidden"
 		fi
