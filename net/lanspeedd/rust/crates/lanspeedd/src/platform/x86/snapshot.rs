@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use lanspeed_common::{LanspeedCounters, LanspeedKey, DIR_RX, DIR_TX};
+use lanspeed_common::{FastCounterValue, LanspeedCounters, LanspeedKey, DIR_RX, DIR_TX};
 
 use crate::{
     identity::{filter, IdentityTable},
@@ -18,6 +18,21 @@ pub struct RawMapSample {
 pub struct MapRead {
     pub entries: Vec<RawMapSample>,
     pub truncated: bool,
+}
+
+/// Two bounded PerCPU lookups of one FastCounter key. The NSS FastS reader
+/// owns seq/reset validation; this type only transports the raw map boundary.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FastCounterMapRead {
+    pub entries: Vec<RawFastCounterSample>,
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RawFastCounterSample {
+    pub key: LanspeedKey,
+    pub first: Vec<FastCounterValue>,
+    pub second: Vec<FastCounterValue>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

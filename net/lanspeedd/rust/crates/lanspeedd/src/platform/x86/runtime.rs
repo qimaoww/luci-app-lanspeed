@@ -1,7 +1,7 @@
 use std::{ffi::CString, fmt, fs, io, os::fd::OwnedFd, path::Path};
 
 use aya::{
-    maps::HashMap,
+    maps::{HashMap, PerCpuHashMap},
     programs::{
         links::Link,
         tc::{
@@ -13,8 +13,9 @@ use aya::{
 };
 
 use lanspeed_common::{
-    LanspeedCounters, LanspeedKey, CLIENTS_MAP_NAME, EGRESS_EARLY_PROGRAM_NAME,
-    EGRESS_PROGRAM_NAME, INGRESS_EARLY_PROGRAM_NAME, INGRESS_PROGRAM_NAME, MAX_CLIENTS,
+    FastCounterValue, LanspeedCounters, LanspeedKey, CLIENTS_MAP_NAME, EGRESS_EARLY_PROGRAM_NAME,
+    EGRESS_PROGRAM_NAME, FAST_COUNTERS_MAP_NAME, INGRESS_EARLY_PROGRAM_NAME, INGRESS_PROGRAM_NAME,
+    MAX_CLIENTS,
 };
 
 use crate::{
@@ -30,7 +31,9 @@ use crate::{
 pub const PRIMARY_OBJECT_PATH: &str = "/usr/lib/bpf/lanspeed-ebpf-kfunc";
 pub const FALLBACK_OBJECT_PATH: &str = "/usr/lib/bpf/lanspeed-ebpf-fallback";
 
-use super::snapshot::{BpfSnapshot, BpfSnapshotCollector, ConnectionOverlay, MapRead};
+use super::snapshot::{
+    BpfSnapshot, BpfSnapshotCollector, ConnectionOverlay, FastCounterMapRead, MapRead,
+};
 use super::tc_monitor::TcTopologyMonitor;
 
 pub const NORMAL_PRIORITY: u16 = 49_152;
@@ -175,6 +178,12 @@ pub trait AyaAdapter {
     fn forget_link(&mut self, spec: &LinkSpec, link: Self::Link) -> Result<(), AdapterError>;
     fn abandon_link(&mut self, spec: &LinkSpec, link: Self::Link) -> Result<(), AdapterError>;
     fn read_clients(&mut self) -> Result<MapRead, AdapterError>;
+    fn read_fast_counters(&mut self) -> Result<FastCounterMapRead, AdapterError> {
+        Err(AdapterError::new(
+            AdapterErrorKind::MapReadFailed,
+            "fast counter map is unavailable",
+        ))
+    }
     fn interface_name(&mut self, ifindex: u32) -> Option<String>;
     fn unload(&mut self);
 }
@@ -1329,8 +1338,18 @@ struct ClientKey(LanspeedKey);
 #[repr(transparent)]
 struct ClientValue(LanspeedCounters);
 
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+struct FastCounterKey(LanspeedKey);
+
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+struct FastCounterMapValue(FastCounterValue);
+
 unsafe impl Pod for ClientKey {}
 unsafe impl Pod for ClientValue {}
+unsafe impl Pod for FastCounterKey {}
+unsafe impl Pod for FastCounterMapValue {}
 
 #[derive(Debug)]
 pub struct SystemAyaLink {
@@ -1678,6 +1697,64 @@ impl AyaAdapter for SystemAyaAdapter {
         }
         truncated |= entries.len() == self.client_map_capacity as usize;
         Ok(MapRead { entries, truncated })
+    }
+
+    fn read_fast_counters(&mut self) -> Result<FastCounterMapRead, AdapterError> {
+        let map = self
+            .ebpf
+            .as_ref()
+            .and_then(|ebpf| ebpf.map(FAST_COUNTERS_MAP_NAME))
+            .ok_or_else(|| {
+                AdapterError::new(
+                    AdapterErrorKind::MapReadFailed,
+                    format!("{FAST_COUNTERS_MAP_NAME} missing"),
+                )
+            })?;
+        let counters = PerCpuHashMap::<_, FastCounterKey, FastCounterMapValue>::try_from(map)
+            .map_err(|error| {
+                AdapterError::new(AdapterErrorKind::MapReadFailed, error.to_string())
+            })?;
+        let mut entries = Vec::new();
+        let mut truncated = false;
+        for key in counters.keys() {
+            let key = match key {
+                Ok(key) => key,
+                Err(aya::maps::MapError::KeyNotFound) => continue,
+                Err(error) => {
+                    return Err(AdapterError::new(
+                        AdapterErrorKind::MapReadFailed,
+                        error.to_string(),
+                    ));
+                }
+            };
+            if entries.len() >= self.client_map_capacity as usize {
+                truncated = true;
+                break;
+            }
+            let first = counters
+                .get(&key, 0)
+                .map_err(|error| {
+                    AdapterError::new(AdapterErrorKind::MapReadFailed, error.to_string())
+                })?
+                .iter()
+                .map(|value| value.0)
+                .collect();
+            let second = counters
+                .get(&key, 0)
+                .map_err(|error| {
+                    AdapterError::new(AdapterErrorKind::MapReadFailed, error.to_string())
+                })?
+                .iter()
+                .map(|value| value.0)
+                .collect();
+            entries.push(super::snapshot::RawFastCounterSample {
+                key: key.0,
+                first,
+                second,
+            });
+        }
+        truncated |= entries.len() == self.client_map_capacity as usize;
+        Ok(FastCounterMapRead { entries, truncated })
     }
 
     fn interface_name(&mut self, ifindex: u32) -> Option<String> {
