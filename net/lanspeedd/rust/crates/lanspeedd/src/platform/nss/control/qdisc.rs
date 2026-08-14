@@ -215,10 +215,7 @@ fn sync_tree(
         }
     }
     let staged = (|| {
-        for rule in rules {
-            replace_client_class(device, rule.class_minor, direction.rate(rule))?;
-            ensure_client_fifo(device, rule.class_minor, direction.rate(rule))?;
-        }
+        sync_client_rules_batch(device, direction, rules)?;
         remove_stale_classes(device, rules)?;
         // qca_nss_qdisc rejects TC filters on an NSSHTB root. nft sets skb
         // priority before egress, while ECM supplies the same classid to
@@ -246,10 +243,7 @@ pub(super) fn sync_igs_tree(device: &str, rules: &[&ActiveRule]) -> Result<(), S
         }
     }
     let staged = (|| {
-        for rule in rules {
-            replace_client_class(device, rule.class_minor, Direction::Upload.rate(rule))?;
-            ensure_client_fifo(device, rule.class_minor, Direction::Upload.rate(rule))?;
-        }
+        sync_client_rules_batch(device, Direction::Upload, rules)?;
         remove_stale_classes(device, rules)?;
         verify_tree_inventory(device, Direction::Upload, rules, NSS_MAX_RATE_BPS, false)
     })();
@@ -338,17 +332,6 @@ fn install_base_tree(device: &str, default_rate: u64) -> Result<(), String> {
     staged
 }
 
-fn replace_client_class(device: &str, minor: u16, rate_bps: u64) -> Result<(), String> {
-    replace_class(
-        device,
-        &classid(ROOT_CLASS_MINOR),
-        minor,
-        rate_bps,
-        rate_bps,
-        1,
-    )
-}
-
 fn replace_class(
     device: &str,
     parent: &str,
@@ -357,37 +340,46 @@ fn replace_class(
     crate_bps: u64,
     priority: u8,
 ) -> Result<(), String> {
+    let args = replace_class_args(device, parent, minor, rate_bps, crate_bps, priority);
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    system::run("tc", &refs)
+}
+
+fn replace_class_args(
+    device: &str,
+    parent: &str,
+    minor: u16,
+    rate_bps: u64,
+    crate_bps: u64,
+    priority: u8,
+) -> Vec<String> {
     let class = classid(minor);
     let rate = format!("{rate_bps}bit");
     let crate_rate = format!("{crate_bps}bit");
     let burst = format!("{}b", burst_bytes(rate_bps.max(crate_bps)));
-    let priority = priority.to_string();
-    system::run(
-        "tc",
-        &[
-            "class",
-            "replace",
-            "dev",
-            device,
-            "parent",
-            parent,
-            "classid",
-            &class,
-            "nsshtb",
-            "rate",
-            &rate,
-            "burst",
-            &burst,
-            "crate",
-            &crate_rate,
-            "cburst",
-            &burst,
-            "priority",
-            &priority,
-            "quantum",
-            "1514",
-        ],
-    )
+    vec![
+        "class".into(),
+        "replace".into(),
+        "dev".into(),
+        device.into(),
+        "parent".into(),
+        parent.into(),
+        "classid".into(),
+        class,
+        "nsshtb".into(),
+        "rate".into(),
+        rate,
+        "burst".into(),
+        burst.clone(),
+        "crate".into(),
+        crate_rate,
+        "cburst".into(),
+        burst,
+        "priority".into(),
+        priority.to_string(),
+        "quantum".into(),
+        "1514".into(),
+    ]
 }
 
 fn nss_queue_bytes(rate_bps: u64) -> u64 {
@@ -397,41 +389,64 @@ fn nss_queue_bytes(rate_bps: u64) -> u64 {
         .clamp(NSS_MIN_QUEUE_BYTES, NSS_MAX_QUEUE_BYTES)
 }
 
-fn ensure_client_fifo(device: &str, minor: u16, rate_bps: u64) -> Result<(), String> {
-    let parent = classid(minor);
-    let handle = leaf_handle(minor);
+fn sync_client_rules_batch(
+    device: &str,
+    direction: Direction,
+    rules: &[&ActiveRule],
+) -> Result<(), String> {
     let leaves = leaf_qdiscs(device)?;
-    let operation = if leaves.get(&parent).is_some_and(|value| value == &handle) {
-        // NSSBFIFO implements qdisc change, so replace updates the bounded
-        // queue when a client rate changes without detaching the live leaf.
-        "replace"
-    } else {
-        // A different leaf under a LAN Speed class can only be a partial
-        // object from our own failed transaction. Remove that exact parent;
-        // never delete a qdisc by interface name alone.
-        if leaves.contains_key(&parent) {
-            system::run("tc", &["qdisc", "del", "dev", device, "parent", &parent])?;
-        }
-        "add"
-    };
-    system::run(
-        "tc",
-        &[
-            "qdisc",
-            operation,
-            "dev",
+    let mut commands = Vec::<Vec<String>>::new();
+    for rule in rules {
+        let rate_bps = direction.rate(rule);
+        commands.push(replace_class_args(
             device,
-            "parent",
-            &parent,
-            "handle",
-            &handle,
-            "nssbfifo",
-            "limit",
-            &format!("{}b", nss_queue_bytes(rate_bps)),
-            "accel_mode",
-            "0",
-        ],
-    )
+            &classid(ROOT_CLASS_MINOR),
+            rule.class_minor,
+            rate_bps,
+            rate_bps,
+            1,
+        ));
+        let parent = classid(rule.class_minor);
+        let handle = leaf_handle(rule.class_minor);
+        let operation = if leaves.get(&parent).is_some_and(|value| value == &handle) {
+            "replace"
+        } else {
+            if leaves.contains_key(&parent) {
+                commands.push(vec![
+                    "qdisc".into(),
+                    "del".into(),
+                    "dev".into(),
+                    device.into(),
+                    "parent".into(),
+                    parent.clone(),
+                ]);
+            }
+            "add"
+        };
+        commands.push(vec![
+            "qdisc".into(),
+            operation.into(),
+            "dev".into(),
+            device.into(),
+            "parent".into(),
+            parent,
+            "handle".into(),
+            handle,
+            "nssbfifo".into(),
+            "limit".into(),
+            format!("{}b", nss_queue_bytes(rate_bps)),
+            "accel_mode".into(),
+            "0".into(),
+        ]);
+    }
+    if commands.is_empty() {
+        return Ok(());
+    }
+    let script = commands
+        .iter()
+        .map(|command| format!("{}\n", command.join(" ")))
+        .collect::<String>();
+    system::run_script("tc", &["-batch", "-"], &script)
 }
 
 fn remove_stale_classes(device: &str, desired: &[&ActiveRule]) -> Result<(), String> {
