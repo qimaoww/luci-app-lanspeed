@@ -2,6 +2,20 @@
 mod diagnostics_tests {
     use super::*;
 
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn snapshot_store_is_thread_safe_and_publishes_an_atomic_arc() {
+        assert_send_sync::<SnapshotStore>();
+        let store = SnapshotStore::new(Arc::new(ResponseSnapshot::unsupported("stale")));
+        let writer = store.clone();
+        let handle = std::thread::spawn(move || {
+            writer.publish(Arc::new(ResponseSnapshot::unsupported("fresh")));
+        });
+        handle.join().expect("snapshot writer must not panic");
+        assert_eq!(store.load().reload.version, "fresh");
+    }
+
     fn set_bpf_evidence(snapshot: &mut ResponseSnapshot, value: Value, live_metrics: bool) {
         snapshot
             .status

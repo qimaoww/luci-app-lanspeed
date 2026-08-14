@@ -1,4 +1,8 @@
-use std::{cell::RefCell, collections::BTreeMap, mem::MaybeUninit, rc::Rc, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    mem::MaybeUninit,
+    sync::{Arc, RwLock},
+};
 
 use serde_json::{json, Value};
 
@@ -1509,17 +1513,23 @@ fn config_issues(config: &RuntimeConfig) -> Vec<DiagnosticConfigIssue> {
 }
 
 #[derive(Clone)]
-pub struct SnapshotStore(Rc<RefCell<Arc<ResponseSnapshot>>>);
+pub struct SnapshotStore(Arc<RwLock<Arc<ResponseSnapshot>>>);
 
 impl SnapshotStore {
     pub fn new(snapshot: Arc<ResponseSnapshot>) -> Self {
-        Self(Rc::new(RefCell::new(snapshot)))
+        Self(Arc::new(RwLock::new(snapshot)))
     }
     pub fn load(&self) -> Arc<ResponseSnapshot> {
-        Arc::clone(&self.0.borrow())
+        match self.0.read() {
+            Ok(snapshot) => Arc::clone(&snapshot),
+            Err(poisoned) => Arc::clone(&poisoned.into_inner()),
+        }
     }
     pub fn publish(&self, snapshot: Arc<ResponseSnapshot>) {
-        *self.0.borrow_mut() = snapshot;
+        match self.0.write() {
+            Ok(mut current) => *current = snapshot,
+            Err(poisoned) => *poisoned.into_inner() = snapshot,
+        }
     }
 }
 
