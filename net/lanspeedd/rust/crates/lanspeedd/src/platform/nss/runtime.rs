@@ -6,6 +6,7 @@ use crate::{
             EcmBpfCollectionCheckpoint, EcmBpfRuntime, EcmBpfSnapshot, EcmBpfSnapshotCollector,
         },
         ecm_node::{self, NodeSnapshot},
+        fast_rate_shadow::FastRateShadow,
         fast_s_runtime::{FastSRuntime, FastSSnapshot},
         window::{EcmBpfRateWindowBook, NssCoverageBook, NssWindowBook},
     },
@@ -26,6 +27,7 @@ pub(crate) struct NssRuntime {
     pub(crate) ecm_bpf_coverage: NssCoverageBook,
     pub(crate) ecm_bpf_rates: EcmBpfRateWindowBook,
     pub(crate) fast_s: FastSRuntime,
+    pub(crate) fast_rate_shadow: FastRateShadow,
 }
 
 #[derive(Clone)]
@@ -38,6 +40,7 @@ pub(crate) struct NssRuntimeCheckpoint {
     ecm_bpf_error_stage: Option<&'static str>,
     node_error: Option<String>,
     fast_s: FastSRuntime,
+    fast_rate_shadow: FastRateShadow,
 }
 
 impl Default for NssRuntime {
@@ -52,6 +55,7 @@ impl Default for NssRuntime {
             ecm_bpf_coverage: NssCoverageBook::default(),
             ecm_bpf_rates: EcmBpfRateWindowBook::default(),
             fast_s: FastSRuntime::default(),
+            fast_rate_shadow: FastRateShadow::new(),
         }
     }
 }
@@ -104,6 +108,7 @@ impl NssRuntime {
             ecm_bpf_error_stage: self.ecm_bpf_error_stage,
             node_error: self.node_error.clone(),
             fast_s: self.fast_s.clone(),
+            fast_rate_shadow: self.fast_rate_shadow.clone(),
         }
     }
 
@@ -120,6 +125,7 @@ impl NssRuntime {
         self.ecm_bpf_error_stage = checkpoint.ecm_bpf_error_stage;
         self.node_error = checkpoint.node_error;
         self.fast_s = checkpoint.fast_s;
+        self.fast_rate_shadow = checkpoint.fast_rate_shadow;
     }
 
     pub(crate) fn collect_fast_s(
@@ -148,6 +154,64 @@ impl NssRuntime {
 
     pub(crate) const fn fast_s_truncated_reads(&self) -> u64 {
         self.fast_s.truncated_reads()
+    }
+
+    pub(crate) fn observe_fast_rate_shadow(
+        &mut self,
+        nss: Option<&EcmBpfSnapshot>,
+        n_read_begin_ms: u64,
+        n_read_end_ms: u64,
+        s_read_begin_ms: u64,
+        s_read_end_ms: u64,
+    ) {
+        let fast_s = self.fast_s_snapshot().cloned();
+        self.fast_rate_shadow.observe(
+            nss,
+            fast_s.as_ref(),
+            n_read_begin_ms,
+            n_read_end_ms,
+            s_read_begin_ms,
+            s_read_end_ms,
+        );
+    }
+
+    pub(crate) const fn fast_rate_shadow_latest(
+        &self,
+    ) -> Option<crate::platform::nss::fast_rate_store::FastRateSample> {
+        self.fast_rate_shadow.latest()
+    }
+
+    pub(crate) const fn fast_rate_shadow_telemetry(
+        &self,
+    ) -> crate::platform::nss::fast_rate_store::FastRateTelemetry {
+        self.fast_rate_shadow.telemetry()
+    }
+
+    pub(crate) const fn fast_rate_shadow_last_error_code(&self) -> Option<&'static str> {
+        match self.fast_rate_shadow.last_error() {
+            Some(crate::platform::nss::fast_rate::FastWindowError::InvalidReadInterval) => {
+                Some("invalid_read_interval")
+            }
+            Some(crate::platform::nss::fast_rate::FastWindowError::ReadEndSkew { .. }) => {
+                Some("read_end_skew")
+            }
+            Some(crate::platform::nss::fast_rate::FastWindowError::SampleSkew { .. }) => {
+                Some("sample_skew")
+            }
+            Some(crate::platform::nss::fast_rate::FastWindowError::AttachmentGenerationChanged) => {
+                Some("attachment_generation_changed")
+            }
+            Some(crate::platform::nss::fast_rate::FastWindowError::ResetGenerationChanged) => {
+                Some("reset_generation_changed")
+            }
+            Some(crate::platform::nss::fast_rate::FastWindowError::TimeDidNotAdvance) => {
+                Some("time_did_not_advance")
+            }
+            Some(crate::platform::nss::fast_rate::FastWindowError::CounterReset) => {
+                Some("counter_reset")
+            }
+            None => None,
+        }
     }
 
     pub(crate) fn collect_ecm_bpf(

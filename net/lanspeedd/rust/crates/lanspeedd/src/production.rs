@@ -971,17 +971,72 @@ impl ProductionRuntime {
             u64::from(self.config.refresh_interval_ms).saturating_mul(3)
         };
         let nss_freshness_ms = nss_snapshot_freshness_ms(self.config.refresh_interval_ms);
-        let (bpf_snapshot, mut runtime_health, bpf_snapshot_fresh, fast_s_read, fast_s_read_failed) =
-            match external_bpf {
-                Some((runtime, adapter)) => {
+        let (
+            bpf_snapshot,
+            mut runtime_health,
+            bpf_snapshot_fresh,
+            fast_s_read,
+            fast_s_read_failed,
+            fast_s_read_timing,
+        ) = match external_bpf {
+            Some((runtime, adapter)) => {
+                let (snapshot, fresh) = if classifier_map_read_due {
+                    match runtime.collect_snapshot_self_healing(
+                        adapter,
+                        &mut self.bpf_collector,
+                        &identities,
+                        &overlay,
+                        now_ms,
+                        EXTERNAL_BPF_SELF_HEAL_REASON,
+                    ) {
+                        Ok(snapshot) => {
+                            self.bpf_error = None;
+                            self.bpf_error_stage = None;
+                            (Some(snapshot), true)
+                        }
+                        Err(error) => {
+                            self.bpf_error_stage = Some(bpf_error_stage(error.kind()));
+                            self.bpf_error = Some(error.to_string());
+                            (self.bpf_collector.last_complete().cloned(), false)
+                        }
+                    }
+                } else {
+                    (self.bpf_collector.last_complete().cloned(), false)
+                };
+                let (fast_s_read, fast_s_read_failed, fast_s_read_timing) =
+                    if self.probe_report.facts.nss.present {
+                        let read_begin_ms = production_now_ms().unwrap_or(now_ms);
+                        let result = adapter.read_fast_counters();
+                        let read_end_ms = production_now_ms().unwrap_or(read_begin_ms);
+                        match result {
+                            Ok(read) => (Some(read), false, Some((read_begin_ms, read_end_ms))),
+                            Err(_) => (None, true, None),
+                        }
+                    } else {
+                        (None, false, None)
+                    };
+                let health_now_ms = snapshot
+                    .as_ref()
+                    .map_or(now_ms, |snapshot| now_ms.max(snapshot.sample_ms));
+                (
+                    snapshot,
+                    runtime.runtime_health(health_now_ms, bpf_freshness_ms),
+                    fresh,
+                    fast_s_read,
+                    fast_s_read_failed,
+                    fast_s_read_timing,
+                )
+            }
+            None => match self.bpf.as_mut() {
+                Some(runtime) => {
                     let (snapshot, fresh) = if classifier_map_read_due {
                         match runtime.collect_snapshot_self_healing(
-                            adapter,
+                            &mut self.adapter,
                             &mut self.bpf_collector,
                             &identities,
                             &overlay,
                             now_ms,
-                            EXTERNAL_BPF_SELF_HEAL_REASON,
+                            INTERNAL_BPF_SELF_HEAL_REASON,
                         ) {
                             Ok(snapshot) => {
                                 self.bpf_error = None;
@@ -997,14 +1052,18 @@ impl ProductionRuntime {
                     } else {
                         (self.bpf_collector.last_complete().cloned(), false)
                     };
-                    let (fast_s_read, fast_s_read_failed) = if self.probe_report.facts.nss.present {
-                        match adapter.read_fast_counters() {
-                            Ok(read) => (Some(read), false),
-                            Err(_) => (None, true),
-                        }
-                    } else {
-                        (None, false)
-                    };
+                    let (fast_s_read, fast_s_read_failed, fast_s_read_timing) =
+                        if self.probe_report.facts.nss.present {
+                            let read_begin_ms = production_now_ms().unwrap_or(now_ms);
+                            let result = self.adapter.read_fast_counters();
+                            let read_end_ms = production_now_ms().unwrap_or(read_begin_ms);
+                            match result {
+                                Ok(read) => (Some(read), false, Some((read_begin_ms, read_end_ms))),
+                                Err(_) => (None, true, None),
+                            }
+                        } else {
+                            (None, false, None)
+                        };
                     let health_now_ms = snapshot
                         .as_ref()
                         .map_or(now_ms, |snapshot| now_ms.max(snapshot.sample_ms));
@@ -1014,56 +1073,12 @@ impl ProductionRuntime {
                         fresh,
                         fast_s_read,
                         fast_s_read_failed,
+                        fast_s_read_timing,
                     )
                 }
-                None => match self.bpf.as_mut() {
-                    Some(runtime) => {
-                        let (snapshot, fresh) = if classifier_map_read_due {
-                            match runtime.collect_snapshot_self_healing(
-                                &mut self.adapter,
-                                &mut self.bpf_collector,
-                                &identities,
-                                &overlay,
-                                now_ms,
-                                INTERNAL_BPF_SELF_HEAL_REASON,
-                            ) {
-                                Ok(snapshot) => {
-                                    self.bpf_error = None;
-                                    self.bpf_error_stage = None;
-                                    (Some(snapshot), true)
-                                }
-                                Err(error) => {
-                                    self.bpf_error_stage = Some(bpf_error_stage(error.kind()));
-                                    self.bpf_error = Some(error.to_string());
-                                    (self.bpf_collector.last_complete().cloned(), false)
-                                }
-                            }
-                        } else {
-                            (self.bpf_collector.last_complete().cloned(), false)
-                        };
-                        let (fast_s_read, fast_s_read_failed) =
-                            if self.probe_report.facts.nss.present {
-                                match self.adapter.read_fast_counters() {
-                                    Ok(read) => (Some(read), false),
-                                    Err(_) => (None, true),
-                                }
-                            } else {
-                                (None, false)
-                            };
-                        let health_now_ms = snapshot
-                            .as_ref()
-                            .map_or(now_ms, |snapshot| now_ms.max(snapshot.sample_ms));
-                        (
-                            snapshot,
-                            runtime.runtime_health(health_now_ms, bpf_freshness_ms),
-                            fresh,
-                            fast_s_read,
-                            fast_s_read_failed,
-                        )
-                    }
-                    None => (None, RuntimeHealth::default(), false, None, false),
-                },
-            };
+                None => (None, RuntimeHealth::default(), false, None, false, None),
+            },
+        };
         if runtime_health.bpf_object_loaded {
             runtime_health.bpf_map_capacity = self.config.max_clients.saturating_mul(4);
         }
@@ -1082,6 +1097,7 @@ impl ProductionRuntime {
             let fast_s_snapshot = self.nss.collect_fast_s(read, now_ms);
             now_ms = now_ms.max(fast_s_snapshot.sample_ms);
         }
+        let ecm_read_begin_ms = production_now_ms().unwrap_or(now_ms);
         let (ecm_bpf_snapshot, ecm_bpf_snapshot_fresh) = self.nss.collect_ecm_bpf(
             &identities,
             &mut now_ms,
@@ -1089,6 +1105,7 @@ impl ProductionRuntime {
             &mut runtime_health,
             classifier_map_read_due,
         );
+        let ecm_read_end_ms = production_now_ms().unwrap_or(ecm_read_begin_ms.max(now_ms));
         let ecm_classifier_read_end_ms = if ecm_bpf_snapshot_fresh {
             Some(production_now_ms()?)
         } else {
@@ -1099,6 +1116,17 @@ impl ProductionRuntime {
             .flatten()
         {
             now_ms = now_ms.max(read_end_ms);
+        }
+        if ecm_bpf_snapshot_fresh {
+            if let Some((fast_s_read_begin_ms, fast_s_read_end_ms)) = fast_s_read_timing {
+                self.nss.observe_fast_rate_shadow(
+                    ecm_bpf_snapshot.as_ref(),
+                    ecm_read_begin_ms,
+                    ecm_read_end_ms,
+                    fast_s_read_begin_ms,
+                    fast_s_read_end_ms,
+                );
+            }
         }
         runtime_health.now_ms = now_ms;
         self.apply_conntrack_health(&mut runtime_health);
@@ -1589,6 +1617,46 @@ impl ProductionRuntime {
                     "invalid_reads": self.nss.fast_s_invalid_reads(),
                     "truncated_reads": self.nss.fast_s_truncated_reads(),
                     "read_failures": self.nss.fast_s_read_failures(),
+                    "formal_rate_owner": false,
+                }),
+            );
+        }
+        let fast_rate_telemetry = self.nss.fast_rate_shadow_telemetry();
+        if let Some(fast_rate) = self.nss.fast_rate_shadow_latest() {
+            status_evidence.details.insert(
+                "fast_rate_shadow".into(),
+                json!({
+                    "sample_ms": fast_rate.sample_ms,
+                    "window_ms": fast_rate.window_ms,
+                    "read_end_skew_ms": fast_rate.read_end_skew_ms,
+                    "fast_n_bps": fast_rate.fast_n_bps,
+                    "fast_s_bps": fast_rate.fast_s_bps,
+                    "fast_total_bps": fast_rate.fast_total_bps,
+                    "valid_windows": fast_rate_telemetry.valid_windows,
+                    "invalid_windows": fast_rate_telemetry.invalid_windows,
+                    "zero_windows": fast_rate_telemetry.zero_windows,
+                    "last_invalid_ms": fast_rate_telemetry.last_invalid_ms,
+                    "last_zero_latency_ms": fast_rate_telemetry.last_zero_latency_ms,
+                    "last_rise_latency_ms": fast_rate_telemetry.last_rise_latency_ms,
+                    "last_error": self.nss.fast_rate_shadow_last_error_code(),
+                    "formal_rate_owner": false,
+                }),
+            );
+        } else if fast_rate_telemetry.invalid_windows != 0 {
+            status_evidence.details.insert(
+                "fast_rate_shadow".into(),
+                json!({
+                    "sample_ms": Value::Null,
+                    "window_ms": Value::Null,
+                    "read_end_skew_ms": Value::Null,
+                    "fast_n_bps": Value::Null,
+                    "fast_s_bps": Value::Null,
+                    "fast_total_bps": Value::Null,
+                    "valid_windows": fast_rate_telemetry.valid_windows,
+                    "invalid_windows": fast_rate_telemetry.invalid_windows,
+                    "zero_windows": fast_rate_telemetry.zero_windows,
+                    "last_invalid_ms": fast_rate_telemetry.last_invalid_ms,
+                    "last_error": self.nss.fast_rate_shadow_last_error_code(),
                     "formal_rate_owner": false,
                 }),
             );

@@ -83,6 +83,10 @@ impl FastRateCoordinator {
         self.max_read_end_skew_ms
     }
 
+    pub(crate) const fn has_start(&self) -> bool {
+        self.start.is_some()
+    }
+
     pub(crate) fn clear(&mut self) {
         self.start = None;
     }

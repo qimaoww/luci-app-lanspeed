@@ -6,7 +6,7 @@ use lanspeed_common::LanspeedKey;
 
 use crate::platform::fast_counter_map::FastCounterMapRead;
 
-use super::fast_counter::{FastCounterAggregate, FastSReader};
+use super::fast_counter::{FastCounterAggregate, FastSReadError, FastSReader};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct FastSKey {
@@ -41,27 +41,46 @@ pub(crate) struct FastSSnapshot {
     pub valid_entries: usize,
     pub invalid_entries: usize,
     pub truncated: bool,
+    pub reset_generation: u32,
+    pub bytes: u64,
+    pub packets: u64,
     pub entries: Vec<FastSSample>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FastSRuntime {
     readers: BTreeMap<FastSKey, FastSReader>,
     last_snapshot: Option<FastSSnapshot>,
+    reset_generation: u32,
     invalid_reads: u64,
     truncated_reads: u64,
     read_failures: u64,
+}
+
+impl Default for FastSRuntime {
+    fn default() -> Self {
+        Self {
+            readers: BTreeMap::new(),
+            last_snapshot: None,
+            reset_generation: 1,
+            invalid_reads: 0,
+            truncated_reads: 0,
+            read_failures: 0,
+        }
+    }
 }
 
 impl FastSRuntime {
     pub(crate) fn collect(&mut self, read: FastCounterMapRead, now_ms: u64) -> FastSSnapshot {
         if read.truncated {
             self.readers.clear();
+            self.reset_generation = self.reset_generation.saturating_add(1).max(1);
             self.truncated_reads = self.truncated_reads.saturating_add(1);
             let snapshot = FastSSnapshot {
                 sample_ms: now_ms,
                 map_entries: read.entries.len(),
                 truncated: true,
+                reset_generation: self.reset_generation,
                 ..FastSSnapshot::default()
             };
             self.last_snapshot = Some(snapshot.clone());
@@ -72,6 +91,8 @@ impl FastSRuntime {
         let mut entries = Vec::new();
         let mut invalid_entries = 0;
         let mut sample_ms = now_ms;
+        let mut bytes: u64 = 0;
+        let mut packets: u64 = 0;
         for raw in read.entries {
             let key = FastSKey::from(raw.key);
             let reader = self.readers.entry(key).or_default();
@@ -79,13 +100,18 @@ impl FastSRuntime {
                 Ok(aggregate) => {
                     let entry_sample_ms = (aggregate.last_seen_ns / 1_000_000).min(now_ms);
                     sample_ms = sample_ms.max(entry_sample_ms);
+                    bytes = bytes.saturating_add(aggregate.bytes);
+                    packets = packets.saturating_add(aggregate.packets);
                     entries.push(FastSSample {
                         key,
                         aggregate,
                         sample_ms: entry_sample_ms,
                     });
                 }
-                Err(_) => {
+                Err(error) => {
+                    if matches!(error, FastSReadError::ResetGenerationChanged { .. }) {
+                        self.reset_generation = self.reset_generation.saturating_add(1).max(1);
+                    }
                     invalid_entries += 1;
                     self.invalid_reads = self.invalid_reads.saturating_add(1);
                 }
@@ -98,6 +124,9 @@ impl FastSRuntime {
             valid_entries: entries.len(),
             invalid_entries,
             truncated: false,
+            reset_generation: self.reset_generation.max(1),
+            bytes,
+            packets,
             entries,
         };
         self.last_snapshot = Some(snapshot.clone());
