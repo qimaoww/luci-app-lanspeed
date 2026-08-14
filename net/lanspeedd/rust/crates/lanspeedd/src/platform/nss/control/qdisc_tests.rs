@@ -34,7 +34,7 @@ mod tests {
         let values = parse_nss_qdisc_details(
             "qdisc nsshtb 7d00: root refcnt 5 r2q 10 accel_mode 0\n\
              qdisc nssbfifo 7d02: parent 7d00:2 limit 16Mb set_default accel_mode 0\n\
-             qdisc nssbfifo 7c23: parent 7d00:7c23 limit 687500b accel_mode 0\n\
+             qdisc nssbfifo 7c23: parent 7d00:7c23 limit 68750b accel_mode 0\n\
              qdisc clsact ffff: parent ffff:fff1\n",
         )
         .unwrap();
@@ -68,7 +68,7 @@ mod tests {
                     root: false,
                     r2q: None,
                     accel_mode: Some(0),
-                    limit: Some("687500b".into()),
+                    limit: Some("68750b".into()),
                     set_default: false,
                 },
             ]
@@ -108,7 +108,7 @@ mod tests {
         assert_eq!(tc_size_text(16 * 1024 * 1024), "16Mb");
         assert_eq!(tc_size_text(1024 * 1024), "1Mb");
         assert_eq!(tc_size_text(1514), "1514b");
-        assert_eq!(tc_size_text(687_500), "687500b");
+        assert_eq!(tc_size_text(68_750), "68750b");
     }
 
     #[test]
@@ -158,5 +158,18 @@ mod tests {
         assert_eq!(burst_bytes(11_000_000), 13_750);
         assert_eq!(burst_bytes(110_000_000), 137_500);
         assert_eq!(burst_bytes(NSS_MAX_RATE_BPS), MAX_BURST_BYTES);
+    }
+
+    #[test]
+    fn nss_fifo_uses_a_bounded_delay_target_and_small_floor() {
+        assert_eq!(nss_queue_bytes(8_000), NSS_MIN_QUEUE_BYTES);
+        assert_eq!(nss_queue_bytes(11_000_000), 68_750);
+        assert_eq!(nss_queue_bytes(NSS_MAX_RATE_BPS), NSS_MAX_QUEUE_BYTES);
+    }
+
+    #[test]
+    fn nss_fifo_delay_formula_is_byte_rate_based() {
+        assert_eq!(nss_queue_bytes(80_000_000), 500_000);
+        assert_eq!(nss_queue_bytes(160_000_000), 1_000_000);
     }
 }

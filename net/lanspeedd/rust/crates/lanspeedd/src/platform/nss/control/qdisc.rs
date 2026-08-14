@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use crate::control::{queue_bytes, ActiveRule, ControlPlan, NSS_CPU_DOWNLOAD, NSS_MAX_RATE_BPS};
+use crate::control::{ActiveRule, ControlPlan, NSS_CPU_DOWNLOAD, NSS_MAX_RATE_BPS};
 
 use super::{cpu_path, system, topology::Topology};
 
@@ -11,6 +11,9 @@ const ROOT_CLASS_MINOR: u16 = 1;
 const DEFAULT_CLASS_MINOR: u16 = 2;
 const DEFAULT_FIFO_HANDLE: &str = "7d02:";
 const DEFAULT_QUEUE_BYTES: u64 = 16 * 1024 * 1024;
+const NSS_TARGET_DELAY_MS: u64 = 50;
+const NSS_MIN_QUEUE_BYTES: u64 = 8 * 1514;
+const NSS_MAX_QUEUE_BYTES: u64 = 16 * 1024 * 1024;
 const MIN_BURST_BYTES: u64 = 6 * 1514;
 const MAX_BURST_BYTES: u64 = 1024 * 1024;
 const PAYLOAD_RATE_NUMERATOR: u64 = 110;
@@ -387,6 +390,13 @@ fn replace_class(
     )
 }
 
+fn nss_queue_bytes(rate_bps: u64) -> u64 {
+    rate_bps
+        .saturating_mul(NSS_TARGET_DELAY_MS)
+        .saturating_div(BITS_PER_MILLISECOND_BYTE)
+        .clamp(NSS_MIN_QUEUE_BYTES, NSS_MAX_QUEUE_BYTES)
+}
+
 fn ensure_client_fifo(device: &str, minor: u16, rate_bps: u64) -> Result<(), String> {
     let parent = classid(minor);
     let handle = leaf_handle(minor);
@@ -417,7 +427,7 @@ fn ensure_client_fifo(device: &str, minor: u16, rate_bps: u64) -> Result<(), Str
             &handle,
             "nssbfifo",
             "limit",
-            &format!("{}b", queue_bytes(rate_bps)),
+            &format!("{}b", nss_queue_bytes(rate_bps)),
             "accel_mode",
             "0",
         ],
@@ -556,7 +566,7 @@ fn verify_nss_options(
             root: false,
             r2q: None,
             accel_mode: Some(0),
-            limit: Some(tc_size_text(queue_bytes(rate))),
+            limit: Some(tc_size_text(nss_queue_bytes(rate))),
             set_default: false,
         };
         let expected_class = NssClassDetail {
