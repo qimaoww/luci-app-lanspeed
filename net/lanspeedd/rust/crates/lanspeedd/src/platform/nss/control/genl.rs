@@ -19,6 +19,7 @@ const GENL_ID_CTRL: u16 = 0x10;
 const NLMSG_HEADER_LEN: usize = 16;
 const GENL_HEADER_LEN: usize = 4;
 const NLM_F_REQUEST: u16 = 1;
+const NLM_F_ACK: u16 = 4;
 const NLMSG_ERROR: u16 = 2;
 const NLMSG_OVERRUN: u16 = 4;
 const CTRL_CMD_GETFAMILY: u8 = 3;
@@ -90,6 +91,45 @@ pub(super) fn read_runtime() -> Option<Value> {
         "stats": stats_json(stats),
         "health": health_json(health),
     }))
+}
+
+pub(super) fn write_igs(
+    operation: &str,
+    ifb: &str,
+    edge: Option<&str>,
+) -> Option<Result<(), &'static str>> {
+    let (command, attributes) = match operation {
+        "stage" => (
+            abi::CMD_IGS_STAGE,
+            encode_string_attribute(abi::A_IFB_NAME, ifb).ok()?,
+        ),
+        "publish" => {
+            let edge = edge?;
+            let mut attributes = encode_string_attribute(abi::A_IFB_NAME, ifb).ok()?;
+            attributes.extend_from_slice(&encode_string_attribute(abi::A_EDGE_NAME, edge).ok()?);
+            (abi::CMD_IGS_PUBLISH, attributes)
+        }
+        "unpublish" => (
+            abi::CMD_IGS_UNPUBLISH,
+            encode_string_attribute(abi::A_IFB_NAME, ifb).ok()?,
+        ),
+        "unstage" => (
+            abi::CMD_IGS_DELETE,
+            encode_string_attribute(abi::A_IFB_NAME, ifb).ok()?,
+        ),
+        _ => return None,
+    };
+    write_command(command, attributes)
+}
+
+pub(super) fn write_peer_replace(config: &str) -> Option<Result<(), &'static str>> {
+    let attributes = encode_string_attribute(abi::A_CONFIG, config).ok()?;
+    write_command(abi::CMD_PEER_REPLACE, attributes)
+}
+
+pub(super) fn write_tag_replace(config: &str) -> Option<Result<(), &'static str>> {
+    let attributes = encode_string_attribute(abi::A_CONFIG, config).ok()?;
+    write_command(abi::CMD_TAG_REPLACE, attributes)
 }
 
 fn open_family() -> Option<(GenericNetlinkSocket, u16)> {
@@ -231,6 +271,33 @@ fn command_request(family_id: u16, sequence: u32, command: u8) -> Vec<u8> {
     generic_request(family_id, sequence, command, abi::VERSION, &[])
 }
 
+fn write_command(command: u8, attributes: Vec<u8>) -> Option<Result<(), &'static str>> {
+    let (socket, family_id) = open_family()?;
+    let sequence = next_sequence();
+    let request = generic_request_flags(
+        family_id,
+        sequence,
+        command,
+        abi::VERSION,
+        &attributes,
+        NLM_F_REQUEST | NLM_F_ACK,
+    );
+    if socket.send(&request).is_err() {
+        return Some(Err("generic netlink request failed"));
+    }
+    loop {
+        let packet = match socket.receive() {
+            Ok(packet) => packet,
+            Err(_) => return Some(Err("generic netlink reply failed")),
+        };
+        match parse_ack_messages(&packet, sequence) {
+            Ok(Some(())) => return Some(Ok(())),
+            Ok(None) => {}
+            Err(error) => return Some(Err(error)),
+        }
+    }
+}
+
 fn generic_request(
     family_id: u16,
     sequence: u32,
@@ -238,11 +305,29 @@ fn generic_request(
     version: u8,
     attributes: &[u8],
 ) -> Vec<u8> {
+    generic_request_flags(
+        family_id,
+        sequence,
+        command,
+        version,
+        attributes,
+        NLM_F_REQUEST,
+    )
+}
+
+fn generic_request_flags(
+    family_id: u16,
+    sequence: u32,
+    command: u8,
+    version: u8,
+    attributes: &[u8],
+    flags: u16,
+) -> Vec<u8> {
     let length = NLMSG_HEADER_LEN + GENL_HEADER_LEN + attributes.len();
     let mut request = Vec::with_capacity(align4(length));
     request.extend_from_slice(&(length as u32).to_ne_bytes());
     request.extend_from_slice(&family_id.to_ne_bytes());
-    request.extend_from_slice(&NLM_F_REQUEST.to_ne_bytes());
+    request.extend_from_slice(&flags.to_ne_bytes());
     request.extend_from_slice(&sequence.to_ne_bytes());
     request.extend_from_slice(&0u32.to_ne_bytes());
     request.push(command);
@@ -261,6 +346,15 @@ fn encode_attribute(kind: u16, value: &[u8]) -> Vec<u8> {
     attribute.extend_from_slice(value);
     attribute.resize(align4(attribute.len()), 0);
     attribute
+}
+
+fn encode_string_attribute(kind: u16, value: &str) -> Result<Vec<u8>, &'static str> {
+    if value.as_bytes().contains(&0) {
+        return Err("generic netlink string contains NUL");
+    }
+    let mut bytes = value.as_bytes().to_vec();
+    bytes.push(0);
+    Ok(encode_attribute(kind, &bytes))
 }
 
 fn parse_family_id_messages(bytes: &[u8], sequence: u32) -> Result<Option<u16>, &'static str> {
@@ -529,6 +623,16 @@ fn parse_error(payload: &[u8]) -> Result<(), &'static str> {
     } else {
         Err("kernel rejected generic netlink request")
     }
+}
+
+fn parse_ack_messages(bytes: &[u8], sequence: u32) -> Result<Option<()>, &'static str> {
+    for message in messages(bytes, sequence)? {
+        if message.kind == NLMSG_ERROR {
+            parse_error(message.payload)?;
+            return Ok(Some(()));
+        }
+    }
+    Ok(None)
 }
 
 fn for_each_attribute(
@@ -824,5 +928,34 @@ mod tests {
             parse_family_id_messages(&packet, 9),
             Err("truncated generic netlink header")
         );
+    }
+
+    #[test]
+    fn write_requests_use_ack_and_bounded_nul_strings() {
+        let attribute = encode_string_attribute(abi::A_IFB_NAME, "lsu12345678").unwrap();
+        assert_eq!(attribute.last(), Some(&0));
+        assert!(encode_string_attribute(abi::A_IFB_NAME, "bad\0name").is_err());
+        let request = generic_request_flags(
+            42,
+            9,
+            abi::CMD_IGS_STAGE,
+            abi::VERSION,
+            &attribute,
+            NLM_F_REQUEST | NLM_F_ACK,
+        );
+        assert_eq!(
+            u16::from_ne_bytes(request[6..8].try_into().unwrap()),
+            NLM_F_REQUEST | NLM_F_ACK
+        );
+        assert!(request
+            .windows(attribute.len())
+            .any(|window| window == attribute));
+    }
+
+    #[test]
+    fn parses_a_successful_netlink_ack() {
+        let packet = message(NLMSG_ERROR, 11, &0i32.to_ne_bytes());
+        assert_eq!(parse_ack_messages(&packet, 11).unwrap(), Some(()));
+        assert_eq!(parse_ack_messages(&packet, 12).unwrap(), None);
     }
 }

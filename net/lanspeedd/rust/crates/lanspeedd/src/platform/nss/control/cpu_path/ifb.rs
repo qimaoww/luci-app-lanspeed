@@ -259,6 +259,23 @@ pub(super) fn published_edge(name: &str) -> Result<Option<String>, String> {
 }
 
 fn control(operation: &str, name: &str) -> Result<(), String> {
+    let genl_result = match operation {
+        "stage" | "unpublish" | "unstage" => super::super::genl::write_igs(operation, name, None),
+        "publish" => {
+            let mut fields = name.split_ascii_whitespace();
+            let ifb = fields.next();
+            let edge = fields.next();
+            if ifb.is_none() || edge.is_none() || fields.next().is_some() {
+                return Err("nss_igs_publish_failed".into());
+            }
+            super::super::genl::write_igs("publish", ifb.unwrap(), edge)
+        }
+        "peer_sync" => super::super::genl::write_peer_replace(name),
+        _ => None,
+    };
+    if let Some(result) = genl_result {
+        return result.map_err(|_| format!("nss_igs_{operation}_failed"));
+    }
     fs::write(format!("{CONTROL_ROOT}/{operation}"), format!("{name}\n"))
         .map_err(|_| format!("nss_igs_{operation}_failed"))
 }

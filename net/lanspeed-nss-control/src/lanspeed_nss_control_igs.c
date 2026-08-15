@@ -432,6 +432,26 @@ out:
 	return error;
 }
 
+int lanspeed_igs_stage(const char *value)
+{
+	return lanspeed_stage_set(value, NULL);
+}
+
+int lanspeed_igs_publish(const char *value)
+{
+	return lanspeed_publish_set(value, NULL);
+}
+
+int lanspeed_igs_unpublish(const char *value)
+{
+	return lanspeed_unpublish_set(value, NULL);
+}
+
+int lanspeed_igs_delete(const char *value)
+{
+	return lanspeed_unstage_set(value, NULL);
+}
+
 static int lanspeed_status_get(char *buffer, const struct kernel_param *kp)
 {
 	struct lanspeed_igs_entry *entry;

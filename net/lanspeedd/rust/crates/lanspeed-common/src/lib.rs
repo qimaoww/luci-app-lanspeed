@@ -50,6 +50,12 @@ pub mod nss_genl {
     pub const CMD_GET_STATE: u8 = 2;
     pub const CMD_GET_STATS: u8 = 3;
     pub const CMD_GET_HEALTH: u8 = 4;
+    pub const CMD_IGS_STAGE: u8 = 5;
+    pub const CMD_IGS_PUBLISH: u8 = 6;
+    pub const CMD_IGS_UNPUBLISH: u8 = 7;
+    pub const CMD_IGS_DELETE: u8 = 8;
+    pub const CMD_PEER_REPLACE: u8 = 9;
+    pub const CMD_TAG_REPLACE: u8 = 10;
 
     pub const A_ABI_VERSION: u16 = 1;
     pub const A_FEATURE_BITS: u16 = 2;
@@ -77,6 +83,9 @@ pub mod nss_genl {
     pub const A_ACK_LATE: u16 = 24;
     pub const A_HEALTHY: u16 = 25;
     pub const A_PEER_REASSERT_COUNT: u16 = 26;
+    pub const A_IFB_NAME: u16 = 27;
+    pub const A_EDGE_NAME: u16 = 28;
+    pub const A_CONFIG: u16 = 29;
 
     pub const FEATURE_IGS: u32 = 1 << 0;
     pub const FEATURE_WIFI_PEER: u32 = 1 << 1;

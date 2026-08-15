@@ -38,7 +38,12 @@ pub(super) fn preflight(plan: &ControlPlan) -> Result<(), String> {
 pub(super) fn sync(plan: &ControlPlan) -> Result<(), String> {
     system::load_module("lanspeed_nss_control", "lanspeed_nss_control_unavailable")?;
     let records = expected(plan)?;
-    fs::write(CONFIG_PATH, render(&records)).map_err(|_| "nss_igs_tag_config_failed".to_owned())?;
+    let config = render(&records);
+    if let Some(result) = super::super::genl::write_tag_replace(&config) {
+        result.map_err(|_| "nss_igs_tag_config_failed".to_owned())?;
+    } else {
+        fs::write(CONFIG_PATH, config).map_err(|_| "nss_igs_tag_config_failed".to_owned())?;
+    }
     verify_records(&records)
 }
 
@@ -52,7 +57,12 @@ pub(super) fn cleanup() -> Result<(), String> {
     }
     system::load_module("lanspeed_nss_control", "lanspeed_nss_control_unavailable")?;
     let records = BTreeSet::new();
-    fs::write(CONFIG_PATH, render(&records)).map_err(|_| "nss_igs_tag_config_failed".to_owned())?;
+    let config = render(&records);
+    if let Some(result) = super::super::genl::write_tag_replace(&config) {
+        result.map_err(|_| "nss_igs_tag_config_failed".to_owned())?;
+    } else {
+        fs::write(CONFIG_PATH, config).map_err(|_| "nss_igs_tag_config_failed".to_owned())?;
+    }
     verify_records(&records)
 }
 

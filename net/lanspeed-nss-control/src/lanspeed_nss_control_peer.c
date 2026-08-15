@@ -171,6 +171,11 @@ out:
 	return error;
 }
 
+int lanspeed_peer_replace(const char *value)
+{
+	return lanspeed_peer_sync_set(value, NULL);
+}
+
 static int lanspeed_peer_status_get(char *buffer,
 				     const struct kernel_param *kp)
 {

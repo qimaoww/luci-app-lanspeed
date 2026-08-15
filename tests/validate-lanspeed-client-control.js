@@ -356,10 +356,19 @@ async function main() {
     nssKmodSource.includes('LANSPEED_NSS_CMD_GET_STATE') &&
     nssKmodSource.includes('LANSPEED_NSS_CMD_GET_STATS') &&
     nssKmodSource.includes('LANSPEED_NSS_CMD_GET_HEALTH') &&
+    nssKmodSource.includes('LANSPEED_NSS_CMD_IGS_STAGE') &&
+    nssKmodSource.includes('LANSPEED_NSS_CMD_IGS_PUBLISH') &&
+    nssKmodSource.includes('LANSPEED_NSS_CMD_IGS_UNPUBLISH') &&
+    nssKmodSource.includes('LANSPEED_NSS_CMD_IGS_DELETE') &&
+    nssKmodSource.includes('LANSPEED_NSS_CMD_PEER_REPLACE') &&
+    nssKmodSource.includes('LANSPEED_NSS_CMD_TAG_REPLACE') &&
     nssKmodSource.includes('LANSPEED_NSS_A_PEER_REASSERT_COUNT') &&
     nssControlByModule['genl.rs'].includes('pub(super) fn read') &&
     nssControlByModule['genl.rs'].includes('CMD_GET_CAPS') &&
     nssControlByModule['genl.rs'].includes('pub(super) fn read_runtime') &&
+    nssControlByModule['genl.rs'].includes('pub(super) fn write_igs') &&
+    nssControlByModule['genl.rs'].includes('pub(super) fn write_peer_replace') &&
+    nssControlByModule['genl.rs'].includes('pub(super) fn write_tag_replace') &&
     nssControlByModule['genl.rs'].includes('parse_state_messages') &&
     nssControlByModule['genl.rs'].includes('parse_stats_messages') &&
     nssControlByModule['genl.rs'].includes('parse_health_messages') &&

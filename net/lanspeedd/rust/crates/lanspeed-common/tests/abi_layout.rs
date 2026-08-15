@@ -116,11 +116,20 @@ fn nss_generic_netlink_abi_is_stable_and_complete() {
             abi::CMD_GET_STATE,
             abi::CMD_GET_STATS,
             abi::CMD_GET_HEALTH,
+            abi::CMD_IGS_STAGE,
+            abi::CMD_IGS_PUBLISH,
+            abi::CMD_IGS_UNPUBLISH,
+            abi::CMD_IGS_DELETE,
+            abi::CMD_PEER_REPLACE,
+            abi::CMD_TAG_REPLACE,
         ],
-        [1, 2, 3, 4]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     );
     assert_eq!(abi::A_HEALTHY, 25);
     assert_eq!(abi::A_PEER_REASSERT_COUNT, 26);
+    assert_eq!(abi::A_IFB_NAME, 27);
+    assert_eq!(abi::A_EDGE_NAME, 28);
+    assert_eq!(abi::A_CONFIG, 29);
     assert_eq!(
         abi::FEATURE_IGS
             | abi::FEATURE_WIFI_PEER

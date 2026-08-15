@@ -388,6 +388,11 @@ free_input:
 	return error;
 }
 
+int lanspeed_tag_replace(const char *value)
+{
+	return lanspeed_tag_config_set(value, NULL);
+}
+
 static int lanspeed_tag_config_get(char *buffer, const struct kernel_param *kp)
 {
 	struct lanspeed_tag_config *config;

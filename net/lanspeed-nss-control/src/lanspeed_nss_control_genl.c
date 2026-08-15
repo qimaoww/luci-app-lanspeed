@@ -6,10 +6,24 @@
 
 #include "lanspeed_nss_control.h"
 
+#define LANSPEED_GENL_MAX_CONFIG 4095
+
 static struct genl_family lanspeed_genl_family;
 
 static const struct nla_policy lanspeed_genl_policy[LANSPEED_NSS_A_MAX + 1] = {
 	[LANSPEED_NSS_A_ABI_VERSION] = { .type = NLA_U32 },
+	[LANSPEED_NSS_A_IFB_NAME] = {
+		.type = NLA_NUL_STRING,
+		.len = IFNAMSIZ - 1,
+	},
+	[LANSPEED_NSS_A_EDGE_NAME] = {
+		.type = NLA_NUL_STRING,
+		.len = IFNAMSIZ - 1,
+	},
+	[LANSPEED_NSS_A_CONFIG] = {
+		.type = NLA_NUL_STRING,
+		.len = LANSPEED_GENL_MAX_CONFIG,
+	},
 };
 
 static int lanspeed_genl_reply_start(struct sk_buff **skb,
@@ -186,6 +200,85 @@ static int lanspeed_genl_get_health(struct sk_buff *skb, struct genl_info *info)
 	return lanspeed_genl_reply_finish(reply, info, header);
 }
 
+static int lanspeed_genl_require_string(struct genl_info *info, u16 attr,
+					const char **value)
+{
+	if (!info->attrs[attr])
+		return -EINVAL;
+	*value = nla_data(info->attrs[attr]);
+	return 0;
+}
+
+static int lanspeed_genl_igs_stage(struct sk_buff *skb, struct genl_info *info)
+{
+	const char *ifb;
+	int error = lanspeed_genl_require_string(info, LANSPEED_NSS_A_IFB_NAME,
+						 &ifb);
+
+	return error ? error : lanspeed_igs_stage(ifb);
+}
+
+static int lanspeed_genl_igs_publish(struct sk_buff *skb,
+					 struct genl_info *info)
+{
+	char value[IFNAMSIZ * 2 + 2];
+	const char *ifb;
+	const char *edge;
+	int error;
+
+	error = lanspeed_genl_require_string(info, LANSPEED_NSS_A_IFB_NAME,
+					     &ifb);
+	if (error)
+		return error;
+	error = lanspeed_genl_require_string(info, LANSPEED_NSS_A_EDGE_NAME,
+					     &edge);
+	if (error)
+		return error;
+	if (scnprintf(value, sizeof(value), "%s %s", ifb, edge) >= sizeof(value))
+		return -EINVAL;
+	return lanspeed_igs_publish(value);
+}
+
+static int lanspeed_genl_igs_unpublish(struct sk_buff *skb,
+					   struct genl_info *info)
+{
+	const char *ifb;
+	int error = lanspeed_genl_require_string(info, LANSPEED_NSS_A_IFB_NAME,
+						 &ifb);
+
+	return error ? error : lanspeed_igs_unpublish(ifb);
+}
+
+static int lanspeed_genl_igs_delete(struct sk_buff *skb,
+					struct genl_info *info)
+{
+	const char *ifb;
+	int error = lanspeed_genl_require_string(info, LANSPEED_NSS_A_IFB_NAME,
+						 &ifb);
+
+	return error ? error : lanspeed_igs_delete(ifb);
+}
+
+static int lanspeed_genl_peer_replace(struct sk_buff *skb,
+					      struct genl_info *info)
+{
+	const char *config;
+	int error = lanspeed_genl_require_string(info, LANSPEED_NSS_A_CONFIG,
+						 &config);
+
+	return error ? error : lanspeed_peer_replace(config);
+}
+
+static int lanspeed_genl_tag_replace(struct sk_buff *skb,
+					     struct genl_info *info)
+{
+	const char *config;
+	int error = lanspeed_genl_require_string(info, LANSPEED_NSS_A_CONFIG,
+						 &config);
+
+	return error ? error : lanspeed_tag_replace(config);
+}
+
 static const struct genl_ops lanspeed_genl_ops[] = {
 	{
 		.cmd = LANSPEED_NSS_CMD_GET_CAPS,
@@ -202,6 +295,36 @@ static const struct genl_ops lanspeed_genl_ops[] = {
 	{
 		.cmd = LANSPEED_NSS_CMD_GET_HEALTH,
 		.doit = lanspeed_genl_get_health,
+	},
+	{
+		.cmd = LANSPEED_NSS_CMD_IGS_STAGE,
+		.doit = lanspeed_genl_igs_stage,
+		.flags = GENL_ADMIN_PERM,
+	},
+	{
+		.cmd = LANSPEED_NSS_CMD_IGS_PUBLISH,
+		.doit = lanspeed_genl_igs_publish,
+		.flags = GENL_ADMIN_PERM,
+	},
+	{
+		.cmd = LANSPEED_NSS_CMD_IGS_UNPUBLISH,
+		.doit = lanspeed_genl_igs_unpublish,
+		.flags = GENL_ADMIN_PERM,
+	},
+	{
+		.cmd = LANSPEED_NSS_CMD_IGS_DELETE,
+		.doit = lanspeed_genl_igs_delete,
+		.flags = GENL_ADMIN_PERM,
+	},
+	{
+		.cmd = LANSPEED_NSS_CMD_PEER_REPLACE,
+		.doit = lanspeed_genl_peer_replace,
+		.flags = GENL_ADMIN_PERM,
+	},
+	{
+		.cmd = LANSPEED_NSS_CMD_TAG_REPLACE,
+		.doit = lanspeed_genl_tag_replace,
+		.flags = GENL_ADMIN_PERM,
 	},
 };
 

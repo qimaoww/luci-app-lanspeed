@@ -30,6 +30,12 @@ enum lanspeed_nss_genl_command {
 	LANSPEED_NSS_CMD_GET_STATE,
 	LANSPEED_NSS_CMD_GET_STATS,
 	LANSPEED_NSS_CMD_GET_HEALTH,
+	LANSPEED_NSS_CMD_IGS_STAGE,
+	LANSPEED_NSS_CMD_IGS_PUBLISH,
+	LANSPEED_NSS_CMD_IGS_UNPUBLISH,
+	LANSPEED_NSS_CMD_IGS_DELETE,
+	LANSPEED_NSS_CMD_PEER_REPLACE,
+	LANSPEED_NSS_CMD_TAG_REPLACE,
 	__LANSPEED_NSS_CMD_MAX,
 };
 
@@ -63,6 +69,9 @@ enum lanspeed_nss_genl_attribute {
 	LANSPEED_NSS_A_ACK_LATE,
 	LANSPEED_NSS_A_HEALTHY,
 	LANSPEED_NSS_A_PEER_REASSERT_COUNT,
+	LANSPEED_NSS_A_IFB_NAME,
+	LANSPEED_NSS_A_EDGE_NAME,
+	LANSPEED_NSS_A_CONFIG,
 	__LANSPEED_NSS_A_MAX,
 };
 
@@ -137,6 +146,13 @@ void lanspeed_telemetry_peer_reset(void);
 void lanspeed_telemetry_control_event(void);
 void lanspeed_telemetry_snapshot(struct lanspeed_telemetry_snapshot *snapshot);
 int lanspeed_telemetry_get(char *buffer, const struct kernel_param *kp);
+
+int lanspeed_igs_stage(const char *value);
+int lanspeed_igs_publish(const char *value);
+int lanspeed_igs_unpublish(const char *value);
+int lanspeed_igs_delete(const char *value);
+int lanspeed_peer_replace(const char *value);
+int lanspeed_tag_replace(const char *value);
 
 int lanspeed_genl_register(void);
 void lanspeed_genl_unregister(void);
