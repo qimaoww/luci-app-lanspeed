@@ -276,6 +276,8 @@ impl ProductionRuntime {
         process_tracker.refresh_if_due("/proc", production_now_ms()?);
         let mut preflight = probe.collect(&config, &RuntimeHealth::default(), ProbeMethod::Health);
         process_tracker.overlay_report(&mut preflight);
+        #[cfg(feature = "nss-platform")]
+        let _nss_genl_caps = crate::platform::nss::control::startup_caps();
         let control = ControlManager::load(&config)?;
         Ok(Self {
             bpf_collector: BpfSnapshotCollector::new(

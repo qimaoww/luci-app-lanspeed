@@ -172,6 +172,10 @@ pub(crate) fn hardware_telemetry() -> serde_json::Value {
     hardware_telemetry::read()
 }
 
+pub(crate) fn startup_caps() -> Option<serde_json::Value> {
+    genl::read()
+}
+
 pub(crate) fn quiesce_prefix_loss(plan: &ControlPlan) -> Result<(), String> {
     rollback::deactivate(plan)
 }

@@ -250,6 +250,9 @@ async function main() {
       .filter((name) => name.endsWith('.rs') && !name.endsWith('_tests.rs'))
       .sort().join(',') === nssControlModules.filter((name) => !name.endsWith('_tests.rs')).slice().sort().join(','),
     'NSS client control must be a fixed modular implementation rather than a monolithic source file');
+  assert(nssControlByModule['mod.rs'].includes('pub(crate) fn startup_caps') &&
+    production.includes('let _nss_genl_caps = crate::platform::nss::control::startup_caps()'),
+    'NSS daemon startup must query the versioned Generic Netlink capabilities');
   for (const name of [
     'capability', 'classifier', 'cpu_path', 'ecm_qos', 'firewall', 'legacy', 'qdisc', 'rollback', 'shaper',
     'state', 'system', 'telemetry', 'topology'
