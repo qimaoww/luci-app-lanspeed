@@ -82,6 +82,7 @@ const nssFusion = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/fus
 const nssOutput = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/output.rs');
 const nssEvidence = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/evidence.rs');
 const nssRuntime = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/runtime.rs');
+const nssHardwareVerifier = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/hardware_verifier.rs');
 const nssModule = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/mod.rs');
 const nssBpfCoverage = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/bpf_coverage.rs');
 const nssTcSnapshot = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/tc_snapshot.rs');
@@ -147,6 +148,18 @@ assert(model.ownership.pure_bpf_rate_owner === 'tc_lan_edge_map' &&
   'ECM+BPF must combine kernel-classified hardware and slow-path ownership');
 assert(model.ownership.overlapping_rate_owners_forbidden === true,
   'overlapping NSS/BPF rate ownership must be forbidden');
+assert(model.nss_hardware_verifier.client_rate_owner === false &&
+  model.nss_hardware_verifier.rate_mux_input === false &&
+  model.nss_hardware_verifier.scope ===
+    'ecm_bpf_upload_vs_aggregate_current_igs_nodes' &&
+  model.nss_hardware_verifier.generation_change === 'rebaseline_without_verdict' &&
+  nssHardwareVerifier.includes('formal_rate_owner') &&
+  nssHardwareVerifier.includes('hardware_generation_changed') &&
+  nssHardwareVerifier.includes('igs_sync_stalled') &&
+  nssRuntime.includes('hardware_verifier: HardwareVerifier') &&
+  production.includes('self.nss.observe_hardware_verifier(') &&
+  production.includes('"nss_hardware_verifier".into()'),
+  'kmod IGS counters must independently cross-check ECM-BPF without entering RateMux');
 assert(model.ownership.manual_fallback_forbidden === true,
   'manual rate schemes must fail closed instead of silently switching');
 assert(model.ownership.rate_and_coverage_windows ===

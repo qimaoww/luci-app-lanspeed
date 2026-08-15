@@ -1121,6 +1121,11 @@ impl ProductionRuntime {
             classifier_map_read_due,
         );
         let ecm_read_end_ms = production_now_ms().unwrap_or(ecm_read_begin_ms.max(now_ms));
+        self.nss.observe_hardware_verifier(
+            ecm_bpf_snapshot.as_ref(),
+            ecm_read_end_ms,
+            ecm_bpf_snapshot_fresh,
+        );
         let ecm_classifier_read_end_ms = if ecm_bpf_snapshot_fresh {
             Some(production_now_ms()?)
         } else {
@@ -1621,6 +1626,10 @@ impl ProductionRuntime {
                 conntrack_generation_evidence(snapshot),
             );
         }
+        status_evidence.details.insert(
+            "nss_hardware_verifier".into(),
+            self.nss.hardware_verifier_evidence(),
+        );
         if let Some(fast_s) = self.nss.fast_s_snapshot() {
             status_evidence.details.insert(
                 "fast_s_shadow".into(),

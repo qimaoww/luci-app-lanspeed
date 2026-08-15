@@ -8,6 +8,7 @@ use crate::{
         ecm_node::{self, NodeSnapshot},
         fast_rate_shadow::FastRateShadow,
         fast_s_runtime::{FastSRuntime, FastSSnapshot},
+        hardware_verifier::HardwareVerifier,
         window::{EcmBpfRateWindowBook, NssCoverageBook, NssWindowBook},
     },
     policy::RateCollector,
@@ -28,6 +29,7 @@ pub(crate) struct NssRuntime {
     pub(crate) ecm_bpf_rates: EcmBpfRateWindowBook,
     pub(crate) fast_s: FastSRuntime,
     pub(crate) fast_rate_shadow: FastRateShadow,
+    pub(crate) hardware_verifier: HardwareVerifier,
 }
 
 #[derive(Clone)]
@@ -41,6 +43,7 @@ pub(crate) struct NssRuntimeCheckpoint {
     node_error: Option<String>,
     fast_s: FastSRuntime,
     fast_rate_shadow: FastRateShadow,
+    hardware_verifier: HardwareVerifier,
 }
 
 impl Default for NssRuntime {
@@ -56,6 +59,7 @@ impl Default for NssRuntime {
             ecm_bpf_rates: EcmBpfRateWindowBook::default(),
             fast_s: FastSRuntime::default(),
             fast_rate_shadow: FastRateShadow::new(),
+            hardware_verifier: HardwareVerifier::default(),
         }
     }
 }
@@ -109,6 +113,7 @@ impl NssRuntime {
             node_error: self.node_error.clone(),
             fast_s: self.fast_s.clone(),
             fast_rate_shadow: self.fast_rate_shadow.clone(),
+            hardware_verifier: self.hardware_verifier.clone(),
         }
     }
 
@@ -126,6 +131,7 @@ impl NssRuntime {
         self.node_error = checkpoint.node_error;
         self.fast_s = checkpoint.fast_s;
         self.fast_rate_shadow = checkpoint.fast_rate_shadow;
+        self.hardware_verifier = checkpoint.hardware_verifier;
     }
 
     pub(crate) fn collect_fast_s(
@@ -264,6 +270,19 @@ impl NssRuntime {
             }
             None => None,
         }
+    }
+
+    pub(crate) fn observe_hardware_verifier(
+        &mut self,
+        nss: Option<&EcmBpfSnapshot>,
+        sample_ms: u64,
+        fresh: bool,
+    ) {
+        self.hardware_verifier.observe(nss, sample_ms, fresh);
+    }
+
+    pub(crate) fn hardware_verifier_evidence(&self) -> serde_json::Value {
+        self.hardware_verifier.evidence()
     }
 
     pub(crate) fn collect_ecm_bpf(

@@ -470,6 +470,17 @@
     "counter_reset": "rebaseline_only_affected_connection_generation",
     "client_wide_reset_forbidden": true
   },
+  "nss_hardware_verifier": {
+    "module": "rust/crates/lanspeedd/src/platform/nss/hardware_verifier.rs",
+    "client_rate_owner": false,
+    "rate_mux_input": false,
+    "scope": "ecm_bpf_upload_vs_aggregate_current_igs_nodes",
+    "window": "consecutive_fresh_generation_stable_samples",
+    "generation_change": "rebaseline_without_verdict",
+    "counter_reset": "rebaseline_without_verdict",
+    "sync_stall": "diagnostic_only",
+    "outcomes": ["idle", "aligned", "bpf_only", "igs_only", "divergent"]
+  },
   "diagnostics": {
     "public_client_api_exposes_internal_packets": false,
     "evidence_key": "nss_window",

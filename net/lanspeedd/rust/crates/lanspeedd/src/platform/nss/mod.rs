@@ -26,6 +26,8 @@ pub(crate) mod fast_s_timer;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod fusion;
 #[cfg(any(feature = "openwrt", test))]
+pub(crate) mod hardware_verifier;
+#[cfg(any(feature = "openwrt", test))]
 pub(crate) mod output;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod rate_mux;

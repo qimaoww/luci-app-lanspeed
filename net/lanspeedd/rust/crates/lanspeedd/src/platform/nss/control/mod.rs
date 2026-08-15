@@ -5,6 +5,7 @@ mod ecm_qos;
 mod firewall;
 mod genl;
 mod hardware_telemetry;
+pub(crate) use hardware_telemetry::HardwareTelemetrySample;
 mod legacy;
 mod qdisc;
 mod rollback;
@@ -170,6 +171,10 @@ pub(crate) fn cleanup(plan: &ControlPlan) -> Result<(), String> {
 
 pub(crate) fn hardware_telemetry() -> serde_json::Value {
     hardware_telemetry::read()
+}
+
+pub(crate) fn hardware_telemetry_sample() -> Option<hardware_telemetry::HardwareTelemetrySample> {
+    hardware_telemetry::sample()
 }
 
 pub(crate) fn startup_caps() -> Option<serde_json::Value> {
