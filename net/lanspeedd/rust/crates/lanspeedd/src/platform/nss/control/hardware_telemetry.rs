@@ -36,9 +36,20 @@ pub(super) fn read() -> Value {
     };
     let mut value = parse(&text).unwrap_or_else(|| json!({"state": "invalid"}));
     if value["state"] == "ready" {
-        if let Some(caps) = super::genl::read() {
+        if let Some(runtime) = super::genl::read_runtime() {
             if let Some(object) = value.as_object_mut() {
-                object.insert("genl_caps".into(), caps);
+                if let Some(caps) = runtime.get("caps") {
+                    object.insert("genl_caps".into(), caps.clone());
+                }
+                if let Some(state) = runtime.get("state") {
+                    object.insert("genl_state".into(), state.clone());
+                }
+                if let Some(stats) = runtime.get("stats") {
+                    object.insert("genl_stats".into(), stats.clone());
+                }
+                if let Some(health) = runtime.get("health") {
+                    object.insert("genl_health".into(), health.clone());
+                }
             }
         }
     }

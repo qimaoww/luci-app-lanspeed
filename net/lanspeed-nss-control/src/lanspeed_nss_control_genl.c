@@ -119,6 +119,8 @@ static int lanspeed_genl_put_snapshot(struct sk_buff *reply,
 			value->hardware_generation, LANSPEED_NSS_A_UNSPEC) ||
 	       nla_put_u64_64bit(reply, LANSPEED_NSS_A_PEER_GENERATION,
 			value->peer_generation, LANSPEED_NSS_A_UNSPEC) ||
+	       nla_put_u64_64bit(reply, LANSPEED_NSS_A_PEER_REASSERT_COUNT,
+			value->peer_reassert_count, LANSPEED_NSS_A_UNSPEC) ||
 	       nla_put_u64_64bit(reply, LANSPEED_NSS_A_IGS_SYNC_COUNT,
 			value->igs_sync_count, LANSPEED_NSS_A_UNSPEC) ||
 	       nla_put_u64_64bit(reply, LANSPEED_NSS_A_IGS_LAST_SYNC_NS,

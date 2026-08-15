@@ -76,6 +76,7 @@ pub mod nss_genl {
     pub const A_ACK_TIMEOUT: u16 = 23;
     pub const A_ACK_LATE: u16 = 24;
     pub const A_HEALTHY: u16 = 25;
+    pub const A_PEER_REASSERT_COUNT: u16 = 26;
 
     pub const FEATURE_IGS: u32 = 1 << 0;
     pub const FEATURE_WIFI_PEER: u32 = 1 << 1;

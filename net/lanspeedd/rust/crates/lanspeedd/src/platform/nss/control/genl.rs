@@ -41,9 +41,60 @@ struct Caps {
     supports_peer_query: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct State {
+    staged: u32,
+    published: u32,
+    degraded: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Stats {
+    control_generation: u64,
+    hardware_generation: u64,
+    peer_generation: u64,
+    peer_reassert_count: u64,
+    igs_sync_count: u64,
+    igs_last_sync_ns: u64,
+    igs_bytes: u64,
+    igs_packets: u64,
+    igs_drops: u64,
+    ack_latency_last_ns: u64,
+    ack_latency_max_ns: u64,
+    ack_received: u64,
+    ack_timeout: u64,
+    ack_late: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Health {
+    healthy: bool,
+    control_generation: u64,
+    hardware_generation: u64,
+}
+
 pub(super) fn read() -> Option<Value> {
+    let (socket, family_id) = open_family()?;
+    Some(caps_json(query_caps(&socket, family_id)?))
+}
+
+pub(super) fn read_runtime() -> Option<Value> {
+    let (socket, family_id) = open_family()?;
+    let caps = query_caps(&socket, family_id)?;
+    let state = query_state(&socket, family_id)?;
+    let stats = query_stats(&socket, family_id)?;
+    let health = query_health(&socket, family_id)?;
+    Some(json!({
+        "caps": caps_json(caps),
+        "state": state_json(state),
+        "stats": stats_json(stats),
+        "health": health_json(health),
+    }))
+}
+
+fn open_family() -> Option<(GenericNetlinkSocket, u16)> {
     let socket = GenericNetlinkSocket::open().ok()?;
-    let sequence = NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed).max(1);
+    let sequence = next_sequence();
     socket.send(&family_request(sequence).ok()?).ok()?;
     let family_id = loop {
         let packet = socket.receive().ok()?;
@@ -51,15 +102,61 @@ pub(super) fn read() -> Option<Value> {
             break id;
         }
     };
-    let sequence = NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed).max(1);
+    Some((socket, family_id))
+}
+
+fn query_caps(socket: &GenericNetlinkSocket, family_id: u16) -> Option<Caps> {
+    let sequence = next_sequence();
     socket.send(&caps_request(family_id, sequence)).ok()?;
-    let caps = loop {
+    loop {
         let packet = socket.receive().ok()?;
         if let Some(caps) = parse_caps_messages(&packet, sequence, family_id).ok()? {
-            break caps;
+            return Some(caps);
         }
-    };
-    Some(caps_json(caps))
+    }
+}
+
+fn query_state(socket: &GenericNetlinkSocket, family_id: u16) -> Option<State> {
+    let sequence = next_sequence();
+    socket
+        .send(&command_request(family_id, sequence, abi::CMD_GET_STATE))
+        .ok()?;
+    loop {
+        let packet = socket.receive().ok()?;
+        if let Some(state) = parse_state_messages(&packet, sequence, family_id).ok()? {
+            return Some(state);
+        }
+    }
+}
+
+fn query_stats(socket: &GenericNetlinkSocket, family_id: u16) -> Option<Stats> {
+    let sequence = next_sequence();
+    socket
+        .send(&command_request(family_id, sequence, abi::CMD_GET_STATS))
+        .ok()?;
+    loop {
+        let packet = socket.receive().ok()?;
+        if let Some(stats) = parse_stats_messages(&packet, sequence, family_id).ok()? {
+            return Some(stats);
+        }
+    }
+}
+
+fn query_health(socket: &GenericNetlinkSocket, family_id: u16) -> Option<Health> {
+    let sequence = next_sequence();
+    socket
+        .send(&command_request(family_id, sequence, abi::CMD_GET_HEALTH))
+        .ok()?;
+    loop {
+        let packet = socket.receive().ok()?;
+        if let Some(health) = parse_health_messages(&packet, sequence, family_id).ok()? {
+            return Some(health);
+        }
+    }
+}
+
+fn next_sequence() -> u32 {
+    NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed).max(1)
 }
 
 fn caps_json(caps: Caps) -> Value {
@@ -73,6 +170,44 @@ fn caps_json(caps: Caps) -> Value {
         "supports_wifi_peer": caps.supports_wifi_peer,
         "supports_igs_stats": caps.supports_igs_stats,
         "supports_peer_query": caps.supports_peer_query,
+    })
+}
+
+fn state_json(state: State) -> Value {
+    json!({
+        "state": "ready",
+        "staged": state.staged,
+        "published": state.published,
+        "degraded": state.degraded,
+    })
+}
+
+fn stats_json(stats: Stats) -> Value {
+    json!({
+        "state": "ready",
+        "control_generation": stats.control_generation,
+        "hardware_generation": stats.hardware_generation,
+        "peer_generation": stats.peer_generation,
+        "peer_reassert_count": stats.peer_reassert_count,
+        "igs_sync_count": stats.igs_sync_count,
+        "igs_last_sync_ns": stats.igs_last_sync_ns,
+        "igs_bytes": stats.igs_bytes,
+        "igs_packets": stats.igs_packets,
+        "igs_drops": stats.igs_drops,
+        "ack_latency_last_ns": stats.ack_latency_last_ns,
+        "ack_latency_max_ns": stats.ack_latency_max_ns,
+        "ack_received": stats.ack_received,
+        "ack_timeout": stats.ack_timeout,
+        "ack_late": stats.ack_late,
+    })
+}
+
+fn health_json(health: Health) -> Value {
+    json!({
+        "state": "ready",
+        "healthy": health.healthy,
+        "control_generation": health.control_generation,
+        "hardware_generation": health.hardware_generation,
     })
 }
 
@@ -90,6 +225,10 @@ fn family_request(sequence: u32) -> io::Result<Vec<u8>> {
 
 fn caps_request(family_id: u16, sequence: u32) -> Vec<u8> {
     generic_request(family_id, sequence, abi::CMD_GET_CAPS, abi::VERSION, &[])
+}
+
+fn command_request(family_id: u16, sequence: u32, command: u8) -> Vec<u8> {
+    generic_request(family_id, sequence, command, abi::VERSION, &[])
 }
 
 fn generic_request(
@@ -129,6 +268,9 @@ fn parse_family_id_messages(bytes: &[u8], sequence: u32) -> Result<Option<u16>, 
         if message.kind == NLMSG_ERROR {
             parse_error(message.payload)?;
         } else if message.kind == GENL_ID_CTRL {
+            if message.payload.len() < GENL_HEADER_LEN {
+                return Err("truncated generic netlink header");
+            }
             let attributes = &message.payload[GENL_HEADER_LEN..];
             let mut family_id = None;
             for_each_attribute(attributes, |kind, value| {
@@ -193,12 +335,142 @@ fn parse_caps_messages(
     Ok(None)
 }
 
+fn parse_state_messages(
+    bytes: &[u8],
+    sequence: u32,
+    family_id: u16,
+) -> Result<Option<State>, &'static str> {
+    let Some(attributes) = reply_attributes(bytes, sequence, family_id)? else {
+        return Ok(None);
+    };
+    let mut values = BTreeMap::new();
+    for_each_attribute(attributes, |kind, value| {
+        if matches!(
+            kind,
+            abi::A_IGS_STAGED | abi::A_IGS_PUBLISHED | abi::A_IGS_DEGRADED
+        ) {
+            values.insert(kind, read_u32(value).ok_or("short u32")?);
+        }
+        Ok(())
+    })?;
+    Ok(Some(State {
+        staged: required_u32_value(&values, abi::A_IGS_STAGED)?,
+        published: required_u32_value(&values, abi::A_IGS_PUBLISHED)?,
+        degraded: required_u32_value(&values, abi::A_IGS_DEGRADED)?,
+    }))
+}
+
+fn parse_stats_messages(
+    bytes: &[u8],
+    sequence: u32,
+    family_id: u16,
+) -> Result<Option<Stats>, &'static str> {
+    let Some(attributes) = reply_attributes(bytes, sequence, family_id)? else {
+        return Ok(None);
+    };
+    let mut values = BTreeMap::new();
+    for_each_attribute(attributes, |kind, value| {
+        if matches!(
+            kind,
+            abi::A_CONTROL_GENERATION
+                | abi::A_HARDWARE_GENERATION
+                | abi::A_PEER_GENERATION
+                | abi::A_PEER_REASSERT_COUNT
+                | abi::A_IGS_SYNC_COUNT
+                | abi::A_IGS_LAST_SYNC_NS
+                | abi::A_IGS_BYTES
+                | abi::A_IGS_PACKETS
+                | abi::A_IGS_DROPS
+                | abi::A_ACK_LATENCY_LAST_NS
+                | abi::A_ACK_LATENCY_MAX_NS
+                | abi::A_ACK_RECEIVED
+                | abi::A_ACK_TIMEOUT
+                | abi::A_ACK_LATE
+        ) {
+            values.insert(kind, read_u64(value).ok_or("short u64")?);
+        }
+        Ok(())
+    })?;
+    Ok(Some(Stats {
+        control_generation: required_u64(&values, abi::A_CONTROL_GENERATION)?,
+        hardware_generation: required_u64(&values, abi::A_HARDWARE_GENERATION)?,
+        peer_generation: required_u64(&values, abi::A_PEER_GENERATION)?,
+        peer_reassert_count: required_u64(&values, abi::A_PEER_REASSERT_COUNT)?,
+        igs_sync_count: required_u64(&values, abi::A_IGS_SYNC_COUNT)?,
+        igs_last_sync_ns: required_u64(&values, abi::A_IGS_LAST_SYNC_NS)?,
+        igs_bytes: required_u64(&values, abi::A_IGS_BYTES)?,
+        igs_packets: required_u64(&values, abi::A_IGS_PACKETS)?,
+        igs_drops: required_u64(&values, abi::A_IGS_DROPS)?,
+        ack_latency_last_ns: required_u64(&values, abi::A_ACK_LATENCY_LAST_NS)?,
+        ack_latency_max_ns: required_u64(&values, abi::A_ACK_LATENCY_MAX_NS)?,
+        ack_received: required_u64(&values, abi::A_ACK_RECEIVED)?,
+        ack_timeout: required_u64(&values, abi::A_ACK_TIMEOUT)?,
+        ack_late: required_u64(&values, abi::A_ACK_LATE)?,
+    }))
+}
+
+fn parse_health_messages(
+    bytes: &[u8],
+    sequence: u32,
+    family_id: u16,
+) -> Result<Option<Health>, &'static str> {
+    let Some(attributes) = reply_attributes(bytes, sequence, family_id)? else {
+        return Ok(None);
+    };
+    let mut healthy = None;
+    let mut values = BTreeMap::new();
+    for_each_attribute(attributes, |kind, value| {
+        match kind {
+            abi::A_HEALTHY => healthy = Some(value.first().copied().ok_or("short u8")? != 0),
+            abi::A_CONTROL_GENERATION | abi::A_HARDWARE_GENERATION => {
+                values.insert(kind, read_u64(value).ok_or("short u64")?);
+            }
+            _ => {}
+        }
+        Ok(())
+    })?;
+    Ok(Some(Health {
+        healthy: healthy.ok_or("missing health attribute")?,
+        control_generation: required_u64(&values, abi::A_CONTROL_GENERATION)?,
+        hardware_generation: required_u64(&values, abi::A_HARDWARE_GENERATION)?,
+    }))
+}
+
+fn reply_attributes<'a>(
+    bytes: &'a [u8],
+    sequence: u32,
+    family_id: u16,
+) -> Result<Option<&'a [u8]>, &'static str> {
+    for message in messages(bytes, sequence)? {
+        if message.kind == NLMSG_ERROR {
+            parse_error(message.payload)?;
+            continue;
+        }
+        if message.kind == NLMSG_OVERRUN || message.kind != family_id {
+            continue;
+        }
+        if message.payload.len() < GENL_HEADER_LEN {
+            return Err("truncated generic netlink header");
+        }
+        return Ok(Some(&message.payload[GENL_HEADER_LEN..]));
+    }
+    Ok(None)
+}
+
 fn required_u32(values: &BTreeMap<u16, Value>, kind: u16) -> Result<u32, &'static str> {
     values
         .get(&kind)
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
         .ok_or("missing u32 attribute")
+}
+
+fn required_u32_value(values: &BTreeMap<u16, u32>, kind: u16) -> Result<u32, &'static str> {
+    values.get(&kind).copied().ok_or("missing u32 attribute")
+}
+
+fn required_u64(values: &BTreeMap<u16, u64>, kind: u16) -> Result<u64, &'static str> {
+    values.get(&kind).copied().ok_or("missing u64 attribute")
 }
 
 fn required_bool(values: &BTreeMap<u16, Value>, kind: u16) -> Result<bool, &'static str> {
@@ -289,6 +561,10 @@ fn read_u32(bytes: &[u8]) -> Option<u32> {
     Some(u32::from_ne_bytes(bytes.get(..4)?.try_into().ok()?))
 }
 
+fn read_u64(bytes: &[u8]) -> Option<u64> {
+    Some(u64::from_ne_bytes(bytes.get(..8)?.try_into().ok()?))
+}
+
 const fn align4(value: usize) -> usize {
     (value + 3) & !3
 }
@@ -322,8 +598,8 @@ impl GenericNetlinkSocket {
             return Err(io::Error::last_os_error());
         }
         let timeout = libc::timeval {
-            tv_sec: 1,
-            tv_usec: 0,
+            tv_sec: 0,
+            tv_usec: 250_000,
         };
         let result = unsafe {
             libc::setsockopt(
@@ -472,5 +748,81 @@ mod tests {
         assert!(request
             .windows(abi::FAMILY_NAME.len())
             .any(|window| window == abi::FAMILY_NAME.as_bytes()));
+    }
+
+    #[test]
+    fn parses_state_stats_and_health_replies() {
+        let mut state_payload = vec![abi::CMD_GET_STATE, abi::VERSION, 0, 0];
+        for (kind, value) in [
+            (abi::A_IGS_STAGED, 1u32),
+            (abi::A_IGS_PUBLISHED, 2u32),
+            (abi::A_IGS_DEGRADED, 3u32),
+        ] {
+            state_payload.extend_from_slice(&encode_attribute(kind, &value.to_ne_bytes()));
+        }
+        let state_packet = message(42, 7, &state_payload);
+        assert_eq!(
+            parse_state_messages(&state_packet, 7, 42).unwrap(),
+            Some(State {
+                staged: 1,
+                published: 2,
+                degraded: 3,
+            })
+        );
+
+        let stat_values: [(u16, u64); 14] = [
+            (abi::A_CONTROL_GENERATION, 10),
+            (abi::A_HARDWARE_GENERATION, 11),
+            (abi::A_PEER_GENERATION, 12),
+            (abi::A_PEER_REASSERT_COUNT, 13),
+            (abi::A_IGS_SYNC_COUNT, 14),
+            (abi::A_IGS_LAST_SYNC_NS, 15),
+            (abi::A_IGS_BYTES, 16),
+            (abi::A_IGS_PACKETS, 17),
+            (abi::A_IGS_DROPS, 18),
+            (abi::A_ACK_LATENCY_LAST_NS, 19),
+            (abi::A_ACK_LATENCY_MAX_NS, 20),
+            (abi::A_ACK_RECEIVED, 21),
+            (abi::A_ACK_TIMEOUT, 22),
+            (abi::A_ACK_LATE, 23),
+        ];
+        let mut stats_payload = vec![abi::CMD_GET_STATS, abi::VERSION, 0, 0];
+        for (kind, value) in stat_values {
+            stats_payload.extend_from_slice(&encode_attribute(kind, &value.to_ne_bytes()));
+        }
+        let stats_packet = message(42, 7, &stats_payload);
+        let stats = parse_stats_messages(&stats_packet, 7, 42).unwrap().unwrap();
+        assert_eq!(stats.control_generation, 10);
+        assert_eq!(stats.peer_reassert_count, 13);
+        assert_eq!(stats.ack_late, 23);
+
+        let mut health_payload = vec![abi::CMD_GET_HEALTH, abi::VERSION, 0, 0];
+        health_payload.extend_from_slice(&encode_attribute(abi::A_HEALTHY, &[1]));
+        health_payload.extend_from_slice(&encode_attribute(
+            abi::A_CONTROL_GENERATION,
+            &10u64.to_ne_bytes(),
+        ));
+        health_payload.extend_from_slice(&encode_attribute(
+            abi::A_HARDWARE_GENERATION,
+            &11u64.to_ne_bytes(),
+        ));
+        let health_packet = message(42, 7, &health_payload);
+        assert_eq!(
+            parse_health_messages(&health_packet, 7, 42).unwrap(),
+            Some(Health {
+                healthy: true,
+                control_generation: 10,
+                hardware_generation: 11,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_a_short_family_reply_without_panicking() {
+        let packet = message(GENL_ID_CTRL, 9, &[abi::CMD_GET_CAPS]);
+        assert_eq!(
+            parse_family_id_messages(&packet, 9),
+            Err("truncated generic netlink header")
+        );
     }
 }

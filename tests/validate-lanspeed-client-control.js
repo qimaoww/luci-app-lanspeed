@@ -356,8 +356,13 @@ async function main() {
     nssKmodSource.includes('LANSPEED_NSS_CMD_GET_STATE') &&
     nssKmodSource.includes('LANSPEED_NSS_CMD_GET_STATS') &&
     nssKmodSource.includes('LANSPEED_NSS_CMD_GET_HEALTH') &&
+    nssKmodSource.includes('LANSPEED_NSS_A_PEER_REASSERT_COUNT') &&
     nssControlByModule['genl.rs'].includes('pub(super) fn read') &&
     nssControlByModule['genl.rs'].includes('CMD_GET_CAPS') &&
+    nssControlByModule['genl.rs'].includes('pub(super) fn read_runtime') &&
+    nssControlByModule['genl.rs'].includes('parse_state_messages') &&
+    nssControlByModule['genl.rs'].includes('parse_stats_messages') &&
+    nssControlByModule['genl.rs'].includes('parse_health_messages') &&
     nssKmodSource.includes('NF_IP_PRI_CONNTRACK + 2') &&
 	    nssControlByModule['capability.rs'].includes('"act_mirred"') &&
 	    nssPublishEntry.indexOf('NSS_IF_SET_IGS_NODE') <

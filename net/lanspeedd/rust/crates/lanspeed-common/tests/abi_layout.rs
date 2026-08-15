@@ -120,6 +120,7 @@ fn nss_generic_netlink_abi_is_stable_and_complete() {
         [1, 2, 3, 4]
     );
     assert_eq!(abi::A_HEALTHY, 25);
+    assert_eq!(abi::A_PEER_REASSERT_COUNT, 26);
     assert_eq!(
         abi::FEATURE_IGS
             | abi::FEATURE_WIFI_PEER
