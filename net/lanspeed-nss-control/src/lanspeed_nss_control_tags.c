@@ -45,13 +45,19 @@ struct lanspeed_local_prefix {
 struct lanspeed_client_tag_table {
 	struct rcu_head rcu;
 	u16 count;
-	struct lanspeed_tag_address addresses[LANSPEED_MAX_TAG_ADDRESSES];
+	u16 v4_count;
+	u16 v6_count;
+	struct lanspeed_tag_address v4_addresses[LANSPEED_MAX_TAG_ADDRESSES];
+	struct lanspeed_tag_address v6_addresses[LANSPEED_MAX_TAG_ADDRESSES];
 };
 
 struct lanspeed_local_prefix_table {
 	struct rcu_head rcu;
 	u16 count;
-	struct lanspeed_local_prefix prefixes[LANSPEED_MAX_LOCAL_PREFIXES];
+	u16 v4_count;
+	u16 v6_count;
+	struct lanspeed_local_prefix v4_prefixes[LANSPEED_MAX_LOCAL_PREFIXES];
+	struct lanspeed_local_prefix v6_prefixes[LANSPEED_MAX_LOCAL_PREFIXES];
 };
 
 static struct lanspeed_client_tag_table lanspeed_empty_client_tags;
@@ -77,11 +83,10 @@ static bool lanspeed_local_v4(__be32 address,
 {
 	u16 index;
 
-	for (index = 0; index < table->count; index++) {
-		const struct lanspeed_local_prefix *prefix = &table->prefixes[index];
+	for (index = 0; index < table->v4_count; index++) {
+		const struct lanspeed_local_prefix *prefix = &table->v4_prefixes[index];
 
-		if (prefix->family == AF_INET &&
-		    lanspeed_v4_prefix_equal(address, prefix->address.v4,
+		if (lanspeed_v4_prefix_equal(address, prefix->address.v4,
 					     prefix->length))
 			return true;
 	}
@@ -93,11 +98,10 @@ static bool lanspeed_local_v6(const struct in6_addr *address,
 {
 	u16 index;
 
-	for (index = 0; index < table->count; index++) {
-		const struct lanspeed_local_prefix *prefix = &table->prefixes[index];
+	for (index = 0; index < table->v6_count; index++) {
+		const struct lanspeed_local_prefix *prefix = &table->v6_prefixes[index];
 
-		if (prefix->family == AF_INET6 &&
-		    ipv6_prefix_equal(address, &prefix->address.v6, prefix->length))
+		if (ipv6_prefix_equal(address, &prefix->address.v6, prefix->length))
 			return true;
 	}
 	return false;
@@ -106,29 +110,45 @@ static bool lanspeed_local_v6(const struct in6_addr *address,
 static u16 lanspeed_tag_v4(__be32 address,
 			   const struct lanspeed_client_tag_table *table)
 {
-	u16 index;
+	u16 first = 0;
+	u16 last = table->v4_count;
 
-	for (index = 0; index < table->count; index++) {
-		const struct lanspeed_tag_address *entry = &table->addresses[index];
+	while (first < last) {
+		u16 middle = first + (last - first) / 2;
+		const struct lanspeed_tag_address *entry =
+			&table->v4_addresses[middle];
 
-		if (entry->family == AF_INET && entry->address.v4 == address)
-			return entry->qos_tag;
+		if (ntohl(entry->address.v4) < ntohl(address))
+			first = middle + 1;
+		else
+			last = middle;
 	}
+	if (first < table->v4_count &&
+	    table->v4_addresses[first].address.v4 == address)
+		return table->v4_addresses[first].qos_tag;
 	return 0;
 }
 
 static u16 lanspeed_tag_v6(const struct in6_addr *address,
 			   const struct lanspeed_client_tag_table *table)
 {
-	u16 index;
+	u16 first = 0;
+	u16 last = table->v6_count;
 
-	for (index = 0; index < table->count; index++) {
-		const struct lanspeed_tag_address *entry = &table->addresses[index];
+	while (first < last) {
+		u16 middle = first + (last - first) / 2;
+		const struct lanspeed_tag_address *entry =
+			&table->v6_addresses[middle];
 
-		if (entry->family == AF_INET6 &&
-		    ipv6_addr_equal(&entry->address.v6, address))
-			return entry->qos_tag;
+		if (memcmp(entry->address.v6.s6_addr, address->s6_addr,
+			   sizeof(address->s6_addr)) < 0)
+			first = middle + 1;
+		else
+			last = middle;
 	}
+	if (first < table->v6_count &&
+	    ipv6_addr_equal(&table->v6_addresses[first].address.v6, address))
+		return table->v6_addresses[first].qos_tag;
 	return 0;
 }
 
@@ -254,44 +274,98 @@ static struct nf_hook_ops lanspeed_tag_hooks[] = {
 	},
 };
 
-static bool lanspeed_tag_address_duplicate(
-					    const struct lanspeed_client_tag_table *table,
-					    const struct lanspeed_tag_address *entry)
+static int lanspeed_tag_v4_insert(struct lanspeed_client_tag_table *table,
+					  const struct lanspeed_tag_address *entry)
 {
-	u16 index;
+	u16 first = 0;
+	u16 last = table->v4_count;
 
-	for (index = 0; index < table->count; index++) {
-		const struct lanspeed_tag_address *existing = &table->addresses[index];
-
-		if (existing->family != entry->family)
-			continue;
-		if (entry->family == AF_INET && existing->address.v4 == entry->address.v4)
-			return true;
-		if (entry->family == AF_INET6 &&
-		    ipv6_addr_equal(&existing->address.v6, &entry->address.v6))
-			return true;
+	while (first < last) {
+		u16 middle = first + (last - first) / 2;
+		if (ntohl(table->v4_addresses[middle].address.v4) <
+		    ntohl(entry->address.v4))
+			first = middle + 1;
+		else
+			last = middle;
 	}
-	return false;
+	if (first < table->v4_count &&
+	    table->v4_addresses[first].address.v4 == entry->address.v4)
+		return -EEXIST;
+	if (table->v4_count >= LANSPEED_MAX_TAG_ADDRESSES)
+		return -ENOSPC;
+	memmove(&table->v4_addresses[first + 1], &table->v4_addresses[first],
+		(table->v4_count - first) * sizeof(table->v4_addresses[0]));
+	table->v4_addresses[first] = *entry;
+	table->v4_count++;
+	table->count++;
+	return 0;
 }
 
-static bool lanspeed_prefix_duplicate(
-					       const struct lanspeed_local_prefix_table *table,
-					       const struct lanspeed_local_prefix *prefix)
+static int lanspeed_tag_v6_insert(struct lanspeed_client_tag_table *table,
+					  const struct lanspeed_tag_address *entry)
+{
+	u16 first = 0;
+	u16 last = table->v6_count;
+
+	while (first < last) {
+		u16 middle = first + (last - first) / 2;
+		if (memcmp(table->v6_addresses[middle].address.v6.s6_addr,
+			   entry->address.v6.s6_addr,
+			   sizeof(entry->address.v6.s6_addr)) < 0)
+			first = middle + 1;
+		else
+			last = middle;
+	}
+	if (first < table->v6_count &&
+	    ipv6_addr_equal(&table->v6_addresses[first].address.v6,
+				&entry->address.v6))
+		return -EEXIST;
+	if (table->v6_count >= LANSPEED_MAX_TAG_ADDRESSES)
+		return -ENOSPC;
+	memmove(&table->v6_addresses[first + 1], &table->v6_addresses[first],
+		(table->v6_count - first) * sizeof(table->v6_addresses[0]));
+	table->v6_addresses[first] = *entry;
+	table->v6_count++;
+	table->count++;
+	return 0;
+}
+
+static int lanspeed_prefix_v4_insert(struct lanspeed_local_prefix_table *table,
+					     const struct lanspeed_local_prefix *prefix)
 {
 	u16 index;
 
-	for (index = 0; index < table->count; index++) {
-		const struct lanspeed_local_prefix *existing = &table->prefixes[index];
+	for (index = 0; index < table->v4_count; index++) {
+		const struct lanspeed_local_prefix *existing = &table->v4_prefixes[index];
 
-		if (existing->family != prefix->family || existing->length != prefix->length)
-			continue;
-		if (prefix->family == AF_INET && existing->address.v4 == prefix->address.v4)
-			return true;
-		if (prefix->family == AF_INET6 &&
-		    ipv6_addr_equal(&existing->address.v6, &prefix->address.v6))
-			return true;
+		if (existing->length == prefix->length &&
+		    existing->address.v4 == prefix->address.v4)
+			return -EEXIST;
 	}
-	return false;
+	if (table->v4_count >= LANSPEED_MAX_LOCAL_PREFIXES)
+		return -ENOSPC;
+	table->v4_prefixes[table->v4_count++] = *prefix;
+	table->count++;
+	return 0;
+}
+
+static int lanspeed_prefix_v6_insert(struct lanspeed_local_prefix_table *table,
+					     const struct lanspeed_local_prefix *prefix)
+{
+	u16 index;
+
+	for (index = 0; index < table->v6_count; index++) {
+		const struct lanspeed_local_prefix *existing = &table->v6_prefixes[index];
+
+		if (existing->length == prefix->length &&
+		    ipv6_addr_equal(&existing->address.v6, &prefix->address.v6))
+			return -EEXIST;
+	}
+	if (table->v6_count >= LANSPEED_MAX_LOCAL_PREFIXES)
+		return -ENOSPC;
+	table->v6_prefixes[table->v6_count++] = *prefix;
+	table->count++;
+	return 0;
 }
 
 static int lanspeed_tag_record(struct lanspeed_client_tag_table *clients,
@@ -322,10 +396,9 @@ static int lanspeed_tag_record(struct lanspeed_client_tag_table *clients,
 		} else if (!in6_pton(value, -1, address.address.v6.s6_addr, -1, NULL)) {
 			return -EINVAL;
 		}
-		if (lanspeed_tag_address_duplicate(clients, &address))
-			return -EINVAL;
-		clients->addresses[clients->count++] = address;
-		return 0;
+		return address.family == AF_INET
+			? lanspeed_tag_v4_insert(clients, &address)
+			: lanspeed_tag_v6_insert(clients, &address);
 	}
 	if (strcmp(kind, "L4") && strcmp(kind, "L6"))
 		return -EINVAL;
@@ -343,10 +416,9 @@ static int lanspeed_tag_record(struct lanspeed_client_tag_table *clients,
 	} else if (!in6_pton(value, -1, prefix.address.v6.s6_addr, -1, NULL)) {
 		return -EINVAL;
 	}
-	if (lanspeed_prefix_duplicate(prefixes, &prefix))
-		return -EINVAL;
-	prefixes->prefixes[prefixes->count++] = prefix;
-	return 0;
+	return prefix.family == AF_INET
+		? lanspeed_prefix_v4_insert(prefixes, &prefix)
+		: lanspeed_prefix_v6_insert(prefixes, &prefix);
 }
 
 static void lanspeed_client_tag_table_free(struct rcu_head *rcu)
@@ -439,29 +511,33 @@ static int lanspeed_tag_config_get(char *buffer, const struct kernel_param *kp)
 	clients = rcu_dereference(lanspeed_client_tags);
 	prefixes = rcu_dereference(lanspeed_local_prefixes);
 	length += scnprintf(buffer + length, PAGE_SIZE - length, "v1");
-	for (index = 0; index < prefixes->count && length < PAGE_SIZE - 1; index++) {
-		const struct lanspeed_local_prefix *prefix = &prefixes->prefixes[index];
+	for (index = 0; index < prefixes->v4_count && length < PAGE_SIZE - 1; index++) {
+		const struct lanspeed_local_prefix *prefix = &prefixes->v4_prefixes[index];
 
-		if (prefix->family == AF_INET)
-			length += scnprintf(buffer + length, PAGE_SIZE - length,
-					    ";L4,%pI4,%u", &prefix->address.v4,
-					    prefix->length);
-		else
-			length += scnprintf(buffer + length, PAGE_SIZE - length,
-					    ";L6,%pI6c,%u", &prefix->address.v6,
-					    prefix->length);
+		length += scnprintf(buffer + length, PAGE_SIZE - length,
+				    ";L4,%pI4,%u", &prefix->address.v4,
+				    prefix->length);
 	}
-	for (index = 0; index < clients->count && length < PAGE_SIZE - 1; index++) {
-		const struct lanspeed_tag_address *address = &clients->addresses[index];
+	for (index = 0; index < prefixes->v6_count && length < PAGE_SIZE - 1; index++) {
+		const struct lanspeed_local_prefix *prefix = &prefixes->v6_prefixes[index];
 
-		if (address->family == AF_INET)
-			length += scnprintf(buffer + length, PAGE_SIZE - length,
-					    ";C4,%pI4,%u", &address->address.v4,
-					    address->qos_tag);
-		else
-			length += scnprintf(buffer + length, PAGE_SIZE - length,
-					    ";C6,%pI6c,%u", &address->address.v6,
-					    address->qos_tag);
+		length += scnprintf(buffer + length, PAGE_SIZE - length,
+				    ";L6,%pI6c,%u", &prefix->address.v6,
+				    prefix->length);
+	}
+	for (index = 0; index < clients->v4_count && length < PAGE_SIZE - 1; index++) {
+		const struct lanspeed_tag_address *address = &clients->v4_addresses[index];
+
+		length += scnprintf(buffer + length, PAGE_SIZE - length,
+				    ";C4,%pI4,%u", &address->address.v4,
+				    address->qos_tag);
+	}
+	for (index = 0; index < clients->v6_count && length < PAGE_SIZE - 1; index++) {
+		const struct lanspeed_tag_address *address = &clients->v6_addresses[index];
+
+		length += scnprintf(buffer + length, PAGE_SIZE - length,
+				    ";C6,%pI6c,%u", &address->address.v6,
+				    address->qos_tag);
 	}
 	length += scnprintf(buffer + length, PAGE_SIZE - length, "\n");
 	rcu_read_unlock();

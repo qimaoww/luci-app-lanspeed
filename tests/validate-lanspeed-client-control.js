@@ -366,6 +366,13 @@ async function main() {
     nssKmodSource.includes('LANSPEED_NSS_A_PEER_REASSERT_COUNT') &&
     nssKmodSource.includes('struct lanspeed_client_tag_table') &&
     nssKmodSource.includes('struct lanspeed_local_prefix_table') &&
+    nssKmodSource.includes('v4_addresses[LANSPEED_MAX_TAG_ADDRESSES]') &&
+    nssKmodSource.includes('v6_addresses[LANSPEED_MAX_TAG_ADDRESSES]') &&
+    nssKmodSource.includes('v4_prefixes[LANSPEED_MAX_LOCAL_PREFIXES]') &&
+    nssKmodSource.includes('v6_prefixes[LANSPEED_MAX_LOCAL_PREFIXES]') &&
+    nssKmodSource.includes('first + (last - first) / 2') &&
+    nssKmodSource.includes('memmove(&table->v4_addresses') &&
+    nssKmodSource.includes('memmove(&table->v6_addresses') &&
     nssKmodSource.includes('struct lanspeed_published_edge_set') &&
     nssKmodSource.includes('lanspeed_published_edges_cleanup') &&
     nssKmodSource.includes('rcu_dereference(lanspeed_client_tags)') &&
