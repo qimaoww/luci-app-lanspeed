@@ -11,7 +11,7 @@ EVIDENCE_DIR="$LANSPEED_TEST_OUTPUT_DIR"
 UNIT_EVIDENCE="$EVIDENCE_DIR/task-15-unit-fixtures.txt"
 LOG_DIR="$EVIDENCE_DIR/task-15-logs"
 RUN_ID=$(date -u '+%Y%m%dT%H%M%SZ')-$$
-IMMORTALWRT_ROOT=${IMMORTALWRT_ROOT:-/openwrt/immortalwrt}
+IMMORTALWRT_ROOT=${IMMORTALWRT_ROOT:-}
 rust_cargo=${RUST_CARGO:-}
 
 if [ -z "$rust_cargo" ]; then
@@ -141,14 +141,20 @@ resolve_bpf_linker() {
 		return 0
 	fi
 
-	candidate=$(find "$IMMORTALWRT_ROOT/build_dir" -type f \
-		-path '*/host-tools/bin/bpf-linker' -perm -u+x -print 2>/dev/null \
-		| sort | head -n 1)
-	if [ -n "$candidate" ]; then
-		printf '%s\n' "$candidate"
-		return 0
+	if [ -n "$IMMORTALWRT_ROOT" ]; then
+		candidate=$(find "$IMMORTALWRT_ROOT/build_dir" -type f \
+			-path '*/host-tools/bin/bpf-linker' -perm -u+x -print 2>/dev/null \
+			| sort | head -n 1)
+		if [ -n "$candidate" ]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
 	fi
 
+	if [ -z "$IMMORTALWRT_ROOT" ]; then
+		printf 'missing bpf-linker; set BPF_LINKER or IMMORTALWRT_ROOT\n' >&2
+		return 1
+	fi
 	archive="$IMMORTALWRT_ROOT/dl/bpf-linker-0.10.3-x86_64-unknown-linux-musl.tar.gz"
 	expected=0fa4645d2dfbb5cafe6231b0aa9fad4f1430bd0871e3bd7319e82d827bf6262c
 	if [ ! -f "$archive" ]; then
@@ -223,7 +229,8 @@ run_unit() {
 		--workspace --exclude lanspeed-ebpf --exclude lanspeed-openwrt-sys \
 		--features lanspeedd/openwrt \
 		--locked --offline -- --test-threads=1 || return $?
-	if [ -x "$IMMORTALWRT_ROOT/staging_dir/target-x86_64_musl/host/bin/cargo" ]; then
+	if [ -n "$IMMORTALWRT_ROOT" ] &&
+		[ -x "$IMMORTALWRT_ROOT/staging_dir/target-x86_64_musl/host/bin/cargo" ]; then
 		run_logged "rust-openwrt-compile" sh \
 			"$SCRIPT_DIR/validate-lanspeed-openwrt-compile.sh" \
 			"$IMMORTALWRT_ROOT" || return $?

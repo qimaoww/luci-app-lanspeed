@@ -22,8 +22,8 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 本地 checkout：
 
 ```sh
-SDK_DIR=/openwrt/immortalwrt ENABLE_BPF=1 DRY_RUN=1 scripts/build-sdk.sh
-SDK_DIR=/openwrt/immortalwrt ENABLE_BPF=1 scripts/build-sdk.sh
+SDK_DIR=/path/to/immortalwrt-sdk ENABLE_BPF=1 DRY_RUN=1 scripts/build-sdk.sh
+SDK_DIR=/path/to/immortalwrt-sdk ENABLE_BPF=1 scripts/build-sdk.sh
 ```
 
 `DRY_RUN` 只显示步骤；正式产物必须由目标 SDK 重建并在实机验证。

@@ -253,14 +253,17 @@ try {
   const fullVersion = `${daemonVersion}-r${daemonRelease}`;
   const workspaceVersion = cargoToml.match(/^version = "([^"]+)"$/m);
   const buildVersion = buildCargoToml.match(/^version = "([^"]+)"$/m);
-  const immortalwrtRoot = process.env.IMMORTALWRT_ROOT || '/openwrt/immortalwrt';
-  const sdkCargo = path.join(immortalwrtRoot, 'staging_dir/target-x86_64_musl/host/bin/cargo');
+  const sdkRoot = process.env.IMMORTALWRT_ROOT || process.env.SDK_DIR;
+  const sdkCargo = sdkRoot ?
+    path.join(sdkRoot, 'staging_dir/target-x86_64_musl/host/bin/cargo') : null;
   let sdkCargoExecutable = false;
-  try {
-    fs.accessSync(sdkCargo, fs.constants.X_OK);
-    sdkCargoExecutable = true;
-  } catch (_error) {
-    // Fall back to cargo on PATH when the SDK cargo is absent or not executable.
+  if (sdkCargo) {
+    try {
+      fs.accessSync(sdkCargo, fs.constants.X_OK);
+      sdkCargoExecutable = true;
+    } catch (_error) {
+      // Fall back to cargo on PATH when the SDK cargo is absent or not executable.
+    }
   }
   const cargo = process.env.RUST_CARGO || (sdkCargoExecutable ? sdkCargo : 'cargo');
   const metadata = JSON.parse(childProcess.execFileSync(cargo, [

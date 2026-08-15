@@ -163,7 +163,7 @@ for phrase in \
 	'package/luci-app-lanspeed/compile' \
 	'强制依赖 `lanspeedd-bpf`' \
 	"scripts/build-sdk.sh" \
-	"SDK_DIR=/openwrt/immortalwrt" \
+	"SDK_DIR=/path/to/immortalwrt-sdk" \
 	"ENABLE_BPF=1" \
 	"DRY_RUN=1" \
 	"## 支持范围" \

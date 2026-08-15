@@ -223,7 +223,7 @@ daemon_config="$daemon_root/etc/config/lanspeed"
 [[ -s $daemon_config ]] || fail "daemon APK does not contain etc/config/lanspeed"
 x86_migration="$daemon_root/etc/uci-defaults/95-lanspeed-x86-profile"
 
-if grep -aEq '/openwrt/(immortalwrt|libwrt)|/root/|/home/[[:alnum:]_.-]+/' \
+if grep -aEq '/(openwrt|root|home)/' \
 	"$daemon" "$bpf_root"/usr/lib/bpf/*.o; then
 	fail 'runtime artifacts contain a private build path or host account name'
 fi

@@ -3,7 +3,11 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
-SDK_ROOT=${1:-${IMMORTALWRT_ROOT:-/openwrt/immortalwrt}}
+SDK_ROOT=${1:-${IMMORTALWRT_ROOT:-}}
+if [ -z "$SDK_ROOT" ]; then
+	printf 'set IMMORTALWRT_ROOT or pass the SDK root as the first argument\n' >&2
+	exit 1
+fi
 TARGET_ROOT="$SDK_ROOT/staging_dir/target-x86_64_musl"
 CARGO="$TARGET_ROOT/host/bin/cargo"
 RUSTC="$TARGET_ROOT/host/bin/rustc"

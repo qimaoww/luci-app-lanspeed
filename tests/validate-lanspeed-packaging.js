@@ -222,9 +222,12 @@ function validateBuiltLuciApk() {
   }
 
   assert(fs.existsSync(apkPath), `LANSPEED_LUCI_APK does not exist: ${apkPath}`);
-  const immortalwrtRoot = process.env.IMMORTALWRT_ROOT || '/openwrt/immortalwrt';
+  const sdkRoot = process.env.IMMORTALWRT_ROOT || process.env.SDK_DIR;
   const apkTool = process.env.LANSPEED_APK_TOOL ||
-    path.join(immortalwrtRoot, 'staging_dir/host/bin/apk');
+    (sdkRoot ? path.join(sdkRoot, 'staging_dir/host/bin/apk') : null);
+  if (!apkTool) {
+    throw new Error('APK content validation requires LANSPEED_APK_TOOL or IMMORTALWRT_ROOT');
+  }
   try {
     fs.accessSync(apkTool, fs.constants.X_OK);
   } catch (_error) {
