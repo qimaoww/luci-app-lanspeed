@@ -1,8 +1,9 @@
-//! Read-only LANSPEED_NSS generic-netlink ABI.
+//! Versioned LANSPEED_NSS generic-netlink ABI for read and control paths.
 //!
 //! Module parameters remain available during the compatibility window, while
-//! capability discovery uses the versioned family instead of duplicating NSS
-//! limits or inferring feature support from filenames.
+//! the daemon prefers the versioned family for capability discovery and owned
+//! control operations instead of duplicating NSS limits or inferring feature
+//! support from filenames.
 
 use std::{
     collections::BTreeMap,
