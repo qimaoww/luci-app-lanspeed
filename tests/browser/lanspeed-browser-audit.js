@@ -1091,8 +1091,16 @@ async page => {
 			await hoverTarget.hover();
 			await page.waitForTimeout(180);
 			const after = await computedStyle(hoverTarget);
-			evidence.interactions.hover = { before: before, after: after };
-			addCheck('hover-state', styleChanged(before, after), evidence.interactions.hover);
+			const hovered = await hoverTarget.evaluate(element => element.matches(':hover'));
+			evidence.interactions.hover = {
+				before: before,
+				after: after,
+				hovered: hovered,
+				styleChanged: styleChanged(before, after)
+			};
+			/* Aurora deliberately keeps action/remove button colors stable on hover;
+			 * the pointer state itself is the contract for those controls. */
+			addCheck('hover-state', hovered, evidence.interactions.hover);
 		} else {
 			addCheck('hover-state', false, 'No enabled visible button');
 		}
@@ -1427,6 +1435,30 @@ async page => {
 		}
 
 			if (config.pageName === 'diagnostics') {
+				const diagnosticsPlatform = await root.evaluate(node => {
+					const state = node.__lanspeedDiagnosticsState || {};
+					const status = state.status || {};
+					const evidence = status.evidence || {};
+					const platform = evidence.platform || {};
+					const profile = platform.profile === undefined || platform.profile === null
+						? '' : String(platform.profile);
+					const nssPlatform = profile ? profile === 'nss_aarch64' :
+						String(platform.target_arch || '') === 'aarch64' &&
+						platform.nss_compiled !== false &&
+						(!status.capabilities || status.capabilities.nss !== false);
+					return {
+						profile: profile,
+						targetArch: platform.target_arch || '',
+						nssCompiled: platform.nss_compiled,
+						nssPlatform: nssPlatform
+					};
+				});
+				const nssPlatform = diagnosticsPlatform.nssPlatform === true;
+				evidence.observations.platform = diagnosticsPlatform;
+				const reportFields = [ 'LAN Speed', 'RPC 检查', '客户端总速率' ]
+					.concat(nssPlatform ? [ '精准接入点', 'NSS/CPU 流量分类' ] : [])
+					.concat([ '降级与能力边界', '数据新鲜度', '连接健康', '版本一致性',
+						'接口健康', '隐私说明' ]);
 				const refresh = root.locator('.lanspeed-diagnostics-refresh:visible').first();
 				addCheck('diagnostics-refresh-control', await refresh.count() === 1, null);
 				if (await refresh.count()) {
@@ -1497,13 +1529,10 @@ async page => {
 					const feedbackNode = root.locator('.lanspeed-diagnostics-report-feedback').first();
 					const feedback = (await feedbackNode.innerText()).trim();
 					const feedbackState = await feedbackNode.getAttribute('data-state');
-					const reportEvidence = await page.evaluate(() => {
+					const reportEvidence = await page.evaluate(requiredFields => {
 						const marker = '__lanspeedBrowserAuditClipboard';
 						const state = window[marker] || {};
 						const text = String(state.text || '');
-						const requiredFields = [ 'LAN Speed', 'RPC 检查', '客户端总速率', '精准接入点',
-							'NSS/CPU 流量分类', '降级与能力边界', '数据新鲜度', '连接健康',
-							'版本一致性', '接口健康', '隐私说明' ];
 						const sensitivePatterns = [];
 						if (/\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b/i.test(text) ||
 							/\b(?:[0-9a-f]{4}\.){2}[0-9a-f]{4}\b/i.test(text))
@@ -1531,7 +1560,7 @@ async page => {
 							missingFields: requiredFields.filter(field => text.indexOf(field) === -1),
 							sensitivePatterns: sensitivePatterns
 						};
-					});
+					}, reportFields);
 					evidence.interactions.copy = Object.assign({
 						feedback: feedback, feedbackState: feedbackState
 					}, captureSetup, reportEvidence);
@@ -1609,10 +1638,11 @@ async page => {
 					};
 				});
 				evidence.observations.status = diagnosticsContract;
-				const expectedSections = [
-					'lanspeed-diagnostics-summary-section', 'lanspeed-diagnostics-pipeline-section',
-					'lanspeed-diagnostics-health-section', 'lanspeed-diagnostics-support-section'
-				];
+				const expectedSections = [ 'lanspeed-diagnostics-summary-section' ]
+					.concat(nssPlatform ? [ 'lanspeed-diagnostics-pipeline-section',
+						'lanspeed-diagnostics-control-section' ] : [])
+					.concat([ 'lanspeed-diagnostics-health-section',
+						'lanspeed-diagnostics-support-section' ]);
 				const allowedItemState = /^(good|warning|bad|neutral)$/;
 				const allowedRowState = /^(good|warning|bad|empty|neutral)$/;
 				const allowedErrorState = /^(stale|degraded|error|invalid)$/;
@@ -1632,7 +1662,8 @@ async page => {
 					disabledNoCollect.indexOf(row) !== -1 ? row.state !== 'bad' : row.state !== 'neutral');
 				const unknownSubsystemCodes = diagnosticsContract.subsystemRows.filter(row =>
 					row.cells[2] && row.cells[2].indexOf('未识别的诊断代码') !== -1);
-				addCheck('diagnostics-four-section-shell', diagnosticsContract.sections.length === 4 &&
+				addCheck('diagnostics-platform-section-shell', diagnosticsContract.sections.length ===
+					expectedSections.length &&
 					expectedSections.every(className => diagnosticsContract.sections.some(section =>
 						section.classes.indexOf(className) !== -1 && section.heading.trim())) &&
 					diagnosticsContract.nestedSections === 0 && diagnosticsContract.legacyPanels === 0,
@@ -1642,8 +1673,11 @@ async page => {
 					diagnosticsContract.checked.trim() && diagnosticsContract.facts.length === 4 &&
 					diagnosticsContract.facts.every(item => allowedItemState.test(item.state) &&
 						item.label.trim() && item.value.trim()), diagnosticsContract);
-				const expectedStageHeadings = [ '总速率', '接入归属', 'NSS / CPU 分类' ];
-				addCheck('diagnostics-pipeline-contract', diagnosticsContract.stages.length === 3 &&
+				const expectedStageHeadings = nssPlatform ? [ '总速率', '接入归属',
+					'NSS / CPU 分类', '控制能力', '混合路径证明', '聚合整形队列',
+					'互联网禁用' ] : [];
+				addCheck('diagnostics-platform-pipeline-contract', diagnosticsContract.stages.length ===
+					expectedStageHeadings.length &&
 					expectedStageHeadings.every(heading => diagnosticsContract.stages.some(item =>
 						item.heading.trim() === heading)) &&
 					diagnosticsContract.stages.every(item => allowedItemState.test(item.state) &&
@@ -1672,12 +1706,16 @@ async page => {
 						disabledNss: disabledNss,
 						unknown: unknownSubsystemCodes
 					});
+				const expectedReportFieldCount = nssPlatform ? 11 : 9;
+				const expectedReportFields = nssPlatform ? diagnosticsContract.reportFields :
+					diagnosticsContract.reportFields.filter(item => [ '精准接入点',
+					'NSS/CPU 流量分类' ].indexOf(item.field) === -1);
 				addCheck('diagnostics-alert-report-contract', diagnosticsContract.importantAlerts.length > 0 &&
 					diagnosticsContract.environmentAlerts.length > 0 &&
 					diagnosticsContract.importantAlerts.concat(diagnosticsContract.environmentAlerts).every(item =>
 						/^(critical|warning|info)$/.test(item.severity) && item.text) &&
-					diagnosticsContract.reportLength >= 100 && diagnosticsContract.reportFields.length === 11 &&
-					diagnosticsContract.reportFields.every(item => item.found), diagnosticsContract);
+					diagnosticsContract.reportLength >= 100 && expectedReportFields.length === expectedReportFieldCount &&
+					expectedReportFields.every(item => item.found), diagnosticsContract);
 				if (!config.allowBadState)
 					addCheck('diagnostics-no-hard-failure', diagnosticsContract.pageState !== 'error' &&
 						rpcFailures === 0, diagnosticsContract);
@@ -1782,13 +1820,16 @@ async page => {
 						addCheck('config-no-hard-failure', false, configContract);
 				} else {
 					const requiredSubsections = [ 'lanspeed-config-runtime-section', 'lanspeed-ifcfg' ];
+					const nssPlatform = configContract.fieldNames.indexOf('access_edge_mode') !== -1;
 					const requiredFields = [
-						'rate_collector_mode', 'access_edge_mode', 'conn_collector_mode',
+						'rate_collector_mode'
+					].concat(nssPlatform ? [ 'access_edge_mode' ] : []).concat([
+						'conn_collector_mode',
 						'enable_bpf', 'enable_conntrack_fallback', 'refresh_interval_ms',
 						'overview_window_samples', 'max_clients', 'active_client_window_ms',
 						'active_client_min_bps', 'show_client_status', 'show_ipv6',
 						'hide_private_ipv6', 'hide_ipv6_ranges'
-					];
+					]);
 					const uniqueFields = Array.from(new Set(configContract.fieldNames));
 					const invalidGroups = configContract.groups.filter(group => {
 						const modes = group.buttons.map(button => button.mode).sort().join(',');
