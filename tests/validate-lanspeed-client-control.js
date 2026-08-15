@@ -364,6 +364,10 @@ async function main() {
     nssKmodSource.includes('LANSPEED_NSS_CMD_TAG_REPLACE') &&
     nssKmodSource.includes('LANSPEED_NSS_CMD_TRUSTED_INGRESS_REPLACE') &&
     nssKmodSource.includes('LANSPEED_NSS_A_PEER_REASSERT_COUNT') &&
+    nssKmodSource.includes('struct lanspeed_client_tag_table') &&
+    nssKmodSource.includes('struct lanspeed_local_prefix_table') &&
+    nssKmodSource.includes('rcu_dereference(lanspeed_client_tags)') &&
+    nssKmodSource.includes('rcu_dereference(lanspeed_local_prefixes)') &&
     nssControlByModule['genl.rs'].includes('pub(super) fn read') &&
     nssControlByModule['genl.rs'].includes('CMD_GET_CAPS') &&
     nssControlByModule['genl.rs'].includes('pub(super) fn read_runtime') &&
