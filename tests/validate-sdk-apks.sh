@@ -202,12 +202,18 @@ extract_package BPF "$bpf_apk" "$bpf_root"
 extract_package LuCI "$luci_apk" "$luci_root"
 
 control_asset="$luci_root/www/luci-static/resources/lanspeed/clientControl.js"
+shared_control_reasons_asset="$luci_root/www/luci-static/resources/lanspeed/clientControlReasonsShared.js"
+nss_control_reasons_asset="$luci_root/www/luci-static/resources/lanspeed/clientControlReasonsNss.js"
 acl_asset="$luci_root/usr/share/rpcd/acl.d/luci-app-lanspeed.json"
 [[ -s $control_asset ]] || fail 'LuCI APK does not contain the realtime client control module'
-grep -q 'direction_verification_pending' "$control_asset" || \
-	fail 'LuCI APK client control module is stale'
-grep -q 'nss_path_identity_pending' "$control_asset" || \
-	fail 'LuCI APK client control module lacks NSS path verification state'
+[[ -s $shared_control_reasons_asset ]] || \
+	fail 'LuCI APK does not contain the shared client control reason module'
+[[ -s $nss_control_reasons_asset ]] || \
+	fail 'LuCI APK does not contain the NSS client control reason module'
+grep -q 'direction_verification_pending' "$shared_control_reasons_asset" || \
+	fail 'LuCI APK shared client control reason module is stale'
+grep -q 'nss_path_identity_pending' "$nss_control_reasons_asset" || \
+	fail 'LuCI APK NSS client control reason module lacks path verification state'
 grep -q 'control live clients' "$acl_asset" || \
 	fail 'LuCI APK ACL does not grant the current client control contract'
 

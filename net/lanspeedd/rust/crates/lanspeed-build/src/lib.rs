@@ -237,7 +237,27 @@ fn apply_path_remapping(command: &mut Command, workspace: &PathBuf, required_fla
         flags.push(' ');
     }
     flags.push_str(&remap);
+    if let Some(sysroot) = rustc_sysroot() {
+        flags.push(' ');
+        flags.push_str(&format!(
+            "--remap-path-prefix={}=/rust-toolchain",
+            sysroot.to_string_lossy()
+        ));
+    }
     command.env("RUSTFLAGS", flags);
+}
+
+fn rustc_sysroot() -> Option<PathBuf> {
+    let rustc = env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc"));
+    let output = Command::new(rustc)
+        .args(["--print", "sysroot"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sysroot = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
+    sysroot.is_absolute().then_some(sysroot)
 }
 
 fn detect_rustc() -> Result<String, BuildError> {
