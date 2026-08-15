@@ -70,7 +70,8 @@ static int lanspeed_genl_get_caps(struct sk_buff *skb, struct genl_info *info)
 			LANSPEED_NSS_FEATURE_IGS_STATS |
 			LANSPEED_NSS_FEATURE_PEER_QUERY |
 			LANSPEED_NSS_FEATURE_RCU_TAGS |
-			LANSPEED_NSS_FEATURE_TRUSTED_INGRESS) ||
+			LANSPEED_NSS_FEATURE_TRUSTED_INGRESS |
+			LANSPEED_NSS_FEATURE_IGS_CADENCE) ||
 	    nla_put_u32(reply, LANSPEED_NSS_A_MAX_IGS, LANSPEED_MAX_IGS) ||
 	    nla_put_u32(reply, LANSPEED_NSS_A_MAX_PEERS,
 			LANSPEED_MAX_WIFI_PEERS) ||
@@ -145,6 +146,16 @@ static int lanspeed_genl_put_snapshot(struct sk_buff *reply,
 			value->igs_packets, LANSPEED_NSS_A_UNSPEC) ||
 	       nla_put_u64_64bit(reply, LANSPEED_NSS_A_IGS_DROPS,
 			value->igs_drops, LANSPEED_NSS_A_UNSPEC) ||
+	       nla_put_u64_64bit(reply, LANSPEED_NSS_A_IGS_CADENCE_SAMPLES,
+			value->igs_cadence_samples, LANSPEED_NSS_A_UNSPEC) ||
+	       nla_put_u64_64bit(reply, LANSPEED_NSS_A_IGS_CADENCE_LAST_NS,
+			value->igs_cadence_last_ns, LANSPEED_NSS_A_UNSPEC) ||
+	       nla_put_u64_64bit(reply, LANSPEED_NSS_A_IGS_CADENCE_MIN_NS,
+			value->igs_cadence_min_ns, LANSPEED_NSS_A_UNSPEC) ||
+	       nla_put_u64_64bit(reply, LANSPEED_NSS_A_IGS_CADENCE_MAX_NS,
+			value->igs_cadence_max_ns, LANSPEED_NSS_A_UNSPEC) ||
+	       nla_put_u32(reply, LANSPEED_NSS_A_IGS_ACTIVE_NODES,
+			   value->igs_active_nodes) ||
 	       nla_put_u64_64bit(reply, LANSPEED_NSS_A_ACK_LATENCY_LAST_NS,
 			value->ack_latency_last_ns, LANSPEED_NSS_A_UNSPEC) ||
 	       nla_put_u64_64bit(reply, LANSPEED_NSS_A_ACK_LATENCY_MAX_NS,

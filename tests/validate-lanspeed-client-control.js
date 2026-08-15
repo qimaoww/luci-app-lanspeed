@@ -53,6 +53,8 @@ const nssCpuPath = Object.values(nssCpuPathByModule).join('\n');
 const nssCpuPathProduction = Object.values(nssCpuPathByModule)
   .map((value) => value.split('#[cfg(test)]')[0]).join('\n');
 const nssControlSourceRoot = path.join(root, 'net/lanspeed-nss-control/src');
+const nssKmodHeader = fs.readFileSync(path.join(nssControlSourceRoot,
+  'lanspeed_nss_control.h'), 'utf8');
 const nssKmodSource = [
   'lanspeed_nss_control_core.c',
   'lanspeed_nss_control_ack.c',
@@ -364,6 +366,15 @@ async function main() {
     nssKmodSource.includes('LANSPEED_NSS_CMD_TAG_REPLACE') &&
     nssKmodSource.includes('LANSPEED_NSS_CMD_TRUSTED_INGRESS_REPLACE') &&
     nssKmodSource.includes('LANSPEED_NSS_A_PEER_REASSERT_COUNT') &&
+    nssKmodHeader.includes('LANSPEED_NSS_FEATURE_IGS_CADENCE') &&
+    nssKmodHeader.includes('LANSPEED_NSS_A_IGS_CADENCE_SAMPLES') &&
+    nssKmodHeader.includes('atomic64_t stats_last_sync_ns') &&
+    nssKmodSource.includes('list_add_tail_rcu(&entry->list') &&
+    nssKmodSource.includes('list_for_each_entry_rcu(entry, &lanspeed_igs_entries') &&
+    nssKmodSource.includes('lanspeed_igs_cadence_min_ns') &&
+    nssKmodSource.includes('module_param_cb(telemetry_cadence') &&
+    nssControlByModule['hardware_telemetry.rs'].includes('parse_cadence') &&
+    nssControlByModule['genl.rs'].includes('A_IGS_CADENCE_LAST_NS') &&
     nssKmodSource.includes('struct lanspeed_client_tag_table') &&
     nssKmodSource.includes('struct lanspeed_local_prefix_table') &&
     nssKmodSource.includes('v4_addresses[LANSPEED_MAX_TAG_ADDRESSES]') &&

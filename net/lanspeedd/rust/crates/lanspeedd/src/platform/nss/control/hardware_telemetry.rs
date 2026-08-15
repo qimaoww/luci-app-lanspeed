@@ -5,6 +5,7 @@ use std::fs;
 use serde_json::{json, Map, Value};
 
 const TELEMETRY_PATH: &str = "/sys/module/lanspeed_nss_control/parameters/telemetry";
+const CADENCE_PATH: &str = "/sys/module/lanspeed_nss_control/parameters/telemetry_cadence";
 const MAX_TELEMETRY_BYTES: u64 = 4096;
 
 const FIELDS: &[&str] = &[
@@ -36,6 +37,9 @@ pub(super) fn read() -> Value {
     };
     let mut value = parse(&text).unwrap_or_else(|| json!({"state": "invalid"}));
     if value["state"] == "ready" {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("igs_cadence".into(), read_cadence());
+        }
         if let Some(runtime) = super::genl::read_runtime() {
             if let Some(object) = value.as_object_mut() {
                 if let Some(caps) = runtime.get("caps") {
@@ -54,6 +58,19 @@ pub(super) fn read() -> Value {
         }
     }
     value
+}
+
+fn read_cadence() -> Value {
+    let Ok(metadata) = fs::metadata(CADENCE_PATH) else {
+        return json!({"state": "unavailable"});
+    };
+    if metadata.len() > MAX_TELEMETRY_BYTES {
+        return json!({"state": "invalid"});
+    }
+    let Ok(text) = fs::read_to_string(CADENCE_PATH) else {
+        return json!({"state": "unavailable"});
+    };
+    parse_cadence(&text).unwrap_or_else(|| json!({"state": "invalid"}))
 }
 
 fn parse(text: &str) -> Option<Value> {
@@ -78,9 +95,37 @@ fn parse(text: &str) -> Option<Value> {
     })
 }
 
+fn parse_cadence(text: &str) -> Option<Value> {
+    const CADENCE_FIELDS: &[&str] = &[
+        "samples",
+        "last_interval_ns",
+        "min_interval_ns",
+        "max_interval_ns",
+        "active_nodes",
+    ];
+    let mut fields = text.split_ascii_whitespace();
+    if fields.next()? != "v1" {
+        return None;
+    }
+    let mut values = Map::new();
+    for field in fields {
+        let (key, value) = field.split_once('=')?;
+        if !CADENCE_FIELDS.contains(&key) || values.contains_key(key) {
+            return None;
+        }
+        values.insert(key.to_owned(), Value::from(value.parse::<u64>().ok()?));
+    }
+    (values.len() == CADENCE_FIELDS.len()).then(|| {
+        let mut result = Map::new();
+        result.insert("state".into(), Value::from("ready"));
+        result.extend(values);
+        Value::Object(result)
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse;
+    use super::{parse, parse_cadence};
 
     #[test]
     fn parses_the_fixed_v1_telemetry_contract() {
@@ -114,5 +159,18 @@ mod tests {
         assert!(parse("v1 sync_count=1 unknown=2").is_none());
         assert!(parse("v1 sync_count=1 sync_count=2").is_none());
         assert!(parse("v1 sync_count=-1").is_none());
+    }
+
+    #[test]
+    fn parses_per_node_igs_cadence_without_changing_the_v1_counter_contract() {
+        let value = parse_cadence(
+            "v1 samples=10 last_interval_ns=100 min_interval_ns=90 \
+             max_interval_ns=120 active_nodes=2",
+        )
+        .unwrap();
+        assert_eq!(value["state"], "ready");
+        assert_eq!(value["samples"], 10);
+        assert_eq!(value["active_nodes"], 2);
+        assert!(parse_cadence("v1 samples=1 unknown=2").is_none());
     }
 }

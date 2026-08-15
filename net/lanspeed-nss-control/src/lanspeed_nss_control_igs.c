@@ -98,7 +98,7 @@ static void lanspeed_igs_event(void *if_ctx, struct nss_cmn_msg *message)
 		return;
 	sync = &igs->msg.stats;
 	node = &sync->node_stats;
-	lanspeed_telemetry_igs_sync(node->tx_bytes, node->tx_packets,
+	lanspeed_telemetry_igs_sync(dev, node->tx_bytes, node->tx_packets,
 				    sync->igs_stats.tx_dropped);
 	u64_stats_init(&stats.syncp);
 	u64_stats_update_begin(&stats.syncp);
@@ -117,10 +117,11 @@ void lanspeed_igs_unregister(struct lanspeed_igs_entry *entry)
 	nss_igs_unregister_if(entry->if_num);
 	nss_dynamic_interface_dealloc_node(entry->if_num,
 					   NSS_DYNAMIC_INTERFACE_TYPE_IGS);
+	list_del_rcu(&entry->list);
+	synchronize_rcu();
 	dev_put(entry->dev);
 	if (entry->edge)
 		dev_put(entry->edge);
-	list_del(&entry->list);
 	kfree(entry);
 }
 
@@ -294,6 +295,13 @@ static int lanspeed_stage_set(const char *value, const struct kernel_param *kp)
 		error = -ENOSPC;
 		goto out;
 	}
+	entry->dev = dev;
+	entry->if_num = if_num;
+	entry->state = LANSPEED_IGS_STAGED;
+	atomic64_set(&entry->stats_last_sync_ns, 0);
+	atomic64_set(&entry->stats_bytes, 0);
+	atomic64_set(&entry->stats_packets, 0);
+	atomic64_set(&entry->stats_drops, 0);
 	if (!nss_igs_register_if(if_num, NSS_DYNAMIC_INTERFACE_TYPE_IGS,
 				 lanspeed_igs_event, dev, 0)) {
 		nss_dynamic_interface_dealloc_node(if_num,
@@ -303,10 +311,7 @@ static int lanspeed_stage_set(const char *value, const struct kernel_param *kp)
 		error = -EIO;
 		goto out;
 	}
-	entry->dev = dev;
-	entry->if_num = if_num;
-	entry->state = LANSPEED_IGS_STAGED;
-	list_add_tail(&entry->list, &lanspeed_igs_entries);
+	list_add_tail_rcu(&entry->list, &lanspeed_igs_entries);
 	lanspeed_telemetry_control_event();
 	error = 0;
 out:

@@ -61,6 +61,11 @@ struct Stats {
     igs_bytes: u64,
     igs_packets: u64,
     igs_drops: u64,
+    igs_cadence_samples: Option<u64>,
+    igs_cadence_last_ns: Option<u64>,
+    igs_cadence_min_ns: Option<u64>,
+    igs_cadence_max_ns: Option<u64>,
+    igs_active_nodes: Option<u32>,
     ack_latency_last_ns: u64,
     ack_latency_max_ns: u64,
     ack_received: u64,
@@ -240,6 +245,11 @@ fn stats_json(stats: Stats) -> Value {
         "igs_bytes": stats.igs_bytes,
         "igs_packets": stats.igs_packets,
         "igs_drops": stats.igs_drops,
+        "igs_cadence_samples": stats.igs_cadence_samples,
+        "igs_cadence_last_ns": stats.igs_cadence_last_ns,
+        "igs_cadence_min_ns": stats.igs_cadence_min_ns,
+        "igs_cadence_max_ns": stats.igs_cadence_max_ns,
+        "igs_active_nodes": stats.igs_active_nodes,
         "ack_latency_last_ns": stats.ack_latency_last_ns,
         "ack_latency_max_ns": stats.ack_latency_max_ns,
         "ack_received": stats.ack_received,
@@ -469,7 +479,12 @@ fn parse_stats_messages(
         return Ok(None);
     };
     let mut values = BTreeMap::new();
+    let mut igs_active_nodes = None;
     for_each_attribute(attributes, |kind, value| {
+        if kind == abi::A_IGS_ACTIVE_NODES {
+            igs_active_nodes = Some(read_u32(value).ok_or("short u32")?);
+            return Ok(());
+        }
         if matches!(
             kind,
             abi::A_CONTROL_GENERATION
@@ -481,6 +496,10 @@ fn parse_stats_messages(
                 | abi::A_IGS_BYTES
                 | abi::A_IGS_PACKETS
                 | abi::A_IGS_DROPS
+                | abi::A_IGS_CADENCE_SAMPLES
+                | abi::A_IGS_CADENCE_LAST_NS
+                | abi::A_IGS_CADENCE_MIN_NS
+                | abi::A_IGS_CADENCE_MAX_NS
                 | abi::A_ACK_LATENCY_LAST_NS
                 | abi::A_ACK_LATENCY_MAX_NS
                 | abi::A_ACK_RECEIVED
@@ -501,6 +520,11 @@ fn parse_stats_messages(
         igs_bytes: required_u64(&values, abi::A_IGS_BYTES)?,
         igs_packets: required_u64(&values, abi::A_IGS_PACKETS)?,
         igs_drops: required_u64(&values, abi::A_IGS_DROPS)?,
+        igs_cadence_samples: values.get(&abi::A_IGS_CADENCE_SAMPLES).copied(),
+        igs_cadence_last_ns: values.get(&abi::A_IGS_CADENCE_LAST_NS).copied(),
+        igs_cadence_min_ns: values.get(&abi::A_IGS_CADENCE_MIN_NS).copied(),
+        igs_cadence_max_ns: values.get(&abi::A_IGS_CADENCE_MAX_NS).copied(),
+        igs_active_nodes,
         ack_latency_last_ns: required_u64(&values, abi::A_ACK_LATENCY_LAST_NS)?,
         ack_latency_max_ns: required_u64(&values, abi::A_ACK_LATENCY_MAX_NS)?,
         ack_received: required_u64(&values, abi::A_ACK_RECEIVED)?,
@@ -880,7 +904,7 @@ mod tests {
             })
         );
 
-        let stat_values: [(u16, u64); 14] = [
+        let stat_values: [(u16, u64); 18] = [
             (abi::A_CONTROL_GENERATION, 10),
             (abi::A_HARDWARE_GENERATION, 11),
             (abi::A_PEER_GENERATION, 12),
@@ -890,6 +914,10 @@ mod tests {
             (abi::A_IGS_BYTES, 16),
             (abi::A_IGS_PACKETS, 17),
             (abi::A_IGS_DROPS, 18),
+            (abi::A_IGS_CADENCE_SAMPLES, 24),
+            (abi::A_IGS_CADENCE_LAST_NS, 25),
+            (abi::A_IGS_CADENCE_MIN_NS, 26),
+            (abi::A_IGS_CADENCE_MAX_NS, 27),
             (abi::A_ACK_LATENCY_LAST_NS, 19),
             (abi::A_ACK_LATENCY_MAX_NS, 20),
             (abi::A_ACK_RECEIVED, 21),
@@ -900,11 +928,20 @@ mod tests {
         for (kind, value) in stat_values {
             stats_payload.extend_from_slice(&encode_attribute(kind, &value.to_ne_bytes()));
         }
+        stats_payload.extend_from_slice(&encode_attribute(
+            abi::A_IGS_ACTIVE_NODES,
+            &2u32.to_ne_bytes(),
+        ));
         let stats_packet = message(42, 7, &stats_payload);
         let stats = parse_stats_messages(&stats_packet, 7, 42).unwrap().unwrap();
         assert_eq!(stats.control_generation, 10);
         assert_eq!(stats.peer_reassert_count, 13);
         assert_eq!(stats.ack_late, 23);
+        assert_eq!(stats.igs_cadence_samples, Some(24));
+        assert_eq!(stats.igs_cadence_last_ns, Some(25));
+        assert_eq!(stats.igs_cadence_min_ns, Some(26));
+        assert_eq!(stats.igs_cadence_max_ns, Some(27));
+        assert_eq!(stats.igs_active_nodes, Some(2));
 
         let mut health_payload = vec![abi::CMD_GET_HEALTH, abi::VERSION, 0, 0];
         health_payload.extend_from_slice(&encode_attribute(abi::A_HEALTHY, &[1]));

@@ -3,6 +3,7 @@
 #ifndef __LANSPEED_NSS_CONTROL_H
 #define __LANSPEED_NSS_CONTROL_H
 
+#include <linux/atomic.h>
 #include <linux/etherdevice.h>
 #include <linux/if.h>
 #include <linux/list.h>
@@ -73,6 +74,11 @@ enum lanspeed_nss_genl_attribute {
 	LANSPEED_NSS_A_IFB_NAME,
 	LANSPEED_NSS_A_EDGE_NAME,
 	LANSPEED_NSS_A_CONFIG,
+	LANSPEED_NSS_A_IGS_CADENCE_SAMPLES,
+	LANSPEED_NSS_A_IGS_CADENCE_LAST_NS,
+	LANSPEED_NSS_A_IGS_CADENCE_MIN_NS,
+	LANSPEED_NSS_A_IGS_CADENCE_MAX_NS,
+	LANSPEED_NSS_A_IGS_ACTIVE_NODES,
 	__LANSPEED_NSS_A_MAX,
 };
 
@@ -84,6 +90,7 @@ enum lanspeed_nss_genl_attribute {
 #define LANSPEED_NSS_FEATURE_PEER_QUERY (1U << 3)
 #define LANSPEED_NSS_FEATURE_RCU_TAGS (1U << 4)
 #define LANSPEED_NSS_FEATURE_TRUSTED_INGRESS (1U << 5)
+#define LANSPEED_NSS_FEATURE_IGS_CADENCE (1U << 6)
 
 struct lanspeed_telemetry_snapshot {
 	u64 igs_sync_count;
@@ -91,6 +98,11 @@ struct lanspeed_telemetry_snapshot {
 	u64 igs_bytes;
 	u64 igs_packets;
 	u64 igs_drops;
+	u64 igs_cadence_samples;
+	u64 igs_cadence_last_ns;
+	u64 igs_cadence_min_ns;
+	u64 igs_cadence_max_ns;
+	u32 igs_active_nodes;
 	u64 peer_generation;
 	u64 peer_reassert_count;
 	u64 ack_latency_last_ns;
@@ -117,6 +129,10 @@ struct lanspeed_igs_entry {
 	enum lanspeed_igs_state state;
 	u16 peer_count;
 	u8 peers[LANSPEED_MAX_WIFI_PEERS][ETH_ALEN];
+	atomic64_t stats_last_sync_ns;
+	atomic64_t stats_bytes;
+	atomic64_t stats_packets;
+	atomic64_t stats_drops;
 };
 
 struct lanspeed_peer_config {
@@ -141,12 +157,15 @@ void lanspeed_ack_abort(struct lanspeed_ack_txn *txn);
 int lanspeed_ack_wait(struct lanspeed_ack_txn *txn);
 void lanspeed_ack_callback(void *app_data, struct nss_cmn_msg *message);
 
-void lanspeed_telemetry_igs_sync(u64 bytes, u64 packets, u64 drops);
+void lanspeed_telemetry_igs_sync(struct net_device *dev,
+				 u64 bytes, u64 packets, u64 drops);
 void lanspeed_telemetry_peer_apply(u16 count);
 void lanspeed_telemetry_peer_reset(void);
 void lanspeed_telemetry_control_event(void);
 void lanspeed_telemetry_snapshot(struct lanspeed_telemetry_snapshot *snapshot);
 int lanspeed_telemetry_get(char *buffer, const struct kernel_param *kp);
+int lanspeed_telemetry_cadence_get(char *buffer,
+				   const struct kernel_param *kp);
 
 int lanspeed_igs_stage(const char *value);
 int lanspeed_igs_publish(const char *value);

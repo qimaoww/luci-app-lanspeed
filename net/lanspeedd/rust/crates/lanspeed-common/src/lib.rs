@@ -87,6 +87,11 @@ pub mod nss_genl {
     pub const A_IFB_NAME: u16 = 27;
     pub const A_EDGE_NAME: u16 = 28;
     pub const A_CONFIG: u16 = 29;
+    pub const A_IGS_CADENCE_SAMPLES: u16 = 30;
+    pub const A_IGS_CADENCE_LAST_NS: u16 = 31;
+    pub const A_IGS_CADENCE_MIN_NS: u16 = 32;
+    pub const A_IGS_CADENCE_MAX_NS: u16 = 33;
+    pub const A_IGS_ACTIVE_NODES: u16 = 34;
 
     pub const FEATURE_IGS: u32 = 1 << 0;
     pub const FEATURE_WIFI_PEER: u32 = 1 << 1;
@@ -94,6 +99,7 @@ pub mod nss_genl {
     pub const FEATURE_PEER_QUERY: u32 = 1 << 3;
     pub const FEATURE_RCU_TAGS: u32 = 1 << 4;
     pub const FEATURE_TRUSTED_INGRESS: u32 = 1 << 5;
+    pub const FEATURE_IGS_CADENCE: u32 = 1 << 6;
 }
 
 pub const DIR_TX: u8 = 1;
