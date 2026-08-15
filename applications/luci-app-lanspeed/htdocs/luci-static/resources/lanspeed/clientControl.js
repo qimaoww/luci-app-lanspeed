@@ -35,7 +35,9 @@ function ensureOk(response) {
 function run(viewState, identityKey, task) {
 	viewState.controlBusy = viewState.controlBusy || {};
 	if (viewState.controlBusy[identityKey]) return Promise.resolve(false);
+	var wasPaused = !!(viewState.prefs && viewState.prefs.paused);
 	viewState.controlBusy[identityKey] = true;
+	if (!wasPaused && typeof viewState.stopTimer === 'function') viewState.stopTimer();
 	viewState.refreshLive();
 	return Promise.resolve().then(task).then(ensureOk).then(function(response) {
 		var clients = viewState.clients && viewState.clients.clients;
@@ -60,6 +62,7 @@ function run(viewState, identityKey, task) {
 	}).finally(function() {
 		delete viewState.controlBusy[identityKey];
 		viewState.refreshLive();
+		if (!wasPaused && typeof viewState.schedule === 'function') viewState.schedule();
 	});
 }
 

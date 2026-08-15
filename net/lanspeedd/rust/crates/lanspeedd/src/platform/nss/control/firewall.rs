@@ -46,16 +46,10 @@ pub(super) fn quiesce(plan: &ControlPlan) -> Result<(), String> {
 }
 
 pub(super) fn clear_controlled_connections(plan: &ControlPlan) -> Result<(), String> {
-    let mut addresses = plan.conntrack_cleanup_ips.clone();
-    addresses.extend(
-        plan.rules
-            .iter()
-            .filter(|rule| rule.internet_disabled || rule.upload_bps != 0 || rule.download_bps != 0)
-            .flat_map(|rule| rule.ips.iter())
-            .copied(),
-    );
-    for address in addresses {
-        clear_conntrack_address(address)?;
+    // Only explicit rule changes or deletions request reclassification. Do
+    // not clear every configured client's flows when one client changes.
+    for address in &plan.conntrack_cleanup_ips {
+        clear_conntrack_address(*address)?;
     }
     Ok(())
 }

@@ -935,6 +935,8 @@ impl ControlManager {
             .live
             .get(&request.identity_key)
             .ok_or_else(|| DaemonError::reload("unknown_identity"))?;
+        #[cfg(feature = "nss-platform")]
+        let conntrack_ips = live.ips.clone();
         if !self.rules.contains_key(&request.identity_key) && self.rules.len() >= MAX_CONTROL_RULES
         {
             return Err(DaemonError::reload("control_rule_limit"));
@@ -975,6 +977,10 @@ impl ControlManager {
         }
         persist_rule(&rule)?;
         self.rules.insert(rule.identity_key.clone(), rule);
+        // Reclassify only this client's existing flows. Rebuilding one
+        // control rule must not reset unrelated clients' connections.
+        #[cfg(feature = "nss-platform")]
+        self.conntrack_cleanup_ips.extend(conntrack_ips);
         self.dirty = true;
         Ok(json!(ControlRpcResponse {
             ok: self.result.state != "error",
