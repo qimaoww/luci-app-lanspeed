@@ -175,6 +175,8 @@ pub fn apply_conntrack_success(
     collector_mode: &str,
 ) -> ResponseSnapshot {
     let mut overlaid = snapshot.clone();
+    overlaid.status.capabilities.conntrack_fallback = true;
+    overlaid.health.capabilities.conntrack_fallback = true;
     publish_connection_details(&mut overlaid, Some(collected));
     let by_identity = collected
         .clients
@@ -264,6 +266,8 @@ pub fn apply_conntrack_success(
 
 pub fn apply_conntrack_failure(snapshot: &ResponseSnapshot, error: &str) -> ResponseSnapshot {
     let mut overlaid = snapshot.clone();
+    overlaid.status.capabilities.conntrack_fallback = false;
+    overlaid.health.capabilities.conntrack_fallback = false;
     publish_connection_details(&mut overlaid, None);
     remove_connection_only_clients(&mut overlaid.clients);
     for client in &mut overlaid.clients.clients {
@@ -288,6 +292,64 @@ pub fn apply_conntrack_failure(snapshot: &ResponseSnapshot, error: &str) -> Resp
         Value::String(error.to_owned()),
     );
     overlaid
+}
+
+/// Preserve the latest worker-published connection overlay when a faster rate
+/// collection publishes a snapshot that intentionally skipped conntrack.
+pub fn preserve_conntrack_overlay(snapshot: &mut ResponseSnapshot, previous: &ResponseSnapshot) {
+    if snapshot.clients.conn_source.is_some() {
+        return;
+    }
+    if previous.clients.conn_source.is_none() {
+        if let Some(previous_evidence) = previous.clients.evidence.as_ref() {
+            let status = previous_evidence.details.get("conntrack_status");
+            let error = previous_evidence.details.get("conntrack_error");
+            if status.is_some() || error.is_some() {
+                let evidence = snapshot.clients.evidence.get_or_insert_default();
+                if let Some(status) = status {
+                    evidence
+                        .details
+                        .insert("conntrack_status".to_owned(), status.clone());
+                }
+                if let Some(error) = error {
+                    evidence
+                        .details
+                        .insert("conntrack_error".to_owned(), error.clone());
+                }
+            }
+        }
+        return;
+    }
+
+    let previous_clients = previous
+        .clients
+        .clients
+        .iter()
+        .map(|client| (client.identity_key.as_str(), client))
+        .collect::<BTreeMap<_, _>>();
+    for client in &mut snapshot.clients.clients {
+        if let Some(previous) = previous_clients.get(client.identity_key.as_str()) {
+            client.tcp_conns = previous.tcp_conns;
+            client.udp_conns = previous.udp_conns;
+            client.udp_dns_conns = previous.udp_dns_conns;
+            client.udp_other_conns = previous.udp_other_conns;
+        }
+    }
+    snapshot.clients.tcp_conns_total = previous.clients.tcp_conns_total;
+    snapshot.clients.udp_conns_total = previous.clients.udp_conns_total;
+    snapshot.clients.udp_dns_conns_total = previous.clients.udp_dns_conns_total;
+    snapshot.clients.udp_other_conns_total = previous.clients.udp_other_conns_total;
+    snapshot.clients.conntrack_entries_seen = previous.clients.conntrack_entries_seen;
+    snapshot.clients.conntrack_entries_matched = previous.clients.conntrack_entries_matched;
+    snapshot.clients.conntrack_parse_errors = previous.clients.conntrack_parse_errors;
+    snapshot.clients.conn_source = previous.clients.conn_source.clone();
+    snapshot.clients.conn_collector_mode = previous.clients.conn_collector_mode.clone();
+    snapshot.clients.conn_semantics = previous.clients.conn_semantics.clone();
+    snapshot.preserve_connection_details_from(previous);
+    snapshot.status.capabilities.conntrack_fallback =
+        previous.status.capabilities.conntrack_fallback;
+    snapshot.health.capabilities.conntrack_fallback =
+        previous.health.capabilities.conntrack_fallback;
 }
 
 fn remove_connection_only_clients(clients: &mut ClientsResponse) {

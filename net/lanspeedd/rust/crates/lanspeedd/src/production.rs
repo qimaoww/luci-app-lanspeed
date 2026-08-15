@@ -61,7 +61,9 @@ use crate::{
     ubus,
 };
 
+use crate::conntrack_worker::{self, ConntrackTask, CONNTRACK_WORK_INTERVAL_MS};
 use crate::control::ControlManager;
+use crate::workers::{QueueError, RuntimeWorker};
 
 #[cfg(not(feature = "nss-platform"))]
 use crate::platform::x86::{
@@ -3007,6 +3009,8 @@ struct App {
     reconnect_pending: Cell<bool>,
     mode_reload: DaeModeReloadLatch,
     last_error: Option<String>,
+    conntrack_worker: Option<RuntimeWorker<ConntrackTask>>,
+    last_conntrack_request_ms: Cell<u64>,
 }
 
 struct PreparedBpfReload {
@@ -3084,12 +3088,14 @@ impl App {
             .runtime
             .as_mut()
             .expect("collection timer requires a staged runtime");
-        if let Err(error) = collect_and_reschedule(
+        let result = collect_and_reschedule(
             &self.state,
             runtime,
             |delay| schedule_absolute_collection(timer, deadline, delay),
             UloopGuard::request_stop,
-        ) {
+        );
+        self.schedule_conntrack(false);
+        if let Err(error) = result {
             self.last_error = Some(error.to_string());
         }
     }
@@ -3097,7 +3103,40 @@ impl App {
         if method == ubus::Method::Reload {
             self.reload()
         } else {
+            if matches!(
+                method,
+                ubus::Method::Clients | ubus::Method::ClientConnections | ubus::Method::Diagnostics
+            ) {
+                self.schedule_conntrack(false);
+            }
             Ok(())
+        }
+    }
+
+    fn schedule_conntrack(&mut self, force: bool) {
+        let Ok(now_ms) = production_now_ms() else {
+            return;
+        };
+        if !force
+            && now_ms.saturating_sub(self.last_conntrack_request_ms.get())
+                < CONNTRACK_WORK_INTERVAL_MS
+        {
+            return;
+        }
+        let task = ConntrackTask {
+            now_ms,
+            max_clients: self.state.config().max_clients,
+            mode: self.state.config().conn_collector_mode,
+        };
+        let Some(worker) = self.conntrack_worker.as_ref() else {
+            return;
+        };
+        match worker.queue().try_send(task) {
+            Ok(()) => self.last_conntrack_request_ms.set(now_ms),
+            Err(QueueError::Full) => {}
+            Err(QueueError::Disconnected) => {
+                self.last_error = Some("conntrack runtime worker disconnected".into());
+            }
         }
     }
     fn handle_control(&mut self, command: ControlCommand) -> Result<Value, DaemonError> {
@@ -3562,6 +3601,8 @@ pub fn run() -> Result<(), DaemonError> {
         Arc::new(ResponseSnapshot::unsupported("starting")),
     );
     let snapshots = state.snapshot_store();
+    let conntrack_worker = conntrack_worker::spawn(snapshots.clone())
+        .map_err(|error| DaemonError::platform(format!("conntrack worker: {error}")))?;
     let app = Rc::new(RefCell::new(App {
         state,
         runtime: None,
@@ -3572,6 +3613,8 @@ pub fn run() -> Result<(), DaemonError> {
         reconnect_pending: Cell::new(false),
         mode_reload: DaeModeReloadLatch::default(),
         last_error: None,
+        conntrack_worker: Some(conntrack_worker),
+        last_conntrack_request_ms: Cell::new(0),
     }));
     let weak = Rc::downgrade(&app);
     app.borrow_mut().collection_timer = Some(Timer::new(move || {
@@ -3633,6 +3676,7 @@ pub fn run() -> Result<(), DaemonError> {
         )?
     };
     app.borrow_mut().runtime = Some(runtime);
+    app.borrow_mut().schedule_conntrack(true);
     let _signals = {
         let mut app = app.borrow_mut();
         let App { runtime, ubus, .. } = &mut *app;

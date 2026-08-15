@@ -8,6 +8,7 @@ use std::{
 
 use crate::{
     config::RuntimeConfig,
+    connections::preserve_conntrack_overlay,
     error::DaemonError,
     state::{diagnostic_now_ms, ResponseSnapshot, SnapshotStore},
     ubus::Method,
@@ -220,6 +221,8 @@ impl CoordinatorState {
         now_ms: u64,
         collection_interval_ms: u32,
     ) {
+        let previous = self.snapshot();
+        preserve_conntrack_overlay(&mut snapshot, &previous);
         let generation = self.snapshot().diagnostic_generation().saturating_add(1);
         snapshot.mark_collection_success(generation, now_ms, collection_interval_ms);
         snapshot.set_config_issues(&self.config);

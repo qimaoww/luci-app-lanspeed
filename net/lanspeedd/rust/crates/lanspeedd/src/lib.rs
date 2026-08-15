@@ -33,6 +33,8 @@ pub mod config;
 pub mod connection_details;
 pub mod connections;
 #[cfg(feature = "openwrt")]
+mod conntrack_worker;
+#[cfg(feature = "openwrt")]
 pub mod control;
 pub mod daemon;
 pub mod error;

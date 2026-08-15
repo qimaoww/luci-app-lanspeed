@@ -468,6 +468,10 @@ impl ResponseSnapshot {
         self.connection_details = PublishedConnectionDetails::Unavailable;
     }
 
+    pub(crate) fn preserve_connection_details_from(&mut self, previous: &Self) {
+        self.connection_details = previous.connection_details.clone();
+    }
+
     pub fn response(&self, method: Method) -> Result<Value, DaemonError> {
         Ok(match method {
             Method::Status => serde_json::to_value(&self.status)?,
