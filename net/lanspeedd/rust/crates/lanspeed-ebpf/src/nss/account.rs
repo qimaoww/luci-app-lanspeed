@@ -196,6 +196,23 @@ unsafe fn update_fast_counter(key: &LanspeedKey, bytes: u64, packets: u64, now: 
         return;
     };
 
+    // A new PerCPU hash key leaves non-inserting CPU slots zero-initialized.
+    // Initialize such a slot on its first local write and recover stale
+    // metadata under the same odd/even sequence protocol before counting it.
+    let abi_version = addr_of_mut!((*counter).abi_version).read_volatile();
+    let reset_generation = addr_of_mut!((*counter).reset_generation).read_volatile();
+    let sequence_value = addr_of_mut!((*counter).seq).read_volatile();
+    if abi_version != FAST_COUNTER_ABI_VERSION || reset_generation == 0 || sequence_value & 1 != 0 {
+        addr_of_mut!((*counter).seq).write_volatile(1);
+        addr_of_mut!((*counter).abi_version).write_volatile(FAST_COUNTER_ABI_VERSION);
+        addr_of_mut!((*counter).reset_generation).write_volatile(1);
+        addr_of_mut!((*counter).bytes).write_volatile(bytes);
+        addr_of_mut!((*counter).packets).write_volatile(packets);
+        addr_of_mut!((*counter).last_seen_ns).write_volatile(now);
+        addr_of_mut!((*counter).seq).write_volatile(2);
+        return;
+    }
+
     // Per-CPU ownership prevents concurrent writers for one map value. The
     // BPF target only supports the existing relaxed atomic RMW primitive, so
     // userspace must perform two lookups and accept only one even seq; it never
