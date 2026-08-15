@@ -1,2 +1,2 @@
 obj-m += lanspeed_nss_control.o
-lanspeed_nss_control-objs := lanspeed_nss_control_core.o lanspeed_nss_control_ack.o lanspeed_nss_control_telemetry.o lanspeed_nss_control_tags.o lanspeed_nss_control_trusted_ingress.o lanspeed_nss_control_nexthop.o lanspeed_nss_control_peer.o lanspeed_nss_control_igs.o
+lanspeed_nss_control-objs := lanspeed_nss_control_core.o lanspeed_nss_control_ack.o lanspeed_nss_control_telemetry.o lanspeed_nss_control_genl.o lanspeed_nss_control_tags.o lanspeed_nss_control_trusted_ingress.o lanspeed_nss_control_nexthop.o lanspeed_nss_control_peer.o lanspeed_nss_control_igs.o

@@ -32,7 +32,7 @@ const ecmNode = fs.readFileSync(path.join(root,
 const nssControlDir = path.join(root,
   'net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/control');
 const nssControlModules = [
-  'mod.rs', 'capability.rs', 'classifier.rs', 'ecm_qos.rs', 'firewall.rs', 'legacy.rs', 'qdisc.rs',
+  'mod.rs', 'capability.rs', 'classifier.rs', 'ecm_qos.rs', 'firewall.rs', 'genl.rs', 'legacy.rs', 'qdisc.rs',
   'firewall_tests.rs', 'hardware_telemetry.rs', 'qdisc_tests.rs', 'rollback.rs', 'shaper.rs', 'state.rs',
   'system.rs', 'system_tests.rs', 'telemetry.rs', 'topology.rs'
 ];
@@ -57,6 +57,7 @@ const nssKmodSource = [
   'lanspeed_nss_control_core.c',
   'lanspeed_nss_control_ack.c',
   'lanspeed_nss_control_telemetry.c',
+  'lanspeed_nss_control_genl.c',
   'lanspeed_nss_control_tags.c',
   'lanspeed_nss_control_trusted_ingress.c',
   'lanspeed_nss_control_nexthop.c',

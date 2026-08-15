@@ -34,7 +34,15 @@ pub(super) fn read() -> Value {
     let Ok(text) = fs::read_to_string(TELEMETRY_PATH) else {
         return json!({"state": "unavailable"});
     };
-    parse(&text).unwrap_or_else(|| json!({"state": "invalid"}))
+    let mut value = parse(&text).unwrap_or_else(|| json!({"state": "invalid"}));
+    if value["state"] == "ready" {
+        if let Some(caps) = super::genl::read() {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("genl_caps".into(), caps);
+            }
+        }
+    }
+    value
 }
 
 fn parse(text: &str) -> Option<Value> {

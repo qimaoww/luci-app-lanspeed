@@ -3,6 +3,7 @@ mod classifier;
 mod cpu_path;
 mod ecm_qos;
 mod firewall;
+mod genl;
 mod hardware_telemetry;
 mod legacy;
 mod qdisc;

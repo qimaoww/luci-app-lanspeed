@@ -25,11 +25,19 @@ static int __init lanspeed_nss_control_init(void)
 	error = lanspeed_tag_register();
 	if (error)
 		lanspeed_igs_unregister_notifier();
+	if (error)
+		return error;
+	error = lanspeed_genl_register();
+	if (error) {
+		lanspeed_tag_unregister();
+		lanspeed_igs_unregister_notifier();
+	}
 	return error;
 }
 
 static void __exit lanspeed_nss_control_exit(void)
 {
+	lanspeed_genl_unregister();
 	lanspeed_tag_unregister();
 	lanspeed_igs_unregister_notifier();
 	lanspeed_igs_cleanup();

@@ -18,6 +18,78 @@ struct lanspeed_ack_txn;
 struct nss_cmn_msg;
 
 #define LANSPEED_MAX_WIFI_PEERS 64
+#define LANSPEED_MAX_IGS 64
+#define LANSPEED_MAX_CLIENT_TAGS 64
+
+#define LANSPEED_NSS_GENL_NAME "LANSPEED_NSS"
+#define LANSPEED_NSS_GENL_VERSION 1
+
+enum lanspeed_nss_genl_command {
+	LANSPEED_NSS_CMD_UNSPEC,
+	LANSPEED_NSS_CMD_GET_CAPS,
+	LANSPEED_NSS_CMD_GET_STATE,
+	LANSPEED_NSS_CMD_GET_STATS,
+	LANSPEED_NSS_CMD_GET_HEALTH,
+	__LANSPEED_NSS_CMD_MAX,
+};
+
+#define LANSPEED_NSS_CMD_MAX (__LANSPEED_NSS_CMD_MAX - 1)
+
+enum lanspeed_nss_genl_attribute {
+	LANSPEED_NSS_A_UNSPEC,
+	LANSPEED_NSS_A_ABI_VERSION,
+	LANSPEED_NSS_A_FEATURE_BITS,
+	LANSPEED_NSS_A_MAX_IGS,
+	LANSPEED_NSS_A_MAX_PEERS,
+	LANSPEED_NSS_A_MAX_CLIENT_TAGS,
+	LANSPEED_NSS_A_SUPPORTS_WIFI_PEER,
+	LANSPEED_NSS_A_SUPPORTS_IGS_STATS,
+	LANSPEED_NSS_A_SUPPORTS_PEER_QUERY,
+	LANSPEED_NSS_A_IGS_STAGED,
+	LANSPEED_NSS_A_IGS_PUBLISHED,
+	LANSPEED_NSS_A_IGS_DEGRADED,
+	LANSPEED_NSS_A_CONTROL_GENERATION,
+	LANSPEED_NSS_A_HARDWARE_GENERATION,
+	LANSPEED_NSS_A_PEER_GENERATION,
+	LANSPEED_NSS_A_IGS_SYNC_COUNT,
+	LANSPEED_NSS_A_IGS_LAST_SYNC_NS,
+	LANSPEED_NSS_A_IGS_BYTES,
+	LANSPEED_NSS_A_IGS_PACKETS,
+	LANSPEED_NSS_A_IGS_DROPS,
+	LANSPEED_NSS_A_ACK_LATENCY_LAST_NS,
+	LANSPEED_NSS_A_ACK_LATENCY_MAX_NS,
+	LANSPEED_NSS_A_ACK_RECEIVED,
+	LANSPEED_NSS_A_ACK_TIMEOUT,
+	LANSPEED_NSS_A_ACK_LATE,
+	LANSPEED_NSS_A_HEALTHY,
+	__LANSPEED_NSS_A_MAX,
+};
+
+#define LANSPEED_NSS_A_MAX (__LANSPEED_NSS_A_MAX - 1)
+
+#define LANSPEED_NSS_FEATURE_IGS (1U << 0)
+#define LANSPEED_NSS_FEATURE_WIFI_PEER (1U << 1)
+#define LANSPEED_NSS_FEATURE_IGS_STATS (1U << 2)
+#define LANSPEED_NSS_FEATURE_PEER_QUERY (1U << 3)
+#define LANSPEED_NSS_FEATURE_RCU_TAGS (1U << 4)
+#define LANSPEED_NSS_FEATURE_TRUSTED_INGRESS (1U << 5)
+
+struct lanspeed_telemetry_snapshot {
+	u64 igs_sync_count;
+	u64 igs_last_sync_ns;
+	u64 igs_bytes;
+	u64 igs_packets;
+	u64 igs_drops;
+	u64 peer_generation;
+	u64 peer_reassert_count;
+	u64 ack_latency_last_ns;
+	u64 ack_latency_max_ns;
+	u64 ack_received;
+	u64 ack_timeout;
+	u64 ack_late;
+	u64 control_generation;
+	u64 hardware_generation;
+};
 
 enum lanspeed_igs_state {
 	LANSPEED_IGS_STAGED,
@@ -62,7 +134,11 @@ void lanspeed_telemetry_igs_sync(u64 bytes, u64 packets, u64 drops);
 void lanspeed_telemetry_peer_apply(u16 count);
 void lanspeed_telemetry_peer_reset(void);
 void lanspeed_telemetry_control_event(void);
+void lanspeed_telemetry_snapshot(struct lanspeed_telemetry_snapshot *snapshot);
 int lanspeed_telemetry_get(char *buffer, const struct kernel_param *kp);
+
+int lanspeed_genl_register(void);
+void lanspeed_genl_unregister(void);
 
 int lanspeed_tag_register(void);
 void lanspeed_tag_unregister(void);

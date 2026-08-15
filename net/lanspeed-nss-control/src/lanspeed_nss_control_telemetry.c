@@ -89,6 +89,26 @@ void lanspeed_telemetry_control_event(void)
 	atomic64_inc(&lanspeed_control_generation);
 }
 
+void lanspeed_telemetry_snapshot(struct lanspeed_telemetry_snapshot *snapshot)
+{
+	if (!snapshot)
+		return;
+	snapshot->igs_sync_count = atomic64_read(&lanspeed_igs_sync_count);
+	snapshot->igs_last_sync_ns = atomic64_read(&lanspeed_igs_last_sync_ns);
+	snapshot->igs_bytes = atomic64_read(&lanspeed_igs_bytes);
+	snapshot->igs_packets = atomic64_read(&lanspeed_igs_packets);
+	snapshot->igs_drops = atomic64_read(&lanspeed_igs_drops);
+	snapshot->peer_generation = atomic64_read(&lanspeed_peer_generation);
+	snapshot->peer_reassert_count = atomic64_read(&lanspeed_peer_reassert_count);
+	snapshot->ack_latency_last_ns = atomic64_read(&lanspeed_ack_latency_last_ns);
+	snapshot->ack_latency_max_ns = atomic64_read(&lanspeed_ack_latency_max_ns);
+	snapshot->ack_received = atomic64_read(&lanspeed_ack_received);
+	snapshot->ack_timeout = atomic64_read(&lanspeed_ack_timeout);
+	snapshot->ack_late = atomic64_read(&lanspeed_ack_late);
+	snapshot->control_generation = atomic64_read(&lanspeed_control_generation);
+	snapshot->hardware_generation = atomic64_read(&lanspeed_hardware_generation);
+}
+
 int lanspeed_telemetry_get(char *buffer, const struct kernel_param *kp)
 {
 	return scnprintf(buffer, PAGE_SIZE,
