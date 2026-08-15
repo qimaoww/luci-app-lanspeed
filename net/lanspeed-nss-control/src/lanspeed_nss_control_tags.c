@@ -161,6 +161,9 @@ static unsigned int lanspeed_tag_hook(void *priv, struct sk_buff *skb,
 	const struct lanspeed_local_prefix_table *prefixes;
 	u16 qos_tag = 0;
 
+	if (!state->in || !lanspeed_trusted_ingress_contains(state->in))
+		return NF_ACCEPT;
+
 	rcu_read_lock();
 	clients = rcu_dereference(lanspeed_client_tags);
 	prefixes = rcu_dereference(lanspeed_local_prefixes);
@@ -199,7 +202,7 @@ static unsigned int lanspeed_bridge_tag_hook(void *priv, struct sk_buff *skb,
 	 * This keeps spoofed client addresses arriving from WAN out of the tag
 	 * path while allowing the actual Wi-Fi and wired NSS ingress edges.
 	 */
-	if (!state->in || !lanspeed_edge_published(state->in))
+	if (!state->in || !lanspeed_trusted_ingress_contains(state->in))
 		return NF_ACCEPT;
 
 	rcu_read_lock();

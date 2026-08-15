@@ -162,8 +162,10 @@ void lanspeed_genl_unregister(void);
 int lanspeed_tag_register(void);
 void lanspeed_tag_unregister(void);
 bool lanspeed_edge_published(struct net_device *edge);
+bool lanspeed_trusted_ingress_contains(struct net_device *edge);
 bool lanspeed_edge_add(struct net_device *edge);
 bool lanspeed_edge_del(struct net_device *edge);
+void lanspeed_published_edges_cleanup(void);
 void lanspeed_trusted_ingress_cleanup(void);
 
 nss_tx_status_t lanspeed_set_nexthop(int32_t edge_if_num, int32_t igs_if_num);

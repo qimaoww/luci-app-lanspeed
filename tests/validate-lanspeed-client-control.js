@@ -366,8 +366,11 @@ async function main() {
     nssKmodSource.includes('LANSPEED_NSS_A_PEER_REASSERT_COUNT') &&
     nssKmodSource.includes('struct lanspeed_client_tag_table') &&
     nssKmodSource.includes('struct lanspeed_local_prefix_table') &&
+    nssKmodSource.includes('struct lanspeed_published_edge_set') &&
+    nssKmodSource.includes('lanspeed_published_edges_cleanup') &&
     nssKmodSource.includes('rcu_dereference(lanspeed_client_tags)') &&
     nssKmodSource.includes('rcu_dereference(lanspeed_local_prefixes)') &&
+    nssKmodSource.includes('lanspeed_trusted_ingress_contains(state->in)') &&
     nssControlByModule['genl.rs'].includes('pub(super) fn read') &&
     nssControlByModule['genl.rs'].includes('CMD_GET_CAPS') &&
     nssControlByModule['genl.rs'].includes('pub(super) fn read_runtime') &&

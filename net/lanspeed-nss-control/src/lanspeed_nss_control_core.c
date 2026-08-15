@@ -41,6 +41,7 @@ static void __exit lanspeed_nss_control_exit(void)
 	lanspeed_tag_unregister();
 	lanspeed_igs_unregister_notifier();
 	lanspeed_igs_cleanup();
+	lanspeed_published_edges_cleanup();
 	lanspeed_trusted_ingress_cleanup();
 	rcu_barrier();
 }
