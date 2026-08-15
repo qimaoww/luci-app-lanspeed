@@ -197,7 +197,7 @@ try {
   );
 
   const bpfRuntime = fs.readFileSync(
-    path.join(lanspeeddRoot, 'rust/crates/lanspeedd/src/platform/x86/runtime.rs'),
+    path.join(lanspeeddRoot, 'rust/crates/lanspeedd/src/platform/tc_bpf_runtime.rs'),
     'utf8'
   );
   assert(
