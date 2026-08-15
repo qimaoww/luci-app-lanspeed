@@ -12,6 +12,7 @@ pub(crate) mod fast_counter;
 pub(crate) mod fast_n_runtime;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod fast_rate;
+pub(crate) mod fast_rate_clients;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod fast_rate_shadow;
 #[cfg(any(feature = "openwrt", test))]

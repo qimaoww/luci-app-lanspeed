@@ -271,6 +271,18 @@ impl NssRuntime {
         self.fast_rate_shadow.comparison()
     }
 
+    pub(crate) fn fast_rate_shadow_client_rate(
+        &self,
+        mac: [u8; 6],
+        direction: u8,
+    ) -> Option<crate::platform::nss::fast_rate_clients::FastClientSample> {
+        self.fast_rate_shadow.client_rate(mac, direction)
+    }
+
+    pub(crate) const fn fast_rate_shadow_client_invalid_windows(&self) -> u64 {
+        self.fast_rate_shadow.client_invalid_windows()
+    }
+
     pub(crate) const fn fast_rate_shadow_last_error_code(&self) -> Option<&'static str> {
         match self.fast_rate_shadow.last_error() {
             Some(crate::platform::nss::fast_rate::FastWindowError::InvalidReadInterval) => {

@@ -4,19 +4,38 @@ use std::sync::mpsc::SyncSender;
 
 use crate::workers::{spawn_rate_worker, QueueError, RateWorker, WorkerQueue};
 
-use super::fast_rate_wakeup::{FastRateWakeup, FastRateWakeupBook};
+use super::{
+    fast_n_runtime::FastNSnapshot,
+    fast_rate_shadow::FastRateShadow,
+    fast_rate_store::FastRateSample,
+    fast_rate_wakeup::{FastRateWakeup, FastRateWakeupBook},
+    fast_s_runtime::FastSSnapshot,
+};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) enum FastRateCommand {
     EventHint { now_ms: u64 },
     FixedTimer { now_ms: u64 },
     Poll { now_ms: u64 },
+    Sample(FastRateSampleInput),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct FastRateSampleInput {
+    pub fast_n: FastNSnapshot,
+    pub fast_s: FastSSnapshot,
+    pub n_read_begin_ms: u64,
+    pub n_read_end_ms: u64,
+    pub s_read_begin_ms: u64,
+    pub s_read_end_ms: u64,
+    pub edge_bps: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FastRateWakeupNotice {
     pub observed_ms: u64,
     pub wakeup: FastRateWakeup,
+    pub sample: Option<FastRateSample>,
 }
 
 pub(crate) struct FastRateWorker {
@@ -50,22 +69,51 @@ fn thread_command(notices: &SyncSender<FastRateWakeupNotice>, command: FastRateC
         static WAKEUPS: std::cell::RefCell<FastRateWakeupBook> =
             std::cell::RefCell::new(FastRateWakeupBook::default());
     }
-    let now_ms = match command {
+    thread_local! {
+        static SHADOW: std::cell::RefCell<FastRateShadow> =
+            std::cell::RefCell::new(FastRateShadow::new());
+    }
+    let (now_ms, sample, sample_attempted) = match command {
         FastRateCommand::EventHint { now_ms } => {
             WAKEUPS.with(|book| book.borrow_mut().on_event_hint(now_ms));
-            now_ms
+            (now_ms, None, false)
         }
         FastRateCommand::FixedTimer { now_ms } => {
             WAKEUPS.with(|book| book.borrow_mut().on_fixed_timer());
-            now_ms
+            (now_ms, None, false)
         }
-        FastRateCommand::Poll { now_ms } => now_ms,
+        FastRateCommand::Poll { now_ms } => (now_ms, None, false),
+        FastRateCommand::Sample(input) => {
+            let now_ms = input
+                .n_read_end_ms
+                .max(input.s_read_end_ms)
+                .max(input.fast_n.sample_ms)
+                .max(input.fast_s.sample_ms);
+            SHADOW.with(|shadow| {
+                shadow.borrow_mut().observe(
+                    Some(&input.fast_n),
+                    Some(&input.fast_s),
+                    input.n_read_begin_ms,
+                    input.n_read_end_ms,
+                    input.s_read_begin_ms,
+                    input.s_read_end_ms,
+                    input.edge_bps,
+                );
+                (now_ms, shadow.borrow().latest(), true)
+            })
+        }
     };
     let notice = WAKEUPS.with(|book| book.borrow_mut().poll(now_ms));
-    if let Some(wakeup) = notice {
+    if let Some(wakeup) = notice.or_else(|| {
+        sample_attempted.then_some(FastRateWakeup {
+            event_hint: false,
+            fixed_timer: false,
+        })
+    }) {
         let _ = notices.try_send(FastRateWakeupNotice {
             observed_ms: now_ms,
             wakeup,
+            sample,
         });
     }
 }
@@ -82,7 +130,8 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use super::{try_queue, FastRateCommand, FastRateWorker};
+    use super::{try_queue, FastRateCommand, FastRateSampleInput, FastRateWorker};
+    use crate::platform::nss::{fast_n_runtime::FastNSnapshot, fast_s_runtime::FastSSnapshot};
 
     #[test]
     fn worker_debounces_events_and_keeps_fixed_timer_independent() {
@@ -98,12 +147,51 @@ mod tests {
         assert_eq!(notice.observed_ms, 120);
         assert!(notice.wakeup.event_hint);
         assert!(!notice.wakeup.fixed_timer);
+        assert!(notice.sample.is_none());
 
         try_queue(&queue, FastRateCommand::FixedTimer { now_ms: 1_000 }).unwrap();
         let notice = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(notice.observed_ms, 1_000);
         assert!(!notice.wakeup.event_hint);
         assert!(notice.wakeup.fixed_timer);
+        assert!(notice.sample.is_none());
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn worker_publishes_only_a_completed_same_window_sample() {
+        let (notices, receiver) = mpsc::sync_channel(4);
+        let worker = FastRateWorker::spawn(8, notices).unwrap();
+        let queue = worker.queue();
+        let input = |n_bytes, s_bytes, sample_ms| FastRateSampleInput {
+            fast_n: FastNSnapshot {
+                sample_ms,
+                valid_entries: 1,
+                reset_generation: 1,
+                bytes: n_bytes,
+                packets: n_bytes / 10,
+                ..FastNSnapshot::default()
+            },
+            fast_s: FastSSnapshot {
+                sample_ms,
+                valid_entries: 1,
+                reset_generation: 2,
+                bytes: s_bytes,
+                packets: s_bytes / 10,
+                ..FastSSnapshot::default()
+            },
+            n_read_begin_ms: sample_ms.saturating_sub(10),
+            n_read_end_ms: sample_ms,
+            s_read_begin_ms: sample_ms.saturating_sub(9),
+            s_read_end_ms: sample_ms.saturating_add(1),
+            edge_bps: None,
+        };
+        try_queue(&queue, FastRateCommand::Sample(input(100, 50, 1_000))).unwrap();
+        let first = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(first.sample.is_none());
+        try_queue(&queue, FastRateCommand::Sample(input(300, 250, 2_000))).unwrap();
+        let second = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(second.sample.unwrap().fast_total_bps, 3_200);
         worker.join().unwrap();
     }
 }

@@ -122,7 +122,7 @@ use crate::probe::Confidence as ProbeConfidence;
 #[cfg(feature = "nss-platform")]
 use crate::{
     connection_details::{TrafficClassification, TrafficClassificationDirection},
-    identity::{filter, ClientIdentity},
+    identity::{filter, ClientIdentity, MacAddress},
     model::{
         AttachmentKind as ModelAttachmentKind, AttachmentTrust as ModelAttachmentTrust,
         ByteDomain as ModelByteDomain, ClassificationState, Client, ClientRateMeta, RateAttachment,
@@ -1712,6 +1712,30 @@ impl ProductionRuntime {
                 }),
             );
         }
+        let mut fast_client_shadow_entries = 0u64;
+        let mut fast_client_shadow_tx_bps = 0u64;
+        let mut fast_client_shadow_rx_bps = 0u64;
+        for client in &clients.clients {
+            let Ok(mac) = client.mac.parse::<MacAddress>() else {
+                continue;
+            };
+            if let Some(sample) = self
+                .nss
+                .fast_rate_shadow_client_rate(mac.octets(), lanspeed_common::DIR_TX)
+            {
+                fast_client_shadow_entries = fast_client_shadow_entries.saturating_add(1);
+                fast_client_shadow_tx_bps =
+                    fast_client_shadow_tx_bps.saturating_add(sample.fast_total_bps);
+            }
+            if let Some(sample) = self
+                .nss
+                .fast_rate_shadow_client_rate(mac.octets(), lanspeed_common::DIR_RX)
+            {
+                fast_client_shadow_entries = fast_client_shadow_entries.saturating_add(1);
+                fast_client_shadow_rx_bps =
+                    fast_client_shadow_rx_bps.saturating_add(sample.fast_total_bps);
+            }
+        }
         let fast_rate_telemetry = self.nss.fast_rate_shadow_telemetry();
         if let Some(fast_rate) = self.nss.fast_rate_shadow_latest() {
             let comparison = self.nss.fast_rate_shadow_comparison();
@@ -1733,6 +1757,10 @@ impl ProductionRuntime {
                     "last_zero_latency_ms": fast_rate_telemetry.last_zero_latency_ms,
                     "last_rise_latency_ms": fast_rate_telemetry.last_rise_latency_ms,
                     "last_error": self.nss.fast_rate_shadow_last_error_code(),
+                    "client_shadow_entries": fast_client_shadow_entries,
+                    "client_shadow_tx_bps": fast_client_shadow_tx_bps,
+                    "client_shadow_rx_bps": fast_client_shadow_rx_bps,
+                    "client_shadow_invalid_windows": self.nss.fast_rate_shadow_client_invalid_windows(),
                     "formal_rate_owner": false,
                 }),
             );
@@ -1751,6 +1779,10 @@ impl ProductionRuntime {
                     "zero_windows": fast_rate_telemetry.zero_windows,
                     "last_invalid_ms": fast_rate_telemetry.last_invalid_ms,
                     "last_error": self.nss.fast_rate_shadow_last_error_code(),
+                    "client_shadow_entries": fast_client_shadow_entries,
+                    "client_shadow_tx_bps": fast_client_shadow_tx_bps,
+                    "client_shadow_rx_bps": fast_client_shadow_rx_bps,
+                    "client_shadow_invalid_windows": self.nss.fast_rate_shadow_client_invalid_windows(),
                     "formal_rate_owner": false,
                 }),
             );

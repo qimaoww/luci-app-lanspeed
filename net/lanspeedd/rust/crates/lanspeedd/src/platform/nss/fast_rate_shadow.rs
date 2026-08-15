@@ -7,6 +7,7 @@
 use super::{
     fast_n_runtime::FastNSnapshot,
     fast_rate::{FastCounterSample, FastRateCoordinator, FastWindowError},
+    fast_rate_clients::{FastClientRateBook, FastClientSample},
     fast_rate_store::{FastRateSample, FastRateStore, FastRateTelemetry, FastShadowComparison},
     fast_s_runtime::FastSSnapshot,
 };
@@ -15,6 +16,7 @@ use super::{
 pub(crate) struct FastRateShadow {
     coordinator: FastRateCoordinator,
     store: FastRateStore,
+    client_rates: FastClientRateBook,
     edge_bps: Option<u64>,
     comparison: Option<FastShadowComparison>,
     last_error: Option<FastWindowError>,
@@ -63,9 +65,26 @@ impl FastRateShadow {
             || fast_s.truncated
             || fast_s.invalid_entries != 0
         {
+            self.client_rates.observe(
+                fast_n,
+                fast_s,
+                n_read_begin_ms,
+                n_read_end_ms,
+                s_read_begin_ms,
+                s_read_end_ms,
+            );
             self.invalidate(fast_n.sample_ms.max(fast_s.sample_ms));
             return;
         }
+
+        self.client_rates.observe(
+            fast_n,
+            fast_s,
+            n_read_begin_ms,
+            n_read_end_ms,
+            s_read_begin_ms,
+            s_read_end_ms,
+        );
 
         let n = FastCounterSample {
             sample_ms: fast_n.sample_ms,
@@ -112,6 +131,14 @@ impl FastRateShadow {
         self.coordinator.clear();
         self.last_error = None;
         self.store.record_invalid(sample_ms);
+    }
+
+    pub(crate) fn client_rate(&self, mac: [u8; 6], direction: u8) -> Option<FastClientSample> {
+        self.client_rates.get(mac, direction)
+    }
+
+    pub(crate) const fn client_invalid_windows(&self) -> u64 {
+        self.client_rates.invalid_windows()
     }
 }
 
@@ -177,6 +204,12 @@ mod tests {
                 .comparison()
                 .and_then(|value| value.absolute_delta_bps),
             Some(0)
+        );
+        assert_eq!(
+            shadow
+                .client_rate([2, 0, 0, 0, 0, 1], lanspeed_common::DIR_TX)
+                .map(|value| value.fast_total_bps),
+            None
         );
     }
 
