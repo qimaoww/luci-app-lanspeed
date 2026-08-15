@@ -103,3 +103,30 @@ fn shared_names_and_capacities_match_the_bpf_contract() {
     assert_eq!(MAX_CLIENTS, 2048);
     assert_eq!(MAX_CONN_TUPLES, 8192);
 }
+
+#[test]
+fn nss_generic_netlink_abi_is_stable_and_complete() {
+    use lanspeed_common::nss_genl as abi;
+
+    assert_eq!(abi::FAMILY_NAME, "LANSPEED_NSS");
+    assert_eq!(abi::VERSION, 1);
+    assert_eq!(
+        [
+            abi::CMD_GET_CAPS,
+            abi::CMD_GET_STATE,
+            abi::CMD_GET_STATS,
+            abi::CMD_GET_HEALTH,
+        ],
+        [1, 2, 3, 4]
+    );
+    assert_eq!(abi::A_HEALTHY, 25);
+    assert_eq!(
+        abi::FEATURE_IGS
+            | abi::FEATURE_WIFI_PEER
+            | abi::FEATURE_IGS_STATS
+            | abi::FEATURE_PEER_QUERY
+            | abi::FEATURE_RCU_TAGS
+            | abi::FEATURE_TRUSTED_INGRESS,
+        0x3f
+    );
+}

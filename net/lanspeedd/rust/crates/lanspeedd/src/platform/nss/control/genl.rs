@@ -11,6 +11,7 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
+use lanspeed_common::nss_genl as abi;
 use serde_json::{json, Value};
 
 const NETLINK_GENERIC: libc::c_int = 16;
@@ -23,19 +24,8 @@ const NLMSG_OVERRUN: u16 = 4;
 const CTRL_CMD_GETFAMILY: u8 = 3;
 const CTRL_ATTR_FAMILY_ID: u16 = 1;
 const CTRL_ATTR_FAMILY_NAME: u16 = 2;
-const LANSPEED_NSS_CMD_GET_CAPS: u8 = 1;
-const LANSPEED_NSS_GENL_VERSION: u8 = 1;
-const LANSPEED_NSS_A_ABI_VERSION: u16 = 1;
-const LANSPEED_NSS_A_FEATURE_BITS: u16 = 2;
-const LANSPEED_NSS_A_MAX_IGS: u16 = 3;
-const LANSPEED_NSS_A_MAX_PEERS: u16 = 4;
-const LANSPEED_NSS_A_MAX_CLIENT_TAGS: u16 = 5;
-const LANSPEED_NSS_A_SUPPORTS_WIFI_PEER: u16 = 6;
-const LANSPEED_NSS_A_SUPPORTS_IGS_STATS: u16 = 7;
-const LANSPEED_NSS_A_SUPPORTS_PEER_QUERY: u16 = 8;
 const NLA_TYPE_MASK: u16 = 0x3fff;
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
-const FAMILY_NAME: &str = "LANSPEED_NSS";
 
 static NEXT_SEQUENCE: AtomicU32 = AtomicU32::new(1);
 
@@ -87,7 +77,7 @@ fn caps_json(caps: Caps) -> Value {
 }
 
 fn family_request(sequence: u32) -> io::Result<Vec<u8>> {
-    let mut name = FAMILY_NAME.as_bytes().to_vec();
+    let mut name = abi::FAMILY_NAME.as_bytes().to_vec();
     name.push(0);
     Ok(generic_request(
         GENL_ID_CTRL,
@@ -99,13 +89,7 @@ fn family_request(sequence: u32) -> io::Result<Vec<u8>> {
 }
 
 fn caps_request(family_id: u16, sequence: u32) -> Vec<u8> {
-    generic_request(
-        family_id,
-        sequence,
-        LANSPEED_NSS_CMD_GET_CAPS,
-        LANSPEED_NSS_GENL_VERSION,
-        &[],
-    )
+    generic_request(family_id, sequence, abi::CMD_GET_CAPS, abi::VERSION, &[])
 }
 
 fn generic_request(
@@ -180,16 +164,14 @@ fn parse_caps_messages(
         let mut values = BTreeMap::new();
         for_each_attribute(&message.payload[GENL_HEADER_LEN..], |kind, value| {
             let number = match kind {
-                LANSPEED_NSS_A_ABI_VERSION
-                | LANSPEED_NSS_A_FEATURE_BITS
-                | LANSPEED_NSS_A_MAX_IGS
-                | LANSPEED_NSS_A_MAX_PEERS
-                | LANSPEED_NSS_A_MAX_CLIENT_TAGS => {
-                    Value::from(read_u32(value).ok_or("short u32")?)
-                }
-                LANSPEED_NSS_A_SUPPORTS_WIFI_PEER
-                | LANSPEED_NSS_A_SUPPORTS_IGS_STATS
-                | LANSPEED_NSS_A_SUPPORTS_PEER_QUERY => {
+                abi::A_ABI_VERSION
+                | abi::A_FEATURE_BITS
+                | abi::A_MAX_IGS
+                | abi::A_MAX_PEERS
+                | abi::A_MAX_CLIENT_TAGS => Value::from(read_u32(value).ok_or("short u32")?),
+                abi::A_SUPPORTS_WIFI_PEER
+                | abi::A_SUPPORTS_IGS_STATS
+                | abi::A_SUPPORTS_PEER_QUERY => {
                     Value::from(value.first().copied().ok_or("short u8")? != 0)
                 }
                 _ => return Ok(()),
@@ -198,14 +180,14 @@ fn parse_caps_messages(
             Ok(())
         })?;
         return Ok(Some(Caps {
-            abi_version: required_u32(&values, LANSPEED_NSS_A_ABI_VERSION)?,
-            feature_bits: required_u32(&values, LANSPEED_NSS_A_FEATURE_BITS)?,
-            max_igs: required_u32(&values, LANSPEED_NSS_A_MAX_IGS)?,
-            max_peers: required_u32(&values, LANSPEED_NSS_A_MAX_PEERS)?,
-            max_client_tags: required_u32(&values, LANSPEED_NSS_A_MAX_CLIENT_TAGS)?,
-            supports_wifi_peer: required_bool(&values, LANSPEED_NSS_A_SUPPORTS_WIFI_PEER)?,
-            supports_igs_stats: required_bool(&values, LANSPEED_NSS_A_SUPPORTS_IGS_STATS)?,
-            supports_peer_query: required_bool(&values, LANSPEED_NSS_A_SUPPORTS_PEER_QUERY)?,
+            abi_version: required_u32(&values, abi::A_ABI_VERSION)?,
+            feature_bits: required_u32(&values, abi::A_FEATURE_BITS)?,
+            max_igs: required_u32(&values, abi::A_MAX_IGS)?,
+            max_peers: required_u32(&values, abi::A_MAX_PEERS)?,
+            max_client_tags: required_u32(&values, abi::A_MAX_CLIENT_TAGS)?,
+            supports_wifi_peer: required_bool(&values, abi::A_SUPPORTS_WIFI_PEER)?,
+            supports_igs_stats: required_bool(&values, abi::A_SUPPORTS_IGS_STATS)?,
+            supports_peer_query: required_bool(&values, abi::A_SUPPORTS_PEER_QUERY)?,
         }));
     }
     Ok(None)
@@ -452,20 +434,20 @@ mod tests {
 
     #[test]
     fn parses_caps_and_rejects_wrong_sequence() {
-        let mut payload = vec![LANSPEED_NSS_CMD_GET_CAPS, LANSPEED_NSS_GENL_VERSION, 0, 0];
+        let mut payload = vec![abi::CMD_GET_CAPS, abi::VERSION, 0, 0];
         for (kind, value) in [
-            (LANSPEED_NSS_A_ABI_VERSION, 1u32.to_ne_bytes().to_vec()),
-            (LANSPEED_NSS_A_FEATURE_BITS, 0x3fu32.to_ne_bytes().to_vec()),
-            (LANSPEED_NSS_A_MAX_IGS, 64u32.to_ne_bytes().to_vec()),
-            (LANSPEED_NSS_A_MAX_PEERS, 64u32.to_ne_bytes().to_vec()),
-            (LANSPEED_NSS_A_MAX_CLIENT_TAGS, 64u32.to_ne_bytes().to_vec()),
+            (abi::A_ABI_VERSION, 1u32.to_ne_bytes().to_vec()),
+            (abi::A_FEATURE_BITS, 0x3fu32.to_ne_bytes().to_vec()),
+            (abi::A_MAX_IGS, 64u32.to_ne_bytes().to_vec()),
+            (abi::A_MAX_PEERS, 64u32.to_ne_bytes().to_vec()),
+            (abi::A_MAX_CLIENT_TAGS, 64u32.to_ne_bytes().to_vec()),
         ] {
             payload.extend_from_slice(&encode_attribute(kind, &value));
         }
         for kind in [
-            LANSPEED_NSS_A_SUPPORTS_WIFI_PEER,
-            LANSPEED_NSS_A_SUPPORTS_IGS_STATS,
-            LANSPEED_NSS_A_SUPPORTS_PEER_QUERY,
+            abi::A_SUPPORTS_WIFI_PEER,
+            abi::A_SUPPORTS_IGS_STATS,
+            abi::A_SUPPORTS_PEER_QUERY,
         ] {
             payload.extend_from_slice(&encode_attribute(kind, &[1]));
         }
@@ -488,7 +470,7 @@ mod tests {
             [3, 1, 0, 0]
         );
         assert!(request
-            .windows(FAMILY_NAME.len())
-            .any(|window| window == FAMILY_NAME.as_bytes()));
+            .windows(abi::FAMILY_NAME.len())
+            .any(|window| window == abi::FAMILY_NAME.as_bytes()));
     }
 }
