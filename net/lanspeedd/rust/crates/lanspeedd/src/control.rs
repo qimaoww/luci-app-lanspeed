@@ -922,6 +922,7 @@ impl ControlManager {
             "verified_directions": verified_directions,
             "nss_verified_directions": nss_verified_directions,
             "cpu_verified_directions": cpu_verified_directions,
+            "hardware_telemetry": crate::platform::nss::control::hardware_telemetry(),
         })
     }
 
