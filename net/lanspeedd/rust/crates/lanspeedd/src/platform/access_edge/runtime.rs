@@ -570,6 +570,45 @@ impl AccessEdgeRuntime {
         &self.latest
     }
 
+    /// Return an aggregate E-authority rate only when every published client
+    /// direction has an authoritative, well-formed segment in this snapshot.
+    /// A partial aggregate is not a valid E comparison target.
+    pub fn authority_bps(&self) -> Option<u64> {
+        let mut total = 0u64;
+        let mut directions = 0usize;
+        for client in &self.latest.clients {
+            let authoritative = match client.attachment.point.kind {
+                AttachmentKind::Wifi => {
+                    client.attachment.trust == AttachmentTrust::AssociatedStation
+                        && client.tx.coverage == Coverage::Full
+                        && client.rx.coverage == Coverage::Full
+                        && client.tx.scope == TrafficScope::Unicast
+                        && client.rx.scope == TrafficScope::Unicast
+                }
+                AttachmentKind::Ethernet => {
+                    !client.attachment.ambiguous
+                        && !matches!(
+                            client.attachment.trust,
+                            AttachmentTrust::Shared | AttachmentTrust::Unknown
+                        )
+                        && client.tx.coverage == Coverage::Partial
+                        && client.rx.coverage == Coverage::Partial
+                        && client.tx.scope == TrafficScope::AllFrames
+                        && client.rx.scope == TrafficScope::AllFrames
+                }
+            };
+            if !authoritative {
+                return None;
+            }
+            for direction in [&client.tx, &client.rx] {
+                let segment = direction.segment?;
+                total = total.saturating_add(segment.bps()?);
+                directions += 1;
+            }
+        }
+        (directions != 0).then_some(total)
+    }
+
     /// Return completeness for the provider that proves this attachment. The
     /// snapshot-level flag remains conservative for global diagnostics, while
     /// ownership and classifier warmup stay independent across Ethernet/Wi-Fi.

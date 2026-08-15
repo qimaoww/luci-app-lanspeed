@@ -1125,6 +1125,7 @@ impl ProductionRuntime {
                     ecm_read_end_ms,
                     fast_s_read_begin_ms,
                     fast_s_read_end_ms,
+                    self.access_edge.authority_bps(),
                 );
             }
         }
@@ -1623,6 +1624,7 @@ impl ProductionRuntime {
         }
         let fast_rate_telemetry = self.nss.fast_rate_shadow_telemetry();
         if let Some(fast_rate) = self.nss.fast_rate_shadow_latest() {
+            let comparison = self.nss.fast_rate_shadow_comparison();
             status_evidence.details.insert(
                 "fast_rate_shadow".into(),
                 json!({
@@ -1632,6 +1634,8 @@ impl ProductionRuntime {
                     "fast_n_bps": fast_rate.fast_n_bps,
                     "fast_s_bps": fast_rate.fast_s_bps,
                     "fast_total_bps": fast_rate.fast_total_bps,
+                    "edge_bps": comparison.and_then(|value| value.edge_bps),
+                    "absolute_delta_bps": comparison.and_then(|value| value.absolute_delta_bps),
                     "valid_windows": fast_rate_telemetry.valid_windows,
                     "invalid_windows": fast_rate_telemetry.invalid_windows,
                     "zero_windows": fast_rate_telemetry.zero_windows,

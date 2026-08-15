@@ -163,6 +163,7 @@ impl NssRuntime {
         n_read_end_ms: u64,
         s_read_begin_ms: u64,
         s_read_end_ms: u64,
+        edge_bps: Option<u64>,
     ) {
         let fast_s = self.fast_s_snapshot().cloned();
         self.fast_rate_shadow.observe(
@@ -172,6 +173,7 @@ impl NssRuntime {
             n_read_end_ms,
             s_read_begin_ms,
             s_read_end_ms,
+            edge_bps,
         );
     }
 
@@ -185,6 +187,12 @@ impl NssRuntime {
         &self,
     ) -> crate::platform::nss::fast_rate_store::FastRateTelemetry {
         self.fast_rate_shadow.telemetry()
+    }
+
+    pub(crate) const fn fast_rate_shadow_comparison(
+        &self,
+    ) -> Option<crate::platform::nss::fast_rate_store::FastShadowComparison> {
+        self.fast_rate_shadow.comparison()
     }
 
     pub(crate) const fn fast_rate_shadow_last_error_code(&self) -> Option<&'static str> {

@@ -7,7 +7,7 @@
 use super::{
     ecm_bpf::EcmBpfSnapshot,
     fast_rate::{FastCounterSample, FastRateCoordinator, FastWindowError},
-    fast_rate_store::{FastRateSample, FastRateStore, FastRateTelemetry},
+    fast_rate_store::{FastRateSample, FastRateStore, FastRateTelemetry, FastShadowComparison},
     fast_s_runtime::FastSSnapshot,
 };
 
@@ -19,6 +19,8 @@ pub(crate) struct FastRateShadow {
     n_packets: u64,
     n_reset_generation: u32,
     n_ready: bool,
+    edge_bps: Option<u64>,
+    comparison: Option<FastShadowComparison>,
     last_error: Option<FastWindowError>,
 }
 
@@ -42,6 +44,10 @@ impl FastRateShadow {
         self.last_error
     }
 
+    pub(crate) const fn comparison(&self) -> Option<FastShadowComparison> {
+        self.comparison
+    }
+
     pub(crate) fn observe(
         &mut self,
         nss: Option<&EcmBpfSnapshot>,
@@ -50,7 +56,9 @@ impl FastRateShadow {
         n_read_end_ms: u64,
         s_read_begin_ms: u64,
         s_read_end_ms: u64,
+        edge_bps: Option<u64>,
     ) {
+        self.edge_bps = edge_bps;
         let Some(nss) = nss else {
             return;
         };
@@ -105,6 +113,7 @@ impl FastRateShadow {
         match self.coordinator.finish(n, s) {
             Ok(window) => {
                 self.store.publish(window);
+                self.comparison = self.store.compare_with_edge(self.edge_bps);
                 self.last_error = None;
                 let _ = self.coordinator.begin(n, s);
             }
@@ -171,6 +180,7 @@ mod tests {
             1_010,
             991,
             1_011,
+            None,
         );
         assert!(shadow.latest().is_none());
         shadow.observe(
@@ -180,11 +190,22 @@ mod tests {
             2_010,
             1_991,
             2_011,
+            Some(3_200),
         );
         let sample = shadow.latest().unwrap();
         assert_eq!(sample.fast_n_bps, 1_600);
         assert_eq!(sample.fast_s_bps, 1_600);
         assert_eq!(sample.fast_total_bps, 3_200);
+        assert_eq!(
+            shadow.comparison().and_then(|value| value.edge_bps),
+            Some(3_200)
+        );
+        assert_eq!(
+            shadow
+                .comparison()
+                .and_then(|value| value.absolute_delta_bps),
+            Some(0)
+        );
     }
 
     #[test]
@@ -197,6 +218,7 @@ mod tests {
             1_010,
             991,
             1_011,
+            None,
         );
         shadow.observe(
             Some(&nss(2_000, 200)),
@@ -208,6 +230,7 @@ mod tests {
             2_010,
             1_991,
             2_011,
+            None,
         );
         assert!(shadow.latest().is_none());
         assert_eq!(shadow.telemetry().invalid_windows, 1);
@@ -223,6 +246,7 @@ mod tests {
             1_010,
             991,
             1_011,
+            None,
         );
         shadow.observe(
             Some(&nss(2_000, 200)),
@@ -235,6 +259,7 @@ mod tests {
             2_010,
             1_991,
             2_011,
+            None,
         );
         shadow.observe(
             Some(&nss(3_000, 300)),
@@ -246,6 +271,7 @@ mod tests {
             3_010,
             2_991,
             3_011,
+            None,
         );
         shadow.observe(
             Some(&nss(4_000, 400)),
@@ -257,6 +283,7 @@ mod tests {
             4_010,
             3_991,
             4_011,
+            None,
         );
         assert!(shadow.latest().is_some());
     }
