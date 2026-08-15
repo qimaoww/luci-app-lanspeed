@@ -419,7 +419,31 @@ function healthyClients() {
 	  pending_clients: 0, error_clients: 0, queue_overflow_clients: 0,
 	  rate_limited_clients: 1, internet_disabled_clients: 1, block_active_clients: 1,
 	  required_directions: 2, verified_directions: 2,
-	  nss_verified_directions: 2, cpu_verified_directions: 1
+	  nss_verified_directions: 2, cpu_verified_directions: 1,
+	  hardware_telemetry: {
+	    state: 'ready', sync_count: 1, last_sync_ns: 2, igs_bytes: 3,
+	    igs_packets: 4, igs_drops: 5, peer_generation: 6, peer_reassert: 7,
+	    ack_latency_last_ns: 8, ack_latency_max_ns: 9, ack_received: 10,
+	    ack_timeout: 11, ack_late: 12, control_generation: 13,
+	    hardware_generation: 14,
+	    genl_caps: {
+	      state: 'ready', abi_version: 1, feature_bits: 2, max_igs: 3,
+	      max_peers: 4, max_client_tags: 5, supports_wifi_peer: true,
+	      supports_igs_stats: true, supports_peer_query: true
+	    },
+	    genl_state: { state: 'ready', staged: 1, published: 1, degraded: 0 },
+	    genl_stats: {
+	      state: 'ready', control_generation: 1, hardware_generation: 2,
+	      peer_generation: 3, peer_reassert_count: 4, igs_sync_count: 5,
+	      igs_last_sync_ns: 6, igs_bytes: 7, igs_packets: 8, igs_drops: 9,
+	      ack_latency_last_ns: 10, ack_latency_max_ns: 11, ack_received: 12,
+	      ack_timeout: 13, ack_late: 14
+	    },
+	    genl_health: {
+	      state: 'ready', healthy: true, control_generation: 1,
+	      hardware_generation: 2
+	    }
+	  }
 	};
   return value;
 }
@@ -633,6 +657,10 @@ async function testStrictContracts() {
 	falseVerifiedControl.evidence.nss_control.pending_clients = 1;
 	assert.strictEqual(model.validateRuntimeResponse(falseVerifiedControl, 'clients').valid, false,
 	  'a verified NSS control aggregate cannot retain pending clients');
+	const badHardwareTelemetry = healthyClients();
+	badHardwareTelemetry.evidence.nss_control.hardware_telemetry.genl_stats.unknown = 1;
+	assert.strictEqual(model.validateRuntimeResponse(badHardwareTelemetry, 'clients').valid, false,
+	  'NSS hardware telemetry must reject undeclared generic-netlink fields');
   const badRateReason = clone(futureRateSource);
   badRateReason.clients[0].rate_meta.reason_codes = [ 'contains spaces' ];
   assert.strictEqual(model.validateRuntimeResponse(badRateReason, 'clients').valid, false);
