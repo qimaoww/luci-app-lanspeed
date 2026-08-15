@@ -481,6 +481,22 @@
     "sync_stall": "diagnostic_only",
     "outcomes": ["idle", "aligned", "bpf_only", "igs_only", "divergent"]
   },
+  "evidence_lease": {
+    "module": "rust/crates/lanspeedd/src/platform/nss/evidence_lease.rs",
+    "lifetime_ms": 10000,
+    "issue_requires": ["e_authority", "aligned_classifier_window", "n_s_disjoint"],
+    "transient_e_substitute": "combined_fast_n_plus_fast_s_only",
+    "structural_e_client_total": "forbidden",
+    "ringbuf_drop_invalidates": false,
+    "fast_window_stale_invalidates": false,
+    "generation_fields": [
+      "attachment_generation",
+      "nss_bpf_load_generation",
+      "nss_map_generation",
+      "tc_attach_generation",
+      "layout_generation"
+    ]
+  },
   "diagnostics": {
     "public_client_api_exposes_internal_packets": false,
     "evidence_key": "nss_window",

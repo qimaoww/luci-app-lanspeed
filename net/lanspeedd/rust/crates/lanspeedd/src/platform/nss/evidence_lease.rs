@@ -1,6 +1,12 @@
-//! EvidenceLease and E-authority rules for the NSS RateMux shadow plane.
+//! EvidenceLease and E-authority rules for the production NSS RateMux.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde_json::{json, Value};
 
 use crate::platform::access_edge::types::{ByteDomain, Coverage, Direction, TrafficScope};
+
+pub(crate) const EVIDENCE_LEASE_LIFETIME_NS: u64 = 10_000_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EdgeKind {
@@ -12,6 +18,7 @@ pub(crate) enum EdgeKind {
 pub(crate) struct EdgeObservation {
     pub kind: EdgeKind,
     pub unique: bool,
+    pub sample_available: bool,
     pub coverage: Coverage,
     pub scope: TrafficScope,
 }
@@ -24,28 +31,32 @@ pub(crate) enum EUsability {
 }
 
 pub(crate) fn e_usability(observation: EdgeObservation) -> EUsability {
+    let structurally_owned = observation.unique
+        && match observation.kind {
+            EdgeKind::Wifi => observation.scope == TrafficScope::Unicast,
+            EdgeKind::Port => observation.scope == TrafficScope::AllFrames,
+        };
+    if !structurally_owned {
+        return EUsability::StructuralEUnavailable;
+    }
+    if !observation.sample_available
+        || matches!(
+            observation.coverage,
+            Coverage::Unavailable | Coverage::Degraded
+        )
+    {
+        return EUsability::TransientEUnavailable;
+    }
     let authority = match observation.kind {
-        EdgeKind::Wifi => {
-            observation.coverage == Coverage::Full && observation.scope == TrafficScope::Unicast
-        }
+        EdgeKind::Wifi => observation.coverage == Coverage::Full,
         EdgeKind::Port => {
-            observation.unique
-                && matches!(observation.coverage, Coverage::Full | Coverage::Partial)
-                && observation.scope == TrafficScope::AllFrames
+            matches!(observation.coverage, Coverage::Full | Coverage::Partial)
         }
     };
     if authority {
         return EUsability::Authority;
     }
-    if matches!(
-        observation.coverage,
-        Coverage::Unavailable | Coverage::Degraded
-    ) || matches!(observation.scope, TrafficScope::None)
-    {
-        EUsability::TransientEUnavailable
-    } else {
-        EUsability::StructuralEUnavailable
-    }
+    EUsability::StructuralEUnavailable
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -141,6 +152,122 @@ pub(crate) fn lease_invalidation(
     None
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct EvidenceLeaseBook {
+    leases: BTreeMap<(String, Direction), EvidenceLease>,
+    issued: u64,
+    invalidated: u64,
+    expired: u64,
+    last_invalidation: Option<LeaseInvalidation>,
+}
+
+impl EvidenceLeaseBook {
+    pub(crate) fn issue(
+        &mut self,
+        client_identity: &str,
+        direction: Direction,
+        generations: LeaseGenerations,
+        byte_domain: ByteDomain,
+        n_s_disjoint: bool,
+        now_ns: u64,
+    ) -> bool {
+        let key = (client_identity.to_owned(), direction);
+        if !n_s_disjoint {
+            self.leases.remove(&key);
+            return false;
+        }
+        self.leases.insert(
+            key,
+            EvidenceLease {
+                client_identity: client_identity.to_owned(),
+                direction,
+                generations,
+                byte_domain,
+                n_s_disjoint,
+                issued_at_ns: now_ns,
+                valid_until_ns: now_ns.saturating_add(EVIDENCE_LEASE_LIFETIME_NS),
+            },
+        );
+        self.issued = self.issued.saturating_add(1);
+        true
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn permits(
+        &mut self,
+        client_identity: &str,
+        direction: Direction,
+        now_ns: u64,
+        generations: LeaseGenerations,
+        byte_domain: ByteDomain,
+        n_s_disjoint: bool,
+        counter_reset: bool,
+        map_loss: bool,
+        integrity_failure: bool,
+    ) -> bool {
+        let key = (client_identity.to_owned(), direction);
+        let Some(lease) = self.leases.get(&key) else {
+            return false;
+        };
+        if let Some(reason) = lease_invalidation(
+            lease,
+            generations,
+            byte_domain,
+            n_s_disjoint,
+            counter_reset,
+            map_loss,
+            integrity_failure,
+        ) {
+            self.leases.remove(&key);
+            self.invalidated = self.invalidated.saturating_add(1);
+            self.last_invalidation = Some(reason);
+            return false;
+        }
+        if !lease.is_valid(now_ns, generations, byte_domain, n_s_disjoint) {
+            self.leases.remove(&key);
+            self.expired = self.expired.saturating_add(1);
+            return false;
+        }
+        true
+    }
+
+    pub(crate) fn remove(&mut self, client_identity: &str, direction: Direction) {
+        self.leases.remove(&(client_identity.to_owned(), direction));
+    }
+
+    pub(crate) fn retain_identities(&mut self, identities: &BTreeSet<String>) {
+        self.leases
+            .retain(|(identity, _), _| identities.contains(identity));
+    }
+
+    pub(crate) fn evidence(&self) -> Value {
+        json!({
+            "active": self.leases.len(),
+            "issued": self.issued,
+            "invalidated": self.invalidated,
+            "expired": self.expired,
+            "last_invalidation": self.last_invalidation.map(LeaseInvalidation::as_str),
+        })
+    }
+}
+
+impl LeaseInvalidation {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::AttachmentGeneration => "attachment_generation",
+            Self::NssBpfLoadGeneration => "nss_bpf_load_generation",
+            Self::NssMapGeneration => "nss_map_generation",
+            Self::TcAttachGeneration => "tc_attach_generation",
+            Self::LayoutGeneration => "layout_generation",
+            Self::ByteDomain => "byte_domain",
+            Self::CounterReset => "counter_reset",
+            Self::MapLoss => "map_loss",
+            Self::IntegrityFailure => "integrity_failure",
+            Self::NsOverlap => "ns_overlap",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +281,7 @@ mod tests {
         EdgeObservation {
             kind,
             unique,
+            sample_available: true,
             coverage,
             scope,
         }
@@ -223,13 +351,15 @@ mod tests {
 
     #[test]
     fn transient_edge_failure_is_not_structural_ambiguity() {
+        let mut missing_sample = edge(
+            EdgeKind::Port,
+            true,
+            Coverage::Partial,
+            TrafficScope::AllFrames,
+        );
+        missing_sample.sample_available = false;
         assert_eq!(
-            e_usability(edge(
-                EdgeKind::Port,
-                true,
-                Coverage::Unavailable,
-                TrafficScope::AllFrames
-            )),
+            e_usability(missing_sample),
             EUsability::TransientEUnavailable
         );
         assert_eq!(
@@ -297,5 +427,102 @@ mod tests {
             ),
             Some(LeaseInvalidation::NsOverlap)
         );
+    }
+
+    #[test]
+    fn lease_book_issues_expires_and_invalidates_per_identity_direction() {
+        let mut book = EvidenceLeaseBook::default();
+        assert!(book.issue(
+            "client",
+            Direction::Tx,
+            generations(),
+            ByteDomain::L2NoFcs,
+            true,
+            100,
+        ));
+        assert!(book.permits(
+            "client",
+            Direction::Tx,
+            150,
+            generations(),
+            ByteDomain::L2NoFcs,
+            true,
+            false,
+            false,
+            false,
+        ));
+        assert!(!book.permits(
+            "client",
+            Direction::Rx,
+            150,
+            generations(),
+            ByteDomain::L2NoFcs,
+            true,
+            false,
+            false,
+            false,
+        ));
+        assert!(!book.permits(
+            "client",
+            Direction::Tx,
+            150,
+            generations(),
+            ByteDomain::L2NoFcs,
+            true,
+            false,
+            true,
+            false,
+        ));
+        assert_eq!(book.evidence()["invalidated"], 1);
+
+        assert!(book.issue(
+            "expired",
+            Direction::Rx,
+            generations(),
+            ByteDomain::L2NoFcs,
+            true,
+            0,
+        ));
+        assert!(!book.permits(
+            "expired",
+            Direction::Rx,
+            EVIDENCE_LEASE_LIFETIME_NS + 1,
+            generations(),
+            ByteDomain::L2NoFcs,
+            true,
+            false,
+            false,
+            false,
+        ));
+        assert_eq!(book.evidence()["expired"], 1);
+
+        assert!(book.issue(
+            "client",
+            Direction::Tx,
+            generations(),
+            ByteDomain::L2NoFcs,
+            true,
+            200,
+        ));
+        assert!(book.issue(
+            "retired",
+            Direction::Rx,
+            generations(),
+            ByteDomain::L2NoFcs,
+            true,
+            200,
+        ));
+        assert!(!book.issue(
+            "overlap",
+            Direction::Tx,
+            generations(),
+            ByteDomain::L2NoFcs,
+            false,
+            200,
+        ));
+        book.retain_identities(&BTreeSet::from(["client".to_owned()]));
+        assert_eq!(book.evidence()["active"], 1);
+        book.remove("client", Direction::Tx);
+        assert_eq!(book.evidence()["active"], 0);
     }
 }

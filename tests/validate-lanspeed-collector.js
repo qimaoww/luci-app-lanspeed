@@ -83,6 +83,8 @@ const nssOutput = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/out
 const nssEvidence = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/evidence.rs');
 const nssRuntime = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/runtime.rs');
 const nssHardwareVerifier = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/hardware_verifier.rs');
+const nssEvidenceLease = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/evidence_lease.rs');
+const nssRateMux = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/rate_mux.rs');
 const nssModule = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/mod.rs');
 const nssBpfCoverage = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/bpf_coverage.rs');
 const nssTcSnapshot = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/tc_snapshot.rs');
@@ -160,6 +162,17 @@ assert(model.nss_hardware_verifier.client_rate_owner === false &&
   production.includes('self.nss.observe_hardware_verifier(') &&
   production.includes('"nss_hardware_verifier".into()'),
   'kmod IGS counters must independently cross-check ECM-BPF without entering RateMux');
+assert(model.evidence_lease.lifetime_ms === 10000 &&
+  model.evidence_lease.transient_e_substitute === 'combined_fast_n_plus_fast_s_only' &&
+  model.evidence_lease.structural_e_client_total === 'forbidden' &&
+  model.evidence_lease.ringbuf_drop_invalidates === false &&
+  nssEvidenceLease.includes('pub(crate) struct EvidenceLeaseBook') &&
+  nssEvidenceLease.includes('pub sample_available: bool') &&
+  nssRateMux.includes('RoutedLeaseSubstitute') &&
+  nssEvidenceLease.includes('leases.insert(') &&
+  nssEvidenceLease.includes('lease_invalidation(') &&
+  nssEvidenceLease.includes('retain_identities('),
+  'EvidenceLease must model bounded per-direction generations and structural invalidation');
 assert(model.ownership.manual_fallback_forbidden === true,
   'manual rate schemes must fail closed instead of silently switching');
 assert(model.ownership.rate_and_coverage_windows ===
