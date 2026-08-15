@@ -11,9 +11,10 @@
  * behavior when they do not publish the UCI-backed active threshold fields.
  */
 
-var PREF_KEY                  = 'luci-app-lanspeed.prefs.v4';
+var PREF_KEY                  = 'luci-app-lanspeed.prefs.v5';
+var LEGACY_PREF_KEY           = 'luci-app-lanspeed.prefs.v4';
 var MIN_REFRESH_MS            = 1000;
-var NSS_REFRESH_MS            = 2000;
+var NSS_REFRESH_MS            = 1000;
 var ACTIVE_CLIENT_WINDOW_MS   = 10000;
 var ACTIVE_CLIENT_MIN_BPS     = 1;
 var DELTA_SIGNIFICANT_RATIO   = 0.10;
@@ -28,6 +29,7 @@ var REFRESH_CHOICES = [
 ];
 
 var NSS_REFRESH_CHOICES = [
+	{ value:  1000, label: '1s'  },
 	{ value:  2000, label: '2s'  },
 	{ value:  4000, label: '4s'  },
 	{ value:  8000, label: '8s'  },
@@ -39,7 +41,7 @@ var PAGE_SIZE_CHOICES = [ 10, 25, 50, 100 ];
 var SORT_KEYS = [ 'hostname', 'mac', 'tx', 'rx', 'tcp_conns', 'udp_conns' ];
 
 var DEFAULT_PREFS = {
-	refreshMs: 3000,
+	refreshMs: 1000,
 	nssRefreshMs: NSS_REFRESH_MS,
 	unit: 'bit',
 	activeOnly: false,
@@ -291,8 +293,23 @@ function opt(value, label, isSelected) {
 function loadPrefs() {
 	try {
 		var raw = window.localStorage.getItem(PREF_KEY);
+		var legacy = false;
+		if (!raw) {
+			raw = window.localStorage.getItem(LEGACY_PREF_KEY);
+			legacy = Boolean(raw);
+		}
 		if (!raw) return Object.assign({}, DEFAULT_PREFS);
 		var stored = JSON.parse(raw);
+		if (!stored || typeof stored !== 'object' || Array.isArray(stored))
+			return Object.assign({}, DEFAULT_PREFS);
+		if (legacy) {
+			/* v4 defaults were 3s/2s; preserve explicit non-default choices. */
+			if (Number(stored.refreshMs) === 3000)
+				stored.refreshMs = 1000;
+			if (Number(stored.nssRefreshMs) === 2000)
+				stored.nssRefreshMs = 1000;
+			window.localStorage.setItem(PREF_KEY, JSON.stringify(stored));
+		}
 		var prefs = Object.assign({}, DEFAULT_PREFS, stored);
 		if (SORT_KEYS.indexOf(prefs.sortKey) === -1)
 			prefs.sortKey = DEFAULT_PREFS.sortKey;
@@ -317,6 +334,7 @@ function savePrefs(p) {
 
 return baseclass.extend({
 	PREF_KEY:                  PREF_KEY,
+	LEGACY_PREF_KEY:           LEGACY_PREF_KEY,
 	MIN_REFRESH_MS:            MIN_REFRESH_MS,
 	NSS_REFRESH_MS:            NSS_REFRESH_MS,
 	NSS_REFRESH_CHOICES:       NSS_REFRESH_CHOICES,

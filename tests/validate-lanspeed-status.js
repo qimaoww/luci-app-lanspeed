@@ -180,7 +180,8 @@ function createContext() {
 			location: { pathname: '/cgi-bin/luci/admin/status/lanspeed/overview' },
 			localStorage: {
 				getItem: function(key) { return storage.has(key) ? storage.get(key) : null; },
-				setItem: function(key, value) { storage.set(key, String(value)); }
+				setItem: function(key, value) { storage.set(key, String(value)); },
+				removeItem: function(key) { storage.delete(key); }
 			}
 		},
 		document: { createTextNode: function(value) { return String(value); }, body: {} },
@@ -820,6 +821,24 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.strictEqual(fmt.paginate(items, 99, 25).page, 3);
 	assert.strictEqual(fmt.paginate([], -5, 25).page, 1);
 	assert.strictEqual(fmt.paginate(items, 1, 17).pageSize, 25);
+	context.window.localStorage.setItem(fmt.LEGACY_PREF_KEY, JSON.stringify({
+		refreshMs: 3000,
+		nssRefreshMs: 2000,
+		pageSize: 50
+	}));
+	const migratedPrefs = fmt.loadPrefs();
+	assert.strictEqual(migratedPrefs.refreshMs, 1000,
+		'v4 refresh default must migrate to the one-second v5 default');
+	assert.strictEqual(migratedPrefs.nssRefreshMs, 1000,
+		'v4 NSS refresh default must migrate to the one-second v5 default');
+	assert.strictEqual(migratedPrefs.pageSize, 50,
+		'v4 migration must preserve explicit non-refresh preferences');
+	assert.deepStrictEqual(JSON.parse(context.window.localStorage.getItem(fmt.PREF_KEY)), {
+		refreshMs: 1000,
+		nssRefreshMs: 1000,
+		pageSize: 50
+	});
+	context.window.localStorage.removeItem(fmt.PREF_KEY);
 	context.window.localStorage.setItem(fmt.PREF_KEY, JSON.stringify({ pageSize: 17 }));
 	assert.strictEqual(fmt.loadPrefs().pageSize, 25);
 	context.window.localStorage.setItem(fmt.PREF_KEY, JSON.stringify({ pageSize: 50 }));
@@ -827,8 +846,8 @@ function testPaginationAndUiStates(context, fmt) {
 	context.window.localStorage.setItem(fmt.PREF_KEY, JSON.stringify({ nssRefreshMs: 8000 }));
 	assert.strictEqual(fmt.loadPrefs().nssRefreshMs, 8000);
 	context.window.localStorage.setItem(fmt.PREF_KEY, JSON.stringify({ nssRefreshMs: 3000 }));
-	assert.strictEqual(fmt.loadPrefs().nssRefreshMs, 2000,
-		'unsupported legacy NSS cadence must normalize to the safe two-second default');
+	assert.strictEqual(fmt.loadPrefs().nssRefreshMs, 1000,
+		'unsupported legacy NSS cadence must normalize to the safe one-second default');
 
 	const modules = loadShellAndRefresh(context, fmt);
 	let refreshCount = 0;
@@ -878,8 +897,8 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.strictEqual(nssBuilt.refs.intervalSel.disabled, false);
 	assert.deepStrictEqual(
 		Array.from(nssBuilt.refs.intervalSel.children).map(textOf),
-		[ '2s', '4s', '8s', '10s' ],
-		'ECM pages must expose only the four NSS-safe refresh cadences');
+		[ '1s', '2s', '4s', '8s', '10s' ],
+		'ECM pages must expose only the five NSS-safe refresh cadences');
 	modules.refresh.refreshIntervalControl(nssState, nssBuilt.refs, nssState.status);
 	assert.strictEqual(nssBuilt.refs.intervalSel.value, '8000');
 	nssBuilt.refs.intervalSel.value = '4000';
@@ -895,7 +914,7 @@ function testPaginationAndUiStates(context, fmt) {
 	nssState.status.evidence.effective_collector = 'nss_ecm_node';
 	modules.refresh.refreshIntervalControl(nssState, nssBuilt.refs, nssState.status);
 	assert.strictEqual(nssBuilt.refs.intervalSel.disabled, false);
-	assert.strictEqual(nssBuilt.refs.intervalSel.children.length, 4);
+	assert.strictEqual(nssBuilt.refs.intervalSel.children.length, 5);
 	assert.strictEqual(nssBuilt.refs.intervalSel.value, '4000',
 		'automatic recovery to ECM must restore the independent NSS preference');
 	state.refreshLive = function() { refreshCount++; modules.refresh.refreshLive(state); };

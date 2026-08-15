@@ -284,7 +284,7 @@ async page => {
 			await page.waitForTimeout(config.settleMs);
 			if (config.pageName === 'overview') {
 				overviewPreferenceSnapshot = await page.evaluate(() => {
-					try { return window.localStorage.getItem('luci-app-lanspeed.prefs.v4'); }
+					try { return window.localStorage.getItem('luci-app-lanspeed.prefs.v5'); }
 					catch (error) { return null; }
 				});
 			}
@@ -2121,9 +2121,9 @@ async page => {
 				try {
 					await page.evaluate(snapshot => {
 						if (snapshot === null)
-							window.localStorage.removeItem('luci-app-lanspeed.prefs.v4');
+							window.localStorage.removeItem('luci-app-lanspeed.prefs.v5');
 						else
-							window.localStorage.setItem('luci-app-lanspeed.prefs.v4', snapshot);
+							window.localStorage.setItem('luci-app-lanspeed.prefs.v5', snapshot);
 					}, overviewPreferenceSnapshot);
 				} catch (error) {}
 			}

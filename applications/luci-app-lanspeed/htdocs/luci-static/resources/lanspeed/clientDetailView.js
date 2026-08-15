@@ -8,7 +8,8 @@
 'require lanspeed.clientDetailShell as clientDetailShell';
 'require lanspeed.clientDetailRefresh as clientDetailRefresh';
 
-var DETAIL_PREF_KEY = 'luci-app-lanspeed.detail-prefs.v1';
+var DETAIL_PREF_KEY = 'luci-app-lanspeed.detail-prefs.v2';
+var LEGACY_DETAIL_PREF_KEY = 'luci-app-lanspeed.detail-prefs.v1';
 
 function detailStorage() {
 	try {
@@ -20,18 +21,31 @@ function detailStorage() {
 
 function detailPrefs(shared) {
 	var defaults = {
-		refreshMs: 3000,
-		nssRefreshMs: fmt.NSS_REFRESH_MS || 2000,
+		refreshMs: fmt.DEFAULT_PREFS && fmt.DEFAULT_PREFS.refreshMs || 1000,
+		nssRefreshMs: fmt.NSS_REFRESH_MS || 1000,
 		paused: false
 	};
 	var storage = detailStorage();
 	var raw, stored, choices, allowed;
 	if (storage && typeof storage.getItem === 'function') {
 		try {
-			raw = storage.getItem(DETAIL_PREF_KEY);
-			stored = raw ? JSON.parse(raw) : null;
-			if (stored && typeof stored === 'object')
-				defaults = Object.assign(defaults, stored);
+		raw = storage.getItem(DETAIL_PREF_KEY);
+		var legacy = false;
+		if (!raw) {
+			raw = storage.getItem(LEGACY_DETAIL_PREF_KEY);
+			legacy = Boolean(raw);
+		}
+		stored = raw ? JSON.parse(raw) : null;
+		if (stored && typeof stored === 'object') {
+			if (legacy) {
+				if (Number(stored.refreshMs) === 3000)
+					stored.refreshMs = defaults.refreshMs;
+				if (Number(stored.nssRefreshMs) === 2000)
+					stored.nssRefreshMs = defaults.nssRefreshMs;
+				storage.setItem(DETAIL_PREF_KEY, JSON.stringify(stored));
+			}
+			defaults = Object.assign(defaults, stored);
+		}
 		} catch (e) {}
 	} else if (shared) {
 		/* Non-browser callers keep deterministic defaults without a storage API. */
@@ -42,16 +56,16 @@ function detailPrefs(shared) {
 	choices = fmt.REFRESH_CHOICES || [];
 	allowed = choices.map(function(choice) { return Number(choice.value); });
 	if (allowed.length && allowed.indexOf(Number(defaults.refreshMs)) === -1)
-		defaults.refreshMs = 3000;
+		defaults.refreshMs = 1000;
 	else {
 		defaults.refreshMs = Number(defaults.refreshMs);
 		if (!isFinite(defaults.refreshMs) || defaults.refreshMs <= 0)
-			defaults.refreshMs = 3000;
+			defaults.refreshMs = 1000;
 	}
 	if (typeof fmt.normalizeNssRefreshMs === 'function')
 		defaults.nssRefreshMs = fmt.normalizeNssRefreshMs(defaults.nssRefreshMs);
 	else
-		defaults.nssRefreshMs = 2000;
+		defaults.nssRefreshMs = 1000;
 	defaults.paused = defaults.paused === true;
 	return defaults;
 }
@@ -62,9 +76,9 @@ function saveDetailPrefs(prefs) {
 		return;
 	try {
 		storage.setItem(DETAIL_PREF_KEY, JSON.stringify({
-			refreshMs: Number(prefs.refreshMs) || 3000,
+			refreshMs: Number(prefs.refreshMs) || 1000,
 			nssRefreshMs: typeof fmt.normalizeNssRefreshMs === 'function'
-				? fmt.normalizeNssRefreshMs(prefs.nssRefreshMs) : 2000,
+				? fmt.normalizeNssRefreshMs(prefs.nssRefreshMs) : 1000,
 			paused: prefs.paused === true
 		}));
 	} catch (e) {}
@@ -95,8 +109,8 @@ function detailRefreshChoices(status) {
 function detailRefreshMs(status, prefs) {
 	if (nssRefreshRestricted(status))
 		return typeof fmt.normalizeNssRefreshMs === 'function'
-			? fmt.normalizeNssRefreshMs(prefs && prefs.nssRefreshMs) : 2000;
-	return Math.max(fmt.MIN_REFRESH_MS, Number(prefs && prefs.refreshMs) || 3000);
+			? fmt.normalizeNssRefreshMs(prefs && prefs.nssRefreshMs) : 1000;
+		return Math.max(fmt.MIN_REFRESH_MS, Number(prefs && prefs.refreshMs) || 1000);
 }
 
 function loadClient(identityKey) {

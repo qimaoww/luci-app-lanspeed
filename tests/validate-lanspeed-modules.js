@@ -2432,11 +2432,12 @@ function assertClientDetailViewLifecycle(src) {
 		addEventListener: function(type, handler) { listeners[type] = handler; },
 		localStorage: {
 			getItem: function(key) {
-				return key === 'luci-app-lanspeed.detail-prefs.v1'
+				return key === 'luci-app-lanspeed.detail-prefs.v2' ||
+					key === 'luci-app-lanspeed.detail-prefs.v1'
 					? storedDetailPrefs : null;
 			},
 			setItem: function(key, value) {
-				if (key !== 'luci-app-lanspeed.detail-prefs.v1')
+				if (key !== 'luci-app-lanspeed.detail-prefs.v2')
 					fail('clientDetailView.js must not overwrite the LAN client preference key');
 				storedDetailPrefs = value;
 			}
@@ -2464,14 +2465,15 @@ function assertClientDetailViewLifecycle(src) {
 	};
 	const fmt = {
 		MIN_REFRESH_MS: 1000,
-		NSS_REFRESH_MS: 2000,
-		DEFAULT_PREFS: { refreshMs: 3000, nssRefreshMs: 2000 },
+		NSS_REFRESH_MS: 1000,
+		DEFAULT_PREFS: { refreshMs: 1000, nssRefreshMs: 1000 },
 		REFRESH_CHOICES: [
 			{ value: 1000, label: '1s' },
 			{ value: 3000, label: '3s' },
 			{ value: 5000, label: '5s' }
 		],
 		NSS_REFRESH_CHOICES: [
+			{ value: 1000, label: '1s' },
 			{ value: 2000, label: '2s' },
 			{ value: 4000, label: '4s' },
 			{ value: 8000, label: '8s' },
@@ -2482,8 +2484,8 @@ function assertClientDetailViewLifecycle(src) {
 			return effective === 'nss_ecm_node' || effective === 'nss_ecm_bpf';
 		},
 		normalizeNssRefreshMs: function(value) {
-			return [ 2000, 4000, 8000, 10000 ].includes(Number(value))
-				? Number(value) : 2000;
+			return [ 1000, 2000, 4000, 8000, 10000 ].includes(Number(value))
+				? Number(value) : 1000;
 		},
 		nextSort: nextDetailSort,
 		loadPrefs: function() { return { refreshMs: 250, paused: false }; }
@@ -2667,10 +2669,10 @@ function assertClientDetailViewLifecycle(src) {
 		const nssState = shellState;
 		if (nssState.refreshPolicy !== 'nss' || nssState.effectiveRefreshMs() !== 8000 ||
 		    JSON.stringify(nssState.refreshChoices.map(function(choice) { return choice.value; })) !==
-			JSON.stringify([ 2000, 4000, 8000, 10000 ]) ||
+			JSON.stringify([ 1000, 2000, 4000, 8000, 10000 ]) ||
 		    timers.size !== 1 || Array.from(timers.values())[0].interval !== 8000 ||
 		    nssState.prefs.refreshMs !== 1000) {
-			fail('clientDetailView.js must restrict only NSS detail pages to independent 2/4/8/10 second refresh choices');
+			fail('clientDetailView.js must restrict only NSS detail pages to independent 1/2/4/8/10 second refresh choices');
 		}
 		nssState.setRefreshMs(4000);
 		if (nssState.prefs.nssRefreshMs !== 4000 || nssState.prefs.refreshMs !== 1000 ||
@@ -2685,8 +2687,8 @@ function assertClientDetailViewLifecycle(src) {
 		nssReloadDeferred.resolve(fixture);
 		await nssReload;
 		if (nssState.refreshPolicy !== 'nss' || nssState.effectiveRefreshMs() !== 4000 ||
-		    nssState.refreshChoices.length !== 4 || timers.size !== 1 ||
-		    Array.from(timers.values())[0].interval !== 3000) {
+			nssState.refreshChoices.length !== 5 || timers.size !== 1 ||
+			Array.from(timers.values())[0].interval !== 3000) {
 			fail('clientDetailView.js must retain the NSS policy and deduct RPC time from its selected cadence when status refresh fails');
 		}
 		nssState.destroy();
@@ -2751,7 +2753,7 @@ function assertClientDetailGeoLifecycle(src) {
 	const refresh = { render: function() { renders++; } };
 	const fmt = {
 		MIN_REFRESH_MS: 1000,
-		DEFAULT_PREFS: { refreshMs: 3000 },
+		DEFAULT_PREFS: { refreshMs: 1000 },
 		nextSort: nextDetailSort,
 		loadPrefs: function() { return { refreshMs: 1000 }; }
 	};
@@ -2850,7 +2852,7 @@ function assertClientDetailIntegratedState(viewSrc) {
 		const queue = rpcResponses.slice();
 		const view = loadClientDetailViewModule(viewSrc, {
 			MIN_REFRESH_MS: 1000,
-			DEFAULT_PREFS: { refreshMs: 3000 },
+			DEFAULT_PREFS: { refreshMs: 1000 },
 			nextSort: nextDetailSort,
 			loadPrefs: function() { return Object.assign({}, prefs); }
 		}, {
@@ -2920,10 +2922,10 @@ function assertClientDetailIntegratedState(viewSrc) {
 				identityKey: 'fixture@lan', response: fixture, error: null
 			});
 			const interval = Array.from(invalidPrefs.timers.values())[0].interval;
-			if (invalidPrefs.state().prefs.refreshMs !== 3000 || interval !== 3000 ||
-			    !fakeElementText(invalidPrefs.built().refs.footer).includes('每 3 秒自动刷新') ||
+			if (invalidPrefs.state().prefs.refreshMs !== 1000 || interval !== 1000 ||
+			    !fakeElementText(invalidPrefs.built().refs.footer).includes('每 1 秒自动刷新') ||
 			    invalidPrefs.state().updatedAt !== now) {
-				fail('clientDetailView.js must normalize invalid refreshMs to 3000ms, schedule when enabled, and stamp direct initial responses');
+				fail('clientDetailView.js must normalize invalid refreshMs to 1000ms, schedule when enabled, and stamp direct initial responses');
 			}
 		}
 
