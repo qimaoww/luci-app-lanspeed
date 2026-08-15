@@ -391,8 +391,8 @@ async function main() {
     daemonMakefile.includes('TARGET_qualcommax:kmod-sched-core') &&
     daemonMakefile.includes('LANSPEED_X86_CONTROL_DEPENDS:=+TARGET_x86:tc-full +TARGET_x86:ip +TARGET_x86:nftables +TARGET_x86:conntrack +TARGET_x86:kmod-ifb +TARGET_x86:kmod-sched-core +TARGET_x86:kmod-sched'),
     'NSS targets and hook devices must be dynamic while scheduler dependencies stay platform-scoped');
-  const hotRefresh = production.match(/fn refresh_connections[\s\S]*?\n    fn collect\(/)?.[0] || '';
-  assert(hotRefresh.includes('self.decorate_controls(&mut snapshot.clients);') &&
+  const hotRefresh = production.match(/fn refresh_controls[\s\S]*?\n    fn reconcile_control_state\(/)?.[0] || '';
+  assert(hotRefresh.includes('self.control.decorate_response(clients);') &&
     !hotRefresh.includes('self.refresh_controls(&mut snapshot.clients);'),
     'hot clients overlay must decorate rows without mutating the authoritative control inventory');
   const calls = [];
