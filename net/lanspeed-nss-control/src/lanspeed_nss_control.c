@@ -112,6 +112,7 @@ struct lanspeed_ack_txn {
 	struct completion done;
 	refcount_t refs;
 	atomic_t completed;
+	atomic_t callback_ref_released;
 	enum nss_cmn_response response;
 	u64 cookie;
 	void *message;
@@ -130,6 +131,12 @@ static void lanspeed_ack_put(struct lanspeed_ack_txn *txn)
 	}
 }
 
+static void lanspeed_ack_release_callback_ref(struct lanspeed_ack_txn *txn)
+{
+	if (atomic_cmpxchg(&txn->callback_ref_released, 0, 1) == 0)
+		lanspeed_ack_put(txn);
+}
+
 static struct lanspeed_ack_txn *lanspeed_ack_alloc(void)
 {
 	struct lanspeed_ack_txn *txn;
@@ -144,6 +151,7 @@ static struct lanspeed_ack_txn *lanspeed_ack_alloc(void)
 	init_completion(&txn->done);
 	refcount_set(&txn->refs, 2);
 	atomic_set(&txn->completed, 0);
+	atomic_set(&txn->callback_ref_released, 0);
 	txn->response = NSS_CMN_RESPONSE_LAST;
 	txn->cookie = atomic64_inc_return(&lanspeed_ack_cookie);
 	return txn;
@@ -177,7 +185,7 @@ static void lanspeed_ack_callback(void *app_data, struct nss_cmn_msg *message)
 		atomic64_inc(&lanspeed_ack_late);
 		lanspeed_ack_release_message(txn);
 	}
-	lanspeed_ack_put(txn);
+	lanspeed_ack_release_callback_ref(txn);
 }
 
 static int lanspeed_ack_wait(struct lanspeed_ack_txn *txn)
@@ -195,6 +203,7 @@ static void lanspeed_ack_abort(struct lanspeed_ack_txn *txn)
 {
 	if (atomic_cmpxchg(&txn->completed, 0, 1) == 0) {
 		lanspeed_ack_release_message(txn);
+		atomic_set(&txn->callback_ref_released, 1);
 		lanspeed_ack_put(txn);
 	}
 }
