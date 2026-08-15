@@ -85,6 +85,7 @@ const nssRuntime = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/ru
 const nssHardwareVerifier = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/hardware_verifier.rs');
 const nssEvidenceLease = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/evidence_lease.rs');
 const nssRateMux = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/rate_mux.rs');
+const nssFastN = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/fast_n_runtime.rs');
 const nssModule = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/mod.rs');
 const nssBpfCoverage = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/bpf_coverage.rs');
 const nssTcSnapshot = read('net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/tc_snapshot.rs');
@@ -542,11 +543,18 @@ assert(ecmBpf.includes('EcmBpfRuntime') &&
   'ECM+BPF userspace must resolve BTF and attach totals plus NSS context probes');
 assert(ecmBpfProgram.includes('ecm_db_connection_data_totals_update') &&
   ecmBpfProgram.includes('LANSPEED_ECM_CLIENTS') &&
+  ecmBpfProgram.includes('LANSPEED_ECM_FAST_COUNTERS') &&
+  ecmBpfProgram.includes('PerCpuHashMap<EcmKey, FastCounterValue>') &&
   ecmBpfProgram.includes('LANSPEED_ECM_NSS_CONTEXT') &&
   ecmBpfProgram.includes('if !nss') &&
   ecmBpfProgram.includes('generation_ptr.cast::<u32>()') &&
   ecmBpfProgram.includes('padding: [0; 4]'),
   'ECM+BPF program must exclude slow-path ECM calls before publishing hardware counters');
+assert(model.ecm_bpf_model.ecm_fast_counter.map === 'lanspeed_ecm_fast_counters' &&
+  nssFastN.includes('FastNRuntime') &&
+  nssFastN.includes('FastNKey') &&
+  ecmBpf.includes('read_fast_n_counters'),
+  'ECM FastN must have an isolated PerCPU map reader and runtime snapshot');
 assert(ebpfManifest.includes('default = ["x86-tc", "conntrack-kfunc"]') &&
   ebpfManifest.includes('x86-tc = ["tc"]') &&
   ebpfManifest.includes('nss-tc = ["tc"]') &&

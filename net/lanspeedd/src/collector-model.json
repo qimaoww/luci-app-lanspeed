@@ -154,7 +154,7 @@
       "time_added_type": "uint32_t",
       "pointer_size": 8
     },
-    "maps": ["lanspeed_ecm_clients", "lanspeed_ecm_nss_context", "lanspeed_ecm_source_stats"],
+    "maps": ["lanspeed_ecm_clients", "lanspeed_ecm_fast_counters", "lanspeed_ecm_nss_context", "lanspeed_ecm_source_stats"],
     "fast_counter": {
       "map": "lanspeed_fast_counters",
       "writer_sources": [
@@ -180,6 +180,23 @@
         "reset_generation_change": "rebaseline"
       },
       "aggregation": "sum_bytes_packets_max_last_seen",
+      "formal_rate_owner": false
+    },
+    "ecm_fast_counter": {
+      "map": "lanspeed_ecm_fast_counters",
+      "writer_sources": ["rust/crates/lanspeed-ebpf/src/nss/ecm.rs"],
+      "map_type": "percpu_hash",
+      "key": "EcmKey_mac_direction",
+      "capacity": "2_times_max_clients",
+      "value": [
+        "abi_version",
+        "reset_generation",
+        "seq",
+        "bytes",
+        "packets",
+        "last_seen_ns"
+      ],
+      "stable_read": "same_fast_counter_protocol",
       "formal_rate_owner": false
     },
     "map_key": ["client_mac", "direction"],

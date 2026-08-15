@@ -9,6 +9,7 @@ pub(crate) mod evidence;
 pub(crate) mod evidence_lease;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod fast_counter;
+pub(crate) mod fast_n_runtime;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod fast_rate;
 #[cfg(any(feature = "openwrt", test))]

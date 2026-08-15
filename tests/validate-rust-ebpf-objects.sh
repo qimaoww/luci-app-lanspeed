@@ -47,7 +47,7 @@ validate_common() {
 			fail "$label object is missing section ${section//\\/}"
 	done
 
-	license_size=$(awk '$3 == "license" { print $7; found = 1 } END { if (!found) exit 1 }' <<<"$sections") || \
+	license_size=$(awk '{ for (i = 1; i <= NF; i++) if ($i == "license") { print $(i + 4); found = 1 } } END { if (!found) exit 1 }' <<<"$sections") || \
 		fail "$label object license section is missing"
 	[[ $license_size == 000004 ]] || \
 		fail "$label object license section has unexpected size $license_size"
@@ -88,7 +88,8 @@ for forbidden in \
 	lanspeed_ecm_nss_enter_netdev_v4 lanspeed_ecm_nss_exit_netdev_v4 \
 	lanspeed_ecm_nss_enter_netdev_v6 lanspeed_ecm_nss_exit_netdev_v6 \
 	lanspeed_ecm_clients lanspeed_ecm_layout lanspeed_ecm_nss_context \
-	lanspeed_ecm_source_stats lanspeed_ecm_event_ringbuf lanspeed_ecm_event_stats; do
+	lanspeed_ecm_fast_counters lanspeed_ecm_source_stats lanspeed_ecm_event_ringbuf \
+	lanspeed_ecm_event_stats; do
 	if has_symbol "$kfunc_symbols" "$forbidden"; then
 		fail "kfunc TC object unexpectedly contains ECM symbol $forbidden"
 	fi
@@ -108,7 +109,8 @@ for forbidden in \
 	lanspeed_ecm_nss_enter_netdev_v4 lanspeed_ecm_nss_exit_netdev_v4 \
 	lanspeed_ecm_nss_enter_netdev_v6 lanspeed_ecm_nss_exit_netdev_v6 \
 	lanspeed_ecm_clients lanspeed_ecm_layout lanspeed_ecm_nss_context \
-	lanspeed_ecm_source_stats lanspeed_ecm_event_ringbuf lanspeed_ecm_event_stats; do
+	lanspeed_ecm_fast_counters lanspeed_ecm_source_stats lanspeed_ecm_event_ringbuf \
+	lanspeed_ecm_event_stats; do
 	if has_symbol "$fallback_symbols" "$forbidden"; then
 		fail "fallback TC object unexpectedly contains ECM symbol $forbidden"
 	fi
@@ -132,7 +134,7 @@ if [[ -n $ecm_object ]]; then
 	if grep -Eq '[[:space:]]classifier(/|[[:space:]])' <<<"$ecm_sections"; then
 		fail 'ECM object unexpectedly contains a TC classifier section'
 	fi
-	ecm_license_size=$(awk '$3 == "license" { print $7; found = 1 } END { if (!found) exit 1 }' <<<"$ecm_sections") || \
+	ecm_license_size=$(awk '{ for (i = 1; i <= NF; i++) if ($i == "license") { print $(i + 4); found = 1 } } END { if (!found) exit 1 }' <<<"$ecm_sections") || \
 		fail 'ECM object license section is missing'
 	[[ $ecm_license_size == 000004 ]] || \
 		fail "ECM object license section has unexpected size $ecm_license_size"
@@ -148,7 +150,8 @@ if [[ -n $ecm_object ]]; then
 		lanspeed_ecm_nss_enter_netdev_v4 lanspeed_ecm_nss_exit_netdev_v4 \
 		lanspeed_ecm_nss_enter_netdev_v6 lanspeed_ecm_nss_exit_netdev_v6 \
 		lanspeed_ecm_clients lanspeed_ecm_layout lanspeed_ecm_nss_context \
-		lanspeed_ecm_source_stats lanspeed_ecm_event_ringbuf lanspeed_ecm_event_stats; do
+		lanspeed_ecm_fast_counters lanspeed_ecm_source_stats lanspeed_ecm_event_ringbuf \
+		lanspeed_ecm_event_stats; do
 		has_symbol "$ecm_symbols" "$required" || fail "ECM object is missing symbol $required"
 	done
 	for forbidden in \

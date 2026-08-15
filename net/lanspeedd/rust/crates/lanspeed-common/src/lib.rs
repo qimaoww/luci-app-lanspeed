@@ -11,6 +11,7 @@ pub const ECM_NSS_CONTEXT_MAP_NAME: &str = "lanspeed_ecm_nss_context";
 pub const ECM_SOURCE_STATS_MAP_NAME: &str = "lanspeed_ecm_source_stats";
 pub const ECM_EVENT_RINGBUF_MAP_NAME: &str = "lanspeed_ecm_event_ringbuf";
 pub const ECM_EVENT_STATS_MAP_NAME: &str = "lanspeed_ecm_event_stats";
+pub const ECM_FAST_COUNTERS_MAP_NAME: &str = "lanspeed_ecm_fast_counters";
 pub const FAST_COUNTERS_MAP_NAME: &str = "lanspeed_fast_counters";
 
 pub const INGRESS_PROGRAM_NAME: &str = "lanspeed_ingress";
@@ -38,6 +39,7 @@ pub const MAX_ECM_NSS_CONTEXTS: u32 = 4096;
 pub const ECM_EVENT_RINGBUF_BYTES: u32 = 64 * 1024;
 pub const FAST_COUNTER_ABI_VERSION: u32 = 1;
 pub const FAST_COUNTERS_MAP_CAPACITY: u32 = MAX_CLIENTS;
+pub const ECM_FAST_COUNTERS_MAP_CAPACITY: u32 = MAX_CLIENTS * 2;
 
 /// Versioned read-only NSS control ABI. The C module mirrors these values in
 /// its public control header; keeping the Rust side in the common crate makes

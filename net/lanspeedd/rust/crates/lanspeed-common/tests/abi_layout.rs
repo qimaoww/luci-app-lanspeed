@@ -2,7 +2,8 @@ use core::mem::{align_of, offset_of, size_of};
 
 use lanspeed_common::{
     EcmCountersUpdatedEvent, EcmEventStats, EcmNssContext, FastCounterValue, LanspeedConnKey,
-    LanspeedCounters, LanspeedKey, CLIENTS_MAP_NAME, DIR_RX, DIR_TX, EGRESS_EARLY_PROGRAM_NAME,
+    LanspeedCounters, LanspeedKey, CLIENTS_MAP_NAME, DIR_RX, DIR_TX,
+    ECM_FAST_COUNTERS_MAP_CAPACITY, ECM_FAST_COUNTERS_MAP_NAME, EGRESS_EARLY_PROGRAM_NAME,
     EGRESS_PROGRAM_NAME, INGRESS_EARLY_PROGRAM_NAME, INGRESS_PROGRAM_NAME, MAX_CLIENTS,
     MAX_CONN_TUPLES, SEEN_CONNS_MAP_NAME,
 };
@@ -96,12 +97,14 @@ fn directions_match_legacy_values() {
 fn shared_names_and_capacities_match_the_bpf_contract() {
     assert_eq!(CLIENTS_MAP_NAME, "lanspeed_clients");
     assert_eq!(SEEN_CONNS_MAP_NAME, "lanspeed_seen_conns");
+    assert_eq!(ECM_FAST_COUNTERS_MAP_NAME, "lanspeed_ecm_fast_counters");
     assert_eq!(INGRESS_PROGRAM_NAME, "lanspeed_ingress");
     assert_eq!(EGRESS_PROGRAM_NAME, "lanspeed_egress");
     assert_eq!(INGRESS_EARLY_PROGRAM_NAME, "lanspeed_ingress_early");
     assert_eq!(EGRESS_EARLY_PROGRAM_NAME, "lanspeed_egress_early");
     assert_eq!(MAX_CLIENTS, 2048);
     assert_eq!(MAX_CONN_TUPLES, 8192);
+    assert_eq!(ECM_FAST_COUNTERS_MAP_CAPACITY, MAX_CLIENTS * 2);
 }
 
 #[test]

@@ -7,14 +7,15 @@ use aya_ebpf::{
         bpf_probe_read_kernel_buf,
     },
     macros::{kprobe, kretprobe, map},
-    maps::{Array, LruHashMap, RingBuf},
+    maps::{Array, LruHashMap, PerCpuHashMap, RingBuf},
     programs::{ProbeContext, RetProbeContext},
 };
 use lanspeed_common::{
     packet::is_valid_client_mac, EcmCounters, EcmCountersUpdatedEvent, EcmEventStats, EcmKey,
-    EcmLayout, EcmNssContext, EcmSourceStats, DIR_RX, DIR_TX, ECM_EVENT_RINGBUF_BYTES,
-    ECM_SOURCE_NETDEV_V4, ECM_SOURCE_NETDEV_V6, ECM_SOURCE_SYNC_MANY_V4, ECM_SOURCE_SYNC_MANY_V6,
-    MAX_CLIENTS, MAX_ECM_NSS_CONTEXTS,
+    EcmLayout, EcmNssContext, EcmSourceStats, FastCounterValue, DIR_RX, DIR_TX,
+    ECM_EVENT_RINGBUF_BYTES, ECM_FAST_COUNTERS_MAP_CAPACITY, ECM_SOURCE_NETDEV_V4,
+    ECM_SOURCE_NETDEV_V6, ECM_SOURCE_SYNC_MANY_V4, ECM_SOURCE_SYNC_MANY_V6,
+    FAST_COUNTER_ABI_VERSION, MAX_CLIENTS, MAX_ECM_NSS_CONTEXTS,
 };
 
 use crate::atomics::add_u64;
@@ -22,6 +23,13 @@ use crate::atomics::add_u64;
 #[map(name = "lanspeed_ecm_clients")]
 pub static LANSPEED_ECM_CLIENTS: LruHashMap<EcmKey, EcmCounters> =
     LruHashMap::with_max_entries(MAX_CLIENTS * 4, 0);
+
+/// Per-CPU FastN cumulative counters. This map is independent from the
+/// Evidence ledger above: the rate worker performs two lookups and accepts
+/// only identical even sequences before building a same-window N/S delta.
+#[map(name = "lanspeed_ecm_fast_counters")]
+static LANSPEED_ECM_FAST_COUNTERS: PerCpuHashMap<EcmKey, FastCounterValue> =
+    PerCpuHashMap::with_max_entries(ECM_FAST_COUNTERS_MAP_CAPACITY, 0);
 
 #[map(name = "lanspeed_ecm_layout")]
 pub static LANSPEED_ECM_LAYOUT: Array<EcmLayout> = Array::with_max_entries(1, 0);
@@ -298,7 +306,8 @@ fn account(
         mac,
         padding: [0; 4],
     };
-    match LANSPEED_ECM_CLIENTS.get_ptr_mut(&key) {
+    let fast_accounted = unsafe { update_fast_counter(&key, bytes, packets, now) };
+    let ledger_accounted = match LANSPEED_ECM_CLIENTS.get_ptr_mut(&key) {
         Some(value) => unsafe {
             add_u64(addr_of_mut!((*value).bytes), bytes);
             add_u64(addr_of_mut!((*value).packets), packets);
@@ -315,17 +324,80 @@ fn account(
                 .insert(&key, &initial, BPF_NOEXIST as u64)
                 .is_ok()
             {
-                return true;
-            }
-            if let Some(value) = LANSPEED_ECM_CLIENTS.get_ptr_mut(&key) {
+                true
+            } else if let Some(value) = LANSPEED_ECM_CLIENTS.get_ptr_mut(&key) {
                 unsafe {
                     add_u64(addr_of_mut!((*value).bytes), bytes);
                     add_u64(addr_of_mut!((*value).packets), packets);
                     addr_of_mut!((*value).last_seen).write_volatile(now);
                 }
-                return true;
+                true
+            } else {
+                false
             }
-            false
         }
+    };
+    fast_accounted || ledger_accounted
+}
+
+#[inline(always)]
+unsafe fn update_fast_counter(key: &EcmKey, bytes: u64, packets: u64, now: u64) -> bool {
+    let Some(counter) = LANSPEED_ECM_FAST_COUNTERS.get_ptr_mut(key) else {
+        let initial = FastCounterValue {
+            abi_version: FAST_COUNTER_ABI_VERSION,
+            reset_generation: 1,
+            seq: 2,
+            bytes,
+            packets,
+            last_seen_ns: now,
+        };
+        if LANSPEED_ECM_FAST_COUNTERS
+            .insert(key, &initial, BPF_NOEXIST as u64)
+            .is_ok()
+        {
+            return true;
+        }
+        let Some(counter) = LANSPEED_ECM_FAST_COUNTERS.get_ptr_mut(key) else {
+            return false;
+        };
+        return unsafe { update_existing_fast_counter(counter, bytes, packets, now) };
+    };
+    unsafe { update_existing_fast_counter(counter, bytes, packets, now) }
+}
+
+#[inline(always)]
+unsafe fn update_existing_fast_counter(
+    counter: *mut FastCounterValue,
+    bytes: u64,
+    packets: u64,
+    now: u64,
+) -> bool {
+    let abi_version = unsafe { addr_of_mut!((*counter).abi_version).read_volatile() };
+    let reset_generation = unsafe { addr_of_mut!((*counter).reset_generation).read_volatile() };
+    let sequence_value = unsafe { addr_of_mut!((*counter).seq).read_volatile() };
+    if abi_version != FAST_COUNTER_ABI_VERSION || reset_generation == 0 || sequence_value & 1 != 0 {
+        unsafe {
+            addr_of_mut!((*counter).seq).write_volatile(1);
+            addr_of_mut!((*counter).abi_version).write_volatile(FAST_COUNTER_ABI_VERSION);
+            addr_of_mut!((*counter).reset_generation).write_volatile(1);
+            addr_of_mut!((*counter).bytes).write_volatile(bytes);
+            addr_of_mut!((*counter).packets).write_volatile(packets);
+            addr_of_mut!((*counter).last_seen_ns).write_volatile(now);
+            addr_of_mut!((*counter).seq).write_volatile(2);
+        }
+        return true;
     }
+
+    // Per-CPU ownership makes the odd/even sequence the publication barrier
+    // for this slot. Userspace still performs two complete map lookups so a
+    // copied value is never accepted merely because its first seq was even.
+    let sequence = unsafe { addr_of_mut!((*counter).seq) };
+    unsafe {
+        add_u64(sequence, 1);
+        add_u64(addr_of_mut!((*counter).bytes), bytes);
+        add_u64(addr_of_mut!((*counter).packets), packets);
+        addr_of_mut!((*counter).last_seen_ns).write_volatile(now);
+        add_u64(sequence, 1);
+    }
+    true
 }
