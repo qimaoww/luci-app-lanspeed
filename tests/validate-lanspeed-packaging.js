@@ -15,7 +15,12 @@ const nssControlSourceMakefile = fs.readFileSync(path.join(nssControlSourceRoot,
 const nssControlKmodSource = [
   'lanspeed_nss_control_core.c',
   'lanspeed_nss_control_ack.c',
-  'lanspeed_nss_control_telemetry.c'
+  'lanspeed_nss_control_telemetry.c',
+  'lanspeed_nss_control_tags.c',
+  'lanspeed_nss_control_trusted_ingress.c',
+  'lanspeed_nss_control_nexthop.c',
+  'lanspeed_nss_control_peer.c',
+  'lanspeed_nss_control_igs.c'
 ].map((name) => fs.readFileSync(path.join(nssControlSourceRoot, name), 'utf8'))
   .join('\n');
 const buildDriver = fs.readFileSync(
@@ -714,8 +719,8 @@ try {
   assertMatch(nssControlKmodMakefile, /^  SOURCE:=lanspeed-nss-control$/m,
     'NSS control kmod package metadata must not expose a local build path');
   assertMatch(nssControlSourceMakefile,
-    /^lanspeed_nss_control-objs := lanspeed_nss_control_core\.o lanspeed_nss_control_ack\.o lanspeed_nss_control_telemetry\.o$/m,
-    'NSS control kmod must link separate core, ACK, and telemetry objects into one module');
+    /^lanspeed_nss_control-objs := lanspeed_nss_control_core\.o lanspeed_nss_control_ack\.o lanspeed_nss_control_telemetry\.o lanspeed_nss_control_tags\.o lanspeed_nss_control_trusted_ingress\.o lanspeed_nss_control_nexthop\.o lanspeed_nss_control_peer\.o lanspeed_nss_control_igs\.o$/m,
+    'NSS control kmod must link separate responsibility objects into one module');
   assertMatch(nssControlKmodMakefile,
     /define Package\/kmod-lanspeed-nss-control\/postinst[\s\S]*chown 0:0[\s\S]*kmod-lanspeed-nss-control\.list[\s\S]*lanspeed_nss_control\.ko[\s\S]*chmod 0644/,
     'NSS control kmod must normalize installed module metadata to root-owned mode 0644');

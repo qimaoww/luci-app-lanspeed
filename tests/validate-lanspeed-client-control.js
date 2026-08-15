@@ -56,7 +56,12 @@ const nssControlSourceRoot = path.join(root, 'net/lanspeed-nss-control/src');
 const nssKmodSource = [
   'lanspeed_nss_control_core.c',
   'lanspeed_nss_control_ack.c',
-  'lanspeed_nss_control_telemetry.c'
+  'lanspeed_nss_control_telemetry.c',
+  'lanspeed_nss_control_tags.c',
+  'lanspeed_nss_control_trusted_ingress.c',
+  'lanspeed_nss_control_nexthop.c',
+  'lanspeed_nss_control_peer.c',
+  'lanspeed_nss_control_igs.c'
 ].map((name) => fs.readFileSync(path.join(nssControlSourceRoot, name), 'utf8'))
   .join('\n');
 const nssPublishEntry = nssKmodSource.match(
