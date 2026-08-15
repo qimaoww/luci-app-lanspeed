@@ -118,9 +118,12 @@ impl FastRateCoordinator {
         {
             return Err(FastWindowError::AttachmentGenerationChanged);
         }
+        // FastN and FastS are independent maps, so their reset counters are
+        // intentionally not required to have the same numeric value. A
+        // window is valid only when each source remains on its own generation
+        // from start to end.
         if n.reset_generation != start.n.reset_generation
             || s.reset_generation != start.s.reset_generation
-            || n.reset_generation != s.reset_generation
         {
             return Err(FastWindowError::ResetGenerationChanged);
         }

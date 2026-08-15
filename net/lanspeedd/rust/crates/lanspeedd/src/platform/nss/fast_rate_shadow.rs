@@ -1,11 +1,11 @@
 //! Same-window FastN/FastS shadow aggregation.
 //!
-//! The shadow plane consumes ECM hardware deltas and the independent FastS
-//! cumulative map. It never selects a production rate owner; it only records
-//! windows that passed the coordinator's generation and skew checks.
+//! The shadow plane consumes the independent FastN and FastS cumulative maps.
+//! It never selects a production rate owner; it only records windows that
+//! passed the coordinator's generation and skew checks.
 
 use super::{
-    ecm_bpf::EcmBpfSnapshot,
+    fast_n_runtime::FastNSnapshot,
     fast_rate::{FastCounterSample, FastRateCoordinator, FastWindowError},
     fast_rate_store::{FastRateSample, FastRateStore, FastRateTelemetry, FastShadowComparison},
     fast_s_runtime::FastSSnapshot,
@@ -15,10 +15,6 @@ use super::{
 pub(crate) struct FastRateShadow {
     coordinator: FastRateCoordinator,
     store: FastRateStore,
-    n_bytes: u64,
-    n_packets: u64,
-    n_reset_generation: u32,
-    n_ready: bool,
     edge_bps: Option<u64>,
     comparison: Option<FastShadowComparison>,
     last_error: Option<FastWindowError>,
@@ -26,10 +22,7 @@ pub(crate) struct FastRateShadow {
 
 impl FastRateShadow {
     pub(crate) fn new() -> Self {
-        Self {
-            n_reset_generation: 1,
-            ..Self::default()
-        }
+        Self { ..Self::default() }
     }
 
     pub(crate) const fn latest(&self) -> Option<FastRateSample> {
@@ -50,7 +43,7 @@ impl FastRateShadow {
 
     pub(crate) fn observe(
         &mut self,
-        nss: Option<&EcmBpfSnapshot>,
+        fast_n: Option<&FastNSnapshot>,
         fast_s: Option<&FastSSnapshot>,
         n_read_begin_ms: u64,
         n_read_end_ms: u64,
@@ -59,40 +52,29 @@ impl FastRateShadow {
         edge_bps: Option<u64>,
     ) {
         self.edge_bps = edge_bps;
-        let Some(nss) = nss else {
+        let Some(fast_n) = fast_n else {
             return;
         };
         let Some(fast_s) = fast_s else {
             return;
         };
-        if nss.truncated || !nss.coverage_ready || fast_s.truncated || fast_s.invalid_entries != 0 {
-            self.invalidate(
-                nss.coverage_end_ms.max(fast_s.sample_ms),
-                fast_s.reset_generation,
-            );
+        if fast_n.truncated
+            || fast_n.invalid_entries != 0
+            || fast_s.truncated
+            || fast_s.invalid_entries != 0
+        {
+            self.invalidate(fast_n.sample_ms.max(fast_s.sample_ms));
             return;
         }
 
-        if !self.n_ready {
-            self.n_ready = true;
-        }
-        self.n_bytes = self
-            .n_bytes
-            .saturating_add(nss.coverage_delta.tx_bytes)
-            .saturating_add(nss.coverage_delta.rx_bytes);
-        self.n_packets = self
-            .n_packets
-            .saturating_add(nss.coverage_delta.tx_packets)
-            .saturating_add(nss.coverage_delta.rx_packets);
-
         let n = FastCounterSample {
-            sample_ms: nss.coverage_end_ms,
+            sample_ms: fast_n.sample_ms,
             read_begin_ms: n_read_begin_ms,
             read_end_ms: n_read_end_ms,
             attachment_generation: 0,
-            reset_generation: self.n_reset_generation,
-            bytes: self.n_bytes,
-            packets: self.n_packets,
+            reset_generation: fast_n.reset_generation,
+            bytes: fast_n.bytes,
+            packets: fast_n.packets,
         };
         let s = FastCounterSample {
             sample_ms: fast_s.sample_ms,
@@ -126,13 +108,7 @@ impl FastRateShadow {
         }
     }
 
-    fn invalidate(&mut self, sample_ms: u64, reset_generation: u32) {
-        self.n_reset_generation = reset_generation.max(1);
-        if self.n_ready {
-            self.n_ready = false;
-            self.n_bytes = 0;
-            self.n_packets = 0;
-        }
+    fn invalidate(&mut self, sample_ms: u64) {
         self.coordinator.clear();
         self.last_error = None;
         self.store.record_invalid(sample_ms);
@@ -142,20 +118,16 @@ impl FastRateShadow {
 #[cfg(test)]
 mod tests {
     use super::FastRateShadow;
-    use crate::platform::counters::TrafficCounters;
-    use crate::platform::nss::{ecm_bpf::EcmBpfSnapshot, fast_s_runtime::FastSSnapshot};
+    use crate::platform::nss::{fast_n_runtime::FastNSnapshot, fast_s_runtime::FastSSnapshot};
 
-    fn nss(end_ms: u64, bytes: u64) -> EcmBpfSnapshot {
-        EcmBpfSnapshot {
-            coverage_delta: TrafficCounters {
-                tx_bytes: bytes,
-                ..TrafficCounters::default()
-            },
-            coverage_start_ms: Some(end_ms.saturating_sub(1_000)),
-            coverage_end_ms: end_ms,
-            coverage_ready: true,
+    fn fast_n(end_ms: u64, bytes: u64) -> FastNSnapshot {
+        FastNSnapshot {
+            bytes,
+            packets: bytes / 10,
+            reset_generation: 1,
             sample_ms: end_ms,
-            ..EcmBpfSnapshot::default()
+            valid_entries: 1,
+            ..FastNSnapshot::default()
         }
     }
 
@@ -174,7 +146,7 @@ mod tests {
     fn publishes_only_same_window_shadow_samples() {
         let mut shadow = FastRateShadow::new();
         shadow.observe(
-            Some(&nss(1_000, 100)),
+            Some(&fast_n(1_000, 100)),
             Some(&fast_s(1_000, 50)),
             990,
             1_010,
@@ -184,7 +156,7 @@ mod tests {
         );
         assert!(shadow.latest().is_none());
         shadow.observe(
-            Some(&nss(2_000, 200)),
+            Some(&fast_n(2_000, 300)),
             Some(&fast_s(2_000, 250)),
             1_990,
             2_010,
@@ -212,7 +184,7 @@ mod tests {
     fn invalid_fast_s_read_does_not_reuse_previous_window() {
         let mut shadow = FastRateShadow::new();
         shadow.observe(
-            Some(&nss(1_000, 100)),
+            Some(&fast_n(1_000, 100)),
             Some(&fast_s(1_000, 50)),
             990,
             1_010,
@@ -221,7 +193,7 @@ mod tests {
             None,
         );
         shadow.observe(
-            Some(&nss(2_000, 200)),
+            Some(&fast_n(2_000, 200)),
             Some(&FastSSnapshot {
                 invalid_entries: 1,
                 ..fast_s(2_000, 150)
@@ -240,7 +212,7 @@ mod tests {
     fn invalidation_rewarms_without_permanent_generation_skew() {
         let mut shadow = FastRateShadow::new();
         shadow.observe(
-            Some(&nss(1_000, 100)),
+            Some(&fast_n(1_000, 100)),
             Some(&fast_s(1_000, 50)),
             990,
             1_010,
@@ -249,7 +221,7 @@ mod tests {
             None,
         );
         shadow.observe(
-            Some(&nss(2_000, 200)),
+            Some(&fast_n(2_000, 200)),
             Some(&FastSSnapshot {
                 invalid_entries: 1,
                 reset_generation: 2,
@@ -262,7 +234,7 @@ mod tests {
             None,
         );
         shadow.observe(
-            Some(&nss(3_000, 300)),
+            Some(&fast_n(3_000, 300)),
             Some(&FastSSnapshot {
                 reset_generation: 2,
                 ..fast_s(3_000, 250)
@@ -274,7 +246,7 @@ mod tests {
             None,
         );
         shadow.observe(
-            Some(&nss(4_000, 400)),
+            Some(&fast_n(4_000, 400)),
             Some(&FastSSnapshot {
                 reset_generation: 2,
                 ..fast_s(4_000, 350)

@@ -6,6 +6,7 @@ use crate::{
             EcmBpfCollectionCheckpoint, EcmBpfRuntime, EcmBpfSnapshot, EcmBpfSnapshotCollector,
         },
         ecm_node::{self, NodeSnapshot},
+        fast_n_runtime::{FastNRuntime, FastNSnapshot},
         fast_rate_shadow::FastRateShadow,
         fast_s_runtime::{FastSRuntime, FastSSnapshot},
         hardware_verifier::HardwareVerifier,
@@ -27,6 +28,7 @@ pub(crate) struct NssRuntime {
     pub(crate) node_windows: NssWindowBook,
     pub(crate) ecm_bpf_coverage: NssCoverageBook,
     pub(crate) ecm_bpf_rates: EcmBpfRateWindowBook,
+    pub(crate) fast_n: FastNRuntime,
     pub(crate) fast_s: FastSRuntime,
     pub(crate) fast_rate_shadow: FastRateShadow,
     pub(crate) hardware_verifier: HardwareVerifier,
@@ -38,6 +40,7 @@ pub(crate) struct NssRuntimeCheckpoint {
     node_windows: NssWindowBook,
     ecm_bpf_coverage: NssCoverageBook,
     ecm_bpf_rates: EcmBpfRateWindowBook,
+    fast_n: FastNRuntime,
     ecm_bpf_error: Option<String>,
     ecm_bpf_error_stage: Option<&'static str>,
     node_error: Option<String>,
@@ -57,6 +60,7 @@ impl Default for NssRuntime {
             node_windows: NssWindowBook::default(),
             ecm_bpf_coverage: NssCoverageBook::default(),
             ecm_bpf_rates: EcmBpfRateWindowBook::default(),
+            fast_n: FastNRuntime::default(),
             fast_s: FastSRuntime::default(),
             fast_rate_shadow: FastRateShadow::new(),
             hardware_verifier: HardwareVerifier::default(),
@@ -108,6 +112,7 @@ impl NssRuntime {
             node_windows: self.node_windows.clone(),
             ecm_bpf_coverage: self.ecm_bpf_coverage.clone(),
             ecm_bpf_rates: self.ecm_bpf_rates.clone(),
+            fast_n: self.fast_n.clone(),
             ecm_bpf_error: self.ecm_bpf_error.clone(),
             ecm_bpf_error_stage: self.ecm_bpf_error_stage,
             node_error: self.node_error.clone(),
@@ -126,6 +131,7 @@ impl NssRuntime {
         self.node_windows = checkpoint.node_windows;
         self.ecm_bpf_coverage = checkpoint.ecm_bpf_coverage;
         self.ecm_bpf_rates = checkpoint.ecm_bpf_rates;
+        self.fast_n = checkpoint.fast_n;
         self.ecm_bpf_error = checkpoint.ecm_bpf_error;
         self.ecm_bpf_error_stage = checkpoint.ecm_bpf_error_stage;
         self.node_error = checkpoint.node_error;
@@ -140,6 +146,26 @@ impl NssRuntime {
         now_ms: u64,
     ) -> FastSSnapshot {
         self.fast_s.collect(read, now_ms)
+    }
+
+    pub(crate) fn collect_fast_n(
+        &mut self,
+        read: crate::platform::nss::ecm_bpf::EcmFastCounterMapRead,
+        now_ms: u64,
+    ) -> FastNSnapshot {
+        self.fast_n.collect(read, now_ms)
+    }
+
+    pub(crate) fn record_fast_n_read_failure(&mut self) {
+        self.fast_n.record_read_failure();
+    }
+
+    pub(crate) const fn fast_n_read_failures(&self) -> u64 {
+        self.fast_n.read_failures()
+    }
+
+    pub(crate) fn fast_n_snapshot(&self) -> Option<&FastNSnapshot> {
+        self.fast_n.last_snapshot()
     }
 
     pub(crate) fn record_fast_s_read_failure(&mut self) {
@@ -208,7 +234,7 @@ impl NssRuntime {
 
     pub(crate) fn observe_fast_rate_shadow(
         &mut self,
-        nss: Option<&EcmBpfSnapshot>,
+        fast_n: Option<&FastNSnapshot>,
         n_read_begin_ms: u64,
         n_read_end_ms: u64,
         s_read_begin_ms: u64,
@@ -217,7 +243,7 @@ impl NssRuntime {
     ) {
         let fast_s = self.fast_s_snapshot().cloned();
         self.fast_rate_shadow.observe(
-            nss,
+            fast_n,
             fast_s.as_ref(),
             n_read_begin_ms,
             n_read_end_ms,

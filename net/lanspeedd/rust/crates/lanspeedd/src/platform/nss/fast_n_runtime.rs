@@ -10,7 +10,7 @@ use lanspeed_common::EcmKey;
 
 use super::{
     ecm_bpf::EcmFastCounterMapRead,
-    fast_counter::{FastCounterAggregate, FastSReader},
+    fast_counter::{FastCounterAggregate, FastSReadError, FastSReader},
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
@@ -59,6 +59,7 @@ pub(crate) struct FastNRuntime {
     invalid_reads: u64,
     truncated_reads: u64,
     reset_generation_changes: u64,
+    read_failures: u64,
 }
 
 impl FastNRuntime {
@@ -107,9 +108,13 @@ impl FastNRuntime {
                         sample_ms: entry_sample_ms,
                     });
                 }
-                Err(_) => {
+                Err(error) => {
                     invalid_entries += 1;
                     self.invalid_reads = self.invalid_reads.saturating_add(1);
+                    if matches!(error, FastSReadError::ResetGenerationChanged { .. }) {
+                        self.reset_generation_changes =
+                            self.reset_generation_changes.saturating_add(1);
+                    }
                 }
             }
         }
@@ -143,6 +148,14 @@ impl FastNRuntime {
 
     pub(crate) const fn reset_generation_changes(&self) -> u64 {
         self.reset_generation_changes
+    }
+
+    pub(crate) const fn read_failures(&self) -> u64 {
+        self.read_failures
+    }
+
+    pub(crate) fn record_read_failure(&mut self) {
+        self.read_failures = self.read_failures.saturating_add(1);
     }
 }
 

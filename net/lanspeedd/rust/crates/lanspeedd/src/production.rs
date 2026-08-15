@@ -1105,12 +1105,35 @@ impl ProductionRuntime {
         if let Some(snapshot) = bpf_snapshot.as_ref() {
             now_ms = now_ms.max(snapshot.sample_ms);
         }
+        let (fast_n_read, fast_n_read_timing) = if self.nss.ecm_bpf.is_some() {
+            let read_begin_ms = production_now_ms().unwrap_or(now_ms);
+            let result = self
+                .nss
+                .ecm_bpf
+                .as_ref()
+                .expect("ECM FastN read requires an active ECM runtime")
+                .read_fast_n_counters();
+            let read_end_ms = production_now_ms().unwrap_or(read_begin_ms);
+            match result {
+                Ok(read) => (Some(read), Some((read_begin_ms, read_end_ms))),
+                Err(_) => {
+                    self.nss.record_fast_n_read_failure();
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
         if fast_s_read_failed {
             self.nss.record_fast_s_read_failure();
         }
         if let Some(read) = fast_s_read {
             let fast_s_snapshot = self.nss.collect_fast_s(read, now_ms);
             now_ms = now_ms.max(fast_s_snapshot.sample_ms);
+        }
+        if let Some(read) = fast_n_read {
+            let fast_n_snapshot = self.nss.collect_fast_n(read, now_ms);
+            now_ms = now_ms.max(fast_n_snapshot.sample_ms);
         }
         let ecm_read_begin_ms = production_now_ms().unwrap_or(now_ms);
         let (ecm_bpf_snapshot, ecm_bpf_snapshot_fresh) = self.nss.collect_ecm_bpf(
@@ -1137,12 +1160,17 @@ impl ProductionRuntime {
         {
             now_ms = now_ms.max(read_end_ms);
         }
-        if ecm_bpf_snapshot_fresh {
-            if let Some((fast_s_read_begin_ms, fast_s_read_end_ms)) = fast_s_read_timing {
+        if let (
+            Some((fast_n_read_begin_ms, fast_n_read_end_ms)),
+            Some((fast_s_read_begin_ms, fast_s_read_end_ms)),
+        ) = (fast_n_read_timing, fast_s_read_timing)
+        {
+            let fast_n_snapshot = self.nss.fast_n_snapshot().cloned();
+            if fast_n_snapshot.is_some() && self.nss.fast_s_snapshot().is_some() {
                 self.nss.observe_fast_rate_shadow(
-                    ecm_bpf_snapshot.as_ref(),
-                    ecm_read_begin_ms,
-                    ecm_read_end_ms,
+                    fast_n_snapshot.as_ref(),
+                    fast_n_read_begin_ms,
+                    fast_n_read_end_ms,
                     fast_s_read_begin_ms,
                     fast_s_read_end_ms,
                     self.access_edge.authority_bps(),
@@ -1654,6 +1682,33 @@ impl ProductionRuntime {
                     "truncated_reads": self.nss.fast_s_truncated_reads(),
                     "read_failures": self.nss.fast_s_read_failures(),
                     "formal_rate_owner": false,
+                }),
+            );
+        }
+        if let Some(fast_n) = self.nss.fast_n_snapshot() {
+            status_evidence.details.insert(
+                "fast_n_shadow".into(),
+                json!({
+                    "sample_ms": fast_n.sample_ms,
+                    "map_entries": fast_n.map_entries,
+                    "valid_entries": fast_n.valid_entries,
+                    "invalid_entries": fast_n.invalid_entries,
+                    "truncated": fast_n.truncated,
+                    "bytes": fast_n.bytes,
+                    "packets": fast_n.packets,
+                    "reset_generation": fast_n.reset_generation,
+                }),
+            );
+        } else if self.nss.fast_n_read_failures() != 0 {
+            status_evidence.details.insert(
+                "fast_n_shadow".into(),
+                json!({
+                    "sample_ms": Value::Null,
+                    "map_entries": 0,
+                    "valid_entries": 0,
+                    "invalid_entries": 0,
+                    "truncated": false,
+                    "read_failures": self.nss.fast_n_read_failures(),
                 }),
             );
         }
