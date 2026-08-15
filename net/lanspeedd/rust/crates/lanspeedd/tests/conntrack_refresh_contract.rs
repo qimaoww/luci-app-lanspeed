@@ -196,28 +196,26 @@ fn client_conntrack_cache_reuses_only_a_fresh_available_snapshot() {
 }
 
 #[test]
-fn production_checks_the_client_cache_before_reading_identities() {
+fn production_runs_conntrack_only_for_the_selected_periodic_owner() {
     let source = include_str!("../src/production.rs");
-    let refresh = source
-        .split("fn refresh_connections(")
-        .nth(1)
-        .unwrap()
-        .split("fn collect(")
-        .next()
-        .unwrap();
-    let plan = refresh
-        .find("client_conntrack_plan(")
-        .expect("clients refresh must consult the conntrack cache policy");
-    let identities = refresh
-        .find("read_identities(")
-        .expect("cache miss must still read identities before conntrack");
+    let collect_inner = source
+        .split("fn collect_inner(")
+        .last()
+        .expect("production must define a collection path");
+    let periodic = collect_inner
+        .find("match periodic_conntrack_plan(decision.rate)")
+        .expect("production must gate conntrack reads behind the periodic plan");
+    let read = collect_inner
+        .find("self\n                    .read_conntrack(&identities")
+        .expect("the periodic read arm must call the bounded conntrack collector");
+    let skip = collect_inner
+        .find("self.conntrack_observation.record_skipped()")
+        .expect("the periodic skip arm must remain observable");
 
+    assert!(periodic < read && periodic < skip);
     assert!(
-        plan < identities,
-        "cache policy must run before identity IO"
+        collect_inner.contains("conntrack = self\n                    .read_conntrack(&identities")
     );
-    assert!(refresh.contains("ClientConntrackPlan::ReuseCached"));
-    assert!(refresh.contains("self.conntrack_snapshot.as_ref()"));
 }
 
 #[test]
