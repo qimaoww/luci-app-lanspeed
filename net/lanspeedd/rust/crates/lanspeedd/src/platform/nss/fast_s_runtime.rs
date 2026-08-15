@@ -6,7 +6,7 @@ use lanspeed_common::LanspeedKey;
 
 use crate::platform::fast_counter_map::FastCounterMapRead;
 
-use super::fast_counter::{FastCounterAggregate, FastSReadError, FastSReader};
+use super::fast_counter::{FastCounterAggregate, FastSReadError, FastSReader, StableReadError};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct FastSKey {
@@ -53,6 +53,17 @@ pub(crate) struct FastSRuntime {
     last_snapshot: Option<FastSSnapshot>,
     reset_generation: u32,
     invalid_reads: u64,
+    invalid_abi: u64,
+    invalid_generation_mismatch: u64,
+    invalid_sequence: u64,
+    invalid_value: u64,
+    invalid_cpu: u64,
+    invalid_no_cpu: u64,
+    invalid_cpu_count: u64,
+    invalid_cpu_generation: u64,
+    last_cpu_generation_expected: Option<u32>,
+    last_cpu_generation_actual: Option<u32>,
+    reset_generation_changes: u64,
     truncated_reads: u64,
     read_failures: u64,
 }
@@ -64,6 +75,17 @@ impl Default for FastSRuntime {
             last_snapshot: None,
             reset_generation: 1,
             invalid_reads: 0,
+            invalid_abi: 0,
+            invalid_generation_mismatch: 0,
+            invalid_sequence: 0,
+            invalid_value: 0,
+            invalid_cpu: 0,
+            invalid_no_cpu: 0,
+            invalid_cpu_count: 0,
+            invalid_cpu_generation: 0,
+            last_cpu_generation_expected: None,
+            last_cpu_generation_actual: None,
+            reset_generation_changes: 0,
             truncated_reads: 0,
             read_failures: 0,
         }
@@ -109,9 +131,7 @@ impl FastSRuntime {
                     });
                 }
                 Err(error) => {
-                    if matches!(error, FastSReadError::ResetGenerationChanged { .. }) {
-                        self.reset_generation = self.reset_generation.saturating_add(1).max(1);
-                    }
+                    self.record_invalid_error(&error);
                     invalid_entries += 1;
                     self.invalid_reads = self.invalid_reads.saturating_add(1);
                 }
@@ -145,12 +165,96 @@ impl FastSRuntime {
         self.truncated_reads
     }
 
+    pub(crate) const fn invalid_abi(&self) -> u64 {
+        self.invalid_abi
+    }
+
+    pub(crate) const fn invalid_sequence(&self) -> u64 {
+        self.invalid_sequence
+    }
+
+    pub(crate) const fn invalid_generation_mismatch(&self) -> u64 {
+        self.invalid_generation_mismatch
+    }
+
+    pub(crate) const fn invalid_value(&self) -> u64 {
+        self.invalid_value
+    }
+
+    pub(crate) const fn invalid_cpu(&self) -> u64 {
+        self.invalid_cpu
+    }
+
+    pub(crate) const fn invalid_no_cpu(&self) -> u64 {
+        self.invalid_no_cpu
+    }
+
+    pub(crate) const fn invalid_cpu_count(&self) -> u64 {
+        self.invalid_cpu_count
+    }
+
+    pub(crate) const fn invalid_cpu_generation(&self) -> u64 {
+        self.invalid_cpu_generation
+    }
+
+    pub(crate) const fn last_cpu_generation_expected(&self) -> Option<u32> {
+        self.last_cpu_generation_expected
+    }
+
+    pub(crate) const fn last_cpu_generation_actual(&self) -> Option<u32> {
+        self.last_cpu_generation_actual
+    }
+
+    pub(crate) const fn reset_generation_changes(&self) -> u64 {
+        self.reset_generation_changes
+    }
+
     pub(crate) const fn read_failures(&self) -> u64 {
         self.read_failures
     }
 
     pub(crate) fn record_read_failure(&mut self) {
         self.read_failures = self.read_failures.saturating_add(1);
+    }
+
+    fn record_invalid_error(&mut self, error: &FastSReadError) {
+        match error {
+            FastSReadError::NoCpuValues => {
+                self.invalid_no_cpu = self.invalid_no_cpu.saturating_add(1);
+                self.invalid_cpu = self.invalid_cpu.saturating_add(1);
+            }
+            FastSReadError::CpuCountChanged { .. } => {
+                self.invalid_cpu_count = self.invalid_cpu_count.saturating_add(1);
+                self.invalid_cpu = self.invalid_cpu.saturating_add(1);
+            }
+            FastSReadError::CpuGenerationMismatch { .. } => {
+                self.invalid_cpu_generation = self.invalid_cpu_generation.saturating_add(1);
+                if let FastSReadError::CpuGenerationMismatch { expected, actual } = error {
+                    self.last_cpu_generation_expected = Some(*expected);
+                    self.last_cpu_generation_actual = Some(*actual);
+                }
+                self.invalid_cpu = self.invalid_cpu.saturating_add(1);
+            }
+            FastSReadError::ResetGenerationChanged { .. } => {
+                self.reset_generation_changes = self.reset_generation_changes.saturating_add(1);
+                self.reset_generation = self.reset_generation.saturating_add(1).max(1);
+            }
+            FastSReadError::CpuValueUnstable { error, .. } => match error {
+                StableReadError::AbiMismatch { .. } => {
+                    self.invalid_abi = self.invalid_abi.saturating_add(1);
+                }
+                StableReadError::ResetGenerationMismatch { .. } => {
+                    self.invalid_generation_mismatch =
+                        self.invalid_generation_mismatch.saturating_add(1);
+                }
+                StableReadError::SequenceUnstable { .. } => {
+                    self.invalid_sequence = self.invalid_sequence.saturating_add(1);
+                }
+                StableReadError::ValueChanged => {
+                    self.invalid_value = self.invalid_value.saturating_add(1);
+                }
+            },
+        }
     }
 }
 

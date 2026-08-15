@@ -33,7 +33,10 @@ pub const FALLBACK_OBJECT_PATH: &str = "/usr/lib/bpf/lanspeed-ebpf-fallback";
 
 use super::snapshot::{BpfSnapshot, BpfSnapshotCollector, ConnectionOverlay, MapRead};
 use super::tc_monitor::TcTopologyMonitor;
-use crate::platform::fast_counter_map::{FastCounterMapRead, RawFastCounterSample};
+use crate::platform::fast_counter_map::{
+    stable_fast_counter_pair, FastCounterMapRead, RawFastCounterSample,
+    FAST_COUNTER_MAP_READ_RETRIES,
+};
 
 pub const NORMAL_PRIORITY: u16 = 49_152;
 pub const NORMAL_HANDLE: u16 = 0x1eed;
@@ -1730,22 +1733,29 @@ impl AyaAdapter for SystemAyaAdapter {
                 truncated = true;
                 break;
             }
-            let first = counters
-                .get(&key, 0)
-                .map_err(|error| {
-                    AdapterError::new(AdapterErrorKind::MapReadFailed, error.to_string())
-                })?
-                .iter()
-                .map(|value| value.0)
-                .collect();
-            let second = counters
-                .get(&key, 0)
-                .map_err(|error| {
-                    AdapterError::new(AdapterErrorKind::MapReadFailed, error.to_string())
-                })?
-                .iter()
-                .map(|value| value.0)
-                .collect();
+            let mut first = Vec::new();
+            let mut second = Vec::new();
+            for _ in 0..FAST_COUNTER_MAP_READ_RETRIES {
+                first = counters
+                    .get(&key, 0)
+                    .map_err(|error| {
+                        AdapterError::new(AdapterErrorKind::MapReadFailed, error.to_string())
+                    })?
+                    .iter()
+                    .map(|value| value.0)
+                    .collect();
+                second = counters
+                    .get(&key, 0)
+                    .map_err(|error| {
+                        AdapterError::new(AdapterErrorKind::MapReadFailed, error.to_string())
+                    })?
+                    .iter()
+                    .map(|value| value.0)
+                    .collect();
+                if stable_fast_counter_pair(&first, &second) {
+                    break;
+                }
+            }
             entries.push(RawFastCounterSample {
                 key: key.0,
                 first,

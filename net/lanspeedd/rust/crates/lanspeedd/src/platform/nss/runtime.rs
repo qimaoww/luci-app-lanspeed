@@ -156,6 +156,50 @@ impl NssRuntime {
         self.fast_s.truncated_reads()
     }
 
+    pub(crate) const fn fast_s_invalid_abi(&self) -> u64 {
+        self.fast_s.invalid_abi()
+    }
+
+    pub(crate) const fn fast_s_invalid_sequence(&self) -> u64 {
+        self.fast_s.invalid_sequence()
+    }
+
+    pub(crate) const fn fast_s_invalid_generation_mismatch(&self) -> u64 {
+        self.fast_s.invalid_generation_mismatch()
+    }
+
+    pub(crate) const fn fast_s_invalid_value(&self) -> u64 {
+        self.fast_s.invalid_value()
+    }
+
+    pub(crate) const fn fast_s_invalid_cpu(&self) -> u64 {
+        self.fast_s.invalid_cpu()
+    }
+
+    pub(crate) const fn fast_s_invalid_no_cpu(&self) -> u64 {
+        self.fast_s.invalid_no_cpu()
+    }
+
+    pub(crate) const fn fast_s_invalid_cpu_count(&self) -> u64 {
+        self.fast_s.invalid_cpu_count()
+    }
+
+    pub(crate) const fn fast_s_invalid_cpu_generation(&self) -> u64 {
+        self.fast_s.invalid_cpu_generation()
+    }
+
+    pub(crate) const fn fast_s_last_cpu_generation_expected(&self) -> Option<u32> {
+        self.fast_s.last_cpu_generation_expected()
+    }
+
+    pub(crate) const fn fast_s_last_cpu_generation_actual(&self) -> Option<u32> {
+        self.fast_s.last_cpu_generation_actual()
+    }
+
+    pub(crate) const fn fast_s_reset_generation_changes(&self) -> u64 {
+        self.fast_s.reset_generation_changes()
+    }
+
     pub(crate) fn observe_fast_rate_shadow(
         &mut self,
         nss: Option<&EcmBpfSnapshot>,

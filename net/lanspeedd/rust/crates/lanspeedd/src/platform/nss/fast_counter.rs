@@ -131,10 +131,14 @@ pub(crate) fn aggregate_per_cpu(
         });
     }
     let mut aggregate = FastCounterAggregate::default();
+    let mut initialized_cpus = 0;
     for (cpu, (before, after)) in first.iter().zip(second).enumerate() {
+        if *before == FastCounterValue::default() && *after == FastCounterValue::default() {
+            continue;
+        }
         let value = validate_stable_pair(*before, *after)
             .map_err(|error| FastSReadError::CpuValueUnstable { cpu, error })?;
-        if cpu == 0 {
+        if initialized_cpus == 0 {
             aggregate.abi_version = value.abi_version;
             aggregate.reset_generation = value.reset_generation;
         } else if value.reset_generation != aggregate.reset_generation {
@@ -143,9 +147,13 @@ pub(crate) fn aggregate_per_cpu(
                 actual: value.reset_generation,
             });
         }
+        initialized_cpus += 1;
         aggregate.bytes = aggregate.bytes.saturating_add(value.bytes);
         aggregate.packets = aggregate.packets.saturating_add(value.packets);
         aggregate.last_seen_ns = aggregate.last_seen_ns.max(value.last_seen_ns);
+    }
+    if initialized_cpus == 0 {
+        return Err(FastSReadError::NoCpuValues);
     }
     Ok(aggregate)
 }
@@ -347,6 +355,35 @@ mod tests {
             Err(FastSReadError::CpuGenerationMismatch {
                 expected: 7,
                 actual: 8,
+            })
+        );
+    }
+
+    #[test]
+    fn skips_uninitialized_per_cpu_slots_but_rejects_one_sided_presence() {
+        let active = value(2);
+        let aggregate = aggregate_per_cpu(
+            &[
+                FastCounterValue::default(),
+                active,
+                FastCounterValue::default(),
+            ],
+            &[
+                FastCounterValue::default(),
+                active,
+                FastCounterValue::default(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(aggregate.bytes, active.bytes);
+        assert_eq!(
+            aggregate_per_cpu(&[FastCounterValue::default()], &[active],),
+            Err(FastSReadError::CpuValueUnstable {
+                cpu: 0,
+                error: StableReadError::AbiMismatch {
+                    first: 0,
+                    second: FAST_COUNTER_ABI_VERSION,
+                },
             })
         );
     }
