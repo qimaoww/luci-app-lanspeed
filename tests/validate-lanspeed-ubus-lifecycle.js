@@ -99,9 +99,9 @@ assert(initScript.includes('procd_add_reload_trigger "lanspeed" "network"'), 'pr
 assert(validateReloadService(initScript), 'reload must preserve a failed NSS transaction and retain the historical x86 restart fallback');
 assert(initScript.includes('transactional NSS reload failed; preserving current dataplane'),
   'NSS reload failure must be observable without restarting the proven dataplane');
-assert(/fn refresh_clients_control_state[\s\S]*runtime\.reconcile_control_state\(\);[\s\S]*runtime\.decorate_controls\(&mut snapshot\.clients\);/.test(production) &&
-  /if method == ubus::Method::Clients[\s\S]*return self\.refresh_clients_control_state\(\);/.test(production),
-  'every NSS clients refresh must structurally audit control without publishing a split conntrack batch');
+assert(/fn before_reply\(&mut self, method: ubus::Method\)[\s\S]*if method == ubus::Method::Reload[\s\S]*self\.reload\(\)/.test(production) &&
+  !production.includes('refresh_clients_control_state'),
+  'ordinary RPCs must remain cache-only while reload keeps its explicit bounded action');
 assert(!/^stop_service\(\)/m.test(initScript), 'owned tc cleanup must not race a daemon that has not stopped yet');
 assert(/^\s*cleanup_lanspeed_tc_filters\s*$/m.test(shellFunctionBody(initScript, 'service_stopped')),
   'service_stopped must remove owned tc filters after procd has stopped the daemon');
