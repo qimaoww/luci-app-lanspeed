@@ -31,6 +31,8 @@ pub(crate) mod output;
 pub(crate) mod rate_mux;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod runtime;
+pub(crate) mod tc_bpf_runtime;
+pub(crate) mod tc_bpf_snapshot;
 pub(crate) mod tc_snapshot;
 #[cfg(any(feature = "openwrt", test))]
 pub mod window;

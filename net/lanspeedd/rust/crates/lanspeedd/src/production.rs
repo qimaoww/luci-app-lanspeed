@@ -46,16 +46,7 @@ use crate::{
     },
     platform::{
         confidence,
-        x86::{
-            coverage_state::X86Coverage,
-            output::clients_response,
-            runtime::{
-                AdapterError, AdapterErrorKind, AttachMode, BpfCollectionCheckpoint,
-                BpfPostCommitCleanup, BpfReconfigureTxn, BpfRuntime, ReconfigureRateBaseline,
-                ReconfigureStrategy, SystemAyaAdapter, SystemAyaLink, FALLBACK_OBJECT_PATH,
-            },
-            snapshot::{BpfSnapshotCollector, ConnectionCounts, ConnectionOverlay},
-        },
+        x86::{coverage_state::X86Coverage, output::clients_response},
     },
     policy::{self, RateCollector},
     probe::{
@@ -71,6 +62,26 @@ use crate::{
 };
 
 use crate::control::ControlManager;
+
+#[cfg(not(feature = "nss-platform"))]
+use crate::platform::x86::{
+    runtime::{
+        AdapterError, AdapterErrorKind, AttachMode, BpfCollectionCheckpoint, BpfPostCommitCleanup,
+        BpfReconfigureTxn, BpfRuntime, ReconfigureRateBaseline, ReconfigureStrategy,
+        SystemAyaAdapter, SystemAyaLink, FALLBACK_OBJECT_PATH,
+    },
+    snapshot::{BpfSnapshotCollector, ConnectionCounts, ConnectionOverlay},
+};
+
+#[cfg(feature = "nss-platform")]
+use crate::platform::nss::{
+    tc_bpf_runtime::{
+        AdapterError, AdapterErrorKind, AttachMode, BpfCollectionCheckpoint, BpfPostCommitCleanup,
+        BpfReconfigureTxn, BpfRuntime, ReconfigureRateBaseline, ReconfigureStrategy,
+        SystemAyaAdapter, SystemAyaLink, FALLBACK_OBJECT_PATH,
+    },
+    tc_bpf_snapshot::{BpfSnapshotCollector, ConnectionCounts, ConnectionOverlay},
+};
 
 #[cfg(feature = "nss-platform")]
 use crate::config::ConnectionCollectorMode;
@@ -90,20 +101,20 @@ use rate_helpers::*;
 use crate::control::{NssPathObservation, NSS_CPU_DOWNLOAD, NSS_CPU_UPLOAD};
 
 #[cfg(feature = "nss-platform")]
-use crate::platform::x86::runtime::AyaAdapter;
+use crate::platform::nss::tc_bpf_runtime::AyaAdapter;
 
 #[cfg(feature = "nss-platform")]
 use crate::config::RateCollectorMode;
 
 #[cfg(all(test, feature = "nss-platform"))]
 use crate::platform::nss::fusion::add_traffic_counters;
+#[cfg(feature = "nss-platform")]
+use crate::platform::nss::tc_bpf_snapshot::BpfSnapshot;
 #[cfg(all(test, feature = "nss-platform"))]
 use crate::platform::nss::{
     output::{coverage_response, nss_rate_coverage_values},
     window::{CoverageWindow, EcmBpfRateBatch, RateWindowValue},
 };
-#[cfg(feature = "nss-platform")]
-use crate::platform::x86::snapshot::BpfSnapshot;
 #[cfg(all(test, feature = "nss-platform"))]
 use crate::probe::Confidence as ProbeConfidence;
 #[cfg(feature = "nss-platform")]

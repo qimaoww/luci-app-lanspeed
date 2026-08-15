@@ -676,12 +676,12 @@ where
             *slot = self.exists(path, evidence, &mut o.probe_error);
         }
         let primary = self.exists(
-            crate::platform::x86::runtime::PRIMARY_OBJECT_PATH,
+            crate::platform::tc_bpf_runtime::PRIMARY_OBJECT_PATH,
             evidence,
             &mut o.probe_error,
         );
         let fallback = self.exists(
-            crate::platform::x86::runtime::FALLBACK_OBJECT_PATH,
+            crate::platform::tc_bpf_runtime::FALLBACK_OBJECT_PATH,
             evidence,
             &mut o.probe_error,
         );

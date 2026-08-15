@@ -1020,12 +1020,12 @@ fn build_evidence(
             None,
         ),
         (
-            crate::platform::x86::runtime::PRIMARY_OBJECT_PATH,
+            crate::platform::tc_bpf_runtime::PRIMARY_OBJECT_PATH,
             o.bpf.object,
             None,
         ),
         (
-            crate::platform::x86::runtime::FALLBACK_OBJECT_PATH,
+            crate::platform::tc_bpf_runtime::FALLBACK_OBJECT_PATH,
             o.bpf.object,
             None,
         ),

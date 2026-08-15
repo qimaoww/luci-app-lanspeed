@@ -12,13 +12,13 @@ const MAX_DRAIN_DATAGRAMS: usize = 64;
 /// A best-effort RTNetlink multicast listener for changes to TC qdiscs and
 /// filters. Failure is intentionally represented as `None`: callers then run
 /// the full `tc` audit every sampling cycle instead of trusting a blind spot.
-pub(super) struct TcTopologyMonitor {
+pub(crate) struct TcTopologyMonitor {
     socket: Option<OwnedFd>,
     receive_buffer: Box<[u8]>,
 }
 
 impl TcTopologyMonitor {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let socket = open_socket().ok();
         Self {
             receive_buffer: if socket.is_some() {
@@ -35,7 +35,7 @@ impl TcTopologyMonitor {
     /// `true` means the caller must perform an exact `tc-full` audit. This is
     /// also returned for overflow, malformed messages, socket errors, and an
     /// unavailable listener so the optimization can never weaken correctness.
-    pub(super) fn topology_changed(&mut self, expected_ifindices: &[i32]) -> bool {
+    pub(crate) fn topology_changed(&mut self, expected_ifindices: &[i32]) -> bool {
         if expected_ifindices.is_empty() {
             return true;
         }
