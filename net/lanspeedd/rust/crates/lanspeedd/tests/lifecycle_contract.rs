@@ -567,20 +567,20 @@ fn hot_collection_uses_one_outer_checkpoint_and_moves_the_unvalidated_snapshot()
 }
 
 #[test]
-fn request_refresh_skips_serialization_while_startup_and_reload_still_validate() {
+fn ordinary_rpcs_are_cache_only_while_startup_and_reload_still_validate() {
     let production = include_str!("../src/production.rs");
-    let request_refresh = production
-        .split("fn refresh_clients_connections(&mut self)")
+    let before_reply = production
+        .split("fn before_reply(&mut self, method: ubus::Method)")
         .nth(1)
         .unwrap()
-        .split("fn before_reply")
+        .split("fn handle_control")
         .next()
         .unwrap();
-    assert_eq!(request_refresh.matches("runtime.checkpoint()").count(), 1);
-    assert!(request_refresh.contains("runtime.restore(checkpoint)"));
-    assert!(request_refresh.contains("self.state.publish_runtime_snapshot(snapshot)"));
-    assert!(!request_refresh.contains("Method::FIXED"));
-    assert!(!request_refresh.contains("snapshot.response("));
+    assert!(before_reply.contains("method == ubus::Method::Reload"));
+    assert!(before_reply.contains("self.reload()"));
+    assert!(before_reply.contains("Ok(())"));
+    assert!(!before_reply.contains("refresh_clients_connections"));
+    assert!(!before_reply.contains("publish_runtime_snapshot"));
 
     let reload_collect = production
         .split("fn collect(&mut self, method: ProbeMethod)")
