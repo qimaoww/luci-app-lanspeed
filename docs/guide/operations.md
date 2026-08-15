@@ -79,4 +79,8 @@ ECM+BPF 还要求可读的 `/sys/kernel/btf/ecm` 和受支持的 `ecm_db_connect
 | NSS 限速应用失败 | 检查路径确认状态、真实 WAN/Access Edge、NSS 根或专属 IFB 队列所有权和结构化原因 |
 | `queue_overflow` | 检查自有 qdisc 的 drops、链路拥塞和队列容量 |
 
+### SDK 基础配置缺失
+
+如果同版 SDK 的标准 `package/.../compile` 在基础包依赖阶段报告目标内核 `.config` 不存在，说明 SDK 的外部构建树尚未准备完整。不得为了 LAN Speed 测试重建、修改或替换外部内核及基础组件；应保留该阻塞证据，先用 LAN Speed 自身的离线契约、对象和包内容校验完成可验证范围，待 SDK 基础构建树由其维护流程准备好后再重跑目标编译。
+
 控制失败后，具体错误会保持到规则或拓扑发生变化，不会被“等待流量验证”覆盖。清理只匹配本服务的平台专用 handle、chain、IFB alias 与 nft comment。
