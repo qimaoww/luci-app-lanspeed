@@ -351,7 +351,14 @@ async function main() {
     nssKmodSource.includes('LANSPEED_IGS_DEGRADED') &&
     nssKmodSource.includes('igs_flow_qos_tag') &&
     nssKmodSource.includes('igs_reply_qos_tag') &&
-	    nssKmodSource.includes('NF_IP_PRI_CONNTRACK + 2') &&
+    nssKmodSource.includes('LANSPEED_NSS_GENL_NAME') &&
+    nssKmodSource.includes('LANSPEED_NSS_CMD_GET_CAPS') &&
+    nssKmodSource.includes('LANSPEED_NSS_CMD_GET_STATE') &&
+    nssKmodSource.includes('LANSPEED_NSS_CMD_GET_STATS') &&
+    nssKmodSource.includes('LANSPEED_NSS_CMD_GET_HEALTH') &&
+    nssControlByModule['genl.rs'].includes('pub(super) fn read') &&
+    nssControlByModule['genl.rs'].includes('CMD_GET_CAPS') &&
+    nssKmodSource.includes('NF_IP_PRI_CONNTRACK + 2') &&
 	    nssControlByModule['capability.rs'].includes('"act_mirred"') &&
 	    nssPublishEntry.indexOf('NSS_IF_SET_IGS_NODE') <
       nssPublishEntry.indexOf('status = lanspeed_set_nexthop') &&
