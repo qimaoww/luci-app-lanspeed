@@ -8,17 +8,14 @@
  */
 
 #include <linux/if.h>
-#include <linux/completion.h>
 #include <linux/etherdevice.h>
 #include <linux/inet.h>
 #include <linux/if_vlan.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
-#include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/mutex.h>
-#include <linux/refcount.h>
 #include <linux/rcupdate.h>
 #include <linux/netfilter.h>
 #include <linux/netfilter_bridge.h>
@@ -37,6 +34,8 @@
 #include <nss_dynamic_interface.h>
 #include <nss_if.h>
 #include <nss_igs.h>
+
+#include "lanspeed_nss_control.h"
 
 enum lanspeed_igs_state {
 	LANSPEED_IGS_STAGED,
@@ -108,177 +107,6 @@ struct lanspeed_trusted_ingress {
 static struct lanspeed_trusted_ingress lanspeed_empty_ingress;
 static struct lanspeed_trusted_ingress __rcu *lanspeed_trusted_ingress =
 	&lanspeed_empty_ingress;
-
-struct lanspeed_ack_txn {
-	struct completion done;
-	refcount_t refs;
-	atomic_t completed;
-	atomic_t callback_ref_released;
-	enum nss_cmn_response response;
-	u64 cookie;
-	u64 started_ns;
-	void *message;
-};
-
-static atomic64_t lanspeed_ack_cookie = ATOMIC64_INIT(0);
-static atomic64_t lanspeed_ack_received = ATOMIC64_INIT(0);
-static atomic64_t lanspeed_ack_timeout = ATOMIC64_INIT(0);
-static atomic64_t lanspeed_ack_late = ATOMIC64_INIT(0);
-static atomic64_t lanspeed_ack_latency_last_ns = ATOMIC64_INIT(0);
-static atomic64_t lanspeed_ack_latency_max_ns = ATOMIC64_INIT(0);
-static atomic64_t lanspeed_igs_sync_count = ATOMIC64_INIT(0);
-static atomic64_t lanspeed_igs_last_sync_ns = ATOMIC64_INIT(0);
-static atomic64_t lanspeed_igs_bytes = ATOMIC64_INIT(0);
-static atomic64_t lanspeed_igs_packets = ATOMIC64_INIT(0);
-static atomic64_t lanspeed_igs_drops = ATOMIC64_INIT(0);
-static atomic64_t lanspeed_peer_generation = ATOMIC64_INIT(0);
-static atomic64_t lanspeed_peer_reassert_count = ATOMIC64_INIT(0);
-static atomic64_t lanspeed_control_generation = ATOMIC64_INIT(0);
-static atomic64_t lanspeed_hardware_generation = ATOMIC64_INIT(0);
-
-static void lanspeed_ack_put(struct lanspeed_ack_txn *txn)
-{
-	if (refcount_dec_and_test(&txn->refs)) {
-		module_put(THIS_MODULE);
-		kfree(txn);
-	}
-}
-
-static void lanspeed_ack_release_callback_ref(struct lanspeed_ack_txn *txn)
-{
-	if (atomic_cmpxchg(&txn->callback_ref_released, 0, 1) == 0)
-		lanspeed_ack_put(txn);
-}
-
-static struct lanspeed_ack_txn *lanspeed_ack_alloc(void)
-{
-	struct lanspeed_ack_txn *txn;
-
-	txn = kzalloc(sizeof(*txn), GFP_KERNEL);
-	if (!txn)
-		return NULL;
-	if (!try_module_get(THIS_MODULE)) {
-		kfree(txn);
-		return NULL;
-	}
-	init_completion(&txn->done);
-	refcount_set(&txn->refs, 2);
-	atomic_set(&txn->completed, 0);
-	atomic_set(&txn->callback_ref_released, 0);
-	txn->response = NSS_CMN_RESPONSE_LAST;
-	txn->cookie = atomic64_inc_return(&lanspeed_ack_cookie);
-	txn->started_ns = ktime_get_ns();
-	return txn;
-}
-
-static void lanspeed_ack_bind_message(struct lanspeed_ack_txn *txn,
-					      void *message)
-{
-	txn->message = message;
-}
-
-static void lanspeed_ack_release_message(struct lanspeed_ack_txn *txn)
-{
-	void *message = xchg(&txn->message, NULL);
-
-	kfree(message);
-}
-
-static void lanspeed_ack_callback(void *app_data, struct nss_cmn_msg *message)
-{
-	struct lanspeed_ack_txn *txn = app_data;
-
-	if (!txn)
-		return;
-	if (atomic_cmpxchg(&txn->completed, 0, 1) == 0) {
-		u64 latency_ns = ktime_get_ns() - txn->started_ns;
-		u64 previous_max;
-
-		txn->response = message->response;
-		atomic64_set(&lanspeed_ack_latency_last_ns, latency_ns);
-		previous_max = atomic64_read(&lanspeed_ack_latency_max_ns);
-		while (latency_ns > previous_max &&
-		       atomic64_cmpxchg(&lanspeed_ack_latency_max_ns,
-					previous_max, latency_ns) != previous_max)
-			previous_max = atomic64_read(&lanspeed_ack_latency_max_ns);
-		lanspeed_ack_release_message(txn);
-		atomic64_inc(&lanspeed_ack_received);
-		if (txn->response == NSS_CMN_RESPONSE_ACK)
-			atomic64_inc(&lanspeed_hardware_generation);
-		complete(&txn->done);
-	} else {
-		atomic64_inc(&lanspeed_ack_late);
-		lanspeed_ack_release_message(txn);
-	}
-	lanspeed_ack_release_callback_ref(txn);
-}
-
-static int lanspeed_ack_wait(struct lanspeed_ack_txn *txn)
-{
-	if (!wait_for_completion_timeout(&txn->done,
-					msecs_to_jiffies(NSS_IF_TX_TIMEOUT))) {
-		if (atomic_cmpxchg(&txn->completed, 0, 1) == 0)
-			atomic64_inc(&lanspeed_ack_timeout);
-		return -ETIMEDOUT;
-	}
-	return txn->response == NSS_CMN_RESPONSE_ACK ? 0 : -EIO;
-}
-
-static void lanspeed_ack_abort(struct lanspeed_ack_txn *txn)
-{
-	if (atomic_cmpxchg(&txn->completed, 0, 1) == 0) {
-		lanspeed_ack_release_message(txn);
-		atomic_set(&txn->callback_ref_released, 1);
-		lanspeed_ack_put(txn);
-	}
-}
-
-static int lanspeed_ack_stats_get(char *buffer,
-					  const struct kernel_param *kp)
-{
-	return scnprintf(buffer, PAGE_SIZE, "v1 received=%lld timeout=%lld late=%lld\n",
-				 (long long)atomic64_read(&lanspeed_ack_received),
-				 (long long)atomic64_read(&lanspeed_ack_timeout),
-				 (long long)atomic64_read(&lanspeed_ack_late));
-}
-
-static int lanspeed_telemetry_get(char *buffer,
-				  const struct kernel_param *kp)
-{
-	return scnprintf(buffer, PAGE_SIZE,
-			 "v1 sync_count=%lld last_sync_ns=%lld igs_bytes=%lld "
-			 "igs_packets=%lld igs_drops=%lld peer_generation=%lld "
-			 "peer_reassert=%lld ack_latency_last_ns=%lld "
-			 "ack_latency_max_ns=%lld ack_received=%lld ack_timeout=%lld "
-			 "ack_late=%lld control_generation=%lld hardware_generation=%lld\n",
-			 (long long)atomic64_read(&lanspeed_igs_sync_count),
-			 (long long)atomic64_read(&lanspeed_igs_last_sync_ns),
-			 (long long)atomic64_read(&lanspeed_igs_bytes),
-			 (long long)atomic64_read(&lanspeed_igs_packets),
-			 (long long)atomic64_read(&lanspeed_igs_drops),
-			 (long long)atomic64_read(&lanspeed_peer_generation),
-			 (long long)atomic64_read(&lanspeed_peer_reassert_count),
-			 (long long)atomic64_read(&lanspeed_ack_latency_last_ns),
-			 (long long)atomic64_read(&lanspeed_ack_latency_max_ns),
-			 (long long)atomic64_read(&lanspeed_ack_received),
-			 (long long)atomic64_read(&lanspeed_ack_timeout),
-			 (long long)atomic64_read(&lanspeed_ack_late),
-			 (long long)atomic64_read(&lanspeed_control_generation),
-			 (long long)atomic64_read(&lanspeed_hardware_generation));
-}
-
-static const struct kernel_param_ops lanspeed_ack_stats_ops = {
-	.get = lanspeed_ack_stats_get,
-};
-
-static const struct kernel_param_ops lanspeed_telemetry_ops = {
-	.get = lanspeed_telemetry_get,
-};
-
-module_param_cb(ack_stats, &lanspeed_ack_stats_ops, NULL, 0444);
-MODULE_PARM_DESC(ack_stats, "LAN Speed NSS ACK transaction telemetry");
-module_param_cb(telemetry, &lanspeed_telemetry_ops, NULL, 0444);
-MODULE_PARM_DESC(telemetry, "LAN Speed NSS hardware and control telemetry");
 
 static struct lanspeed_igs_entry *lanspeed_igs_find_edge(struct net_device *edge);
 
@@ -980,11 +808,8 @@ static void lanspeed_igs_event(void *if_ctx, struct nss_cmn_msg *message)
 		return;
 	sync = &igs->msg.stats;
 	node = &sync->node_stats;
-	atomic64_inc(&lanspeed_igs_sync_count);
-	atomic64_set(&lanspeed_igs_last_sync_ns, ktime_get_ns());
-	atomic64_set(&lanspeed_igs_bytes, node->tx_bytes);
-	atomic64_set(&lanspeed_igs_packets, node->tx_packets);
-	atomic64_set(&lanspeed_igs_drops, sync->igs_stats.tx_dropped);
+	lanspeed_telemetry_igs_sync(node->tx_bytes, node->tx_packets,
+				    sync->igs_stats.tx_dropped);
 	u64_stats_init(&stats.syncp);
 	u64_stats_update_begin(&stats.syncp);
 	u64_stats_set(&stats.rx_packets, node->tx_packets);
@@ -1103,9 +928,7 @@ static int lanspeed_peer_config_apply(struct lanspeed_igs_entry *entry,
 	entry->peer_count = desired->count;
 	memcpy(entry->peers, desired->peers,
 	       desired->count * sizeof(desired->peers[0]));
-	atomic64_inc(&lanspeed_peer_generation);
-	atomic64_add(desired->count, &lanspeed_peer_reassert_count);
-	atomic64_inc(&lanspeed_control_generation);
+	lanspeed_telemetry_peer_apply(desired->count);
 	return 0;
 }
 
@@ -1130,8 +953,7 @@ static int lanspeed_peer_config_reset(struct lanspeed_igs_entry *entry)
 	if (failed)
 		return -EIO;
 	entry->peer_count = 0;
-	atomic64_inc(&lanspeed_peer_generation);
-	atomic64_inc(&lanspeed_control_generation);
+	lanspeed_telemetry_peer_reset();
 	return 0;
 }
 
@@ -1173,7 +995,7 @@ static int lanspeed_igs_publish_entry(struct lanspeed_igs_entry *entry,
 		return -EIO;
 	}
 	entry->state = LANSPEED_IGS_PUBLISHED;
-	atomic64_inc(&lanspeed_control_generation);
+	lanspeed_telemetry_control_event();
 	return 0;
 }
 
@@ -1208,7 +1030,7 @@ static int lanspeed_igs_unpublish_entry(struct lanspeed_igs_entry *entry)
 	dev_put(entry->edge);
 	entry->edge = NULL;
 	entry->state = LANSPEED_IGS_STAGED;
-	atomic64_inc(&lanspeed_control_generation);
+	lanspeed_telemetry_control_event();
 	module_put(THIS_MODULE);
 	return 0;
 }
@@ -1318,7 +1140,7 @@ static int lanspeed_stage_set(const char *value, const struct kernel_param *kp)
 	entry->if_num = if_num;
 	entry->state = LANSPEED_IGS_STAGED;
 	list_add_tail(&entry->list, &lanspeed_igs_entries);
-	atomic64_inc(&lanspeed_control_generation);
+	lanspeed_telemetry_control_event();
 	error = 0;
 out:
 	mutex_unlock(&lanspeed_igs_lock);
@@ -1435,7 +1257,7 @@ static int lanspeed_unstage_set(const char *value,
 		}
 	}
 	lanspeed_igs_unregister(entry);
-	atomic64_inc(&lanspeed_control_generation);
+	lanspeed_telemetry_control_event();
 	error = 0;
 out:
 	mutex_unlock(&lanspeed_igs_lock);

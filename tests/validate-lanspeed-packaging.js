@@ -9,8 +9,15 @@ const root = path.resolve(__dirname, '..');
 const pkgMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
 const nssControlKmodMakefile = fs.readFileSync(path.join(root,
   'net/lanspeed-nss-control/Makefile'), 'utf8');
-const nssControlKmodSource = fs.readFileSync(path.join(root,
-  'net/lanspeed-nss-control/src/lanspeed_nss_control.c'), 'utf8');
+const nssControlSourceRoot = path.join(root, 'net/lanspeed-nss-control/src');
+const nssControlSourceMakefile = fs.readFileSync(path.join(nssControlSourceRoot,
+  'Makefile'), 'utf8');
+const nssControlKmodSource = [
+  'lanspeed_nss_control_core.c',
+  'lanspeed_nss_control_ack.c',
+  'lanspeed_nss_control_telemetry.c'
+].map((name) => fs.readFileSync(path.join(nssControlSourceRoot, name), 'utf8'))
+  .join('\n');
 const buildDriver = fs.readFileSync(
   path.join(root, 'net/lanspeedd/rust/crates/lanspeed-build/src/lib.rs'),
   'utf8'
@@ -706,6 +713,9 @@ try {
     'NSS control kmod must be packaged only for qualcommax with verified IGS dependencies');
   assertMatch(nssControlKmodMakefile, /^  SOURCE:=lanspeed-nss-control$/m,
     'NSS control kmod package metadata must not expose a local build path');
+  assertMatch(nssControlSourceMakefile,
+    /^lanspeed_nss_control-objs := lanspeed_nss_control_core\.o lanspeed_nss_control_ack\.o lanspeed_nss_control_telemetry\.o$/m,
+    'NSS control kmod must link separate core, ACK, and telemetry objects into one module');
   assertMatch(nssControlKmodMakefile,
     /define Package\/kmod-lanspeed-nss-control\/postinst[\s\S]*chown 0:0[\s\S]*kmod-lanspeed-nss-control\.list[\s\S]*lanspeed_nss_control\.ko[\s\S]*chmod 0644/,
     'NSS control kmod must normalize installed module metadata to root-owned mode 0644');
@@ -730,10 +740,9 @@ try {
   assert(
     nssControlKmodSource.includes('NSS_DYNAMIC_INTERFACE_TYPE_VAP') &&
       nssControlKmodSource.includes('NSS_WIFI_VDEV_SET_NEXT_HOP') &&
-      nssControlKmodSource.includes('return lanspeed_wifi_set_nexthop(edge_if_num, NSS_ETH_RX_INTERFACE);') &&
-      nssControlKmodSource.includes('Only peers selected by') &&
-      nssControlKmodSource.includes('wait_for_completion_timeout(&lanspeed_wifi_completion') &&
-      nssControlKmodSource.includes('lanspeed_wifi_response != NSS_CMN_RESPONSE_ACK'),
+      nssControlKmodSource.includes('lanspeed_ack_callback') &&
+      nssControlKmodSource.includes('wait_for_completion_timeout(&txn->done') &&
+      nssControlKmodSource.includes('txn->response == NSS_CMN_RESPONSE_ACK'),
     'NSS control kmod must use the acknowledged Wi-Fi vdev nexthop transaction for dynamic VAP edges'
   );
   assert(

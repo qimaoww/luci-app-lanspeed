@@ -33,7 +33,7 @@ const nssControlDir = path.join(root,
   'net/lanspeedd/rust/crates/lanspeedd/src/platform/nss/control');
 const nssControlModules = [
   'mod.rs', 'capability.rs', 'classifier.rs', 'ecm_qos.rs', 'firewall.rs', 'legacy.rs', 'qdisc.rs',
-  'firewall_tests.rs', 'qdisc_tests.rs', 'rollback.rs', 'shaper.rs', 'state.rs',
+  'firewall_tests.rs', 'hardware_telemetry.rs', 'qdisc_tests.rs', 'rollback.rs', 'shaper.rs', 'state.rs',
   'system.rs', 'system_tests.rs', 'telemetry.rs', 'topology.rs'
 ];
 const nssControlByModule = Object.fromEntries(nssControlModules.map((name) => [
@@ -52,8 +52,13 @@ const nssCpuPathByModule = Object.fromEntries(nssCpuPathModules.map((name) => [
 const nssCpuPath = Object.values(nssCpuPathByModule).join('\n');
 const nssCpuPathProduction = Object.values(nssCpuPathByModule)
   .map((value) => value.split('#[cfg(test)]')[0]).join('\n');
-const nssKmodSource = fs.readFileSync(path.join(root,
-  'net/lanspeed-nss-control/src/lanspeed_nss_control.c'), 'utf8');
+const nssControlSourceRoot = path.join(root, 'net/lanspeed-nss-control/src');
+const nssKmodSource = [
+  'lanspeed_nss_control_core.c',
+  'lanspeed_nss_control_ack.c',
+  'lanspeed_nss_control_telemetry.c'
+].map((name) => fs.readFileSync(path.join(nssControlSourceRoot, name), 'utf8'))
+  .join('\n');
 const nssPublishEntry = nssKmodSource.match(
   /static int lanspeed_igs_publish_entry[\s\S]*?(?=\nstatic int lanspeed_igs_unpublish_entry)/)?.[0] || '';
 const nssUnpublishEntry = nssKmodSource.match(
@@ -329,10 +334,9 @@ async function main() {
     nssKmodSource.includes('NSS_IF_SET_IGS_NODE') &&
     nssKmodSource.includes('nss_if_set_nexthop') &&
     nssKmodSource.includes('NSS_WIFI_VDEV_SET_NEXT_HOP') &&
-    nssKmodSource.includes('return lanspeed_wifi_set_nexthop(edge_if_num, NSS_ETH_RX_INTERFACE);') &&
-    nssKmodSource.includes('Only peers selected by') &&
-    nssKmodSource.includes('wait_for_completion_timeout(&lanspeed_wifi_completion') &&
-    nssKmodSource.includes('lanspeed_wifi_response != NSS_CMN_RESPONSE_ACK') &&
+    nssKmodSource.includes('lanspeed_ack_callback') &&
+    nssKmodSource.includes('wait_for_completion_timeout(&txn->done') &&
+    nssKmodSource.includes('txn->response == NSS_CMN_RESPONSE_ACK') &&
     nssKmodSource.includes('NSS_IF_CLEAR_IGS_NODE') &&
     nssKmodSource.includes('nss_if_reset_nexthop') &&
     nssKmodSource.includes('LANSPEED_IGS_DEGRADED') &&
