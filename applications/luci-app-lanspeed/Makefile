@@ -127,6 +127,7 @@ define Package/luci-app-lanspeed/install
 		"	FULL_VERSION: '$(PKG_VERSION)-r$(PKG_RELEASE)'" \
 		"});" \
 		> $(1)/www/luci-static/resources/lanspeed/version.js
+	chmod 0644 $(1)/www/luci-static/resources/lanspeed/version.js
 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
 	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-lanspeed.json \
 		$(1)/usr/share/luci/menu.d/luci-app-lanspeed.json
