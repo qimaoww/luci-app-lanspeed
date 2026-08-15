@@ -933,7 +933,7 @@ mod tests {
 
     #[test]
     fn write_requests_use_ack_and_bounded_nul_strings() {
-        let attribute = encode_string_attribute(abi::A_IFB_NAME, "lsu12345678").unwrap();
+        let attribute = encode_string_attribute(abi::A_IFB_NAME, "lsuabcdef01").unwrap();
         assert_eq!(attribute.last(), Some(&0));
         assert!(encode_string_attribute(abi::A_IFB_NAME, "bad\0name").is_err());
         let request = generic_request_flags(
