@@ -16,6 +16,52 @@ mod diagnostics_tests {
         assert_eq!(store.load().reload.version, "fresh");
     }
 
+    #[test]
+    fn fast_overlay_is_bound_to_the_exact_base_generation() {
+        let store = SnapshotStore::new(Arc::new(ResponseSnapshot::unsupported("base")));
+        let base = store.generations();
+        assert_eq!(base.fast_generation, 0);
+
+        let fast = store
+            .publish_fast(base.base_generation, |snapshot| {
+                snapshot.reload.version = "fast".into();
+            })
+            .expect("matching base generation must accept a fast overlay");
+        assert_eq!(fast.base_generation, base.base_generation);
+        assert_eq!(fast.fast_generation, 1);
+        assert_eq!(store.load().reload.version, "fast");
+
+        assert!(store
+            .publish_fast(base.base_generation.saturating_add(1), |snapshot| {
+                snapshot.reload.version = "stale".into();
+            })
+            .is_none());
+        assert_eq!(store.load().reload.version, "fast");
+        assert_eq!(store.generations(), fast);
+    }
+
+    #[test]
+    fn publishing_a_base_rearms_the_fast_generation() {
+        let store = SnapshotStore::new(Arc::new(ResponseSnapshot::unsupported("first")));
+        let first = store.generations();
+        let fast = store
+            .publish_fast(first.base_generation, |snapshot| {
+                snapshot.reload.version = "overlay".into();
+            })
+            .unwrap();
+        assert_eq!(fast.fast_generation, 1);
+
+        let second = store.publish_base(Arc::new(ResponseSnapshot::unsupported("second")));
+        assert!(second.base_generation > first.base_generation);
+        assert_eq!(second.fast_generation, 0);
+        assert_eq!(store.load().reload.version, "second");
+        assert!(store
+            .publish_fast(first.base_generation, |snapshot| {
+                snapshot.reload.version = "must_not_publish".into();
+            })
+            .is_none());
+    }
+
     fn set_bpf_evidence(snapshot: &mut ResponseSnapshot, value: Value, live_metrics: bool) {
         snapshot
             .status

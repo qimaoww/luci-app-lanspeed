@@ -1516,24 +1516,101 @@ fn config_issues(config: &RuntimeConfig) -> Vec<DiagnosticConfigIssue> {
     issues
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SnapshotGenerations {
+    pub base_generation: u64,
+    pub fast_generation: u64,
+}
+
+struct SnapshotState {
+    published: Arc<ResponseSnapshot>,
+    generations: SnapshotGenerations,
+}
+
 #[derive(Clone)]
-pub struct SnapshotStore(Arc<RwLock<Arc<ResponseSnapshot>>>);
+pub struct SnapshotStore(Arc<RwLock<SnapshotState>>);
 
 impl SnapshotStore {
     pub fn new(snapshot: Arc<ResponseSnapshot>) -> Self {
-        Self(Arc::new(RwLock::new(snapshot)))
+        let base_generation = snapshot.diagnostic_generation();
+        Self(Arc::new(RwLock::new(SnapshotState {
+            published: snapshot,
+            generations: SnapshotGenerations {
+                base_generation,
+                fast_generation: 0,
+            },
+        })))
     }
     pub fn load(&self) -> Arc<ResponseSnapshot> {
         match self.0.read() {
-            Ok(snapshot) => Arc::clone(&snapshot),
-            Err(poisoned) => Arc::clone(&poisoned.into_inner()),
+            Ok(state) => Arc::clone(&state.published),
+            Err(poisoned) => Arc::clone(&poisoned.into_inner().published),
         }
     }
     pub fn publish(&self, snapshot: Arc<ResponseSnapshot>) {
+        let _ = self.publish_base_inner(snapshot);
+    }
+
+    fn publish_base_inner(&self, snapshot: Arc<ResponseSnapshot>) -> SnapshotGenerations {
         match self.0.write() {
-            Ok(mut current) => *current = snapshot,
-            Err(poisoned) => *poisoned.into_inner() = snapshot,
+            Ok(mut state) => {
+                state.generations.base_generation = state
+                    .generations
+                    .base_generation
+                    .saturating_add(1)
+                    .max(snapshot.diagnostic_generation());
+                state.generations.fast_generation = 0;
+                state.published = snapshot;
+                state.generations
+            }
+            Err(poisoned) => {
+                let mut state = poisoned.into_inner();
+                state.generations.base_generation = state
+                    .generations
+                    .base_generation
+                    .saturating_add(1)
+                    .max(snapshot.diagnostic_generation());
+                state.generations.fast_generation = 0;
+                state.published = snapshot;
+                state.generations
+            }
         }
+    }
+
+    pub fn generations(&self) -> SnapshotGenerations {
+        match self.0.read() {
+            Ok(state) => state.generations,
+            Err(poisoned) => poisoned.into_inner().generations,
+        }
+    }
+
+    /// Publish a base/runtime generation and invalidate any FastRate overlay.
+    pub fn publish_base(&self, snapshot: Arc<ResponseSnapshot>) -> SnapshotGenerations {
+        self.publish_base_inner(snapshot)
+    }
+
+    /// Apply a bounded FastRate overlay only to the exact base generation from
+    /// which it was sampled. The closure runs while the immutable snapshot is
+    /// copied, then readers receive one new Arc atomically.
+    pub fn publish_fast(
+        &self,
+        base_generation: u64,
+        apply: impl FnOnce(&mut ResponseSnapshot),
+    ) -> Option<SnapshotGenerations> {
+        let lock = self.0.write();
+        let mut state = match lock {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if state.generations.base_generation != base_generation {
+            return None;
+        }
+        let mut snapshot = state.published.as_ref().clone();
+        apply(&mut snapshot);
+        state.generations.fast_generation =
+            state.generations.fast_generation.saturating_add(1).max(1);
+        state.published = Arc::new(snapshot);
+        Some(state.generations)
     }
 }
 
