@@ -7,7 +7,7 @@ use crate::workers::{spawn_rate_worker, QueueError, RateWorker, WorkerQueue};
 use super::{
     fast_n_runtime::FastNSnapshot,
     fast_rate_shadow::FastRateShadow,
-    fast_rate_store::FastRateSample,
+    fast_rate_store::{FastRateSample, FastRateTelemetry},
     fast_rate_wakeup::{FastRateWakeup, FastRateWakeupBook},
     fast_s_runtime::FastSSnapshot,
 };
@@ -22,6 +22,7 @@ pub(crate) enum FastRateCommand {
 
 #[derive(Clone, Debug)]
 pub(crate) struct FastRateSampleInput {
+    pub base_generation: u64,
     pub fast_n: FastNSnapshot,
     pub fast_s: FastSSnapshot,
     pub n_read_begin_ms: u64,
@@ -33,9 +34,14 @@ pub(crate) struct FastRateSampleInput {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FastRateWakeupNotice {
+    pub base_generation: u64,
     pub observed_ms: u64,
     pub wakeup: FastRateWakeup,
     pub sample: Option<FastRateSample>,
+    pub telemetry: FastRateTelemetry,
+    pub client_shadow_entries: usize,
+    pub client_shadow_invalid_windows: u64,
+    pub sample_attempted: bool,
 }
 
 pub(crate) struct FastRateWorker {
@@ -73,16 +79,26 @@ fn thread_command(notices: &SyncSender<FastRateWakeupNotice>, command: FastRateC
         static SHADOW: std::cell::RefCell<FastRateShadow> =
             std::cell::RefCell::new(FastRateShadow::new());
     }
-    let (now_ms, sample, sample_attempted) = match command {
+    let (
+        base_generation,
+        now_ms,
+        sample,
+        telemetry,
+        client_shadow_entries,
+        client_shadow_invalid_windows,
+        sample_attempted,
+    ) = match command {
         FastRateCommand::EventHint { now_ms } => {
             WAKEUPS.with(|book| book.borrow_mut().on_event_hint(now_ms));
-            (now_ms, None, false)
+            (0, now_ms, None, FastRateTelemetry::default(), 0, 0, false)
         }
         FastRateCommand::FixedTimer { now_ms } => {
             WAKEUPS.with(|book| book.borrow_mut().on_fixed_timer());
-            (now_ms, None, false)
+            (0, now_ms, None, FastRateTelemetry::default(), 0, 0, false)
         }
-        FastRateCommand::Poll { now_ms } => (now_ms, None, false),
+        FastRateCommand::Poll { now_ms } => {
+            (0, now_ms, None, FastRateTelemetry::default(), 0, 0, false)
+        }
         FastRateCommand::Sample(input) => {
             let now_ms = input
                 .n_read_end_ms
@@ -99,7 +115,16 @@ fn thread_command(notices: &SyncSender<FastRateWakeupNotice>, command: FastRateC
                     input.s_read_end_ms,
                     input.edge_bps,
                 );
-                (now_ms, shadow.borrow().latest(), true)
+                let shadow = shadow.borrow();
+                (
+                    input.base_generation,
+                    now_ms,
+                    shadow.latest(),
+                    shadow.telemetry(),
+                    shadow.client_count(),
+                    shadow.client_invalid_windows(),
+                    true,
+                )
             })
         }
     };
@@ -111,9 +136,14 @@ fn thread_command(notices: &SyncSender<FastRateWakeupNotice>, command: FastRateC
         })
     }) {
         let _ = notices.try_send(FastRateWakeupNotice {
+            base_generation,
             observed_ms: now_ms,
             wakeup,
             sample,
+            telemetry,
+            client_shadow_entries,
+            client_shadow_invalid_windows,
+            sample_attempted,
         });
     }
 }
@@ -172,6 +202,7 @@ mod tests {
                 packets: n_bytes / 10,
                 ..FastNSnapshot::default()
             },
+            base_generation: 1,
             fast_s: FastSSnapshot {
                 sample_ms,
                 valid_entries: 1,

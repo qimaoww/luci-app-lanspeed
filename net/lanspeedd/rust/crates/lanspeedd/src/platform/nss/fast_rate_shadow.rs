@@ -140,6 +140,10 @@ impl FastRateShadow {
     pub(crate) const fn client_invalid_windows(&self) -> u64 {
         self.client_rates.invalid_windows()
     }
+
+    pub(crate) fn client_count(&self) -> usize {
+        self.client_rates.len()
+    }
 }
 
 #[cfg(test)]

@@ -7,6 +7,9 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(feature = "nss-platform")]
+use std::sync::{mpsc, mpsc::Receiver};
+
 use lanspeed_openwrt_sys::{Timer, UbusConnection, UloopGuard};
 use serde_json::{json, Value};
 
@@ -145,6 +148,7 @@ use crate::{
             control::{PathProbeBook, PathProbeWindow},
             ecm_bpf::EcmBpfSnapshot,
             evidence::{apply_ecm_bpf_evidence, apply_nss_snapshot_evidence},
+            fast_rate_worker::{self, FastRateCommand, FastRateSampleInput, FastRateWakeupNotice},
             fusion::{
                 ecm_bpf_client_interfaces, ecm_bpf_fallback_client_rates,
                 merge_ecm_bpf_client_deltas, merge_ecm_bpf_coverage_delta,
@@ -190,6 +194,8 @@ struct ProductionRuntime {
     #[cfg(feature = "nss-platform")]
     nss: NssRuntime,
     #[cfg(feature = "nss-platform")]
+    fast_rate_input: Option<FastRateSampleInput>,
+    #[cfg(feature = "nss-platform")]
     access_edge: AccessEdgeRuntime,
     #[cfg(feature = "nss-platform")]
     classification_results: BTreeMap<String, ClassificationResult>,
@@ -227,6 +233,8 @@ struct RuntimeCheckpoint {
     bpf: Option<BpfCollectionCheckpoint>,
     #[cfg(feature = "nss-platform")]
     nss: NssRuntimeCheckpoint,
+    #[cfg(feature = "nss-platform")]
+    fast_rate_input: Option<FastRateSampleInput>,
     #[cfg(feature = "nss-platform")]
     access_edge: AccessEdgeCheckpoint,
     #[cfg(feature = "nss-platform")]
@@ -288,6 +296,8 @@ impl ProductionRuntime {
             ),
             #[cfg(feature = "nss-platform")]
             nss: NssRuntime::default(),
+            #[cfg(feature = "nss-platform")]
+            fast_rate_input: None,
             #[cfg(feature = "nss-platform")]
             access_edge: AccessEdgeRuntime::new(config.max_clients),
             #[cfg(feature = "nss-platform")]
@@ -424,6 +434,8 @@ impl ProductionRuntime {
             #[cfg(feature = "nss-platform")]
             nss: self.nss.checkpoint(),
             #[cfg(feature = "nss-platform")]
+            fast_rate_input: self.fast_rate_input.clone(),
+            #[cfg(feature = "nss-platform")]
             access_edge: self.access_edge.checkpoint(),
             #[cfg(feature = "nss-platform")]
             classification_results: self.classification_results.clone(),
@@ -459,6 +471,7 @@ impl ProductionRuntime {
         #[cfg(feature = "nss-platform")]
         {
             self.nss.restore(checkpoint.nss);
+            self.fast_rate_input = checkpoint.fast_rate_input;
             self.access_edge.restore(checkpoint.access_edge);
             self.classification_results = checkpoint.classification_results;
             self.classifier_epoch_id = checkpoint.classifier_epoch_id;
@@ -534,6 +547,11 @@ impl ProductionRuntime {
     fn apply_conntrack_health(&self, runtime_health: &mut RuntimeHealth) {
         self.conntrack_observation
             .apply_runtime_health(self.conntrack_snapshot.is_some(), runtime_health);
+    }
+
+    #[cfg(feature = "nss-platform")]
+    fn take_fast_rate_input(&mut self) -> Option<FastRateSampleInput> {
+        self.fast_rate_input.take()
     }
 
     fn collect(&mut self, method: ProbeMethod) -> Result<ResponseSnapshot, DaemonError> {
@@ -906,6 +924,7 @@ impl ProductionRuntime {
         method: ProbeMethod,
         external_bpf: Option<(&mut Bpf, &mut SystemAyaAdapter)>,
     ) -> Result<ResponseSnapshot, DaemonError> {
+        self.fast_rate_input = None;
         let mut now_ms = production_now_ms()?;
         let access_edge_enabled = self.config.access_edge_mode != AccessEdgeMode::Off;
         if !access_edge_enabled {
@@ -1166,9 +1185,22 @@ impl ProductionRuntime {
         ) = (fast_n_read_timing, fast_s_read_timing)
         {
             let fast_n_snapshot = self.nss.fast_n_snapshot().cloned();
-            if fast_n_snapshot.is_some() && self.nss.fast_s_snapshot().is_some() {
+            let fast_s_snapshot = self.nss.fast_s_snapshot().cloned();
+            if let (Some(fast_n_snapshot), Some(fast_s_snapshot)) =
+                (fast_n_snapshot, fast_s_snapshot)
+            {
+                self.fast_rate_input = Some(FastRateSampleInput {
+                    base_generation: 0,
+                    fast_n: fast_n_snapshot.clone(),
+                    fast_s: fast_s_snapshot.clone(),
+                    n_read_begin_ms: fast_n_read_begin_ms,
+                    n_read_end_ms: fast_n_read_end_ms,
+                    s_read_begin_ms: fast_s_read_begin_ms,
+                    s_read_end_ms: fast_s_read_end_ms,
+                    edge_bps: self.access_edge.authority_bps(),
+                });
                 self.nss.observe_fast_rate_shadow(
-                    fast_n_snapshot.as_ref(),
+                    Some(&fast_n_snapshot),
                     fast_n_read_begin_ms,
                     fast_n_read_end_ms,
                     fast_s_read_begin_ms,
@@ -3107,6 +3139,12 @@ struct App {
     last_error: Option<String>,
     conntrack_worker: Option<RuntimeWorker<ConntrackTask>>,
     last_conntrack_request_ms: Cell<u64>,
+    #[cfg(feature = "nss-platform")]
+    fast_rate_worker: Option<fast_rate_worker::FastRateWorker>,
+    #[cfg(feature = "nss-platform")]
+    fast_rate_notices: Receiver<FastRateWakeupNotice>,
+    #[cfg(feature = "nss-platform")]
+    fast_rate_timer: Option<Timer>,
 }
 
 struct PreparedBpfReload {
@@ -3190,9 +3228,108 @@ impl App {
             |delay| schedule_absolute_collection(timer, deadline, delay),
             UloopGuard::request_stop,
         );
+        #[cfg(feature = "nss-platform")]
+        if result.is_ok() {
+            self.queue_fast_rate_sample();
+        }
+        #[cfg(feature = "nss-platform")]
+        self.drain_fast_rate_notices();
         self.schedule_conntrack(false);
         if let Err(error) = result {
             self.last_error = Some(error.to_string());
+        }
+    }
+
+    #[cfg(feature = "nss-platform")]
+    fn queue_fast_rate_sample(&mut self) {
+        let Some(mut input) = self
+            .runtime
+            .as_mut()
+            .and_then(ProductionRuntime::take_fast_rate_input)
+        else {
+            return;
+        };
+        input.base_generation = self.state.snapshot_store().generations().base_generation;
+        let Some(worker) = self.fast_rate_worker.as_ref() else {
+            return;
+        };
+        match fast_rate_worker::try_queue(&worker.queue(), FastRateCommand::Sample(input)) {
+            Ok(()) | Err(QueueError::Full) => {}
+            Err(QueueError::Disconnected) => {
+                self.last_error = Some("NSS FastRate worker disconnected".into());
+            }
+        }
+    }
+
+    #[cfg(feature = "nss-platform")]
+    fn drain_fast_rate_notices(&mut self) {
+        loop {
+            let Ok(notice) = self.fast_rate_notices.try_recv() else {
+                break;
+            };
+            if !notice.sample_attempted || notice.base_generation == 0 {
+                continue;
+            }
+            let sample = notice.sample.map(|value| {
+                serde_json::json!({
+                    "sample_ms": value.sample_ms,
+                    "window_ms": value.window_ms,
+                    "read_end_skew_ms": value.read_end_skew_ms,
+                    "fast_n_bps": value.fast_n_bps,
+                    "fast_s_bps": value.fast_s_bps,
+                    "fast_total_bps": value.fast_total_bps,
+                })
+            });
+            let telemetry = notice.telemetry;
+            let worker_evidence = serde_json::json!({
+                "sample": sample,
+                "observed_ms": notice.observed_ms,
+                "valid_windows": telemetry.valid_windows,
+                "invalid_windows": telemetry.invalid_windows,
+                "zero_windows": telemetry.zero_windows,
+                "last_sample_ms": telemetry.last_sample_ms,
+                "last_invalid_ms": telemetry.last_invalid_ms,
+                "last_zero_latency_ms": telemetry.last_zero_latency_ms,
+                "last_rise_latency_ms": telemetry.last_rise_latency_ms,
+                "client_shadow_entries": notice.client_shadow_entries,
+                "client_shadow_invalid_windows": notice.client_shadow_invalid_windows,
+                "formal_rate_owner": false,
+            });
+            let snapshots = self.state.snapshot_store();
+            let _ = snapshots.publish_fast(notice.base_generation, |snapshot| {
+                snapshot
+                    .status
+                    .evidence
+                    .details
+                    .insert("fast_rate_worker".into(), worker_evidence.clone());
+                snapshot
+                    .health
+                    .evidence
+                    .details
+                    .insert("fast_rate_worker".into(), worker_evidence);
+            });
+        }
+    }
+
+    #[cfg(feature = "nss-platform")]
+    fn fast_rate_timer_tick(&mut self) {
+        let now_ms = production_now_ms().unwrap_or(0);
+        if let Some(worker) = self.fast_rate_worker.as_ref() {
+            match fast_rate_worker::try_queue(
+                &worker.queue(),
+                FastRateCommand::FixedTimer { now_ms },
+            ) {
+                Ok(()) | Err(QueueError::Full) => {}
+                Err(QueueError::Disconnected) => {
+                    self.last_error = Some("NSS FastRate worker disconnected".into());
+                }
+            }
+        }
+        self.drain_fast_rate_notices();
+        if let Some(timer) = self.fast_rate_timer.as_ref() {
+            if let Err(error) = timer.schedule(1_000) {
+                self.last_error = Some(format!("NSS FastRate timer: {error}"));
+            }
         }
     }
     fn before_reply(&mut self, method: ubus::Method) -> Result<(), DaemonError> {
@@ -3699,6 +3836,13 @@ pub fn run() -> Result<(), DaemonError> {
     let snapshots = state.snapshot_store();
     let conntrack_worker = conntrack_worker::spawn(snapshots.clone())
         .map_err(|error| DaemonError::platform(format!("conntrack worker: {error}")))?;
+    #[cfg(feature = "nss-platform")]
+    let (fast_rate_worker, fast_rate_notices) = {
+        let (sender, receiver) = mpsc::sync_channel(8);
+        let worker = fast_rate_worker::FastRateWorker::spawn(4, sender)
+            .map_err(|error| DaemonError::platform(format!("NSS FastRate worker: {error}")))?;
+        (Some(worker), receiver)
+    };
     let app = Rc::new(RefCell::new(App {
         state,
         runtime: None,
@@ -3711,6 +3855,12 @@ pub fn run() -> Result<(), DaemonError> {
         last_error: None,
         conntrack_worker: Some(conntrack_worker),
         last_conntrack_request_ms: Cell::new(0),
+        #[cfg(feature = "nss-platform")]
+        fast_rate_worker,
+        #[cfg(feature = "nss-platform")]
+        fast_rate_notices,
+        #[cfg(feature = "nss-platform")]
+        fast_rate_timer: None,
     }));
     let weak = Rc::downgrade(&app);
     app.borrow_mut().collection_timer = Some(Timer::new(move || {
@@ -3724,6 +3874,15 @@ pub fn run() -> Result<(), DaemonError> {
             app.borrow_mut().reconnect();
         }
     }));
+    #[cfg(feature = "nss-platform")]
+    {
+        let weak = Rc::downgrade(&app);
+        app.borrow_mut().fast_rate_timer = Some(Timer::new(move || {
+            if let Some(app) = weak.upgrade() {
+                app.borrow_mut().fast_rate_timer_tick();
+            }
+        }));
+    }
 
     let weak = Rc::downgrade(&app);
     let control_weak = Rc::downgrade(&app);
@@ -3772,6 +3931,13 @@ pub fn run() -> Result<(), DaemonError> {
         )?
     };
     app.borrow_mut().runtime = Some(runtime);
+    #[cfg(feature = "nss-platform")]
+    app.borrow()
+        .fast_rate_timer
+        .as_ref()
+        .expect("NSS FastRate timer must be installed")
+        .schedule(1_000)
+        .map_err(|error| DaemonError::platform(format!("NSS FastRate timer: {error}")))?;
     app.borrow_mut().schedule_conntrack(true);
     let _signals = {
         let mut app = app.borrow_mut();

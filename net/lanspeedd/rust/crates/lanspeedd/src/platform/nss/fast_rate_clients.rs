@@ -132,6 +132,10 @@ impl FastClientRateBook {
         self.invalid_windows
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.latest.len()
+    }
+
     pub(crate) fn get(&self, mac: [u8; 6], direction: u8) -> Option<FastClientSample> {
         self.latest.get(&FastClientKey { mac, direction }).copied()
     }
