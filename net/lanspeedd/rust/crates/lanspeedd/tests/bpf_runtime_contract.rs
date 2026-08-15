@@ -191,7 +191,7 @@ impl AyaAdapter for FakeAya {
 
 #[test]
 fn production_adapter_uses_only_explicit_legacy_netlink_attach() {
-    let source = include_str!("../src/platform/x86/runtime.rs");
+    let source = include_str!("../src/platform/tc_bpf_runtime.rs");
     assert!(source.contains("attach_with_options"));
     assert!(source.contains("TcAttachOptions::Netlink"));
     assert!(!source.contains(".attach("));
