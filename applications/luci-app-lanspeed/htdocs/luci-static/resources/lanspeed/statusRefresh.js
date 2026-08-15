@@ -457,7 +457,11 @@ function refreshLive(viewState) {
 	refs.clientsHeaderSummary.textContent = summaryParts.join(' · ');
 
 	if (!sorted.length) {
-		refs.clientsTable.style.display = 'none';
+		// Keep the table header visible in the empty state so sorting and
+		// accessibility affordances remain available before the first client
+		// sample arrives.
+		refs.clientsTable.style.display = '';
+		reconcileClientRows(refs.tbody, []);
 		refs.empty.style.display = '';
 		refs.empty.setAttribute('data-state', availability.samplePending ? 'loading' : 'empty');
 		var clientsRpc = viewState.rpc && viewState.rpc.clients;

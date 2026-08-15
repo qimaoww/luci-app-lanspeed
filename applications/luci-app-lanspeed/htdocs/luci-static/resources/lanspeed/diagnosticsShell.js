@@ -170,7 +170,10 @@ function buildHealthSection(refs) {
 	refs.rpcBody = E('tbody', {});
 	refs.rpcSummary = E('span', { 'class': 'sum lanspeed-diagnostics-rpc-summary' }, _('等待 RPC 响应'));
 	refs.rpcDetails = E('details', { 'class': 'lanspeed-diagnostics-health-group lanspeed-diagnostics-rpc-group' }, [
-		E('summary', {}, [ _('RPC 请求明细'), refs.rpcSummary ]),
+		E('summary', {}, [
+			E('span', { 'class': 'lanspeed-diagnostics-summary-label' }, _('RPC 请求明细')),
+			refs.rpcSummary
+		]),
 		E('div', { 'class': 'lanspeed-diagnostics-table-wrap' }, [
 			E('table', { 'class': 'table lanspeed-diagnostics-rpc-table' }, [
 				E('caption', {}, _('本轮各诊断接口的独立结果')),

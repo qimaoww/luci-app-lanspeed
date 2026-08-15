@@ -132,7 +132,12 @@ var BASE_CSS = [
 		'padding-top:.75em}',
 	'.lanspeed-diagnostics-rpc-group>summary,.lanspeed-diagnostics-report-details>summary{cursor:pointer;',
 		'color:var(--lanspeed-text);font-size:.82em;font-weight:650}',
-	'.lanspeed-diagnostics-rpc-group>summary .sum{float:right;margin-left:.7em;color:var(--lanspeed-text-muted);font-weight:400}',
+	'.lanspeed-diagnostics-rpc-group>summary{display:flex;align-items:flex-start;gap:.7em;min-width:0;',
+		'line-height:1.35;overflow-wrap:anywhere}',
+	'.lanspeed-diagnostics-rpc-group>summary .lanspeed-diagnostics-summary-label{min-width:0;',
+		'flex:0 1 auto;overflow-wrap:anywhere}',
+	'.lanspeed-diagnostics-rpc-group>summary .sum{float:none;min-width:0;flex:1 1 auto;margin:0;',
+		'color:var(--lanspeed-text-muted);font-weight:400;text-align:right;overflow-wrap:anywhere}',
 	'.lanspeed-diagnostics-rpc-group[open]>summary,.lanspeed-diagnostics-report-details[open]>summary{margin-bottom:.65em}',
 
 	'.lanspeed-diagnostics-support-body{display:grid;gap:1em;min-width:0}',
@@ -163,6 +168,11 @@ var BASE_CSS = [
 	'.lanspeed-diagnostics-report-feedback[data-state="success"]{color:var(--lanspeed-normal-text)}',
 	'.lanspeed-diagnostics-report-feedback[data-state="loading"]{color:var(--lanspeed-info)}',
 	'.lanspeed-diagnostics-report-feedback[data-state="error"]{color:var(--lanspeed-danger)}',
+
+	'@media (max-width:480px){',
+		'.lanspeed-diagnostics-rpc-group>summary{display:block}',
+		'.lanspeed-diagnostics-rpc-group>summary .sum{display:block;margin:.2em 0 0;text-align:left}',
+	'}',
 
 	'@media (prefers-reduced-motion:reduce){.lanspeed-diagnostics-root *{transition-duration:.01ms!important;',
 		'animation-duration:.01ms!important;animation-iteration-count:1!important}}'
