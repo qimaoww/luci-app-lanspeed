@@ -122,8 +122,9 @@ fn nss_generic_netlink_abi_is_stable_and_complete() {
             abi::CMD_IGS_DELETE,
             abi::CMD_PEER_REPLACE,
             abi::CMD_TAG_REPLACE,
+            abi::CMD_TRUSTED_INGRESS_REPLACE,
         ],
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     );
     assert_eq!(abi::A_HEALTHY, 25);
     assert_eq!(abi::A_PEER_REASSERT_COUNT, 26);

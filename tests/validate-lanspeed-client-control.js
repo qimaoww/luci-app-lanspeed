@@ -44,7 +44,7 @@ const nssProductionControl = Object.values(nssControlByModule)
   .map((value) => value.split('#[cfg(test)]')[0]).join('\n');
 const nssCpuPathDir = path.join(nssControlDir, 'cpu_path');
 const nssCpuPathModules = [
-  'mod.rs', 'block.rs', 'bridge.rs', 'classifier.rs', 'ifb.rs', 'probe.rs', 'shaper.rs', 'tagger.rs'
+  'mod.rs', 'block.rs', 'bridge.rs', 'classifier.rs', 'ifb.rs', 'probe.rs', 'shaper.rs', 'tagger.rs', 'trusted_ingress.rs'
 ];
 const nssCpuPathByModule = Object.fromEntries(nssCpuPathModules.map((name) => [
   name, fs.readFileSync(path.join(nssCpuPathDir, name), 'utf8')
@@ -362,6 +362,7 @@ async function main() {
     nssKmodSource.includes('LANSPEED_NSS_CMD_IGS_DELETE') &&
     nssKmodSource.includes('LANSPEED_NSS_CMD_PEER_REPLACE') &&
     nssKmodSource.includes('LANSPEED_NSS_CMD_TAG_REPLACE') &&
+    nssKmodSource.includes('LANSPEED_NSS_CMD_TRUSTED_INGRESS_REPLACE') &&
     nssKmodSource.includes('LANSPEED_NSS_A_PEER_REASSERT_COUNT') &&
     nssControlByModule['genl.rs'].includes('pub(super) fn read') &&
     nssControlByModule['genl.rs'].includes('CMD_GET_CAPS') &&
@@ -369,6 +370,8 @@ async function main() {
     nssControlByModule['genl.rs'].includes('pub(super) fn write_igs') &&
     nssControlByModule['genl.rs'].includes('pub(super) fn write_peer_replace') &&
     nssControlByModule['genl.rs'].includes('pub(super) fn write_tag_replace') &&
+    nssControlByModule['genl.rs'].includes('pub(super) fn write_trusted_ingress') &&
+    nssCpuPathByModule['trusted_ingress.rs'].includes('pub(super) fn sync') &&
     nssControlByModule['genl.rs'].includes('parse_state_messages') &&
     nssControlByModule['genl.rs'].includes('parse_stats_messages') &&
     nssControlByModule['genl.rs'].includes('parse_health_messages') &&

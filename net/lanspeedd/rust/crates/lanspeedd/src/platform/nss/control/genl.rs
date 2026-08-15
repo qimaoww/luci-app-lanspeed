@@ -133,6 +133,11 @@ pub(super) fn write_tag_replace(config: &str) -> Option<Result<(), &'static str>
     write_command(abi::CMD_TAG_REPLACE, attributes)
 }
 
+pub(super) fn write_trusted_ingress(config: &str) -> Option<Result<(), &'static str>> {
+    let attributes = encode_string_attribute(abi::A_CONFIG, config).ok()?;
+    write_command(abi::CMD_TRUSTED_INGRESS_REPLACE, attributes)
+}
+
 fn open_family() -> Option<(GenericNetlinkSocket, u16)> {
     let socket = GenericNetlinkSocket::open().ok()?;
     let sequence = next_sequence();

@@ -5,6 +5,7 @@ mod ifb;
 mod probe;
 mod shaper;
 mod tagger;
+mod trusted_ingress;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -97,6 +98,12 @@ pub(super) fn stage(plan: &ControlPlan) -> Result<(), String> {
             Err(cleanup_error) => Err(format!("{error};{cleanup_error}")),
         };
     }
+    if let Err(error) = trusted_ingress::sync(plan) {
+        return match shaper::cleanup_unpublished() {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(format!("{error};{cleanup_error}")),
+        };
+    }
     if let Err(error) = classifier::install(plan) {
         return match shaper::cleanup_unpublished() {
             Ok(()) => Err(error),
@@ -111,6 +118,7 @@ pub(super) fn quiesce(plan: &ControlPlan) -> Result<(), String> {
     block::sync(plan)?;
     probe::sync(plan)?;
     tagger::sync(plan)?;
+    trusted_ingress::sync(plan)?;
     classifier::quiesce(plan)
 }
 
@@ -138,6 +146,9 @@ pub(super) fn cleanup() -> Result<(), String> {
         errors.push(error);
     }
     if let Err(error) = tagger::cleanup() {
+        errors.push(error);
+    }
+    if let Err(error) = trusted_ingress::cleanup() {
         errors.push(error);
     }
     if errors.is_empty() {

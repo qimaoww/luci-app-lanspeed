@@ -36,6 +36,7 @@ enum lanspeed_nss_genl_command {
 	LANSPEED_NSS_CMD_IGS_DELETE,
 	LANSPEED_NSS_CMD_PEER_REPLACE,
 	LANSPEED_NSS_CMD_TAG_REPLACE,
+	LANSPEED_NSS_CMD_TRUSTED_INGRESS_REPLACE,
 	__LANSPEED_NSS_CMD_MAX,
 };
 
@@ -153,6 +154,7 @@ int lanspeed_igs_unpublish(const char *value);
 int lanspeed_igs_delete(const char *value);
 int lanspeed_peer_replace(const char *value);
 int lanspeed_tag_replace(const char *value);
+int lanspeed_trusted_ingress_replace(const char *value);
 
 int lanspeed_genl_register(void);
 void lanspeed_genl_unregister(void);

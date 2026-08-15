@@ -279,6 +279,16 @@ static int lanspeed_genl_tag_replace(struct sk_buff *skb,
 	return error ? error : lanspeed_tag_replace(config);
 }
 
+static int lanspeed_genl_trusted_ingress_replace(struct sk_buff *skb,
+						  struct genl_info *info)
+{
+	const char *config;
+	int error = lanspeed_genl_require_string(info, LANSPEED_NSS_A_CONFIG,
+						 &config);
+
+	return error ? error : lanspeed_trusted_ingress_replace(config);
+}
+
 static const struct genl_ops lanspeed_genl_ops[] = {
 	{
 		.cmd = LANSPEED_NSS_CMD_GET_CAPS,
@@ -324,6 +334,11 @@ static const struct genl_ops lanspeed_genl_ops[] = {
 	{
 		.cmd = LANSPEED_NSS_CMD_TAG_REPLACE,
 		.doit = lanspeed_genl_tag_replace,
+		.flags = GENL_ADMIN_PERM,
+	},
+	{
+		.cmd = LANSPEED_NSS_CMD_TRUSTED_INGRESS_REPLACE,
+		.doit = lanspeed_genl_trusted_ingress_replace,
 		.flags = GENL_ADMIN_PERM,
 	},
 };

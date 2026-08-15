@@ -56,6 +56,7 @@ pub mod nss_genl {
     pub const CMD_IGS_DELETE: u8 = 8;
     pub const CMD_PEER_REPLACE: u8 = 9;
     pub const CMD_TAG_REPLACE: u8 = 10;
+    pub const CMD_TRUSTED_INGRESS_REPLACE: u8 = 11;
 
     pub const A_ABI_VERSION: u16 = 1;
     pub const A_FEATURE_BITS: u16 = 2;
