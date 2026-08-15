@@ -31,8 +31,8 @@ use crate::{
 pub const PRIMARY_OBJECT_PATH: &str = "/usr/lib/bpf/lanspeed-ebpf-kfunc";
 pub const FALLBACK_OBJECT_PATH: &str = "/usr/lib/bpf/lanspeed-ebpf-fallback";
 
-use super::tc_bpf_snapshot::{BpfSnapshot, BpfSnapshotCollector, ConnectionOverlay, MapRead};
 use super::tc_bpf_monitor::TcTopologyMonitor;
+use super::tc_bpf_snapshot::{BpfSnapshot, BpfSnapshotCollector, ConnectionOverlay, MapRead};
 use crate::platform::fast_counter_map::{
     stable_fast_counter_pair, FastCounterMapRead, RawFastCounterSample,
     FAST_COUNTER_MAP_READ_RETRIES,
