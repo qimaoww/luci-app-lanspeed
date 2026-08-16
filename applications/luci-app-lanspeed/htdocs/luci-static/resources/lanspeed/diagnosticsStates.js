@@ -133,6 +133,10 @@ function currentRateUsesAccessEdge(status) {
 		String(status && status.access_edge_mode || '') === 'active';
 }
 
+function currentRateUsesRoutedInternet(status) {
+	return nssPlatform(status) && String(status && status.internet_view_mode || '') === 'routed';
+}
+
 function countSummary(counts, labels, preferred) {
 	var keys = [], seen = Object.create(null);
 	(preferred || []).forEach(function(key) {
@@ -206,10 +210,11 @@ function rateOwnerStateWithRpc(viewState) {
 	viewState = viewState || {};
 	var status = viewState.status || {}, clients = viewState.clients || {};
 	var facts = collectRateFacts(clients), edgeOwner = currentRateUsesAccessEdge(status);
+	var routedOwner = currentRateUsesRoutedInternet(status);
 	var statusRpc = rpcState(viewState, 'status'), clientsRpc = rpcState(viewState, 'clients');
 	var coverage = coverageState(status, clients), source, state, badge, value, description, meta;
 	var sourceText = countSummary(facts.sourceCounts, RATE_SOURCE_LABELS,
-		[ 'edge_port', 'edge_wifi', 'fast_routed_lease', 'ecm_bpf_fallback',
+		[ 'edge_port', 'edge_wifi', 'fast_routed_lease', 'fast_routed_internet', 'ecm_bpf_fallback',
 			'ecm_nss_lower_bound', 'tc_bpf_lower_bound', 'none' ]);
 	var coverageText = countSummary(facts.coverageCounts, RATE_COVERAGE_LABELS,
 		[ 'full', 'partial', 'degraded', 'unavailable' ]);
@@ -234,6 +239,17 @@ function rateOwnerStateWithRpc(viewState) {
 			if (facts.coverageCounts.partial)
 				description += ' ' + _('全部方向都有新鲜总速率来源；帧归属边界仅在详细报告中说明。');
 		}
+	} else if (routedOwner) {
+		source = 'nss_ecm_bpf';
+		value = sourceText === '-' ? _('等待路由速率来源') : sourceText;
+		state = facts.unavailableDirections ? 'bad' : facts.staleDirections ? 'warning' : 'good';
+		badge = state === 'bad' ? _('存在缺失') : state === 'warning' ? _('存在陈旧值') : _('路由视图');
+		description = _('显式互联网/路由视图只显示 FastN+FastS 观察到的路由流量，不代表客户端全部帧。');
+		meta = _('%d/%d 个方向已有路由来源 · 1 秒窗口').format(facts.ownerDirections, facts.totalDirections);
+		if (facts.unavailableDirections)
+			description += ' ' + _('%d 个方向没有当前 FastN+FastS 窗口。').format(facts.unavailableDirections);
+		else if (facts.staleDirections)
+			description += ' ' + _('%d 个方向的路由速率已标记为陈旧。').format(facts.staleDirections);
 	} else {
 		var evidence = status.evidence && status.evidence.collector || {};
 		source = collectorKey((status.evidence && status.evidence.effective_collector) ||
@@ -259,7 +275,7 @@ function rateOwnerStateWithRpc(viewState) {
 		source: source, sourceText: sourceText, coverageText: coverageText,
 		scopeText: countSummary(facts.scopeCounts, RATE_SCOPE_LABELS,
 			[ 'all_frames', 'unicast', 'routed_observed', 'lower_bound', 'none' ]),
-		facts: facts, edgeOwner: edgeOwner };
+		facts: facts, edgeOwner: edgeOwner, routedOwner: routedOwner };
 }
 
 function accessEdgeStateWithRpc(viewState) {
@@ -1081,6 +1097,7 @@ return baseclass.extend({
 	collectorDisplayLabel: collectorDisplayLabel,
 	nssPlatform: nssPlatform,
 	currentRateUsesAccessEdge: currentRateUsesAccessEdge,
+	currentRateUsesRoutedInternet: currentRateUsesRoutedInternet,
 	countSummary: countSummary,
 	edgeReasonText: edgeReasonText,
 	collectRateFacts: collectRateFacts,

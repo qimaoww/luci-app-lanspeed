@@ -81,10 +81,10 @@ impl NssRuntime {
         #[cfg(target_arch = "aarch64")]
         {
             if !config.enable_bpf
-                || !matches!(
+                || (!matches!(
                     config.rate_collector_mode,
                     RateCollectorMode::Auto | RateCollectorMode::NssEcmBpf
-                )
+                ) && !config.internet_view_mode.uses_fast_rate())
                 || !report.facts.nss.present
                 || !report.facts.nss.ecm_active
             {

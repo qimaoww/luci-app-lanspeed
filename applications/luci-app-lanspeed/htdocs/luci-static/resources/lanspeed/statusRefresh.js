@@ -509,7 +509,7 @@ function refreshLive(viewState) {
 			} else if (mode === 'nss_ecm_node') {
 				modeTitle = _('NSS ECM node 按客户端 MAC 读取真实字节与包计数并立即发布；独立 LAN 窗口只验证覆盖率。');
 			} else if (mode === 'nss_ecm_bpf') {
-				modeTitle = _('ECM+BPF 在内核区分 NSS 硬件增量与 TC 慢路径增量，同一原始采样窗口只计算一次速率。');
+				modeTitle = _('ECM+BPF 按原有 NSS + CPU 路径统计客户端流量。');
 			} else if (mode === 'conntrack_netlink') {
 				modeTitle = _('CT-Netlink 仅补充当前连接数，不参与非 NSS 设备的实时速率统计。');
 			} else if (mode === 'conntrack_procfs') {

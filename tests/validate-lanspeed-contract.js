@@ -319,6 +319,7 @@ function validateFixture(fixture) {
     'evidence',
     'refresh_interval_ms',
     'rate_collector_mode',
+    'internet_view_mode',
     'access_edge_mode',
     'conn_collector_mode',
     'version',
@@ -694,6 +695,7 @@ function validateUci(config) {
     "option active_client_min_bps '1'",
     "option overview_window_samples '240'",
     "option rate_collector_mode 'auto'",
+    "option internet_view_mode 'off'",
     "option access_edge_mode 'active'",
     "option conn_collector_mode 'auto'",
     "option show_client_status '0'",
@@ -884,6 +886,9 @@ assert(schema.$defs.status.properties.active_client_window_ms.minimum === 1000, 
 assert(schema.$defs.status.properties.active_client_min_bps.minimum === 1, 'schema must reject/clamp active_client_min_bps below 1bps');
 assert(schema.$defs.status.properties.collector_mode.$ref === '#/$defs/collectorMode', 'schema status.collector_mode must reuse collectorMode enum');
 assert(schema.$defs.status.properties.rate_collector_mode.$ref === '#/$defs/rateCollectorMode', 'schema status.rate_collector_mode must reuse rateCollectorMode enum');
+assert(schema.$defs.status.properties.internet_view_mode.$ref === '#/$defs/internetViewMode', 'schema status.internet_view_mode must reuse internetViewMode enum');
+assert(JSON.stringify(schema.$defs.internetViewMode.enum) === JSON.stringify(['off', 'routed']),
+  'schema internetViewMode must expose only off/routed');
 assert(JSON.stringify(schema.$defs.status.properties.access_edge_mode.enum) === JSON.stringify(['off', 'shadow', 'active']),
   'schema status.access_edge_mode must expose only off/shadow/active');
 assert(!Object.prototype.hasOwnProperty.call(schema.$defs.status.properties, 'dedicated_ports'),

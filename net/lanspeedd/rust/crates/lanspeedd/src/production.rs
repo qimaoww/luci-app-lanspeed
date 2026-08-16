@@ -389,12 +389,12 @@ impl ProductionRuntime {
             self.probe_report = Arc::new(report);
         }
         if !self.config.enable_bpf
-            || !matches!(
+            || (!matches!(
                 self.config.rate_collector_mode,
                 crate::config::RateCollectorMode::Auto
                     | crate::config::RateCollectorMode::Bpf
                     | crate::config::RateCollectorMode::NssEcmBpf
-            )
+            ) && !self.config.internet_view_mode.uses_fast_rate())
             || (!self.probe_report.facts.tc.safe_attach && !recovered_orphan_slots)
         {
             return Ok(());
@@ -868,6 +868,7 @@ impl ProductionRuntime {
             overview_window_samples: self.config.overview_window_samples,
             collector_mode: decision.rate.as_str().into(),
             rate_collector_mode: self.config.rate_collector_mode.as_str().into(),
+            internet_view_mode: self.config.internet_view_mode.as_str().into(),
             access_edge_mode: "off".into(),
             conn_collector_mode: self.config.conn_collector_mode.as_str().into(),
             version: version.clone(),
@@ -1264,6 +1265,7 @@ impl ProductionRuntime {
         let legacy_nss_rate_window_enabled = legacy_nss_rate_window_enabled(
             self.config.access_edge_mode,
             self.config.rate_collector_mode,
+            self.config.internet_view_mode,
         );
         let mut nss_window = None;
         let mut ecm_bpf_coverage_window = None;
@@ -1850,6 +1852,7 @@ impl ProductionRuntime {
             overview_window_samples: self.config.overview_window_samples,
             collector_mode: self.config.rate_collector_mode.as_str().into(),
             rate_collector_mode: self.config.rate_collector_mode.as_str().into(),
+            internet_view_mode: self.config.internet_view_mode.as_str().into(),
             access_edge_mode: self.config.access_edge_mode.as_str().into(),
             conn_collector_mode: self.config.conn_collector_mode.as_str().into(),
             version: version.clone(),
@@ -2241,8 +2244,10 @@ impl ProductionRuntime {
             self.config.access_edge_mode,
             self.config.rate_collector_mode,
         );
-        self.nss.begin_rate_mux_cycle(active_auto);
-        if self.config.access_edge_mode == AccessEdgeMode::Off {
+        let explicit_internet = explicit_internet_rate_view(self.config.internet_view_mode);
+        let rate_mux_active = active_auto || explicit_internet;
+        self.nss.begin_rate_mux_cycle(rate_mux_active);
+        if self.config.access_edge_mode == AccessEdgeMode::Off && !explicit_internet {
             self.access_edge
                 .retain_published_identities(&BTreeSet::new());
             self.classification_results.clear();
@@ -2264,7 +2269,7 @@ impl ProductionRuntime {
             index
         });
 
-        if active_auto {
+        if rate_mux_active {
             for edge in &edge_snapshot.clients {
                 let mac = format_edge_mac(edge.attachment.key.mac);
                 let Some(identity) = identity_index.unique.get(&mac).copied() else {
@@ -2386,11 +2391,12 @@ impl ProductionRuntime {
                             })
                     })
                 });
-                if active_auto {
-                    // Active Access Edge never falls through to the legacy NSS
-                    // rate window. RateMux can select only current Edge authority
-                    // or a lease-authorized same-window FastN+FastS substitute;
-                    // no LAN allocation, previous distribution, directional
+                if rate_mux_active {
+                    // Formal RateMux never falls through to the legacy NSS rate
+                    // window. Automatic mode selects Edge authority or a
+                    // lease-authorized same-window FastN+FastS substitute;
+                    // the explicit Internet view selects only routed FastN+FastS.
+                    // No displaced legacy total may become E: no LAN allocation, previous distribution, directional
                     // max, interface floor, or smoothed rate may become E.
                     let lease_direction =
                         lease_observation
@@ -2416,7 +2422,7 @@ impl ProductionRuntime {
                         direction,
                         e,
                         fast.is_some(),
-                        false,
+                        explicit_internet,
                     );
                     return active_rate_direction(view, edge_candidate, fast);
                 }
@@ -2511,7 +2517,13 @@ impl ProductionRuntime {
             if rx.source == ModelRateSource::FastRoutedLease {
                 reasons.push("rx_transient_evidence_lease_substitute".to_owned());
             }
-            if active_auto {
+            if tx.source == ModelRateSource::FastRoutedInternet {
+                reasons.push("tx_explicit_internet_routed_view".to_owned());
+            }
+            if rx.source == ModelRateSource::FastRoutedInternet {
+                reasons.push("rx_explicit_internet_routed_view".to_owned());
+            }
+            if rate_mux_active {
                 client.tx_bps = tx.bps;
                 client.rx_bps = rx.bps;
                 // `collector_mode` names the pipeline that owns the published
@@ -2535,10 +2547,9 @@ impl ProductionRuntime {
                         .warnings
                         .retain(|warning| warning != "conntrack_connection_only");
                 }
-                // Active-auto rates are owned exclusively by RateMux. Neither
-                // a selected Edge/classifier source nor an unavailable/warmup
-                // state may expose cumulative totals from the displaced legacy
-                // pipeline as if they belonged to the current rate source.
+                // Formal RateMux rates are owned exclusively by the selected
+                // view. Neither a selected legacy source nor an unavailable /
+                // warmup state may expose displaced cumulative totals.
                 client.tx_bytes = None;
                 client.rx_bytes = None;
             }
@@ -2689,32 +2700,19 @@ impl ProductionRuntime {
             let boundary_names = (role == InterfaceRole::Lan)
                 .then(|| independent_lan_boundaries(std::slice::from_ref(&name), &masters))
                 .flatten();
-            let sampled = if let Some(boundaries) = boundary_names.as_ref() {
-                sum_interface_counters(boundaries, &raw_counters)
-            } else {
-                raw_counters.get(&name).copied()
-            };
-            let interface = match sampled {
-                Some(counters) => {
+            let interface = match interface_display_counters(
+                &name,
+                role,
+                boundary_names.as_deref(),
+                raw_counters,
+            ) {
+                Some(display) => {
                     let sampled_names = boundary_names
                         .as_deref()
                         .unwrap_or_else(|| std::slice::from_ref(&name));
                     let counter_source = counter_snapshot
                         .source_for(sampled_names.iter().map(String::as_str))
                         .unwrap_or(MIXED_INTERFACE_SOURCE);
-                    let display = if role == InterfaceRole::Lan {
-                        InterfaceCounters {
-                            rx_bytes: counters
-                                .rx_bytes
-                                .saturating_add(counters.rx_packets.saturating_mul(4)),
-                            tx_bytes: counters
-                                .tx_bytes
-                                .saturating_add(counters.tx_packets.saturating_mul(4)),
-                            ..counters
-                        }
-                    } else {
-                        counters
-                    };
                     let (rx_bps, tx_bps, delta_ms) =
                         self.interface_rates.update(&name, display, now_ms);
                     Interface {
@@ -2811,32 +2809,19 @@ impl ProductionRuntime {
                 let boundary_names = (role == InterfaceRole::Lan)
                     .then(|| independent_lan_boundaries(std::slice::from_ref(&name), &masters))
                     .flatten();
-                let sampled = if let Some(boundaries) = boundary_names.as_ref() {
-                    sum_interface_counters(boundaries, raw_counters)
-                } else {
-                    raw_counters.get(&name).copied()
-                };
-                match sampled {
-                    Some(counters) => {
+                match interface_display_counters(
+                    &name,
+                    role,
+                    boundary_names.as_deref(),
+                    raw_counters,
+                ) {
+                    Some(display) => {
                         let sampled_names = boundary_names
                             .as_deref()
                             .unwrap_or_else(|| std::slice::from_ref(&name));
                         let counter_source = counter_snapshot
                             .source_for(sampled_names.iter().map(String::as_str))
                             .unwrap_or(MIXED_INTERFACE_SOURCE);
-                        let display = if role == InterfaceRole::Lan {
-                            InterfaceCounters {
-                                rx_bytes: counters
-                                    .rx_bytes
-                                    .saturating_add(counters.rx_packets.saturating_mul(4)),
-                                tx_bytes: counters
-                                    .tx_bytes
-                                    .saturating_add(counters.tx_packets.saturating_mul(4)),
-                                ..counters
-                            }
-                        } else {
-                            counters
-                        };
                         let (rx_bps, tx_bps, delta_ms) =
                             self.interface_rates.update(&name, display, now_ms);
                         Interface {
@@ -3271,6 +3256,7 @@ impl Runtime for ProductionRuntime {
     fn collection_interval_ms(&self, configured_ms: u32) -> u32 {
         effective_collection_interval_ms(
             self.config.access_edge_mode,
+            self.config.internet_view_mode,
             self.rate_owner,
             configured_ms,
         )

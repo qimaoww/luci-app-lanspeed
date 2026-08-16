@@ -135,6 +135,7 @@ impl ResponseSnapshot {
                 overview_window_samples: 240,
                 collector_mode: "auto".into(),
                 rate_collector_mode: "auto".into(),
+                internet_view_mode: "off".into(),
                 access_edge_mode: if crate::platform::profile::COMPILED_PROFILE
                     .uses_access_edge()
                 {

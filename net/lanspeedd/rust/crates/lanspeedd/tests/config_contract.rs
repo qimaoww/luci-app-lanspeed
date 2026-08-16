@@ -1,9 +1,9 @@
 use lanspeedd::config::{
     AccessEdgeMode, ConfigError, ConfigSource, ConfigValue, ConnectionCollectorMode,
-    InterfaceEligibility, LegacyNameEligibility, RateCollectorMode, RuntimeConfig,
-    DEFAULT_ACTIVE_CLIENT_MIN_BPS, DEFAULT_ACTIVE_CLIENT_WINDOW_MS, DEFAULT_MAX_CLIENTS,
-    DEFAULT_OVERVIEW_WINDOW_SAMPLES, DEFAULT_REFRESH_INTERVAL_MS, MAX_INTERFACE_NAMES,
-    MAX_INTERFACE_NAME_LEN, MAX_MAX_CLIENTS, MAX_OVERVIEW_WINDOW_SAMPLES,
+    InterfaceEligibility, InternetViewMode, LegacyNameEligibility, RateCollectorMode,
+    RuntimeConfig, DEFAULT_ACTIVE_CLIENT_MIN_BPS, DEFAULT_ACTIVE_CLIENT_WINDOW_MS,
+    DEFAULT_MAX_CLIENTS, DEFAULT_OVERVIEW_WINDOW_SAMPLES, DEFAULT_REFRESH_INTERVAL_MS,
+    MAX_INTERFACE_NAMES, MAX_INTERFACE_NAME_LEN, MAX_MAX_CLIENTS, MAX_OVERVIEW_WINDOW_SAMPLES,
     MIN_ACTIVE_CLIENT_WINDOW_MS, MIN_MAX_CLIENTS, MIN_OVERVIEW_WINDOW_SAMPLES,
     MIN_REFRESH_INTERVAL_MS,
 };
@@ -92,6 +92,7 @@ fn defaults_and_limits_match_the_legacy_c_contract() {
     assert!(!config.enable_bpf);
     assert!(config.enable_conntrack_fallback);
     assert_eq!(config.rate_collector_mode, RateCollectorMode::Auto);
+    assert_eq!(config.internet_view_mode, InternetViewMode::Off);
     assert_eq!(
         config.access_edge_mode,
         if cfg!(feature = "nss-platform") {
@@ -178,6 +179,27 @@ fn rate_collector_accepts_only_current_modes() {
     assert_eq!(RateCollectorMode::parse("nss_ecm_direct"), None);
     assert_eq!(RateCollectorMode::parse("nss_conntrack_sync"), None);
     assert_eq!(RateCollectorMode::parse("BPF"), None);
+}
+
+#[test]
+fn internet_view_is_a_distinct_optional_nss_projection() {
+    assert_eq!(InternetViewMode::parse("off"), Some(InternetViewMode::Off));
+    assert_eq!(
+        InternetViewMode::parse("routed"),
+        Some(InternetViewMode::Routed)
+    );
+    assert_eq!(InternetViewMode::parse("nss_ecm_bpf"), None);
+    assert_eq!(InternetViewMode::Routed.as_str(), "routed");
+
+    let config = load(MemorySource::default().with("internet_view_mode", "routed"));
+    assert_eq!(
+        config.internet_view_mode,
+        if cfg!(feature = "nss-platform") {
+            InternetViewMode::Routed
+        } else {
+            InternetViewMode::Off
+        }
+    );
 }
 
 #[test]

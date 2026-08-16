@@ -385,6 +385,8 @@ function readForm(viewState) {
 	var values = cloneValues(viewState.currentValues || cfgModel.DEFAULTS);
 	NUMBER_FIELDS.forEach(function(name) { values[name] = refs.inputs[name].value; });
 	values.rate_collector_mode = refs.inputs.rate_collector_mode.value;
+	values.internet_view_mode = refs.inputs.internet_view_mode
+		? refs.inputs.internet_view_mode.value : 'off';
 	values.access_edge_mode = refs.inputs.access_edge_mode
 		? refs.inputs.access_edge_mode.value : 'off';
 	values.conn_collector_mode = refs.inputs.conn_collector_mode.value;
@@ -456,6 +458,8 @@ function updateDependencies(viewState) {
 	refs.inputs.hide_private_ipv6.disabled = busy || values.show_ipv6 !== '1';
 	if (refs.inputs.access_edge_mode)
 		refs.inputs.access_edge_mode.disabled = busy || !configPlatform.formPolicy(viewState.runtimeStatus).showAccessEdge;
+	if (refs.inputs.internet_view_mode)
+		refs.inputs.internet_view_mode.disabled = busy || !configPlatform.formPolicy(viewState.runtimeStatus).showAccessEdge;
 	refs.hideIpv6RangeInput.disabled = !rangesEnabled;
 	refs.addRangeBtn.disabled = !rangesEnabled;
 	(refs.rangeRemoveButtons || []).forEach(function(button) { button.disabled = !rangesEnabled; });
@@ -478,6 +482,8 @@ function fillForm(viewState, values) {
 	values = configPlatform.normalizeValues(viewState.runtimeStatus, cfgModel.normalize(values || cfgModel.DEFAULTS).values);
 	NUMBER_FIELDS.forEach(function(name) { refs.inputs[name].value = String(values[name]); });
 	refs.inputs.rate_collector_mode.value = values.rate_collector_mode;
+	if (refs.inputs.internet_view_mode)
+		refs.inputs.internet_view_mode.value = values.internet_view_mode;
 	if (refs.inputs.access_edge_mode)
 		refs.inputs.access_edge_mode.value = values.access_edge_mode;
 	refs.inputs.conn_collector_mode.value = values.conn_collector_mode;
@@ -525,6 +531,8 @@ function buildDaemonSection(data, viewState) {
 	if (viewState.platformPolicy.showAccessEdge) {
 		refs.inputs.access_edge_mode = choiceSelect('access_edge_mode',
 			cfgModel.ACCESS_EDGE_MODES, values.access_edge_mode);
+		refs.inputs.internet_view_mode = choiceSelect('internet_view_mode',
+			cfgModel.INTERNET_VIEW_MODES, values.internet_view_mode);
 	}
 	refs.inputs.conn_collector_mode = choiceSelect('conn_collector_mode',
 		cfgModel.modeChoices('connection', viewState.runtimeStatus, values), values.conn_collector_mode);
@@ -553,7 +561,10 @@ function buildDaemonSection(data, viewState) {
 			viewState.platformPolicy.rateHint));
 	if (viewState.platformPolicy.showAccessEdge)
 		rows.push(rowFor(viewState, 'access_edge_mode', _('客户端总速率'), refs.inputs.access_edge_mode,
-				viewState.platformPolicy.accessEdgeHint));
+			viewState.platformPolicy.accessEdgeHint));
+	if (viewState.platformPolicy.showAccessEdge)
+		rows.push(rowFor(viewState, 'internet_view_mode', _('互联网/路由视图'), refs.inputs.internet_view_mode,
+			viewState.platformPolicy.internetViewHint));
 	rows.push(rowFor(viewState, 'conn_collector_mode', _('连接详情来源'), refs.inputs.conn_collector_mode,
 			viewState.platformPolicy.connectionHint));
 	rows.push(rowFor(viewState, 'enable_bpf', _('启用 CPU 流量检测（BPF）'), refs.toggleWrap.enable_bpf,
@@ -594,6 +605,7 @@ function buildDaemonSection(data, viewState) {
 		if (event.key === 'Enter') { event.preventDefault(); addRange(viewState); }
 	});
 	NUMBER_FIELDS.concat([ 'rate_collector_mode', 'conn_collector_mode' ]).concat(
+		refs.inputs.internet_view_mode ? [ 'internet_view_mode' ] : []).concat(
 		refs.inputs.access_edge_mode ? [ 'access_edge_mode' ] : []).forEach(function(name) {
 		refs.inputs[name].addEventListener(name.indexOf('_mode') >= 0 ? 'change' : 'input', function() { formChanged(viewState); });
 	});

@@ -5326,8 +5326,9 @@ function assertStatusViewSourceOnlyState(src) {
 	if (src.includes("status.collector_mode;")) {
 		fail('LAN Speed status modules header must not show configured collector_mode as the current collector source');
 	}
-	if (!src.includes("return 'ECM'") || !src.includes("return 'ECM+BPF'")) {
-		fail('LAN Speed status modules must expose distinct ECM and ECM+BPF collector labels');
+	if (!src.includes("return 'ECM'") || !src.includes("return _('ECM+BPF')") ||
+	    !src.includes('FastN+FastS routed Internet')) {
+		fail('LAN Speed status modules must expose distinct ECM and Internet-routed collector labels');
 	}
 	if (!src.includes("mode === 'access_edge'") || !src.includes("自动精准") ||
 	    !src.includes("accessEdgeOwnsCurrentRate(status) ? 'access_edge'")) {
@@ -6292,8 +6293,8 @@ function assertConfigModelRewrite(src) {
 	const model = loadConfigModelModule(src);
 	const required = [
 		'refresh_interval_ms', 'active_client_window_ms', 'active_client_min_bps',
-			'overview_window_samples', 'rate_collector_mode', 'conn_collector_mode',
-			'access_edge_mode',
+		'overview_window_samples', 'rate_collector_mode', 'conn_collector_mode',
+		'access_edge_mode', 'internet_view_mode',
 			'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges',
 		'collector_mode', 'max_clients', 'ifname', 'interface_include',
 		'interface_exclude', 'observe', 'enable_bpf', 'enable_conntrack_fallback'
@@ -6306,6 +6307,7 @@ function assertConfigModelRewrite(src) {
 	const readableLabels = Object.fromEntries(model.FIELDS.map(field => [ field.name, field.label ]));
 	if (String(readableLabels.rate_collector_mode) !== '客户端网速模式' ||
 		String(readableLabels.access_edge_mode) !== '客户端总速率' ||
+		String(readableLabels.internet_view_mode) !== '互联网/路由视图' ||
 		String(readableLabels.enable_bpf) !== '启用 CPU 流量检测（BPF）') {
 		fail('configModel.js must present user-facing meanings instead of internal collector terminology');
 	}
@@ -6314,9 +6316,11 @@ function assertConfigModelRewrite(src) {
 	if (JSON.stringify(model.REMOVED_UCI_FIELDS) !== JSON.stringify([ 'dedicated_port' ]))
 		fail('configModel.js must keep removed UCI fields explicit for compatibility cleanup');
 	if (model.DEFAULTS.access_edge_mode !== 'active' ||
+		model.DEFAULTS.internet_view_mode !== 'off' ||
 		JSON.stringify(model.ACCESS_EDGE_MODES.map(item => String(item.label))) !== JSON.stringify([
 			'关闭精准检测', '仅后台验证（不用于显示）', '精准总速率（推荐）'
-		])) {
+		]) || JSON.stringify(model.INTERNET_VIEW_MODES.map(item => item.value)) !==
+		JSON.stringify([ 'off', 'routed' ])) {
 		fail('configModel.js automatic defaults and total-rate choices must make precise mode the clear recommendation');
 	}
 	if (model.parseInteger('1000ms', model.LIMITS.refresh_interval_ms).valid ||
@@ -6331,11 +6335,12 @@ function assertConfigModelRewrite(src) {
 	const invalid = model.normalize({
 		refresh_interval_ms: 'oops', hide_ipv6_ranges: 'not-a-cidr',
 		ifname: [ 'bad name' ],
-		access_edge_mode: 'guess', enable_bpf: 'maybe'
+		access_edge_mode: 'guess', internet_view_mode: 'ecm', enable_bpf: 'maybe'
 	});
 	if (invalid.valid || !invalid.errors.refresh_interval_ms ||
 		!invalid.errors.hide_ipv6_ranges || !invalid.errors.ifname ||
 		!invalid.errors.access_edge_mode ||
+		!invalid.errors.internet_view_mode ||
 		!invalid.errors.enable_bpf) {
 		fail('configModel.js must return field-scoped errors for malformed UCI values');
 	}
@@ -6403,6 +6408,12 @@ function assertConfigModelRewrite(src) {
 	}, { capabilities: { nss: true, nss_ecm_offload: true, bpf_package: true, bpf_object: true } });
 	if (combinedDisabled.valid || combinedDisabled.errors.rate_collector_mode !== 'bpf_disabled')
 		fail('configModel.js must require BPF to be enabled for ECM+BPF');
+	const internetDisabled = model.validate({
+		rate_collector_mode: 'nss_ecm_node', internet_view_mode: 'routed',
+		conn_collector_mode: 'auto', enable_bpf: '0', enable_conntrack_fallback: '1'
+	}, { capabilities: { nss: true, nss_ecm_offload: true } });
+	if (internetDisabled.valid || internetDisabled.errors.internet_view_mode !== 'bpf_disabled')
+		fail('configModel.js must require BPF to be enabled for the independent routed view');
 	const repairing = model.validate({
 		rate_collector_mode: 'bpf', conn_collector_mode: 'auto', enable_bpf: '1',
 		enable_conntrack_fallback: '1', interface_include: [ 'eth1' ]
@@ -6560,14 +6571,14 @@ function makeConfigFormState(model, overrides) {
 		'overview_window_samples', 'max_clients' ];
 	const booleans = [ 'show_client_status', 'show_ipv6', 'hide_private_ipv6',
 		'enable_bpf', 'enable_conntrack_fallback' ];
-	const editable = [ 'rate_collector_mode', 'access_edge_mode',
+	const editable = [ 'rate_collector_mode', 'access_edge_mode', 'internet_view_mode',
 		'conn_collector_mode', 'enable_bpf',
 		'enable_conntrack_fallback', 'refresh_interval_ms', 'overview_window_samples',
 		'max_clients', 'active_client_window_ms', 'active_client_min_bps',
 		'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges' ];
 	const inputs = {};
 	numbers.forEach(function(name) { inputs[name] = fakeElement('input', { value: String(values[name]) }); });
-	[ 'rate_collector_mode', 'access_edge_mode', 'conn_collector_mode' ].forEach(function(name) {
+	[ 'rate_collector_mode', 'access_edge_mode', 'internet_view_mode', 'conn_collector_mode' ].forEach(function(name) {
 		inputs[name] = fakeElement('select', { value: values[name] });
 		inputs[name].value = values[name];
 	});
@@ -6858,7 +6869,7 @@ function assertConfigFormRewrite(src) {
 		fail('configForm.js must never revert the whole package or bypass the LuCI UCI cache');
 	}
 	[ 'refresh_interval_ms', 'overview_window_samples', 'max_clients', 'enable_bpf',
-		'enable_conntrack_fallback', 'access_edge_mode', 'interface_exclude' ].forEach(name => {
+		'enable_conntrack_fallback', 'access_edge_mode', 'internet_view_mode', 'interface_exclude' ].forEach(name => {
 		if (!src.includes(name)) fail(`configForm.js must preserve ${name} in the owned data contract`);
 	});
 	if (!src.includes("values.dedicated_port = uci.get('lanspeed', 'main', 'dedicated_port')") ||
@@ -6880,6 +6891,7 @@ function matchingConfigStatus(values) {
 		confidence: 'high',
 		warnings: [],
 			rate_collector_mode: values.rate_collector_mode,
+			internet_view_mode: values.internet_view_mode,
 			access_edge_mode: values.access_edge_mode,
 			conn_collector_mode: values.conn_collector_mode,
 		refresh_interval_ms: values.refresh_interval_ms,
@@ -6969,18 +6981,21 @@ function assertConfigFormBehavior(src) {
 	const profileGuardForm = loadConfigFormModule(src, makeConfigUci(model),
 		{ status: function() { return Promise.resolve({}); } }, makeConfigIfaceStub(), model);
 	const unknownProfileState = makeConfigFormState(model, {
-		values: { rate_collector_mode: 'nss_ecm_bpf', access_edge_mode: 'shadow' },
+		values: { rate_collector_mode: 'nss_ecm_bpf', access_edge_mode: 'shadow', internet_view_mode: 'routed' },
 		runtimeStatus: {}
 	});
+	unknownProfileState.originalRaw.internet_view_mode = 'routed';
 	const unknownProfilePlan = profileGuardForm.prepareSave(unknownProfileState);
 	if (unknownProfilePlan.values.rate_collector_mode !== 'nss_ecm_bpf' ||
 	    Object.prototype.hasOwnProperty.call(unknownProfilePlan.patch.set, 'access_edge_mode') ||
-	    unknownProfilePlan.patch.unset.indexOf('access_edge_mode') !== -1) {
+	    Object.prototype.hasOwnProperty.call(unknownProfilePlan.patch.set, 'internet_view_mode') ||
+	    unknownProfilePlan.patch.unset.indexOf('access_edge_mode') !== -1 ||
+	    unknownProfilePlan.patch.unset.indexOf('internet_view_mode') !== -1) {
 		fail('configForm.js must preserve NSS mode and Access Edge UCI when the runtime platform is temporarily unknown');
 	}
 	const x86ProfileState = makeConfigFormState(model, {
 		values: {
-			rate_collector_mode: 'nss_ecm_bpf', access_edge_mode: 'active',
+			rate_collector_mode: 'nss_ecm_bpf', access_edge_mode: 'active', internet_view_mode: 'routed',
 			interface_include: [ 'br-lan' ]
 		},
 		runtimeStatus: { evidence: { platform: { profile: 'x86_tc_bpf' } } }
@@ -6988,9 +7003,12 @@ function assertConfigFormBehavior(src) {
 	const x86ProfilePlan = profileGuardForm.prepareSave(x86ProfileState);
 	if (x86ProfilePlan.values.rate_collector_mode !== 'bpf' ||
 	    x86ProfilePlan.values.access_edge_mode !== 'off' ||
+	    x86ProfilePlan.values.internet_view_mode !== 'off' ||
 	    x86ProfilePlan.patch.set.rate_collector_mode !== 'bpf' ||
 	    Object.prototype.hasOwnProperty.call(x86ProfilePlan.patch.set, 'access_edge_mode') ||
-	    x86ProfilePlan.patch.unset.indexOf('access_edge_mode') === -1) {
+	    Object.prototype.hasOwnProperty.call(x86ProfilePlan.patch.set, 'internet_view_mode') ||
+	    x86ProfilePlan.patch.unset.indexOf('access_edge_mode') === -1 ||
+	    x86ProfilePlan.patch.unset.indexOf('internet_view_mode') === -1) {
 		fail('configForm.js must normalize forged NSS settings only for an explicit x86 profile');
 	}
 
@@ -7506,6 +7524,7 @@ if (fs.existsSync(statusViewFile)) {
 		...STATUS_STYLE_PARTS.map(readModuleByName),
 		readModuleByName('statusIp.js'),
 		readModuleByName('statusCollector.js'),
+		readModuleByName('statusRateMeta.js'),
 		readModuleByName('statusShell.js'),
 		readModuleByName('statusRefresh.js'),
 		readModuleByName('vocab.js')

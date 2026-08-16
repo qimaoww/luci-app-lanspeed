@@ -22,6 +22,13 @@ pub(crate) fn select_rate_view(
     fast_window_valid: bool,
     explicit_internet_view: bool,
 ) -> RateView {
+    if explicit_internet_view {
+        return if fast_window_valid {
+            RateView::RoutedInternet
+        } else {
+            RateView::Unavailable
+        };
+    }
     if e == EUsability::Authority {
         return RateView::EAuthority;
     }
@@ -92,13 +99,25 @@ mod tests {
     }
 
     #[test]
+    fn explicit_internet_view_is_a_distinct_routed_projection() {
+        assert_eq!(
+            select_rate_view(EUsability::Authority, false, true, true),
+            RateView::RoutedInternet
+        );
+        assert_eq!(
+            select_rate_view(EUsability::Authority, false, false, true),
+            RateView::Unavailable
+        );
+    }
+
+    #[test]
     fn transient_e_can_use_only_a_valid_leased_fast_window() {
         assert_eq!(
             select_rate_view(EUsability::TransientEUnavailable, true, true, false),
             RateView::RoutedLeaseSubstitute
         );
         assert_eq!(
-            select_rate_view(EUsability::TransientEUnavailable, false, true, true),
+            select_rate_view(EUsability::TransientEUnavailable, false, true, false),
             RateView::Unavailable
         );
         assert_eq!(

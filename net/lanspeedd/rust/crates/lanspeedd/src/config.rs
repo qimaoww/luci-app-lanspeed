@@ -59,6 +59,34 @@ pub enum RateCollectorMode {
     NssEcmBpf,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum InternetViewMode {
+    #[default]
+    Off,
+    Routed,
+}
+
+impl InternetViewMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "off" => Some(Self::Off),
+            "routed" => Some(Self::Routed),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Routed => "routed",
+        }
+    }
+
+    pub const fn uses_fast_rate(self) -> bool {
+        matches!(self, Self::Routed)
+    }
+}
+
 impl RateCollectorMode {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
@@ -239,6 +267,7 @@ pub struct RuntimeConfig {
     pub overview_window_samples_clamped: bool,
     pub max_clients_clamped: bool,
     pub rate_collector_mode: RateCollectorMode,
+    pub internet_view_mode: InternetViewMode,
     pub access_edge_mode: AccessEdgeMode,
     pub conn_collector_mode: ConnectionCollectorMode,
     pub ifnames: Vec<String>,
@@ -272,6 +301,7 @@ impl Default for RuntimeConfig {
             overview_window_samples_clamped: false,
             max_clients_clamped: false,
             rate_collector_mode: RateCollectorMode::Auto,
+            internet_view_mode: InternetViewMode::Off,
             access_edge_mode: if crate::platform::profile::COMPILED_PROFILE.uses_access_edge() {
                 AccessEdgeMode::Active
             } else {
@@ -301,6 +331,7 @@ impl RuntimeConfig {
         ) {
             self.rate_collector_mode = RateCollectorMode::Bpf;
         }
+        self.internet_view_mode = InternetViewMode::Off;
         self.access_edge_mode = AccessEdgeMode::Off;
     }
 
@@ -400,6 +431,11 @@ impl RuntimeConfig {
         if let Some(value) = scalar(source, "rate_collector_mode")? {
             if let Some(mode) = RateCollectorMode::parse(&value) {
                 config.rate_collector_mode = mode;
+            }
+        }
+        if let Some(value) = scalar(source, "internet_view_mode")? {
+            if let Some(mode) = InternetViewMode::parse(&value) {
+                config.internet_view_mode = mode;
             }
         }
         if let Some(value) = scalar(source, "access_edge_mode")? {

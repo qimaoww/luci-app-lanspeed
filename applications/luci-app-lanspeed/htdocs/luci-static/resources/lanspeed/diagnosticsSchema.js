@@ -133,6 +133,7 @@ var COLLECTOR_REPORT_LABELS = {
 var RATE_SOURCE_LABELS = {
 	edge_port: _('Edge-Port'), edge_wifi: _('Edge-WiFi'),
 	fast_routed_lease: _('FastN+FastS 租约替代'),
+	fast_routed_internet: _('FastN+FastS 互联网路由'),
 	ecm_bpf_fallback: _('ECM+BPF 降级'), ecm_nss_lower_bound: _('NSS 下界'),
 	tc_bpf_lower_bound: _('CPU 慢路径下界'), none: _('无来源')
 };
@@ -578,7 +579,7 @@ function validateRateMeta(value, path) {
 function validateStatusResponse(value) {
 	var fields = [ 'mode', 'confidence', 'warnings', 'evidence', 'refresh_interval_ms',
 		'active_client_window_ms', 'active_client_min_bps', 'overview_window_samples',
-		'collector_mode', 'rate_collector_mode', 'access_edge_mode',
+		'collector_mode', 'rate_collector_mode', 'internet_view_mode', 'access_edge_mode',
 		'conn_collector_mode', 'version',
 		'capabilities', 'coverage' ];
 	if (!onlyFields(value, fields)) return failure('status', _('存在未定义字段'));
@@ -594,6 +595,9 @@ function validateStatusResponse(value) {
 	if (hasOwn(value, 'access_edge_mode') &&
 		!enumValue(value.access_edge_mode, [ 'off', 'shadow', 'active' ]))
 		return failure('status.access_edge_mode', _('字段无效'));
+	if (hasOwn(value, 'internet_view_mode') &&
+		!enumValue(value.internet_view_mode, [ 'off', 'routed' ]))
+		return failure('status.internet_view_mode', _('字段无效'));
 	if (hasOwn(value, 'collector_mode') && !enumValue(value.collector_mode,
 		[ 'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf', 'conntrack_netlink', 'conntrack_procfs', 'unsupported' ]))
 		return failure('status.collector_mode', _('字段无效'));

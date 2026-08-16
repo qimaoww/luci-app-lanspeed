@@ -508,6 +508,9 @@
     "substitute_rate_source": "fast_routed_lease",
     "substitute_byte_domain": "l2_with_fcs_from_ecm_plus_18_and_tc_plus_4_per_packet",
     "fast_window_current_required": true,
+    "explicit_internet_mode": "internet_view_mode_routed",
+    "explicit_internet_rate_source": "fast_routed_internet",
+    "explicit_internet_scope": "routed_observed",
     "ringbuf_drop_invalidates": false,
     "fast_window_stale_invalidates": false,
     "generation_fields": [

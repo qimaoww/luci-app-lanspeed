@@ -72,6 +72,18 @@ function maxSampleClock(items) {
 	return latest;
 }
 
+function maxRateMetaClock(items) {
+	var latest = null;
+	(items || []).forEach(function(item) {
+		var meta = item && item.rate_meta;
+		[ meta && meta.tx, meta && meta.rx ].forEach(function(direction) {
+			var clock = sampleClock(direction && direction.sample_ms);
+			if (clock !== null && (latest === null || clock > latest)) latest = clock;
+		});
+	});
+	return latest;
+}
+
 function collectorEvidence(data) {
 	var evidence = data && data.evidence || {};
 	return {
@@ -99,12 +111,13 @@ function collectorSampleClock(data) {
 
 function statusBatch(data) {
 	var edgeActive = fmt.nssPlatform(data) && String(data && data.access_edge_mode || '') === 'active';
+	var routedInternet = fmt.nssPlatform(data) && String(data && data.internet_view_mode || '') === 'routed';
 	var edgeSample = sampleClock(data && data.evidence && data.evidence.access_edge &&
 		data.evidence.access_edge.sample_ms);
 	return {
 		// Active Access Edge owns the one-second client rate. The NSS classifier
 		// clock is intentionally two-second and must not gate that live batch.
-		sampleMs: edgeSample !== null ? edgeSample : (edgeActive ? null : collectorSampleClock(data)),
+		sampleMs: edgeSample !== null ? edgeSample : (edgeActive || routedInternet ? null : collectorSampleClock(data)),
 		hasCoverage: !!(data && data.coverage && typeof data.coverage === 'object')
 	};
 }
@@ -118,6 +131,7 @@ function clientBatch(data, status) {
 		collector = 'bpf';
 	var evidenceClock = collectorSampleClock(data);
 	var edgeActive = nssPlatform && String(status && status.access_edge_mode || '') === 'active';
+	var routedInternet = nssPlatform && String(status && status.internet_view_mode || '') === 'routed';
 	var edgeClock = edgeActive ? sampleClock(data.evidence && data.evidence.access_edge &&
 		data.evidence.access_edge.sample_ms) : null;
 
@@ -135,8 +149,9 @@ function clientBatch(data, status) {
 		return collector ? mode === collector : rateModes[mode] === true;
 	});
 	return {
-		sampleMs: edgeClock !== null ? edgeClock :
-			(evidenceClock !== null ? evidenceClock : maxSampleClock(rateRows)),
+		sampleMs: edgeClock !== null ? edgeClock : routedInternet
+			? maxRateMetaClock(rateRows)
+			: (evidenceClock !== null ? evidenceClock : maxSampleClock(rateRows)),
 		hasRates: rateRows.length > 0
 	};
 }
@@ -155,8 +170,10 @@ function livePair(data) {
 		return value !== null;
 	});
 	var comparable = clocks.length > 1;
-	var skew = fmt.nssPlatform(data && data.status) && String(data && data.status && data.status.access_edge_mode || '') === 'active'
-		? ACCESS_EDGE_SAMPLE_SKEW_MS : 0;
+	var nssStatus = data && data.status;
+	var edgeActive = fmt.nssPlatform(nssStatus) && String(nssStatus && nssStatus.access_edge_mode || '') === 'active';
+	var routedInternet = fmt.nssPlatform(nssStatus) && String(nssStatus && nssStatus.internet_view_mode || '') === 'routed';
+	var skew = edgeActive ? ACCESS_EDGE_SAMPLE_SKEW_MS : routedInternet ? 2500 : 0;
 	var aligned = !comparable || clocks.every(function(value) {
 		return Math.abs(value - clocks[0]) <= skew;
 	});

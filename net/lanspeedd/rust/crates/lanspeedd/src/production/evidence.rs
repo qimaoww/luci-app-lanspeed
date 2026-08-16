@@ -100,6 +100,7 @@ pub(super) fn apply_decision_evidence(
         .insert("effective_collector".into(), json!(effective));
     let effective_interval_ms = effective_collection_interval_ms(
         config.access_edge_mode,
+        config.internet_view_mode,
         Some(decision.rate),
         config.refresh_interval_ms,
     );

@@ -19,6 +19,7 @@ var DEFAULTS = {
 	active_client_min_bps: 1,
 	overview_window_samples: 240,
 	rate_collector_mode: 'auto',
+	internet_view_mode: 'off',
 	access_edge_mode: 'active',
 	conn_collector_mode: 'auto',
 	show_client_status: '0',
@@ -50,6 +51,11 @@ var RATE_MODES = [
 	{ value: 'nss_ecm_bpf', label: _('NSS + CPU 路径（ECM+BPF）'), capability: 'nss_ecm_bpf' }
 ];
 
+var INTERNET_VIEW_MODES = [
+	{ value: 'off', label: _('关闭') },
+	{ value: 'routed', label: _('路由流量（FastN+FastS）') }
+];
+
 var CONNECTION_MODES = [
 	{ value: 'auto', label: _('自动（CT-Netlink 推荐）'), capability: null },
 	{ value: 'conntrack_netlink', label: _('内核连接接口（Netlink）'), capability: 'conntrack_netlink' },
@@ -68,6 +74,7 @@ var FIELD_DEFS = [
 	{ name: 'active_client_min_bps', kind: 'integer', label: _('活跃最小速率'), unit: 'bps', limits: LIMITS.active_client_min_bps },
 	{ name: 'overview_window_samples', kind: 'integer', label: _('历史采样点'), unit: _('个'), limits: LIMITS.overview_window_samples },
 	{ name: 'rate_collector_mode', kind: 'enum', label: _('客户端网速模式') },
+	{ name: 'internet_view_mode', kind: 'enum', label: _('互联网/路由视图') },
 	{ name: 'access_edge_mode', kind: 'enum', label: _('客户端总速率') },
 	{ name: 'conn_collector_mode', kind: 'enum', label: _('连接详情来源') },
 	{ name: 'show_client_status', kind: 'boolean', label: _('显示客户端状态') },
@@ -307,6 +314,12 @@ function normalize(raw) {
 	present.access_edge_mode = raw.access_edge_mode !== undefined && raw.access_edge_mode !== null;
 	if (!edge.valid && present.access_edge_mode) errors.access_edge_mode = edge.reason;
 
+	var internetRaw = raw.internet_view_mode === undefined ? DEFAULTS.internet_view_mode : raw.internet_view_mode;
+	var internet = normalizeEnum(internetRaw, INTERNET_VIEW_MODES, DEFAULTS.internet_view_mode);
+	values.internet_view_mode = internet.value;
+	present.internet_view_mode = raw.internet_view_mode !== undefined && raw.internet_view_mode !== null;
+	if (!internet.valid && present.internet_view_mode) errors.internet_view_mode = internet.reason;
+
 	[ 'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'enable_bpf', 'enable_conntrack_fallback' ].forEach(function(name) {
 		var result = parseBoolean(raw[name] === undefined ? DEFAULTS[name] : raw[name], DEFAULTS[name]);
 		values[name] = result.value;
@@ -333,6 +346,8 @@ function normalize(raw) {
 	if (values.enable_bpf === '0' &&
 		(values.rate_collector_mode === 'bpf' || values.rate_collector_mode === 'nss_ecm_bpf'))
 		errors.rate_collector_mode = 'bpf_disabled';
+	if (values.enable_bpf === '0' && values.internet_view_mode === 'routed')
+		errors.internet_view_mode = 'bpf_disabled';
 	if (unique(values.ifname.concat(values.interface_include)).length > MAX_INTERFACE_NAMES)
 		errors.interface_include = 'too_many_interfaces';
 	if (values.observe.length > MAX_INTERFACE_NAMES)
@@ -466,7 +481,7 @@ function buildUciPatch(values, original) {
 	var scalarFields = [
 		'refresh_interval_ms', 'active_client_window_ms', 'active_client_min_bps',
 		'overview_window_samples', 'rate_collector_mode', 'conn_collector_mode',
-		'access_edge_mode',
+		'access_edge_mode', 'internet_view_mode',
 		'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges',
 		'collector_mode', 'max_clients', 'enable_bpf', 'enable_conntrack_fallback'
 	];
@@ -520,6 +535,7 @@ return baseclass.extend({
 	LIMITS: LIMITS,
 	FIELDS: FIELD_DEFS,
 	ACCESS_EDGE_MODES: ACCESS_EDGE_MODES,
+	INTERNET_VIEW_MODES: INTERNET_VIEW_MODES,
 	MAX_INTERFACE_NAMES: MAX_INTERFACE_NAMES,
 	MAX_RANGE_ITEMS: MAX_RANGE_ITEMS,
 	REMOVED_UCI_FIELDS: REMOVED_UCI_FIELDS,

@@ -208,6 +208,7 @@ fn fixture_snapshot() -> ResponseSnapshot {
             overview_window_samples: 240,
             collector_mode: "auto".into(),
             rate_collector_mode: "auto".into(),
+            internet_view_mode: "off".into(),
             access_edge_mode: "shadow".into(),
             conn_collector_mode: "auto".into(),
             version: "1.0.0-r1".into(),

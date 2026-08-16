@@ -133,6 +133,10 @@
       "type": "string",
       "enum": ["auto", "bpf", "nss_ecm_node", "nss_ecm_bpf"]
     },
+    "internetViewMode": {
+      "type": "string",
+      "enum": ["off", "routed"]
+    },
     "connCollectorMode": {
       "type": "string",
       "enum": ["auto", "conntrack_netlink", "conntrack_procfs"]
@@ -147,6 +151,7 @@
         "edge_port",
         "edge_wifi",
         "fast_routed_lease",
+        "fast_routed_internet",
         "ecm_bpf_fallback",
         "ecm_nss_lower_bound",
         "tc_bpf_lower_bound",
@@ -1048,6 +1053,9 @@
         "rate_collector_mode": {
           "$ref": "#/$defs/rateCollectorMode"
         },
+        "internet_view_mode": {
+          "$ref": "#/$defs/internetViewMode"
+        },
         "access_edge_mode": {
           "type": "string",
           "enum": ["off", "shadow", "active"]
@@ -1073,6 +1081,7 @@
         "evidence",
         "refresh_interval_ms",
         "rate_collector_mode",
+        "internet_view_mode",
         "access_edge_mode",
         "conn_collector_mode",
         "version",

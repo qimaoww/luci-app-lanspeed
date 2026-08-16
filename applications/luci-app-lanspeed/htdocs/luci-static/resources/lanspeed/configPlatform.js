@@ -29,6 +29,7 @@ function normalizeValues(status, values) {
 	var normalized = cloneValues(values);
 	if (profile(status) === x86Platform.PROFILE) {
 		normalized.access_edge_mode = 'off';
+		normalized.internet_view_mode = 'off';
 		if (!x86Platform.supportsRateMode(normalized.rate_collector_mode))
 			normalized.rate_collector_mode = 'bpf';
 	}
@@ -40,11 +41,12 @@ function formPolicy(status) {
 	if (value === nssPlatform.PROFILE) {
 		return {
 			showAccessEdge: true,
-			rateHint: _('推荐“自动精准”：优先显示每个客户端接入口的总速率；NSS 与 CPU 检测用于流量分类，并在总速率不可用时降级显示。手动模式只显示所选路径能看到的流量。'),
+			rateHint: _('推荐“自动精准”：优先显示每个客户端接入口的总速率；NSS 与 CPU 检测用于流量分类，并在总速率不可用时降级显示。旧版 ECM+BPF 模式保持原有采集语义。'),
+			internetViewHint: _('独立于客户端网速模式，仅显示 NSS FastN+FastS 观察到的互联网/路由流量；关闭时保持原有总速率或 ECM+BPF 语义。'),
 			accessEdgeHint: _('“精准总速率”在自动模式中使用有线端口或无线客户端计数；“仅后台验证”只采集核对，不改变页面速率；“关闭”完全停用。'),
 			connectionHint: _('自动优先使用 CT-Netlink；仅在旧系统不支持时使用 Procfs。此设置只影响连接详情，不参与客户端总速率融合。'),
 			bpfHint: _('用于识别经过 CPU 的流量，并作为自动精准模式的降级来源；关闭后相关手动模式不可选。'),
-			refreshHint: _('BPF 不限制采样周期；ECM 与 ECM+BPF 固定使用 2000 ms。')
+			refreshHint: _('BPF 不限制采样周期；自动精准使用 1 秒接入窗口，互联网/路由 FastN+FastS 也使用 1 秒窗口。')
 		};
 	}
 	if (value === x86Platform.PROFILE) {
@@ -84,6 +86,9 @@ function runtimeInfo(status) {
 	var rateLabel = rateLabels[String(effectiveRate)] || String(effectiveRate);
 	var connectionLabel = connectionLabels[String(effectiveConnection)] || String(effectiveConnection);
 	if (profile(status) === nssPlatform.PROFILE &&
+		String(status && status.internet_view_mode || '') === 'routed')
+		return _('当前运行：互联网/路由 FastN+FastS · 连接 %s').format(connectionLabel);
+	if (profile(status) === nssPlatform.PROFILE &&
 		String(status && status.rate_collector_mode || '') === 'auto' &&
 		String(status && status.access_edge_mode || '') === 'active')
 		return _('当前运行：总速率 精准接入点 · 分类 %s · 连接 %s').format(rateLabel, connectionLabel);
@@ -94,10 +99,16 @@ function applyPatchPolicy(status, originalRaw, patch) {
 	var value = profile(status);
 	if (value !== nssPlatform.PROFILE)
 		delete patch.set.access_edge_mode;
+	if (value !== nssPlatform.PROFILE)
+		delete patch.set.internet_view_mode;
 	if (value === x86Platform.PROFILE &&
 		(originalRaw || {}).access_edge_mode !== undefined &&
 		patch.unset.indexOf('access_edge_mode') === -1)
 		patch.unset.push('access_edge_mode');
+	if (value === x86Platform.PROFILE &&
+		(originalRaw || {}).internet_view_mode !== undefined &&
+		patch.unset.indexOf('internet_view_mode') === -1)
+		patch.unset.push('internet_view_mode');
 	return patch;
 }
 

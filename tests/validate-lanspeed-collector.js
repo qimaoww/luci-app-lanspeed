@@ -172,6 +172,9 @@ assert(model.evidence_lease.lifetime_ms === 10000 &&
   model.evidence_lease.substitute_byte_domain ===
     'l2_with_fcs_from_ecm_plus_18_and_tc_plus_4_per_packet' &&
   model.evidence_lease.fast_window_current_required === true &&
+  model.evidence_lease.explicit_internet_mode === 'internet_view_mode_routed' &&
+  model.evidence_lease.explicit_internet_rate_source === 'fast_routed_internet' &&
+  model.evidence_lease.explicit_internet_scope === 'routed_observed' &&
   model.evidence_lease.ringbuf_drop_invalidates === false &&
   nssEvidenceLease.includes('pub(crate) struct EvidenceLeaseBook') &&
   nssEvidenceLease.includes('pub sample_available: bool') &&
@@ -365,13 +368,14 @@ assert(edgeModel.classification.E === 'access_edge_authoritative_total' &&
 assert(Object.values(edgeModel.classification.legacy_active_auto_inference_paths)
     .every((enabled) => enabled === false) &&
   production.includes('fn active_access_edge_owns_display_rate(') &&
+  production.includes('fn rate_mux_owns_display_rate(') &&
   production.includes('fn legacy_nss_rate_window_enabled(') &&
-  production.includes('!active_access_edge_owns_display_rate(access_edge_mode, rate_collector_mode)') &&
-  production.includes('Active Access Edge never falls through to the legacy NSS') &&
+  production.includes('!rate_mux_owns_display_rate(access_edge_mode, rate_collector_mode, internet_view_mode)') &&
+  production.includes('Formal RateMux never falls through to the legacy NSS') &&
   production.includes('no LAN allocation, previous distribution, directional') &&
   production.includes('interface floor, or smoothed rate may become E.'),
   'active+auto must not execute any legacy LAN allocation, gap fill, max, floor or smoothing path');
-assert(production.includes('Active-auto rates are owned exclusively by RateMux') &&
+assert(production.includes('Formal RateMux rates are owned exclusively by the selected') &&
   production.includes('client.tx_bytes = None;\n                client.rx_bytes = None;'),
   'active+auto must never retain cumulative totals from the displaced legacy pipeline');
 assert(model.ecm_bpf_window_model.rate_clock ===

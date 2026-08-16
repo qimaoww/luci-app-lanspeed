@@ -10,7 +10,7 @@ function collectorLabel(mode) {
 	if (mode === 'nss_ecm_node')
 		return 'ECM';
 	if (mode === 'nss_ecm_bpf')
-		return 'ECM+BPF';
+		return _('ECM+BPF');
 	if (mode === 'conntrack_netlink')
 		return 'CT-Netlink';
 	if (mode === 'conntrack_procfs')
