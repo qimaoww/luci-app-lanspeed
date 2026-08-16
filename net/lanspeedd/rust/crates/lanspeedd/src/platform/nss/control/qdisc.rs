@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use crate::control::{ActiveRule, ControlPlan, NSS_CPU_DOWNLOAD, NSS_MAX_RATE_BPS};
+use crate::control::{
+    nss_state::NssShapingPolicy, ActiveRule, ControlPlan, NSS_CPU_DOWNLOAD, NSS_MAX_RATE_BPS,
+};
 
 use super::{cpu_path, system, topology::Topology};
 
@@ -11,13 +13,9 @@ const ROOT_CLASS_MINOR: u16 = 1;
 const DEFAULT_CLASS_MINOR: u16 = 2;
 const DEFAULT_FIFO_HANDLE: &str = "7d02:";
 const DEFAULT_QUEUE_BYTES: u64 = 16 * 1024 * 1024;
-const NSS_TARGET_DELAY_MS: u64 = 50;
-const NSS_MIN_QUEUE_BYTES: u64 = 8 * 1514;
 const NSS_MAX_QUEUE_BYTES: u64 = 16 * 1024 * 1024;
 const MIN_BURST_BYTES: u64 = 6 * 1514;
 const MAX_BURST_BYTES: u64 = 1024 * 1024;
-const NSS_RATE_COMPENSATION_NUMERATOR: u64 = 110;
-const NSS_RATE_COMPENSATION_DENOMINATOR: u64 = 100;
 const BURST_WINDOW_MILLIS: u64 = 10;
 const BITS_PER_MILLISECOND_BYTE: u64 = 8_000;
 
@@ -60,12 +58,12 @@ impl Direction {
         }
     }
 
-    pub(super) fn rate(self, rule: &ActiveRule) -> u64 {
+    pub(super) fn rate(self, rule: &ActiveRule, shaping: NssShapingPolicy) -> u64 {
         let configured = match self {
             Self::Upload => rule.upload_bps,
             Self::Download => rule.download_bps,
         };
-        payload_rate(configured)
+        payload_rate(configured, shaping)
     }
 }
 
@@ -102,6 +100,7 @@ pub(super) fn apply(plan: &ControlPlan, topology: &Topology) -> Result<(), Strin
             Direction::Download,
             rules,
             default_class_rate_bps(device)?,
+            plan.nss.shaping(),
         )?;
     }
 
@@ -163,6 +162,7 @@ pub(super) fn verify_plan(plan: &ControlPlan, topology: &Topology) -> Result<(),
             Direction::Download,
             &rules,
             default_class_rate_bps(&device)?,
+            plan.nss.shaping(),
         )?;
         desired.insert(device);
     }
@@ -176,6 +176,7 @@ pub(super) fn verify_plan(plan: &ControlPlan, topology: &Topology) -> Result<(),
             Direction::Upload,
             &[],
             default_class_rate_bps(device)?,
+            NssShapingPolicy::default(),
         )?;
     }
     Ok(())
@@ -201,6 +202,7 @@ fn sync_tree(
     direction: Direction,
     rules: &[&ActiveRule],
     default_rate: u64,
+    shaping: NssShapingPolicy,
 ) -> Result<(), String> {
     system::ensure_replaceable_root(device)?;
     let mut created = !system::owned_root(device)?;
@@ -215,13 +217,13 @@ fn sync_tree(
         }
     }
     let staged = (|| {
-        sync_client_rules_batch(device, direction, rules)?;
+        sync_client_rules_batch(device, direction, rules, shaping)?;
         remove_stale_classes(device, rules)?;
         // qca_nss_qdisc rejects TC filters on an NSSHTB root. nft sets skb
         // priority before egress, while ECM supplies the same classid to
         // accelerated flows, so both directions select classes without a
         // second classifier on the qdisc itself.
-        verify_tree(device, direction, rules, default_rate)
+        verify_tree(device, direction, rules, default_rate, shaping)
     })();
     if staged.is_err() && created {
         let _ = delete_created_root(device);
@@ -229,7 +231,11 @@ fn sync_tree(
     staged
 }
 
-pub(super) fn sync_igs_tree(device: &str, rules: &[&ActiveRule]) -> Result<(), String> {
+pub(super) fn sync_igs_tree(
+    device: &str,
+    rules: &[&ActiveRule],
+    shaping: NssShapingPolicy,
+) -> Result<(), String> {
     system::ensure_replaceable_root(device)?;
     let mut created = !system::owned_root(device)?;
     if created {
@@ -243,9 +249,16 @@ pub(super) fn sync_igs_tree(device: &str, rules: &[&ActiveRule]) -> Result<(), S
         }
     }
     let staged = (|| {
-        sync_client_rules_batch(device, Direction::Upload, rules)?;
+        sync_client_rules_batch(device, Direction::Upload, rules, shaping)?;
         remove_stale_classes(device, rules)?;
-        verify_tree_inventory(device, Direction::Upload, rules, NSS_MAX_RATE_BPS, false)
+        verify_tree_inventory(
+            device,
+            Direction::Upload,
+            rules,
+            NSS_MAX_RATE_BPS,
+            false,
+            shaping,
+        )
     })();
     if staged.is_err() && created {
         let _ = delete_created_root(device);
@@ -253,8 +266,19 @@ pub(super) fn sync_igs_tree(device: &str, rules: &[&ActiveRule]) -> Result<(), S
     staged
 }
 
-pub(super) fn verify_igs_tree(device: &str, rules: &[&ActiveRule]) -> Result<(), String> {
-    verify_tree_inventory(device, Direction::Upload, rules, NSS_MAX_RATE_BPS, false)
+pub(super) fn verify_igs_tree(
+    device: &str,
+    rules: &[&ActiveRule],
+    shaping: NssShapingPolicy,
+) -> Result<(), String> {
+    verify_tree_inventory(
+        device,
+        Direction::Upload,
+        rules,
+        NSS_MAX_RATE_BPS,
+        false,
+        shaping,
+    )
 }
 
 pub(super) fn remove_igs_tree(device: &str) -> Result<(), String> {
@@ -267,6 +291,7 @@ fn sync_passthrough_tree(device: &str) -> Result<(), String> {
         Direction::Upload,
         &[],
         default_class_rate_bps(device)?,
+        NssShapingPolicy::default(),
     )
 }
 
@@ -382,25 +407,27 @@ fn replace_class_args(
     ]
 }
 
-fn nss_queue_bytes(rate_bps: u64) -> u64 {
+fn nss_queue_bytes(rate_bps: u64, shaping: NssShapingPolicy) -> u64 {
+    let minimum = u64::from(shaping.fifo_min_queue_packets).saturating_mul(1514);
     rate_bps
-        .saturating_mul(NSS_TARGET_DELAY_MS)
+        .saturating_mul(u64::from(shaping.fifo_target_delay_ms))
         .saturating_div(BITS_PER_MILLISECOND_BYTE)
-        .clamp(NSS_MIN_QUEUE_BYTES, NSS_MAX_QUEUE_BYTES)
+        .clamp(minimum, NSS_MAX_QUEUE_BYTES)
 }
 
 fn sync_client_rules_batch(
     device: &str,
     direction: Direction,
     rules: &[&ActiveRule],
+    shaping: NssShapingPolicy,
 ) -> Result<(), String> {
     let leaves = leaf_qdiscs(device)?;
     let qdiscs = nss_qdisc_details(device)?;
     let classes = nss_class_details(device)?;
     let mut commands = Vec::<Vec<String>>::new();
     for rule in rules {
-        let rate_bps = direction.rate(rule);
-        let (expected_qdisc, expected_class) = expected_client_details(direction, rule);
+        let rate_bps = direction.rate(rule, shaping);
+        let (expected_qdisc, expected_class) = expected_client_details(direction, rule, shaping);
         if exact_detail_count(&qdiscs, &expected_qdisc) == 1
             && exact_detail_count(&classes, &expected_class) == 1
         {
@@ -442,7 +469,7 @@ fn sync_client_rules_batch(
             handle,
             "nssbfifo".into(),
             "limit".into(),
-            format!("{}b", nss_queue_bytes(rate_bps)),
+            format!("{}b", nss_queue_bytes(rate_bps, shaping)),
             "accel_mode".into(),
             "0".into(),
         ]);
@@ -497,8 +524,9 @@ fn verify_tree(
     direction: Direction,
     rules: &[&ActiveRule],
     default_rate: u64,
+    shaping: NssShapingPolicy,
 ) -> Result<(), String> {
-    verify_tree_inventory(device, direction, rules, default_rate, false)
+    verify_tree_inventory(device, direction, rules, default_rate, false, shaping)
 }
 
 fn verify_tree_inventory(
@@ -507,6 +535,7 @@ fn verify_tree_inventory(
     rules: &[&ActiveRule],
     default_rate: u64,
     allow_root_filters: bool,
+    shaping: NssShapingPolicy,
 ) -> Result<(), String> {
     verify_base_tree(device)?;
     if !allow_root_filters {
@@ -536,7 +565,7 @@ fn verify_tree_inventory(
         && leaves == expected_leaves
         && !foreign_leaf
     {
-        verify_nss_options(device, direction, rules, default_rate)
+        verify_nss_options(device, direction, rules, default_rate, shaping)
     } else {
         Err("nss_qdisc_verification_failed".into())
     }
@@ -547,6 +576,7 @@ fn verify_nss_options(
     direction: Direction,
     rules: &[&ActiveRule],
     default_rate: u64,
+    shaping: NssShapingPolicy,
 ) -> Result<(), String> {
     let qdiscs = nss_qdisc_details(device)?
         .into_iter()
@@ -579,7 +609,7 @@ fn verify_nss_options(
     }
 
     for rule in rules {
-        let (expected_qdisc, expected_class) = expected_client_details(direction, rule);
+        let (expected_qdisc, expected_class) = expected_client_details(direction, rule, shaping);
         if exact_detail_count(&qdiscs, &expected_qdisc) != 1
             || exact_detail_count(&classes, &expected_class) != 1
         {
@@ -592,8 +622,9 @@ fn verify_nss_options(
 fn expected_client_details(
     direction: Direction,
     rule: &ActiveRule,
+    shaping: NssShapingPolicy,
 ) -> (NssQdiscDetail, NssClassDetail) {
-    let rate = direction.rate(rule);
+    let rate = direction.rate(rule, shaping);
     let burst = tc_size_text(burst_bytes(rate));
     let leaf = leaf_handle(rule.class_minor);
     (
@@ -604,7 +635,7 @@ fn expected_client_details(
             root: false,
             r2q: None,
             accel_mode: Some(0),
-            limit: Some(tc_size_text(nss_queue_bytes(rate))),
+            limit: Some(tc_size_text(nss_queue_bytes(rate, shaping))),
             set_default: false,
         },
         NssClassDetail {
@@ -978,11 +1009,11 @@ fn burst_bytes(rate_bps: u64) -> u64 {
         .clamp(MIN_BURST_BYTES, MAX_BURST_BYTES)
 }
 
-fn payload_rate(configured_bps: u64) -> u64 {
+fn payload_rate(configured_bps: u64, shaping: NssShapingPolicy) -> u64 {
     payload_rate_with_compensation(
         configured_bps,
-        NSS_RATE_COMPENSATION_NUMERATOR,
-        NSS_RATE_COMPENSATION_DENOMINATOR,
+        u64::from(shaping.rate_compensation_basis_points),
+        100,
     )
 }
 

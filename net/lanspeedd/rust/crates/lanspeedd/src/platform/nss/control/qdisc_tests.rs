@@ -2,6 +2,10 @@
 mod tests {
     use super::*;
 
+    fn shaping() -> NssShapingPolicy {
+        NssShapingPolicy::default()
+    }
+
     #[test]
     fn nss_tree_has_one_firmware_root_group() {
         assert_eq!(classid(ROOT_CLASS_MINOR), "7d00:1");
@@ -149,22 +153,23 @@ mod tests {
             internet_disabled: false,
             class_minor: 0x7c23,
         };
-        let (qdisc, class) = expected_client_details(Direction::Download, &rule);
+        let (qdisc, class) = expected_client_details(Direction::Download, &rule, shaping());
         assert_eq!(exact_detail_count(std::slice::from_ref(&qdisc), &qdisc), 1);
         assert_eq!(exact_detail_count(std::slice::from_ref(&class), &class), 1);
 
         let mut changed = rule;
         changed.download_bps = 50_000_000;
-        let (changed_qdisc, changed_class) = expected_client_details(Direction::Download, &changed);
+        let (changed_qdisc, changed_class) =
+            expected_client_details(Direction::Download, &changed, shaping());
         assert_ne!(changed_qdisc, qdisc);
         assert_ne!(changed_class, class);
     }
 
     #[test]
     fn nss_payload_rate_has_independent_l2_headroom_and_stays_u32_safe() {
-        assert_eq!(payload_rate(10_000_000), 11_000_000);
-        assert_eq!(payload_rate(100_000_000), 110_000_000);
-        assert_eq!(payload_rate(NSS_MAX_RATE_BPS), NSS_MAX_RATE_BPS);
+        assert_eq!(payload_rate(10_000_000, shaping()), 11_000_000);
+        assert_eq!(payload_rate(100_000_000, shaping()), 110_000_000);
+        assert_eq!(payload_rate(NSS_MAX_RATE_BPS, shaping()), NSS_MAX_RATE_BPS);
     }
 
     #[test]
@@ -172,6 +177,16 @@ mod tests {
         assert_eq!(payload_rate_with_compensation(100_000_000, 110, 100), 110_000_000);
         assert_eq!(payload_rate_with_compensation(100_000_000, 100, 100), 100_000_000);
         assert_eq!(payload_rate_with_compensation(100_000_000, 0, 0), NSS_MAX_RATE_BPS);
+    }
+
+    #[test]
+    fn nss_rate_compensation_uses_the_plan_policy() {
+        let strict = NssShapingPolicy {
+            rate_compensation_basis_points: 100,
+            ..shaping()
+        };
+        assert_eq!(payload_rate(100_000_000, strict), 100_000_000);
+        assert_eq!(payload_rate(100_000_000, shaping()), 110_000_000);
     }
 
     #[test]
@@ -194,14 +209,28 @@ mod tests {
 
     #[test]
     fn nss_fifo_uses_a_bounded_delay_target_and_small_floor() {
-        assert_eq!(nss_queue_bytes(8_000), NSS_MIN_QUEUE_BYTES);
-        assert_eq!(nss_queue_bytes(11_000_000), 68_750);
-        assert_eq!(nss_queue_bytes(NSS_MAX_RATE_BPS), NSS_MAX_QUEUE_BYTES);
+        assert_eq!(nss_queue_bytes(8_000, shaping()), 8 * 1514);
+        assert_eq!(nss_queue_bytes(11_000_000, shaping()), 68_750);
+        assert_eq!(
+            nss_queue_bytes(NSS_MAX_RATE_BPS, shaping()),
+            NSS_MAX_QUEUE_BYTES
+        );
     }
 
     #[test]
     fn nss_fifo_delay_formula_is_byte_rate_based() {
-        assert_eq!(nss_queue_bytes(80_000_000), 500_000);
-        assert_eq!(nss_queue_bytes(160_000_000), 1_000_000);
+        assert_eq!(nss_queue_bytes(80_000_000, shaping()), 500_000);
+        assert_eq!(nss_queue_bytes(160_000_000, shaping()), 1_000_000);
+    }
+
+    #[test]
+    fn nss_fifo_uses_independent_delay_and_floor_policy() {
+        let tuned = NssShapingPolicy {
+            fifo_target_delay_ms: 30,
+            fifo_min_queue_packets: 4,
+            ..shaping()
+        };
+        assert_eq!(nss_queue_bytes(8_000, tuned), 4 * 1514);
+        assert_eq!(nss_queue_bytes(80_000_000, tuned), 300_000);
     }
 }

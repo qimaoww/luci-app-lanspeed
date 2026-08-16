@@ -30,6 +30,9 @@ function normalizeValues(status, values) {
 	if (profile(status) === x86Platform.PROFILE) {
 		normalized.access_edge_mode = 'off';
 		normalized.internet_view_mode = 'off';
+		delete normalized.nss_fifo_target_delay_ms;
+		delete normalized.nss_fifo_min_queue_packets;
+		delete normalized.rate_compensation_factor;
 		if (!x86Platform.supportsRateMode(normalized.rate_collector_mode))
 			normalized.rate_collector_mode = 'bpf';
 	}
@@ -97,10 +100,10 @@ function runtimeInfo(status) {
 
 function applyPatchPolicy(status, originalRaw, patch) {
 	var value = profile(status);
+	var nssOnly = [ 'access_edge_mode', 'internet_view_mode', 'nss_fifo_target_delay_ms',
+		'nss_fifo_min_queue_packets', 'rate_compensation_factor' ];
 	if (value !== nssPlatform.PROFILE)
-		delete patch.set.access_edge_mode;
-	if (value !== nssPlatform.PROFILE)
-		delete patch.set.internet_view_mode;
+		nssOnly.forEach(function(name) { delete patch.set[name]; });
 	if (value === x86Platform.PROFILE &&
 		(originalRaw || {}).access_edge_mode !== undefined &&
 		patch.unset.indexOf('access_edge_mode') === -1)
@@ -109,6 +112,11 @@ function applyPatchPolicy(status, originalRaw, patch) {
 		(originalRaw || {}).internet_view_mode !== undefined &&
 		patch.unset.indexOf('internet_view_mode') === -1)
 		patch.unset.push('internet_view_mode');
+	if (value === x86Platform.PROFILE)
+		nssOnly.slice(2).forEach(function(name) {
+			if ((originalRaw || {})[name] !== undefined && patch.unset.indexOf(name) === -1)
+				patch.unset.push(name);
+		});
 	return patch;
 }
 

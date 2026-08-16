@@ -298,7 +298,7 @@ impl ControlManager {
             max_rate_bps: platform::max_rate_bps(),
             dirty: true,
             #[cfg(feature = "nss-platform")]
-            nss: NssControlState::default(),
+            nss: NssControlState::from_config(config),
         })
     }
 

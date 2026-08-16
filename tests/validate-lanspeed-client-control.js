@@ -312,7 +312,8 @@ async function main() {
 		nssCpuPathByModule['classifier.rs'].includes('remove_stale_u32_slots') &&
 		nssCpuPathByModule['classifier.rs'].includes('upload_chain_owned(&values, &device)') &&
 		nssCpuPathByModule['classifier.rs'].includes('"filter",\n                "replace"') &&
-		nssControlByModule['qdisc.rs'].includes('expected_client_details(direction, rule)') &&
+		nssControlByModule['qdisc.rs'].includes('expected_client_details(direction, rule, shaping)') &&
+		nssCpuPathByModule['shaper.rs'].includes('plan.nss.shaping()') &&
 		nssControlByModule['qdisc.rs'].includes('exact_detail_count(&qdiscs, &expected_qdisc) == 1') &&
 		control.includes('preserve_unchanged_nss_verification') &&
 		control.includes('applied_plan: Option<ControlPlan>') &&

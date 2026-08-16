@@ -33,6 +33,10 @@ const x86ProfileMigration = fs.readFileSync(
   path.join(root, 'net/lanspeedd/files/etc/uci-defaults/95-lanspeed-x86-profile'),
   'utf8'
 );
+const nssShapingMigration = fs.readFileSync(
+  path.join(root, 'net/lanspeedd/files/etc/uci-defaults/94-lanspeed-nss-shaping'),
+  'utf8'
+);
 const initScript = fs.readFileSync(
   path.join(root, 'net/lanspeedd/files/etc/init.d/lanspeedd'),
   'utf8'
@@ -878,6 +882,11 @@ try {
   );
   assertMatch(
     pkgMakefile,
+    /if \[ "\$\(CONFIG_TARGET_qualcommax\)" = "y" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/etc\/uci-defaults; \\\s*\$\(INSTALL_BIN\) \.\/files\/etc\/uci-defaults\/94-lanspeed-nss-shaping \$\(1\)\/etc\/uci-defaults\/94-lanspeed-nss-shaping; \\\s*fi/,
+    'only the qualcommax package may install the NSS shaping migration'
+  );
+  assertMatch(
+    pkgMakefile,
     /if \[ "\$\(CONFIG_TARGET_qualcommax\)" = "y" \]; then \\\s*\$\(SED\) '\/procd_set_param respawn\/a\\\tprocd_set_param term_timeout 15' \$\(1\)\/etc\/init\.d\/lanspeedd; \\\s*fi/,
     'only the qualcommax package may extend procd shutdown for NSS cleanup and BPF RCU detach'
   );
@@ -890,6 +899,15 @@ try {
     'the shared init source must retain the x86 default termination timeout');
   assertMatch(x86ProfileMigration, /uci -q delete lanspeed\.main\.access_edge_mode/,
     'x86 migration must remove a retained Access Edge option');
+  for (const option of [ 'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets',
+    'rate_compensation_factor' ]) {
+    assert(x86ProfileMigration.includes(option),
+      `x86 migration must remove retained NSS-only shaping option ${option}`);
+    assert(nssShapingMigration.includes(`set_default ${option}`),
+      `NSS migration must initialize missing shaping option ${option}`);
+  }
+  assertMatch(nssShapingMigration, /if ! uci -q get "lanspeed\.main\.\$option"/,
+    'NSS shaping migration must not overwrite an existing user value');
   assertMatch(x86ProfileMigration, /uci -q delete lanspeed\.main\.single_client_ports/,
     'x86 migration must remove the retired single-client-port option');
   assertMatch(x86ProfileMigration, /uci -q delete lanspeed\.main\.dedicated_port/,

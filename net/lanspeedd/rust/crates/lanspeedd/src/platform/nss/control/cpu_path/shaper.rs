@@ -50,7 +50,7 @@ pub(super) fn stage(plan: &ControlPlan) -> Result<(), String> {
             let device = ifb::ensure(edge)?;
             ifb::stage(edge)?;
             cleanup_filters(&device)?;
-            qdisc::sync_igs_tree(&device, rules)?;
+            qdisc::sync_igs_tree(&device, rules, plan.nss.shaping())?;
             Ok(())
         })();
         if let Err(error) = staged {
@@ -104,7 +104,7 @@ pub(super) fn verify(plan: &ControlPlan) -> Result<(), String> {
             return Err("nss_igs_ifb_missing".into());
         }
         let device = ifb::device(edge);
-        qdisc::verify_igs_tree(&device, rules)?;
+        qdisc::verify_igs_tree(&device, rules, plan.nss.shaping())?;
         let peers = rules.iter().map(|rule| rule.mac).collect::<BTreeSet<_>>();
         ifb::verify_peers(edge, &peers)?;
     }

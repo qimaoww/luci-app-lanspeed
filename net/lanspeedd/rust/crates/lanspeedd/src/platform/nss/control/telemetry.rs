@@ -90,7 +90,7 @@ pub(super) fn observe(plan: &ControlPlan, previous: &ApplyResult) -> ApplyResult
             .copied()
             .unwrap_or(0);
         for (direction, bit) in [(Direction::Upload, 1), (Direction::Download, 2)] {
-            if direction.rate(rule) == 0 {
+            if direction.rate(rule, plan.nss.shaping()) == 0 {
                 continue;
             }
             if !plan.nss_direction_path_ready(&rule.identity_key, bit) {
@@ -293,7 +293,7 @@ fn snapshot(
     let mut values = BTreeMap::new();
     for rule in &plan.rules {
         for direction in [Direction::Download] {
-            if direction.rate(rule) == 0 {
+            if direction.rate(rule, plan.nss.shaping()) == 0 {
                 continue;
             }
             let bit = match direction {

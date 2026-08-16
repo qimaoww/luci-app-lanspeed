@@ -6297,7 +6297,8 @@ function assertConfigModelRewrite(src) {
 	const required = [
 		'refresh_interval_ms', 'active_client_window_ms', 'active_client_min_bps',
 		'overview_window_samples', 'rate_collector_mode', 'conn_collector_mode',
-		'access_edge_mode', 'internet_view_mode',
+		'access_edge_mode', 'internet_view_mode', 'nss_fifo_target_delay_ms',
+		'nss_fifo_min_queue_packets', 'rate_compensation_factor',
 			'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges',
 		'collector_mode', 'max_clients', 'ifname', 'interface_include',
 		'interface_exclude', 'observe', 'enable_bpf', 'enable_conntrack_fallback'
@@ -6320,11 +6321,20 @@ function assertConfigModelRewrite(src) {
 		fail('configModel.js must keep removed UCI fields explicit for compatibility cleanup');
 	if (model.DEFAULTS.access_edge_mode !== 'active' ||
 		model.DEFAULTS.internet_view_mode !== 'off' ||
+		model.DEFAULTS.nss_fifo_target_delay_ms !== 50 ||
+		model.DEFAULTS.nss_fifo_min_queue_packets !== 8 ||
+		model.DEFAULTS.rate_compensation_factor !== '1.10' ||
 		JSON.stringify(model.ACCESS_EDGE_MODES.map(item => String(item.label))) !== JSON.stringify([
 			'关闭精准检测', '仅后台验证（不用于显示）', '精准总速率（推荐）'
 		]) || JSON.stringify(model.INTERNET_VIEW_MODES.map(item => item.value)) !==
 		JSON.stringify([ 'off', 'routed' ])) {
 		fail('configModel.js automatic defaults and total-rate choices must make precise mode the clear recommendation');
+	}
+	if (!model.parseFactor('1.00', model.LIMITS.rate_compensation_factor).valid ||
+		!model.parseFactor('1.10', model.LIMITS.rate_compensation_factor).valid ||
+		model.parseFactor('1.001', model.LIMITS.rate_compensation_factor).valid ||
+		model.parseFactor('1.26', model.LIMITS.rate_compensation_factor).valid) {
+		fail('configModel.js must validate the NSS rate compensation factor without float coercion');
 	}
 	if (model.parseInteger('1000ms', model.LIMITS.refresh_interval_ms).valid ||
 		model.parseInteger('499', model.LIMITS.refresh_interval_ms).valid ||

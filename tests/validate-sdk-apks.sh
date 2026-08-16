@@ -222,6 +222,7 @@ daemon="$daemon_root/usr/sbin/lanspeedd"
 daemon_config="$daemon_root/etc/config/lanspeed"
 [[ -s $daemon_config ]] || fail "daemon APK does not contain etc/config/lanspeed"
 x86_migration="$daemon_root/etc/uci-defaults/95-lanspeed-x86-profile"
+nss_shaping_migration="$daemon_root/etc/uci-defaults/94-lanspeed-nss-shaping"
 
 if grep -aEq '/(openwrt|root|home)/' \
 	"$daemon" "$bpf_root"/usr/lib/bpf/*.o; then
@@ -261,8 +262,17 @@ case "$expected_arch" in
 	x86_64)
 		[[ ! -e $ecm_object ]] || fail 'x86 BPF APK must not contain an NSS ECM object'
 		[[ -x $x86_migration ]] || fail 'x86 daemon APK must contain the executable profile migration'
+		[[ ! -e $nss_shaping_migration ]] || \
+			fail 'x86 daemon APK must not contain the NSS shaping migration'
 		grep -q 'delete lanspeed.main.access_edge_mode' "$x86_migration" || \
 			fail 'x86 profile migration must remove a retained Access Edge option'
+		for option in nss_fifo_target_delay_ms nss_fifo_min_queue_packets rate_compensation_factor; do
+			grep -q "$option" "$x86_migration" || \
+				fail "x86 profile migration must remove retained NSS shaping option: $option"
+			if grep -q "$option" "$daemon_config"; then
+				fail "x86 daemon configuration must not contain NSS shaping option: $option"
+			fi
+		done
 		grep -q 'delete lanspeed.main.single_client_ports' "$x86_migration" || \
 			fail 'x86 profile migration must remove the retired single-client-port option'
 		grep -q 'delete lanspeed.main.dedicated_port' "$x86_migration" || \
@@ -293,8 +303,20 @@ case "$expected_arch" in
 	aarch64*)
 		[[ -s $ecm_object ]] || fail 'aarch64 BPF APK must contain the isolated NSS ECM object'
 		[[ ! -e $x86_migration ]] || fail 'aarch64 daemon APK must not contain the x86 profile migration'
+		[[ -x $nss_shaping_migration ]] || \
+			fail 'aarch64 NSS daemon APK must contain the shaping migration'
 		grep -q "option access_edge_mode 'active'" "$daemon_config" || \
 			fail 'aarch64 daemon configuration must retain the Access Edge default'
+		grep -q "option nss_fifo_target_delay_ms '50'" "$daemon_config" || \
+			fail 'aarch64 daemon configuration must retain the NSS FIFO delay default'
+		grep -q "option nss_fifo_min_queue_packets '8'" "$daemon_config" || \
+			fail 'aarch64 daemon configuration must retain the NSS FIFO floor default'
+		grep -q "option rate_compensation_factor '1.10'" "$daemon_config" || \
+			fail 'aarch64 daemon configuration must retain the NSS compensation default'
+		for option in nss_fifo_target_delay_ms nss_fifo_min_queue_packets rate_compensation_factor; do
+			grep -q "set_default $option" "$nss_shaping_migration" || \
+				fail "aarch64 NSS shaping migration does not initialize: $option"
+		done
 		if grep -aq 'lanspeed_control_clients_0' "$daemon" "$bpf_root/usr/lib/bpf/lanspeed-ebpf-fallback.o"; then
 			fail 'aarch64 NSS packages must not contain the independent x86 control classifier'
 		fi

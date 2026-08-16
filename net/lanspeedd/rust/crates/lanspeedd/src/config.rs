@@ -13,6 +13,24 @@ pub const MIN_OVERVIEW_WINDOW_SAMPLES: usize = 2;
 pub const MAX_OVERVIEW_WINDOW_SAMPLES: usize = 240;
 pub const MAX_INTERFACE_NAMES: usize = 16;
 pub const MAX_INTERFACE_NAME_LEN: usize = 32;
+#[cfg(feature = "nss-platform")]
+pub const DEFAULT_NSS_FIFO_TARGET_DELAY_MS: u32 = 50;
+#[cfg(feature = "nss-platform")]
+pub const MIN_NSS_FIFO_TARGET_DELAY_MS: u32 = 10;
+#[cfg(feature = "nss-platform")]
+pub const MAX_NSS_FIFO_TARGET_DELAY_MS: u32 = 250;
+#[cfg(feature = "nss-platform")]
+pub const DEFAULT_NSS_FIFO_MIN_QUEUE_PACKETS: u32 = 8;
+#[cfg(feature = "nss-platform")]
+pub const MIN_NSS_FIFO_MIN_QUEUE_PACKETS: u32 = 2;
+#[cfg(feature = "nss-platform")]
+pub const MAX_NSS_FIFO_MIN_QUEUE_PACKETS: u32 = 16;
+#[cfg(feature = "nss-platform")]
+pub const DEFAULT_NSS_RATE_COMPENSATION_BASIS_POINTS: u16 = 110;
+#[cfg(feature = "nss-platform")]
+pub const MIN_NSS_RATE_COMPENSATION_BASIS_POINTS: u16 = 100;
+#[cfg(feature = "nss-platform")]
+pub const MAX_NSS_RATE_COMPENSATION_BASIS_POINTS: u16 = 125;
 
 const CONFIG_PREFIX: &str = "lanspeed.main.";
 pub const ARPHRD_ETHER: u32 = 1;
@@ -283,6 +301,18 @@ pub struct RuntimeConfig {
     pub configured_excluded: Vec<String>,
     pub configured_observed: Vec<String>,
     pub rejected_nssifb_collect: bool,
+    #[cfg(feature = "nss-platform")]
+    pub nss_fifo_target_delay_ms: u32,
+    #[cfg(feature = "nss-platform")]
+    pub nss_fifo_min_queue_packets: u32,
+    #[cfg(feature = "nss-platform")]
+    pub nss_rate_compensation_basis_points: u16,
+    #[cfg(feature = "nss-platform")]
+    pub nss_fifo_target_delay_clamped: bool,
+    #[cfg(feature = "nss-platform")]
+    pub nss_fifo_min_queue_clamped: bool,
+    #[cfg(feature = "nss-platform")]
+    pub nss_rate_compensation_clamped: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -316,6 +346,18 @@ impl Default for RuntimeConfig {
             configured_excluded: Vec::new(),
             configured_observed: Vec::new(),
             rejected_nssifb_collect: false,
+            #[cfg(feature = "nss-platform")]
+            nss_fifo_target_delay_ms: DEFAULT_NSS_FIFO_TARGET_DELAY_MS,
+            #[cfg(feature = "nss-platform")]
+            nss_fifo_min_queue_packets: DEFAULT_NSS_FIFO_MIN_QUEUE_PACKETS,
+            #[cfg(feature = "nss-platform")]
+            nss_rate_compensation_basis_points: DEFAULT_NSS_RATE_COMPENSATION_BASIS_POINTS,
+            #[cfg(feature = "nss-platform")]
+            nss_fifo_target_delay_clamped: false,
+            #[cfg(feature = "nss-platform")]
+            nss_fifo_min_queue_clamped: false,
+            #[cfg(feature = "nss-platform")]
+            nss_rate_compensation_clamped: false,
         }
     }
 }
@@ -454,6 +496,51 @@ impl RuntimeConfig {
         }
         if let Some(value) = scalar(source, "enable_conntrack_fallback")? {
             config.enable_conntrack_fallback = legacy_bool(&value);
+        }
+
+        #[cfg(feature = "nss-platform")]
+        {
+            if let Some(value) = scalar(source, "nss_fifo_target_delay_ms")? {
+                let parsed = parse_c_signed(&value);
+                if parsed > 0 {
+                    config.nss_fifo_target_delay_ms = parsed.clamp(
+                        i128::from(MIN_NSS_FIFO_TARGET_DELAY_MS),
+                        i128::from(MAX_NSS_FIFO_TARGET_DELAY_MS),
+                    ) as u32;
+                    config.nss_fifo_target_delay_clamped = parsed
+                        < i128::from(MIN_NSS_FIFO_TARGET_DELAY_MS)
+                        || parsed > i128::from(MAX_NSS_FIFO_TARGET_DELAY_MS);
+                } else {
+                    config.nss_fifo_target_delay_clamped = true;
+                }
+            }
+            if let Some(value) = scalar(source, "nss_fifo_min_queue_packets")? {
+                let parsed = parse_c_signed(&value);
+                if parsed > 0 {
+                    config.nss_fifo_min_queue_packets = parsed.clamp(
+                        i128::from(MIN_NSS_FIFO_MIN_QUEUE_PACKETS),
+                        i128::from(MAX_NSS_FIFO_MIN_QUEUE_PACKETS),
+                    ) as u32;
+                    config.nss_fifo_min_queue_clamped = parsed
+                        < i128::from(MIN_NSS_FIFO_MIN_QUEUE_PACKETS)
+                        || parsed > i128::from(MAX_NSS_FIFO_MIN_QUEUE_PACKETS);
+                } else {
+                    config.nss_fifo_min_queue_clamped = true;
+                }
+            }
+            if let Some(value) = scalar(source, "rate_compensation_factor")? {
+                if let Some(parsed) = parse_factor_basis_points(&value) {
+                    config.nss_rate_compensation_basis_points = parsed.clamp(
+                        MIN_NSS_RATE_COMPENSATION_BASIS_POINTS,
+                        MAX_NSS_RATE_COMPENSATION_BASIS_POINTS,
+                    );
+                    config.nss_rate_compensation_clamped = parsed
+                        < MIN_NSS_RATE_COMPENSATION_BASIS_POINTS
+                        || parsed > MAX_NSS_RATE_COMPENSATION_BASIS_POINTS;
+                } else {
+                    config.nss_rate_compensation_clamped = true;
+                }
+            }
         }
 
         let mut collect_count = 0;
@@ -628,6 +715,29 @@ fn parse_c_unsigned(value: &str) -> u64 {
     } else {
         parsed
     }
+}
+
+#[cfg(feature = "nss-platform")]
+fn parse_factor_basis_points(value: &str) -> Option<u16> {
+    let value = trim_c_ascii_whitespace(value);
+    if value.is_empty() || matches!(value.as_bytes().first(), Some(b'+' | b'-')) {
+        return None;
+    }
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || fraction.len() > 2
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let whole = whole.parse::<u16>().ok()?;
+    let fraction = match fraction.len() {
+        0 => 0,
+        1 => fraction.parse::<u16>().ok()?.saturating_mul(10),
+        _ => fraction.parse::<u16>().ok()?,
+    };
+    whole.checked_mul(100)?.checked_add(fraction)
 }
 
 fn trim_c_ascii_whitespace(value: &str) -> &str {

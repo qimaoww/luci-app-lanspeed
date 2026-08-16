@@ -418,7 +418,8 @@ fn direction_enabled(plan: &ControlPlan, rule: &ActiveRule, direction: Direction
         Direction::Upload => return false,
         Direction::Download => NSS_CPU_DOWNLOAD,
     };
-    direction.rate(rule) != 0 && plan.nss_direction_path_ready(&rule.identity_key, bit)
+    direction.rate(rule, plan.nss.shaping()) != 0
+        && plan.nss_direction_path_ready(&rule.identity_key, bit)
 }
 
 fn named_object<'a>(value: &'a Value, name: &str) -> Option<&'a Map<String, Value>> {

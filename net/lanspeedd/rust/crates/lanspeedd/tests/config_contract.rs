@@ -9,6 +9,12 @@ use lanspeedd::config::{
 };
 use std::collections::HashMap;
 
+#[cfg(feature = "nss-platform")]
+use lanspeedd::config::{
+    DEFAULT_NSS_FIFO_MIN_QUEUE_PACKETS, DEFAULT_NSS_FIFO_TARGET_DELAY_MS,
+    DEFAULT_NSS_RATE_COMPENSATION_BASIS_POINTS,
+};
+
 #[derive(Default)]
 struct MemorySource {
     values: HashMap<String, ConfigValue>,
@@ -114,6 +120,60 @@ fn defaults_and_limits_match_the_legacy_c_contract() {
     assert!(config.configured_excluded.is_empty());
     assert!(config.configured_observed.is_empty());
     assert!(!config.rejected_nssifb_collect);
+    #[cfg(feature = "nss-platform")]
+    {
+        assert_eq!(
+            config.nss_fifo_target_delay_ms,
+            DEFAULT_NSS_FIFO_TARGET_DELAY_MS
+        );
+        assert_eq!(
+            config.nss_fifo_min_queue_packets,
+            DEFAULT_NSS_FIFO_MIN_QUEUE_PACKETS
+        );
+        assert_eq!(
+            config.nss_rate_compensation_basis_points,
+            DEFAULT_NSS_RATE_COMPENSATION_BASIS_POINTS
+        );
+        assert!(!config.nss_fifo_target_delay_clamped);
+        assert!(!config.nss_fifo_min_queue_clamped);
+        assert!(!config.nss_rate_compensation_clamped);
+    }
+}
+
+#[cfg(feature = "nss-platform")]
+#[test]
+fn nss_shaping_options_are_independent_and_strictly_bounded() {
+    let configured = load(
+        MemorySource::default()
+            .with("nss_fifo_target_delay_ms", "30")
+            .with("nss_fifo_min_queue_packets", "4")
+            .with("rate_compensation_factor", "1.00"),
+    );
+    assert_eq!(configured.nss_fifo_target_delay_ms, 30);
+    assert_eq!(configured.nss_fifo_min_queue_packets, 4);
+    assert_eq!(configured.nss_rate_compensation_basis_points, 100);
+
+    let clamped = load(
+        MemorySource::default()
+            .with("nss_fifo_target_delay_ms", "999")
+            .with("nss_fifo_min_queue_packets", "1")
+            .with("rate_compensation_factor", "1.99"),
+    );
+    assert_eq!(clamped.nss_fifo_target_delay_ms, 250);
+    assert_eq!(clamped.nss_fifo_min_queue_packets, 2);
+    assert_eq!(clamped.nss_rate_compensation_basis_points, 125);
+    assert!(clamped.nss_fifo_target_delay_clamped);
+    assert!(clamped.nss_fifo_min_queue_clamped);
+    assert!(clamped.nss_rate_compensation_clamped);
+
+    for invalid in ["", "1.001", "+1.10", "1x", ".10"] {
+        assert_eq!(
+            load(MemorySource::default().with("rate_compensation_factor", invalid))
+                .nss_rate_compensation_basis_points,
+            DEFAULT_NSS_RATE_COMPENSATION_BASIS_POINTS,
+            "{invalid}"
+        );
+    }
 }
 
 #[test]

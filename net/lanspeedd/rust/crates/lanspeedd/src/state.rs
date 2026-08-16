@@ -1506,6 +1506,36 @@ fn config_issues(config: &RuntimeConfig) -> Vec<DiagnosticConfigIssue> {
             "The client limit was adjusted to a supported range.",
         );
     }
+    #[cfg(feature = "nss-platform")]
+    if config.nss_fifo_target_delay_clamped {
+        push(
+            "nss_fifo_target_delay_clamped",
+            "warning",
+            "nss_fifo_target_delay_ms",
+            "adjusted",
+            "The NSS FIFO target delay was adjusted to the supported range.",
+        );
+    }
+    #[cfg(feature = "nss-platform")]
+    if config.nss_fifo_min_queue_clamped {
+        push(
+            "nss_fifo_min_queue_clamped",
+            "warning",
+            "nss_fifo_min_queue_packets",
+            "adjusted",
+            "The NSS minimum queue was adjusted to the supported range.",
+        );
+    }
+    #[cfg(feature = "nss-platform")]
+    if config.nss_rate_compensation_clamped {
+        push(
+            "nss_rate_compensation_clamped",
+            "warning",
+            "rate_compensation_factor",
+            "adjusted",
+            "The NSS rate compensation factor was adjusted to the supported range.",
+        );
+    }
     if !config.interface_exclude.is_empty() {
         push(
             "interface_exclude_compatibility_only",

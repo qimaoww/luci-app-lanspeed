@@ -149,6 +149,10 @@ define Package/lanspeedd/install
 		$(INSTALL_DIR) $(1)/etc/uci-defaults; \
 		$(INSTALL_BIN) ./files/etc/uci-defaults/95-lanspeed-x86-profile $(1)/etc/uci-defaults/95-lanspeed-x86-profile; \
 	fi
+	if [ "$(CONFIG_TARGET_qualcommax)" = "y" ]; then \
+		$(INSTALL_DIR) $(1)/etc/uci-defaults; \
+		$(INSTALL_BIN) ./files/etc/uci-defaults/94-lanspeed-nss-shaping $(1)/etc/uci-defaults/94-lanspeed-nss-shaping; \
+	fi
 	$(INSTALL_DIR) $(1)/usr/share/lanspeed
 	$(INSTALL_DATA) ./files/usr/share/lanspeed/schema.json $(1)/usr/share/lanspeed/schema.json
 endef
