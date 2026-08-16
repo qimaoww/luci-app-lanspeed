@@ -395,9 +395,17 @@ fn sync_client_rules_batch(
     rules: &[&ActiveRule],
 ) -> Result<(), String> {
     let leaves = leaf_qdiscs(device)?;
+    let qdiscs = nss_qdisc_details(device)?;
+    let classes = nss_class_details(device)?;
     let mut commands = Vec::<Vec<String>>::new();
     for rule in rules {
         let rate_bps = direction.rate(rule);
+        let (expected_qdisc, expected_class) = expected_client_details(direction, rule);
+        if exact_detail_count(&qdiscs, &expected_qdisc) == 1
+            && exact_detail_count(&classes, &expected_class) == 1
+        {
+            continue;
+        }
         commands.push(replace_class_args(
             device,
             &classid(ROOT_CLASS_MINOR),
@@ -571,10 +579,25 @@ fn verify_nss_options(
     }
 
     for rule in rules {
-        let rate = direction.rate(rule);
-        let burst = tc_size_text(burst_bytes(rate));
-        let leaf = leaf_handle(rule.class_minor);
-        let expected_qdisc = NssQdiscDetail {
+        let (expected_qdisc, expected_class) = expected_client_details(direction, rule);
+        if exact_detail_count(&qdiscs, &expected_qdisc) != 1
+            || exact_detail_count(&classes, &expected_class) != 1
+        {
+            return Err("nss_qdisc_verification_failed".into());
+        }
+    }
+    Ok(())
+}
+
+fn expected_client_details(
+    direction: Direction,
+    rule: &ActiveRule,
+) -> (NssQdiscDetail, NssClassDetail) {
+    let rate = direction.rate(rule);
+    let burst = tc_size_text(burst_bytes(rate));
+    let leaf = leaf_handle(rule.class_minor);
+    (
+        NssQdiscDetail {
             kind: "nssbfifo".into(),
             handle: leaf.clone(),
             parent: Some(classid(rule.class_minor)),
@@ -583,8 +606,8 @@ fn verify_nss_options(
             accel_mode: Some(0),
             limit: Some(tc_size_text(nss_queue_bytes(rate))),
             set_default: false,
-        };
-        let expected_class = NssClassDetail {
+        },
+        NssClassDetail {
             handle: classid(rule.class_minor),
             leaf: Some(leaf),
             burst: burst.clone(),
@@ -594,14 +617,8 @@ fn verify_nss_options(
             priority: 1,
             quantum: tc_size_text(1514),
             overhead: tc_size_text(0),
-        };
-        if exact_detail_count(&qdiscs, &expected_qdisc) != 1
-            || exact_detail_count(&classes, &expected_class) != 1
-        {
-            return Err("nss_qdisc_verification_failed".into());
-        }
-    }
-    Ok(())
+        },
+    )
 }
 
 fn verify_base_options(device: &str, default_rate: u64) -> Result<bool, String> {

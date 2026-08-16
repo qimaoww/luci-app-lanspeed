@@ -191,6 +191,8 @@ pub(crate) enum ControlReconcileKind {
 pub(crate) struct ControlReconcileWork {
     pub(crate) kind: ControlReconcileKind,
     plan: ControlPlan,
+    #[cfg(feature = "nss-platform")]
+    previous_plan: Option<ControlPlan>,
     previous: ApplyResult,
     prefix_error: Option<String>,
 }
@@ -200,6 +202,8 @@ pub(crate) struct ControlReconcileOutcome {
     pub(crate) kind: ControlReconcileKind,
     result: Result<ApplyResult, String>,
     #[cfg(feature = "nss-platform")]
+    reconciled_plan: Option<ControlPlan>,
+    #[cfg(feature = "nss-platform")]
     processed_conntrack_cleanup_ips: BTreeSet<IpAddr>,
 }
 
@@ -208,6 +212,8 @@ impl ControlReconcileOutcome {
         Self {
             kind,
             result: Err(error.into()),
+            #[cfg(feature = "nss-platform")]
+            reconciled_plan: None,
             #[cfg(feature = "nss-platform")]
             processed_conntrack_cleanup_ips: BTreeSet::new(),
         }
@@ -245,6 +251,8 @@ pub struct ControlManager {
     rules: BTreeMap<String, ControlRule>,
     live: BTreeMap<String, LiveClient>,
     result: ApplyResult,
+    #[cfg(feature = "nss-platform")]
+    applied_plan: Option<ControlPlan>,
     lan_device: String,
     control_devices: BTreeSet<String>,
     preempted_upload_devices: BTreeSet<String>,
@@ -276,6 +284,8 @@ impl ControlManager {
             rules: load_rules()?,
             live: BTreeMap::new(),
             result: ApplyResult::ready(),
+            #[cfg(feature = "nss-platform")]
+            applied_plan: None,
             lan_device,
             control_devices,
             preempted_upload_devices: BTreeSet::new(),
@@ -303,6 +313,7 @@ impl ControlManager {
         }
         self.live = current.live.clone();
         self.result = current.result.clone();
+        self.applied_plan = current.applied_plan.clone();
         self.control_devices
             .extend(current.control_devices.iter().cloned());
         self.preempted_upload_devices = current.preempted_upload_devices.clone();
@@ -762,6 +773,8 @@ impl ControlManager {
         Some(ControlReconcileWork {
             kind,
             plan,
+            #[cfg(feature = "nss-platform")]
+            previous_plan: self.applied_plan.clone(),
             previous: self.result.clone(),
             prefix_error,
         })
@@ -770,17 +783,37 @@ impl ControlManager {
     pub(crate) fn finish_reconcile(&mut self, outcome: ControlReconcileOutcome) {
         let kind = outcome.kind;
         #[cfg(feature = "nss-platform")]
+        let reconciled_plan = outcome.reconciled_plan;
+        #[cfg(feature = "nss-platform")]
         let processed_conntrack_cleanup_ips = outcome.processed_conntrack_cleanup_ips;
         match outcome.result {
             Ok(result) => {
+                if matches!(
+                    kind,
+                    ControlReconcileKind::Apply | ControlReconcileKind::Observe
+                ) {
+                    #[cfg(feature = "nss-platform")]
+                    {
+                        self.applied_plan = reconciled_plan;
+                    }
+                }
                 if kind == ControlReconcileKind::Apply {
                     #[cfg(feature = "nss-platform")]
                     self.conntrack_cleanup_ips
                         .retain(|ip| !processed_conntrack_cleanup_ips.contains(ip));
+                } else if kind == ControlReconcileKind::QuiescePrefixLoss {
+                    #[cfg(feature = "nss-platform")]
+                    {
+                        self.applied_plan = None;
+                    }
                 }
                 if kind == ControlReconcileKind::Observe
                     && result.reason.as_deref() == Some("control_topology_changed")
                 {
+                    #[cfg(feature = "nss-platform")]
+                    {
+                        self.applied_plan = None;
+                    }
                     #[cfg(feature = "nss-platform")]
                     self.rearm_nss_executor_verification();
                     self.dirty = true;
@@ -788,6 +821,10 @@ impl ControlManager {
                 self.result = result;
             }
             Err(error) => {
+                #[cfg(feature = "nss-platform")]
+                {
+                    self.applied_plan = None;
+                }
                 self.result = ApplyResult {
                     state: "error".into(),
                     reason: Some(public_control_error(&error)),
@@ -1286,12 +1323,156 @@ impl ControlManager {
     }
 }
 
+#[cfg(feature = "nss-platform")]
+fn preserve_unchanged_nss_verification(
+    previous_plan: Option<&ControlPlan>,
+    plan: &ControlPlan,
+    previous: &ApplyResult,
+    mut next: ApplyResult,
+) -> ApplyResult {
+    let Some(previous_plan) = previous_plan else {
+        return next;
+    };
+    if previous_plan.lan_device != plan.lan_device
+        || previous_plan.control_devices != plan.control_devices
+        || previous_plan.dae_upload_devices != plan.dae_upload_devices
+        || previous_plan.local_prefixes != plan.local_prefixes
+    {
+        return next;
+    }
+
+    let previous_rules = previous_plan
+        .rules
+        .iter()
+        .map(|rule| (rule.identity_key.as_str(), rule))
+        .collect::<BTreeMap<_, _>>();
+    for rule in &plan.rules {
+        if previous_rules.get(rule.identity_key.as_str()).copied() != Some(rule)
+            || !nss_identity_plan_unchanged(previous_plan, plan, &rule.identity_key)
+        {
+            continue;
+        }
+        let required = u8::from(rule.upload_bps != 0) | (u8::from(rule.download_bps != 0) << 1);
+        copy_direction_evidence(
+            &previous.verified_directions,
+            &mut next.verified_directions,
+            &rule.identity_key,
+            required,
+        );
+        copy_direction_evidence(
+            &previous.nss_verified_directions,
+            &mut next.nss_verified_directions,
+            &rule.identity_key,
+            required,
+        );
+        copy_direction_evidence(
+            &previous.cpu_verified_directions,
+            &mut next.cpu_verified_directions,
+            &rule.identity_key,
+            required,
+        );
+        if let Some(reason) = previous.verification_failures.get(&rule.identity_key) {
+            next.verification_failures
+                .insert(rule.identity_key.clone(), reason.clone());
+        }
+    }
+    next.queue_overflow = next
+        .verification_failures
+        .values()
+        .any(|reason| reason == "queue_overflow");
+    refresh_nss_apply_state(plan, &mut next);
+    next
+}
+
+#[cfg(feature = "nss-platform")]
+fn nss_identity_plan_unchanged(previous: &ControlPlan, next: &ControlPlan, identity: &str) -> bool {
+    previous.nss_proven_directions.get(identity) == next.nss_proven_directions.get(identity)
+        && previous.nss_path_ready_directions.get(identity)
+            == next.nss_path_ready_directions.get(identity)
+        && previous.nss_cpu_directions.get(identity) == next.nss_cpu_directions.get(identity)
+        && previous.nss_active_nss_directions.get(identity)
+            == next.nss_active_nss_directions.get(identity)
+        && previous.nss_active_cpu_directions.get(identity)
+            == next.nss_active_cpu_directions.get(identity)
+}
+
+#[cfg(feature = "nss-platform")]
+fn copy_direction_evidence(
+    previous: &BTreeMap<String, u8>,
+    next: &mut BTreeMap<String, u8>,
+    identity: &str,
+    required: u8,
+) {
+    let directions = previous.get(identity).copied().unwrap_or(0) & required;
+    if directions != 0 {
+        next.insert(identity.to_owned(), directions);
+    }
+}
+
+#[cfg(feature = "nss-platform")]
+fn refresh_nss_apply_state(plan: &ControlPlan, result: &mut ApplyResult) {
+    let expected = plan.rules.iter().fold(0usize, |count, rule| {
+        count + usize::from(rule.upload_bps != 0) + usize::from(rule.download_bps != 0)
+    });
+    if expected == 0 {
+        return;
+    }
+    let verified = plan
+        .rules
+        .iter()
+        .map(|rule| {
+            let directions = result
+                .verified_directions
+                .get(&rule.identity_key)
+                .copied()
+                .unwrap_or(0);
+            usize::from(rule.upload_bps != 0 && directions & NSS_CPU_UPLOAD != 0)
+                + usize::from(rule.download_bps != 0 && directions & NSS_CPU_DOWNLOAD != 0)
+        })
+        .sum::<usize>();
+    let path_pending = plan.rules.iter().any(|rule| {
+        (rule.upload_bps != 0 && !plan.nss_direction_path_ready(&rule.identity_key, NSS_CPU_UPLOAD))
+            || (rule.download_bps != 0
+                && !plan.nss_direction_path_ready(&rule.identity_key, NSS_CPU_DOWNLOAD))
+    });
+    if verified == expected && !result.queue_overflow && !path_pending {
+        result.state = "verified".into();
+        result.reason = None;
+    } else {
+        result.state = "pending_new_connections".into();
+        result.reason = Some(
+            if path_pending {
+                "nss_path_identity_pending"
+            } else if verified == 0 {
+                "traffic_verification_pending"
+            } else {
+                "direction_verification_pending"
+            }
+            .into(),
+        );
+    }
+}
+
 pub(crate) fn execute_reconcile(work: ControlReconcileWork) -> ControlReconcileOutcome {
     let kind = work.kind;
     #[cfg(feature = "nss-platform")]
     let processed_conntrack_cleanup_ips = work.plan.nss.conntrack_cleanup_ips().clone();
     let result = match kind {
-        ControlReconcileKind::Apply => platform::apply(&work.plan),
+        ControlReconcileKind::Apply => platform::apply(&work.plan).map(|result| {
+            #[cfg(feature = "nss-platform")]
+            {
+                preserve_unchanged_nss_verification(
+                    work.previous_plan.as_ref(),
+                    &work.plan,
+                    &work.previous,
+                    result,
+                )
+            }
+            #[cfg(not(feature = "nss-platform"))]
+            {
+                result
+            }
+        }),
         ControlReconcileKind::Observe => Ok(platform::observe(&work.plan, &work.previous)),
         ControlReconcileKind::QuiescePrefixLoss => {
             let primary = work
@@ -1305,9 +1486,21 @@ pub(crate) fn execute_reconcile(work: ControlReconcileWork) -> ControlReconcileO
             ))
         }
     };
+    #[cfg(feature = "nss-platform")]
+    let reconciled_plan = result.as_ref().ok().and_then(|result| match kind {
+        ControlReconcileKind::Apply => Some(work.plan.clone()),
+        ControlReconcileKind::Observe
+            if result.reason.as_deref() != Some("control_topology_changed") =>
+        {
+            Some(work.plan.clone())
+        }
+        ControlReconcileKind::Observe | ControlReconcileKind::QuiescePrefixLoss => None,
+    });
     ControlReconcileOutcome {
         kind,
         result,
+        #[cfg(feature = "nss-platform")]
+        reconciled_plan,
         #[cfg(feature = "nss-platform")]
         processed_conntrack_cleanup_ips,
     }
@@ -1326,6 +1519,8 @@ pub(crate) fn test_reconcile_work() -> ControlReconcileWork {
             #[cfg(feature = "nss-platform")]
             nss: NssControlPlan::default(),
         },
+        #[cfg(feature = "nss-platform")]
+        previous_plan: None,
         previous: ApplyResult::ready(),
         prefix_error: None,
     }
@@ -1336,6 +1531,8 @@ pub(crate) fn test_reconcile_outcome(kind: ControlReconcileKind) -> ControlRecon
     ControlReconcileOutcome {
         kind,
         result: Ok(ApplyResult::ready()),
+        #[cfg(feature = "nss-platform")]
+        reconciled_plan: None,
         #[cfg(feature = "nss-platform")]
         processed_conntrack_cleanup_ips: BTreeSet::new(),
     }

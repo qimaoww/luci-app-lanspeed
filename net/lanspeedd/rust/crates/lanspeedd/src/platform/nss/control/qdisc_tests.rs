@@ -136,6 +136,31 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_client_queue_fingerprint_is_a_noop_candidate() {
+        let rule = ActiveRule {
+            identity_key: "02:00:00:00:00:01@lan".into(),
+            mac: "02:00:00:00:00:01".parse().unwrap(),
+            interface: "edge0".into(),
+            upload_before_proxy: false,
+            upload_preempted: false,
+            ips: vec!["192.0.2.9".parse().unwrap()],
+            upload_bps: 10_000_000,
+            download_bps: 100_000_000,
+            internet_disabled: false,
+            class_minor: 0x7c23,
+        };
+        let (qdisc, class) = expected_client_details(Direction::Download, &rule);
+        assert_eq!(exact_detail_count(std::slice::from_ref(&qdisc), &qdisc), 1);
+        assert_eq!(exact_detail_count(std::slice::from_ref(&class), &class), 1);
+
+        let mut changed = rule;
+        changed.download_bps = 50_000_000;
+        let (changed_qdisc, changed_class) = expected_client_details(Direction::Download, &changed);
+        assert_ne!(changed_qdisc, qdisc);
+        assert_ne!(changed_class, class);
+    }
+
+    #[test]
     fn nss_payload_rate_has_independent_l2_headroom_and_stays_u32_safe() {
         assert_eq!(payload_rate(10_000_000), 11_000_000);
         assert_eq!(payload_rate(100_000_000), 110_000_000);

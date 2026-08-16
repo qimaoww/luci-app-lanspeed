@@ -611,7 +611,15 @@ fn stage_upload_hooks(plan: &ControlPlan, blocked_only: bool) -> Result<(), Stri
     }
     for (edge, rules) in grouped {
         system::ensure_clsact(&edge)?;
-        cleanup_upload_hook(&edge)?;
+        let values = upload_chain_values(&edge)?;
+        let jumps = upload_jump_values(&edge)?;
+        let device = ifb::device(&edge);
+        if (!values.is_empty() || !jumps.is_empty())
+            && (!upload_chain_owned(&values, &device)
+                || (!jumps.is_empty() && !upload_jump_owned(&jumps)))
+        {
+            cleanup_upload_hook(&edge)?;
+        }
         install_upload_chain(plan, &edge, &rules, blocked_only)?;
         verify_upload_chain(plan, &edge, &rules, blocked_only)?;
     }
@@ -624,38 +632,60 @@ fn install_upload_chain(
     rules: &[&ActiveRule],
     blocked_only: bool,
 ) -> Result<(), String> {
+    let values = upload_chain_values(edge)?;
+    let matches = upload_match_sets(edge)?;
+    let mut desired = BTreeSet::<(u32, String)>::new();
     let chain = UPLOAD_CHAIN.to_string();
-    system::run(
-        "tc",
-        &[
-            "filter",
-            "add",
-            "dev",
-            edge,
-            "ingress",
-            "chain",
-            &chain,
-            "protocol",
-            "all",
-            "pref",
-            &UPLOAD_TERMINAL_PREF.to_string(),
-            "handle",
-            &format!("0x{UPLOAD_CHAIN:x}"),
-            "matchall",
-            "action",
-            "pass",
-        ],
-    )?;
+    if values.iter().filter(|value| upload_marker(value)).count() != 1 {
+        system::run(
+            "tc",
+            &[
+                "filter",
+                "replace",
+                "dev",
+                edge,
+                "ingress",
+                "chain",
+                &chain,
+                "protocol",
+                "all",
+                "pref",
+                &UPLOAD_TERMINAL_PREF.to_string(),
+                "handle",
+                &format!("0x{UPLOAD_CHAIN:x}"),
+                "matchall",
+                "action",
+                "pass",
+            ],
+        )?;
+    }
 
     let mut pref = UPLOAD_LOCAL_PREF_START;
     for (address, mask) in &plan.local_prefixes {
-        add_upload_prefix_pass(edge, pref, *address, *mask)?;
+        let protocol = if address.is_ipv4() { "ip" } else { "ipv6" };
+        desired.insert((pref, protocol.into()));
+        if filter_action_count(&values, pref, protocol, "gact", "pass", None) != 1
+            || exact_u32_match_count(
+                &matches,
+                pref,
+                protocol,
+                prefix_u32_matches(Direction::Upload, *address, *mask),
+            ) != 1
+        {
+            replace_upload_prefix_pass(edge, pref, *address, *mask)?;
+        }
         pref += 1;
     }
     pref = UPLOAD_BLOCK_PREF_START;
     for rule in rules.iter().filter(|rule| rule.internet_disabled) {
         for protocol in PROTOCOLS {
-            add_upload_drop(edge, pref, protocol, rule)?;
+            desired.insert((pref, protocol.into()));
+            if filter_action_count(&values, pref, protocol, "gact", "drop", None) != 1
+                || exact_u32_match_count(&matches, pref, protocol, edge_ingress_mac_matches(rule))
+                    != 1
+            {
+                replace_upload_drop(edge, pref, protocol, rule)?;
+            }
             pref += 1;
         }
     }
@@ -666,15 +696,32 @@ fn install_upload_chain(
                 && plan.nss_direction_path_ready(&rule.identity_key, NSS_CPU_UPLOAD)
         }) {
             for protocol in PROTOCOLS {
-                add_upload_redirect(edge, pref, protocol, rule)?;
+                desired.insert((pref, protocol.into()));
+                let priority = qdisc_classid(rule.class_minor);
+                let target = ifb::device(edge);
+                if upload_redirect_action_count(&values, pref, protocol, &priority, &target) != 1
+                    || exact_u32_match_count(
+                        &matches,
+                        pref,
+                        protocol,
+                        edge_ingress_mac_matches(rule),
+                    ) != 1
+                {
+                    replace_upload_redirect(edge, pref, protocol, rule)?;
+                }
                 pref += 1;
             }
         }
     }
-    Ok(())
+    remove_stale_u32_slots(edge, "ingress", UPLOAD_CHAIN, &values, &desired)
 }
 
-fn add_upload_prefix_pass(edge: &str, pref: u32, address: IpAddr, mask: u8) -> Result<(), String> {
+fn replace_upload_prefix_pass(
+    edge: &str,
+    pref: u32,
+    address: IpAddr,
+    mask: u8,
+) -> Result<(), String> {
     let cidr = format!("{address}/{mask}");
     let (protocol, family) = if address.is_ipv4() {
         ("ip", "ip")
@@ -685,7 +732,7 @@ fn add_upload_prefix_pass(edge: &str, pref: u32, address: IpAddr, mask: u8) -> R
         "tc",
         &[
             "filter",
-            "add",
+            "replace",
             "dev",
             edge,
             "ingress",
@@ -706,11 +753,16 @@ fn add_upload_prefix_pass(edge: &str, pref: u32, address: IpAddr, mask: u8) -> R
     )
 }
 
-fn add_upload_drop(edge: &str, pref: u32, protocol: &str, rule: &ActiveRule) -> Result<(), String> {
+fn replace_upload_drop(
+    edge: &str,
+    pref: u32,
+    protocol: &str,
+    rule: &ActiveRule,
+) -> Result<(), String> {
     add_upload_mac_action(edge, pref, protocol, rule, &["action", "gact", "drop"])
 }
 
-fn add_upload_redirect(
+fn replace_upload_redirect(
     edge: &str,
     pref: u32,
     protocol: &str,
@@ -739,7 +791,7 @@ fn add_upload_mac_action(
 ) -> Result<(), String> {
     let mut args = vec![
         "filter".to_owned(),
-        "add".to_owned(),
+        "replace".to_owned(),
         "dev".to_owned(),
         edge.to_owned(),
         "ingress".to_owned(),
@@ -1214,7 +1266,13 @@ fn sync_download_hooks(plan: &ControlPlan, blocked_only: bool) -> Result<(), Str
     }
     for (edge, rules) in grouped {
         system::ensure_clsact(&edge)?;
-        cleanup_download_hook(&edge)?;
+        let values = download_chain_values(&edge)?;
+        let jumps = download_jump_values(&edge)?;
+        if (!values.is_empty() || !jumps.is_empty())
+            && (!download_chain_owned(&values) || !download_jump_owned(&jumps))
+        {
+            cleanup_download_hook(&edge)?;
+        }
         install_download_hook(plan, &edge, &rules, blocked_only)?;
     }
     Ok(())
@@ -1226,37 +1284,64 @@ fn install_download_hook(
     rules: &[&ActiveRule],
     blocked_only: bool,
 ) -> Result<(), String> {
+    let values = download_chain_values(edge)?;
+    let matches = download_match_sets(edge)?;
+    let jumps = download_jump_values(edge)?;
+    let mut desired = BTreeSet::<(u32, String)>::new();
     let chain = DOWNLOAD_CHAIN.to_string();
-    system::run(
-        "tc",
-        &[
-            "filter",
-            "add",
-            "dev",
-            edge,
-            "egress",
-            "chain",
-            &chain,
-            "protocol",
-            "all",
-            "pref",
-            &TERMINAL_PREF.to_string(),
-            "handle",
-            &format!("0x{DOWNLOAD_CHAIN:x}"),
-            "matchall",
-            "action",
-            "pass",
-        ],
-    )?;
+    if values.iter().filter(|value| download_marker(value)).count() != 1 {
+        system::run(
+            "tc",
+            &[
+                "filter",
+                "replace",
+                "dev",
+                edge,
+                "egress",
+                "chain",
+                &chain,
+                "protocol",
+                "all",
+                "pref",
+                &TERMINAL_PREF.to_string(),
+                "handle",
+                &format!("0x{DOWNLOAD_CHAIN:x}"),
+                "matchall",
+                "action",
+                "pass",
+            ],
+        )?;
+    }
     let mut pref = LOCAL_PREF_START;
     for (address, mask) in &plan.local_prefixes {
-        add_prefix_pass(edge, pref, *address, *mask)?;
+        let protocol = if address.is_ipv4() { "ip" } else { "ipv6" };
+        desired.insert((pref, protocol.into()));
+        if filter_action_count(&values, pref, protocol, "gact", "pass", None) != 1
+            || exact_u32_match_count(
+                &matches,
+                pref,
+                protocol,
+                prefix_u32_matches(Direction::Download, *address, *mask),
+            ) != 1
+        {
+            replace_download_prefix_pass(edge, pref, *address, *mask)?;
+        }
         pref += 1;
     }
     pref = BLOCK_PREF_START;
     for rule in rules.iter().filter(|rule| rule.internet_disabled) {
         for protocol in PROTOCOLS {
-            add_download_drop(edge, pref, protocol, rule)?;
+            desired.insert((pref, protocol.into()));
+            if filter_action_count(&values, pref, protocol, "gact", "drop", None) != 1
+                || exact_u32_match_count(
+                    &matches,
+                    pref,
+                    protocol,
+                    mac_u32_matches(Direction::Download, rule.mac),
+                ) != 1
+            {
+                replace_download_drop(edge, pref, protocol, rule)?;
+            }
             pref += 1;
         }
     }
@@ -1267,35 +1352,56 @@ fn install_download_hook(
                 && plan.nss_direction_path_ready(&rule.identity_key, NSS_CPU_DOWNLOAD)
         }) {
             for protocol in PROTOCOLS {
-                add_download_priority(edge, pref, protocol, rule)?;
+                desired.insert((pref, protocol.into()));
+                let priority = qdisc_classid(rule.class_minor);
+                if filter_action_count(&values, pref, protocol, "skbedit", "pipe", Some(&priority))
+                    != 1
+                    || exact_u32_match_count(
+                        &matches,
+                        pref,
+                        protocol,
+                        mac_u32_matches(Direction::Download, rule.mac),
+                    ) != 1
+                {
+                    replace_download_priority(edge, pref, protocol, rule)?;
+                }
                 pref += 1;
             }
         }
     }
-    system::run(
-        "tc",
-        &[
-            "filter",
-            "add",
-            "dev",
-            edge,
-            "egress",
-            "protocol",
-            "all",
-            "pref",
-            &DOWNLOAD_JUMP_PREF.to_string(),
-            "handle",
-            &format!("0x{DOWNLOAD_CHAIN:x}"),
-            "matchall",
-            "action",
-            "goto",
-            "chain",
-            &chain,
-        ],
-    )
+    remove_stale_u32_slots(edge, "egress", DOWNLOAD_CHAIN, &values, &desired)?;
+    if !download_jump_owned(&jumps) {
+        system::run(
+            "tc",
+            &[
+                "filter",
+                "add",
+                "dev",
+                edge,
+                "egress",
+                "protocol",
+                "all",
+                "pref",
+                &DOWNLOAD_JUMP_PREF.to_string(),
+                "handle",
+                &format!("0x{DOWNLOAD_CHAIN:x}"),
+                "matchall",
+                "action",
+                "goto",
+                "chain",
+                &chain,
+            ],
+        )?;
+    }
+    Ok(())
 }
 
-fn add_prefix_pass(edge: &str, pref: u32, address: IpAddr, mask: u8) -> Result<(), String> {
+fn replace_download_prefix_pass(
+    edge: &str,
+    pref: u32,
+    address: IpAddr,
+    mask: u8,
+) -> Result<(), String> {
     let cidr = format!("{address}/{mask}");
     let (protocol, family) = if address.is_ipv4() {
         ("ip", "ip")
@@ -1306,7 +1412,7 @@ fn add_prefix_pass(edge: &str, pref: u32, address: IpAddr, mask: u8) -> Result<(
         "tc",
         &[
             "filter",
-            "add",
+            "replace",
             "dev",
             edge,
             "egress",
@@ -1327,7 +1433,7 @@ fn add_prefix_pass(edge: &str, pref: u32, address: IpAddr, mask: u8) -> Result<(
     )
 }
 
-fn add_download_drop(
+fn replace_download_drop(
     edge: &str,
     pref: u32,
     protocol: &str,
@@ -1337,7 +1443,7 @@ fn add_download_drop(
         "tc",
         &[
             "filter",
-            "add",
+            "replace",
             "dev",
             edge,
             "egress",
@@ -1359,7 +1465,7 @@ fn add_download_drop(
     )
 }
 
-fn add_download_priority(
+fn replace_download_priority(
     edge: &str,
     pref: u32,
     protocol: &str,
@@ -1369,7 +1475,7 @@ fn add_download_priority(
         "tc",
         &[
             "filter",
-            "add",
+            "replace",
             "dev",
             edge,
             "egress",
@@ -1658,6 +1764,50 @@ fn filter_values(
     } else {
         system::tc_filter_values(&output.stdout, "cpu_path_classifier_inspection_failed")
     }
+}
+
+fn remove_stale_u32_slots(
+    edge: &str,
+    hook: &str,
+    chain: u32,
+    previous: &[Value],
+    desired: &BTreeSet<(u32, String)>,
+) -> Result<(), String> {
+    for (pref, protocol) in stale_u32_slots(previous, desired) {
+        system::run(
+            "tc",
+            &[
+                "filter",
+                "del",
+                "dev",
+                edge,
+                hook,
+                "chain",
+                &chain.to_string(),
+                "protocol",
+                &protocol,
+                "pref",
+                &pref.to_string(),
+                "u32",
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn stale_u32_slots(
+    previous: &[Value],
+    desired: &BTreeSet<(u32, String)>,
+) -> BTreeSet<(u32, String)> {
+    previous
+        .iter()
+        .filter(|value| value.get("kind").and_then(Value::as_str) == Some("u32"))
+        .filter_map(|value| {
+            let pref = value.get("pref")?.as_u64()?.try_into().ok()?;
+            let protocol = value.get("protocol")?.as_str()?.to_owned();
+            (!desired.contains(&(pref, protocol.clone()))).then_some((pref, protocol))
+        })
+        .collect()
 }
 
 fn download_marker(value: &Value) -> bool {

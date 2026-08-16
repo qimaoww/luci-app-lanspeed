@@ -307,8 +307,15 @@ async function main() {
 	    nssCpuPathByModule['classifier.rs'].includes('"action", "skbedit", "priority"') &&
 	    nssCpuPathByModule['classifier.rs'].includes('"action", "mirred", "egress"') &&
 	    nssCpuPathByModule['classifier.rs'].includes('exact_upload_redirect_actions') &&
-	    nssCpuPathByModule['classifier.rs'].indexOf('add_upload_prefix_pass(edge') <
-	      nssCpuPathByModule['classifier.rs'].indexOf('add_upload_redirect(edge') &&
+	    nssCpuPathByModule['classifier.rs'].indexOf('replace_upload_prefix_pass(edge') <
+	      nssCpuPathByModule['classifier.rs'].indexOf('replace_upload_redirect(edge') &&
+		nssCpuPathByModule['classifier.rs'].includes('remove_stale_u32_slots') &&
+		nssCpuPathByModule['classifier.rs'].includes('upload_chain_owned(&values, &device)') &&
+		nssCpuPathByModule['classifier.rs'].includes('"filter",\n                "replace"') &&
+		nssControlByModule['qdisc.rs'].includes('expected_client_details(direction, rule)') &&
+		nssControlByModule['qdisc.rs'].includes('exact_detail_count(&qdiscs, &expected_qdisc) == 1') &&
+		control.includes('preserve_unchanged_nss_verification') &&
+		control.includes('applied_plan: Option<ControlPlan>') &&
 			nssCpuPathByModule['classifier.rs'].includes('"gact"') &&
 			nssCpuPathByModule['classifier.rs'].includes('"skbedit"') &&
 		nssCpuProbeProduction.includes('hook prerouting') &&

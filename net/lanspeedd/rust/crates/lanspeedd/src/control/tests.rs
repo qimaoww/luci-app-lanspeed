@@ -59,6 +59,8 @@ fn manager() -> ControlManager {
         rules: BTreeMap::new(),
         live: BTreeMap::new(),
         result: ApplyResult::ready(),
+        #[cfg(feature = "nss-platform")]
+        applied_plan: None,
         lan_device: "br-lan".into(),
         control_devices: BTreeSet::from(["br-lan".into()]),
         preempted_upload_devices: BTreeSet::new(),
@@ -165,6 +167,94 @@ fn nss_control_diagnostics_never_treat_queue_overflow_as_verified() {
     assert_eq!(diagnostics["detail_code"], "queue_overflow");
     assert_eq!(diagnostics["queue_overflow_clients"], 1);
     assert_eq!(diagnostics["effective_clients"], 0);
+}
+
+#[cfg(feature = "nss-platform")]
+#[test]
+fn nss_apply_preserves_only_unchanged_client_verification() {
+    fn active_rule(identity: &str, mac: &str, upload: u64, download: u64) -> ActiveRule {
+        ActiveRule {
+            identity_key: identity.into(),
+            mac: MacAddress::from_str(mac).unwrap(),
+            interface: "edge0".into(),
+            upload_before_proxy: false,
+            upload_preempted: false,
+            ips: vec!["192.0.2.9".parse().unwrap()],
+            upload_bps: upload,
+            download_bps: download,
+            internet_disabled: false,
+            class_minor: FIRST_CLASS_MINOR,
+        }
+    }
+    fn plan(rules: Vec<ActiveRule>) -> ControlPlan {
+        let shaped = rules
+            .iter()
+            .find(|rule| rule.upload_bps != 0 || rule.download_bps != 0)
+            .map(|rule| rule.identity_key.clone());
+        let mut nss = NssControlPlan::default();
+        if let Some(identity) = shaped {
+            nss.nss_proven_directions
+                .insert(identity.clone(), NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD);
+            nss.nss_path_ready_directions
+                .insert(identity.clone(), NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD);
+            nss.nss_cpu_directions
+                .insert(identity, NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD);
+        }
+        ControlPlan {
+            lan_device: "br-lan".into(),
+            control_devices: vec!["br-lan".into(), "edge0".into()],
+            dae_upload_devices: Vec::new(),
+            local_prefixes: vec![("192.0.2.1".parse().unwrap(), 24)],
+            rules,
+            nss,
+        }
+    }
+
+    let identity = "02:00:00:00:00:01@lan";
+    let unchanged = active_rule(identity, "02:00:00:00:00:01", 10_000_000, 100_000_000);
+    let previous_plan = plan(vec![unchanged.clone()]);
+    let mut block_only = active_rule("02:00:00:00:00:02@lan", "02:00:00:00:00:02", 0, 0);
+    block_only.internet_disabled = true;
+    block_only.class_minor = FIRST_CLASS_MINOR + 1;
+    let next_plan = plan(vec![unchanged.clone(), block_only]);
+    let mut previous = ApplyResult::ready();
+    previous.state = "verified".into();
+    previous
+        .verified_directions
+        .insert(identity.into(), NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD);
+    previous
+        .nss_verified_directions
+        .insert(identity.into(), NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD);
+    previous
+        .cpu_verified_directions
+        .insert(identity.into(), NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD);
+
+    let preserved = preserve_unchanged_nss_verification(
+        Some(&previous_plan),
+        &next_plan,
+        &previous,
+        ApplyResult::ready(),
+    );
+    assert_eq!(preserved.state, "verified");
+    assert_eq!(
+        preserved.verified_directions.get(identity),
+        Some(&(NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD))
+    );
+
+    let changed_plan = plan(vec![active_rule(
+        identity,
+        "02:00:00:00:00:01",
+        20_000_000,
+        100_000_000,
+    )]);
+    let changed = preserve_unchanged_nss_verification(
+        Some(&previous_plan),
+        &changed_plan,
+        &previous,
+        ApplyResult::ready(),
+    );
+    assert_eq!(changed.state, "pending_new_connections");
+    assert!(!changed.verified_directions.contains_key(identity));
 }
 
 #[cfg(feature = "nss-platform")]
@@ -356,10 +446,64 @@ fn completed_apply_consumes_only_its_captured_conntrack_cleanup() {
     manager.finish_reconcile(ControlReconcileOutcome {
         kind: ControlReconcileKind::Apply,
         result: Ok(ApplyResult::ready()),
+        reconciled_plan: None,
         processed_conntrack_cleanup_ips: BTreeSet::from([completed_ip]),
     });
 
     assert_eq!(manager.conntrack_cleanup_ips, BTreeSet::from([newer_ip]));
+}
+
+#[cfg(feature = "nss-platform")]
+#[test]
+fn completed_apply_becomes_the_previous_plan_for_the_next_transaction() {
+    let committed_plan = ControlPlan {
+        lan_device: "br-lan".into(),
+        control_devices: vec!["br-lan".into()],
+        dae_upload_devices: Vec::new(),
+        local_prefixes: Vec::new(),
+        rules: Vec::new(),
+        nss: NssControlPlan::default(),
+    };
+    let mut manager = manager();
+    manager.finish_reconcile(ControlReconcileOutcome {
+        kind: ControlReconcileKind::Apply,
+        result: Ok(ApplyResult::ready()),
+        reconciled_plan: Some(committed_plan.clone()),
+        processed_conntrack_cleanup_ips: BTreeSet::new(),
+    });
+
+    manager.dirty = true;
+    let work = manager.begin_reconcile().expect("next apply work");
+    assert_eq!(work.kind, ControlReconcileKind::Apply);
+    assert_eq!(work.previous_plan.as_ref(), Some(&committed_plan));
+}
+
+#[cfg(feature = "nss-platform")]
+#[test]
+fn successful_observation_advances_the_next_transaction_plan() {
+    let mut observed_plan = ControlPlan {
+        lan_device: "br-lan".into(),
+        control_devices: vec!["br-lan".into()],
+        dae_upload_devices: Vec::new(),
+        local_prefixes: Vec::new(),
+        rules: Vec::new(),
+        nss: NssControlPlan::default(),
+    };
+    observed_plan.nss.nss_path_ready_directions.insert(
+        "02:00:00:00:00:01@lan".into(),
+        NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD,
+    );
+    let mut manager = manager();
+    manager.finish_reconcile(ControlReconcileOutcome {
+        kind: ControlReconcileKind::Observe,
+        result: Ok(ApplyResult::ready()),
+        reconciled_plan: Some(observed_plan.clone()),
+        processed_conntrack_cleanup_ips: BTreeSet::new(),
+    });
+
+    manager.dirty = true;
+    let work = manager.begin_reconcile().expect("next apply work");
+    assert_eq!(work.previous_plan.as_ref(), Some(&observed_plan));
 }
 
 #[cfg(feature = "nss-platform")]
