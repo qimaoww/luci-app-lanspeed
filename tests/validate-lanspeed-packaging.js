@@ -499,10 +499,11 @@ function validateQaDeviceContract() {
     const dryEvidence = fs.readFileSync(dryEvidencePath, 'utf8');
     assert(!dryEvidence.includes(dryPlaceholder), 'qa-device dry-run evidence must never expose SSHPASS');
     assert(
-      dryEvidence.includes('coverage=ubus 九个方法: status, clients, overview, health, diagnostics, reload, interfaces, sysdevices, client_connections'),
-      'qa-device evidence header must state all nine ubus methods'
+      dryEvidence.includes('coverage=ubus 十个方法: realtime, status, clients, overview, health, diagnostics, reload, interfaces, sysdevices, client_connections'),
+      'qa-device evidence header must state all ten read/diagnostic ubus methods'
     );
     for (const method of [
+      'realtime',
       'status',
       'clients',
       'overview',
@@ -1033,6 +1034,7 @@ try {
     'LuCI package must install exactly the active client detail resources');
 
   const documentedMethods = [
+    'realtime',
     'status',
     'clients',
     'overview',

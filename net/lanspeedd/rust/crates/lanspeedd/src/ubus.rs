@@ -7,6 +7,7 @@ use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Method {
+    Realtime,
     Status,
     Clients,
     Overview,
@@ -21,7 +22,8 @@ pub enum Method {
 }
 
 impl Method {
-    pub const FIXED: [Self; 8] = [
+    pub const FIXED: [Self; 9] = [
+        Self::Realtime,
         Self::Status,
         Self::Clients,
         Self::Overview,
@@ -31,7 +33,8 @@ impl Method {
         Self::Sysdevices,
         Self::Diagnostics,
     ];
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
+        Self::Realtime,
         Self::Status,
         Self::Clients,
         Self::Overview,
@@ -46,6 +49,7 @@ impl Method {
     ];
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Realtime => "realtime",
             Self::Status => "status",
             Self::Clients => "clients",
             Self::Overview => "overview",
@@ -223,6 +227,6 @@ mod tests {
     fn every_platform_registers_both_client_control_methods() {
         assert!(Method::ALL.contains(&Method::ClientControlSet));
         assert!(Method::ALL.contains(&Method::ClientControlDelete));
-        assert_eq!(Method::ALL.len(), 11);
+        assert_eq!(Method::ALL.len(), 12);
     }
 }

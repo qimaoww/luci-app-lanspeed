@@ -101,6 +101,7 @@ append_section() {
 
 collect_commands() {
 	cat <<'EOF'
+ubus call lanspeed realtime
 ubus call lanspeed status
 ubus call lanspeed overview
 ubus call lanspeed health
@@ -190,7 +191,7 @@ run_collect() {
 		printf 'target=%s\n' "${TARGET:-not_provided}"
 		printf 'dry_run=%s\n' "$DRY_RUN"
 		printf '%s\n' "safety=collect 包含 reload；reload 只刷新 lanspeedd 运行状态，不修改持久 UCI、网络、防火墙或代理配置；其余命令采集诊断证据"
-		printf '%s\n' "coverage=ubus 九个方法: status, clients, overview, health, diagnostics, reload, interfaces, sysdevices, client_connections"
+		printf '%s\n' "coverage=ubus 十个方法: realtime, status, clients, overview, health, diagnostics, reload, interfaces, sysdevices, client_connections"
 	} > "$DRY_RUN_EVIDENCE"
 
 	collect_commands | while IFS= read -r command; do

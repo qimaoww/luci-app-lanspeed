@@ -6,6 +6,9 @@
   "type": "object",
   "oneOf": [
     {
+      "$ref": "#/$defs/realtime"
+    },
+    {
       "$ref": "#/$defs/status"
     },
     {
@@ -1850,6 +1853,81 @@
         }
       },
       "required": [
+        "interfaces"
+      ]
+    },
+    "realtimeInterface": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "lan",
+            "observe",
+            "wan",
+            "excluded",
+            "unknown"
+          ]
+        },
+        "rx_bps": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tx_bps": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sample_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "name",
+        "role"
+      ]
+    },
+    "realtimeInterfaces": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "interfaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/realtimeInterface"
+          }
+        },
+        "monotonic_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "interfaces"
+      ]
+    },
+    "realtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "clients": {
+          "$ref": "#/$defs/clients"
+        },
+        "interfaces": {
+          "$ref": "#/$defs/realtimeInterfaces"
+        }
+      },
+      "required": [
+        "status",
+        "clients",
         "interfaces"
       ]
     },

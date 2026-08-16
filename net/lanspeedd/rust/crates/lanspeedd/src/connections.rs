@@ -131,7 +131,7 @@ pub enum BeforeReplyAction {
 
 pub const fn before_reply_action(method: Method) -> BeforeReplyAction {
     match method {
-        Method::Clients | Method::ClientConnections | Method::Diagnostics => {
+        Method::Realtime | Method::Clients | Method::ClientConnections | Method::Diagnostics => {
             BeforeReplyAction::CacheOnly
         }
         Method::Reload => BeforeReplyAction::Reload,

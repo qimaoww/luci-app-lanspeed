@@ -581,6 +581,7 @@ fn client_connections_serializes_missing_options_as_null_without_skipping_keys()
 fn fixed_snapshot_methods_and_all_registered_methods_stay_distinct() {
     let snapshot = fixture_snapshot();
     let expected = [
+        (Method::Realtime, "status"),
         (Method::Status, "mode"),
         (Method::Clients, "clients"),
         (Method::Overview, "samples"),
@@ -590,16 +591,21 @@ fn fixed_snapshot_methods_and_all_registered_methods_stay_distinct() {
         (Method::Sysdevices, "devices"),
         (Method::Diagnostics, "contract_version"),
     ];
-    assert_eq!(Method::FIXED.len(), 8);
-    assert_eq!(Method::ALL.len(), 11);
+    assert_eq!(Method::FIXED.len(), 9);
+    assert_eq!(Method::ALL.len(), 12);
     assert_eq!(Method::ALL[..Method::FIXED.len()], Method::FIXED);
-    assert_eq!(Method::ALL[8], Method::ClientConnections);
-    assert_eq!(Method::ALL[9], Method::ClientControlSet);
-    assert_eq!(Method::ALL[10], Method::ClientControlDelete);
+    assert_eq!(Method::ALL[9], Method::ClientConnections);
+    assert_eq!(Method::ALL[10], Method::ClientControlSet);
+    assert_eq!(Method::ALL[11], Method::ClientControlDelete);
+    assert_eq!(Method::Realtime.name(), "realtime");
     assert_eq!(Method::Diagnostics.name(), "diagnostics");
     assert_eq!(Method::ClientConnections.name(), "client_connections");
     assert_eq!(Method::ClientControlSet.name(), "client_control_set");
     assert_eq!(Method::ClientControlDelete.name(), "client_control_delete");
+    assert_eq!(
+        before_reply_action(Method::Realtime),
+        BeforeReplyAction::CacheOnly
+    );
     assert_eq!(
         before_reply_action(Method::ClientConnections),
         BeforeReplyAction::CacheOnly
@@ -652,7 +658,7 @@ fn client_connections_requires_bounded_identity_and_parameterized_dispatch() {
 }
 
 #[test]
-fn all_eight_fixed_methods_and_nested_models_keep_exact_maximal_key_sets() {
+fn all_nine_fixed_methods_and_nested_models_keep_exact_maximal_key_sets() {
     let snapshot = fixture_snapshot();
     let status = snapshot.response(Method::Status).unwrap();
     let clients = snapshot.response(Method::Clients).unwrap();
@@ -676,6 +682,7 @@ fn all_eight_fixed_methods_and_nested_models_keep_exact_maximal_key_sets() {
             "overview_window_samples",
             "collector_mode",
             "rate_collector_mode",
+            "internet_view_mode",
             "access_edge_mode",
             "conn_collector_mode",
             "version",
@@ -971,6 +978,7 @@ fn optional_fields_are_omitted_without_changing_required_key_sets() {
             "overview_window_samples",
             "collector_mode",
             "rate_collector_mode",
+            "internet_view_mode",
             "access_edge_mode",
             "conn_collector_mode",
             "version",

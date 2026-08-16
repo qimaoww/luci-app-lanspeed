@@ -3528,7 +3528,10 @@ impl App {
         } else {
             if matches!(
                 method,
-                ubus::Method::Clients | ubus::Method::ClientConnections | ubus::Method::Diagnostics
+                ubus::Method::Realtime
+                    | ubus::Method::Clients
+                    | ubus::Method::ClientConnections
+                    | ubus::Method::Diagnostics
             ) {
                 self.schedule_conntrack(false);
             }

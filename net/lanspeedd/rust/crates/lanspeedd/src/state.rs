@@ -475,6 +475,7 @@ impl ResponseSnapshot {
 
     pub fn response(&self, method: Method) -> Result<Value, DaemonError> {
         Ok(match method {
+            Method::Realtime => crate::realtime::response(self)?,
             Method::Status => serde_json::to_value(&self.status)?,
             Method::Clients => serde_json::to_value(&self.clients)?,
             Method::Overview => serde_json::to_value(&self.overview)?,

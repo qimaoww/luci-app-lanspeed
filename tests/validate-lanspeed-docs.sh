@@ -175,8 +175,9 @@ for phrase in \
 	"低于 MSRV" \
 	"内部 atomic intrinsic 的版本转折点" \
 	"交叉编译通过不等于具体设备已完成真机验证" \
-	"十一个 ubus 方法" \
+	"十二个 ubus 方法" \
 	"六个 RPC 请求" \
+	"ubus call lanspeed realtime" \
 	"ubus call lanspeed status" \
 	"ubus call lanspeed clients" \
 	"ubus call lanspeed health" \

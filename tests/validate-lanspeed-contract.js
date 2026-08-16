@@ -5,6 +5,7 @@ const path = require('path');
 
 const root = path.resolve(__dirname, '..');
 const UBUS_METHODS = Object.freeze([
+  'realtime',
   'status',
   'clients',
   'overview',
@@ -656,6 +657,15 @@ function validateRpc(rpcSource) {
     'client_connections RPC declaration must keep the empty-object response contract');
   assert(exported.clientConnections === declaration.callable,
     'rpc.js must export client_connections as clientConnections');
+
+  const realtime = declarations.filter(({ specification }) =>
+    specification.object === 'lanspeed' && specification.method === 'realtime'
+  );
+  assert(realtime.length === 1, 'rpc.js must declare realtime exactly once');
+  assert(JSON.stringify(realtime[0].specification.expect) === JSON.stringify({ '': {} }),
+    'realtime RPC declaration must keep the empty-object response contract');
+  assert(exported.realtime === realtime[0].callable,
+    'rpc.js must export realtime');
 
   const diagnostics = declarations.filter(({ specification }) =>
     specification.object === 'lanspeed' && specification.method === 'diagnostics'

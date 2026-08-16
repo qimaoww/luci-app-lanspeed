@@ -4943,6 +4943,9 @@ function assertRpcModule(src) {
 	if (!src.includes("method: 'interfaces'") || !src.includes('interfaces: callInterfaces')) {
 		fail('lanspeed/rpc.js must expose interface throughput data');
 	}
+	if (!src.includes("method: 'realtime'") || !src.includes('realtime:')) {
+		fail('lanspeed/rpc.js must expose the compact atomic realtime snapshot');
+	}
 	if (!src.includes("method: 'health'") || !src.includes('health:')) {
 		fail('lanspeed/rpc.js must expose the dedicated runtime health method');
 	}

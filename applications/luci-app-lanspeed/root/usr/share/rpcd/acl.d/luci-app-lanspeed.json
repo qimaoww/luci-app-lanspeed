@@ -4,6 +4,7 @@
     "read": {
       "ubus": {
         "lanspeed": [
+          "realtime",
           "status",
           "clients",
           "overview",

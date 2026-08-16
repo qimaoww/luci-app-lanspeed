@@ -52,6 +52,7 @@ pub mod production;
 #[cfg(any(feature = "openwrt", test))]
 mod production_evidence;
 pub mod rate;
+pub mod realtime;
 pub mod state;
 pub mod ubus;
 pub mod workers;

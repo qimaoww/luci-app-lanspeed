@@ -310,6 +310,58 @@ async function testIndependentRpcSettlement(context, fmt) {
 	assert.strictEqual(timedOut.rpc.clients.ok, true);
 }
 
+async function testAtomicRealtimeSnapshot(context, fmt) {
+	let realtimeCalls = 0, uciCalls = 0, legacyCalls = 0;
+	let sampleMs = 1000;
+	const rpc = {
+		realtime: function() {
+			realtimeCalls++;
+			return Promise.resolve({
+				status: {
+					access_edge_mode: 'active', rate_collector_mode: 'auto',
+					evidence: { platform: { profile: 'nss_aarch64' }, access_edge: { sample_ms: sampleMs } }
+				},
+				clients: {
+					clients: [ {
+						identity_key: 'client@lan', interface: 'br-lan',
+						collector_mode: 'access_edge', sample_ms: sampleMs,
+						tx_bps: sampleMs, rx_bps: sampleMs,
+						rate_meta: { tx: { source: 'edge_port' }, rx: { source: 'edge_port' } }
+					} ],
+					evidence: { access_edge: { sample_ms: sampleMs } }
+				},
+				interfaces: {
+					monotonic_ms: sampleMs,
+					interfaces: [ { name: 'br-lan', role: 'lan', sample_ms: sampleMs, rx_bps: 2, tx_bps: 3 } ]
+				}
+			});
+		},
+		status: function() { legacyCalls++; return Promise.resolve({}); },
+		clients: function() { legacyCalls++; return Promise.resolve({ clients: [] }); },
+		interfaces: function() { legacyCalls++; return Promise.resolve({ interfaces: [] }); },
+		uciGet: function() { uciCalls++; return Promise.resolve({ show_client_status: '1' }); }
+	};
+	const overview = loadOverview(context, fmt, rpc);
+	let now = 5000;
+	const clock = function() { return ++now; };
+	const first = await overview.loadAll(null, clock);
+	assert.strictEqual(realtimeCalls, 1);
+	assert.strictEqual(legacyCalls, 0, 'successful realtime must replace all three legacy live calls');
+	assert.strictEqual(uciCalls, 1);
+	assert.strictEqual(first.livePair.aligned, true);
+	assert.strictEqual(first.clients.clients[0].tx_bps, 1000);
+	assert.strictEqual(first.rpc.status.checkedAt, first.rpc.clients.checkedAt);
+	assert.strictEqual(first.rpc.clients.checkedAt, first.rpc.interfaces.checkedAt);
+
+	sampleMs = 2000;
+	const second = await overview.loadAll(first, clock);
+	assert.strictEqual(realtimeCalls, 2);
+	assert.strictEqual(legacyCalls, 0);
+	assert.strictEqual(uciCalls, 1, 'UCI display settings must be cached after the initial load');
+	assert.strictEqual(second.clients.clients[0].tx_bps, 2000);
+	assert.strictEqual(second.rpc.uci.cached, true);
+}
+
 async function testLiveSamplePairing(context, fmt) {
 	let statusSampleMs = 1000;
 	let clientSampleMs = 1000;
@@ -1043,12 +1095,13 @@ async function main() {
 	const context = createContext();
 	const fmt = loadFormat(context);
 	await testIndependentRpcSettlement(context, fmt);
+	await testAtomicRealtimeSnapshot(context, fmt);
 	await testLiveSamplePairing(context, fmt);
 	await testControllerLifecycle(context, fmt);
 	testRenderWiresLiveRefresh(context, fmt);
 	testPaginationAndUiStates(context, fmt);
 	console.log('validate-lanspeed-status: PASS');
-	console.log('  independent RPC settlement, paired sample clocks, hard failure, single-flight refresh');
+	console.log('  atomic realtime snapshot, legacy RPC fallback, paired clocks, hard failure, single-flight refresh');
 	console.log('  timer lifecycle, destroy invalidation, pagination, keyboard, ARIA, and empty states');
 }
 

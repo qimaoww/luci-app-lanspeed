@@ -72,6 +72,7 @@ config lanspeed 'main'
 ## ubus 调试
 
 ```sh
+ubus call lanspeed realtime
 ubus call lanspeed status
 ubus call lanspeed clients
 ubus call lanspeed overview
@@ -88,7 +89,7 @@ ubus call lanspeed client_control_delete \
   '{"identity_key":"02:00:00:00:00:42@br-lan"}'
 ```
 
-十一个 ubus 方法返回统一版本和结构化 evidence。状态 `mode` 为 `Full`、`Degraded` 或 `Unsupported`，`confidence` 为 `high`、`medium`、`low` 或 `unsupported`；`router_self` 表示路由器自身流量语义。
+十二个 ubus 方法返回统一版本和结构化 evidence；`realtime` 是实时页使用的原子轻量快照，完整诊断仍由原方法提供。状态 `mode` 为 `Full`、`Degraded` 或 `Unsupported`，`confidence` 为 `high`、`medium`、`low` 或 `unsupported`；`router_self` 表示路由器自身流量语义。
 
 `client_control_set` 只接受十进制 bit/s 和 `0`/`1` 开关。两个方向分别观察自有 class counter，只有对应计数增长后才标记已验证。
 

@@ -14,6 +14,11 @@ var callStatus = rpc.declare({
 	method: 'status',
 	expect: { '': {} }
 });
+var callRealtime = rpc.declare({
+	object: 'lanspeed',
+	method: 'realtime',
+	expect: { '': {} }
+});
 var callClients = rpc.declare({
 	object: 'lanspeed',
 	method: 'clients',
@@ -101,6 +106,7 @@ function restartService() {
 }
 
 return baseclass.extend({
+	realtime:   callRealtime,
 	status:     callStatus,
 	clients:    callClients,
 	clientConnections: callClientConnections,

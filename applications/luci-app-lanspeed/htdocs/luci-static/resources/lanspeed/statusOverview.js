@@ -11,6 +11,7 @@ var LIVE_SOURCE_KEYS = [ 'status', 'clients', 'interfaces' ];
 var ACCESS_EDGE_SAMPLE_SKEW_MS = 50;
 var LIVE_RPC_TIMEOUT_MS = 2500;
 var SOURCE_LABELS = {
+	realtime: 'realtime',
 	status: 'status',
 	clients: 'clients',
 	interfaces: 'interfaces',
@@ -25,6 +26,8 @@ function emptySource(key) {
 
 function sourceIsValid(key, value) {
 	if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+	if (key === 'realtime') return sourceIsValid('status', value.status) &&
+		sourceIsValid('clients', value.clients) && sourceIsValid('interfaces', value.interfaces);
 	if (key === 'clients') return Array.isArray(value.clients);
 	if (key === 'interfaces') return Array.isArray(value.interfaces);
 	return true;
@@ -196,11 +199,7 @@ function nssAccessEdgeRenderable(data, pair) {
 		pair && pair.hasClientRates === true;
 }
 
-/*
- * Coverage, clients, and interfaces are separate ubus calls over one atomic
- * daemon snapshot. A collection may publish between the calls, so hold the
- * last visible metric set whenever their clocks identify different snapshots.
- */
+/* Legacy daemons expose three live calls which can straddle publication. */
 function alignLiveSamples(next, previous) {
 	var pair = livePair(next);
 	if (pair.aligned !== false) {
@@ -323,7 +322,7 @@ function loadUiConfig() {
 	return lsRpc.uciGet('lanspeed', 'main');
 }
 
-function loadAll(previous, clock, timeoutMs) {
+function loadLegacy(previous, clock, timeoutMs) {
 	clock = clock || function() { return Date.now(); };
 	var loaders = {
 		status: function() { return lsRpc.status(); },
@@ -355,6 +354,61 @@ function loadAll(previous, clock, timeoutMs) {
 			return alignLiveSamples(recovered, previous);
 		});
 	});
+}
+
+function cachedUci(previous, clock, timeoutMs) {
+	if (!hasPreviousSuccess(previous, 'uci'))
+		return sourceSettled('uci', loadUiConfig, previous, clock, timeoutMs);
+	var old = previous.rpc.uci || {};
+	var checkedAt = clock();
+	return Promise.resolve({
+		key: 'uci',
+		value: previousValue(previous, 'uci'),
+		rpc: {
+			ok: true,
+			retained: false,
+			cached: true,
+			error: null,
+			checkedAt: checkedAt,
+			lastSuccessAt: Number(old.lastSuccessAt) || checkedAt
+		}
+	});
+}
+
+function bundledResult(key, bundle, realtimeResult) {
+	return {
+		key: key,
+		value: bundle[key],
+		rpc: Object.assign({}, realtimeResult.rpc)
+	};
+}
+
+function loadRealtime(previous, clock, timeoutMs) {
+	var startedAt = clock();
+	return Promise.all([
+		sourceSettled('realtime', function() { return lsRpc.realtime(); },
+			previous, clock, timeoutMs),
+		cachedUci(previous, clock, timeoutMs)
+	]).then(function(results) {
+		var realtimeResult = results[0];
+		if (!realtimeResult.rpc.ok)
+			return loadLegacy(previous, clock, timeoutMs);
+		var bundle = realtimeResult.value;
+		var next = aggregateResults([
+			bundledResult('status', bundle, realtimeResult),
+			bundledResult('clients', bundle, realtimeResult),
+			bundledResult('interfaces', bundle, realtimeResult),
+			results[1]
+		], startedAt);
+		return alignLiveSamples(next, previous);
+	});
+}
+
+function loadAll(previous, clock, timeoutMs) {
+	clock = clock || function() { return Date.now(); };
+	return typeof lsRpc.realtime === 'function'
+		? loadRealtime(previous, clock, timeoutMs)
+		: loadLegacy(previous, clock, timeoutMs);
 }
 
 function normalizeData(data) {
@@ -632,6 +686,7 @@ return baseclass.extend({
 	createController: createController,
 	normalizeData: normalizeData,
 	loadAll: loadAll,
+	loadLegacy: loadLegacy,
 	statusBatch: statusBatch,
 	clientBatch: clientBatch,
 	interfaceBatch: interfaceBatch,
