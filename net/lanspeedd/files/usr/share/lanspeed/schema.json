@@ -146,6 +146,7 @@
       "enum": [
         "edge_port",
         "edge_wifi",
+        "fast_routed_lease",
         "ecm_bpf_fallback",
         "ecm_nss_lower_bound",
         "tc_bpf_lower_bound",

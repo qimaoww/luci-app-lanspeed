@@ -905,6 +905,8 @@ assert(schema.$defs.rateCollectorMode.enum.includes('auto'), 'schema must allow 
 assert(schema.$defs.rateCollectorMode.enum.includes('bpf'), 'schema must allow rate_collector_mode=bpf');
 assert(schema.$defs.rateCollectorMode.enum.includes('nss_ecm_node'), 'schema must allow rate_collector_mode=nss_ecm_node');
 assert(schema.$defs.rateCollectorMode.enum.includes('nss_ecm_bpf'), 'schema must allow rate_collector_mode=nss_ecm_bpf');
+assert(schema.$defs.rateSource.enum.includes('fast_routed_lease'),
+  'schema must expose the lease-authorized FastN+FastS rate source');
 assert(schema.$defs.capabilities.required.includes('nss_ecm_bpf'), 'schema must require the ECM+BPF runtime capability');
 assert(!schema.$defs.rateCollectorMode.enum.includes('nss_ecm_direct'), 'schema must remove legacy rate_collector_mode=nss_ecm_direct');
 assert(!schema.$defs.rateCollectorMode.enum.includes('nss_conntrack_sync'), 'schema must remove legacy rate_collector_mode=nss_conntrack_sync');
