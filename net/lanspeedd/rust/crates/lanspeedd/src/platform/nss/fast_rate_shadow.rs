@@ -54,10 +54,13 @@ impl FastRateShadow {
         edge_bps: Option<u64>,
     ) {
         self.edge_bps = edge_bps;
-        let Some(fast_n) = fast_n else {
-            return;
-        };
-        let Some(fast_s) = fast_s else {
+        let (Some(fast_n), Some(fast_s)) = (fast_n, fast_s) else {
+            self.invalidate_unavailable(
+                fast_n
+                    .map(|snapshot| snapshot.sample_ms)
+                    .or_else(|| fast_s.map(|snapshot| snapshot.sample_ms))
+                    .unwrap_or_default(),
+            );
             return;
         };
         if fast_n.truncated
@@ -131,6 +134,11 @@ impl FastRateShadow {
         self.coordinator.clear();
         self.last_error = None;
         self.store.record_invalid(sample_ms);
+    }
+
+    pub(crate) fn invalidate_unavailable(&mut self, sample_ms: u64) {
+        self.client_rates.clear();
+        self.invalidate(sample_ms);
     }
 
     pub(crate) fn client_rate(&self, mac: [u8; 6], direction: u8) -> Option<FastClientSample> {

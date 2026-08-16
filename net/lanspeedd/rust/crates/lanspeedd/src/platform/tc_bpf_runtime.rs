@@ -1,7 +1,12 @@
-use std::{ffi::CString, fmt, fs, io, os::fd::OwnedFd, path::Path};
+use std::{
+    ffi::CString,
+    fmt, fs, io,
+    os::fd::{AsFd, OwnedFd},
+    path::Path,
+};
 
 use aya::{
-    maps::{HashMap, PerCpuHashMap},
+    maps::{HashMap, IterableMap, Map, MapData, PerCpuHashMap},
     programs::{
         links::Link,
         tc::{
@@ -1365,6 +1370,71 @@ pub struct SystemAyaAdapter {
     client_map_capacity: u32,
 }
 
+/// Read-only duplicate of the TC FastS map for the bounded rate worker.
+///
+/// The owning adapter keeps the loaded BPF object and its links on the
+/// runtime thread. This handle only owns a duplicated map FD, so a one-second
+/// counter read cannot borrow or block the collector's BPF object.
+pub struct FastCounterMapReader {
+    counters: PerCpuHashMap<MapData, FastCounterKey, FastCounterMapValue>,
+    capacity: u32,
+}
+
+impl FastCounterMapReader {
+    pub fn read(&self) -> Result<FastCounterMapRead, AdapterError> {
+        let mut entries = Vec::new();
+        let mut truncated = false;
+        for key in self.counters.keys() {
+            let key = match key {
+                Ok(key) => key,
+                Err(aya::maps::MapError::KeyNotFound) => continue,
+                Err(error) => {
+                    return Err(AdapterError::new(
+                        AdapterErrorKind::MapReadFailed,
+                        error.to_string(),
+                    ));
+                }
+            };
+            if entries.len() >= self.capacity as usize {
+                truncated = true;
+                break;
+            }
+            let mut first = Vec::new();
+            let mut second = Vec::new();
+            for _ in 0..FAST_COUNTER_MAP_READ_RETRIES {
+                first = self
+                    .counters
+                    .get(&key, 0)
+                    .map_err(|error| {
+                        AdapterError::new(AdapterErrorKind::MapReadFailed, error.to_string())
+                    })?
+                    .iter()
+                    .map(|value| value.0)
+                    .collect();
+                second = self
+                    .counters
+                    .get(&key, 0)
+                    .map_err(|error| {
+                        AdapterError::new(AdapterErrorKind::MapReadFailed, error.to_string())
+                    })?
+                    .iter()
+                    .map(|value| value.0)
+                    .collect();
+                if stable_fast_counter_pair(&first, &second) {
+                    break;
+                }
+            }
+            entries.push(RawFastCounterSample {
+                key: key.0,
+                first,
+                second,
+            });
+        }
+        truncated |= entries.len() == self.capacity as usize;
+        Ok(FastCounterMapRead { entries, truncated })
+    }
+}
+
 impl Default for SystemAyaAdapter {
     fn default() -> Self {
         Self {
@@ -1430,6 +1500,44 @@ impl SystemAyaAdapter {
         }
         self.ebpf = Some(ebpf);
         Ok(())
+    }
+
+    pub fn fast_counter_reader(&self) -> Result<FastCounterMapReader, AdapterError> {
+        let map = self
+            .ebpf
+            .as_ref()
+            .and_then(|ebpf| ebpf.map(FAST_COUNTERS_MAP_NAME))
+            .ok_or_else(|| {
+                AdapterError::new(
+                    AdapterErrorKind::MapReadFailed,
+                    format!("{FAST_COUNTERS_MAP_NAME} missing"),
+                )
+            })?;
+        let counters = PerCpuHashMap::<_, FastCounterKey, FastCounterMapValue>::try_from(map)
+            .map_err(|error| {
+                AdapterError::new(AdapterErrorKind::MapReadFailed, error.to_string())
+            })?;
+        let fd = counters
+            .map()
+            .fd()
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|error| {
+                AdapterError::new(AdapterErrorKind::MapReadFailed, error.to_string())
+            })?;
+        let map_data = MapData::from_fd(fd).map_err(|error| {
+            AdapterError::new(AdapterErrorKind::MapReadFailed, error.to_string())
+        })?;
+        let map = Map::from_map_data(map_data).map_err(|error| {
+            AdapterError::new(AdapterErrorKind::MapReadFailed, error.to_string())
+        })?;
+        let counters = PerCpuHashMap::try_from(map).map_err(|error| {
+            AdapterError::new(AdapterErrorKind::MapReadFailed, error.to_string())
+        })?;
+        Ok(FastCounterMapReader {
+            counters,
+            capacity: self.client_map_capacity,
+        })
     }
 }
 

@@ -82,6 +82,7 @@ impl FastRateStore {
     pub(crate) fn record_invalid(&mut self, sample_ms: u64) {
         self.telemetry.invalid_windows = self.telemetry.invalid_windows.saturating_add(1);
         self.telemetry.last_invalid_ms = Some(sample_ms);
+        self.latest = None;
     }
 
     pub(crate) fn compare_with_edge(&self, edge_bps: Option<u64>) -> Option<FastShadowComparison> {

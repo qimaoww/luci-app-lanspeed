@@ -2,22 +2,53 @@
 
 use std::sync::mpsc::SyncSender;
 
-use crate::workers::{spawn_rate_worker, QueueError, RateWorker, WorkerQueue};
+use crate::{
+    clock::monotonic_millis,
+    platform::{nss::ecm_bpf::EcmFastCounterMapReader, tc_bpf_runtime::FastCounterMapReader},
+    workers::{spawn_rate_worker, QueueError, RateWorker, WorkerQueue},
+};
 
 use super::{
+    fast_n_runtime::FastNRuntime,
     fast_n_runtime::FastNSnapshot,
     fast_rate_shadow::FastRateShadow,
     fast_rate_store::{FastRateSample, FastRateTelemetry},
     fast_rate_wakeup::{FastRateWakeup, FastRateWakeupBook},
+    fast_s_runtime::FastSRuntime,
     fast_s_runtime::FastSSnapshot,
 };
 
+const FAST_RATE_SAMPLE_INTERVAL_MS: u64 = 1_000;
+
 #[derive(Clone, Debug)]
 pub(crate) enum FastRateCommand {
-    EventHint { now_ms: u64 },
-    FixedTimer { now_ms: u64 },
-    Poll { now_ms: u64 },
+    EventHint {
+        now_ms: u64,
+        base_generation: u64,
+        edge_bps: Option<u64>,
+    },
+    FixedTimer {
+        now_ms: u64,
+        base_generation: u64,
+        edge_bps: Option<u64>,
+    },
+    Poll {
+        now_ms: u64,
+        base_generation: u64,
+        edge_bps: Option<u64>,
+    },
     Sample(FastRateSampleInput),
+}
+
+pub(crate) struct FastRateSources {
+    n: EcmFastCounterMapReader,
+    s: FastCounterMapReader,
+}
+
+impl FastRateSources {
+    pub(crate) fn new(n: EcmFastCounterMapReader, s: FastCounterMapReader) -> Self {
+        Self { n, s }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -53,10 +84,20 @@ impl FastRateWorker {
         capacity: usize,
         notices: SyncSender<FastRateWakeupNotice>,
     ) -> Result<Self, std::io::Error> {
+        Self::spawn_with_sources(capacity, notices, None)
+    }
+
+    pub(crate) fn spawn_with_sources(
+        capacity: usize,
+        notices: SyncSender<FastRateWakeupNotice>,
+        sources: Option<FastRateSources>,
+    ) -> Result<Self, std::io::Error> {
+        let mut state = FastRateWorkerState::new(sources);
         let worker = spawn_rate_worker(capacity, move |command| {
-            // The worker owns the debounce state, so callers never need to
-            // coordinate event and fixed-timer timing through a shared lock.
-            thread_command(&notices, command);
+            // The worker owns debounce, map readers, stable-read aggregation,
+            // and the same-window shadow. The uloop thread only supplies the
+            // immutable base generation and receives a completed notice.
+            state.handle(&notices, command);
         })?;
         Ok(Self { worker })
     }
@@ -70,79 +111,158 @@ impl FastRateWorker {
     }
 }
 
-fn thread_command(notices: &SyncSender<FastRateWakeupNotice>, command: FastRateCommand) {
-    thread_local! {
-        static WAKEUPS: std::cell::RefCell<FastRateWakeupBook> =
-            std::cell::RefCell::new(FastRateWakeupBook::default());
+struct FastRateWorkerState {
+    sources: Option<FastRateSources>,
+    fast_n: FastNRuntime,
+    fast_s: FastSRuntime,
+    wakeups: FastRateWakeupBook,
+    shadow: FastRateShadow,
+    last_sample_ms: Option<u64>,
+}
+
+impl FastRateWorkerState {
+    fn new(sources: Option<FastRateSources>) -> Self {
+        Self {
+            sources,
+            fast_n: FastNRuntime::default(),
+            fast_s: FastSRuntime::default(),
+            wakeups: FastRateWakeupBook::default(),
+            shadow: FastRateShadow::new(),
+            last_sample_ms: None,
+        }
     }
-    thread_local! {
-        static SHADOW: std::cell::RefCell<FastRateShadow> =
-            std::cell::RefCell::new(FastRateShadow::new());
-    }
-    let (
-        base_generation,
-        now_ms,
-        sample,
-        telemetry,
-        client_shadow_entries,
-        client_shadow_invalid_windows,
-        sample_attempted,
-    ) = match command {
-        FastRateCommand::EventHint { now_ms } => {
-            WAKEUPS.with(|book| book.borrow_mut().on_event_hint(now_ms));
-            (0, now_ms, None, FastRateTelemetry::default(), 0, 0, false)
-        }
-        FastRateCommand::FixedTimer { now_ms } => {
-            WAKEUPS.with(|book| book.borrow_mut().on_fixed_timer());
-            (0, now_ms, None, FastRateTelemetry::default(), 0, 0, false)
-        }
-        FastRateCommand::Poll { now_ms } => {
-            (0, now_ms, None, FastRateTelemetry::default(), 0, 0, false)
-        }
-        FastRateCommand::Sample(input) => {
-            let now_ms = input
-                .n_read_end_ms
-                .max(input.s_read_end_ms)
-                .max(input.fast_n.sample_ms)
-                .max(input.fast_s.sample_ms);
-            SHADOW.with(|shadow| {
-                shadow.borrow_mut().observe(
-                    Some(&input.fast_n),
-                    Some(&input.fast_s),
-                    input.n_read_begin_ms,
-                    input.n_read_end_ms,
-                    input.s_read_begin_ms,
-                    input.s_read_end_ms,
-                    input.edge_bps,
-                );
-                let shadow = shadow.borrow();
-                (
+
+    fn handle(&mut self, notices: &SyncSender<FastRateWakeupNotice>, command: FastRateCommand) {
+        match command {
+            FastRateCommand::EventHint {
+                now_ms,
+                base_generation,
+                edge_bps,
+            } => {
+                self.wakeups.on_event_hint(now_ms);
+                self.sample_if_due(notices, now_ms, base_generation, edge_bps);
+            }
+            FastRateCommand::FixedTimer {
+                now_ms,
+                base_generation,
+                edge_bps,
+            } => {
+                self.wakeups.on_fixed_timer();
+                self.sample_if_due(notices, now_ms, base_generation, edge_bps);
+            }
+            FastRateCommand::Poll {
+                now_ms,
+                base_generation,
+                edge_bps,
+            } => self.sample_if_due(notices, now_ms, base_generation, edge_bps),
+            FastRateCommand::Sample(input) => {
+                let now_ms = input
+                    .n_read_end_ms
+                    .max(input.s_read_end_ms)
+                    .max(input.fast_n.sample_ms)
+                    .max(input.fast_s.sample_ms);
+                self.observe_input(&input);
+                self.send_notice(
+                    notices,
                     input.base_generation,
                     now_ms,
-                    shadow.latest(),
-                    shadow.telemetry(),
-                    shadow.client_count(),
-                    shadow.client_invalid_windows(),
+                    FastRateWakeup {
+                        event_hint: false,
+                        fixed_timer: false,
+                    },
                     true,
-                )
-            })
+                );
+            }
         }
-    };
-    let notice = WAKEUPS.with(|book| book.borrow_mut().poll(now_ms));
-    if let Some(wakeup) = notice.or_else(|| {
-        sample_attempted.then_some(FastRateWakeup {
-            event_hint: false,
-            fixed_timer: false,
+    }
+
+    fn sample_if_due(
+        &mut self,
+        notices: &SyncSender<FastRateWakeupNotice>,
+        now_ms: u64,
+        base_generation: u64,
+        edge_bps: Option<u64>,
+    ) {
+        let Some(wakeup) = self.wakeups.poll(now_ms) else {
+            return;
+        };
+        if self.sources.is_some()
+            && self
+                .last_sample_ms
+                .is_some_and(|last| now_ms.saturating_sub(last) < FAST_RATE_SAMPLE_INTERVAL_MS)
+        {
+            return;
+        }
+        let sample_attempted = self.sources.is_some();
+        if sample_attempted {
+            match self.read_sources(now_ms, base_generation, edge_bps) {
+                Ok(input) => {
+                    self.last_sample_ms = Some(input.fast_n.sample_ms.max(input.fast_s.sample_ms));
+                    self.observe_input(&input);
+                }
+                Err(()) => {
+                    self.last_sample_ms = Some(now_ms);
+                    self.shadow.invalidate_unavailable(now_ms);
+                }
+            }
+        }
+        self.send_notice(notices, base_generation, now_ms, wakeup, sample_attempted);
+    }
+
+    fn read_sources(
+        &mut self,
+        now_ms: u64,
+        base_generation: u64,
+        edge_bps: Option<u64>,
+    ) -> Result<FastRateSampleInput, ()> {
+        let sources = self.sources.as_ref().ok_or(())?;
+        let n_read_begin_ms = monotonic_millis().map_err(|_| ())?;
+        let n_read = sources.n.read().map_err(|_| ())?;
+        let n_read_end_ms = monotonic_millis().map_err(|_| ())?;
+        let s_read_begin_ms = monotonic_millis().map_err(|_| ())?;
+        let s_read = sources.s.read().map_err(|_| ())?;
+        let s_read_end_ms = monotonic_millis().map_err(|_| ())?;
+        let sample_ms = now_ms.max(n_read_end_ms).max(s_read_end_ms);
+        Ok(FastRateSampleInput {
+            base_generation,
+            fast_n: self.fast_n.collect(n_read, sample_ms),
+            fast_s: self.fast_s.collect(s_read, sample_ms),
+            n_read_begin_ms,
+            n_read_end_ms,
+            s_read_begin_ms,
+            s_read_end_ms,
+            edge_bps,
         })
-    }) {
+    }
+
+    fn observe_input(&mut self, input: &FastRateSampleInput) {
+        self.shadow.observe(
+            Some(&input.fast_n),
+            Some(&input.fast_s),
+            input.n_read_begin_ms,
+            input.n_read_end_ms,
+            input.s_read_begin_ms,
+            input.s_read_end_ms,
+            input.edge_bps,
+        );
+    }
+
+    fn send_notice(
+        &self,
+        notices: &SyncSender<FastRateWakeupNotice>,
+        base_generation: u64,
+        observed_ms: u64,
+        wakeup: FastRateWakeup,
+        sample_attempted: bool,
+    ) {
         let _ = notices.try_send(FastRateWakeupNotice {
             base_generation,
-            observed_ms: now_ms,
+            observed_ms,
             wakeup,
-            sample,
-            telemetry,
-            client_shadow_entries,
-            client_shadow_invalid_windows,
+            sample: self.shadow.latest(),
+            telemetry: self.shadow.telemetry(),
+            client_shadow_entries: self.shadow.client_count(),
+            client_shadow_invalid_windows: self.shadow.client_invalid_windows(),
             sample_attempted,
         });
     }
@@ -168,18 +288,47 @@ mod tests {
         let (notices, receiver) = mpsc::sync_channel(4);
         let worker = FastRateWorker::spawn(8, notices).unwrap();
         let queue = worker.queue();
-        try_queue(&queue, FastRateCommand::EventHint { now_ms: 100 }).unwrap();
-        try_queue(&queue, FastRateCommand::EventHint { now_ms: 105 }).unwrap();
-        try_queue(&queue, FastRateCommand::Poll { now_ms: 119 }).unwrap();
+        let context = |now_ms| FastRateCommand::EventHint {
+            now_ms,
+            base_generation: 1,
+            edge_bps: None,
+        };
+        try_queue(&queue, context(100)).unwrap();
+        try_queue(&queue, context(105)).unwrap();
+        try_queue(
+            &queue,
+            FastRateCommand::Poll {
+                now_ms: 119,
+                base_generation: 1,
+                edge_bps: None,
+            },
+        )
+        .unwrap();
         assert!(receiver.recv_timeout(Duration::from_millis(50)).is_err());
-        try_queue(&queue, FastRateCommand::Poll { now_ms: 120 }).unwrap();
+        try_queue(
+            &queue,
+            FastRateCommand::Poll {
+                now_ms: 120,
+                base_generation: 1,
+                edge_bps: None,
+            },
+        )
+        .unwrap();
         let notice = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(notice.observed_ms, 120);
         assert!(notice.wakeup.event_hint);
         assert!(!notice.wakeup.fixed_timer);
         assert!(notice.sample.is_none());
 
-        try_queue(&queue, FastRateCommand::FixedTimer { now_ms: 1_000 }).unwrap();
+        try_queue(
+            &queue,
+            FastRateCommand::FixedTimer {
+                now_ms: 1_000,
+                base_generation: 1,
+                edge_bps: None,
+            },
+        )
+        .unwrap();
         let notice = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(notice.observed_ms, 1_000);
         assert!(!notice.wakeup.event_hint);

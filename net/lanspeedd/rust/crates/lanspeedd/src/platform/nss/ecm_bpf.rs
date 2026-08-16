@@ -2,12 +2,13 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt, fs, io,
     mem::size_of,
+    os::fd::AsFd,
     path::Path,
     ptr,
 };
 
 use aya::{
-    maps::{Array, HashMap, MapData, PerCpuHashMap, RingBuf},
+    maps::{Array, HashMap, IterableMap, Map, MapData, PerCpuHashMap, RingBuf},
     programs::{kprobe::KProbeLinkId, KProbe},
     Ebpf, EbpfLoader, Pod,
 };
@@ -125,6 +126,66 @@ struct EcmFastCounterValue(FastCounterValue);
 
 unsafe impl Pod for EcmFastCounterKey {}
 unsafe impl Pod for EcmFastCounterValue {}
+
+/// Read-only duplicate of the ECM FastN map for the bounded rate worker.
+pub struct EcmFastCounterMapReader {
+    counters: PerCpuHashMap<MapData, EcmFastCounterKey, EcmFastCounterValue>,
+}
+
+impl EcmFastCounterMapReader {
+    pub fn read(&self) -> Result<EcmFastCounterMapRead, EcmBpfRuntimeError> {
+        let mut entries = Vec::new();
+        let mut truncated = false;
+        for key in self.counters.keys() {
+            let key = match key {
+                Ok(key) => key,
+                Err(aya::maps::MapError::KeyNotFound) => continue,
+                Err(error) => {
+                    return Err(EcmBpfRuntimeError::new(
+                        ECM_BPF_MAP_READ_STAGE,
+                        error.to_string(),
+                    ));
+                }
+            };
+            if entries.len() >= ECM_FAST_COUNTERS_MAP_CAPACITY as usize {
+                truncated = true;
+                break;
+            }
+            let mut first = Vec::new();
+            let mut second = Vec::new();
+            for _ in 0..FAST_COUNTER_MAP_READ_RETRIES {
+                first = self
+                    .counters
+                    .get(&key, 0)
+                    .map_err(|error| {
+                        EcmBpfRuntimeError::new(ECM_BPF_MAP_READ_STAGE, error.to_string())
+                    })?
+                    .iter()
+                    .map(|value| value.0)
+                    .collect();
+                second = self
+                    .counters
+                    .get(&key, 0)
+                    .map_err(|error| {
+                        EcmBpfRuntimeError::new(ECM_BPF_MAP_READ_STAGE, error.to_string())
+                    })?
+                    .iter()
+                    .map(|value| value.0)
+                    .collect();
+                if stable_fast_counter_pair(&first, &second) {
+                    break;
+                }
+            }
+            entries.push(RawEcmFastCounterSample {
+                key: key.0,
+                first,
+                second,
+            });
+        }
+        truncated |= entries.len() == ECM_FAST_COUNTERS_MAP_CAPACITY as usize;
+        Ok(EcmFastCounterMapRead { entries, truncated })
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EcmBpfClientSample {
@@ -974,6 +1035,34 @@ impl EcmBpfRuntime {
         }
         truncated |= entries.len() == ECM_FAST_COUNTERS_MAP_CAPACITY as usize;
         Ok(EcmFastCounterMapRead { entries, truncated })
+    }
+
+    pub fn fast_n_reader(&self) -> Result<EcmFastCounterMapReader, EcmBpfRuntimeError> {
+        let map = self
+            .ebpf
+            .as_ref()
+            .and_then(|ebpf| ebpf.map(ECM_FAST_COUNTERS_MAP_NAME))
+            .ok_or_else(|| {
+                EcmBpfRuntimeError::new(
+                    ECM_BPF_MAP_READ_STAGE,
+                    format!("{ECM_FAST_COUNTERS_MAP_NAME} missing"),
+                )
+            })?;
+        let counters = PerCpuHashMap::<_, EcmFastCounterKey, EcmFastCounterValue>::try_from(map)
+            .map_err(|error| EcmBpfRuntimeError::new(ECM_BPF_MAP_READ_STAGE, error.to_string()))?;
+        let fd = counters
+            .map()
+            .fd()
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|error| EcmBpfRuntimeError::new(ECM_BPF_MAP_READ_STAGE, error.to_string()))?;
+        let map_data = MapData::from_fd(fd)
+            .map_err(|error| EcmBpfRuntimeError::new(ECM_BPF_MAP_READ_STAGE, error.to_string()))?;
+        let map = Map::from_map_data(map_data)
+            .map_err(|error| EcmBpfRuntimeError::new(ECM_BPF_MAP_READ_STAGE, error.to_string()))?;
+        let counters = PerCpuHashMap::try_from(map)
+            .map_err(|error| EcmBpfRuntimeError::new(ECM_BPF_MAP_READ_STAGE, error.to_string()))?;
+        Ok(EcmFastCounterMapReader { counters })
     }
 
     fn read_client_map(&self) -> Result<EcmMapRead, EcmBpfRuntimeError> {

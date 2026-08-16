@@ -132,6 +132,11 @@ impl FastClientRateBook {
         self.invalid_windows
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.coordinators.clear();
+        self.latest.clear();
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.latest.len()
     }
