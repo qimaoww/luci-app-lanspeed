@@ -2,9 +2,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use lanspeed_common::EcmLayout;
 use serde_json::{json, Value};
 
-use crate::platform::access_edge::types::{ByteDomain, Coverage, Direction, TrafficScope};
+use crate::{
+    model::ClassificationState,
+    platform::access_edge::{
+        AttachmentKind, AttachmentTrust, ByteDomain, ClassificationResult, Coverage, Direction,
+        EdgeClientObservation, MuxFailure, TrafficScope,
+    },
+};
 
 pub(crate) const EVIDENCE_LEASE_LIFETIME_NS: u64 = 10_000_000_000;
 
@@ -60,6 +67,135 @@ pub(crate) fn e_usability(observation: EdgeObservation) -> EUsability {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LeaseDirectionObservation {
+    pub e: EdgeObservation,
+    pub classification: ClassificationState,
+    pub counter_reset: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LeaseClientObservation {
+    pub client_identity: String,
+    pub attachment_generation: u64,
+    pub byte_domain: ByteDomain,
+    pub proof_end_ms: Option<u64>,
+    pub tx: LeaseDirectionObservation,
+    pub rx: LeaseDirectionObservation,
+}
+
+impl LeaseClientObservation {
+    pub(crate) fn from_edge(
+        client_identity: &str,
+        edge: &EdgeClientObservation,
+        classification: Option<&ClassificationResult>,
+        topology_complete: bool,
+    ) -> Self {
+        let kind = match edge.attachment.point.kind {
+            AttachmentKind::Wifi => EdgeKind::Wifi,
+            AttachmentKind::Ethernet => EdgeKind::Port,
+        };
+        let unique = topology_complete
+            && !edge.attachment.ambiguous
+            && matches!(
+                (edge.attachment.point.kind, edge.attachment.trust),
+                (AttachmentKind::Wifi, AttachmentTrust::AssociatedStation)
+                    | (AttachmentKind::Ethernet, AttachmentTrust::ObservedExclusive)
+            );
+        let expected_scope = match kind {
+            EdgeKind::Wifi => TrafficScope::Unicast,
+            EdgeKind::Port => TrafficScope::AllFrames,
+        };
+        let direction = |direction: Direction| {
+            let edge_direction = match direction {
+                Direction::Tx => &edge.tx,
+                Direction::Rx => &edge.rx,
+            };
+            LeaseDirectionObservation {
+                e: EdgeObservation {
+                    kind,
+                    unique,
+                    sample_available: edge_direction.segment.is_some(),
+                    coverage: edge_direction.coverage,
+                    // Scope is part of the attachment contract. A temporarily
+                    // missing sample must not turn a proved unique edge into a
+                    // structurally ambiguous edge.
+                    scope: expected_scope,
+                },
+                classification: classification.map_or(ClassificationState::Unavailable, |result| {
+                    match direction {
+                        Direction::Tx => result.tx_state,
+                        Direction::Rx => result.rx_state,
+                    }
+                }),
+                counter_reset: edge_direction.failure == Some(MuxFailure::CounterReset),
+            }
+        };
+        Self {
+            client_identity: client_identity.to_owned(),
+            attachment_generation: edge.attachment.generation,
+            byte_domain: match kind {
+                EdgeKind::Wifi => ByteDomain::StationData,
+                EdgeKind::Port => ByteDomain::L2WithFcs,
+            },
+            proof_end_ms: classification.and_then(|result| result.window_end_ms),
+            tx: direction(Direction::Tx),
+            rx: direction(Direction::Rx),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct LeaseSourceObservation {
+    pub nss_bpf_object_loaded: bool,
+    pub nss_bpf_attached: bool,
+    pub nss_map_read_attempted: bool,
+    pub nss_map_read_ok: bool,
+    pub nss_map_truncated: bool,
+    pub tc_bpf_object_loaded: bool,
+    pub tc_bpf_attached: bool,
+    pub tc_expected_hooks: usize,
+    pub tc_attached_hooks: usize,
+    pub tc_map_read_attempted: bool,
+    pub tc_map_read_ok: bool,
+    pub tc_map_truncated: bool,
+    pub tc_self_heal_recoveries: u64,
+    pub layout: Option<EcmLayout>,
+    pub fast_n_reset_generation: Option<u32>,
+    pub fast_s_reset_generation: Option<u32>,
+    pub fast_integrity_failure: bool,
+    pub fast_reads_ready: bool,
+    pub proof_cycle_ready: bool,
+}
+
+impl LeaseSourceObservation {
+    fn map_loss(self) -> bool {
+        self.nss_map_truncated
+            || self.tc_map_truncated
+            || (self.nss_map_read_attempted && !self.nss_map_read_ok)
+            || (self.tc_map_read_attempted && !self.tc_map_read_ok)
+    }
+
+    fn ready(self) -> bool {
+        self.nss_bpf_object_loaded
+            && self.nss_bpf_attached
+            && self.nss_map_read_attempted
+            && self.nss_map_read_ok
+            && self.tc_bpf_object_loaded
+            && self.tc_bpf_attached
+            && self.tc_expected_hooks != 0
+            && self.tc_expected_hooks == self.tc_attached_hooks
+            && self.tc_map_read_attempted
+            && self.tc_map_read_ok
+            && self.layout.is_some_and(|layout| layout.ready == 1)
+            && self.fast_n_reset_generation.is_some()
+            && self.fast_s_reset_generation.is_some()
+            && self.fast_reads_ready
+            && !self.fast_integrity_failure
+            && !self.map_loss()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct LeaseGenerations {
     pub attachment_generation: u64,
     pub nss_bpf_load_generation: u64,
@@ -98,6 +234,7 @@ impl EvidenceLease {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LeaseInvalidation {
+    ClientIdentity,
     AttachmentGeneration,
     NssBpfLoadGeneration,
     NssMapGeneration,
@@ -236,8 +373,24 @@ impl EvidenceLeaseBook {
     }
 
     pub(crate) fn retain_identities(&mut self, identities: &BTreeSet<String>) {
+        let before = self.leases.len();
         self.leases
             .retain(|(identity, _), _| identities.contains(identity));
+        let removed = before.saturating_sub(self.leases.len());
+        if removed != 0 {
+            self.invalidated = self.invalidated.saturating_add(removed as u64);
+            self.last_invalidation = Some(LeaseInvalidation::ClientIdentity);
+        }
+    }
+
+    pub(crate) fn invalidate_all(&mut self, reason: LeaseInvalidation) {
+        let invalidated = self.leases.len();
+        if invalidated == 0 {
+            return;
+        }
+        self.leases.clear();
+        self.invalidated = self.invalidated.saturating_add(invalidated as u64);
+        self.last_invalidation = Some(reason);
     }
 
     pub(crate) fn evidence(&self) -> Value {
@@ -254,6 +407,7 @@ impl EvidenceLeaseBook {
 impl LeaseInvalidation {
     const fn as_str(self) -> &'static str {
         match self {
+            Self::ClientIdentity => "client_identity",
             Self::AttachmentGeneration => "attachment_generation",
             Self::NssBpfLoadGeneration => "nss_bpf_load_generation",
             Self::NssMapGeneration => "nss_map_generation",
@@ -265,6 +419,287 @@ impl LeaseInvalidation {
             Self::IntegrityFailure => "integrity_failure",
             Self::NsOverlap => "ns_overlap",
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct NssBpfSignature {
+    object_loaded: bool,
+    attached: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct TcAttachSignature {
+    object_loaded: bool,
+    attached: bool,
+    expected_hooks: usize,
+    attached_hooks: usize,
+    self_heal_recoveries: u64,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct LeaseGenerationTracker {
+    initialized: bool,
+    nss_bpf: NssBpfSignature,
+    tc_attach: TcAttachSignature,
+    layout: Option<EcmLayout>,
+    fast_n_reset_generation: Option<u32>,
+    fast_s_reset_generation: Option<u32>,
+    generations: LeaseGenerations,
+}
+
+impl LeaseGenerationTracker {
+    fn observe(&mut self, source: LeaseSourceObservation) -> Option<LeaseInvalidation> {
+        let nss_bpf = NssBpfSignature {
+            object_loaded: source.nss_bpf_object_loaded,
+            attached: source.nss_bpf_attached,
+        };
+        let tc_attach = TcAttachSignature {
+            object_loaded: source.tc_bpf_object_loaded,
+            attached: source.tc_bpf_attached,
+            expected_hooks: source.tc_expected_hooks,
+            attached_hooks: source.tc_attached_hooks,
+            self_heal_recoveries: source.tc_self_heal_recoveries,
+        };
+        if !self.initialized {
+            self.initialized = true;
+            self.nss_bpf = nss_bpf;
+            self.tc_attach = tc_attach;
+            self.layout = source.layout;
+            self.fast_n_reset_generation = source.fast_n_reset_generation;
+            self.fast_s_reset_generation = source.fast_s_reset_generation;
+            self.generations = LeaseGenerations {
+                attachment_generation: 0,
+                nss_bpf_load_generation: 1,
+                nss_map_generation: 1,
+                tc_attach_generation: 1,
+                layout_generation: 1,
+            };
+            return None;
+        }
+
+        let mut invalidation = None;
+        if self.nss_bpf != nss_bpf {
+            self.nss_bpf = nss_bpf;
+            self.generations.nss_bpf_load_generation =
+                self.generations.nss_bpf_load_generation.saturating_add(1);
+            // The ECM map is owned by this BPF object. A load/attach identity
+            // transition therefore changes both explicit generations.
+            self.generations.nss_map_generation =
+                self.generations.nss_map_generation.saturating_add(1);
+            invalidation = Some(LeaseInvalidation::NssBpfLoadGeneration);
+        }
+        if self.tc_attach != tc_attach {
+            self.tc_attach = tc_attach;
+            self.generations.tc_attach_generation =
+                self.generations.tc_attach_generation.saturating_add(1);
+            invalidation.get_or_insert(LeaseInvalidation::TcAttachGeneration);
+        }
+        if self.layout != source.layout {
+            self.layout = source.layout;
+            self.generations.layout_generation =
+                self.generations.layout_generation.saturating_add(1);
+            invalidation.get_or_insert(LeaseInvalidation::LayoutGeneration);
+        }
+        let n_reset = update_known_generation(
+            &mut self.fast_n_reset_generation,
+            source.fast_n_reset_generation,
+        );
+        let s_reset = update_known_generation(
+            &mut self.fast_s_reset_generation,
+            source.fast_s_reset_generation,
+        );
+        if n_reset || s_reset {
+            invalidation.get_or_insert(LeaseInvalidation::CounterReset);
+        }
+        invalidation
+    }
+
+    fn for_attachment(&self, attachment_generation: u64) -> LeaseGenerations {
+        LeaseGenerations {
+            attachment_generation,
+            ..self.generations
+        }
+    }
+}
+
+fn update_known_generation(current: &mut Option<u32>, observed: Option<u32>) -> bool {
+    let Some(observed) = observed else {
+        return false;
+    };
+    let changed = current.is_some_and(|current| current != observed);
+    *current = Some(observed);
+    changed
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct EvidenceLeaseRuntime {
+    generations: LeaseGenerationTracker,
+    book: EvidenceLeaseBook,
+    last_proof_end_ms: BTreeMap<(String, Direction), u64>,
+    current_valid: BTreeSet<(String, Direction)>,
+    source_ready: bool,
+    fast_reads_ready: bool,
+    proof_cycle_ready: bool,
+    map_loss: bool,
+    fast_integrity_failure: bool,
+    e_authority_directions: usize,
+    e_transient_directions: usize,
+    e_structural_directions: usize,
+}
+
+impl EvidenceLeaseRuntime {
+    pub(crate) fn reconcile(
+        &mut self,
+        now_ms: u64,
+        source: LeaseSourceObservation,
+        clients: &[LeaseClientObservation],
+    ) {
+        let generation_invalidation = self.generations.observe(source);
+        self.source_ready = source.ready();
+        self.fast_reads_ready = source.fast_reads_ready;
+        self.proof_cycle_ready = source.proof_cycle_ready;
+        self.map_loss = source.map_loss();
+        self.fast_integrity_failure = source.fast_integrity_failure;
+        self.current_valid.clear();
+        self.e_authority_directions = 0;
+        self.e_transient_directions = 0;
+        self.e_structural_directions = 0;
+
+        let identities = clients
+            .iter()
+            .map(|client| client.client_identity.clone())
+            .collect::<BTreeSet<_>>();
+        self.book.retain_identities(&identities);
+        self.last_proof_end_ms
+            .retain(|(identity, _), _| identities.contains(identity));
+
+        if self.map_loss {
+            self.book.invalidate_all(LeaseInvalidation::MapLoss);
+        } else if source.fast_integrity_failure {
+            self.book
+                .invalidate_all(LeaseInvalidation::IntegrityFailure);
+        } else if let Some(reason) = generation_invalidation {
+            self.book.invalidate_all(reason);
+        }
+
+        let now_ns = now_ms.saturating_mul(1_000_000);
+        for client in clients {
+            for (direction, observation) in [(Direction::Tx, client.tx), (Direction::Rx, client.rx)]
+            {
+                let e = e_usability(observation.e);
+                match e {
+                    EUsability::Authority => {
+                        self.e_authority_directions = self.e_authority_directions.saturating_add(1)
+                    }
+                    EUsability::TransientEUnavailable => {
+                        self.e_transient_directions = self.e_transient_directions.saturating_add(1)
+                    }
+                    EUsability::StructuralEUnavailable => {
+                        self.e_structural_directions =
+                            self.e_structural_directions.saturating_add(1)
+                    }
+                }
+                let generations = self
+                    .generations
+                    .for_attachment(client.attachment_generation);
+                let classification_integrity_failure = matches!(
+                    observation.classification,
+                    ClassificationState::DomainMismatch
+                        | ClassificationState::WindowMismatch
+                        | ClassificationState::CounterSkew
+                );
+                let structural_failure = e == EUsability::StructuralEUnavailable;
+                let integrity_failure = classification_integrity_failure || structural_failure;
+                let counter_reset = observation.counter_reset;
+                let valid = self.book.permits(
+                    &client.client_identity,
+                    direction,
+                    now_ns,
+                    generations,
+                    client.byte_domain,
+                    true,
+                    counter_reset,
+                    self.map_loss,
+                    integrity_failure || source.fast_integrity_failure,
+                );
+                if valid {
+                    self.current_valid
+                        .insert((client.client_identity.clone(), direction));
+                }
+
+                let Some(proof_end_ms) = client.proof_end_ms else {
+                    continue;
+                };
+                let key = (client.client_identity.clone(), direction);
+                let proof_is_new = self.last_proof_end_ms.get(&key) != Some(&proof_end_ms);
+                let proof_ns = proof_end_ms.saturating_mul(1_000_000);
+                let proof_current = proof_ns <= now_ns
+                    && now_ns <= proof_ns.saturating_add(EVIDENCE_LEASE_LIFETIME_NS);
+                if source.proof_cycle_ready
+                    && self.source_ready
+                    && e == EUsability::Authority
+                    && observation.classification == ClassificationState::Aligned
+                    && proof_is_new
+                    && proof_current
+                {
+                    self.last_proof_end_ms.insert(key.clone(), proof_end_ms);
+                    if self.book.issue(
+                        &client.client_identity,
+                        direction,
+                        generations,
+                        client.byte_domain,
+                        true,
+                        proof_ns,
+                    ) {
+                        self.current_valid.insert(key);
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn evidence(&self) -> Value {
+        let generations = self.generations.generations;
+        let mut evidence = self.book.evidence();
+        let object = evidence
+            .as_object_mut()
+            .expect("EvidenceLeaseBook evidence is an object");
+        object.insert("mode".into(), json!("shadow"));
+        object.insert("formal_rate_owner".into(), json!(false));
+        object.insert("current_valid".into(), json!(self.current_valid.len()));
+        object.insert("source_ready".into(), json!(self.source_ready));
+        object.insert("fast_reads_ready".into(), json!(self.fast_reads_ready));
+        object.insert("proof_cycle_ready".into(), json!(self.proof_cycle_ready));
+        object.insert("map_loss".into(), json!(self.map_loss));
+        object.insert(
+            "fast_integrity_failure".into(),
+            json!(self.fast_integrity_failure),
+        );
+        object.insert(
+            "generations".into(),
+            json!({
+                "nss_bpf_load": generations.nss_bpf_load_generation,
+                "nss_map": generations.nss_map_generation,
+                "tc_attach": generations.tc_attach_generation,
+                "layout": generations.layout_generation,
+                "fast_n_reset": self.generations.fast_n_reset_generation,
+                "fast_s_reset": self.generations.fast_s_reset_generation,
+            }),
+        );
+        object.insert(
+            "e_usability".into(),
+            json!({
+                "authority": self.e_authority_directions,
+                "transient_unavailable": self.e_transient_directions,
+                "structural_unavailable": self.e_structural_directions,
+            }),
+        );
+        object.insert(
+            "lease_lifetime_ms".into(),
+            json!(EVIDENCE_LEASE_LIFETIME_NS / 1_000_000),
+        );
+        evidence
     }
 }
 
@@ -524,5 +959,178 @@ mod tests {
         assert_eq!(book.evidence()["active"], 1);
         book.remove("client", Direction::Tx);
         assert_eq!(book.evidence()["active"], 0);
+    }
+
+    fn ready_source() -> LeaseSourceObservation {
+        LeaseSourceObservation {
+            nss_bpf_object_loaded: true,
+            nss_bpf_attached: true,
+            nss_map_read_attempted: true,
+            nss_map_read_ok: true,
+            tc_bpf_object_loaded: true,
+            tc_bpf_attached: true,
+            tc_expected_hooks: 2,
+            tc_attached_hooks: 2,
+            tc_map_read_attempted: true,
+            tc_map_read_ok: true,
+            layout: Some(EcmLayout {
+                ready: 1,
+                ..EcmLayout::default()
+            }),
+            fast_n_reset_generation: Some(1),
+            fast_s_reset_generation: Some(2),
+            fast_reads_ready: true,
+            proof_cycle_ready: true,
+            ..LeaseSourceObservation::default()
+        }
+    }
+
+    fn runtime_client(
+        e: EdgeObservation,
+        classification: ClassificationState,
+        proof_end_ms: u64,
+    ) -> LeaseClientObservation {
+        let direction = LeaseDirectionObservation {
+            e,
+            classification,
+            counter_reset: false,
+        };
+        LeaseClientObservation {
+            client_identity: "client".to_owned(),
+            attachment_generation: 7,
+            byte_domain: ByteDomain::L2WithFcs,
+            proof_end_ms: Some(proof_end_ms),
+            tx: direction,
+            rx: direction,
+        }
+    }
+
+    fn authority_edge() -> EdgeObservation {
+        edge(
+            EdgeKind::Port,
+            true,
+            Coverage::Partial,
+            TrafficScope::AllFrames,
+        )
+    }
+
+    #[test]
+    fn runtime_issues_only_one_lease_per_direction_for_a_new_aligned_proof() {
+        let mut runtime = EvidenceLeaseRuntime::default();
+        let client = runtime_client(authority_edge(), ClassificationState::Aligned, 6_000);
+        runtime.reconcile(6_000, ready_source(), &[client.clone()]);
+        assert_eq!(runtime.evidence()["active"], 2);
+        assert_eq!(runtime.evidence()["issued"], 2);
+        assert_eq!(runtime.evidence()["current_valid"], 2);
+        assert_eq!(runtime.evidence()["source_ready"], true);
+
+        let mut retained = ready_source();
+        retained.proof_cycle_ready = false;
+        runtime.reconcile(7_000, retained, &[client]);
+        assert_eq!(runtime.evidence()["active"], 2);
+        assert_eq!(runtime.evidence()["issued"], 2);
+    }
+
+    #[test]
+    fn stale_fast_snapshots_cannot_sign_a_fresh_classifier_proof() {
+        let mut runtime = EvidenceLeaseRuntime::default();
+        let client = runtime_client(authority_edge(), ClassificationState::Aligned, 6_000);
+        let mut source = ready_source();
+        source.fast_reads_ready = false;
+        runtime.reconcile(6_000, source, &[client]);
+        assert_eq!(runtime.evidence()["active"], 0);
+        assert_eq!(runtime.evidence()["issued"], 0);
+        assert_eq!(runtime.evidence()["source_ready"], false);
+        assert_eq!(runtime.evidence()["proof_cycle_ready"], true);
+    }
+
+    #[test]
+    fn transient_edge_loss_keeps_a_lease_but_never_refreshes_stale_proof() {
+        let mut runtime = EvidenceLeaseRuntime::default();
+        let client = runtime_client(authority_edge(), ClassificationState::Aligned, 6_000);
+        runtime.reconcile(6_000, ready_source(), &[client]);
+
+        let mut transient = authority_edge();
+        transient.sample_available = false;
+        let client = runtime_client(transient, ClassificationState::Unavailable, 6_000);
+        let mut retained = ready_source();
+        retained.proof_cycle_ready = false;
+        runtime.reconcile(7_000, retained, &[client.clone()]);
+        assert_eq!(runtime.evidence()["active"], 2);
+        assert_eq!(
+            runtime.evidence()["e_usability"]["transient_unavailable"],
+            2
+        );
+
+        runtime.reconcile(16_001, retained, &[client]);
+        assert_eq!(runtime.evidence()["active"], 0);
+        assert_eq!(runtime.evidence()["expired"], 2);
+    }
+
+    #[test]
+    fn source_generations_map_loss_and_reset_invalidate_immediately() {
+        let mut runtime = EvidenceLeaseRuntime::default();
+        let client = runtime_client(authority_edge(), ClassificationState::Aligned, 6_000);
+        runtime.reconcile(6_000, ready_source(), &[client.clone()]);
+
+        let mut tc_changed = ready_source();
+        tc_changed.proof_cycle_ready = false;
+        tc_changed.tc_self_heal_recoveries = 1;
+        runtime.reconcile(7_000, tc_changed, &[client.clone()]);
+        assert_eq!(runtime.evidence()["active"], 0);
+        assert_eq!(
+            runtime.evidence()["last_invalidation"],
+            "tc_attach_generation"
+        );
+
+        let client = runtime_client(authority_edge(), ClassificationState::Aligned, 8_000);
+        tc_changed.proof_cycle_ready = true;
+        runtime.reconcile(8_000, tc_changed, &[client.clone()]);
+        assert_eq!(runtime.evidence()["active"], 2);
+        let mut map_loss = tc_changed;
+        map_loss.proof_cycle_ready = false;
+        map_loss.nss_map_read_ok = false;
+        runtime.reconcile(8_100, map_loss, &[client.clone()]);
+        assert_eq!(runtime.evidence()["active"], 0);
+        assert_eq!(runtime.evidence()["last_invalidation"], "map_loss");
+
+        let client = runtime_client(authority_edge(), ClassificationState::Aligned, 10_000);
+        tc_changed.proof_cycle_ready = true;
+        runtime.reconcile(10_000, tc_changed, &[client.clone()]);
+        assert_eq!(runtime.evidence()["active"], 2);
+        let mut reset = tc_changed;
+        reset.proof_cycle_ready = false;
+        reset.fast_n_reset_generation = Some(3);
+        runtime.reconcile(10_100, reset, &[client]);
+        assert_eq!(runtime.evidence()["active"], 0);
+        assert_eq!(runtime.evidence()["last_invalidation"], "counter_reset");
+    }
+
+    #[test]
+    fn structural_edge_or_domain_mismatch_cannot_hold_or_issue_a_lease() {
+        let mut runtime = EvidenceLeaseRuntime::default();
+        let client = runtime_client(authority_edge(), ClassificationState::Aligned, 6_000);
+        runtime.reconcile(6_000, ready_source(), &[client]);
+        assert_eq!(runtime.evidence()["active"], 2);
+
+        let structural = edge(
+            EdgeKind::Port,
+            false,
+            Coverage::Partial,
+            TrafficScope::AllFrames,
+        );
+        let client = runtime_client(structural, ClassificationState::Partial, 6_000);
+        let mut retained = ready_source();
+        retained.proof_cycle_ready = false;
+        runtime.reconcile(7_000, retained, &[client]);
+        assert_eq!(runtime.evidence()["active"], 0);
+        assert_eq!(runtime.evidence()["last_invalidation"], "integrity_failure");
+
+        let wifi = edge(EdgeKind::Wifi, true, Coverage::Full, TrafficScope::Unicast);
+        let mut client = runtime_client(wifi, ClassificationState::DomainMismatch, 8_000);
+        client.byte_domain = ByteDomain::StationData;
+        runtime.reconcile(8_000, ready_source(), &[client]);
+        assert_eq!(runtime.evidence()["active"], 0);
+        assert_eq!(runtime.evidence()["issued"], 2);
     }
 }

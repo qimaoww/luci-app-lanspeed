@@ -149,6 +149,7 @@ use crate::{
             control::{PathProbeBook, PathProbeWindow},
             ecm_bpf::EcmBpfSnapshot,
             evidence::{apply_ecm_bpf_evidence, apply_nss_snapshot_evidence},
+            evidence_lease::LeaseClientObservation,
             fast_rate_worker::{self, FastRateCommand, FastRateSources, FastRateWakeupNotice},
             fusion::{
                 ecm_bpf_client_interfaces, ecm_bpf_fallback_client_rates,
@@ -1251,6 +1252,12 @@ impl ProductionRuntime {
                 &runtime_health,
             );
         }
+        self.reconcile_evidence_leases(
+            &identities,
+            &runtime_health,
+            fast_n_read_timing.is_some() && fast_s_read_timing.is_some(),
+            classifier_due && ecm_bpf_snapshot_fresh && bpf_snapshot_fresh,
+        );
         self.nss
             .transition_rate_owner(&mut self.rate_owner, decision.rate);
         let legacy_nss_rate_window_enabled = legacy_nss_rate_window_enabled(
@@ -1465,6 +1472,9 @@ impl ProductionRuntime {
                     bpf_snapshot_fresh,
                 ),
             );
+            client_evidence
+                .details
+                .insert("evidence_lease".into(), self.nss.evidence_lease_evidence());
             if let Some(snapshot) = conntrack.as_deref() {
                 client_evidence.details.insert(
                     "conntrack_generation".into(),
@@ -1597,6 +1607,9 @@ impl ProductionRuntime {
                 bpf_snapshot_fresh,
             ),
         );
+        status_evidence
+            .details
+            .insert("evidence_lease".into(), self.nss.evidence_lease_evidence());
         if let Some(window) = nss_window.as_ref() {
             status_evidence
                 .details
@@ -1850,6 +1863,9 @@ impl ProductionRuntime {
                 bpf_snapshot_fresh,
             ),
         );
+        health_evidence
+            .details
+            .insert("evidence_lease".into(), self.nss.evidence_lease_evidence());
         if let Some(window) = nss_window.as_ref() {
             health_evidence
                 .details
@@ -2148,6 +2164,42 @@ impl ProductionRuntime {
         }
         self.classification_results = active_results;
         self.cpu_path_probe_windows = active_probe_windows;
+    }
+
+    #[cfg(feature = "nss-platform")]
+    fn reconcile_evidence_leases(
+        &mut self,
+        identities: &IdentityTable,
+        runtime_health: &RuntimeHealth,
+        fast_reads_ready: bool,
+        proof_cycle_ready: bool,
+    ) {
+        let identities = identity_mac_index(identities);
+        let observations = self
+            .access_edge
+            .latest()
+            .clients
+            .iter()
+            .filter_map(|edge| {
+                let mac = format_edge_mac(edge.attachment.key.mac);
+                let identity = identities.unique.get(&mac)?;
+                let identity_key = identity.key.to_string();
+                Some(LeaseClientObservation::from_edge(
+                    &identity_key,
+                    edge,
+                    self.classification_results.get(&identity_key),
+                    self.access_edge
+                        .attachment_topology_complete(&edge.attachment),
+                ))
+            })
+            .collect::<Vec<_>>();
+        self.nss.reconcile_evidence_leases(
+            runtime_health.now_ms,
+            runtime_health,
+            fast_reads_ready,
+            proof_cycle_ready,
+            &observations,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]

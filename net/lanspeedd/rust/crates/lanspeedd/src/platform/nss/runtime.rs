@@ -6,6 +6,7 @@ use crate::{
             EcmBpfCollectionCheckpoint, EcmBpfRuntime, EcmBpfSnapshot, EcmBpfSnapshotCollector,
         },
         ecm_node::{self, NodeSnapshot},
+        evidence_lease::{EvidenceLeaseRuntime, LeaseClientObservation, LeaseSourceObservation},
         fast_n_runtime::{FastNRuntime, FastNSnapshot},
         fast_rate_shadow::FastRateShadow,
         fast_s_runtime::{FastSRuntime, FastSSnapshot},
@@ -31,6 +32,7 @@ pub(crate) struct NssRuntime {
     pub(crate) fast_n: FastNRuntime,
     pub(crate) fast_s: FastSRuntime,
     pub(crate) fast_rate_shadow: FastRateShadow,
+    pub(crate) evidence_leases: EvidenceLeaseRuntime,
     pub(crate) hardware_verifier: HardwareVerifier,
 }
 
@@ -46,6 +48,7 @@ pub(crate) struct NssRuntimeCheckpoint {
     node_error: Option<String>,
     fast_s: FastSRuntime,
     fast_rate_shadow: FastRateShadow,
+    evidence_leases: EvidenceLeaseRuntime,
     hardware_verifier: HardwareVerifier,
 }
 
@@ -63,6 +66,7 @@ impl Default for NssRuntime {
             fast_n: FastNRuntime::default(),
             fast_s: FastSRuntime::default(),
             fast_rate_shadow: FastRateShadow::new(),
+            evidence_leases: EvidenceLeaseRuntime::default(),
             hardware_verifier: HardwareVerifier::default(),
         }
     }
@@ -118,6 +122,7 @@ impl NssRuntime {
             node_error: self.node_error.clone(),
             fast_s: self.fast_s.clone(),
             fast_rate_shadow: self.fast_rate_shadow.clone(),
+            evidence_leases: self.evidence_leases.clone(),
             hardware_verifier: self.hardware_verifier.clone(),
         }
     }
@@ -137,6 +142,7 @@ impl NssRuntime {
         self.node_error = checkpoint.node_error;
         self.fast_s = checkpoint.fast_s;
         self.fast_rate_shadow = checkpoint.fast_rate_shadow;
+        self.evidence_leases = checkpoint.evidence_leases;
         self.hardware_verifier = checkpoint.hardware_verifier;
     }
 
@@ -308,6 +314,49 @@ impl NssRuntime {
             }
             None => None,
         }
+    }
+
+    pub(crate) fn reconcile_evidence_leases(
+        &mut self,
+        now_ms: u64,
+        runtime_health: &RuntimeHealth,
+        fast_reads_ready: bool,
+        proof_cycle_ready: bool,
+        clients: &[LeaseClientObservation],
+    ) {
+        let fast_n = self.fast_n_snapshot();
+        let fast_s = self.fast_s_snapshot();
+        let source = LeaseSourceObservation {
+            nss_bpf_object_loaded: runtime_health.ecm_bpf_object_loaded,
+            nss_bpf_attached: runtime_health.ecm_bpf_attached,
+            nss_map_read_attempted: runtime_health.ecm_bpf_map_read_attempted,
+            nss_map_read_ok: runtime_health.ecm_bpf_map_read_ok,
+            nss_map_truncated: runtime_health.ecm_bpf_map_iteration_truncated
+                || fast_n.is_some_and(|snapshot| snapshot.truncated),
+            tc_bpf_object_loaded: runtime_health.bpf_object_loaded,
+            tc_bpf_attached: runtime_health.bpf_attached,
+            tc_expected_hooks: runtime_health.bpf_expected_hook_count,
+            tc_attached_hooks: runtime_health.bpf_attached_hook_count,
+            tc_map_read_attempted: runtime_health.bpf_map_read_attempted,
+            tc_map_read_ok: runtime_health.bpf_map_read_ok,
+            tc_map_truncated: runtime_health.bpf_map_iteration_truncated
+                || fast_s.is_some_and(|snapshot| snapshot.truncated),
+            tc_self_heal_recoveries: runtime_health.bpf_self_heal_recoveries,
+            layout: runtime_health.ecm_bpf_layout,
+            fast_n_reset_generation: fast_n.and_then(|snapshot| {
+                (snapshot.reset_generation != 0).then_some(snapshot.reset_generation)
+            }),
+            fast_s_reset_generation: fast_s.map(|snapshot| snapshot.reset_generation),
+            fast_integrity_failure: fast_n.is_some_and(|snapshot| snapshot.invalid_entries != 0)
+                || fast_s.is_some_and(|snapshot| snapshot.invalid_entries != 0),
+            fast_reads_ready,
+            proof_cycle_ready,
+        };
+        self.evidence_leases.reconcile(now_ms, source, clients);
+    }
+
+    pub(crate) fn evidence_lease_evidence(&self) -> serde_json::Value {
+        self.evidence_leases.evidence()
     }
 
     pub(crate) fn observe_hardware_verifier(
