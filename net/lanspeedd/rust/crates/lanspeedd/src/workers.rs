@@ -36,9 +36,13 @@ impl<T> Clone for WorkerQueue<T> {
 
 impl<T> WorkerQueue<T> {
     pub fn try_send(&self, task: T) -> Result<(), QueueError> {
+        self.try_send_recover(task).map_err(|(error, _)| error)
+    }
+
+    pub fn try_send_recover(&self, task: T) -> Result<(), (QueueError, T)> {
         self.sender.try_send(task).map_err(|error| match error {
-            TrySendError::Full(_) => QueueError::Full,
-            TrySendError::Disconnected(_) => QueueError::Disconnected,
+            TrySendError::Full(task) => (QueueError::Full, task),
+            TrySendError::Disconnected(task) => (QueueError::Disconnected, task),
         })
     }
 }
