@@ -1,8 +1,10 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs, io,
     path::Path,
 };
+
+pub const LAN_INTERFACE_RATE_WINDOW_MS: u64 = 2_000;
 
 pub const PROC_NET_DEV_SOURCE: &str = "/proc/net/dev single-pass snapshot";
 pub const SYSFS_INTERFACE_SOURCE: &str = "/sys/class/net/<if>/statistics fallback";
@@ -149,7 +151,7 @@ fn parse_proc_net_dev(contents: &str) -> io::Result<BTreeMap<String, InterfaceCo
 
 #[derive(Clone, Default)]
 pub struct InterfaceRateBook {
-    previous: BTreeMap<String, (InterfaceCounters, u64)>,
+    history: BTreeMap<String, VecDeque<(InterfaceCounters, u64)>>,
 }
 
 impl InterfaceRateBook {
@@ -159,15 +161,34 @@ impl InterfaceRateBook {
         counters: InterfaceCounters,
         now_ms: u64,
     ) -> (u64, u64, u64) {
-        let rates = self
-            .previous
-            .get(name)
+        self.update_windowed(name, counters, now_ms, 0)
+    }
+
+    pub fn update_windowed(
+        &mut self,
+        name: &str,
+        counters: InterfaceCounters,
+        now_ms: u64,
+        minimum_window_ms: u64,
+    ) -> (u64, u64, u64) {
+        let history = self.history.entry(name.to_owned()).or_default();
+        if history.back().is_some_and(|(previous, previous_ms)| {
+            now_ms <= *previous_ms
+                || counters.rx_bytes < previous.rx_bytes
+                || counters.tx_bytes < previous.tx_bytes
+        }) {
+            history.clear();
+        }
+        history.push_back((counters, now_ms));
+        while history.len() > 2 && now_ms.saturating_sub(history[1].1) >= minimum_window_ms {
+            history.pop_front();
+        }
+
+        history
+            .front()
             .and_then(|(old, old_ms)| {
                 let delta_ms = now_ms.checked_sub(*old_ms)?;
-                if delta_ms == 0
-                    || counters.rx_bytes < old.rx_bytes
-                    || counters.tx_bytes < old.tx_bytes
-                {
+                if delta_ms < minimum_window_ms || delta_ms == 0 {
                     return None;
                 }
                 Some((
@@ -176,9 +197,7 @@ impl InterfaceRateBook {
                     delta_ms,
                 ))
             })
-            .unwrap_or((0, 0, 0));
-        self.previous.insert(name.to_owned(), (counters, now_ms));
-        rates
+            .unwrap_or((0, 0, 0))
     }
 }
 
@@ -234,5 +253,56 @@ mod tests {
             Some(MIXED_INTERFACE_SOURCE)
         );
         assert_eq!(snapshot.source_for(["missing"]), None);
+    }
+
+    #[test]
+    fn two_second_window_smooths_batched_bridge_counters() {
+        let mut rates = InterfaceRateBook::default();
+        let counters = |rx_bytes, tx_bytes| InterfaceCounters {
+            rx_bytes,
+            tx_bytes,
+            ..InterfaceCounters::default()
+        };
+
+        assert_eq!(
+            rates.update_windowed("br-lan", counters(0, 0), 0, 2_000),
+            (0, 0, 0)
+        );
+        assert_eq!(
+            rates.update_windowed("br-lan", counters(0, 0), 1_000, 2_000),
+            (0, 0, 0)
+        );
+        assert_eq!(
+            rates.update_windowed("br-lan", counters(2_000, 4_000), 2_000, 2_000),
+            (8_000, 16_000, 2_000)
+        );
+        assert_eq!(
+            rates.update_windowed("br-lan", counters(2_000, 4_000), 3_000, 2_000),
+            (8_000, 16_000, 2_000)
+        );
+        assert_eq!(
+            rates.update_windowed("br-lan", counters(4_000, 8_000), 4_000, 2_000),
+            (8_000, 16_000, 2_000)
+        );
+    }
+
+    #[test]
+    fn counter_rollback_rewarms_the_window() {
+        let mut rates = InterfaceRateBook::default();
+        let counters = |bytes| InterfaceCounters {
+            rx_bytes: bytes,
+            tx_bytes: bytes,
+            ..InterfaceCounters::default()
+        };
+
+        rates.update_windowed("br-lan", counters(1_000), 0, 2_000);
+        assert_eq!(
+            rates.update_windowed("br-lan", counters(3_000), 2_000, 2_000),
+            (8_000, 8_000, 2_000)
+        );
+        assert_eq!(
+            rates.update_windowed("br-lan", counters(10), 3_000, 2_000),
+            (0, 0, 0)
+        );
     }
 }

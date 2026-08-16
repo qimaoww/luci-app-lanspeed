@@ -40,7 +40,7 @@ use crate::{
     },
     interfaces::{
         read_interface_counter_snapshot, InterfaceCounterSnapshot, InterfaceCounters,
-        InterfaceRateBook, MIXED_INTERFACE_SOURCE,
+        InterfaceRateBook, LAN_INTERFACE_RATE_WINDOW_MS, MIXED_INTERFACE_SOURCE,
     },
     model::{
         Capabilities, ClientsResponse, Confidence, Conflict, Evidence, HealthResponse, Interface,
@@ -178,7 +178,7 @@ const CLASSIFIER_INTERVAL_MS: u64 = 2_000;
 const CPU_PATH_PROBE_READ_END_SKEW_MS: u64 = 250;
 const INTERNAL_BPF_SELF_HEAL_REASON: &str = "production.collect.internal";
 const EXTERNAL_BPF_SELF_HEAL_REASON: &str = "production.collect.external";
-const INTERFACE_NOTE: &str = "Per-interface totals from one kernel net-device pass with sysfs fallback; reflect hardware-offloaded and hardware-switched traffic too.";
+const INTERFACE_NOTE: &str = "LAN interface totals use independent physical boundaries from one kernel net-device pass and a two-second rolling window to smooth batched counter updates.";
 
 fn production_now_ms() -> Result<u64, DaemonError> {
     monotonic_millis()
@@ -2713,8 +2713,16 @@ impl ProductionRuntime {
                     let counter_source = counter_snapshot
                         .source_for(sampled_names.iter().map(String::as_str))
                         .unwrap_or(MIXED_INTERFACE_SOURCE);
-                    let (rx_bps, tx_bps, delta_ms) =
-                        self.interface_rates.update(&name, display, now_ms);
+                    let (rx_bps, tx_bps, delta_ms) = if role == InterfaceRole::Lan {
+                        self.interface_rates.update_windowed(
+                            &name,
+                            display,
+                            now_ms,
+                            LAN_INTERFACE_RATE_WINDOW_MS,
+                        )
+                    } else {
+                        self.interface_rates.update(&name, display, now_ms)
+                    };
                     Interface {
                         name,
                         role,
@@ -2822,8 +2830,16 @@ impl ProductionRuntime {
                         let counter_source = counter_snapshot
                             .source_for(sampled_names.iter().map(String::as_str))
                             .unwrap_or(MIXED_INTERFACE_SOURCE);
-                        let (rx_bps, tx_bps, delta_ms) =
-                            self.interface_rates.update(&name, display, now_ms);
+                        let (rx_bps, tx_bps, delta_ms) = if role == InterfaceRole::Lan {
+                            self.interface_rates.update_windowed(
+                                &name,
+                                display,
+                                now_ms,
+                                LAN_INTERFACE_RATE_WINDOW_MS,
+                            )
+                        } else {
+                            self.interface_rates.update(&name, display, now_ms)
+                        };
                         Interface {
                             name,
                             role,
