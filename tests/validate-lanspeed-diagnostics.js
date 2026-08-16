@@ -426,6 +426,10 @@ function healthyClients() {
 	    ack_latency_last_ns: 8, ack_latency_max_ns: 9, ack_received: 10,
 	    ack_timeout: 11, ack_late: 12, control_generation: 13,
 	    hardware_generation: 14,
+	    igs_cadence: {
+	      state: 'ready', samples: 15, last_interval_ns: 16,
+	      min_interval_ns: 17, max_interval_ns: 18, active_nodes: 1
+	    },
 	    genl_caps: {
 	      state: 'ready', abi_version: 1, feature_bits: 2, max_igs: 3,
 	      max_peers: 4, max_client_tags: 5, supports_wifi_peer: true,
@@ -436,8 +440,10 @@ function healthyClients() {
 	      state: 'ready', control_generation: 1, hardware_generation: 2,
 	      peer_generation: 3, peer_reassert_count: 4, igs_sync_count: 5,
 	      igs_last_sync_ns: 6, igs_bytes: 7, igs_packets: 8, igs_drops: 9,
-	      ack_latency_last_ns: 10, ack_latency_max_ns: 11, ack_received: 12,
-	      ack_timeout: 13, ack_late: 14
+	      igs_active_nodes: 1, igs_cadence_samples: 10,
+	      igs_cadence_last_ns: 11, igs_cadence_min_ns: 12,
+	      igs_cadence_max_ns: 13, ack_latency_last_ns: 14,
+	      ack_latency_max_ns: 15, ack_received: 16, ack_timeout: 17, ack_late: 18
 	    },
 	    genl_health: {
 	      state: 'ready', healthy: true, control_generation: 1,
@@ -661,6 +667,16 @@ async function testStrictContracts() {
 	badHardwareTelemetry.evidence.nss_control.hardware_telemetry.genl_stats.unknown = 1;
 	assert.strictEqual(model.validateRuntimeResponse(badHardwareTelemetry, 'clients').valid, false,
 	  'NSS hardware telemetry must reject undeclared generic-netlink fields');
+	const badIgsCadence = healthyClients();
+	badIgsCadence.evidence.nss_control.hardware_telemetry.igs_cadence.samples = -1;
+	assert.strictEqual(model.validateRuntimeResponse(badIgsCadence, 'clients').valid, false,
+	  'NSS hardware telemetry must reject invalid IGS cadence counters');
+	const unavailableIgsCadence = healthyClients();
+	unavailableIgsCadence.evidence.nss_control.hardware_telemetry.igs_cadence = {
+	  state: 'unavailable'
+	};
+	assert.strictEqual(model.validateRuntimeResponse(unavailableIgsCadence, 'clients').valid, true,
+	  'missing optional IGS cadence telemetry must not invalidate the clients response');
   const badRateReason = clone(futureRateSource);
   badRateReason.clients[0].rate_meta.reason_codes = [ 'contains spaces' ];
   assert.strictEqual(model.validateRuntimeResponse(badRateReason, 'clients').valid, false);

@@ -34,10 +34,13 @@ var NSS_GENL_CAP_FIELDS = [ 'state', 'abi_version', 'feature_bits', 'max_igs',
 var NSS_GENL_STATE_FIELDS = [ 'state', 'staged', 'published', 'degraded' ];
 var NSS_GENL_STATS_FIELDS = [ 'state', 'control_generation', 'hardware_generation',
 	'peer_generation', 'peer_reassert_count', 'igs_sync_count', 'igs_last_sync_ns',
-	'igs_bytes', 'igs_packets', 'igs_drops', 'ack_latency_last_ns',
+	'igs_bytes', 'igs_packets', 'igs_drops', 'igs_active_nodes', 'igs_cadence_samples',
+	'igs_cadence_last_ns', 'igs_cadence_min_ns', 'igs_cadence_max_ns', 'ack_latency_last_ns',
 	'ack_latency_max_ns', 'ack_received', 'ack_timeout', 'ack_late' ];
 var NSS_GENL_HEALTH_FIELDS = [ 'state', 'healthy', 'control_generation',
 	'hardware_generation' ];
+var NSS_IGS_CADENCE_FIELDS = [ 'state', 'samples', 'last_interval_ns',
+	'min_interval_ns', 'max_interval_ns', 'active_nodes' ];
 var CAPABILITY_KEYS = [
 	'bpf', 'bpf_supported', 'bpf_package', 'bpf_object', 'bpf_runtime_metrics', 'conntrack_fallback',
 	'live_metrics', 'fw4', 'nft', 'software_flow_offload', 'hardware_flow_offload',
@@ -238,9 +241,18 @@ function validNssGenlObject(value, fields, integerFields, booleanFields) {
 	});
 }
 
+function validNssIgsCadence(value) {
+	if (!plainObject(value) || !onlyFields(value, NSS_IGS_CADENCE_FIELDS) ||
+		!enumValue(value.state, [ 'unavailable', 'invalid', 'ready' ])) return false;
+	if (value.state !== 'ready') return Object.keys(value).length === 1;
+	return NSS_IGS_CADENCE_FIELDS.slice(1).every(function(field) {
+		return hasOwn(value, field) && nonNegativeInteger(value[field]);
+	});
+}
+
 function validNssHardwareTelemetry(value) {
 	var fields = [ 'state' ].concat(NSS_TELEMETRY_FIELDS, [
-		'genl_caps', 'genl_state', 'genl_stats', 'genl_health'
+		'igs_cadence', 'genl_caps', 'genl_state', 'genl_stats', 'genl_health'
 	]);
 	if (!plainObject(value) || !onlyFields(value, fields) ||
 		!enumValue(value.state, [ 'unavailable', 'invalid', 'ready' ])) return false;
@@ -248,6 +260,8 @@ function validNssHardwareTelemetry(value) {
 	if (NSS_TELEMETRY_FIELDS.some(function(field) {
 		return !hasOwn(value, field) || !nonNegativeInteger(value[field]);
 	})) return false;
+	if (hasOwn(value, 'igs_cadence') && !validNssIgsCadence(value.igs_cadence))
+		return false;
 	if (hasOwn(value, 'genl_caps') && !validNssGenlObject(value.genl_caps,
 		NSS_GENL_CAP_FIELDS,
 		[ 'abi_version', 'feature_bits', 'max_igs', 'max_peers', 'max_client_tags' ],
@@ -258,7 +272,9 @@ function validNssHardwareTelemetry(value) {
 		NSS_GENL_STATS_FIELDS,
 		[ 'control_generation', 'hardware_generation', 'peer_generation',
 			'peer_reassert_count', 'igs_sync_count', 'igs_last_sync_ns', 'igs_bytes',
-			'igs_packets', 'igs_drops', 'ack_latency_last_ns', 'ack_latency_max_ns',
+			'igs_packets', 'igs_drops', 'igs_active_nodes', 'igs_cadence_samples',
+			'igs_cadence_last_ns', 'igs_cadence_min_ns', 'igs_cadence_max_ns',
+			'ack_latency_last_ns', 'ack_latency_max_ns',
 			'ack_received', 'ack_timeout', 'ack_late' ], [])) return false;
 	if (hasOwn(value, 'genl_health') && !validNssGenlObject(value.genl_health,
 		NSS_GENL_HEALTH_FIELDS, [ 'control_generation', 'hardware_generation' ],
