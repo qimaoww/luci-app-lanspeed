@@ -1,4 +1,4 @@
-//! Shadow-only FastS aggregation over the platform-neutral FastCounter map.
+//! Worker-owned FastS aggregation over the platform-neutral FastCounter map.
 
 use std::collections::BTreeMap;
 

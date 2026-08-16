@@ -152,6 +152,13 @@ impl FastClientRateBook {
     pub(crate) fn get(&self, mac: [u8; 6], direction: u8) -> Option<FastClientSample> {
         self.latest.get(&FastClientKey { mac, direction }).copied()
     }
+
+    pub(crate) fn samples(&self) -> Vec<(FastClientKey, FastClientSample)> {
+        self.latest
+            .iter()
+            .map(|(key, sample)| (*key, *sample))
+            .collect()
+    }
 }
 
 fn l2_with_fcs_bytes(window: super::fast_rate::FastWindow) -> u64 {

@@ -7,9 +7,9 @@ use crate::{
         },
         ecm_node::{self, NodeSnapshot},
         evidence_lease::{EvidenceLeaseRuntime, LeaseClientObservation, LeaseSourceObservation},
-        fast_n_runtime::{FastNRuntime, FastNSnapshot},
-        fast_rate_shadow::FastRateShadow,
-        fast_s_runtime::{FastSRuntime, FastSSnapshot},
+        fast_n_runtime::FastNSnapshot,
+        fast_rate_worker::FastRatePublication,
+        fast_s_runtime::FastSSnapshot,
         hardware_verifier::HardwareVerifier,
         rate_mux::{RateMuxRuntime, RateView},
         window::{EcmBpfRateWindowBook, NssCoverageBook, NssWindowBook},
@@ -30,9 +30,7 @@ pub(crate) struct NssRuntime {
     pub(crate) node_windows: NssWindowBook,
     pub(crate) ecm_bpf_coverage: NssCoverageBook,
     pub(crate) ecm_bpf_rates: EcmBpfRateWindowBook,
-    pub(crate) fast_n: FastNRuntime,
-    pub(crate) fast_s: FastSRuntime,
-    pub(crate) fast_rate_shadow: FastRateShadow,
+    pub(crate) fast_rate: Option<FastRatePublication>,
     pub(crate) evidence_leases: EvidenceLeaseRuntime,
     pub(crate) rate_mux: RateMuxRuntime,
     pub(crate) hardware_verifier: HardwareVerifier,
@@ -44,12 +42,10 @@ pub(crate) struct NssRuntimeCheckpoint {
     node_windows: NssWindowBook,
     ecm_bpf_coverage: NssCoverageBook,
     ecm_bpf_rates: EcmBpfRateWindowBook,
-    fast_n: FastNRuntime,
     ecm_bpf_error: Option<String>,
     ecm_bpf_error_stage: Option<&'static str>,
     node_error: Option<String>,
-    fast_s: FastSRuntime,
-    fast_rate_shadow: FastRateShadow,
+    fast_rate: Option<FastRatePublication>,
     evidence_leases: EvidenceLeaseRuntime,
     rate_mux: RateMuxRuntime,
     hardware_verifier: HardwareVerifier,
@@ -66,9 +62,7 @@ impl Default for NssRuntime {
             node_windows: NssWindowBook::default(),
             ecm_bpf_coverage: NssCoverageBook::default(),
             ecm_bpf_rates: EcmBpfRateWindowBook::default(),
-            fast_n: FastNRuntime::default(),
-            fast_s: FastSRuntime::default(),
-            fast_rate_shadow: FastRateShadow::new(),
+            fast_rate: None,
             evidence_leases: EvidenceLeaseRuntime::default(),
             rate_mux: RateMuxRuntime::default(),
             hardware_verifier: HardwareVerifier::default(),
@@ -120,12 +114,10 @@ impl NssRuntime {
             node_windows: self.node_windows.clone(),
             ecm_bpf_coverage: self.ecm_bpf_coverage.clone(),
             ecm_bpf_rates: self.ecm_bpf_rates.clone(),
-            fast_n: self.fast_n.clone(),
             ecm_bpf_error: self.ecm_bpf_error.clone(),
             ecm_bpf_error_stage: self.ecm_bpf_error_stage,
             node_error: self.node_error.clone(),
-            fast_s: self.fast_s.clone(),
-            fast_rate_shadow: self.fast_rate_shadow.clone(),
+            fast_rate: self.fast_rate.clone(),
             evidence_leases: self.evidence_leases.clone(),
             rate_mux: self.rate_mux.clone(),
             hardware_verifier: self.hardware_verifier.clone(),
@@ -141,146 +133,154 @@ impl NssRuntime {
         self.node_windows = checkpoint.node_windows;
         self.ecm_bpf_coverage = checkpoint.ecm_bpf_coverage;
         self.ecm_bpf_rates = checkpoint.ecm_bpf_rates;
-        self.fast_n = checkpoint.fast_n;
         self.ecm_bpf_error = checkpoint.ecm_bpf_error;
         self.ecm_bpf_error_stage = checkpoint.ecm_bpf_error_stage;
         self.node_error = checkpoint.node_error;
-        self.fast_s = checkpoint.fast_s;
-        self.fast_rate_shadow = checkpoint.fast_rate_shadow;
+        self.fast_rate = checkpoint.fast_rate;
         self.evidence_leases = checkpoint.evidence_leases;
         self.rate_mux = checkpoint.rate_mux;
         self.hardware_verifier = checkpoint.hardware_verifier;
     }
 
-    pub(crate) fn collect_fast_s(
-        &mut self,
-        read: crate::platform::fast_counter_map::FastCounterMapRead,
-        now_ms: u64,
-    ) -> FastSSnapshot {
-        self.fast_s.collect(read, now_ms)
+    pub(crate) fn install_fast_rate_publication(&mut self, publication: FastRatePublication) {
+        self.fast_rate = Some(publication);
     }
 
-    pub(crate) fn collect_fast_n(
-        &mut self,
-        read: crate::platform::nss::ecm_bpf::EcmFastCounterMapRead,
-        now_ms: u64,
-    ) -> FastNSnapshot {
-        self.fast_n.collect(read, now_ms)
+    pub(crate) fn fast_rate_reads_ready(&self, now_ms: u64) -> bool {
+        const MAX_AGE_MS: u64 = 2_500;
+        self.fast_rate.as_ref().is_some_and(|publication| {
+            publication.read_valid
+                && publication.observed_ms <= now_ms
+                && now_ms.saturating_sub(publication.observed_ms) <= MAX_AGE_MS
+                && publication.fast_n.is_some()
+                && publication.fast_s.is_some()
+        })
     }
 
-    pub(crate) fn record_fast_n_read_failure(&mut self) {
-        self.fast_n.record_read_failure();
-    }
-
-    pub(crate) const fn fast_n_read_failures(&self) -> u64 {
-        self.fast_n.read_failures()
+    pub(crate) fn fast_n_read_failures(&self) -> u64 {
+        self.fast_rate
+            .as_ref()
+            .map_or(0, |publication| publication.fast_n_read_failures)
     }
 
     pub(crate) fn fast_n_snapshot(&self) -> Option<&FastNSnapshot> {
-        self.fast_n.last_snapshot()
-    }
-
-    pub(crate) fn record_fast_s_read_failure(&mut self) {
-        self.fast_s.record_read_failure();
+        self.fast_rate
+            .as_ref()
+            .and_then(|publication| publication.fast_n.as_ref())
     }
 
     pub(crate) fn fast_s_snapshot(&self) -> Option<&FastSSnapshot> {
-        self.fast_s.last_snapshot()
+        self.fast_rate
+            .as_ref()
+            .and_then(|publication| publication.fast_s.as_ref())
     }
 
-    pub(crate) const fn fast_s_read_failures(&self) -> u64 {
-        self.fast_s.read_failures()
+    pub(crate) fn fast_s_read_failures(&self) -> u64 {
+        self.fast_rate
+            .as_ref()
+            .map_or(0, |publication| publication.fast_s_read_failures)
     }
 
-    pub(crate) const fn fast_s_invalid_reads(&self) -> u64 {
-        self.fast_s.invalid_reads()
+    pub(crate) fn fast_s_invalid_reads(&self) -> u64 {
+        self.fast_rate
+            .as_ref()
+            .map_or(0, |publication| publication.fast_s_invalid_reads)
     }
 
-    pub(crate) const fn fast_s_truncated_reads(&self) -> u64 {
-        self.fast_s.truncated_reads()
+    pub(crate) fn fast_s_truncated_reads(&self) -> u64 {
+        self.fast_rate
+            .as_ref()
+            .map_or(0, |publication| publication.fast_s_truncated_reads)
     }
 
-    pub(crate) const fn fast_s_invalid_abi(&self) -> u64 {
-        self.fast_s.invalid_abi()
+    pub(crate) fn fast_s_invalid_abi(&self) -> u64 {
+        self.fast_rate
+            .as_ref()
+            .map_or(0, |publication| publication.fast_s_invalid_abi)
     }
 
-    pub(crate) const fn fast_s_invalid_sequence(&self) -> u64 {
-        self.fast_s.invalid_sequence()
+    pub(crate) fn fast_s_invalid_sequence(&self) -> u64 {
+        self.fast_rate
+            .as_ref()
+            .map_or(0, |publication| publication.fast_s_invalid_sequence)
     }
 
-    pub(crate) const fn fast_s_invalid_generation_mismatch(&self) -> u64 {
-        self.fast_s.invalid_generation_mismatch()
+    pub(crate) fn fast_s_invalid_generation_mismatch(&self) -> u64 {
+        self.fast_rate.as_ref().map_or(0, |publication| {
+            publication.fast_s_invalid_generation_mismatch
+        })
     }
 
-    pub(crate) const fn fast_s_invalid_value(&self) -> u64 {
-        self.fast_s.invalid_value()
+    pub(crate) fn fast_s_invalid_value(&self) -> u64 {
+        self.fast_rate
+            .as_ref()
+            .map_or(0, |publication| publication.fast_s_invalid_value)
     }
 
-    pub(crate) const fn fast_s_invalid_cpu(&self) -> u64 {
-        self.fast_s.invalid_cpu()
+    pub(crate) fn fast_s_invalid_cpu(&self) -> u64 {
+        self.fast_rate
+            .as_ref()
+            .map_or(0, |publication| publication.fast_s_invalid_cpu)
     }
 
-    pub(crate) const fn fast_s_invalid_no_cpu(&self) -> u64 {
-        self.fast_s.invalid_no_cpu()
+    pub(crate) fn fast_s_invalid_no_cpu(&self) -> u64 {
+        self.fast_rate
+            .as_ref()
+            .map_or(0, |publication| publication.fast_s_invalid_no_cpu)
     }
 
-    pub(crate) const fn fast_s_invalid_cpu_count(&self) -> u64 {
-        self.fast_s.invalid_cpu_count()
+    pub(crate) fn fast_s_invalid_cpu_count(&self) -> u64 {
+        self.fast_rate
+            .as_ref()
+            .map_or(0, |publication| publication.fast_s_invalid_cpu_count)
     }
 
-    pub(crate) const fn fast_s_invalid_cpu_generation(&self) -> u64 {
-        self.fast_s.invalid_cpu_generation()
+    pub(crate) fn fast_s_invalid_cpu_generation(&self) -> u64 {
+        self.fast_rate
+            .as_ref()
+            .map_or(0, |publication| publication.fast_s_invalid_cpu_generation)
     }
 
-    pub(crate) const fn fast_s_last_cpu_generation_expected(&self) -> Option<u32> {
-        self.fast_s.last_cpu_generation_expected()
+    pub(crate) fn fast_s_last_cpu_generation_expected(&self) -> Option<u32> {
+        self.fast_rate
+            .as_ref()
+            .and_then(|publication| publication.fast_s_last_cpu_generation_expected)
     }
 
-    pub(crate) const fn fast_s_last_cpu_generation_actual(&self) -> Option<u32> {
-        self.fast_s.last_cpu_generation_actual()
+    pub(crate) fn fast_s_last_cpu_generation_actual(&self) -> Option<u32> {
+        self.fast_rate
+            .as_ref()
+            .and_then(|publication| publication.fast_s_last_cpu_generation_actual)
     }
 
-    pub(crate) const fn fast_s_reset_generation_changes(&self) -> u64 {
-        self.fast_s.reset_generation_changes()
+    pub(crate) fn fast_s_reset_generation_changes(&self) -> u64 {
+        self.fast_rate
+            .as_ref()
+            .map_or(0, |publication| publication.fast_s_reset_generation_changes)
     }
 
-    pub(crate) fn observe_fast_rate_shadow(
-        &mut self,
-        fast_n: Option<&FastNSnapshot>,
-        n_read_begin_ms: u64,
-        n_read_end_ms: u64,
-        s_read_begin_ms: u64,
-        s_read_end_ms: u64,
-        edge_bps: Option<u64>,
-    ) {
-        let fast_s = self.fast_s_snapshot().cloned();
-        self.fast_rate_shadow.observe(
-            fast_n,
-            fast_s.as_ref(),
-            n_read_begin_ms,
-            n_read_end_ms,
-            s_read_begin_ms,
-            s_read_end_ms,
-            edge_bps,
-        );
-    }
-
-    pub(crate) const fn fast_rate_shadow_latest(
+    pub(crate) fn fast_rate_shadow_latest(
         &self,
     ) -> Option<crate::platform::nss::fast_rate_store::FastRateSample> {
-        self.fast_rate_shadow.latest()
+        self.fast_rate
+            .as_ref()
+            .and_then(|publication| publication.sample)
     }
 
-    pub(crate) const fn fast_rate_shadow_telemetry(
+    pub(crate) fn fast_rate_shadow_telemetry(
         &self,
     ) -> crate::platform::nss::fast_rate_store::FastRateTelemetry {
-        self.fast_rate_shadow.telemetry()
+        self.fast_rate
+            .as_ref()
+            .map_or(Default::default(), |publication| publication.telemetry)
     }
 
-    pub(crate) const fn fast_rate_shadow_comparison(
+    pub(crate) fn fast_rate_shadow_comparison(
         &self,
     ) -> Option<crate::platform::nss::fast_rate_store::FastShadowComparison> {
-        self.fast_rate_shadow.comparison()
+        self.fast_rate
+            .as_ref()
+            .and_then(|publication| publication.comparison)
     }
 
     pub(crate) fn fast_rate_shadow_client_rate(
@@ -288,15 +288,23 @@ impl NssRuntime {
         mac: [u8; 6],
         direction: u8,
     ) -> Option<crate::platform::nss::fast_rate_clients::FastClientSample> {
-        self.fast_rate_shadow.client_rate(mac, direction)
+        self.fast_rate
+            .as_ref()
+            .and_then(|publication| publication.client_rate(mac, direction))
     }
 
-    pub(crate) const fn fast_rate_shadow_client_invalid_windows(&self) -> u64 {
-        self.fast_rate_shadow.client_invalid_windows()
+    pub(crate) fn fast_rate_shadow_client_invalid_windows(&self) -> u64 {
+        self.fast_rate
+            .as_ref()
+            .map_or(0, |publication| publication.client_invalid_windows)
     }
 
-    pub(crate) const fn fast_rate_shadow_last_error_code(&self) -> Option<&'static str> {
-        match self.fast_rate_shadow.last_error() {
+    pub(crate) fn fast_rate_shadow_last_error_code(&self) -> Option<&'static str> {
+        match self
+            .fast_rate
+            .as_ref()
+            .and_then(|publication| publication.last_error)
+        {
             Some(crate::platform::nss::fast_rate::FastWindowError::InvalidReadInterval) => {
                 Some("invalid_read_interval")
             }
@@ -320,10 +328,6 @@ impl NssRuntime {
             }
             None => None,
         }
-    }
-
-    pub(crate) fn invalidate_fast_rate_shadow_unavailable(&mut self, now_ms: u64) {
-        self.fast_rate_shadow.invalidate_unavailable(now_ms);
     }
 
     pub(crate) fn reconcile_evidence_leases(
@@ -497,5 +501,38 @@ impl NssRuntime {
             return Ok(());
         };
         runtime.shutdown().map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NssRuntime;
+    use crate::platform::nss::{
+        fast_n_runtime::FastNSnapshot, fast_rate_worker::FastRatePublication,
+        fast_s_runtime::FastSSnapshot,
+    };
+
+    #[test]
+    fn worker_publication_must_be_valid_complete_and_current_for_a_lease() {
+        let mut runtime = NssRuntime::default();
+        runtime.install_fast_rate_publication(FastRatePublication {
+            observed_ms: 2_000,
+            read_valid: true,
+            fast_n: Some(FastNSnapshot::default()),
+            fast_s: Some(FastSSnapshot::default()),
+            ..FastRatePublication::default()
+        });
+        assert!(runtime.fast_rate_reads_ready(4_500));
+        assert!(!runtime.fast_rate_reads_ready(4_501));
+        assert!(!runtime.fast_rate_reads_ready(1_999));
+
+        runtime.install_fast_rate_publication(FastRatePublication {
+            observed_ms: 5_000,
+            read_valid: false,
+            fast_n: Some(FastNSnapshot::default()),
+            fast_s: Some(FastSSnapshot::default()),
+            ..FastRatePublication::default()
+        });
+        assert!(!runtime.fast_rate_reads_ready(5_000));
     }
 }

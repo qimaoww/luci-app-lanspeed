@@ -2,7 +2,7 @@
 //!
 //! FastN uses the same PerCPU seq/read protocol as FastS, but its key is the
 //! ECM MAC+direction identity rather than a TC interface key. The snapshot is
-//! still shadow-only until the rate worker supplies a shared N/S window.
+//! published only after the rate worker supplies a shared N/S window.
 
 use std::collections::BTreeMap;
 

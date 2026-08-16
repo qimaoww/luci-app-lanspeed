@@ -258,6 +258,17 @@ fn production_refreshes_dae_processes_before_bpf_map_reads_and_reloads_mode_tran
 }
 
 #[test]
+fn nss_fast_maps_have_one_worker_owner_and_no_collection_loop_reader() {
+    let production = include_str!("../src/production.rs");
+    let worker = include_str!("../src/platform/nss/fast_rate_worker.rs");
+    assert!(!production.contains(".read_fast_counters()"));
+    assert!(!production.contains(".read_fast_n_counters()"));
+    assert!(worker.contains("sources.n.read()"));
+    assert!(worker.contains("sources.s.read()"));
+    assert!(production.contains("\"formal_rate_owner\": true"));
+}
+
+#[test]
 fn production_rust_has_no_pidof_probe_path_and_publishes_dae_and_nss_alias_evidence() {
     let commands = include_str!("../src/probe/commands.rs");
     let collector = include_str!("../src/probe/collector.rs");

@@ -1,13 +1,13 @@
 //! Same-window FastN/FastS shadow aggregation.
 //!
-//! The shadow plane consumes the independent FastN and FastS cumulative maps.
-//! It never selects a production rate owner; it only records windows that
-//! passed the coordinator's generation and skew checks.
+//! This worker-internal plane consumes independent FastN and FastS cumulative
+//! maps and records only windows that passed generation and skew checks. The
+//! RateMux decides whether a published client direction may consume a window.
 
 use super::{
     fast_n_runtime::FastNSnapshot,
     fast_rate::{FastCounterSample, FastRateCoordinator, FastWindowError},
-    fast_rate_clients::{FastClientRateBook, FastClientSample},
+    fast_rate_clients::{FastClientKey, FastClientRateBook, FastClientSample},
     fast_rate_store::{FastRateSample, FastRateStore, FastRateTelemetry, FastShadowComparison},
     fast_s_runtime::FastSSnapshot,
 };
@@ -143,6 +143,10 @@ impl FastRateShadow {
 
     pub(crate) fn client_rate(&self, mac: [u8; 6], direction: u8) -> Option<FastClientSample> {
         self.client_rates.get(mac, direction)
+    }
+
+    pub(crate) fn client_samples(&self) -> Vec<(FastClientKey, FastClientSample)> {
+        self.client_rates.samples()
     }
 
     pub(crate) const fn client_invalid_windows(&self) -> u64 {

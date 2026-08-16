@@ -1,4 +1,4 @@
-//! Shadow-only storage and telemetry for same-window FastRate samples.
+//! Worker-owned storage and telemetry for same-window FastRate samples.
 
 use super::fast_rate::FastWindow;
 

@@ -96,6 +96,8 @@ use crate::config::ConnectionCollectorMode;
 use crate::collectors::conntrack::{self, CollectorMode as ConntrackMode};
 
 mod evidence;
+#[cfg(feature = "nss-platform")]
+mod fast_rate_overlay;
 mod rate_helpers;
 mod system;
 #[cfg(all(test, feature = "nss-platform"))]
@@ -105,9 +107,6 @@ use rate_helpers::*;
 
 #[cfg(feature = "nss-platform")]
 use crate::control::{NssPathObservation, NSS_CPU_DOWNLOAD, NSS_CPU_UPLOAD};
-
-#[cfg(feature = "nss-platform")]
-use crate::platform::nss::tc_bpf_runtime::AyaAdapter;
 
 #[cfg(feature = "nss-platform")]
 use crate::config::RateCollectorMode;
@@ -1009,14 +1008,7 @@ impl ProductionRuntime {
             u64::from(self.config.refresh_interval_ms).saturating_mul(3)
         };
         let nss_freshness_ms = nss_snapshot_freshness_ms(self.config.refresh_interval_ms);
-        let (
-            bpf_snapshot,
-            mut runtime_health,
-            bpf_snapshot_fresh,
-            fast_s_read,
-            fast_s_read_failed,
-            fast_s_read_timing,
-        ) = match external_bpf {
+        let (bpf_snapshot, mut runtime_health, bpf_snapshot_fresh) = match external_bpf {
             Some((runtime, adapter)) => {
                 let (snapshot, fresh) = if classifier_map_read_due {
                     match runtime.collect_snapshot_self_healing(
@@ -1041,18 +1033,6 @@ impl ProductionRuntime {
                 } else {
                     (self.bpf_collector.last_complete().cloned(), false)
                 };
-                let (fast_s_read, fast_s_read_failed, fast_s_read_timing) =
-                    if self.probe_report.facts.nss.present {
-                        let read_begin_ms = production_now_ms().unwrap_or(now_ms);
-                        let result = adapter.read_fast_counters();
-                        let read_end_ms = production_now_ms().unwrap_or(read_begin_ms);
-                        match result {
-                            Ok(read) => (Some(read), false, Some((read_begin_ms, read_end_ms))),
-                            Err(_) => (None, true, None),
-                        }
-                    } else {
-                        (None, false, None)
-                    };
                 let health_now_ms = snapshot
                     .as_ref()
                     .map_or(now_ms, |snapshot| now_ms.max(snapshot.sample_ms));
@@ -1060,9 +1040,6 @@ impl ProductionRuntime {
                     snapshot,
                     runtime.runtime_health(health_now_ms, bpf_freshness_ms),
                     fresh,
-                    fast_s_read,
-                    fast_s_read_failed,
-                    fast_s_read_timing,
                 )
             }
             None => match self.bpf.as_mut() {
@@ -1090,18 +1067,6 @@ impl ProductionRuntime {
                     } else {
                         (self.bpf_collector.last_complete().cloned(), false)
                     };
-                    let (fast_s_read, fast_s_read_failed, fast_s_read_timing) =
-                        if self.probe_report.facts.nss.present {
-                            let read_begin_ms = production_now_ms().unwrap_or(now_ms);
-                            let result = self.adapter.read_fast_counters();
-                            let read_end_ms = production_now_ms().unwrap_or(read_begin_ms);
-                            match result {
-                                Ok(read) => (Some(read), false, Some((read_begin_ms, read_end_ms))),
-                                Err(_) => (None, true, None),
-                            }
-                        } else {
-                            (None, false, None)
-                        };
                     let health_now_ms = snapshot
                         .as_ref()
                         .map_or(now_ms, |snapshot| now_ms.max(snapshot.sample_ms));
@@ -1109,12 +1074,9 @@ impl ProductionRuntime {
                         snapshot,
                         runtime.runtime_health(health_now_ms, bpf_freshness_ms),
                         fresh,
-                        fast_s_read,
-                        fast_s_read_failed,
-                        fast_s_read_timing,
                     )
                 }
-                None => (None, RuntimeHealth::default(), false, None, false, None),
+                None => (None, RuntimeHealth::default(), false),
             },
         };
         if runtime_health.bpf_object_loaded {
@@ -1127,36 +1089,6 @@ impl ProductionRuntime {
         };
         if let Some(snapshot) = bpf_snapshot.as_ref() {
             now_ms = now_ms.max(snapshot.sample_ms);
-        }
-        let (fast_n_read, fast_n_read_timing) = if self.nss.ecm_bpf.is_some() {
-            let read_begin_ms = production_now_ms().unwrap_or(now_ms);
-            let result = self
-                .nss
-                .ecm_bpf
-                .as_ref()
-                .expect("ECM FastN read requires an active ECM runtime")
-                .read_fast_n_counters();
-            let read_end_ms = production_now_ms().unwrap_or(read_begin_ms);
-            match result {
-                Ok(read) => (Some(read), Some((read_begin_ms, read_end_ms))),
-                Err(_) => {
-                    self.nss.record_fast_n_read_failure();
-                    (None, None)
-                }
-            }
-        } else {
-            (None, None)
-        };
-        if fast_s_read_failed {
-            self.nss.record_fast_s_read_failure();
-        }
-        if let Some(read) = fast_s_read {
-            let fast_s_snapshot = self.nss.collect_fast_s(read, now_ms);
-            now_ms = now_ms.max(fast_s_snapshot.sample_ms);
-        }
-        if let Some(read) = fast_n_read {
-            let fast_n_snapshot = self.nss.collect_fast_n(read, now_ms);
-            now_ms = now_ms.max(fast_n_snapshot.sample_ms);
         }
         let ecm_read_begin_ms = production_now_ms().unwrap_or(now_ms);
         let (ecm_bpf_snapshot, ecm_bpf_snapshot_fresh) = self.nss.collect_ecm_bpf(
@@ -1182,25 +1114,6 @@ impl ProductionRuntime {
             .flatten()
         {
             now_ms = now_ms.max(read_end_ms);
-        }
-        if let (
-            Some((fast_n_read_begin_ms, fast_n_read_end_ms)),
-            Some((fast_s_read_begin_ms, fast_s_read_end_ms)),
-        ) = (fast_n_read_timing, fast_s_read_timing)
-        {
-            let fast_n_snapshot = self.nss.fast_n_snapshot().cloned();
-            self.nss.observe_fast_rate_shadow(
-                fast_n_snapshot.as_ref(),
-                fast_n_read_begin_ms,
-                fast_n_read_end_ms,
-                fast_s_read_begin_ms,
-                fast_s_read_end_ms,
-                self.access_edge.authority_bps(),
-            );
-        } else if runtime_health.ecm_bpf_object_loaded && runtime_health.bpf_object_loaded {
-            // A current-window substitute may never reuse the previous sample
-            // when either independent map failed to produce this cycle.
-            self.nss.invalidate_fast_rate_shadow_unavailable(now_ms);
         }
         runtime_health.now_ms = now_ms;
         self.apply_conntrack_health(&mut runtime_health);
@@ -1255,10 +1168,11 @@ impl ProductionRuntime {
                 &runtime_health,
             );
         }
+        let fast_reads_ready = self.nss.fast_rate_reads_ready(now_ms);
         self.reconcile_evidence_leases(
             &identities,
             &runtime_health,
-            fast_n_read_timing.is_some() && fast_s_read_timing.is_some(),
+            fast_reads_ready,
             classifier_due && ecm_bpf_snapshot_fresh && bpf_snapshot_fresh,
         );
         self.nss
@@ -1731,7 +1645,8 @@ impl ProductionRuntime {
                     "reset_generation_changes": self.nss.fast_s_reset_generation_changes(),
                     "truncated_reads": self.nss.fast_s_truncated_reads(),
                     "read_failures": self.nss.fast_s_read_failures(),
-                    "formal_rate_owner": false,
+                    "owner": "nss_rate_worker",
+                    "formal_rate_owner": true,
                 }),
             );
         }
@@ -1747,6 +1662,8 @@ impl ProductionRuntime {
                     "bytes": fast_n.bytes,
                     "packets": fast_n.packets,
                     "reset_generation": fast_n.reset_generation,
+                    "owner": "nss_rate_worker",
+                    "formal_rate_owner": true,
                 }),
             );
         } else if self.nss.fast_n_read_failures() != 0 {
@@ -1819,7 +1736,8 @@ impl ProductionRuntime {
                     "client_shadow_routed_l2_with_fcs_tx_bps": fast_client_shadow_routed_tx_bps,
                     "client_shadow_routed_l2_with_fcs_rx_bps": fast_client_shadow_routed_rx_bps,
                     "client_shadow_invalid_windows": self.nss.fast_rate_shadow_client_invalid_windows(),
-                    "formal_rate_owner": false,
+                    "owner": "nss_rate_worker",
+                    "formal_rate_owner": true,
                 }),
             );
         } else if fast_rate_telemetry.invalid_windows != 0 {
@@ -1843,7 +1761,8 @@ impl ProductionRuntime {
                     "client_shadow_routed_l2_with_fcs_tx_bps": fast_client_shadow_routed_tx_bps,
                     "client_shadow_routed_l2_with_fcs_rx_bps": fast_client_shadow_routed_rx_bps,
                     "client_shadow_invalid_windows": self.nss.fast_rate_shadow_client_invalid_windows(),
-                    "formal_rate_owner": false,
+                    "owner": "nss_rate_worker",
+                    "formal_rate_owner": true,
                 }),
             );
         }
@@ -3384,6 +3303,8 @@ impl App {
 
     fn collect_current_tick(&mut self) {
         self.drain_control_notices();
+        #[cfg(feature = "nss-platform")]
+        self.drain_fast_rate_notices();
         let timer = self.collection_timer.as_ref().unwrap();
         let deadline = &self.collection_deadline_ms;
         let runtime = self
@@ -3421,7 +3342,16 @@ impl App {
             if !notice.sample_attempted || notice.base_generation == 0 {
                 continue;
             }
-            let sample = notice.sample.map(|value| {
+            let snapshots = self.state.snapshot_store();
+            if snapshots.generations().base_generation != notice.base_generation {
+                continue;
+            }
+            if let Some(runtime) = self.runtime.as_mut() {
+                runtime
+                    .nss
+                    .install_fast_rate_publication(notice.publication.clone());
+            }
+            let sample = notice.publication.sample.map(|value| {
                 serde_json::json!({
                     "sample_ms": value.sample_ms,
                     "window_ms": value.window_ms,
@@ -3431,7 +3361,7 @@ impl App {
                     "fast_total_bps": value.fast_total_bps,
                 })
             });
-            let telemetry = notice.telemetry;
+            let telemetry = notice.publication.telemetry;
             let worker_evidence = serde_json::json!({
                 "sample": sample,
                 "observed_ms": notice.observed_ms,
@@ -3442,28 +3372,33 @@ impl App {
                 "last_invalid_ms": telemetry.last_invalid_ms,
                 "last_zero_latency_ms": telemetry.last_zero_latency_ms,
                 "last_rise_latency_ms": telemetry.last_rise_latency_ms,
-                "client_shadow_entries": notice.client_shadow_entries,
-                "client_shadow_invalid_windows": notice.client_shadow_invalid_windows,
+                "client_shadow_entries": notice.publication.client_samples.len(),
+                "client_shadow_invalid_windows": notice.publication.client_invalid_windows,
                 "event_received": notice.wakeup_telemetry.event_received,
                 "event_coalesced": notice.wakeup_telemetry.event_coalesced,
                 "fixed_timer_wakeups": notice.wakeup_telemetry.fixed_timer_wakeups,
                 "last_event_ms": notice.wakeup_telemetry.last_event_ms,
                 "last_wakeup_event": notice.wakeup.event_hint,
                 "last_wakeup_fixed": notice.wakeup.fixed_timer,
-                "formal_rate_owner": false,
+                "read_valid": notice.publication.read_valid,
+                "formal_rate_owner": true,
             });
-            let snapshots = self.state.snapshot_store();
             let _ = snapshots.publish_fast(notice.base_generation, |snapshot| {
+                let overlay =
+                    fast_rate_overlay::apply_fast_rate_overlay(snapshot, &notice.publication);
+                let mut evidence = worker_evidence.clone();
+                evidence["overlay_clients"] = serde_json::json!(overlay.clients);
+                evidence["overlay_directions"] = serde_json::json!(overlay.directions);
                 snapshot
                     .status
                     .evidence
                     .details
-                    .insert("fast_rate_worker".into(), worker_evidence.clone());
+                    .insert("fast_rate_worker".into(), evidence.clone());
                 snapshot
                     .health
                     .evidence
                     .details
-                    .insert("fast_rate_worker".into(), worker_evidence);
+                    .insert("fast_rate_worker".into(), evidence);
             });
         }
     }
