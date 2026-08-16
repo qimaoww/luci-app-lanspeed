@@ -134,7 +134,7 @@ use crate::{
     },
     platform::{
         access_edge::{
-            normalize_l2_with_fcs, AccessEdgeCheckpoint, AccessEdgeRuntime,
+            normalize_l2_with_fcs, AccessEdgeCheckpoint, AccessEdgeRuntime, AccessEdgeSnapshot,
             Attachment as EdgeAttachment, AttachmentKind as EdgeAttachmentKind,
             AttachmentTrust as EdgeAttachmentTrust, ByteDomain as EdgeByteDomain,
             ClassificationEpoch, ClassificationResult, Direction as EdgeDirection, DirectionEpoch,
@@ -999,6 +999,21 @@ impl ProductionRuntime {
                 edge_read_end_ms,
             );
         }
+        let published_edge = if access_edge_enabled {
+            self.nss.low_rate_window.observe(
+                self.access_edge.latest(),
+                &interface_counter_snapshot,
+                edge_read_end_ms,
+                self.config.nss_low_rate_window_ms,
+                self.config.nss_low_rate_high_watermark_bps,
+            )
+        } else {
+            self.nss.low_rate_window.reset();
+            self.access_edge.latest().clone()
+        };
+        self.nss
+            .low_rate_window
+            .apply_observe_rates(&mut interfaces);
         // Keep the x86 BPF freshness contract tied to its configured cadence.
         // NSS has a dedicated two-second floor, so its retained ECM snapshot
         // must use that effective cadence rather than the one-second default.
@@ -1323,6 +1338,7 @@ impl ProductionRuntime {
         }
         self.apply_access_edge_rates(
             &mut clients,
+            &published_edge,
             &identities,
             conntrack.as_deref(),
             decision.rate,
@@ -1337,11 +1353,12 @@ impl ProductionRuntime {
             self.config.access_edge_mode,
             self.config.rate_collector_mode,
         ) {
-            NssInterfaceRates::from_runtime(&self.access_edge).apply(&mut interfaces);
+            NssInterfaceRates::from_published_snapshot(&self.access_edge, &published_edge)
+                .apply(&mut interfaces);
         }
         if access_edge_enabled {
             let edge_evidence = access_edge_global_evidence(
-                self.access_edge.latest(),
+                &published_edge,
                 &clients,
                 self.config.access_edge_mode,
             );
@@ -2156,6 +2173,7 @@ impl ProductionRuntime {
     fn apply_access_edge_rates(
         &mut self,
         clients: &mut ClientsResponse,
+        edge_snapshot: &AccessEdgeSnapshot,
         identities: &IdentityTable,
         conntrack: Option<&CollectedSnapshot>,
         pipeline: RateCollector,
@@ -2179,7 +2197,6 @@ impl ProductionRuntime {
             self.classification_results.clear();
             return;
         }
-        let edge_snapshot = self.access_edge.latest().clone();
         let edge_index = edge_mac_index(&edge_snapshot.clients);
         let identity_index = identity_mac_index(identities);
         let mut published_identity_keys = clients

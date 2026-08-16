@@ -120,8 +120,11 @@ pub(crate) struct NssInterfaceRates {
 }
 
 impl NssInterfaceRates {
-    pub(crate) fn from_runtime(runtime: &AccessEdgeRuntime) -> Self {
-        Self::from_snapshot(runtime.latest(), |ifindex| {
+    pub(crate) fn from_published_snapshot(
+        runtime: &AccessEdgeRuntime,
+        snapshot: &AccessEdgeSnapshot,
+    ) -> Self {
+        Self::from_snapshot(snapshot, |ifindex| {
             runtime.bridge_name(ifindex).map(str::to_owned)
         })
     }

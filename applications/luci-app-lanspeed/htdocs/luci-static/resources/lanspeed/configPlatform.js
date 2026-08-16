@@ -30,6 +30,8 @@ function normalizeValues(status, values) {
 	if (profile(status) === x86Platform.PROFILE) {
 		normalized.access_edge_mode = 'off';
 		normalized.internet_view_mode = 'off';
+		delete normalized.nss_low_rate_window_ms;
+		delete normalized.nss_low_rate_high_watermark_bps;
 		delete normalized.nss_fifo_target_delay_ms;
 		delete normalized.nss_fifo_min_queue_packets;
 		delete normalized.rate_compensation_factor;
@@ -100,7 +102,8 @@ function runtimeInfo(status) {
 
 function applyPatchPolicy(status, originalRaw, patch) {
 	var value = profile(status);
-	var nssOnly = [ 'access_edge_mode', 'internet_view_mode', 'nss_fifo_target_delay_ms',
+	var nssOnly = [ 'access_edge_mode', 'internet_view_mode', 'nss_low_rate_window_ms',
+		'nss_low_rate_high_watermark_bps', 'nss_fifo_target_delay_ms',
 		'nss_fifo_min_queue_packets', 'rate_compensation_factor' ];
 	if (value !== nssPlatform.PROFILE)
 		nssOnly.forEach(function(name) { delete patch.set[name]; });

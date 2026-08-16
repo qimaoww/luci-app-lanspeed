@@ -62,7 +62,9 @@ Qualcomm aarch64 NSS 设备自动按 ECM+BPF、ECM、BPF 选择健康后端，�
 
 NSS 控制使用实时 Access Edge 与严格同窗 N/S 分类为每个客户端、每个方向选择一个聚合执行器。窗口完整且流量足够时，下载树安装到 Access Edge 确认的真实客户端出口，直连 ECM classid 与 CPU egress `skbedit` 共同选择同一 NSSHTB + NSSBFIFO 根树；上传在真实客户端入口建立一个每边共享的 NSS IGS IFB，按源 MAC 在同一 NSSHTB + NSSBFIFO 树内分 class，NSS 直连和透明代理接管前后的入口流量不再各自拥有独立上限。透明代理新建的 WAN socket 不再携带客户端身份，因此从不在 WAN 侧把它反推为某个客户端。
 
-NSS 队列策略使用独立配置：`nss_fifo_target_delay_ms` 控制 delay-based FIFO 窗口，`nss_fifo_min_queue_packets` 控制低速 MTU 下限，`rate_compensation_factor` 控制 NSSHTB 有效速率系数。默认分别为 `50`、`8`、`1.10`；这些设置不进入 x86 配置或 x86 HTB/FQ 控制路径。
+NSS 低速接口采样使用独立配置：`nss_low_rate_window_ms` 控制接入点与观察接口的共同累计窗口，`nss_low_rate_high_watermark_bps` 控制恢复 1 秒原始速率的总速率高水位。默认分别为 `18000` 和 `8000000`。
+
+NSS 队列策略同样使用独立配置：`nss_fifo_target_delay_ms` 控制 delay-based FIFO 窗口，`nss_fifo_min_queue_packets` 控制低速 MTU 下限，`rate_compensation_factor` 控制 NSSHTB 有效速率系数。默认分别为 `50`、`8`、`1.10`；这些 NSS 设置不进入 x86 配置或 x86 HTB/FQ 控制路径。
 
 路径未证明时保持 `nss_path_identity_pending`，不创建 class、不重定向，也不写 QoS map。应用按“能力与所有权预检 → 暂停旧 QoS tag → 创建并验证唯一队列 → 发布边缘重定向或原子 nft 映射 → 精确清理所需客户端 conntrack”执行。每次状态观察都会重新核验自有 nft、队列与 filter；对象被删除后立即撤销 verified 并事务重建。失败只回滚带专用 handle、chain、IFB alias 或 nft comment 的对象。
 

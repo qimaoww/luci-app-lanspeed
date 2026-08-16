@@ -7,7 +7,8 @@ if uci -q get lanspeed.main.access_edge_mode >/dev/null; then
 	changed=1
 fi
 
-for option in nss_fifo_target_delay_ms nss_fifo_min_queue_packets rate_compensation_factor; do
+for option in nss_fifo_target_delay_ms nss_fifo_min_queue_packets rate_compensation_factor \
+	nss_low_rate_window_ms nss_low_rate_high_watermark_bps; do
 	if uci -q get "lanspeed.main.$option" >/dev/null; then
 		uci -q delete "lanspeed.main.$option"
 		changed=1

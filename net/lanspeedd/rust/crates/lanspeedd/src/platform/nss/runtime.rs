@@ -11,6 +11,7 @@ use crate::{
         fast_rate_worker::FastRatePublication,
         fast_s_runtime::FastSSnapshot,
         hardware_verifier::HardwareVerifier,
+        low_rate_window::NssLowRateWindow,
         rate_mux::{RateMuxRuntime, RateView},
         window::{EcmBpfRateWindowBook, NssCoverageBook, NssWindowBook},
     },
@@ -31,6 +32,7 @@ pub(crate) struct NssRuntime {
     pub(crate) ecm_bpf_coverage: NssCoverageBook,
     pub(crate) ecm_bpf_rates: EcmBpfRateWindowBook,
     pub(crate) fast_rate: Option<FastRatePublication>,
+    pub(crate) low_rate_window: NssLowRateWindow,
     pub(crate) evidence_leases: EvidenceLeaseRuntime,
     pub(crate) rate_mux: RateMuxRuntime,
     pub(crate) hardware_verifier: HardwareVerifier,
@@ -46,6 +48,7 @@ pub(crate) struct NssRuntimeCheckpoint {
     ecm_bpf_error_stage: Option<&'static str>,
     node_error: Option<String>,
     fast_rate: Option<FastRatePublication>,
+    low_rate_window: NssLowRateWindow,
     evidence_leases: EvidenceLeaseRuntime,
     rate_mux: RateMuxRuntime,
     hardware_verifier: HardwareVerifier,
@@ -63,6 +66,7 @@ impl Default for NssRuntime {
             ecm_bpf_coverage: NssCoverageBook::default(),
             ecm_bpf_rates: EcmBpfRateWindowBook::default(),
             fast_rate: None,
+            low_rate_window: NssLowRateWindow::default(),
             evidence_leases: EvidenceLeaseRuntime::default(),
             rate_mux: RateMuxRuntime::default(),
             hardware_verifier: HardwareVerifier::default(),
@@ -118,6 +122,7 @@ impl NssRuntime {
             ecm_bpf_error_stage: self.ecm_bpf_error_stage,
             node_error: self.node_error.clone(),
             fast_rate: self.fast_rate.clone(),
+            low_rate_window: self.low_rate_window.clone(),
             evidence_leases: self.evidence_leases.clone(),
             rate_mux: self.rate_mux.clone(),
             hardware_verifier: self.hardware_verifier.clone(),
@@ -137,6 +142,7 @@ impl NssRuntime {
         self.ecm_bpf_error_stage = checkpoint.ecm_bpf_error_stage;
         self.node_error = checkpoint.node_error;
         self.fast_rate = checkpoint.fast_rate;
+        self.low_rate_window = checkpoint.low_rate_window;
         self.evidence_leases = checkpoint.evidence_leases;
         self.rate_mux = checkpoint.rate_mux;
         self.hardware_verifier = checkpoint.hardware_verifier;

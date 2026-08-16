@@ -12,7 +12,9 @@ use std::collections::HashMap;
 #[cfg(feature = "nss-platform")]
 use lanspeedd::config::{
     DEFAULT_NSS_FIFO_MIN_QUEUE_PACKETS, DEFAULT_NSS_FIFO_TARGET_DELAY_MS,
-    DEFAULT_NSS_RATE_COMPENSATION_BASIS_POINTS,
+    DEFAULT_NSS_LOW_RATE_HIGH_WATERMARK_BPS, DEFAULT_NSS_LOW_RATE_WINDOW_MS,
+    DEFAULT_NSS_RATE_COMPENSATION_BASIS_POINTS, MAX_NSS_LOW_RATE_HIGH_WATERMARK_BPS,
+    MAX_NSS_LOW_RATE_WINDOW_MS, MIN_NSS_LOW_RATE_HIGH_WATERMARK_BPS, MIN_NSS_LOW_RATE_WINDOW_MS,
 };
 
 #[derive(Default)]
@@ -134,10 +136,64 @@ fn defaults_and_limits_match_the_legacy_c_contract() {
             config.nss_rate_compensation_basis_points,
             DEFAULT_NSS_RATE_COMPENSATION_BASIS_POINTS
         );
+        assert_eq!(
+            config.nss_low_rate_window_ms,
+            DEFAULT_NSS_LOW_RATE_WINDOW_MS
+        );
+        assert_eq!(
+            config.nss_low_rate_high_watermark_bps,
+            DEFAULT_NSS_LOW_RATE_HIGH_WATERMARK_BPS
+        );
         assert!(!config.nss_fifo_target_delay_clamped);
         assert!(!config.nss_fifo_min_queue_clamped);
         assert!(!config.nss_rate_compensation_clamped);
+        assert!(!config.nss_low_rate_window_clamped);
+        assert!(!config.nss_low_rate_high_watermark_clamped);
     }
+}
+
+#[cfg(feature = "nss-platform")]
+#[test]
+fn nss_low_rate_options_are_independent_and_strictly_bounded() {
+    let configured = load(
+        MemorySource::default()
+            .with("nss_low_rate_window_ms", "12000")
+            .with("nss_low_rate_high_watermark_bps", "16000000"),
+    );
+    assert_eq!(configured.nss_low_rate_window_ms, 12_000);
+    assert_eq!(configured.nss_low_rate_high_watermark_bps, 16_000_000);
+
+    let clamped_low = load(
+        MemorySource::default()
+            .with("nss_low_rate_window_ms", "1")
+            .with("nss_low_rate_high_watermark_bps", "1"),
+    );
+    assert_eq!(
+        clamped_low.nss_low_rate_window_ms,
+        MIN_NSS_LOW_RATE_WINDOW_MS
+    );
+    assert_eq!(
+        clamped_low.nss_low_rate_high_watermark_bps,
+        MIN_NSS_LOW_RATE_HIGH_WATERMARK_BPS
+    );
+    assert!(clamped_low.nss_low_rate_window_clamped);
+    assert!(clamped_low.nss_low_rate_high_watermark_clamped);
+
+    let clamped_high = load(
+        MemorySource::default()
+            .with("nss_low_rate_window_ms", "999999")
+            .with("nss_low_rate_high_watermark_bps", "999999999999"),
+    );
+    assert_eq!(
+        clamped_high.nss_low_rate_window_ms,
+        MAX_NSS_LOW_RATE_WINDOW_MS
+    );
+    assert_eq!(
+        clamped_high.nss_low_rate_high_watermark_bps,
+        MAX_NSS_LOW_RATE_HIGH_WATERMARK_BPS
+    );
+    assert!(clamped_high.nss_low_rate_window_clamped);
+    assert!(clamped_high.nss_low_rate_high_watermark_clamped);
 }
 
 #[cfg(feature = "nss-platform")]

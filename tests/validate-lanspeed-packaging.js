@@ -900,7 +900,8 @@ try {
   assertMatch(x86ProfileMigration, /uci -q delete lanspeed\.main\.access_edge_mode/,
     'x86 migration must remove a retained Access Edge option');
   for (const option of [ 'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets',
-    'rate_compensation_factor' ]) {
+    'rate_compensation_factor', 'nss_low_rate_window_ms',
+    'nss_low_rate_high_watermark_bps' ]) {
     assert(x86ProfileMigration.includes(option),
       `x86 migration must remove retained NSS-only shaping option ${option}`);
     assert(nssShapingMigration.includes(`set_default ${option}`),

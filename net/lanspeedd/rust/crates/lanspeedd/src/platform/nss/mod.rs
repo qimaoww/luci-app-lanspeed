@@ -32,6 +32,8 @@ pub(crate) mod hardware_verifier;
 #[cfg(any(feature = "nss-platform", test))]
 pub(crate) mod interface_rate;
 #[cfg(any(feature = "openwrt", test))]
+pub(crate) mod low_rate_window;
+#[cfg(any(feature = "openwrt", test))]
 pub(crate) mod output;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod rate_mux;

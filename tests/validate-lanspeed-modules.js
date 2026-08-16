@@ -6297,7 +6297,8 @@ function assertConfigModelRewrite(src) {
 	const required = [
 		'refresh_interval_ms', 'active_client_window_ms', 'active_client_min_bps',
 		'overview_window_samples', 'rate_collector_mode', 'conn_collector_mode',
-		'access_edge_mode', 'internet_view_mode', 'nss_fifo_target_delay_ms',
+		'access_edge_mode', 'internet_view_mode', 'nss_low_rate_window_ms',
+		'nss_low_rate_high_watermark_bps', 'nss_fifo_target_delay_ms',
 		'nss_fifo_min_queue_packets', 'rate_compensation_factor',
 			'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges',
 		'collector_mode', 'max_clients', 'ifname', 'interface_include',
@@ -6321,6 +6322,8 @@ function assertConfigModelRewrite(src) {
 		fail('configModel.js must keep removed UCI fields explicit for compatibility cleanup');
 	if (model.DEFAULTS.access_edge_mode !== 'active' ||
 		model.DEFAULTS.internet_view_mode !== 'off' ||
+		model.DEFAULTS.nss_low_rate_window_ms !== 18000 ||
+		model.DEFAULTS.nss_low_rate_high_watermark_bps !== 8000000 ||
 		model.DEFAULTS.nss_fifo_target_delay_ms !== 50 ||
 		model.DEFAULTS.nss_fifo_min_queue_packets !== 8 ||
 		model.DEFAULTS.rate_compensation_factor !== '1.10' ||
@@ -6581,13 +6584,17 @@ function makeConfigFormState(model, overrides) {
 	overrides = overrides || {};
 	const values = configValues(model, overrides.values || {});
 	const numbers = [ 'refresh_interval_ms', 'active_client_window_ms', 'active_client_min_bps',
-		'overview_window_samples', 'max_clients' ];
+		'overview_window_samples', 'max_clients', 'nss_low_rate_window_ms',
+		'nss_low_rate_high_watermark_bps', 'nss_fifo_target_delay_ms',
+		'nss_fifo_min_queue_packets', 'rate_compensation_factor' ];
 	const booleans = [ 'show_client_status', 'show_ipv6', 'hide_private_ipv6',
 		'enable_bpf', 'enable_conntrack_fallback' ];
 	const editable = [ 'rate_collector_mode', 'access_edge_mode', 'internet_view_mode',
 		'conn_collector_mode', 'enable_bpf',
 		'enable_conntrack_fallback', 'refresh_interval_ms', 'overview_window_samples',
 		'max_clients', 'active_client_window_ms', 'active_client_min_bps',
+		'nss_low_rate_window_ms', 'nss_low_rate_high_watermark_bps',
+		'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets', 'rate_compensation_factor',
 		'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges' ];
 	const inputs = {};
 	numbers.forEach(function(name) { inputs[name] = fakeElement('input', { value: String(values[name]) }); });
@@ -6882,7 +6889,8 @@ function assertConfigFormRewrite(src) {
 		fail('configForm.js must never revert the whole package or bypass the LuCI UCI cache');
 	}
 	[ 'refresh_interval_ms', 'overview_window_samples', 'max_clients', 'enable_bpf',
-		'enable_conntrack_fallback', 'access_edge_mode', 'internet_view_mode', 'interface_exclude' ].forEach(name => {
+		'enable_conntrack_fallback', 'access_edge_mode', 'internet_view_mode',
+		'nss_low_rate_window_ms', 'nss_low_rate_high_watermark_bps', 'interface_exclude' ].forEach(name => {
 		if (!src.includes(name)) fail(`configForm.js must preserve ${name} in the owned data contract`);
 	});
 	if (!src.includes("values.dedicated_port = uci.get('lanspeed', 'main', 'dedicated_port')") ||

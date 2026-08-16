@@ -51,6 +51,14 @@ impl InterfaceCounterSnapshot {
         }
         source.map(InterfaceCounterSource::as_str)
     }
+
+    #[cfg(all(test, feature = "nss-platform"))]
+    pub(crate) fn from_test_counters(counters: BTreeMap<String, InterfaceCounters>) -> Self {
+        Self {
+            counters,
+            sources: BTreeMap::new(),
+        }
+    }
 }
 
 pub trait InterfaceCounterReader {

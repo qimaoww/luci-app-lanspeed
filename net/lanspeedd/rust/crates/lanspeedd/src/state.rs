@@ -1536,6 +1536,26 @@ fn config_issues(config: &RuntimeConfig) -> Vec<DiagnosticConfigIssue> {
             "The NSS rate compensation factor was adjusted to the supported range.",
         );
     }
+    #[cfg(feature = "nss-platform")]
+    if config.nss_low_rate_window_clamped {
+        push(
+            "nss_low_rate_window_clamped",
+            "warning",
+            "nss_low_rate_window_ms",
+            "adjusted",
+            "The NSS low-rate alignment window was adjusted to the supported range.",
+        );
+    }
+    #[cfg(feature = "nss-platform")]
+    if config.nss_low_rate_high_watermark_clamped {
+        push(
+            "nss_low_rate_high_watermark_clamped",
+            "warning",
+            "nss_low_rate_high_watermark_bps",
+            "adjusted",
+            "The NSS low-rate high watermark was adjusted to the supported range.",
+        );
+    }
     if !config.interface_exclude.is_empty() {
         push(
             "interface_exclude_compatibility_only",

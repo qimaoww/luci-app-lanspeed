@@ -1823,7 +1823,9 @@ async page => {
 					const nssPlatform = configContract.fieldNames.indexOf('access_edge_mode') !== -1;
 					const requiredFields = [
 						'rate_collector_mode'
-					].concat(nssPlatform ? [ 'access_edge_mode' ] : []).concat([
+					].concat(nssPlatform ? [ 'access_edge_mode', 'nss_low_rate_window_ms',
+						'nss_low_rate_high_watermark_bps', 'nss_fifo_target_delay_ms',
+						'nss_fifo_min_queue_packets', 'rate_compensation_factor' ] : []).concat([
 						'conn_collector_mode',
 						'enable_bpf', 'enable_conntrack_fallback', 'refresh_interval_ms',
 						'overview_window_samples', 'max_clients', 'active_client_window_ms',

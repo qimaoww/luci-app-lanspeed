@@ -31,6 +31,18 @@ pub const DEFAULT_NSS_RATE_COMPENSATION_BASIS_POINTS: u16 = 110;
 pub const MIN_NSS_RATE_COMPENSATION_BASIS_POINTS: u16 = 100;
 #[cfg(feature = "nss-platform")]
 pub const MAX_NSS_RATE_COMPENSATION_BASIS_POINTS: u16 = 125;
+#[cfg(feature = "nss-platform")]
+pub const DEFAULT_NSS_LOW_RATE_WINDOW_MS: u64 = 18_000;
+#[cfg(feature = "nss-platform")]
+pub const MIN_NSS_LOW_RATE_WINDOW_MS: u64 = 2_000;
+#[cfg(feature = "nss-platform")]
+pub const MAX_NSS_LOW_RATE_WINDOW_MS: u64 = 60_000;
+#[cfg(feature = "nss-platform")]
+pub const DEFAULT_NSS_LOW_RATE_HIGH_WATERMARK_BPS: u64 = 8_000_000;
+#[cfg(feature = "nss-platform")]
+pub const MIN_NSS_LOW_RATE_HIGH_WATERMARK_BPS: u64 = 1_000_000;
+#[cfg(feature = "nss-platform")]
+pub const MAX_NSS_LOW_RATE_HIGH_WATERMARK_BPS: u64 = 1_000_000_000;
 
 const CONFIG_PREFIX: &str = "lanspeed.main.";
 pub const ARPHRD_ETHER: u32 = 1;
@@ -308,11 +320,19 @@ pub struct RuntimeConfig {
     #[cfg(feature = "nss-platform")]
     pub nss_rate_compensation_basis_points: u16,
     #[cfg(feature = "nss-platform")]
+    pub nss_low_rate_window_ms: u64,
+    #[cfg(feature = "nss-platform")]
+    pub nss_low_rate_high_watermark_bps: u64,
+    #[cfg(feature = "nss-platform")]
     pub nss_fifo_target_delay_clamped: bool,
     #[cfg(feature = "nss-platform")]
     pub nss_fifo_min_queue_clamped: bool,
     #[cfg(feature = "nss-platform")]
     pub nss_rate_compensation_clamped: bool,
+    #[cfg(feature = "nss-platform")]
+    pub nss_low_rate_window_clamped: bool,
+    #[cfg(feature = "nss-platform")]
+    pub nss_low_rate_high_watermark_clamped: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -353,11 +373,19 @@ impl Default for RuntimeConfig {
             #[cfg(feature = "nss-platform")]
             nss_rate_compensation_basis_points: DEFAULT_NSS_RATE_COMPENSATION_BASIS_POINTS,
             #[cfg(feature = "nss-platform")]
+            nss_low_rate_window_ms: DEFAULT_NSS_LOW_RATE_WINDOW_MS,
+            #[cfg(feature = "nss-platform")]
+            nss_low_rate_high_watermark_bps: DEFAULT_NSS_LOW_RATE_HIGH_WATERMARK_BPS,
+            #[cfg(feature = "nss-platform")]
             nss_fifo_target_delay_clamped: false,
             #[cfg(feature = "nss-platform")]
             nss_fifo_min_queue_clamped: false,
             #[cfg(feature = "nss-platform")]
             nss_rate_compensation_clamped: false,
+            #[cfg(feature = "nss-platform")]
+            nss_low_rate_window_clamped: false,
+            #[cfg(feature = "nss-platform")]
+            nss_low_rate_high_watermark_clamped: false,
         }
     }
 }
@@ -539,6 +567,34 @@ impl RuntimeConfig {
                         || parsed > MAX_NSS_RATE_COMPENSATION_BASIS_POINTS;
                 } else {
                     config.nss_rate_compensation_clamped = true;
+                }
+            }
+            if let Some(value) = scalar(source, "nss_low_rate_window_ms")? {
+                let parsed = parse_c_signed(&value);
+                if parsed > 0 {
+                    config.nss_low_rate_window_ms = parsed.clamp(
+                        i128::from(MIN_NSS_LOW_RATE_WINDOW_MS),
+                        i128::from(MAX_NSS_LOW_RATE_WINDOW_MS),
+                    ) as u64;
+                    config.nss_low_rate_window_clamped = parsed
+                        < i128::from(MIN_NSS_LOW_RATE_WINDOW_MS)
+                        || parsed > i128::from(MAX_NSS_LOW_RATE_WINDOW_MS);
+                } else {
+                    config.nss_low_rate_window_clamped = true;
+                }
+            }
+            if let Some(value) = scalar(source, "nss_low_rate_high_watermark_bps")? {
+                let parsed = parse_c_signed(&value);
+                if parsed > 0 {
+                    config.nss_low_rate_high_watermark_bps = parsed.clamp(
+                        i128::from(MIN_NSS_LOW_RATE_HIGH_WATERMARK_BPS),
+                        i128::from(MAX_NSS_LOW_RATE_HIGH_WATERMARK_BPS),
+                    ) as u64;
+                    config.nss_low_rate_high_watermark_clamped = parsed
+                        < i128::from(MIN_NSS_LOW_RATE_HIGH_WATERMARK_BPS)
+                        || parsed > i128::from(MAX_NSS_LOW_RATE_HIGH_WATERMARK_BPS);
+                } else {
+                    config.nss_low_rate_high_watermark_clamped = true;
                 }
             }
         }

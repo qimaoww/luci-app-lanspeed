@@ -13,8 +13,8 @@ var BOOLEAN_FIELDS = [ 'show_client_status', 'show_ipv6', 'hide_private_ipv6',
 	'enable_bpf', 'enable_conntrack_fallback' ];
 var NUMBER_FIELDS = [ 'refresh_interval_ms', 'active_client_window_ms',
 	'active_client_min_bps', 'overview_window_samples', 'max_clients' ];
-var NSS_NUMBER_FIELDS = [ 'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets',
-	'rate_compensation_factor' ];
+var NSS_NUMBER_FIELDS = [ 'nss_low_rate_window_ms', 'nss_low_rate_high_watermark_bps',
+	'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets', 'rate_compensation_factor' ];
 var STATUS_RATE_MODES = [ 'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf' ];
 var STATUS_CONNECTION_MODES = [ 'auto', 'conntrack_netlink', 'conntrack_procfs' ];
 var STATUS_ACCESS_EDGE_MODES = [ 'off', 'shadow', 'active' ];
@@ -580,6 +580,12 @@ function buildDaemonSection(data, viewState) {
 		rows.push(rowFor(viewState, 'internet_view_mode', _('互联网/路由视图'), refs.inputs.internet_view_mode,
 			viewState.platformPolicy.internetViewHint));
 	if (viewState.platformPolicy.showAccessEdge) {
+		rows.push(rowFor(viewState, 'nss_low_rate_window_ms', _('NSS 低速对齐窗口'),
+			refs.inputs.nss_low_rate_window_ms,
+			_('低流量时用同一累计窗口对齐接入点与 WAN 接口；默认 18000 ms。')));
+		rows.push(rowFor(viewState, 'nss_low_rate_high_watermark_bps', _('NSS 低速高水位'),
+			refs.inputs.nss_low_rate_high_watermark_bps,
+			_('总速率达到该值后恢复 1 秒原始速率；默认 8000000 bps。')));
 		rows.push(rowFor(viewState, 'nss_fifo_target_delay_ms', _('NSS 队列目标延迟'),
 			refs.inputs.nss_fifo_target_delay_ms,
 			_('按限速值计算 NSSBFIFO 容量；默认 50 ms，可独立调整。')));
