@@ -172,11 +172,21 @@ pub trait Runtime {
     type Checkpoint;
     fn checkpoint(&self) -> Self::Checkpoint;
     fn restore(&mut self, checkpoint: Self::Checkpoint);
+    fn collection_signals(&mut self) -> RuntimeCollectionSignals {
+        RuntimeCollectionSignals::default()
+    }
     fn collect(&mut self) -> Result<ResponseSnapshot, DaemonError>;
     fn collection_interval_ms(&self, configured_ms: u32) -> u32 {
         configured_ms
     }
     fn shutdown(&mut self) -> Result<(), DaemonError>;
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RuntimeCollectionSignals {
+    pub has_bpf: bool,
+    pub process_activity_changed: bool,
+    pub attach_mode_mismatch: bool,
 }
 
 pub trait RuntimeFactory {

@@ -7,7 +7,7 @@
 use std::sync::mpsc::{Receiver, SyncSender};
 
 use crate::{
-    daemon::Runtime,
+    daemon::{Runtime, RuntimeCollectionSignals},
     error::DaemonError,
     state::ResponseSnapshot,
     workers::{spawn_runtime_worker, QueueError, RuntimeWorker},
@@ -22,6 +22,7 @@ pub(crate) struct RuntimeCollectionNotice<R> {
     pub(crate) runtime: R,
     pub(crate) result: Result<ResponseSnapshot, DaemonError>,
     pub(crate) collection_interval_ms: u32,
+    pub(crate) signals: RuntimeCollectionSignals,
 }
 
 pub(crate) struct RuntimeCollectionWorker<R> {
@@ -37,6 +38,7 @@ where
         notices: SyncSender<RuntimeCollectionNotice<R>>,
     ) -> Result<Self, std::io::Error> {
         let worker = spawn_runtime_worker(capacity, move |mut task: RuntimeCollectionTask<R>| {
+            let signals = task.runtime.collection_signals();
             let checkpoint = task.runtime.checkpoint();
             let result = task.runtime.collect();
             if result.is_err() {
@@ -49,6 +51,7 @@ where
                 runtime: task.runtime,
                 result,
                 collection_interval_ms,
+                signals,
             };
             if let Err(error) = notices.send(notice) {
                 let mut notice = error.0;
@@ -98,7 +101,10 @@ mod tests {
 
     use super::{notice_channel, RuntimeCollectionWorker};
     use crate::{
-        daemon::Runtime, error::DaemonError, state::ResponseSnapshot, workers::QueueError,
+        daemon::{Runtime, RuntimeCollectionSignals},
+        error::DaemonError,
+        state::ResponseSnapshot,
+        workers::QueueError,
     };
 
     #[derive(Debug)]
@@ -131,6 +137,14 @@ mod tests {
 
         fn restore(&mut self, checkpoint: Self::Checkpoint) {
             self.generation = checkpoint;
+        }
+
+        fn collection_signals(&mut self) -> RuntimeCollectionSignals {
+            RuntimeCollectionSignals {
+                has_bpf: true,
+                process_activity_changed: self.generation == 4,
+                attach_mode_mismatch: false,
+            }
         }
 
         fn collect(&mut self) -> Result<ResponseSnapshot, DaemonError> {
@@ -168,6 +182,14 @@ mod tests {
         assert!(notice.result.is_ok());
         assert_eq!(notice.runtime.generation, 5);
         assert_eq!(notice.collection_interval_ms, 1_005);
+        assert_eq!(
+            notice.signals,
+            RuntimeCollectionSignals {
+                has_bpf: true,
+                process_activity_changed: true,
+                attach_mode_mismatch: false,
+            }
+        );
         worker.join().unwrap();
     }
 

@@ -26,7 +26,7 @@ use crate::{
     daemon::{
         abort_reload_after_timer_failure, abort_reload_candidate, activate_runtime, commit_reload,
         install_control_or_shutdown, reconnect_and_register, shutdown_runtime, CoordinatorState,
-        Runtime, UloopSignalBridge,
+        Runtime, RuntimeCollectionSignals, UloopSignalBridge,
     },
     error::DaemonError,
     history::overview::{
@@ -54,10 +54,7 @@ use crate::{
     policy::{self, RateCollector},
     probe::{
         collector::{self, probe_deadline, probe_due, ProbeMethod, SystemProbeCollector},
-        process::{
-            run_dae_mode_tick, DaeModeReloadLatch, DaeModeTickOutcome, DaeModeTickSignals,
-            DaeProcessTracker,
-        },
+        process::{DaeModeReloadLatch, DaeProcessTracker},
         Mode as ProbeMode, ProbeCapabilities, ProbeReport, RuntimeHealth,
     },
     runtime_worker::{self, RuntimeCollectionNotice, RuntimeCollectionWorker},
@@ -3208,9 +3205,18 @@ impl Runtime for ProductionRuntime {
         ProductionRuntime::restore(self, checkpoint);
     }
 
+    fn collection_signals(&mut self) -> RuntimeCollectionSignals {
+        let process_activity_changed = self.refresh_dae_process_state();
+        RuntimeCollectionSignals {
+            has_bpf: self.bpf.is_some(),
+            process_activity_changed,
+            attach_mode_mismatch: self.bpf_attach_mode_mismatch(),
+        }
+    }
+
     fn collect(&mut self) -> Result<ResponseSnapshot, DaemonError> {
-        // collect_and_reschedule owns the hot-cycle transaction. Candidate reload
-        // collection uses ProductionRuntime::collect and keeps its local rollback.
+        // The runtime worker owns the hot-cycle transaction. Candidate reload
+        // collection keeps its separate local rollback path.
         self.collect_inner(ProbeMethod::Status, None)
     }
 
@@ -3263,65 +3269,7 @@ struct PreparedBpfReload {
 
 impl App {
     fn collection_tick(&mut self) {
-        let (has_bpf, process_activity_changed, attach_mode_mismatch) = {
-            let runtime = self
-                .runtime
-                .as_mut()
-                .expect("collection timer requires a staged runtime");
-            let process_activity_changed = runtime.refresh_dae_process_state();
-            (
-                runtime.bpf.is_some(),
-                process_activity_changed,
-                runtime.bpf_attach_mode_mismatch(),
-            )
-        };
-        let signals =
-            DaeModeTickSignals::new(has_bpf, process_activity_changed, attach_mode_mismatch);
-        let retry_delay = self
-            .runtime
-            .as_ref()
-            .map_or(self.state.config().refresh_interval_ms, |runtime| {
-                runtime.collection_interval_ms(self.state.config().refresh_interval_ms)
-            });
-        let mut mode_reload = std::mem::take(&mut self.mode_reload);
-        let outcome = run_dae_mode_tick(
-            &mut mode_reload,
-            self,
-            signals,
-            |app| app.reload_inner().map_err(|error| error.to_string()),
-            |app| app.state.fatal_error().is_some(),
-            |app| {
-                schedule_absolute_collection(
-                    app.collection_timer.as_ref().unwrap(),
-                    &app.collection_deadline_ms,
-                    retry_delay,
-                )
-                .map_err(|error| error.to_string())
-            },
-            Self::collect_current_tick,
-        );
-        self.mode_reload = mode_reload;
-        match outcome {
-            DaeModeTickOutcome::Collected | DaeModeTickOutcome::Reloaded => {}
-            DaeModeTickOutcome::RetryScheduled { reload_error } => {
-                self.last_error = Some(reload_error);
-            }
-            DaeModeTickOutcome::FatalReload { reload_error } => {
-                self.last_error = Some(reload_error);
-                UloopGuard::request_stop();
-            }
-            DaeModeTickOutcome::RetryScheduleFailed {
-                reload_error,
-                timer_error,
-            } => {
-                let message = format!(
-                    "dynamic BPF mode reload failed: {reload_error}; collection timer rearm failed: {timer_error}"
-                );
-                self.last_error = Some(message.clone());
-                *self.state.fatal_cell().borrow_mut() = Some(message);
-                UloopGuard::request_stop();
-            }
-        }
+        self.collect_current_tick();
     }
 
     fn collect_current_tick(&mut self) {
@@ -3375,23 +3323,26 @@ impl App {
                 self.last_error = Some("unexpected runtime collection notice".into());
                 continue;
             }
+            let RuntimeCollectionNotice {
+                runtime,
+                result,
+                collection_interval_ms,
+                signals,
+            } = notice;
             self.runtime_collection_pending = false;
-            self.runtime = Some(notice.runtime);
-            let collection_ok = match notice.result {
+            self.runtime = Some(runtime);
+            let collection_ok = match result {
                 Ok(snapshot) => {
                     let now_ms = diagnostic_now_ms(snapshot.interfaces.monotonic_ms.unwrap_or(0));
-                    self.state.publish_collection_success(
-                        snapshot,
-                        now_ms,
-                        notice.collection_interval_ms,
-                    );
+                    self.state
+                        .publish_collection_success(snapshot, now_ms, collection_interval_ms);
                     true
                 }
                 Err(error) => {
                     let fallback = self.state.snapshot().interfaces.monotonic_ms.unwrap_or(0);
                     self.state.publish_collection_failure(
                         diagnostic_now_ms(fallback),
-                        notice.collection_interval_ms,
+                        collection_interval_ms,
                         &error,
                     );
                     self.last_error = Some(error.to_string());
@@ -3403,7 +3354,7 @@ impl App {
                     .as_ref()
                     .expect("collection timer must be installed"),
                 &self.collection_deadline_ms,
-                notice.collection_interval_ms,
+                collection_interval_ms,
             ) {
                 let message = format!("collection timer failed: {error}");
                 self.last_error = Some(message.clone());
@@ -3411,13 +3362,37 @@ impl App {
                 UloopGuard::request_stop();
                 return;
             }
-            if collection_ok {
+            let mode_ready = self.handle_collection_signals(signals);
+            if collection_ok && mode_ready {
                 self.queue_control_work();
             }
             self.drain_control_notices();
             #[cfg(feature = "nss-platform")]
             self.drain_fast_rate_notices();
             self.schedule_conntrack(false);
+        }
+    }
+
+    fn handle_collection_signals(&mut self, signals: RuntimeCollectionSignals) -> bool {
+        if !self.mode_reload.observe(
+            signals.has_bpf,
+            signals.process_activity_changed,
+            signals.attach_mode_mismatch,
+        ) {
+            return true;
+        }
+        match self.reload_inner() {
+            Ok(()) => {
+                self.mode_reload.complete();
+                true
+            }
+            Err(error) => {
+                self.last_error = Some(error.to_string());
+                if self.state.fatal_error().is_some() {
+                    UloopGuard::request_stop();
+                }
+                false
+            }
         }
     }
 
