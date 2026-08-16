@@ -11,6 +11,7 @@ use crate::{
         fast_rate_shadow::FastRateShadow,
         fast_s_runtime::{FastSRuntime, FastSSnapshot},
         hardware_verifier::HardwareVerifier,
+        rate_mux::{RateMuxRuntime, RateView},
         window::{EcmBpfRateWindowBook, NssCoverageBook, NssWindowBook},
     },
     policy::RateCollector,
@@ -33,6 +34,7 @@ pub(crate) struct NssRuntime {
     pub(crate) fast_s: FastSRuntime,
     pub(crate) fast_rate_shadow: FastRateShadow,
     pub(crate) evidence_leases: EvidenceLeaseRuntime,
+    pub(crate) rate_mux: RateMuxRuntime,
     pub(crate) hardware_verifier: HardwareVerifier,
 }
 
@@ -49,6 +51,7 @@ pub(crate) struct NssRuntimeCheckpoint {
     fast_s: FastSRuntime,
     fast_rate_shadow: FastRateShadow,
     evidence_leases: EvidenceLeaseRuntime,
+    rate_mux: RateMuxRuntime,
     hardware_verifier: HardwareVerifier,
 }
 
@@ -67,6 +70,7 @@ impl Default for NssRuntime {
             fast_s: FastSRuntime::default(),
             fast_rate_shadow: FastRateShadow::new(),
             evidence_leases: EvidenceLeaseRuntime::default(),
+            rate_mux: RateMuxRuntime::default(),
             hardware_verifier: HardwareVerifier::default(),
         }
     }
@@ -123,6 +127,7 @@ impl NssRuntime {
             fast_s: self.fast_s.clone(),
             fast_rate_shadow: self.fast_rate_shadow.clone(),
             evidence_leases: self.evidence_leases.clone(),
+            rate_mux: self.rate_mux.clone(),
             hardware_verifier: self.hardware_verifier.clone(),
         }
     }
@@ -143,6 +148,7 @@ impl NssRuntime {
         self.fast_s = checkpoint.fast_s;
         self.fast_rate_shadow = checkpoint.fast_rate_shadow;
         self.evidence_leases = checkpoint.evidence_leases;
+        self.rate_mux = checkpoint.rate_mux;
         self.hardware_verifier = checkpoint.hardware_verifier;
     }
 
@@ -361,6 +367,33 @@ impl NssRuntime {
 
     pub(crate) fn evidence_lease_evidence(&self) -> serde_json::Value {
         self.evidence_leases.evidence()
+    }
+
+    pub(crate) fn begin_rate_mux_cycle(&mut self, active: bool) {
+        self.rate_mux.begin_cycle(active);
+    }
+
+    pub(crate) fn select_rate_view(
+        &mut self,
+        client_identity: &str,
+        direction: crate::platform::access_edge::Direction,
+        e: crate::platform::nss::evidence_lease::EUsability,
+        fast_window_valid: bool,
+        explicit_internet_view: bool,
+    ) -> RateView {
+        let lease_valid = self.evidence_leases.lease_valid(client_identity, direction);
+        self.rate_mux.select(
+            client_identity,
+            direction,
+            e,
+            lease_valid,
+            fast_window_valid,
+            explicit_internet_view,
+        )
+    }
+
+    pub(crate) fn rate_mux_evidence(&self) -> serde_json::Value {
+        self.rate_mux.evidence()
     }
 
     pub(crate) fn observe_hardware_verifier(

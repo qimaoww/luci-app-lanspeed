@@ -166,10 +166,20 @@ assert(model.nss_hardware_verifier.client_rate_owner === false &&
 assert(model.evidence_lease.lifetime_ms === 10000 &&
   model.evidence_lease.transient_e_substitute === 'combined_fast_n_plus_fast_s_only' &&
   model.evidence_lease.structural_e_client_total === 'forbidden' &&
+  model.evidence_lease.formal_selector ===
+    'rust/crates/lanspeedd/src/platform/nss/rate_mux.rs' &&
+  model.evidence_lease.substitute_rate_source === 'fast_routed_lease' &&
+  model.evidence_lease.substitute_byte_domain ===
+    'l2_with_fcs_from_ecm_plus_18_and_tc_plus_4_per_packet' &&
+  model.evidence_lease.fast_window_current_required === true &&
   model.evidence_lease.ringbuf_drop_invalidates === false &&
   nssEvidenceLease.includes('pub(crate) struct EvidenceLeaseBook') &&
   nssEvidenceLease.includes('pub sample_available: bool') &&
+  nssRateMux.includes('pub(crate) struct RateMuxRuntime') &&
   nssRateMux.includes('RoutedLeaseSubstitute') &&
+  production.includes('self.nss.select_rate_view(') &&
+  production.includes('fast_client_sample_current(runtime_health.now_ms') &&
+  production.includes('ModelRateSource::FastRoutedLease') &&
   nssEvidenceLease.includes('leases.insert(') &&
   nssEvidenceLease.includes('lease_invalidation(') &&
   nssEvidenceLease.includes('retain_identities('),

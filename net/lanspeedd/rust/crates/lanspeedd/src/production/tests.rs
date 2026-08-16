@@ -730,6 +730,49 @@ fn direction_rate_meta_emits_only_summary_overrides() {
 }
 
 #[test]
+fn active_rate_mux_never_treats_a_classifier_candidate_as_edge_authority() {
+    let classifier = RateCandidate {
+        source: EdgeRateSource::EcmBpfFallback,
+        bps: 8_000,
+        coverage: crate::platform::access_edge::Coverage::Degraded,
+        scope: EdgeTrafficScope::RoutedObserved,
+        byte_domain: EdgeByteDomain::L2WithFcs,
+        sample_ms: 2_000,
+        window_ms: 1_000,
+        cadence_ms: 2_000,
+        attachment_generation: 7,
+        fresh: true,
+    };
+    let unavailable = active_rate_direction(RateView::Unavailable, Some(classifier), None);
+    assert_eq!(unavailable.source, ModelRateSource::None);
+    assert_eq!(unavailable.bps, 0);
+
+    let e_without_edge = active_rate_direction(RateView::EAuthority, None, None);
+    assert_eq!(e_without_edge.source, ModelRateSource::None);
+}
+
+#[test]
+fn active_rate_mux_publishes_only_current_normalized_leased_fast_window() {
+    let sample = FastClientSample {
+        sample_ms: 10_000,
+        window_ms: 1_000,
+        read_end_skew_ms: 5,
+        fast_n_bps: 1_000,
+        fast_s_bps: 500,
+        fast_total_bps: 1_500,
+        routed_l2_with_fcs_bps: 1_800,
+    };
+    assert!(fast_client_sample_current(12_500, sample));
+    assert!(!fast_client_sample_current(12_501, sample));
+    let published = active_rate_direction(RateView::RoutedLeaseSubstitute, None, Some(sample));
+    assert_eq!(published.bps, 1_800);
+    assert_eq!(published.source, ModelRateSource::FastRoutedLease);
+    assert_eq!(published.scope, ModelRateScope::RoutedObserved);
+    assert_eq!(published.byte_domain, Some(ModelByteDomain::L2WithFcs));
+    assert!(published.mux_owner);
+}
+
+#[test]
 fn either_invalid_classifier_window_blocks_the_combined_epoch() {
     let valid = Some((1_000, 3_000));
     for invalid in [Some((3_000, 3_000)), Some((4_000, 3_000))] {

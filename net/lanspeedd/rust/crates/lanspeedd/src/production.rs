@@ -149,7 +149,8 @@ use crate::{
             control::{PathProbeBook, PathProbeWindow},
             ecm_bpf::EcmBpfSnapshot,
             evidence::{apply_ecm_bpf_evidence, apply_nss_snapshot_evidence},
-            evidence_lease::LeaseClientObservation,
+            evidence_lease::{e_usability, EUsability, LeaseClientObservation},
+            fast_rate_clients::FastClientSample,
             fast_rate_worker::{self, FastRateCommand, FastRateSources, FastRateWakeupNotice},
             fusion::{
                 ecm_bpf_client_interfaces, ecm_bpf_fallback_client_rates,
@@ -160,6 +161,7 @@ use crate::{
                 ecm_bpf_coverage_merge_evidence, ecm_bpf_rate_batch_evidence, nss_rate_coverage,
                 rate_window_interface_counters, window_clients, window_evidence,
             },
+            rate_mux::RateView,
             runtime::{NssRuntime, NssRuntimeCheckpoint},
             tc_snapshot::{NssTcClientSample, NssTcSnapshot},
             window::{LanClock, WindowQuality},
@@ -1474,6 +1476,9 @@ impl ProductionRuntime {
             client_evidence
                 .details
                 .insert("evidence_lease".into(), self.nss.evidence_lease_evidence());
+            client_evidence
+                .details
+                .insert("rate_mux".into(), self.nss.rate_mux_evidence());
             if let Some(snapshot) = conntrack.as_deref() {
                 client_evidence.details.insert(
                     "conntrack_generation".into(),
@@ -1609,6 +1614,9 @@ impl ProductionRuntime {
         status_evidence
             .details
             .insert("evidence_lease".into(), self.nss.evidence_lease_evidence());
+        status_evidence
+            .details
+            .insert("rate_mux".into(), self.nss.rate_mux_evidence());
         if let Some(window) = nss_window.as_ref() {
             status_evidence
                 .details
@@ -1875,6 +1883,9 @@ impl ProductionRuntime {
         health_evidence
             .details
             .insert("evidence_lease".into(), self.nss.evidence_lease_evidence());
+        health_evidence
+            .details
+            .insert("rate_mux".into(), self.nss.rate_mux_evidence());
         if let Some(window) = nss_window.as_ref() {
             health_evidence
                 .details
@@ -2226,16 +2237,17 @@ impl ProductionRuntime {
         slow_read_end_ms: Option<u64>,
         runtime_health: &RuntimeHealth,
     ) {
+        let active_auto = active_access_edge_owns_display_rate(
+            self.config.access_edge_mode,
+            self.config.rate_collector_mode,
+        );
+        self.nss.begin_rate_mux_cycle(active_auto);
         if self.config.access_edge_mode == AccessEdgeMode::Off {
             self.access_edge
                 .retain_published_identities(&BTreeSet::new());
             self.classification_results.clear();
             return;
         }
-        let active_auto = active_access_edge_owns_display_rate(
-            self.config.access_edge_mode,
-            self.config.rate_collector_mode,
-        );
         let edge_snapshot = self.access_edge.latest().clone();
         let edge_index = edge_mac_index(&edge_snapshot.clients);
         let identity_index = identity_mac_index(identities);
@@ -2332,17 +2344,31 @@ impl ProductionRuntime {
             if self.config.access_edge_mode == AccessEdgeMode::Shadow {
                 reasons.push("access_edge_shadow".to_owned());
             }
+            let lease_observation = edge.map(|edge| {
+                LeaseClientObservation::from_edge(
+                    &client.identity_key,
+                    edge,
+                    self.classification_results.get(&client.identity_key),
+                    attachment_topology_complete,
+                )
+            });
+            let fast_mac = client
+                .mac
+                .parse::<MacAddress>()
+                .ok()
+                .map(MacAddress::octets);
 
             let mut select_direction = |direction: EdgeDirection, old_bps: u64| {
                 let edge_direction = edge.map(|sample| match direction {
                     EdgeDirection::Tx => &sample.tx,
                     EdgeDirection::Rx => &sample.rx,
                 });
-                let mut candidates = Vec::new();
-                if let Some(observation) = edge_direction {
-                    if let Some(segment) = observation.segment {
-                        if let (Some(bps), Some(window_ms)) = (segment.bps(), segment.window_ms()) {
-                            candidates.push(RateCandidate {
+                let edge_candidate = edge_direction.and_then(|observation| {
+                    observation.segment.and_then(|segment| {
+                        segment
+                            .bps()
+                            .zip(segment.window_ms())
+                            .map(|(bps, window_ms)| RateCandidate {
                                 source: segment.source,
                                 bps,
                                 coverage: observation.coverage,
@@ -2357,10 +2383,44 @@ impl ProductionRuntime {
                                     segment.end_ms,
                                     ACCESS_EDGE_INTERVAL_MS,
                                 ),
+                            })
+                    })
+                });
+                if active_auto {
+                    // Active Access Edge never falls through to the legacy NSS
+                    // rate window. RateMux can select only current Edge authority
+                    // or a lease-authorized same-window FastN+FastS substitute;
+                    // no LAN allocation, previous distribution, directional
+                    // max, interface floor, or smoothed rate may become E.
+                    let lease_direction =
+                        lease_observation
+                            .as_ref()
+                            .map(|observation| match direction {
+                                EdgeDirection::Tx => observation.tx,
+                                EdgeDirection::Rx => observation.rx,
                             });
-                        }
-                    }
+                    let e = lease_direction
+                        .map(|observation| e_usability(observation.e))
+                        .unwrap_or(EUsability::StructuralEUnavailable);
+                    let fast_direction = match direction {
+                        EdgeDirection::Tx => lanspeed_common::DIR_TX,
+                        EdgeDirection::Rx => lanspeed_common::DIR_RX,
+                    };
+                    let fast = fast_mac
+                        .and_then(|mac| self.nss.fast_rate_shadow_client_rate(mac, fast_direction))
+                        .filter(|sample| {
+                            fast_client_sample_current(runtime_health.now_ms, *sample)
+                        });
+                    let view = self.nss.select_rate_view(
+                        &client.identity_key,
+                        direction,
+                        e,
+                        fast.is_some(),
+                        false,
+                    );
+                    return active_rate_direction(view, edge_candidate, fast);
                 }
+                let mut candidates = edge_candidate.into_iter().collect::<Vec<_>>();
                 candidates.extend(classifier_rate_candidates(
                     &client.identity_key,
                     direction,
@@ -2433,16 +2493,7 @@ impl ProductionRuntime {
                     &candidates,
                     failure,
                 );
-                if active_auto {
-                    if let Some(selected) = selected.selected {
-                        return published_from_candidate(selected.candidate, selected.stale);
-                    }
-                    // Active Access Edge never falls through to the legacy NSS
-                    // rate window. Warmup or unavailable means exactly that;
-                    // no LAN allocation, previous distribution, directional
-                    // max, interface floor, or smoothed rate may become E.
-                    return PublishedRateDirection::unavailable(0);
-                }
+                let _ = selected;
                 pipeline_direction(
                     pipeline,
                     old_bps,
@@ -2454,6 +2505,12 @@ impl ProductionRuntime {
 
             let tx = select_direction(EdgeDirection::Tx, client.tx_bps);
             let rx = select_direction(EdgeDirection::Rx, client.rx_bps);
+            if tx.source == ModelRateSource::FastRoutedLease {
+                reasons.push("tx_transient_evidence_lease_substitute".to_owned());
+            }
+            if rx.source == ModelRateSource::FastRoutedLease {
+                reasons.push("rx_transient_evidence_lease_substitute".to_owned());
+            }
             if active_auto {
                 client.tx_bps = tx.bps;
                 client.rx_bps = rx.bps;

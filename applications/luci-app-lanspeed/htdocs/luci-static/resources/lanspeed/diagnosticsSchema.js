@@ -132,6 +132,7 @@ var COLLECTOR_REPORT_LABELS = {
 };
 var RATE_SOURCE_LABELS = {
 	edge_port: _('Edge-Port'), edge_wifi: _('Edge-WiFi'),
+	fast_routed_lease: _('FastN+FastS 租约替代'),
 	ecm_bpf_fallback: _('ECM+BPF 降级'), ecm_nss_lower_bound: _('NSS 下界'),
 	tc_bpf_lower_bound: _('CPU 慢路径下界'), none: _('无来源')
 };

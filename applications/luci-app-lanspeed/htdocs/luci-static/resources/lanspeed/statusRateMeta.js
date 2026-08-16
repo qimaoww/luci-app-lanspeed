@@ -4,6 +4,7 @@
 var RATE_SOURCE_LABELS = {
 	edge_port: 'Edge-Port',
 	edge_wifi: 'Edge-WiFi',
+	fast_routed_lease: 'FastN+FastS lease',
 	ecm_bpf_fallback: 'ECM+BPF fallback',
 	ecm_nss_lower_bound: 'ECM NSS lower-bound',
 	tc_bpf_lower_bound: 'TC-BPF lower-bound',

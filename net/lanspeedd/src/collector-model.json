@@ -390,7 +390,7 @@
     },
     "public_contract": {
       "total_rate_prefers": "E",
-      "edge_missing_fallback": "strictly_aligned_N_plus_S_degraded_only",
+      "edge_missing_fallback": "transient_e_only_valid_evidence_lease_and_current_fast_n_plus_fast_s",
       "unclassified_must_not_be_named_unaccelerated": true,
       "classification_state_granularity": "client_worst_state_plus_sparse_direction_override",
       "main_clients_payload": "rate_meta_with_sparse_directional_rate_freshness_and_classification_coverage_summary",
@@ -504,6 +504,10 @@
     "issue_requires": ["e_authority", "aligned_classifier_window", "n_s_disjoint"],
     "transient_e_substitute": "combined_fast_n_plus_fast_s_only",
     "structural_e_client_total": "forbidden",
+    "formal_selector": "rust/crates/lanspeedd/src/platform/nss/rate_mux.rs",
+    "substitute_rate_source": "fast_routed_lease",
+    "substitute_byte_domain": "l2_with_fcs_from_ecm_plus_18_and_tc_plus_4_per_packet",
+    "fast_window_current_required": true,
     "ringbuf_drop_invalidates": false,
     "fast_window_stale_invalidates": false,
     "generation_fields": [

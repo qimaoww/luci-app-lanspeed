@@ -171,6 +171,7 @@ pub enum RateScope {
 pub enum RateSource {
     EdgePort,
     EdgeWifi,
+    FastRoutedLease,
     EcmBpfFallback,
     EcmNssLowerBound,
     TcBpfLowerBound,

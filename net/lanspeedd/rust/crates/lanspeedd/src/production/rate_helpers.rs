@@ -455,6 +455,48 @@ pub(super) fn published_from_candidate(
 }
 
 #[cfg(feature = "nss-platform")]
+pub(super) fn fast_client_sample_current(now_ms: u64, sample: FastClientSample) -> bool {
+    sample.window_ms != 0
+        && sample.read_end_skew_ms
+            <= crate::platform::nss::fast_rate::FAST_WINDOW_MAX_READ_END_SKEW_MS
+        && sample.sample_ms <= now_ms
+        && now_ms.saturating_sub(sample.sample_ms) <= ACCESS_EDGE_INTERVAL_MS.saturating_mul(5) / 2
+}
+
+#[cfg(feature = "nss-platform")]
+pub(super) fn active_rate_direction(
+    view: RateView,
+    edge: Option<RateCandidate>,
+    fast: Option<FastClientSample>,
+) -> PublishedRateDirection {
+    match view {
+        RateView::EAuthority => edge
+            .filter(|candidate| candidate.fresh)
+            .map(|candidate| published_from_candidate(candidate, false))
+            .unwrap_or_else(|| PublishedRateDirection::unavailable(0)),
+        RateView::RoutedLeaseSubstitute => fast
+            .map(published_from_fast_lease)
+            .unwrap_or_else(|| PublishedRateDirection::unavailable(0)),
+        RateView::RoutedInternet | RateView::Unavailable => PublishedRateDirection::unavailable(0),
+    }
+}
+
+#[cfg(feature = "nss-platform")]
+fn published_from_fast_lease(sample: FastClientSample) -> PublishedRateDirection {
+    PublishedRateDirection {
+        bps: sample.routed_l2_with_fcs_bps,
+        source: ModelRateSource::FastRoutedLease,
+        coverage: ModelRateCoverage::Degraded,
+        scope: ModelRateScope::RoutedObserved,
+        byte_domain: Some(ModelByteDomain::L2WithFcs),
+        sample_ms: Some(sample.sample_ms),
+        window_ms: Some(sample.window_ms),
+        stale: false,
+        mux_owner: true,
+    }
+}
+
+#[cfg(feature = "nss-platform")]
 pub(super) fn rate_direction_meta(
     direction: PublishedRateDirection,
     summary_sample_ms: Option<u64>,

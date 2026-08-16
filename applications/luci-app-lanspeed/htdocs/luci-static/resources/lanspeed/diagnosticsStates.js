@@ -188,7 +188,8 @@ function collectRateFacts(clientsResponse) {
 			if (directionStale) staleDirections++;
 			if (source === 'none' || coverage === 'unavailable') unavailableDirections++;
 			else ownerDirections++;
-			if (source === 'ecm_bpf_fallback' || source === 'ecm_nss_lower_bound' || source === 'tc_bpf_lower_bound')
+			if (source === 'fast_routed_lease' || source === 'ecm_bpf_fallback' ||
+				source === 'ecm_nss_lower_bound' || source === 'tc_bpf_lower_bound')
 				fallbackDirections++;
 		});
 	});
@@ -208,7 +209,8 @@ function rateOwnerStateWithRpc(viewState) {
 	var statusRpc = rpcState(viewState, 'status'), clientsRpc = rpcState(viewState, 'clients');
 	var coverage = coverageState(status, clients), source, state, badge, value, description, meta;
 	var sourceText = countSummary(facts.sourceCounts, RATE_SOURCE_LABELS,
-		[ 'edge_port', 'edge_wifi', 'ecm_bpf_fallback', 'ecm_nss_lower_bound', 'tc_bpf_lower_bound', 'none' ]);
+		[ 'edge_port', 'edge_wifi', 'fast_routed_lease', 'ecm_bpf_fallback',
+			'ecm_nss_lower_bound', 'tc_bpf_lower_bound', 'none' ]);
 	var coverageText = countSummary(facts.coverageCounts, RATE_COVERAGE_LABELS,
 		[ 'full', 'partial', 'degraded', 'unavailable' ]);
 	if (edgeOwner) {
@@ -222,7 +224,7 @@ function rateOwnerStateWithRpc(viewState) {
 			description += ' ' + _('%d 个方向没有可用的总速率 owner。').format(facts.unavailableDirections);
 		} else if (facts.fallbackDirections || facts.coverageCounts.degraded || coverage.quality === 'degraded') {
 			state = 'warning'; badge = _('降级');
-			description += ' ' + _('部分方向正在使用分类器降级来源，只能代表已观察到的路由流量。');
+			description += ' ' + _('部分方向正在使用租约替代或分类器降级来源，只能代表已观察到的路由流量。');
 		} else if (facts.staleDirections) {
 			state = 'warning'; badge = _('存在陈旧值');
 			description += ' ' + _('%d 个方向的总速率已标记为陈旧。').format(facts.staleDirections);

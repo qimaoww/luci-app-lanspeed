@@ -701,6 +701,11 @@ impl EvidenceLeaseRuntime {
         );
         evidence
     }
+
+    pub(crate) fn lease_valid(&self, client_identity: &str, direction: Direction) -> bool {
+        self.current_valid
+            .contains(&(client_identity.to_owned(), direction))
+    }
 }
 
 #[cfg(test)]
