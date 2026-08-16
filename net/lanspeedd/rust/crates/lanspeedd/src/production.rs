@@ -4,11 +4,8 @@ use std::{
     fs,
     path::Path,
     rc::Rc,
-    sync::Arc,
+    sync::{mpsc, mpsc::Receiver, Arc},
 };
-
-#[cfg(feature = "nss-platform")]
-use std::sync::{mpsc, mpsc::Receiver};
 
 use lanspeed_openwrt_sys::{Timer, UbusConnection, UloopGuard};
 use serde_json::{json, Value};
@@ -22,7 +19,10 @@ use crate::{
         periodic_conntrack_plan, publish_connection_details, ConntrackObservation,
         PeriodicConntrackPlan,
     },
-    control::{ClientControlDeleteRequest, ClientControlRequest, ControlCommand},
+    control::{
+        ClientControlDeleteRequest, ClientControlRequest, ControlCommand, ControlReconcileOutcome,
+        ControlReconcileWork,
+    },
     daemon::{
         abort_reload_after_timer_failure, abort_reload_candidate, activate_runtime,
         collect_and_reschedule, commit_reload, install_control_or_shutdown, reconnect_and_register,
@@ -66,6 +66,7 @@ use crate::{
 
 use crate::conntrack_worker::{self, ConntrackTask, CONNTRACK_WORK_INTERVAL_MS};
 use crate::control::ControlManager;
+use crate::control_worker::{self, ControlWorkerNotice, ControlWorkerTask};
 use crate::workers::{QueueError, RuntimeWorker};
 
 #[cfg(not(feature = "nss-platform"))]
@@ -184,6 +185,8 @@ fn production_now_ms() -> Result<u64, DaemonError> {
 struct ProductionRuntime {
     config: RuntimeConfig,
     control: ControlManager,
+    control_work: Option<ControlReconcileWork>,
+    control_reconcile_pending: bool,
     adapter: SystemAyaAdapter,
     bpf: Option<Bpf>,
     bpf_error: Option<String>,
@@ -230,6 +233,9 @@ struct ProductionRuntime {
 }
 
 struct RuntimeCheckpoint {
+    control: ControlManager,
+    control_work: Option<ControlReconcileWork>,
+    control_reconcile_pending: bool,
     bpf: Option<BpfCollectionCheckpoint>,
     #[cfg(feature = "nss-platform")]
     nss: NssRuntimeCheckpoint,
@@ -321,6 +327,8 @@ impl ProductionRuntime {
             hostnames: HostnameCache::new(),
             adapter: SystemAyaAdapter::with_max_clients(config.max_clients),
             control,
+            control_work: None,
+            control_reconcile_pending: false,
             config,
             bpf: None,
             bpf_error: None,
@@ -427,6 +435,9 @@ impl ProductionRuntime {
 
     fn checkpoint(&self) -> RuntimeCheckpoint {
         RuntimeCheckpoint {
+            control: self.control.clone(),
+            control_work: self.control_work.clone(),
+            control_reconcile_pending: self.control_reconcile_pending,
             bpf: self
                 .bpf
                 .as_ref()
@@ -465,6 +476,9 @@ impl ProductionRuntime {
     }
 
     fn restore(&mut self, checkpoint: RuntimeCheckpoint) {
+        self.control = checkpoint.control;
+        self.control_work = checkpoint.control_work;
+        self.control_reconcile_pending = checkpoint.control_reconcile_pending;
         if let (Some(runtime), Some(checkpoint)) = (self.bpf.as_mut(), checkpoint.bpf) {
             runtime.restore_collection_checkpoint(&mut self.bpf_collector, checkpoint);
         }
@@ -2837,12 +2851,35 @@ impl ProductionRuntime {
     }
 
     fn reconcile_control_state(&mut self) {
+        if self.control_reconcile_pending {
+            return;
+        }
         #[cfg(feature = "nss-platform")]
         if !self.control_platform_owner {
             self.control.observe_existing_nss_control();
             return;
         }
-        self.control.reconcile();
+        self.control_work = self.control.begin_reconcile();
+        self.control_reconcile_pending = self.control_work.is_some();
+    }
+
+    fn take_control_work(&mut self) -> Option<ControlReconcileWork> {
+        self.control_work.take()
+    }
+
+    fn restore_control_work(&mut self, work: ControlReconcileWork) {
+        debug_assert!(self.control_reconcile_pending);
+        debug_assert!(self.control_work.is_none());
+        self.control_work = Some(work);
+    }
+
+    fn finish_control_work(&mut self, outcome: ControlReconcileOutcome) {
+        if !self.control_reconcile_pending {
+            return;
+        }
+        self.control.finish_reconcile(outcome);
+        self.control_reconcile_pending = false;
+        self.reconcile_control_state();
     }
 
     fn client_control_set(&mut self, request: ClientControlRequest) -> Result<Value, DaemonError> {
@@ -3139,6 +3176,10 @@ struct App {
     last_error: Option<String>,
     conntrack_worker: Option<RuntimeWorker<ConntrackTask>>,
     last_conntrack_request_ms: Cell<u64>,
+    control_worker: Option<control_worker::ControlWorker>,
+    control_notices: Receiver<ControlWorkerNotice>,
+    control_generation: u64,
+    control_pending_generation: Option<u64>,
     #[cfg(feature = "nss-platform")]
     fast_rate_worker: Option<fast_rate_worker::FastRateWorker>,
     #[cfg(feature = "nss-platform")]
@@ -3216,6 +3257,7 @@ impl App {
     }
 
     fn collect_current_tick(&mut self) {
+        self.drain_control_notices();
         let timer = self.collection_timer.as_ref().unwrap();
         let deadline = &self.collection_deadline_ms;
         let runtime = self
@@ -3231,6 +3273,9 @@ impl App {
         #[cfg(feature = "nss-platform")]
         if result.is_ok() {
             self.queue_fast_rate_sample();
+        }
+        if result.is_ok() {
+            self.queue_control_work();
         }
         #[cfg(feature = "nss-platform")]
         self.drain_fast_rate_notices();
@@ -3333,6 +3378,7 @@ impl App {
         }
     }
     fn before_reply(&mut self, method: ubus::Method) -> Result<(), DaemonError> {
+        self.drain_control_notices();
         if method == ubus::Method::Reload {
             self.reload()
         } else {
@@ -3343,6 +3389,67 @@ impl App {
                 self.schedule_conntrack(false);
             }
             Ok(())
+        }
+    }
+
+    fn queue_control_work(&mut self) {
+        if self.control_pending_generation.is_some() {
+            return;
+        }
+        let Some(work) = self
+            .runtime
+            .as_mut()
+            .and_then(ProductionRuntime::take_control_work)
+        else {
+            return;
+        };
+        self.control_generation = self.control_generation.wrapping_add(1).max(1);
+        let generation = self.control_generation;
+        let Some(worker) = self.control_worker.as_ref() else {
+            self.runtime
+                .as_mut()
+                .expect("control work requires a runtime")
+                .restore_control_work(work);
+            return;
+        };
+        match control_worker::try_queue(
+            &worker.queue(),
+            ControlWorkerTask {
+                generation,
+                work: work.clone(),
+            },
+        ) {
+            Ok(()) => self.control_pending_generation = Some(generation),
+            Err(QueueError::Full) => {
+                self.runtime
+                    .as_mut()
+                    .expect("control work requires a runtime")
+                    .restore_control_work(work);
+            }
+            Err(QueueError::Disconnected) => {
+                let kind = work.kind;
+                self.runtime
+                    .as_mut()
+                    .expect("control work requires a runtime")
+                    .finish_control_work(ControlReconcileOutcome::failed(
+                        kind,
+                        "control runtime worker disconnected",
+                    ));
+                self.last_error = Some("control runtime worker disconnected".into());
+            }
+        }
+    }
+
+    fn drain_control_notices(&mut self) {
+        while let Ok(notice) = self.control_notices.try_recv() {
+            if self.control_pending_generation != Some(notice.generation) {
+                continue;
+            }
+            self.control_pending_generation = None;
+            if let Some(runtime) = self.runtime.as_mut() {
+                runtime.finish_control_work(notice.outcome);
+            }
+            self.queue_control_work();
         }
     }
 
@@ -3373,14 +3480,21 @@ impl App {
         }
     }
     fn handle_control(&mut self, command: ControlCommand) -> Result<Value, DaemonError> {
-        let runtime = self
-            .runtime
-            .as_mut()
-            .ok_or_else(|| DaemonError::collection("runtime is not started"))?;
-        match command {
-            ControlCommand::Set(request) => runtime.client_control_set(request),
-            ControlCommand::Delete(request) => runtime.client_control_delete(request),
+        self.drain_control_notices();
+        let result = {
+            let runtime = self
+                .runtime
+                .as_mut()
+                .ok_or_else(|| DaemonError::collection("runtime is not started"))?;
+            match command {
+                ControlCommand::Set(request) => runtime.client_control_set(request),
+                ControlCommand::Delete(request) => runtime.client_control_delete(request),
+            }
+        };
+        if result.is_ok() {
+            self.queue_control_work();
         }
+        result
     }
     fn schedule_reconnect(&self) {
         if !self.reconnect_pending.replace(true)
@@ -3435,6 +3549,15 @@ impl App {
     fn reload_inner(&mut self) -> Result<(), DaemonError> {
         if self.runtime.is_none() {
             return Err(DaemonError::reload("runtime is not started"));
+        }
+        self.drain_control_notices();
+        if self.control_pending_generation.is_some()
+            || self
+                .runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.control_reconcile_pending)
+        {
+            return Err(DaemonError::reload("control transaction pending"));
         }
         let config = load_config()?;
         let current = self.runtime.as_ref().unwrap();
@@ -3836,6 +3959,12 @@ pub fn run() -> Result<(), DaemonError> {
     let snapshots = state.snapshot_store();
     let conntrack_worker = conntrack_worker::spawn(snapshots.clone())
         .map_err(|error| DaemonError::platform(format!("conntrack worker: {error}")))?;
+    let (control_worker, control_notices) = {
+        let (sender, receiver) = mpsc::sync_channel(4);
+        let worker = control_worker::ControlWorker::spawn(1, sender)
+            .map_err(|error| DaemonError::platform(format!("control worker: {error}")))?;
+        (Some(worker), receiver)
+    };
     #[cfg(feature = "nss-platform")]
     let (fast_rate_worker, fast_rate_notices) = {
         let (sender, receiver) = mpsc::sync_channel(8);
@@ -3855,6 +3984,10 @@ pub fn run() -> Result<(), DaemonError> {
         last_error: None,
         conntrack_worker: Some(conntrack_worker),
         last_conntrack_request_ms: Cell::new(0),
+        control_worker,
+        control_notices,
+        control_generation: 0,
+        control_pending_generation: None,
         #[cfg(feature = "nss-platform")]
         fast_rate_worker,
         #[cfg(feature = "nss-platform")]
@@ -3931,6 +4064,7 @@ pub fn run() -> Result<(), DaemonError> {
         )?
     };
     app.borrow_mut().runtime = Some(runtime);
+    app.borrow_mut().queue_control_work();
     #[cfg(feature = "nss-platform")]
     app.borrow()
         .fast_rate_timer
@@ -3950,6 +4084,13 @@ pub fn run() -> Result<(), DaemonError> {
     let run_result = event_loop
         .run()
         .map_err(|error| DaemonError::platform(error.to_string()));
+    let control_worker = app.borrow_mut().control_worker.take();
+    let control_worker_result = control_worker.map_or(Ok(()), |worker| {
+        worker
+            .join()
+            .map_err(|_| DaemonError::platform("control worker panicked"))
+    });
+    app.borrow_mut().drain_control_notices();
     let shutdown_result = {
         let mut app = app.borrow_mut();
         let _connection = app.ubus.take();
@@ -3959,7 +4100,7 @@ pub fn run() -> Result<(), DaemonError> {
     if let Some(error) = fatal {
         return Err(DaemonError::platform(error));
     }
-    run_result.and(shutdown_result)
+    run_result.and(control_worker_result).and(shutdown_result)
 }
 
 fn load_config() -> Result<RuntimeConfig, DaemonError> {

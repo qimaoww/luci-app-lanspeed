@@ -279,6 +279,25 @@ fn ambiguous_identity_can_only_remove_or_relax_existing_control() {
 }
 
 #[test]
+fn repeated_prefix_loss_does_not_queue_another_quiesce() {
+    let ready = ApplyResult::ready();
+    assert!(prefix_loss_needs_quiesce(
+        &ready,
+        "local_network_unavailable"
+    ));
+
+    let failed = failed_apply_result("local_network_unavailable", &ready);
+    assert!(!prefix_loss_needs_quiesce(
+        &failed,
+        "local_network_unavailable"
+    ));
+    assert!(prefix_loss_needs_quiesce(
+        &failed,
+        "lan_control_interface_unavailable"
+    ));
+}
+
+#[test]
 fn identity_parser_rejects_command_text() {
     assert!(parse_identity_key("aa:bb:cc:dd:ee:01@lan;reboot").is_err());
     assert!(parse_identity_key("$(reboot)@lan").is_err());
@@ -322,6 +341,25 @@ fn retired_conntrack_cleanup_requires_unique_live_ownership() {
     };
     assert!(deleted_rule_conntrack_ips(Some(&ambiguous)).is_empty());
     assert!(deleted_rule_conntrack_ips(None).is_empty());
+}
+
+#[cfg(feature = "nss-platform")]
+#[test]
+fn completed_apply_consumes_only_its_captured_conntrack_cleanup() {
+    let completed_ip = IpAddr::from_str("192.0.2.10").unwrap();
+    let newer_ip = IpAddr::from_str("192.0.2.11").unwrap();
+    let mut manager = manager();
+    manager
+        .conntrack_cleanup_ips
+        .extend([completed_ip, newer_ip]);
+
+    manager.finish_reconcile(ControlReconcileOutcome {
+        kind: ControlReconcileKind::Apply,
+        result: Ok(ApplyResult::ready()),
+        processed_conntrack_cleanup_ips: BTreeSet::from([completed_ip]),
+    });
+
+    assert_eq!(manager.conntrack_cleanup_ips, BTreeSet::from([newer_ip]));
 }
 
 #[cfg(feature = "nss-platform")]

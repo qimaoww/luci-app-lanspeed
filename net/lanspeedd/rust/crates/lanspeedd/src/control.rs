@@ -180,6 +180,40 @@ pub struct ApplyResult {
     pub verification_failures: BTreeMap<String, String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ControlReconcileKind {
+    Apply,
+    Observe,
+    QuiescePrefixLoss,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ControlReconcileWork {
+    pub(crate) kind: ControlReconcileKind,
+    plan: ControlPlan,
+    previous: ApplyResult,
+    prefix_error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ControlReconcileOutcome {
+    pub(crate) kind: ControlReconcileKind,
+    result: Result<ApplyResult, String>,
+    #[cfg(feature = "nss-platform")]
+    processed_conntrack_cleanup_ips: BTreeSet<IpAddr>,
+}
+
+impl ControlReconcileOutcome {
+    pub(crate) fn failed(kind: ControlReconcileKind, error: impl Into<String>) -> Self {
+        Self {
+            kind,
+            result: Err(error.into()),
+            #[cfg(feature = "nss-platform")]
+            processed_conntrack_cleanup_ips: BTreeSet::new(),
+        }
+    }
+}
+
 impl ApplyResult {
     fn ready() -> Self {
         Self {
@@ -206,6 +240,7 @@ pub struct ControlRpcResponse {
     pub control: ClientControlSummary,
 }
 
+#[derive(Clone)]
 pub struct ControlManager {
     rules: BTreeMap<String, ControlRule>,
     live: BTreeMap<String, LiveClient>,
@@ -694,6 +729,13 @@ impl ControlManager {
     }
 
     pub fn reconcile(&mut self) {
+        let Some(work) = self.begin_reconcile() else {
+            return;
+        };
+        self.finish_reconcile(execute_reconcile(work));
+    }
+
+    pub(crate) fn begin_reconcile(&mut self) -> Option<ControlReconcileWork> {
         let has_active_rules = !self.active_rules().is_empty();
         let prefix_error = if has_active_rules {
             self.refresh_local_prefixes().err()
@@ -701,48 +743,49 @@ impl ControlManager {
             None
         };
         let plan = self.plan();
+        let kind = if let Some(error) = prefix_error.as_deref() {
+            if !prefix_loss_needs_quiesce(&self.result, error) {
+                self.dirty = false;
+                return None;
+            }
+            ControlReconcileKind::QuiescePrefixLoss
+        } else if self.dirty {
+            ControlReconcileKind::Apply
+        } else if self.result.state == "error" {
+            // Keep an apply error sticky until a rule or topology change marks
+            // the desired plan dirty again.
+            return None;
+        } else {
+            ControlReconcileKind::Observe
+        };
+        self.dirty = false;
+        Some(ControlReconcileWork {
+            kind,
+            plan,
+            previous: self.result.clone(),
+            prefix_error,
+        })
+    }
+
+    pub(crate) fn finish_reconcile(&mut self, outcome: ControlReconcileOutcome) {
+        let kind = outcome.kind;
         #[cfg(feature = "nss-platform")]
-        if let Some(error) = prefix_error.as_deref() {
-            // A failed prefix refresh invalidates the local-access bypass. Do
-            // not keep an older verified queue alive against a changed LAN
-            // topology; remove only this platform's owned control objects and
-            // wait for fresh prefixes before rebuilding.
-            if self.result.state != "error" || self.result.reason.as_deref() != Some(error) {
-                let cleanup_error = crate::platform::nss::control::quiesce_prefix_loss(&plan).err();
-                self.result =
-                    failed_apply_result(cleanup_error.as_deref().unwrap_or(error), &self.result);
-            }
-            self.dirty = false;
-            return;
-        }
-        if !self.dirty {
-            // Observing absent counters after an apply rollback must not turn
-            // a concrete failure into a misleading "waiting for traffic"
-            // state.  Keep the error sticky until a topology change, reload,
-            // or explicit rule update marks the desired plan dirty again.
-            if self.result.state == "error" {
-                return;
-            }
-            self.result = platform::observe(&plan, &self.result);
-            if self.result.reason.as_deref() == Some("control_topology_changed") {
-                #[cfg(feature = "nss-platform")]
-                self.rearm_nss_executor_verification();
-                self.dirty = true;
-                #[cfg(not(feature = "nss-platform"))]
-                return;
-            } else {
-                return;
-            }
-        }
-        if let Some(error) = prefix_error {
-            self.result = failed_apply_result(&error, &self.result);
-            return;
-        }
-        match platform::apply(&plan) {
+        let processed_conntrack_cleanup_ips = outcome.processed_conntrack_cleanup_ips;
+        match outcome.result {
             Ok(result) => {
+                if kind == ControlReconcileKind::Apply {
+                    #[cfg(feature = "nss-platform")]
+                    self.conntrack_cleanup_ips
+                        .retain(|ip| !processed_conntrack_cleanup_ips.contains(ip));
+                }
+                if kind == ControlReconcileKind::Observe
+                    && result.reason.as_deref() == Some("control_topology_changed")
+                {
+                    #[cfg(feature = "nss-platform")]
+                    self.rearm_nss_executor_verification();
+                    self.dirty = true;
+                }
                 self.result = result;
-                #[cfg(feature = "nss-platform")]
-                self.conntrack_cleanup_ips.clear();
             }
             Err(error) => {
                 self.result = ApplyResult {
@@ -762,7 +805,6 @@ impl ControlManager {
                 };
             }
         }
-        self.dirty = false;
     }
 
     /// Reload candidates must prove that every inherited NSS object still
@@ -1244,6 +1286,61 @@ impl ControlManager {
     }
 }
 
+pub(crate) fn execute_reconcile(work: ControlReconcileWork) -> ControlReconcileOutcome {
+    let kind = work.kind;
+    #[cfg(feature = "nss-platform")]
+    let processed_conntrack_cleanup_ips = work.plan.nss.conntrack_cleanup_ips().clone();
+    let result = match kind {
+        ControlReconcileKind::Apply => platform::apply(&work.plan),
+        ControlReconcileKind::Observe => Ok(platform::observe(&work.plan, &work.previous)),
+        ControlReconcileKind::QuiescePrefixLoss => {
+            let primary = work
+                .prefix_error
+                .as_deref()
+                .unwrap_or("local_network_unavailable");
+            let cleanup_error = platform::quiesce_prefix_loss(&work.plan).err();
+            Ok(failed_apply_result(
+                cleanup_error.as_deref().unwrap_or(primary),
+                &work.previous,
+            ))
+        }
+    };
+    ControlReconcileOutcome {
+        kind,
+        result,
+        #[cfg(feature = "nss-platform")]
+        processed_conntrack_cleanup_ips,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_reconcile_work() -> ControlReconcileWork {
+    ControlReconcileWork {
+        kind: ControlReconcileKind::Observe,
+        plan: ControlPlan {
+            lan_device: "br-lan".into(),
+            control_devices: vec!["br-lan".into()],
+            dae_upload_devices: Vec::new(),
+            local_prefixes: Vec::new(),
+            rules: Vec::new(),
+            #[cfg(feature = "nss-platform")]
+            nss: NssControlPlan::default(),
+        },
+        previous: ApplyResult::ready(),
+        prefix_error: None,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_reconcile_outcome(kind: ControlReconcileKind) -> ControlReconcileOutcome {
+    ControlReconcileOutcome {
+        kind,
+        result: Ok(ApplyResult::ready()),
+        #[cfg(feature = "nss-platform")]
+        processed_conntrack_cleanup_ips: BTreeSet::new(),
+    }
+}
+
 #[cfg(feature = "nss-platform")]
 fn deleted_rule_conntrack_ips(client: Option<&LiveClient>) -> Vec<IpAddr> {
     client
@@ -1280,6 +1377,11 @@ fn failed_apply_result(error: &str, previous: &ApplyResult) -> ApplyResult {
         cpu_verified_directions: BTreeMap::new(),
         verification_failures: BTreeMap::new(),
     }
+}
+
+fn prefix_loss_needs_quiesce(previous: &ApplyResult, error: &str) -> bool {
+    let reason = public_control_error(error);
+    previous.state != "error" || previous.reason.as_deref() != Some(reason.as_str())
 }
 
 fn public_control_error(error: &str) -> String {

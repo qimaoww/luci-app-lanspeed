@@ -21,6 +21,11 @@ pub(super) fn cleanup(plan: &ControlPlan) -> Result<(), String> {
 }
 
 #[cfg(not(feature = "nss-platform"))]
+pub(super) fn quiesce_prefix_loss(_plan: &ControlPlan) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(feature = "nss-platform"))]
 pub(super) fn max_rate_bps() -> u64 {
     crate::platform::x86::control::max_rate_bps()
 }
@@ -44,6 +49,11 @@ pub(super) fn observe(plan: &ControlPlan, previous: &ApplyResult) -> ApplyResult
 #[cfg(feature = "nss-platform")]
 pub(super) fn cleanup(plan: &ControlPlan) -> Result<(), String> {
     crate::platform::nss::control::cleanup(plan)
+}
+
+#[cfg(feature = "nss-platform")]
+pub(super) fn quiesce_prefix_loss(plan: &ControlPlan) -> Result<(), String> {
+    crate::platform::nss::control::quiesce_prefix_loss(plan)
 }
 
 #[cfg(feature = "nss-platform")]
