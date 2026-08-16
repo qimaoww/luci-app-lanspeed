@@ -50,17 +50,32 @@ impl FastRateWakeupBook {
     }
 
     pub(crate) fn on_event_hint(&mut self, now_ms: u64) {
-        self.telemetry.event_received = self.telemetry.event_received.saturating_add(1);
+        self.on_event_hints(now_ms, 1);
+    }
+
+    pub(crate) fn on_event_hints(&mut self, now_ms: u64, count: u64) {
+        if count == 0 {
+            return;
+        }
+        self.telemetry.event_received = self.telemetry.event_received.saturating_add(count);
         self.telemetry.last_event_ms = Some(now_ms);
         if self.event_deadline_ms.is_some() {
-            self.telemetry.event_coalesced = self.telemetry.event_coalesced.saturating_add(1);
+            self.telemetry.event_coalesced = self.telemetry.event_coalesced.saturating_add(count);
             return;
         }
         self.event_deadline_ms = Some(now_ms.saturating_add(self.debounce_ms));
+        self.telemetry.event_coalesced = self
+            .telemetry
+            .event_coalesced
+            .saturating_add(count.saturating_sub(1));
     }
 
     pub(crate) fn on_fixed_timer(&mut self) {
         self.fixed_timer_pending = true;
+    }
+
+    pub(crate) fn defer_event_until(&mut self, deadline_ms: u64) {
+        self.event_deadline_ms = Some(deadline_ms);
     }
 
     pub(crate) fn poll(&mut self, now_ms: u64) -> Option<FastRateWakeup> {
@@ -105,6 +120,43 @@ mod tests {
         assert_eq!(telemetry.event_received, 2);
         assert_eq!(telemetry.event_coalesced, 1);
         assert_eq!(telemetry.last_event_ms, Some(105));
+    }
+
+    #[test]
+    fn event_batch_counts_every_hint_but_arms_one_deadline() {
+        let mut book = FastRateWakeupBook::default();
+        book.on_event_hints(100, 4);
+        assert!(book.poll(119).is_none());
+        assert_eq!(
+            book.poll(120),
+            Some(FastRateWakeup {
+                event_hint: true,
+                fixed_timer: false,
+            })
+        );
+        let telemetry = book.telemetry();
+        assert_eq!(telemetry.event_received, 4);
+        assert_eq!(telemetry.event_coalesced, 3);
+    }
+
+    #[test]
+    fn deferred_event_keeps_coalescing_until_the_rate_window_is_eligible() {
+        let mut book = FastRateWakeupBook::default();
+        book.on_event_hint(100);
+        assert!(book.poll(120).is_some());
+        book.defer_event_until(1_000);
+        book.on_event_hints(500, 3);
+        assert!(book.poll(999).is_none());
+        assert_eq!(
+            book.poll(1_000),
+            Some(FastRateWakeup {
+                event_hint: true,
+                fixed_timer: false,
+            })
+        );
+        let telemetry = book.telemetry();
+        assert_eq!(telemetry.event_received, 4);
+        assert_eq!(telemetry.event_coalesced, 3);
     }
 
     #[test]

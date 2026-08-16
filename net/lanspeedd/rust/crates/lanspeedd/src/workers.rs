@@ -53,14 +53,27 @@ impl<T: Send + 'static> Worker<T> {
     pub fn spawn(
         name: &'static str,
         capacity: usize,
-        handler: impl FnMut(T) + Send + 'static,
+        mut handler: impl FnMut(T) + Send + 'static,
+    ) -> Result<Self, std::io::Error> {
+        Self::spawn_with_tick(name, capacity, STOP_POLL_INTERVAL, move |task| {
+            if let Some(task) = task {
+                handler(task);
+            }
+        })
+    }
+
+    fn spawn_with_tick(
+        name: &'static str,
+        capacity: usize,
+        tick_interval: Duration,
+        handler: impl FnMut(Option<T>) + Send + 'static,
     ) -> Result<Self, std::io::Error> {
         let (sender, receiver) = mpsc::sync_channel(capacity.max(1));
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let join = thread::Builder::new()
             .name(name.to_owned())
-            .spawn(move || run_worker(receiver, worker_stop, handler))?;
+            .spawn(move || run_worker_with_tick(receiver, worker_stop, tick_interval, handler))?;
         Ok(Self {
             queue: WorkerQueue { sender },
             stop,
@@ -104,6 +117,14 @@ pub fn spawn_rate_worker<T: Send + 'static>(
     Worker::spawn("lanspeed-rate", capacity, handler)
 }
 
+pub fn spawn_rate_worker_with_tick<T: Send + 'static>(
+    capacity: usize,
+    tick_interval: Duration,
+    handler: impl FnMut(Option<T>) + Send + 'static,
+) -> Result<RateWorker<T>, std::io::Error> {
+    Worker::spawn_with_tick("lanspeed-rate", capacity, tick_interval, handler)
+}
+
 pub fn spawn_runtime_worker<T: Send + 'static>(
     capacity: usize,
     handler: impl FnMut(T) + Send + 'static,
@@ -111,11 +132,16 @@ pub fn spawn_runtime_worker<T: Send + 'static>(
     Worker::spawn("lanspeed-runtime", capacity, handler)
 }
 
-fn run_worker<T>(receiver: Receiver<T>, stop: Arc<AtomicBool>, mut handler: impl FnMut(T)) {
+fn run_worker_with_tick<T>(
+    receiver: Receiver<T>,
+    stop: Arc<AtomicBool>,
+    tick_interval: Duration,
+    mut handler: impl FnMut(Option<T>),
+) {
     while !stop.load(Ordering::Acquire) {
-        match receiver.recv_timeout(STOP_POLL_INTERVAL) {
-            Ok(task) => handler(task),
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+        match receiver.recv_timeout(tick_interval) {
+            Ok(task) => handler(Some(task)),
+            Err(mpsc::RecvTimeoutError::Timeout) => handler(None),
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
@@ -129,7 +155,7 @@ mod tests {
         time::Duration,
     };
 
-    use super::{spawn_rate_worker, spawn_runtime_worker, QueueError};
+    use super::{spawn_rate_worker, spawn_rate_worker_with_tick, spawn_runtime_worker, QueueError};
 
     #[test]
     fn bounded_queue_reports_full_without_blocking_the_caller() {
@@ -183,5 +209,19 @@ mod tests {
         assert!(matches!(second.0, "rate" | "runtime"));
         rate.join().unwrap();
         runtime.join().unwrap();
+    }
+
+    #[test]
+    fn ticking_rate_worker_runs_idle_work_without_a_command() {
+        let (sender, receiver) = mpsc::channel();
+        let worker =
+            spawn_rate_worker_with_tick(1, Duration::from_millis(5), move |task: Option<()>| {
+                if task.is_none() {
+                    let _ = sender.send(());
+                }
+            })
+            .unwrap();
+        receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        worker.join().unwrap();
     }
 }

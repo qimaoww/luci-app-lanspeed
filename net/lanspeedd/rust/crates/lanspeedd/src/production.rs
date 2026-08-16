@@ -2875,8 +2875,8 @@ impl ProductionRuntime {
     }
 
     #[cfg(feature = "nss-platform")]
-    fn fast_rate_sources(&self) -> Result<Option<FastRateSources>, String> {
-        let Some(ecm_bpf) = self.nss.ecm_bpf.as_ref() else {
+    fn fast_rate_sources(&mut self) -> Result<Option<FastRateSources>, String> {
+        let Some(ecm_bpf) = self.nss.ecm_bpf.as_mut() else {
             return Ok(None);
         };
         let s_reader = self
@@ -2884,7 +2884,18 @@ impl ProductionRuntime {
             .fast_counter_reader()
             .map_err(|error| error.to_string())?;
         let n_reader = ecm_bpf.fast_n_reader().map_err(|error| error.to_string())?;
-        Ok(Some(FastRateSources::new(n_reader, s_reader)))
+        let event_reader = ecm_bpf.take_event_hint_reader();
+        Ok(Some(FastRateSources::new(n_reader, s_reader, event_reader)))
+    }
+
+    #[cfg(feature = "nss-platform")]
+    fn apply_fast_event_telemetry(
+        &mut self,
+        telemetry: crate::platform::nss::ecm_bpf::EcmEventHintTelemetry,
+    ) {
+        if let Some(ecm_bpf) = self.nss.ecm_bpf.as_mut() {
+            ecm_bpf.apply_event_hint_telemetry(telemetry);
+        }
     }
 
     fn shutdown(&mut self) -> Result<(), DaemonError> {
@@ -3275,6 +3286,11 @@ impl App {
             let Ok(notice) = self.fast_rate_notices.try_recv() else {
                 break;
             };
+            if let Some(telemetry) = notice.event_telemetry {
+                if let Some(runtime) = self.runtime.as_mut() {
+                    runtime.apply_fast_event_telemetry(telemetry);
+                }
+            }
             if !notice.sample_attempted || notice.base_generation == 0 {
                 continue;
             }
@@ -3301,6 +3317,12 @@ impl App {
                 "last_rise_latency_ms": telemetry.last_rise_latency_ms,
                 "client_shadow_entries": notice.client_shadow_entries,
                 "client_shadow_invalid_windows": notice.client_shadow_invalid_windows,
+                "event_received": notice.wakeup_telemetry.event_received,
+                "event_coalesced": notice.wakeup_telemetry.event_coalesced,
+                "fixed_timer_wakeups": notice.wakeup_telemetry.fixed_timer_wakeups,
+                "last_event_ms": notice.wakeup_telemetry.last_event_ms,
+                "last_wakeup_event": notice.wakeup.event_hint,
+                "last_wakeup_fixed": notice.wakeup.fixed_timer,
                 "formal_rate_owner": false,
             });
             let snapshots = self.state.snapshot_store();
@@ -3330,7 +3352,7 @@ impl App {
         let (sender, receiver) = mpsc::sync_channel(8);
         let sources = match self
             .runtime
-            .as_ref()
+            .as_mut()
             .map(ProductionRuntime::fast_rate_sources)
         {
             Some(Ok(sources)) => sources,
@@ -3360,7 +3382,7 @@ impl App {
         if let Some(worker) = self.fast_rate_worker.as_ref() {
             match fast_rate_worker::try_queue(
                 &worker.queue(),
-                FastRateCommand::FixedTimer {
+                FastRateCommand::Poll {
                     now_ms,
                     base_generation,
                     edge_bps,
@@ -4076,9 +4098,9 @@ pub fn run() -> Result<(), DaemonError> {
         .fast_rate_timer
         .as_ref()
         .expect("NSS FastRate timer must be installed")
-        // Start off the collection deadline so a worker sample can publish
-        // against the current base generation before the next collection.
-        .schedule(1_250)
+        // The worker owns the 20 ms event poll/debounce and 1 s fixed timer.
+        // This timer only refreshes generation context and drains notices.
+        .schedule(250)
         .map_err(|error| DaemonError::platform(format!("NSS FastRate timer: {error}")))?;
     app.borrow_mut().schedule_conntrack(true);
     let _signals = {

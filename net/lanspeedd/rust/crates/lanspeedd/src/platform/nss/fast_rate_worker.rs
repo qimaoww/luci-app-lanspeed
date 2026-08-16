@@ -1,11 +1,14 @@
 //! NSS FastRate worker boundary.
 
-use std::sync::mpsc::SyncSender;
+use std::{sync::mpsc::SyncSender, time::Duration};
 
 use crate::{
     clock::monotonic_millis,
-    platform::{nss::ecm_bpf::EcmFastCounterMapReader, tc_bpf_runtime::FastCounterMapReader},
-    workers::{spawn_rate_worker, QueueError, RateWorker, WorkerQueue},
+    platform::{
+        nss::ecm_bpf::{EcmEventHintReader, EcmEventHintTelemetry, EcmFastCounterMapReader},
+        tc_bpf_runtime::FastCounterMapReader,
+    },
+    workers::{spawn_rate_worker_with_tick, QueueError, RateWorker, WorkerQueue},
 };
 
 use super::{
@@ -13,12 +16,15 @@ use super::{
     fast_n_runtime::FastNSnapshot,
     fast_rate_shadow::FastRateShadow,
     fast_rate_store::{FastRateSample, FastRateTelemetry},
-    fast_rate_wakeup::{FastRateWakeup, FastRateWakeupBook},
+    fast_rate_wakeup::{FastRateWakeup, FastRateWakeupBook, FastRateWakeupTelemetry},
     fast_s_runtime::FastSRuntime,
     fast_s_runtime::FastSSnapshot,
 };
 
 const FAST_RATE_SAMPLE_INTERVAL_MS: u64 = 1_000;
+const FAST_RATE_EVENT_MIN_INTERVAL_MS: u64 = 900;
+const FAST_RATE_EVENT_POLL_MS: u64 = 20;
+const FAST_RATE_EVENT_DRAIN_BUDGET: usize = 4_096;
 
 #[derive(Clone, Debug)]
 pub(crate) enum FastRateCommand {
@@ -43,11 +49,16 @@ pub(crate) enum FastRateCommand {
 pub(crate) struct FastRateSources {
     n: EcmFastCounterMapReader,
     s: FastCounterMapReader,
+    events: Option<EcmEventHintReader>,
 }
 
 impl FastRateSources {
-    pub(crate) fn new(n: EcmFastCounterMapReader, s: FastCounterMapReader) -> Self {
-        Self { n, s }
+    pub(crate) fn new(
+        n: EcmFastCounterMapReader,
+        s: FastCounterMapReader,
+        events: Option<EcmEventHintReader>,
+    ) -> Self {
+        Self { n, s, events }
     }
 }
 
@@ -68,6 +79,8 @@ pub(crate) struct FastRateWakeupNotice {
     pub base_generation: u64,
     pub observed_ms: u64,
     pub wakeup: FastRateWakeup,
+    pub wakeup_telemetry: FastRateWakeupTelemetry,
+    pub event_telemetry: Option<EcmEventHintTelemetry>,
     pub sample: Option<FastRateSample>,
     pub telemetry: FastRateTelemetry,
     pub client_shadow_entries: usize,
@@ -93,12 +106,19 @@ impl FastRateWorker {
         sources: Option<FastRateSources>,
     ) -> Result<Self, std::io::Error> {
         let mut state = FastRateWorkerState::new(sources);
-        let worker = spawn_rate_worker(capacity, move |command| {
-            // The worker owns debounce, map readers, stable-read aggregation,
-            // and the same-window shadow. The uloop thread only supplies the
-            // immutable base generation and receives a completed notice.
-            state.handle(&notices, command);
-        })?;
+        let worker = spawn_rate_worker_with_tick(
+            capacity,
+            Duration::from_millis(FAST_RATE_EVENT_POLL_MS),
+            move |command| {
+                // The worker owns debounce, map readers, stable-read aggregation,
+                // and the same-window shadow. The uloop thread only supplies the
+                // immutable base generation and receives a completed notice.
+                match command {
+                    Some(command) => state.handle(&notices, command),
+                    None => state.tick(&notices),
+                }
+            },
+        )?;
         Ok(Self { worker })
     }
 
@@ -118,6 +138,8 @@ struct FastRateWorkerState {
     wakeups: FastRateWakeupBook,
     shadow: FastRateShadow,
     last_sample_ms: Option<u64>,
+    context: Option<(u64, Option<u64>)>,
+    next_fixed_ms: Option<u64>,
 }
 
 impl FastRateWorkerState {
@@ -129,6 +151,8 @@ impl FastRateWorkerState {
             wakeups: FastRateWakeupBook::default(),
             shadow: FastRateShadow::new(),
             last_sample_ms: None,
+            context: None,
+            next_fixed_ms: None,
         }
     }
 
@@ -139,6 +163,7 @@ impl FastRateWorkerState {
                 base_generation,
                 edge_bps,
             } => {
+                self.context = Some((base_generation, edge_bps));
                 self.wakeups.on_event_hint(now_ms);
                 self.sample_if_due(notices, now_ms, base_generation, edge_bps);
             }
@@ -147,6 +172,7 @@ impl FastRateWorkerState {
                 base_generation,
                 edge_bps,
             } => {
+                self.context = Some((base_generation, edge_bps));
                 self.wakeups.on_fixed_timer();
                 self.sample_if_due(notices, now_ms, base_generation, edge_bps);
             }
@@ -154,7 +180,14 @@ impl FastRateWorkerState {
                 now_ms,
                 base_generation,
                 edge_bps,
-            } => self.sample_if_due(notices, now_ms, base_generation, edge_bps),
+            } => {
+                self.context = Some((base_generation, edge_bps));
+                if self.sources.is_some() {
+                    self.tick_at(notices, now_ms);
+                } else {
+                    self.sample_if_due(notices, now_ms, base_generation, edge_bps);
+                }
+            }
             FastRateCommand::Sample(input) => {
                 let now_ms = input
                     .n_read_end_ms
@@ -176,6 +209,37 @@ impl FastRateWorkerState {
         }
     }
 
+    fn tick(&mut self, notices: &SyncSender<FastRateWakeupNotice>) {
+        if self.sources.is_none() {
+            return;
+        }
+        let Ok(now_ms) = monotonic_millis() else {
+            return;
+        };
+        self.tick_at(notices, now_ms);
+    }
+
+    fn tick_at(&mut self, notices: &SyncSender<FastRateWakeupNotice>, now_ms: u64) {
+        let event_count = self
+            .sources
+            .as_mut()
+            .and_then(|sources| sources.events.as_mut())
+            .map_or(0, |events| events.drain(FAST_RATE_EVENT_DRAIN_BUDGET));
+        self.wakeups.on_event_hints(now_ms, event_count);
+
+        let Some((base_generation, edge_bps)) = self.context else {
+            return;
+        };
+        let next_fixed_ms = self
+            .next_fixed_ms
+            .get_or_insert_with(|| now_ms.saturating_add(FAST_RATE_SAMPLE_INTERVAL_MS));
+        if now_ms >= *next_fixed_ms {
+            self.wakeups.on_fixed_timer();
+            *next_fixed_ms = now_ms.saturating_add(FAST_RATE_SAMPLE_INTERVAL_MS);
+        }
+        self.sample_if_due(notices, now_ms, base_generation, edge_bps);
+    }
+
     fn sample_if_due(
         &mut self,
         notices: &SyncSender<FastRateWakeupNotice>,
@@ -186,12 +250,21 @@ impl FastRateWorkerState {
         let Some(wakeup) = self.wakeups.poll(now_ms) else {
             return;
         };
-        if self.sources.is_some()
-            && self
-                .last_sample_ms
-                .is_some_and(|last| now_ms.saturating_sub(last) < FAST_RATE_SAMPLE_INTERVAL_MS)
-        {
-            return;
+        if self.sources.is_some() {
+            if let Some(last_sample_ms) = self.last_sample_ms {
+                let min_interval_ms = if wakeup.event_hint {
+                    FAST_RATE_EVENT_MIN_INTERVAL_MS
+                } else {
+                    FAST_RATE_SAMPLE_INTERVAL_MS
+                };
+                if now_ms.saturating_sub(last_sample_ms) < min_interval_ms {
+                    if wakeup.event_hint {
+                        self.wakeups
+                            .defer_event_until(last_sample_ms.saturating_add(min_interval_ms));
+                    }
+                    return;
+                }
+            }
         }
         let sample_attempted = self.sources.is_some();
         if sample_attempted {
@@ -259,6 +332,14 @@ impl FastRateWorkerState {
             base_generation,
             observed_ms,
             wakeup,
+            wakeup_telemetry: self.wakeups.telemetry(),
+            event_telemetry: self.sources.as_ref().and_then(|sources| {
+                sources.events.as_ref().map(|events| {
+                    let mut telemetry = events.telemetry();
+                    telemetry.event_coalesced = self.wakeups.telemetry().event_coalesced;
+                    telemetry
+                })
+            }),
             sample: self.shadow.latest(),
             telemetry: self.shadow.telemetry(),
             client_shadow_entries: self.shadow.client_count(),

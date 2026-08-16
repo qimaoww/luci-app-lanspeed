@@ -619,6 +619,59 @@ struct EventStatsValue(EcmEventStats);
 
 unsafe impl Pod for EventStatsValue {}
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct EcmEventHintTelemetry {
+    pub(crate) event_received: u64,
+    pub(crate) event_coalesced: u64,
+    pub(crate) event_invalid: u64,
+    pub(crate) event_source_counts: [u64; EVENT_SOURCE_BUCKETS],
+    pub(crate) event_interval_histogram: [u64; EVENT_INTERVAL_BUCKETS],
+    pub(crate) event_last_timestamp_ns: Option<u64>,
+    pub(crate) event_last_sequence: Option<u64>,
+}
+
+pub(crate) struct EcmEventHintReader {
+    ringbuf: RingBuf<MapData>,
+    telemetry: EcmEventHintTelemetry,
+}
+
+impl EcmEventHintReader {
+    pub(crate) fn drain(&mut self, budget: usize) -> u64 {
+        let mut received = 0u64;
+        for _ in 0..budget {
+            let Some(item) = self.ringbuf.next() else {
+                break;
+            };
+            let event = decode_event_hint(&item);
+            drop(item);
+            let Some(event) = event else {
+                self.telemetry.event_invalid = self.telemetry.event_invalid.saturating_add(1);
+                continue;
+            };
+            received = received.saturating_add(1);
+            self.telemetry.event_received = self.telemetry.event_received.saturating_add(1);
+            let source_bucket = event_source_bucket(event.source);
+            self.telemetry.event_source_counts[source_bucket] =
+                self.telemetry.event_source_counts[source_bucket].saturating_add(1);
+            if let Some(previous) = self.telemetry.event_last_timestamp_ns {
+                if event.timestamp_ns > previous {
+                    let interval_bucket =
+                        event_interval_bucket(event.timestamp_ns.saturating_sub(previous));
+                    self.telemetry.event_interval_histogram[interval_bucket] =
+                        self.telemetry.event_interval_histogram[interval_bucket].saturating_add(1);
+                }
+            }
+            self.telemetry.event_last_timestamp_ns = Some(event.timestamp_ns);
+            self.telemetry.event_last_sequence = Some(event.sequence);
+        }
+        received
+    }
+
+    pub(crate) const fn telemetry(&self) -> EcmEventHintTelemetry {
+        self.telemetry
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EcmBpfHealth {
     pub object_loaded: bool,
@@ -1063,6 +1116,32 @@ impl EcmBpfRuntime {
         let counters = PerCpuHashMap::try_from(map)
             .map_err(|error| EcmBpfRuntimeError::new(ECM_BPF_MAP_READ_STAGE, error.to_string()))?;
         Ok(EcmFastCounterMapReader { counters })
+    }
+
+    pub(crate) fn take_event_hint_reader(&mut self) -> Option<EcmEventHintReader> {
+        let ringbuf = self.event_ringbuf.take()?;
+        Some(EcmEventHintReader {
+            ringbuf,
+            telemetry: EcmEventHintTelemetry {
+                event_received: self.event_received,
+                event_coalesced: self.event_coalesced,
+                event_invalid: self.event_invalid,
+                event_source_counts: self.event_source_counts,
+                event_interval_histogram: self.event_interval_histogram,
+                event_last_timestamp_ns: self.event_last_timestamp_ns,
+                event_last_sequence: self.event_last_sequence,
+            },
+        })
+    }
+
+    pub(crate) fn apply_event_hint_telemetry(&mut self, telemetry: EcmEventHintTelemetry) {
+        self.event_received = telemetry.event_received;
+        self.event_coalesced = telemetry.event_coalesced;
+        self.event_invalid = telemetry.event_invalid;
+        self.event_source_counts = telemetry.event_source_counts;
+        self.event_interval_histogram = telemetry.event_interval_histogram;
+        self.event_last_timestamp_ns = telemetry.event_last_timestamp_ns;
+        self.event_last_sequence = telemetry.event_last_sequence;
     }
 
     fn read_client_map(&self) -> Result<EcmMapRead, EcmBpfRuntimeError> {
