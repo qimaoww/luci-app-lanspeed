@@ -24,9 +24,9 @@ use crate::{
         ControlReconcileWork,
     },
     daemon::{
-        abort_reload_after_timer_failure, abort_reload_candidate, activate_runtime,
-        collect_and_reschedule, commit_reload, install_control_or_shutdown, reconnect_and_register,
-        shutdown_runtime, CoordinatorState, Runtime, UloopSignalBridge,
+        abort_reload_after_timer_failure, abort_reload_candidate, activate_runtime, commit_reload,
+        install_control_or_shutdown, reconnect_and_register, shutdown_runtime, CoordinatorState,
+        Runtime, UloopSignalBridge,
     },
     error::DaemonError,
     history::overview::{
@@ -60,7 +60,8 @@ use crate::{
         },
         Mode as ProbeMode, ProbeCapabilities, ProbeReport, RuntimeHealth,
     },
-    state::{ResponseSnapshot, CONNECTION_SEMANTICS, OVERVIEW_SAMPLE_SOURCE},
+    runtime_worker::{self, RuntimeCollectionNotice, RuntimeCollectionWorker},
+    state::{diagnostic_now_ms, ResponseSnapshot, CONNECTION_SEMANTICS, OVERVIEW_SAMPLE_SOURCE},
     ubus,
 };
 
@@ -170,6 +171,7 @@ use crate::{
 };
 
 const RECONNECT_MS: u32 = 1_000;
+const RUNTIME_NOTICE_POLL_MS: u32 = 20;
 // Kept as a policy/timer constant so the x86 build does not need to link the
 // NSS platform module merely to compile common scheduling code.
 const ACCESS_EDGE_INTERVAL_MS: u64 = 1_000;
@@ -3232,6 +3234,10 @@ struct App {
     ubus: Option<UbusConnection>,
     collection_timer: Option<Timer>,
     collection_deadline_ms: Cell<u64>,
+    runtime_worker: Option<RuntimeCollectionWorker<ProductionRuntime>>,
+    runtime_notices: Receiver<RuntimeCollectionNotice<ProductionRuntime>>,
+    runtime_collection_pending: bool,
+    runtime_notice_timer: Option<Timer>,
     reconnect_timer: Option<Timer>,
     reconnect_pending: Cell<bool>,
     mode_reload: DaeModeReloadLatch,
@@ -3322,26 +3328,143 @@ impl App {
         self.drain_control_notices();
         #[cfg(feature = "nss-platform")]
         self.drain_fast_rate_notices();
-        let timer = self.collection_timer.as_ref().unwrap();
-        let deadline = &self.collection_deadline_ms;
-        let runtime = self
-            .runtime
-            .as_mut()
-            .expect("collection timer requires a staged runtime");
-        let result = collect_and_reschedule(
-            &self.state,
-            runtime,
-            |delay| schedule_absolute_collection(timer, deadline, delay),
-            UloopGuard::request_stop,
-        );
-        if result.is_ok() {
-            self.queue_control_work();
+        self.drain_runtime_notices();
+        if self.runtime_collection_pending {
+            self.schedule_runtime_notice_poll();
+            return;
         }
-        #[cfg(feature = "nss-platform")]
-        self.drain_fast_rate_notices();
-        self.schedule_conntrack(false);
+        let Some(runtime) = self.runtime.take() else {
+            self.last_error = Some("runtime collection ownership unavailable".into());
+            self.schedule_collection_retry();
+            return;
+        };
+        let Some(worker) = self.runtime_worker.as_ref() else {
+            self.runtime = Some(runtime);
+            self.last_error = Some("runtime collection worker unavailable".into());
+            self.schedule_collection_retry();
+            return;
+        };
+        match worker.try_collect(runtime, self.state.config().refresh_interval_ms) {
+            Ok(()) => {
+                self.runtime_collection_pending = true;
+                self.schedule_runtime_notice_poll();
+            }
+            Err((error, runtime)) => {
+                self.runtime = Some(runtime);
+                self.last_error = Some(match error {
+                    QueueError::Full => "runtime collection worker queue full".into(),
+                    QueueError::Disconnected => "runtime collection worker disconnected".into(),
+                });
+                self.schedule_collection_retry();
+            }
+        }
+    }
+
+    fn runtime_notice_tick(&mut self) {
+        self.drain_runtime_notices();
+        if self.runtime_collection_pending {
+            self.schedule_runtime_notice_poll();
+        }
+    }
+
+    fn drain_runtime_notices(&mut self) {
+        while let Ok(notice) = self.runtime_notices.try_recv() {
+            if !self.runtime_collection_pending || self.runtime.is_some() {
+                let mut runtime = notice.runtime;
+                let _ = runtime.shutdown();
+                self.last_error = Some("unexpected runtime collection notice".into());
+                continue;
+            }
+            self.runtime_collection_pending = false;
+            self.runtime = Some(notice.runtime);
+            let collection_ok = match notice.result {
+                Ok(snapshot) => {
+                    let now_ms = diagnostic_now_ms(snapshot.interfaces.monotonic_ms.unwrap_or(0));
+                    self.state.publish_collection_success(
+                        snapshot,
+                        now_ms,
+                        notice.collection_interval_ms,
+                    );
+                    true
+                }
+                Err(error) => {
+                    let fallback = self.state.snapshot().interfaces.monotonic_ms.unwrap_or(0);
+                    self.state.publish_collection_failure(
+                        diagnostic_now_ms(fallback),
+                        notice.collection_interval_ms,
+                        &error,
+                    );
+                    self.last_error = Some(error.to_string());
+                    false
+                }
+            };
+            if let Err(error) = schedule_absolute_collection(
+                self.collection_timer
+                    .as_ref()
+                    .expect("collection timer must be installed"),
+                &self.collection_deadline_ms,
+                notice.collection_interval_ms,
+            ) {
+                let message = format!("collection timer failed: {error}");
+                self.last_error = Some(message.clone());
+                *self.state.fatal_cell().borrow_mut() = Some(message);
+                UloopGuard::request_stop();
+                return;
+            }
+            if collection_ok {
+                self.queue_control_work();
+            }
+            self.drain_control_notices();
+            #[cfg(feature = "nss-platform")]
+            self.drain_fast_rate_notices();
+            self.schedule_conntrack(false);
+        }
+    }
+
+    fn recover_runtime_worker_notice(&mut self) {
+        while let Ok(notice) = self.runtime_notices.try_recv() {
+            if self.runtime.is_none() {
+                self.runtime_collection_pending = false;
+                self.runtime = Some(notice.runtime);
+            } else {
+                let mut runtime = notice.runtime;
+                let _ = runtime.shutdown();
+            }
+        }
+    }
+
+    fn schedule_runtime_notice_poll(&mut self) {
+        let result = self
+            .runtime_notice_timer
+            .as_ref()
+            .expect("runtime notice timer must be installed")
+            .schedule(RUNTIME_NOTICE_POLL_MS);
         if let Err(error) = result {
-            self.last_error = Some(error.to_string());
+            let message = format!("runtime notice timer failed: {error}");
+            self.last_error = Some(message.clone());
+            *self.state.fatal_cell().borrow_mut() = Some(message);
+            UloopGuard::request_stop();
+        }
+    }
+
+    fn schedule_collection_retry(&mut self) {
+        let interval = self
+            .runtime
+            .as_ref()
+            .map_or(self.state.config().refresh_interval_ms, |runtime| {
+                runtime.collection_interval_ms(self.state.config().refresh_interval_ms)
+            });
+        if let Err(error) = schedule_absolute_collection(
+            self.collection_timer
+                .as_ref()
+                .expect("collection timer must be installed"),
+            &self.collection_deadline_ms,
+            interval,
+        ) {
+            let message = format!("collection retry timer failed: {error}");
+            self.last_error = Some(message.clone());
+            *self.state.fatal_cell().borrow_mut() = Some(message);
+            UloopGuard::request_stop();
         }
     }
 
@@ -3481,8 +3604,12 @@ impl App {
         }
     }
     fn before_reply(&mut self, method: ubus::Method) -> Result<(), DaemonError> {
+        self.drain_runtime_notices();
         self.drain_control_notices();
         if method == ubus::Method::Reload {
+            if self.runtime_collection_pending {
+                return Err(DaemonError::reload("runtime collection pending"));
+            }
             self.reload()
         } else {
             if matches!(
@@ -3547,6 +3674,9 @@ impl App {
     }
 
     fn drain_control_notices(&mut self) {
+        if self.runtime.is_none() {
+            return;
+        }
         while let Ok(notice) = self.control_notices.try_recv() {
             if self.control_pending_generation != Some(notice.generation) {
                 continue;
@@ -3586,7 +3716,11 @@ impl App {
         }
     }
     fn handle_control(&mut self, command: ControlCommand) -> Result<Value, DaemonError> {
+        self.drain_runtime_notices();
         self.drain_control_notices();
+        if self.runtime_collection_pending {
+            return Err(DaemonError::collection("runtime collection pending"));
+        }
         let result = {
             let runtime = self
                 .runtime
@@ -4067,6 +4201,9 @@ pub fn run() -> Result<(), DaemonError> {
     let snapshots = state.snapshot_store();
     let conntrack_worker = conntrack_worker::spawn(snapshots.clone())
         .map_err(|error| DaemonError::platform(format!("conntrack worker: {error}")))?;
+    let (runtime_notice_sender, runtime_notices) = runtime_worker::notice_channel(1);
+    let runtime_worker = RuntimeCollectionWorker::spawn(1, runtime_notice_sender)
+        .map_err(|error| DaemonError::platform(format!("runtime worker: {error}")))?;
     let (control_worker, control_notices) = {
         let (sender, receiver) = mpsc::sync_channel(4);
         let worker = control_worker::ControlWorker::spawn(1, sender)
@@ -4086,6 +4223,10 @@ pub fn run() -> Result<(), DaemonError> {
         ubus: None,
         collection_timer: None,
         collection_deadline_ms: Cell::new(0),
+        runtime_worker: Some(runtime_worker),
+        runtime_notices,
+        runtime_collection_pending: false,
+        runtime_notice_timer: None,
         reconnect_timer: None,
         reconnect_pending: Cell::new(false),
         mode_reload: DaeModeReloadLatch::default(),
@@ -4107,6 +4248,12 @@ pub fn run() -> Result<(), DaemonError> {
     app.borrow_mut().collection_timer = Some(Timer::new(move || {
         if let Some(app) = weak.upgrade() {
             app.borrow_mut().collection_tick();
+        }
+    }));
+    let weak = Rc::downgrade(&app);
+    app.borrow_mut().runtime_notice_timer = Some(Timer::new(move || {
+        if let Some(app) = weak.upgrade() {
+            app.borrow_mut().runtime_notice_tick();
         }
     }));
     let weak = Rc::downgrade(&app);
@@ -4196,6 +4343,13 @@ pub fn run() -> Result<(), DaemonError> {
     let run_result = event_loop
         .run()
         .map_err(|error| DaemonError::platform(error.to_string()));
+    let runtime_worker = app.borrow_mut().runtime_worker.take();
+    let runtime_worker_result = runtime_worker.map_or(Ok(()), |worker| {
+        worker
+            .join()
+            .map_err(|_| DaemonError::platform("runtime worker panicked"))
+    });
+    app.borrow_mut().recover_runtime_worker_notice();
     let control_worker = app.borrow_mut().control_worker.take();
     let control_worker_result = control_worker.map_or(Ok(()), |worker| {
         worker
@@ -4212,7 +4366,10 @@ pub fn run() -> Result<(), DaemonError> {
     if let Some(error) = fatal {
         return Err(DaemonError::platform(error));
     }
-    run_result.and(control_worker_result).and(shutdown_result)
+    run_result
+        .and(runtime_worker_result)
+        .and(control_worker_result)
+        .and(shutdown_result)
 }
 
 fn load_config() -> Result<RuntimeConfig, DaemonError> {
