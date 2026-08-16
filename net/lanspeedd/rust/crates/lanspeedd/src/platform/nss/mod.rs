@@ -29,6 +29,8 @@ pub(crate) mod fast_s_timer;
 pub(crate) mod fusion;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod hardware_verifier;
+#[cfg(any(feature = "nss-platform", test))]
+pub(crate) mod interface_rate;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod output;
 #[cfg(any(feature = "openwrt", test))]

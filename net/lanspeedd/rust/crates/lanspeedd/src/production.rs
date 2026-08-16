@@ -156,6 +156,7 @@ use crate::{
                 ecm_bpf_client_interfaces, ecm_bpf_fallback_client_rates,
                 merge_ecm_bpf_client_deltas, merge_ecm_bpf_coverage_delta,
             },
+            interface_rate::NssInterfaceRates,
             output::{
                 apply_ecm_bpf_rate_batch, coverage_evidence, ecm_bpf_clients_response,
                 ecm_bpf_coverage_merge_evidence, ecm_bpf_rate_batch_evidence, nss_rate_coverage,
@@ -1418,6 +1419,12 @@ impl ProductionRuntime {
             bpf_classifier_read_end_ms,
             &runtime_health,
         );
+        if active_access_edge_owns_display_rate(
+            self.config.access_edge_mode,
+            self.config.rate_collector_mode,
+        ) {
+            NssInterfaceRates::from_runtime(&self.access_edge).apply(&mut interfaces);
+        }
         if access_edge_enabled {
             let edge_evidence = access_edge_global_evidence(
                 self.access_edge.latest(),

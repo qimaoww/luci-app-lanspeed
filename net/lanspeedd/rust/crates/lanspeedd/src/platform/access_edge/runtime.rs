@@ -57,6 +57,31 @@ pub struct EdgeClientObservation {
     pub rx: EdgeDirectionObservation,
 }
 
+impl EdgeClientObservation {
+    pub(crate) fn is_authoritative(&self) -> bool {
+        match self.attachment.point.kind {
+            AttachmentKind::Wifi => {
+                self.attachment.trust == AttachmentTrust::AssociatedStation
+                    && self.tx.coverage == Coverage::Full
+                    && self.rx.coverage == Coverage::Full
+                    && self.tx.scope == TrafficScope::Unicast
+                    && self.rx.scope == TrafficScope::Unicast
+            }
+            AttachmentKind::Ethernet => {
+                !self.attachment.ambiguous
+                    && !matches!(
+                        self.attachment.trust,
+                        AttachmentTrust::Shared | AttachmentTrust::Unknown
+                    )
+                    && self.tx.coverage == Coverage::Partial
+                    && self.rx.coverage == Coverage::Partial
+                    && self.tx.scope == TrafficScope::AllFrames
+                    && self.rx.scope == TrafficScope::AllFrames
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AccessEdgeSnapshot {
     pub sample_ms: u64,
@@ -570,6 +595,10 @@ impl AccessEdgeRuntime {
         &self.latest
     }
 
+    pub(crate) fn bridge_name(&self, bridge_ifindex: u32) -> Option<&str> {
+        self.bridge_names.get(&bridge_ifindex).map(String::as_str)
+    }
+
     /// Return an aggregate E-authority rate only when every published client
     /// direction has an authoritative, well-formed segment in this snapshot.
     /// A partial aggregate is not a valid E comparison target.
@@ -577,27 +606,7 @@ impl AccessEdgeRuntime {
         let mut total = 0u64;
         let mut directions = 0usize;
         for client in &self.latest.clients {
-            let authoritative = match client.attachment.point.kind {
-                AttachmentKind::Wifi => {
-                    client.attachment.trust == AttachmentTrust::AssociatedStation
-                        && client.tx.coverage == Coverage::Full
-                        && client.rx.coverage == Coverage::Full
-                        && client.tx.scope == TrafficScope::Unicast
-                        && client.rx.scope == TrafficScope::Unicast
-                }
-                AttachmentKind::Ethernet => {
-                    !client.attachment.ambiguous
-                        && !matches!(
-                            client.attachment.trust,
-                            AttachmentTrust::Shared | AttachmentTrust::Unknown
-                        )
-                        && client.tx.coverage == Coverage::Partial
-                        && client.rx.coverage == Coverage::Partial
-                        && client.tx.scope == TrafficScope::AllFrames
-                        && client.rx.scope == TrafficScope::AllFrames
-                }
-            };
-            if !authoritative {
+            if !client.is_authoritative() {
                 return None;
             }
             for direction in [&client.tx, &client.rx] {
