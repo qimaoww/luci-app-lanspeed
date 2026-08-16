@@ -316,6 +316,10 @@ impl NssRuntime {
         }
     }
 
+    pub(crate) fn invalidate_fast_rate_shadow_unavailable(&mut self, now_ms: u64) {
+        self.fast_rate_shadow.invalidate_unavailable(now_ms);
+    }
+
     pub(crate) fn reconcile_evidence_leases(
         &mut self,
         now_ms: u64,

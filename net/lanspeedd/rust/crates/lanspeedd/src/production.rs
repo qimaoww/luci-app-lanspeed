@@ -1185,19 +1185,18 @@ impl ProductionRuntime {
         ) = (fast_n_read_timing, fast_s_read_timing)
         {
             let fast_n_snapshot = self.nss.fast_n_snapshot().cloned();
-            let fast_s_snapshot = self.nss.fast_s_snapshot().cloned();
-            if let (Some(fast_n_snapshot), Some(_fast_s_snapshot)) =
-                (fast_n_snapshot, fast_s_snapshot)
-            {
-                self.nss.observe_fast_rate_shadow(
-                    Some(&fast_n_snapshot),
-                    fast_n_read_begin_ms,
-                    fast_n_read_end_ms,
-                    fast_s_read_begin_ms,
-                    fast_s_read_end_ms,
-                    self.access_edge.authority_bps(),
-                );
-            }
+            self.nss.observe_fast_rate_shadow(
+                fast_n_snapshot.as_ref(),
+                fast_n_read_begin_ms,
+                fast_n_read_end_ms,
+                fast_s_read_begin_ms,
+                fast_s_read_end_ms,
+                self.access_edge.authority_bps(),
+            );
+        } else if runtime_health.ecm_bpf_object_loaded && runtime_health.bpf_object_loaded {
+            // A current-window substitute may never reuse the previous sample
+            // when either independent map failed to produce this cycle.
+            self.nss.invalidate_fast_rate_shadow_unavailable(now_ms);
         }
         runtime_health.now_ms = now_ms;
         self.apply_conntrack_health(&mut runtime_health);
@@ -1749,6 +1748,8 @@ impl ProductionRuntime {
         let mut fast_client_shadow_entries = 0u64;
         let mut fast_client_shadow_tx_bps = 0u64;
         let mut fast_client_shadow_rx_bps = 0u64;
+        let mut fast_client_shadow_routed_tx_bps = 0u64;
+        let mut fast_client_shadow_routed_rx_bps = 0u64;
         for client in &clients.clients {
             let Ok(mac) = client.mac.parse::<MacAddress>() else {
                 continue;
@@ -1760,6 +1761,8 @@ impl ProductionRuntime {
                 fast_client_shadow_entries = fast_client_shadow_entries.saturating_add(1);
                 fast_client_shadow_tx_bps =
                     fast_client_shadow_tx_bps.saturating_add(sample.fast_total_bps);
+                fast_client_shadow_routed_tx_bps =
+                    fast_client_shadow_routed_tx_bps.saturating_add(sample.routed_l2_with_fcs_bps);
             }
             if let Some(sample) = self
                 .nss
@@ -1768,6 +1771,8 @@ impl ProductionRuntime {
                 fast_client_shadow_entries = fast_client_shadow_entries.saturating_add(1);
                 fast_client_shadow_rx_bps =
                     fast_client_shadow_rx_bps.saturating_add(sample.fast_total_bps);
+                fast_client_shadow_routed_rx_bps =
+                    fast_client_shadow_routed_rx_bps.saturating_add(sample.routed_l2_with_fcs_bps);
             }
         }
         let fast_rate_telemetry = self.nss.fast_rate_shadow_telemetry();
@@ -1794,6 +1799,8 @@ impl ProductionRuntime {
                     "client_shadow_entries": fast_client_shadow_entries,
                     "client_shadow_tx_bps": fast_client_shadow_tx_bps,
                     "client_shadow_rx_bps": fast_client_shadow_rx_bps,
+                    "client_shadow_routed_l2_with_fcs_tx_bps": fast_client_shadow_routed_tx_bps,
+                    "client_shadow_routed_l2_with_fcs_rx_bps": fast_client_shadow_routed_rx_bps,
                     "client_shadow_invalid_windows": self.nss.fast_rate_shadow_client_invalid_windows(),
                     "formal_rate_owner": false,
                 }),
@@ -1816,6 +1823,8 @@ impl ProductionRuntime {
                     "client_shadow_entries": fast_client_shadow_entries,
                     "client_shadow_tx_bps": fast_client_shadow_tx_bps,
                     "client_shadow_rx_bps": fast_client_shadow_rx_bps,
+                    "client_shadow_routed_l2_with_fcs_tx_bps": fast_client_shadow_routed_tx_bps,
+                    "client_shadow_routed_l2_with_fcs_rx_bps": fast_client_shadow_routed_rx_bps,
                     "client_shadow_invalid_windows": self.nss.fast_rate_shadow_client_invalid_windows(),
                     "formal_rate_owner": false,
                 }),

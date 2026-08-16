@@ -29,6 +29,10 @@ pub(crate) struct FastClientSample {
     pub fast_n_bps: u64,
     pub fast_s_bps: u64,
     pub fast_total_bps: u64,
+    /// FastN is ECM/network-layer data (+ Ethernet header + FCS) while
+    /// FastS is TC L2 data (+ FCS). This is the only combined value eligible
+    /// for comparison with a wired Access Edge authority.
+    pub routed_l2_with_fcs_bps: u64,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -114,6 +118,10 @@ impl FastClientRateBook {
                                 window.total_bytes(),
                                 window.duration_ms(),
                             ),
+                            routed_l2_with_fcs_bps: bytes_to_bps(
+                                l2_with_fcs_bytes(window),
+                                window.duration_ms(),
+                            ),
                         },
                     );
                     let _ = coordinator.begin(n_sample, s_sample);
@@ -144,6 +152,20 @@ impl FastClientRateBook {
     pub(crate) fn get(&self, mac: [u8; 6], direction: u8) -> Option<FastClientSample> {
         self.latest.get(&FastClientKey { mac, direction }).copied()
     }
+}
+
+fn l2_with_fcs_bytes(window: super::fast_rate::FastWindow) -> u64 {
+    const ECM_TO_L2_WITH_FCS_BYTES_PER_PACKET: u64 = 18;
+    const L2_FCS_BYTES_PER_PACKET: u64 = 4;
+    window
+        .n_bytes
+        .saturating_add(
+            window
+                .n_packets
+                .saturating_mul(ECM_TO_L2_WITH_FCS_BYTES_PER_PACKET),
+        )
+        .saturating_add(window.s_bytes)
+        .saturating_add(window.s_packets.saturating_mul(L2_FCS_BYTES_PER_PACKET))
 }
 
 type Aggregate = (u64, u64, u32);
@@ -292,6 +314,7 @@ mod tests {
         assert_eq!(sample.fast_n_bps, 1_600);
         assert_eq!(sample.fast_s_bps, 1_600);
         assert_eq!(sample.fast_total_bps, 3_200);
+        assert_eq!(sample.routed_l2_with_fcs_bps, 6_720);
         assert!(book.get([2, 0, 0, 0, 0, 2], DIR_TX).is_none());
         assert_eq!(book.invalid_windows(), 0);
     }
