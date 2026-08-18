@@ -1385,6 +1385,7 @@ function assertClientDetailStyleLeaf(name, src) {
 		[
 			'.lanspeed-connection-identity',
 			'.lanspeed-connection-summary',
+			'.lanspeed-connection-rate-meta',
 			'.lanspeed-connection-toolbar',
 			'.lanspeed-connection-detail-row',
 			'.lanspeed-connection-endpoint',
@@ -1393,6 +1394,8 @@ function assertClientDetailStyleLeaf(name, src) {
 			if (!css.includes(token))
 				fail(`${name} must provide the detail-only ${token} layout hook`);
 		});
+		if (!css.includes('font-variant-numeric:tabular-nums;white-space:nowrap'))
+			fail(`${name} must keep summary rate values on one line`);
 	}
 	if (name === 'clientDetailStyleAurora.js' &&
 	    (!css.includes('padding:1rem 1.25rem .85rem') ||
@@ -3085,6 +3088,8 @@ function assertClientDetailRefreshBehavior(src) {
 	state.refs = built.refs;
 	const refs = state.refs;
 	refresh.render(state);
+	const identityHeader = findFakeElement(built.root, 'lanspeed-connection-identity-card')
+		.children.find(function(child) { return String(child.attrs.class || '').includes('lanspeed-header'); });
 
 	const meta = fakeElementText(refs.clientMeta);
 	const metaIps = findFakeElementsByClass(
@@ -3112,6 +3117,7 @@ function assertClientDetailRefreshBehavior(src) {
 	    !fakeElementText(refs.connectionState).includes('有当前连接') ||
 	    refs.summaryTargets.textContent !== '2' || refs.summaryConnections.textContent !== '2' ||
 	    refs.summaryTx.textContent !== '40.00 Kbps' || refs.summaryRx.textContent !== '96.00 Kbps' ||
+	    refs.summaryRateMeta.parentNode !== identityHeader || refs.summary.children.includes(refs.summaryRateMeta) ||
 	    refs.summaryRateMeta.textContent !== '总速率采样：TC-BPF · 连接数据独立采样：Conntrack Netlink' ||
 	    refs.summaryUpdated.textContent !== '03:04:05' ||
 	    refs.summaryUpdated.textContent.includes('12345') || rows.length !== 4 ||
@@ -3121,6 +3127,18 @@ function assertClientDetailRefreshBehavior(src) {
 	    refs.table.hidden || !refs.empty.hidden || !refs.error.hidden) {
 		fail('clientDetailRefresh.js must render identity/meta, real summaries, and destination groups with highest download speed first by default');
 	}
+	const threeDigitResponse = JSON.parse(JSON.stringify(state.response));
+	threeDigitResponse.client.tx_bps = 123456789;
+	threeDigitResponse.client.rx_bps = 987654321;
+	state.response = threeDigitResponse;
+	refresh.render(state);
+	if (/\s/.test(refs.summaryTx.textContent.slice(-4, -3)) ||
+	    /\s/.test(refs.summaryRx.textContent.slice(-4, -3)) ||
+	    refs.summaryTx.textContent !== '123.46 Mbps' || refs.summaryRx.textContent !== '987.65 Mbps') {
+		fail('client detail summary rates must keep three-digit values and units on one line');
+	}
+	state.response = fixture;
+	refresh.render(state);
 			if (!footer.includes('连接数据') || !footer.includes('Conntrack Netlink') ||
 		    !footer.includes('NSS：总速率来自接入 Edge') ||
 		    !footer.includes('显示 2 / 共 2 条') ||

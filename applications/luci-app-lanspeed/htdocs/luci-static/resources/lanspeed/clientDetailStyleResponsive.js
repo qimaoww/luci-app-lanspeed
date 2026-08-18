@@ -7,6 +7,7 @@ var CSS = [
 	'.lanspeed-connection-summary{padding:1.25em 0 0;border-left:0;border-top:1px solid var(--lanspeed-border)}',
 	'}',
 	'@media (max-width:700px){',
+	'.lanspeed-connection-rate-meta{flex:1 1 100%;max-width:none;order:3}',
 	'.lanspeed-classification-card .lanspeed-body{overflow-x:auto}',
 	'.lanspeed-classification-table{min-width:28em}',
 	'.lanspeed-connections-card .lanspeed-body{overflow-x:hidden}',

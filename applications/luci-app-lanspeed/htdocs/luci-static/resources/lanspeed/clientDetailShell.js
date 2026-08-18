@@ -24,7 +24,7 @@ function buildShell(viewState) {
 				'class': 'lanspeed-sort-indicator',
 				'aria-hidden': 'true'
 			}, '')
-		]);
+	]);
 		var th = E('th', thAttrs, button);
 		refs.sortHeaders[sortKey] = {
 			th: th,
@@ -128,7 +128,7 @@ function buildShell(viewState) {
 		'class': 'lanspeed-connection-summary-value'
 	}, '—');
 	refs.summaryRateMeta = E('p', {
-		'class': 'lanspeed-connection-summary-meta',
+		'class': 'lanspeed-connection-rate-meta',
 		'role': 'status'
 	}, _('总速率采样口径将在加载后显示。'));
 	refs.summaryUpdated = E('span', {
@@ -158,8 +158,7 @@ function buildShell(viewState) {
 		E('div', { 'class': 'lanspeed-connection-summary-item' }, [
 			E('span', { 'class': 'lanspeed-connection-summary-label' }, _('页面更新时间')),
 			refs.summaryUpdated
-		]),
-		refs.summaryRateMeta
+		])
 	]);
 
 	var identityCard = E('div', {
@@ -168,6 +167,7 @@ function buildShell(viewState) {
 		E('div', { 'class': 'lanspeed-header' }, [
 			E('h3', {}, _('客户端身份')),
 			E('span', { 'class': 'spacer' }),
+			refs.summaryRateMeta,
 			refs.connectionState
 		]),
 		E('div', { 'class': 'lanspeed-body' }, [
