@@ -47,8 +47,8 @@ pub struct NssControlState {
     pub(crate) nss_active_cpu_directions: BTreeMap<String, u8>,
     pub(crate) nss_attachment_generations: BTreeMap<String, (String, u64)>,
     pub(crate) nss_reload_attachment_rebase_pending: bool,
-    /// Existing flows that must be reclassified after an explicit rule
-    /// update or deletion. This is intentionally scoped to affected clients.
+    /// Existing flows that must be reclassified after a classifier-contract
+    /// transition or deletion. Pure rate changes retain their live flows.
     pub(crate) conntrack_cleanup_ips: BTreeSet<IpAddr>,
     pub(crate) pending_conntrack_identities: BTreeSet<String>,
 }

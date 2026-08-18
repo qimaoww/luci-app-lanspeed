@@ -46,8 +46,8 @@ pub(super) fn quiesce(plan: &ControlPlan) -> Result<(), String> {
 }
 
 pub(super) fn clear_controlled_connections(plan: &ControlPlan) -> Result<(), String> {
-    // Only explicit rule changes or deletions request reclassification. Do
-    // not clear every configured client's flows when one client changes.
+    // Only classifier-contract transitions or deletions request
+    // reclassification. Pure rate updates retain every live connection.
     for address in &plan.conntrack_cleanup_ips {
         clear_conntrack_address(*address)?;
     }

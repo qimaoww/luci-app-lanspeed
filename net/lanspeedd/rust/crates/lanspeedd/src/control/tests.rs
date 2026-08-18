@@ -171,7 +171,7 @@ fn nss_control_diagnostics_never_treat_queue_overflow_as_verified() {
 
 #[cfg(feature = "nss-platform")]
 #[test]
-fn nss_apply_preserves_only_unchanged_client_verification() {
+fn nss_apply_preserves_stable_flow_contract_verification() {
     fn active_rule(identity: &str, mac: &str, upload: u64, download: u64) -> ActiveRule {
         ActiveRule {
             identity_key: identity.into(),
@@ -247,14 +247,91 @@ fn nss_apply_preserves_only_unchanged_client_verification() {
         20_000_000,
         100_000_000,
     )]);
+    let mut evidence_changed_plan = changed_plan.clone();
+    evidence_changed_plan
+        .nss
+        .nss_proven_directions
+        .insert(identity.into(), NSS_CPU_DOWNLOAD);
+    evidence_changed_plan
+        .nss
+        .nss_cpu_directions
+        .insert(identity.into(), NSS_CPU_UPLOAD);
     let changed = preserve_unchanged_nss_verification(
         Some(&previous_plan),
-        &changed_plan,
+        &evidence_changed_plan,
         &previous,
         ApplyResult::ready(),
     );
-    assert_eq!(changed.state, "pending_new_connections");
-    assert!(!changed.verified_directions.contains_key(identity));
+    assert_eq!(changed.state, "verified");
+    assert_eq!(
+        changed.verified_directions.get(identity),
+        Some(&(NSS_CPU_UPLOAD | NSS_CPU_DOWNLOAD))
+    );
+
+    let direction_changed_plan = plan(vec![active_rule(
+        identity,
+        "02:00:00:00:00:01",
+        0,
+        100_000_000,
+    )]);
+    let direction_changed = preserve_unchanged_nss_verification(
+        Some(&previous_plan),
+        &direction_changed_plan,
+        &previous,
+        ApplyResult::ready(),
+    );
+    assert_eq!(direction_changed.state, "pending_new_connections");
+    assert!(!direction_changed.verified_directions.contains_key(identity));
+}
+
+#[cfg(feature = "nss-platform")]
+#[test]
+fn nss_rate_only_update_retains_conntrack() {
+    let previous = ControlRule {
+        identity_key: "02:00:00:00:00:01@lan".into(),
+        mac: MacAddress::from_str("02:00:00:00:00:01").unwrap(),
+        upload_bps: 10_000_000,
+        download_bps: 100_000_000,
+        internet_disabled: false,
+        class_minor: FIRST_CLASS_MINOR,
+    };
+    let rate_only = ControlRule {
+        upload_bps: 8_000_000,
+        download_bps: 80_000_000,
+        ..previous.clone()
+    };
+    assert!(!nss_control_update_requires_conntrack_refresh(
+        Some(&previous),
+        &rate_only
+    ));
+    assert!(nss_control_update_requires_conntrack_refresh(
+        None, &rate_only
+    ));
+
+    let direction_disabled = ControlRule {
+        upload_bps: 0,
+        ..rate_only.clone()
+    };
+    assert!(nss_control_update_requires_conntrack_refresh(
+        Some(&previous),
+        &direction_disabled
+    ));
+    let internet_disabled = ControlRule {
+        internet_disabled: true,
+        ..rate_only.clone()
+    };
+    assert!(nss_control_update_requires_conntrack_refresh(
+        Some(&previous),
+        &internet_disabled
+    ));
+    let reclassified = ControlRule {
+        class_minor: FIRST_CLASS_MINOR + 1,
+        ..rate_only
+    };
+    assert!(nss_control_update_requires_conntrack_refresh(
+        Some(&previous),
+        &reclassified
+    ));
 }
 
 #[cfg(feature = "nss-platform")]

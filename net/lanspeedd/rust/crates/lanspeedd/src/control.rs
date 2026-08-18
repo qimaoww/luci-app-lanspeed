@@ -1010,6 +1010,8 @@ impl ControlManager {
             .map_err(|reason| DaemonError::reload(reason))?;
         validate_rate(request.upload_bps)?;
         validate_rate(request.download_bps)?;
+        #[cfg(feature = "nss-platform")]
+        let previous_rule = self.rules.get(&request.identity_key).cloned();
         let live = self
             .live
             .get(&request.identity_key)
@@ -1054,12 +1056,19 @@ impl ControlManager {
                 identity_key: request.identity_key,
             });
         }
+        #[cfg(feature = "nss-platform")]
+        let refresh_connections =
+            nss_control_update_requires_conntrack_refresh(previous_rule.as_ref(), &rule);
         persist_rule(&rule)?;
         self.rules.insert(rule.identity_key.clone(), rule);
-        // Reclassify only this client's existing flows. Rebuilding one
-        // control rule must not reset unrelated clients' connections.
+        // A pure rate change keeps the same class and classifier contract, so
+        // NSSHTB/NSSBFIFO can be replaced in place without deleting live
+        // conntrack entries. Reclassify only transitions that change which
+        // executor owns an existing flow.
         #[cfg(feature = "nss-platform")]
-        self.conntrack_cleanup_ips.extend(conntrack_ips);
+        if refresh_connections {
+            self.conntrack_cleanup_ips.extend(conntrack_ips);
+        }
         self.dirty = true;
         Ok(json!(ControlRpcResponse {
             ok: self.result.state != "error",
@@ -1347,7 +1356,9 @@ fn preserve_unchanged_nss_verification(
         .map(|rule| (rule.identity_key.as_str(), rule))
         .collect::<BTreeMap<_, _>>();
     for rule in &plan.rules {
-        if previous_rules.get(rule.identity_key.as_str()).copied() != Some(rule)
+        if !previous_rules
+            .get(rule.identity_key.as_str())
+            .is_some_and(|previous| nss_flow_contract_unchanged(previous, rule))
             || !nss_identity_plan_unchanged(previous_plan, plan, &rule.identity_key)
         {
             continue;
@@ -1385,15 +1396,26 @@ fn preserve_unchanged_nss_verification(
 }
 
 #[cfg(feature = "nss-platform")]
+fn nss_flow_contract_unchanged(previous: &ActiveRule, next: &ActiveRule) -> bool {
+    previous.identity_key == next.identity_key
+        && previous.mac == next.mac
+        && previous.interface == next.interface
+        && previous.upload_before_proxy == next.upload_before_proxy
+        && previous.upload_preempted == next.upload_preempted
+        && previous.ips.iter().collect::<BTreeSet<_>>() == next.ips.iter().collect::<BTreeSet<_>>()
+        && previous.internet_disabled == next.internet_disabled
+        && previous.class_minor == next.class_minor
+        && (previous.upload_bps == 0) == (next.upload_bps == 0)
+        && (previous.download_bps == 0) == (next.download_bps == 0)
+}
+
+#[cfg(feature = "nss-platform")]
 fn nss_identity_plan_unchanged(previous: &ControlPlan, next: &ControlPlan, identity: &str) -> bool {
-    previous.nss_proven_directions.get(identity) == next.nss_proven_directions.get(identity)
-        && previous.nss_path_ready_directions.get(identity)
-            == next.nss_path_ready_directions.get(identity)
-        && previous.nss_cpu_directions.get(identity) == next.nss_cpu_directions.get(identity)
-        && previous.nss_active_nss_directions.get(identity)
-            == next.nss_active_nss_directions.get(identity)
-        && previous.nss_active_cpu_directions.get(identity)
-            == next.nss_active_cpu_directions.get(identity)
+    // Proven/active executor maps are rolling traffic evidence and can
+    // change while an existing flow remains on the same classifier path.
+    // Only path readiness is structural for retaining a verified rate-only
+    // update; a lost ready direction still forces fresh verification.
+    previous.nss_path_ready_directions.get(identity) == next.nss_path_ready_directions.get(identity)
 }
 
 #[cfg(feature = "nss-platform")]
@@ -1544,6 +1566,22 @@ fn deleted_rule_conntrack_ips(client: Option<&LiveClient>) -> Vec<IpAddr> {
         .filter(|client| !client.ambiguous)
         .map(|client| client.ips.clone())
         .unwrap_or_default()
+}
+
+#[cfg(feature = "nss-platform")]
+fn nss_control_update_requires_conntrack_refresh(
+    previous: Option<&ControlRule>,
+    next: &ControlRule,
+) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+    previous.identity_key != next.identity_key
+        || previous.mac != next.mac
+        || previous.class_minor != next.class_minor
+        || previous.internet_disabled != next.internet_disabled
+        || (previous.upload_bps == 0) != (next.upload_bps == 0)
+        || (previous.download_bps == 0) != (next.download_bps == 0)
 }
 
 fn control_update_is_not_more_restrictive(
