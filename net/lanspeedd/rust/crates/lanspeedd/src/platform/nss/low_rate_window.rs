@@ -183,9 +183,16 @@ impl NssLowRateWindow {
             {
                 history.push_back((*current, sample_ms));
             }
-            while history
-                .front()
-                .is_some_and(|(_, first_ms)| sample_ms.saturating_sub(*first_ms) > self.window_ms)
+            // Keep the nearest sample just outside the configured window. The
+            // interface clock follows the real collection cadence (typically
+            // about 1001 ms), while Access Edge segments use their own exact
+            // boundaries. Dropping that outer sample makes an 18 s Edge window
+            // periodically miss the closest interface baseline and fall back
+            // to the noisy one-second netdev rate.
+            while history.len() > 2
+                && history.get(1).is_some_and(|(_, second_ms)| {
+                    sample_ms.saturating_sub(*second_ms) >= self.window_ms
+                })
             {
                 history.pop_front();
             }
@@ -537,6 +544,52 @@ mod tests {
         assert_eq!(wan.delta_ms, Some(2_000));
         assert_eq!(edge.bps(), Some(800_000));
         assert_eq!(edge_up.bps(), Some(400_000));
+    }
+
+    #[test]
+    fn interface_window_keeps_outer_baseline_across_collection_clock_drift() {
+        let mut window = NssLowRateWindow::default();
+        window.observe(
+            &AccessEdgeSnapshot::default(),
+            &duplex_counters(0, 0),
+            0,
+            18_000,
+            TEST_HIGH_WATERMARK_BPS,
+        );
+
+        for second in 1..=18 {
+            let edge_end_ms = second * 1_000;
+            let interface_sample_ms = second * 1_001;
+            window.observe(
+                &AccessEdgeSnapshot {
+                    sample_ms: edge_end_ms,
+                    clients: vec![duplex_client(
+                        edge_end_ms - 1_000,
+                        edge_end_ms,
+                        25_000,
+                        50_000,
+                    )],
+                    topology_complete: true,
+                    ..AccessEdgeSnapshot::default()
+                },
+                &duplex_counters(second * 50_000, second * 25_000),
+                interface_sample_ms,
+                18_000,
+                TEST_HIGH_WATERMARK_BPS,
+            );
+        }
+
+        let mut response = interfaces();
+        window.apply_observe_rates(&mut response);
+        let wan = &response.interfaces[0];
+        assert_eq!(wan.source.as_deref(), Some(RATE_SOURCE));
+        assert_eq!(
+            wan.coverage.as_deref(),
+            Some("aligned_low_rate_observe_window")
+        );
+        assert_eq!(wan.delta_ms, Some(18_018));
+        assert_eq!(wan.rx_bps, Some(399_600));
+        assert_eq!(wan.tx_bps, Some(199_800));
     }
 
     #[test]
