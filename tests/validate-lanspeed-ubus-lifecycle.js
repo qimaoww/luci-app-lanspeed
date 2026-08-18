@@ -10,6 +10,10 @@ const production = fs.readFileSync(
   path.join(root, 'net/lanspeedd/rust/crates/lanspeedd/src/production.rs'),
   'utf8'
 );
+const reloadWorker = fs.readFileSync(
+  path.join(root, 'net/lanspeedd/rust/crates/lanspeedd/src/production/reload_worker.rs'),
+  'utf8'
+);
 const fixture = JSON.parse(fs.readFileSync(path.join(root, 'tests/fixtures/lanspeed-lifecycle.json'), 'utf8'));
 
 function assert(condition, message) {
@@ -99,9 +103,16 @@ assert(initScript.includes('procd_add_reload_trigger "lanspeed" "network"'), 'pr
 assert(validateReloadService(initScript), 'reload must preserve a failed NSS transaction and retain the historical x86 restart fallback');
 assert(initScript.includes('transactional NSS reload failed; preserving current dataplane'),
   'NSS reload failure must be observable without restarting the proven dataplane');
-assert(/fn before_reply\(&mut self, method: ubus::Method\)[\s\S]*if method == ubus::Method::Reload[\s\S]*self\.reload\(\)/.test(production) &&
-  !production.includes('refresh_clients_control_state'),
-  'ordinary RPCs must remain cache-only while reload keeps its explicit bounded action');
+assert(/fn before_reply\(&mut self, method: ubus::Method\)[\s\S]*if method == ubus::Method::Reload[\s\S]*self\.reload_bounded\(\)/.test(production) &&
+  production.includes('recv_timeout(remaining)') &&
+  production.includes('self.wait_for_runtime_ownership(deadline)') &&
+  production.includes('while self.runtime_collection_pending || self.control_pending_generation.is_some()') &&
+  production.includes('self.reload_requested = true') &&
+  reloadWorker.includes('spawn_runtime_worker') &&
+  reloadWorker.includes('reload_transaction(task.runtime)') &&
+  !production.includes('refresh_clients_control_state') &&
+  !production.includes('fn reload_inner'),
+  'ordinary RPCs must remain cache-only while bounded reload work stays on its runtime worker');
 assert(!/^stop_service\(\)/m.test(initScript), 'owned tc cleanup must not race a daemon that has not stopped yet');
 assert(/^\s*cleanup_lanspeed_tc_filters\s*$/m.test(shellFunctionBody(initScript, 'service_stopped')),
   'service_stopped must remove owned tc filters after procd has stopped the daemon');

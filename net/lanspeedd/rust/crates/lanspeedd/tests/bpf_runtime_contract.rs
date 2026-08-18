@@ -217,44 +217,30 @@ fn production_sampling_uses_the_same_boot_monotonic_epoch_as_bpf() {
 }
 
 #[test]
-fn production_refreshes_dae_processes_before_bpf_map_reads_and_reloads_mode_transactionally() {
+fn production_refreshes_dae_before_collection_and_reloads_mode_on_the_runtime_worker() {
     let source = include_str!("../src/production.rs");
-    let tick = source
-        .split("fn collection_tick(&mut self)")
+    let runtime_impl = source
+        .split("impl Runtime for ProductionRuntime")
         .nth(1)
         .unwrap()
-        .split("fn refresh_clients_connections")
+        .split("struct App")
         .next()
         .unwrap();
-    let refresh = tick.find("refresh_dae_process_state").unwrap();
-    let collect = tick.find("collect_and_reschedule").unwrap();
-
-    assert!(
-        refresh < collect,
-        "the fast /proc scan must precede collection/map reads"
-    );
-    assert!(tick.contains("process_activity_changed"));
-    assert!(tick.contains("runtime.bpf_attach_mode_mismatch()"));
-    assert_eq!(tick.matches("run_dae_mode_tick(").count(), 1);
-    assert!(tick.contains("reload_inner()"));
-    assert!(
-        tick.contains("schedule("),
-        "a failed non-fatal reload must re-arm the timer"
-    );
+    let refresh = runtime_impl.find("refresh_dae_process_state()").unwrap();
+    let collect = runtime_impl
+        .find("self.collect_inner(ProbeMethod::Status, None)")
+        .unwrap();
+    assert!(refresh < collect);
+    assert!(source.contains("self.queue_reload()"));
+    assert!(!source.contains("reload_inner()"));
     assert!(!source.contains(".switch_mode("));
 
-    let reload = source
-        .split("fn reload_inner(&mut self)")
-        .nth(1)
-        .unwrap()
-        .split("fn finish_mode_switch_suspend_failure")
-        .next()
-        .unwrap();
+    let reload = include_str!("../src/production/reload_worker.rs");
     assert!(reload.contains("process_tracker.clone()"));
     assert!(reload.contains("prepare_with_process_tracker"));
     assert!(reload.contains("suspend_for_replacement"));
     assert!(reload.contains("attach_suspended"));
-    assert!(reload.contains("finish_mode_switch_rollback"));
+    assert!(reload.contains("BPF mode-switch rollback failed"));
 }
 
 #[test]
@@ -351,31 +337,16 @@ fn production_mode_switch_suspends_before_attaching_on_the_same_bpf_object() {
         runtime.reconfigure_strategy(AttachMode::EarlyPassthrough),
         ReconfigureStrategy::SuspendThenAttach
     );
-    let source = include_str!("../src/production.rs");
+    let source = include_str!("../src/production/reload_worker.rs");
     assert!(source.contains("ReconfigureStrategy::SuspendThenAttach"));
     assert!(!source.contains("load_independent_bpf"));
-    let mode_switch = source
-        .split("let suspended = match {")
-        .nth(1)
-        .unwrap()
-        .split("commit_reload(")
-        .next()
-        .unwrap();
+    let mode_switch = source.split("let suspended = {").nth(1).unwrap();
     assert!(mode_switch.contains("suspend_for_replacement"));
     assert!(mode_switch.contains("attach_suspended"));
     assert!(mode_switch.contains("collect_with_external_bpf"));
     assert!(mode_switch.contains("candidate.bpf = current.bpf.take()"));
-    assert!(mode_switch.contains("finish_mode_switch_rollback"));
-    let rollback = source
-        .split("fn finish_mode_switch_rollback")
-        .nth(1)
-        .unwrap()
-        .split("pub fn run")
-        .next()
-        .unwrap();
-    assert!(rollback.contains("old BPF restore failed"));
-    assert!(mode_switch.contains("let old_topology_intact = runtime.is_attached()"));
-    assert!(mode_switch.contains("finish_mode_switch_suspend_failure"));
+    assert!(mode_switch.contains("BPF mode-switch rollback failed"));
+    assert!(mode_switch.contains("let fatal = !runtime.is_attached()"));
 }
 
 fn assert_suspended_mode_switch_abort_is_rate_safe(old_mode: AttachMode, new_mode: AttachMode) {

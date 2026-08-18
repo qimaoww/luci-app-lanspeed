@@ -1,6 +1,9 @@
-use std::{cell::RefCell, fs, path::Path};
+use std::{fs, path::Path};
 
+#[cfg(all(test, feature = "nss-platform"))]
 use lanspeed_openwrt_sys::UloopGuard;
+#[cfg(all(test, feature = "nss-platform"))]
+use std::cell::RefCell;
 
 use crate::{
     config::{
@@ -157,6 +160,7 @@ pub(crate) fn version_from(version: Option<&str>, release: Option<&str>) -> Stri
     }
 }
 
+#[cfg(all(test, feature = "nss-platform"))]
 pub(crate) fn record_fatal_cleanup(
     context: &str,
     primary: &str,

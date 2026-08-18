@@ -567,7 +567,7 @@ fn hot_collection_uses_one_outer_checkpoint_and_moves_the_unvalidated_snapshot()
 }
 
 #[test]
-fn ordinary_rpcs_are_cache_only_while_startup_and_reload_still_validate() {
+fn ordinary_rpcs_are_cache_only_while_reload_runs_on_the_runtime_worker() {
     let production = include_str!("../src/production.rs");
     let before_reply = production
         .split("fn before_reply(&mut self, method: ubus::Method)")
@@ -577,10 +577,34 @@ fn ordinary_rpcs_are_cache_only_while_startup_and_reload_still_validate() {
         .next()
         .unwrap();
     assert!(before_reply.contains("method == ubus::Method::Reload"));
-    assert!(before_reply.contains("self.reload()"));
+    assert!(before_reply.contains("self.reload_bounded()"));
     assert!(before_reply.contains("Ok(())"));
     assert!(!before_reply.contains("refresh_clients_connections"));
     assert!(!before_reply.contains("publish_runtime_snapshot"));
+
+    let reload_worker = include_str!("../src/production/reload_worker.rs");
+    assert!(reload_worker.contains("spawn_runtime_worker"));
+    assert!(reload_worker.contains("load_config()"));
+    assert!(reload_worker.contains("prepare_with_process_tracker"));
+    assert!(reload_worker.contains("ProbeMethod::Reload"));
+    assert!(reload_worker.contains("candidate.collect"));
+
+    let bounded_reload = production
+        .split("fn reload_bounded(&mut self)")
+        .nth(1)
+        .unwrap()
+        .split("fn wait_for_runtime_ownership")
+        .next()
+        .unwrap();
+    let ownership_wait = bounded_reload
+        .find("self.wait_for_runtime_ownership")
+        .unwrap();
+    let worker_queue = bounded_reload.find("self.queue_reload()").unwrap();
+    assert!(bounded_reload.contains("self.reload_requested = true"));
+    assert!(ownership_wait < worker_queue);
+    assert!(production.contains(
+        "while self.runtime_collection_pending || self.control_pending_generation.is_some()"
+    ));
 
     let reload_collect = production
         .split("fn collect(&mut self, method: ProbeMethod)")

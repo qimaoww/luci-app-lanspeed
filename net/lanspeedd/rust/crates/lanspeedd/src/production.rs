@@ -5,6 +5,7 @@ use std::{
     path::Path,
     rc::Rc,
     sync::{mpsc, mpsc::Receiver, Arc},
+    time::{Duration, Instant},
 };
 
 use lanspeed_openwrt_sys::{Timer, UbusConnection, UloopGuard};
@@ -24,9 +25,8 @@ use crate::{
         ControlReconcileWork,
     },
     daemon::{
-        abort_reload_after_timer_failure, abort_reload_candidate, activate_runtime, commit_reload,
-        install_control_or_shutdown, reconnect_and_register, shutdown_runtime, CoordinatorState,
-        Runtime, RuntimeCollectionSignals, UloopSignalBridge,
+        activate_runtime, install_control_or_shutdown, reconnect_and_register, shutdown_runtime,
+        CoordinatorState, Runtime, RuntimeCollectionSignals, UloopSignalBridge,
     },
     error::DaemonError,
     history::overview::{
@@ -70,7 +70,7 @@ use crate::workers::{QueueError, RuntimeWorker};
 #[cfg(not(feature = "nss-platform"))]
 use crate::platform::x86::{
     runtime::{
-        AdapterError, AdapterErrorKind, AttachMode, BpfCollectionCheckpoint, BpfPostCommitCleanup,
+        AdapterErrorKind, AttachMode, BpfCollectionCheckpoint, BpfPostCommitCleanup,
         BpfReconfigureTxn, BpfRuntime, ReconfigureRateBaseline, ReconfigureStrategy,
         SystemAyaAdapter, SystemAyaLink, FALLBACK_OBJECT_PATH,
     },
@@ -80,7 +80,7 @@ use crate::platform::x86::{
 #[cfg(feature = "nss-platform")]
 use crate::platform::nss::{
     tc_bpf_runtime::{
-        AdapterError, AdapterErrorKind, AttachMode, BpfCollectionCheckpoint, BpfPostCommitCleanup,
+        AdapterErrorKind, AttachMode, BpfCollectionCheckpoint, BpfPostCommitCleanup,
         BpfReconfigureTxn, BpfRuntime, ReconfigureRateBaseline, ReconfigureStrategy,
         SystemAyaAdapter, SystemAyaLink, FALLBACK_OBJECT_PATH,
     },
@@ -97,11 +97,13 @@ mod evidence;
 #[cfg(feature = "nss-platform")]
 mod fast_rate_overlay;
 mod rate_helpers;
+mod reload_worker;
 mod system;
 #[cfg(all(test, feature = "nss-platform"))]
 mod tests;
 use evidence::*;
 use rate_helpers::*;
+use reload_worker::{ProductionReloadWorker, ReloadNotice, ReloadOutcome};
 
 #[cfg(feature = "nss-platform")]
 use crate::control::{NssPathObservation, NSS_CPU_DOWNLOAD, NSS_CPU_UPLOAD};
@@ -169,6 +171,7 @@ use crate::{
 
 const RECONNECT_MS: u32 = 1_000;
 const RUNTIME_NOTICE_POLL_MS: u32 = 20;
+const RELOAD_WAIT_MS: u64 = 7_500;
 // Kept as a policy/timer constant so the x86 build does not need to link the
 // NSS platform module merely to compile common scheduling code.
 const ACCESS_EDGE_INTERVAL_MS: u64 = 1_000;
@@ -2909,13 +2912,15 @@ impl ProductionRuntime {
         self.control_work = Some(work);
     }
 
-    fn finish_control_work(&mut self, outcome: ControlReconcileOutcome) {
+    fn finish_control_work(&mut self, outcome: ControlReconcileOutcome, continue_reconcile: bool) {
         if !self.control_reconcile_pending {
             return;
         }
         self.control.finish_reconcile(outcome);
         self.control_reconcile_pending = false;
-        self.reconcile_control_state();
+        if continue_reconcile {
+            self.reconcile_control_state();
+        }
     }
 
     fn client_control_set(&mut self, request: ClientControlRequest) -> Result<Value, DaemonError> {
@@ -3243,6 +3248,10 @@ struct App {
     runtime_worker: Option<RuntimeCollectionWorker<ProductionRuntime>>,
     runtime_notices: Receiver<RuntimeCollectionNotice<ProductionRuntime>>,
     runtime_collection_pending: bool,
+    reload_worker: Option<ProductionReloadWorker>,
+    reload_notices: Receiver<ReloadNotice>,
+    reload_requested: bool,
+    reload_pending: bool,
     runtime_notice_timer: Option<Timer>,
     reconnect_timer: Option<Timer>,
     reconnect_pending: Cell<bool>,
@@ -3262,11 +3271,6 @@ struct App {
     fast_rate_timer: Option<Timer>,
 }
 
-struct PreparedBpfReload {
-    transaction: BpfReconfigureTxn,
-    collection_checkpoint: BpfCollectionCheckpoint,
-}
-
 impl App {
     fn collection_tick(&mut self) {
         self.collect_current_tick();
@@ -3277,7 +3281,8 @@ impl App {
         #[cfg(feature = "nss-platform")]
         self.drain_fast_rate_notices();
         self.drain_runtime_notices();
-        if self.runtime_collection_pending {
+        self.drain_reload_notices();
+        if self.runtime_collection_pending || self.reload_pending {
             self.schedule_runtime_notice_poll();
             return;
         }
@@ -3310,7 +3315,8 @@ impl App {
 
     fn runtime_notice_tick(&mut self) {
         self.drain_runtime_notices();
-        if self.runtime_collection_pending {
+        self.drain_reload_notices();
+        if self.runtime_collection_pending || self.reload_pending {
             self.schedule_runtime_notice_poll();
         }
     }
@@ -3363,7 +3369,7 @@ impl App {
                 return;
             }
             let mode_ready = self.handle_collection_signals(signals);
-            if collection_ok && mode_ready {
+            if collection_ok && mode_ready && !self.reload_requested {
                 self.queue_control_work();
             }
             self.drain_control_notices();
@@ -3381,11 +3387,11 @@ impl App {
         ) {
             return true;
         }
-        match self.reload_inner() {
-            Ok(()) => {
-                self.mode_reload.complete();
-                true
-            }
+        if self.reload_requested {
+            return false;
+        }
+        match self.queue_reload() {
+            Ok(()) => false,
             Err(error) => {
                 self.last_error = Some(error.to_string());
                 if self.state.fatal_error().is_some() {
@@ -3404,6 +3410,184 @@ impl App {
             } else {
                 let mut runtime = notice.runtime;
                 let _ = runtime.shutdown();
+            }
+        }
+    }
+
+    fn recover_reload_worker_notice(&mut self) {
+        while let Ok(notice) = self.reload_notices.try_recv() {
+            self.reload_pending = false;
+            let mut recovered = notice.outcome.into_runtime();
+            if self.runtime.is_none() {
+                self.runtime = Some(recovered);
+            } else {
+                let _ = recovered.shutdown();
+            }
+        }
+    }
+
+    fn queue_reload(&mut self) -> Result<(), DaemonError> {
+        self.drain_control_notices();
+        if self.reload_pending {
+            return Err(DaemonError::reload("runtime reload pending"));
+        }
+        if self.runtime_collection_pending {
+            return Err(DaemonError::reload("runtime collection pending"));
+        }
+        if self.control_pending_generation.is_some()
+            || self
+                .runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.control_reconcile_pending)
+        {
+            return Err(DaemonError::reload("control transaction pending"));
+        }
+        let runtime = self
+            .runtime
+            .take()
+            .ok_or_else(|| DaemonError::reload("runtime is not started"))?;
+        let Some(worker) = self.reload_worker.as_ref() else {
+            self.runtime = Some(runtime);
+            return Err(DaemonError::reload("runtime reload worker unavailable"));
+        };
+        match worker.try_reload(runtime) {
+            Ok(()) => {
+                self.reload_pending = true;
+                self.schedule_runtime_notice_poll();
+                Ok(())
+            }
+            Err((error, runtime)) => {
+                self.runtime = Some(runtime);
+                Err(DaemonError::reload(match error {
+                    QueueError::Full => "runtime reload worker queue full",
+                    QueueError::Disconnected => "runtime reload worker disconnected",
+                }))
+            }
+        }
+    }
+
+    fn reload_bounded(&mut self) -> Result<(), DaemonError> {
+        if self.reload_requested || self.reload_pending {
+            return Err(DaemonError::reload("runtime reload pending"));
+        }
+        self.reload_requested = true;
+        let deadline = Instant::now() + Duration::from_millis(RELOAD_WAIT_MS);
+        if let Err(error) = self.wait_for_runtime_ownership(deadline) {
+            self.reload_requested = false;
+            self.schedule_runtime_notice_poll();
+            return Err(error);
+        }
+        self.reload_requested = false;
+        if let Err(error) = self.queue_reload() {
+            if let Some(runtime) = self.runtime.as_mut() {
+                runtime.reconcile_control_state();
+            }
+            self.queue_control_work();
+            return Err(error);
+        }
+        if let Ok(notice) = self.reload_notices.try_recv() {
+            return self.finish_reload_notice(notice);
+        }
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            self.schedule_runtime_notice_poll();
+            return Err(DaemonError::reload("runtime reload pending"));
+        };
+        match self.reload_notices.recv_timeout(remaining) {
+            Ok(notice) => self.finish_reload_notice(notice),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.schedule_runtime_notice_poll();
+                Err(DaemonError::reload("runtime reload pending"))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                self.reload_pending = false;
+                let message = "runtime reload worker disconnected";
+                self.last_error = Some(message.into());
+                *self.state.fatal_cell().borrow_mut() = Some(message.into());
+                UloopGuard::request_stop();
+                Err(DaemonError::reload(message))
+            }
+        }
+    }
+
+    fn wait_for_runtime_ownership(&mut self, deadline: Instant) -> Result<(), DaemonError> {
+        while self.runtime_collection_pending || self.control_pending_generation.is_some() {
+            self.drain_runtime_notices();
+            self.drain_control_notices();
+            if !self.runtime_collection_pending && self.control_pending_generation.is_none() {
+                break;
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Err(DaemonError::reload("runtime collection pending"));
+            };
+            std::thread::sleep(
+                remaining.min(Duration::from_millis(u64::from(RUNTIME_NOTICE_POLL_MS))),
+            );
+        }
+        Ok(())
+    }
+
+    fn drain_reload_notices(&mut self) {
+        while let Ok(notice) = self.reload_notices.try_recv() {
+            if let Err(error) = self.finish_reload_notice(notice) {
+                self.last_error = Some(error.to_string());
+            }
+        }
+    }
+
+    fn finish_reload_notice(&mut self, notice: ReloadNotice) -> Result<(), DaemonError> {
+        if !self.reload_pending || self.runtime.is_some() {
+            let mut runtime = notice.outcome.into_runtime();
+            let _ = runtime.shutdown();
+            return Err(DaemonError::reload("unexpected runtime reload notice"));
+        }
+        self.reload_pending = false;
+        match notice.outcome {
+            ReloadOutcome::Success(success) => {
+                let interval = success
+                    .runtime
+                    .collection_interval_ms(success.config.refresh_interval_ms);
+                if let Err(error) = schedule_absolute_collection(
+                    self.collection_timer
+                        .as_ref()
+                        .expect("collection timer must be installed"),
+                    &self.collection_deadline_ms,
+                    interval,
+                ) {
+                    let message = format!("reload committed; collection timer failed: {error}");
+                    self.runtime = Some(success.runtime);
+                    self.last_error = Some(message.clone());
+                    *self.state.fatal_cell().borrow_mut() = Some(message.clone());
+                    UloopGuard::request_stop();
+                    return Err(DaemonError::reload(message));
+                }
+                let now_ms =
+                    diagnostic_now_ms(success.snapshot.interfaces.monotonic_ms.unwrap_or(0));
+                self.state
+                    .commit_collection(success.config, success.snapshot, now_ms, interval);
+                self.runtime = Some(success.runtime);
+                self.mode_reload.complete();
+                #[cfg(feature = "nss-platform")]
+                self.restart_fast_rate_worker();
+                self.queue_control_work();
+                self.schedule_conntrack(true);
+                if let Some(message) = success.fatal_error {
+                    self.last_error = Some(message.clone());
+                    *self.state.fatal_cell().borrow_mut() = Some(message.clone());
+                    UloopGuard::request_stop();
+                    return Err(DaemonError::reload(message));
+                }
+                Ok(())
+            }
+            ReloadOutcome::Failure(failure) => {
+                let error = failure.error;
+                self.runtime = Some(failure.runtime);
+                self.schedule_collection_retry();
+                if failure.fatal {
+                    let message = error.to_string();
+                    *self.state.fatal_cell().borrow_mut() = Some(message);
+                    UloopGuard::request_stop();
+                }
+                Err(error)
             }
         }
     }
@@ -3580,12 +3764,10 @@ impl App {
     }
     fn before_reply(&mut self, method: ubus::Method) -> Result<(), DaemonError> {
         self.drain_runtime_notices();
+        self.drain_reload_notices();
         self.drain_control_notices();
         if method == ubus::Method::Reload {
-            if self.runtime_collection_pending {
-                return Err(DaemonError::reload("runtime collection pending"));
-            }
-            self.reload()
+            self.reload_bounded()
         } else {
             if matches!(
                 method,
@@ -3639,10 +3821,13 @@ impl App {
                 self.runtime
                     .as_mut()
                     .expect("control work requires a runtime")
-                    .finish_control_work(ControlReconcileOutcome::failed(
-                        kind,
-                        "control runtime worker disconnected",
-                    ));
+                    .finish_control_work(
+                        ControlReconcileOutcome::failed(
+                            kind,
+                            "control runtime worker disconnected",
+                        ),
+                        true,
+                    );
                 self.last_error = Some("control runtime worker disconnected".into());
             }
         }
@@ -3658,9 +3843,11 @@ impl App {
             }
             self.control_pending_generation = None;
             if let Some(runtime) = self.runtime.as_mut() {
-                runtime.finish_control_work(notice.outcome);
+                runtime.finish_control_work(notice.outcome, !self.reload_requested);
             }
-            self.queue_control_work();
+            if !self.reload_requested {
+                self.queue_control_work();
+            }
         }
     }
 
@@ -3692,8 +3879,9 @@ impl App {
     }
     fn handle_control(&mut self, command: ControlCommand) -> Result<Value, DaemonError> {
         self.drain_runtime_notices();
+        self.drain_reload_notices();
         self.drain_control_notices();
-        if self.runtime_collection_pending {
+        if self.runtime_collection_pending || self.reload_pending {
             return Err(DaemonError::collection("runtime collection pending"));
         }
         let result = {
@@ -3753,416 +3941,6 @@ impl App {
             self.last_error = Some(error.to_string());
         }
     }
-    fn reload(&mut self) -> Result<(), DaemonError> {
-        let result = self.reload_inner();
-        if result.is_ok() {
-            self.mode_reload.complete();
-        }
-        result
-    }
-
-    fn reload_inner(&mut self) -> Result<(), DaemonError> {
-        if self.runtime.is_none() {
-            return Err(DaemonError::reload("runtime is not started"));
-        }
-        self.drain_control_notices();
-        if self.control_pending_generation.is_some()
-            || self
-                .runtime
-                .as_ref()
-                .is_some_and(|runtime| runtime.control_reconcile_pending)
-        {
-            return Err(DaemonError::reload("control transaction pending"));
-        }
-        let config = load_config()?;
-        let current = self.runtime.as_ref().unwrap();
-        let process_tracker = current.process_tracker.clone();
-        #[cfg(feature = "nss-platform")]
-        let attachment_generation_floor = current.access_edge.attachment_generation_watermark();
-        let mut candidate =
-            ProductionRuntime::prepare_with_process_tracker(config.clone(), process_tracker)?;
-        #[cfg(feature = "nss-platform")]
-        {
-            let current = self.runtime.as_ref().unwrap();
-            candidate.control.inherit_nss_reload_state(&current.control);
-            candidate.control_platform_owner = false;
-            candidate
-                .access_edge
-                .advance_attachment_generation_floor(attachment_generation_floor);
-        }
-        #[cfg(feature = "nss-platform")]
-        candidate
-            .nss
-            .activate(&candidate.config, &candidate.probe_report);
-        let wants_bpf = config.enable_bpf
-            && matches!(
-                config.rate_collector_mode,
-                crate::config::RateCollectorMode::Auto
-                    | crate::config::RateCollectorMode::Bpf
-                    | crate::config::RateCollectorMode::NssEcmBpf
-            )
-            && candidate.probe_report.facts.tc.safe_attach;
-        let desired_mode = candidate.desired_attach_mode();
-        let current_has_bpf = self
-            .runtime
-            .as_ref()
-            .is_some_and(|runtime| runtime.bpf.is_some());
-        let reconfigure_strategy = if wants_bpf && current_has_bpf {
-            let current_bpf = self.runtime.as_ref().unwrap().bpf.as_ref().unwrap();
-            if current_bpf.attach_mode().is_none() {
-                return Err(DaemonError::reload(
-                    "current BPF topology is not healthy enough to reload",
-                ));
-            }
-            Some(current_bpf.reconfigure_strategy(desired_mode))
-        } else {
-            None
-        };
-        let reuse_bpf = reconfigure_strategy == Some(ReconfigureStrategy::InPlace);
-        let suspended_mode_switch =
-            reconfigure_strategy == Some(ReconfigureStrategy::SuspendThenAttach);
-        let mut prepared_bpf = None;
-        let mut mode_switch_checkpoint = None;
-        let mut snapshot = if reuse_bpf {
-            let current = self.runtime.as_mut().unwrap();
-            if current.config.max_clients == config.max_clients
-                && current.config.active_client_window_ms == config.active_client_window_ms
-            {
-                candidate.bpf_collector = current.bpf_collector.clone();
-            }
-            candidate.bpf_error = current.bpf_error.clone();
-            candidate.bpf_error_stage = current.bpf_error_stage;
-            let runtime = current.bpf.as_mut().unwrap();
-            let transaction = match runtime.prepare_reconfigure(
-                &mut current.adapter,
-                &collect_ifnames(&config),
-                desired_mode,
-            ) {
-                Ok(transaction) => transaction,
-                Err(error) => {
-                    if error.kind() == AdapterErrorKind::DetachFailed {
-                        *self.state.fatal_cell().borrow_mut() =
-                            Some(format!("BPF reconfigure prepare cleanup failed: {error}"));
-                        UloopGuard::request_stop();
-                    }
-                    return Err(DaemonError::reload(error.to_string()));
-                }
-            };
-            if transaction.topology_changed() {
-                candidate.bpf_collector.reset_rates();
-            }
-            match candidate.collect_with_external_bpf(
-                runtime,
-                &mut current.adapter,
-                ProbeMethod::Reload,
-            ) {
-                Ok((snapshot, collection_checkpoint)) => {
-                    prepared_bpf = Some(PreparedBpfReload {
-                        transaction,
-                        collection_checkpoint,
-                    });
-                    snapshot
-                }
-                Err(error) => {
-                    if let Err(rollback) =
-                        runtime.abort_reconfigure(&mut current.adapter, transaction)
-                    {
-                        return Err(record_fatal_cleanup(
-                            "BPF reconfigure abort",
-                            &error.to_string(),
-                            &rollback.to_string(),
-                            self.state.fatal_cell(),
-                        ));
-                    }
-                    return Err(abort_reload_candidate(
-                        &self.state,
-                        &mut candidate,
-                        error,
-                        UloopGuard::request_stop,
-                    ));
-                }
-            }
-        } else {
-            if suspended_mode_switch {
-                let current = self.runtime.as_ref().unwrap();
-                if current.config.max_clients == config.max_clients
-                    && current.config.active_client_window_ms == config.active_client_window_ms
-                {
-                    candidate.bpf_collector = current.bpf_collector.clone();
-                }
-                candidate.bpf_error = current.bpf_error.clone();
-                candidate.bpf_error_stage = current.bpf_error_stage;
-                mode_switch_checkpoint = Some(candidate.checkpoint());
-            } else if wants_bpf {
-                if let Err(error) = candidate.activate_new_bpf() {
-                    *self.state.fatal_cell().borrow_mut() = Some(error.to_string());
-                    UloopGuard::request_stop();
-                    return Err(error);
-                }
-            }
-            match candidate.collect(ProbeMethod::Reload) {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    return Err(abort_reload_candidate(
-                        &self.state,
-                        &mut candidate,
-                        error,
-                        UloopGuard::request_stop,
-                    ));
-                }
-            }
-        };
-        let old_interval = self
-            .runtime
-            .as_ref()
-            .map_or(self.state.config().refresh_interval_ms, |runtime| {
-                runtime.collection_interval_ms(self.state.config().refresh_interval_ms)
-            });
-        let new_interval = candidate.collection_interval_ms(config.refresh_interval_ms);
-        if let Err(error) = schedule_absolute_collection(
-            self.collection_timer.as_ref().unwrap(),
-            &self.collection_deadline_ms,
-            new_interval,
-        ) {
-            let bpf_rollback = prepared_bpf.take().and_then(|prepared| {
-                let current = self.runtime.as_mut().unwrap();
-                let runtime = current.bpf.as_mut().unwrap();
-                runtime.restore_collection_checkpoint(
-                    &mut candidate.bpf_collector,
-                    prepared.collection_checkpoint,
-                );
-                runtime
-                    .abort_reconfigure(&mut current.adapter, prepared.transaction)
-                    .err()
-            });
-            let bpf_rollback_failed = bpf_rollback.is_some();
-            let primary = match bpf_rollback {
-                Some(rollback) => {
-                    DaemonError::reload(format!("{error}; BPF rollback failed: {rollback}"))
-                }
-                None => DaemonError::reload(error.to_string()),
-            };
-            let timer = self.collection_timer.as_ref().unwrap();
-            let deadline = &self.collection_deadline_ms;
-            let failure = abort_reload_after_timer_failure(
-                &self.state,
-                &mut candidate,
-                primary,
-                || schedule_absolute_collection(timer, deadline, old_interval),
-                UloopGuard::request_stop,
-            );
-            if bpf_rollback_failed && self.state.fatal_error().is_none() {
-                *self.state.fatal_cell().borrow_mut() = Some(failure.to_string());
-                UloopGuard::request_stop();
-            }
-            return Err(failure);
-        }
-        if suspended_mode_switch {
-            let suspended = match {
-                let current = self.runtime.as_mut().unwrap();
-                let runtime = current.bpf.as_mut().unwrap();
-                match runtime.suspend_for_replacement(&mut current.adapter) {
-                    Ok(suspended) => Ok(suspended),
-                    Err(error) => {
-                        let old_topology_intact = runtime.is_attached();
-                        Err((error, old_topology_intact))
-                    }
-                }
-            } {
-                Ok(suspended) => suspended,
-                Err((error, old_topology_intact)) => {
-                    let primary =
-                        DaemonError::reload(format!("BPF mode-switch suspend failed: {error}"));
-                    let timer = self.collection_timer.as_ref().unwrap();
-                    let deadline = &self.collection_deadline_ms;
-                    let restore_timer =
-                        || schedule_absolute_collection(timer, deadline, old_interval);
-                    let failure = finish_mode_switch_suspend_failure(
-                        &self.state,
-                        &mut candidate,
-                        primary,
-                        old_topology_intact,
-                        restore_timer,
-                        UloopGuard::request_stop,
-                    );
-                    return Err(failure);
-                }
-            };
-            candidate.restore(
-                mode_switch_checkpoint
-                    .take()
-                    .expect("suspended mode switch checkpointed before collection"),
-            );
-            candidate.bpf_collector.reset_rates();
-            let interfaces = collect_ifnames(&config);
-            let attach_result = {
-                let current = self.runtime.as_mut().unwrap();
-                current.bpf.as_mut().unwrap().attach_suspended(
-                    &mut current.adapter,
-                    &suspended,
-                    &interfaces,
-                    desired_mode,
-                )
-            };
-            if let Err(error) = attach_result {
-                let restore = {
-                    let current = self.runtime.as_mut().unwrap();
-                    current
-                        .bpf
-                        .as_mut()
-                        .unwrap()
-                        .resume_suspended(&mut current.adapter, suspended)
-                };
-                let timer = self.collection_timer.as_ref().unwrap();
-                let deadline = &self.collection_deadline_ms;
-                return Err(finish_mode_switch_rollback(
-                    &self.state,
-                    &mut candidate,
-                    DaemonError::reload(error.to_string()),
-                    restore,
-                    || schedule_absolute_collection(timer, deadline, old_interval),
-                    UloopGuard::request_stop,
-                ));
-            }
-            let collected = {
-                let current = self.runtime.as_mut().unwrap();
-                candidate.collect_with_external_bpf(
-                    current.bpf.as_mut().unwrap(),
-                    &mut current.adapter,
-                    ProbeMethod::Reload,
-                )
-            };
-            snapshot = match collected {
-                Ok((snapshot, _)) => snapshot,
-                Err(error) => {
-                    let restore = {
-                        let current = self.runtime.as_mut().unwrap();
-                        let runtime = current.bpf.as_mut().unwrap();
-                        runtime
-                            .suspend_for_replacement(&mut current.adapter)
-                            .and_then(|_| runtime.resume_suspended(&mut current.adapter, suspended))
-                    };
-                    let timer = self.collection_timer.as_ref().unwrap();
-                    let deadline = &self.collection_deadline_ms;
-                    return Err(finish_mode_switch_rollback(
-                        &self.state,
-                        &mut candidate,
-                        error,
-                        restore,
-                        || schedule_absolute_collection(timer, deadline, old_interval),
-                        UloopGuard::request_stop,
-                    ));
-                }
-            };
-            let current = self.runtime.as_mut().unwrap();
-            candidate.adapter = std::mem::take(&mut current.adapter);
-            candidate.bpf = current.bpf.take();
-        }
-        let postcommit_cleanup: Option<BpfPostCommitCleanup<SystemAyaLink>> =
-            prepared_bpf.take().map(|prepared| {
-                let current = self.runtime.as_mut().unwrap();
-                let runtime = current.bpf.as_mut().unwrap();
-                let cleanup = runtime
-                    .commit_reconfigure(prepared.transaction, ReconfigureRateBaseline::Prepared);
-                candidate.adapter = std::mem::take(&mut current.adapter);
-                candidate.bpf = current.bpf.take();
-                cleanup
-            });
-        #[cfg(feature = "nss-platform")]
-        {
-            // From this point commit_reload cannot reject the candidate. Give
-            // it cleanup authority before the old runtime is retired, and
-            // make the old shutdown preserve the shared dataplane objects.
-            candidate.control_platform_owner = true;
-            self.runtime.as_mut().unwrap().control_platform_owner = false;
-        }
-        commit_reload(
-            &mut self.state,
-            &mut self.runtime,
-            candidate,
-            config,
-            snapshot,
-            UloopGuard::request_stop,
-        );
-        if let Some(cleanup) = postcommit_cleanup {
-            let current = self.runtime.as_mut().unwrap();
-            let runtime = current.bpf.as_mut().unwrap();
-            if let Err(error) = runtime.run_postcommit_cleanup(&mut current.adapter, cleanup) {
-                let message = format!("reload committed; postcommit BPF cleanup failed: {error}");
-                *self.state.fatal_cell().borrow_mut() = Some(message);
-                UloopGuard::request_stop();
-            }
-        }
-        #[cfg(feature = "nss-platform")]
-        self.restart_fast_rate_worker();
-        Ok(())
-    }
-}
-
-fn finish_mode_switch_suspend_failure<R: Runtime>(
-    state: &CoordinatorState,
-    candidate: &mut R,
-    primary: DaemonError,
-    old_topology_intact: bool,
-    restore_timer: impl FnOnce() -> Result<(), DaemonError>,
-    request_stop: impl FnOnce(),
-) -> DaemonError {
-    if old_topology_intact {
-        abort_reload_after_timer_failure(state, candidate, primary, restore_timer, request_stop)
-    } else {
-        abort_unrecoverable_mode_switch(state, candidate, primary, restore_timer, request_stop)
-    }
-}
-
-fn abort_unrecoverable_mode_switch<R: Runtime>(
-    state: &CoordinatorState,
-    candidate: &mut R,
-    primary: DaemonError,
-    restore_timer: impl FnOnce() -> Result<(), DaemonError>,
-    request_stop: impl FnOnce(),
-) -> DaemonError {
-    let candidate_cleanup = candidate.shutdown().err();
-    let timer_rollback = restore_timer().err();
-    let mut message = primary.to_string();
-    if let Some(error) = candidate_cleanup {
-        message.push_str(&format!("; candidate cleanup failed: {error}"));
-    }
-    if let Some(error) = timer_rollback {
-        message.push_str(&format!("; timer rollback failed: {error}"));
-    }
-    *state.fatal_cell().borrow_mut() = Some(message.clone());
-    request_stop();
-    DaemonError::reload(message)
-}
-
-fn finish_mode_switch_rollback<R: Runtime>(
-    state: &CoordinatorState,
-    candidate: &mut R,
-    primary: DaemonError,
-    bpf_restore: Result<(), AdapterError>,
-    restore_timer: impl FnOnce() -> Result<(), DaemonError>,
-    request_stop: impl FnOnce(),
-) -> DaemonError {
-    let candidate_cleanup = candidate.shutdown().err();
-    let old_restore = bpf_restore.err();
-    let timer_rollback = restore_timer().err();
-    if candidate_cleanup.is_none() && old_restore.is_none() && timer_rollback.is_none() {
-        return primary;
-    }
-
-    let mut message = primary.to_string();
-    if let Some(error) = candidate_cleanup {
-        message.push_str(&format!("; candidate cleanup failed: {error}"));
-    }
-    if let Some(error) = old_restore {
-        message.push_str(&format!("; old BPF restore failed: {error}"));
-    }
-    if let Some(error) = timer_rollback {
-        message.push_str(&format!("; timer rollback failed: {error}"));
-    }
-    *state.fatal_cell().borrow_mut() = Some(message.clone());
-    request_stop();
-    DaemonError::reload(message)
 }
 
 pub fn run() -> Result<(), DaemonError> {
@@ -4179,6 +3957,9 @@ pub fn run() -> Result<(), DaemonError> {
     let (runtime_notice_sender, runtime_notices) = runtime_worker::notice_channel(1);
     let runtime_worker = RuntimeCollectionWorker::spawn(1, runtime_notice_sender)
         .map_err(|error| DaemonError::platform(format!("runtime worker: {error}")))?;
+    let (reload_notice_sender, reload_notices) = reload_worker::notice_channel(1);
+    let reload_worker = ProductionReloadWorker::spawn(1, reload_notice_sender)
+        .map_err(|error| DaemonError::platform(format!("reload worker: {error}")))?;
     let (control_worker, control_notices) = {
         let (sender, receiver) = mpsc::sync_channel(4);
         let worker = control_worker::ControlWorker::spawn(1, sender)
@@ -4201,6 +3982,10 @@ pub fn run() -> Result<(), DaemonError> {
         runtime_worker: Some(runtime_worker),
         runtime_notices,
         runtime_collection_pending: false,
+        reload_worker: Some(reload_worker),
+        reload_notices,
+        reload_requested: false,
+        reload_pending: false,
         runtime_notice_timer: None,
         reconnect_timer: None,
         reconnect_pending: Cell::new(false),
@@ -4325,6 +4110,13 @@ pub fn run() -> Result<(), DaemonError> {
             .map_err(|_| DaemonError::platform("runtime worker panicked"))
     });
     app.borrow_mut().recover_runtime_worker_notice();
+    let reload_worker = app.borrow_mut().reload_worker.take();
+    let reload_worker_result = reload_worker.map_or(Ok(()), |worker| {
+        worker
+            .join()
+            .map_err(|_| DaemonError::platform("reload worker panicked"))
+    });
+    app.borrow_mut().recover_reload_worker_notice();
     let control_worker = app.borrow_mut().control_worker.take();
     let control_worker_result = control_worker.map_or(Ok(()), |worker| {
         worker
@@ -4343,6 +4135,7 @@ pub fn run() -> Result<(), DaemonError> {
     }
     run_result
         .and(runtime_worker_result)
+        .and(reload_worker_result)
         .and(control_worker_result)
         .and(shutdown_result)
 }
@@ -4434,11 +4227,12 @@ fn version() -> String {
     system::version()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "nss-platform"))]
 fn version_from(version: Option<&str>, release: Option<&str>) -> String {
     system::version_from(version, release)
 }
 
+#[cfg(all(test, feature = "nss-platform"))]
 fn record_fatal_cleanup(
     context: &str,
     primary: &str,
