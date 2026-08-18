@@ -89,8 +89,14 @@ impl FastRateShadow {
             s_read_end_ms,
         );
 
+        let common_progress_ms = fast_n.progress_ms.max(fast_s.progress_ms);
+        let sample_ms = if common_progress_ms == 0 {
+            fast_n.sample_ms.max(fast_s.sample_ms)
+        } else {
+            common_progress_ms
+        };
         let n = FastCounterSample {
-            sample_ms: fast_n.sample_ms,
+            sample_ms,
             read_begin_ms: n_read_begin_ms,
             read_end_ms: n_read_end_ms,
             attachment_generation: 0,
@@ -99,7 +105,7 @@ impl FastRateShadow {
             packets: fast_n.packets,
         };
         let s = FastCounterSample {
-            sample_ms: fast_s.sample_ms,
+            sample_ms,
             read_begin_ms: s_read_begin_ms,
             read_end_ms: s_read_end_ms,
             attachment_generation: 0,
@@ -112,6 +118,9 @@ impl FastRateShadow {
 
     fn observe_pair(&mut self, n: FastCounterSample, s: FastCounterSample) {
         if !self.coordinator.has_start() && self.coordinator.begin(n, s).is_ok() {
+            return;
+        }
+        if !self.coordinator.has_progress(n, s) {
             return;
         }
         match self.coordinator.finish(n, s) {
@@ -227,6 +236,58 @@ mod tests {
                 .map(|value| value.fast_total_bps),
             None
         );
+    }
+
+    #[test]
+    fn holds_a_valid_event_window_when_a_read_sees_no_new_progress() {
+        let mut shadow = FastRateShadow::new();
+        let mut first_n = fast_n(1_100, 100);
+        first_n.progress_ms = 1_000;
+        let mut first_s = fast_s(1_100, 50);
+        first_s.progress_ms = 1_000;
+        shadow.observe(
+            Some(&first_n),
+            Some(&first_s),
+            1_090,
+            1_100,
+            1_091,
+            1_101,
+            None,
+        );
+
+        let mut next_n = fast_n(2_100, 300);
+        next_n.progress_ms = 3_000;
+        let mut next_s = fast_s(2_100, 250);
+        next_s.progress_ms = 3_000;
+        shadow.observe(
+            Some(&next_n),
+            Some(&next_s),
+            2_090,
+            2_100,
+            2_091,
+            2_101,
+            None,
+        );
+        let published = shadow.latest().unwrap();
+        assert_eq!(published.sample_ms, 3_000);
+        assert_eq!(published.window_ms, 2_000);
+        assert_eq!(published.fast_total_bps, 1_600);
+
+        let mut held_n = next_n;
+        held_n.sample_ms = 3_100;
+        let mut held_s = next_s;
+        held_s.sample_ms = 3_100;
+        shadow.observe(
+            Some(&held_n),
+            Some(&held_s),
+            3_090,
+            3_100,
+            3_091,
+            3_101,
+            None,
+        );
+        assert_eq!(shadow.latest(), Some(published));
+        assert_eq!(shadow.telemetry().zero_windows, 0);
     }
 
     #[test]

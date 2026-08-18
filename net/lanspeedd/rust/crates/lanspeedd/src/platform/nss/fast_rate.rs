@@ -87,6 +87,22 @@ impl FastRateCoordinator {
         self.start.is_some()
     }
 
+    /// Return whether the current pair can produce a new counter window.
+    ///
+    /// ECM may publish a cumulative map in bursts. Re-reading an unchanged
+    /// pair must keep the last valid rate alive instead of turning the burst
+    /// cadence into alternating zero and spike windows. Generation changes
+    /// still force a validation pass so resets cannot be hidden by the hold.
+    pub(crate) fn has_progress(&self, n: FastCounterSample, s: FastCounterSample) -> bool {
+        let Some(start) = self.start else {
+            return true;
+        };
+        n.sample_ms > start.n.sample_ms
+            || s.sample_ms > start.s.sample_ms
+            || n.reset_generation != start.n.reset_generation
+            || s.reset_generation != start.s.reset_generation
+    }
+
     pub(crate) fn clear(&mut self) {
         self.start = None;
     }
@@ -292,5 +308,23 @@ mod tests {
             coordinator.max_read_end_skew_ms(),
             FAST_WINDOW_MAX_READ_END_SKEW_MS
         );
+    }
+
+    #[test]
+    fn unchanged_cumulative_pair_does_not_create_a_zero_window() {
+        let mut coordinator = FastRateCoordinator::default();
+        let first = sample(1_000, 1_010, 100, 10);
+        coordinator.begin(first, first).unwrap();
+        assert!(!coordinator.has_progress(first, first));
+    }
+
+    #[test]
+    fn reset_generation_is_progress_for_validation() {
+        let mut coordinator = FastRateCoordinator::default();
+        let first = sample(1_000, 1_010, 100, 10);
+        coordinator.begin(first, first).unwrap();
+        let mut reset = first;
+        reset.reset_generation += 1;
+        assert!(coordinator.has_progress(reset, first));
     }
 }

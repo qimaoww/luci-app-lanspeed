@@ -37,6 +37,9 @@ pub(crate) struct FastSSample {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct FastSSnapshot {
     pub sample_ms: u64,
+    /// Latest counter update timestamp observed in this map. This is kept
+    /// separate from `sample_ms`, which is the completed userspace read time.
+    pub progress_ms: u64,
     pub map_entries: usize,
     pub valid_entries: usize,
     pub invalid_entries: usize,
@@ -113,6 +116,7 @@ impl FastSRuntime {
         let mut entries = Vec::new();
         let mut invalid_entries = 0;
         let mut sample_ms = now_ms;
+        let mut progress_ms = 0;
         let mut bytes: u64 = 0;
         let mut packets: u64 = 0;
         for raw in read.entries {
@@ -122,6 +126,7 @@ impl FastSRuntime {
                 Ok(aggregate) => {
                     let entry_sample_ms = (aggregate.last_seen_ns / 1_000_000).min(now_ms);
                     sample_ms = sample_ms.max(entry_sample_ms);
+                    progress_ms = progress_ms.max(entry_sample_ms);
                     bytes = bytes.saturating_add(aggregate.bytes);
                     packets = packets.saturating_add(aggregate.packets);
                     entries.push(FastSSample {
@@ -140,6 +145,7 @@ impl FastSRuntime {
 
         let snapshot = FastSSnapshot {
             sample_ms,
+            progress_ms,
             map_entries,
             valid_entries: entries.len(),
             invalid_entries,
