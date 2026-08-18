@@ -3488,8 +3488,8 @@ function assertClientDetailRefreshBehavior(src) {
 	const incompleteFooter = fakeElementText(refs.footer);
 	if (refs.summaryTargets.textContent !== '—' ||
 	    refs.summaryConnections.textContent !== '—' ||
-	    refs.summaryTx.textContent !== '—' || refs.summaryRx.textContent !== '—' ||
-	    refs.summaryRateMeta.textContent !== '—' ||
+	    refs.summaryTx.textContent !== '40.00 Kbps' || refs.summaryRx.textContent !== '96.00 Kbps' ||
+	    refs.summaryRateMeta.textContent !== '总速率采样：TC-BPF · 连接数据独立采样：Conntrack Netlink · 连接数据暂不可用' ||
 	    fakeElementText(refs.empty) !== '连接快照不完整，无法确认当前连接数量，请稍后重试。' ||
 	    !incompleteFooter.includes('告警：连接快照不完整') ||
 	    incompleteFooter.includes('显示 0') || incompleteFooter.includes('共 0')) {

@@ -162,6 +162,8 @@ function clientRateMetaLabel(client, response) {
 		parts.push(_('已过期'));
 	if (response && response.conn_source)
 		parts.push(_('连接数据独立采样：') + sourceLabel(response.conn_source));
+	if (response && response.available === false)
+		parts.push(_('连接数据暂不可用'));
 	return parts.join(' · ');
 }
 
@@ -500,6 +502,10 @@ function render(viewState) {
 	var incomplete = Boolean(response && response.available === false &&
 		warnings.indexOf('conntrack_snapshot_incomplete') !== -1);
 	var client = response && response.client;
+	/* The client rate plane is published independently of the conntrack detail
+	 * plane.  Keep showing a present client's totals when conntrack is
+	 * unavailable, while counts/rows remain explicitly unknown or empty. */
+	var rateUsable = Boolean(response && client && !notFound);
 	var ips = orderedClientIps(client && client.ips);
 	var displayName = viewState.customHostname || client && client.hostname || ips[0] ||
 		client && client.mac || viewState.identityKey || '-';
@@ -574,11 +580,11 @@ function render(viewState) {
 		: '—';
 	refs.summaryConnections.textContent = usable
 		? String(Number(response.total_connections) || 0) : '—';
-	refs.summaryTx.textContent = usable
+	refs.summaryTx.textContent = rateUsable
 		? clientSummaryRate(client, 'tx_bps', viewState.prefs && viewState.prefs.unit) : '—';
-	refs.summaryRx.textContent = usable
+	refs.summaryRx.textContent = rateUsable
 		? clientSummaryRate(client, 'rx_bps', viewState.prefs && viewState.prefs.unit) : '—';
-	refs.summaryRateMeta.textContent = usable
+	refs.summaryRateMeta.textContent = rateUsable
 		? clientRateMetaLabel(client, response) : '—';
 	refs.summaryUpdated.textContent = updatedAtLabel(viewState.updatedAt);
 
@@ -648,7 +654,7 @@ function render(viewState) {
 		}
 		if (warnings.length)
 			footer.push(_('告警：') + warnings.map(warningLabel).join('，'));
-		if (usable && fmt.nssPlatform(viewState.status)) {
+		if (rateUsable && fmt.nssPlatform(viewState.status)) {
 			footer.push(_('NSS：总速率来自接入 Edge；连接明细来自独立 Conntrack 窗口，卸载流量可能不出现在逐连接字节中，不能与总速率相加核对'));
 		}
 	}
