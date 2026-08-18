@@ -10,6 +10,7 @@ var SOURCE_KEYS = [ 'status', 'clients', 'interfaces', 'uci' ];
 var LIVE_SOURCE_KEYS = [ 'status', 'clients', 'interfaces' ];
 var ACCESS_EDGE_SAMPLE_SKEW_MS = 50;
 var LIVE_RPC_TIMEOUT_MS = 2500;
+var ERROR_NOTICE_MS = 3000;
 var SOURCE_LABELS = {
 	realtime: 'realtime',
 	status: 'status',
@@ -485,6 +486,7 @@ function createController(viewState, options) {
 	var eventTarget = options.eventTarget || hostWindow;
 	var timerApi = options.timerApi || hostWindow || {};
 	var hostDocument = options.document || (typeof document !== 'undefined' ? document : null);
+	var visibilityTarget = options.visibilityTarget || hostDocument;
 	var Observer = options.MutationObserver || (hostWindow && hostWindow.MutationObserver) ||
 		(typeof MutationObserver !== 'undefined' ? MutationObserver : null);
 	var clock = options.now || function() { return Date.now(); };
@@ -492,6 +494,7 @@ function createController(viewState, options) {
 	var pending = null;
 	var requestSeq = 0;
 	var timer = null;
+	var noticeTimer = null;
 	var destroyed = false;
 	var root = null;
 	var observer = null;
@@ -506,6 +509,45 @@ function createController(viewState, options) {
 		if (timer !== null && typeof timerApi.clearTimeout === 'function')
 			timerApi.clearTimeout(timer);
 		timer = null;
+	}
+
+	function clearErrorNoticeTimer() {
+		if (noticeTimer !== null && typeof timerApi.clearTimeout === 'function')
+			timerApi.clearTimeout(noticeTimer);
+		noticeTimer = null;
+	}
+
+	function scheduleErrorNoticeHide() {
+		clearErrorNoticeTimer();
+		if (!viewState.errorNoticeUntil || typeof timerApi.setTimeout !== 'function') return;
+		var delay = Math.max(0, Number(viewState.errorNoticeUntil) - clock());
+		noticeTimer = timerApi.setTimeout(function() {
+			noticeTimer = null;
+			viewState.errorNoticeVisible = false;
+			if (!destroyed) refresh(true);
+		}, delay);
+	}
+
+	function triggerErrorNotice() {
+		viewState.errorNoticeVisible = true;
+		viewState.errorNoticeUntil = clock() + ERROR_NOTICE_MS;
+		scheduleErrorNoticeHide();
+	}
+
+	function visibilityChanged() {
+		var hidden = visibilityTarget &&
+			(visibilityTarget.hidden === true || visibilityTarget.visibilityState === 'hidden');
+		if (hidden) {
+			clearErrorNoticeTimer();
+			viewState.errorNoticeVisible = false;
+			viewState.errorNoticeUntil = 0;
+			if (viewState.refs) refresh(true);
+			return;
+		}
+		if (viewState.errorNoticeSignature) {
+			triggerErrorNotice();
+			if (viewState.refs) refresh(true);
+		}
 	}
 
 	function schedule(anchorAt) {
@@ -592,6 +634,7 @@ function createController(viewState, options) {
 		destroyed = true;
 		requestSeq++;
 		stopTimer();
+		clearErrorNoticeTimer();
 		pending = null;
 		if (observer && typeof observer.disconnect === 'function') observer.disconnect();
 		observer = null;
@@ -599,6 +642,8 @@ function createController(viewState, options) {
 			eventTarget.removeEventListener('pagehide', destroy);
 			eventTarget.removeEventListener('beforeunload', destroy);
 		}
+		if (visibilityTarget && typeof visibilityTarget.removeEventListener === 'function')
+			visibilityTarget.removeEventListener('visibilitychange', visibilityChanged);
 		viewState.destroyed = true;
 	}
 
@@ -618,8 +663,12 @@ function createController(viewState, options) {
 		eventTarget.addEventListener('pagehide', destroy);
 		eventTarget.addEventListener('beforeunload', destroy);
 	}
+	if (visibilityTarget && typeof visibilityTarget.addEventListener === 'function')
+		visibilityTarget.addEventListener('visibilitychange', visibilityChanged);
 
 	viewState.stopTimer = stopTimer;
+	viewState.clearErrorNoticeTimer = clearErrorNoticeTimer;
+	viewState.triggerErrorNotice = triggerErrorNotice;
 	viewState.schedule = schedule;
 	viewState.reload = reload;
 	viewState.destroy = destroy;

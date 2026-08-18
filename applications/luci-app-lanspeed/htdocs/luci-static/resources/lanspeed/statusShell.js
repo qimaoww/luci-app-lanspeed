@@ -45,13 +45,15 @@ function buildShell(viewState) {
 		refs.meta
 	]);
 
-	refs.errorTitle = E('strong', {}, _('部分实时数据暂不可用'));
+	refs.errorTitle = E('strong', {
+		'class': 'lanspeed-status-error-title'
+	}, _('部分实时数据暂未更新'));
 	refs.errorPre = E('p', { 'class': 'lanspeed-status-error-summary' }, '');
 	refs.errorList = E('ul', { 'class': 'lanspeed-status-error-list' });
 	refs.errorBox = E('div', {
-		'class': 'alert-message error lanspeed-status-error',
-		'role': 'alert',
-		'aria-live': 'assertive',
+		'class': 'lanspeed-status-error',
+		'role': 'status',
+		'aria-live': 'polite',
 		'aria-atomic': 'true',
 		'aria-hidden': 'true',
 		'style': 'display:none'

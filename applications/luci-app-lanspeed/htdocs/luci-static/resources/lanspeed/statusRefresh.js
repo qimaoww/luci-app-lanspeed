@@ -13,6 +13,8 @@ var CLIENT_INFO_WARNINGS = {
 	conntrack_connection_only: true
 };
 
+var ERROR_NOTICE_MS = 3000;
+
 var RPC_LABELS = {
 	status: _('服务状态'),
 	clients: _('客户端数据'),
@@ -88,6 +90,11 @@ function refreshAvailability(viewState, refs) {
 	}
 
 	if (!failed.length) {
+		viewState.errorNoticeSignature = null;
+		viewState.errorNoticeVisible = true;
+		viewState.errorNoticeUntil = 0;
+		if (typeof viewState.clearErrorNoticeTimer === 'function')
+			viewState.clearErrorNoticeTimer();
 		refs.errorBox.style.display = 'none';
 		refs.errorBox.setAttribute('aria-hidden', 'true');
 		refs.errorPre.textContent = '';
@@ -95,21 +102,39 @@ function refreshAvailability(viewState, refs) {
 		return { failed: failed, hardFailure: hardFailure, samplePending: samplePending };
 	}
 
+	var signature = (hardFailure ? 'hard:' : 'partial:') + failed.join(',');
+	if (viewState.errorNoticeSignature !== signature) {
+		viewState.errorNoticeSignature = signature;
+		if (typeof viewState.triggerErrorNotice === 'function')
+			viewState.triggerErrorNotice();
+		else {
+			viewState.errorNoticeVisible = true;
+			viewState.errorNoticeUntil = Date.now() + ERROR_NOTICE_MS;
+		}
+	}
+	var noticeVisible = viewState.errorNoticeVisible !== false &&
+		(!Number(viewState.errorNoticeUntil) || Number(viewState.errorNoticeUntil) > Date.now());
+	if (!noticeVisible) {
+		refs.errorBox.style.display = 'none';
+		refs.errorBox.setAttribute('aria-hidden', 'true');
+		return { failed: failed, hardFailure: hardFailure, samplePending: false };
+	}
+
 	refs.errorBox.style.display = '';
 	refs.errorBox.setAttribute('aria-hidden', 'false');
 	refs.errorTitle.textContent = hardFailure
-		? _('实时状态暂不可用') : _('部分实时数据暂不可用');
+		? _('实时数据暂未更新') : _('部分实时数据暂未更新');
 	refs.errorPre.textContent = hardFailure
 		? _('所有实时请求均失败，请检查服务状态后重试。')
 		: _('其余成功数据仍会显示；标为“沿用上次”的内容可能已经过期。');
 	fmt.replaceChildren(refs.errorList, failed.map(function(key) {
 		var state = rpc[key];
-		return E('li', { 'data-state': state.retained ? 'warning' : 'bad' }, [
-			E('strong', {}, RPC_LABELS[key] + '：'),
-			E('span', {}, rpcErrorText(state)),
-			state.retained
-				? E('span', { 'class': 'label label-warning' }, _('沿用上次'))
-				: E('span', { 'class': 'label label-danger' }, _('不可用'))
+			return E('li', { 'data-state': state.retained ? 'warning' : 'bad' }, [
+				E('strong', {}, RPC_LABELS[key] + '：'),
+				E('span', {}, rpcErrorText(state)),
+				state.retained
+					? E('span', { 'class': 'label label-warning' }, _('沿用上次'))
+					: E('span', { 'class': 'label label-warning' }, _('暂未更新'))
 		]);
 	}));
 	return { failed: failed, hardFailure: hardFailure, samplePending: false };

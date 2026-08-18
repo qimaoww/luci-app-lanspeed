@@ -682,6 +682,12 @@ async function testControllerLifecycle(context, fmt) {
 		addEventListener: function(name, handler) { events[name] = handler; },
 		removeEventListener: function(name) { delete events[name]; }
 	};
+	const visibility = {
+		hidden: false,
+		visibilityState: 'visible',
+		addEventListener: function(name, handler) { events[name] = handler; },
+		removeEventListener: function(name) { delete events[name]; }
+	};
 	let refreshes = 0;
 	let busyRefreshes = 0;
 	let calls = 0;
@@ -698,6 +704,7 @@ async function testControllerLifecycle(context, fmt) {
 		load: function() { calls++; return deferred.promise; },
 		timerApi: timers,
 		eventTarget: target,
+		visibilityTarget: visibility,
 		now: function() { return now; }
 	});
 
@@ -1086,7 +1093,8 @@ function testPaginationAndUiStates(context, fmt) {
 	state.refreshLive();
 	assert.strictEqual(state.refs.root.attrs['data-state'], 'bad');
 	assert.strictEqual(state.refs.errorBox.attrs['aria-hidden'], 'false');
-	assert.ok(textOf(state.refs.errorTitle).includes('实时状态暂不可用'));
+	assert.ok(textOf(state.refs.errorTitle).includes('实时数据暂未更新'));
+	assert.ok(!textOf(state.refs.errorBox).includes('不可用'));
 	assert.strictEqual(state.refs.errorList.children.length, 4);
 	assert.ok(refreshCount >= 10);
 }

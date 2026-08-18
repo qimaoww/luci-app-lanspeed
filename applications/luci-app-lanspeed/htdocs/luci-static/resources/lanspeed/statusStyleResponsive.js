@@ -25,6 +25,9 @@ var RESPONSIVE_CSS = [
 	'.lanspeed-clients-card .lanspeed-client-name .ipline{max-width:100%}}',
 
 	'@media (max-width:700px){.lanspeed-header,.lanspeed-details>summary{align-items:center}',
+	'.lanspeed-status-error{grid-template-columns:minmax(0,1fr);gap:.25em}',
+	'.lanspeed-status-error-title{white-space:normal}',
+	'.lanspeed-status-error-list{grid-column:auto;grid-template-columns:minmax(0,1fr)}',
 	'.lanspeed-details-body{max-width:100%;overflow-x:hidden}',
 	'.lanspeed-ifaces-table,.lanspeed-ifaces-table tbody{display:block;width:100%;min-width:0}',
 	'.lanspeed-ifaces-table thead{display:none}',
