@@ -92,9 +92,17 @@ function formatDuration(value) {
 	if (milliseconds < 60000) return _('%s 秒').format(String(Math.round(milliseconds / 100) / 10));
 	return _('%s 分钟').format(String(Math.round(milliseconds / 6000) / 10));
 }
+
+/* The interface aggregate clock is captured before per-interface samples.
+ * A small positive skew therefore still describes the same snapshot, rather
+ * than an interface with no sample. Keep this within the live-pair tolerance so
+ * a genuinely stale or unrelated clock is still reported as unavailable. */
+var INTERFACE_SAMPLE_CLOCK_SKEW_MS = 50;
 function sampleAge(clockValue, sampleValue) {
 	var clock = finiteNumber(clockValue), sample = finiteNumber(sampleValue);
-	return clock === null || sample === null || sample > clock ? null : clock - sample;
+	if (clock === null || sample === null) return null;
+	if (sample > clock) return sample - clock <= INTERFACE_SAMPLE_CLOCK_SKEW_MS ? 0 : null;
+	return clock - sample;
 }
 function formatPercent(value) {
 	var number = finiteNumber(value);

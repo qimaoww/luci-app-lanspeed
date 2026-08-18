@@ -1180,6 +1180,10 @@ async function testDomAndPresenter() {
   assert.strictEqual(goodBuilt.refs.interfacesBody.children.length, 1);
   assert.strictEqual(goodBuilt.refs.interfacesBody.children[0].children[3].textContent, '500 毫秒',
     'interface sample timestamps must render as age relative to the interface clock');
+  assert.strictEqual(states.sampleAge(9500, 9503), 0,
+    'interface samples captured just after the aggregate clock must remain usable');
+  assert.strictEqual(states.sampleAge(9500, 9551), null,
+    'interface samples beyond the clock skew tolerance must remain unavailable');
   assert.strictEqual(goodBuilt.refs.subsystemsBody.children.length, 8);
   const nssRow = goodBuilt.refs.subsystemsBody.children.find((row) =>
     row.children[0] && row.children[0].textContent === 'NSS 加速识别');
