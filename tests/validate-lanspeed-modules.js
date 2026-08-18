@@ -3176,52 +3176,21 @@ function assertClientDetailRefreshBehavior(src) {
 		};
 		state.response = classifiedResponse;
 		refresh.render(state);
-		if (refs.classificationCard.hidden || refs.classificationState.textContent !== '已对齐' ||
-		    refs.classificationTxDirectionState.textContent !== '已对齐' ||
-		    refs.classificationTxEdge.textContent !== '95.00 Mbps' ||
-		    refs.classificationTxNss.textContent !== '80.00 Mbps' ||
-		    refs.classificationRxSlow.textContent !== '5.00 Mbps' ||
-		    refs.classificationTxUnknown.textContent !== '5.00 Mbps' ||
-		    refs.classificationTxCoverage.textContent !== '95%' ||
-		    !refs.classificationWindow.textContent.includes('6 s')) {
-			fail('client detail classification card must render aligned N/S/U and coverage without adding them to total rate');
+		if (findFakeElement(built.root, 'lanspeed-classification-card') ||
+		    fakeElementText(built.root).includes('流量分类') ||
+		    fakeElementText(built.root).includes('NSS已识别')) {
+			fail('client detail must omit traffic classification even when the NSS response carries classification data');
 		}
-		classifiedResponse.traffic_classification = {
-			state: 'domain_mismatch', comparison_window_ms: 6000,
-			tx: { state: 'domain_mismatch', edge_bps: 95000000, nss_bps: 80000000, slow_bps: 10000000 },
-			rx: { state: 'domain_mismatch', edge_bps: 59000000, nss_bps: 50000000, slow_bps: 5000000 }
-		};
-		refresh.render(state);
-		if (refs.classificationState.textContent !== '字节域不匹配' ||
-		    refs.classificationTxUnknown.textContent !== '—' ||
-		    refs.classificationRxCoverage.textContent !== '—') {
-			fail('domain mismatch must retain observed N/S while omitting fabricated U and coverage');
-		}
-		classifiedResponse.traffic_classification = {
-			state: 'map_loss', tx: { state: 'map_loss' }, rx: { state: 'map_loss' }
-		};
-		refresh.render(state);
-		if (refs.classificationState.textContent !== '映射表数据丢失' ||
-		    refs.classificationTxCoverage.textContent !== '—') {
-			fail('map loss must remain explicit and must not render a zero classification coverage');
-		}
-		state.response = fixture;
-		refresh.render(state);
-		if (!refs.classificationCard.hidden)
-			fail('old detail responses without traffic_classification must keep the optional card hidden');
 		const x86State = Object.assign({}, state, {
-			response: classifiedResponse,
 			status: { evidence: { platform: { profile: 'x86_tc_bpf' } } },
 			nssPlatform: false
 		});
 		const x86Built = buildClientDetailShellForRefresh(x86State);
 		x86State.refs = x86Built.refs;
 		refresh.render(x86State);
-		if (x86Built.refs.classificationCard ||
-		    findFakeElement(x86Built.root, 'lanspeed-classification-card') ||
-		    fakeElementText(x86Built.root).includes('流量分类') ||
-		    fakeElementText(x86Built.root).includes('NSS已识别')) {
-			fail('x86 client detail must not construct classification DOM even when the response carries forged NSS fields');
+		if (findFakeElement(x86Built.root, 'lanspeed-classification-card') ||
+		    fakeElementText(x86Built.root).includes('流量分类')) {
+			fail('x86 client detail must omit classification DOM');
 		}
 		if (JSON.stringify(locationRequests[0]) !== JSON.stringify([
 		'2001:db8:ffff::20', '198.51.100.53'
@@ -3657,20 +3626,19 @@ function assertClientDetailShellInteraction(src) {
 	    !rootClasses.includes('lanspeed-connection-detail') || themedRoot !== built.root) {
 		fail('clientDetailShell.js root must reuse cbi-map/lanspeed-root, add the detail class and receive theme detection');
 	}
-		const sections = findFakeElementsByClass(built.root, 'cbi-section');
-		if (sections.length !== 3 || sections.some(function(section) {
+	const sections = findFakeElementsByClass(built.root, 'cbi-section');
+	if (sections.length !== 2 || sections.some(function(section) {
 			return !built.root.children.includes(section);
-		}) || !findFakeElement(built.root, 'lanspeed-connection-identity-card') ||
-		    !findFakeElement(built.root, 'lanspeed-classification-card') ||
-		    !findFakeElement(built.root, 'lanspeed-connections-card')) {
-			fail('clientDetailShell.js must render three peer sections for identity, classification and connections');
-		}
-		if (findFakeElementsByClass(built.root, 'lanspeed-header').length !== 3 ||
-		    findFakeElementsByClass(built.root, 'lanspeed-body').length !== 3 ||
-		    findFakeElementsByClass(built.root, 'lanspeed-toolbar').length !== 1 ||
-		    findFakeElementsByClass(built.root, 'lanspeed-table').length !== 2 ||
-		    findFakeElementsByClass(built.root, 'big').length) {
-			fail('clientDetailShell.js must reuse compact peer header/body/table structures without metric cards');
+	}) || !findFakeElement(built.root, 'lanspeed-connection-identity-card') ||
+	    !findFakeElement(built.root, 'lanspeed-connections-card')) {
+		fail('clientDetailShell.js must render only identity and connections sections');
+	}
+	if (findFakeElementsByClass(built.root, 'lanspeed-header').length !== 2 ||
+	    findFakeElementsByClass(built.root, 'lanspeed-body').length !== 2 ||
+	    findFakeElementsByClass(built.root, 'lanspeed-toolbar').length !== 1 ||
+	    findFakeElementsByClass(built.root, 'lanspeed-table').length !== 1 ||
+	    findFakeElementsByClass(built.root, 'big').length) {
+		fail('clientDetailShell.js must reuse compact peer header/body/table structures without metric cards');
 	}
 
 	const allowedSharedClasses = new Set([
@@ -3683,10 +3651,9 @@ function assertClientDetailShellInteraction(src) {
 	]);
 	walkFakeElements(built.root, function(node) {
 		String(node.attrs && node.attrs.class || '').split(/\s+/).filter(Boolean).forEach(function(className) {
-				if (!allowedSharedClasses.has(className) &&
-				    !className.startsWith('lanspeed-connection-') &&
-				    !className.startsWith('lanspeed-classification-') &&
-				    className !== 'lanspeed-connections-card') {
+					if (!allowedSharedClasses.has(className) &&
+					    !className.startsWith('lanspeed-connection-') &&
+					    className !== 'lanspeed-connections-card') {
 				fail(`clientDetailShell.js must prefix its new class ${className}`);
 			}
 		});
@@ -3697,12 +3664,6 @@ function assertClientDetailShellInteraction(src) {
 			'error', 'back', 'clientName', 'clientMeta', 'connectionState', 'summary',
 			'summaryTargets', 'summaryConnections', 'summaryTx', 'summaryRx', 'summaryRateMeta', 'summaryUpdated', 'protocolAll',
 			'protocolTcp', 'protocolUdp', 'filter', 'intervalSel', 'refresh', 'pause',
-			'classificationCard', 'classificationState', 'classificationWindow',
-			'classificationTxDirectionState', 'classificationRxDirectionState',
-			'classificationTxEdge', 'classificationRxEdge',
-			'classificationTxNss', 'classificationRxNss', 'classificationTxSlow',
-			'classificationRxSlow', 'classificationTxUnknown', 'classificationRxUnknown',
-			'classificationTxCoverage', 'classificationRxCoverage',
 			'sortHeaders', 'table', 'tbody',
 		'empty', 'footer'
 	].forEach(function(name) {
@@ -3712,19 +3673,16 @@ function assertClientDetailShellInteraction(src) {
 	const x86Built = shell.buildShell(Object.assign({}, viewState, { nssPlatform: false }));
 	if (findFakeElementsByClass(x86Built.root, 'cbi-section').length !== 2 ||
 	    findFakeElement(x86Built.root, 'lanspeed-classification-card') ||
-	    x86Built.refs.classificationCard ||
-	    fakeElementText(x86Built.root).includes('流量分类') ||
-	    fakeElementText(x86Built.root).includes('NSS已识别')) {
-		fail('clientDetailShell.js must build only identity and connections sections for x86 TC-BPF');
+	    fakeElementText(x86Built.root).includes('流量分类')) {
+		fail('clientDetailShell.js must build only identity and connections sections for every platform');
 	}
 
 	const copy = fakeElementText(built.root);
 	[
 		'返回客户端列表', 'LAN Speed 状态 / 客户端连接详情', '无法加载连接详情',
 		'客户端身份', '正在加载客户端身份…', 'MAC 与 IP 信息将在加载后显示',
-			'等待数据', '连接摘要', '目标 IP 数', '连接数', '上行总速率', '下行总速率', '页面更新时间',
-			'总速率采样口径将在加载后显示。',
-			'流量分类', '方向状态', 'Edge 同窗总速率', 'NSS已识别', 'CPU慢路径已识别', '未分类', '分类覆盖率',
+		'等待数据', '连接摘要', '目标 IP 数', '连接数', '上行总速率', '下行总速率', '页面更新时间',
+		'总速率采样口径将在加载后显示。',
 		'当前连接', '全部', 'TCP', 'UDP', '立即刷新', '目标 IP', '国家/地区', '目标端口',
 		'协议', '状态', '上行', '下行', '暂无连接', '连接数据加载后会显示来源、刷新间隔和 IP 位置说明。'
 	].forEach(function(text) {

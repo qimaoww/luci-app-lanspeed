@@ -8,8 +8,6 @@ var CSS = [
 	'}',
 	'@media (max-width:700px){',
 	'.lanspeed-connection-rate-meta{flex:1 1 100%;max-width:none;order:3}',
-	'.lanspeed-classification-card .lanspeed-body{overflow-x:auto}',
-	'.lanspeed-classification-table{min-width:28em}',
 	'.lanspeed-connections-card .lanspeed-body{overflow-x:hidden}',
 	'.lanspeed-connections-card .lanspeed-table,.lanspeed-connections-card .lanspeed-table thead,.lanspeed-connections-card .lanspeed-table tbody{display:block;width:100%;min-width:0}',
 	'.lanspeed-connections-card .lanspeed-table thead>tr{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.25em;padding:0 0 .6em;border-bottom:1px solid var(--lanspeed-border)}',

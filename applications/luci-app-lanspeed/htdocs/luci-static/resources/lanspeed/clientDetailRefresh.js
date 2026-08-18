@@ -167,60 +167,6 @@ function clientRateMetaLabel(client, response) {
 	return parts.join(' · ');
 }
 
-function classificationStateLabel(state) {
-	var labels = {
-		warmup: _('预热中'), aligned: _('已对齐'), partial: _('部分可用'), stale: _('已过期'),
-		domain_mismatch: _('字节域不匹配'), window_mismatch: _('窗口不匹配'),
-		counter_skew: _('计数错位'), map_loss: _('映射表数据丢失'), unavailable: _('不可用')
-	};
-	return labels[String(state || '')] || _('未知状态');
-}
-
-function renderTrafficClassification(refs, response, unit, status) {
-	if (!refs.classificationCard) return;
-	var classification = response && response.traffic_classification;
-	var enabled = fmt.nssPlatform(status);
-	refs.classificationCard.hidden = !enabled || !classification;
-	if (!enabled || !classification) return;
-
-	var state = String(classification.state || 'unavailable');
-	refs.classificationState.textContent = classificationStateLabel(state);
-	refs.classificationState.className = state === 'aligned'
-		? 'label success lanspeed-classification-state'
-		: 'label warning lanspeed-classification-state';
-	var comparisonWindow = Number(classification.comparison_window_ms);
-	var start = Number(classification.window_start_ms);
-	var end = Number(classification.window_end_ms);
-	var windowParts = [];
-	if (isFinite(comparisonWindow) && comparisonWindow > 0)
-		windowParts.push((Math.round(comparisonWindow / 100) / 10) + ' s');
-	if (isFinite(start) && isFinite(end) && end >= start)
-		windowParts.push(String(start) + '–' + String(end) + ' ms');
-	refs.classificationWindow.textContent = windowParts.length ? windowParts.join(' · ') : '—';
-
-	var tx = classification.tx || {}, rx = classification.rx || {};
-	var rate = function(value) {
-		return typeof value === 'number' && isFinite(value) && value >= 0
-			? fmt.formatRate(value, unit) : '—';
-	};
-	var coverage = function(value) {
-		return typeof value === 'number' && isFinite(value) && value >= 0 && value <= 100
-			? String(value) + '%' : '—';
-	};
-	refs.classificationTxDirectionState.textContent = classificationStateLabel(tx.state);
-	refs.classificationRxDirectionState.textContent = classificationStateLabel(rx.state);
-	refs.classificationTxEdge.textContent = rate(tx.edge_bps);
-	refs.classificationRxEdge.textContent = rate(rx.edge_bps);
-	refs.classificationTxNss.textContent = rate(tx.nss_bps);
-	refs.classificationRxNss.textContent = rate(rx.nss_bps);
-	refs.classificationTxSlow.textContent = rate(tx.slow_bps);
-	refs.classificationRxSlow.textContent = rate(rx.slow_bps);
-	refs.classificationTxUnknown.textContent = rate(tx.unclassified_bps);
-	refs.classificationRxUnknown.textContent = rate(rx.unclassified_bps);
-	refs.classificationTxCoverage.textContent = coverage(tx.coverage_pct);
-	refs.classificationRxCoverage.textContent = coverage(rx.coverage_pct);
-}
-
 function stateLabel(state) {
 	var value = String(state || '').toLowerCase();
 	if (value === 'established') return _('已建立');
@@ -515,7 +461,6 @@ function render(viewState) {
 
 	refs.clientName.textContent = displayName;
 	renderClientMeta(refs.clientMeta, client, ips, viewState.identityKey);
-	renderTrafficClassification(refs, response, viewState.prefs && viewState.prefs.unit, viewState.status);
 	if (refs.clientHeading) {
 		var hostnameEditable = Boolean(viewState.hostnameMac) &&
 			viewState.hostnameOpening !== true;
