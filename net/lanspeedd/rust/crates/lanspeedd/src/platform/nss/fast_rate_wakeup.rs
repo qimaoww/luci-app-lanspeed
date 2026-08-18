@@ -20,7 +20,7 @@ pub(crate) struct FastRateWakeupTelemetry {
 pub(crate) struct FastRateWakeupBook {
     debounce_ms: u64,
     event_deadline_ms: Option<u64>,
-    fixed_timer_pending: bool,
+    fixed_timer_deadline_ms: Option<u64>,
     telemetry: FastRateWakeupTelemetry,
 }
 
@@ -35,7 +35,7 @@ impl FastRateWakeupBook {
         Self {
             debounce_ms,
             event_deadline_ms: None,
-            fixed_timer_pending: false,
+            fixed_timer_deadline_ms: None,
             telemetry: FastRateWakeupTelemetry {
                 event_received: 0,
                 event_coalesced: 0,
@@ -70,27 +70,40 @@ impl FastRateWakeupBook {
             .saturating_add(count.saturating_sub(1));
     }
 
-    pub(crate) fn on_fixed_timer(&mut self) {
-        self.fixed_timer_pending = true;
+    pub(crate) fn on_fixed_timer(&mut self, now_ms: u64) {
+        self.fixed_timer_deadline_ms = Some(
+            self.fixed_timer_deadline_ms
+                .map_or(now_ms, |deadline| deadline.min(now_ms)),
+        );
+        self.telemetry.fixed_timer_wakeups = self.telemetry.fixed_timer_wakeups.saturating_add(1);
     }
 
     pub(crate) fn defer_event_until(&mut self, deadline_ms: u64) {
         self.event_deadline_ms = Some(deadline_ms);
     }
 
+    pub(crate) fn defer_fixed_until(&mut self, deadline_ms: u64) {
+        self.fixed_timer_deadline_ms = Some(deadline_ms);
+    }
+
     pub(crate) fn poll(&mut self, now_ms: u64) -> Option<FastRateWakeup> {
         let event_hint = self
             .event_deadline_ms
             .is_some_and(|deadline| now_ms >= deadline);
-        if !event_hint && !self.fixed_timer_pending {
+        let fixed_timer = self
+            .fixed_timer_deadline_ms
+            .is_some_and(|deadline| now_ms >= deadline);
+        if !event_hint && !fixed_timer {
             return None;
         }
-        let fixed_timer = self.fixed_timer_pending;
-        self.event_deadline_ms = None;
-        self.fixed_timer_pending = false;
+
+        if event_hint || fixed_timer {
+            // A fixed read performed after an event arrived covers that hint
+            // even when its debounce deadline has not elapsed yet.
+            self.event_deadline_ms = None;
+        }
         if fixed_timer {
-            self.telemetry.fixed_timer_wakeups =
-                self.telemetry.fixed_timer_wakeups.saturating_add(1);
+            self.fixed_timer_deadline_ms = None;
         }
         Some(FastRateWakeup {
             event_hint,
@@ -162,7 +175,7 @@ mod tests {
     #[test]
     fn fixed_timer_wakes_without_an_event_and_merges_with_a_pending_hint() {
         let mut book = FastRateWakeupBook::new(FAST_RATE_DEBOUNCE_MS);
-        book.on_fixed_timer();
+        book.on_fixed_timer(0);
         assert_eq!(
             book.poll(0),
             Some(FastRateWakeup {
@@ -172,7 +185,7 @@ mod tests {
         );
 
         book.on_event_hint(100);
-        book.on_fixed_timer();
+        book.on_fixed_timer(100);
         assert_eq!(
             book.poll(100),
             Some(FastRateWakeup {
@@ -182,6 +195,44 @@ mod tests {
         );
         assert!(book.poll(120).is_none());
         assert_eq!(book.telemetry().fixed_timer_wakeups, 2);
+    }
+
+    #[test]
+    fn deferred_fixed_timer_waits_without_counting_a_second_tick() {
+        let mut book = FastRateWakeupBook::default();
+        book.on_fixed_timer(1_000);
+        assert!(book.poll(1_000).is_some());
+        book.defer_fixed_until(1_100);
+        assert!(book.poll(1_099).is_none());
+        assert_eq!(
+            book.poll(1_100),
+            Some(FastRateWakeup {
+                event_hint: false,
+                fixed_timer: true,
+            })
+        );
+        assert_eq!(book.telemetry().fixed_timer_wakeups, 1);
+    }
+
+    #[test]
+    fn event_poll_does_not_remove_a_future_fixed_timer() {
+        let mut book = FastRateWakeupBook::default();
+        book.on_fixed_timer(1_000);
+        book.on_event_hint(100);
+        assert_eq!(
+            book.poll(120),
+            Some(FastRateWakeup {
+                event_hint: true,
+                fixed_timer: false,
+            })
+        );
+        assert_eq!(
+            book.poll(1_000),
+            Some(FastRateWakeup {
+                event_hint: false,
+                fixed_timer: true,
+            })
+        );
     }
 
     #[test]

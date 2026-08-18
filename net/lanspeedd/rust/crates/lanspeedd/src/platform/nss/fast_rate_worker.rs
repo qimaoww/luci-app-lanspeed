@@ -213,7 +213,7 @@ impl FastRateWorkerState {
                 edge_bps,
             } => {
                 self.context = Some((base_generation, edge_bps));
-                self.wakeups.on_fixed_timer();
+                self.wakeups.on_fixed_timer(now_ms);
                 self.sample_if_due(notices, now_ms, base_generation, edge_bps);
             }
             FastRateCommand::Poll {
@@ -274,7 +274,7 @@ impl FastRateWorkerState {
             .next_fixed_ms
             .get_or_insert_with(|| now_ms.saturating_add(FAST_RATE_SAMPLE_INTERVAL_MS));
         if now_ms >= *next_fixed_ms {
-            self.wakeups.on_fixed_timer();
+            self.wakeups.on_fixed_timer(now_ms);
             *next_fixed_ms = now_ms.saturating_add(FAST_RATE_SAMPLE_INTERVAL_MS);
         }
         self.sample_if_due(notices, now_ms, base_generation, edge_bps);
@@ -292,16 +292,7 @@ impl FastRateWorkerState {
         };
         if self.sources.is_some() {
             if let Some(last_sample_ms) = self.last_sample_ms {
-                let min_interval_ms = if wakeup.event_hint {
-                    FAST_RATE_EVENT_MIN_INTERVAL_MS
-                } else {
-                    FAST_RATE_SAMPLE_INTERVAL_MS
-                };
-                if now_ms.saturating_sub(last_sample_ms) < min_interval_ms {
-                    if wakeup.event_hint {
-                        self.wakeups
-                            .defer_event_until(last_sample_ms.saturating_add(min_interval_ms));
-                    }
+                if defer_rate_limited_wakeup(&mut self.wakeups, wakeup, last_sample_ms, now_ms) {
                     return;
                 }
             }
@@ -448,6 +439,31 @@ impl FastRateWorkerState {
     }
 }
 
+fn defer_rate_limited_wakeup(
+    wakeups: &mut FastRateWakeupBook,
+    wakeup: FastRateWakeup,
+    last_sample_ms: u64,
+    now_ms: u64,
+) -> bool {
+    let min_interval_ms = if wakeup.fixed_timer {
+        FAST_RATE_SAMPLE_INTERVAL_MS
+    } else {
+        FAST_RATE_EVENT_MIN_INTERVAL_MS
+    };
+    if now_ms.saturating_sub(last_sample_ms) >= min_interval_ms {
+        return false;
+    }
+
+    let deadline_ms = last_sample_ms.saturating_add(min_interval_ms);
+    if wakeup.event_hint {
+        wakeups.defer_event_until(deadline_ms);
+    }
+    if wakeup.fixed_timer {
+        wakeups.defer_fixed_until(deadline_ms);
+    }
+    true
+}
+
 fn publication_observed_ms(
     now_ms: u64,
     sample_attempted: bool,
@@ -474,9 +490,45 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        publication_observed_ms, try_queue, FastRateCommand, FastRateSampleInput, FastRateWorker,
+        defer_rate_limited_wakeup, publication_observed_ms, try_queue, FastRateCommand,
+        FastRateSampleInput, FastRateWorker,
     };
-    use crate::platform::nss::{fast_n_runtime::FastNSnapshot, fast_s_runtime::FastSSnapshot};
+    use crate::platform::nss::{
+        fast_n_runtime::FastNSnapshot,
+        fast_rate_wakeup::{FastRateWakeup, FastRateWakeupBook},
+        fast_s_runtime::FastSSnapshot,
+    };
+
+    #[test]
+    fn rate_limited_fixed_tick_is_retried_at_the_full_interval() {
+        let mut wakeups = FastRateWakeupBook::default();
+        let fixed = FastRateWakeup {
+            event_hint: true,
+            fixed_timer: true,
+        };
+        assert!(defer_rate_limited_wakeup(&mut wakeups, fixed, 100, 1_000));
+        assert!(wakeups.poll(1_099).is_none());
+        assert_eq!(wakeup_at(&mut wakeups, 1_100), fixed);
+    }
+
+    #[test]
+    fn eligible_event_is_not_rearmed() {
+        let mut wakeups = FastRateWakeupBook::default();
+        assert!(!defer_rate_limited_wakeup(
+            &mut wakeups,
+            FastRateWakeup {
+                event_hint: true,
+                fixed_timer: false,
+            },
+            100,
+            1_000
+        ));
+        assert!(wakeups.poll(u64::MAX).is_none());
+    }
+
+    fn wakeup_at(wakeups: &mut FastRateWakeupBook, now_ms: u64) -> FastRateWakeup {
+        wakeups.poll(now_ms).expect("deferred wakeup")
+    }
 
     #[test]
     fn publication_clock_uses_the_completed_map_read_timestamp() {
