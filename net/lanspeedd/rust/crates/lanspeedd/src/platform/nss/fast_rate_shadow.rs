@@ -97,6 +97,8 @@ impl FastRateShadow {
         };
         let n = FastCounterSample {
             sample_ms,
+            progress_ms: fast_n.progress_ms,
+            source_present: fast_n.valid_entries != 0,
             read_begin_ms: n_read_begin_ms,
             read_end_ms: n_read_end_ms,
             attachment_generation: 0,
@@ -106,6 +108,8 @@ impl FastRateShadow {
         };
         let s = FastCounterSample {
             sample_ms,
+            progress_ms: fast_s.progress_ms,
+            source_present: fast_s.valid_entries != 0,
             read_begin_ms: s_read_begin_ms,
             read_end_ms: s_read_end_ms,
             attachment_generation: 0,
@@ -262,10 +266,10 @@ mod tests {
         shadow.observe(
             Some(&next_n),
             Some(&next_s),
-            2_090,
-            2_100,
-            2_091,
-            2_101,
+            3_090,
+            3_100,
+            3_091,
+            3_101,
             None,
         );
         let published = shadow.latest().unwrap();

@@ -710,6 +710,12 @@ fn active_rate_mux_publishes_only_current_normalized_leased_fast_window() {
     };
     assert!(fast_client_sample_current(12_500, sample));
     assert!(!fast_client_sample_current(12_501, sample));
+    let long_window = FastClientSample {
+        window_ms: 2_000,
+        ..sample
+    };
+    assert!(fast_client_sample_current(13_000, long_window));
+    assert!(!fast_client_sample_current(13_001, long_window));
     let published = active_rate_direction(RateView::RoutedLeaseSubstitute, None, Some(sample));
     assert_eq!(published.bps, 1_800);
     assert_eq!(published.source, ModelRateSource::FastRoutedLease);

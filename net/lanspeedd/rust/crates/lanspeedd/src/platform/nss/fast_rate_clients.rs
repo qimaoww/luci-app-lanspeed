@@ -99,6 +99,8 @@ impl FastClientRateBook {
             };
             let n_sample = FastCounterSample {
                 sample_ms,
+                progress_ms: n.progress_ms,
+                source_present: n.source_present,
                 read_begin_ms: n_read_begin_ms,
                 read_end_ms: n_read_end_ms,
                 attachment_generation: 0,
@@ -108,6 +110,8 @@ impl FastClientRateBook {
             };
             let s_sample = FastCounterSample {
                 sample_ms,
+                progress_ms: s.progress_ms,
+                source_present: s.source_present,
                 read_begin_ms: s_read_begin_ms,
                 read_end_ms: s_read_end_ms,
                 attachment_generation: 0,
@@ -198,6 +202,7 @@ struct Aggregate {
     packets: u64,
     reset_generation: u32,
     progress_ms: u64,
+    source_present: bool,
 }
 
 fn aggregate_n(snapshot: &FastNSnapshot) -> BTreeMap<FastClientKey, Aggregate> {
@@ -258,6 +263,7 @@ fn add_aggregate(
             value.bytes = value.bytes.saturating_add(bytes);
             value.packets = value.packets.saturating_add(packets);
             value.progress_ms = value.progress_ms.max(progress_ms);
+            value.source_present = true;
             if value.reset_generation != reset_generation {
                 value.reset_generation = 0;
             }
@@ -267,6 +273,7 @@ fn add_aggregate(
             packets,
             reset_generation,
             progress_ms,
+            source_present: true,
         });
 }
 
@@ -375,7 +382,7 @@ mod tests {
         let mut next_s = s(250);
         next_s.sample_ms = 2_100;
         next_s.entries[0].sample_ms = 3_000;
-        book.observe(&next_n, &next_s, 2_090, 2_100, 2_091, 2_101);
+        book.observe(&next_n, &next_s, 3_090, 3_100, 3_091, 3_101);
 
         let sample = book.get([2, 0, 0, 0, 0, 1], DIR_TX).unwrap();
         assert_eq!(sample.sample_ms, 3_000);
@@ -393,6 +400,34 @@ mod tests {
         book.observe(&held_n, &held_s, 3_090, 3_100, 3_091, 3_101);
         assert_eq!(book.get([2, 0, 0, 0, 0, 1], DIR_TX), Some(sample));
         assert_eq!(book.invalid_windows(), 0);
+    }
+
+    #[test]
+    fn holds_combined_rate_until_both_sources_progress() {
+        let mut book = FastClientRateBook::default();
+        let mut first_n = n(100);
+        first_n.entries[0].sample_ms = 1_000;
+        let mut first_s = s(50);
+        first_s.entries[0].sample_ms = 1_000;
+        book.observe(&first_n, &first_s, 990, 1_000, 991, 1_001);
+
+        let mut next_n = n(300);
+        next_n.entries[0].sample_ms = 3_000;
+        let mut next_s = s(250);
+        next_s.entries[0].sample_ms = 2_000;
+        book.observe(&next_n, &next_s, 2_990, 3_000, 2_991, 3_001);
+        let published = book
+            .get([2, 0, 0, 0, 0, 1], DIR_TX)
+            .expect("first complete window");
+
+        // FastS can advance between two batched FastN updates. That partial
+        // read must not replace the completed combined window with a zero-N
+        // or short-denominator sample.
+        let mut s_only = next_s;
+        s_only.sample_ms = 2_500;
+        s_only.entries[0].sample_ms = 2_500;
+        book.observe(&next_n, &s_only, 3_490, 3_500, 2_490, 2_501);
+        assert_eq!(book.get([2, 0, 0, 0, 0, 1], DIR_TX), Some(published));
     }
 
     #[test]

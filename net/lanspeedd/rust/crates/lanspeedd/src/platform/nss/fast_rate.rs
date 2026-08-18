@@ -8,7 +8,20 @@ pub(crate) const FAST_WINDOW_MAX_READ_END_SKEW_MS: u64 = 250;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FastCounterSample {
+    /// Common event clock used to validate that the two maps were read as one
+    /// publication.  The worker sets this to the latest progress observed in
+    /// either source so N/S skew is checked independently from the rate
+    /// denominator.
     pub sample_ms: u64,
+    /// Counter-progress clock belonging to this source.  FastN and FastS do
+    /// not necessarily update at the same cadence; keeping their clocks
+    /// separate prevents a faster source from shrinking the denominator for
+    /// a batched source.
+    pub progress_ms: u64,
+    /// Whether this source has a real cumulative counter for the key.  A
+    /// missing FastN/FastS key is represented by a synthetic zero source and
+    /// is allowed to participate in an N-only or S-only window.
+    pub source_present: bool,
     pub read_begin_ms: u64,
     pub read_end_ms: u64,
     pub attachment_generation: u64,
@@ -26,6 +39,8 @@ pub(crate) struct FastWindow {
     pub n_packets: u64,
     pub s_bytes: u64,
     pub s_packets: u64,
+    pub n_window_ms: u64,
+    pub s_window_ms: u64,
 }
 
 impl FastWindow {
@@ -38,7 +53,16 @@ impl FastWindow {
     }
 
     pub(crate) const fn duration_ms(self) -> u64 {
-        self.end_ms.saturating_sub(self.start_ms)
+        let source_window = if self.n_window_ms > self.s_window_ms {
+            self.n_window_ms
+        } else {
+            self.s_window_ms
+        };
+        if source_window != 0 {
+            source_window
+        } else {
+            self.end_ms.saturating_sub(self.start_ms)
+        }
     }
 }
 
@@ -97,10 +121,19 @@ impl FastRateCoordinator {
         let Some(start) = self.start else {
             return true;
         };
-        n.sample_ms > start.n.sample_ms
-            || s.sample_ms > start.s.sample_ms
-            || n.reset_generation != start.n.reset_generation
+        if n.reset_generation != start.n.reset_generation
             || s.reset_generation != start.s.reset_generation
+        {
+            return true;
+        }
+        let n_progress = effective_progress_ms(n) > effective_progress_ms(start.n);
+        let s_progress = effective_progress_ms(s) > effective_progress_ms(start.s);
+        match (n.source_present, s.source_present) {
+            (true, true) => n_progress && s_progress,
+            (true, false) => n_progress,
+            (false, true) => s_progress,
+            (false, false) => false,
+        }
     }
 
     pub(crate) fn clear(&mut self) {
@@ -145,7 +178,34 @@ impl FastRateCoordinator {
         }
         let start_ms = start.n.sample_ms.max(start.s.sample_ms);
         let end_ms = n.sample_ms.min(s.sample_ms);
-        if end_ms <= start_ms {
+        let n_progress_ms = effective_progress_ms(n);
+        let s_progress_ms = effective_progress_ms(s);
+        let start_n_progress_ms = effective_progress_ms(start.n);
+        let start_s_progress_ms = effective_progress_ms(start.s);
+        if n_progress_ms < start_n_progress_ms || s_progress_ms < start_s_progress_ms {
+            return Err(FastWindowError::CounterReset);
+        }
+        // `last_seen_ns` is a progress hint, not an aggregate rate clock:
+        // taking the maximum across CPUs can let a tiny packet on one CPU
+        // shorten the denominator for a much larger batch on another CPU.
+        // The counter progress clock describes the interval represented by a
+        // batched ECM/NSS update. Stable map read ends are only an observation
+        // fallback for synthetic inputs that do not carry progress timestamps;
+        // using them first would spread one batch over an unrelated 1-3 second
+        // userspace scheduling interval.
+        let n_window_ms = elapsed_or_progress(
+            n.read_end_ms,
+            start.n.read_end_ms,
+            n_progress_ms,
+            start_n_progress_ms,
+        );
+        let s_window_ms = elapsed_or_progress(
+            s.read_end_ms,
+            start.s.read_end_ms,
+            s_progress_ms,
+            start_s_progress_ms,
+        );
+        if end_ms <= start_ms && n_window_ms == 0 && s_window_ms == 0 {
             return Err(FastWindowError::TimeDidNotAdvance);
         }
         if n.bytes < start.n.bytes
@@ -165,7 +225,31 @@ impl FastRateCoordinator {
             n_packets: n.packets - start.n.packets,
             s_bytes: s.bytes - start.s.bytes,
             s_packets: s.packets - start.s.packets,
+            n_window_ms,
+            s_window_ms,
         })
+    }
+}
+
+fn effective_progress_ms(sample: FastCounterSample) -> u64 {
+    if sample.progress_ms == 0 {
+        sample.sample_ms
+    } else {
+        sample.progress_ms
+    }
+}
+
+fn elapsed_or_progress(
+    end_read_ms: u64,
+    start_read_ms: u64,
+    end_progress_ms: u64,
+    start_progress_ms: u64,
+) -> u64 {
+    let progress_elapsed = end_progress_ms.saturating_sub(start_progress_ms);
+    if progress_elapsed != 0 {
+        progress_elapsed
+    } else {
+        end_read_ms.saturating_sub(start_read_ms)
     }
 }
 
@@ -207,6 +291,8 @@ mod tests {
     fn sample(sample_ms: u64, read_end_ms: u64, bytes: u64, packets: u64) -> FastCounterSample {
         FastCounterSample {
             sample_ms,
+            progress_ms: sample_ms,
+            source_present: true,
             read_begin_ms: read_end_ms.saturating_sub(10),
             read_end_ms,
             attachment_generation: 4,
@@ -232,7 +318,31 @@ mod tests {
         assert_eq!(window.s_bytes, 300);
         assert_eq!(window.total_bytes(), 900);
         assert_eq!(window.total_packets(), 90);
-        assert_eq!(window.duration_ms(), 996);
+        assert_eq!(window.duration_ms(), 1_000);
+        assert_eq!(window.n_window_ms, 1_000);
+        assert_eq!(window.s_window_ms, 1_000);
+    }
+
+    #[test]
+    fn encloses_fastn_batches_without_using_fast_s_short_interval() {
+        let mut coordinator = FastRateCoordinator::default();
+        let mut first_n = sample(1_000, 1_010, 100, 10);
+        first_n.progress_ms = 1_000;
+        let mut first_s = sample(1_000, 1_014, 50, 5);
+        first_s.progress_ms = 1_000;
+        coordinator.begin(first_n, first_s).unwrap();
+
+        let mut next_n = sample(2_000, 4_010, 300, 30);
+        next_n.progress_ms = 3_000;
+        let mut next_s = sample(2_000, 4_014, 70, 7);
+        next_s.progress_ms = 2_200;
+        let window = coordinator.finish(next_n, next_s).unwrap();
+
+        assert_eq!(window.n_window_ms, 2_000);
+        assert_eq!(window.s_window_ms, 1_200);
+        assert_eq!(window.duration_ms(), 2_000);
+        assert_eq!(window.n_bytes, 200);
+        assert_eq!(window.s_bytes, 20);
     }
 
     #[test]

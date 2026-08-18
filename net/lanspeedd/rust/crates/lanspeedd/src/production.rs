@@ -1351,7 +1351,16 @@ impl ProductionRuntime {
             bpf_classifier_read_end_ms,
             &runtime_health,
         );
-        if active_access_edge_owns_display_rate(
+        if explicit_internet_rate_view(self.config.internet_view_mode) {
+            // The explicit routed view is owned by the FastRate publication.
+            // Do not let the independent Access Edge/kernel interface sample
+            // leak into the page while that publication is between windows.
+            fast_rate_overlay::apply_routed_interface_rates_from_clients(
+                &mut interfaces,
+                &clients,
+                now_ms,
+            );
+        } else if active_access_edge_owns_display_rate(
             self.config.access_edge_mode,
             self.config.rate_collector_mode,
         ) {

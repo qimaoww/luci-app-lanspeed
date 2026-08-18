@@ -121,6 +121,8 @@ mod tests {
             n_packets: n_bytes / 10,
             s_bytes,
             s_packets: s_bytes / 10,
+            n_window_ms: 1_000,
+            s_window_ms: 1_000,
         }
     }
 

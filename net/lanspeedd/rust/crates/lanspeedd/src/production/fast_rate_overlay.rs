@@ -1,8 +1,13 @@
+use std::collections::BTreeMap;
+
 use lanspeed_common::{DIR_RX, DIR_TX};
 
 use crate::{
     identity::MacAddress,
-    model::{ByteDomain, RateCoverage, RateDirectionMeta, RateScope, RateSource},
+    model::{
+        ByteDomain, Client, ClientsResponse, InterfaceRole, InterfacesResponse, RateCoverage,
+        RateDirectionMeta, RateScope, RateSource,
+    },
     platform::nss::{fast_rate_clients::FastClientSample, fast_rate_worker::FastRatePublication},
     state::ResponseSnapshot,
 };
@@ -15,6 +20,30 @@ pub(super) struct FastRateOverlayStats {
     pub directions: usize,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct RoutedInterfaceRate {
+    tx_bps: u64,
+    rx_bps: u64,
+    sample_ms: u64,
+    window_ms: u64,
+    directions: u32,
+}
+
+impl RoutedInterfaceRate {
+    fn add(&mut self, direction: u8, sample: FastClientSample) {
+        if direction == DIR_TX {
+            self.tx_bps = self.tx_bps.saturating_add(sample.routed_l2_with_fcs_bps);
+        } else if direction == DIR_RX {
+            self.rx_bps = self.rx_bps.saturating_add(sample.routed_l2_with_fcs_bps);
+        } else {
+            return;
+        }
+        self.sample_ms = self.sample_ms.max(sample.sample_ms);
+        self.window_ms = self.window_ms.max(sample.window_ms);
+        self.directions = self.directions.saturating_add(1);
+    }
+}
+
 pub(super) fn apply_fast_rate_overlay(
     snapshot: &mut ResponseSnapshot,
     publication: &FastRatePublication,
@@ -23,6 +52,10 @@ pub(super) fn apply_fast_rate_overlay(
         return FastRateOverlayStats::default();
     }
 
+    let routed_view = snapshot.status.internet_view_mode == "routed";
+    let mut logical_rates = BTreeMap::<String, RoutedInterfaceRate>::new();
+    let mut physical_rates = BTreeMap::<String, RoutedInterfaceRate>::new();
+    let mut total_rate = RoutedInterfaceRate::default();
     let mut stats = FastRateOverlayStats::default();
     for client in &mut snapshot.clients.clients {
         let Ok(mac) = client.mac.parse::<MacAddress>() else {
@@ -33,25 +66,64 @@ pub(super) fn apply_fast_rate_overlay(
         };
         let tx = publication.client_rate(mac.octets(), DIR_TX);
         let rx = publication.client_rate(mac.octets(), DIR_RX);
+        let tx_current = tx.filter(|sample| {
+            direction_uses_fast(meta.tx.source)
+                && fast_client_sample_current(publication.observed_ms, *sample)
+        });
+        let rx_current = rx.filter(|sample| {
+            direction_uses_fast(meta.rx.source)
+                && fast_client_sample_current(publication.observed_ms, *sample)
+        });
         let mut client_changed = false;
 
-        if direction_uses_fast(meta.tx.source)
-            && tx.is_some_and(|sample| fast_client_sample_current(publication.observed_ms, sample))
-        {
-            let sample = tx.expect("checked FastRate TX sample");
+        if let Some(sample) = tx_current {
             client.tx_bps = sample.routed_l2_with_fcs_bps;
             apply_direction(&mut meta.tx, sample);
             client_changed = true;
             stats.directions = stats.directions.saturating_add(1);
         }
-        if direction_uses_fast(meta.rx.source)
-            && rx.is_some_and(|sample| fast_client_sample_current(publication.observed_ms, sample))
-        {
-            let sample = rx.expect("checked FastRate RX sample");
+        if let Some(sample) = rx_current {
             client.rx_bps = sample.routed_l2_with_fcs_bps;
             apply_direction(&mut meta.rx, sample);
             client_changed = true;
             stats.directions = stats.directions.saturating_add(1);
+        }
+
+        if routed_view {
+            if let Some(sample) = tx_current {
+                total_rate.add(DIR_TX, sample);
+                logical_rates
+                    .entry(client.interface.clone())
+                    .or_default()
+                    .add(DIR_TX, sample);
+                if let Some(ifname) = meta
+                    .attachment
+                    .as_ref()
+                    .and_then(|value| value.ifname.as_ref())
+                {
+                    physical_rates
+                        .entry(ifname.clone())
+                        .or_default()
+                        .add(DIR_TX, sample);
+                }
+            }
+            if let Some(sample) = rx_current {
+                total_rate.add(DIR_RX, sample);
+                logical_rates
+                    .entry(client.interface.clone())
+                    .or_default()
+                    .add(DIR_RX, sample);
+                if let Some(ifname) = meta
+                    .attachment
+                    .as_ref()
+                    .and_then(|value| value.ifname.as_ref())
+                {
+                    physical_rates
+                        .entry(ifname.clone())
+                        .or_default()
+                        .add(DIR_RX, sample);
+                }
+            }
         }
         if !client_changed {
             continue;
@@ -80,8 +152,165 @@ pub(super) fn apply_fast_rate_overlay(
         meta.reason_codes.dedup();
     }
 
+    if routed_view {
+        apply_routed_interface_rates(
+            &mut snapshot.interfaces,
+            &logical_rates,
+            &physical_rates,
+            total_rate,
+            publication.observed_ms,
+        );
+    }
     update_latest_overview(snapshot, publication.observed_ms);
     stats
+}
+
+/// Route view must use the same per-client FastN+FastS windows as the client
+/// rows.  Net-device/Access Edge counters are deliberately not consulted here:
+/// a bridge and its wireless child observe the same packet in opposite places
+/// and summing those counters is the source of the historical two-times value.
+fn apply_routed_interface_rates(
+    response: &mut InterfacesResponse,
+    logical: &BTreeMap<String, RoutedInterfaceRate>,
+    physical: &BTreeMap<String, RoutedInterfaceRate>,
+    total: RoutedInterfaceRate,
+    observed_ms: u64,
+) {
+    for interface in &mut response.interfaces {
+        let is_wan = interface.name == "wan" || interface.role == InterfaceRole::Wan;
+        let rate = if is_wan {
+            Some(total)
+        } else {
+            match interface.role {
+                InterfaceRole::Lan => logical.get(&interface.name).copied(),
+                InterfaceRole::Observe => physical.get(&interface.name).copied(),
+                InterfaceRole::Wan => Some(total),
+                InterfaceRole::Excluded | InterfaceRole::Unknown => None,
+            }
+        }
+        .unwrap_or_default();
+
+        // The LuCI table intentionally presents LAN/physical rows in link
+        // orientation.  Keep the raw fields in the corresponding orientation
+        // so bridge, radio and client columns remain comparable without adding
+        // the same routed packet twice.
+        let (rx_bps, tx_bps) = if is_wan {
+            (rate.rx_bps, rate.tx_bps)
+        } else {
+            (rate.tx_bps, rate.rx_bps)
+        };
+        interface.rx_bps = Some(rx_bps);
+        interface.tx_bps = Some(tx_bps);
+        interface.delta_ms = Some(if rate.directions == 0 {
+            0
+        } else {
+            rate.window_ms
+        });
+        interface.sample_ms = Some(if rate.directions == 0 {
+            observed_ms
+        } else {
+            rate.sample_ms
+        });
+        interface.source = Some("NSS FastN+FastS routed client window".into());
+        interface.coverage = Some(if rate.directions == 0 {
+            "fast_routed_window_pending".into()
+        } else {
+            format!("fast_routed_client_directions:{}", rate.directions)
+        });
+        interface.evidence = None;
+    }
+}
+
+/// Project the rates already selected by the current collection into the
+/// interface response. This closes the gap before the independent worker
+/// notice is drained, while preserving the exact client-side owner/window.
+pub(super) fn apply_routed_interface_rates_from_clients(
+    response: &mut InterfacesResponse,
+    clients: &ClientsResponse,
+    observed_ms: u64,
+) {
+    let mut logical_rates = BTreeMap::<String, RoutedInterfaceRate>::new();
+    let mut physical_rates = BTreeMap::<String, RoutedInterfaceRate>::new();
+    let mut total_rate = RoutedInterfaceRate::default();
+    for client in &clients.clients {
+        let Some(meta) = client.rate_meta.as_ref() else {
+            continue;
+        };
+        add_client_direction(
+            &mut logical_rates,
+            &mut physical_rates,
+            &mut total_rate,
+            client,
+            meta,
+            DIR_TX,
+            client.tx_bps,
+            meta.tx.window_ms.or(meta.window_ms),
+            meta.tx.sample_ms.or(meta.sample_ms),
+        );
+        add_client_direction(
+            &mut logical_rates,
+            &mut physical_rates,
+            &mut total_rate,
+            client,
+            meta,
+            DIR_RX,
+            client.rx_bps,
+            meta.rx.window_ms.or(meta.window_ms),
+            meta.rx.sample_ms.or(meta.sample_ms),
+        );
+    }
+    apply_routed_interface_rates(
+        response,
+        &logical_rates,
+        &physical_rates,
+        total_rate,
+        observed_ms,
+    );
+}
+
+fn add_client_direction(
+    logical_rates: &mut BTreeMap<String, RoutedInterfaceRate>,
+    physical_rates: &mut BTreeMap<String, RoutedInterfaceRate>,
+    total_rate: &mut RoutedInterfaceRate,
+    client: &Client,
+    meta: &crate::model::ClientRateMeta,
+    direction: u8,
+    bps: u64,
+    window_ms: Option<u64>,
+    sample_ms: Option<u64>,
+) {
+    let source = if direction == DIR_TX {
+        meta.tx.source
+    } else {
+        meta.rx.source
+    };
+    if !direction_uses_fast(source) {
+        return;
+    }
+    let sample = FastClientSample {
+        sample_ms: sample_ms.unwrap_or_default(),
+        window_ms: window_ms.unwrap_or_default(),
+        read_end_skew_ms: 0,
+        fast_n_bps: 0,
+        fast_s_bps: 0,
+        fast_total_bps: bps,
+        routed_l2_with_fcs_bps: bps,
+    };
+    total_rate.add(direction, sample);
+    logical_rates
+        .entry(client.interface.clone())
+        .or_default()
+        .add(direction, sample);
+    if let Some(ifname) = meta
+        .attachment
+        .as_ref()
+        .and_then(|value| value.ifname.as_ref())
+    {
+        physical_rates
+            .entry(ifname.clone())
+            .or_default()
+            .add(direction, sample);
+    }
 }
 
 fn direction_uses_fast(source: RateSource) -> bool {
@@ -161,10 +390,11 @@ fn client_is_active(
 
 #[cfg(test)]
 mod tests {
-    use super::apply_fast_rate_overlay;
+    use super::{apply_fast_rate_overlay, apply_routed_interface_rates_from_clients};
     use crate::{
         model::{
-            Client, ClientRateMeta, Confidence, OverviewSample, RateDirectionMeta, RateSource,
+            Client, ClientRateMeta, Confidence, Interface, InterfaceRole, InterfaceStatus,
+            OverviewSample, RateAttachment, RateDirectionMeta, RateSource,
         },
         platform::nss::{
             fast_rate_clients::{FastClientKey, FastClientSample},
@@ -243,6 +473,23 @@ mod tests {
         }
     }
 
+    fn interface(name: &str, role: InterfaceRole) -> Interface {
+        Interface {
+            name: name.into(),
+            role,
+            status: InterfaceStatus::Available,
+            rx_bytes: Some(10_000),
+            tx_bytes: Some(20_000),
+            rx_bps: Some(30),
+            tx_bps: Some(40),
+            delta_ms: Some(1_000),
+            sample_ms: Some(2_000),
+            source: Some("old source".into()),
+            coverage: Some("old coverage".into()),
+            evidence: None,
+        }
+    }
+
     fn snapshot() -> ResponseSnapshot {
         let mut snapshot = ResponseSnapshot::unsupported("test");
         snapshot.status.active_client_min_bps = 1;
@@ -265,6 +512,11 @@ mod tests {
     fn overlays_only_directions_already_owned_by_fast_rate() {
         let mut snapshot = snapshot();
         let stats = apply_fast_rate_overlay(&mut snapshot, &publication(true));
+        apply_routed_interface_rates_from_clients(
+            &mut snapshot.interfaces,
+            &snapshot.clients,
+            2_000,
+        );
         let client = &snapshot.clients.clients[0];
         assert_eq!(stats.clients, 1);
         assert_eq!(stats.directions, 1);
@@ -291,5 +543,51 @@ mod tests {
             Default::default()
         );
         assert_eq!(snapshot, before);
+    }
+
+    #[test]
+    fn routed_view_projects_one_fast_window_to_logical_physical_and_wan_rows() {
+        let mut snapshot = snapshot();
+        snapshot.status.internet_view_mode = "routed".into();
+        snapshot.clients.clients[0]
+            .rate_meta
+            .as_mut()
+            .unwrap()
+            .tx
+            .source = RateSource::FastRoutedInternet;
+        snapshot.clients.clients[0]
+            .rate_meta
+            .as_mut()
+            .unwrap()
+            .rx
+            .source = RateSource::FastRoutedInternet;
+        snapshot.clients.clients[0]
+            .rate_meta
+            .as_mut()
+            .unwrap()
+            .attachment = Some(RateAttachment {
+            kind: crate::model::AttachmentKind::Wifi,
+            ifname: Some("phy1-ap0".into()),
+            trust: crate::model::AttachmentTrust::AssociatedStation,
+        });
+        snapshot.interfaces.interfaces = vec![
+            interface("br-lan", InterfaceRole::Lan),
+            interface("phy1-ap0", InterfaceRole::Observe),
+            interface("wan", InterfaceRole::Wan),
+        ];
+
+        let stats = apply_fast_rate_overlay(&mut snapshot, &publication(true));
+        assert_eq!(stats.directions, 2);
+        let rows = &snapshot.interfaces.interfaces;
+        // Client TX=800 and RX=1600.  LAN and the physical Wi-Fi row expose
+        // link-oriented raw fields; WAN keeps the Internet-facing direction.
+        assert_eq!((rows[0].rx_bps, rows[0].tx_bps), (Some(800), Some(1_600)));
+        assert_eq!((rows[1].rx_bps, rows[1].tx_bps), (Some(800), Some(1_600)));
+        assert_eq!((rows[2].rx_bps, rows[2].tx_bps), (Some(1_600), Some(800)));
+        assert_eq!(rows[0].delta_ms, Some(1_000));
+        assert_eq!(
+            rows[0].source.as_deref(),
+            Some("NSS FastN+FastS routed client window")
+        );
     }
 }

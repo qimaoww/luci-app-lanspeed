@@ -457,11 +457,19 @@ pub(super) fn published_from_candidate(
 
 #[cfg(feature = "nss-platform")]
 pub(super) fn fast_client_sample_current(now_ms: u64, sample: FastClientSample) -> bool {
+    // NSS FastN publishes in hardware batches that can be longer than the
+    // one-second UI cadence. Keep one complete window usable through the next
+    // expected publication instead of dropping it between two batch notices;
+    // short FastS-only windows retain the historical 2.5s floor.
+    let freshness_ms = ACCESS_EDGE_INTERVAL_MS
+        .saturating_mul(5)
+        .saturating_div(2)
+        .max(sample.window_ms.saturating_add(ACCESS_EDGE_INTERVAL_MS));
     sample.window_ms != 0
         && sample.read_end_skew_ms
             <= crate::platform::nss::fast_rate::FAST_WINDOW_MAX_READ_END_SKEW_MS
         && sample.sample_ms <= now_ms
-        && now_ms.saturating_sub(sample.sample_ms) <= ACCESS_EDGE_INTERVAL_MS.saturating_mul(5) / 2
+        && now_ms.saturating_sub(sample.sample_ms) <= freshness_ms
 }
 
 #[cfg(feature = "nss-platform")]
