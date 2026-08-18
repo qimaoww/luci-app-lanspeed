@@ -321,7 +321,24 @@ impl FastRateWorkerState {
                 }
             }
         }
-        self.send_notice(notices, base_generation, now_ms, wakeup, sample_attempted);
+        // `read_sources` timestamps the snapshots at the end of the map
+        // reads.  Using the wakeup time here can make a valid sample look as
+        // if it came from the future whenever either lookup crosses a
+        // millisecond boundary; the overlay then drops the newest window.
+        let observed_ms = publication_observed_ms(
+            now_ms,
+            sample_attempted,
+            self.last_input
+                .as_ref()
+                .map(|(fast_n, fast_s)| (fast_n, fast_s)),
+        );
+        self.send_notice(
+            notices,
+            base_generation,
+            observed_ms,
+            wakeup,
+            sample_attempted,
+        );
     }
 
     fn read_sources(
@@ -431,6 +448,19 @@ impl FastRateWorkerState {
     }
 }
 
+fn publication_observed_ms(
+    now_ms: u64,
+    sample_attempted: bool,
+    last_input: Option<(&FastNSnapshot, &FastSSnapshot)>,
+) -> u64 {
+    if !sample_attempted {
+        return now_ms;
+    }
+    last_input.map_or(now_ms, |(fast_n, fast_s)| {
+        now_ms.max(fast_n.sample_ms).max(fast_s.sample_ms)
+    })
+}
+
 pub(crate) fn try_queue(
     queue: &WorkerQueue<FastRateCommand>,
     command: FastRateCommand,
@@ -443,8 +473,30 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use super::{try_queue, FastRateCommand, FastRateSampleInput, FastRateWorker};
+    use super::{
+        publication_observed_ms, try_queue, FastRateCommand, FastRateSampleInput, FastRateWorker,
+    };
     use crate::platform::nss::{fast_n_runtime::FastNSnapshot, fast_s_runtime::FastSSnapshot};
+
+    #[test]
+    fn publication_clock_uses_the_completed_map_read_timestamp() {
+        let fast_n = FastNSnapshot {
+            sample_ms: 1_005,
+            ..FastNSnapshot::default()
+        };
+        let fast_s = FastSSnapshot {
+            sample_ms: 1_007,
+            ..FastSSnapshot::default()
+        };
+        assert_eq!(
+            publication_observed_ms(1_000, true, Some((&fast_n, &fast_s))),
+            1_007
+        );
+        assert_eq!(
+            publication_observed_ms(1_000, false, Some((&fast_n, &fast_s))),
+            1_000
+        );
+    }
 
     #[test]
     fn worker_debounces_events_and_keeps_fixed_timer_independent() {
@@ -534,7 +586,9 @@ mod tests {
         assert!(first.publication.sample.is_none());
         try_queue(&queue, FastRateCommand::Sample(input(300, 250, 2_000))).unwrap();
         let second = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert_eq!(second.publication.sample.unwrap().fast_total_bps, 3_200);
+        let second_sample = second.publication.sample.expect("completed sample");
+        assert_eq!(second_sample.fast_total_bps, 3_200);
+        assert!(second.observed_ms >= second_sample.sample_ms);
         assert!(second.publication.read_valid);
         assert!(second.publication.fast_n.is_some());
         assert!(second.publication.fast_s.is_some());

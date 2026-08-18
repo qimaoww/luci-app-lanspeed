@@ -2307,6 +2307,13 @@ impl ProductionRuntime {
                 .parse::<MacAddress>()
                 .ok()
                 .map(MacAddress::octets);
+            // FastRate map reads run independently of the collection worker.
+            // Its publication timestamp can therefore be a few milliseconds
+            // newer than this cycle's health clock; use the publication clock
+            // for freshness instead of discarding the completed window.
+            let fast_reference_ms = runtime_health
+                .now_ms
+                .max(self.nss.fast_rate_observed_ms().unwrap_or_default());
 
             let mut select_direction = |direction: EdgeDirection, old_bps: u64| {
                 let edge_direction = edge.map(|sample| match direction {
@@ -2359,9 +2366,7 @@ impl ProductionRuntime {
                     };
                     let fast = fast_mac
                         .and_then(|mac| self.nss.fast_rate_shadow_client_rate(mac, fast_direction))
-                        .filter(|sample| {
-                            fast_client_sample_current(runtime_health.now_ms, *sample)
-                        });
+                        .filter(|sample| fast_client_sample_current(fast_reference_ms, *sample));
                     let view = self.nss.select_rate_view(
                         &client.identity_key,
                         direction,

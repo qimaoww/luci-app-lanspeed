@@ -299,6 +299,17 @@ impl NssRuntime {
             .and_then(|publication| publication.client_rate(mac, direction))
     }
 
+    /// Return the monotonic timestamp of the currently published FastRate
+    /// snapshot.  The rate worker may finish its map reads after the runtime
+    /// collection clock was sampled; callers use the newer of the two clocks
+    /// when checking freshness instead of rejecting that valid window as
+    /// future data.
+    pub(crate) fn fast_rate_observed_ms(&self) -> Option<u64> {
+        self.fast_rate
+            .as_ref()
+            .map(|publication| publication.observed_ms)
+    }
+
     pub(crate) fn fast_rate_shadow_client_invalid_windows(&self) -> u64 {
         self.fast_rate
             .as_ref()
