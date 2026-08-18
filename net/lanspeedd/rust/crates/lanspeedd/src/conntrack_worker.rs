@@ -13,6 +13,9 @@ use std::{
 use crate::{
     collectors::conntrack::{self, CollectorMode},
     config::ConnectionCollectorMode,
+    connection_details::{
+        ConnectionCountersSnapshot, ConnectionDetailsSnapshot, ConnectionRateBook,
+    },
     connections::{apply_conntrack_failure, apply_conntrack_success},
     identity::{IdentityObservation, IdentityTable, ObservationSource},
     model::ClientsResponse,
@@ -29,14 +32,20 @@ pub struct ConntrackTask {
     pub now_ms: u64,
     pub max_clients: usize,
     pub mode: ConnectionCollectorMode,
+    /// NSS offload counters may be synchronized one worker cycle late. Keep
+    /// the same deferred-rate policy used by the in-process collector.
+    pub defer_connection_rates: bool,
 }
 
 pub fn spawn(snapshots: SnapshotStore) -> Result<RuntimeWorker<ConntrackTask>, std::io::Error> {
+    let mut connection_rates = ConnectionRateBook::default();
     spawn_runtime_worker(1, move |task| {
         // A malformed kernel response must not permanently remove the runtime
         // worker. Publish a normal failure snapshot and keep retrying on the
         // next scheduled task instead of letting the thread disappear.
-        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| run_task(&snapshots, task))) {
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
+            run_task(&snapshots, task, &mut connection_rates)
+        })) {
             let latest = snapshots.load();
             let error = format!(
                 "conntrack worker panic: {}",
@@ -57,7 +66,25 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
     "unknown panic payload".to_owned()
 }
 
-fn run_task(snapshots: &SnapshotStore, task: ConntrackTask) {
+fn update_connection_rates(
+    connection_rates: &mut ConnectionRateBook,
+    defer: bool,
+    sample_ms: u64,
+    counters: &ConnectionCountersSnapshot,
+    details: &mut ConnectionDetailsSnapshot,
+) {
+    if defer {
+        connection_rates.update_deferred(sample_ms, counters, details);
+    } else {
+        connection_rates.update(sample_ms, counters, details);
+    }
+}
+
+fn run_task(
+    snapshots: &SnapshotStore,
+    task: ConntrackTask,
+    connection_rates: &mut ConnectionRateBook,
+) {
     // Build the identity table on the worker from the latest immutable client
     // snapshot.  This keeps both the potentially slow read and identity
     // preparation off the uloop/UBus thread.
@@ -75,8 +102,20 @@ fn run_task(snapshots: &SnapshotStore, task: ConntrackTask) {
     // or topology data; only the connection fields are replaced.
     let latest = snapshots.load();
     let overlaid = match result {
-        Ok(collected) => apply_conntrack_success(&latest, &collected, task.mode.as_str()),
-        Err(error) => apply_conntrack_failure(&latest, &error.to_string()),
+        Ok(mut collected) => {
+            update_connection_rates(
+                connection_rates,
+                task.defer_connection_rates,
+                collected.sample_ms,
+                &collected.connection_counters,
+                &mut collected.connection_details,
+            );
+            apply_conntrack_success(&latest, &collected, task.mode.as_str())
+        }
+        Err(error) => {
+            connection_rates.clear();
+            apply_conntrack_failure(&latest, &error.to_string())
+        }
     };
     snapshots.publish(Arc::new(overlaid));
 }
@@ -121,8 +160,93 @@ fn identities_from_clients(clients: &ClientsResponse, max_clients: usize) -> Ide
 
 #[cfg(test)]
 mod tests {
-    use super::identities_from_clients;
+    use std::{collections::BTreeMap, sync::Arc};
+
+    use super::{identities_from_clients, update_connection_rates};
+    use crate::connection_details::{
+        ClientConnectionDetail, ClientConnectionSet, ConnectionCounters,
+        ConnectionCountersSnapshot, ConnectionDetailsSnapshot, ConnectionDirection,
+        ConnectionProtocol, ConnectionRateBook, ConnectionRateKey, ConnectionState, RateProtocol,
+    };
     use crate::model::{Client, ClientsResponse, Evidence};
+
+    fn details() -> ConnectionDetailsSnapshot {
+        Arc::new(BTreeMap::from([(
+            "client".into(),
+            ClientConnectionSet {
+                total_connections: 1,
+                connections: vec![ClientConnectionDetail {
+                    client_ip: "192.0.2.2".parse().unwrap(),
+                    client_port: 12_345,
+                    remote_ip: "198.51.100.2".parse().unwrap(),
+                    remote_port: 443,
+                    protocol: ConnectionProtocol::Tcp,
+                    state: ConnectionState::Established,
+                    direction: ConnectionDirection::Outbound,
+                    tx_bps: 0,
+                    rx_bps: 0,
+                }],
+                truncated: false,
+            },
+        )]))
+    }
+
+    fn counters(tx_bytes: u64, rx_bytes: u64) -> ConnectionCountersSnapshot {
+        Arc::new(BTreeMap::from([(
+            ConnectionRateKey {
+                conntrack_id: Some(7),
+                conntrack_zone: Some(0),
+                identity_key: "client".into(),
+                client_ip: "192.0.2.2".parse().unwrap(),
+                client_port: 12_345,
+                remote_ip: Some("198.51.100.2".parse().unwrap()),
+                remote_port: 443,
+                protocol: RateProtocol::Tcp,
+                direction: ConnectionDirection::Outbound,
+            },
+            ConnectionCounters { tx_bytes, rx_bytes },
+        )]))
+    }
+
+    #[test]
+    fn worker_keeps_connection_rates_across_published_snapshots() {
+        let mut book = ConnectionRateBook::default();
+        let mut first = details();
+        update_connection_rates(&mut book, false, 1_000, &counters(100, 200), &mut first);
+
+        let mut second = details();
+        update_connection_rates(
+            &mut book,
+            false,
+            2_000,
+            &counters(25_100, 10_200),
+            &mut second,
+        );
+
+        let detail = &second["client"].connections[0];
+        assert_eq!(detail.tx_bps, 200_000);
+        assert_eq!(detail.rx_bps, 80_000);
+    }
+
+    #[test]
+    fn worker_uses_deferred_policy_for_nss_counters() {
+        let mut book = ConnectionRateBook::default();
+        let mut first = details();
+        update_connection_rates(&mut book, true, 1_000, &counters(100, 200), &mut first);
+
+        let mut second = details();
+        update_connection_rates(
+            &mut book,
+            true,
+            3_000,
+            &counters(25_100, 10_200),
+            &mut second,
+        );
+
+        let detail = &second["client"].connections[0];
+        assert_eq!(detail.tx_bps, 100_000);
+        assert_eq!(detail.rx_bps, 40_000);
+    }
 
     #[test]
     fn worker_identity_snapshot_preserves_mac_zone_and_ips() {

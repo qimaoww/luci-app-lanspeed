@@ -3865,6 +3865,10 @@ impl App {
             now_ms,
             max_clients: self.state.config().max_clients,
             mode: self.state.config().conn_collector_mode,
+            defer_connection_rates: matches!(
+                self.state.snapshot().status.collector_mode.as_str(),
+                "nss_ecm_node" | "nss_ecm_bpf"
+            ),
         };
         let Some(worker) = self.conntrack_worker.as_ref() else {
             return;
