@@ -110,6 +110,8 @@ const nssEbpf = collectFiles('net/lanspeedd/rust/crates/lanspeed-ebpf/src/nss')
   .map((file) => fs.readFileSync(file, 'utf8')).join('\n');
 const production = `${read('net/lanspeedd/rust/crates/lanspeedd/src/production.rs')}\n${read(
   'net/lanspeedd/rust/crates/lanspeedd/src/production/rate_helpers.rs'
+)}\n${read(
+  'net/lanspeedd/rust/crates/lanspeedd/src/production/reload_worker.rs'
 )}`;
 const policy = read('net/lanspeedd/rust/crates/lanspeedd/src/policy.rs');
 const config = read('net/lanspeedd/rust/crates/lanspeedd/src/config.rs');
