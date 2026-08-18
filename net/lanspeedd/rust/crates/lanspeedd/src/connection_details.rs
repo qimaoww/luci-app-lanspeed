@@ -1,7 +1,7 @@
 use crate::{
     collectors::conntrack::{FlowSample, Protocol, TcpState},
     identity::{ClientIdentity, IdentityTable},
-    model::ClassificationState,
+    model::{ClassificationState, ClientRateMeta},
 };
 use serde::Serialize;
 use std::{cmp::Ordering, collections::BTreeMap, net::IpAddr, sync::Arc};
@@ -18,6 +18,17 @@ pub struct ClientConnectionSummary {
     pub ips: Vec<String>,
     pub interface: String,
     pub zone: String,
+    /// Aggregate client rates come from the published client snapshot, not
+    /// from summing the bounded connection-detail list.  This keeps the
+    /// detail page correct when the connection response is truncated and
+    /// keeps the value on the same rate plane as the overview page.
+    pub rx_bps: u64,
+    pub tx_bps: u64,
+    /// The total-rate sample belongs to the published client snapshot.  It is
+    /// deliberately separate from the response-level Conntrack sample_ms.
+    pub rate_sample_ms: Option<u64>,
+    pub rate_collector_mode: String,
+    pub rate_meta: Option<ClientRateMeta>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

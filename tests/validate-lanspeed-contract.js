@@ -481,7 +481,10 @@ function validateClientConnectionsFixture(response, pathName) {
     'connections',
     'warnings'
   ];
-  const summaryFields = ['identity_key', 'hostname', 'mac', 'ips', 'interface', 'zone'];
+	const summaryFields = [
+		'identity_key', 'hostname', 'mac', 'ips', 'interface', 'zone', 'rx_bps', 'tx_bps',
+		'rate_sample_ms', 'rate_collector_mode', 'rate_meta'
+	];
   const detailFields = [
     'client_ip',
     'client_port',
@@ -501,6 +504,18 @@ function validateClientConnectionsFixture(response, pathName) {
   assert(sameStringSet(Object.keys(response.client), summaryFields),
     `${pathName}.client must keep the exact Rust summary key set`);
   assertArray(response.client.ips, `${pathName}.client.ips`);
+  assert(Number.isInteger(response.client.rx_bps) && response.client.rx_bps >= 0,
+    `${pathName}.client.rx_bps must be a non-negative integer`);
+	assert(Number.isInteger(response.client.tx_bps) && response.client.tx_bps >= 0,
+		`${pathName}.client.tx_bps must be a non-negative integer`);
+	assert((response.client.rate_sample_ms === null ||
+		Number.isInteger(response.client.rate_sample_ms) && response.client.rate_sample_ms >= 0),
+		`${pathName}.client.rate_sample_ms must be null or a non-negative integer`);
+	assert(typeof response.client.rate_collector_mode === 'string' &&
+		response.client.rate_collector_mode.length > 0,
+		`${pathName}.client.rate_collector_mode must identify the total-rate collector`);
+	assert(response.client.rate_meta === null || typeof response.client.rate_meta === 'object',
+		`${pathName}.client.rate_meta must be null or the typed total-rate metadata`);
   assertArray(response.connections, `${pathName}.connections`);
   assertArray(response.warnings, `${pathName}.warnings`);
   assert(response.connections.length >= 2,
@@ -867,7 +882,12 @@ assertSchemaExactObject(schema, 'clientConnectionSummary', [
   'mac',
   'ips',
   'interface',
-  'zone'
+  'zone',
+  'rx_bps',
+  'tx_bps',
+  'rate_sample_ms',
+  'rate_collector_mode',
+  'rate_meta'
 ]);
 const clientConnectionFields = [
   'available',

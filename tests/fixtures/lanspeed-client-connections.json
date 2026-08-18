@@ -10,7 +10,12 @@
       "2001:db8:1::10"
     ],
     "interface": "br-lan",
-    "zone": "lan"
+    "zone": "lan",
+    "rx_bps": 96000,
+    "tx_bps": 40000,
+    "rate_sample_ms": 12000,
+    "rate_collector_mode": "bpf",
+    "rate_meta": null
   },
   "total_connections": 2,
   "returned_connections": 2,

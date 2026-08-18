@@ -55,6 +55,7 @@ var CSS = [
 	'.lanspeed-connection-summary-item{display:flex;flex-direction:column;justify-content:center;gap:.32em;min-width:0;min-height:5.4em;padding:.85em .95em;border:1px solid var(--lanspeed-border);border-radius:var(--lanspeed-radius-control);background:var(--lanspeed-surface-muted)}',
 	'.lanspeed-connection-summary-label{font-size:.72em;font-weight:550;opacity:.58}',
 	'.lanspeed-connection-summary-value{order:-1;font-size:1.38em;font-weight:650;line-height:1.15;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}',
+	'.lanspeed-connection-summary-meta{grid-column:1/-1;margin:.05em 0 0;padding:.55em .7em;border-radius:var(--lanspeed-radius-control);background:var(--lanspeed-accent-soft);color:var(--lanspeed-accent);font-size:.75em;font-weight:550;line-height:1.45;overflow-wrap:anywhere}',
 	'.lanspeed-classification-card[hidden]{display:none!important}',
 	'.lanspeed-classification-card .lanspeed-body{min-width:0}',
 	'.lanspeed-classification-state{display:inline-flex;align-items:center;padding:.3em .68em!important;border-radius:var(--lanspeed-radius-badge)!important;font-size:.8em;font-weight:650;white-space:nowrap}',

@@ -3111,6 +3111,8 @@ function assertClientDetailRefreshBehavior(src) {
 	    JSON.stringify(metaCounts) !== JSON.stringify([ '2' ]) ||
 	    !fakeElementText(refs.connectionState).includes('有当前连接') ||
 	    refs.summaryTargets.textContent !== '2' || refs.summaryConnections.textContent !== '2' ||
+	    refs.summaryTx.textContent !== '40.00 Kbps' || refs.summaryRx.textContent !== '96.00 Kbps' ||
+	    refs.summaryRateMeta.textContent !== '总速率采样：TC-BPF · 连接数据独立采样：Conntrack Netlink' ||
 	    refs.summaryUpdated.textContent !== '03:04:05' ||
 	    refs.summaryUpdated.textContent.includes('12345') || rows.length !== 4 ||
 	    JSON.stringify(initialGroupOrder) !== JSON.stringify([
@@ -3119,12 +3121,34 @@ function assertClientDetailRefreshBehavior(src) {
 	    refs.table.hidden || !refs.empty.hidden || !refs.error.hidden) {
 		fail('clientDetailRefresh.js must render identity/meta, real summaries, and destination groups with highest download speed first by default');
 	}
-		if (!footer.includes('连接数据') || !footer.includes('Conntrack Netlink') ||
-	    !footer.includes('显示 2 / 共 2 条') ||
+			if (!footer.includes('连接数据') || !footer.includes('Conntrack Netlink') ||
+		    !footer.includes('NSS：总速率来自接入 Edge') ||
+		    !footer.includes('显示 2 / 共 2 条') ||
 	    !footer.includes('每 1 秒自动刷新') ||
 	    !footer.includes('国家/地区及中国省份按 IP 推测，由浏览器查询并缓存')) {
 			fail('clientDetailRefresh.js footer must report source/count/refresh meanings and disclose browser-cached IP inference');
 		}
+		const nssRateResponse = JSON.parse(JSON.stringify(fixture));
+		nssRateResponse.client.rate_collector_mode = 'access_edge';
+		nssRateResponse.client.rate_meta = {
+			version: 1, scope: 'unicast', generation: 8, stale: false, reason_codes: [],
+			window_ms: 17000, sample_ms: 12000,
+			tx: { source: 'edge_wifi', coverage: 'full', byte_domain: 'station_data' },
+			rx: { source: 'edge_wifi', coverage: 'full', byte_domain: 'station_data' },
+			attachment: { kind: 'wifi', ifname: 'phy1-ap0', trust: 'associated_station' }
+		};
+		state.response = nssRateResponse;
+		refresh.render(state);
+		if (refs.summaryRateMeta.textContent !==
+		    '总速率采样：Edge-WiFi · phy1-ap0 · 全覆盖 · 17 s 窗口 · 连接数据独立采样：Conntrack Netlink') {
+			fail('NSS detail summary must disclose the authoritative Edge-WiFi source and its real rolling window');
+		}
+		state.status = { evidence: { platform: { profile: 'generic_x86_64' } } };
+		state.response = fixture;
+		refresh.render(state);
+		if (fakeElementText(refs.footer).includes('NSS：'))
+			fail('x86 detail footer must not inherit the NSS offload accuracy warning');
+		state.status = { evidence: { platform: { profile: 'nss_aarch64' } } };
 		const classifiedResponse = JSON.parse(JSON.stringify(fixture));
 		classifiedResponse.traffic_classification = {
 			state: 'aligned', window_start_ms: 120000, window_end_ms: 126000,
@@ -3464,6 +3488,8 @@ function assertClientDetailRefreshBehavior(src) {
 	const incompleteFooter = fakeElementText(refs.footer);
 	if (refs.summaryTargets.textContent !== '—' ||
 	    refs.summaryConnections.textContent !== '—' ||
+	    refs.summaryTx.textContent !== '—' || refs.summaryRx.textContent !== '—' ||
+	    refs.summaryRateMeta.textContent !== '—' ||
 	    fakeElementText(refs.empty) !== '连接快照不完整，无法确认当前连接数量，请稍后重试。' ||
 	    !incompleteFooter.includes('告警：连接快照不完整') ||
 	    incompleteFooter.includes('显示 0') || incompleteFooter.includes('共 0')) {
@@ -3651,7 +3677,7 @@ function assertClientDetailShellInteraction(src) {
 	const refs = built.refs;
 	[
 			'error', 'back', 'clientName', 'clientMeta', 'connectionState', 'summary',
-			'summaryTargets', 'summaryConnections', 'summaryUpdated', 'protocolAll',
+			'summaryTargets', 'summaryConnections', 'summaryTx', 'summaryRx', 'summaryRateMeta', 'summaryUpdated', 'protocolAll',
 			'protocolTcp', 'protocolUdp', 'filter', 'intervalSel', 'refresh', 'pause',
 			'classificationCard', 'classificationState', 'classificationWindow',
 			'classificationTxDirectionState', 'classificationRxDirectionState',
@@ -3678,7 +3704,8 @@ function assertClientDetailShellInteraction(src) {
 	[
 		'返回客户端列表', 'LAN Speed 状态 / 客户端连接详情', '无法加载连接详情',
 		'客户端身份', '正在加载客户端身份…', 'MAC 与 IP 信息将在加载后显示',
-			'等待数据', '连接摘要', '目标 IP 数', '连接数', '更新时间',
+			'等待数据', '连接摘要', '目标 IP 数', '连接数', '上行总速率', '下行总速率', '页面更新时间',
+			'总速率采样口径将在加载后显示。',
 			'流量分类', '方向状态', 'Edge 同窗总速率', 'NSS已识别', 'CPU慢路径已识别', '未分类', '分类覆盖率',
 		'当前连接', '全部', 'TCP', 'UDP', '立即刷新', '目标 IP', '国家/地区', '目标端口',
 		'协议', '状态', '上行', '下行', '暂无连接', '连接数据加载后会显示来源、刷新间隔和 IP 位置说明。'
@@ -3689,7 +3716,7 @@ function assertClientDetailShellInteraction(src) {
 		built.root, 'lanspeed-connection-summary-label'
 	).map(fakeElementText);
 	if (JSON.stringify(summaryLabels) !== JSON.stringify([
-		'目标 IP 数', '连接数', '更新时间'
+		'目标 IP 数', '连接数', '上行总速率', '下行总速率', '页面更新时间'
 	])) {
 		fail('clientDetailShell.js must label the grouped destination summary as target IP count');
 	}

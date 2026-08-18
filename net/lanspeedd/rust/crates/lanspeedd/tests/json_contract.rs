@@ -441,6 +441,11 @@ fn client_connections_keeps_exact_envelope_summary_and_detail_key_sets() {
             "ips",
             "interface",
             "zone",
+            "rx_bps",
+            "tx_bps",
+            "rate_sample_ms",
+            "rate_collector_mode",
+            "rate_meta",
         ],
         "client_connections.client",
     );
@@ -462,6 +467,12 @@ fn client_connections_keeps_exact_envelope_summary_and_detail_key_sets() {
     assert_eq!(value["available"], true);
     assert_eq!(value["sample_ms"], 12_345);
     assert_eq!(value["client"]["hostname"], "fixture-client");
+    assert_eq!(value["client"]["rx_bps"], 2_000);
+    assert_eq!(value["client"]["tx_bps"], 1_000);
+    assert_eq!(value["client"]["rate_sample_ms"], 10_000);
+    assert_eq!(value["client"]["rate_collector_mode"], "bpf");
+    assert_eq!(value["client"]["rate_meta"]["version"], 1);
+    assert_eq!(value["client"]["rate_meta"]["sample_ms"], 10_000);
     assert_eq!(value["conn_source"], "conntrack_netlink");
     assert_eq!(value["connections"][0]["remote_ip"], "198.51.100.20");
 }
@@ -520,6 +531,11 @@ fn incomplete_client_connections_keeps_the_existing_envelope_key_set() {
             "ips",
             "interface",
             "zone",
+            "rx_bps",
+            "tx_bps",
+            "rate_sample_ms",
+            "rate_collector_mode",
+            "rate_meta",
         ],
         "incomplete client_connections.client",
     );
@@ -571,6 +587,11 @@ fn client_connections_serializes_missing_options_as_null_without_skipping_keys()
             "ips",
             "interface",
             "zone",
+            "rx_bps",
+            "tx_bps",
+            "rate_sample_ms",
+            "rate_collector_mode",
+            "rate_meta",
         ],
         "client_connections.client without hostname",
     );

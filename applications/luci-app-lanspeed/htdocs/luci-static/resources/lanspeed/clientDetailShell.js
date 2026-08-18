@@ -121,6 +121,16 @@ function buildShell(viewState) {
 	refs.summaryConnections = E('span', {
 		'class': 'lanspeed-connection-summary-value'
 	}, '—');
+	refs.summaryTx = E('span', {
+		'class': 'lanspeed-connection-summary-value'
+	}, '—');
+	refs.summaryRx = E('span', {
+		'class': 'lanspeed-connection-summary-value'
+	}, '—');
+	refs.summaryRateMeta = E('p', {
+		'class': 'lanspeed-connection-summary-meta',
+		'role': 'status'
+	}, _('总速率采样口径将在加载后显示。'));
 	refs.summaryUpdated = E('span', {
 		'class': 'lanspeed-connection-summary-value'
 	}, '—');
@@ -138,9 +148,18 @@ function buildShell(viewState) {
 			refs.summaryConnections
 		]),
 		E('div', { 'class': 'lanspeed-connection-summary-item' }, [
-			E('span', { 'class': 'lanspeed-connection-summary-label' }, _('更新时间')),
+			E('span', { 'class': 'lanspeed-connection-summary-label' }, _('上行总速率')),
+			refs.summaryTx
+		]),
+		E('div', { 'class': 'lanspeed-connection-summary-item' }, [
+			E('span', { 'class': 'lanspeed-connection-summary-label' }, _('下行总速率')),
+			refs.summaryRx
+		]),
+		E('div', { 'class': 'lanspeed-connection-summary-item' }, [
+			E('span', { 'class': 'lanspeed-connection-summary-label' }, _('页面更新时间')),
 			refs.summaryUpdated
-		])
+		]),
+		refs.summaryRateMeta
 	]);
 
 	var identityCard = E('div', {

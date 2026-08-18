@@ -1460,6 +1460,35 @@
         "zone": {
           "type": "string",
           "minLength": 1
+        },
+        "rx_bps": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tx_bps": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rate_sample_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "rate_collector_mode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rate_meta": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/clientRateMeta"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -1468,7 +1497,12 @@
         "mac",
         "ips",
         "interface",
-        "zone"
+        "zone",
+        "rx_bps",
+        "tx_bps",
+        "rate_sample_ms",
+        "rate_collector_mode",
+        "rate_meta"
       ]
     },
     "trafficClassificationDirection": {

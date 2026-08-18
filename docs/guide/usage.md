@@ -93,4 +93,6 @@ ubus call lanspeed client_control_delete \
 
 `client_control_set` 只接受十进制 bit/s 和 `0`/`1` 开关。两个方向分别观察自有 class counter，只有对应计数增长后才标记已验证。
 
-`client_connections` 返回当前 conntrack 快照：TCP 仅统计 ESTABLISHED + ASSURED，UDP 仅统计 ASSURED。每条连接的速率由相邻累计字节快照计算；新连接、计数器回退或时间回退不会生成虚假速率。
+`client_connections` 返回当前 conntrack 快照：TCP 仅统计 ESTABLISHED + ASSURED，UDP 仅统计 ASSURED。`client.rx_bps`/`client.tx_bps` 是该客户端当前已发布快照的下行/上行总速率，不从受限的连接明细列表求和；因此即使明细被截断，摘要总速率仍保持完整。`client.rate_sample_ms`、`client.rate_collector_mode` 和 `client.rate_meta` 同时给出这组总速率的采样时间、采集器和方向级来源/窗口，不能与响应顶层的 conntrack `sample_ms` 混用。
+
+每条连接的速率由相邻累计字节快照计算；新连接、计数器回退或时间回退不会生成虚假速率。NSS 的客户端总速率通常来自接入 Edge（有线端口或 Wi-Fi station）滚动窗口，而逐连接速率来自独立 Conntrack 窗口；硬件卸载同步可能使 Conntrack 延迟或漏记连接级字节，所以连接行可用于识别目标和观察趋势，不能按连接行求和反推或校准总速率。页面会明确显示这两个采样面，不使用比例摊分伪造单连接精度。

@@ -67,6 +67,104 @@ function sourceLabel(source) {
 	return source ? String(source) : _('未知');
 }
 
+function rateSourceLabel(source) {
+	var labels = {
+		edge_port: 'Edge-Port',
+		edge_wifi: 'Edge-WiFi',
+		fast_routed_lease: 'FastN+FastS lease',
+		fast_routed_internet: 'FastN+FastS routed Internet',
+		ecm_bpf_fallback: 'ECM+BPF fallback',
+		ecm_nss_lower_bound: 'ECM NSS lower-bound',
+		tc_bpf_lower_bound: 'TC-BPF lower-bound',
+		none: _('不可用')
+	};
+	return labels[String(source || '')] || (source ? String(source) : _('未知'));
+}
+
+function collectorLabel(mode) {
+	var labels = {
+		access_edge: 'Access Edge',
+		bpf: 'TC-BPF',
+		nss_ecm_node: 'NSS ECM',
+		nss_ecm_bpf: 'NSS ECM+BPF',
+		conntrack_netlink: 'Conntrack Netlink',
+		conntrack_procfs: 'Conntrack Procfs'
+	};
+	return labels[String(mode || '')] || (mode ? String(mode) : _('未知'));
+}
+
+function rateWindowLabel(value) {
+	var milliseconds = Number(value);
+	if (!isFinite(milliseconds) || milliseconds <= 0) return '';
+	var seconds = milliseconds / 1000;
+	var precision = seconds >= 10 || Math.floor(seconds) === seconds ? 0 : 1;
+	return (Math.round(seconds * Math.pow(10, precision)) / Math.pow(10, precision)) + ' s ' + _('窗口');
+}
+
+function clientRateSource(client) {
+	var meta = client && client.rate_meta;
+	if (meta && typeof meta === 'object') {
+		var tx = meta.tx && meta.tx.source;
+		var rx = meta.rx && meta.rx.source;
+		if (tx || rx) {
+			var txLabel = rateSourceLabel(tx);
+			var rxLabel = rateSourceLabel(rx);
+			return txLabel === rxLabel ? txLabel : '↑ ' + txLabel + ' / ↓ ' + rxLabel;
+		}
+	}
+	return collectorLabel(client && client.rate_collector_mode);
+}
+
+function clientRateWindow(client) {
+	var meta = client && client.rate_meta;
+	if (!meta || typeof meta !== 'object') return '';
+	var spanLabel = rateWindowLabel(meta.window_ms);
+	if (spanLabel) return spanLabel;
+	var txWindow = meta.tx && rateWindowLabel(meta.tx.window_ms);
+	var rxWindow = meta.rx && rateWindowLabel(meta.rx.window_ms);
+	if (txWindow && txWindow === rxWindow) return txWindow;
+	if (txWindow || rxWindow)
+		return '↑ ' + (txWindow || '—') + ' / ↓ ' + (rxWindow || '—');
+	return '';
+}
+
+function rateCoverageLabel(value) {
+	var labels = {
+		full: _('全覆盖'),
+		partial: _('部分覆盖'),
+		degraded: _('降级覆盖'),
+		unavailable: _('覆盖不可用')
+	};
+	return labels[String(value || '')] ? String(labels[String(value || '')]) : '';
+}
+
+function clientRateCoverage(client) {
+	var meta = client && client.rate_meta;
+	if (!meta || typeof meta !== 'object') return '';
+	var tx = rateCoverageLabel(meta.tx && meta.tx.coverage);
+	var rx = rateCoverageLabel(meta.rx && meta.rx.coverage);
+	if (tx && tx === rx) return tx;
+	if (tx || rx) return '↑ ' + (tx || '—') + ' / ↓ ' + (rx || '—');
+	return '';
+}
+
+function clientRateMetaLabel(client, response) {
+	if (!client) return '—';
+	var parts = [_('总速率采样：') + clientRateSource(client)];
+	var meta = client.rate_meta;
+	if (meta && meta.attachment && meta.attachment.ifname)
+		parts.push(String(meta.attachment.ifname));
+	var coverage = clientRateCoverage(client);
+	if (coverage) parts.push(coverage);
+	var spanLabel = clientRateWindow(client);
+	if (spanLabel) parts.push(spanLabel);
+	if (meta && meta.stale === true)
+		parts.push(_('已过期'));
+	if (response && response.conn_source)
+		parts.push(_('连接数据独立采样：') + sourceLabel(response.conn_source));
+	return parts.join(' · ');
+}
+
 function classificationStateLabel(state) {
 	var labels = {
 		warmup: _('预热中'), aligned: _('已对齐'), partial: _('部分可用'), stale: _('已过期'),
@@ -282,6 +380,12 @@ function detailRate(label, arrow, value, unit) {
 	]);
 }
 
+function clientSummaryRate(client, field, unit) {
+	if (!client || client[field] === null || client[field] === undefined)
+		return '—';
+	return fmt.formatRate(client[field], unit);
+}
+
 function buildGroupRows(viewState, group) {
 	var expanded = viewState.expanded[group.remoteIp] === true;
 	var unit = viewState.prefs && viewState.prefs.unit;
@@ -470,6 +574,12 @@ function render(viewState) {
 		: '—';
 	refs.summaryConnections.textContent = usable
 		? String(Number(response.total_connections) || 0) : '—';
+	refs.summaryTx.textContent = usable
+		? clientSummaryRate(client, 'tx_bps', viewState.prefs && viewState.prefs.unit) : '—';
+	refs.summaryRx.textContent = usable
+		? clientSummaryRate(client, 'rx_bps', viewState.prefs && viewState.prefs.unit) : '—';
+	refs.summaryRateMeta.textContent = usable
+		? clientRateMetaLabel(client, response) : '—';
 	refs.summaryUpdated.textContent = updatedAtLabel(viewState.updatedAt);
 
 	var rows = [];
@@ -538,6 +648,9 @@ function render(viewState) {
 		}
 		if (warnings.length)
 			footer.push(_('告警：') + warnings.map(warningLabel).join('，'));
+		if (usable && fmt.nssPlatform(viewState.status)) {
+			footer.push(_('NSS：总速率来自接入 Edge；连接明细来自独立 Conntrack 窗口，卸载流量可能不出现在逐连接字节中，不能与总速率相加核对'));
+		}
 	}
 	footer.push(viewState.prefs && viewState.prefs.paused
 		? _('自动刷新已暂停')
