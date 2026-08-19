@@ -708,8 +708,30 @@ async function testResourceStateMachine() {
   assert.strictEqual(goodRate.source, 'access_edge');
   assert.strictEqual(goodRate.state, 'good');
   assert.strictEqual(goodRate.sourceText, 'Edge-Port 2');
+  assert.strictEqual(goodRate.facts.windowMs, 1000);
+  assert.strictEqual(goodRate.windowText, '实际窗口约 1 秒');
   assert.strictEqual(model.accessEdgeStateWithRpc(good).value, '1/1 个接入点');
   assert.strictEqual(model.accessEdgeStateWithRpc(good).trustText, '单 MAC 观察 1');
+
+  const routedValues = payloads();
+  routedValues.status.access_edge_mode = 'off';
+  routedValues.status.internet_view_mode = 'routed';
+  routedValues.clients.clients[0].rate_meta.scope = 'routed_observed';
+  routedValues.clients.clients[0].rate_meta.window_ms = 2000;
+  [ 'tx', 'rx' ].forEach((direction) => {
+    Object.assign(routedValues.clients.clients[0].rate_meta[direction], {
+      source: 'fast_routed_internet', coverage: 'full', byte_domain: 'ecm_data', window_ms: 2000
+    });
+  });
+  const routed = model.normalizeResults(await settled(routedValues), null, 10000, 1);
+  const routedRate = model.rateOwnerStateWithRpc(routed);
+  assert.strictEqual(routedRate.routedOwner, true);
+  assert.strictEqual(routedRate.edgeOwner, false);
+  assert.strictEqual(routedRate.badge, '路由视图');
+  assert.strictEqual(routedRate.facts.windowMs, 2000);
+  assert.strictEqual(routedRate.windowText, '实际窗口约 2 秒');
+  assert(routedRate.meta.includes('实际窗口约 2 秒'),
+    'routed diagnostics must expose the observed FastN+FastS batch window');
   const goodClassification = model.classificationStateWithRpc(good);
   assert.strictEqual(goodClassification.state, 'good');
   assert.strictEqual(goodClassification.badge, '运行正常');

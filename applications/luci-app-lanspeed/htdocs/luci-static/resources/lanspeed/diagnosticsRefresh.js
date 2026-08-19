@@ -221,7 +221,8 @@ function renderPipeline(refs, viewState) {
 		classificationEvidence[_('覆盖率')] = classification.coverageText;
 	classificationEvidence[_('映射')] = classification.maps.text;
 	setStage(refs, 'rate', rate.state, rate.badge, rate.value,
-		'', _('%d/%d 方向 · 1 秒窗口').format(rate.facts.ownerDirections, rate.facts.totalDirections), rateEvidence);
+		'', _('%d/%d 方向 · %s').format(rate.facts.ownerDirections, rate.facts.totalDirections,
+			rate.windowText), rateEvidence);
 	setStage(refs, 'edge', edge.state, edge.badge, edge.value,
 		'', edge.meta, edgeEvidence);
 	setStage(refs, 'classification', classification.state, classification.badge, classification.value,
@@ -310,9 +311,11 @@ function renderPlatformIntro(refs, viewState) {
 		refs.intro.textContent = _('正在确认运行平台与采集链路。');
 		return;
 	}
-	refs.intro.textContent = fmt.nssPlatform(viewState && viewState.status)
-		? _('总速率由客户端接入口采集；NSS/CPU 只做分类，不与总速率相加。')
-		: _('x86 使用原生 TC-BPF 客户端总速率。');
+	var status = viewState && viewState.status;
+	refs.intro.textContent = !fmt.nssPlatform(status) ? _('x86 使用原生 TC-BPF 客户端总速率。') :
+		diagnosticsModel.currentRateUsesRoutedInternet(status)
+			? _('总速率只显示 NSS FastN+FastS 观察到的互联网/路由流量；不代表客户端全部帧。')
+			: _('总速率由客户端接入口采集；NSS/CPU 只做分类，不与总速率相加。');
 }
 
 function interfaceRoleLabel(role) {

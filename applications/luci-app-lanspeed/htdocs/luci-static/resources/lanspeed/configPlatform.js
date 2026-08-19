@@ -51,7 +51,7 @@ function formPolicy(status) {
 			accessEdgeHint: _('“精准总速率”在自动模式中使用有线端口或无线客户端计数；“仅后台验证”只采集核对，不改变页面速率；“关闭”完全停用。'),
 			connectionHint: _('自动优先使用 CT-Netlink；仅在旧系统不支持时使用 Procfs。此设置只影响连接详情，不参与客户端总速率融合。'),
 			bpfHint: _('用于识别经过 CPU 的流量，并作为自动精准模式的降级来源；关闭后相关手动模式不可选。'),
-			refreshHint: _('BPF 不限制采样周期；自动精准使用 1 秒接入窗口，互联网/路由 FastN+FastS 也使用 1 秒窗口。')
+			refreshHint: _('BPF 不限制采样周期；自动精准的接入窗口目标为 1 秒，互联网/路由 FastN+FastS 使用来源实际批次窗口（NSS 硬件通常约 2 秒）。')
 		};
 	}
 	if (value === x86Platform.PROFILE) {
