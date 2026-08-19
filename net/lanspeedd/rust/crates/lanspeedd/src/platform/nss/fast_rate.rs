@@ -5,6 +5,12 @@
 //! computed rates; both deltas must come from one shared start/end window.
 
 pub(crate) const FAST_WINDOW_MAX_READ_END_SKEW_MS: u64 = 250;
+/// FastN is normally published in roughly two-second hardware batches.  A
+/// single unchanged one-second read is therefore not proof of zero traffic.
+/// Once the same stable cumulative pair remains unchanged beyond this guard,
+/// the fixed timer may publish a real zero window without consuming the raw
+/// baseline used by the next counter batch.
+pub(crate) const FAST_WINDOW_QUIET_CONFIRM_MS: u64 = 2_500;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FastCounterSample {
@@ -144,6 +150,71 @@ impl FastRateCoordinator {
 
     pub(crate) fn clear(&mut self) {
         self.start = None;
+    }
+
+    /// Return a same-window zero after both stable cumulative counters have
+    /// remained unchanged for the quiet-confirmation interval.
+    ///
+    /// This deliberately borrows the coordinator start instead of consuming
+    /// it.  The next non-zero FastN/FastS batch must still be calculated from
+    /// the original raw counter baseline; rebasing on a synthetic timer clock
+    /// would shorten its denominator and create a spike.
+    pub(crate) fn confirmed_quiet_window(
+        &self,
+        n: FastCounterSample,
+        s: FastCounterSample,
+        min_quiet_ms: u64,
+    ) -> Result<Option<FastWindow>, FastWindowError> {
+        let Some(start) = self.start else {
+            return Ok(None);
+        };
+        if n.bytes < start.n.bytes
+            || n.packets < start.n.packets
+            || s.bytes < start.s.bytes
+            || s.packets < start.s.packets
+        {
+            return Err(FastWindowError::CounterReset);
+        }
+        if n.bytes != start.n.bytes
+            || n.packets != start.n.packets
+            || s.bytes != start.s.bytes
+            || s.packets != start.s.packets
+        {
+            return Ok(None);
+        }
+
+        let start_ms = start.n.read_end_ms.max(start.s.read_end_ms);
+        let end_ms = n.read_end_ms.min(s.read_end_ms);
+        let window_ms = end_ms.saturating_sub(start_ms);
+        if window_ms < min_quiet_ms || window_ms == 0 {
+            return Ok(None);
+        }
+        validate_pair(n, s, self.max_read_end_skew_ms)?;
+        if n.attachment_generation != start.n.attachment_generation
+            || s.attachment_generation != start.s.attachment_generation
+            || n.attachment_generation != s.attachment_generation
+        {
+            return Err(FastWindowError::AttachmentGenerationChanged);
+        }
+        if n.reset_generation != start.n.reset_generation
+            || s.reset_generation != start.s.reset_generation
+        {
+            return Err(FastWindowError::ResetGenerationChanged);
+        }
+
+        let start_read_end_skew_ms = read_end_skew(start.n.read_end_ms, start.s.read_end_ms);
+        let end_read_end_skew_ms = read_end_skew(n.read_end_ms, s.read_end_ms);
+        Ok(Some(FastWindow {
+            start_ms,
+            end_ms,
+            read_end_skew_ms: start_read_end_skew_ms.max(end_read_end_skew_ms),
+            n_bytes: 0,
+            n_packets: 0,
+            s_bytes: 0,
+            s_packets: 0,
+            n_window_ms: window_ms,
+            s_window_ms: window_ms,
+        }))
     }
 
     pub(crate) fn begin(
@@ -447,11 +518,40 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_cumulative_pair_does_not_create_a_zero_window() {
+    fn unchanged_pair_requires_quiet_confirmation_before_a_zero_window() {
         let mut coordinator = FastRateCoordinator::default();
         let first = sample(1_000, 1_010, 100, 10);
         coordinator.begin(first, first).unwrap();
         assert!(!coordinator.has_progress(first, first));
+
+        let mut early = first;
+        early.sample_ms = 2_000;
+        early.read_begin_ms = 1_990;
+        early.read_end_ms = 2_000;
+        assert_eq!(
+            coordinator.confirmed_quiet_window(early, early, 2_500),
+            Ok(None)
+        );
+
+        let mut confirmed = early;
+        confirmed.sample_ms = 4_000;
+        confirmed.read_begin_ms = 3_990;
+        confirmed.read_end_ms = 4_000;
+        let zero = coordinator
+            .confirmed_quiet_window(confirmed, confirmed, 2_500)
+            .unwrap()
+            .expect("confirmed quiet window");
+        assert_eq!(zero.total_bytes(), 0);
+        assert_eq!(zero.total_packets(), 0);
+        assert_eq!(zero.start_ms, 1_010);
+        assert_eq!(zero.end_ms, 4_000);
+        assert_eq!(zero.duration_ms(), 2_990);
+
+        // Quiet publication borrows rather than consumes the raw baseline.
+        let progressed = sample(5_000, 5_010, 300, 30);
+        let resumed = coordinator.finish(progressed, progressed).unwrap();
+        assert_eq!(resumed.total_bytes(), 400);
+        assert_eq!(resumed.duration_ms(), 4_000);
     }
 
     #[test]

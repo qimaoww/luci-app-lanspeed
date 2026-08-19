@@ -11,7 +11,7 @@ use lanspeed_common::{DIR_RX, DIR_TX};
 
 use super::{
     fast_n_runtime::FastNSnapshot,
-    fast_rate::{FastCounterSample, FastRateCoordinator},
+    fast_rate::{FastCounterSample, FastRateCoordinator, FastWindow, FAST_WINDOW_QUIET_CONFIRM_MS},
     fast_s_runtime::FastSSnapshot,
 };
 
@@ -123,28 +123,27 @@ impl FastClientRateBook {
                 continue;
             }
             if !coordinator.has_progress(n_sample, s_sample) {
+                match coordinator.confirmed_quiet_window(
+                    n_sample,
+                    s_sample,
+                    FAST_WINDOW_QUIET_CONFIRM_MS,
+                ) {
+                    Ok(Some(window)) => {
+                        self.latest.insert(key, client_sample(window));
+                    }
+                    Ok(None) => {}
+                    Err(_) => {
+                        self.latest.remove(&key);
+                        self.invalid_windows = self.invalid_windows.saturating_add(1);
+                        coordinator.clear();
+                        let _ = coordinator.begin(n_sample, s_sample);
+                    }
+                }
                 continue;
             }
             match coordinator.finish(n_sample, s_sample) {
                 Ok(window) => {
-                    self.latest.insert(
-                        key,
-                        FastClientSample {
-                            sample_ms: window.end_ms,
-                            window_ms: window.duration_ms(),
-                            read_end_skew_ms: window.read_end_skew_ms,
-                            fast_n_bps: bytes_to_bps(window.n_bytes, window.duration_ms()),
-                            fast_s_bps: bytes_to_bps(window.s_bytes, window.duration_ms()),
-                            fast_total_bps: bytes_to_bps(
-                                window.total_bytes(),
-                                window.duration_ms(),
-                            ),
-                            routed_l2_with_fcs_bps: bytes_to_bps(
-                                l2_with_fcs_bytes(window),
-                                window.duration_ms(),
-                            ),
-                        },
-                    );
+                    self.latest.insert(key, client_sample(window));
                     let _ = coordinator.begin(n_sample, s_sample);
                 }
                 Err(_) => {
@@ -182,7 +181,19 @@ impl FastClientRateBook {
     }
 }
 
-fn l2_with_fcs_bytes(window: super::fast_rate::FastWindow) -> u64 {
+fn client_sample(window: FastWindow) -> FastClientSample {
+    FastClientSample {
+        sample_ms: window.end_ms,
+        window_ms: window.duration_ms(),
+        read_end_skew_ms: window.read_end_skew_ms,
+        fast_n_bps: bytes_to_bps(window.n_bytes, window.duration_ms()),
+        fast_s_bps: bytes_to_bps(window.s_bytes, window.duration_ms()),
+        fast_total_bps: bytes_to_bps(window.total_bytes(), window.duration_ms()),
+        routed_l2_with_fcs_bps: bytes_to_bps(l2_with_fcs_bytes(window), window.duration_ms()),
+    }
+}
+
+fn l2_with_fcs_bytes(window: FastWindow) -> u64 {
     const ECM_TO_L2_WITH_FCS_BYTES_PER_PACKET: u64 = 18;
     const L2_FCS_BYTES_PER_PACKET: u64 = 4;
     window
@@ -450,6 +461,41 @@ mod tests {
         assert_eq!(sample.fast_n_bps, 1_600);
         assert_eq!(sample.fast_s_bps, 0);
         assert_eq!(sample.fast_total_bps, 1_600);
+    }
+
+    #[test]
+    fn publishes_confirmed_quiet_zero_without_rebasing_the_next_batch() {
+        let mut book = FastClientRateBook::default();
+        let first_n = n(100);
+        let first_s = s(50);
+        book.observe(&first_n, &first_s, 990, 1_000, 991, 1_001);
+
+        let mut quiet_n = first_n.clone();
+        quiet_n.sample_ms = 4_000;
+        let mut quiet_s = first_s.clone();
+        quiet_s.sample_ms = 4_000;
+        book.observe(&quiet_n, &quiet_s, 3_990, 4_000, 3_991, 4_001);
+
+        let zero = book
+            .get([2, 0, 0, 0, 0, 1], DIR_TX)
+            .expect("confirmed quiet zero");
+        assert_eq!(zero.sample_ms, 4_000);
+        assert_eq!(zero.window_ms, 2_999);
+        assert_eq!(zero.fast_n_bps, 0);
+        assert_eq!(zero.fast_s_bps, 0);
+        assert_eq!(zero.fast_total_bps, 0);
+
+        let mut resumed_n = n(500);
+        resumed_n.sample_ms = 5_000;
+        resumed_n.entries[0].sample_ms = 5_000;
+        let mut resumed_s = s(250);
+        resumed_s.sample_ms = 5_000;
+        resumed_s.entries[0].sample_ms = 5_000;
+        book.observe(&resumed_n, &resumed_s, 4_990, 5_000, 4_991, 5_001);
+        let resumed = book
+            .get([2, 0, 0, 0, 0, 1], DIR_TX)
+            .expect("resumed non-zero window");
+        assert!(resumed.fast_total_bps > 0);
     }
 
     #[test]

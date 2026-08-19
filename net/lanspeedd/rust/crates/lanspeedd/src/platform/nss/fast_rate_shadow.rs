@@ -6,7 +6,9 @@
 
 use super::{
     fast_n_runtime::FastNSnapshot,
-    fast_rate::{FastCounterSample, FastRateCoordinator, FastWindowError},
+    fast_rate::{
+        FastCounterSample, FastRateCoordinator, FastWindowError, FAST_WINDOW_QUIET_CONFIRM_MS,
+    },
     fast_rate_clients::{FastClientKey, FastClientRateBook, FastClientSample},
     fast_rate_store::{FastRateSample, FastRateStore, FastRateTelemetry, FastShadowComparison},
     fast_s_runtime::FastSSnapshot,
@@ -125,6 +127,23 @@ impl FastRateShadow {
             return;
         }
         if !self.coordinator.has_progress(n, s) {
+            match self
+                .coordinator
+                .confirmed_quiet_window(n, s, FAST_WINDOW_QUIET_CONFIRM_MS)
+            {
+                Ok(Some(window)) => {
+                    self.store.publish(window);
+                    self.comparison = self.store.compare_with_edge(self.edge_bps);
+                    self.last_error = None;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.last_error = Some(error);
+                    self.store.record_invalid(n.sample_ms.max(s.sample_ms));
+                    self.coordinator.clear();
+                    let _ = self.coordinator.begin(n, s);
+                }
+            }
             return;
         }
         match self.coordinator.finish(n, s) {
@@ -292,6 +311,72 @@ mod tests {
         );
         assert_eq!(shadow.latest(), Some(published));
         assert_eq!(shadow.telemetry().zero_windows, 0);
+    }
+
+    #[test]
+    fn fixed_timer_publishes_zero_after_quiet_confirmation() {
+        let mut shadow = FastRateShadow::new();
+        let mut first_n = fast_n(1_100, 100);
+        first_n.progress_ms = 1_000;
+        let mut first_s = fast_s(1_100, 50);
+        first_s.progress_ms = 1_000;
+        shadow.observe(
+            Some(&first_n),
+            Some(&first_s),
+            1_090,
+            1_100,
+            1_091,
+            1_101,
+            None,
+        );
+
+        let mut early_n = first_n.clone();
+        early_n.sample_ms = 2_100;
+        let mut early_s = first_s.clone();
+        early_s.sample_ms = 2_100;
+        shadow.observe(
+            Some(&early_n),
+            Some(&early_s),
+            2_090,
+            2_100,
+            2_091,
+            2_101,
+            None,
+        );
+        assert!(shadow.latest().is_none());
+
+        let mut quiet_n = first_n.clone();
+        quiet_n.sample_ms = 4_100;
+        let mut quiet_s = first_s.clone();
+        quiet_s.sample_ms = 4_100;
+        shadow.observe(
+            Some(&quiet_n),
+            Some(&quiet_s),
+            4_090,
+            4_100,
+            4_091,
+            4_101,
+            None,
+        );
+        let zero = shadow.latest().expect("confirmed aggregate zero");
+        assert_eq!(zero.sample_ms, 4_100);
+        assert_eq!(zero.fast_total_bps, 0);
+        assert_eq!(shadow.telemetry().zero_windows, 1);
+
+        let mut resumed_n = fast_n(5_100, 300);
+        resumed_n.progress_ms = 5_000;
+        let mut resumed_s = fast_s(5_100, 250);
+        resumed_s.progress_ms = 5_000;
+        shadow.observe(
+            Some(&resumed_n),
+            Some(&resumed_s),
+            5_090,
+            5_100,
+            5_091,
+            5_101,
+            None,
+        );
+        assert!(shadow.latest().unwrap().fast_total_bps > 0);
     }
 
     #[test]
