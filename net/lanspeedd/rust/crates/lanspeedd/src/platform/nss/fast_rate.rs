@@ -128,8 +128,14 @@ impl FastRateCoordinator {
         }
         let n_progress = effective_progress_ms(n) > effective_progress_ms(start.n);
         let s_progress = effective_progress_ms(s) > effective_progress_ms(start.s);
+        // FastN is the batched routed plane. When it exists, its progress
+        // closes the shared raw N+S window; an unchanged FastS counter is a
+        // valid zero contribution to that same window. FastS-only progress
+        // must not cut a pending FastN batch into alternating low/high rates.
+        // If no FastN key exists, the fixed timer still lets pure CPU/proxy
+        // FastS traffic close and publish the shared window on its own.
         match (n.source_present, s.source_present) {
-            (true, true) => n_progress && s_progress,
+            (true, true) => n_progress,
             (true, false) => n_progress,
             (false, true) => s_progress,
             (false, false) => false,
@@ -343,6 +349,26 @@ mod tests {
         assert_eq!(window.duration_ms(), 2_000);
         assert_eq!(window.n_bytes, 200);
         assert_eq!(window.s_bytes, 20);
+    }
+
+    #[test]
+    fn fastn_progress_closes_a_window_when_fasts_is_unchanged() {
+        let mut coordinator = FastRateCoordinator::default();
+        let first_n = sample(1_000, 1_010, 100, 10);
+        let first_s = sample(1_000, 1_014, 50, 5);
+        coordinator.begin(first_n, first_s).unwrap();
+
+        let next_n = sample(2_000, 2_010, 300, 30);
+        let mut unchanged_s = first_s;
+        unchanged_s.sample_ms = 2_000;
+        unchanged_s.read_begin_ms = 2_004;
+        unchanged_s.read_end_ms = 2_014;
+
+        assert!(coordinator.has_progress(next_n, unchanged_s));
+        let window = coordinator.finish(next_n, unchanged_s).unwrap();
+        assert_eq!(window.n_bytes, 200);
+        assert_eq!(window.s_bytes, 0);
+        assert_eq!(window.duration_ms(), 1_000);
     }
 
     #[test]

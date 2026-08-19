@@ -403,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn holds_combined_rate_until_both_sources_progress() {
+    fn fasts_only_progress_does_not_cut_a_pending_fastn_batch() {
         let mut book = FastClientRateBook::default();
         let mut first_n = n(100);
         first_n.entries[0].sample_ms = 1_000;
@@ -428,6 +428,28 @@ mod tests {
         s_only.entries[0].sample_ms = 2_500;
         book.observe(&next_n, &s_only, 3_490, 3_500, 2_490, 2_501);
         assert_eq!(book.get([2, 0, 0, 0, 0, 1], DIR_TX), Some(published));
+    }
+
+    #[test]
+    fn publishes_fastn_progress_with_an_unchanged_fasts_contribution() {
+        let mut book = FastClientRateBook::default();
+        let mut first_n = n(100);
+        first_n.entries[0].sample_ms = 1_000;
+        let mut first_s = s(50);
+        first_s.entries[0].sample_ms = 1_000;
+        book.observe(&first_n, &first_s, 990, 1_000, 991, 1_001);
+
+        let mut next_n = n(300);
+        next_n.sample_ms = 2_000;
+        next_n.entries[0].sample_ms = 2_000;
+        let mut unchanged_s = first_s;
+        unchanged_s.sample_ms = 2_000;
+        book.observe(&next_n, &unchanged_s, 1_990, 2_000, 1_991, 2_001);
+
+        let sample = book.get([2, 0, 0, 0, 0, 1], DIR_TX).unwrap();
+        assert_eq!(sample.fast_n_bps, 1_600);
+        assert_eq!(sample.fast_s_bps, 0);
+        assert_eq!(sample.fast_total_bps, 1_600);
     }
 
     #[test]
