@@ -183,7 +183,7 @@ assert(model.evidence_lease.lifetime_ms === 10000 &&
   nssRateMux.includes('pub(crate) struct RateMuxRuntime') &&
   nssRateMux.includes('RoutedLeaseSubstitute') &&
   production.includes('self.nss.select_rate_view(') &&
-  production.includes('fast_client_sample_current(runtime_health.now_ms') &&
+  production.includes('fast_client_sample_current(fast_reference_ms') &&
   production.includes('ModelRateSource::FastRoutedLease') &&
   nssEvidenceLease.includes('leases.insert(') &&
   nssEvidenceLease.includes('lease_invalidation(') &&
