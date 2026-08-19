@@ -5,6 +5,7 @@
 'require lanspeed.statusIp as statusIp';
 'require lanspeed.statusShell as statusShell';
 'require lanspeed.statusRefresh as statusRefresh';
+'require lanspeed.statusRateMeta as statusRateMeta';
 
 var SOURCE_KEYS = [ 'status', 'clients', 'interfaces', 'uci' ];
 var LIVE_SOURCE_KEYS = [ 'status', 'clients', 'interfaces' ];
@@ -119,9 +120,10 @@ function statusBatch(data) {
 	var edgeSample = sampleClock(data && data.evidence && data.evidence.access_edge &&
 		data.evidence.access_edge.sample_ms);
 	return {
-		// Active Access Edge owns the one-second client rate. The NSS classifier
-		// clock is intentionally two-second and must not gate that live batch.
-		sampleMs: edgeSample !== null ? edgeSample : (edgeActive || routedInternet ? null : collectorSampleClock(data)),
+		// Explicit routed view owns its FastN+FastS clock; Access Edge is only a
+		// background verifier and must not gate or relabel that view.
+		sampleMs: routedInternet ? null : edgeSample !== null ? edgeSample :
+			(edgeActive ? null : collectorSampleClock(data)),
 		hasCoverage: !!(data && data.coverage && typeof data.coverage === 'object')
 	};
 }
@@ -134,8 +136,8 @@ function clientBatch(data, status) {
 	if (!nssPlatform && (collector === 'nss_ecm_node' || collector === 'nss_ecm_bpf'))
 		collector = 'bpf';
 	var evidenceClock = collectorSampleClock(data);
-	var edgeActive = nssPlatform && String(status && status.access_edge_mode || '') === 'active';
 	var routedInternet = nssPlatform && String(status && status.internet_view_mode || '') === 'routed';
+	var edgeActive = nssPlatform && String(status && status.access_edge_mode || '') === 'active' && !routedInternet;
 	var edgeClock = edgeActive ? sampleClock(data.evidence && data.evidence.access_edge &&
 		data.evidence.access_edge.sample_ms) : null;
 
@@ -145,6 +147,9 @@ function clientBatch(data, status) {
 	var rows = Array.isArray(data.clients) ? data.clients : [];
 	var rateRows = rows.filter(function(item) {
 		var mode = String(item && item.collector_mode || '');
+		if (routedInternet) {
+			return !!statusRateMeta.routedCollector(item && item.rate_meta);
+		}
 		// rate_meta is authoritative while active Access Edge owns the total.
 		// Accept it during a rolling daemon/LuCI upgrade even if a response still
 		// carries the identity's old conntrack/NSS collector_mode.
@@ -175,8 +180,8 @@ function livePair(data) {
 	});
 	var comparable = clocks.length > 1;
 	var nssStatus = data && data.status;
-	var edgeActive = fmt.nssPlatform(nssStatus) && String(nssStatus && nssStatus.access_edge_mode || '') === 'active';
 	var routedInternet = fmt.nssPlatform(nssStatus) && String(nssStatus && nssStatus.internet_view_mode || '') === 'routed';
+	var edgeActive = fmt.nssPlatform(nssStatus) && String(nssStatus && nssStatus.access_edge_mode || '') === 'active' && !routedInternet;
 	var skew = edgeActive ? ACCESS_EDGE_SAMPLE_SKEW_MS : routedInternet ? 2500 : 0;
 	var aligned = !comparable || clocks.every(function(value) {
 		return Math.abs(value - clocks[0]) <= skew;
@@ -197,6 +202,7 @@ function livePair(data) {
 function nssAccessEdgeRenderable(data, pair) {
 	return fmt.nssPlatform(data && data.status) &&
 		String(data && data.status && data.status.access_edge_mode || '') === 'active' &&
+		String(data && data.status && data.status.internet_view_mode || '') !== 'routed' &&
 		pair && pair.hasClientRates === true;
 }
 

@@ -148,6 +148,17 @@ function clientRateCoverage(client) {
 	return '';
 }
 
+function routedRateView(client, status) {
+	if (status && String(status.internet_view_mode || '') === 'routed')
+		return true;
+	var meta = client && client.rate_meta;
+	return !!(meta && typeof meta === 'object' && meta.scope === 'routed_observed' &&
+		((meta.tx && (meta.tx.source === 'fast_routed_internet' ||
+			meta.tx.source === 'fast_routed_lease')) ||
+		 (meta.rx && (meta.rx.source === 'fast_routed_internet' ||
+			meta.rx.source === 'fast_routed_lease'))));
+}
+
 function clientRateMetaLabel(client, response) {
 	if (!client) return '—';
 	var parts = [_('总速率采样：') + clientRateSource(client)];
@@ -600,7 +611,9 @@ function render(viewState) {
 		if (warnings.length)
 			footer.push(_('告警：') + warnings.map(warningLabel).join('，'));
 		if (rateUsable && fmt.nssPlatform(viewState.status)) {
-			footer.push(_('NSS：总速率来自接入 Edge；连接明细来自独立 Conntrack 窗口，卸载流量可能不出现在逐连接字节中，不能与总速率相加核对'));
+			footer.push(routedRateView(client, viewState.status)
+				? _('NSS：总速率来自 FastN+FastS 互联网/路由观察；连接明细来自独立 Conntrack 窗口，卸载流量可能不出现在逐连接字节中，不能与总速率相加核对')
+				: _('NSS：总速率来自接入 Edge；连接明细来自独立 Conntrack 窗口，卸载流量可能不出现在逐连接字节中，不能与总速率相加核对'));
 		}
 	}
 	footer.push(viewState.prefs && viewState.prefs.paused

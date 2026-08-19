@@ -213,7 +213,7 @@ function loadFormat(context) {
 function loadOverview(context, fmt, rpc, modules) {
 	modules = modules || {};
 	return vm.compileFunction(readModule('statusOverview.js'), [
-		'baseclass', 'fmt', 'lsRpc', 'statusIp', 'statusShell', 'statusRefresh'
+		'baseclass', 'fmt', 'lsRpc', 'statusIp', 'statusShell', 'statusRefresh', 'statusRateMeta'
 	], { filename: 'resources/lanspeed/statusOverview.js', parsingContext: context })(
 		{ extend: function(value) { return value; } },
 		fmt,
@@ -223,7 +223,17 @@ function loadOverview(context, fmt, rpc, modules) {
 			hideIpv6RangesValue: function(value) { return value || ''; }
 		},
 		modules.shell || { buildShell: function() { return { root: fakeElement('div'), refs: {} }; } },
-		modules.refresh || { refreshLive: function() {} }
+		modules.refresh || { refreshLive: function() {} },
+		modules.rateMeta || { routedCollector: function(meta) {
+			if (!meta || meta.scope !== 'routed_observed') return '';
+			var tx = meta.tx && meta.tx.source, rx = meta.rx && meta.rx.source;
+			var valid = function(source) {
+				return source === 'fast_routed_internet' || source === 'fast_routed_lease';
+			};
+			if (!valid(tx) || !valid(rx)) return '';
+			return tx === 'fast_routed_lease' || rx === 'fast_routed_lease'
+				? 'fast_routed_lease' : 'fast_routed_internet';
+		} }
 	);
 }
 
@@ -645,6 +655,41 @@ async function testLiveSamplePairing(context, fmt) {
 		'active Edge rate_meta must remain authoritative during a rolling upgrade with a legacy collector_mode');
 	assert.strictEqual(activeEdge.clients.clients[0].tx_bps, 1200,
 		'active Edge clients within the 50ms read-end skew must remain visible');
+
+	const routedRpc = {
+		status: function() {
+			return Promise.resolve({
+				access_edge_mode: 'active', internet_view_mode: 'routed', rate_collector_mode: 'auto',
+				evidence: { platform: { profile: 'nss_aarch64' }, access_edge: { sample_ms: 14000 } }
+			});
+		},
+		clients: function() {
+			return Promise.resolve({
+				clients: [ {
+					collector_mode: 'access_edge', sample_ms: 14200, tx_bps: 700, rx_bps: 800,
+					rate_meta: {
+						scope: 'routed_observed',
+						tx: { source: 'fast_routed_internet', sample_ms: 14200 },
+						rx: { source: 'fast_routed_internet', sample_ms: 14200 }
+					}
+				} ],
+				evidence: { effective_collector: 'nss_ecm_bpf' }
+			});
+		},
+		interfaces: function() {
+			return Promise.resolve({ monotonic_ms: 14200,
+				interfaces: [ { name: 'br-lan', sample_ms: 14200, rx_bps: 800, tx_bps: 700 } ] });
+		},
+		uciGet: function() { return Promise.resolve({}); }
+	};
+	const routedOverview = loadOverview(context, fmt, routedRpc);
+	const routedBatch = await routedOverview.loadAll(null, clock);
+	assert.strictEqual(routedBatch.livePair.coverageSampleMs, null,
+		'explicit routed view must not use the background Access Edge clock');
+	assert.strictEqual(routedBatch.livePair.hasClientRates, true,
+		'explicit routed view must pair FastN+FastS client metadata even with legacy collector_mode');
+	assert.strictEqual(routedBatch.livePair.clientSampleMs, 14200);
+	assert.strictEqual(routedBatch.livePair.aligned, true);
 }
 
 function fakeTimers() {
@@ -845,7 +890,9 @@ function loadShellAndRefresh(context, fmt) {
 		{
 			effectiveCollector: function() { return 'bpf'; },
 			collectorClass: function() { return 'label label-success'; },
-			collectorLabel: function() { return 'BPF'; }
+			collectorLabel: function(mode) {
+				return mode === 'fast_routed_internet' ? 'FastN+FastS routed Internet' : 'BPF';
+			}
 		}, rateMeta,
 		fakeElement,
 		translate,
@@ -953,6 +1000,42 @@ function testPaginationAndUiStates(context, fmt) {
 		prefs: Object.assign({}, state.prefs, { nssRefreshMs: 8000 })
 	});
 	const nssBuilt = modules.shell.buildShell(nssState);
+	nssState.status.access_edge_mode = 'active';
+	nssState.status.rate_collector_mode = 'auto';
+	nssState.status.internet_view_mode = 'routed';
+	nssState.status.evidence.platform = { profile: 'nss_aarch64' };
+	nssState.clients = { clients: [ Object.assign({}, client(1), {
+		collector_mode: 'access_edge',
+		rate_meta: { scope: 'routed_observed',
+			tx: { source: 'fast_routed_internet' }, rx: { source: 'fast_routed_internet' } }
+	}) ] };
+	nssState.refs = nssBuilt.refs;
+	modules.refresh.refreshLive(nssState);
+	assert.strictEqual(nssState.refs.collectorPill.textContent, 'FastN+FastS routed Internet',
+		'explicit routed view must not be presented as automatic Access Edge');
+	assert(String(nssState.refs.collectorPill.title || '').includes('互联网/路由'),
+		'explicit routed view must describe its FastN+FastS scope');
+	const pendingClient = Object.assign({}, client(2), {
+		tx_bps: 0, rx_bps: 0, collector_mode: 'access_edge',
+		rate_meta: { scope: 'none',
+			tx: { source: 'none', coverage: 'unavailable' },
+			rx: { source: 'none', coverage: 'unavailable' } }
+	});
+	nssState.clients = { clients: [ pendingClient ] };
+	nssState.interfaces = { interfaces: [ {
+		name: 'br-lan', role: 'lan', rx_bps: 0, tx_bps: 0,
+		coverage: 'fast_routed_window_pending'
+	} ] };
+	nssState.livePair = { pendingClientSampleMs: 14200 };
+	modules.refresh.refreshLive(nssState);
+	assert.strictEqual(nssState.refs.mTx.textContent, '0');
+	assert.strictEqual(nssState.refs.mRx.textContent, '0');
+	assert.strictEqual(nssState.refs.mClients.textContent, '1');
+	assert(!textOf(nssState.refs.tbody.children[0]).includes('—'),
+		'routed rows must retain numeric zero instead of replacing it with a placeholder');
+	assert.strictEqual(textOf(nssState.refs.ifacesBody.children[0]), 'br-lan0000',
+		'routed interface rows must retain numeric zero values');
+	assert.strictEqual(nssState.refs.ifacesSummary.textContent, '↑ 0 · ↓ 0');
 	assert.strictEqual(nssBuilt.refs.intervalSel.disabled, false);
 	assert.deepStrictEqual(
 		Array.from(nssBuilt.refs.intervalSel.children).map(textOf),

@@ -327,7 +327,8 @@ const MODULE_REQUIRES = {
 		'lanspeed.rpc',
 		'lanspeed.statusIp',
 		'lanspeed.statusShell',
-		'lanspeed.statusRefresh'
+		'lanspeed.statusRefresh',
+		'lanspeed.statusRateMeta'
 	],
 	'statusShell.js': [
 		'baseclass',
@@ -3160,6 +3161,26 @@ function assertClientDetailRefreshBehavior(src) {
 		if (refs.summaryRateMeta.textContent !==
 		    '总速率采样：Edge-WiFi · phy1-ap0 · 全覆盖 · 17 s 窗口 · 连接数据独立采样：Conntrack Netlink') {
 			fail('NSS detail summary must disclose the authoritative Edge-WiFi source and its real rolling window');
+		}
+		const routedRateResponse = JSON.parse(JSON.stringify(fixture));
+		routedRateResponse.client.rate_collector_mode = 'access_edge';
+		routedRateResponse.client.rate_meta = {
+			version: 1, scope: 'routed_observed', generation: 8, stale: false, reason_codes: [],
+			window_ms: 2000, sample_ms: 14000,
+			tx: { source: 'fast_routed_internet', coverage: 'degraded', byte_domain: 'l2_with_fcs' },
+			rx: { source: 'fast_routed_internet', coverage: 'degraded', byte_domain: 'l2_with_fcs' },
+			attachment: { kind: 'wifi', ifname: 'phy1-ap0', trust: 'associated_station' }
+		};
+		state.response = routedRateResponse;
+		state.status = {
+			evidence: { platform: { profile: 'nss_aarch64' } },
+			internet_view_mode: 'routed'
+		};
+		refresh.render(state);
+		const routedFooter = fakeElementText(refs.footer);
+		if (!routedFooter.includes('NSS：总速率来自 FastN+FastS 互联网/路由观察') ||
+		    routedFooter.includes('NSS：总速率来自接入 Edge')) {
+			fail('NSS routed detail footer must describe FastN+FastS observation instead of Access Edge');
 		}
 		state.status = { evidence: { platform: { profile: 'generic_x86_64' } } };
 		state.response = fixture;

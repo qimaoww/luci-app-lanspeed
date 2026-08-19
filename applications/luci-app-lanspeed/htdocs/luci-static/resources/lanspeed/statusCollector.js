@@ -11,6 +11,10 @@ function collectorLabel(mode) {
 		return 'ECM';
 	if (mode === 'nss_ecm_bpf')
 		return _('ECM+BPF');
+	if (mode === 'fast_routed_internet')
+		return 'FastN+FastS routed Internet';
+	if (mode === 'fast_routed_lease')
+		return 'FastN+FastS lease';
 	if (mode === 'conntrack_netlink')
 		return 'CT-Netlink';
 	if (mode === 'conntrack_procfs')
@@ -24,7 +28,8 @@ function collectorLabel(mode) {
 
 function collectorClass(mode) {
 	mode = String(mode || '-');
-	if (mode === 'access_edge' || mode === 'bpf' || mode === 'nss_ecm_node' || mode === 'nss_ecm_bpf')
+	if (mode === 'access_edge' || mode === 'bpf' || mode === 'nss_ecm_node' || mode === 'nss_ecm_bpf' ||
+		mode === 'fast_routed_internet' || mode === 'fast_routed_lease')
 		return 'label label-success';
 	return 'label label-danger';
 }
