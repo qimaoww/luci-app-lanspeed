@@ -84,14 +84,23 @@ assert_metadata_field() {
 assert_root_ownership() {
 	local label=$1
 	local metadata=$2
-	local unexpected
+	local unexpected user group user_id group_id
 
 	unexpected=$(jq -r '
 		.. | objects | .acl? |
 		select(type == "object") |
-		select(.user != "root" or .group != "root") |
 		"\(.user // "<missing>"):\(.group // "<missing>")"
-	' "$metadata" | LC_ALL=C sort -u)
+	' "$metadata" | while IFS=: read -r user group; do
+		# APK stores names resolved from the builder's passwd database. Some
+		# build containers name UID 0 differently; ownership is numeric, so
+		# accept any name that resolves to UID/GID 0 while still rejecting
+		# genuinely non-root package entries.
+		user_id=$(getent passwd "$user" 2>/dev/null | awk -F: 'NR == 1 { print $3 }')
+		group_id=$(getent group "$group" 2>/dev/null | awk -F: 'NR == 1 { print $3 }')
+		if [ "$user_id" != 0 ] || [ "$group_id" != 0 ]; then
+			printf '%s:%s\n' "$user" "$group"
+		fi
+	done | LC_ALL=C sort -u)
 	[[ -z $unexpected ]] || \
 		fail "$label contains non-root packaged ownership: $unexpected"
 }
