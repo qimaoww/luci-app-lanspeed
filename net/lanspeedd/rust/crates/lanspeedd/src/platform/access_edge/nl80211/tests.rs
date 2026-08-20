@@ -180,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn association_disappearance_or_reset_gets_a_new_generation() {
+    fn one_missing_dump_retains_generation_but_two_confirm_disappearance() {
         let interface = WirelessInterface {
             ifindex: 7,
             ifname: "phy1-ap0".into(),
@@ -207,11 +207,24 @@ mod tests {
             .apply_generations(vec![(interface.clone(), raw)], 1, 2)
             .unwrap();
         let first_generation = first.stations[0].association_generation;
-        provider.apply_generations(Vec::new(), 3, 4).unwrap();
-        let second = provider
-            .apply_generations(vec![(interface, raw)], 5, 6)
+        let first_miss = provider.apply_generations(Vec::new(), 3, 4).unwrap();
+        assert!(!first_miss.complete);
+        assert_eq!(first_miss.stations[0].association_generation, first_generation);
+
+        let continued = provider
+            .apply_generations(vec![(interface.clone(), raw)], 5, 6)
             .unwrap();
-        assert!(second.stations[0].association_generation > first_generation);
+        assert!(continued.complete);
+        assert_eq!(continued.stations[0].association_generation, first_generation);
+
+        provider.apply_generations(Vec::new(), 7, 8).unwrap();
+        let confirmed = provider.apply_generations(Vec::new(), 9, 10).unwrap();
+        assert!(confirmed.complete);
+        assert!(confirmed.stations.is_empty());
+        let replacement = provider
+            .apply_generations(vec![(interface, raw)], 11, 12)
+            .unwrap();
+        assert!(replacement.stations[0].association_generation > first_generation);
     }
 
     #[test]
@@ -277,5 +290,96 @@ mod tests {
             .unwrap();
         assert!(mesh.stations[0].association_generation > wds.stations[0].association_generation);
         assert!(!mesh.stations[0].proves_direct_client_interface());
+    }
+
+    #[test]
+    fn thirty_two_bit_byte_wrap_keeps_generation_and_extends_monotonically() {
+        let interface = WirelessInterface {
+            ifindex: 7,
+            ifname: "phy1-ap0".into(),
+            bridge_ifindex: Some(10),
+            vlan_id: None,
+            iftype: Some(NL80211_IFTYPE_AP),
+        };
+        let mut raw = RawStationCounter {
+            mac: [0x02, 1, 2, 3, 4, 5],
+            ifindex: 7,
+            association_started_ns: Some(1_000),
+            connected_time_s: Some(10),
+            counters: LinkCounters {
+                rx_bytes: u64::from(u32::MAX) - 99,
+                tx_bytes: 1_000,
+                rx_packets: 100,
+                tx_packets: 200,
+            },
+            rx_byte_width: StationByteCounterWidth::Bits32,
+            tx_byte_width: StationByteCounterWidth::Bits32,
+        };
+        let mut provider = SystemNl80211StationProvider::new(8);
+        let first = provider
+            .apply_generations(vec![(interface.clone(), raw)], 1, 2)
+            .unwrap();
+
+        raw.connected_time_s = Some(11);
+        raw.counters.rx_bytes = 100;
+        raw.counters.tx_bytes = 2_000;
+        raw.counters.rx_packets = 110;
+        raw.counters.tx_packets = 210;
+        let wrapped = provider
+            .apply_generations(vec![(interface, raw)], 3, 4)
+            .unwrap();
+
+        assert_eq!(
+            wrapped.stations[0].association_generation,
+            first.stations[0].association_generation
+        );
+        assert_eq!(
+            wrapped.stations[0].counters.rx_bytes,
+            u64::from(u32::MAX) + 101
+        );
+        assert_eq!(wrapped.stations[0].counters.tx_bytes, 2_000);
+    }
+
+    #[test]
+    fn non_wrap_counter_decrease_still_advances_generation() {
+        let interface = WirelessInterface {
+            ifindex: 7,
+            ifname: "phy1-ap0".into(),
+            bridge_ifindex: Some(10),
+            vlan_id: None,
+            iftype: Some(NL80211_IFTYPE_AP),
+        };
+        let mut raw = RawStationCounter {
+            mac: [0x02, 1, 2, 3, 4, 5],
+            ifindex: 7,
+            association_started_ns: Some(1_000),
+            connected_time_s: Some(10),
+            counters: LinkCounters {
+                rx_bytes: 2_000_000_000,
+                tx_bytes: 1_000,
+                rx_packets: 100,
+                tx_packets: 200,
+            },
+            rx_byte_width: StationByteCounterWidth::Bits32,
+            tx_byte_width: StationByteCounterWidth::Bits32,
+        };
+        let mut provider = SystemNl80211StationProvider::new(8);
+        let first = provider
+            .apply_generations(vec![(interface.clone(), raw)], 1, 2)
+            .unwrap();
+
+        raw.connected_time_s = Some(11);
+        raw.counters.rx_bytes = 100;
+        raw.counters.tx_bytes = 1_100;
+        raw.counters.rx_packets = 110;
+        raw.counters.tx_packets = 210;
+        let reset = provider
+            .apply_generations(vec![(interface, raw)], 3, 4)
+            .unwrap();
+        assert!(
+            reset.stations[0].association_generation
+                > first.stations[0].association_generation
+        );
+        assert_eq!(reset.stations[0].counters.rx_bytes, 100);
     }
 }

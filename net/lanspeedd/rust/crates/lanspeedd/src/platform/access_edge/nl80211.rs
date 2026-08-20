@@ -5,6 +5,10 @@ use std::{
     path::Path,
 };
 
+mod counter_extender;
+
+use counter_extender::extend_station_counters;
+
 use super::rate::LinkCounters;
 
 const NETLINK_GENERIC: libc::c_int = 16;
@@ -41,6 +45,10 @@ const NL80211_STA_INFO_ASSOC_AT_BOOTTIME: u16 = 42;
 const NLA_TYPE_MASK: u16 = 0x3fff;
 const MAX_DUMP_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_MAX_INTERFACES: usize = 1_024;
+/// A completed station dump can transiently omit an associated peer while
+/// firmware statistics are being published. Retain one missing frame as
+/// stale topology evidence; a second completed miss confirms disappearance.
+const STATION_MISSING_GRACE_READS: u8 = 1;
 pub const DEFAULT_MAX_STATIONS: usize = 8_192;
 pub const NL80211_IFTYPE_AP: u32 = 3;
 pub const NL80211_IFTYPE_WDS: u32 = 5;
@@ -105,15 +113,14 @@ pub trait WifiStationCounterProvider {
     fn read_stations(&mut self) -> io::Result<StationCounterSnapshot>;
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct AssociationState {
     generation: u64,
-    iftype: Option<u32>,
-    association_started_ns: Option<u64>,
-    connected_time_s: Option<u32>,
+    interface: WirelessInterface,
+    raw: RawStationCounter,
+    /// Monotonic counters after extending accepted 32-bit wraps.
     counters: LinkCounters,
-    rx_byte_width: StationByteCounterWidth,
-    tx_byte_width: StationByteCounterWidth,
+    missing_complete_reads: u8,
 }
 
 /// Raw Generic Netlink provider. It discovers bridged wireless netdevs from
@@ -166,6 +173,7 @@ impl SystemNl80211StationProvider {
         read_begin_ms: u64,
         read_end_ms: u64,
     ) -> io::Result<StationCounterSnapshot> {
+        let previous = self.associations.clone();
         let mut seen = BTreeSet::new();
         let mut next = BTreeMap::new();
         let mut stations = Vec::with_capacity(raw.len());
@@ -177,36 +185,44 @@ impl SystemNl80211StationProvider {
                     "duplicate station in nl80211 snapshot",
                 ));
             }
-            let generation = match self.associations.get(&key).copied() {
-                Some(old) if association_continues(old, interface.iftype, raw) => old.generation,
-                _ => self.allocate_generation(),
-            };
-            next.insert(
-                key,
-                AssociationState {
-                    generation,
-                    iftype: interface.iftype,
-                    association_started_ns: raw.association_started_ns,
-                    connected_time_s: raw.connected_time_s,
-                    counters: raw.counters,
-                    rx_byte_width: raw.rx_byte_width,
-                    tx_byte_width: raw.tx_byte_width,
-                },
-            );
-            stations.push(StationCounterSample {
-                mac: raw.mac,
-                ifindex: interface.ifindex,
-                ifname: interface.ifname,
-                bridge_ifindex: interface.bridge_ifindex,
-                vlan_id: interface.vlan_id,
-                iftype: interface.iftype,
-                association_generation: generation,
-                association_started_ns: raw.association_started_ns,
-                connected_time_s: raw.connected_time_s,
-                counters: raw.counters,
-                rx_byte_width: raw.rx_byte_width,
-                tx_byte_width: raw.tx_byte_width,
+            let continued = previous.get(&key).and_then(|old| {
+                if !association_material_continues(old, interface.iftype, raw) {
+                    return None;
+                }
+                extend_station_counters(
+                    old.raw.counters,
+                    raw.counters,
+                    old.counters,
+                    raw.rx_byte_width,
+                    raw.tx_byte_width,
+                )
+                .map(|counters| (old.generation, counters))
             });
+            let (generation, counters) =
+                continued.unwrap_or_else(|| (self.allocate_generation(), raw.counters));
+            let association = AssociationState {
+                generation,
+                interface: interface.clone(),
+                raw,
+                counters,
+                missing_complete_reads: 0,
+            };
+            stations.push(station_sample(&association));
+            next.insert(key, association);
+        }
+
+        let mut retained_missing = false;
+        for (key, mut association) in previous {
+            if seen.contains(&key)
+                || association.missing_complete_reads >= STATION_MISSING_GRACE_READS
+            {
+                continue;
+            }
+            association.missing_complete_reads =
+                association.missing_complete_reads.saturating_add(1);
+            stations.push(station_sample(&association));
+            next.insert(key, association);
+            retained_missing = true;
         }
         self.associations = next;
         stations.sort_by_key(|station| (station.ifindex, station.mac));
@@ -214,8 +230,30 @@ impl SystemNl80211StationProvider {
             stations,
             read_begin_ms,
             read_end_ms,
-            complete: true,
+            // Cached peers preserve only identity/generation. Mark the frame
+            // incomplete so Access Edge refuses their old byte counters and
+            // RateMux can use a current routed substitute instead.
+            complete: !retained_missing,
         })
+    }
+}
+
+fn station_sample(association: &AssociationState) -> StationCounterSample {
+    let interface = &association.interface;
+    let raw = association.raw;
+    StationCounterSample {
+        mac: raw.mac,
+        ifindex: interface.ifindex,
+        ifname: interface.ifname.clone(),
+        bridge_ifindex: interface.bridge_ifindex,
+        vlan_id: interface.vlan_id,
+        iftype: interface.iftype,
+        association_generation: association.generation,
+        association_started_ns: raw.association_started_ns,
+        connected_time_s: raw.connected_time_s,
+        counters: association.counters,
+        rx_byte_width: raw.rx_byte_width,
+        tx_byte_width: raw.tx_byte_width,
     }
 }
 
@@ -1039,37 +1077,29 @@ fn advance_message(
     Ok(offset + aligned)
 }
 
-fn association_continues(
-    previous: AssociationState,
+fn association_material_continues(
+    previous: &AssociationState,
     iftype: Option<u32>,
     current: RawStationCounter,
 ) -> bool {
     let association_marker_matches = match (
-        previous.association_started_ns,
+        previous.raw.association_started_ns,
         current.association_started_ns,
     ) {
         (Some(previous), Some(current)) => previous == current,
         (None, None) => true,
         _ => false,
     };
-    let connected_time_advanced = match (previous.connected_time_s, current.connected_time_s) {
+    let connected_time_advanced = match (previous.raw.connected_time_s, current.connected_time_s) {
         (Some(previous), Some(current)) => current >= previous,
         (None, None) => true,
         _ => false,
     };
-    previous.iftype == iftype
-        && previous.rx_byte_width == current.rx_byte_width
-        && previous.tx_byte_width == current.tx_byte_width
+    previous.interface.iftype == iftype
+        && previous.raw.rx_byte_width == current.rx_byte_width
+        && previous.raw.tx_byte_width == current.tx_byte_width
         && association_marker_matches
         && connected_time_advanced
-        && counters_did_not_reset(previous.counters, current.counters)
-}
-
-fn counters_did_not_reset(previous: LinkCounters, current: LinkCounters) -> bool {
-    current.rx_bytes >= previous.rx_bytes
-        && current.tx_bytes >= previous.tx_bytes
-        && current.rx_packets >= previous.rx_packets
-        && current.tx_packets >= previous.tx_packets
 }
 
 fn valid_client_mac(mac: [u8; 6]) -> bool {

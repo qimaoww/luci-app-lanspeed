@@ -77,15 +77,23 @@ pub(super) fn apply_fast_rate_overlay(
             (routed_view || direction_uses_fast(meta.rx.source))
                 && fast_client_sample_current(publication.observed_ms, *sample)
         });
+        // The worker emits a fixed-timer notice every second even when the
+        // NSS hardware keeps the same cumulative batch for another read.
+        // Keep the source window and its denominator intact, but advance the
+        // response publication clock so LuCI's 1s live-batch alignment does
+        // not wait for the next hardware batch. The raw source end remains in
+        // the FastRate evidence/window fields.
+        let tx_published = tx_current.map(|sample| publish_at(publication.observed_ms, sample));
+        let rx_published = rx_current.map(|sample| publish_at(publication.observed_ms, sample));
         let mut client_changed = false;
 
-        if let Some(sample) = tx_current {
+        if let Some(sample) = tx_published {
             client.tx_bps = sample.routed_l2_with_fcs_bps;
             apply_direction(&mut meta.tx, sample, routed_view);
             client_changed = true;
             stats.directions = stats.directions.saturating_add(1);
         }
-        if let Some(sample) = rx_current {
+        if let Some(sample) = rx_published {
             client.rx_bps = sample.routed_l2_with_fcs_bps;
             apply_direction(&mut meta.rx, sample, routed_view);
             client_changed = true;
@@ -101,8 +109,8 @@ pub(super) fn apply_fast_rate_overlay(
         client.rx_bytes = None;
         client.sample_ms = [
             client.sample_ms,
-            tx.map(|sample| sample.sample_ms),
-            rx.map(|sample| sample.sample_ms),
+            tx_published.map(|sample| sample.sample_ms),
+            rx_published.map(|sample| sample.sample_ms),
         ]
         .into_iter()
         .flatten()
@@ -136,6 +144,13 @@ pub(super) fn apply_fast_rate_overlay(
     }
     update_latest_overview(snapshot, publication.observed_ms);
     stats
+}
+
+fn publish_at(observed_ms: u64, sample: FastClientSample) -> FastClientSample {
+    FastClientSample {
+        sample_ms: observed_ms.max(sample.sample_ms),
+        ..sample
+    }
 }
 
 pub(super) fn base_contract(
@@ -559,6 +574,29 @@ mod tests {
         );
         assert_eq!(snapshot.overview.samples[0].tx_bps, 10);
         assert_eq!(snapshot.overview.samples[0].rx_bps, 1_600);
+    }
+
+    #[test]
+    fn held_fast_window_advances_the_publication_clock_without_changing_rate() {
+        let mut snapshot = snapshot();
+        snapshot.status.internet_view_mode = "routed".into();
+        let meta = snapshot.clients.clients[0].rate_meta.as_mut().unwrap();
+        meta.tx.source = RateSource::FastRoutedInternet;
+        meta.rx.source = RateSource::FastRoutedInternet;
+        let mut publication = publication(true);
+        publication.observed_ms = 3_000;
+        let contract = base_contract(&snapshot, 1);
+
+        apply_fast_rate_overlay(&mut snapshot, &publication, &contract);
+
+        let client = &snapshot.clients.clients[0];
+        let meta = client.rate_meta.as_ref().unwrap();
+        assert_eq!((client.tx_bps, client.rx_bps), (800, 1_600));
+        assert_eq!(client.sample_ms, Some(3_000));
+        assert_eq!(meta.sample_ms, Some(3_000));
+        assert_eq!(meta.window_ms, Some(1_000));
+        assert_eq!(meta.tx.sample_ms, Some(3_000));
+        assert_eq!(meta.rx.sample_ms, Some(3_000));
     }
 
     #[test]

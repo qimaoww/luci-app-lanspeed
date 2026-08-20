@@ -132,8 +132,8 @@ impl FastRateCoordinator {
         {
             return true;
         }
-        let n_progress = effective_progress_ms(n) > effective_progress_ms(start.n);
-        let s_progress = effective_progress_ms(s) > effective_progress_ms(start.s);
+        let n_progress = source_progressed(n, start.n);
+        let s_progress = source_progressed(s, start.s);
         // FastN is the batched routed plane. When it exists, its progress
         // closes the shared raw N+S window; an unchanged FastS counter is a
         // valid zero contribution to that same window. FastS-only progress
@@ -253,15 +253,32 @@ impl FastRateCoordinator {
         {
             return Err(FastWindowError::ResetGenerationChanged);
         }
-        let start_ms = start.n.sample_ms.max(start.s.sample_ms);
-        let end_ms = n.sample_ms.min(s.sample_ms);
         let n_progress_ms = effective_progress_ms(n);
         let s_progress_ms = effective_progress_ms(s);
         let start_n_progress_ms = effective_progress_ms(start.n);
         let start_s_progress_ms = effective_progress_ms(start.s);
+        let n_progressed = effective_progress_ms(n) > effective_progress_ms(start.n);
+        let s_progressed = effective_progress_ms(s) > effective_progress_ms(start.s);
         if n_progress_ms < start_n_progress_ms || s_progress_ms < start_s_progress_ms {
             return Err(FastWindowError::CounterReset);
         }
+        // Some NSS map producers update cumulative bytes before refreshing
+        // their last-seen timestamp.  A timestamp-only gate would then hold
+        // a valid one-second delta until the next hardware batch.  When both
+        // sources advance only by counters, use the completed map-read clock
+        // for the publication timestamp; the per-source denominator below
+        // already retains the progress clock whenever it is available.
+        let progress_clock_advanced = n_progressed || s_progressed;
+        let start_ms = if progress_clock_advanced {
+            start.n.sample_ms.max(start.s.sample_ms)
+        } else {
+            start.n.read_end_ms.max(start.s.read_end_ms)
+        };
+        let end_ms = if progress_clock_advanced {
+            n.sample_ms.min(s.sample_ms)
+        } else {
+            n.read_end_ms.min(s.read_end_ms)
+        };
         // `last_seen_ns` is a progress hint, not an aggregate rate clock:
         // taking the maximum across CPUs can let a tiny packet on one CPU
         // shorten the denominator for a much larger batch on another CPU.
@@ -314,6 +331,12 @@ fn effective_progress_ms(sample: FastCounterSample) -> u64 {
     } else {
         sample.progress_ms
     }
+}
+
+fn source_progressed(current: FastCounterSample, start: FastCounterSample) -> bool {
+    effective_progress_ms(current) > effective_progress_ms(start)
+        || current.bytes > start.bytes
+        || current.packets > start.packets
 }
 
 fn elapsed_or_progress(
@@ -439,6 +462,23 @@ mod tests {
         let window = coordinator.finish(next_n, unchanged_s).unwrap();
         assert_eq!(window.n_bytes, 200);
         assert_eq!(window.s_bytes, 0);
+        assert_eq!(window.duration_ms(), 1_000);
+    }
+
+    #[test]
+    fn counter_progress_closes_a_window_when_last_seen_clock_is_unchanged() {
+        let mut coordinator = FastRateCoordinator::default();
+        let mut first = sample(1_000, 1_010, 100, 10);
+        first.progress_ms = 777;
+        let mut second = sample(1_000, 2_010, 300, 30);
+        second.progress_ms = 777;
+        coordinator.begin(first, first).unwrap();
+
+        assert!(coordinator.has_progress(second, second));
+        let window = coordinator.finish(second, second).unwrap();
+        assert_eq!(window.start_ms, 1_010);
+        assert_eq!(window.end_ms, 2_010);
+        assert_eq!(window.n_bytes, 200);
         assert_eq!(window.duration_ms(), 1_000);
     }
 

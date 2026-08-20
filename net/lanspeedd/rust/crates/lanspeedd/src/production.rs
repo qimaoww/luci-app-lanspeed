@@ -3831,6 +3831,12 @@ impl App {
     }
     fn before_reply(&mut self, method: ubus::Method) -> Result<(), DaemonError> {
         self.drain_runtime_notices();
+        #[cfg(feature = "nss-platform")]
+        // The fixed FastRate worker is independent from the slower runtime
+        // collection. Drain its newest notice immediately before live RPCs
+        // so a 1s LuCI poll cannot observe the previous base snapshot while a
+        // valid FastN+FastS publication is already queued.
+        self.drain_fast_rate_notices();
         self.drain_reload_notices();
         self.drain_control_notices();
         if method == ubus::Method::Reload {
