@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     config::RuntimeConfig,
     identity::IdentityTable,
@@ -8,6 +10,7 @@ use crate::{
         ecm_node::{self, NodeSnapshot},
         evidence_lease::{EvidenceLeaseRuntime, LeaseClientObservation, LeaseSourceObservation},
         fast_n_runtime::FastNSnapshot,
+        fast_rate_contract::FastRateBaseContract,
         fast_rate_worker::FastRatePublication,
         fast_s_runtime::FastSSnapshot,
         hardware_verifier::HardwareVerifier,
@@ -32,6 +35,7 @@ pub(crate) struct NssRuntime {
     pub(crate) ecm_bpf_coverage: NssCoverageBook,
     pub(crate) ecm_bpf_rates: EcmBpfRateWindowBook,
     pub(crate) fast_rate: Option<FastRatePublication>,
+    pub(crate) fast_rate_contract: Option<Arc<FastRateBaseContract>>,
     pub(crate) low_rate_window: NssLowRateWindow,
     pub(crate) evidence_leases: EvidenceLeaseRuntime,
     pub(crate) rate_mux: RateMuxRuntime,
@@ -48,6 +52,7 @@ pub(crate) struct NssRuntimeCheckpoint {
     ecm_bpf_error_stage: Option<&'static str>,
     node_error: Option<String>,
     fast_rate: Option<FastRatePublication>,
+    fast_rate_contract: Option<Arc<FastRateBaseContract>>,
     low_rate_window: NssLowRateWindow,
     evidence_leases: EvidenceLeaseRuntime,
     rate_mux: RateMuxRuntime,
@@ -66,6 +71,7 @@ impl Default for NssRuntime {
             ecm_bpf_coverage: NssCoverageBook::default(),
             ecm_bpf_rates: EcmBpfRateWindowBook::default(),
             fast_rate: None,
+            fast_rate_contract: None,
             low_rate_window: NssLowRateWindow::default(),
             evidence_leases: EvidenceLeaseRuntime::default(),
             rate_mux: RateMuxRuntime::default(),
@@ -122,6 +128,7 @@ impl NssRuntime {
             ecm_bpf_error_stage: self.ecm_bpf_error_stage,
             node_error: self.node_error.clone(),
             fast_rate: self.fast_rate.clone(),
+            fast_rate_contract: self.fast_rate_contract.clone(),
             low_rate_window: self.low_rate_window.clone(),
             evidence_leases: self.evidence_leases.clone(),
             rate_mux: self.rate_mux.clone(),
@@ -142,14 +149,20 @@ impl NssRuntime {
         self.ecm_bpf_error_stage = checkpoint.ecm_bpf_error_stage;
         self.node_error = checkpoint.node_error;
         self.fast_rate = checkpoint.fast_rate;
+        self.fast_rate_contract = checkpoint.fast_rate_contract;
         self.low_rate_window = checkpoint.low_rate_window;
         self.evidence_leases = checkpoint.evidence_leases;
         self.rate_mux = checkpoint.rate_mux;
         self.hardware_verifier = checkpoint.hardware_verifier;
     }
 
-    pub(crate) fn install_fast_rate_publication(&mut self, publication: FastRatePublication) {
+    pub(crate) fn install_fast_rate_publication(
+        &mut self,
+        publication: FastRatePublication,
+        contract: Arc<FastRateBaseContract>,
+    ) {
         self.fast_rate = Some(publication);
+        self.fast_rate_contract = Some(contract);
     }
 
     pub(crate) fn fast_rate_reads_ready(&self, now_ms: u64) -> bool {
@@ -293,7 +306,14 @@ impl NssRuntime {
         &self,
         mac: [u8; 6],
         direction: u8,
+        identity_key: &str,
+        attachment_generation: u64,
     ) -> Option<crate::platform::nss::fast_rate_clients::FastClientSample> {
+        if !self.fast_rate_contract.as_ref().is_some_and(|contract| {
+            contract.client_matches(mac, identity_key, attachment_generation)
+        }) {
+            return None;
+        }
         self.fast_rate
             .as_ref()
             .and_then(|publication| publication.client_rate(mac, direction))
@@ -523,33 +543,95 @@ impl NssRuntime {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::NssRuntime;
     use crate::platform::nss::{
-        fast_n_runtime::FastNSnapshot, fast_rate_worker::FastRatePublication,
+        fast_n_runtime::FastNSnapshot,
+        fast_rate_contract::{FastRateBaseContract, FastRateClientContract},
+        fast_rate_worker::FastRatePublication,
         fast_s_runtime::FastSSnapshot,
     };
+
+    fn contract(generation: u64) -> Arc<FastRateBaseContract> {
+        Arc::new(FastRateBaseContract::new(
+            3,
+            [FastRateClientContract {
+                mac: [2, 0, 0, 0, 0, 1],
+                identity_key: "client@lan".into(),
+                attachment_generation: generation,
+            }],
+        ))
+    }
 
     #[test]
     fn worker_publication_must_be_valid_complete_and_current_for_a_lease() {
         let mut runtime = NssRuntime::default();
-        runtime.install_fast_rate_publication(FastRatePublication {
-            observed_ms: 2_000,
-            read_valid: true,
-            fast_n: Some(FastNSnapshot::default()),
-            fast_s: Some(FastSSnapshot::default()),
-            ..FastRatePublication::default()
-        });
+        runtime.install_fast_rate_publication(
+            FastRatePublication {
+                observed_ms: 2_000,
+                read_valid: true,
+                fast_n: Some(FastNSnapshot::default()),
+                fast_s: Some(FastSSnapshot::default()),
+                ..FastRatePublication::default()
+            },
+            contract(7),
+        );
         assert!(runtime.fast_rate_reads_ready(4_500));
         assert!(!runtime.fast_rate_reads_ready(4_501));
         assert!(!runtime.fast_rate_reads_ready(1_999));
 
-        runtime.install_fast_rate_publication(FastRatePublication {
-            observed_ms: 5_000,
-            read_valid: false,
-            fast_n: Some(FastNSnapshot::default()),
-            fast_s: Some(FastSSnapshot::default()),
-            ..FastRatePublication::default()
-        });
+        runtime.install_fast_rate_publication(
+            FastRatePublication {
+                observed_ms: 5_000,
+                read_valid: false,
+                fast_n: Some(FastNSnapshot::default()),
+                fast_s: Some(FastSSnapshot::default()),
+                ..FastRatePublication::default()
+            },
+            contract(7),
+        );
         assert!(!runtime.fast_rate_reads_ready(5_000));
+    }
+
+    #[test]
+    fn client_rate_cannot_cross_an_identity_or_attachment_generation() {
+        use crate::platform::nss::{
+            fast_rate_clients::{FastClientKey, FastClientSample},
+            fast_rate_worker::FastRatePublication,
+        };
+        use lanspeed_common::DIR_TX;
+
+        let mut runtime = NssRuntime::default();
+        runtime.install_fast_rate_publication(
+            FastRatePublication {
+                client_samples: vec![(
+                    FastClientKey {
+                        mac: [2, 0, 0, 0, 0, 1],
+                        direction: DIR_TX,
+                    },
+                    FastClientSample {
+                        sample_ms: 2_000,
+                        window_ms: 1_000,
+                        read_end_skew_ms: 0,
+                        fast_n_bps: 8_000,
+                        fast_s_bps: 0,
+                        fast_total_bps: 8_000,
+                        routed_l2_with_fcs_bps: 8_000,
+                    },
+                )],
+                ..FastRatePublication::default()
+            },
+            contract(7),
+        );
+        assert!(runtime
+            .fast_rate_shadow_client_rate([2, 0, 0, 0, 0, 1], DIR_TX, "client@lan", 7)
+            .is_some());
+        assert!(runtime
+            .fast_rate_shadow_client_rate([2, 0, 0, 0, 0, 1], DIR_TX, "replacement@lan", 7)
+            .is_none());
+        assert!(runtime
+            .fast_rate_shadow_client_rate([2, 0, 0, 0, 0, 1], DIR_TX, "client@lan", 8)
+            .is_none());
     }
 }

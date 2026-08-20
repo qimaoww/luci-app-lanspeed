@@ -14,6 +14,9 @@ mod diagnostics_tests {
         });
         handle.join().expect("snapshot writer must not panic");
         assert_eq!(store.load().reload.version, "fresh");
+        let (snapshot, generations) = store.load_with_generations();
+        assert_eq!(snapshot.reload.version, "fresh");
+        assert_eq!(generations, store.generations());
     }
 
     #[test]

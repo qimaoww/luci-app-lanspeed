@@ -1,6 +1,9 @@
 //! NSS FastRate worker boundary.
 
-use std::{sync::mpsc::SyncSender, time::Duration};
+use std::{
+    sync::{mpsc::SyncSender, Arc},
+    time::Duration,
+};
 
 use crate::{
     clock::monotonic_millis,
@@ -16,6 +19,7 @@ use super::{
     fast_n_runtime::FastNSnapshot,
     fast_rate::FastWindowError,
     fast_rate_clients::{FastClientKey, FastClientSample},
+    fast_rate_contract::FastRateBaseContract,
     fast_rate_shadow::FastRateShadow,
     fast_rate_store::{FastRateSample, FastRateTelemetry, FastShadowComparison},
     fast_rate_wakeup::{FastRateWakeup, FastRateWakeupBook, FastRateWakeupTelemetry},
@@ -33,16 +37,19 @@ pub(crate) enum FastRateCommand {
     EventHint {
         now_ms: u64,
         base_generation: u64,
+        base_contract: Arc<FastRateBaseContract>,
         edge_bps: Option<u64>,
     },
     FixedTimer {
         now_ms: u64,
         base_generation: u64,
+        base_contract: Arc<FastRateBaseContract>,
         edge_bps: Option<u64>,
     },
     Poll {
         now_ms: u64,
         base_generation: u64,
+        base_contract: Arc<FastRateBaseContract>,
         edge_bps: Option<u64>,
     },
     Sample(FastRateSampleInput),
@@ -67,6 +74,7 @@ impl FastRateSources {
 #[derive(Clone, Debug)]
 pub(crate) struct FastRateSampleInput {
     pub base_generation: u64,
+    pub base_contract: Arc<FastRateBaseContract>,
     pub fast_n: FastNSnapshot,
     pub fast_s: FastSSnapshot,
     pub n_read_begin_ms: u64,
@@ -116,6 +124,7 @@ impl FastRatePublication {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FastRateWakeupNotice {
     pub base_generation: u64,
+    pub base_contract: Arc<FastRateBaseContract>,
     pub observed_ms: u64,
     pub wakeup: FastRateWakeup,
     pub wakeup_telemetry: FastRateWakeupTelemetry,
@@ -174,7 +183,7 @@ struct FastRateWorkerState {
     wakeups: FastRateWakeupBook,
     shadow: FastRateShadow,
     last_sample_ms: Option<u64>,
-    context: Option<(u64, Option<u64>)>,
+    context: Option<(u64, Arc<FastRateBaseContract>, Option<u64>)>,
     next_fixed_ms: Option<u64>,
     last_input: Option<(FastNSnapshot, FastSSnapshot)>,
     last_read_valid: bool,
@@ -201,31 +210,37 @@ impl FastRateWorkerState {
             FastRateCommand::EventHint {
                 now_ms,
                 base_generation,
+                base_contract,
                 edge_bps,
             } => {
-                self.context = Some((base_generation, edge_bps));
+                let base_contract = self.merge_context_contract(base_contract);
+                self.context = Some((base_generation, base_contract.clone(), edge_bps));
                 self.wakeups.on_event_hint(now_ms);
-                self.sample_if_due(notices, now_ms, base_generation, edge_bps);
+                self.sample_if_due(notices, now_ms, base_generation, base_contract, edge_bps);
             }
             FastRateCommand::FixedTimer {
                 now_ms,
                 base_generation,
+                base_contract,
                 edge_bps,
             } => {
-                self.context = Some((base_generation, edge_bps));
+                let base_contract = self.merge_context_contract(base_contract);
+                self.context = Some((base_generation, base_contract.clone(), edge_bps));
                 self.wakeups.on_fixed_timer(now_ms);
-                self.sample_if_due(notices, now_ms, base_generation, edge_bps);
+                self.sample_if_due(notices, now_ms, base_generation, base_contract, edge_bps);
             }
             FastRateCommand::Poll {
                 now_ms,
                 base_generation,
+                base_contract,
                 edge_bps,
             } => {
-                self.context = Some((base_generation, edge_bps));
+                let base_contract = self.merge_context_contract(base_contract);
+                self.context = Some((base_generation, base_contract.clone(), edge_bps));
                 if self.sources.is_some() {
                     self.tick_at(notices, now_ms);
                 } else {
-                    self.sample_if_due(notices, now_ms, base_generation, edge_bps);
+                    self.sample_if_due(notices, now_ms, base_generation, base_contract, edge_bps);
                 }
             }
             FastRateCommand::Sample(input) => {
@@ -238,6 +253,7 @@ impl FastRateWorkerState {
                 self.send_notice(
                     notices,
                     input.base_generation,
+                    input.base_contract.clone(),
                     now_ms,
                     FastRateWakeup {
                         event_hint: false,
@@ -247,6 +263,25 @@ impl FastRateWorkerState {
                 );
             }
         }
+    }
+
+    /// A collection snapshot can briefly omit one or more otherwise stable
+    /// clients while FDB/identity observations settle.  Do not make that
+    /// transient omission reset the per-client FastRate coordinators: retain
+    /// the previous identity-bound contract, while letting the current
+    /// snapshot replace a MAC whose identity or attachment generation
+    /// changed.  The overlay still iterates only the current snapshot, so a
+    /// departed client can never be rendered; this cache only protects a
+    /// client that reappears with the same binding on the next collection.
+    fn merge_context_contract(
+        &self,
+        current: Arc<FastRateBaseContract>,
+    ) -> Arc<FastRateBaseContract> {
+        self.context
+            .as_ref()
+            .map_or(current.clone(), |(_, previous, _)| {
+                Arc::new(previous.retain_missing_from(&current))
+            })
     }
 
     fn tick(&mut self, notices: &SyncSender<FastRateWakeupNotice>) {
@@ -267,7 +302,7 @@ impl FastRateWorkerState {
             .map_or(0, |events| events.drain(FAST_RATE_EVENT_DRAIN_BUDGET));
         self.wakeups.on_event_hints(now_ms, event_count);
 
-        let Some((base_generation, edge_bps)) = self.context else {
+        let Some((base_generation, base_contract, edge_bps)) = self.context.clone() else {
             return;
         };
         let next_fixed_ms = self
@@ -277,7 +312,7 @@ impl FastRateWorkerState {
             self.wakeups.on_fixed_timer(now_ms);
             *next_fixed_ms = now_ms.saturating_add(FAST_RATE_SAMPLE_INTERVAL_MS);
         }
-        self.sample_if_due(notices, now_ms, base_generation, edge_bps);
+        self.sample_if_due(notices, now_ms, base_generation, base_contract, edge_bps);
     }
 
     fn sample_if_due(
@@ -285,6 +320,7 @@ impl FastRateWorkerState {
         notices: &SyncSender<FastRateWakeupNotice>,
         now_ms: u64,
         base_generation: u64,
+        base_contract: Arc<FastRateBaseContract>,
         edge_bps: Option<u64>,
     ) {
         let Some(wakeup) = self.wakeups.poll(now_ms) else {
@@ -299,7 +335,7 @@ impl FastRateWorkerState {
         }
         let sample_attempted = self.sources.is_some();
         if sample_attempted {
-            match self.read_sources(now_ms, base_generation, edge_bps) {
+            match self.read_sources(now_ms, base_generation, base_contract.clone(), edge_bps) {
                 Ok(input) => {
                     self.last_sample_ms = Some(input.fast_n.sample_ms.max(input.fast_s.sample_ms));
                     self.observe_input(&input);
@@ -326,6 +362,7 @@ impl FastRateWorkerState {
         self.send_notice(
             notices,
             base_generation,
+            base_contract,
             observed_ms,
             wakeup,
             sample_attempted,
@@ -336,6 +373,7 @@ impl FastRateWorkerState {
         &mut self,
         now_ms: u64,
         base_generation: u64,
+        base_contract: Arc<FastRateBaseContract>,
         edge_bps: Option<u64>,
     ) -> Result<FastRateSampleInput, ()> {
         let sources = self.sources.as_ref().ok_or(())?;
@@ -360,6 +398,7 @@ impl FastRateWorkerState {
         let sample_ms = now_ms.max(n_read_end_ms).max(s_read_end_ms);
         Ok(FastRateSampleInput {
             base_generation,
+            base_contract,
             fast_n: self.fast_n.collect(n_read, sample_ms),
             fast_s: self.fast_s.collect(s_read, sample_ms),
             n_read_begin_ms,
@@ -371,7 +410,7 @@ impl FastRateWorkerState {
     }
 
     fn observe_input(&mut self, input: &FastRateSampleInput) {
-        self.shadow.observe(
+        self.shadow.observe_with_contract(
             Some(&input.fast_n),
             Some(&input.fast_s),
             input.n_read_begin_ms,
@@ -379,6 +418,7 @@ impl FastRateWorkerState {
             input.s_read_begin_ms,
             input.s_read_end_ms,
             input.edge_bps,
+            &input.base_contract,
         );
         self.last_input = Some((input.fast_n.clone(), input.fast_s.clone()));
         self.last_read_valid = !input.fast_n.truncated
@@ -391,12 +431,14 @@ impl FastRateWorkerState {
         &self,
         notices: &SyncSender<FastRateWakeupNotice>,
         base_generation: u64,
+        base_contract: Arc<FastRateBaseContract>,
         observed_ms: u64,
         wakeup: FastRateWakeup,
         sample_attempted: bool,
     ) {
         let _ = notices.try_send(FastRateWakeupNotice {
             base_generation,
+            base_contract,
             observed_ms,
             wakeup,
             wakeup_telemetry: self.wakeups.telemetry(),
@@ -487,6 +529,7 @@ pub(crate) fn try_queue(
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use super::{
@@ -495,9 +538,14 @@ mod tests {
     };
     use crate::platform::nss::{
         fast_n_runtime::FastNSnapshot,
+        fast_rate_contract::FastRateBaseContract,
         fast_rate_wakeup::{FastRateWakeup, FastRateWakeupBook},
         fast_s_runtime::FastSSnapshot,
     };
+
+    fn contract() -> Arc<FastRateBaseContract> {
+        Arc::new(FastRateBaseContract::default())
+    }
 
     #[test]
     fn rate_limited_fixed_tick_is_retried_at_the_full_interval() {
@@ -558,6 +606,7 @@ mod tests {
         let context = |now_ms| FastRateCommand::EventHint {
             now_ms,
             base_generation: 1,
+            base_contract: contract(),
             edge_bps: None,
         };
         try_queue(&queue, context(100)).unwrap();
@@ -567,6 +616,7 @@ mod tests {
             FastRateCommand::Poll {
                 now_ms: 119,
                 base_generation: 1,
+                base_contract: contract(),
                 edge_bps: None,
             },
         )
@@ -577,6 +627,7 @@ mod tests {
             FastRateCommand::Poll {
                 now_ms: 120,
                 base_generation: 1,
+                base_contract: contract(),
                 edge_bps: None,
             },
         )
@@ -592,6 +643,7 @@ mod tests {
             FastRateCommand::FixedTimer {
                 now_ms: 1_000,
                 base_generation: 1,
+                base_contract: contract(),
                 edge_bps: None,
             },
         )
@@ -619,6 +671,7 @@ mod tests {
                 ..FastNSnapshot::default()
             },
             base_generation: 1,
+            base_contract: contract(),
             fast_s: FastSSnapshot {
                 sample_ms,
                 valid_entries: 1,

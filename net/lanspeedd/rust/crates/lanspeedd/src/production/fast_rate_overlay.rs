@@ -12,6 +12,8 @@ use crate::{
     state::ResponseSnapshot,
 };
 
+use crate::platform::nss::fast_rate_contract::{FastRateBaseContract, FastRateClientContract};
+
 use super::rate_helpers::fast_client_sample_current;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -47,15 +49,13 @@ impl RoutedInterfaceRate {
 pub(super) fn apply_fast_rate_overlay(
     snapshot: &mut ResponseSnapshot,
     publication: &FastRatePublication,
+    contract: &FastRateBaseContract,
 ) -> FastRateOverlayStats {
     if !publication.read_valid {
         return FastRateOverlayStats::default();
     }
 
     let routed_view = snapshot.status.internet_view_mode == "routed";
-    let mut logical_rates = BTreeMap::<String, RoutedInterfaceRate>::new();
-    let mut physical_rates = BTreeMap::<String, RoutedInterfaceRate>::new();
-    let mut total_rate = RoutedInterfaceRate::default();
     let mut stats = FastRateOverlayStats::default();
     for client in &mut snapshot.clients.clients {
         let Ok(mac) = client.mac.parse::<MacAddress>() else {
@@ -64,67 +64,34 @@ pub(super) fn apply_fast_rate_overlay(
         let Some(meta) = client.rate_meta.as_mut() else {
             continue;
         };
+        if !contract.client_matches(mac.octets(), &client.identity_key, meta.generation) {
+            continue;
+        }
         let tx = publication.client_rate(mac.octets(), DIR_TX);
         let rx = publication.client_rate(mac.octets(), DIR_RX);
         let tx_current = tx.filter(|sample| {
-            direction_uses_fast(meta.tx.source)
+            (routed_view || direction_uses_fast(meta.tx.source))
                 && fast_client_sample_current(publication.observed_ms, *sample)
         });
         let rx_current = rx.filter(|sample| {
-            direction_uses_fast(meta.rx.source)
+            (routed_view || direction_uses_fast(meta.rx.source))
                 && fast_client_sample_current(publication.observed_ms, *sample)
         });
         let mut client_changed = false;
 
         if let Some(sample) = tx_current {
             client.tx_bps = sample.routed_l2_with_fcs_bps;
-            apply_direction(&mut meta.tx, sample);
+            apply_direction(&mut meta.tx, sample, routed_view);
             client_changed = true;
             stats.directions = stats.directions.saturating_add(1);
         }
         if let Some(sample) = rx_current {
             client.rx_bps = sample.routed_l2_with_fcs_bps;
-            apply_direction(&mut meta.rx, sample);
+            apply_direction(&mut meta.rx, sample, routed_view);
             client_changed = true;
             stats.directions = stats.directions.saturating_add(1);
         }
 
-        if routed_view {
-            if let Some(sample) = tx_current {
-                total_rate.add(DIR_TX, sample);
-                logical_rates
-                    .entry(client.interface.clone())
-                    .or_default()
-                    .add(DIR_TX, sample);
-                if let Some(ifname) = meta
-                    .attachment
-                    .as_ref()
-                    .and_then(|value| value.ifname.as_ref())
-                {
-                    physical_rates
-                        .entry(ifname.clone())
-                        .or_default()
-                        .add(DIR_TX, sample);
-                }
-            }
-            if let Some(sample) = rx_current {
-                total_rate.add(DIR_RX, sample);
-                logical_rates
-                    .entry(client.interface.clone())
-                    .or_default()
-                    .add(DIR_RX, sample);
-                if let Some(ifname) = meta
-                    .attachment
-                    .as_ref()
-                    .and_then(|value| value.ifname.as_ref())
-                {
-                    physical_rates
-                        .entry(ifname.clone())
-                        .or_default()
-                        .add(DIR_RX, sample);
-                }
-            }
-        }
         if !client_changed {
             continue;
         }
@@ -153,16 +120,69 @@ pub(super) fn apply_fast_rate_overlay(
     }
 
     if routed_view {
-        apply_routed_interface_rates(
+        // Interface rows are a projection of the client rows actually
+        // published to this immutable snapshot. A low-rate direction can
+        // legitimately retain its previous still-valid window while the
+        // opposite direction advances. Summing only directions updated by
+        // this notice makes br-lan/WAN disagree with the visible client sum
+        // for one frame. Rebuild from the final client response so overview,
+        // client rows, logical LAN, physical edge and WAN all share exactly
+        // one published value set.
+        apply_routed_interface_rates_from_clients(
             &mut snapshot.interfaces,
-            &logical_rates,
-            &physical_rates,
-            total_rate,
+            &snapshot.clients,
             publication.observed_ms,
         );
     }
     update_latest_overview(snapshot, publication.observed_ms);
     stats
+}
+
+pub(super) fn base_contract(
+    snapshot: &ResponseSnapshot,
+    base_generation: u64,
+) -> FastRateBaseContract {
+    FastRateBaseContract::new(
+        base_generation,
+        snapshot.clients.clients.iter().filter_map(|client| {
+            let mac = client.mac.parse::<MacAddress>().ok()?.octets();
+            let meta = client.rate_meta.as_ref()?;
+            Some(FastRateClientContract {
+                mac,
+                identity_key: client.identity_key.clone(),
+                attachment_generation: meta.generation,
+            })
+        }),
+    )
+}
+
+pub(super) fn publication_matches_snapshot(
+    snapshot: &ResponseSnapshot,
+    publication: &FastRatePublication,
+    contract: &FastRateBaseContract,
+) -> bool {
+    let routed_view = snapshot.status.internet_view_mode == "routed";
+    snapshot.clients.clients.iter().any(|client| {
+        let Ok(mac) = client.mac.parse::<MacAddress>() else {
+            return false;
+        };
+        let Some(meta) = client.rate_meta.as_ref() else {
+            return false;
+        };
+        if !contract.client_matches(mac.octets(), &client.identity_key, meta.generation) {
+            return false;
+        }
+        [(DIR_TX, meta.tx.source), (DIR_RX, meta.rx.source)]
+            .into_iter()
+            .any(|(direction, source)| {
+                (routed_view || direction_uses_fast(source))
+                    && publication
+                        .client_rate(mac.octets(), direction)
+                        .is_some_and(|sample| {
+                            fast_client_sample_current(publication.observed_ms, sample)
+                        })
+            })
+    })
 }
 
 /// Route view must use the same per-client FastN+FastS windows as the client
@@ -320,7 +340,10 @@ fn direction_uses_fast(source: RateSource) -> bool {
     )
 }
 
-fn apply_direction(direction: &mut RateDirectionMeta, sample: FastClientSample) {
+fn apply_direction(direction: &mut RateDirectionMeta, sample: FastClientSample, routed_view: bool) {
+    if routed_view {
+        direction.source = RateSource::FastRoutedInternet;
+    }
     direction.coverage = RateCoverage::Degraded;
     direction.byte_domain = Some(ByteDomain::L2WithFcs);
     direction.sample_ms = Some(sample.sample_ms);
@@ -390,7 +413,10 @@ fn client_is_active(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_fast_rate_overlay, apply_routed_interface_rates_from_clients};
+    use super::{
+        apply_fast_rate_overlay, apply_routed_interface_rates_from_clients, base_contract,
+        publication_matches_snapshot,
+    };
     use crate::{
         model::{
             Client, ClientRateMeta, Confidence, Interface, InterfaceRole, InterfaceStatus,
@@ -511,7 +537,8 @@ mod tests {
     #[test]
     fn overlays_only_directions_already_owned_by_fast_rate() {
         let mut snapshot = snapshot();
-        let stats = apply_fast_rate_overlay(&mut snapshot, &publication(true));
+        let contract = base_contract(&snapshot, 1);
+        let stats = apply_fast_rate_overlay(&mut snapshot, &publication(true), &contract);
         apply_routed_interface_rates_from_clients(
             &mut snapshot.interfaces,
             &snapshot.clients,
@@ -538,8 +565,9 @@ mod tests {
     fn rejects_an_invalid_worker_read_without_reusing_the_previous_window() {
         let mut snapshot = snapshot();
         let before = snapshot.clone();
+        let contract = base_contract(&snapshot, 1);
         assert_eq!(
-            apply_fast_rate_overlay(&mut snapshot, &publication(false)),
+            apply_fast_rate_overlay(&mut snapshot, &publication(false), &contract),
             Default::default()
         );
         assert_eq!(snapshot, before);
@@ -576,7 +604,8 @@ mod tests {
             interface("wan", InterfaceRole::Wan),
         ];
 
-        let stats = apply_fast_rate_overlay(&mut snapshot, &publication(true));
+        let contract = base_contract(&snapshot, 1);
+        let stats = apply_fast_rate_overlay(&mut snapshot, &publication(true), &contract);
         assert_eq!(stats.directions, 2);
         let rows = &snapshot.interfaces.interfaces;
         // Client TX=800 and RX=1600.  LAN and the physical Wi-Fi row expose
@@ -589,5 +618,100 @@ mod tests {
             rows[0].source.as_deref(),
             Some("NSS FastN+FastS routed client window")
         );
+    }
+
+    #[test]
+    fn routed_interfaces_sum_the_final_client_rows_when_one_direction_is_held() {
+        let mut snapshot = snapshot();
+        snapshot.status.internet_view_mode = "routed".into();
+        let meta = snapshot.clients.clients[0].rate_meta.as_mut().unwrap();
+        meta.tx.source = RateSource::FastRoutedInternet;
+        meta.rx.source = RateSource::FastRoutedInternet;
+        meta.rx.sample_ms = Some(2_000);
+        meta.rx.window_ms = Some(1_000);
+        snapshot.interfaces.interfaces = vec![
+            interface("br-lan", InterfaceRole::Lan),
+            interface("wan", InterfaceRole::Wan),
+        ];
+
+        let mut publication = publication(true);
+        publication.observed_ms = 6_000;
+        publication.client_samples[0].1.sample_ms = 6_000;
+        // RX is older than max(3.5 s, window + 1 s), so the client keeps its
+        // previously published 20 bps while TX advances to 800 bps.
+        publication.client_samples[1].1.sample_ms = 2_000;
+        let contract = base_contract(&snapshot, 1);
+        let stats = apply_fast_rate_overlay(&mut snapshot, &publication, &contract);
+        assert_eq!(stats.directions, 1);
+        assert_eq!(snapshot.clients.clients[0].tx_bps, 800);
+        assert_eq!(snapshot.clients.clients[0].rx_bps, 20);
+        assert_eq!(
+            (
+                snapshot.interfaces.interfaces[0].rx_bps,
+                snapshot.interfaces.interfaces[0].tx_bps
+            ),
+            (Some(800), Some(20))
+        );
+        assert_eq!(
+            (
+                snapshot.interfaces.interfaces[1].rx_bps,
+                snapshot.interfaces.interfaces[1].tx_bps
+            ),
+            (Some(20), Some(800))
+        );
+    }
+
+    #[test]
+    fn routed_publication_repairs_a_new_base_only_for_the_same_attachment() {
+        let mut sampled = snapshot();
+        sampled.status.internet_view_mode = "routed".into();
+        sampled.clients.clients[0]
+            .rate_meta
+            .as_mut()
+            .unwrap()
+            .generation = 7;
+        let contract = base_contract(&sampled, 11);
+
+        let mut next = sampled.clone();
+        let meta = next.clients.clients[0].rate_meta.as_mut().unwrap();
+        meta.tx.source = RateSource::None;
+        meta.rx.source = RateSource::None;
+        next.clients.clients[0].tx_bps = 0;
+        next.clients.clients[0].rx_bps = 0;
+        assert!(publication_matches_snapshot(
+            &next,
+            &publication(true),
+            &contract
+        ));
+        let stats = apply_fast_rate_overlay(&mut next, &publication(true), &contract);
+        assert_eq!(stats.directions, 2);
+        assert_eq!(next.clients.clients[0].tx_bps, 800);
+        assert_eq!(next.clients.clients[0].rx_bps, 1_600);
+        assert_eq!(
+            next.clients.clients[0]
+                .rate_meta
+                .as_ref()
+                .unwrap()
+                .tx
+                .source,
+            RateSource::FastRoutedInternet
+        );
+
+        next.clients.clients[0]
+            .rate_meta
+            .as_mut()
+            .unwrap()
+            .generation = 8;
+        assert!(!publication_matches_snapshot(
+            &next,
+            &publication(true),
+            &contract
+        ));
+        let before = next.clone();
+        assert_eq!(
+            apply_fast_rate_overlay(&mut next, &publication(true), &contract),
+            Default::default()
+        );
+        assert_eq!(next, before);
     }
 }

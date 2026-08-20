@@ -1716,20 +1716,25 @@ impl ProductionRuntime {
             let Ok(mac) = client.mac.parse::<MacAddress>() else {
                 continue;
             };
-            if let Some(sample) = self
-                .nss
-                .fast_rate_shadow_client_rate(mac.octets(), lanspeed_common::DIR_TX)
-            {
+            let attachment_generation = client.rate_meta.as_ref().map_or(0, |meta| meta.generation);
+            if let Some(sample) = self.nss.fast_rate_shadow_client_rate(
+                mac.octets(),
+                lanspeed_common::DIR_TX,
+                &client.identity_key,
+                attachment_generation,
+            ) {
                 fast_client_shadow_entries = fast_client_shadow_entries.saturating_add(1);
                 fast_client_shadow_tx_bps =
                     fast_client_shadow_tx_bps.saturating_add(sample.fast_total_bps);
                 fast_client_shadow_routed_tx_bps =
                     fast_client_shadow_routed_tx_bps.saturating_add(sample.routed_l2_with_fcs_bps);
             }
-            if let Some(sample) = self
-                .nss
-                .fast_rate_shadow_client_rate(mac.octets(), lanspeed_common::DIR_RX)
-            {
+            if let Some(sample) = self.nss.fast_rate_shadow_client_rate(
+                mac.octets(),
+                lanspeed_common::DIR_RX,
+                &client.identity_key,
+                attachment_generation,
+            ) {
                 fast_client_shadow_entries = fast_client_shadow_entries.saturating_add(1);
                 fast_client_shadow_rx_bps =
                     fast_client_shadow_rx_bps.saturating_add(sample.fast_total_bps);
@@ -2374,7 +2379,14 @@ impl ProductionRuntime {
                         EdgeDirection::Rx => lanspeed_common::DIR_RX,
                     };
                     let fast = fast_mac
-                        .and_then(|mac| self.nss.fast_rate_shadow_client_rate(mac, fast_direction))
+                        .and_then(|mac| {
+                            self.nss.fast_rate_shadow_client_rate(
+                                mac,
+                                fast_direction,
+                                &client.identity_key,
+                                attachment_generation,
+                            )
+                        })
                         .filter(|sample| fast_client_sample_current(fast_reference_ms, *sample));
                     let view = self.nss.select_rate_view(
                         &client.identity_key,
@@ -3285,6 +3297,11 @@ struct App {
     fast_rate_timer: Option<Timer>,
 }
 
+#[cfg(feature = "nss-platform")]
+const fn fast_rate_notices_can_drain(runtime_available: bool) -> bool {
+    runtime_available
+}
+
 impl App {
     fn collection_tick(&mut self) {
         self.collect_current_tick();
@@ -3643,6 +3660,17 @@ impl App {
 
     #[cfg(feature = "nss-platform")]
     fn drain_fast_rate_notices(&mut self) {
+        // Runtime collection temporarily owns `ProductionRuntime` on its
+        // worker thread. Consuming a FastRate notice while `self.runtime` is
+        // absent would update only the published Arc: the in-flight base
+        // result would then overwrite that overlay with its older FastRate
+        // state. Leave the bounded notices queued until runtime ownership
+        // returns; `drain_runtime_notices()` publishes the new base and then
+        // calls this method, allowing the newest compatible window to be
+        // installed into both runtime state and the same base generation.
+        if !fast_rate_notices_can_drain(self.runtime.is_some()) {
+            return;
+        }
         loop {
             let Ok(notice) = self.fast_rate_notices.try_recv() else {
                 break;
@@ -3656,13 +3684,25 @@ impl App {
                 continue;
             }
             let snapshots = self.state.snapshot_store();
-            if snapshots.generations().base_generation != notice.base_generation {
+            let (current_snapshot, current_generations) = snapshots.load_with_generations();
+            if notice.base_contract.base_generation != notice.base_generation {
+                continue;
+            }
+            let exact_generation = current_generations.base_generation == notice.base_generation;
+            let compatible_retarget = !exact_generation
+                && fast_rate_overlay::publication_matches_snapshot(
+                    &current_snapshot,
+                    &notice.publication,
+                    &notice.base_contract,
+                );
+            if !exact_generation && !compatible_retarget {
                 continue;
             }
             if let Some(runtime) = self.runtime.as_mut() {
-                runtime
-                    .nss
-                    .install_fast_rate_publication(notice.publication.clone());
+                runtime.nss.install_fast_rate_publication(
+                    notice.publication.clone(),
+                    notice.base_contract.clone(),
+                );
             }
             let sample = notice.publication.sample.map(|value| {
                 serde_json::json!({
@@ -3694,11 +3734,17 @@ impl App {
                 "last_wakeup_event": notice.wakeup.event_hint,
                 "last_wakeup_fixed": notice.wakeup.fixed_timer,
                 "read_valid": notice.publication.read_valid,
+                "sampled_base_generation": notice.base_generation,
+                "published_base_generation": current_generations.base_generation,
+                "retargeted_compatible_base": compatible_retarget,
                 "formal_rate_owner": true,
             });
-            let _ = snapshots.publish_fast(notice.base_generation, |snapshot| {
-                let overlay =
-                    fast_rate_overlay::apply_fast_rate_overlay(snapshot, &notice.publication);
+            let _ = snapshots.publish_fast(current_generations.base_generation, |snapshot| {
+                let overlay = fast_rate_overlay::apply_fast_rate_overlay(
+                    snapshot,
+                    &notice.publication,
+                    &notice.base_contract,
+                );
                 let mut evidence = worker_evidence.clone();
                 evidence["overlay_clients"] = serde_json::json!(overlay.clients);
                 evidence["overlay_directions"] = serde_json::json!(overlay.directions);
@@ -3749,7 +3795,13 @@ impl App {
     #[cfg(feature = "nss-platform")]
     fn fast_rate_timer_tick(&mut self) {
         let now_ms = production_now_ms().unwrap_or(0);
-        let base_generation = self.state.snapshot_store().generations().base_generation;
+        let snapshots = self.state.snapshot_store();
+        let (base_snapshot, generations) = snapshots.load_with_generations();
+        let base_generation = generations.base_generation;
+        let base_contract = Arc::new(fast_rate_overlay::base_contract(
+            &base_snapshot,
+            base_generation,
+        ));
         let edge_bps = self
             .runtime
             .as_ref()
@@ -3760,6 +3812,7 @@ impl App {
                 FastRateCommand::Poll {
                     now_ms,
                     base_generation,
+                    base_contract,
                     edge_bps,
                 },
             ) {

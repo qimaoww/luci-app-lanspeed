@@ -2,6 +2,12 @@ use super::*;
 use crate::config::InternetViewMode;
 
 #[test]
+fn fast_rate_notices_wait_for_runtime_collection_ownership_to_return() {
+    assert!(!fast_rate_notices_can_drain(false));
+    assert!(fast_rate_notices_can_drain(true));
+}
+
+#[test]
 fn nss_control_path_requires_a_current_nonempty_classifier_epoch() {
     use crate::platform::access_edge::DirectionClassification;
     use crate::platform::nss::control::PathProbeDirectionWindow;
@@ -708,14 +714,14 @@ fn active_rate_mux_publishes_only_current_normalized_leased_fast_window() {
         fast_total_bps: 1_500,
         routed_l2_with_fcs_bps: 1_800,
     };
-    assert!(fast_client_sample_current(12_500, sample));
-    assert!(!fast_client_sample_current(12_501, sample));
+    assert!(fast_client_sample_current(13_500, sample));
+    assert!(!fast_client_sample_current(13_501, sample));
     let long_window = FastClientSample {
         window_ms: 2_000,
         ..sample
     };
-    assert!(fast_client_sample_current(13_000, long_window));
-    assert!(!fast_client_sample_current(13_001, long_window));
+    assert!(fast_client_sample_current(13_500, long_window));
+    assert!(!fast_client_sample_current(13_501, long_window));
     let published = active_rate_direction(RateView::RoutedLeaseSubstitute, None, Some(sample));
     assert_eq!(published.bps, 1_800);
     assert_eq!(published.source, ModelRateSource::FastRoutedLease);

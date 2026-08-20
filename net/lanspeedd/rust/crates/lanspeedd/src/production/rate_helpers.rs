@@ -460,10 +460,12 @@ pub(super) fn fast_client_sample_current(now_ms: u64, sample: FastClientSample) 
     // NSS FastN publishes in hardware batches that can be longer than the
     // one-second UI cadence. Keep one complete window usable through the next
     // expected publication instead of dropping it between two batch notices;
-    // short FastS-only windows retain the historical 2.5s floor.
-    let freshness_ms = ACCESS_EDGE_INTERVAL_MS
-        .saturating_mul(5)
-        .saturating_div(2)
+    // short FastS-only windows remain usable through the 2.5-second quiet
+    // confirmation interval plus one fixed-timer scheduling slot. Without
+    // that slot the old value can expire one tick before the worker publishes
+    // its confirmed zero, producing a false one-frame unavailable/0 gap.
+    let freshness_ms = crate::platform::nss::fast_rate::FAST_WINDOW_QUIET_CONFIRM_MS
+        .saturating_add(ACCESS_EDGE_INTERVAL_MS)
         .max(sample.window_ms.saturating_add(ACCESS_EDGE_INTERVAL_MS));
     sample.window_ms != 0
         && sample.read_end_skew_ms

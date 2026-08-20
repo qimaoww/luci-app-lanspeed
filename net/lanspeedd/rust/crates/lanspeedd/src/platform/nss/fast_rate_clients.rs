@@ -12,6 +12,7 @@ use lanspeed_common::{DIR_RX, DIR_TX};
 use super::{
     fast_n_runtime::FastNSnapshot,
     fast_rate::{FastCounterSample, FastRateCoordinator, FastWindow, FAST_WINDOW_QUIET_CONFIRM_MS},
+    fast_rate_contract::FastRateBaseContract,
     fast_s_runtime::FastSSnapshot,
 };
 
@@ -38,8 +39,22 @@ pub(crate) struct FastClientSample {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct FastClientRateBook {
     coordinators: BTreeMap<FastClientKey, FastRateCoordinator>,
+    last_counters: BTreeMap<FastClientKey, ClientCounterPair>,
+    bindings: BTreeMap<FastClientKey, ClientBinding>,
     latest: BTreeMap<FastClientKey, FastClientSample>,
     invalid_windows: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ClientCounterPair {
+    n: Option<Aggregate>,
+    s: Option<Aggregate>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ClientBinding {
+    identity_key: String,
+    attachment_generation: u64,
 }
 
 impl FastClientRateBook {
@@ -52,12 +67,64 @@ impl FastClientRateBook {
         s_read_begin_ms: u64,
         s_read_end_ms: u64,
     ) {
+        self.observe_inner(
+            fast_n,
+            fast_s,
+            n_read_begin_ms,
+            n_read_end_ms,
+            s_read_begin_ms,
+            s_read_end_ms,
+            None,
+        );
+    }
+
+    /// Observe a window while binding every retained client key to the base
+    /// snapshot's identity and attachment generation.  A map entry may
+    /// disappear during a quiet interval when its connection has no fresh
+    /// hardware update; retaining its last cumulative baseline lets the same
+    /// client publish a confirmed numeric zero and resume from the original
+    /// counter baseline.  The contract prunes departed/re-attached identities
+    /// so this hold can never cross an attachment generation.
+    pub(crate) fn observe_with_contract(
+        &mut self,
+        fast_n: &FastNSnapshot,
+        fast_s: &FastSSnapshot,
+        n_read_begin_ms: u64,
+        n_read_end_ms: u64,
+        s_read_begin_ms: u64,
+        s_read_end_ms: u64,
+        contract: &FastRateBaseContract,
+    ) {
+        self.reconcile_contract(contract);
+        self.observe_inner(
+            fast_n,
+            fast_s,
+            n_read_begin_ms,
+            n_read_end_ms,
+            s_read_begin_ms,
+            s_read_end_ms,
+            Some(contract),
+        );
+    }
+
+    fn observe_inner(
+        &mut self,
+        fast_n: &FastNSnapshot,
+        fast_s: &FastSSnapshot,
+        n_read_begin_ms: u64,
+        n_read_end_ms: u64,
+        s_read_begin_ms: u64,
+        s_read_end_ms: u64,
+        contract: Option<&FastRateBaseContract>,
+    ) {
         if fast_n.truncated
             || fast_n.invalid_entries != 0
             || fast_s.truncated
             || fast_s.invalid_entries != 0
         {
             self.coordinators.values_mut().for_each(|book| book.clear());
+            self.last_counters.clear();
+            self.bindings.clear();
             self.latest.clear();
             self.invalid_windows = self.invalid_windows.saturating_add(1);
             return;
@@ -65,31 +132,70 @@ impl FastClientRateBook {
 
         let n = aggregate_n(fast_n);
         let s = aggregate_s(fast_s);
-        let keys = n.keys().chain(s.keys()).copied().collect::<BTreeSet<_>>();
-        self.coordinators.retain(|key, coordinator| {
-            if keys.contains(key) {
-                true
-            } else {
-                coordinator.clear();
-                self.latest.remove(key);
-                false
+        let mut keys = n.keys().chain(s.keys()).copied().collect::<BTreeSet<_>>();
+        keys.extend(self.coordinators.keys().copied());
+        if let Some(contract) = contract {
+            // Once either direction of a client has been observed, keep a
+            // paired key for the opposite direction as well.  A quiet
+            // direction is a real numeric zero after confirmation; leaving
+            // it absent would make the UI oscillate between 0 and
+            // unavailable even though the attachment is still valid.
+            let mut seen_macs = keys.iter().map(|key| key.mac).collect::<BTreeSet<_>>();
+            // A valid NSS map can legitimately contain no entry yet for a
+            // newly attached but idle client.  Seed both directions from the
+            // identity-bound contract so that, after the normal quiet
+            // confirmation interval, that client publishes an explicit 0
+            // instead of oscillating between a number and unavailable.
+            seen_macs.extend(contract.client_macs());
+            for mac in seen_macs {
+                keys.insert(FastClientKey {
+                    mac,
+                    direction: DIR_TX,
+                });
+                keys.insert(FastClientKey {
+                    mac,
+                    direction: DIR_RX,
+                });
             }
-        });
+            keys.retain(|key| contract.client(key.mac).is_some());
+        }
 
         for key in keys {
+            if let Some(contract) = contract {
+                let Some(client) = contract.client(key.mac) else {
+                    continue;
+                };
+                self.bindings.entry(key).or_insert_with(|| ClientBinding {
+                    identity_key: client.identity_key.clone(),
+                    attachment_generation: client.attachment_generation,
+                });
+            }
             // N and S are intentionally disjoint paths. A client may be
             // present in only one map during a perfectly valid window; the
             // absent source contributes a zero cumulative counter until it
-            // appears. A real counter rollback still fails in the coordinator
-            // and rewarms the key before publishing again.
-            let n = n.get(&key).copied().unwrap_or(Aggregate {
+            // appears. If both source entries disappear after a key has been
+            // observed, retain their last cumulative values with no progress
+            // marker; the coordinator can then confirm a real quiet zero
+            // without shortening the next resumed window. A real counter
+            // rollback still fails in the coordinator and rewarms the key.
+            let previous = self.last_counters.get(&key).copied().unwrap_or_default();
+            let n = current_or_retained(n.get(&key).copied(), previous.n, fast_n.reset_generation);
+            let s = current_or_retained(s.get(&key).copied(), previous.s, fast_s.reset_generation);
+            let n = n.unwrap_or(Aggregate {
                 reset_generation: fast_n.reset_generation.max(1),
                 ..Aggregate::default()
             });
-            let s = s.get(&key).copied().unwrap_or(Aggregate {
+            let s = s.unwrap_or(Aggregate {
                 reset_generation: fast_s.reset_generation.max(1),
                 ..Aggregate::default()
             });
+            self.last_counters.insert(
+                key,
+                ClientCounterPair {
+                    n: Some(n),
+                    s: Some(s),
+                },
+            );
             let coordinator = self.coordinators.entry(key).or_default();
             let common_progress_ms = n.progress_ms.max(s.progress_ms);
             let sample_ms = if common_progress_ms == 0 {
@@ -162,6 +268,8 @@ impl FastClientRateBook {
 
     pub(crate) fn clear(&mut self) {
         self.coordinators.clear();
+        self.last_counters.clear();
+        self.bindings.clear();
         self.latest.clear();
     }
 
@@ -179,6 +287,44 @@ impl FastClientRateBook {
             .map(|(key, sample)| (*key, *sample))
             .collect()
     }
+
+    fn reconcile_contract(&mut self, contract: &FastRateBaseContract) {
+        let mut remove = BTreeSet::new();
+        for (key, binding) in &self.bindings {
+            let matches = contract.client(key.mac).is_some_and(|client| {
+                client.identity_key == binding.identity_key
+                    && client.attachment_generation == binding.attachment_generation
+            });
+            if !matches {
+                remove.insert(*key);
+            }
+        }
+        for key in remove {
+            self.coordinators.remove(&key);
+            self.last_counters.remove(&key);
+            self.bindings.remove(&key);
+            self.latest.remove(&key);
+        }
+    }
+}
+
+fn current_or_retained(
+    current: Option<Aggregate>,
+    previous: Option<Aggregate>,
+    reset_generation: u32,
+) -> Option<Aggregate> {
+    current.or_else(|| {
+        previous.map(|value| Aggregate {
+            source_present: false,
+            progress_ms: 0,
+            reset_generation: if value.reset_generation == 0 {
+                reset_generation.max(1)
+            } else {
+                value.reset_generation
+            },
+            ..value
+        })
+    })
 }
 
 fn client_sample(window: FastWindow) -> FastClientSample {
@@ -207,7 +353,7 @@ fn l2_with_fcs_bytes(window: FastWindow) -> u64 {
         .saturating_add(window.s_packets.saturating_mul(L2_FCS_BYTES_PER_PACKET))
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct Aggregate {
     bytes: u64,
     packets: u64,
@@ -304,6 +450,7 @@ mod tests {
     use super::FastClientRateBook;
     use crate::platform::nss::{
         fast_n_runtime::{FastNKey, FastNSample, FastNSnapshot},
+        fast_rate_contract::{FastRateBaseContract, FastRateClientContract},
         fast_s_runtime::{FastSKey, FastSSample},
     };
     use lanspeed_common::{DIR_TX, FAST_COUNTER_ABI_VERSION};
@@ -354,6 +501,17 @@ mod tests {
             }],
             ..crate::platform::nss::fast_s_runtime::FastSSnapshot::default()
         }
+    }
+
+    fn contract(generation: u64) -> FastRateBaseContract {
+        FastRateBaseContract::new(
+            1,
+            [FastRateClientContract {
+                mac: [2, 0, 0, 0, 0, 1],
+                identity_key: "client@lan".into(),
+                attachment_generation: generation,
+            }],
+        )
     }
 
     #[test]
@@ -546,5 +704,159 @@ mod tests {
         let sample = book.get([2, 0, 0, 0, 0, 1], DIR_TX).unwrap();
         assert_eq!(sample.fast_n_bps, 0);
         assert_eq!(sample.fast_s_bps, 1_600);
+    }
+
+    #[test]
+    fn retains_a_seen_client_when_both_maps_are_quiet_then_publishes_zero_and_resumes() {
+        let mut book = FastClientRateBook::default();
+        let contract = contract(7);
+        let first_n = n(100);
+        let first_s = s(50);
+        book.observe_with_contract(&first_n, &first_s, 990, 1_000, 991, 1_001, &contract);
+
+        let mut empty_n = FastNSnapshot {
+            sample_ms: 2_000,
+            reset_generation: 1,
+            ..FastNSnapshot::default()
+        };
+        let mut empty_s = crate::platform::nss::fast_s_runtime::FastSSnapshot {
+            sample_ms: 2_000,
+            reset_generation: 2,
+            ..crate::platform::nss::fast_s_runtime::FastSSnapshot::default()
+        };
+        book.observe_with_contract(&empty_n, &empty_s, 1_990, 2_000, 1_991, 2_001, &contract);
+        assert_eq!(book.get([2, 0, 0, 0, 0, 1], DIR_TX), None);
+
+        empty_n.sample_ms = 4_000;
+        empty_s.sample_ms = 4_000;
+        book.observe_with_contract(&empty_n, &empty_s, 3_990, 4_000, 3_991, 4_001, &contract);
+        let zero = book
+            .get([2, 0, 0, 0, 0, 1], DIR_TX)
+            .expect("quiet client keeps a numeric zero window");
+        assert_eq!(zero.fast_total_bps, 0);
+
+        let mut resumed_n = n(500);
+        resumed_n.sample_ms = 5_000;
+        resumed_n.entries[0].sample_ms = 5_000;
+        let mut resumed_s = s(250);
+        resumed_s.sample_ms = 5_000;
+        resumed_s.entries[0].sample_ms = 5_000;
+        book.observe_with_contract(
+            &resumed_n, &resumed_s, 4_990, 5_000, 4_991, 5_001, &contract,
+        );
+        assert!(
+            book.get([2, 0, 0, 0, 0, 1], DIR_TX)
+                .expect("same attachment resumes from retained baseline")
+                .fast_total_bps
+                > 0
+        );
+    }
+
+    #[test]
+    fn observed_client_gets_a_confirmed_zero_for_the_never_seen_direction() {
+        let mut book = FastClientRateBook::default();
+        let contract = contract(7);
+        let empty_s = crate::platform::nss::fast_s_runtime::FastSSnapshot {
+            sample_ms: 1_000,
+            reset_generation: 2,
+            ..crate::platform::nss::fast_s_runtime::FastSSnapshot::default()
+        };
+        book.observe_with_contract(&n(100), &empty_s, 990, 1_000, 991, 1_001, &contract);
+
+        let mut quiet_n = n(100);
+        quiet_n.sample_ms = 4_000;
+        quiet_n.entries[0].sample_ms = 1_000;
+        let quiet_s = crate::platform::nss::fast_s_runtime::FastSSnapshot {
+            sample_ms: 4_000,
+            reset_generation: 2,
+            ..crate::platform::nss::fast_s_runtime::FastSSnapshot::default()
+        };
+        book.observe_with_contract(&quiet_n, &quiet_s, 3_990, 4_000, 3_991, 4_001, &contract);
+
+        let rx = book
+            .get([2, 0, 0, 0, 0, 1], lanspeed_common::DIR_RX)
+            .expect("opposite direction publishes numeric zero");
+        assert_eq!(rx.fast_total_bps, 0);
+        assert_eq!(rx.routed_l2_with_fcs_bps, 0);
+    }
+
+    #[test]
+    fn idle_contract_client_gets_zero_even_when_never_present_in_either_map() {
+        let mut book = FastClientRateBook::default();
+        let mut clients = vec![FastRateClientContract {
+            mac: [2, 0, 0, 0, 0, 1],
+            identity_key: "client@lan".into(),
+            attachment_generation: 7,
+        }];
+        clients.push(FastRateClientContract {
+            mac: [2, 0, 0, 0, 0, 2],
+            identity_key: "idle@lan".into(),
+            attachment_generation: 3,
+        });
+        let contract = FastRateBaseContract::new(1, clients);
+        let mut first_n = n(100);
+        first_n.entries[0].sample_ms = 1_000;
+        let mut first_s = s(50);
+        first_s.entries[0].sample_ms = 1_000;
+        book.observe_with_contract(&first_n, &first_s, 990, 1_000, 991, 1_001, &contract);
+
+        let quiet_n = FastNSnapshot {
+            sample_ms: 4_000,
+            reset_generation: 1,
+            ..FastNSnapshot::default()
+        };
+        let quiet_s = crate::platform::nss::fast_s_runtime::FastSSnapshot {
+            sample_ms: 4_000,
+            reset_generation: 2,
+            ..crate::platform::nss::fast_s_runtime::FastSSnapshot::default()
+        };
+        book.observe_with_contract(&quiet_n, &quiet_s, 3_990, 4_000, 3_991, 4_001, &contract);
+        assert_eq!(
+            book.get([2, 0, 0, 0, 0, 2], lanspeed_common::DIR_TX)
+                .expect("idle contract client zero")
+                .fast_total_bps,
+            0
+        );
+        assert_eq!(
+            book.get([2, 0, 0, 0, 0, 2], lanspeed_common::DIR_RX)
+                .expect("idle contract client rx zero")
+                .fast_total_bps,
+            0
+        );
+    }
+
+    #[test]
+    fn retained_client_baseline_is_dropped_when_attachment_changes() {
+        let mut book = FastClientRateBook::default();
+        let first = contract(7);
+        book.observe_with_contract(&n(100), &s(50), 990, 1_000, 991, 1_001, &first);
+
+        let replacement = FastRateBaseContract::new(
+            2,
+            [FastRateClientContract {
+                mac: [2, 0, 0, 0, 0, 1],
+                identity_key: "replacement@lan".into(),
+                attachment_generation: 8,
+            }],
+        );
+        let mut empty_n = FastNSnapshot {
+            sample_ms: 4_000,
+            reset_generation: 1,
+            ..FastNSnapshot::default()
+        };
+        let mut empty_s = crate::platform::nss::fast_s_runtime::FastSSnapshot {
+            sample_ms: 4_000,
+            reset_generation: 2,
+            ..crate::platform::nss::fast_s_runtime::FastSSnapshot::default()
+        };
+        book.observe_with_contract(&empty_n, &empty_s, 3_990, 4_000, 3_991, 4_001, &replacement);
+        assert!(book.get([2, 0, 0, 0, 0, 1], DIR_TX).is_none());
+
+        // A new counter baseline is required before the replacement can
+        // publish a rate; the old attachment's bytes must never be reused.
+        empty_n.sample_ms = 5_000;
+        empty_s.sample_ms = 5_000;
+        book.observe_with_contract(&empty_n, &empty_s, 4_990, 5_000, 4_991, 5_001, &replacement);
+        assert!(book.get([2, 0, 0, 0, 0, 1], DIR_TX).is_none());
     }
 }

@@ -1604,6 +1604,15 @@ impl SnapshotStore {
             Err(poisoned) => Arc::clone(&poisoned.into_inner().published),
         }
     }
+    pub fn load_with_generations(&self) -> (Arc<ResponseSnapshot>, SnapshotGenerations) {
+        match self.0.read() {
+            Ok(state) => (Arc::clone(&state.published), state.generations),
+            Err(poisoned) => {
+                let state = poisoned.into_inner();
+                (Arc::clone(&state.published), state.generations)
+            }
+        }
+    }
     pub fn publish(&self, snapshot: Arc<ResponseSnapshot>) {
         let _ = self.publish_base_inner(snapshot);
     }

@@ -10,15 +10,50 @@ use super::{
         FastCounterSample, FastRateCoordinator, FastWindowError, FAST_WINDOW_QUIET_CONFIRM_MS,
     },
     fast_rate_clients::{FastClientKey, FastClientRateBook, FastClientSample},
+    fast_rate_contract::FastRateBaseContract,
     fast_rate_store::{FastRateSample, FastRateStore, FastRateTelemetry, FastShadowComparison},
     fast_s_runtime::FastSSnapshot,
 };
+
+fn retain_aggregate_baseline(
+    current: FastCounterSample,
+    previous: Option<FastCounterSample>,
+) -> FastCounterSample {
+    if current.source_present {
+        return current;
+    }
+    let Some(previous) = previous else {
+        return current;
+    };
+    // An empty valid map is a quiet observation, not a counter reset. Keep
+    // the last cumulative aggregate and advance only the read clock; the
+    // coordinator can publish a real zero after quiet confirmation. A
+    // non-zero reset generation from the current source still wins, so a
+    // genuine reload/reset is re-warmed instead of crossing generations.
+    FastCounterSample {
+        sample_ms: current.sample_ms,
+        progress_ms: 0,
+        source_present: false,
+        read_begin_ms: current.read_begin_ms,
+        read_end_ms: current.read_end_ms,
+        attachment_generation: current.attachment_generation,
+        reset_generation: if current.reset_generation == 0 {
+            previous.reset_generation
+        } else {
+            current.reset_generation
+        },
+        bytes: previous.bytes,
+        packets: previous.packets,
+    }
+}
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct FastRateShadow {
     coordinator: FastRateCoordinator,
     store: FastRateStore,
     client_rates: FastClientRateBook,
+    last_n: Option<FastCounterSample>,
+    last_s: Option<FastCounterSample>,
     edge_bps: Option<u64>,
     comparison: Option<FastShadowComparison>,
     last_error: Option<FastWindowError>,
@@ -55,6 +90,52 @@ impl FastRateShadow {
         s_read_end_ms: u64,
         edge_bps: Option<u64>,
     ) {
+        self.observe_inner(
+            fast_n,
+            fast_s,
+            n_read_begin_ms,
+            n_read_end_ms,
+            s_read_begin_ms,
+            s_read_end_ms,
+            edge_bps,
+            None,
+        );
+    }
+
+    pub(crate) fn observe_with_contract(
+        &mut self,
+        fast_n: Option<&FastNSnapshot>,
+        fast_s: Option<&FastSSnapshot>,
+        n_read_begin_ms: u64,
+        n_read_end_ms: u64,
+        s_read_begin_ms: u64,
+        s_read_end_ms: u64,
+        edge_bps: Option<u64>,
+        contract: &FastRateBaseContract,
+    ) {
+        self.observe_inner(
+            fast_n,
+            fast_s,
+            n_read_begin_ms,
+            n_read_end_ms,
+            s_read_begin_ms,
+            s_read_end_ms,
+            edge_bps,
+            Some(contract),
+        );
+    }
+
+    fn observe_inner(
+        &mut self,
+        fast_n: Option<&FastNSnapshot>,
+        fast_s: Option<&FastSSnapshot>,
+        n_read_begin_ms: u64,
+        n_read_end_ms: u64,
+        s_read_begin_ms: u64,
+        s_read_end_ms: u64,
+        edge_bps: Option<u64>,
+        contract: Option<&FastRateBaseContract>,
+    ) {
         self.edge_bps = edge_bps;
         let (Some(fast_n), Some(fast_s)) = (fast_n, fast_s) else {
             self.invalidate_unavailable(
@@ -82,14 +163,25 @@ impl FastRateShadow {
             return;
         }
 
-        self.client_rates.observe(
-            fast_n,
-            fast_s,
-            n_read_begin_ms,
-            n_read_end_ms,
-            s_read_begin_ms,
-            s_read_end_ms,
-        );
+        match contract {
+            Some(contract) => self.client_rates.observe_with_contract(
+                fast_n,
+                fast_s,
+                n_read_begin_ms,
+                n_read_end_ms,
+                s_read_begin_ms,
+                s_read_end_ms,
+                contract,
+            ),
+            None => self.client_rates.observe(
+                fast_n,
+                fast_s,
+                n_read_begin_ms,
+                n_read_end_ms,
+                s_read_begin_ms,
+                s_read_end_ms,
+            ),
+        }
 
         let common_progress_ms = fast_n.progress_ms.max(fast_s.progress_ms);
         let sample_ms = if common_progress_ms == 0 {
@@ -97,28 +189,36 @@ impl FastRateShadow {
         } else {
             common_progress_ms
         };
-        let n = FastCounterSample {
-            sample_ms,
-            progress_ms: fast_n.progress_ms,
-            source_present: fast_n.valid_entries != 0,
-            read_begin_ms: n_read_begin_ms,
-            read_end_ms: n_read_end_ms,
-            attachment_generation: 0,
-            reset_generation: fast_n.reset_generation,
-            bytes: fast_n.bytes,
-            packets: fast_n.packets,
-        };
-        let s = FastCounterSample {
-            sample_ms,
-            progress_ms: fast_s.progress_ms,
-            source_present: fast_s.valid_entries != 0,
-            read_begin_ms: s_read_begin_ms,
-            read_end_ms: s_read_end_ms,
-            attachment_generation: 0,
-            reset_generation: fast_s.reset_generation,
-            bytes: fast_s.bytes,
-            packets: fast_s.packets,
-        };
+        let n = retain_aggregate_baseline(
+            FastCounterSample {
+                sample_ms,
+                progress_ms: fast_n.progress_ms,
+                source_present: fast_n.valid_entries != 0,
+                read_begin_ms: n_read_begin_ms,
+                read_end_ms: n_read_end_ms,
+                attachment_generation: 0,
+                reset_generation: fast_n.reset_generation,
+                bytes: fast_n.bytes,
+                packets: fast_n.packets,
+            },
+            self.last_n,
+        );
+        let s = retain_aggregate_baseline(
+            FastCounterSample {
+                sample_ms,
+                progress_ms: fast_s.progress_ms,
+                source_present: fast_s.valid_entries != 0,
+                read_begin_ms: s_read_begin_ms,
+                read_end_ms: s_read_end_ms,
+                attachment_generation: 0,
+                reset_generation: fast_s.reset_generation,
+                bytes: fast_s.bytes,
+                packets: fast_s.packets,
+            },
+            self.last_s,
+        );
+        self.last_n = Some(n);
+        self.last_s = Some(s);
         self.observe_pair(n, s);
     }
 
@@ -164,6 +264,8 @@ impl FastRateShadow {
 
     fn invalidate(&mut self, sample_ms: u64) {
         self.coordinator.clear();
+        self.last_n = None;
+        self.last_s = None;
         self.last_error = None;
         self.store.record_invalid(sample_ms);
     }
@@ -377,6 +479,60 @@ mod tests {
             None,
         );
         assert!(shadow.latest().unwrap().fast_total_bps > 0);
+    }
+
+    #[test]
+    fn empty_valid_maps_confirm_a_global_zero_without_reusing_a_short_window() {
+        let mut shadow = FastRateShadow::new();
+        let mut first_n = fast_n(1_100, 100);
+        first_n.progress_ms = 1_000;
+        let mut first_s = fast_s(1_100, 50);
+        first_s.progress_ms = 1_000;
+        shadow.observe(
+            Some(&first_n),
+            Some(&first_s),
+            1_090,
+            1_100,
+            1_091,
+            1_101,
+            None,
+        );
+
+        let mut empty_n = FastNSnapshot {
+            sample_ms: 4_100,
+            reset_generation: 1,
+            ..FastNSnapshot::default()
+        };
+        let mut empty_s = FastSSnapshot {
+            sample_ms: 4_100,
+            reset_generation: 1,
+            ..FastSSnapshot::default()
+        };
+        shadow.observe(
+            Some(&empty_n),
+            Some(&empty_s),
+            4_090,
+            4_100,
+            4_091,
+            4_101,
+            None,
+        );
+        let zero = shadow.latest().expect("empty maps become a confirmed zero");
+        assert_eq!(zero.fast_total_bps, 0);
+        assert_eq!(shadow.telemetry().invalid_windows, 0);
+
+        empty_n.sample_ms = 5_100;
+        empty_s.sample_ms = 5_100;
+        shadow.observe(
+            Some(&empty_n),
+            Some(&empty_s),
+            5_090,
+            5_100,
+            5_091,
+            5_101,
+            None,
+        );
+        assert_eq!(shadow.latest().unwrap().fast_total_bps, 0);
     }
 
     #[test]
