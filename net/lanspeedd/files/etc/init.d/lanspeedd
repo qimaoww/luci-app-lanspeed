@@ -120,11 +120,22 @@ cleanup_lanspeed_tc_filters() {
 	done
 }
 
+load_nss_control_modules() {
+	# qca_nss_qdisc and act_nssmirred are optional kernel modules on NSS
+	# targets. Load them before the first reconcile so a boot-time network
+	# trigger cannot leave a persisted control rule permanently pending.
+	[ -x /sbin/modprobe ] || return 0
+	for module in qca_nss_qdisc act_nssmirred; do
+		[ -d "/sys/module/$module" ] || /sbin/modprobe "$module" >/dev/null 2>&1 || true
+	done
+}
+
 start_service() {
 	# A package upgrade can force-kill an older daemon before procd reaches
 	# service_stopped(). Reclaim only the exact reserved lanspeed identities
 	# before loading the new object so stale program IDs cannot block startup.
 	cleanup_lanspeed_tc_filters
+	load_nss_control_modules
 	procd_open_instance
 	procd_set_param command "$PROG"
 	procd_set_param respawn 3600 5 5
@@ -138,6 +149,7 @@ service_stopped() {
 }
 
 reload_service() {
+	load_nss_control_modules
 	if ubus call lanspeed reload >/dev/null 2>&1; then
 		return 0
 	fi

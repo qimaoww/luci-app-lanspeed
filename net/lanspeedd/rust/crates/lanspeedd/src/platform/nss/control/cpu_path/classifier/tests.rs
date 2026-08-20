@@ -93,6 +93,19 @@ mod tests {
             Some("7cf7:0"),
             "ifb-foreign"
         ));
+
+        let mut offloaded = actions;
+        offloaded[1]["to_dev"] = json!("*");
+        assert!(exact_upload_redirect_actions(
+            &offloaded,
+            Some("7cf7:0"),
+            "lsu12345678"
+        ));
+        assert!(!exact_upload_redirect_actions(
+            &offloaded,
+            Some("7cf7:0"),
+            "ifb-foreign"
+        ));
     }
 
     #[test]

@@ -1173,12 +1173,29 @@ fn exact_upload_redirect_actions(actions: &[Value], priority: Option<&str>, devi
         && actions[1].get("kind").and_then(Value::as_str) == Some("mirred")
         && actions[1].get("mirred_action").and_then(Value::as_str) == Some("redirect")
         && actions[1].get("direction").and_then(Value::as_str) == Some("egress")
-        && actions[1].get("to_dev").and_then(Value::as_str) == Some(device)
+        && actions[1]
+            .get("to_dev")
+            .and_then(Value::as_str)
+            .is_some_and(|actual| {
+                /* qca_nss_qdisc hides an offloaded mirred target as `*` in
+                 * tc -j output. The surrounding LAN Speed marker and the
+                 * deterministic lsu IFB ownership check still identify this
+                 * chain; rejecting the hidden target makes every retry look
+                 * like a foreign classifier and prevents rollback. */
+                actual == device || (actual == "*" && is_lanspeed_ifb_name(device))
+            })
         && actions[1]
             .get("control_action")
             .and_then(|control| control.get("type"))
             .and_then(Value::as_str)
             == Some("stolen")
+}
+
+fn is_lanspeed_ifb_name(device: &str) -> bool {
+    let Some(suffix) = device.strip_prefix("lsu") else {
+        return false;
+    };
+    suffix.len() == 8 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn upload_redirect_action_count(

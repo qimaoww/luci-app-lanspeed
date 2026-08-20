@@ -179,8 +179,16 @@ static int lanspeed_igs_unpublish_entry(struct lanspeed_igs_entry *entry)
 	edge_if_num = nss_cmn_get_interface_number_by_dev(entry->edge);
 	if (edge_if_num < 0)
 		return -ENODEV;
-	if (lanspeed_peer_config_reset(entry))
-		return -EIO;
+	/* A Wi-Fi station may disappear between the last peer_sync and a
+	 * transaction teardown. NSS then rejects the per-peer reset because the
+	 * station no longer exists, although the IGS edge itself is still fully
+	 * reclaimable. Do not strand the edge in PUBLISHED/DEGRADED state for that
+	 * stale peer: forget the cached bindings and continue the ordered edge
+	 * reset/IGS clear below. */
+	if (lanspeed_peer_config_reset(entry)) {
+		entry->peer_count = 0;
+		lanspeed_telemetry_peer_reset();
+	}
 	if (entry->state == LANSPEED_IGS_PUBLISHED &&
 	    lanspeed_reset_nexthop(edge_if_num) !=
 	    NSS_TX_SUCCESS)

@@ -1029,6 +1029,17 @@ impl ControlManager {
         if live.ambiguous && !relaxing_ambiguous_control {
             return Err(DaemonError::reload("ambiguous_identity"));
         }
+        #[cfg(feature = "nss-platform")]
+        let requires_control =
+            request.upload_bps != 0 || request.download_bps != 0 || request.internet_disabled;
+        #[cfg(feature = "nss-platform")]
+        if requires_control && live.interface.is_none() && !relaxing_ambiguous_control {
+            /* A persisted rule without a trusted attachment is intentionally
+             * kept inactive by active_rules(). Rejecting a new restrictive
+             * request here prevents it from dirtying the global NSS plan and
+             * attempting to tear down an unrelated stale IGS edge. */
+            return Err(DaemonError::reload("identity_interface_unavailable"));
+        }
         if live.ips.is_empty()
             && control_requires_address(
                 request.upload_bps,

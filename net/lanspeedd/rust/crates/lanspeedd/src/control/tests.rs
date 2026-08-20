@@ -445,6 +445,26 @@ fn ambiguous_identity_can_only_remove_or_relax_existing_control() {
     ));
 }
 
+#[cfg(feature = "nss-platform")]
+#[test]
+fn nss_rate_request_requires_a_confirmed_lan_attachment() {
+    let identity = "02:00:00:00:00:01@lan";
+    let mut manager = manager();
+    manager.observe_clients(&[client(identity, "192.0.2.9")]);
+    manager.live.get_mut(identity).unwrap().interface = None;
+
+    let error = manager
+        .set(ClientControlRequest {
+            identity_key: identity.into(),
+            upload_bps: 10_000_000,
+            download_bps: 0,
+            internet_disabled: false,
+        })
+        .unwrap_err();
+    assert_eq!(error, DaemonError::reload("identity_interface_unavailable"));
+    assert!(manager.rules.is_empty());
+}
+
 #[test]
 fn repeated_prefix_loss_does_not_queue_another_quiesce() {
     let ready = ApplyResult::ready();
