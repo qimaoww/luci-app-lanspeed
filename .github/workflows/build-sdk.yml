@@ -224,7 +224,7 @@ jobs:
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.built*
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.configured
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.prepared*
-          key: lanspeed-sdk-rust-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target_arch }}-${{ matrix.sdk_sha256 }}-feeds-${{ steps.sdk-identity.outputs.feeds_hash }}-rust-${{ steps.sdk-identity.outputs.rust_version }}-recipe-${{ steps.sdk-identity.outputs.rust_recipe_hash }}
+          key: lanspeed-sdk-rust-v3-source-llvm-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target_arch }}-${{ matrix.sdk_sha256 }}-feeds-${{ steps.sdk-identity.outputs.feeds_hash }}-rust-${{ steps.sdk-identity.outputs.rust_version }}-recipe-${{ steps.sdk-identity.outputs.rust_recipe_hash }}-policy-${{ hashFiles('scripts/rust-configure-wrapper.sh') }}
 
       - name: Build base package
         shell: bash
@@ -293,7 +293,7 @@ jobs:
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.built*
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.configured
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.prepared*
-          key: lanspeed-sdk-rust-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target_arch }}-${{ matrix.sdk_sha256 }}-feeds-${{ steps.sdk-identity.outputs.feeds_hash }}-rust-${{ steps.sdk-identity.outputs.rust_version }}-recipe-${{ steps.sdk-identity.outputs.rust_recipe_hash }}
+          key: lanspeed-sdk-rust-v3-source-llvm-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target_arch }}-${{ matrix.sdk_sha256 }}-feeds-${{ steps.sdk-identity.outputs.feeds_hash }}-rust-${{ steps.sdk-identity.outputs.rust_version }}-recipe-${{ steps.sdk-identity.outputs.rust_recipe_hash }}-policy-${{ hashFiles('scripts/rust-configure-wrapper.sh') }}
 
       - name: Clone prepared SDK for BPF build
         shell: bash

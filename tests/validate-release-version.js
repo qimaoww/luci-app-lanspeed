@@ -549,9 +549,9 @@ try {
   });
   const rustCacheRestoreStep = extractNamedStep(buildJob, 'Restore SDK Rust host cache');
   const rustCacheSaveStep = extractNamedStep(buildJob, 'Save SDK Rust host cache');
-  const rustCacheKey = 'lanspeed-sdk-rust-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target_arch }}-${{ matrix.sdk_sha256 }}-feeds-${{ steps.sdk-identity.outputs.feeds_hash }}-rust-${{ steps.sdk-identity.outputs.rust_version }}-recipe-${{ steps.sdk-identity.outputs.rust_recipe_hash }}';
+  const rustCacheKey = "lanspeed-sdk-rust-v3-source-llvm-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target_arch }}-${{ matrix.sdk_sha256 }}-feeds-${{ steps.sdk-identity.outputs.feeds_hash }}-rust-${{ steps.sdk-identity.outputs.rust_version }}-recipe-${{ steps.sdk-identity.outputs.rust_recipe_hash }}-policy-${{ hashFiles('scripts/rust-configure-wrapper.sh') }}";
   assert(rustCacheRestoreStep.includes(`key: ${rustCacheKey}`),
-    'Rust cache restore must be isolated by runner, target, SDK, feeds, and exact Rust recipe');
+    'Rust cache restore must be isolated by runner, target, SDK, feeds, recipe, and bootstrap policy');
   assert(rustCacheSaveStep.includes(`key: ${rustCacheKey}`),
     'Rust cache save must use the exact restore key');
   assert(!rustCacheRestoreStep.includes('restore-keys:'),

@@ -17,6 +17,7 @@ SDK_RUST_VERSION=${SDK_RUST_VERSION:-}
 SDK_RUST_RECIPE_HASH=${SDK_RUST_RECIPE_HASH:-}
 SDK_RUST_IDENTITY_SCRIPT="$REPO_ROOT/scripts/sdk-rust-identity.sh"
 APK_OWNER_FAKEROOT="$REPO_ROOT/scripts/apk-owner-fakeroot.sh"
+RUST_CONFIGURE_WRAPPER="$REPO_ROOT/scripts/rust-configure-wrapper.sh"
 
 die() {
 	printf '%s\n' "error: $*" >&2
@@ -365,6 +366,7 @@ refresh_sdk_config() {
 compile_package() {
 	package=$1
 	fakeroot_arg=
+	rust_bash_arg="BASH=$RUST_CONFIGURE_WRAPPER"
 	if [ -n "${PACKAGE_FAKEROOT:-}" ]; then
 		fakeroot_arg="FAKEROOT=$PACKAGE_FAKEROOT"
 	fi
@@ -377,17 +379,26 @@ compile_package() {
 			base_package_config=m
 		fi
 		if [ -n "$fakeroot_arg" ]; then
-			run_in_sdk make "package/$package/compile" V=s "LANSPEED_BUILD_BPF=$ENABLE_BPF" "CONFIG_PACKAGE_lanspeedd=$base_package_config" "CONFIG_PACKAGE_lanspeedd-bpf=$bpf_package_config" "$fakeroot_arg"
+			run_in_sdk make "package/$package/compile" V=s "LANSPEED_BUILD_BPF=$ENABLE_BPF" "CONFIG_PACKAGE_lanspeedd=$base_package_config" "CONFIG_PACKAGE_lanspeedd-bpf=$bpf_package_config" "$rust_bash_arg" "$fakeroot_arg"
 		else
-			run_in_sdk make "package/$package/compile" V=s "LANSPEED_BUILD_BPF=$ENABLE_BPF" "CONFIG_PACKAGE_lanspeedd=$base_package_config" "CONFIG_PACKAGE_lanspeedd-bpf=$bpf_package_config"
+			run_in_sdk make "package/$package/compile" V=s "LANSPEED_BUILD_BPF=$ENABLE_BPF" "CONFIG_PACKAGE_lanspeedd=$base_package_config" "CONFIG_PACKAGE_lanspeedd-bpf=$bpf_package_config" "$rust_bash_arg"
 		fi
 	else
 		if [ -n "$fakeroot_arg" ]; then
-			run_in_sdk make "package/$package/compile" V=s "$fakeroot_arg"
+			run_in_sdk make "package/$package/compile" V=s "$rust_bash_arg" "$fakeroot_arg"
 		else
-			run_in_sdk make "package/$package/compile" V=s
+			run_in_sdk make "package/$package/compile" V=s "$rust_bash_arg"
 		fi
 	fi
+}
+
+verify_build_wrappers() {
+	if [ "$DRY_RUN" = 1 ]; then
+		printf '+ route SDK Bash commands through the Rust configure wrapper\n'
+		return 0
+	fi
+	[ -x "$RUST_CONFIGURE_WRAPPER" ] || \
+		die "Rust configure wrapper is missing or not executable"
 }
 
 configure_package_fakeroot() {
@@ -500,6 +511,7 @@ main() {
 	done
 	configure_packages
 	refresh_sdk_config
+	verify_build_wrappers
 	configure_package_fakeroot
 	for package in $COMPILE_PACKAGES; do
 		compile_package "$package"
