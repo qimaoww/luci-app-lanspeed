@@ -573,7 +573,7 @@ try {
     'Rust cache save must run only after a cache miss');
 
   const baseBuildStep = extractNamedStep(buildJob, 'Build base package');
-  assert(baseBuildStep.includes('ENABLE_BPF=0 SDK_RELEASE=25.12 SDK_DIR="$base_sdk"'),
+  assert(baseBuildStep.includes('APK_FAKEROOT_SUDO=1 ENABLE_BPF=0 SDK_RELEASE=25.12 SDK_DIR="$base_sdk"'),
     'base SDK must build the non-BPF daemon first');
   assert(baseBuildStep.includes('./scripts/build-sdk.sh lanspeedd'),
     'base SDK must build only the daemon target');
@@ -601,7 +601,7 @@ try {
   assert(clonePreparedStep.includes('cp -a "$base_sdk/." "$bpf_sdk/"'),
     'BPF SDK must be cloned only after the base Rust toolchain is prepared');
   const bpfBuildStep = extractNamedStep(buildJob, 'Build BPF packages');
-  assert(bpfBuildStep.includes('ENABLE_BPF=1 SDK_RELEASE=25.12 SDK_DIR="$bpf_sdk"'),
+  assert(bpfBuildStep.includes('APK_FAKEROOT_SUDO=1 ENABLE_BPF=1 SDK_RELEASE=25.12 SDK_DIR="$bpf_sdk"'),
     'BPF SDK must reuse the prepared clone with BPF enabled');
   assert(bpfBuildStep.includes('./scripts/build-sdk.sh all'),
     'BPF SDK must build both daemon and LuCI targets');

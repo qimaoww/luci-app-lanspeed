@@ -15,6 +15,7 @@ SDK_FEEDS_PREPARED=${SDK_FEEDS_PREPARED:-0}
 SDK_FEEDS_HASH=${SDK_FEEDS_HASH:-}
 SDK_RUST_VERSION=${SDK_RUST_VERSION:-}
 SDK_RUST_RECIPE_HASH=${SDK_RUST_RECIPE_HASH:-}
+APK_FAKEROOT_SUDO=${APK_FAKEROOT_SUDO:-0}
 SDK_RUST_IDENTITY_SCRIPT="$REPO_ROOT/scripts/sdk-rust-identity.sh"
 APK_USERNS_FAKEROOT="$REPO_ROOT/scripts/apk-userns-fakeroot.sh"
 
@@ -33,7 +34,7 @@ info() {
 
 usage() {
 	cat >&2 <<'EOF'
-Usage: SDK_DIR=/path/to/immortalwrt-sdk [DRY_RUN=1] [TARGET_ARCH=x86_64] [ENABLE_BPF=0|1] [SDK_RELEASE=25.12] [SDK_FEEDS_PREPARED=0|1] [SDK_FEEDS_HASH=sha256] [SDK_RUST_VERSION=x.y.z] [SDK_RUST_RECIPE_HASH=sha256] ./scripts/build-sdk.sh <target>
+Usage: SDK_DIR=/path/to/immortalwrt-sdk [DRY_RUN=1] [TARGET_ARCH=x86_64] [ENABLE_BPF=0|1] [SDK_RELEASE=25.12] [SDK_FEEDS_PREPARED=0|1] [SDK_FEEDS_HASH=sha256] [SDK_RUST_VERSION=x.y.z] [SDK_RUST_RECIPE_HASH=sha256] [APK_FAKEROOT_SUDO=0|1] ./scripts/build-sdk.sh <target>
 
 Targets:
   prepare-feeds       inject and update feeds without installing or compiling packages
@@ -393,7 +394,11 @@ compile_package() {
 configure_package_fakeroot() {
 	PACKAGE_FAKEROOT=
 	if [ "$DRY_RUN" = 1 ]; then
-		PACKAGE_FAKEROOT=$APK_USERNS_FAKEROOT
+		if [ "$APK_FAKEROOT_SUDO" = 1 ]; then
+			PACKAGE_FAKEROOT="sudo -n $APK_USERNS_FAKEROOT"
+		else
+			PACKAGE_FAKEROOT=$APK_USERNS_FAKEROOT
+		fi
 		printf '+ package APK files through an isolated root-only user database\n'
 		return 0
 	fi
@@ -403,9 +408,17 @@ configure_package_fakeroot() {
 		die "APK user namespace wrapper is missing or not executable"
 	command -v unshare >/dev/null 2>&1 || \
 		die "APK packaging as a non-root user requires unshare"
-	unshare -Ur true >/dev/null 2>&1 || \
+	if unshare -Ur true >/dev/null 2>&1; then
+		PACKAGE_FAKEROOT=$APK_USERNS_FAKEROOT
+		return 0
+	fi
+	[ "$APK_FAKEROOT_SUDO" = 1 ] || \
 		die "APK packaging cannot create an unprivileged root user namespace"
-	PACKAGE_FAKEROOT=$APK_USERNS_FAKEROOT
+	command -v sudo >/dev/null 2>&1 || \
+		die "APK_FAKEROOT_SUDO=1 requires sudo"
+	sudo -n unshare -Ur true >/dev/null 2>&1 || \
+		die "APK packaging cannot create a root user namespace through passwordless sudo"
+	PACKAGE_FAKEROOT="sudo -n $APK_USERNS_FAKEROOT"
 }
 
 set_config_module() {
@@ -461,6 +474,7 @@ main() {
 	validate_flag DRY_RUN "$DRY_RUN"
 	validate_flag ENABLE_BPF "$ENABLE_BPF"
 	validate_flag SDK_FEEDS_PREPARED "$SDK_FEEDS_PREPARED"
+	validate_flag APK_FAKEROOT_SUDO "$APK_FAKEROOT_SUDO"
 	if [ "$SDK_FEEDS_PREPARED" = 1 ]; then
 		case "$SDK_FEEDS_HASH" in
 			*[!0-9a-f]*|'') die "SDK_FEEDS_HASH must be a lowercase SHA256 when SDK_FEEDS_PREPARED=1" ;;

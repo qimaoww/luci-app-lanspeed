@@ -57,7 +57,7 @@ fi
 grep -F "ENABLE_BPF=0 is only supported with the lanspeedd target" "$DRY_RUN_EVIDENCE" >/dev/null
 
 SDK_DIR=/tmp/fake-sdk DRY_RUN=1 ENABLE_BPF=0 "$ROOT/scripts/build-sdk.sh" lanspeedd > "$DRY_RUN_EVIDENCE" 2>&1
-SDK_DIR=/tmp/fake-sdk DRY_RUN=1 "$ROOT/scripts/build-sdk.sh" all >> "$DRY_RUN_EVIDENCE" 2>&1
+SDK_DIR=/tmp/fake-sdk DRY_RUN=1 APK_FAKEROOT_SUDO=1 "$ROOT/scripts/build-sdk.sh" all >> "$DRY_RUN_EVIDENCE" 2>&1
 SDK_DIR=/tmp/fake-sdk DRY_RUN=1 SDK_RELEASE=23.05 "$ROOT/scripts/build-sdk.sh" all >> "$DRY_RUN_EVIDENCE" 2>&1
 SDK_DIR=/tmp/fake-sdk DRY_RUN=1 SDK_RELEASE=23.05 SDK_BASE_FEED_REF=5804844cf812c07b2d66d513bec2e36e7a8270ee "$ROOT/scripts/build-sdk.sh" all >> "$DRY_RUN_EVIDENCE" 2>&1
 SDK_DIR=/tmp/fake-sdk DRY_RUN=1 ENABLE_BPF=0 "$ROOT/scripts/build-sdk.sh" prepare-feeds > "$PREPARE_FEEDS_EVIDENCE" 2>&1
@@ -76,6 +76,7 @@ grep -F "make package/lanspeedd/compile V=s" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "make package/luci-app-lanspeed/compile V=s" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "package APK files through an isolated root-only user database" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "FAKEROOT=$ROOT/scripts/apk-userns-fakeroot.sh" "$DRY_RUN_EVIDENCE" >/dev/null
+grep -F "FAKEROOT=sudo -n $ROOT/scripts/apk-userns-fakeroot.sh" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "./scripts/feeds install -p lanspeed lanspeedd-bpf" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "select CONFIG_PACKAGE_lanspeedd=m before compiling package/lanspeedd/compile" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "disable CONFIG_PACKAGE_lanspeedd-bpf before compiling package/lanspeedd/compile" "$DRY_RUN_EVIDENCE" >/dev/null
@@ -105,6 +106,11 @@ if SDK_DIR=/tmp/fake-sdk DRY_RUN=1 SDK_FEEDS_PREPARED=invalid "$ROOT/scripts/bui
 	exit 1
 fi
 grep -F "SDK_FEEDS_PREPARED must be 0 or 1" "$PREPARE_FEEDS_EVIDENCE" >/dev/null
+if SDK_DIR=/tmp/fake-sdk DRY_RUN=1 APK_FAKEROOT_SUDO=invalid "$ROOT/scripts/build-sdk.sh" all >> "$PREPARE_FEEDS_EVIDENCE" 2>&1; then
+	printf '%s\n' "expected invalid APK_FAKEROOT_SUDO flag to fail" >&2
+	exit 1
+fi
+grep -F "APK_FAKEROOT_SUDO must be 0 or 1" "$PREPARE_FEEDS_EVIDENCE" >/dev/null
 
 TMP_SDK=$(mktemp -d "${TMPDIR:-/tmp}/lanspeed-sdk.XXXXXX")
 mkdir -p "$TMP_SDK/bin" "$TMP_SDK/scripts/config"
