@@ -62,8 +62,8 @@ sh tests/validate-lanspeed-docs.sh
 
 ## 发布
 
-`main` 分支上的 `net/lanspeedd/Makefile` 或 `applications/luci-app-lanspeed/Makefile` 完整版本发生变化时，发布 workflow 为 x86_64 和四种 aarch64 包架构构建三个 APK。
+发布 workflow 默认禁用，不监听 `main`、tag 或 pull request；仓库内仅保留 `workflow_dispatch` 手动触发。需要发布时，由仓库管理员临时启用 `Build SDK Packages` 并手动运行，为 x86_64 和四种 aarch64 包架构构建三个 APK，完成后重新禁用该 workflow。
 
 Rust 主机工具链按 runner 操作系统与架构、目标架构、SDK SHA256、feeds 实际 revision、Rust 配方版本和内容哈希隔离缓存，后续相同 SDK 不再从头编译 Rust。
 
-workflow 先创建草稿 Release，校验全部架构资产后再发布。失败草稿可由同一版本提交通过 `workflow_dispatch` 自动重建；手动运行也可补发缺失的 tag/Release。维护者不得预先创建 `v*` tag。
+workflow 先创建草稿 Release，校验全部架构资产后再发布。失败草稿可由同一版本提交再次手动运行以重建，也可补发缺失的 tag/Release。维护者不得预先创建 `v*` tag。

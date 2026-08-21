@@ -328,17 +328,10 @@ try {
     encoding: 'utf8'
   }).trim();
   assert(releaseVersion === fullVersion, 'scripts/release-version.sh output must match daemon package version and release');
-  assert(/on:\n  push:\n    branches:\n      - main\n    paths:/.test(workflow),
-    'release workflow must run from selected main-branch paths');
-  [
-    'net/lanspeedd/Makefile',
-    'applications/luci-app-lanspeed/Makefile',
-    'scripts/release-version.sh',
-    '.github/workflows/build-sdk.yml'
-  ].forEach((triggerPath) => {
-    assert(workflow.includes(`      - ${triggerPath}`), `release workflow must watch ${triggerPath}`);
-  });
-  assert(workflow.includes('  workflow_dispatch:'), 'release workflow must expose workflow_dispatch recovery');
+  const triggerBlock = extractYamlBlock(workflow, 'on', 0);
+  assert(triggerBlock.trim() === 'on:\n  workflow_dispatch:',
+    'release workflow must be manual-only and expose workflow_dispatch');
+  assert(!/\n\s+push:/.test(triggerBlock), 'release workflow must not run from pushes');
   assert(!/tags:/.test(workflow), 'workflow must not run from tag pushes');
   assert(!/pull_request:/.test(workflow), 'workflow must not run from pull requests');
   assert(workflow.includes('concurrency:\n  group: lanspeed-release\n  cancel-in-progress: false'),
@@ -780,18 +773,16 @@ try {
   assert(ciWorkflow.includes('./tests/run.sh unit'), 'CI must run the complete unit suite');
   assert(ciWorkflow.includes('timeout-minutes: 45'), 'CI must have a finite validation timeout');
 
-  assert(readme.includes('`main` 分支'), 'README must describe the main-branch automatic release trigger');
-  assert(readme.includes('`net/lanspeedd/Makefile`') &&
-    readme.includes('`applications/luci-app-lanspeed/Makefile`'),
-  'README must name both version-bearing Makefiles');
-  assert(readme.includes('完整版本发生变化'), 'README must explain that the complete version change triggers the workflow');
+  assert(!readme.includes('完整版本发生变化时，发布 workflow'),
+    'README must not describe the disabled automatic release trigger');
   assert(readme.includes('按 runner 操作系统与架构、目标架构、SDK SHA256、feeds 实际 revision、Rust 配方版本和内容哈希隔离缓存'),
     'README must document the complete Rust host toolchain cache identity');
   assert(readme.includes('后续相同 SDK 不再从头编译 Rust'),
     'README must explain the cache benefit');
+  assert(readme.includes('发布 workflow 默认禁用'), 'README must document the disabled release workflow');
+  assert(readme.includes('仅保留 `workflow_dispatch` 手动触发'), 'README must document the manual-only release trigger');
   assert(readme.includes('草稿 Release'), 'README must describe draft-first publication');
-  assert(readme.includes('`workflow_dispatch` 自动重建'), 'README must document automatic draft recovery');
-  assert(readme.includes('手动运行也可补发'), 'README must document missing-release recovery');
+  assert(readme.includes('再次手动运行'), 'README must document manual draft recovery');
   assert(readme.includes('不得预先创建 `v*` tag'), 'README must forbid maintainers from pre-creating release tags');
   assert(!readme.includes('GitHub Actions 在 `v*` tag 发布时'), 'README must not retain the obsolete tag-trigger description');
 	assert(readme.includes('`1.1.6-r3`'), 'README full-version example must match the 1.1.6 release');

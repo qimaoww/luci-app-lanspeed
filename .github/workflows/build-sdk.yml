@@ -1,18 +1,6 @@
 name: Build SDK Packages
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - net/lanspeedd/Makefile
-      - applications/luci-app-lanspeed/Makefile
-      - scripts/build-sdk.sh
-      - scripts/sdk-rust-identity.sh
-      - scripts/release-version.sh
-      - tests/validate-sdk-apks.sh
-      - tests/validate-rust-ebpf-objects.sh
-      - .github/workflows/build-sdk.yml
   workflow_dispatch:
 
 concurrency:
