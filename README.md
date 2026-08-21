@@ -2,7 +2,7 @@
 
 > 本仓库所有代码及文档（包括本 README）均由 AI 生成。
 > 
-`luci-app-lanspeed` 为 ImmortalWrt / OpenWrt 提供 LAN 客户端实时速率、连接详情、运行诊断与配置页面。当前版本为 `1.1.6-r3`。
+`luci-app-lanspeed` 为 ImmortalWrt / OpenWrt 提供 LAN 客户端实时速率、连接详情、运行诊断与配置页面。当前版本为 `1.2.0-r1`。
 
 x86_64 使用独立 TC-BPF 路径；Qualcomm aarch64 NSS 使用 Access Edge 提供客户端总速率，ECM/NSS 与 TC-BPF 只做路径分类。两套平台的测速和客户端控制代码独立编译，不交叉探测或回退。
 
@@ -18,10 +18,12 @@ x86_64 使用独立 TC-BPF 路径；Qualcomm aarch64 NSS 使用 Access Edge 提�
 ## 核心功能
 
 - 实时显示客户端上行、下行、连接数、主机名、地址和物理接入点。
-- 连接详情按远端 IP 聚合 TCP/UDP，可展开、排序、分页和暂停刷新。
-- 实时状态页支持独立上传/下载限速及禁用上网；x86 与 NSS 使用互不复用的平台实现。
-- NSS 总速率由 Access Edge 提供；ECM/NSS 与 TC-BPF 分类值不与总速率相加。
+- 客户端详情显示该客户端的已发布上下行总速率；连接行由独立 Conntrack 窗口采样，不再展示无法可靠校准的流量分类。
+- 实时状态页支持独立上传/下载限速及禁用上网；修改限速时保留现有连接，失败只回滚 LAN Speed 专用对象。
+- NSS 总速率由 Access Edge 提供；独立 FastRate worker 按固定节拍采集 FastN/FastS，ECM/NSS 与 TC-BPF 分类值不与总速率相加。
+- NSS 可选互联网/路由视图只展示 FastN+FastS 观察到的路由流量，与客户端总速率 owner 和客户端控制分离。
 - CT-Netlink 连接采集失败时回退 CT-Procfs；连接计数不参与客户端总速率。
+- 速率、连接、reload 和慢探针在独立 worker 中执行，普通 RPC 只读取完整发布快照。
 - 诊断页检查 RPC、BPF、ECM、Access Edge、接口和版本契约，并给出机器可读原因。
 - Aurora、Argon、Bootstrap 三主题支持桌面和移动端布局。
 
@@ -58,7 +60,11 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 
 `luci-app-lanspeed` 强制依赖 `lanspeedd-bpf`，`lanspeedd-bpf` 依赖 `lanspeedd`。同一个 `package/lanspeedd/compile` 目标根据 SDK 架构生成 TC 对象，并只在 aarch64 生成 ECM 对象。
 
-SDK 构建与发布说明见[构建与发布](docs/guide/development.md)。
+### 预编译发布
+
+GitHub Release 只提供 x86_64 的三个 APK 和整合归档，不发布 Qualcomm NSS 预编译包。NSS 控制依赖专属 `kmod-lanspeed-nss-control`，该内核模块必须与设备的内核 ABI、NSS 驱动和固件编译配置一致，无法用一个通用 APK 覆盖不同固件；NSS 用户建议使用目标固件的同版源码或 SDK 自行编译，且不要混用其他固件生成的 kmod。
+
+完整 SDK 构建与发布说明见[构建与发布](docs/guide/development.md)。
 
 ## 界面预览
 
@@ -86,6 +92,7 @@ SDK 构建与发布说明见[构建与发布](docs/guide/development.md)。
 | `lanspeedd` | Rust daemon、UCI、ubus、连接采集与平台调度 |
 | `lanspeedd-bpf` | 对应架构的 TC-BPF 对象；aarch64 包额外包含 ECM kprobe 对象 |
 | `luci-app-lanspeed` | 实时状态、运行诊断、配置和连接详情页面 |
+| `kmod-lanspeed-nss-control` | Qualcomm NSS 专属 Generic Netlink、IGS、FastRate 与队列控制内核模块；必须随目标固件自行编译 |
 
 安装依赖、内核选项及服务冲突处理见[部署与排障](docs/guide/operations.md)。
 

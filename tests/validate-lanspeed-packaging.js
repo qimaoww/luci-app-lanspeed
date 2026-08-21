@@ -718,10 +718,10 @@ try {
     /LANSPEED_NSS_CONTROL_DEPENDS:=\+TARGET_qualcommax:tc-full \+TARGET_qualcommax:ip \+TARGET_qualcommax:nftables \+TARGET_qualcommax:conntrack \+TARGET_qualcommax:kmod-ifb \+TARGET_qualcommax:kmod-sched-core \+TARGET_qualcommax:kmod-qca-nss-drv-igs \+TARGET_qualcommax:kmod-lanspeed-nss-control/,
     'NSS client control must request its CPU-path modules only behind the qualcommax architecture gate'
   );
-  assertMatch(nssControlKmodMakefile, /^PKG_VERSION:=1\.1\.6$/m,
+  assertMatch(nssControlKmodMakefile, /^PKG_VERSION:=1\.2\.0$/m,
     'NSS control kmod must stay on the daemon version');
-  assertMatch(nssControlKmodMakefile, /^PKG_RELEASE:=3$/m,
-    'NSS control kmod must stay on release 4');
+  assertMatch(nssControlKmodMakefile, /^PKG_RELEASE:=1$/m,
+    'NSS control kmod must stay on release 1');
   assertMatch(nssControlKmodMakefile,
     /^  DEPENDS:=@TARGET_qualcommax \+kmod-ifb \+kmod-qca-nss-drv \+kmod-qca-nss-drv-igs$/m,
     'NSS control kmod must be packaged only for qualcommax with verified IGS dependencies');

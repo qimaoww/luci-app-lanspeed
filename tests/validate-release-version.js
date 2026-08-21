@@ -15,8 +15,9 @@ const versionJs = fs.readFileSync(path.join(root, 'applications/luci-app-lanspee
 const workflow = fs.readFileSync(path.join(root, '.github/workflows/build-sdk.yml'), 'utf8');
 const sdkIdentityScript = fs.readFileSync(path.join(root, 'scripts/sdk-rust-identity.sh'), 'utf8');
 const ciWorkflow = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
+const homeReadme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
 const readme = [
-  fs.readFileSync(path.join(root, 'README.md'), 'utf8'),
+  homeReadme,
   fs.readFileSync(path.join(root, 'docs/guide/development.md'), 'utf8')
 ].join('\n');
 const releaseScriptPath = path.join(root, 'scripts/release-version.sh');
@@ -271,8 +272,8 @@ try {
   ], { cwd: rustRoot, encoding: 'utf8' }));
   runWorkspaceMetadataSelfTest(daemonVersion);
 
-  assert(daemonVersion === '1.1.6', 'daemon PKG_VERSION must remain exactly 1.1.6 for this release');
-  assert(luciVersion === '1.1.6', 'LuCI PKG_VERSION must remain exactly 1.1.6 for this release');
+  assert(daemonVersion === '1.2.0', 'daemon PKG_VERSION must remain exactly 1.2.0 for this release');
+  assert(luciVersion === '1.2.0', 'LuCI PKG_VERSION must remain exactly 1.2.0 for this release');
   assert(daemonVersion === luciVersion, 'daemon and LuCI PKG_VERSION must match for releases');
   assert(daemonRelease === luciRelease, 'daemon and LuCI PKG_RELEASE must match for releases');
   assert(workspaceVersion, 'Cargo workspace must define package.version');
@@ -418,42 +419,6 @@ try {
       artifact: 'lanspeed-apk-x86_64',
       sdkPath: 'x86/64/immortalwrt-sdk-25.12.1-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst',
       sdkSha256: '02ad8cfc775001ccae8e9282d19696de54e3ab3963f005737ad61f8698263edd'
-    },
-    {
-      id: 'aarch64_generic',
-      packageArch: 'aarch64_generic',
-      assetArch: 'aarch64_generic',
-      suffix: '-aarch64_generic',
-      artifact: 'lanspeed-apk-aarch64_generic',
-      sdkPath: 'armsr/armv8/immortalwrt-sdk-25.12.1-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst',
-      sdkSha256: '1ac4a0940328ebbb71c5e2e44bd798d9acc06b99dc417178fe9868e5e91a0ef5'
-    },
-    {
-      id: 'aarch64_cortex_a53',
-      packageArch: 'aarch64_cortex-a53',
-      assetArch: 'aarch64_cortex-a53',
-      suffix: '-aarch64_cortex-a53',
-      artifact: 'lanspeed-apk-aarch64_cortex-a53',
-      sdkPath: 'qualcommax/ipq807x/immortalwrt-sdk-25.12.1-qualcommax-ipq807x_gcc-14.3.0_musl.Linux-x86_64.tar.zst',
-      sdkSha256: '2abfafc35ab11e9291552577e1d415dbd7c306d05083feca732e3c500d03771e'
-    },
-    {
-      id: 'aarch64_cortex_a72',
-      packageArch: 'aarch64_cortex-a72',
-      assetArch: 'aarch64_cortex-a72',
-      suffix: '-aarch64_cortex-a72',
-      artifact: 'lanspeed-apk-aarch64_cortex-a72',
-      sdkPath: 'bcm27xx/bcm2711/immortalwrt-sdk-25.12.1-bcm27xx-bcm2711_gcc-14.3.0_musl.Linux-x86_64.tar.zst',
-      sdkSha256: '8af293943f9feb1d831a53d6e1b8c1367a8feb186f08f058cebf3ef530e9e68b'
-    },
-    {
-      id: 'aarch64_cortex_a76',
-      packageArch: 'aarch64_cortex-a76',
-      assetArch: 'aarch64_cortex-a76',
-      suffix: '-aarch64_cortex-a76',
-      artifact: 'lanspeed-apk-aarch64_cortex-a76',
-      sdkPath: 'bcm27xx/bcm2712/immortalwrt-sdk-25.12.1-bcm27xx-bcm2712_gcc-14.3.0_musl.Linux-x86_64.tar.zst',
-      sdkSha256: '70d0100420fc65ca7d5f10d308282749259d71f472b607392bd421ad5de1c44a'
     }
   ];
   const completeReleaseAssets = releaseArchitectures.flatMap(({ assetArch, suffix }) => [
@@ -514,7 +479,7 @@ try {
   assert(/^      fail-fast: false$/m.test(buildJob), 'build matrix must keep fail-fast disabled');
   const matrixIds = [...buildJob.matchAll(/^          - id: ([a-z0-9_]+)$/gm)].map((match) => match[1]);
   assertExactList(matrixIds, releaseArchitectures.map(({ id }) => id),
-    'build matrix include must contain x86_64 and every distinct ImmortalWrt aarch64 package architecture');
+    'release build matrix must contain only x86_64');
   releaseArchitectures.forEach(({ id, packageArch, assetArch, suffix, artifact, sdkPath, sdkSha256 }) => {
     assert(buildJob.includes(`package_arch: ${packageArch}`), `${id} matrix entry must declare APK architecture ${packageArch}`);
     assert(buildJob.includes(`asset_arch: ${assetArch}`), `${id} matrix entry must declare asset architecture ${assetArch}`);
@@ -525,8 +490,9 @@ try {
       `${id} matrix entry must declare its exact release asset suffix`);
     assert(buildJob.includes(`artifact: ${artifact}`), `${id} matrix entry must use its unique artifact name`);
   });
-  assert((buildJob.match(/target_arch: aarch64/g) || []).length === 4,
-    'all four ARM64 package architecture entries must use the aarch64 Rust target');
+  assert(!workflow.includes('target_arch: aarch64') && !workflow.includes('package_arch: aarch64') &&
+    !workflow.includes('asset_arch: aarch64') && !workflow.includes('lanspeed-apk-aarch64'),
+  'release workflow must not build or publish NSS/aarch64 packages');
   const curlLines = workflow.split('\n').map((line) => line.trim()).filter((line) => line.startsWith('curl '));
   assert(curlLines.length === 2, 'workflow must contain exactly the bpf-linker and SDK curl downloads');
   curlLines.forEach((line) => {
@@ -706,7 +672,7 @@ try {
   assert(workflow.includes('compression-level: 0'), 'matrix APK artifacts must disable redundant compression');
   assert(workflow.includes('if-no-files-found: error'), 'matrix upload must fail if any artifact collection failed');
   assert(publishJob.includes('pattern: lanspeed-apk-*') && publishJob.includes('merge-multiple: true'),
-    'publish job must download and merge every architecture artifact from the same run');
+    'publish job must download the x86_64 artifact from the same run');
   const expectedAssets = releaseArchitectures.flatMap(({ assetArch, suffix }) => [
     `lanspeedd-${'${CODE_VERSION}'}${suffix}.apk`,
     `lanspeedd-bpf-${'${CODE_VERSION}'}${suffix}.apk`,
@@ -717,10 +683,10 @@ try {
     assert(workflow.includes(asset), `publish job must require exact release asset ${asset}`);
   });
   assert(workflow.includes('find "$release_dir" -maxdepth 1 -type f -printf \'%f\\n\' | sort > "$actual_files"'),
-    'publish job must enumerate only the 20 downloaded release files');
+    'publish job must enumerate only the four downloaded x86_64 release files');
   assert(workflow.includes('diff -u "$expected_files" "$actual_files"'), 'publish job must reject missing or extra release files');
   assertBefore(workflow, 'diff -u "$expected_files" "$actual_files"', 'name: Publish recoverable GitHub Release',
-    'publish job must validate all 20 files before creating a draft Release');
+    'publish job must validate all four x86_64 files before creating a draft Release');
   const recoverablePublishStep = extractNamedStep(publishJob, 'Publish recoverable GitHub Release');
   assert(recoverablePublishStep.includes('RELEASE_TAG: ${{ needs.detect.outputs.release_tag }}'),
     'publish step must use the exact tag emitted by detection');
@@ -735,8 +701,8 @@ try {
   assert(recoverablePublishStep.includes('gh release upload "$RELEASE_TAG" "${files[@]}"'),
     'all exact APK and bundle files must be uploaded without clobbering existing assets');
   assert(recoverablePublishStep.includes('mapfile -t files < <(find "$release_dir"') &&
-    recoverablePublishStep.includes('[ "${#files[@]}" -ne 20 ]'),
-  'publish must upload the complete validated 20-file set');
+    recoverablePublishStep.includes('[ "${#files[@]}" -ne 4 ]'),
+  'publish must upload the complete validated four-file x86_64 set');
   assert(recoverablePublishStep.includes('for attempt in $(seq 1 12); do'),
     'publish must wait for GitHub to expose asset digests');
   assert(recoverablePublishStep.includes("jq -nc '{draft: false}'"),
@@ -781,16 +747,22 @@ try {
     'README must explain the cache benefit');
   assert(readme.includes('发布 workflow 默认禁用'), 'README must document the disabled release workflow');
   assert(readme.includes('仅保留 `workflow_dispatch` 手动触发'), 'README must document the manual-only release trigger');
+  assert(homeReadme.includes('GitHub Release 只提供 x86_64'),
+    'top-level README must state that releases are x86_64-only');
+  assert(homeReadme.includes('不发布 Qualcomm NSS 预编译包') &&
+    homeReadme.includes('专属 `kmod-lanspeed-nss-control`') &&
+    homeReadme.includes('建议使用目标固件的同版源码或 SDK 自行编译'),
+  'top-level README must explain why NSS users should build the dedicated kmod themselves');
   assert(readme.includes('草稿 Release'), 'README must describe draft-first publication');
   assert(readme.includes('再次手动运行'), 'README must document manual draft recovery');
   assert(readme.includes('不得预先创建 `v*` tag'), 'README must forbid maintainers from pre-creating release tags');
   assert(!readme.includes('GitHub Actions 在 `v*` tag 发布时'), 'README must not retain the obsolete tag-trigger description');
-	assert(readme.includes('`1.1.6-r3`'), 'README full-version example must match the 1.1.6 release');
+	assert(readme.includes('`1.2.0-r1`'), 'README full-version example must match the 1.2.0 release');
 	assert(!/1\.1\.6-r(?!3(?:\D|$))\d+/.test(readme),
-	  'README must keep the 1.1.6 release at r3');
+	  'README must keep the 1.2.0 release at r1');
 
-	assert(daemonRelease === '3', 'daemon PKG_RELEASE must remain exactly 3');
-	assert(luciRelease === '3', 'LuCI PKG_RELEASE must remain exactly 3');
+	assert(daemonRelease === '1', 'daemon PKG_RELEASE must remain exactly 3');
+	assert(luciRelease === '1', 'LuCI PKG_RELEASE must remain exactly 3');
 
   console.log('validate-release-version: PASS');
 } catch (error) {

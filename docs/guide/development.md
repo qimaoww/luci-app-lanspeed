@@ -62,8 +62,10 @@ sh tests/validate-lanspeed-docs.sh
 
 ## 发布
 
-发布 workflow 默认禁用，不监听 `main`、tag 或 pull request；仓库内仅保留 `workflow_dispatch` 手动触发。需要发布时，由仓库管理员临时启用 `Build SDK Packages` 并手动运行，为 x86_64 和四种 aarch64 包架构构建三个 APK，完成后重新禁用该 workflow。
+发布 workflow 默认禁用，不监听 `main`、tag 或 pull request；仓库内仅保留 `workflow_dispatch` 手动触发。需要发布时，由仓库管理员临时启用 `Build SDK Packages` 并手动运行，只为 x86_64 构建 `lanspeedd`、`lanspeedd-bpf`、`luci-app-lanspeed` 三个 APK 和一个整合归档，完成后重新禁用该 workflow。
+
+Qualcomm NSS 不发布通用预编译包。NSS 控制依赖专属 `kmod-lanspeed-nss-control`，必须与目标设备的内核 ABI、NSS 驱动和固件编译配置保持一致；建议使用目标固件的同版源码或 SDK 自行编译，不能混用其他固件生成的 kmod。
 
 Rust 主机工具链按 runner 操作系统与架构、目标架构、SDK SHA256、feeds 实际 revision、Rust 配方版本和内容哈希隔离缓存，后续相同 SDK 不再从头编译 Rust。
 
-workflow 先创建草稿 Release，校验全部架构资产后再发布。失败草稿可由同一版本提交再次手动运行以重建，也可补发缺失的 tag/Release。维护者不得预先创建 `v*` tag。
+workflow 先创建草稿 Release，精确校验四个 x86_64 资产后再发布。失败草稿可由同一版本提交再次手动运行以重建，也可补发缺失的 tag/Release。维护者不得预先创建 `v*` tag。
