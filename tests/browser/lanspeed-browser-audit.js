@@ -1871,7 +1871,8 @@ async page => {
 						'enable_proxy_connections') !== -1;
 					const requiredFields = [
 						'rate_collector_mode'
-					].concat(nssPlatform ? [ 'access_edge_mode', 'nss_low_rate_window_ms',
+					].concat(nssPlatform ? [ 'access_edge_mode', 'internet_view_mode',
+						'nss_low_rate_window_ms',
 						'nss_low_rate_high_watermark_bps', 'nss_fifo_target_delay_ms',
 						'nss_fifo_min_queue_packets', 'rate_compensation_factor' ] : []).concat(
 						x86ProxyConnections ? [ 'enable_proxy_connections', 'mihomo_controller_port',
