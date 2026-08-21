@@ -65,7 +65,7 @@ function multisetsEqual(left, right) {
   return left.length === right.length && left.every((identity, index) => identity === right[index]);
 }
 
-const reloadContract = /^\s*if ubus call lanspeed reload >\/dev\/null 2>&1; then[ \t]*\n[ \t]*return 0[ \t]*\n[ \t]*fi[\s\S]*if \[ -d \/sys\/module\/lanspeed_nss_control \]; then[\s\S]*return 1[ \t]*\n[ \t]*fi[ \t]*\n[ \t]*restart[ \t]*\s*$/;
+const reloadContract = /^(?:\s*load_nss_control_modules\s*\n)?\s*if ubus call lanspeed reload >\/dev\/null 2>&1; then[ \t]*\n[ \t]*return 0[ \t]*\n[ \t]*fi[\s\S]*if \[ -d \/sys\/module\/lanspeed_nss_control \]; then[\s\S]*return 1[ \t]*\n[ \t]*fi[ \t]*\n[ \t]*restart[ \t]*\s*$/;
 const destructiveTcCommand = /cleanup_|(?:\btc|\$TC)\s+filter\s+del\b|\bqdisc\s+del\b/i;
 
 function validateReloadService(source) {
@@ -120,6 +120,9 @@ const startBody = shellFunctionBody(initScript, 'start_service');
 assert(/^\s*cleanup_lanspeed_tc_filters\s*$/m.test(startBody) &&
   startBody.indexOf('cleanup_lanspeed_tc_filters') < startBody.indexOf('procd_open_instance'),
   'startup must reclaim stale owned filters before launching a replacement daemon');
+assert(/^\s*load_nss_control_modules\s*$/m.test(startBody) &&
+  /^\s*load_nss_control_modules\s*$/m.test(shellFunctionBody(initScript, 'reload_service')),
+  'NSS startup and reload must preload the optional qdisc and redirect modules');
 const tcDeleteBody = shellFunctionBody(initScript, 'lanspeed_tc_delete_owned');
 assert(tcDeleteBody.includes('2>/dev/null') &&
   tcDeleteBody.includes('lanspeed_tc_filter_present') &&

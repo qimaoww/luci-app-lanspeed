@@ -62,6 +62,11 @@ fn vendors_build_std_dependencies_for_supported_rust_releases() {
         ("rustc-demangle", "rustc-demangle", "0.1.26"),
         ("libc-0.2.183", "libc", "0.2.183"),
         ("rustc-demangle-0.1.27", "rustc-demangle", "0.1.27"),
+        (
+            "rustc-literal-escaper-0.0.8",
+            "rustc-literal-escaper",
+            "0.0.8",
+        ),
     ] {
         let manifest =
             fs::read_to_string(workspace.join("vendor").join(directory).join("Cargo.toml"))
@@ -88,6 +93,10 @@ fn vendors_build_std_dependencies_for_supported_rust_releases() {
         (
             "rustc-demangle-0.1.27",
             "b50b8869d9fc858ce7266cce0194bd74df58b9d0e3f6df3a9fc8eb470d95c09d",
+        ),
+        (
+            "rustc-literal-escaper-0.0.8",
+            "bfe6f213fb658c8fb95baabd5420393438cf5a98d707f5dd701d9197c705f71e",
         ),
     ] {
         let checksums = fs::read_to_string(
