@@ -234,7 +234,7 @@ jobs:
           base_sdk="$RUNNER_TEMP/sdk-base-${{ matrix.id }}"
 
           set -o pipefail
-          APK_FAKEROOT_SUDO=1 ENABLE_BPF=0 SDK_RELEASE=25.12 SDK_DIR="$base_sdk" SDK_FEEDS_PREPARED=1 \
+          ENABLE_BPF=0 SDK_RELEASE=25.12 SDK_DIR="$base_sdk" SDK_FEEDS_PREPARED=1 \
             SDK_FEEDS_HASH="${{ steps.sdk-identity.outputs.feeds_hash }}" \
             SDK_RUST_VERSION="${{ steps.sdk-identity.outputs.rust_version }}" \
             SDK_RUST_RECIPE_HASH="${{ steps.sdk-identity.outputs.rust_recipe_hash }}" \
@@ -312,7 +312,7 @@ jobs:
 
           bpf_sdk="$RUNNER_TEMP/sdk-bpf-${{ matrix.id }}"
           set -o pipefail
-          APK_FAKEROOT_SUDO=1 ENABLE_BPF=1 SDK_RELEASE=25.12 SDK_DIR="$bpf_sdk" SDK_FEEDS_PREPARED=1 \
+          ENABLE_BPF=1 SDK_RELEASE=25.12 SDK_DIR="$bpf_sdk" SDK_FEEDS_PREPARED=1 \
             SDK_FEEDS_HASH="${{ steps.sdk-identity.outputs.feeds_hash }}" \
             SDK_RUST_VERSION="${{ steps.sdk-identity.outputs.rust_version }}" \
             SDK_RUST_RECIPE_HASH="${{ steps.sdk-identity.outputs.rust_recipe_hash }}" \
