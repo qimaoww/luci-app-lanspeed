@@ -381,6 +381,7 @@ where
         );
 
         if observations.commands.tc {
+            let mut tc_filter_details = Vec::new();
             if let Some(result) = self.command(
                 ReadOnlyCommand::TcFilterHelp,
                 &[],
@@ -415,15 +416,7 @@ where
                     ) {
                         if result.exit_code == Some(0) {
                             match tc::parse_filter_json(ifname, direction, &result.stdout) {
-                                Ok(details) => {
-                                    let filters = details
-                                        .into_iter()
-                                        .map(|detail| detail.filter)
-                                        .collect::<Vec<_>>();
-                                    observations.tc.existing_filters |=
-                                        tc::has_foreign_filters(&filters);
-                                    observations.tc.filters.extend(filters);
-                                }
+                                Ok(details) => tc_filter_details.extend(details),
                                 Err(_) => {
                                     observations.probe_error = true;
                                     record_failure(
@@ -442,6 +435,16 @@ where
                     }
                 }
             }
+            tc::reconcile_runtime_owned_filters(
+                &mut tc_filter_details,
+                &config.runtime_collect_ifnames(),
+                runtime,
+            );
+            observations.tc.filters = tc_filter_details
+                .into_iter()
+                .map(|detail| detail.filter)
+                .collect();
+            observations.tc.existing_filters = tc::has_foreign_filters(&observations.tc.filters);
         }
         if observations.commands.nft {
             if let Some(result) = self.command(

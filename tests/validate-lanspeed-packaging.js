@@ -720,8 +720,8 @@ try {
   );
   assertMatch(nssControlKmodMakefile, /^PKG_VERSION:=1\.2\.0$/m,
     'NSS control kmod must stay on the daemon version');
-  assertMatch(nssControlKmodMakefile, /^PKG_RELEASE:=1$/m,
-    'NSS control kmod must stay on release 1');
+  assertMatch(nssControlKmodMakefile, /^PKG_RELEASE:=2$/m,
+    'NSS control kmod must stay on release 2');
   assertMatch(nssControlKmodMakefile,
     /^  DEPENDS:=@TARGET_qualcommax \+kmod-ifb \+kmod-qca-nss-drv \+kmod-qca-nss-drv-igs$/m,
     'NSS control kmod must be packaged only for qualcommax with verified IGS dependencies');
