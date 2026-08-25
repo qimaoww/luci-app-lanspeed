@@ -11,6 +11,7 @@ use lanspeedd::probe::files::BoundedFile;
 use lanspeedd::probe::tc::{
     dae_preempts_lan_ingress, has_foreign_filters, has_owned_identity_collision,
     has_software_direct_action_semantics, parse_filter_json, qdisc_json_has_clsact,
+    reconcile_runtime_owned_filters,
 };
 use lanspeedd::probe::{
     assess, BpfObservation, CommandObservations, FileObservations, NssObservation,
@@ -911,6 +912,99 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
     }];
     assert!(!has_owned_identity_collision(&chained));
     assert!(!dae_preempts_lan_ingress(&chained, &["eth1".into()]));
+}
+
+#[test]
+fn unnamed_tc_full_programs_use_complete_runtime_ownership_without_false_conflicts() {
+    let issue_filter = |direction| {
+        parse_filter_json(
+            "br-lan",
+            direction,
+            r#"[
+              {"protocol":"all","pref":49152,"kind":"bpf","chain":0},
+              {"protocol":"all","pref":49152,"kind":"bpf","chain":0,
+               "options":{"handle":"0x1eed","bpf_name":"","direct-action":true,
+                          "not_in_hw":true,"prog":{"id":18,"name":"","jited":1}}}
+            ]"#,
+        )
+        .unwrap()
+    };
+    let mut details = issue_filter("ingress");
+    details.extend(issue_filter("egress"));
+    assert_eq!(details.len(), 2);
+    assert!(details.iter().all(|detail| detail.program_name.is_none()));
+    assert!(details
+        .iter()
+        .all(|detail| detail.filter.owner == "unknown"));
+
+    let runtime = ProbeRuntimeHealth {
+        bpf_object_loaded: true,
+        bpf_attached: true,
+        bpf_expected_hook_count: 2,
+        bpf_attached_hook_count: 2,
+        bpf_map_read_attempted: true,
+        bpf_map_read_ok: true,
+        ..ProbeRuntimeHealth::default()
+    };
+    assert_eq!(
+        reconcile_runtime_owned_filters(&mut details, &["br-lan".into()], &runtime),
+        2
+    );
+    let filters = details
+        .into_iter()
+        .map(|detail| detail.filter)
+        .collect::<Vec<_>>();
+    assert!(!has_foreign_filters(&filters));
+    assert!(!has_owned_identity_collision(&filters));
+
+    let mut config = RuntimeConfig::default();
+    config.enable_bpf = true;
+    config.interface_include.push("br-lan".into());
+    let mut observations = ProbeObservations::default();
+    observations.commands.tc = true;
+    observations.tc.clsact = true;
+    observations.tc.bpf = true;
+    observations.tc.filters = filters;
+    observations.files.lan_bridge = true;
+    observations.bpf.package = true;
+    observations.bpf.object = true;
+    let report = assess(&config, observations, &runtime);
+    assert!(!report.warnings.contains(&"existing_tc_filters_detected"));
+    assert!(!report.warnings.contains(&"tc_filter_conflict"));
+    assert!(report.facts.tc.safe_attach);
+
+    let mut partial = issue_filter("ingress");
+    let partial_runtime = ProbeRuntimeHealth {
+        bpf_attached: true,
+        bpf_expected_hook_count: 2,
+        bpf_attached_hook_count: 1,
+        ..ProbeRuntimeHealth::default()
+    };
+    assert_eq!(
+        reconcile_runtime_owned_filters(&mut partial, &["br-lan".into()], &partial_runtime),
+        0
+    );
+    assert_eq!(partial[0].filter.owner, "unknown");
+
+    let mut named_foreign = issue_filter("ingress");
+    named_foreign.extend(
+        parse_filter_json(
+            "br-lan",
+            "egress",
+            r#"[{"protocol":"all","pref":49152,"kind":"bpf","chain":0,
+                 "options":{"handle":"0x1eed","bpf_name":"third_party",
+                            "direct-action":true,"not_in_hw":true,
+                            "prog":{"id":99,"name":"foreign"}}}]"#,
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        reconcile_runtime_owned_filters(&mut named_foreign, &["br-lan".into()], &runtime),
+        0
+    );
+    assert!(named_foreign
+        .iter()
+        .all(|detail| detail.filter.owner == "unknown"));
 }
 
 #[test]

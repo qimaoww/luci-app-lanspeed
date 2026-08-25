@@ -80,8 +80,8 @@
     }
   ],
   "versions": {
-    "daemon": "1.2.0-r1",
-    "package": "1.2.0-r1",
+    "daemon": "1.2.0-r2",
+    "package": "1.2.0-r2",
     "contract_version": 1,
     "schema_version": 1
   },

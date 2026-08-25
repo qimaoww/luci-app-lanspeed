@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
 
-use super::TcFilter;
+use super::{RuntimeHealth, TcFilter};
 
 pub const LANSPEED_PREF: u32 = 49_152;
 pub const LANSPEED_HANDLE: &str = "0x1eed";
@@ -33,6 +33,84 @@ pub fn has_owned_identity_collision(filters: &[TcFilter]) -> bool {
 
 pub fn has_foreign_filters(filters: &[TcFilter]) -> bool {
     filters.iter().any(|filter| filter.owner != "lanspeed")
+}
+
+/// Recover ownership when tc exposes the BPF program ID but omits both name
+/// fields. Runtime ownership is accepted only when every expected hook is
+/// attached and the current TC snapshot contains a compatible unnamed filter
+/// in every owned slot. A named or structurally incompatible occupant remains
+/// foreign, preserving the collision guard.
+pub fn reconcile_runtime_owned_filters(
+    details: &mut [TcFilterDetails],
+    attach_ifnames: &[String],
+    runtime: &RuntimeHealth,
+) -> usize {
+    let attach_ifnames = attach_ifnames
+        .iter()
+        .fold(Vec::<&str>::new(), |mut unique, ifname| {
+            if !unique.contains(&ifname.as_str()) {
+                unique.push(ifname);
+            }
+            unique
+        });
+    let expected_hook_count = attach_ifnames.len().saturating_mul(2);
+    if expected_hook_count == 0
+        || !runtime.bpf_attached
+        || runtime.bpf_expected_hook_count != expected_hook_count
+        || runtime.bpf_attached_hook_count != expected_hook_count
+    {
+        return 0;
+    }
+
+    let (expected_pref, expected_handle) = if runtime.dae_early_bpf {
+        (LANSPEED_EARLY_PREF, LANSPEED_EARLY_HANDLE)
+    } else {
+        (LANSPEED_PREF, LANSPEED_HANDLE)
+    };
+    let is_expected_slot = |detail: &TcFilterDetails, ifname: &str, direction: &str| {
+        detail.filter.interface == ifname
+            && detail.filter.direction == direction
+            && detail.filter.chain == 0
+            && detail.filter.pref == expected_pref
+            && handles_equal(&detail.filter.handle, expected_handle)
+    };
+    let is_unnamed_candidate = |detail: &TcFilterDetails| {
+        detail.filter.owner == "unknown"
+            && detail.kind.as_deref() == Some("bpf")
+            && detail.program_name.is_none()
+            && detail.program_id.is_some()
+            && has_software_direct_action_semantics(detail)
+    };
+
+    let complete_snapshot = attach_ifnames.iter().all(|ifname| {
+        ["ingress", "egress"].into_iter().all(|direction| {
+            let occupants = details
+                .iter()
+                .filter(|detail| is_expected_slot(detail, ifname, direction))
+                .collect::<Vec<_>>();
+            !occupants.is_empty()
+                && occupants
+                    .iter()
+                    .all(|detail| detail.filter.owner == "lanspeed" || is_unnamed_candidate(detail))
+        })
+    });
+    if !complete_snapshot {
+        return 0;
+    }
+
+    let mut reconciled = 0;
+    for detail in details {
+        if attach_ifnames.iter().any(|ifname| {
+            ["ingress", "egress"]
+                .into_iter()
+                .any(|direction| is_expected_slot(detail, ifname, direction))
+        }) && is_unnamed_candidate(detail)
+        {
+            detail.filter.owner = "lanspeed".into();
+            reconciled += 1;
+        }
+    }
+    reconciled
 }
 
 /// Validate the execution properties that make a cls_bpf hook suitable for
@@ -303,7 +381,11 @@ fn canonical_handle(handle: &str) -> String {
 }
 
 fn string_field(object: &Map<String, Value>, name: &str) -> Option<String> {
-    object.get(name)?.as_str().map(str::to_owned)
+    object
+        .get(name)?
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
 }
 
 fn owner(program_name: &str) -> &'static str {
