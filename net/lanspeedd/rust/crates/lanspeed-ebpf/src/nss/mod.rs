@@ -11,6 +11,8 @@ mod conntrack;
 
 #[cfg(feature = "nss-ecm")]
 mod ecm;
+#[cfg(feature = "nss-tc")]
+mod routed;
 
 #[cfg(feature = "nss-ecm")]
 pub use ecm::{
