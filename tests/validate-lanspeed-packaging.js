@@ -41,6 +41,10 @@ const initScript = fs.readFileSync(
   path.join(root, 'net/lanspeedd/files/etc/init.d/lanspeedd'),
   'utf8'
 );
+const nssModuleLoader = fs.readFileSync(
+  path.join(root, 'net/lanspeedd/files/usr/libexec/lanspeed/load-control-modules.nss'),
+  'utf8'
+);
 const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/Makefile'), 'utf8');
 const luciStaticRoot = path.join(
   root,
@@ -892,11 +896,24 @@ try {
   );
   assertMatch(
     pkgMakefile,
+    /if \[ "\$\(CONFIG_TARGET_qualcommax\)" = "y" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/usr\/libexec\/lanspeed; \\\s*\$\(INSTALL_BIN\) \.\/files\/usr\/libexec\/lanspeed\/load-control-modules\.nss \$\(1\)\/usr\/libexec\/lanspeed\/load-control-modules; \\\s*fi/,
+    'only the qualcommax package may install the NSS kernel-module loader'
+  );
+  assertMatch(
+    pkgMakefile,
     /if \[ "\$\(CONFIG_TARGET_qualcommax\)" != "y" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/etc\/hotplug\.d\/iface; \\\s*\$\(INSTALL_BIN\) \.\/files\/etc\/hotplug\.d\/iface\/90-lanspeedd \$\(1\)\/etc\/hotplug\.d\/iface\/90-lanspeedd; \\\s*fi/,
     'qualcommax must use only procd reload triggers while x86 retains its existing hotplug entry'
   );
   assertNoMatch(initScript, /procd_set_param term_timeout/,
     'the shared init source must retain the x86 default termination timeout');
+  assertMatch(initScript, /\/usr\/libexec\/lanspeed\/load-control-modules/,
+    'the shared init source must call the optional platform module loader');
+  assertNoMatch(initScript, /qca_nss_qdisc|act_nssmirred|modprobe/,
+    'the shared init source installed on x86 must not probe NSS kernel modules');
+  assertMatch(nssModuleLoader, /qca_nss_qdisc/,
+    'the isolated NSS loader must prepare qca_nss_qdisc');
+  assertMatch(nssModuleLoader, /act_nssmirred/,
+    'the isolated NSS loader must prepare act_nssmirred');
   assertMatch(x86ProfileMigration, /uci -q delete lanspeed\.main\.access_edge_mode/,
     'x86 migration must remove a retained Access Edge option');
   for (const option of [ 'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets',

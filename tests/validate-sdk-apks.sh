@@ -232,6 +232,7 @@ daemon_config="$daemon_root/etc/config/lanspeed"
 [[ -s $daemon_config ]] || fail "daemon APK does not contain etc/config/lanspeed"
 x86_migration="$daemon_root/etc/uci-defaults/95-lanspeed-x86-profile"
 nss_shaping_migration="$daemon_root/etc/uci-defaults/94-lanspeed-nss-shaping"
+platform_module_loader="$daemon_root/usr/libexec/lanspeed/load-control-modules"
 
 if grep -aEq '/(openwrt|root|home)/' \
 	"$daemon" "$bpf_root"/usr/lib/bpf/*.o; then
@@ -270,6 +271,8 @@ ecm_object="$bpf_root/usr/lib/bpf/lanspeed-ebpf-ecm.o"
 case "$expected_arch" in
 	x86_64)
 		[[ ! -e $ecm_object ]] || fail 'x86 BPF APK must not contain an NSS ECM object'
+		[[ ! -e $platform_module_loader ]] || \
+			fail 'x86 daemon APK must not contain the NSS kernel-module loader'
 		[[ -x $x86_migration ]] || fail 'x86 daemon APK must contain the executable profile migration'
 		[[ ! -e $nss_shaping_migration ]] || \
 			fail 'x86 daemon APK must not contain the NSS shaping migration'
@@ -312,6 +315,12 @@ case "$expected_arch" in
 		;;
 	aarch64*)
 		[[ -s $ecm_object ]] || fail 'aarch64 BPF APK must contain the isolated NSS ECM object'
+		[[ -x $platform_module_loader ]] || \
+			fail 'aarch64 NSS daemon APK must contain the executable kernel-module loader'
+		for module in qca_nss_qdisc act_nssmirred; do
+			grep -q "$module" "$platform_module_loader" || \
+				fail "aarch64 NSS kernel-module loader is missing: $module"
+		done
 		[[ ! -e $x86_migration ]] || fail 'aarch64 daemon APK must not contain the x86 profile migration'
 		[[ -x $nss_shaping_migration ]] || \
 			fail 'aarch64 NSS daemon APK must contain the shaping migration'
