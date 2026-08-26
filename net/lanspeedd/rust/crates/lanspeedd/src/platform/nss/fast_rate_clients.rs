@@ -2,8 +2,8 @@
 //!
 //! The aggregate shadow is useful for diagnostics, but a routed substitute
 //! must be keyed by the client MAC and direction. This book keeps one bounded
-//! coordinator per MAC/direction and drops a window when either source or its
-//! reset generation disappears.
+//! rolling counter history per MAC/direction and drops a window when either
+//! source or its reset generation becomes invalid.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -11,8 +11,9 @@ use lanspeed_common::{DIR_RX, DIR_TX};
 
 use super::{
     fast_n_runtime::FastNSnapshot,
-    fast_rate::{FastCounterSample, FastRateCoordinator, FastWindow, FAST_WINDOW_QUIET_CONFIRM_MS},
+    fast_rate::{FastCounterSample, FastWindow},
     fast_rate_contract::FastRateBaseContract,
+    fast_rate_rolling::FastRateRollingWindow,
     fast_s_runtime::FastSSnapshot,
 };
 
@@ -38,7 +39,7 @@ pub(crate) struct FastClientSample {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct FastClientRateBook {
-    coordinators: BTreeMap<FastClientKey, FastRateCoordinator>,
+    rolling: BTreeMap<FastClientKey, FastRateRollingWindow>,
     last_counters: BTreeMap<FastClientKey, ClientCounterPair>,
     bindings: BTreeMap<FastClientKey, ClientBinding>,
     latest: BTreeMap<FastClientKey, FastClientSample>,
@@ -122,7 +123,9 @@ impl FastClientRateBook {
             || fast_s.truncated
             || fast_s.invalid_entries != 0
         {
-            self.coordinators.values_mut().for_each(|book| book.clear());
+            self.rolling
+                .values_mut()
+                .for_each(FastRateRollingWindow::clear);
             self.last_counters.clear();
             self.bindings.clear();
             self.latest.clear();
@@ -133,7 +136,7 @@ impl FastClientRateBook {
         let n = aggregate_n(fast_n);
         let s = aggregate_s(fast_s);
         let mut keys = n.keys().chain(s.keys()).copied().collect::<BTreeSet<_>>();
-        keys.extend(self.coordinators.keys().copied());
+        keys.extend(self.rolling.keys().copied());
         if let Some(contract) = contract {
             // Once either direction of a client has been observed, keep a
             // paired key for the opposite direction as well.  A quiet
@@ -175,9 +178,9 @@ impl FastClientRateBook {
             // absent source contributes a zero cumulative counter until it
             // appears. If both source entries disappear after a key has been
             // observed, retain their last cumulative values with no progress
-            // marker; the coordinator can then confirm a real quiet zero
-            // without shortening the next resumed window. A real counter
-            // rollback still fails in the coordinator and rewarms the key.
+            // marker; the rolling book can then confirm a real quiet zero
+            // without losing the cumulative baseline. A real counter rollback
+            // still fails the rolling window and rewarms the key.
             let previous = self.last_counters.get(&key).copied().unwrap_or_default();
             let n = current_or_retained(n.get(&key).copied(), previous.n, fast_n.reset_generation);
             let s = current_or_retained(s.get(&key).copied(), previous.s, fast_s.reset_generation);
@@ -196,20 +199,23 @@ impl FastClientRateBook {
                     s: Some(s),
                 },
             );
-            let coordinator = self.coordinators.entry(key).or_default();
+            let rolling = self.rolling.entry(key).or_default();
             let common_progress_ms = n.progress_ms.max(s.progress_ms);
             let sample_ms = if common_progress_ms == 0 {
                 fast_n.sample_ms.max(fast_s.sample_ms)
             } else {
                 common_progress_ms
             };
+            let attachment_generation = contract
+                .and_then(|contract| contract.client(key.mac))
+                .map_or(0, |client| client.attachment_generation);
             let n_sample = FastCounterSample {
                 sample_ms,
                 progress_ms: n.progress_ms,
                 source_present: n.source_present,
                 read_begin_ms: n_read_begin_ms,
                 read_end_ms: n_read_end_ms,
-                attachment_generation: 0,
+                attachment_generation,
                 reset_generation: n.reset_generation,
                 bytes: n.bytes,
                 packets: n.packets,
@@ -220,43 +226,20 @@ impl FastClientRateBook {
                 source_present: s.source_present,
                 read_begin_ms: s_read_begin_ms,
                 read_end_ms: s_read_end_ms,
-                attachment_generation: 0,
+                attachment_generation,
                 reset_generation: s.reset_generation,
                 bytes: s.bytes,
                 packets: s.packets,
             };
-            if !coordinator.has_start() && coordinator.begin(n_sample, s_sample).is_ok() {
-                continue;
-            }
-            if !coordinator.has_progress(n_sample, s_sample) {
-                match coordinator.confirmed_quiet_window(
-                    n_sample,
-                    s_sample,
-                    FAST_WINDOW_QUIET_CONFIRM_MS,
-                ) {
-                    Ok(Some(window)) => {
+            match rolling.observe(n_sample, s_sample) {
+                Ok(window) => {
+                    if let Some(window) = window {
                         self.latest.insert(key, client_sample(window));
                     }
-                    Ok(None) => {}
-                    Err(_) => {
-                        self.latest.remove(&key);
-                        self.invalid_windows = self.invalid_windows.saturating_add(1);
-                        coordinator.clear();
-                        let _ = coordinator.begin(n_sample, s_sample);
-                    }
-                }
-                continue;
-            }
-            match coordinator.finish(n_sample, s_sample) {
-                Ok(window) => {
-                    self.latest.insert(key, client_sample(window));
-                    let _ = coordinator.begin(n_sample, s_sample);
                 }
                 Err(_) => {
                     self.latest.remove(&key);
                     self.invalid_windows = self.invalid_windows.saturating_add(1);
-                    coordinator.clear();
-                    let _ = coordinator.begin(n_sample, s_sample);
                 }
             }
         }
@@ -267,7 +250,7 @@ impl FastClientRateBook {
     }
 
     pub(crate) fn clear(&mut self) {
-        self.coordinators.clear();
+        self.rolling.clear();
         self.last_counters.clear();
         self.bindings.clear();
         self.latest.clear();
@@ -300,7 +283,7 @@ impl FastClientRateBook {
             }
         }
         for key in remove {
-            self.coordinators.remove(&key);
+            self.rolling.remove(&key);
             self.last_counters.remove(&key);
             self.bindings.remove(&key);
             self.latest.remove(&key);
@@ -519,23 +502,24 @@ mod tests {
         let mut book = FastClientRateBook::default();
         book.observe(&n(100), &s(50), 990, 1_010, 991, 1_011);
         let mut next_n = n(300);
-        next_n.sample_ms = 2_000;
-        next_n.entries[0].sample_ms = 2_000;
+        next_n.sample_ms = 3_000;
+        next_n.entries[0].sample_ms = 3_000;
         let mut next_s = s(250);
-        next_s.sample_ms = 2_000;
-        next_s.entries[0].sample_ms = 2_000;
-        book.observe(&next_n, &next_s, 1_990, 2_010, 1_991, 2_011);
+        next_s.sample_ms = 3_000;
+        next_s.entries[0].sample_ms = 3_000;
+        book.observe(&next_n, &next_s, 2_990, 3_010, 2_991, 3_011);
         let sample = book.get([2, 0, 0, 0, 0, 1], DIR_TX).unwrap();
-        assert_eq!(sample.fast_n_bps, 1_600);
-        assert_eq!(sample.fast_s_bps, 1_600);
-        assert_eq!(sample.fast_total_bps, 3_200);
-        assert_eq!(sample.routed_l2_with_fcs_bps, 6_720);
+        assert_eq!(sample.window_ms, 2_000);
+        assert_eq!(sample.fast_n_bps, 800);
+        assert_eq!(sample.fast_s_bps, 800);
+        assert_eq!(sample.fast_total_bps, 1_600);
+        assert_eq!(sample.routed_l2_with_fcs_bps, 3_360);
         assert!(book.get([2, 0, 0, 0, 0, 2], DIR_TX).is_none());
         assert_eq!(book.invalid_windows(), 0);
     }
 
     #[test]
-    fn uses_counter_progress_time_instead_of_batched_read_time() {
+    fn uses_completed_read_time_instead_of_batched_progress_time() {
         let mut book = FastClientRateBook::default();
         let mut first_n = n(100);
         first_n.sample_ms = 1_100;
@@ -554,20 +538,24 @@ mod tests {
         book.observe(&next_n, &next_s, 3_090, 3_100, 3_091, 3_101);
 
         let sample = book.get([2, 0, 0, 0, 0, 1], DIR_TX).unwrap();
-        assert_eq!(sample.sample_ms, 3_000);
+        assert_eq!(sample.sample_ms, 3_100);
         assert_eq!(sample.window_ms, 2_000);
         assert_eq!(sample.fast_n_bps, 800);
         assert_eq!(sample.fast_s_bps, 800);
         assert_eq!(sample.fast_total_bps, 1_600);
 
-        // A read that sees no new counter progress holds the valid event-rate
-        // window instead of publishing a synthetic zero window.
+        // A read that sees no new counter progress keeps the bytes in an
+        // overlapping read-clock window instead of republishing a short
+        // event-clock spike.
         let mut held_n = next_n;
-        held_n.sample_ms = 3_100;
+        held_n.sample_ms = 4_100;
         let mut held_s = next_s;
-        held_s.sample_ms = 3_100;
-        book.observe(&held_n, &held_s, 3_090, 3_100, 3_091, 3_101);
-        assert_eq!(book.get([2, 0, 0, 0, 0, 1], DIR_TX), Some(sample));
+        held_s.sample_ms = 4_100;
+        book.observe(&held_n, &held_s, 4_090, 4_100, 4_091, 4_101);
+        let held = book.get([2, 0, 0, 0, 0, 1], DIR_TX).unwrap();
+        assert_eq!(held.window_ms, 3_000);
+        assert!(held.fast_total_bps < sample.fast_total_bps);
+        assert!(held.fast_total_bps > 0);
         assert_eq!(book.invalid_windows(), 0);
     }
 
@@ -589,14 +577,17 @@ mod tests {
             .get([2, 0, 0, 0, 0, 1], DIR_TX)
             .expect("first complete window");
 
-        // FastS can advance between two batched FastN updates. That partial
-        // read must not replace the completed combined window with a zero-N
-        // or short-denominator sample.
+        // FastS can advance between two batched FastN updates. Both maps are
+        // still read together, so the rolling denominator must grow instead
+        // of being shortened to the FastS progress timestamp.
         let mut s_only = next_s;
         s_only.sample_ms = 2_500;
         s_only.entries[0].sample_ms = 2_500;
-        book.observe(&next_n, &s_only, 3_490, 3_500, 2_490, 2_501);
-        assert_eq!(book.get([2, 0, 0, 0, 0, 1], DIR_TX), Some(published));
+        book.observe(&next_n, &s_only, 3_490, 3_500, 3_491, 3_501);
+        let rolled = book.get([2, 0, 0, 0, 0, 1], DIR_TX).unwrap();
+        assert_eq!(rolled.window_ms, 2_500);
+        assert!(rolled.fast_total_bps < published.fast_total_bps);
+        assert!(rolled.fast_total_bps > 0);
     }
 
     #[test]
@@ -609,16 +600,16 @@ mod tests {
         book.observe(&first_n, &first_s, 990, 1_000, 991, 1_001);
 
         let mut next_n = n(300);
-        next_n.sample_ms = 2_000;
-        next_n.entries[0].sample_ms = 2_000;
+        next_n.sample_ms = 3_000;
+        next_n.entries[0].sample_ms = 3_000;
         let mut unchanged_s = first_s;
-        unchanged_s.sample_ms = 2_000;
-        book.observe(&next_n, &unchanged_s, 1_990, 2_000, 1_991, 2_001);
+        unchanged_s.sample_ms = 3_000;
+        book.observe(&next_n, &unchanged_s, 2_990, 3_000, 2_991, 3_001);
 
         let sample = book.get([2, 0, 0, 0, 0, 1], DIR_TX).unwrap();
-        assert_eq!(sample.fast_n_bps, 1_600);
+        assert_eq!(sample.fast_n_bps, 800);
         assert_eq!(sample.fast_s_bps, 0);
-        assert_eq!(sample.fast_total_bps, 1_600);
+        assert_eq!(sample.fast_total_bps, 800);
     }
 
     #[test]
@@ -638,7 +629,7 @@ mod tests {
             .get([2, 0, 0, 0, 0, 1], DIR_TX)
             .expect("confirmed quiet zero");
         assert_eq!(zero.sample_ms, 4_000);
-        assert_eq!(zero.window_ms, 2_999);
+        assert_eq!(zero.window_ms, 3_000);
         assert_eq!(zero.fast_n_bps, 0);
         assert_eq!(zero.fast_s_bps, 0);
         assert_eq!(zero.fast_total_bps, 0);
@@ -670,17 +661,17 @@ mod tests {
             1_001,
         );
         let mut next_n = n(300);
-        next_n.entries[0].sample_ms = 2_000;
+        next_n.entries[0].sample_ms = 3_000;
         book.observe(
             &next_n,
             &crate::platform::nss::fast_s_runtime::FastSSnapshot::default(),
-            1_990,
-            2_000,
-            1_991,
-            2_001,
+            2_990,
+            3_000,
+            2_991,
+            3_001,
         );
         let sample = book.get([2, 0, 0, 0, 0, 1], DIR_TX).unwrap();
-        assert_eq!(sample.fast_n_bps, 1_600);
+        assert_eq!(sample.fast_n_bps, 800);
         assert_eq!(sample.fast_s_bps, 0);
     }
 
@@ -692,18 +683,18 @@ mod tests {
         first_s.entries[0].sample_ms = 1_000;
         book.observe(&empty_n, &first_s, 990, 1_000, 991, 1_001);
         let mut next_s = s(300);
-        next_s.entries[0].sample_ms = 2_000;
+        next_s.entries[0].sample_ms = 3_000;
         book.observe(
             &FastNSnapshot::default(),
             &next_s,
-            1_990,
-            2_000,
-            1_991,
-            2_001,
+            2_990,
+            3_000,
+            2_991,
+            3_001,
         );
         let sample = book.get([2, 0, 0, 0, 0, 1], DIR_TX).unwrap();
         assert_eq!(sample.fast_n_bps, 0);
-        assert_eq!(sample.fast_s_bps, 1_600);
+        assert_eq!(sample.fast_s_bps, 800);
     }
 
     #[test]

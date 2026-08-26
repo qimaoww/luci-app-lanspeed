@@ -750,6 +750,36 @@ fn explicit_internet_view_publishes_routed_fast_window_without_a_lease() {
 }
 
 #[test]
+fn fast_rate_source_replaces_the_displaced_low_rate_reason_in_every_base_snapshot() {
+    let mut reasons = vec![
+        "classification_counter_skew".to_owned(),
+        "nss_low_rate_rolling_window".to_owned(),
+    ];
+    replace_displaced_nss_rate_reason(
+        &mut reasons,
+        ModelRateSource::FastRoutedInternet,
+        ModelRateSource::FastRoutedInternet,
+    );
+    assert!(reasons
+        .iter()
+        .any(|reason| reason == "nss_fast_rate_rolling_window"));
+    assert!(!reasons
+        .iter()
+        .any(|reason| reason == "nss_low_rate_rolling_window"));
+    assert!(reasons
+        .iter()
+        .any(|reason| reason == "classification_counter_skew"));
+
+    let mut legacy = vec!["nss_low_rate_rolling_window".to_owned()];
+    replace_displaced_nss_rate_reason(
+        &mut legacy,
+        ModelRateSource::EcmBpfFallback,
+        ModelRateSource::EcmBpfFallback,
+    );
+    assert_eq!(legacy, ["nss_low_rate_rolling_window"]);
+}
+
+#[test]
 fn either_invalid_classifier_window_blocks_the_combined_epoch() {
     let valid = Some((1_000, 3_000));
     for invalid in [Some((3_000, 3_000)), Some((4_000, 3_000))] {

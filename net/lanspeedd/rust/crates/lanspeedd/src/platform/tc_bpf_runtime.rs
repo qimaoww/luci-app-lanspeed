@@ -20,7 +20,7 @@ use aya::{
 use lanspeed_common::{
     FastCounterValue, LanspeedCounters, LanspeedKey, CLIENTS_MAP_NAME, EGRESS_EARLY_PROGRAM_NAME,
     EGRESS_PROGRAM_NAME, FAST_COUNTERS_MAP_NAME, INGRESS_EARLY_PROGRAM_NAME, INGRESS_PROGRAM_NAME,
-    MAX_CLIENTS,
+    MAX_CLIENTS, ROUTED_FAST_COUNTERS_MAP_NAME,
 };
 
 use crate::{
@@ -1503,14 +1503,25 @@ impl SystemAyaAdapter {
     }
 
     pub fn fast_counter_reader(&self) -> Result<FastCounterMapReader, AdapterError> {
+        self.fast_counter_reader_from(FAST_COUNTERS_MAP_NAME)
+    }
+
+    pub fn routed_fast_counter_reader(&self) -> Result<FastCounterMapReader, AdapterError> {
+        self.fast_counter_reader_from(ROUTED_FAST_COUNTERS_MAP_NAME)
+    }
+
+    fn fast_counter_reader_from(
+        &self,
+        map_name: &'static str,
+    ) -> Result<FastCounterMapReader, AdapterError> {
         let map = self
             .ebpf
             .as_ref()
-            .and_then(|ebpf| ebpf.map(FAST_COUNTERS_MAP_NAME))
+            .and_then(|ebpf| ebpf.map(map_name))
             .ok_or_else(|| {
                 AdapterError::new(
                     AdapterErrorKind::MapReadFailed,
-                    format!("{FAST_COUNTERS_MAP_NAME} missing"),
+                    format!("{map_name} missing"),
                 )
             })?;
         let counters = PerCpuHashMap::<_, FastCounterKey, FastCounterMapValue>::try_from(map)

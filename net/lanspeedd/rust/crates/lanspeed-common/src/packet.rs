@@ -35,6 +35,16 @@ pub enum TransportProtocol {
     Udp = IPPROTO_UDP,
 }
 
+/// Network-layer endpoints needed for a FIB scope check. Unlike
+/// `PacketIdentity`, this intentionally accepts ICMP and other non-TCP/UDP
+/// traffic because routed-rate accounting must exclude router-local frames
+/// regardless of their transport protocol.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RouteAddresses {
+    Ipv4 { src: [u8; 4], dst: [u8; 4] },
+    Ipv6 { src: [u8; 16], dst: [u8; 16] },
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PacketIdentity {
     pub src_mac: [u8; 6],
@@ -70,6 +80,54 @@ pub fn vlan_zone(tci: u16) -> u16 {
 
 pub fn is_valid_client_mac(mac: [u8; 6]) -> bool {
     mac[0] & 1 == 0 && mac != [0; 6] && mac != [0xff; 6]
+}
+
+/// Parse only the IP endpoints from an Ethernet frame, including up to two
+/// inline VLAN headers. Unsupported or truncated frames return `None` so a
+/// caller can fail open without misclassifying unknown traffic as local.
+pub fn route_addresses(frame: &[u8]) -> Option<RouteAddresses> {
+    if frame.len() < ETHERNET_HEADER_LEN {
+        return None;
+    }
+    let mut network_offset = ETHERNET_HEADER_LEN;
+    let mut ethertype = read_u16(frame, 12)?;
+    if is_vlan_ethertype(ethertype) {
+        ethertype = vlan_inner_ethertype(frame, network_offset)?;
+        network_offset += 4;
+        if is_vlan_ethertype(ethertype) {
+            ethertype = vlan_inner_ethertype(frame, network_offset)?;
+            network_offset += 4;
+            if is_vlan_ethertype(ethertype) {
+                return None;
+            }
+        }
+    }
+
+    match ethertype {
+        ETHERTYPE_IPV4 => {
+            checked_end(frame, network_offset, IPV4_MIN_HEADER_LEN)?;
+            if frame[network_offset] >> 4 != 4 || frame[network_offset] & 0x0f < 5 {
+                return None;
+            }
+            let mut src = [0; 4];
+            src.copy_from_slice(&frame[network_offset + 12..network_offset + 16]);
+            let mut dst = [0; 4];
+            dst.copy_from_slice(&frame[network_offset + 16..network_offset + 20]);
+            Some(RouteAddresses::Ipv4 { src, dst })
+        }
+        ETHERTYPE_IPV6 => {
+            checked_end(frame, network_offset, IPV6_HEADER_LEN)?;
+            if frame[network_offset] >> 4 != 6 {
+                return None;
+            }
+            let mut src = [0; 16];
+            src.copy_from_slice(&frame[network_offset + 8..network_offset + 24]);
+            let mut dst = [0; 16];
+            dst.copy_from_slice(&frame[network_offset + 24..network_offset + 40]);
+            Some(RouteAddresses::Ipv6 { src, dst })
+        }
+        _ => None,
+    }
 }
 
 /// Returns the L2+L3+L4 bytes repeated for each segment represented by a GRO skb.

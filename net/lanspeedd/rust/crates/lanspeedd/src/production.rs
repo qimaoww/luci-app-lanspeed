@@ -2494,6 +2494,7 @@ impl ProductionRuntime {
             if rx.source == ModelRateSource::FastRoutedInternet {
                 reasons.push("rx_explicit_internet_routed_view".to_owned());
             }
+            replace_displaced_nss_rate_reason(&mut reasons, tx.source, rx.source);
             if rate_mux_active {
                 client.tx_bps = tx.bps;
                 client.rx_bps = rx.bps;
@@ -2973,7 +2974,7 @@ impl ProductionRuntime {
         };
         let s_reader = self
             .adapter
-            .fast_counter_reader()
+            .routed_fast_counter_reader()
             .map_err(|error| error.to_string())?;
         let n_reader = ecm_bpf.fast_n_reader().map_err(|error| error.to_string())?;
         let event_reader = ecm_bpf.take_event_hint_reader();
@@ -3020,6 +3021,25 @@ impl ProductionRuntime {
         self.shutdown_complete = true;
         Ok(())
     }
+}
+
+#[cfg(feature = "nss-platform")]
+fn replace_displaced_nss_rate_reason(
+    reasons: &mut Vec<String>,
+    tx: ModelRateSource,
+    rx: ModelRateSource,
+) {
+    let fast_rate_selected = [tx, rx].into_iter().any(|source| {
+        matches!(
+            source,
+            ModelRateSource::FastRoutedInternet | ModelRateSource::FastRoutedLease
+        )
+    });
+    if !fast_rate_selected {
+        return;
+    }
+    reasons.retain(|reason| reason != "nss_low_rate_rolling_window");
+    reasons.push("nss_fast_rate_rolling_window".to_owned());
 }
 
 #[cfg(feature = "nss-platform")]

@@ -255,6 +255,33 @@ fn nss_fast_maps_have_one_worker_owner_and_no_collection_loop_reader() {
 }
 
 #[test]
+fn routed_internet_view_uses_its_own_fast_s_map_without_changing_legacy_accounting() {
+    let production = include_str!("../src/production.rs");
+    let account = include_str!("../../lanspeed-ebpf/src/nss/account.rs");
+
+    assert!(production.contains(".routed_fast_counter_reader()"));
+    assert!(!production
+        .contains("let s_reader = self\n            .adapter\n            .fast_counter_reader()"));
+
+    let legacy_update = account
+        .find("&LANSPEED_FAST_COUNTERS,")
+        .expect("legacy FastS counter update");
+    let routed_guard = account
+        .find("if !lan_local {")
+        .expect("routed FastS scope guard");
+    let routed_update = account
+        .find("&LANSPEED_ROUTED_FAST_COUNTERS,")
+        .expect("routed FastS counter update");
+    let client_update = account
+        .find("LANSPEED_CLIENTS.get_ptr_mut")
+        .expect("legacy client counter update");
+
+    assert!(legacy_update < routed_guard);
+    assert!(routed_guard < routed_update);
+    assert!(routed_update < client_update);
+}
+
+#[test]
 fn production_rust_has_no_pidof_probe_path_and_publishes_dae_and_nss_alias_evidence() {
     let commands = include_str!("../src/probe/commands.rs");
     let collector = include_str!("../src/probe/collector.rs");
