@@ -132,9 +132,9 @@ define Package/lanspeedd/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/target/$(RUSTC_TARGET_ARCH)/release/lanspeedd $(1)/usr/sbin/lanspeedd
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/etc/init.d/lanspeedd $(1)/etc/init.d/lanspeedd
-	if [ "$(CONFIG_TARGET_qualcommax)" = "y" ]; then \
-		$(SED) '/procd_set_param respawn/a\	procd_set_param term_timeout 15' $(1)/etc/init.d/lanspeedd; \
-	fi
+	$(INSTALL_DIR) $(1)/usr/libexec/lanspeed
+	$(INSTALL_BIN) ./files/usr/libexec/lanspeed/process-barrier $(1)/usr/libexec/lanspeed/process-barrier
+	$(INSTALL_BIN) ./files/usr/libexec/lanspeed/start-daemon $(1)/usr/libexec/lanspeed/start-daemon
 	if [ "$(CONFIG_TARGET_qualcommax)" = "y" ]; then \
 		$(INSTALL_DIR) $(1)/usr/libexec/lanspeed; \
 		$(INSTALL_BIN) ./files/usr/libexec/lanspeed/load-control-modules.nss $(1)/usr/libexec/lanspeed/load-control-modules; \

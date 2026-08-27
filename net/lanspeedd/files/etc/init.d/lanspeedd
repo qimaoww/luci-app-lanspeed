@@ -3,15 +3,21 @@
 USE_PROCD=1
 START=95
 STOP=10
+EXTRA_COMMANDS="cleanup_lanspeed_tc_filters"
 
 NAME="lanspeedd"
 PROG="/usr/sbin/lanspeedd"
+LANSPEED_PROCESS_BARRIER="/usr/libexec/lanspeed/process-barrier"
+LANSPEED_DAEMON_LAUNCHER="/usr/libexec/lanspeed/start-daemon"
 TC="/sbin/tc"
 LANSPEED_TC_OWNER="lanspeed"
 LANSPEED_TC_PREF="49152"
 LANSPEED_TC_HANDLE="0x1eed"
 LANSPEED_TC_EARLY_PREF="1"
 LANSPEED_TC_EARLY_HANDLE="0x1eee"
+LANSPEED_STOP_WAIT_LOOPS="20"
+LANSPEED_STOP_WAIT_INTERVAL="1"
+LANSPEED_STOP_IDENTITIES=
 
 config_ifaces() {
 	config_get ifnames "$1" ifname
@@ -128,21 +134,43 @@ load_platform_control_modules() {
 	"$loader"
 }
 
+stop_service() {
+	LANSPEED_STOP_IDENTITIES=$("$LANSPEED_PROCESS_BARRIER" snapshot "$PROG" 2>/dev/null || true)
+}
+
+restart() {
+	trap '' TERM
+	if ! stop "$@"; then
+		trap - TERM
+		return 1
+	fi
+	trap - TERM
+	start "$@"
+}
+
 start_service() {
-	# A package upgrade can force-kill an older daemon before procd reaches
-	# service_stopped(). Reclaim only the exact reserved lanspeed identities
-	# before loading the new object so stale program IDs cannot block startup.
-	cleanup_lanspeed_tc_filters
+	# A direct procd `set` during package installation can overlap the old
+	# instance with this launch. Pass its exact process generations to the
+	# launcher, which waits before reclaiming stale TC slots and execing.
+	previous_identities=$("$LANSPEED_PROCESS_BARRIER" snapshot "$PROG" 2>/dev/null || true)
 	load_platform_control_modules
 	procd_open_instance
-	procd_set_param command "$PROG"
+	procd_set_param command "$LANSPEED_DAEMON_LAUNCHER" "$PROG"
+	procd_set_param env \
+		"LANSPEED_PREVIOUS_IDENTITIES=$previous_identities" \
+		"LANSPEED_STOP_WAIT_LOOPS=$LANSPEED_STOP_WAIT_LOOPS" \
+		"LANSPEED_STOP_WAIT_INTERVAL=$LANSPEED_STOP_WAIT_INTERVAL"
 	procd_set_param respawn 3600 5 5
+	procd_set_param term_timeout 15
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_close_instance
 }
 
 service_stopped() {
+	"$LANSPEED_PROCESS_BARRIER" wait "$LANSPEED_STOP_IDENTITIES" \
+		"$LANSPEED_STOP_WAIT_LOOPS" "$LANSPEED_STOP_WAIT_INTERVAL" || return 1
+	LANSPEED_STOP_IDENTITIES=
 	cleanup_lanspeed_tc_filters
 }
 

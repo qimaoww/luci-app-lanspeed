@@ -1,10 +1,18 @@
 #!/usr/bin/env node
 
+const childProcess = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
-const initScript = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/init.d/lanspeedd'), 'utf8');
+const initScriptPath = path.join(root, 'net/lanspeedd/files/etc/init.d/lanspeedd');
+const processBarrierPath = path.join(root,
+  'net/lanspeedd/files/usr/libexec/lanspeed/process-barrier');
+const daemonLauncherPath = path.join(root,
+  'net/lanspeedd/files/usr/libexec/lanspeed/start-daemon');
+const initScript = fs.readFileSync(initScriptPath, 'utf8');
+const processBarrier = fs.readFileSync(processBarrierPath, 'utf8');
+const daemonLauncher = fs.readFileSync(daemonLauncherPath, 'utf8');
 const hotplugScript = fs.readFileSync(path.join(root, 'net/lanspeedd/files/etc/hotplug.d/iface/90-lanspeedd'), 'utf8');
 const production = fs.readFileSync(
   path.join(root, 'net/lanspeedd/rust/crates/lanspeedd/src/production.rs'),
@@ -30,6 +38,18 @@ function assertThrows(fn, message) {
     threw = true;
   }
   assert(threw, message);
+}
+
+function runInitBarrierProbe(source) {
+  const result = childProcess.spawnSync('sh', [
+    '-s', initScriptPath, processBarrierPath, daemonLauncherPath
+  ], {
+    input: source,
+    encoding: 'utf8'
+  });
+  assert(result.status === 0,
+    `init restart barrier probe failed: ${result.stderr || result.stdout}`);
+  return result.stdout.trim();
 }
 
 function shellFunctionBody(source, name) {
@@ -99,6 +119,9 @@ assertThrows(
 );
 
 assert(initScript.includes('USE_PROCD=1'), 'lanspeedd must remain supervised by procd');
+assert(initScript.includes('LANSPEED_STOP_WAIT_LOOPS="20"') &&
+  initScript.includes('LANSPEED_STOP_WAIT_INTERVAL="1"'),
+  'the bounded exit barrier must use the integer sleep interval supported by OpenWrt BusyBox');
 assert(initScript.includes('procd_add_reload_trigger "lanspeed" "network"'), 'procd must trigger in-process reload for config/network changes');
 assert(validateReloadService(initScript), 'reload must preserve a failed NSS transaction and retain the historical x86 restart fallback');
 assert(initScript.includes('transactional NSS reload failed; preserving current dataplane'),
@@ -113,16 +136,111 @@ assert(/fn before_reply\(&mut self, method: ubus::Method\)[\s\S]*if method == ub
   !production.includes('refresh_clients_control_state') &&
   !production.includes('fn reload_inner'),
   'ordinary RPCs must remain cache-only while bounded reload work stays on its runtime worker');
-assert(!/^stop_service\(\)/m.test(initScript), 'owned tc cleanup must not race a daemon that has not stopped yet');
-assert(/^\s*cleanup_lanspeed_tc_filters\s*$/m.test(shellFunctionBody(initScript, 'service_stopped')),
-  'service_stopped must remove owned tc filters after procd has stopped the daemon');
+const stopBody = shellFunctionBody(initScript, 'stop_service');
+const stoppedBody = shellFunctionBody(initScript, 'service_stopped');
+const restartBody = shellFunctionBody(initScript, 'restart');
+assert(stopBody.includes('"$LANSPEED_PROCESS_BARRIER" snapshot "$PROG"'),
+  'stop_service must snapshot the exact supervised process generations before procd sends SIGTERM');
+assert(stoppedBody.includes('"$LANSPEED_PROCESS_BARRIER" wait "$LANSPEED_STOP_IDENTITIES"') &&
+  stoppedBody.indexOf('"$LANSPEED_PROCESS_BARRIER" wait') < stoppedBody.indexOf('cleanup_lanspeed_tc_filters'),
+  'service_stopped must wait for the previous process generation before reclaiming owned TC filters');
+assert(restartBody.includes('if ! stop "$@"') &&
+  restartBody.indexOf('stop "$@"') < restartBody.indexOf('start "$@"'),
+  'restart must not launch a replacement when the previous process exit barrier fails');
+const delayedExitProbe = runInitBarrierProbe(`
+. "$1"
+LANSPEED_PROCESS_BARRIER="$2"
+LANSPEED_STOP_WAIT_LOOPS=50
+LANSPEED_STOP_WAIT_INTERVAL=0.01
+sleep 5 & old_pid=$!
+LANSPEED_STOP_IDENTITIES=$(awk '{ print $1 ":" $22 }' "/proc/$old_pid/stat")
+cleanup_lanspeed_tc_filters() {
+  [ ! -r "/proc/$old_pid/stat" ] || return 1
+  printf '%s\\n' cleanup_after_exit
+}
+( sleep 0.1; kill "$old_pid" 2>/dev/null || true ) &
+service_stopped
+wait "$old_pid" 2>/dev/null || true
+`);
+assert(delayedExitProbe === 'cleanup_after_exit',
+  'service_stopped must defer TC cleanup until the captured process generation exits');
+const timeoutProbe = runInitBarrierProbe(`
+. "$1"
+LANSPEED_PROCESS_BARRIER="$2"
+LANSPEED_STOP_WAIT_LOOPS=2
+LANSPEED_STOP_WAIT_INTERVAL=0.01
+sleep 5 & old_pid=$!
+LANSPEED_STOP_IDENTITIES=$(awk '{ print $1 ":" $22 }' "/proc/$old_pid/stat")
+cleanup_lanspeed_tc_filters() { printf '%s\\n' unexpected_cleanup; }
+if service_stopped; then
+  printf '%s\\n' unexpected_success
+else
+  printf '%s\\n' exit_barrier_failed
+fi
+kill "$old_pid" 2>/dev/null || true
+wait "$old_pid" 2>/dev/null || true
+`);
+assert(timeoutProbe === 'exit_barrier_failed',
+  'an exit barrier timeout must fail without cleaning TC under a live process');
+const blockedRestartProbe = runInitBarrierProbe(`
+. "$1"
+stop() { return 1; }
+start() { printf '%s\\n' unexpected_start; }
+if restart; then
+  printf '%s\\n' unexpected_success
+else
+  printf '%s\\n' restart_blocked
+fi
+`);
+assert(blockedRestartProbe === 'restart_blocked',
+  'restart must propagate a failed stop barrier without starting a replacement');
 const startBody = shellFunctionBody(initScript, 'start_service');
-assert(/^\s*cleanup_lanspeed_tc_filters\s*$/m.test(startBody) &&
-  startBody.indexOf('cleanup_lanspeed_tc_filters') < startBody.indexOf('procd_open_instance'),
-  'startup must reclaim stale owned filters before launching a replacement daemon');
+assert(startBody.includes('"$LANSPEED_PROCESS_BARRIER" snapshot "$PROG"') &&
+  startBody.indexOf('snapshot "$PROG"') < startBody.indexOf('procd_open_instance'),
+  'every direct procd set must snapshot the previous process generations before replacement');
+assert(startBody.includes('procd_set_param command "$LANSPEED_DAEMON_LAUNCHER" "$PROG"') &&
+  startBody.includes('"LANSPEED_PREVIOUS_IDENTITIES=$previous_identities"'),
+  'procd must launch the daemon through the process-generation barrier');
 assert(/^\s*load_platform_control_modules\s*$/m.test(startBody) &&
   /^\s*load_platform_control_modules\s*$/m.test(shellFunctionBody(initScript, 'reload_service')),
   'startup and reload must invoke only the installed platform module loader');
+assert(startBody.includes('procd_set_param term_timeout 15'),
+  'procd must allow graceful TC-BPF and NSS dataplane shutdown on every platform');
+assert(processBarrier.includes('print $1 ":" $22') &&
+  processBarrier.includes('pidof "$name"') &&
+  processBarrier.includes('readlink "/proc/$pid/exe"') &&
+  processBarrier.includes('"$executable (deleted)"') &&
+  processBarrier.includes('[ "$confirmed" = "$identity" ]') &&
+  processBarrier.includes('[ "$current" = "$identity" ]'),
+  'the process barrier must stabilize snapshots around executable checks and distinguish later PID reuse');
+assert(processBarrier.includes('$3 != "Z"'),
+  'the process barrier must treat a zombie as exited after kernel resources are released');
+assert(processBarrier.includes('sleep "$interval"') && processBarrier.includes('return 1'),
+  'the process barrier must wait with a bounded failure path');
+assert(processBarrier.indexOf('[ "$remaining" -gt 0 ] || break') <
+  processBarrier.indexOf('sleep "$interval"'),
+  'the process barrier must perform a final liveness check after the last bounded sleep');
+assert(daemonLauncher.indexOf('"$barrier" wait') <
+  daemonLauncher.indexOf('"$cleanup_command" cleanup_lanspeed_tc_filters') &&
+  daemonLauncher.indexOf('"$cleanup_command" cleanup_lanspeed_tc_filters') <
+  daemonLauncher.indexOf('exec "$daemon" "$@"'),
+  'the launcher must wait, reclaim stale owned TC slots, then exec the daemon in order');
+const directStartProbe = runInitBarrierProbe(`
+sleep 5 & old_pid=$!
+identity=$(awk '{ print $1 ":" $22 }' "/proc/$old_pid/stat")
+( sleep 0.1; kill "$old_pid" 2>/dev/null || true ) &
+LANSPEED_PROCESS_BARRIER="$2" \\
+LANSPEED_CLEANUP_COMMAND=/bin/true \\
+LANSPEED_PREVIOUS_IDENTITIES="$identity" \\
+LANSPEED_STOP_WAIT_LOOPS=50 \\
+LANSPEED_STOP_WAIT_INTERVAL=0.01 \\
+  "$3" /bin/true
+[ ! -r "/proc/$old_pid/stat" ]
+wait "$old_pid" 2>/dev/null || true
+printf '%s\\n' direct_start_after_exit
+`);
+assert(directStartProbe === 'direct_start_after_exit',
+  'a direct procd set must not exec the replacement before the previous generation exits');
 const tcDeleteBody = shellFunctionBody(initScript, 'lanspeed_tc_delete_owned');
 assert(tcDeleteBody.includes('2>/dev/null') &&
   tcDeleteBody.includes('lanspeed_tc_filter_present') &&

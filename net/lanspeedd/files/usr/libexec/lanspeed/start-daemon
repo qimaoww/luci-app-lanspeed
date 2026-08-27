@@ -1,0 +1,15 @@
+#!/bin/sh
+
+barrier="${LANSPEED_PROCESS_BARRIER:-/usr/libexec/lanspeed/process-barrier}"
+cleanup_command="${LANSPEED_CLEANUP_COMMAND:-/etc/init.d/lanspeedd}"
+daemon="${1:-/usr/sbin/lanspeedd}"
+[ "$#" -eq 0 ] || shift
+
+"$barrier" wait \
+	"${LANSPEED_PREVIOUS_IDENTITIES:-}" \
+	"${LANSPEED_STOP_WAIT_LOOPS:-20}" \
+	"${LANSPEED_STOP_WAIT_INTERVAL:-1}" || exit 1
+
+"$cleanup_command" cleanup_lanspeed_tc_filters || exit 1
+
+exec "$daemon" "$@"
