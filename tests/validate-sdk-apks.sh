@@ -241,6 +241,8 @@ daemon_launcher="$daemon_root/usr/libexec/lanspeed/start-daemon"
 	fail 'daemon APK must contain the executable guarded daemon launcher'
 grep -F -q '/proc/$pid/stat' "$process_barrier" || \
 	fail 'daemon APK process barrier must verify exact procfs generations'
+grep -F -q '[ "$confirmed" = "$identity" ]' "$process_barrier" || \
+	fail 'daemon APK process barrier must stabilize snapshots against PID reuse'
 grep -q 'cleanup_lanspeed_tc_filters' "$daemon_launcher" || \
 	fail 'daemon APK launcher must reclaim stale TC slots before exec'
 

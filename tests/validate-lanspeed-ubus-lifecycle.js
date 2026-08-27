@@ -210,12 +210,16 @@ assert(processBarrier.includes('print $1 ":" $22') &&
   processBarrier.includes('pidof "$name"') &&
   processBarrier.includes('readlink "/proc/$pid/exe"') &&
   processBarrier.includes('"$executable (deleted)"') &&
+  processBarrier.includes('[ "$confirmed" = "$identity" ]') &&
   processBarrier.includes('[ "$current" = "$identity" ]'),
-  'the process barrier must require the live or package-replaced daemon executable and distinguish PID reuse');
+  'the process barrier must stabilize snapshots around executable checks and distinguish later PID reuse');
 assert(processBarrier.includes('$3 != "Z"'),
   'the process barrier must treat a zombie as exited after kernel resources are released');
 assert(processBarrier.includes('sleep "$interval"') && processBarrier.includes('return 1'),
   'the process barrier must wait with a bounded failure path');
+assert(processBarrier.indexOf('[ "$remaining" -gt 0 ] || break') <
+  processBarrier.indexOf('sleep "$interval"'),
+  'the process barrier must perform a final liveness check after the last bounded sleep');
 assert(daemonLauncher.indexOf('"$barrier" wait') <
   daemonLauncher.indexOf('"$cleanup_command" cleanup_lanspeed_tc_filters') &&
   daemonLauncher.indexOf('"$cleanup_command" cleanup_lanspeed_tc_filters') <

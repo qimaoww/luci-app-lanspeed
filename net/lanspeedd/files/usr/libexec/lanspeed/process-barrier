@@ -11,13 +11,15 @@ snapshot_processes() {
 	name="${executable##*/}"
 	identities=
 	for pid in $(pidof "$name" 2>/dev/null); do
+		identity=$(process_identity "$pid") || continue
+		[ -n "$identity" ] || continue
 		candidate=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
 		case "$candidate" in
 			"$executable"|"$executable (deleted)") ;;
 			*) continue ;;
 		esac
-		identity=$(process_identity "$pid") || continue
-		[ -n "$identity" ] || continue
+		confirmed=$(process_identity "$pid" || true)
+		[ "$confirmed" = "$identity" ] || continue
 		identities="${identities:+$identities }$identity"
 	done
 	printf '%s\n' "$identities"
@@ -29,7 +31,7 @@ wait_processes() {
 	interval="$3"
 	[ -n "$identities" ] || return 0
 
-	while [ "$remaining" -gt 0 ]; do
+	while true; do
 		alive=
 		for identity in $identities; do
 			pid="${identity%%:*}"
@@ -38,6 +40,7 @@ wait_processes() {
 			alive="${alive:+$alive }$pid"
 		done
 		[ -z "$alive" ] && return 0
+		[ "$remaining" -gt 0 ] || break
 		remaining=$((remaining - 1))
 		sleep "$interval"
 	done
