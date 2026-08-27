@@ -233,6 +233,16 @@ daemon_config="$daemon_root/etc/config/lanspeed"
 x86_migration="$daemon_root/etc/uci-defaults/95-lanspeed-x86-profile"
 nss_shaping_migration="$daemon_root/etc/uci-defaults/94-lanspeed-nss-shaping"
 platform_module_loader="$daemon_root/usr/libexec/lanspeed/load-control-modules"
+process_barrier="$daemon_root/usr/libexec/lanspeed/process-barrier"
+daemon_launcher="$daemon_root/usr/libexec/lanspeed/start-daemon"
+[[ -x $process_barrier ]] || \
+	fail 'daemon APK must contain the executable process-generation barrier'
+[[ -x $daemon_launcher ]] || \
+	fail 'daemon APK must contain the executable guarded daemon launcher'
+grep -F -q '/proc/$pid/stat' "$process_barrier" || \
+	fail 'daemon APK process barrier must verify exact procfs generations'
+grep -q 'cleanup_lanspeed_tc_filters' "$daemon_launcher" || \
+	fail 'daemon APK launcher must reclaim stale TC slots before exec'
 
 if grep -aEq '/(openwrt|root|home)/' \
 	"$daemon" "$bpf_root"/usr/lib/bpf/*.o; then
