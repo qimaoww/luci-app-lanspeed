@@ -608,7 +608,8 @@ function assertProductDesignSystem() {
 	}
 	if (!bootstrapCss.includes('textarea)::placeholder{color:var(--lanspeed-text-subtle);opacity:.74}'))
 		fail('designSystemBootstrap.js must keep compact native placeholders above normal-text contrast');
-	if (!auroraCss.includes('@media (max-width:700px){#floating-toolbar~#maincontent #view{') ||
+	if (!auroraCss.includes('@media (max-width:700px){') ||
+	    !auroraCss.includes('#floating-toolbar~#maincontent #view{') ||
 	    !auroraCss.includes('padding-right:calc(var(--spacing,.25rem)*12)}') ||
 	    !auroraCss.includes('#floating-toolbar~#maincontent ' +
 		'.lanspeed-theme-aurora{width:100%!important;max-width:none!important;margin-right:0}}')) {
@@ -725,6 +726,8 @@ function assertAuroraNativeVisualSystem() {
 	const auroraCss = loadStyleLeaf('designSystemAurora.js').CSS;
 	const statusCss = loadStyleLeaf('statusStyleAurora.js').CSS;
 	const diagnosticsCss = loadStyleLeaf('diagnosticsStyleAurora.js').CSS;
+	const configCss = loadStyleLeaf('configStyleAurora.js').CSS;
+	const detailCss = loadStyleLeaf('clientDetailStyleAurora.js').CSS;
 	const diagnosticsResponsiveCss = loadStyleLeaf('diagnosticsStyleResponsive.js').CSS;
 
 	function declaration(css, name) {
@@ -796,6 +799,32 @@ function assertAuroraNativeVisualSystem() {
 	  'lanspeed-control-height' ].forEach(function(name) {
 		if (!declaration(auroraCss, name).includes('var(--spacing'))
 			fail(`designSystemAurora.js must derive --${name} from Aurora --spacing`);
+	});
+
+	if (declaration(auroraCss, 'lanspeed-surface-raised') !== 'var(--surface-overlay)' ||
+	    !auroraCss.includes('padding:var(--lanspeed-section-x);overflow:visible;') ||
+	    !auroraCss.includes('border-bottom-color:var(--lanspeed-border);background-color:transparent}')) {
+		fail('designSystemAurora.js must use the native Aurora card surface and inset transparent heading treatment');
+	}
+	[
+		[ 'statusStyleAurora.js', statusCss ],
+		[ 'diagnosticsStyleAurora.js', diagnosticsCss ],
+		[ 'configStyleAurora.js', configCss ],
+		[ 'clientDetailStyleAurora.js', detailCss ]
+	].forEach(function(entry) {
+		if (!entry[1].includes('margin:0 0 var(--lanspeed-section-y);') ||
+		    !entry[1].includes('padding:0 0 var(--lanspeed-section-y);') ||
+		    !entry[1].includes('background:transparent')) {
+			fail(`${entry[0]} must match the inset transparent Aurora native card heading`);
+		}
+	});
+	[
+		[ 'statusStyleAurora.js', statusCss, '.lanspeed-body' ],
+		[ 'diagnosticsStyleAurora.js', diagnosticsCss, '.lanspeed-body' ],
+		[ 'configStyleAurora.js', configCss, '.lanspeed-config-body' ]
+	].forEach(function(entry) {
+		if (!entry[1].includes(entry[2]) || !entry[1].includes('padding:0}'))
+			fail(`${entry[0]} card bodies must consume the native Aurora outer card padding`);
 	});
 
 	if (!baseCss.includes('border-radius:var(--lanspeed-radius-input)!important'))
@@ -5575,12 +5604,16 @@ function assertThemeBehavior(src) {
 			light: {
 				'--brand': '#7c9082', '--brand-hover': '#7c9082',
 				'--brand-subtle': '#e8eae6', '--on-brand': '#ffffff',
-				'--text': '#1a1f2e', '--surface': '#ffffff', '--surface-overlay': '#fdfcf9'
+				'--text': '#1a1f2e', '--text-muted': '#7f7c70', '--text-subtle': '#99968a',
+				'--bg': '#fffefa', '--surface': '#faf9f5', '--surface-sunken': '#f8f7f3',
+				'--surface-overlay': '#fffefa', '--control-bg': '#fffefa'
 			},
 			dark: {
 				'--brand': '#7c9082', '--brand-hover': '#7c9082',
 				'--brand-subtle': '#1a1c1a', '--on-brand': '#ffffff',
-				'--text': '#f5f5f5', '--surface': '#121212', '--surface-overlay': '#161616'
+				'--text': '#f5f5f5', '--text-muted': '#a6a6a6', '--text-subtle': '#888888',
+				'--bg': '#101010', '--surface': '#121212', '--surface-sunken': '#0d0d0d',
+				'--surface-overlay': '#161616', '--control-bg': '#121212'
 			}
 		};
 		const body = {
@@ -5655,6 +5688,9 @@ function assertThemeBehavior(src) {
 	    auroraDoc.tabmenu.attrs['data-lanspeed-page-theme'] !== 'aurora' ||
 	    auroraRoot.styleValues['--lanspeed-action-text-safe'] !== 'rgb(26, 31, 46)' ||
 	    auroraRoot.styleValues['--lanspeed-action-hover-text-safe'] !== 'rgb(26, 31, 46)' ||
+	    !/^rgb\(/.test(auroraRoot.styleValues['--lanspeed-muted-text-safe'] || '') ||
+	    auroraRoot.styleValues['--lanspeed-muted-text-safe'] === 'rgb(127, 124, 112)' ||
+	    !/^rgb\(/.test(auroraRoot.styleValues['--lanspeed-subtle-text-safe'] || '') ||
 	    auroraRoot.styleValues['--lanspeed-normal-text-safe'] !== 'rgb(26, 31, 46)' ||
 	    auroraRoot.styleValues['--lanspeed-focus-color-safe'] !== 'rgb(124, 144, 130)') {
 		fail('theme.js must replace low-contrast Aurora light brand text with safe native text tokens');
