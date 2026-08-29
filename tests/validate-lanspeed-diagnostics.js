@@ -280,14 +280,14 @@ function loadRefresh(vocabulary) {
     );
 }
 
-function loadView(rpc, shell, refresh, navigatorValue) {
+function loadView(rpc, shell, refresh, navigatorValue, windowValue) {
   return vm.compileFunction(readModule('diagnosticsView.js'), [
     'baseclass', 'lsRpc', 'lsVersion', 'diagnosticsModel',
     'diagnosticsShell', 'diagnosticsRefresh', 'navigator', 'document', 'window', '_'
   ], { filename: 'diagnosticsView.js', parsingContext: context })(
     baseclass, rpc, { FULL_VERSION: '1.2.0-r2' }, model,
     shell || loadShell(), refresh || loadRefresh(), navigatorValue || {},
-    { body: null }, { setTimeout }, translate
+    { body: null }, windowValue || { setTimeout }, translate
   );
 }
 
@@ -1015,6 +1015,28 @@ async function testResourceStateMachine() {
 async function testRequestOrdering() {
   const queues = {};
   const rpc = {};
+  const windowScrolls = [];
+  const containerScrolls = [];
+  const scrollContainer = {
+    parentElement: null,
+    scrollLeft: 17,
+    scrollTop: 420,
+    scrollTo(left, top) {
+      containerScrolls.push([ left, top ]);
+      this.scrollLeft = left;
+      this.scrollTop = top;
+    }
+  };
+  const fakeWindow = {
+    setTimeout,
+    scrollX: 9,
+    scrollY: 260,
+    scrollTo(x, y) {
+      windowScrolls.push([ x, y ]);
+      this.scrollX = x;
+      this.scrollY = y;
+    }
+  };
   model.RPC_KEYS.forEach((key) => {
     queues[key] = [];
     rpc[key] = () => new Promise((resolve) => queues[key].push(resolve));
@@ -1022,14 +1044,24 @@ async function testRequestOrdering() {
   const stubShell = {
     buildShell() {
       const rootNode = fakeElement('div', {}, []);
+      rootNode.parentElement = scrollContainer;
       return { root: rootNode, refs: {
         root: rootNode, btnRefresh: fakeElement('button'), btnCopy: fakeElement('button'),
         reportPreview: fakeElement('pre'), reportFeedback: fakeElement('span')
       } };
     }
   };
-  const stubRefresh = { refresh() {} };
-  const view = loadView(rpc, stubShell, stubRefresh);
+  let refreshCount = 0;
+  const stubRefresh = { refresh() {
+    refreshCount++;
+    if (refreshCount === 2) {
+      fakeWindow.scrollX = 0;
+      fakeWindow.scrollY = 0;
+      scrollContainer.scrollLeft = 0;
+      scrollContainer.scrollTop = 0;
+    }
+  } };
+  const view = loadView(rpc, stubShell, stubRefresh, {}, fakeWindow);
   const initial = view.createLoadingState(null, 0);
   initial.autoStart = false;
   const rootNode = view.render(initial);
@@ -1042,10 +1074,18 @@ async function testRequestOrdering() {
   await Promise.resolve();
   assert.strictEqual(state.refs.btnRefresh.disabled, true);
   assert.strictEqual(state.refs.btnCopy.disabled, true);
+  assert.strictEqual(refreshCount, 1,
+    'starting overlapping diagnostic refreshes must keep the last rendered page intact');
   const secondPayload = payloads('1.2.0-r2');
   model.RPC_KEYS.forEach((key) => queues[key][1](secondPayload[key]));
   const secondResult = await second;
   assert.strictEqual(secondResult.ignored, false);
+  assert.strictEqual(refreshCount, 2,
+    'only a completed current diagnostic batch may redraw the page');
+  assert.deepStrictEqual(windowScrolls, [ [ 9, 260 ] ],
+    'diagnostic redraw must restore the window viewport');
+  assert.deepStrictEqual(containerScrolls, [ [ 17, 420 ] ],
+    'diagnostic redraw must restore the theme scroll container');
   const firstPayload = payloads('1.1.1-r6');
   firstPayload.diagnostics.versions.daemon = '1.1.1-r6';
   firstPayload.diagnostics.versions.package = '1.1.1-r6';
@@ -1076,7 +1116,7 @@ async function testFinallyRestoresControls() {
   const throwingRefresh = {
     refresh() {
       refreshCount++;
-      if (refreshCount === 3) throw new Error('synthetic presenter failure');
+      if (refreshCount === 2) throw new Error('synthetic presenter failure');
     }
   };
   const view = loadView(rpc, stubShell, throwingRefresh);

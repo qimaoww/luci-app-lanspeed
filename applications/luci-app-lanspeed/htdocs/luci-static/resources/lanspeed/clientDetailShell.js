@@ -357,6 +357,7 @@ function buildShell(viewState) {
 	var root = E('div', {
 		'class': 'cbi-map lanspeed-root lanspeed-connection-detail'
 	}, rootChildren);
+	refs.root = root;
 
 	lsTheme.applyRoot(root);
 

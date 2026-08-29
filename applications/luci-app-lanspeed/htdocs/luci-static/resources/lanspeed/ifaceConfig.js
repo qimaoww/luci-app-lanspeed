@@ -315,6 +315,9 @@ function buildModeButton(viewState, wrap, name, mode, label, disabled, title) {
 	}, label);
 	button.disabled = Boolean(disabled || viewState.configSaving || viewState.ifcfgLoading);
 	button.ifcfgAlwaysDisabled = Boolean(disabled);
+	viewState.ifcfgControls = viewState.ifcfgControls || {};
+	viewState.ifcfgControls[name] = viewState.ifcfgControls[name] || {};
+	viewState.ifcfgControls[name][mode] = button;
 	button.addEventListener('click', function(event) {
 		if (event && event.preventDefault) event.preventDefault();
 		if (!button.disabled)
@@ -322,6 +325,19 @@ function buildModeButton(viewState, wrap, name, mode, label, disabled, title) {
 	});
 	wrap.appendChild(button);
 	(viewState.ifcfgButtons || (viewState.ifcfgButtons = [])).push(button);
+}
+
+function syncModeControls(viewState) {
+	Object.keys(viewState.ifcfgControls || {}).forEach(function(name) {
+		Object.keys(viewState.ifcfgControls[name] || {}).forEach(function(mode) {
+			var button = viewState.ifcfgControls[name][mode];
+			var active = viewState.ifcfgState && viewState.ifcfgState[name] === mode;
+			button.className = active ? 'active' : '';
+			button.setAttribute('aria-checked', active ? 'true' : 'false');
+			button.disabled = Boolean(viewState.configSaving || viewState.ifcfgLoading ||
+				button.ifcfgAlwaysDisabled);
+		});
+	});
 }
 
 function buildModeControl(viewState, device) {
@@ -380,29 +396,36 @@ function renderIfaceConfig(viewState) {
 		return l - r || fmt.compareText(left.name, right.name);
 	});
 	var state = viewState.ifcfgState;
-	viewState.ifcfgButtons = [];
 	if (!state) {
 		state = {};
 		devices.forEach(function(device) { state[device.name] = stateForDevice(viewState, device); });
 		viewState.ifcfgState = state;
 	}
 	if (refs.ifcfgBody) {
-		fmt.replaceChildren(refs.ifcfgBody, devices.map(function(device) {
-			var tags = [];
-			if (device.role) tags.push(text(device.role));
-			if (device.is_nss_ifb) tags.push(_('NSS 镜像'));
-			if (device.is_bridge) tags.push(_('网桥'));
-			if (device.is_bridge_port) tags.push(_('桥成员'));
-			if (!collectAllowed(device)) tags.push(_('仅观察'));
-			if (device.speed_mbps) tags.push(text(device.speed_mbps) + 'M');
-			return E('tr', { 'data-interface': device.name }, [
-				E('td', { 'class': 'mono' }, device.name),
-				E('td', {}, tags.length ? E('span', { 'class': 'devtags' }, tags.map(function(tag) {
-					return E('span', { 'class': 'devtag' }, tag);
-				})) : E('span', { 'class': 'muted' }, '-')),
-				E('td', { 'class': 'action' }, buildModeControl(viewState, device))
-			]);
-		}));
+		var signature = JSON.stringify(devices);
+		if (viewState.ifcfgDeviceSignature !== signature) {
+			viewState.ifcfgButtons = [];
+			viewState.ifcfgControls = {};
+			fmt.replaceChildren(refs.ifcfgBody, devices.map(function(device) {
+				var tags = [];
+				if (device.role) tags.push(text(device.role));
+				if (device.is_nss_ifb) tags.push(_('NSS 镜像'));
+				if (device.is_bridge) tags.push(_('网桥'));
+				if (device.is_bridge_port) tags.push(_('桥成员'));
+				if (!collectAllowed(device)) tags.push(_('仅观察'));
+				if (device.speed_mbps) tags.push(text(device.speed_mbps) + 'M');
+				return E('tr', { 'data-interface': device.name }, [
+					E('td', { 'class': 'mono' }, device.name),
+					E('td', {}, tags.length ? E('span', { 'class': 'devtags' }, tags.map(function(tag) {
+						return E('span', { 'class': 'devtag' }, tag);
+					})) : E('span', { 'class': 'muted' }, '-')),
+					E('td', { 'class': 'action' }, buildModeControl(viewState, device))
+				]);
+			}));
+			viewState.ifcfgDeviceSignature = signature;
+		} else {
+			syncModeControls(viewState);
+		}
 	}
 	if (refs.ifcfgSummary) {
 		var counts = selectedCounts(viewState);

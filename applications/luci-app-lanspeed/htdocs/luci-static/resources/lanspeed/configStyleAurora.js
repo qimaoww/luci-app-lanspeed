@@ -3,12 +3,15 @@
 
 /* Aurora uses generous spacing inside one section surface; setting rows are not nested cards. */
 var AURORA_CSS = [
-	'.lanspeed-config-root.lanspeed-theme-aurora .lanspeed-header{padding:1rem 1.25rem .85rem;gap:.45rem .75rem}',
+	'.lanspeed-config-root.lanspeed-theme-aurora>.cbi-section{padding:var(--lanspeed-section-x);overflow:visible}',
+	'.lanspeed-config-root.lanspeed-theme-aurora .lanspeed-header{margin:0 0 var(--lanspeed-section-y);',
+		'padding:0 0 var(--lanspeed-section-y);background:transparent;gap:.45rem .75rem}',
 	'.lanspeed-config-root.lanspeed-theme-aurora .lanspeed-header>h3{font-size:1.2rem;line-height:1.25}',
-	'.lanspeed-config-root.lanspeed-theme-aurora .lanspeed-config-subheader{padding:1rem 1.25rem .85rem;background-color:var(--lanspeed-surface-raised)}',
+	'.lanspeed-config-root.lanspeed-theme-aurora .lanspeed-config-subheader{',
+		'margin:0 0 var(--lanspeed-section-y);padding:0 0 var(--lanspeed-section-y);background:transparent}',
 	'.lanspeed-config-root.lanspeed-theme-aurora .lanspeed-config-subheader>h4{font-size:1.2rem;line-height:1.25}',
 	'.lanspeed-config-root.lanspeed-theme-aurora :is(.lanspeed-config-body,.lanspeed-ifcfg-body){',
-		'padding:1rem 1.25rem 1.15rem}',
+		'padding:0}',
 	'.lanspeed-config-root.lanspeed-theme-aurora :is(.lanspeed-header,.lanspeed-config-subheader)>.sum{padding:.22rem .58rem;',
 		'border:0;border-radius:var(--lanspeed-radius-badge);background:var(--lanspeed-surface-sunken)}',
 	'.lanspeed-theme-aurora .lanspeed-range-stack,.lanspeed-theme-aurora .lanspeed-range-list{gap:.5rem;max-width:none}',
@@ -72,10 +75,11 @@ var AURORA_CSS = [
 	'@media (max-width:800px){',
 	'.lanspeed-theme-aurora{--lanspeed-mobile-config-row-padding:.9rem 0;',
 		'--lanspeed-mobile-ifcfg-row-padding:.85rem 0;--lanspeed-mobile-seg-padding:.5rem .3rem}',
-	'.lanspeed-config-root.lanspeed-theme-aurora .lanspeed-header{padding:.85rem 1rem .7rem}',
-	'.lanspeed-config-root.lanspeed-theme-aurora .lanspeed-config-subheader{padding:.85rem 1rem .7rem}',
+	'.lanspeed-config-root.lanspeed-theme-aurora>.cbi-section{padding:calc(var(--spacing,.25rem)*4)}',
+	'.lanspeed-config-root.lanspeed-theme-aurora .lanspeed-header{margin-bottom:.85rem;padding:0 0 .7rem}',
+	'.lanspeed-config-root.lanspeed-theme-aurora .lanspeed-config-subheader{margin-bottom:.85rem;padding:0 0 .7rem}',
 	'.lanspeed-config-root.lanspeed-theme-aurora :is(.lanspeed-config-body,.lanspeed-ifcfg-body){',
-		'padding:.85rem 1rem 1rem}',
+		'padding:0}',
 	'.lanspeed-theme-aurora :is(.lanspeed-config-table,.lanspeed-ifcfg-table) tbody tr{',
 		'border-bottom:1px solid var(--lanspeed-border);background:transparent}',
 	'.lanspeed-theme-aurora :is(.lanspeed-header,.lanspeed-config-subheader)>.sum{font-size:.76em}}'

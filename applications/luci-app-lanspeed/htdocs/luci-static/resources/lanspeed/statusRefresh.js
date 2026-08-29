@@ -305,7 +305,57 @@ function restoreClientViewport(state) {
 	});
 }
 
+function nodeContains(parent, target) {
+	if (!parent || !target) return false;
+	if (parent === target) return true;
+	if (typeof parent.contains === 'function') return parent.contains(target);
+	return Array.prototype.some.call(parent.children || [], function(child) {
+		return child && typeof child === 'object' && nodeContains(child, target);
+	});
+}
+
+function focusableChildren(root, result) {
+	result = result || [];
+	Array.prototype.forEach.call(root && root.children || [], function(child) {
+		if (!child || typeof child !== 'object') return;
+		var tag = String(child.tagName || '').toLowerCase();
+		var tabindex = child.getAttribute && child.getAttribute('tabindex');
+		if ([ 'a', 'button', 'input', 'select', 'textarea' ].indexOf(tag) !== -1 || tabindex !== null)
+			result.push(child);
+		focusableChildren(child, result);
+	});
+	return result;
+}
+
+function captureRowFocus(row) {
+	var doc = typeof document !== 'undefined' ? document : null;
+	var active = doc && doc.activeElement;
+	if (!nodeContains(row, active)) return null;
+	var focusables = focusableChildren(row);
+	return {
+		action: active && active.getAttribute && active.getAttribute('data-client-action'),
+		index: focusables.indexOf(active)
+	};
+}
+
+function restoreRowFocus(row, state) {
+	if (!state) return;
+	var focusables = focusableChildren(row);
+	var target = null;
+	if (state.action) {
+		target = focusables.filter(function(node) {
+			return node.getAttribute && node.getAttribute('data-client-action') === state.action;
+		})[0] || null;
+	}
+	if (!target && state.index >= 0)
+		target = focusables[state.index] || null;
+	if (!target || typeof target.focus !== 'function') return;
+	try { target.focus({ preventScroll: true }); }
+	catch (e) { target.focus(); }
+}
+
 function replaceRowContents(target, source) {
+	var focusState = captureRowFocus(target);
 	var children = [];
 	while (source.firstChild)
 		children.push(source.removeChild(source.firstChild));
@@ -313,6 +363,7 @@ function replaceRowContents(target, source) {
 		target.removeChild(target.firstChild);
 	target.className = source.className;
 	children.forEach(function(child) { target.appendChild(child); });
+	restoreRowFocus(target, focusState);
 }
 
 /*

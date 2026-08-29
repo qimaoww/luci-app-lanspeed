@@ -179,6 +179,7 @@ function cell(viewState, client) {
 	var limitAttrs = {
 		'type': 'button',
 		'class': 'cbi-button cbi-button-neutral lanspeed-control-button',
+		'data-client-action': 'limit',
 		'title': control.shaping_supported === true ? _('设置独立上传、下载限速') : reasonText(control.reason)
 	};
 	if (busy || (control.shaping_supported !== true && !hasLimit)) limitAttrs.disabled = 'disabled';
@@ -190,6 +191,7 @@ function cell(viewState, client) {
 	var blocked = control.internet_disabled === true;
 	var blockAttrs = {
 		'type': 'button',
+		'data-client-action': 'block',
 		'class': blocked ? 'cbi-button cbi-button-positive lanspeed-control-button' :
 			'cbi-button cbi-button-negative lanspeed-control-button',
 		'title': control.blocking_supported === true ?

@@ -410,6 +410,7 @@ async page => {
 				sectionStyle: styleOf(':scope > .cbi-section'),
 				headerStyle: styleOf(':scope > .cbi-section .lanspeed-header'),
 				headingStyle: styleOf(':scope > .cbi-section .lanspeed-header h3'),
+				tabActiveStyle: styleOf(document.querySelector('#tabmenu .tabs>li.active')),
 				controlStyle: styleOf('input:not([type="hidden"]),select,textarea'),
 				buttonStyle: styleOf('.cbi-button,button'),
 				badgeStyle: styleOf('.label')
@@ -472,6 +473,16 @@ async page => {
 			if (config.expectedTheme === 'aurora') {
 				const requiredNative = [ '--brand', '--surface', '--text', '--text-muted', '--hairline', '--control-bg' ];
 				const missingNative = requiredNative.filter(name => !themeEvidence.nativeTokens[name]);
+				const auroraTextBackgrounds = [
+					themeEvidence.resolved.surface,
+					themeEvidence.resolved.surfaceMuted,
+					themeEvidence.resolved.surfaceRaised,
+					themeEvidence.resolved.controlBackground
+				];
+				const mutedFollowsNative = colorsNear(themeEvidence.resolved.textMuted,
+					themeEvidence.resolved.auroraTextMuted, 3);
+				const mutedIsContrastSafe = auroraTextBackgrounds.every(background =>
+					colorContrastRatio(themeEvidence.resolved.textMuted, background) >= 4.5);
 				addCheck('aurora-native-tokens', missingNative.length === 0, {
 					missing: missingNative,
 					values: themeEvidence.nativeTokens
@@ -480,10 +491,36 @@ async page => {
 					colorsNear(themeEvidence.resolved.accent, themeEvidence.resolved.brand, 3) &&
 					colorsNear(themeEvidence.resolved.surface, themeEvidence.resolved.auroraSurface, 3) &&
 					colorsNear(themeEvidence.resolved.text, themeEvidence.resolved.auroraText, 3) &&
-					colorsNear(themeEvidence.resolved.textMuted, themeEvidence.resolved.auroraTextMuted, 3) &&
+					(mutedFollowsNative || mutedIsContrastSafe) &&
 					colorsNear(themeEvidence.resolved.border, themeEvidence.resolved.auroraHairline, 3) &&
 					colorsNear(themeEvidence.resolved.controlBackground,
-						themeEvidence.resolved.auroraControlBackground, 3), themeEvidence.resolved);
+						themeEvidence.resolved.auroraControlBackground, 3), Object.assign({
+						mutedFollowsNative: mutedFollowsNative,
+						mutedIsContrastSafe: mutedIsContrastSafe,
+						textBackgrounds: auroraTextBackgrounds
+					}, themeEvidence.resolved));
+				addCheck('aurora-page-tabs-follow-brand',
+					!!themeEvidence.tabActiveStyle &&
+						colorsNear(themeEvidence.tabActiveStyle.borderBottomColor,
+							themeEvidence.resolved.brand, 3), {
+						brand: themeEvidence.resolved.brand,
+						tab: themeEvidence.tabActiveStyle
+					});
+				const headerBackground = parseRgb(themeEvidence.headerStyle &&
+					themeEvidence.headerStyle.backgroundColor);
+				addCheck('aurora-native-card-heading', !!themeEvidence.sectionStyle &&
+					!!themeEvidence.headerStyle &&
+					colorsNear(themeEvidence.sectionStyle.backgroundColor,
+						themeEvidence.resolved.auroraSurface, 3) &&
+					parseFloat(themeEvidence.sectionStyle.paddingLeft) > 0 &&
+					parseFloat(themeEvidence.headerStyle.paddingLeft) === 0 &&
+					parseFloat(themeEvidence.headerStyle.paddingTop) === 0 &&
+					parseFloat(themeEvidence.headerStyle.paddingBottom) > 0 &&
+					!!headerBackground && headerBackground.a === 0, {
+					section: themeEvidence.sectionStyle,
+					header: themeEvidence.headerStyle,
+					nativeSurface: themeEvidence.resolved.auroraSurface
+				});
 			}
 			if (config.expectedTheme === 'bootstrap') {
 				const requiredNative = [ '--primary-color-high', '--background-color-high',
@@ -1821,11 +1858,15 @@ async page => {
 				} else {
 					const requiredSubsections = [ 'lanspeed-config-runtime-section', 'lanspeed-ifcfg' ];
 					const nssPlatform = configContract.fieldNames.indexOf('access_edge_mode') !== -1;
+					const x86ProxyConnections = configContract.fieldNames.indexOf(
+						'enable_proxy_connections') !== -1;
 					const requiredFields = [
 						'rate_collector_mode'
 					].concat(nssPlatform ? [ 'access_edge_mode', 'nss_low_rate_window_ms',
 						'nss_low_rate_high_watermark_bps', 'nss_fifo_target_delay_ms',
-						'nss_fifo_min_queue_packets', 'rate_compensation_factor' ] : []).concat([
+						'nss_fifo_min_queue_packets', 'rate_compensation_factor' ] : []).concat(
+						x86ProxyConnections ? [ 'enable_proxy_connections', 'mihomo_controller_port',
+							'mihomo_controller_secret' ] : []).concat([
 						'conn_collector_mode',
 						'enable_bpf', 'enable_conntrack_fallback', 'refresh_interval_ms',
 						'overview_window_samples', 'max_clients', 'active_client_window_ms',
