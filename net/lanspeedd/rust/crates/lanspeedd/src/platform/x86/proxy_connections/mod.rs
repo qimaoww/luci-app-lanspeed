@@ -5,8 +5,9 @@
 //! the socket. Mihomo supplies its logical connection ledger through the
 //! loopback external-controller API. dae/daed does not expose an equivalent
 //! per-connection API, so active TCP sockets are recovered from its dedicated
-//! `daens` network namespace and UDP tuples from its timer-backed eBPF state
-//! map. Neither adapter is compiled into the NSS backend.
+//! `daens` network namespace, TCP byte counters from SOCK_DIAG, and UDP tuples
+//! from its timer-backed eBPF state map. Neither adapter is compiled into the
+//! NSS backend.
 
 mod dae;
 mod http;

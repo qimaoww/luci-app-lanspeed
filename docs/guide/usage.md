@@ -77,7 +77,7 @@ x86 配置页额外提供透明代理连接补全：
 
 Mihomo 控制器始终只连接 `127.0.0.1`。认证码字段使用密码输入框；手动值保存在 `/etc/config/lanspeed`，自动模式不会把 OpenClash 原认证码复制到 LAN Speed 配置。
 
-dae/daed 没有逐连接 API。x86 后端只读取运行中 dae/daed 进程实际持有的数据：TCP 来自 `daens` 网络命名空间中的 ESTABLISHED socket，UDP 同时校验 `udp_conn_state_map` 与 `routing_tuples_map`，仅接收用户定义代理 outbound，排除 direct、block 和中间路由状态。UDP 生命周期遵循 dae 1.27 的 300 秒状态定时器；BPF map 名称、类型或 ABI 尺寸不匹配时该适配器直接跳过，不猜测解析。
+dae/daed 没有逐连接 API。x86 后端只读取运行中 dae/daed 进程实际持有的数据：TCP 来自 `daens` 网络命名空间中的 ESTABLISHED socket，并通过内核 SOCK_DIAG/TCP_INFO 累计字节计算逐连接速率；UDP 同时校验 `udp_conn_state_map` 与 `routing_tuples_map`，仅接收用户定义代理 outbound，排除 direct、block 和中间路由状态。UDP 生命周期遵循 dae 1.27 的 300 秒状态定时器；内核诊断或 BPF map 名称、类型、ABI 尺寸不匹配时该适配器直接跳过，不猜测解析。
 
 历史配置中的 `dedicated_port` 已停用；配置页保存时会自动清理该遗留项。客户端详情中的主机名按 MAC 写入 `/etc/config/dhcp`，不会强制配置静态 IP。
 

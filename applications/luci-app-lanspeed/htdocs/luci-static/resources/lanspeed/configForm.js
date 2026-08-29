@@ -661,7 +661,7 @@ function buildDaemonSection(data, viewState) {
 	if (viewState.platformPolicy.showProxyConnections) {
 		rows.push(rowFor(viewState, 'enable_proxy_connections', _('代理连接补全'),
 			refs.toggleWrap.enable_proxy_connections,
-			_('从本机 Mihomo/OpenClash API 与 dae 进程补全透明代理后的真实连接；仅影响连接详情。')));
+			_('从本机 Mihomo/OpenClash API 与 dae/daed 进程补全透明代理后的真实连接；仅影响连接详情。')));
 		rows.push(rowFor(viewState, 'mihomo_controller_port', _('Mihomo 控制器端口'),
 			refs.inputs.mihomo_controller_port,
 			_('填 0 自动读取 OpenClash 控制器端口；未检测到时使用 9090。只连接 127.0.0.1。')));
