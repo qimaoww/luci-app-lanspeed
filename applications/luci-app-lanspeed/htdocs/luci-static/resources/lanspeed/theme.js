@@ -526,11 +526,16 @@ function updateColorMode(root, doc, theme) {
 	var currentMode = root.getAttribute
 		? root.getAttribute('data-lanspeed-color-mode')
 		: root.attrs && root.attrs['data-lanspeed-color-mode'];
+	var beforeTokens = contrastTokenSignature(root);
+	var modeChanged = false;
 	if (colorMode) {
-		if (currentMode !== colorMode)
+		if (currentMode !== colorMode) {
 			root.setAttribute('data-lanspeed-color-mode', colorMode);
+			modeChanged = true;
+		}
 	} else if (currentMode && root.removeAttribute) {
 		root.removeAttribute('data-lanspeed-color-mode');
+		modeChanged = true;
 	}
 	if (theme === 'aurora')
 		updateAuroraContrastTokens(root, doc);
@@ -538,7 +543,8 @@ function updateColorMode(root, doc, theme) {
 		updateArgonContrastTokens(root, doc, colorMode);
 	else
 		clearAuroraContrastTokens(root);
-	if (root && typeof root.dispatchEvent === 'function') {
+	var tokensChanged = beforeTokens !== contrastTokenSignature(root);
+	if ((modeChanged || tokensChanged) && root && typeof root.dispatchEvent === 'function') {
 		var view = doc && doc.defaultView;
 		var event = null;
 		try {
@@ -559,6 +565,14 @@ function updateColorMode(root, doc, theme) {
 			root.dispatchEvent(event);
 	}
 	return colorMode;
+}
+
+function contrastTokenSignature(root) {
+	if (!root || !root.style || typeof root.style.getPropertyValue !== 'function')
+		return '';
+	return AURORA_CONTRAST_PROPERTIES.concat(ARGON_CONTRAST_PROPERTIES).map(function(name) {
+		return name + ':' + String(root.style.getPropertyValue(name) || '').trim();
+	}).join(';');
 }
 
 function releaseColorMode(root) {
@@ -657,6 +671,7 @@ function watchColorMode(root, doc, theme) {
 
 	if (typeof view.MutationObserver === 'function' && doc.documentElement) {
 		observer = new view.MutationObserver(function(records) {
+			var themeShellChanged = false;
 			for (var i = 0; i < records.length; i++) {
 				var record = records[i];
 				for (var j = 0; j < (record.removedNodes || []).length; j++) {
@@ -666,22 +681,56 @@ function watchColorMode(root, doc, theme) {
 						return;
 					}
 				}
+				/* Live data renderers update classes and child nodes below the page
+				 * root. Only shell-level theme attributes can change color mode;
+				 * subtree child mutations are observed solely to detect root removal. */
+				if (record.type === 'attributes' &&
+				    (record.target === doc.documentElement || record.target === doc.body))
+					themeShellChanged = true;
 			}
-			scheduleUpdate();
+			if (themeShellChanged)
+				scheduleUpdate();
 		});
-		var options = {
-			attributes: true,
-			attributeFilter: [
-				'class', 'style', 'data-darkmode', 'data-theme', 'data-mode', 'data-color-mode'
-			],
-			childList: true,
-			subtree: true
+		var targets = [];
+		var addTarget = function(node, attributes, childList) {
+			if (!node) return;
+			var target = targets.filter(function(item) { return item.node === node; })[0];
+			if (!target) {
+				target = { node: node, attributes: false, childList: false };
+				targets.push(target);
+			}
+			target.attributes = target.attributes || attributes;
+			target.childList = target.childList || childList;
 		};
-		try {
-			observer.observe(doc.documentElement, options);
-		} catch (e) {
-			observer = null;
+		addTarget(doc.documentElement, true, false);
+		addTarget(doc.body, true, false);
+		/* Observe only the direct ancestor chain for removal. Data renderers
+		 * mutate descendants of root, so their row and table updates never enter
+		 * this observer and cannot trigger theme work. */
+		var ancestor = root;
+		while (ancestor && ancestor.parentNode) {
+			addTarget(ancestor.parentNode, false, true);
+			ancestor = ancestor.parentNode;
 		}
+		var observed = false;
+		targets.forEach(function(target) {
+			var options = {
+				attributes: target.attributes,
+				childList: target.childList,
+				subtree: false
+			};
+			if (target.attributes) {
+				options.attributeFilter = [
+					'class', 'style', 'data-darkmode', 'data-theme', 'data-mode', 'data-color-mode'
+				];
+			}
+			try {
+				observer.observe(target.node, options);
+				observed = true;
+			} catch (e) {}
+		});
+		if (!observed)
+			observer = null;
 	}
 
 	/* Some themes replace a stylesheet or a CSS variable without mutating an

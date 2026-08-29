@@ -2127,13 +2127,13 @@ function loadStatusRefreshModule(src, fakeWindow) {
 		[ 'baseclass', 'E', '_' ])(fakeBaseclass, fakeElement, fakeTranslate);
 	return vm.compileFunction(src,
 		[ 'baseclass', 'vocab', 'fmt', 'clientConnections', 'clientControl', 'lsVersion',
-		  'statusIp', 'statusCollector', 'statusRateMeta', 'E', '_', 'window' ],
+		  'statusIp', 'statusCollector', 'statusRateMeta', 'E', '_', 'window', 'document' ],
 		{ filename: 'resources/lanspeed/statusRefresh.js' })(
 			fakeBaseclass, vocab, {},
 			loadClientConnectionsModule(readModuleByName('clientConnections.js')),
 			{ cell: function() { return fakeElement('td'); } },
 			{ FULL_VERSION: 'test' }, {}, {}, rateMeta, fakeElement, fakeTranslate,
-			fakeWindow || { location: { pathname: '/admin/status/lanspeed/overview' } }
+			fakeWindow || { location: { pathname: '/admin/status/lanspeed/overview' } }, fakeDocument
 		);
 }
 
@@ -2147,7 +2147,10 @@ function fakeElement(tag, attrs, children) {
 		listeners: {},
 		parentNode: null,
 		style: {},
-		focus: function() { fakeDocument.activeElement = this; },
+		focus: function(options) {
+			this.focusOptions = options || null;
+			fakeDocument.activeElement = this;
+		},
 		addEventListener: function(type, handler) { this.listeners[type] = handler; },
 		setAttribute: function(name, value) {
 			this.attrs[name] = String(value);
@@ -3428,8 +3431,9 @@ function assertClientDetailRefreshBehavior(src) {
 	if (currentGroups[1] === focusedGroup ||
 	    currentGroups[1].attrs['data-remote-ip'] !== '198.51.100.53' ||
 	    fakeDocument.activeElement !== currentGroups[1] ||
+	    !currentGroups[1].focusOptions || currentGroups[1].focusOptions.preventScroll !== true ||
 	    currentGroups[1].attrs['aria-expanded'] !== 'true' || currentDetails[1].hidden) {
-		fail('clientDetailRefresh.js refresh renders must restore keyboard focus to the rebuilt row for the same remote IP');
+		fail('clientDetailRefresh.js refresh renders must restore keyboard focus without scrolling to the rebuilt row for the same remote IP');
 	}
 
 	state.protocol = 'tcp';
@@ -4174,6 +4178,20 @@ function assertStatusRefreshSortingInteraction(src) {
 		    retainedC.className !== 'idle' || fakeElementText(retainedC) !== 'C newest' ||
 		    fakeElementText(originalA) !== 'A newest') {
 			fail('statusRefresh.js must move existing keyed rows without recreating them');
+		}
+
+		const focusedOld = fakeElement('button', { 'data-client-action': 'limit' }, '限速');
+		const focusedRow = fakeElement('tr', { 'data-client-key': 'focus@lan' },
+			fakeElement('td', {}, focusedOld));
+		tbody.children.slice().forEach(function(child) { tbody.removeChild(child); });
+		tbody.appendChild(focusedRow);
+		fakeDocument.activeElement = focusedOld;
+		const focusedNew = fakeElement('button', { 'data-client-action': 'limit' }, '限速');
+		mod.reconcileClientRows(tbody, [ fakeElement('tr', { 'data-client-key': 'focus@lan' },
+			fakeElement('td', {}, focusedNew)) ]);
+		if (tbody.children[0] !== focusedRow || fakeDocument.activeElement !== focusedNew ||
+		    !focusedNew.focusOptions || focusedNew.focusOptions.preventScroll !== true) {
+			fail('statusRefresh.js must keep focus without scrolling on the same client action while live data updates its row');
 		}
 
 		const scrolls = [];
@@ -5493,15 +5511,20 @@ function assertThemeBehavior(src) {
 		let callback = null;
 		let disconnected = 0;
 		let observed = false;
+		const observations = [];
 		function FakeMutationObserver(listener) {
 			callback = listener;
-			this.observe = function() { observed = true; };
+			this.observe = function(target, options) {
+				observed = true;
+				observations.push({ target: target, options: options });
+			};
 			this.disconnect = function() { disconnected++; };
 		}
 		return {
 			MutationObserver: FakeMutationObserver,
 			emit: function(records) { if (callback) callback(records); },
 			isObserved: function() { return observed; },
+			observations: function() { return observations.slice(); },
 			disconnectCount: function() { return disconnected; }
 		};
 	}
@@ -5546,6 +5569,7 @@ function assertThemeBehavior(src) {
 
 	function auroraDocument(media, observer) {
 		let mode = 'light';
+		let computedStyleCalls = 0;
 		const tabmenu = rootNode();
 		const tokens = {
 			light: {
@@ -5579,8 +5603,10 @@ function assertThemeBehavior(src) {
 				body.backgroundColor = mode === 'dark' ? '#121212' : '#ffffff';
 				html.backgroundColor = body.backgroundColor;
 			},
+			getComputedStyleCalls: function() { return computedStyleCalls; },
 			defaultView: {
 				getComputedStyle: function(node) {
+					computedStyleCalls++;
 					return {
 						backgroundColor: node && node.backgroundColor || 'transparent',
 						getPropertyValue: function(name) { return tokens[mode][name] || ''; }
@@ -5633,8 +5659,17 @@ function assertThemeBehavior(src) {
 	    auroraRoot.styleValues['--lanspeed-focus-color-safe'] !== 'rgb(124, 144, 130)') {
 		fail('theme.js must replace low-contrast Aurora light brand text with safe native text tokens');
 	}
+	if (auroraObserver.observations().some(function(entry) { return entry.options.subtree; })) {
+		fail('theme.js must not subscribe to live page subtree mutations');
+	}
+	const styleCallsBeforeLiveMutation = auroraDoc.getComputedStyleCalls();
+	auroraObserver.emit([{ type: 'childList', target: auroraRoot, removedNodes: [] }]);
+	if (auroraDoc.getComputedStyleCalls() !== styleCallsBeforeLiveMutation) {
+		fail('theme.js must ignore live page subtree mutations when watching shell-level theme changes');
+	}
 	auroraDoc.setMode('dark');
-	auroraObserver.emit([{ type: 'attributes', attributeName: 'data-darkmode', removedNodes: [] }]);
+	auroraObserver.emit([{ type: 'attributes', target: auroraDoc.documentElement,
+		attributeName: 'data-darkmode', removedNodes: [] }]);
 	if (auroraRoot.attrs['data-lanspeed-color-mode'] !== 'dark' ||
 	    auroraRoot.styleValues['--lanspeed-action-text-safe'] !== 'rgb(18, 18, 18)' ||
 	    auroraRoot.styleValues['--lanspeed-action-hover-text-safe'] !== 'rgb(18, 18, 18)' ||
@@ -6859,6 +6894,13 @@ function assertIfaceConfigBehavior(src) {
 	asyncChecks.push(iface.load(state).then(function(result) {
 		if (!result || state.ifcfgState['br-lan'] !== 'collect' || state.ifcfgState.wan !== 'observe') {
 			fail('ifaceConfig.js scan must render the staged UCI selection instead of overwriting it with stale runtime flags');
+		}
+		const collectButton = state.ifcfgControls && state.ifcfgControls['br-lan'] &&
+			state.ifcfgControls['br-lan'].collect;
+		iface.render(state);
+		if (!collectButton || state.ifcfgControls['br-lan'].collect !== collectButton ||
+		    collectButton.attrs['aria-checked'] !== 'true') {
+			fail('ifaceConfig.js must update stable interface controls in place instead of rebuilding the table');
 		}
 		const before = cloneConfigRecord(state.ifcfgState);
 		const pending = iface.load(state);

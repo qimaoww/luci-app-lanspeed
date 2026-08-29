@@ -208,6 +208,43 @@ function scheduleInitial(viewState) {
 		Promise.resolve().then(start);
 }
 
+function captureViewport(root) {
+	var host = typeof window !== 'undefined' ? window : null;
+	var state = {
+		host: host,
+		x: host ? Number(host.scrollX !== undefined ? host.scrollX : host.pageXOffset) || 0 : 0,
+		y: host ? Number(host.scrollY !== undefined ? host.scrollY : host.pageYOffset) || 0 : 0,
+		containers: []
+	};
+	var node = root && root.parentElement;
+	while (node) {
+		var left = Number(node.scrollLeft) || 0;
+		var top = Number(node.scrollTop) || 0;
+		if (left || top)
+			state.containers.push({ node: node, left: left, top: top });
+		node = node.parentElement;
+	}
+	return state;
+}
+
+function restoreViewport(state) {
+	if (!state) return;
+	var host = state.host;
+	var x = host ? Number(host.scrollX !== undefined ? host.scrollX : host.pageXOffset) || 0 : 0;
+	var y = host ? Number(host.scrollY !== undefined ? host.scrollY : host.pageYOffset) || 0 : 0;
+	if (host && typeof host.scrollTo === 'function' && (x !== state.x || y !== state.y))
+		host.scrollTo(state.x, state.y);
+	state.containers.forEach(function(position) {
+		if (!position.node) return;
+		if (typeof position.node.scrollTo === 'function')
+			position.node.scrollTo(position.left, position.top);
+		else {
+			position.node.scrollLeft = position.left;
+			position.node.scrollTop = position.top;
+		}
+	});
+}
+
 return baseclass.extend({
 	RPC_CALLS: RPC_CALLS,
 	createLoadingState: createLoadingState,
@@ -257,7 +294,7 @@ return baseclass.extend({
 				var self = this;
 				var requestId = (self.requestId || 0) + 1;
 				var previous = snapshotData(self);
-				var startError = null;
+				var viewport = captureViewport(self.refs && self.refs.root);
 				applyData(self, createLoadingState(previous, requestId));
 				self.requestId = requestId;
 				if (self.refs) {
@@ -267,20 +304,30 @@ return baseclass.extend({
 					self.refs.btnRefresh.textContent = _('检查中…');
 					if (self.refs.btnCopy) self.refs.btnCopy.disabled = true;
 					self.refs.root.setAttribute('aria-busy', 'true');
-					try { diagnosticsRefresh.refresh(self); } catch (error) { startError = error; }
 				}
 
-				return (startError ? Promise.reject(startError) : Promise.resolve().then(function() {
+				/* Keep the last rendered diagnosis in place while the next RPC batch
+				 * runs. Busy controls communicate progress without replacing tables,
+				 * notices, expanded details, focus or scroll position with loading DOM. */
+				return Promise.resolve().then(function() {
 					return loadAll(self.rpcTimeoutMs);
-				})).then(function(results) {
+				}).then(function(results) {
 					if (requestId !== self.requestId) return { ignored: true, requestId: requestId };
 					applyData(self, normalizeResults(results, previous, Date.now(), requestId));
-					diagnosticsRefresh.refresh(self);
+					try {
+						diagnosticsRefresh.refresh(self);
+					} finally {
+						restoreViewport(viewport);
+					}
 					return { ignored: false, requestId: requestId, state: self.pageState };
 				}, function(error) {
 					if (requestId !== self.requestId) return { ignored: true, requestId: requestId };
 					applyData(self, normalizeResults(unexpectedResults(error), previous, Date.now(), requestId));
-					diagnosticsRefresh.refresh(self);
+					try {
+						diagnosticsRefresh.refresh(self);
+					} finally {
+						restoreViewport(viewport);
+					}
 					return { ignored: false, requestId: requestId, state: self.pageState, error: error };
 				}).then(function(result) {
 					restoreControls(self, requestId);

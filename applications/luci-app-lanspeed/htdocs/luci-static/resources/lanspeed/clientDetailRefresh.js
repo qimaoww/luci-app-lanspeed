@@ -48,10 +48,48 @@ function replaceRows(tbody, rows) {
 		rows.some(function(row) {
 			if (row.getAttribute('data-remote-ip') !== activeRemoteIp)
 				return false;
-			row.focus();
+			try { row.focus({ preventScroll: true }); }
+			catch (e) { row.focus(); }
 			return true;
 		});
 	}
+}
+
+function captureViewport(refs) {
+	var host = document && document.defaultView;
+	var state = {
+		host: host,
+		x: host ? Number(host.scrollX !== undefined ? host.scrollX : host.pageXOffset) || 0 : 0,
+		y: host ? Number(host.scrollY !== undefined ? host.scrollY : host.pageYOffset) || 0 : 0,
+		containers: []
+	};
+	var node = refs && refs.root ? refs.root.parentElement : null;
+	while (node) {
+		var left = Number(node.scrollLeft) || 0;
+		var top = Number(node.scrollTop) || 0;
+		if (left || top)
+			state.containers.push({ node: node, left: left, top: top });
+		node = node.parentElement;
+	}
+	return state;
+}
+
+function restoreViewport(state) {
+	if (!state) return;
+	var host = state.host;
+	var x = host ? Number(host.scrollX !== undefined ? host.scrollX : host.pageXOffset) || 0 : 0;
+	var y = host ? Number(host.scrollY !== undefined ? host.scrollY : host.pageYOffset) || 0 : 0;
+	if (host && typeof host.scrollTo === 'function' && (x !== state.x || y !== state.y))
+		host.scrollTo(state.x, state.y);
+	state.containers.forEach(function(position) {
+		if (!position.node) return;
+		if (typeof position.node.scrollTo === 'function')
+			position.node.scrollTo(position.left, position.top);
+		else {
+			position.node.scrollLeft = position.left;
+			position.node.scrollTop = position.top;
+		}
+	});
 }
 
 function warningLabel(warning) {
@@ -450,6 +488,7 @@ function errorText(error, response) {
 function render(viewState) {
 	var refs = viewState && viewState.refs;
 	if (!refs) return;
+	var viewport = captureViewport(refs);
 
 	var response = viewState.response || null;
 	var warnings = fmt.asArray(response && response.warnings);
@@ -621,6 +660,7 @@ function render(viewState) {
 		: _('每 %s 秒自动刷新').format(String(Math.round(Number(interval) / 100) / 10)));
 	footer.push(_('国家/地区及中国省份按 IP 推测，由浏览器查询并缓存，结果可能不准确'));
 	refs.footer.textContent = footer.join(' · ');
+	restoreViewport(viewport);
 }
 
 return baseclass.extend({
