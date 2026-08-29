@@ -14,8 +14,9 @@ use lanspeed_common::{
     ECM_NSS_EXIT_NETDEV_V6_PROGRAM_NAME, ECM_NSS_EXIT_SYNC_MANY_V4_PROGRAM_NAME,
     ECM_NSS_EXIT_SYNC_MANY_V6_PROGRAM_NAME, ECM_SOURCE_STATS_MAP_NAME, ECM_UPDATE_PROGRAM_NAME,
     EGRESS_EARLY_PROGRAM_NAME, EGRESS_PROGRAM_NAME, FAST_COUNTERS_MAP_CAPACITY,
-    FAST_COUNTERS_MAP_NAME, INGRESS_EARLY_PROGRAM_NAME, INGRESS_PROGRAM_NAME, MAX_CLIENTS,
-    MAX_CONN_TUPLES, MAX_ECM_NSS_CONTEXTS, SEEN_CONNS_MAP_NAME,
+    FAST_COUNTERS_MAP_NAME, FIB_LOOKUP_MAP_NAME, INGRESS_EARLY_PROGRAM_NAME, INGRESS_PROGRAM_NAME,
+    MAX_CLIENTS, MAX_CONN_TUPLES, MAX_ECM_NSS_CONTEXTS, ROUTED_FAST_COUNTERS_MAP_NAME,
+    SEEN_CONNS_MAP_NAME,
 };
 use object::{
     Object as _, ObjectSection as _, ObjectSymbol as _, RelocationTarget, SectionIndex,
@@ -94,6 +95,8 @@ fn objects_are_fresh_for_the_accounting_sources() {
         workspace.join("crates/lanspeed-ebpf/src/x86/accounting.rs"),
         workspace.join("crates/lanspeed-ebpf/src/atomics.rs"),
         workspace.join("crates/lanspeed-ebpf/src/x86/connections.rs"),
+        workspace.join("crates/lanspeed-ebpf/src/nss/account.rs"),
+        workspace.join("crates/lanspeed-ebpf/src/nss/routed.rs"),
     ];
 
     for object in [object_path(), fallback_object_path()] {
@@ -208,7 +211,9 @@ fn production_tc_object_has_exact_maps_programs_and_license() {
             CLIENTS_MAP_NAME,
             CONNTRACK_SCRATCH_MAP_NAME,
             FAST_COUNTERS_MAP_NAME,
+            FIB_LOOKUP_MAP_NAME,
             PACKET_SCRATCH_MAP_NAME,
+            ROUTED_FAST_COUNTERS_MAP_NAME,
             SEEN_CONNS_MAP_NAME,
         ])
     );
@@ -233,6 +238,23 @@ fn production_tc_object_has_exact_maps_programs_and_license() {
     );
     assert_eq!(fast_counters.max_entries(), FAST_COUNTERS_MAP_CAPACITY);
 
+    let routed_fast_counters = &object.maps[ROUTED_FAST_COUNTERS_MAP_NAME];
+    assert_eq!(
+        routed_fast_counters.map_type(),
+        bpf_map_type::BPF_MAP_TYPE_PERCPU_HASH as u32
+    );
+    assert_eq!(
+        (
+            routed_fast_counters.key_size(),
+            routed_fast_counters.value_size()
+        ),
+        (16, 40)
+    );
+    assert_eq!(
+        routed_fast_counters.max_entries(),
+        FAST_COUNTERS_MAP_CAPACITY
+    );
+
     let seen = &object.maps[SEEN_CONNS_MAP_NAME];
     assert_eq!(seen.map_type(), bpf_map_type::BPF_MAP_TYPE_LRU_HASH as u32);
     assert_eq!(seen.key_size(), 28);
@@ -249,6 +271,14 @@ fn production_tc_object_has_exact_maps_programs_and_license() {
         (4, 160)
     );
     assert_eq!(packet_scratch.max_entries(), 1);
+
+    let fib_scratch = &object.maps[FIB_LOOKUP_MAP_NAME];
+    assert_eq!(
+        fib_scratch.map_type(),
+        bpf_map_type::BPF_MAP_TYPE_PERCPU_ARRAY as u32
+    );
+    assert_eq!(fib_scratch.key_size(), 4);
+    assert_eq!(fib_scratch.max_entries(), 1);
 
     let conntrack_scratch = &object.maps[CONNTRACK_SCRATCH_MAP_NAME];
     assert_eq!(
@@ -336,7 +366,9 @@ fn fallback_object_preserves_abi_without_kfunc_relocations() {
         BTreeSet::from([
             CLIENTS_MAP_NAME,
             FAST_COUNTERS_MAP_NAME,
+            FIB_LOOKUP_MAP_NAME,
             PACKET_SCRATCH_MAP_NAME,
+            ROUTED_FAST_COUNTERS_MAP_NAME,
         ])
     );
     assert_eq!(
@@ -369,6 +401,22 @@ fn fallback_object_preserves_abi_without_kfunc_relocations() {
         (16, 40)
     );
     assert_eq!(fast_counters.max_entries(), FAST_COUNTERS_MAP_CAPACITY);
+    let routed_fast_counters = &parsed.maps[ROUTED_FAST_COUNTERS_MAP_NAME];
+    assert_eq!(
+        routed_fast_counters.map_type(),
+        bpf_map_type::BPF_MAP_TYPE_PERCPU_HASH as u32
+    );
+    assert_eq!(
+        (
+            routed_fast_counters.key_size(),
+            routed_fast_counters.value_size()
+        ),
+        (16, 40)
+    );
+    assert_eq!(
+        routed_fast_counters.max_entries(),
+        FAST_COUNTERS_MAP_CAPACITY
+    );
     let packet_scratch = &parsed.maps[PACKET_SCRATCH_MAP_NAME];
     assert_eq!(
         packet_scratch.map_type(),
@@ -379,6 +427,13 @@ fn fallback_object_preserves_abi_without_kfunc_relocations() {
         (4, 160)
     );
     assert_eq!(packet_scratch.max_entries(), 1);
+    let fib_scratch = &parsed.maps[FIB_LOOKUP_MAP_NAME];
+    assert_eq!(
+        fib_scratch.map_type(),
+        bpf_map_type::BPF_MAP_TYPE_PERCPU_ARRAY as u32
+    );
+    assert_eq!(fib_scratch.key_size(), 4);
+    assert_eq!(fib_scratch.max_entries(), 1);
     assert!(!parsed.maps.contains_key(SEEN_CONNS_MAP_NAME));
     assert!(!parsed.maps.contains_key(CONNTRACK_SCRATCH_MAP_NAME));
     for program in parsed.programs.values() {

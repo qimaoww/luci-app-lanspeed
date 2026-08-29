@@ -1,0 +1,64 @@
+#!/bin/sh
+
+process_identity() {
+	pid="$1"
+	[ -r "/proc/$pid/stat" ] || return 1
+	awk '$3 != "Z" { print $1 ":" $22 }' "/proc/$pid/stat" 2>/dev/null
+}
+
+snapshot_processes() {
+	executable="$1"
+	name="${executable##*/}"
+	identities=
+	for pid in $(pidof "$name" 2>/dev/null); do
+		identity=$(process_identity "$pid") || continue
+		[ -n "$identity" ] || continue
+		candidate=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
+		case "$candidate" in
+			"$executable"|"$executable (deleted)") ;;
+			*) continue ;;
+		esac
+		confirmed=$(process_identity "$pid" || true)
+		[ "$confirmed" = "$identity" ] || continue
+		identities="${identities:+$identities }$identity"
+	done
+	printf '%s\n' "$identities"
+}
+
+wait_processes() {
+	identities="$1"
+	remaining="$2"
+	interval="$3"
+	[ -n "$identities" ] || return 0
+
+	while true; do
+		alive=
+		for identity in $identities; do
+			pid="${identity%%:*}"
+			current=$(process_identity "$pid" || true)
+			[ "$current" = "$identity" ] || continue
+			alive="${alive:+$alive }$pid"
+		done
+		[ -z "$alive" ] && return 0
+		[ "$remaining" -gt 0 ] || break
+		remaining=$((remaining - 1))
+		sleep "$interval"
+	done
+
+	logger -p daemon.err -t lanspeedd "timed out waiting for previous process exit pids=$alive"
+	return 1
+}
+
+case "${1:-}" in
+	snapshot)
+		[ "$#" -eq 2 ] || exit 2
+		snapshot_processes "$2"
+		;;
+	wait)
+		[ "$#" -eq 4 ] || exit 2
+		wait_processes "$2" "$3" "$4"
+		;;
+	*)
+		exit 2
+		;;
+esac

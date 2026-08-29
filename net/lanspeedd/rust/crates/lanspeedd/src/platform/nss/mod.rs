@@ -16,6 +16,8 @@ pub(crate) mod fast_rate_clients;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod fast_rate_contract;
 #[cfg(any(feature = "openwrt", test))]
+pub(crate) mod fast_rate_rolling;
+#[cfg(any(feature = "openwrt", test))]
 pub(crate) mod fast_rate_shadow;
 #[cfg(any(feature = "openwrt", test))]
 pub(crate) mod fast_rate_store;

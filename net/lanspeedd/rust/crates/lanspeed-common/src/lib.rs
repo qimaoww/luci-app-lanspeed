@@ -13,6 +13,8 @@ pub const ECM_EVENT_RINGBUF_MAP_NAME: &str = "lanspeed_ecm_event_ringbuf";
 pub const ECM_EVENT_STATS_MAP_NAME: &str = "lanspeed_ecm_event_stats";
 pub const ECM_FAST_COUNTERS_MAP_NAME: &str = "lanspeed_ecm_fast_counters";
 pub const FAST_COUNTERS_MAP_NAME: &str = "lanspeed_fast_counters";
+pub const ROUTED_FAST_COUNTERS_MAP_NAME: &str = "lanspeed_routed_fast_counters";
+pub const FIB_LOOKUP_MAP_NAME: &str = "lanspeed_fib_lookup";
 
 pub const INGRESS_PROGRAM_NAME: &str = "lanspeed_ingress";
 pub const EGRESS_PROGRAM_NAME: &str = "lanspeed_egress";

@@ -1,6 +1,6 @@
 use lanspeed_common::packet::{
-    is_valid_client_mac, parse_packet, parse_packet_prefix, vlan_zone, AddressFamily,
-    PacketIdentity, ParseError, TransportProtocol,
+    is_valid_client_mac, parse_packet, parse_packet_prefix, route_addresses, vlan_zone,
+    AddressFamily, PacketIdentity, ParseError, RouteAddresses, TransportProtocol,
 };
 
 const SRC_MAC: [u8; 6] = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55];
@@ -107,6 +107,41 @@ fn parses_ethernet_ipv6_tcp_and_udp() {
         assert_eq!(identity.src_addr[0..4], [0x20, 0x01, 0x0d, 0xb8]);
         assert_eq!(identity.dst_addr[15], 2);
     }
+}
+
+#[test]
+fn route_endpoints_accept_non_transport_ipv4_and_ipv6_frames() {
+    assert_eq!(
+        route_addresses(&ethernet(0x0800, &ipv4(1, 5, &[0; 8]))),
+        Some(RouteAddresses::Ipv4 {
+            src: [192, 0, 2, 10],
+            dst: [198, 51, 100, 20],
+        })
+    );
+    assert_eq!(
+        route_addresses(&ethernet(0x86dd, &ipv6(58, &[0; 8]))),
+        Some(RouteAddresses::Ipv6 {
+            src: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            dst: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+        })
+    );
+}
+
+#[test]
+fn route_endpoints_walk_two_vlan_headers_and_fail_open_on_unknown_frames() {
+    let ip = ipv4(1, 5, &[0; 8]);
+    let mut tagged = Vec::new();
+    tagged.extend_from_slice(&1u16.to_be_bytes());
+    tagged.extend_from_slice(&0x88a8u16.to_be_bytes());
+    tagged.extend_from_slice(&2u16.to_be_bytes());
+    tagged.extend_from_slice(&0x0800u16.to_be_bytes());
+    tagged.extend_from_slice(&ip);
+    assert!(matches!(
+        route_addresses(&ethernet(0x8100, &tagged)),
+        Some(RouteAddresses::Ipv4 { .. })
+    ));
+    assert_eq!(route_addresses(&ethernet(0x0806, &[0; 28])), None);
+    assert_eq!(route_addresses(&[0; 13]), None);
 }
 
 #[test]

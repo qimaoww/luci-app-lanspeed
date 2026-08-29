@@ -10,12 +10,14 @@ use aya_ebpf::{
 };
 use lanspeed_common::{
     accounting::tc_frame_accounting,
-    packet::{gro_repeated_header_len, is_valid_client_mac, vlan_zone},
+    packet::{gro_repeated_header_len, is_valid_client_mac, route_addresses, vlan_zone},
     FastCounterValue, LanspeedCounters, LanspeedKey, DIR_TX, FAST_COUNTERS_MAP_CAPACITY,
     FAST_COUNTER_ABI_VERSION, MAX_CLIENTS,
 };
 
 use crate::atomics::add_u64;
+
+use super::routed::is_lan_local_frame;
 
 #[cfg(feature = "conntrack-kfunc")]
 use super::conntrack::try_count_connection;
@@ -44,6 +46,13 @@ pub static LANSPEED_CLIENTS: LruHashMap<LanspeedKey, LanspeedCounters> =
 static LANSPEED_FAST_COUNTERS: PerCpuHashMap<LanspeedKey, FastCounterValue> =
     PerCpuHashMap::with_max_entries(FAST_COUNTERS_MAP_CAPACITY, 0);
 
+/// Routed-only FastS counters for the explicit Internet view. The ordinary
+/// FastS and client maps retain their all-frame semantics when that view is
+/// disabled.
+#[map(name = "lanspeed_routed_fast_counters")]
+static LANSPEED_ROUTED_FAST_COUNTERS: PerCpuHashMap<LanspeedKey, FastCounterValue> =
+    PerCpuHashMap::with_max_entries(FAST_COUNTERS_MAP_CAPACITY, 0);
+
 #[cfg(feature = "conntrack-kfunc")]
 #[map(name = "lanspeed_seen_conns")]
 pub static LANSPEED_SEEN_CONNS: LruHashMap<LanspeedConnKey, u8> =
@@ -62,10 +71,11 @@ pub fn account_frame(ctx: TcContext, direction: u8, action: i32) -> i32 {
     };
     let prefix = unsafe { &mut *prefix };
     let prefix_ptr = prefix.bytes.as_mut_ptr();
-    if !load_packet_prefix(&ctx, prefix_ptr, ETHERNET_HEADER_LEN as u32) {
+    let prefix_len = frame_len.min(PACKET_PREFIX_LEN as u32);
+    if !load_packet_prefix(&ctx, prefix_ptr, prefix_len) {
         return action;
     }
-    let ethernet = unsafe { loaded_packet_prefix(prefix, ETHERNET_HEADER_LEN as u32) };
+    let ethernet = unsafe { loaded_packet_prefix(prefix, prefix_len) };
 
     let mac = if direction == DIR_TX {
         [
@@ -91,11 +101,12 @@ pub fn account_frame(ctx: TcContext, direction: u8, action: i32) -> i32 {
     }
 
     let skb = ctx.skb.skb;
+    let ifindex = unsafe { (*skb).ifindex };
+    let lan_local = route_addresses(ethernet)
+        .is_some_and(|addresses| is_lan_local_frame(&ctx, addresses, direction, ifindex));
     let wire_len = unsafe { (*skb).wire_len };
     let gso_segs = unsafe { (*skb).gso_segs };
-    let prefix_len = frame_len.min(PACKET_PREFIX_LEN as u32);
-    let gro_prefix_loaded =
-        direction == DIR_TX && gso_segs > 1 && load_packet_prefix(&ctx, prefix_ptr, prefix_len);
+    let gro_prefix_loaded = direction == DIR_TX && gso_segs > 1;
     let ingress_header_len = if gro_prefix_loaded {
         gro_repeated_header_len(unsafe { loaded_packet_prefix(prefix, prefix_len) })
     } else {
@@ -104,7 +115,7 @@ pub fn account_frame(ctx: TcContext, direction: u8, action: i32) -> i32 {
     let accounting =
         tc_frame_accounting(direction, frame_len, wire_len, gso_segs, ingress_header_len);
     let key = LanspeedKey {
-        ifindex: unsafe { (*skb).ifindex },
+        ifindex,
         vlan_or_zone: vlan_zone(unsafe { (*skb).vlan_tci } as u16),
         direction,
         reserved: 0,
@@ -113,7 +124,22 @@ pub fn account_frame(ctx: TcContext, direction: u8, action: i32) -> i32 {
     };
     let now = unsafe { bpf_ktime_get_ns() };
     unsafe {
-        update_fast_counter(&key, accounting.bytes, accounting.packets, now);
+        update_fast_counter_in(
+            &LANSPEED_FAST_COUNTERS,
+            &key,
+            accounting.bytes,
+            accounting.packets,
+            now,
+        );
+        if !lan_local {
+            update_fast_counter_in(
+                &LANSPEED_ROUTED_FAST_COUNTERS,
+                &key,
+                accounting.bytes,
+                accounting.packets,
+                now,
+            );
+        }
     }
 
     let counters = match LANSPEED_CLIENTS.get_ptr_mut(&key) {
@@ -182,8 +208,15 @@ unsafe fn add_packet(counters: *mut LanspeedCounters, bytes: u64, packets: u64, 
     }
 }
 
-unsafe fn update_fast_counter(key: &LanspeedKey, bytes: u64, packets: u64, now: u64) {
-    let Some(counter) = LANSPEED_FAST_COUNTERS.get_ptr_mut(key) else {
+#[inline(always)]
+unsafe fn update_fast_counter_in(
+    counters: &PerCpuHashMap<LanspeedKey, FastCounterValue>,
+    key: &LanspeedKey,
+    bytes: u64,
+    packets: u64,
+    now: u64,
+) {
+    let Some(counter) = counters.get_ptr_mut(key) else {
         let initial = FastCounterValue {
             abi_version: FAST_COUNTER_ABI_VERSION,
             reset_generation: 1,
@@ -192,7 +225,7 @@ unsafe fn update_fast_counter(key: &LanspeedKey, bytes: u64, packets: u64, now: 
             packets,
             last_seen_ns: now,
         };
-        let _ = LANSPEED_FAST_COUNTERS.insert(key, &initial, BPF_NOEXIST as u64);
+        let _ = counters.insert(key, &initial, BPF_NOEXIST as u64);
         return;
     };
 

@@ -122,6 +122,15 @@ pub(super) fn apply_fast_rate_overlay(
             _ => None,
         };
         meta.stale = false;
+        if routed_view {
+            // The routed view replaces both published directions with the
+            // independent FastN+FastS rolling result. Do not retain the
+            // displaced ECM low-rate window as if it owned this value.
+            meta.reason_codes
+                .retain(|reason| reason != "nss_low_rate_rolling_window");
+        }
+        meta.reason_codes
+            .push("nss_fast_rate_rolling_window".into());
         meta.reason_codes.push("fast_rate_worker_overlay".into());
         meta.reason_codes.sort();
         meta.reason_codes.dedup();
@@ -583,6 +592,7 @@ mod tests {
         let meta = snapshot.clients.clients[0].rate_meta.as_mut().unwrap();
         meta.tx.source = RateSource::FastRoutedInternet;
         meta.rx.source = RateSource::FastRoutedInternet;
+        meta.reason_codes.push("nss_low_rate_rolling_window".into());
         let mut publication = publication(true);
         publication.observed_ms = 3_000;
         let contract = base_contract(&snapshot, 1);
@@ -597,6 +607,14 @@ mod tests {
         assert_eq!(meta.window_ms, Some(1_000));
         assert_eq!(meta.tx.sample_ms, Some(3_000));
         assert_eq!(meta.rx.sample_ms, Some(3_000));
+        assert!(meta
+            .reason_codes
+            .iter()
+            .any(|reason| reason == "nss_fast_rate_rolling_window"));
+        assert!(!meta
+            .reason_codes
+            .iter()
+            .any(|reason| reason == "nss_low_rate_rolling_window"));
     }
 
     #[test]
