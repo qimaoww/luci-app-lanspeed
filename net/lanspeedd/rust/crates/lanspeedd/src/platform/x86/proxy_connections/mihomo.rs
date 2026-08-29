@@ -1,4 +1,4 @@
-use super::{http, normalize_ip, ProxyConnectionSample, ProxySource};
+use super::{http, normalize_ip, ProxyConnectionSample, ProxyConnectionSettings, ProxySource};
 use crate::connection_details::ConnectionProtocol;
 use lanspeed_openwrt_sys::{UciContext, UciValue};
 use serde::Deserialize;
@@ -52,8 +52,10 @@ impl PortValue {
     }
 }
 
-pub(super) fn read_samples() -> io::Result<Vec<ProxyConnectionSample>> {
-    let Some(config) = read_config()? else {
+pub(super) fn read_samples(
+    settings: &ProxyConnectionSettings,
+) -> io::Result<Vec<ProxyConnectionSample>> {
+    let Some(config) = read_config(settings)? else {
         return Ok(Vec::new());
     };
     let body = http::get_loopback_json(
@@ -70,29 +72,53 @@ struct MihomoControllerConfig {
     secret: String,
 }
 
-fn read_config() -> io::Result<Option<MihomoControllerConfig>> {
+fn read_config(settings: &ProxyConnectionSettings) -> io::Result<Option<MihomoControllerConfig>> {
     let mut uci = UciContext::new().map_err(uci_error)?;
     let enabled = uci
         .lookup("openclash.config.enable")
         .map_err(uci_error)?
         .and_then(string_value)
         .is_some_and(|value| value == "1");
-    if !enabled {
-        return Ok(None);
-    }
-    let port = uci
+    let openclash_port = uci
         .lookup("openclash.config.cn_port")
         .map_err(uci_error)?
         .and_then(string_value)
         .and_then(|value| value.parse::<u16>().ok())
-        .filter(|port| *port != 0)
-        .unwrap_or(DEFAULT_CONTROLLER_PORT);
-    let secret = uci
+        .filter(|port| *port != 0);
+    let openclash_secret = uci
         .lookup("openclash.config.dashboard_password")
         .map_err(uci_error)?
-        .and_then(string_value)
-        .unwrap_or_default();
-    Ok(Some(MihomoControllerConfig { port, secret }))
+        .and_then(string_value);
+    Ok(resolve_config(
+        settings,
+        enabled,
+        openclash_port,
+        openclash_secret,
+    ))
+}
+
+fn resolve_config(
+    settings: &ProxyConnectionSettings,
+    openclash_enabled: bool,
+    openclash_port: Option<u16>,
+    openclash_secret: Option<String>,
+) -> Option<MihomoControllerConfig> {
+    let manually_configured =
+        settings.mihomo_controller_port.is_some() || settings.mihomo_controller_secret.is_some();
+    if !openclash_enabled && !manually_configured {
+        return None;
+    }
+    Some(MihomoControllerConfig {
+        port: settings
+            .mihomo_controller_port
+            .or(openclash_port)
+            .unwrap_or(DEFAULT_CONTROLLER_PORT),
+        secret: settings
+            .mihomo_controller_secret
+            .clone()
+            .or(openclash_secret)
+            .unwrap_or_default(),
+    })
 }
 
 fn string_value(value: UciValue) -> Option<String> {
@@ -184,6 +210,33 @@ mod tests {
             (samples[1].tx_bytes, samples[1].rx_bytes),
             (Some(500), Some(1000))
         );
+    }
+
+    #[test]
+    fn manual_settings_override_openclash_without_exposing_the_secret() {
+        let settings = ProxyConnectionSettings {
+            enabled: true,
+            mihomo_controller_port: Some(9_091),
+            mihomo_controller_secret: Some("manual-token".into()),
+        };
+        let config = resolve_config(
+            &settings,
+            false,
+            Some(9_090),
+            Some("openclash-token".to_owned()),
+        )
+        .unwrap();
+        assert_eq!(config.port, 9_091);
+        assert_eq!(config.secret, "manual-token");
+    }
+
+    #[test]
+    fn automatic_settings_follow_only_an_enabled_openclash_instance() {
+        let settings = ProxyConnectionSettings::default();
+        assert!(resolve_config(&settings, false, Some(9_090), Some("token".into())).is_none());
+        let config = resolve_config(&settings, true, Some(9_090), Some("token".into())).unwrap();
+        assert_eq!(config.port, 9_090);
+        assert_eq!(config.secret, "token");
     }
 
     #[test]

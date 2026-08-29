@@ -20,11 +20,102 @@ use crate::{
     },
     identity::{ClientIdentity, IdentityTable},
 };
+use lanspeed_openwrt_sys::{UciContext, UciValue};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    io,
     net::IpAddr,
     sync::Arc,
 };
+
+const DEFAULT_PROXY_CONNECTIONS_ENABLED: bool = true;
+const MAX_MIHOMO_SECRET_LEN: usize = 1_024;
+
+#[derive(Clone, Eq, PartialEq)]
+struct ProxyConnectionSettings {
+    enabled: bool,
+    mihomo_controller_port: Option<u16>,
+    mihomo_controller_secret: Option<String>,
+}
+
+impl Default for ProxyConnectionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: DEFAULT_PROXY_CONNECTIONS_ENABLED,
+            mihomo_controller_port: None,
+            mihomo_controller_secret: None,
+        }
+    }
+}
+
+impl ProxyConnectionSettings {
+    fn read() -> io::Result<Self> {
+        let mut uci = UciContext::new().map_err(uci_error)?;
+        let enabled = match lookup_string(&mut uci, "lanspeed.main.enable_proxy_connections")? {
+            None => DEFAULT_PROXY_CONNECTIONS_ENABLED,
+            Some(value) if value == "1" || value == "true" => true,
+            Some(value) if value == "0" || value == "false" => false,
+            Some(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid proxy connection enable option",
+                ));
+            }
+        };
+        let mihomo_controller_port =
+            match lookup_string(&mut uci, "lanspeed.main.mihomo_controller_port")? {
+                None => None,
+                Some(value) if value.is_empty() || value == "0" => None,
+                Some(value) => Some(
+                    value
+                        .parse::<u16>()
+                        .ok()
+                        .filter(|port| *port != 0)
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "invalid Mihomo controller port",
+                            )
+                        })?,
+                ),
+            };
+        let mihomo_controller_secret =
+            lookup_string(&mut uci, "lanspeed.main.mihomo_controller_secret")?
+                .filter(|value| !value.is_empty())
+                .map(|value| {
+                    if value.len() > MAX_MIHOMO_SECRET_LEN
+                        || !value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "invalid Mihomo authentication secret",
+                        ));
+                    }
+                    Ok(value)
+                })
+                .transpose()?;
+        Ok(Self {
+            enabled,
+            mihomo_controller_port,
+            mihomo_controller_secret,
+        })
+    }
+}
+
+fn lookup_string(uci: &mut UciContext, path: &str) -> io::Result<Option<String>> {
+    match uci.lookup(path).map_err(uci_error)? {
+        Some(UciValue::String(value)) => Ok(Some(value)),
+        Some(UciValue::List(_)) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "proxy connection option must be a string",
+        )),
+        None => Ok(None),
+    }
+}
+
+fn uci_error(error: lanspeed_openwrt_sys::Error) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum ProxySource {
@@ -151,8 +242,15 @@ impl ProxyConnectionCollector {
         collected: &mut CollectedSnapshot,
     ) -> MergeStats {
         let mut stats = MergeStats::default();
+        let Ok(settings) = ProxyConnectionSettings::read() else {
+            return stats;
+        };
+        if !settings.enabled {
+            self.rates = ProxyRateBook::default();
+            return stats;
+        }
         let mut samples = Vec::new();
-        if let Ok(current) = mihomo::read_samples() {
+        if let Ok(current) = mihomo::read_samples(&settings) {
             stats.mihomo_samples = current.len();
             samples.extend(self.rates.update(ProxySource::Mihomo, now_ms, current));
         }
@@ -437,6 +535,14 @@ mod tests {
             (second[0].tx_bps, second[0].rx_bps),
             (Some(8_000), Some(16_000))
         );
+    }
+
+    #[test]
+    fn proxy_connection_settings_default_to_openclash_auto_detection() {
+        let settings = ProxyConnectionSettings::default();
+        assert!(settings.enabled);
+        assert_eq!(settings.mihomo_controller_port, None);
+        assert_eq!(settings.mihomo_controller_secret, None);
     }
 
     #[test]

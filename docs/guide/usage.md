@@ -67,6 +67,16 @@ config lanspeed 'main'
 | `enable_bpf` | `1` | BPF 运行开关，不改变包依赖 |
 | `enable_conntrack_fallback` | `1` | 连接元数据回退，不参与总速率 |
 
+x86 配置页额外提供透明代理连接补全：
+
+| 选项 | 默认 | 行为 |
+|---|---:|---|
+| `enable_proxy_connections` | `1` | 启用本机 Mihomo/OpenClash API 与 dae 进程连接补全 |
+| `mihomo_controller_port` | `0` | `0` 自动读取 OpenClash `cn_port`，否则覆盖本机控制器端口 |
+| `mihomo_controller_secret` | 空 | 空值自动读取 OpenClash `dashboard_password`，否则使用手动认证码 |
+
+Mihomo 控制器始终只连接 `127.0.0.1`。认证码字段使用密码输入框；手动值保存在 `/etc/config/lanspeed`，自动模式不会把 OpenClash 原认证码复制到 LAN Speed 配置。
+
 历史配置中的 `dedicated_port` 已停用；配置页保存时会自动清理该遗留项。客户端详情中的主机名按 MAC 写入 `/etc/config/dhcp`，不会强制配置静态 IP。
 
 ## ubus 调试

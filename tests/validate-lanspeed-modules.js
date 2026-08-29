@@ -6324,7 +6324,8 @@ function assertConfigModelRewrite(src) {
 		'access_edge_mode', 'internet_view_mode', 'nss_low_rate_window_ms',
 		'nss_low_rate_high_watermark_bps', 'nss_fifo_target_delay_ms',
 		'nss_fifo_min_queue_packets', 'rate_compensation_factor',
-			'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges',
+		'enable_proxy_connections', 'mihomo_controller_port', 'mihomo_controller_secret',
+		'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges',
 		'collector_mode', 'max_clients', 'ifname', 'interface_include',
 		'interface_exclude', 'observe', 'enable_bpf', 'enable_conntrack_fallback'
 	];
@@ -6337,6 +6338,8 @@ function assertConfigModelRewrite(src) {
 	if (String(readableLabels.rate_collector_mode) !== '客户端网速模式' ||
 		String(readableLabels.access_edge_mode) !== '客户端总速率' ||
 		String(readableLabels.internet_view_mode) !== '互联网/路由视图' ||
+		String(readableLabels.enable_proxy_connections) !== '代理连接补全' ||
+		String(readableLabels.mihomo_controller_secret) !== 'Mihomo API 认证码' ||
 		String(readableLabels.enable_bpf) !== '启用 CPU 流量检测（BPF）') {
 		fail('configModel.js must present user-facing meanings instead of internal collector terminology');
 	}
@@ -6351,6 +6354,9 @@ function assertConfigModelRewrite(src) {
 		model.DEFAULTS.nss_fifo_target_delay_ms !== 50 ||
 		model.DEFAULTS.nss_fifo_min_queue_packets !== 8 ||
 		model.DEFAULTS.rate_compensation_factor !== '1.10' ||
+		model.DEFAULTS.enable_proxy_connections !== '1' ||
+		model.DEFAULTS.mihomo_controller_port !== 0 ||
+		model.DEFAULTS.mihomo_controller_secret !== '' ||
 		JSON.stringify(model.ACCESS_EDGE_MODES.map(item => String(item.label))) !== JSON.stringify([
 			'关闭精准检测', '仅后台验证（不用于显示）', '精准总速率（推荐）'
 		]) || JSON.stringify(model.INTERNET_VIEW_MODES.map(item => item.value)) !==
@@ -6362,6 +6368,11 @@ function assertConfigModelRewrite(src) {
 		model.parseFactor('1.001', model.LIMITS.rate_compensation_factor).valid ||
 		model.parseFactor('1.26', model.LIMITS.rate_compensation_factor).valid) {
 		fail('configModel.js must validate the NSS rate compensation factor without float coercion');
+	}
+	if (!model.parseBearerSecret('').valid || !model.parseBearerSecret('token-123').valid ||
+		model.parseBearerSecret('has space').valid || model.parseBearerSecret('line\nfeed').valid ||
+		model.parseBearerSecret('x'.repeat(1025)).valid) {
+		fail('configModel.js must validate an optional bounded HTTP Bearer secret');
 	}
 	if (model.parseInteger('1000ms', model.LIMITS.refresh_interval_ms).valid ||
 		model.parseInteger('499', model.LIMITS.refresh_interval_ms).valid ||
@@ -6375,13 +6386,15 @@ function assertConfigModelRewrite(src) {
 	const invalid = model.normalize({
 		refresh_interval_ms: 'oops', hide_ipv6_ranges: 'not-a-cidr',
 		ifname: [ 'bad name' ],
-		access_edge_mode: 'guess', internet_view_mode: 'ecm', enable_bpf: 'maybe'
+		access_edge_mode: 'guess', internet_view_mode: 'ecm', enable_bpf: 'maybe',
+		mihomo_controller_port: '65536', mihomo_controller_secret: 'has space'
 	});
 	if (invalid.valid || !invalid.errors.refresh_interval_ms ||
 		!invalid.errors.hide_ipv6_ranges || !invalid.errors.ifname ||
 		!invalid.errors.access_edge_mode ||
 		!invalid.errors.internet_view_mode ||
-		!invalid.errors.enable_bpf) {
+		!invalid.errors.enable_bpf || !invalid.errors.mihomo_controller_port ||
+		!invalid.errors.mihomo_controller_secret) {
 		fail('configModel.js must return field-scoped errors for malformed UCI values');
 	}
 	const edge = model.normalize({ access_edge_mode: 'active' });
@@ -6488,6 +6501,19 @@ function assertConfigModelRewrite(src) {
 	if (JSON.stringify(removedPortPatch.unset) !== JSON.stringify([ 'dedicated_port' ]) ||
 		Object.prototype.hasOwnProperty.call(removedPortPatch.set, 'dedicated_port'))
 		fail('configModel.js must clean the removed dedicated-port option on the next save');
+	const manualMihomoPatch = model.buildUciPatch(Object.assign({}, model.DEFAULTS, {
+		mihomo_controller_port: 9091, mihomo_controller_secret: 'manual-token'
+	}), {});
+	if (manualMihomoPatch.set.enable_proxy_connections !== '1' ||
+		manualMihomoPatch.set.mihomo_controller_port !== '9091' ||
+		manualMihomoPatch.set.mihomo_controller_secret !== 'manual-token')
+		fail('configModel.js must persist x86 Mihomo manual overrides through its owned UCI patch');
+	const automaticMihomoPatch = model.buildUciPatch(model.DEFAULTS, {
+		mihomo_controller_secret: 'old-token'
+	});
+	if (automaticMihomoPatch.unset.indexOf('mihomo_controller_secret') === -1 ||
+		Object.prototype.hasOwnProperty.call(automaticMihomoPatch.set, 'mihomo_controller_secret'))
+		fail('configModel.js must remove a manual secret when returning to OpenClash auto detection');
 	if (!src.includes('legacy-enum') || !src.includes('compatibility: true') ||
 		!src.includes('MAX_INTERFACE_NAMES'))
 		fail('configModel.js must explicitly identify compatibility fields and interface limits');
@@ -6914,7 +6940,8 @@ function assertConfigFormRewrite(src) {
 	}
 	[ 'refresh_interval_ms', 'overview_window_samples', 'max_clients', 'enable_bpf',
 		'enable_conntrack_fallback', 'access_edge_mode', 'internet_view_mode',
-		'nss_low_rate_window_ms', 'nss_low_rate_high_watermark_bps', 'interface_exclude' ].forEach(name => {
+		'nss_low_rate_window_ms', 'nss_low_rate_high_watermark_bps', 'interface_exclude',
+		'enable_proxy_connections', 'mihomo_controller_port', 'mihomo_controller_secret' ].forEach(name => {
 		if (!src.includes(name)) fail(`configForm.js must preserve ${name} in the owned data contract`);
 	});
 	if (!src.includes("values.dedicated_port = uci.get('lanspeed', 'main', 'dedicated_port')") ||
@@ -6928,6 +6955,10 @@ function assertConfigFormRewrite(src) {
 	if (!src.includes("data-disabled") || !src.includes('hide_private_ipv6.disabled') ||
 		!src.includes('modeChoices('))
 		fail('configForm.js must implement dependent disabled states and capability-gated choices');
+	if (!src.includes("'type': 'password'") || !src.includes("'autocomplete': 'new-password'") ||
+		!src.includes('showProxyConnections') ||
+		!src.includes("_('留空自动读取 OpenClash 认证码"))
+		fail('configForm.js must render x86 Mihomo overrides as an explicitly gated password form');
 }
 
 function matchingConfigStatus(values) {
