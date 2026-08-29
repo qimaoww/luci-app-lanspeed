@@ -4,9 +4,9 @@
 //! only the client-to-proxy half after a transparent proxy takes ownership of
 //! the socket. Mihomo supplies its logical connection ledger through the
 //! loopback external-controller API. dae/daed does not expose an equivalent
-//! API, so its
-//! accepted TCP sockets are recovered from the process-owned `/proc` entries.
-//! Neither adapter is compiled into the NSS backend.
+//! per-connection API, so active TCP sockets are recovered from its dedicated
+//! `daens` network namespace and UDP tuples from its timer-backed eBPF state
+//! map. Neither adapter is compiled into the NSS backend.
 
 mod dae;
 mod http;
