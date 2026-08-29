@@ -67,6 +67,18 @@ config lanspeed 'main'
 | `enable_bpf` | `1` | BPF 运行开关，不改变包依赖 |
 | `enable_conntrack_fallback` | `1` | 连接元数据回退，不参与总速率 |
 
+x86 配置页额外提供透明代理连接补全：
+
+| 选项 | 默认 | 行为 |
+|---|---:|---|
+| `enable_proxy_connections` | `1` | 启用本机 Mihomo/OpenClash API 与 dae/daed 连接补全 |
+| `mihomo_controller_port` | `0` | `0` 自动读取 OpenClash `cn_port`，否则覆盖本机控制器端口 |
+| `mihomo_controller_secret` | 空 | 空值自动读取 OpenClash `dashboard_password`，否则使用手动认证码 |
+
+Mihomo 控制器始终只连接 `127.0.0.1`。认证码字段使用密码输入框；手动值保存在 `/etc/config/lanspeed`，自动模式不会把 OpenClash 原认证码复制到 LAN Speed 配置。
+
+dae/daed 没有逐连接 API。x86 后端只读取运行中 dae/daed 进程实际持有的数据：TCP 来自 `daens` 网络命名空间中的 ESTABLISHED socket，并通过内核 SOCK_DIAG/TCP_INFO 累计字节计算逐连接速率；UDP 同时校验 `udp_conn_state_map` 与 `routing_tuples_map`，仅接收用户定义代理 outbound，排除 direct、block 和中间路由状态。UDP 生命周期遵循 dae 1.27 的 300 秒状态定时器；内核诊断或 BPF map 名称、类型、ABI 尺寸不匹配时该适配器直接跳过，不猜测解析。
+
 历史配置中的 `dedicated_port` 已停用；配置页保存时会自动清理该遗留项。客户端详情中的主机名按 MAC 写入 `/etc/config/dhcp`，不会强制配置静态 IP。
 
 ## ubus 调试
@@ -93,7 +105,7 @@ ubus call lanspeed client_control_delete \
 
 `client_control_set` 只接受十进制 bit/s 和 `0`/`1` 开关。两个方向分别观察自有 class counter，只有对应计数增长后才标记已验证。
 
-`client_connections` 返回当前 conntrack 快照：TCP 仅统计 ESTABLISHED + ASSURED，UDP 仅统计 ASSURED。`client.rx_bps`/`client.tx_bps` 是该客户端当前已发布快照的下行/上行总速率，不从受限的连接明细列表求和；因此即使明细被截断，摘要总速率仍保持完整。`client.rate_sample_ms`、`client.rate_collector_mode` 和 `client.rate_meta` 同时给出这组总速率的采样时间、采集器和方向级来源/窗口，不能与响应顶层的 conntrack `sample_ms` 混用。
+`client_connections` 以当前 conntrack 快照为基础：TCP 仅统计 ESTABLISHED + ASSURED，UDP 仅统计 ASSURED；x86 启用透明代理补全后，还会合并上述 Mihomo 或 dae/daed 逻辑连接。`client.rx_bps`/`client.tx_bps` 是该客户端当前已发布快照的下行/上行总速率，不从受限的连接明细列表求和；因此即使明细被截断，摘要总速率仍保持完整。`client.rate_sample_ms`、`client.rate_collector_mode` 和 `client.rate_meta` 同时给出这组总速率的采样时间、采集器和方向级来源/窗口，不能与响应顶层的 conntrack `sample_ms` 混用。
 
 连接跟踪快照不可用或不完整时，`client_connections` 仍可能返回客户端总速率；此时连接数量和明细必须按不可用处理，前端会明确标注“连接数据暂不可用”，不会把缺失的连接明细当成零速率或与总速率相加。
 

@@ -13,6 +13,9 @@ var BOOLEAN_FIELDS = [ 'show_client_status', 'show_ipv6', 'hide_private_ipv6',
 	'enable_bpf', 'enable_conntrack_fallback' ];
 var NUMBER_FIELDS = [ 'refresh_interval_ms', 'active_client_window_ms',
 	'active_client_min_bps', 'overview_window_samples', 'max_clients' ];
+var X86_BOOLEAN_FIELDS = [ 'enable_proxy_connections' ];
+var X86_NUMBER_FIELDS = [ 'mihomo_controller_port' ];
+var X86_SECRET_FIELDS = [ 'mihomo_controller_secret' ];
 var NSS_NUMBER_FIELDS = [ 'nss_low_rate_window_ms', 'nss_low_rate_high_watermark_bps',
 	'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets', 'rate_compensation_factor' ];
 var STATUS_RATE_MODES = [ 'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf' ];
@@ -123,6 +126,8 @@ function errorMessage(code, field) {
 		conntrack_fallback_disabled: _('请先允许连接跟踪回退，或选择其他速率模式'),
 		conntrack_netlink_unavailable: _('当前运行环境不支持 CT-Netlink'),
 		conntrack_procfs_unavailable: _('当前运行环境不支持 CT-Procfs'),
+		secret_invalid: _('认证码只能包含不带空格的可见 ASCII 字符'),
+		secret_too_long: _('认证码长度不得超过 1024 个字符'),
 		capability_unavailable: _('当前运行能力不支持此值')
 	};
 	return messages[code] || text(code || _('配置值无效'));
@@ -227,6 +232,19 @@ function numberInput(name, value) {
 		'max': String(limits.max),
 		'step': String(limits.step),
 		'value': String(value),
+		'aria-describedby': fieldId(name) + '-hint ' + fieldId(name) + '-error'
+	});
+}
+
+function secretInput(name, value) {
+	return E('input', {
+		'id': fieldId(name),
+		'type': 'password',
+		'class': 'cbi-input-text',
+		'value': text(value),
+		'autocomplete': 'new-password',
+		'spellcheck': 'false',
+		'maxlength': '1024',
 		'aria-describedby': fieldId(name) + '-hint ' + fieldId(name) + '-error'
 	});
 }
@@ -387,6 +405,9 @@ function readForm(viewState) {
 	var refs = viewState.daemonRefs;
 	var values = cloneValues(viewState.currentValues || cfgModel.DEFAULTS);
 	NUMBER_FIELDS.forEach(function(name) { values[name] = refs.inputs[name].value; });
+	X86_NUMBER_FIELDS.forEach(function(name) {
+		if (refs.inputs[name]) values[name] = refs.inputs[name].value;
+	});
 	NSS_NUMBER_FIELDS.forEach(function(name) {
 		if (refs.inputs[name]) values[name] = refs.inputs[name].value;
 	});
@@ -397,6 +418,12 @@ function readForm(viewState) {
 		? refs.inputs.access_edge_mode.value : 'off';
 	values.conn_collector_mode = refs.inputs.conn_collector_mode.value;
 	BOOLEAN_FIELDS.forEach(function(name) { values[name] = refs.inputs[name].checked ? '1' : '0'; });
+	X86_BOOLEAN_FIELDS.forEach(function(name) {
+		if (refs.inputs[name]) values[name] = refs.inputs[name].checked ? '1' : '0';
+	});
+	X86_SECRET_FIELDS.forEach(function(name) {
+		if (refs.inputs[name]) values[name] = refs.inputs[name].value;
+	});
 	values.hide_ipv6_ranges = rangeValues(refs);
 	values.collector_mode = cfgModel.collectorModeFor(values);
 	LIST_FIELDS.forEach(function(name) {
@@ -466,6 +493,14 @@ function updateDependencies(viewState) {
 		refs.inputs.access_edge_mode.disabled = busy || !configPlatform.formPolicy(viewState.runtimeStatus).showAccessEdge;
 	if (refs.inputs.internet_view_mode)
 		refs.inputs.internet_view_mode.disabled = busy || !configPlatform.formPolicy(viewState.runtimeStatus).showAccessEdge;
+	if (refs.inputs.enable_proxy_connections) {
+		var proxyEnabled = !busy && values.enable_proxy_connections === '1';
+		refs.inputs.mihomo_controller_port.disabled = !proxyEnabled;
+		refs.inputs.mihomo_controller_secret.disabled = !proxyEnabled;
+		[ 'mihomo_controller_port', 'mihomo_controller_secret' ].forEach(function(name) {
+			if (refs.fields[name]) refs.fields[name].row.setAttribute('data-disabled', proxyEnabled ? 'false' : 'true');
+		});
+	}
 	refs.hideIpv6RangeInput.disabled = !rangesEnabled;
 	refs.addRangeBtn.disabled = !rangesEnabled;
 	(refs.rangeRemoveButtons || []).forEach(function(button) { button.disabled = !rangesEnabled; });
@@ -487,6 +522,9 @@ function fillForm(viewState, values) {
 	var refs = viewState.daemonRefs;
 	values = configPlatform.normalizeValues(viewState.runtimeStatus, cfgModel.normalize(values || cfgModel.DEFAULTS).values);
 	NUMBER_FIELDS.forEach(function(name) { refs.inputs[name].value = String(values[name]); });
+	X86_NUMBER_FIELDS.forEach(function(name) {
+		if (refs.inputs[name]) refs.inputs[name].value = String(values[name]);
+	});
 	NSS_NUMBER_FIELDS.forEach(function(name) {
 		if (refs.inputs[name] && values[name] !== undefined)
 			refs.inputs[name].value = String(values[name]);
@@ -502,6 +540,16 @@ function fillForm(viewState, values) {
 		var wrap = refs.inputs[name].parentNode;
 		var label = wrap && wrap.querySelector && wrap.querySelector('.lanspeed-toggle-label');
 		if (label) label.textContent = refs.inputs[name].checked ? _('已启用') : _('已停用');
+	});
+	X86_BOOLEAN_FIELDS.forEach(function(name) {
+		if (!refs.inputs[name]) return;
+		refs.inputs[name].checked = values[name] === '1';
+		var wrap = refs.inputs[name].parentNode;
+		var label = wrap && wrap.querySelector && wrap.querySelector('.lanspeed-toggle-label');
+		if (label) label.textContent = refs.inputs[name].checked ? _('已启用') : _('已停用');
+	});
+	X86_SECRET_FIELDS.forEach(function(name) {
+		if (refs.inputs[name]) refs.inputs[name].value = text(values[name]);
 	});
 	refs.hideIpv6RangesItems = cfgModel.parseCidrList(values.hide_ipv6_ranges).valid;
 	refs.hideIpv6RangeInput.value = '';
@@ -536,6 +584,10 @@ function buildDaemonSection(data, viewState) {
 	viewState.initialIfaceOriginal.present = Object.assign({}, viewState.ifaceOriginal.present || {});
 
 	NUMBER_FIELDS.forEach(function(name) { refs.inputs[name] = numberInput(name, values[name]); });
+	if (viewState.platformPolicy.showProxyConnections) {
+		X86_NUMBER_FIELDS.forEach(function(name) { refs.inputs[name] = numberInput(name, values[name]); });
+		X86_SECRET_FIELDS.forEach(function(name) { refs.inputs[name] = secretInput(name, values[name]); });
+	}
 	if (viewState.platformPolicy.showAccessEdge)
 		NSS_NUMBER_FIELDS.forEach(function(name) {
 			refs.inputs[name] = numberInput(name, values[name]);
@@ -557,6 +609,14 @@ function buildDaemonSection(data, viewState) {
 		refs.toggleWrap = refs.toggleWrap || {};
 		refs.toggleWrap[name] = wrap;
 	});
+	if (viewState.platformPolicy.showProxyConnections)
+		X86_BOOLEAN_FIELDS.forEach(function(name) {
+			var field = cfgModel.FIELDS.filter(function(item) { return item.name === name; })[0];
+			var wrap = toggleInput(name, field ? field.label : name, values[name] === '1');
+			refs.inputs[name] = wrap.querySelector('input');
+			refs.toggleWrap = refs.toggleWrap || {};
+			refs.toggleWrap[name] = wrap;
+		});
 
 	refs.hideIpv6RangesItems = cfgModel.parseCidrList(values.hide_ipv6_ranges).valid;
 	refs.hideIpv6RangesList = E('div', { 'class': 'lanspeed-range-list' });
@@ -598,6 +658,17 @@ function buildDaemonSection(data, viewState) {
 	}
 	rows.push(rowFor(viewState, 'conn_collector_mode', _('连接详情来源'), refs.inputs.conn_collector_mode,
 			viewState.platformPolicy.connectionHint));
+	if (viewState.platformPolicy.showProxyConnections) {
+		rows.push(rowFor(viewState, 'enable_proxy_connections', _('代理连接补全'),
+			refs.toggleWrap.enable_proxy_connections,
+			_('从本机 Mihomo/OpenClash API 与 dae/daed 进程补全透明代理后的真实连接；仅影响连接详情。')));
+		rows.push(rowFor(viewState, 'mihomo_controller_port', _('Mihomo 控制器端口'),
+			refs.inputs.mihomo_controller_port,
+			_('填 0 自动读取 OpenClash 控制器端口；未检测到时使用 9090。只连接 127.0.0.1。')));
+		rows.push(rowFor(viewState, 'mihomo_controller_secret', _('Mihomo API 认证码'),
+			refs.inputs.mihomo_controller_secret,
+			_('留空自动读取 OpenClash 认证码；手动值仅保存到 LAN Speed UCI，页面不会读取或回显 OpenClash 原认证码。')));
+	}
 	rows.push(rowFor(viewState, 'enable_bpf', _('启用 CPU 流量检测（BPF）'), refs.toggleWrap.enable_bpf,
 			viewState.platformPolicy.bpfHint));
 	rows.push(rowFor(viewState, 'enable_conntrack_fallback', _('允许兼容连接详情'), refs.toggleWrap.enable_conntrack_fallback,
@@ -636,6 +707,7 @@ function buildDaemonSection(data, viewState) {
 		if (event.key === 'Enter') { event.preventDefault(); addRange(viewState); }
 	});
 	NUMBER_FIELDS.concat(viewState.platformPolicy.showAccessEdge ? NSS_NUMBER_FIELDS : []).concat(
+		viewState.platformPolicy.showProxyConnections ? X86_NUMBER_FIELDS.concat(X86_SECRET_FIELDS) : []).concat(
 		[ 'rate_collector_mode', 'conn_collector_mode' ]).concat(
 		refs.inputs.internet_view_mode ? [ 'internet_view_mode' ] : []).concat(
 		refs.inputs.access_edge_mode ? [ 'access_edge_mode' ] : []).forEach(function(name) {
@@ -648,6 +720,14 @@ function buildDaemonSection(data, viewState) {
 			formChanged(viewState);
 		});
 	});
+	if (viewState.platformPolicy.showProxyConnections)
+		X86_BOOLEAN_FIELDS.forEach(function(name) {
+			refs.inputs[name].addEventListener('change', function() {
+				var label = refs.toggleWrap[name].querySelector('.lanspeed-toggle-label');
+				if (label) label.textContent = refs.inputs[name].checked ? _('已启用') : _('已停用');
+				formChanged(viewState);
+			});
+		});
 
 	var section = E('section', { 'class': 'lanspeed-config-subsection lanspeed-config-runtime-section' }, [
 		E('div', { 'class': 'lanspeed-config-subheader' }, [

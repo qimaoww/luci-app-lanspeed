@@ -665,7 +665,7 @@ pub fn classify_connection(flow: &FlowSample) -> Option<(ConnectionProtocol, Con
     }
 }
 
-fn sort_connection_details(details: &mut [ClientConnectionDetail]) {
+pub(crate) fn sort_connection_details(details: &mut [ClientConnectionDetail]) {
     details.sort_by(compare_connection_details);
 }
 

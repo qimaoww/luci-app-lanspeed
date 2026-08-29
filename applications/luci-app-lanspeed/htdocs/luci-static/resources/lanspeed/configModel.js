@@ -27,6 +27,9 @@ var DEFAULTS = {
 	nss_fifo_min_queue_packets: 8,
 	rate_compensation_factor: '1.10',
 	conn_collector_mode: 'auto',
+	enable_proxy_connections: '1',
+	mihomo_controller_port: 0,
+	mihomo_controller_secret: '',
 	show_client_status: '0',
 	show_ipv6: '1',
 	hide_private_ipv6: '0',
@@ -47,6 +50,7 @@ var LIMITS = {
 	active_client_min_bps: { min: 1, max: 9007199254740991, step: 1 },
 	overview_window_samples: { min: 2, max: 240, step: 1 },
 	max_clients: { min: 64, max: 16384, step: 1 },
+	mihomo_controller_port: { min: 0, max: 65535, step: 1 },
 	nss_low_rate_window_ms: { min: 2000, max: 60000, step: 1000 },
 	nss_low_rate_high_watermark_bps: { min: 1000000, max: 1000000000, step: 1000000 },
 	nss_fifo_target_delay_ms: { min: 10, max: 250, step: 10 },
@@ -92,6 +96,9 @@ var FIELD_DEFS = [
 	{ name: 'nss_fifo_min_queue_packets', kind: 'integer', label: _('NSS 最小队列'), unit: _('包'), limits: LIMITS.nss_fifo_min_queue_packets },
 	{ name: 'rate_compensation_factor', kind: 'decimal', label: _('NSS 速率补偿系数'), limits: LIMITS.rate_compensation_factor },
 	{ name: 'conn_collector_mode', kind: 'enum', label: _('连接详情来源') },
+	{ name: 'enable_proxy_connections', kind: 'boolean', label: _('代理连接补全') },
+	{ name: 'mihomo_controller_port', kind: 'integer', label: _('Mihomo 控制器端口'), limits: LIMITS.mihomo_controller_port },
+	{ name: 'mihomo_controller_secret', kind: 'secret', label: _('Mihomo API 认证码') },
 	{ name: 'show_client_status', kind: 'boolean', label: _('显示客户端状态') },
 	{ name: 'show_ipv6', kind: 'boolean', label: _('显示 IPv6 地址') },
 	{ name: 'hide_private_ipv6', kind: 'boolean', label: _('隐藏私有 IPv6 地址') },
@@ -187,6 +194,22 @@ function parseBoolean(value, fallback) {
 	if (raw === '0' || raw === 'false')
 		return { valid: true, value: '0', raw: raw };
 	return { valid: false, value: fallback, raw: raw, reason: 'boolean_required' };
+}
+
+function parseBearerSecret(value) {
+	var raw = asText(value);
+	var valid = raw.length <= 1024;
+	var i;
+	for (i = 0; valid && i < raw.length; i++) {
+		if (raw.charCodeAt(i) < 0x21 || raw.charCodeAt(i) > 0x7e)
+			valid = false;
+	}
+	return {
+		valid: valid,
+		value: valid ? raw : '',
+		raw: raw,
+		reason: valid ? null : (raw.length > 1024 ? 'secret_too_long' : 'secret_invalid')
+	};
 }
 
 function validInterfaceName(value) {
@@ -311,7 +334,7 @@ function normalize(raw) {
 	var numberFields = [ 'refresh_interval_ms', 'active_client_window_ms', 'active_client_min_bps',
 		'overview_window_samples', 'max_clients', 'nss_low_rate_window_ms',
 		'nss_low_rate_high_watermark_bps', 'nss_fifo_target_delay_ms',
-		'nss_fifo_min_queue_packets' ];
+		'nss_fifo_min_queue_packets', 'mihomo_controller_port' ];
 	var listFields = [ 'ifname', 'interface_include', 'interface_exclude', 'observe' ];
 
 	numberFields.forEach(function(name) {
@@ -360,12 +383,21 @@ function normalize(raw) {
 	present.internet_view_mode = raw.internet_view_mode !== undefined && raw.internet_view_mode !== null;
 	if (!internet.valid && present.internet_view_mode) errors.internet_view_mode = internet.reason;
 
-	[ 'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'enable_bpf', 'enable_conntrack_fallback' ].forEach(function(name) {
+	[ 'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'enable_bpf',
+		'enable_conntrack_fallback', 'enable_proxy_connections' ].forEach(function(name) {
 		var result = parseBoolean(raw[name] === undefined ? DEFAULTS[name] : raw[name], DEFAULTS[name]);
 		values[name] = result.value;
 		present[name] = raw[name] !== undefined && raw[name] !== null;
 		if (!result.valid && present[name]) errors[name] = result.reason;
 	});
+
+	var secret = parseBearerSecret(raw.mihomo_controller_secret === undefined ?
+		DEFAULTS.mihomo_controller_secret : raw.mihomo_controller_secret);
+	values.mihomo_controller_secret = secret.value;
+	present.mihomo_controller_secret = raw.mihomo_controller_secret !== undefined &&
+		raw.mihomo_controller_secret !== null;
+	if (!secret.valid && present.mihomo_controller_secret)
+		errors.mihomo_controller_secret = secret.reason;
 
 	var ranges = parseCidrList(raw.hide_ipv6_ranges === undefined ? DEFAULTS.hide_ipv6_ranges : raw.hide_ipv6_ranges);
 	values.hide_ipv6_ranges = ranges.valid.join(' ');
@@ -525,7 +557,8 @@ function buildUciPatch(values, original) {
 		'nss_low_rate_high_watermark_bps', 'nss_fifo_target_delay_ms',
 		'nss_fifo_min_queue_packets', 'rate_compensation_factor',
 		'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges',
-		'collector_mode', 'max_clients', 'enable_bpf', 'enable_conntrack_fallback'
+		'collector_mode', 'max_clients', 'enable_bpf', 'enable_conntrack_fallback',
+		'enable_proxy_connections', 'mihomo_controller_port'
 	];
 	var listFields = [ 'ifname', 'interface_include', 'interface_exclude', 'observe' ];
 	scalarFields.forEach(function(name) {
@@ -533,6 +566,12 @@ function buildUciPatch(values, original) {
 		if (value !== undefined && value !== null)
 			set[name] = String(value);
 	});
+	if (normalized.mihomo_controller_secret)
+		set.mihomo_controller_secret = normalized.mihomo_controller_secret;
+	else if (Object.prototype.hasOwnProperty.call(originalValues, 'mihomo_controller_secret') &&
+		originalValues.mihomo_controller_secret !== undefined &&
+		originalValues.mihomo_controller_secret !== null)
+		unset.push('mihomo_controller_secret');
 	listFields.forEach(function(name) {
 		var valuesList = unique(normalized[name]);
 		if (valuesList.length)
@@ -584,6 +623,7 @@ return baseclass.extend({
 	parseInteger: parseInteger,
 	parseFactor: parseFactor,
 	parseBoolean: parseBoolean,
+	parseBearerSecret: parseBearerSecret,
 	parseCidr: parseCidr,
 	parseCidrList: parseCidrList,
 	parseInterfaceList: parseInterfaceList,
