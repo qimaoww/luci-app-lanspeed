@@ -10,6 +10,8 @@ var BOOTSTRAP_CLASS = 'lanspeed-theme-bootstrap';
 var COLOR_MODE_CLEANUP = '__lanspeedColorModeCleanup';
 var AURORA_CONTRAST_PROPERTIES = [
 	'--lanspeed-accent-safe',
+	'--lanspeed-muted-text-safe',
+	'--lanspeed-subtle-text-safe',
 	'--lanspeed-action-text-safe',
 	'--lanspeed-action-hover-text-safe',
 	'--lanspeed-normal-text-safe',
@@ -414,9 +416,16 @@ function updateAuroraContrastTokens(root, doc) {
 	var brandSubtle = resolveAuroraToken(doc, '--brand-subtle');
 	var onBrand = resolveAuroraToken(doc, '--on-brand');
 	var text = resolveAuroraToken(doc, '--text');
+	var textMuted = resolveAuroraToken(doc, '--text-muted') || text;
+	var textSubtle = resolveAuroraToken(doc, '--text-subtle') || textMuted;
 	var surface = resolveAuroraToken(doc, '--surface') || { r: 255, g: 255, b: 255, a: 1 };
 	var surfaceOverlay = resolveAuroraToken(doc, '--surface-overlay') || surface;
 	var backgrounds = [ surface, surfaceOverlay ];
+	[ '--bg', '--surface-sunken', '--control-bg' ].forEach(function(name) {
+		var background = resolveAuroraToken(doc, name);
+		if (background && background.a > .01)
+			backgrounds.push(background);
+	});
 	var black = { r: 0, g: 0, b: 0, a: 1 };
 	var white = { r: 255, g: 255, b: 255, a: 1 };
 	var actionBackground = backgrounds.map(function(background) {
@@ -430,6 +439,8 @@ function updateAuroraContrastTokens(root, doc) {
 	setSafeColor(root, '--lanspeed-action-text-safe', actionText);
 	setSafeColor(root, '--lanspeed-action-hover-text-safe', actionHoverText);
 	setSafeColor(root, '--lanspeed-accent-safe', safeInteractiveColor(brand, backgrounds));
+	setSafeColor(root, '--lanspeed-muted-text-safe', safeTextColor(textMuted, backgrounds));
+	setSafeColor(root, '--lanspeed-subtle-text-safe', safeTextColor(textSubtle, backgrounds));
 	var normalText = null;
 	if (brandSubtle) {
 		var subtleBackground = backgrounds.map(function(background) {
