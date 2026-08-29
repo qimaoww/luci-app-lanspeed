@@ -3,6 +3,8 @@
 
 var AURORA_CLASS = 'lanspeed-theme-aurora';
 var AURORA_META = 'LuCI Aurora';
+var PAGE_CHROME_NODE = '__lanspeedPageChromeNode';
+var PAGE_CHROME_THEME = 'data-lanspeed-page-theme';
 var ARGON_CLASS = 'lanspeed-theme-argon';
 var BOOTSTRAP_CLASS = 'lanspeed-theme-bootstrap';
 var COLOR_MODE_CLEANUP = '__lanspeedColorModeCleanup';
@@ -565,6 +567,28 @@ function releaseColorMode(root) {
 		cleanup();
 }
 
+function releasePageChrome(root) {
+	var node = root && root[PAGE_CHROME_NODE];
+	if (node && node.removeAttribute)
+		node.removeAttribute(PAGE_CHROME_THEME);
+	if (root)
+		root[PAGE_CHROME_NODE] = null;
+}
+
+function applyPageChrome(root, doc, theme) {
+	releasePageChrome(root);
+	if (!root || theme !== 'aurora' || !doc || !doc.querySelector)
+		return;
+	var tabmenu = null;
+	try {
+		tabmenu = doc.querySelector('#tabmenu');
+	} catch (e) {}
+	if (!tabmenu || !tabmenu.setAttribute)
+		return;
+	tabmenu.setAttribute(PAGE_CHROME_THEME, theme);
+	root[PAGE_CHROME_NODE] = tabmenu;
+}
+
 function watchColorMode(root, doc, theme) {
 	updateColorMode(root, doc, theme);
 
@@ -615,6 +639,7 @@ function watchColorMode(root, doc, theme) {
 		if (!active)
 			return;
 		active = false;
+		releasePageChrome(root);
 		if (mediaBound && useEventTarget && typeof media.removeEventListener === 'function')
 			media.removeEventListener('change', mediaListener);
 		else if (mediaBound && typeof media.removeListener === 'function')
@@ -783,12 +808,14 @@ return baseclass.extend({
 
 		root.classList.add(this.className(doc));
 		root.setAttribute('data-lanspeed-theme', theme);
+		applyPageChrome(root, doc, theme);
 		watchColorMode(root, doc, theme);
 		return theme;
 	},
 
 	releaseRoot: function(root) {
 		releaseColorMode(root);
+		releasePageChrome(root);
 		clearAuroraContrastTokens(root);
 	}
 });

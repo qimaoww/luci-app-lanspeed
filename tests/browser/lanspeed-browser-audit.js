@@ -410,6 +410,7 @@ async page => {
 				sectionStyle: styleOf(':scope > .cbi-section'),
 				headerStyle: styleOf(':scope > .cbi-section .lanspeed-header'),
 				headingStyle: styleOf(':scope > .cbi-section .lanspeed-header h3'),
+				tabActiveStyle: styleOf(document.querySelector('#tabmenu .tabs>li.active')),
 				controlStyle: styleOf('input:not([type="hidden"]),select,textarea'),
 				buttonStyle: styleOf('.cbi-button,button'),
 				badgeStyle: styleOf('.label')
@@ -484,6 +485,13 @@ async page => {
 					colorsNear(themeEvidence.resolved.border, themeEvidence.resolved.auroraHairline, 3) &&
 					colorsNear(themeEvidence.resolved.controlBackground,
 						themeEvidence.resolved.auroraControlBackground, 3), themeEvidence.resolved);
+				addCheck('aurora-page-tabs-follow-brand',
+					!!themeEvidence.tabActiveStyle &&
+					colorsNear(themeEvidence.tabActiveStyle.borderBottomColor,
+						themeEvidence.resolved.brand, 3), {
+						brand: themeEvidence.resolved.brand,
+						tab: themeEvidence.tabActiveStyle
+					});
 			}
 			if (config.expectedTheme === 'bootstrap') {
 				const requiredNative = [ '--primary-color-high', '--background-color-high',

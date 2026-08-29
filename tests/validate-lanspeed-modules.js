@@ -603,6 +603,9 @@ function assertProductDesignSystem() {
 		fail('designSystemArgon.js must override Argon native low-contrast placeholders with dynamic text tokens');
 	if (!auroraCss.includes('color:var(--lanspeed-text-muted)!important;opacity:1}'))
 		fail('designSystemAurora.js must keep native-token placeholders readable in both color modes');
+	if (!auroraCss.includes('#tabmenu[data-lanspeed-page-theme="aurora"] .tabs>li.active{border-bottom-color:var(--brand)}')) {
+		fail('designSystemAurora.js must keep the LAN Speed page tabs on the active Aurora preset brand');
+	}
 	if (!bootstrapCss.includes('textarea)::placeholder{color:var(--lanspeed-text-subtle);opacity:.74}'))
 		fail('designSystemBootstrap.js must keep compact native placeholders above normal-text contrast');
 	if (!auroraCss.includes('@media (max-width:700px){#floating-toolbar~#maincontent #view{') ||
@@ -5434,6 +5437,9 @@ function assertThemeModule(src) {
 	    !src.includes('removeEventListener') ||
 	    !src.includes('MutationObserver') ||
 	    !src.includes('data-lanspeed-color-mode') ||
+	    !src.includes('data-lanspeed-page-theme') ||
+	    !src.includes('function applyPageChrome') ||
+	    !src.includes('function releasePageChrome') ||
 	    !src.includes('applyRoot: function(root') ||
 	    !src.includes('releaseRoot: function(root')) {
 		fail('resources/lanspeed/theme.js must detect Aurora from theme assets and shell markers before applying the scoped class');
@@ -5540,6 +5546,7 @@ function assertThemeBehavior(src) {
 
 	function auroraDocument(media, observer) {
 		let mode = 'light';
+		const tabmenu = rootNode();
 		const tokens = {
 			light: {
 				'--brand': '#7c9082', '--brand-hover': '#7c9082',
@@ -5566,6 +5573,7 @@ function assertThemeBehavior(src) {
 		return {
 			body: body,
 			documentElement: html,
+			tabmenu: tabmenu,
 			setMode: function(nextMode) {
 				mode = nextMode;
 				body.backgroundColor = mode === 'dark' ? '#121212' : '#ffffff';
@@ -5582,7 +5590,9 @@ function assertThemeBehavior(src) {
 				MutationObserver: observer && observer.MutationObserver
 			},
 			querySelector: function(selector) {
-				return selector === 'link[href*="/luci-static/aurora/"]' ? {} : null;
+				if (selector === 'link[href*="/luci-static/aurora/"]') return {};
+				if (selector === '#tabmenu') return tabmenu;
+				return null;
 			}
 		};
 	}
@@ -5616,6 +5626,7 @@ function assertThemeBehavior(src) {
 	const auroraRoot = rootNode();
 	theme.applyRoot(auroraRoot, auroraDoc);
 	if (auroraRoot.attrs['data-lanspeed-color-mode'] !== 'light' ||
+	    auroraDoc.tabmenu.attrs['data-lanspeed-page-theme'] !== 'aurora' ||
 	    auroraRoot.styleValues['--lanspeed-action-text-safe'] !== 'rgb(26, 31, 46)' ||
 	    auroraRoot.styleValues['--lanspeed-action-hover-text-safe'] !== 'rgb(26, 31, 46)' ||
 	    auroraRoot.styleValues['--lanspeed-normal-text-safe'] !== 'rgb(26, 31, 46)' ||
@@ -5637,6 +5648,8 @@ function assertThemeBehavior(src) {
 	})) {
 		fail('theme.js releaseRoot must remove generated Aurora contrast tokens');
 	}
+	if (auroraDoc.tabmenu.attrs['data-lanspeed-page-theme'])
+		fail('theme.js releaseRoot must remove the Aurora page-chrome marker');
 
 	const lightMedia = mediaController();
 	const lightRoot = rootNode();
