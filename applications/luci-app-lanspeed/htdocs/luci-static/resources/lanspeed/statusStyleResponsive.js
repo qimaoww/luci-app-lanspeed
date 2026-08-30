@@ -130,6 +130,7 @@ var RESPONSIVE_CSS = [
 	/* Keep table headings aligned to the reading edge; only cell values use the
 	 * compact centered rhythm. The control heading is the deliberate exception. */
 	'.lanspeed-clients-card .lanspeed-table th:is(:nth-child(2),:nth-child(3),:nth-child(4)){text-align:left!important}',
+	'.lanspeed-clients-card .lanspeed-table td:nth-child(2){text-align:left!important}',
 	'.lanspeed-clients-card .lanspeed-table th:is(:nth-child(5),:nth-child(6),:nth-child(7),:nth-child(8)){text-align:center!important}',
 	'.lanspeed-clients-card .lanspeed-table th:is(:nth-child(5),:nth-child(6),:nth-child(7),:nth-child(8)) .lanspeed-sort-button{position:relative;display:flex;width:100%;justify-content:center}',
 	'.lanspeed-clients-card .lanspeed-table th:is(:nth-child(5),:nth-child(6),:nth-child(7),:nth-child(8)) .lanspeed-sort-indicator{position:absolute;right:0}',
