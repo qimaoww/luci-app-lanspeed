@@ -275,7 +275,7 @@ function loadRefresh(vocabulary) {
   return vm.compileFunction(readModule('diagnosticsRefresh.js'),
     [ 'baseclass', 'fmt', 'vocab', 'lsVersion', 'statusCollector', 'diagnosticsModel', 'clientControl', 'E', '_' ],
     { filename: 'diagnosticsRefresh.js', parsingContext: context })(
-      baseclass, format, vocabulary || vocab, { FULL_VERSION: '1.2.0-r2' }, statusCollector, model,
+      baseclass, format, vocabulary || vocab, { FULL_VERSION: '1.2.0-r3' }, statusCollector, model,
       clientControl, fakeElement, translate
     );
 }
@@ -285,7 +285,7 @@ function loadView(rpc, shell, refresh, navigatorValue, windowValue) {
     'baseclass', 'lsRpc', 'lsVersion', 'diagnosticsModel',
     'diagnosticsShell', 'diagnosticsRefresh', 'navigator', 'document', 'window', '_'
   ], { filename: 'diagnosticsView.js', parsingContext: context })(
-    baseclass, rpc, { FULL_VERSION: '1.2.0-r2' }, model,
+    baseclass, rpc, { FULL_VERSION: '1.2.0-r3' }, model,
     shell || loadShell(), refresh || loadRefresh(), navigatorValue || {},
     { body: null }, windowValue || { setTimeout }, translate
   );
@@ -322,7 +322,7 @@ function healthyDiagnostics() {
   return value;
 }
 
-function healthyStatus(version = '1.2.0-r2') {
+function healthyStatus(version = '1.2.0-r3') {
   const value = clone(readFixture('lanspeed-status.json'));
   value.mode = 'Full';
   value.confidence = 'high';
@@ -347,13 +347,40 @@ function healthyStatus(version = '1.2.0-r2') {
       rate_reason: 'bpf_available', connection_reason: 'netlink_preferred', confidence: 'high'
     },
     probe_failures: { items: [], total: 0, truncated: false },
-    bpf: {
+	    bpf: {
       enabled: true, collect_target_count: 1, expected_hook_count: 2,
       attached_hook_count: 2, object_loaded: true, attach_state: 'ready',
       map_state: 'ready', last_complete_snapshot_ms: 9500,
-      retained_fresh_snapshot: false, reason_code: 'ready'
-    }
-  };
+	      retained_fresh_snapshot: false, reason_code: 'ready'
+	    },
+	    tc_status: {
+	      state: 'clean', scan_complete: true, qdisc_scan: true, class_scan: true,
+	      filter_scan: true, command_output_truncated: false, objects_truncated: false,
+	      parse_errors: 0, interface_count: 1, qdisc_count: 2, class_count: 1,
+	      filter_count: 1, lanspeed_objects: 3, foreign_objects: 0, conflicts: [],
+	      qdiscs: [
+	        { interface: 'br-lan', kind: 'clsact', handle: 'ffff:', parent: 'ffff:fff1',
+	          root: false, ingress_block: null, egress_block: null, owner: 'shared', detail: null,
+          counters: { bytes: 100, packets: 10, drops: 0, overlimits: 0, backlog: 0,
+            requeues: 3, qlen: 4, maxpacket: 1500 } },
+	        { interface: 'br-lan', kind: 'htb', handle: '7a10:', parent: null,
+	          root: true, ingress_block: null, egress_block: null, owner: 'lanspeed', detail: 'default=1',
+	          counters: { bytes: 100, packets: 10, drops: 0, overlimits: 0, backlog: 0 } }
+	      ],
+	      classes: [
+	        { interface: 'br-lan', kind: 'htb', handle: '7a10:1', parent: '7a10:',
+	          owner: 'lanspeed', detail: 'rate=4000000000',
+	          counters: { bytes: 100, packets: 10, drops: 0, overlimits: 0, backlog: 0 } }
+	      ],
+	      filters: [
+	        { interface: 'br-lan', direction: 'ingress', parent: 'ffff:fff2', chain: 0,
+	          pref: 49152, handle: '0x1eed', kind: 'bpf', protocol: 'all', owner: 'lanspeed',
+	          program_name: 'lanspeed_ingress', program_id: 7, direct_action: true,
+	          in_hw: false, action: null, terminal_action: false,
+	          counters: { bytes: 100, packets: 10, drops: 0, overlimits: null, backlog: null } }
+	      ]
+	    }
+	  };
   value.coverage = { quality: 'ok', samples: 12, window_ms: 10000, tx_pct: 96, rx_pct: 94 };
   return value;
 }
@@ -365,10 +392,11 @@ function healthyHealth() {
   value.capabilities = clone(healthyStatus().capabilities);
   value.conflicts = [];
   value.warnings = [];
-  value.evidence = {
-    probe_failures: { items: [], total: 0, truncated: false },
-    bpf: clone(healthyStatus().evidence.bpf)
-  };
+	value.evidence = {
+	  probe_failures: { items: [], total: 0, truncated: false },
+	  bpf: clone(healthyStatus().evidence.bpf),
+	  tc_status: clone(healthyStatus().evidence.tc_status)
+	};
   return value;
 }
 
@@ -688,10 +716,10 @@ async function testStrictContracts() {
   assert.strictEqual(model.validateRuntimeResponse(badOverviewRelation, 'overview').valid, false);
   assert.strictEqual(model.validateRuntimeResponse({}, 'unknown').valid, false);
 
-  const versionMismatch = payloads('1.2.0-r2');
+  const versionMismatch = payloads('1.2.0-r3');
   versionMismatch.status.version = '1.1.1-r6';
   const mismatchState = model.normalizeResults(await settled(versionMismatch), null, 9000, 1);
-  assert.strictEqual(model.versionStateWithRpc(mismatchState, mismatchState.status.version, '1.2.0-r2').state, 'warning');
+  assert.strictEqual(model.versionStateWithRpc(mismatchState, mismatchState.status.version, '1.2.0-r3').state, 'warning');
 
   const timeout = await model.runCall({ key: 'overview', call: () => new Promise(() => {}) }, 250);
   assert.strictEqual(timeout.ok, false);
@@ -745,7 +773,7 @@ async function testResourceStateMachine() {
 	assert.strictEqual(goodControl.nssVerifiedDirections, 2);
 	assert.strictEqual(goodControl.cpuVerifiedDirections, 1);
 	assert.strictEqual(goodControl.blockActiveClients, 1);
-	const controlReport = model.buildReport(good, '1.2.0-r2');
+	const controlReport = model.buildReport(good, '1.2.0-r3');
 	assert(controlReport.includes('NSS 客户端控制') && controlReport.includes('NSS 2 · CPU 1'),
 	  'the redacted report must include NSS control executor counts');
 	assert(!controlReport.includes(good.clients.clients[0].identity_key),
@@ -1076,7 +1104,7 @@ async function testRequestOrdering() {
   assert.strictEqual(state.refs.btnCopy.disabled, true);
   assert.strictEqual(refreshCount, 1,
     'starting overlapping diagnostic refreshes must keep the last rendered page intact');
-  const secondPayload = payloads('1.2.0-r2');
+  const secondPayload = payloads('1.2.0-r3');
   model.RPC_KEYS.forEach((key) => queues[key][1](secondPayload[key]));
   const secondResult = await second;
   assert.strictEqual(secondResult.ignored, false);
@@ -1093,8 +1121,8 @@ async function testRequestOrdering() {
   const firstResult = await first;
   assert.strictEqual(firstResult.ignored, true);
   assert.strictEqual(state.requestId, 2);
-  assert.strictEqual(state.status.version, '1.2.0-r2');
-  assert.strictEqual(state.diagnostics.versions.daemon, '1.2.0-r2');
+  assert.strictEqual(state.status.version, '1.2.0-r3');
+  assert.strictEqual(state.diagnostics.versions.daemon, '1.2.0-r3');
   assert.strictEqual(state.refs.btnRefresh.disabled, false);
   assert.strictEqual(state.refs.root.getAttribute('aria-busy'), 'false');
 }
@@ -1239,7 +1267,21 @@ async function testDomAndPresenter() {
 	assert.strictEqual(goodBuilt.refs.controlQueueValue.textContent, '1/1 个客户端已生效');
 	assert.strictEqual(goodBuilt.refs.controlBlockValue.textContent, '1/1 个客户端');
   assert.strictEqual(goodBuilt.refs.pipelineSummary.textContent, '总速率 2/2 方向 · 分类 1/1 客户端');
-  assert.strictEqual(goodBuilt.refs.interfacesBody.children.length, 1);
+	assert.strictEqual(goodBuilt.refs.interfacesBody.children.length, 1);
+	assert.strictEqual(goodBuilt.refs.tcSummary.textContent, '无冲突');
+	assert.strictEqual(goodBuilt.refs.tcObjectsBody.children.length, 4,
+	  'full host TC status must render qdiscs, classes, and filters together');
+	assert.strictEqual(goodBuilt.refs.tcConflictGroup.hidden, true);
+	assert.strictEqual(goodBuilt.refs.tcDetails.tag, 'details');
+	assert.strictEqual(goodBuilt.refs.tcDetails.open, false,
+		'TC object table must stay collapsed until the operator asks for details');
+	assert.strictEqual(goodBuilt.refs.tcDetails.children[0].children[0].textContent, '展开 TC 详情');
+	assert.strictEqual(goodBuilt.refs.tcDetails.children[0].children[1].textContent,
+		'查看全部 qdisc、class、filter');
+	assert(goodBuilt.refs.tcDetailsMeta.textContent.includes('4 个对象 · 1 个接口'));
+	assert(goodBuilt.refs.tcObjectsCaption.textContent.includes('qdisc 2、class 1、filter 1'));
+	assert(goodBuilt.refs.tcObjectsBody.children[0].children[6].textContent.includes('队列长度 4'));
+	assert(goodBuilt.refs.tcObjectsBody.children[1].children[7].textContent.includes('default=1'));
   assert.strictEqual(goodBuilt.refs.interfacesBody.children[0].children[3].textContent, '500 毫秒',
     'interface sample timestamps must render as age relative to the interface clock');
   assert.strictEqual(states.sampleAge(9500, 9503), 0,
@@ -1259,7 +1301,28 @@ async function testDomAndPresenter() {
     row.children.some((cell) => String(cell.textContent || '').includes('未识别的诊断代码'))),
   'known subsystem codes must never fall through to the unknown-code UI');
   assert(goodBuilt.refs.reportPreview.textContent.includes('运行诊断报告 v2'));
-  assert(goodBuilt.refs.versionValue.textContent.includes('一致'));
+	assert(goodBuilt.refs.versionValue.textContent.includes('一致'));
+
+	const conflictValues = payloads();
+	Object.assign(conflictValues.health.evidence.tc_status, {
+	  state: 'conflict', foreign_objects: 1,
+	  conflicts: [ { id: 'foreign_root_qdisc', severity: 'warning', interface: 'br-lan',
+	    direction: 'root', object: 'cake / 8000:', owner: 'other' } ]
+	});
+	conflictValues.health.evidence.tc_status.qdiscs.push({
+	  interface: 'br-lan', kind: 'cake', handle: '8000:', parent: null, root: true,
+	  ingress_block: null, egress_block: null, owner: 'other', detail: null,
+	  counters: { bytes: 0, packets: 0, drops: 0, overlimits: 0, backlog: 0 }
+	});
+	conflictValues.health.evidence.tc_status.qdisc_count = 3;
+	const conflictState = model.normalizeResults(await settled(conflictValues), null, 20200, 2);
+	conflictState.reload = () => Promise.resolve();
+	conflictState.copyReport = () => Promise.resolve();
+	const conflictBuilt = applyRefs(conflictState, shell, refresh);
+	assert.strictEqual(conflictBuilt.refs.tcSummary.textContent, '检测到冲突');
+	assert.strictEqual(conflictBuilt.refs.tcConflictGroup.hidden, false);
+	assert.strictEqual(conflictBuilt.refs.tcConflictBody.children.length, 1);
+	assert(conflictBuilt.refs.tcConflictBody.children[0].children[5].textContent.includes('外部根队列'));
 
   const x86Values = payloads();
   x86Values.status.evidence.platform = {
@@ -1465,19 +1528,37 @@ async function testAlertsAndReport() {
   ], 'warning aliases from status, health conflicts and diagnostics must collapse to root causes');
   assert.strictEqual(new Set(Array.from(deduplicated.all, (item) => item.text)).size,
     deduplicated.all.length, 'deduplicated diagnostics must not render repeated warning text');
-  const deduplicatedReport = model.buildReport(duplicateState, '1.2.0-r2');
+  const deduplicatedReport = model.buildReport(duplicateState, '1.2.0-r3');
   assert.strictEqual((deduplicatedReport.match(/localized:software_flow_offload_enabled/g) || []).length, 1);
   assert.strictEqual((deduplicatedReport.match(/localized:fullcone_detected/g) || []).length, 1);
 
-  const report = model.buildReport(state, '1.2.0-r2');
+  const report = model.buildReport(state, '1.2.0-r3');
   [ 'router.private.example', '10.77.0.20', 'secret-lan-interface',
     'collector-secret', 'token_secret_reason', 'command:ip_route_private', 'ip_route_private' ].forEach((secret) => {
     assert(!report.includes(secret), `report leaked ${secret}`);
   });
   assert(report.includes('接口 1 · LAN · 采集中'));
+  assert(report.includes('本机 TC: 无冲突'));
+  assert(report.includes('TC 对象: qdisc 2 · class 1 · filter 1'));
+  assert(!report.includes('TC 异常'), 'healthy TC state must not add a noisy anomaly section');
   assert(report.includes('分类映射表'));
   assert(report.includes('白名单状态'));
   assert(report.includes('localized:live_metrics_unavailable'));
+
+  const tcConflictValues = payloads();
+  tcConflictValues.health.evidence.tc_status.state = 'conflict';
+  tcConflictValues.health.evidence.tc_status.conflicts = [ {
+    id: 'foreign_root_qdisc', severity: 'warning', interface: 'secret-tc-interface',
+    direction: 'root', object: 'cake / 8000:', owner: 'other'
+  } ];
+  const tcConflictState = model.normalizeResults(await settled(tcConflictValues), null, 30400, 2);
+  const tcConflictReport = model.buildReport(tcConflictState, '1.2.0-r3');
+  assert(tcConflictReport.includes('TC 异常:'), 'TC conflicts must be surfaced in the diagnostic report');
+  assert(tcConflictReport.includes('外部根队列会阻止 LAN Speed'));
+  assert(tcConflictReport.includes('归属: 其他组件'));
+  assert(tcConflictReport.includes('对象: cake / 8000:'));
+  assert(!tcConflictReport.includes('secret-tc-interface'),
+    'TC anomaly reports must preserve the report privacy boundary');
 
   const mapFailureValues = payloads();
   const rawBpfSecret = 'map_read_failed /sys/fs/bpf/private-map eth1 token=bpf-secret';
@@ -1492,7 +1573,7 @@ async function testAlertsAndReport() {
     message_public: rawBpfSecret
   } ];
   const mapFailureState = model.normalizeResults(await settled(mapFailureValues), null, 30500, 2);
-  const mapFailureReport = model.buildReport(mapFailureState, '1.2.0-r2');
+  const mapFailureReport = model.buildReport(mapFailureState, '1.2.0-r3');
   assert(mapFailureReport.includes('分类映射表'));
   assert(mapFailureReport.includes('localized:map_read_failed') || mapFailureReport.includes('映射表'));
   [ rawBpfSecret, '/sys/fs/bpf/private-map', 'eth1', 'bpf-secret' ].forEach((secret) => {
@@ -1534,7 +1615,7 @@ async function testAlertsAndReport() {
       error: model.rpcErrorInfo({ code: 'TOKEN_SECRET', message: 'token=do-not-copy router.private.example' }, 'transport') })
   });
   const secretFailure = model.normalizeResults(secretFailureResults, null, 31000, 2);
-  const failureReport = model.buildReport(secretFailure, '1.2.0-r2');
+  const failureReport = model.buildReport(secretFailure, '1.2.0-r3');
   [ 'TOKEN_SECRET', 'do-not-copy', 'router.private.example' ].forEach((secret) => {
     assert(!failureReport.includes(secret), `RPC report leaked ${secret}`);
   });

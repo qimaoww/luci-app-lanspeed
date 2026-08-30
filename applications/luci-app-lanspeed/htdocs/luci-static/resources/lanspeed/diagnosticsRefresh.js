@@ -339,6 +339,182 @@ function rateText(item) {
 		fmt.formatRate(Number(item.tx_bps) || 0, 'bit'));
 }
 
+var TC_STATE_LABELS = {
+	clean: _('无冲突'), coexisting: _('可共存'), conflict: _('检测到冲突'),
+	partial: _('扫描不完整'), unavailable: _('不可用')
+};
+var TC_OWNER_LABELS = {
+	lanspeed: _('LAN Speed'), kernel: _('内核默认'), shared: _('共享挂载点'),
+	dae: _('DAE / daed'), sqm: _('SQM'), qosify: _('qosify'),
+	other: _('其他组件'), unknown: _('未知组件')
+};
+var TC_CONFLICT_LABELS = {
+	reserved_filter_slot: _('其他过滤器占用了 LAN Speed 保留的 pref/handle'),
+	reserved_qdisc_handle: _('其他队列占用了 LAN Speed 保留的根句柄'),
+	foreign_filter_preemption: _('更高优先级的外部动作可能重定向、丢弃或提前终止数据包'),
+	foreign_filter_precedes_lanspeed: _('外部过滤器先于 LAN Speed 执行，请确认其动作会继续放行'),
+	foreign_root_qdisc: _('外部根队列会阻止 LAN Speed 在此接口建立客户端整形树'),
+	ingress_qdisc_blocks_clsact: _('传统 ingress qdisc 会阻止 LAN Speed 安装共享 clsact 挂载点')
+};
+
+function tcOwnerLabel(owner) {
+	return TC_OWNER_LABELS[String(owner || 'unknown')] || _('未知组件');
+}
+
+function tcDirectionLabel(direction) {
+	return ({ ingress: _('入站'), egress: _('出站'), root: _('根队列'), child: _('子队列'),
+		unknown: _('未知') })[String(direction || 'unknown')] || String(direction || '-');
+}
+
+function tcEvidence(viewState) {
+	var value = viewState && viewState.health && viewState.health.evidence &&
+		viewState.health.evidence.tc_status;
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+	return value;
+}
+
+function tcInteger(value) {
+	value = Number(value);
+	return isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+}
+
+function tcCounters(value) {
+	value = value && typeof value === 'object' ? value : {};
+	var parts = [];
+	if (value.packets !== null && value.packets !== undefined)
+		parts.push(_('%d 包').format(tcInteger(value.packets)));
+	if (value.bytes !== null && value.bytes !== undefined)
+		parts.push(_('%d 字节').format(tcInteger(value.bytes)));
+	if (value.drops !== null && value.drops !== undefined && tcInteger(value.drops))
+		parts.push(_('%d 丢包').format(tcInteger(value.drops)));
+	if (value.overlimits !== null && value.overlimits !== undefined && tcInteger(value.overlimits))
+		parts.push(_('%d 超限').format(tcInteger(value.overlimits)));
+	if (value.backlog !== null && value.backlog !== undefined && tcInteger(value.backlog))
+		parts.push(_('积压 %d').format(tcInteger(value.backlog)));
+	if (value.requeues !== null && value.requeues !== undefined && tcInteger(value.requeues))
+		parts.push(_('%d 次重排队').format(tcInteger(value.requeues)));
+	if (value.qlen !== null && value.qlen !== undefined)
+		parts.push(_('队列长度 %d').format(tcInteger(value.qlen)));
+	if (value.maxpacket !== null && value.maxpacket !== undefined && tcInteger(value.maxpacket))
+		parts.push(_('最大包 %d').format(tcInteger(value.maxpacket)));
+	return parts.length ? parts.join(' · ') : '-';
+}
+
+function tcFilterDetail(item) {
+	var parts = [];
+	if (item.protocol !== null && item.protocol !== undefined) parts.push(_('协议 %s').format(String(item.protocol)));
+	if (item.program_name) parts.push(_('程序 %s').format(String(item.program_name)));
+	if (item.program_id !== null && item.program_id !== undefined) parts.push(_('ID %d').format(tcInteger(item.program_id)));
+	if (item.direct_action === true) parts.push('direct-action');
+	if (item.in_hw === true) parts.push(_('硬件中'));
+	else if (item.in_hw === false) parts.push(_('软件中'));
+	if (item.action) parts.push(_('动作 %s').format(String(item.action)));
+	return parts.length ? parts.join(' · ') : '-';
+}
+
+function tcObjectRows(value) {
+	var rows = [], conflicts = Array.isArray(value.conflicts) ? value.conflicts : [];
+	var conflictInterfaces = {};
+	conflicts.forEach(function(item) { if (item && item.interface) conflictInterfaces[item.interface] = true; });
+	function cell(label, value, className) {
+		var text = value === null || value === undefined || value === '' ? '-' : String(value);
+		var attrs = { 'data-label': label, 'title': text };
+		if (className) attrs['class'] = className;
+		return E('td', attrs, text);
+	}
+	function push(item, type, location, identity, detail) {
+		item = item && typeof item === 'object' ? item : {};
+		var owner = String(item.owner || 'unknown');
+		var state = conflictInterfaces[item.interface] && owner !== 'lanspeed' ? 'warning' :
+			owner === 'lanspeed' ? 'good' : 'neutral';
+		rows.push(E('tr', { 'data-state': state }, [
+			cell(_('接口'), item.interface, 'lanspeed-diagnostics-tc-interface'),
+			cell(_('类型'), type, 'lanspeed-diagnostics-tc-type'),
+			cell(_('位置'), location, 'lanspeed-diagnostics-tc-location'),
+			cell(_('种类'), item.kind, 'lanspeed-diagnostics-tc-kind'),
+			cell(_('标识'), identity, 'lanspeed-diagnostics-tc-identity'),
+			cell(_('归属'), tcOwnerLabel(owner), 'lanspeed-diagnostics-tc-owner'),
+			cell(_('统计'), tcCounters(item.counters), 'lanspeed-diagnostics-tc-counters'),
+			cell(_('明细'), detail, 'lanspeed-diagnostics-tc-detail')
+		]));
+	}
+	(Array.isArray(value.qdiscs) ? value.qdiscs : []).forEach(function(item) {
+		push(item, 'qdisc', item.root ? _('root') : String(item.parent || '-'),
+			String(item.handle || '-'), String(item.detail || '-'));
+	});
+	(Array.isArray(value.classes) ? value.classes : []).forEach(function(item) {
+		push(item, 'class', String(item.parent || '-'), String(item.handle || '-'), String(item.detail || '-'));
+	});
+	(Array.isArray(value.filters) ? value.filters : []).forEach(function(item) {
+		var location = tcDirectionLabel(item.direction) + ' · chain ' + tcInteger(item.chain);
+		push(item, 'filter', location,
+			'pref ' + tcInteger(item.pref) + ' / ' + String(item.handle || '-'), tcFilterDetail(item));
+	});
+	return rows;
+}
+
+function renderTcStatus(refs, viewState) {
+	if (!refs.tcSummary) return null;
+	var value = tcEvidence(viewState);
+	var state = value && TC_STATE_LABELS[value.state] ? value.state : 'unavailable';
+	var visual = state === 'clean' ? 'good' : state === 'conflict' || state === 'unavailable' ? 'bad' : 'warning';
+	var noticeState = state === 'clean' ? 'ready' : state === 'conflict' || state === 'unavailable' ? 'error' : 'degraded';
+	var label = TC_STATE_LABELS[state];
+	refs.tcSummary.className = 'label lanspeed-diagnostics-tc-summary ' + stateClass(visual);
+	refs.tcSummary.textContent = label;
+	refs.tcNotice.setAttribute('data-state', noticeState);
+	refs.tcNoticeTitle.textContent = label;
+	refs.tcNoticeText.textContent = !value ? _('当前后端未提供全机 TC 快照；升级后重新检查。') :
+		state === 'clean' ? _('已读取全机 TC，未发现外部对象占用 LAN Speed 保留位置。') :
+		state === 'coexisting' ? _('检测到其他 TC 对象，但当前没有证据表明它们占用或抢先于 LAN Speed。') :
+		state === 'conflict' ? _('下列对象可能阻止挂载、覆盖保留句柄或先于 LAN Speed 处理数据包。') :
+		state === 'partial' ? _('至少一类 TC 对象未能完整读取；现有结果仍显示，不能据此断言没有冲突。') :
+		_('无法读取本机 TC 状态，请检查 tc-full 与运行权限。');
+	value = value || {};
+	var qdiscCount = tcInteger(value.qdisc_count), classCount = tcInteger(value.class_count),
+		filterCount = tcInteger(value.filter_count), conflictCount = Array.isArray(value.conflicts) ? value.conflicts.length : 0;
+	setFact(refs, 'tcState', visual, label,
+		conflictCount ? _('%d 个冲突或抢占风险').format(conflictCount) : _('未发现保留位置冲突'));
+	setFact(refs, 'tcScan', value.scan_complete === true ? 'good' : visual === 'bad' ? 'bad' : 'warning',
+		value.scan_complete === true ? _('完整') : _('不完整'),
+		_('qdisc %s · class %s · filter %s').format(value.qdisc_scan ? _('成功') : _('失败'),
+			value.class_scan ? _('成功') : _('失败'), value.filter_scan ? _('成功') : _('失败')));
+	setFact(refs, 'tcObjects', value.scan_complete === true ? 'good' : 'warning',
+		_('%d 个').format(qdiscCount + classCount + filterCount),
+		_('qdisc %d · class %d · filter %d · %d 个接口').format(qdiscCount, classCount,
+			filterCount, tcInteger(value.interface_count)));
+	setFact(refs, 'tcOwners', conflictCount ? 'warning' : 'good',
+		_('LAN Speed %d · 其他 %d').format(tcInteger(value.lanspeed_objects), tcInteger(value.foreign_objects)),
+		value.objects_truncated || value.command_output_truncated ? _('输出达到安全上限') :
+			tcInteger(value.parse_errors) ? _('%d 个对象解析失败').format(tcInteger(value.parse_errors)) : _('全部对象已归类'));
+
+	var conflictRows = (Array.isArray(value.conflicts) ? value.conflicts : []).map(function(item) {
+		item = item && typeof item === 'object' ? item : {};
+		var critical = item.severity === 'critical';
+		return E('tr', { 'data-state': critical ? 'bad' : 'warning' }, [
+			E('td', { 'data-label': _('级别') }, critical ? _('严重') : _('警告')),
+			E('td', { 'data-label': _('接口') }, String(item.interface || '-')),
+			E('td', { 'data-label': _('位置') }, tcDirectionLabel(item.direction)),
+			E('td', { 'data-label': _('对象') }, String(item.object || '-')),
+			E('td', { 'data-label': _('归属') }, tcOwnerLabel(item.owner)),
+			E('td', { 'data-label': _('判断') }, TC_CONFLICT_LABELS[item.id] || _('未知 TC 冲突'))
+		]);
+	});
+	refs.tcConflictGroup.hidden = !conflictRows.length;
+	refs.tcConflictGroup.setAttribute('aria-hidden', conflictRows.length ? 'false' : 'true');
+	fmt.replaceChildren(refs.tcConflictBody, conflictRows);
+	var objectRows = tcObjectRows(value);
+	if (!objectRows.length) objectRows.push(E('tr', { 'data-state': 'empty' }, [
+		E('td', { 'colspan': '8' }, state === 'unavailable' ? _('没有可显示的 TC 快照。') : _('本机没有 TC 对象。'))
+	]));
+	fmt.replaceChildren(refs.tcObjectsBody, objectRows);
+	refs.tcObjectsCaption.textContent = _('本机全部 TC 对象：qdisc %d、class %d、filter %d').format(
+		qdiscCount, classCount, filterCount);
+	refs.tcDetailsMeta.textContent = _('%d 个对象 · %d 个接口').format(
+		qdiscCount + classCount + filterCount, tcInteger(value.interface_count));
+	return { state: state, conflicts: conflictCount, objects: qdiscCount + classCount + filterCount };
+}
+
 function renderInterfaces(refs, viewState) {
 	var result = diagnosticsModel.interfaceStateWithRpc(viewState);
 	var rows = (result.items || []).map(function(item) {
@@ -457,6 +633,7 @@ function refresh(viewState) {
 	var pipeline = renderPipeline(refs, viewState);
 	var control = renderControl(refs, viewState);
 	var rpcState = renderRpcChecks(refs, viewState);
+	var tcStatus = renderTcStatus(refs, viewState);
 	var interfaces = renderInterfaces(refs, viewState);
 	renderSubsystems(refs, viewState);
 	var warnings = renderWarnings(refs, viewState.status, viewState.health, viewState.rpc, viewState.diagnostics);
@@ -466,13 +643,14 @@ function refresh(viewState) {
 		(state === 'loading' ? _('上次检查 %s · 正在重新检查').format(new Date(viewState.checkedAt).toLocaleTimeString()) :
 			_('检查于 %s').format(new Date(viewState.checkedAt).toLocaleTimeString())) : _('尚未完成检查');
 	refs.root.setAttribute('aria-busy', state === 'loading' ? 'true' : 'false');
-	return { state: state, cardState: cardState, pipeline: pipeline, control: control, rpc: rpcState,
+	return { state: state, cardState: cardState, pipeline: pipeline, control: control, rpc: rpcState, tc: tcStatus,
 		interfaces: interfaces, warnings: warnings };
 }
 
 return baseclass.extend({
 	refreshStatusCards: refreshStatusCards,
 	renderRpcChecks: renderRpcChecks,
+	renderTcStatus: renderTcStatus,
 	renderWarnings: renderWarnings,
 	refresh: function(viewState) { return refresh(viewState); }
 });

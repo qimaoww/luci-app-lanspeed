@@ -74,6 +74,7 @@ ECM+BPF 还要求可读的 `/sys/kernel/btf/ecm` 和受支持的 `ecm_db_connect
 | 没有客户端 | 检查 LAN 接口、BPF attach 与 ECM node MAC 映射 |
 | 速率长时间为 0 | 检查 `effective_collector`、map/state 和 `sample_ms` |
 | OpenClash 或 dae/daed 共存 | 检查 TC hook、NSS state 和诊断 evidence |
+| 其他 SQM/QoS/代理的 TC 共存 | 在“运行诊断 -> 本机 TC 状态”核对完整 qdisc/class/filter 清单；“可共存”只表示未发现保留位置冲突，“检测到冲突”会列出根队列、pref/handle 或抢先动作 |
 | 覆盖率低 | 检查 offload、旁路路径、LAN-to-LAN、IFB/TUN 和接口边界 |
 | x86 限速应用失败 | 检查外部 qdisc/IFB 所有权及 HTB、FQ、u32、mirred 模块 |
 | NSS 限速应用失败 | 检查路径确认状态、真实 WAN/Access Edge、NSS 根或专属 IFB 队列所有权和结构化原因 |

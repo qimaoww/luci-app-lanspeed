@@ -5047,7 +5047,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.2.0-r2';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.2.0-r3';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
@@ -6130,7 +6130,7 @@ function assertDiagnosticsStyleModule(src) {
 		'@media (max-width:1100px)', '@media (max-width:900px)',
 		'@media (max-width:700px)', '@media (max-width:480px)',
 		'.lanspeed-diagnostic-stage-evidence{grid-template-columns:minmax(0,1fr)}',
-		'.lanspeed-diagnostics-rpc-table tbody>tr>td[data-label]::before{content:attr(data-label);'
+		'.lanspeed-diagnostics-tc-table tbody>tr>td[data-label]::before{content:attr(data-label);'
 	].forEach(function(marker) {
 		if (!responsiveCss.includes(marker))
 			fail(`diagnosticsStyleResponsive.js must retain responsive diagnostics behavior: ${marker}`);
@@ -6151,6 +6151,9 @@ function assertDiagnosticsShellModule(src) {
 	    !src.includes('buildSummarySection(refs, viewState)') ||
 	    !src.includes('buildPipelineSection(refs)') ||
 	    !src.includes('buildHealthSection(refs)') ||
+	    !src.includes("sectionHeader(_('基础接口与 RPC 健康')") ||
+	    !src.includes("E('h4', {}, _('本机 TC 状态'))") ||
+	    !src.includes('refs.tcObjectsBody') ||
 	    !src.includes('buildSupportSection(refs, viewState)') ||
 	    !src.includes("stage(refs, 'rate'") ||
 	    !src.includes("stage(refs, 'edge'") ||
@@ -6187,6 +6190,8 @@ function assertDiagnosticsRefreshModule(src) {
 	    !src.includes("refs.root.setAttribute('data-page-state', state)") ||
 	    !src.includes('renderPipeline(refs, viewState)') ||
 	    !src.includes('renderInterfaces(refs, viewState)') ||
+	    !src.includes('renderTcStatus(refs, viewState)') ||
+	    !src.includes('TC_CONFLICT_LABELS') ||
 	    !src.includes('renderSubsystems(refs, viewState)') ||
 	    !src.includes('renderWarnings(refs, viewState.status') ||
 	    !src.includes("'data-label': _('结果')") ||
@@ -7068,7 +7073,7 @@ function matchingConfigStatus(values) {
 		max_clients: values.max_clients,
 		enable_bpf: values.enable_bpf === '1',
 		enable_conntrack_fallback: values.enable_conntrack_fallback === '1',
-		version: '1.2.0-r2',
+		version: '1.2.0-r3',
 		capabilities: { bpf: true, conntrack_fallback: true },
 		evidence: {
 			platform: { profile: 'nss_aarch64' },
@@ -7098,7 +7103,7 @@ function assertConfigFormBehavior(src) {
 	}, makeConfigIfaceStub(), model);
 	asyncChecks.push(validLoadForm.loadValues().then(function(values) {
 		if (values.pageState !== 'ready' || !values.rpc.status.ok ||
-			values.rpc.status.phase !== 'success' || values.status.version !== '1.2.0-r2') {
+			values.rpc.status.phase !== 'success' || values.status.version !== '1.2.0-r3') {
 			fail('configForm.js must accept the complete status contract and retain capability evidence');
 		}
 	}).catch(function(error) {
