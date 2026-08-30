@@ -7073,7 +7073,7 @@ function matchingConfigStatus(values) {
 		max_clients: values.max_clients,
 		enable_bpf: values.enable_bpf === '1',
 		enable_conntrack_fallback: values.enable_conntrack_fallback === '1',
-		version: '1.2.0-r2',
+		version: '1.2.0-r3',
 		capabilities: { bpf: true, conntrack_fallback: true },
 		evidence: {
 			platform: { profile: 'nss_aarch64' },
@@ -7103,7 +7103,7 @@ function assertConfigFormBehavior(src) {
 	}, makeConfigIfaceStub(), model);
 	asyncChecks.push(validLoadForm.loadValues().then(function(values) {
 		if (values.pageState !== 'ready' || !values.rpc.status.ok ||
-			values.rpc.status.phase !== 'success' || values.status.version !== '1.2.0-r2') {
+			values.rpc.status.phase !== 'success' || values.status.version !== '1.2.0-r3') {
 			fail('configForm.js must accept the complete status contract and retain capability evidence');
 		}
 	}).catch(function(error) {
