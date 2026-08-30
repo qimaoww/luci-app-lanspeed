@@ -222,6 +222,42 @@ function clientNameContent(c, displayName, ips) {
 	];
 }
 
+function clientTrafficCell(c, direction, rate, rateUnit) {
+	var directionLabel = direction === 'tx' ? _('上行') : _('下行');
+	return E('td', {
+		'class': 'num lanspeed-client-value',
+		'data-label': directionLabel
+	}, E('span', { 'class': 'lanspeed-client-rate' }, fmt.formatRate(rate, rateUnit)));
+}
+
+function clientTrafficTotalCell(c, showTotal) {
+	/* The first rollout is intentionally x86-only. NSS has different counter
+	 * ownership semantics and must not gain a second, unverified total here. */
+	var txTotal = showTotal && typeof fmt.formatBytes === 'function'
+		? fmt.formatBytes(c && c.tx_bytes) : null;
+	var rxTotal = showTotal && typeof fmt.formatBytes === 'function'
+		? fmt.formatBytes(c && c.rx_bytes) : null;
+	var attrs = {
+		'class': 'num lanspeed-client-total-cell',
+		'data-label': _('累计流量'),
+		'title': showTotal ? [
+			_('上行累计 %s').format(txTotal),
+			_('下行累计 %s').format(rxTotal)
+		].join(' · ') : ''
+	};
+	if (!showTotal) attrs.hidden = 'hidden';
+	return E('td', attrs, showTotal ? [
+		E('span', {
+			'class': 'lanspeed-client-total lanspeed-client-total-tx',
+			'aria-label': _('上行累计 %s').format(txTotal)
+		}, '↑ ' + txTotal),
+		E('span', {
+			'class': 'lanspeed-client-total lanspeed-client-total-rx',
+			'aria-label': _('下行累计 %s').format(rxTotal)
+		}, '↓ ' + rxTotal)
+	] : []);
+}
+
 function splitClientWarnings(rawWarnings, globalWarnings) {
 	var info = [], warnings = [];
 	(rawWarnings || []).forEach(function(w) {
@@ -451,8 +487,11 @@ function refreshLive(viewState) {
 		}, '') : '';
 	viewState.showClientControl = true;
 	if (refs.controlHeader) refs.controlHeader.hidden = false;
-	if (refs.clientsTable)
+	if (refs.totalHeader) refs.totalHeader.hidden = nssProfile;
+	if (refs.clientsTable) {
 		refs.clientsTable.setAttribute('data-client-control', 'shown');
+		refs.clientsTable.setAttribute('data-client-totals', nssProfile ? 'hidden' : 'shown');
+	}
 	refreshIntervalControl(viewState, refs, status);
 	var clientsAll = fmt.asArray(viewState.clients && viewState.clients.clients);
 	var prefs = viewState.prefs;
@@ -659,14 +698,9 @@ function refreshLive(viewState) {
 					'class': 'mono lanspeed-client-mac',
 					'data-label': 'MAC'
 				}, fmt.textOrDash(c.mac)),
-				E('td', {
-					'class': 'num lanspeed-client-value',
-					'data-label': _('上行')
-				}, fmt.formatRate(tx, prefs.unit)),
-				E('td', {
-					'class': 'num lanspeed-client-value',
-					'data-label': _('下行')
-				}, fmt.formatRate(rx, prefs.unit)),
+				clientTrafficCell(c, 'tx', tx, prefs.unit),
+				clientTrafficCell(c, 'rx', rx, prefs.unit),
+				clientTrafficTotalCell(c, !nssProfile),
 				E('td', {
 					'class': 'num lanspeed-client-value',
 					'data-label': 'TCP'
@@ -765,6 +799,8 @@ function refreshLive(viewState) {
 
 return baseclass.extend({
 	clientNameContent: clientNameContent,
+	clientTrafficCell: clientTrafficCell,
+	clientTrafficTotalCell: clientTrafficTotalCell,
 	refreshSortHeaders: refreshSortHeaders,
 	splitClientWarnings: splitClientWarnings,
 	setClientStatusVisibility: setClientStatusVisibility,

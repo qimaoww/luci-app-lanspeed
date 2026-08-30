@@ -5913,16 +5913,33 @@ function assertStatusStyleModule(src) {
 		'.lanspeed-clients-card .lanspeed-table td[data-label]::before{content:attr(data-label);',
 		'.lanspeed-ifaces-table tbody>tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));',
 		'.lanspeed-ifaces-table tbody td[data-label]::before{content:attr(data-label);',
-		'.lanspeed-table[data-client-status="hidden"]{table-layout:fixed}',
+		'.lanspeed-table{table-layout:fixed}',
 		'.lanspeed-client-control-header{text-align:center}',
-		'.lanspeed-control-actions{display:grid;',
-		'grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch}',
-		'.lanspeed-control-button{width:100%}',
-		'.lanspeed-table[data-client-status="hidden"] td:nth-child(8){width:22%}'
+		'.lanspeed-control-actions{display:flex;flex-wrap:nowrap;justify-content:flex-start}',
+		'.lanspeed-control-button{width:5.5em;min-width:5.5em}',
+		'.lanspeed-table th:nth-child(1)',
+		'width:22%',
+		'width:13.6%;text-align:center}',
+		'width:5%;text-align:center}'
 	].forEach(function(marker) {
 		if (!responsiveCss.includes(marker))
 			fail(`statusStyleResponsive.js must retain responsive status behavior: ${marker}`);
 	});
+	if (!baseCss.includes('min-height:calc(var(--lanspeed-control-height)*.82)!important') ||
+	    !baseCss.includes('padding:.28em .7em!important') ||
+	    !baseCss.includes('font-size:inherit!important;') ||
+	    !baseCss.includes('font-weight:inherit!important;line-height:inherit!important')) {
+		fail('client control buttons must use compact theme-native control sizing');
+	}
+	if (!baseCss.includes('.lanspeed-client-total{display:inline-block;color:inherit;font-size:inherit;') ||
+	    !baseCss.includes('font-weight:inherit;line-height:inherit;white-space:nowrap}')) {
+		fail('cumulative traffic values must use the same typography as live rate values');
+	}
+	if (!baseCss.includes('.lanspeed-client-total-header,.lanspeed-client-total-cell{text-align:center}') ||
+	    !responsiveCss.includes('width:13.6%;text-align:center}') ||
+	    !responsiveCss.includes('width:5%;text-align:center}')) {
+		fail('client totals and connection controls must use a compact, aligned desktop table rhythm');
+	}
 	themeCss.forEach(function(theme) {
 		if (!theme[2].includes(`lanspeed-theme-${theme[1]}`) ||
 		    !theme[2].includes('.lanspeed-metrics{') ||
@@ -6038,11 +6055,18 @@ function assertStatusRefreshModule(src) {
 	if (!src.includes("'class': 'lanspeed-client-name'") ||
 	    !src.includes("'class': 'mono lanspeed-client-mac'") ||
 	    !src.includes("'class': 'num lanspeed-client-value'") ||
+	    !src.includes("'class': 'num lanspeed-client-total-cell'") ||
 	    !src.includes("'class': 'lanspeed-client-state-cell'") ||
-	    !src.includes("'data-label': _('上行')") ||
-	    !src.includes("'data-label': _('下行')") ||
+	    (!src.includes("'data-label': _('上行')") && !src.includes('clientTrafficCell(c, \'tx\'')) ||
+	    (!src.includes("'data-label': _('下行')") && !src.includes('clientTrafficCell(c, \'rx\'')) ||
 	    !src.includes("'data-label': _('状态')")) {
 		fail('lanspeed/statusRefresh.js must label client fields for the narrow stacked layout');
+	}
+	if (!src.includes('clientTrafficTotalCell(c, !nssProfile)') ||
+	    !src.includes("'data-label': _('累计流量')") ||
+	    !src.includes("'class': 'lanspeed-client-total lanspeed-client-total-tx'") ||
+	    !src.includes("'class': 'lanspeed-client-total lanspeed-client-total-rx'")) {
+		fail('statusRefresh.js must render x86 cumulative traffic in its own bidirectional table column');
 	}
 	if (!src.includes('reconcileClientRows(refs.tbody') ||
 	    !src.includes("'data-client-key': String(fmt.identityOf(c))") ||

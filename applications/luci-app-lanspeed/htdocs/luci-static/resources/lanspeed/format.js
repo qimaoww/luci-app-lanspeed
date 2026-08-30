@@ -38,6 +38,10 @@ var NSS_REFRESH_CHOICES = [
 
 var PAGE_SIZE_CHOICES = [ 10, 25, 50, 100 ];
 
+/* Cumulative client traffic is a byte counter, independent from the live
+ * rate unit. Always choose the largest readable binary unit automatically. */
+var TRAFFIC_UNITS = [ 'B', 'KB', 'MB', 'GB', 'TB' ];
+
 var SORT_KEYS = [ 'hostname', 'mac', 'tx', 'rx', 'tcp_conns', 'udp_conns' ];
 
 var DEFAULT_PREFS = {
@@ -124,6 +128,23 @@ function formatRate(valueBps, unit) {
 	var i = 0;
 	while (n >= div && i < units.length - 1) { n /= div; i++; }
 	return (i === 0 ? '%d %s' : '%.2f %s').format(n, units[i]);
+}
+
+function formatBytes(value) {
+	if (value === null || value === undefined || value === '') return '-';
+	var n = Number(value);
+	if (!isFinite(n) || n < 0) return '-';
+	var index = 0;
+	while (n >= 1024 && index < TRAFFIC_UNITS.length - 1) {
+		n /= 1024;
+		index++;
+	}
+	var label = TRAFFIC_UNITS[index];
+	/* Preserve useful precision for small counters without producing noisy
+	 * long values once a client has transferred hundreds of units. */
+	if (n === 0) return '0 ' + label;
+	var precision = n < 10 ? 2 : n < 100 ? 1 : 0;
+	return n.toFixed(precision) + ' ' + label;
 }
 
 function clientSampleMs(c) {
@@ -360,6 +381,7 @@ return baseclass.extend({
 	defaultSortDirection: defaultSortDirection,
 	nextSort:          nextSort,
 	formatRate:        formatRate,
+	formatBytes:       formatBytes,
 	clientSampleMs:    clientSampleMs,
 	latestClientSampleMs: latestClientSampleMs,
 	activeConfig:      activeConfig,

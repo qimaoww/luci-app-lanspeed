@@ -910,6 +910,8 @@ function client(index) {
 		ips: [ '192.0.2.' + index ],
 		tx_bps: index * 100,
 		rx_bps: index * 200,
+		tx_bytes: index * 1024,
+		rx_bytes: index * 1024 * 1024,
 		tcp_conns: index,
 		udp_conns: index,
 		collector_mode: 'bpf',
@@ -919,6 +921,9 @@ function client(index) {
 }
 
 function testPaginationAndUiStates(context, fmt) {
+	assert.strictEqual(fmt.formatBytes(1024), '1.00 KB');
+	assert.strictEqual(fmt.formatBytes(1024 * 1024 * 1024), '1.00 GB');
+	assert.strictEqual(fmt.formatBytes(1024 * 1024 * 1024 * 1024), '1.00 TB');
 	const items = Array.from({ length: 63 }, function(_value, index) { return index; });
 	const third = fmt.paginate(items, 3, 25);
 	assert.deepStrictEqual(Array.from(third.items), items.slice(50));
@@ -1015,6 +1020,12 @@ function testPaginationAndUiStates(context, fmt) {
 		'explicit routed view must not be presented as automatic Access Edge');
 	assert(String(nssState.refs.collectorPill.title || '').includes('互联网/路由'),
 		'explicit routed view must describe its FastN+FastS scope');
+	assert(!textOf(nssState.refs.tbody.children[0]).includes('累计'),
+		'NSS rows must retain their existing rate-only presentation in the x86-first rollout');
+	assert.strictEqual(nssState.refs.totalHeader.hidden, true,
+		'NSS must hide the x86-only cumulative traffic column');
+	assert.strictEqual(findByClass(nssState.refs.tbody.children[0], 'lanspeed-client-total-cell').hidden, true,
+		'NSS client rows must hide their cumulative traffic cell');
 	const pendingClient = Object.assign({}, client(2), {
 		tx_bps: 0, rx_bps: 0, collector_mode: 'access_edge',
 		rate_meta: { scope: 'none',
@@ -1066,6 +1077,14 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.strictEqual(toolbarRight.children[2], state.refs.btnPause);
 	assert.strictEqual(state.refs.tbody.children.length, 10);
 	assert.ok(textOf(state.refs.tbody.children[0]).includes('client-30'));
+	assert.strictEqual(state.refs.totalHeader.hidden, false);
+	const firstTotalCell = findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-cell');
+	assert.ok(firstTotalCell, 'x86 rows must render a dedicated cumulative traffic cell');
+	assert.ok(textOf(firstTotalCell).includes('↑') && textOf(firstTotalCell).includes('↓'));
+	assert(!textOf(state.refs.tbody.children[0].children[2]).includes('累计'),
+		'live upload rate cells must no longer contain cumulative traffic');
+	assert(!textOf(state.refs.tbody.children[0].children[3]).includes('累计'),
+		'live download rate cells must no longer contain cumulative traffic');
 	assert.ok(state.refs.collectorPill.className.includes('lanspeed-collector-status'));
 	assert.strictEqual(findAllByClass(built.root, 'lanspeed-collector-status').length, 1);
 	assert.strictEqual(findAllByClass(built.root, 'lanspeed-service-status').length, 0);
@@ -1087,6 +1106,8 @@ function testPaginationAndUiStates(context, fmt) {
 		'a changed live rate must render the real backend value immediately without interpolation');
 	assert.strictEqual(findByClass(stableFirstRow, 'lanspeed-live-rate'), null,
 		'rate rendering must not introduce animation-only DOM');
+	assert.ok(textOf(findByClass(stableFirstRow, 'lanspeed-client-total-cell')).includes('↓ 30.0 MB'),
+		'cumulative client counters must automatically use the largest readable unit');
 
 	state.refs.pageNext.listeners.click({ preventDefault: function() {} });
 	assert.strictEqual(state.page, 2);

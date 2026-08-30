@@ -312,12 +312,17 @@ function buildShell(viewState) {
 		'class': 'lanspeed-client-status-header'
 	}, _('状态'));
 	refs.statusHeader.hidden = viewState.showClientStatus !== true;
+	refs.totalHeader = E('th', {
+		'class': 'num lanspeed-client-total-header'
+	}, _('累计流量'));
+	refs.totalHeader.hidden = true;
 	refs.controlHeader = E('th', { 'class': 'lanspeed-client-control-header' }, _('控制'));
 	refs.controlHeader.hidden = viewState.showClientControl !== true;
 	refs.clientsTable = E('table', {
 		'id': 'lanspeed-clients-table',
 		'class': 'lanspeed-table',
 		'data-client-status': viewState.showClientStatus === true ? 'shown' : 'hidden',
+		'data-client-totals': 'hidden',
 		'data-client-control': viewState.showClientControl === true ? 'shown' : 'hidden'
 	}, [
 		E('thead', {}, E('tr', {}, [
@@ -325,6 +330,7 @@ function buildShell(viewState) {
 			sortableHeader(viewState, refs, 'mac', 'MAC'),
 			sortableHeader(viewState, refs, 'tx', _('上行'), { 'class': 'num' }),
 			sortableHeader(viewState, refs, 'rx', _('下行'), { 'class': 'num' }),
+			refs.totalHeader,
 			sortableHeader(viewState, refs, 'tcp_conns', 'TCP', {
 				'class': 'num', 'title': _('当前已建立并确认的 TCP 连接')
 			}),
