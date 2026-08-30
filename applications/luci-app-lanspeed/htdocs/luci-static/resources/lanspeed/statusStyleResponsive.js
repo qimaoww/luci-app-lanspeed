@@ -111,8 +111,8 @@ var RESPONSIVE_CSS = [
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):nth-child(3),',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):nth-child(4),',
 	/* x86 totals are compact counters; give the live rates and control room to breathe. */
-	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):nth-child(2){width:14%;text-align:center}',
-	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):is(:nth-child(3),:nth-child(4)){width:12%;text-align:center}',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):nth-child(2){width:15%;text-align:center}',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):is(:nth-child(3),:nth-child(4)){width:10%;text-align:center}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):is(:nth-child(5),:nth-child(6)){width:8%;text-align:center}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):nth-child(10){width:14%;text-align:center}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):is(:nth-child(7),:nth-child(8)){width:5%;text-align:center}',
