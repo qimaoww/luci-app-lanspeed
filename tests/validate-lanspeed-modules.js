@@ -3922,8 +3922,8 @@ function assertFormatActiveWindow(src) {
 function assertFormatSorting(src) {
 	const fmt = loadFormatModule(src);
 	const clients = [
-		{ identity_key: 'zulu@lan', hostname: 'Zulu', mac: '00:00:00:00:00:02', tx_bps: 20, rx_bps: 100, tcp_conns: 2, udp_conns: 4 },
-		{ identity_key: 'alpha@lan', hostname: 'Alpha', mac: '00:00:00:00:00:01', tx_bps: 30, rx_bps: 50, tcp_conns: 5, udp_conns: 1 }
+		{ identity_key: 'zulu@lan', hostname: 'Zulu', mac: '00:00:00:00:00:02', tx_bps: 20, rx_bps: 100, tx_bytes: 200, rx_bytes: 1000, tcp_conns: 2, udp_conns: 4 },
+		{ identity_key: 'alpha@lan', hostname: 'Alpha', mac: '00:00:00:00:00:01', tx_bps: 30, rx_bps: 50, tx_bytes: 300, rx_bytes: 500, tcp_conns: 5, udp_conns: 1 }
 	];
 	const identities = function(sorted) { return sorted.map(function(client) { return client.identity_key; }).join(','); };
 	if (!fmt.DEFAULT_PREFS || !Array.isArray(fmt.SORT_KEYS) ||
@@ -3936,12 +3936,14 @@ function assertFormatSorting(src) {
 	if (fmt.DEFAULT_PREFS.sortKey !== 'rx' || fmt.DEFAULT_PREFS.sortDir !== 'desc' || fmt.DEFAULT_PREFS.sortCustom !== false) {
 		fail('format.js must default the client table to descending download speed');
 	}
-	if (JSON.stringify(Array.from(fmt.SORT_KEYS)) !== JSON.stringify([ 'hostname', 'mac', 'tx', 'rx', 'tcp_conns', 'udp_conns' ])) {
-		fail('format.js must expose exactly the six sortable client columns');
+	if (JSON.stringify(Array.from(fmt.SORT_KEYS)) !== JSON.stringify([ 'hostname', 'mac', 'tx', 'rx', 'tx_bytes', 'rx_bytes', 'tcp_conns', 'udp_conns' ])) {
+		fail('format.js must expose all eight sortable client columns');
 	}
 	if (fmt.defaultSortDirection('hostname') !== 'desc' ||
 	    fmt.defaultSortDirection('mac') !== 'desc' ||
-	    fmt.defaultSortDirection('rx') !== 'desc') {
+	    fmt.defaultSortDirection('rx') !== 'desc' ||
+	    fmt.defaultSortDirection('tx_bytes') !== 'desc' ||
+	    fmt.defaultSortDirection('rx_bytes') !== 'desc') {
 		fail('format.js must start every sortable column in descending order');
 	}
 	const first = fmt.nextSort(fmt.DEFAULT_PREFS, 'hostname');
@@ -3954,6 +3956,12 @@ function assertFormatSorting(src) {
 	if (identities(fmt.sortClients(clients, 'rx')) !== 'zulu@lan,alpha@lan' ||
 	    identities(fmt.sortClients(clients, 'rx', 'asc')) !== 'alpha@lan,zulu@lan') {
 		fail('format.js must sort numeric columns in both directions');
+	}
+	if (identities(fmt.sortClients(clients, 'tx_bytes')) !== 'alpha@lan,zulu@lan' ||
+	    identities(fmt.sortClients(clients, 'tx_bytes', 'asc')) !== 'zulu@lan,alpha@lan' ||
+	    identities(fmt.sortClients(clients, 'rx_bytes')) !== 'zulu@lan,alpha@lan' ||
+	    identities(fmt.sortClients(clients, 'rx_bytes', 'asc')) !== 'alpha@lan,zulu@lan') {
+		fail('format.js must sort cumulative upload and download counters independently');
 	}
 	if (identities(fmt.sortClients(clients, 'hostname', 'asc')) !== 'alpha@lan,zulu@lan' ||
 	    identities(fmt.sortClients(clients, 'hostname', 'desc')) !== 'zulu@lan,alpha@lan') {
@@ -6008,10 +6016,10 @@ function assertStatusShellModule(src) {
 	    src.includes('lanspeed-diagnostic-') || src.includes('diagnosticsCard')) {
 		fail('lanspeed/statusShell.js must not render the dedicated diagnostics page inside realtime status');
 	}
-	const sortableKeys = [ 'hostname', 'mac', 'tx', 'rx', 'tcp_conns', 'udp_conns' ];
+	const sortableKeys = [ 'hostname', 'mac', 'tx', 'rx', 'tx_bytes', 'rx_bytes', 'tcp_conns', 'udp_conns' ];
 	if (!src.includes('function sortableHeader(viewState, refs, sortKey, label, attrs)') ||
 	    sortableKeys.some(function(key) { return !src.includes(`sortableHeader(viewState, refs, '${key}'`); })) {
-		fail('lanspeed/statusShell.js must sort directly from all six requested client table headers');
+		fail('lanspeed/statusShell.js must sort directly from all eight requested client table headers');
 	}
 	if (src.includes('refs.sortSel') || src.includes("_('排序')")) {
 		fail('lanspeed/statusShell.js must not render a separate sorting control');
@@ -6055,18 +6063,19 @@ function assertStatusRefreshModule(src) {
 	if (!src.includes("'class': 'lanspeed-client-name'") ||
 	    !src.includes("'class': 'mono lanspeed-client-mac'") ||
 	    !src.includes("'class': 'num lanspeed-client-value'") ||
-	    !src.includes("'class': 'num lanspeed-client-total-cell'") ||
+	    !src.includes("'class': 'num lanspeed-client-total-cell '") ||
 	    !src.includes("'class': 'lanspeed-client-state-cell'") ||
 	    (!src.includes("'data-label': _('上行')") && !src.includes('clientTrafficCell(c, \'tx\'')) ||
 	    (!src.includes("'data-label': _('下行')") && !src.includes('clientTrafficCell(c, \'rx\'')) ||
 	    !src.includes("'data-label': _('状态')")) {
 		fail('lanspeed/statusRefresh.js must label client fields for the narrow stacked layout');
 	}
-	if (!src.includes('clientTrafficTotalCell(c, !nssProfile)') ||
-	    !src.includes("'data-label': _('累计流量')") ||
-	    !src.includes("'class': 'lanspeed-client-total lanspeed-client-total-tx'") ||
-	    !src.includes("'class': 'lanspeed-client-total lanspeed-client-total-rx'")) {
-		fail('statusRefresh.js must render x86 cumulative traffic in its own bidirectional table column');
+	if (!src.includes("clientTrafficTotalCell(c, 'tx', !nssProfile)") ||
+	    !src.includes("clientTrafficTotalCell(c, 'rx', !nssProfile)") ||
+	    !src.includes("var label = isUpload ? _('累计上传') : _('累计下载')") ||
+	    !src.includes("lanspeed-client-total-upload-cell") ||
+	    !src.includes("lanspeed-client-total-download-cell")) {
+		fail('statusRefresh.js must render adjacent, independently labelled x86 cumulative upload/download columns');
 	}
 	if (!src.includes('reconcileClientRows(refs.tbody') ||
 	    !src.includes("'data-client-key': String(fmt.identityOf(c))") ||

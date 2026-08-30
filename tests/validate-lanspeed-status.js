@@ -1022,10 +1022,14 @@ function testPaginationAndUiStates(context, fmt) {
 		'explicit routed view must describe its FastN+FastS scope');
 	assert(!textOf(nssState.refs.tbody.children[0]).includes('累计'),
 		'NSS rows must retain their existing rate-only presentation in the x86-first rollout');
-	assert.strictEqual(nssState.refs.totalHeader.hidden, true,
-		'NSS must hide the x86-only cumulative traffic column');
-	assert.strictEqual(findByClass(nssState.refs.tbody.children[0], 'lanspeed-client-total-cell').hidden, true,
-		'NSS client rows must hide their cumulative traffic cell');
+	assert.strictEqual(nssState.refs.totalUploadHeader.hidden, true,
+		'NSS must hide the x86-only cumulative upload column');
+	assert.strictEqual(nssState.refs.totalDownloadHeader.hidden, true,
+		'NSS must hide the x86-only cumulative download column');
+	assert.strictEqual(findByClass(nssState.refs.tbody.children[0], 'lanspeed-client-total-upload-cell').hidden, true,
+		'NSS client rows must hide their cumulative upload cell');
+	assert.strictEqual(findByClass(nssState.refs.tbody.children[0], 'lanspeed-client-total-download-cell').hidden, true,
+		'NSS client rows must hide their cumulative download cell');
 	const pendingClient = Object.assign({}, client(2), {
 		tx_bps: 0, rx_bps: 0, collector_mode: 'access_edge',
 		rate_meta: { scope: 'none',
@@ -1077,10 +1081,14 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.strictEqual(toolbarRight.children[2], state.refs.btnPause);
 	assert.strictEqual(state.refs.tbody.children.length, 10);
 	assert.ok(textOf(state.refs.tbody.children[0]).includes('client-30'));
-	assert.strictEqual(state.refs.totalHeader.hidden, false);
-	const firstTotalCell = findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-cell');
-	assert.ok(firstTotalCell, 'x86 rows must render a dedicated cumulative traffic cell');
-	assert.ok(textOf(firstTotalCell).includes('↑') && textOf(firstTotalCell).includes('↓'));
+	assert.strictEqual(state.refs.totalUploadHeader.hidden, false);
+	assert.strictEqual(state.refs.totalDownloadHeader.hidden, false);
+	const firstUploadCell = findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-upload-cell');
+	const firstDownloadCell = findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-download-cell');
+	assert.ok(firstUploadCell && firstDownloadCell,
+		'x86 rows must render adjacent cumulative upload and download cells');
+	assert.strictEqual(textOf(firstUploadCell), '30.0 KB');
+	assert.strictEqual(textOf(firstDownloadCell), '30.0 MB');
 	assert(!textOf(state.refs.tbody.children[0].children[2]).includes('累计'),
 		'live upload rate cells must no longer contain cumulative traffic');
 	assert(!textOf(state.refs.tbody.children[0].children[3]).includes('累计'),
@@ -1106,8 +1114,10 @@ function testPaginationAndUiStates(context, fmt) {
 		'a changed live rate must render the real backend value immediately without interpolation');
 	assert.strictEqual(findByClass(stableFirstRow, 'lanspeed-live-rate'), null,
 		'rate rendering must not introduce animation-only DOM');
-	assert.ok(textOf(findByClass(stableFirstRow, 'lanspeed-client-total-cell')).includes('↓ 30.0 MB'),
-		'cumulative client counters must automatically use the largest readable unit');
+	assert.strictEqual(textOf(findByClass(stableFirstRow, 'lanspeed-client-total-upload-cell')), '30.0 KB',
+		'cumulative upload counters must automatically use the largest readable unit');
+	assert.strictEqual(textOf(findByClass(stableFirstRow, 'lanspeed-client-total-download-cell')), '30.0 MB',
+		'cumulative download counters must automatically use the largest readable unit');
 
 	state.refs.pageNext.listeners.click({ preventDefault: function() {} });
 	assert.strictEqual(state.page, 2);

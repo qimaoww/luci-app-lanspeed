@@ -42,7 +42,7 @@ var PAGE_SIZE_CHOICES = [ 10, 25, 50, 100 ];
  * rate unit. Always choose the largest readable binary unit automatically. */
 var TRAFFIC_UNITS = [ 'B', 'KB', 'MB', 'GB', 'TB' ];
 
-var SORT_KEYS = [ 'hostname', 'mac', 'tx', 'rx', 'tcp_conns', 'udp_conns' ];
+var SORT_KEYS = [ 'hostname', 'mac', 'tx', 'rx', 'tx_bytes', 'rx_bytes', 'tcp_conns', 'udp_conns' ];
 
 var DEFAULT_PREFS = {
 	refreshMs: 1000,
@@ -240,6 +240,17 @@ function sortClients(clients, sortKey, sortDir, nowMs, config) {
 		else if (sortKey === 'mac')       r = compareText(a.mac, b.mac);
 		else if (sortKey === 'tx')        r = (Number(a.tx_bps) || 0) - (Number(b.tx_bps) || 0);
 		else if (sortKey === 'rx')        r = (Number(a.rx_bps) || 0) - (Number(b.rx_bps) || 0);
+		else if (sortKey === 'tx_bytes' || sortKey === 'rx_bytes') {
+			av = typeof a[sortKey] === 'number' ? a[sortKey] : null;
+			bv = typeof b[sortKey] === 'number' ? b[sortKey] : null;
+			if (av === null || bv === null) {
+				if (av === null && bv !== null) return 1;
+				if (av !== null && bv === null) return -1;
+				r = 0;
+			} else {
+				r = av - bv;
+			}
+		}
 		else if (sortKey === 'tcp_conns' || sortKey === 'udp_conns') {
 			av = typeof a[sortKey] === 'number' ? a[sortKey] : null;
 			bv = typeof b[sortKey] === 'number' ? b[sortKey] : null;

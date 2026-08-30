@@ -230,32 +230,25 @@ function clientTrafficCell(c, direction, rate, rateUnit) {
 	}, E('span', { 'class': 'lanspeed-client-rate' }, fmt.formatRate(rate, rateUnit)));
 }
 
-function clientTrafficTotalCell(c, showTotal) {
+function clientTrafficTotalCell(c, direction, showTotal) {
 	/* The first rollout is intentionally x86-only. NSS has different counter
 	 * ownership semantics and must not gain a second, unverified total here. */
-	var txTotal = showTotal && typeof fmt.formatBytes === 'function'
-		? fmt.formatBytes(c && c.tx_bytes) : null;
-	var rxTotal = showTotal && typeof fmt.formatBytes === 'function'
-		? fmt.formatBytes(c && c.rx_bytes) : null;
+	var isUpload = direction === 'tx';
+	var label = isUpload ? _('累计上传') : _('累计下载');
+	var field = isUpload ? 'tx_bytes' : 'rx_bytes';
+	var total = showTotal && typeof fmt.formatBytes === 'function'
+		? fmt.formatBytes(c && c[field]) : null;
 	var attrs = {
-		'class': 'num lanspeed-client-total-cell',
-		'data-label': _('累计流量'),
-		'title': showTotal ? [
-			_('上行累计 %s').format(txTotal),
-			_('下行累计 %s').format(rxTotal)
-		].join(' · ') : ''
+		'class': 'num lanspeed-client-total-cell ' +
+			(isUpload ? 'lanspeed-client-total-upload-cell' : 'lanspeed-client-total-download-cell'),
+		'data-label': label,
+		'title': showTotal ? label + ' ' + total : ''
 	};
 	if (!showTotal) attrs.hidden = 'hidden';
-	return E('td', attrs, showTotal ? [
-		E('span', {
-			'class': 'lanspeed-client-total lanspeed-client-total-tx',
-			'aria-label': _('上行累计 %s').format(txTotal)
-		}, '↑ ' + txTotal),
-		E('span', {
-			'class': 'lanspeed-client-total lanspeed-client-total-rx',
-			'aria-label': _('下行累计 %s').format(rxTotal)
-		}, '↓ ' + rxTotal)
-	] : []);
+	return E('td', attrs, showTotal ? E('span', {
+		'class': 'lanspeed-client-total',
+		'aria-label': label + ' ' + total
+	}, total) : []);
 }
 
 function splitClientWarnings(rawWarnings, globalWarnings) {
@@ -487,7 +480,8 @@ function refreshLive(viewState) {
 		}, '') : '';
 	viewState.showClientControl = true;
 	if (refs.controlHeader) refs.controlHeader.hidden = false;
-	if (refs.totalHeader) refs.totalHeader.hidden = nssProfile;
+	if (refs.totalUploadHeader) refs.totalUploadHeader.hidden = nssProfile;
+	if (refs.totalDownloadHeader) refs.totalDownloadHeader.hidden = nssProfile;
 	if (refs.clientsTable) {
 		refs.clientsTable.setAttribute('data-client-control', 'shown');
 		refs.clientsTable.setAttribute('data-client-totals', nssProfile ? 'hidden' : 'shown');
@@ -700,7 +694,8 @@ function refreshLive(viewState) {
 				}, fmt.textOrDash(c.mac)),
 				clientTrafficCell(c, 'tx', tx, prefs.unit),
 				clientTrafficCell(c, 'rx', rx, prefs.unit),
-				clientTrafficTotalCell(c, !nssProfile),
+				clientTrafficTotalCell(c, 'tx', !nssProfile),
+				clientTrafficTotalCell(c, 'rx', !nssProfile),
 				E('td', {
 					'class': 'num lanspeed-client-value',
 					'data-label': 'TCP'
