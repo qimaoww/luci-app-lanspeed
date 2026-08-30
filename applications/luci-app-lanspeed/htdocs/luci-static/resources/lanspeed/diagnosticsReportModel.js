@@ -197,6 +197,94 @@ function subsystemReportText(item, isNssPlatform) {
 	return label + ': ' + state + (detail === '-' ? '' : ' · ' + sanitizeReportText(detail));
 }
 
+var TC_REPORT_STATES = {
+	clean: _('无冲突'), coexisting: _('可共存'), conflict: _('检测到冲突'),
+	partial: _('扫描不完整'), unavailable: _('不可用')
+};
+var TC_CONFLICT_REPORT_LABELS = {
+	reserved_filter_slot: _('其他过滤器占用了 LAN Speed 保留的 pref/handle'),
+	reserved_qdisc_handle: _('其他队列占用了 LAN Speed 保留的根句柄'),
+	foreign_filter_preemption: _('更高优先级的外部动作可能重定向、丢弃或提前终止数据包'),
+	foreign_filter_precedes_lanspeed: _('外部过滤器先于 LAN Speed 执行，请确认其动作会继续放行'),
+	foreign_root_qdisc: _('外部根队列会阻止 LAN Speed 在此接口建立客户端整形树'),
+	ingress_qdisc_blocks_clsact: _('传统 ingress qdisc 会阻止 LAN Speed 安装共享 clsact 挂载点')
+};
+var TC_DIRECTION_REPORT_LABELS = {
+	ingress: _('入站'), egress: _('出站'), root: _('根队列'), child: _('子队列'), unknown: _('未知')
+};
+var TC_OWNER_REPORT_LABELS = {
+	lanspeed: _('LAN Speed'), kernel: _('内核默认'), shared: _('共享挂载点'),
+	dae: _('DAE / daed'), sqm: _('SQM'), qosify: _('qosify'), other: _('其他组件'), unknown: _('未知组件')
+};
+var TC_SEVERITY_REPORT_LABELS = { critical: _('严重'), warning: _('警告'), info: _('提示') };
+
+function tcReportCount(value, field) {
+	var count = value && Number(value[field]);
+	return isFinite(count) && count >= 0 ? Math.min(Math.floor(count), 1000000000) : 0;
+}
+
+function tcReportState(viewState) {
+	var value = viewState && viewState.health && viewState.health.evidence &&
+		viewState.health.evidence.tc_status;
+	if (!plainObject(value)) return null;
+	var state = TC_REPORT_STATES[String(value.state || '')] ? String(value.state) : 'unavailable';
+	var conflictItems = Array.isArray(value.conflicts) ? value.conflicts.slice(0, 32) : [];
+	var conflictCount = Array.isArray(value.conflicts) ? Math.min(value.conflicts.length, 1000000000) : 0;
+	return {
+		state: state,
+		label: TC_REPORT_STATES[state],
+		complete: value.scan_complete === true,
+		qdiscScan: value.qdisc_scan === true,
+		classScan: value.class_scan === true,
+		filterScan: value.filter_scan === true,
+		outputTruncated: value.command_output_truncated === true,
+		objectsTruncated: value.objects_truncated === true,
+		parseErrors: tcReportCount(value, 'parse_errors'),
+		qdiscs: tcReportCount(value, 'qdisc_count'),
+		classes: tcReportCount(value, 'class_count'),
+		filters: tcReportCount(value, 'filter_count'),
+		lanspeed: tcReportCount(value, 'lanspeed_objects'),
+		foreign: tcReportCount(value, 'foreign_objects'),
+		conflicts: conflictCount,
+		conflictsTruncated: conflictCount > conflictItems.length,
+		conflictItems: conflictItems
+	};
+}
+
+function tcReportConflictText(item) {
+	item = plainObject(item) ? item : {};
+	var id = String(item.id || ''), parts = [ TC_CONFLICT_REPORT_LABELS[id] || _('未知 TC 冲突') ];
+	var severity = TC_SEVERITY_REPORT_LABELS[String(item.severity || '')];
+	var direction = TC_DIRECTION_REPORT_LABELS[String(item.direction || '')] ||
+		(String(item.direction || '') ? reportField(item.direction) : '');
+	if (severity) parts.push(_('级别') + ': ' + severity);
+	if (direction) parts.push(_('位置') + ': ' + direction);
+	if (item.owner) parts.push(_('归属') + ': ' + (TC_OWNER_REPORT_LABELS[String(item.owner)] || reportField(item.owner)));
+	if (item.object) parts.push(_('对象') + ': ' + reportField(item.object));
+	return parts.join(' · ');
+}
+
+function tcReportAnomalyLines(tc) {
+	var lines = [];
+	if (tc.state === 'unavailable') {
+		lines.push(_('TC 状态不可用，无法完成全量扫描。'));
+	} else {
+		if (!tc.complete) lines.push(_('TC 全量扫描未完成。'));
+		if (!tc.qdiscScan) lines.push(_('qdisc 扫描失败。'));
+		if (!tc.classScan) lines.push(_('class 扫描失败。'));
+		if (!tc.filterScan) lines.push(_('filter 扫描失败。'));
+	}
+	if (tc.outputTruncated) lines.push(_('TC 命令输出被截断，结果可能不完整。'));
+	if (tc.objectsTruncated) lines.push(_('TC 对象达到安全上限，结果可能不完整。'));
+	if (tc.parseErrors) lines.push(_('%d 个 TC 对象解析失败。').format(tc.parseErrors));
+	if (tc.state === 'conflict' && !tc.conflictItems.length)
+		lines.push(_('TC 状态标记为冲突，但后端没有返回冲突对象。'));
+	tc.conflictItems.forEach(function(item) { lines.push(tcReportConflictText(item)); });
+	if (tc.conflictsTruncated)
+		lines.push(_('还有 %d 个 TC 冲突未在报告中展开。').format(tc.conflicts - tc.conflictItems.length));
+	return lines;
+}
+
 function buildReport(viewState, frontendVersion) {
 	viewState = viewState || {};
 	var runtime = viewState.status || {}, rate = rateOwnerStateWithRpc(viewState), edge = accessEdgeStateWithRpc(viewState),
@@ -204,6 +292,7 @@ function buildReport(viewState, frontendVersion) {
 		integrity = integrityStateWithRpc(viewState),
 		freshness = freshnessState(viewState, viewState.progress), connections = connectionStateWithRpc(viewState),
 		interfaces = interfaceStateWithRpc(viewState),
+		tc = tcReportState(viewState),
 		versions = versionStateWithRpc(viewState, runtime.version, frontendVersion), groups = warningGroups(viewState.status, viewState.health, viewState.rpc, viewState.diagnostics),
 		contract = diagnosticsContractState(viewState), backendVersion = contract.usable ? contract.data.versions.daemon : runtime.version,
 		lines = [
@@ -257,7 +346,23 @@ function buildReport(viewState, frontendVersion) {
 		_('数据新鲜度') + ': ' + stateLabel(freshness.state) + ' · ' + reportField(freshness.value),
 		_('连接健康') + ': ' + stateLabel(connections.state) + ' · ' + reportCollectorLabel(connections.source),
 		_('版本一致性') + ': ' + stateLabel(versions.state) + ' · ' + reportField(versions.badge),
-		_('接口健康') + ': ' + stateLabel(interfaces.state) + ' · ' + reportField(interfaces.value), '');
+		_('接口健康') + ': ' + stateLabel(interfaces.state) + ' · ' + reportField(interfaces.value));
+	if (tc) {
+		lines.push(
+			_('本机 TC') + ': ' + reportField(tc.label),
+			'- ' + _('TC 扫描') + ': ' + (tc.complete ? _('完整') : _('不完整')),
+			'- ' + _('TC 对象') + ': qdisc ' + reportField(tc.qdiscs) + ' · class ' +
+				reportField(tc.classes) + ' · filter ' + reportField(tc.filters),
+			'- ' + _('TC 归属') + ': LAN Speed ' + reportField(tc.lanspeed) + ' · 其他 ' +
+				reportField(tc.foreign),
+			'- ' + _('TC 冲突') + ': ' + reportField(tc.conflicts));
+		var tcAnomalies = tcReportAnomalyLines(tc);
+		if (tcAnomalies.length) {
+			lines.push(_('TC 异常') + ':');
+			tcAnomalies.forEach(function(item) { lines.push('- ' + reportField(item)); });
+		}
+	}
+	lines.push('');
 	if (contract.usable) {
 		lines.push(_('子系统状态') + ':');
 		asArray(contract.data.subsystems).forEach(function(item) {
@@ -301,5 +406,6 @@ return baseclass.extend({
 	interfaceReportRole: interfaceReportRole,
 	interfaceReportStatus: interfaceReportStatus,
 	subsystemReportText: subsystemReportText,
+	tcReportState: tcReportState,
 	buildReport: buildReport
 });

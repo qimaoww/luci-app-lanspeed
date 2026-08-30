@@ -40,6 +40,9 @@ pub enum ReadOnlyCommand {
     TcQdiscHelp,
     TcQdiscShow,
     TcFilterShow,
+    TcQdiscDump,
+    TcClassDump,
+    TcFilterDump,
     NftListFlowtables,
     NftDaeDnsUdp53,
     IpRuleShow,
@@ -55,7 +58,13 @@ impl ReadOnlyCommand {
         match self {
             Self::Fw4 => "fw4",
             Self::Qosify => "qosify",
-            Self::TcFilterHelp | Self::TcQdiscHelp | Self::TcQdiscShow | Self::TcFilterShow => "tc",
+            Self::TcFilterHelp
+            | Self::TcQdiscHelp
+            | Self::TcQdiscShow
+            | Self::TcFilterShow
+            | Self::TcQdiscDump
+            | Self::TcClassDump
+            | Self::TcFilterDump => "tc",
             Self::NftListFlowtables | Self::NftDaeDnsUdp53 => "nft",
             Self::IpRuleShow | Self::IpRouteShow => "ip",
             Self::UbusNetworkLanStatus
@@ -72,6 +81,9 @@ impl ReadOnlyCommand {
             Self::TcFilterShow => &["-j", "-d", "filter", "show"],
             Self::TcQdiscHelp => &["qdisc", "help"],
             Self::TcQdiscShow => &["-j", "qdisc", "show"],
+            Self::TcQdiscDump => &["-j", "-s", "-d", "qdisc", "show"],
+            Self::TcClassDump => &["-j", "-s", "-d", "class", "show"],
+            Self::TcFilterDump => &["-j", "-s", "-d", "filter", "show"],
             Self::NftListFlowtables => &["list", "flowtables"],
             Self::NftDaeDnsUdp53 => &["list", "ruleset"],
             Self::IpRuleShow => &["rule", "show"],
@@ -88,6 +100,8 @@ impl ReadOnlyCommand {
             Self::NftDaeDnsUdp53 => 128 * 1024,
             Self::TcFilterShow => 64 * 1024,
             Self::TcQdiscShow => 16 * 1024,
+            Self::TcQdiscDump | Self::TcClassDump => 256 * 1024,
+            Self::TcFilterDump => 512 * 1024,
             _ => DEFAULT_OUTPUT_CAP,
         }
     }
@@ -115,6 +129,9 @@ impl ReadOnlyCommand {
                 format!("tc_qdisc_show_{}", snake_component(args[1]))
             }
             Self::TcQdiscShow => "tc_qdisc_show".into(),
+            Self::TcQdiscDump => "tc_qdisc_dump".into(),
+            Self::TcClassDump => "tc_class_dump".into(),
+            Self::TcFilterDump => "tc_filter_dump".into(),
             Self::TcFilterShow if args.len() == 3 => {
                 format!(
                     "tc_filter_show_{}_{}",

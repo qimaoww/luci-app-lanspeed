@@ -190,6 +190,7 @@ fn observations(value: &Value) -> (RuntimeConfig, ProbeObservations) {
             bpf: flag(value, &["tc", "bpf"]),
             existing_filters: flag(value, &["tc", "existing_filters"]),
             filters,
+            host_status: Default::default(),
         },
         proxy: ProxyObservation {
             openclash_installed,
@@ -732,6 +733,14 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
             .is_ok()
     );
     assert!(validate_read_only_args(ReadOnlyCommand::TcQdiscShow, &["dev", "br-lan"]).is_ok());
+    for command in [
+        ReadOnlyCommand::TcQdiscDump,
+        ReadOnlyCommand::TcClassDump,
+        ReadOnlyCommand::TcFilterDump,
+    ] {
+        assert!(validate_read_only_args(command, &[]).is_ok());
+        assert!(validate_read_only_args(command, &["dev", "br-lan"]).is_err());
+    }
     assert!(
         validate_read_only_args(ReadOnlyCommand::TcQdiscShow, &["dev", "br-lan;reboot"]).is_err()
     );
@@ -773,6 +782,19 @@ fn command_and_tc_probes_are_bounded_read_only_parsers() {
     );
     assert_eq!(ReadOnlyCommand::TcFilterShow.output_cap(), 64 * 1024);
     assert_eq!(ReadOnlyCommand::TcQdiscShow.output_cap(), 16 * 1024);
+    assert_eq!(
+        ReadOnlyCommand::TcQdiscDump.fixed_args(),
+        &["-j", "-s", "-d", "qdisc", "show"]
+    );
+    assert_eq!(
+        ReadOnlyCommand::TcClassDump.fixed_args(),
+        &["-j", "-s", "-d", "class", "show"]
+    );
+    assert_eq!(
+        ReadOnlyCommand::TcFilterDump.fixed_args(),
+        &["-j", "-s", "-d", "filter", "show"]
+    );
+    assert!(ReadOnlyCommand::TcFilterDump.output_cap() >= 512 * 1024);
     assert!(ReadOnlyCommand::TcFilterShow.nonzero_exit_is_absence());
     assert!(ReadOnlyCommand::IpRouteShow.nonzero_exit_is_absence());
     assert!(!ReadOnlyCommand::IpRuleShow.nonzero_exit_is_absence());
@@ -1284,7 +1306,11 @@ impl CommandRunner for FakeCommands {
             ReadOnlyCommand::TcQdiscHelp if !self.tc_help_stderr_only => {
                 "Usage: tc ... clsact".into()
             }
-            ReadOnlyCommand::TcFilterShow | ReadOnlyCommand::TcQdiscShow => "[]".into(),
+            ReadOnlyCommand::TcFilterShow
+            | ReadOnlyCommand::TcQdiscShow
+            | ReadOnlyCommand::TcQdiscDump
+            | ReadOnlyCommand::TcClassDump
+            | ReadOnlyCommand::TcFilterDump => "[]".into(),
             ReadOnlyCommand::NftListFlowtables => "flowtable ft { counter; }".into(),
             _ => String::new(),
         };
@@ -1550,6 +1576,20 @@ fn injectable_production_collector_records_every_read_only_source_and_error() {
         .any(|entry| entry.object == "network.interface.lan"));
     assert!(report.facts.proxy.openclash_fake_ip);
     assert!(report.facts.proxy.openclash_dns_chain_complete);
+    assert!(report.facts.tc.host_status.scan_complete);
+    assert_eq!(report.facts.tc.host_status.state, "clean");
+    for source in [
+        "command:tc_qdisc_dump",
+        "command:tc_class_dump",
+        "command:tc_filter_dump",
+    ] {
+        assert!(report
+            .evidence
+            .probe_sources
+            .command
+            .iter()
+            .any(|value| value == source));
+    }
 
     let (mut commands, files, uci, ubus) = collector.into_parts();
     commands.tc_help_stderr_only = false;

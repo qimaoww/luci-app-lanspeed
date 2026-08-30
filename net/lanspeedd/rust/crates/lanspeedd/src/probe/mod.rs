@@ -4,6 +4,7 @@ pub mod files;
 pub mod process;
 pub mod proxy;
 pub mod tc;
+pub mod tc_status;
 
 use crate::config::RuntimeConfig;
 use lanspeed_common::{EcmEventStats, EcmLayout, EcmSourceStats};
@@ -192,6 +193,7 @@ pub struct TcObservations {
     pub bpf: bool,
     pub existing_filters: bool,
     pub filters: Vec<TcFilter>,
+    pub host_status: tc_status::TcHostStatus,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProxyObservation {
@@ -289,6 +291,7 @@ pub struct TcFacts {
     pub dae_preempts_lan_ingress: bool,
     pub safe_attach: bool,
     pub filters: Vec<TcFilter>,
+    pub host_status: tc_status::TcHostStatus,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FileFacts {
@@ -677,6 +680,7 @@ pub fn assess(
             dae_preempts_lan_ingress: dae_preempts,
             safe_attach,
             filters: observations.tc.filters.clone(),
+            host_status: observations.tc.host_status.clone(),
         },
         files: FileFacts {
             nf_conntrack_acct_present: observations.files.nf_conntrack_acct_present,

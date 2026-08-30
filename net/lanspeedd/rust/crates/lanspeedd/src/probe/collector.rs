@@ -3,7 +3,7 @@ use super::{
     FileEvidence, ProbeFailure, ProbeObservations, ProbeReport, RuntimeHealth, UbusEvidence,
     UciEvidence,
 };
-use super::{commands::ReadOnlyCommand, tc};
+use super::{commands::ReadOnlyCommand, tc, tc_status};
 use crate::config::RuntimeConfig;
 use std::{io, path::Path};
 
@@ -445,6 +445,63 @@ where
                 .map(|detail| detail.filter)
                 .collect();
             observations.tc.existing_filters = tc::has_foreign_filters(&observations.tc.filters);
+
+            /*
+             * The attach-safety probe above stays scoped to configured LAN
+             * devices.  Diagnostics additionally take three read-only rtnetlink
+             * dumps without a device selector so the UI can show every TC
+             * object on the host, including objects installed by other tools.
+             * A failure here is reported inside the TC snapshot and does not
+             * make the packet collector itself unhealthy.
+             */
+            let mut tc_dump_error = false;
+            let qdiscs = self
+                .command(
+                    ReadOnlyCommand::TcQdiscDump,
+                    &[],
+                    "tc full qdisc dump",
+                    &mut evidence,
+                    &mut tc_dump_error,
+                )
+                .filter(|result| result.exit_code == Some(0))
+                .map_or_else(tc_status::TcDumpPart::default, |result| {
+                    tc_status::qdiscs(&result.stdout, result.output_truncated)
+                });
+            let classes = self
+                .command(
+                    ReadOnlyCommand::TcClassDump,
+                    &[],
+                    "tc full class dump",
+                    &mut evidence,
+                    &mut tc_dump_error,
+                )
+                .filter(|result| result.exit_code == Some(0))
+                .map_or_else(tc_status::TcDumpPart::default, |result| {
+                    tc_status::classes(&result.stdout, result.output_truncated)
+                });
+            let filters = self
+                .command(
+                    ReadOnlyCommand::TcFilterDump,
+                    &[],
+                    "tc full filter dump",
+                    &mut evidence,
+                    &mut tc_dump_error,
+                )
+                .filter(|result| result.exit_code == Some(0))
+                .map_or_else(tc_status::TcDumpPart::default, |result| {
+                    tc_status::filters(&result.stdout, result.output_truncated)
+                });
+            let mut target_interfaces = config
+                .ifnames
+                .iter()
+                .chain(config.interface_include.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            target_interfaces.push("ifb-lanspeed".into());
+            target_interfaces.sort();
+            target_interfaces.dedup();
+            observations.tc.host_status =
+                tc_status::build(qdiscs, classes, filters, &target_interfaces);
         }
         if observations.commands.nft {
             if let Some(result) = self.command(

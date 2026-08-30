@@ -167,6 +167,50 @@ function buildHealthSection(refs) {
 	refs.healthSummary = E('span', { 'class': 'sum lanspeed-diagnostics-health-summary' }, _('等待接口响应'));
 	refs.interfacesBody = E('tbody', {});
 	refs.subsystemsBody = E('tbody', {});
+	refs.tcSummary = E('span', { 'class': 'label lanspeed-diagnostics-tc-summary' }, _('等待 TC 状态'));
+	refs.tcNoticeTitle = E('strong', {}, _('正在扫描本机 TC'));
+	refs.tcNoticeText = E('span', {}, _('读取全部 qdisc、class 与 filter。'));
+	refs.tcNotice = E('div', {
+		'class': 'lanspeed-diagnostics-state lanspeed-diagnostics-tc-notice',
+		'data-state': 'loading'
+	}, [ refs.tcNoticeTitle, refs.tcNoticeText ]);
+	refs.tcFacts = E('dl', { 'class': 'lanspeed-diagnostics-facts lanspeed-diagnostics-tc-facts' }, [
+		fact(refs, 'tcState', _('冲突结论')),
+		fact(refs, 'tcScan', _('扫描完整性')),
+		fact(refs, 'tcObjects', _('TC 对象')),
+		fact(refs, 'tcOwners', _('对象归属'))
+	]);
+	refs.tcConflictBody = E('tbody', {});
+	refs.tcConflictGroup = E('div', {
+		'class': 'lanspeed-diagnostics-health-group lanspeed-diagnostics-tc-conflict-group',
+		'hidden': 'hidden'
+	}, [
+		E('h4', {}, _('TC 冲突与抢占风险')),
+		E('div', { 'class': 'lanspeed-diagnostics-table-wrap' }, [
+			E('table', { 'class': 'table lanspeed-diagnostics-tc-conflict-table' }, [
+				E('caption', {}, _('这里只列出会占用 Lanspeed 保留位置或可能改变执行顺序的对象')),
+				tableHead([ _('级别'), _('接口'), _('位置'), _('对象'), _('归属'), _('判断') ]),
+				refs.tcConflictBody
+			])
+		])
+	]);
+	refs.tcObjectsBody = E('tbody', {});
+	refs.tcObjectsCaption = E('caption', {}, _('本机全部 TC 对象'));
+	refs.tcObjectsTable = E('table', { 'class': 'table lanspeed-diagnostics-tc-table' }, [
+		refs.tcObjectsCaption,
+		tableHead([ _('接口'), _('类型'), _('位置'), _('种类'), _('标识'), _('归属'), _('统计'), _('明细') ]),
+		refs.tcObjectsBody
+	]);
+	refs.tcDetailsMeta = E('span', { 'class': 'sum lanspeed-diagnostics-tc-details-summary' }, _('等待 TC 扫描'));
+	refs.tcDetails = E('details', { 'class': 'lanspeed-diagnostics-health-group lanspeed-diagnostics-tc-details' }, [
+		E('summary', {}, [
+			E('span', { 'class': 'lanspeed-diagnostics-summary-label' }, _('展开 TC 详情')),
+			E('span', { 'class': 'lanspeed-diagnostics-tc-details-hint' }, _('查看全部 qdisc、class、filter')),
+			refs.tcDetailsMeta
+		]),
+		refs.tcConflictGroup,
+		E('div', { 'class': 'lanspeed-diagnostics-table-wrap' }, [ refs.tcObjectsTable ])
+	]);
 	refs.rpcBody = E('tbody', {});
 	refs.rpcSummary = E('span', { 'class': 'sum lanspeed-diagnostics-rpc-summary' }, _('等待 RPC 响应'));
 	refs.rpcDetails = E('details', { 'class': 'lanspeed-diagnostics-health-group lanspeed-diagnostics-rpc-group' }, [
@@ -186,11 +230,20 @@ function buildHealthSection(refs) {
 	var section = E('section', { 'class': 'cbi-section lanspeed-diagnostics-health-section' }, [
 		sectionHeader(_('基础接口与 RPC 健康'), refs.healthSummary, '', []),
 		E('div', { 'class': 'lanspeed-body lanspeed-diagnostics-health-body' }, [
-				E('div', { 'class': 'lanspeed-diagnostics-health-group' }, [
-					E('h4', {}, _('逻辑接口吞吐')),
-					E('div', { 'class': 'lanspeed-diagnostics-table-wrap' }, [
-						E('table', { 'class': 'table lanspeed-diagnostics-health-table' }, [
-							E('caption', {}, _('逻辑接口健康与吞吐，仅用于交叉验证，不代表客户端总速率来源')),
+			E('div', { 'class': 'lanspeed-diagnostics-health-group lanspeed-diagnostics-tc-group' }, [
+				E('div', { 'class': 'lanspeed-diagnostics-tc-heading' }, [
+					E('h4', {}, _('本机 TC 状态')),
+					refs.tcSummary
+				]),
+				refs.tcNotice,
+				refs.tcFacts,
+				refs.tcDetails
+			]),
+			E('div', { 'class': 'lanspeed-diagnostics-health-group' }, [
+				E('h4', {}, _('逻辑接口吞吐')),
+				E('div', { 'class': 'lanspeed-diagnostics-table-wrap' }, [
+					E('table', { 'class': 'table lanspeed-diagnostics-health-table' }, [
+						E('caption', {}, _('逻辑接口健康与吞吐，仅用于交叉验证，不代表客户端总速率来源')),
 						tableHead([ _('接口'), _('角色'), _('状态'), _('采样'), _('实时速率') ]),
 						refs.interfacesBody
 					])

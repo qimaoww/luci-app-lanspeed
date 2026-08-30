@@ -19,7 +19,7 @@ const PROBE_FAILURE_KINDS: [&str; 5] = ["probe", "command", "file", "uci", "ubus
 #[cfg(feature = "nss-platform")]
 const PROBE_FAILURE_KINDS: [&str; 6] = ["probe", "command", "file", "uci", "ubus", "nss"];
 
-const PUBLIC_COMMAND_SOURCES: [&str; 11] = [
+const PUBLIC_COMMAND_SOURCES: [&str; 14] = [
     "command:tc",
     "command:nft",
     "command:ubus",
@@ -27,6 +27,9 @@ const PUBLIC_COMMAND_SOURCES: [&str; 11] = [
     "command:qosify",
     "command:tc_filter_help",
     "command:tc_qdisc_help",
+    "command:tc_qdisc_dump",
+    "command:tc_class_dump",
+    "command:tc_filter_dump",
     "command:nft_list_flowtables",
     "command:nft_dae_dns_udp53",
     "command:ip_rule_show",

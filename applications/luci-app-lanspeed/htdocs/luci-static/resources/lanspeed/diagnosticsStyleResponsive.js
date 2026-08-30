@@ -7,7 +7,9 @@ var ROOT = '.lanspeed-diagnostics-root';
 var TABLE_NAMES = [
 	'.lanspeed-diagnostics-health-table',
 	'.lanspeed-diagnostics-subsystem-table',
-	'.lanspeed-diagnostics-rpc-table'
+	'.lanspeed-diagnostics-rpc-table',
+	'.lanspeed-diagnostics-tc-conflict-table',
+	'.lanspeed-diagnostics-tc-table'
 ];
 
 function tableSelectors(suffix) {

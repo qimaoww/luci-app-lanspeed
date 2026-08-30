@@ -61,6 +61,33 @@ pub(super) fn runtime_evidence(
     bpf_error_stage: Option<&'static str>,
 ) -> Evidence {
     let mut public = evidence(report, method);
+    if method == "health" {
+        public.details.insert(
+            "tc_status".into(),
+            serde_json::to_value(&report.facts.tc.host_status).unwrap_or_else(|_| {
+                json!({
+                    "state": "unavailable",
+                    "scan_complete": false,
+                    "qdisc_scan": false,
+                    "class_scan": false,
+                    "filter_scan": false,
+                    "command_output_truncated": false,
+                    "objects_truncated": false,
+                    "parse_errors": 1,
+                    "interface_count": 0,
+                    "qdisc_count": 0,
+                    "class_count": 0,
+                    "filter_count": 0,
+                    "lanspeed_objects": 0,
+                    "foreign_objects": 0,
+                    "qdiscs": [],
+                    "classes": [],
+                    "filters": [],
+                    "conflicts": [],
+                })
+            }),
+        );
+    }
     public.details.insert(
         "bpf".into(),
         crate::production_evidence::bpf_details(config, report, runtime, bpf_error_stage),

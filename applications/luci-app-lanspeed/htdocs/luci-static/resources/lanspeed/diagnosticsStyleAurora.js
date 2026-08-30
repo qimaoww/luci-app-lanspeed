@@ -24,9 +24,11 @@ var AURORA_CSS = [
 	ROOT + ' .lanspeed-diagnostics-health-body,' + ROOT + ' .lanspeed-diagnostics-support-body{gap:1.15rem}',
 	ROOT + ' .lanspeed-diagnostics-health-group>h4,' + ROOT + ' .lanspeed-diagnostics-alert-group>h4{font-size:.88rem}',
 	ROOT + ' .lanspeed-diagnostics-health-table,' + ROOT + ' .lanspeed-diagnostics-subsystem-table,',
-	ROOT + ' .lanspeed-diagnostics-rpc-table{font-size:.84rem}',
+	ROOT + ' .lanspeed-diagnostics-rpc-table,' + ROOT + ' .lanspeed-diagnostics-tc-conflict-table,',
+	ROOT + ' .lanspeed-diagnostics-tc-table{font-size:.84rem}',
 	ROOT + ' .lanspeed-diagnostics-health-table :is(th,td),' + ROOT + ' .lanspeed-diagnostics-subsystem-table :is(th,td),',
-	ROOT + ' .lanspeed-diagnostics-rpc-table :is(th,td){padding:.56rem .62rem}',
+	ROOT + ' .lanspeed-diagnostics-rpc-table :is(th,td),' + ROOT + ' .lanspeed-diagnostics-tc-conflict-table :is(th,td),',
+	ROOT + ' .lanspeed-diagnostics-tc-table :is(th,td){padding:.56rem .62rem}',
 	ROOT + ' .lanspeed-diagnostic-alert,' + ROOT + ' .lanspeed-diagnostic-alert-empty{',
 		'border-radius:var(--lanspeed-radius-section);box-shadow:var(--lanspeed-shadow-raised)}',
 	ROOT + ' .lanspeed-diagnostics-report-preview{border-radius:var(--lanspeed-radius-compact);box-shadow:var(--lanspeed-shadow-raised)}',
@@ -40,7 +42,8 @@ var AURORA_CSS = [
 			'border-left:0;border-top:1px solid var(--lanspeed-border)}',
 		ROOT + ' .lanspeed-diagnostic-fact:first-child,' + ROOT + ' .lanspeed-diagnostic-stage:first-child{padding-top:0;border-top:0}',
 		ROOT + ' .lanspeed-diagnostics-health-table,' + ROOT + ' .lanspeed-diagnostics-subsystem-table,',
-		ROOT + ' .lanspeed-diagnostics-rpc-table{font-size:.82rem}',
+		ROOT + ' .lanspeed-diagnostics-rpc-table,' + ROOT + ' .lanspeed-diagnostics-tc-conflict-table,',
+		ROOT + ' .lanspeed-diagnostics-tc-table{font-size:.82rem}',
 		ROOT + ' .lanspeed-diagnostic-alert,' + ROOT + ' .lanspeed-diagnostic-alert-empty{border-radius:var(--lanspeed-radius-control)}',
 	'}'
 ].join('\n');
