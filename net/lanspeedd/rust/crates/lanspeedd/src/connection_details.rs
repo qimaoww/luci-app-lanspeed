@@ -672,7 +672,7 @@ pub(crate) fn sort_connection_details(details: &mut [ClientConnectionDetail]) {
 fn owner(table: &IdentityTable, address: Option<IpAddr>) -> Option<(&ClientIdentity, IpAddr)> {
     let address = address?;
     table
-        .by_ip(&address.to_string())
+        .by_ip_addr(address)
         .map(|identity| (identity, address))
 }
 

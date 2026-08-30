@@ -182,7 +182,7 @@ impl std::error::Error for IdentityError {}
 #[derive(Clone, Debug, Default)]
 pub struct IdentityPolicy {
     router_macs: HashSet<MacAddress>,
-    excluded_ips: HashSet<String>,
+    excluded_ips: HashSet<IpAddr>,
 }
 
 impl IdentityPolicy {
@@ -204,7 +204,7 @@ impl IdentityPolicy {
     }
 
     fn exclude_ip(&mut self, ip: &str) {
-        if let Some(ip) = normalize_ip_address(ip) {
+        if let Some(ip) = normalize_ip_address(ip).and_then(|value| value.parse().ok()) {
             self.excluded_ips.insert(ip);
         }
     }
@@ -215,8 +215,12 @@ impl IdentityPolicy {
 
     fn excludes_ip(&self, ip: &str) -> bool {
         normalize_ip_address(ip)
-            .map(|ip| self.excluded_ips.contains(&ip))
-            .unwrap_or(false)
+            .and_then(|ip| ip.parse().ok())
+            .is_some_and(|ip| self.excludes_ip_addr(ip))
+    }
+
+    fn excludes_ip_addr(&self, ip: IpAddr) -> bool {
+        self.excluded_ips.contains(&ip)
     }
 }
 
@@ -224,6 +228,10 @@ pub struct IdentityTable {
     max_clients: usize,
     policy: IdentityPolicy,
     clients: BTreeMap<IdentityKey, ClientIdentity>,
+    // Conntrack classifies both endpoints for every flow. Keep a direct IP
+    // index so that hot-path ownership checks do not linearly scan every
+    // identity (or allocate a temporary string) for each endpoint.
+    ip_owners: BTreeMap<IpAddr, IdentityKey>,
 }
 
 impl IdentityTable {
@@ -236,6 +244,7 @@ impl IdentityTable {
             max_clients,
             policy,
             clients: BTreeMap::new(),
+            ip_owners: BTreeMap::new(),
         }
     }
 
@@ -243,6 +252,7 @@ impl IdentityTable {
         let mac = mac.parse()?;
         self.policy.router_macs.insert(mac);
         self.clients.retain(|key, _| key.mac != mac);
+        self.rebuild_ip_index();
         Ok(())
     }
 
@@ -265,6 +275,9 @@ impl IdentityTable {
         let Some(ip) = normalize_ip_address(ip) else {
             return;
         };
+        if let Ok(parsed) = ip.parse::<IpAddr>() {
+            self.ip_owners.remove(&parsed);
+        }
         for client in self.clients.values_mut() {
             client.ips.retain(|candidate| candidate != &ip);
         }
@@ -297,15 +310,33 @@ impl IdentityTable {
             .clients
             .entry(key.clone())
             .or_insert_with(|| ClientIdentity {
-                key,
+                key: key.clone(),
                 interface: observation.interface.to_owned(),
                 ips: Vec::new(),
                 hostname: None,
                 last_seen: 0,
             });
         if let Some(ip) = normalized_ip {
-            if client.ips.len() < MAX_IPS_PER_IDENTITY && !client.ips.contains(&ip) {
+            let parsed_ip = ip.parse::<IpAddr>().ok();
+            let accepted = if client.ips.contains(&ip) {
+                true
+            } else if client.ips.len() < MAX_IPS_PER_IDENTITY {
                 client.ips.push(ip);
+                true
+            } else {
+                false
+            };
+            if accepted {
+                if let Some(ip) = parsed_ip {
+                    self.ip_owners
+                        .entry(ip)
+                        .and_modify(|owner| {
+                            if key < *owner {
+                                *owner = key.clone();
+                            }
+                        })
+                        .or_insert(key.clone());
+                }
             }
         }
         if let Some(hostname) = observation.hostname.filter(|name| !name.is_empty()) {
@@ -361,12 +392,16 @@ impl IdentityTable {
 
     pub fn by_ip(&self, ip: &str) -> Option<&ClientIdentity> {
         let ip = normalize_ip_address(ip)?;
-        if self.policy.excludes_ip(&ip) {
+        let parsed = ip.parse::<IpAddr>().ok()?;
+        self.by_ip_addr(parsed)
+    }
+
+    pub fn by_ip_addr(&self, ip: IpAddr) -> Option<&ClientIdentity> {
+        if self.policy.excludes_ip_addr(ip) {
             return None;
         }
-        self.clients
-            .values()
-            .find(|client| client.ips.iter().any(|candidate| candidate == &ip))
+        let key = self.ip_owners.get(&ip)?;
+        self.clients.get(key)
     }
 
     pub fn warnings(&self) -> Vec<&'static str> {
@@ -380,6 +415,18 @@ impl IdentityTable {
 
     pub fn into_clients(self) -> Vec<ClientIdentity> {
         self.clients.into_values().collect()
+    }
+
+    fn rebuild_ip_index(&mut self) {
+        self.ip_owners.clear();
+        for (key, client) in &self.clients {
+            for ip in &client.ips {
+                let Ok(ip) = ip.parse::<IpAddr>() else {
+                    continue;
+                };
+                self.ip_owners.entry(ip).or_insert_with(|| key.clone());
+            }
+        }
     }
 }
 

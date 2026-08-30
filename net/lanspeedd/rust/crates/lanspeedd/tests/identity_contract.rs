@@ -817,3 +817,37 @@ fn duplicate_ip_lookup_is_deterministic_by_mac_zone_key_order() {
             .is_some());
     }
 }
+
+#[test]
+fn direct_ip_lookup_matches_string_lookup_and_respects_ip_limit() {
+    let mut identities = IdentityTable::new(1);
+    for ip in [
+        "192.0.2.1",
+        "192.0.2.2",
+        "192.0.2.3",
+        "192.0.2.4",
+        "192.0.2.5",
+    ] {
+        identities
+            .observe(IdentityObservation {
+                mac: "02:00:00:00:00:30",
+                zone: Some("lan"),
+                interface: "br-lan",
+                ip: Some(ip),
+                hostname: None,
+                last_seen: 0,
+                source: ObservationSource::Neighbor,
+            })
+            .unwrap();
+    }
+
+    for ip in ["192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4"] {
+        let parsed = IpAddr::from_str(ip).unwrap();
+        assert!(identities.by_ip(ip).is_some());
+        assert!(identities.by_ip_addr(parsed).is_some());
+    }
+    assert!(identities.by_ip("192.0.2.5").is_none());
+    assert!(identities
+        .by_ip_addr(IpAddr::from_str("192.0.2.5").unwrap())
+        .is_none());
+}
