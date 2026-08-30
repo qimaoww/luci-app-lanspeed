@@ -5948,6 +5948,9 @@ function assertStatusStyleModule(src) {
 	    !responsiveCss.includes('width:5%;text-align:center}')) {
 		fail('client totals and connection controls must use a compact, aligned desktop table rhythm');
 	}
+	if (!responsiveCss.includes('.lanspeed-table td:nth-child(2){text-align:left!important}')) {
+		fail('desktop MAC values must share the MAC heading reading edge');
+	}
 	themeCss.forEach(function(theme) {
 		if (!theme[2].includes(`lanspeed-theme-${theme[1]}`) ||
 		    !theme[2].includes('.lanspeed-metrics{') ||
