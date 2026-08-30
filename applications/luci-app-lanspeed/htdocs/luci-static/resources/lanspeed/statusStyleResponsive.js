@@ -110,9 +110,10 @@ var RESPONSIVE_CSS = [
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):nth-child(2),',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):nth-child(3),',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):nth-child(4),',
-	/* x86 totals are compact counters; give the live rates and control room to breathe. */
-	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):nth-child(2){width:15%;text-align:center}',
-	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):is(:nth-child(3),:nth-child(4)){width:10%;text-align:center}',
+	/* Keep the MAC column geometry stable; compact the live-rate values within
+	 * their existing cells so only the upload/download pair moves visually. */
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):nth-child(2){width:14%;text-align:center}',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):is(:nth-child(3),:nth-child(4)){width:12%;text-align:center}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):is(:nth-child(5),:nth-child(6)){width:8%;text-align:center}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):nth-child(10){width:14%;text-align:center}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"] :is(th,td):is(:nth-child(7),:nth-child(8)){width:5%;text-align:center}',
@@ -134,7 +135,9 @@ var RESPONSIVE_CSS = [
 	'.lanspeed-clients-card .lanspeed-table th:is(:nth-child(5),:nth-child(6),:nth-child(7),:nth-child(8)) .lanspeed-sort-indicator{position:absolute;right:0}',
 	'.lanspeed-clients-card .lanspeed-table td:is(:nth-child(3),:nth-child(4)){text-align:left!important}',
 	'.lanspeed-clients-card .lanspeed-table th:nth-child(3) .lanspeed-sort-button,',
-	'.lanspeed-clients-card .lanspeed-table td:nth-child(3) .lanspeed-client-rate{position:relative;left:.5rem}',
+	'.lanspeed-clients-card .lanspeed-table td:nth-child(3) .lanspeed-client-rate{position:relative;left:1rem}',
+	'.lanspeed-clients-card .lanspeed-table th:nth-child(4) .lanspeed-sort-button,',
+	'.lanspeed-clients-card .lanspeed-table td:nth-child(4) .lanspeed-client-rate{position:relative;left:-1rem}',
 	'.lanspeed-clients-card .lanspeed-table th:nth-child(10){text-align:center!important}}',
 	'@media (min-width:701px) and (max-width:900px){',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(1),',
