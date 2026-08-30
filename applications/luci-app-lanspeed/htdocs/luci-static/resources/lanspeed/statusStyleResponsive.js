@@ -133,6 +133,8 @@ var RESPONSIVE_CSS = [
 	'.lanspeed-clients-card .lanspeed-table th:is(:nth-child(5),:nth-child(6),:nth-child(7),:nth-child(8)) .lanspeed-sort-button{position:relative;display:flex;width:100%;justify-content:center}',
 	'.lanspeed-clients-card .lanspeed-table th:is(:nth-child(5),:nth-child(6),:nth-child(7),:nth-child(8)) .lanspeed-sort-indicator{position:absolute;right:0}',
 	'.lanspeed-clients-card .lanspeed-table td:is(:nth-child(3),:nth-child(4)){text-align:left!important}',
+	'.lanspeed-clients-card .lanspeed-table th:nth-child(3) .lanspeed-sort-button,',
+	'.lanspeed-clients-card .lanspeed-table td:nth-child(3) .lanspeed-client-rate{position:relative;left:.5rem}',
 	'.lanspeed-clients-card .lanspeed-table th:nth-child(10){text-align:center!important}}',
 	'@media (min-width:701px) and (max-width:900px){',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(1),',
