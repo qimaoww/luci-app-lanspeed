@@ -125,7 +125,12 @@ var RESPONSIVE_CSS = [
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="hidden"] :is(th,td):is(:nth-child(7),:nth-child(8)){width:5%;text-align:center}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="shown"][data-client-totals="hidden"] :is(th,td):is(:nth-child(2),:nth-child(3),:nth-child(4),:nth-child(9),:nth-child(10)){width:13.6%;text-align:center}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="shown"][data-client-totals="hidden"] :is(th,td):is(:nth-child(7),:nth-child(8)){width:5%;text-align:center}',
-	'.lanspeed-clients-card .lanspeed-control-actions{justify-content:center}}',
+	'.lanspeed-clients-card .lanspeed-control-actions{justify-content:center}',
+	/* Keep table headings aligned to the reading edge; only cell values use the
+	 * compact centered rhythm. The control heading is the deliberate exception. */
+	'.lanspeed-clients-card .lanspeed-table th:is(:nth-child(2),:nth-child(3),:nth-child(4)){text-align:left!important}',
+	'.lanspeed-clients-card .lanspeed-table th:is(:nth-child(5),:nth-child(6),:nth-child(7),:nth-child(8)){text-align:center!important}',
+	'.lanspeed-clients-card .lanspeed-table th:nth-child(10){text-align:center!important}}',
 	'@media (min-width:701px) and (max-width:900px){',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(1),',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(1){width:16%}',
