@@ -9,6 +9,7 @@ use super::tc::{
 
 const MAX_TC_OBJECTS: usize = 2_048;
 const LANSPEED_ROOT_MAJORS: [&str; 5] = ["7a10", "7a20", "7d00", "7e20", "7e30"];
+const LANSPEED_STATIC_IFBS: [&str; 3] = ["ifb-lanspeed", "ifb-nss-lsu", "ifb-nss-lsd"];
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct TcCounters {
@@ -391,6 +392,15 @@ fn conflicts(status: &TcHostStatus, target_interfaces: &[String]) -> Vec<TcStatu
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
+    targets.extend(
+        status
+            .qdiscs
+            .iter()
+            .map(|value| value.interface.as_str())
+            .chain(status.classes.iter().map(|value| value.interface.as_str()))
+            .chain(status.filters.iter().map(|value| value.interface.as_str()))
+            .filter(|value| lanspeed_internal_interface(value)),
+    );
     targets.extend(
         status
             .qdiscs
@@ -866,6 +876,15 @@ fn is_lanspeed_major(value: &str) -> bool {
     LANSPEED_ROOT_MAJORS.contains(&value.trim_start_matches("0x").to_ascii_lowercase().as_str())
 }
 
+fn lanspeed_internal_interface(value: &str) -> bool {
+    if LANSPEED_STATIC_IFBS.contains(&value) {
+        return true;
+    }
+    value.strip_prefix("lsu").is_some_and(|suffix| {
+        suffix.len() == 8 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
 fn reserved_root_handle(handle: &str) -> bool {
     handle_major(handle).is_some_and(is_lanspeed_major)
 }
@@ -978,6 +997,34 @@ mod tests {
         assert!(!status.scan_complete);
         assert_eq!(status.parse_errors, 1);
         assert!(status.command_output_truncated);
+    }
+
+    #[test]
+    fn recognizes_nss_roots_and_conflicts_on_owned_ifb_names() {
+        let qdisc = qdiscs(
+            r#"[{"kind":"nsshtb","handle":"7d00:","dev":"lsu1234abcd","root":true},{"kind":"cake","handle":"8000:","dev":"lsu8765dcba","root":true},{"kind":"cake","handle":"8001:","dev":"ifb-nss-lsu","root":true},{"kind":"cake","handle":"8002:","dev":"lsu-invalid","root":true}]"#,
+            false,
+        );
+        let class = classes(
+            r#"[{"kind":"nsshtb","handle":"7d00:1","dev":"lsu1234abcd","parent":"7d00:","options":{"rate":4000000000}}]"#,
+            false,
+        );
+        let status = build(qdisc, class, filters("[]", false), &[]);
+
+        assert_eq!(status.qdiscs[0].owner, "lanspeed");
+        assert_eq!(status.classes[0].owner, "lanspeed");
+        assert!(status
+            .conflicts
+            .iter()
+            .any(|value| { value.id == "foreign_root_qdisc" && value.interface == "lsu8765dcba" }));
+        assert!(status
+            .conflicts
+            .iter()
+            .any(|value| { value.id == "foreign_root_qdisc" && value.interface == "ifb-nss-lsu" }));
+        assert!(!status
+            .conflicts
+            .iter()
+            .any(|value| value.interface == "lsu-invalid"));
     }
 
     #[test]
