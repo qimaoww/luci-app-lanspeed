@@ -109,6 +109,9 @@ function openLimit(viewState, client) {
 		'class': 'alert-message error lanspeed-control-feedback', 'style': 'display:none',
 		'role': 'alert'
 	});
+	var currentState = stateLabel(control);
+	var stateClass = control.queue_overflow || control.state === 'error' ||
+		control.state === 'unsupported' ? 'label danger' : 'label';
 	var save = E('button', {
 		'type': 'button', 'class': 'cbi-button cbi-button-positive important'
 	}, _('保存'));
@@ -137,6 +140,10 @@ function openLimit(viewState, client) {
 			E('label', {}, [ E('span', {}, _('上传 Mbps')), upload ]),
 			E('label', {}, [ E('span', {}, _('下载 Mbps')), download ])
 		]),
+		currentState ? E('p', { 'class': 'lanspeed-control-popup-state' }, [
+			E('span', { 'class': 'lanspeed-control-client-label' }, _('当前状态')),
+			E('span', { 'class': stateClass }, currentState)
+		]) : '',
 		feedback,
 		E('div', { 'class': 'right' }, [ cancel, ' ', save ])
 	]);
@@ -203,14 +210,8 @@ function cell(viewState, client) {
 		if (event) event.preventDefault();
 		toggleBlock(viewState, client);
 	});
-	var label = stateLabel(control);
 	return E('td', { 'class': 'lanspeed-client-control', 'data-label': _('控制') }, [
-		E('div', { 'class': 'lanspeed-control-actions' }, [ limit, block ]),
-		label ? E('span', {
-			'class': control.queue_overflow || control.state === 'error' ?
-				'label danger lanspeed-control-state' : 'label lanspeed-control-state',
-			'title': reasonText(control.reason)
-		}, label) : ''
+		E('div', { 'class': 'lanspeed-control-actions' }, [ limit, block ])
 	]);
 }
 

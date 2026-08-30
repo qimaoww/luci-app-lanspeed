@@ -38,7 +38,11 @@ var NSS_REFRESH_CHOICES = [
 
 var PAGE_SIZE_CHOICES = [ 10, 25, 50, 100 ];
 
-var SORT_KEYS = [ 'hostname', 'mac', 'tx', 'rx', 'tcp_conns', 'udp_conns' ];
+/* Cumulative client traffic is a byte counter, independent from the live
+ * rate unit. Always choose the largest readable binary unit automatically. */
+var TRAFFIC_UNITS = [ 'B', 'KB', 'MB', 'GB', 'TB' ];
+
+var SORT_KEYS = [ 'hostname', 'mac', 'tx', 'rx', 'tx_bytes', 'rx_bytes', 'tcp_conns', 'udp_conns' ];
 
 var DEFAULT_PREFS = {
 	refreshMs: 1000,
@@ -124,6 +128,23 @@ function formatRate(valueBps, unit) {
 	var i = 0;
 	while (n >= div && i < units.length - 1) { n /= div; i++; }
 	return (i === 0 ? '%d %s' : '%.2f %s').format(n, units[i]);
+}
+
+function formatBytes(value) {
+	if (value === null || value === undefined || value === '') return '-';
+	var n = Number(value);
+	if (!isFinite(n) || n < 0) return '-';
+	var index = 0;
+	while (n >= 1024 && index < TRAFFIC_UNITS.length - 1) {
+		n /= 1024;
+		index++;
+	}
+	var label = TRAFFIC_UNITS[index];
+	/* Preserve useful precision for small counters without producing noisy
+	 * long values once a client has transferred hundreds of units. */
+	if (n === 0) return '0 ' + label;
+	var precision = n < 10 ? 2 : n < 100 ? 1 : 0;
+	return n.toFixed(precision) + ' ' + label;
 }
 
 function clientSampleMs(c) {
@@ -219,6 +240,17 @@ function sortClients(clients, sortKey, sortDir, nowMs, config) {
 		else if (sortKey === 'mac')       r = compareText(a.mac, b.mac);
 		else if (sortKey === 'tx')        r = (Number(a.tx_bps) || 0) - (Number(b.tx_bps) || 0);
 		else if (sortKey === 'rx')        r = (Number(a.rx_bps) || 0) - (Number(b.rx_bps) || 0);
+		else if (sortKey === 'tx_bytes' || sortKey === 'rx_bytes') {
+			av = typeof a[sortKey] === 'number' ? a[sortKey] : null;
+			bv = typeof b[sortKey] === 'number' ? b[sortKey] : null;
+			if (av === null || bv === null) {
+				if (av === null && bv !== null) return 1;
+				if (av !== null && bv === null) return -1;
+				r = 0;
+			} else {
+				r = av - bv;
+			}
+		}
 		else if (sortKey === 'tcp_conns' || sortKey === 'udp_conns') {
 			av = typeof a[sortKey] === 'number' ? a[sortKey] : null;
 			bv = typeof b[sortKey] === 'number' ? b[sortKey] : null;
@@ -360,6 +392,7 @@ return baseclass.extend({
 	defaultSortDirection: defaultSortDirection,
 	nextSort:          nextSort,
 	formatRate:        formatRate,
+	formatBytes:       formatBytes,
 	clientSampleMs:    clientSampleMs,
 	latestClientSampleMs: latestClientSampleMs,
 	activeConfig:      activeConfig,

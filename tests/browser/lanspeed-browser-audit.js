@@ -635,6 +635,8 @@ async page => {
 
 		const contentEvidence = await root.evaluate((node, expectedTexts) => {
 			function visible(element) {
+				const closedDetails = element.closest('details:not([open])');
+				if (closedDetails && !element.closest('summary')) return false;
 				const style = getComputedStyle(element);
 				const rect = element.getBoundingClientRect();
 				return style.display !== 'none' && style.visibility !== 'hidden' &&
@@ -906,6 +908,8 @@ async page => {
 				return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 			}
 			function visible(element) {
+				const closedDetails = element.closest('details:not([open])');
+				if (closedDetails && !element.closest('summary')) return false;
 				const style = getComputedStyle(element);
 				const rect = element.getBoundingClientRect();
 				return style.display !== 'none' && style.visibility !== 'hidden' &&
@@ -1699,6 +1703,8 @@ async page => {
 					disabledNoCollect.indexOf(row) !== -1 ? row.state !== 'bad' : row.state !== 'neutral');
 				const unknownSubsystemCodes = diagnosticsContract.subsystemRows.filter(row =>
 					row.cells[2] && row.cells[2].indexOf('未识别的诊断代码') !== -1);
+				const expectedFactLabels = [ '服务与 RPC', '采集循环', '连接详情', '版本一致性',
+					'冲突结论', '扫描完整性', 'TC 对象', '对象归属' ];
 				addCheck('diagnostics-platform-section-shell', diagnosticsContract.sections.length ===
 					expectedSections.length &&
 					expectedSections.every(className => diagnosticsContract.sections.some(section =>
@@ -1707,7 +1713,10 @@ async page => {
 					diagnosticsContract.sections);
 				addCheck('diagnostics-summary-contract', allowedPageState.test(diagnosticsContract.pageState) &&
 					diagnosticsContract.busy === 'false' && diagnosticsContract.summary.trim() &&
-					diagnosticsContract.checked.trim() && diagnosticsContract.facts.length === 4 &&
+					diagnosticsContract.checked.trim() &&
+					diagnosticsContract.facts.length === expectedFactLabels.length &&
+					expectedFactLabels.every(label => diagnosticsContract.facts.some(item =>
+						item.label.trim() === label)) &&
 					diagnosticsContract.facts.every(item => allowedItemState.test(item.state) &&
 						item.label.trim() && item.value.trim()), diagnosticsContract);
 				const expectedStageHeadings = nssPlatform ? [ '总速率', '接入归属',
