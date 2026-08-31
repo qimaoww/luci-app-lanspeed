@@ -357,15 +357,14 @@ pub struct Client {
         serialize_with = "saturated_option_u64"
     )]
     pub sample_ms: Option<u64>,
-    /// Cumulative byte counter from the latest collector snapshot. It is
-    /// independent from `rx_bps`/`tx_bps` and resets when the collector map is
-    /// rebaselined.
+    /// Lifetime byte counter. On x86 the daemon persists collector deltas in
+    /// SQLite, independently from `rx_bps`/`tx_bps` and BPF map resets.
     #[serde(
         skip_serializing_if = "Option::is_none",
         serialize_with = "saturated_option_u64"
     )]
     pub rx_bytes: Option<u64>,
-    /// Cumulative byte counter from the latest collector snapshot.
+    /// Lifetime byte counter; see `rx_bytes` for persistence semantics.
     #[serde(
         skip_serializing_if = "Option::is_none",
         serialize_with = "saturated_option_u64"

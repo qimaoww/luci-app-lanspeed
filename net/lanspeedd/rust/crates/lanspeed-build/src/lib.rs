@@ -122,7 +122,7 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
                 "--features",
                 match userspace_profile {
                     BpfTargetArch::Aarch64 => "openwrt,nss-platform",
-                    BpfTargetArch::X86_64 => "openwrt",
+                    BpfTargetArch::X86_64 => "openwrt,traffic-persistence",
                 },
                 "--locked",
                 "--offline",
