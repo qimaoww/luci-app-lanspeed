@@ -281,10 +281,11 @@ impl ProductionRuntime {
     fn stage(config: RuntimeConfig) -> Result<Self, DaemonError> {
         let mut runtime = Self::prepare(config)?;
         runtime.activate_new_bpf()?;
-        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
-        {
-            runtime.traffic_ledger = Some(TrafficLedger::open_default(production_now_ms()?));
-        }
+        // Traffic persistence is intentionally lazy. Opening SQLite (and
+        // creating its WAL files) is not part of the daemon's boot-critical
+        // path; it starts only after the first successful BPF collection.
+        // This keeps a missing/unwritable database from preventing TC-BPF
+        // startup or making LuCI unavailable.
         #[cfg(feature = "nss-platform")]
         runtime.nss.activate(&runtime.config, &runtime.probe_report);
         Ok(runtime)
@@ -735,6 +736,13 @@ impl ProductionRuntime {
         };
         let actual_live = decision.rate == RateCollector::Bpf && bpf_snapshot.is_some();
         let actual_degraded = !actual_live;
+        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+        if actual_live && self.traffic_ledger.is_none() {
+            // Defer filesystem and SQLite work until BPF has produced a valid
+            // sample. Database errors remain in memory and raw live counters
+            // continue to be served.
+            self.traffic_ledger = Some(TrafficLedger::open_default(now_ms));
+        }
         self.hostnames.refresh_from_paths(
             &HostnamePaths::default(),
             now_ms,
@@ -3310,6 +3318,9 @@ impl Runtime for ProductionRuntime {
     fn collection_committed(&mut self) {
         #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
         if let Some(ledger) = self.traffic_ledger.as_mut() {
+            // A staged reload candidate may collect for validation, but must
+            // not write to the shared database until it is committed.
+            ledger.activate_storage_owner();
             ledger.flush_committed(production_now_ms().unwrap_or(0));
         }
     }

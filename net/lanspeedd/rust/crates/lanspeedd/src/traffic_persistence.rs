@@ -2,8 +2,11 @@
 //!
 //! The BPF maps remain the source for live counters. This ledger converts map
 //! deltas into lifetime totals and checkpoints only dirty rows in a batched
-//! SQLite transaction. Reload candidates fork the in-memory ledger without
+//! SQLite transaction. Reload candidates can collect for validation without
 //! becoming storage owners, so a rejected candidate can never write totals.
+//! SQLite is opened lazily after the first successful live sample rather than
+//! during daemon startup; filesystem/database failures therefore never block
+//! live counters.
 
 use std::{
     collections::BTreeMap,
@@ -57,7 +60,10 @@ impl TrafficLedger {
             path,
             entries,
             next_flush_ms: now_ms.saturating_add(FLUSH_INTERVAL_MS),
-            storage_owner: true,
+            // The runtime becomes the storage owner only after its first
+            // collection has been validated and committed. This also keeps
+            // reload candidates read/compute-only until activation.
+            storage_owner: false,
             last_error,
         }
     }
@@ -369,6 +375,7 @@ mod tests {
                 first.observe_raw("mac@lan", "mac", "lan", 100, 200),
                 (100, 200)
             );
+            first.activate_storage_owner();
             first.flush_shutdown(1);
             assert!(first.last_error().is_none());
         }
