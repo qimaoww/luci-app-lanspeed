@@ -4512,6 +4512,8 @@ function daemonRefsForSave() {
 		activeWindow: { value: '10000' },
 		activeMin: { value: '1' },
 		showClientStatus: { checked: false },
+		showClientTotals: { checked: true },
+		showClientControl: { checked: true },
 		showIpv6: { checked: true },
 		hidePrivateIpv6: { checked: false },
 		hideIpv6RangesItems: [ 'fc00::/7', 'fe80::/10' ],
@@ -4670,7 +4672,8 @@ function assertConfigSaveBehavior(configSrc, ifaceSrc) {
 		const refs = busy.state.daemonRefs;
 		const daemonControls = [
 			refs.rateCollectorMode, refs.connCollectorMode, refs.activeWindow,
-			refs.activeMin, refs.showClientStatus, refs.showIpv6, refs.hidePrivateIpv6,
+			refs.activeMin, refs.showClientStatus, refs.showClientTotals, refs.showClientControl,
+			refs.showIpv6, refs.hidePrivateIpv6,
 			refs.hideIpv6RangeInput, refs.addRangeBtn, refs.resetBtn
 		].concat(refs.rangeRemoveButtons);
 		if (!daemonControls.every(function(control) { return control.disabled; }) ||
@@ -4938,6 +4941,8 @@ function assertStatusShellInteraction(src) {
 		);
 	const viewState = {
 		showClientStatus: false,
+		showClientTotals: true,
+		showClientControl: true,
 		prefs: { refreshMs: 3000, unit: 'bit', activeOnly: false, sortKey: 'rx', sortDir: 'desc', sortCustom: false, paused: false },
 		filter: '',
 		reload: function(force) { if (force === true) reloads++; },
@@ -5450,7 +5455,11 @@ function assertStatusViewSourceOnlyState(src) {
 		fail('LAN Speed status modules must isolate UCI loading and read IPv6 display options before rendering client IPs');
 	}
 	if (!src.includes("showClientStatus: uciMain.show_client_status === '1'") ||
+	    !src.includes("showClientTotals: uciMain.show_client_totals !== '0'") ||
+	    !src.includes("showClientControl: uciMain.show_client_control !== '0'") ||
 	    !src.includes('showClientStatus: normalized.showClientStatus') ||
+	    !src.includes('showClientTotals: normalized.showClientTotals') ||
+	    !src.includes('showClientControl: normalized.showClientControl') ||
 	    !src.includes('viewState.showClientStatus = normalized.showClientStatus') ||
 	    !src.includes('var showClientStatus = viewState.showClientStatus === true;')) {
 		fail('LAN Speed status modules must load show_client_status as a default-off UCI display option');
@@ -6073,8 +6082,8 @@ function assertStatusRefreshModule(src) {
 	    !src.includes("'data-label': _('状态')")) {
 		fail('lanspeed/statusRefresh.js must label client fields for the narrow stacked layout');
 	}
-	if (!src.includes("clientTrafficTotalCell(c, 'tx', !nssProfile)") ||
-	    !src.includes("clientTrafficTotalCell(c, 'rx', !nssProfile)") ||
+	if (!src.includes("clientTrafficTotalCell(c, 'tx', showClientTotals)") ||
+	    !src.includes("clientTrafficTotalCell(c, 'rx', showClientTotals)") ||
 	    !src.includes("var label = isUpload ? _('累计上传') : _('累计下载')") ||
 	    !src.includes("lanspeed-client-total-upload-cell") ||
 	    !src.includes("lanspeed-client-total-download-cell")) {
@@ -6095,6 +6104,8 @@ function assertStatusRefreshModule(src) {
 		fail('statusRefresh.js must preserve theme-owned scroll containers as well as the window viewport');
 	}
 	if (!src.includes('var showClientStatus = viewState.showClientStatus === true;') ||
+	    !src.includes('var showClientControl = viewState.showClientControl === true;') ||
+	    !src.includes('var showClientTotals = viewState.showClientTotals === true && !nssProfile;') ||
 	    !src.includes('setClientStatusVisibility(refs, showClientStatus);') ||
 	    !src.includes('clientStateCell(stateCells, showClientStatus)') ||
 	    !src.includes('cell.hidden = !visible;')) {
@@ -6762,7 +6773,7 @@ function makeConfigFormState(model, overrides) {
 		'overview_window_samples', 'max_clients', 'nss_low_rate_window_ms',
 		'nss_low_rate_high_watermark_bps', 'nss_fifo_target_delay_ms',
 		'nss_fifo_min_queue_packets', 'rate_compensation_factor' ];
-	const booleans = [ 'show_client_status', 'show_ipv6', 'hide_private_ipv6',
+	const booleans = [ 'show_client_status', 'show_client_totals', 'show_client_control', 'show_ipv6', 'hide_private_ipv6',
 		'enable_bpf', 'enable_conntrack_fallback' ];
 	const editable = [ 'rate_collector_mode', 'access_edge_mode', 'internet_view_mode',
 		'conn_collector_mode', 'enable_bpf',
@@ -6770,7 +6781,7 @@ function makeConfigFormState(model, overrides) {
 		'max_clients', 'active_client_window_ms', 'active_client_min_bps',
 		'nss_low_rate_window_ms', 'nss_low_rate_high_watermark_bps',
 		'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets', 'rate_compensation_factor',
-		'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges' ];
+		'show_client_status', 'show_client_totals', 'show_client_control', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges' ];
 	const inputs = {};
 	numbers.forEach(function(name) { inputs[name] = fakeElement('input', { value: String(values[name]) }); });
 	[ 'rate_collector_mode', 'access_edge_mode', 'internet_view_mode', 'conn_collector_mode' ].forEach(function(name) {

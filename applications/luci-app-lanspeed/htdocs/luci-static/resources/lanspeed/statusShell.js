@@ -315,18 +315,18 @@ function buildShell(viewState) {
 	refs.totalUploadHeader = sortableHeader(viewState, refs, 'tx_bytes', _('累计上传'), {
 		'class': 'num lanspeed-client-total-header lanspeed-client-total-upload-header'
 	});
-	refs.totalUploadHeader.hidden = true;
+	refs.totalUploadHeader.hidden = viewState.showClientTotals !== true;
 	refs.totalDownloadHeader = sortableHeader(viewState, refs, 'rx_bytes', _('累计下载'), {
 		'class': 'num lanspeed-client-total-header lanspeed-client-total-download-header'
 	});
-	refs.totalDownloadHeader.hidden = true;
+	refs.totalDownloadHeader.hidden = viewState.showClientTotals !== true;
 	refs.controlHeader = E('th', { 'class': 'lanspeed-client-control-header' }, _('控制'));
 	refs.controlHeader.hidden = viewState.showClientControl !== true;
 	refs.clientsTable = E('table', {
 		'id': 'lanspeed-clients-table',
 		'class': 'lanspeed-table',
 		'data-client-status': viewState.showClientStatus === true ? 'shown' : 'hidden',
-		'data-client-totals': 'hidden',
+		'data-client-totals': viewState.showClientTotals === true ? 'shown' : 'hidden',
 		'data-client-control': viewState.showClientControl === true ? 'shown' : 'hidden'
 	}, [
 		E('thead', {}, E('tr', {}, [

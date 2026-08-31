@@ -478,13 +478,15 @@ function refreshLive(viewState) {
 			var mode = statusRateMeta.routedCollector(client && client.rate_meta);
 			return mode === 'fast_routed_lease' ? mode : current || mode;
 		}, '') : '';
-	viewState.showClientControl = true;
-	if (refs.controlHeader) refs.controlHeader.hidden = false;
-	if (refs.totalUploadHeader) refs.totalUploadHeader.hidden = nssProfile;
-	if (refs.totalDownloadHeader) refs.totalDownloadHeader.hidden = nssProfile;
+	var showClientControl = viewState.showClientControl === true;
+	var showClientTotals = viewState.showClientTotals === true && !nssProfile;
+	viewState.showClientControl = showClientControl;
+	if (refs.controlHeader) refs.controlHeader.hidden = !showClientControl;
+	if (refs.totalUploadHeader) refs.totalUploadHeader.hidden = !showClientTotals;
+	if (refs.totalDownloadHeader) refs.totalDownloadHeader.hidden = !showClientTotals;
 	if (refs.clientsTable) {
-		refs.clientsTable.setAttribute('data-client-control', 'shown');
-		refs.clientsTable.setAttribute('data-client-totals', nssProfile ? 'hidden' : 'shown');
+		refs.clientsTable.setAttribute('data-client-control', showClientControl ? 'shown' : 'hidden');
+		refs.clientsTable.setAttribute('data-client-totals', showClientTotals ? 'shown' : 'hidden');
 	}
 	refreshIntervalControl(viewState, refs, status);
 	var clientsAll = fmt.asArray(viewState.clients && viewState.clients.clients);
@@ -682,6 +684,9 @@ function refreshLive(viewState) {
 				displayName = c.mac || '-';
 			}
 
+			var controlCell = clientControl.cell(viewState, c);
+			controlCell.hidden = !showClientControl;
+
 			return E('tr', {
 				'class': idle ? 'idle' : '',
 				'data-client-key': String(fmt.identityOf(c))
@@ -694,8 +699,8 @@ function refreshLive(viewState) {
 				}, fmt.textOrDash(c.mac)),
 				clientTrafficCell(c, 'tx', tx, prefs.unit),
 				clientTrafficCell(c, 'rx', rx, prefs.unit),
-				clientTrafficTotalCell(c, 'tx', !nssProfile),
-				clientTrafficTotalCell(c, 'rx', !nssProfile),
+				clientTrafficTotalCell(c, 'tx', showClientTotals),
+				clientTrafficTotalCell(c, 'rx', showClientTotals),
 				E('td', {
 					'class': 'num lanspeed-client-value',
 					'data-label': 'TCP'
@@ -711,7 +716,7 @@ function refreshLive(viewState) {
 						: ''
 				}, typeof c.udp_conns === 'number' ? String(c.udp_conns) : '-'),
 				stateCell,
-				clientControl.cell(viewState, c)
+				controlCell
 			]);
 		}));
 	}
