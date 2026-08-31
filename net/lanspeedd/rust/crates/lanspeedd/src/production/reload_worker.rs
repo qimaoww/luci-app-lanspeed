@@ -109,13 +109,6 @@ fn reload_transaction(mut current: ProductionRuntime) -> ReloadOutcome {
             Ok(candidate) => candidate,
             Err(error) => return failure(current, error, false),
         };
-    #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
-    {
-        candidate.traffic_ledger = current
-            .traffic_ledger
-            .as_ref()
-            .map(TrafficLedger::fork_for_reload);
-    }
     #[cfg(feature = "nss-platform")]
     {
         candidate.control.inherit_nss_reload_state(&current.control);
@@ -317,17 +310,6 @@ fn reload_transaction(mut current: ProductionRuntime) -> ReloadOutcome {
     {
         candidate.control_platform_owner = true;
         current.control_platform_owner = false;
-    }
-
-    #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
-    {
-        if let Some(ledger) = candidate.traffic_ledger.as_mut() {
-            ledger.activate_storage_owner();
-        }
-        if let Some(ledger) = current.traffic_ledger.as_mut() {
-            ledger.deactivate_storage_owner();
-        }
-        candidate.collection_committed();
     }
 
     let mut fatal_errors = Vec::new();

@@ -182,13 +182,11 @@ fn x86_userspace_build_excludes_nss_platform() {
 
     build(BuildTarget::Userspace).unwrap();
     let args = fs::read_to_string(&cargo_args).unwrap();
-    assert!(args.lines().collect::<Vec<_>>().windows(2).any(|pair| {
-        pair[0] == "--features"
-            && pair[1].split(',').any(|feature| feature == "openwrt")
-            && pair[1]
-                .split(',')
-                .any(|feature| feature == "traffic-persistence")
-    }));
+    assert!(args
+        .lines()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|pair| pair == ["--features", "openwrt"]));
     assert!(!args.contains("nss-platform"));
     assert!(args
         .lines()

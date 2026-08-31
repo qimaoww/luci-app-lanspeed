@@ -179,9 +179,6 @@ pub trait Runtime {
     fn collection_interval_ms(&self, configured_ms: u32) -> u32 {
         configured_ms
     }
-    /// Called only after a collection transaction has succeeded. Slow
-    /// checkpoint work belongs here rather than in the uloop publication path.
-    fn collection_committed(&mut self) {}
     fn shutdown(&mut self) -> Result<(), DaemonError>;
 }
 
@@ -340,7 +337,6 @@ pub fn activate_runtime<R: Runtime>(
     });
     match startup {
         Ok(snapshot) => {
-            runtime.collection_committed();
             let previous = state.snapshot();
             let now_ms = diagnostic_now_ms(snapshot.interfaces.monotonic_ms.unwrap_or(0));
             let interval = runtime.collection_interval_ms(state.config().refresh_interval_ms);
@@ -383,7 +379,6 @@ pub fn collect_and_reschedule<R: Runtime>(
     // strongly typed snapshot directly and leaves JSON serialization to ubus replies.
     let collection_error = match runtime.collect() {
         Ok(snapshot) => {
-            runtime.collection_committed();
             let now_ms = diagnostic_now_ms(snapshot.interfaces.monotonic_ms.unwrap_or(0));
             let interval = runtime.collection_interval_ms(state.config().refresh_interval_ms);
             state.publish_collection_success(snapshot, now_ms, interval);
@@ -468,7 +463,7 @@ pub fn install_control_or_shutdown<R: Runtime, C>(
 pub fn commit_reload<R: Runtime>(
     state: &mut CoordinatorState,
     runtime: &mut Option<R>,
-    mut candidate: R,
+    candidate: R,
     config: RuntimeConfig,
     snapshot: ResponseSnapshot,
     request_stop: impl FnOnce(),
@@ -477,7 +472,6 @@ pub fn commit_reload<R: Runtime>(
         .take()
         .expect("runtime checked before reload staging");
     let collection_interval_ms = candidate.collection_interval_ms(config.refresh_interval_ms);
-    candidate.collection_committed();
     *runtime = Some(candidate);
     let now_ms = diagnostic_now_ms(snapshot.interfaces.monotonic_ms.unwrap_or(0));
     state.commit_collection(config, snapshot, now_ms, collection_interval_ms);

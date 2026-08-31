@@ -43,8 +43,6 @@ where
             let result = task.runtime.collect();
             if result.is_err() {
                 task.runtime.restore(checkpoint);
-            } else {
-                task.runtime.collection_committed();
             }
             let collection_interval_ms = task
                 .runtime

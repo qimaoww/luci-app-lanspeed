@@ -67,9 +67,6 @@ use crate::control::ControlManager;
 use crate::control_worker::{self, ControlWorkerNotice, ControlWorkerTask};
 use crate::workers::{QueueError, RuntimeWorker};
 
-#[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
-use crate::traffic_persistence::TrafficLedger;
-
 #[cfg(not(feature = "nss-platform"))]
 use crate::platform::x86::{
     runtime::{
@@ -230,8 +227,6 @@ struct ProductionRuntime {
     interface_rates: InterfaceRateBook,
     rate_owner: Option<RateCollector>,
     hostnames: HostnameCache,
-    #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
-    traffic_ledger: Option<TrafficLedger>,
     /// Only the committed NSS runtime may mutate or remove shared client
     /// control objects. Reload candidates inspect them read-only until the
     /// ownership handoff is committed.
@@ -266,8 +261,6 @@ struct RuntimeCheckpoint {
     interface_rates: InterfaceRateBook,
     rate_owner: Option<RateCollector>,
     hostnames: HostnameCache,
-    #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
-    traffic_ledger: Option<TrafficLedger>,
     conntrack_snapshot: Option<Arc<CollectedSnapshot>>,
     connection_rates: ConnectionRateBook,
     conntrack_observation: ConntrackObservation,
@@ -281,10 +274,6 @@ impl ProductionRuntime {
     fn stage(config: RuntimeConfig) -> Result<Self, DaemonError> {
         let mut runtime = Self::prepare(config)?;
         runtime.activate_new_bpf()?;
-        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
-        {
-            runtime.traffic_ledger = Some(TrafficLedger::open_default(production_now_ms()?));
-        }
         #[cfg(feature = "nss-platform")]
         runtime.nss.activate(&runtime.config, &runtime.probe_report);
         Ok(runtime)
@@ -335,8 +324,6 @@ impl ProductionRuntime {
             next_probe_ms: 0,
             rate_owner: None,
             hostnames: HostnameCache::new(),
-            #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
-            traffic_ledger: None,
             adapter: SystemAyaAdapter::with_max_clients(config.max_clients),
             control,
             control_work: None,
@@ -475,8 +462,6 @@ impl ProductionRuntime {
             interface_rates: self.interface_rates.clone(),
             rate_owner: self.rate_owner,
             hostnames: self.hostnames.clone(),
-            #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
-            traffic_ledger: self.traffic_ledger.clone(),
             conntrack_snapshot: self.conntrack_snapshot.clone(),
             connection_rates: self.connection_rates.clone(),
             conntrack_observation: self.conntrack_observation.clone(),
@@ -513,10 +498,6 @@ impl ProductionRuntime {
         self.interface_rates = checkpoint.interface_rates;
         self.rate_owner = checkpoint.rate_owner;
         self.hostnames = checkpoint.hostnames;
-        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
-        {
-            self.traffic_ledger = checkpoint.traffic_ledger;
-        }
         self.conntrack_snapshot = checkpoint.conntrack_snapshot;
         self.connection_rates = checkpoint.connection_rates;
         self.conntrack_observation = checkpoint.conntrack_observation;
@@ -743,10 +724,6 @@ impl ProductionRuntime {
         for client in &mut clients.clients {
             let ips = client.ips.iter().map(String::as_str).collect::<Vec<_>>();
             client.hostname = self.hostnames.lookup(&client.mac, &ips).map(str::to_owned);
-        }
-        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
-        if let Some(ledger) = self.traffic_ledger.as_mut() {
-            ledger.overlay_clients(&mut clients.clients);
         }
         if let Some(snapshot) = conntrack.as_ref() {
             clients.conntrack_entries_seen = Some(snapshot.stats.entries_seen as u64);
@@ -3018,10 +2995,6 @@ impl ProductionRuntime {
         if self.shutdown_complete {
             return Ok(());
         }
-        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
-        if let Some(ledger) = self.traffic_ledger.as_mut() {
-            ledger.flush_shutdown(production_now_ms().unwrap_or(0));
-        }
         let mut failures = Vec::new();
         if let Some(runtime) = self.bpf.as_mut() {
             if let Err(error) = runtime.shutdown(&mut self.adapter) {
@@ -3305,13 +3278,6 @@ impl Runtime for ProductionRuntime {
             self.rate_owner,
             configured_ms,
         )
-    }
-
-    fn collection_committed(&mut self) {
-        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
-        if let Some(ledger) = self.traffic_ledger.as_mut() {
-            ledger.flush_committed(production_now_ms().unwrap_or(0));
-        }
     }
 
     fn shutdown(&mut self) -> Result<(), DaemonError> {

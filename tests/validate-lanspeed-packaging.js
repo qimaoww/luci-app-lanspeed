@@ -955,7 +955,7 @@ try {
     'client-control userspace tools and kernel queue modules must be requested only by the x86 package');
   assertMatch(pkgMakefile, /LANSPEED_NSS_CONTROL_DEPENDS:=\+TARGET_qualcommax:tc-full \+TARGET_qualcommax:ip \+TARGET_qualcommax:nftables \+TARGET_qualcommax:conntrack \+TARGET_qualcommax:kmod-ifb \+TARGET_qualcommax:kmod-sched-core \+TARGET_qualcommax:kmod-qca-nss-drv-igs \+TARGET_qualcommax:kmod-lanspeed-nss-control/,
     'NSS client control must package only its verified CPU-path kernel dependencies');
-  assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+libgcc \+kmod-nf-conntrack-netlink \+TARGET_x86:libsqlite3 \$\(LANSPEED_X86_CONTROL_DEPENDS\) \$\(LANSPEED_NSS_CONTROL_DEPENDS\)/,
+  assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+libgcc \+kmod-nf-conntrack-netlink \$\(LANSPEED_X86_CONTROL_DEPENDS\) \$\(LANSPEED_NSS_CONTROL_DEPENDS\)/,
     'base daemon must retain collector dependencies and append isolated platform controls');
   assertNoMatch(pkgMakefile, /\+libubox|\+libubus|\+libuci|\+libblobmsg-json/,
     'pure Rust userspace must not retain versioned OpenWrt library dependencies');

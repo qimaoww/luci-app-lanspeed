@@ -18,12 +18,10 @@ libc.workspace = true
 object = { version = "=0.39.1", default-features = false, features = ["elf", "read_core"] }
 serde.workspace = true
 serde_json.workspace = true
-rusqlite = { version = "=0.32.1", default-features = false, optional = true }
 
 [features]
 default = []
 openwrt = ["dep:lanspeed-openwrt-sys"]
 nss-platform = []
-traffic-persistence = ["dep:rusqlite"]
 
 [dev-dependencies]
