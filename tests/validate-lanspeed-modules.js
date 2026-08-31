@@ -5924,7 +5924,7 @@ function assertStatusStyleModule(src) {
 		'.lanspeed-table{table-layout:fixed}',
 		'.lanspeed-client-control-header{text-align:center}',
 		'.lanspeed-control-actions{display:flex;flex-wrap:nowrap;justify-content:flex-start}',
-		'.lanspeed-control-button{width:5.5em;min-width:5.5em}',
+		'.lanspeed-control-button{width:4.4em;min-width:4.4em}',
 		'.lanspeed-table th:nth-child(1)',
 		'width:22%',
 		'width:13.6%;text-align:center}',
