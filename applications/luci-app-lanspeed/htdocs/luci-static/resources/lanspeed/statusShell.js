@@ -68,6 +68,11 @@ function columnLayoutKey(table) {
 function visibleColumnHeaders(refs) {
 	return (refs.clientColumnHeaders || []).filter(function(column) {
 		return column.th && !column.th.hidden;
+	}).slice().sort(function(left, right) {
+		/* sortableHeader() is also used to create the optional headers before
+		 * the table row is assembled. Always use the final DOM order here so
+		 * cumulative columns cannot receive another column's width. */
+		return Number(left.th.cellIndex) - Number(right.th.cellIndex);
 	});
 }
 
@@ -96,8 +101,18 @@ function applyStoredColumnWidths(viewState, refs) {
 	var table = refs && refs.clientsTable;
 	if (!table) return;
 	var columns = visibleColumnHeaders(refs);
+	var layoutKey = columnLayoutKey(table);
+	var stored = loadColumnWidths(viewState)[layoutKey];
+	var layoutActive = table.classList &&
+		table.classList.contains('lanspeed-custom-column-layout');
+	/* Refreshes replace rows, not headers. Reapplying the layout on every poll
+	 * briefly exposes native table sizing and makes the columns visibly jump.
+	 * Keep an already-applied layout untouched until the visible-column state
+	 * actually changes. */
+	if (viewState.clientColumnLayoutKey === layoutKey &&
+		((stored && layoutActive) || (!stored && !layoutActive))) return;
 	clearColumnLayout(table);
-	var stored = loadColumnWidths(viewState)[columnLayoutKey(table)];
+	viewState.clientColumnLayoutKey = layoutKey;
 	/* Accept the short-lived pre-release shape as a best-effort migration. */
 	if (stored && typeof stored === 'object' && !stored.columns) {
 		var legacyColumns = {};

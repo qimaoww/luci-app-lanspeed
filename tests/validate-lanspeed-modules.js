@@ -6075,6 +6075,7 @@ function assertStatusShellModule(src) {
 		!src.includes('pointerdown') ||
 		!src.includes('pointercancel') ||
 		!src.includes('clientColumnResizeActive') ||
+		!src.includes('clientColumnLayoutKey') ||
 		!src.includes('persistCurrentColumnWidths') ||
 		!src.includes('localStorage.setItem(COLUMN_WIDTHS_KEY')) {
 		fail('lanspeed/statusShell.js must provide persistent per-column resize handles');
