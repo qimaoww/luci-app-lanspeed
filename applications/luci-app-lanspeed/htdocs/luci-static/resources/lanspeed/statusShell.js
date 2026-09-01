@@ -4,7 +4,7 @@
 'require lanspeed.theme as lsTheme';
 'require lanspeed.statusStyle as statusStyle';
 
-var COLUMN_WIDTHS_KEY = 'luci-app-lanspeed.client-column-widths.v2';
+var COLUMN_WIDTHS_KEY = 'luci-app-lanspeed.client-column-widths.v3';
 var DEFAULT_COLUMN_GAP = 16;
 var MAX_COLUMN_GAP = 32;
 
@@ -40,29 +40,59 @@ function clearTableDisplay(table) {
 		delete table.style.display;
 }
 
-function setColumnLayout(table, widths) {
-	if (!table || !table.style || !Array.isArray(widths)) return;
+function columnStyleIndex(column) {
+	return Math.max(1, (Number(column && column.th && column.th.cellIndex) || 0) + 1);
+}
+
+function columnWidthProperty(column) {
+	return '--lanspeed-client-column-' + columnStyleIndex(column) + '-width';
+}
+
+function columnGapProperty(column) {
+	return '--lanspeed-client-column-' + columnStyleIndex(column) + '-gap';
+}
+
+function setColumnLayout(table, columns, widths, gaps) {
+	if (!table || !table.style || !Array.isArray(columns) || !Array.isArray(widths)) return;
 	var parentWidth = table.parentElement ? Number(table.parentElement.clientWidth) || 0 : 0;
 	var trackWidth = widths.reduce(function(sum, width) {
 		return sum + Math.max(0, Number(width) || 0);
 	}, 0);
+	var gapWidth = (gaps || []).reduce(function(sum, gap) {
+		return sum + Math.max(0, Number(gap) || 0);
+	}, 0);
 	var tableWidth = parentWidth > 0 ? parentWidth : trackWidth;
-	if (!(tableWidth > 0 && trackWidth > 0)) return;
+	if (!(tableWidth > 0 && trackWidth > 0 && columns.length === widths.length)) return;
 	if (table.classList && typeof table.classList.add === 'function')
 		table.classList.add('lanspeed-custom-column-layout');
 	setImportantTableDisplay(table, 'block');
 	setImportantTableWidth(table, tableWidth.toFixed(2) + 'px');
-	table.style.setProperty('--lanspeed-client-grid-template', widths.map(function(width) {
-		return Math.max(0, Number(width) || 0).toFixed(2) + 'px';
-	}).join(' '));
+	columns.forEach(function(column, index) {
+		table.style.setProperty(columnWidthProperty(column),
+			Math.max(0, Number(widths[index]) || 0).toFixed(2) + 'px');
+		table.style.setProperty(columnGapProperty(column),
+			Math.max(0, Number(gaps && gaps[index]) || 0).toFixed(2) + 'px');
+	});
+	/* Keep the last cell edge on the card edge despite sub-pixel rounding. */
+	if (columns.length && tableWidth > trackWidth + gapWidth) {
+		var last = columns.length - 1;
+		var lastGap = Math.max(0, Number(gaps && gaps[last]) || 0) +
+			(tableWidth - trackWidth - gapWidth);
+		table.style.setProperty(columnGapProperty(columns[last]), lastGap.toFixed(2) + 'px');
+	}
 }
 
 function clearColumnLayout(table) {
 	if (!table || !table.style) return;
 	if (table.classList && typeof table.classList.remove === 'function')
 		table.classList.remove('lanspeed-custom-column-layout');
-	if (typeof table.style.removeProperty === 'function')
+	if (typeof table.style.removeProperty === 'function') {
 		table.style.removeProperty('--lanspeed-client-grid-template');
+		for (var index = 1; index <= 12; index++) {
+			table.style.removeProperty('--lanspeed-client-column-' + index + '-width');
+			table.style.removeProperty('--lanspeed-client-column-' + index + '-gap');
+		}
+	}
 	clearTableWidth(table);
 	clearTableDisplay(table);
 }
@@ -109,6 +139,39 @@ function sumColumnWidths(widths) {
 	return widths.reduce(function(sum, width) {
 		return sum + Math.max(0, Number(width) || 0);
 	}, 0);
+}
+
+function defaultColumnGaps(count) {
+	var gaps = [];
+	for (var index = 0; index < count; index++)
+		gaps.push(index < count - 1 ? DEFAULT_COLUMN_GAP : 0);
+	return gaps;
+}
+
+function fitColumnGaps(count, widths, parentWidth, gaps) {
+	var remaining = Math.max(0, parentWidth - sumColumnWidths(widths));
+	var values = Array.isArray(gaps) ? gaps.slice(0, count) : [];
+	while (values.length < count) values.push(0);
+	values = values.map(function(gap) { return Math.max(0, Number(gap) || 0); });
+	var total = sumColumnWidths(values);
+	if (!(total > 0)) {
+		values = defaultColumnGaps(count);
+		total = sumColumnWidths(values);
+	}
+	if (total > 0) {
+		values = values.map(function(gap) { return gap * remaining / total; });
+	} else if (count) {
+		values[count - 1] = remaining;
+	}
+	return values;
+}
+
+function currentColumnGaps(table, columns) {
+	var style = typeof getComputedStyle === 'function' ? getComputedStyle(table) : null;
+	return columns.map(function(column) {
+		var value = style ? parseFloat(style.getPropertyValue(columnGapProperty(column))) : 0;
+		return isFinite(value) && value >= 0 ? value : 0;
+	});
 }
 
 function fitColumnWidths(columns, widths, parentWidth, preferredGap) {
@@ -177,12 +240,19 @@ function applyStoredColumnWidths(viewState, refs) {
 	if (viewState.clientColumnLayoutKey === layoutKey && layoutActive &&
 		(tableWidth <= 0 || Math.abs(tableWidth - parentWidth) < 1)) return;
 	var values;
+	var gaps;
+	var storedCanvasWidth = 0;
 	if (stored && typeof stored === 'object' && !Array.isArray(stored) &&
 		stored.columns && typeof stored.columns === 'object') {
 		values = columns.map(function(column) {
 			var value = Number(stored.columns[column.key]);
 			return isFinite(value) && value > 0 ? value : 0;
 		});
+		gaps = columns.map(function(column) {
+			var value = Number(stored.gaps && stored.gaps[column.key]);
+			return isFinite(value) && value >= 0 ? value : 0;
+		});
+		storedCanvasWidth = Number(stored.canvasWidth) || 0;
 	}
 	if (!values || !(sumColumnWidths(values) > 0)) {
 		values = columns.map(function(column) {
@@ -194,9 +264,18 @@ function applyStoredColumnWidths(viewState, refs) {
 		var current = sumColumnWidths(values);
 		if (current > 0)
 			values = values.map(function(width) { return width * target / current; });
+		gaps = defaultColumnGaps(columns.length);
+	}
+	values = values.map(function(width, index) {
+		return Math.max(minimumColumnWidth(columns[index].key), Number(width) || 0);
+	});
+	if (!(storedCanvasWidth > 0 && Math.abs(storedCanvasWidth - parentWidth) < 1 &&
+		Math.abs(sumColumnWidths(values) + sumColumnWidths(gaps || []) - parentWidth) < 2)) {
+		values = fitColumnWidths(columns, values, parentWidth, DEFAULT_COLUMN_GAP);
+		gaps = fitColumnGaps(columns.length, values, parentWidth, gaps);
 	}
 	clearColumnLayout(table);
-	setColumnLayout(table, fitColumnWidths(columns, values, parentWidth, DEFAULT_COLUMN_GAP));
+	setColumnLayout(table, columns, values, gaps);
 	viewState.clientColumnLayoutKey = layoutKey;
 }
 
@@ -204,16 +283,22 @@ function persistCurrentColumnWidths(viewState, refs) {
 	var table = refs && refs.clientsTable;
 	if (!table || typeof table.getBoundingClientRect !== 'function') return;
 	var values = {};
-	visibleColumnHeaders(refs).forEach(function(column) {
+	var gaps = {};
+	var columns = visibleColumnHeaders(refs);
+	var currentGaps = currentColumnGaps(table, columns);
+	columns.forEach(function(column, index) {
 		if (!column.th || typeof column.th.getBoundingClientRect !== 'function') return;
 		var width = Number(column.th.getBoundingClientRect().width);
 		if (width > 0) values[column.key] = width;
+		gaps[column.key] = Math.max(0, Number(currentGaps[index]) || 0);
 	});
 	if (!Object.keys(values).length) return;
 	var stored = loadColumnWidths(viewState);
 	stored[columnLayoutKey(table)] = {
-		version: 2,
-		columns: values
+		version: 3,
+		canvasWidth: table.parentElement ? Number(table.parentElement.clientWidth) || 0 : 0,
+		columns: values,
+		gaps: gaps
 	};
 	viewState.clientColumnWidths = stored;
 	saveColumnWidths(viewState);
@@ -265,17 +350,20 @@ function setupColumnResize(viewState, refs) {
 			var startWidths = visible.map(function(item) {
 				return Number(item.th.getBoundingClientRect().width) || 0;
 			});
-			startWidths = fitColumnWidths(visible, startWidths, parentWidth, DEFAULT_COLUMN_GAP);
+			var startGaps = currentColumnGaps(table, visible);
 			var firstWidth = startWidths[index];
 			if (!(firstWidth > 0)) return;
-			setColumnLayout(table, startWidths);
+			if (!(startGaps[index] >= 0)) startGaps[index] = 0;
+			setColumnLayout(table, visible, startWidths, startGaps);
 			viewState.clientColumnResizeActive = true;
 			var startX = Number(event.clientX);
 			var minFirst = minimumColumnWidth(column.key);
-			var gapCount = Math.max(0, visible.length - 1);
-			var otherWidth = sumColumnWidths(startWidths) - firstWidth;
-			var minAllowed = Math.max(minFirst, parentWidth - otherWidth - MAX_COLUMN_GAP * gapCount);
-			var maxAllowed = Math.max(minAllowed, parentWidth - otherWidth);
+			var gapIndex = index < visible.length - 1 ? index : Math.max(0, index - 1);
+			var startGap = startGaps[gapIndex];
+			/* Keep every following column's x-coordinate fixed. The selected track
+			 * borrows from (or returns to) only its own right-hand spacer. */
+			var minAllowed = minFirst;
+			var maxAllowed = firstWidth + startGap;
 			var dragging = false;
 			var hostDocument = typeof document !== 'undefined' ? document : null;
 			function move(moveEvent) {
@@ -283,8 +371,10 @@ function setupColumnResize(viewState, refs) {
 				if (!isFinite(delta)) return;
 				var width = Math.max(minAllowed, Math.min(maxAllowed, firstWidth + delta));
 				var widths = startWidths.slice();
+				var gaps = startGaps.slice();
 				widths[index] = width;
-				setColumnLayout(table, widths);
+				gaps[gapIndex] = Math.max(0, startGap - (width - firstWidth));
+				setColumnLayout(table, visible, widths, gaps);
 				dragging = true;
 				if (moveEvent && moveEvent.preventDefault) moveEvent.preventDefault();
 			}

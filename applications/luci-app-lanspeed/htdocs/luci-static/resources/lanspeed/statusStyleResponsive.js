@@ -116,7 +116,7 @@ var RESPONSIVE_CSS = [
 	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout thead,',
 	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout tbody{display:block;width:100%}',
 	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout thead>tr,',
-	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout tbody>tr{display:grid;width:100%;grid-template-columns:var(--lanspeed-client-grid-template);justify-content:space-between}',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout tbody>tr{display:flex;width:100%;justify-content:flex-start}',
 	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout :is(th,td){display:block!important;width:auto!important;min-width:0;box-sizing:border-box}',
 	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout thead>tr{border-bottom:1px solid var(--lanspeed-border)}',
 	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout tbody>tr{border-bottom:1px solid var(--lanspeed-border)}',
@@ -182,7 +182,20 @@ var RESPONSIVE_CSS = [
 	/* Grid tracks are the source of truth for the adjustable canvas. The
 	 * combination-specific percentage rules above are retained for the native
 	 * fallback, but must not shrink grid children inside their assigned track. */
-	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout[data-client-status][data-client-totals][data-client-control] :is(th,td):nth-child(n){width:100%!important;min-width:0!important;max-width:none!important}}',
+	'/* legacy grid-template-columns:var(--lanspeed-client-grid-template) is intentionally replaced by fixed flex tracks */',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout[data-client-status][data-client-totals][data-client-control] :is(th,td):nth-child(n){width:100%!important;min-width:0!important;max-width:none!important}',
+	/* Each cell owns a fixed flex track and its own right-hand spacer. Resizing
+	 * one track therefore leaves every other cell's position and width intact. */
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout[data-client-status][data-client-totals][data-client-control] :is(th,td):nth-child(1){flex:0 0 var(--lanspeed-client-column-1-width)!important;width:var(--lanspeed-client-column-1-width)!important;margin-right:var(--lanspeed-client-column-1-gap)!important}',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout[data-client-status][data-client-totals][data-client-control] :is(th,td):nth-child(2){flex:0 0 var(--lanspeed-client-column-2-width)!important;width:var(--lanspeed-client-column-2-width)!important;margin-right:var(--lanspeed-client-column-2-gap)!important}',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout[data-client-status][data-client-totals][data-client-control] :is(th,td):nth-child(3){flex:0 0 var(--lanspeed-client-column-3-width)!important;width:var(--lanspeed-client-column-3-width)!important;margin-right:var(--lanspeed-client-column-3-gap)!important}',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout[data-client-status][data-client-totals][data-client-control] :is(th,td):nth-child(4){flex:0 0 var(--lanspeed-client-column-4-width)!important;width:var(--lanspeed-client-column-4-width)!important;margin-right:var(--lanspeed-client-column-4-gap)!important}',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout[data-client-status][data-client-totals][data-client-control] :is(th,td):nth-child(5){flex:0 0 var(--lanspeed-client-column-5-width)!important;width:var(--lanspeed-client-column-5-width)!important;margin-right:var(--lanspeed-client-column-5-gap)!important}',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout[data-client-status][data-client-totals][data-client-control] :is(th,td):nth-child(6){flex:0 0 var(--lanspeed-client-column-6-width)!important;width:var(--lanspeed-client-column-6-width)!important;margin-right:var(--lanspeed-client-column-6-gap)!important}',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout[data-client-status][data-client-totals][data-client-control] :is(th,td):nth-child(7){flex:0 0 var(--lanspeed-client-column-7-width)!important;width:var(--lanspeed-client-column-7-width)!important;margin-right:var(--lanspeed-client-column-7-gap)!important}',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout[data-client-status][data-client-totals][data-client-control] :is(th,td):nth-child(8){flex:0 0 var(--lanspeed-client-column-8-width)!important;width:var(--lanspeed-client-column-8-width)!important;margin-right:var(--lanspeed-client-column-8-gap)!important}',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout[data-client-status][data-client-totals][data-client-control] :is(th,td):nth-child(9){flex:0 0 var(--lanspeed-client-column-9-width)!important;width:var(--lanspeed-client-column-9-width)!important;margin-right:var(--lanspeed-client-column-9-gap)!important}',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout[data-client-status][data-client-totals][data-client-control] :is(th,td):nth-child(10){flex:0 0 var(--lanspeed-client-column-10-width)!important;width:var(--lanspeed-client-column-10-width)!important;margin-right:var(--lanspeed-client-column-10-gap)!important}}',
 	'@media (min-width:701px) and (max-width:900px){',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(1),',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(1){width:15%}',
