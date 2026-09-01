@@ -4,9 +4,11 @@
 'require lanspeed.theme as lsTheme';
 'require lanspeed.statusStyle as statusStyle';
 
-var COLUMN_WIDTHS_KEY = 'luci-app-lanspeed.client-column-widths.v3';
-var DEFAULT_COLUMN_GAP = 16;
-var MAX_COLUMN_GAP = 32;
+var COLUMN_WIDTHS_KEY = 'luci-app-lanspeed.client-column-widths.v4';
+/* Keep an explicit per-column resize reserve. A larger reserve gives each
+ * track useful drag range while preserving every following track's position. */
+var DEFAULT_COLUMN_GAP = 48;
+var MAX_COLUMN_GAP = 96;
 
 function setImportantTableWidth(table, value) {
 	if (!table || !table.style) return;
@@ -295,7 +297,7 @@ function persistCurrentColumnWidths(viewState, refs) {
 	if (!Object.keys(values).length) return;
 	var stored = loadColumnWidths(viewState);
 	stored[columnLayoutKey(table)] = {
-		version: 3,
+		version: 4,
 		canvasWidth: table.parentElement ? Number(table.parentElement.clientWidth) || 0 : 0,
 		columns: values,
 		gaps: gaps
