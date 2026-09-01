@@ -970,6 +970,8 @@ function testPaginationAndUiStates(context, fmt) {
 		rpc: successRpc(100000),
 		checkedAt: 100000,
 		showClientStatus: true,
+		showClientTotals: true,
+		showClientControl: true,
 		showIpv6: true,
 		hidePrivateIpv6: false,
 		hideIpv6Ranges: '',
