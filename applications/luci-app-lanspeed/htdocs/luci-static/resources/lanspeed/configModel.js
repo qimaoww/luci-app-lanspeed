@@ -30,7 +30,6 @@ var DEFAULTS = {
 	enable_proxy_connections: '1',
 	mihomo_controller_port: 0,
 	mihomo_controller_secret: '',
-	show_client_status: '0',
 	show_client_totals: '1',
 	show_client_control: '1',
 	show_ipv6: '1',
@@ -101,7 +100,6 @@ var FIELD_DEFS = [
 	{ name: 'enable_proxy_connections', kind: 'boolean', label: _('代理连接补全') },
 	{ name: 'mihomo_controller_port', kind: 'integer', label: _('Mihomo 控制器端口'), limits: LIMITS.mihomo_controller_port },
 	{ name: 'mihomo_controller_secret', kind: 'secret', label: _('Mihomo API 认证码') },
-	{ name: 'show_client_status', kind: 'boolean', label: _('显示客户端状态') },
 	{ name: 'show_client_totals', kind: 'boolean', label: _('显示客户端累计流量') },
 	{ name: 'show_client_control', kind: 'boolean', label: _('显示客户端控制') },
 	{ name: 'show_ipv6', kind: 'boolean', label: _('显示 IPv6 地址') },
@@ -118,11 +116,10 @@ var FIELD_DEFS = [
 ];
 
 /*
- * The manual direct-port declaration is no longer exposed by LuCI. Read the
- * old UCI option once so the next save can remove it without overwriting the
- * rest of the user's configuration.
+ * Removed UCI options are no longer exposed by LuCI. Read old options once so
+ * the next save can remove them without overwriting the rest of the config.
  */
-var REMOVED_UCI_FIELDS = [ 'dedicated_port' ];
+var REMOVED_UCI_FIELDS = [ 'dedicated_port', 'show_client_status' ];
 
 function clone(value) {
 	if (Array.isArray(value))
@@ -387,7 +384,7 @@ function normalize(raw) {
 	present.internet_view_mode = raw.internet_view_mode !== undefined && raw.internet_view_mode !== null;
 	if (!internet.valid && present.internet_view_mode) errors.internet_view_mode = internet.reason;
 
-	[ 'show_client_status', 'show_client_totals', 'show_client_control', 'show_ipv6', 'hide_private_ipv6', 'enable_bpf',
+	[ 'show_client_totals', 'show_client_control', 'show_ipv6', 'hide_private_ipv6', 'enable_bpf',
 		'enable_conntrack_fallback', 'enable_proxy_connections' ].forEach(function(name) {
 		var result = parseBoolean(raw[name] === undefined ? DEFAULTS[name] : raw[name], DEFAULTS[name]);
 		values[name] = result.value;
@@ -560,7 +557,7 @@ function buildUciPatch(values, original) {
 		'access_edge_mode', 'internet_view_mode', 'nss_low_rate_window_ms',
 		'nss_low_rate_high_watermark_bps', 'nss_fifo_target_delay_ms',
 		'nss_fifo_min_queue_packets', 'rate_compensation_factor',
-		'show_client_status', 'show_client_totals', 'show_client_control', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges',
+		'show_client_totals', 'show_client_control', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges',
 		'collector_mode', 'max_clients', 'enable_bpf', 'enable_conntrack_fallback',
 		'enable_proxy_connections', 'mihomo_controller_port'
 	];

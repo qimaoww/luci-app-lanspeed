@@ -277,7 +277,7 @@ async function testIndependentRpcSettlement(context, fmt) {
 	assert.strictEqual(partial.hardFailure, false);
 
 	rpc.clients = function() { return Promise.resolve({ clients: [ { hostname: 'kept' } ] }); };
-	rpc.uciGet = function() { return Promise.resolve({ show_client_status: '1' }); };
+	rpc.uciGet = function() { return Promise.resolve({}); };
 	const first = await overview.loadAll(null, clock);
 	const firstClientSuccess = first.rpc.clients.lastSuccessAt;
 	rpc.clients = function() { return Promise.reject(Object.assign(new Error('temporary'), { code: 7 })); };
@@ -349,7 +349,7 @@ async function testAtomicRealtimeSnapshot(context, fmt) {
 		status: function() { legacyCalls++; return Promise.resolve({}); },
 		clients: function() { legacyCalls++; return Promise.resolve({ clients: [] }); },
 		interfaces: function() { legacyCalls++; return Promise.resolve({ interfaces: [] }); },
-		uciGet: function() { uciCalls++; return Promise.resolve({ show_client_status: '1' }); }
+		uciGet: function() { uciCalls++; return Promise.resolve({}); }
 	};
 	const overview = loadOverview(context, fmt, rpc);
 	let now = 5000;
@@ -969,7 +969,6 @@ function testPaginationAndUiStates(context, fmt) {
 		interfaces: { interfaces: [ { name: 'br-lan', role: 'lan', rx_bps: 100, tx_bps: 200 } ] },
 		rpc: successRpc(100000),
 		checkedAt: 100000,
-		showClientStatus: true,
 		showClientTotals: true,
 		showClientControl: true,
 		showIpv6: true,

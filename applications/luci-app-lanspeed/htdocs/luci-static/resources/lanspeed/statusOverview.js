@@ -442,7 +442,6 @@ function normalizeData(data) {
 		clients: clients,
 		interfaces: interfaces,
 		uci: uciMain,
-		showClientStatus: uciMain.show_client_status === '1',
 		showClientTotals: uciMain.show_client_totals !== '0',
 		showClientControl: uciMain.show_client_control !== '0',
 		showIpv6: uciMain.show_ipv6 !== '0',
@@ -583,7 +582,6 @@ function createController(viewState, options) {
 		viewState.clients = normalized.clients;
 		viewState.interfaces = normalized.interfaces;
 		viewState.uci = normalized.uci;
-		viewState.showClientStatus = normalized.showClientStatus;
 		viewState.showClientTotals = normalized.showClientTotals;
 		viewState.showClientControl = normalized.showClientControl;
 		viewState.showIpv6 = normalized.showIpv6;
@@ -712,7 +710,6 @@ return baseclass.extend({
 			clients: normalized.clients,
 			interfaces: normalized.interfaces,
 			uci: normalized.uci,
-			showClientStatus: normalized.showClientStatus,
 			showClientTotals: normalized.showClientTotals,
 			showClientControl: normalized.showClientControl,
 			showIpv6: normalized.showIpv6,

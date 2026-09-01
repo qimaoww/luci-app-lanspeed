@@ -98,7 +98,7 @@ function clearColumnLayout(table) {
 }
 
 function columnLayoutKey(table) {
-	return [ 'status', 'totals', 'control' ].map(function(name) {
+	return [ 'totals', 'control' ].map(function(name) {
 		return name + '=' + (table.getAttribute('data-client-' + name) || 'shown');
 	}).join('|');
 }
@@ -308,7 +308,6 @@ function minimumColumnWidth(key) {
 	if (key === 'hostname') return 120;
 	if (key === 'mac') return 145;
 	if (key === 'control') return 145;
-	if (key === 'status') return 80;
 	if (key === 'tcp_conns' || key === 'udp_conns') return 62;
 	if (key === 'tx_bytes' || key === 'rx_bytes') return 92;
 	return 88;
@@ -728,11 +727,6 @@ function buildShell(viewState) {
 	]);
 
 	refs.tbody = E('tbody', {});
-	refs.statusHeader = E('th', {
-		'class': 'lanspeed-client-status-header',
-		'data-column-key': 'status'
-	}, _('状态'));
-	refs.statusHeader.hidden = viewState.showClientStatus !== true;
 	refs.totalUploadHeader = sortableHeader(viewState, refs, 'tx_bytes', _('累计上传'), {
 		'class': 'num lanspeed-client-total-header lanspeed-client-total-upload-header'
 	});
@@ -749,7 +743,6 @@ function buildShell(viewState) {
 	refs.clientsTable = E('table', {
 		'id': 'lanspeed-clients-table',
 		'class': 'lanspeed-table',
-		'data-client-status': viewState.showClientStatus === true ? 'shown' : 'hidden',
 		'data-client-totals': viewState.showClientTotals === true ? 'shown' : 'hidden',
 		'data-client-control': viewState.showClientControl === true ? 'shown' : 'hidden'
 	}, [
@@ -766,7 +759,6 @@ function buildShell(viewState) {
 			sortableHeader(viewState, refs, 'udp_conns', 'UDP', {
 				'class': 'num', 'title': _('当前已确认的 UDP 连接')
 			}),
-			refs.statusHeader,
 			refs.controlHeader
 		])),
 		refs.tbody
@@ -788,7 +780,6 @@ function buildShell(viewState) {
 			refs.pageNav
 		])
 	]);
-	refs.clientColumnHeaders.push({ key: 'status', th: refs.statusHeader });
 	refs.clientColumnHeaders.push({ key: 'control', th: refs.controlHeader });
 	setupColumnResize(viewState, refs);
 

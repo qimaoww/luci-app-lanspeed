@@ -9,7 +9,7 @@
 var FIELD_NAMES = cfgModel.FIELDS.map(function(field) { return field.name; });
 var REMOVED_UCI_FIELDS = cfgModel.REMOVED_UCI_FIELDS || [];
 var LIST_FIELDS = [ 'ifname', 'interface_include', 'interface_exclude', 'observe' ];
-var BOOLEAN_FIELDS = [ 'show_client_status', 'show_client_totals', 'show_client_control', 'show_ipv6', 'hide_private_ipv6',
+var BOOLEAN_FIELDS = [ 'show_client_totals', 'show_client_control', 'show_ipv6', 'hide_private_ipv6',
 	'enable_bpf', 'enable_conntrack_fallback' ];
 var NUMBER_FIELDS = [ 'refresh_interval_ms', 'active_client_window_ms',
 	'active_client_min_bps', 'overview_window_samples', 'max_clients' ];
@@ -683,8 +683,6 @@ function buildDaemonSection(data, viewState) {
 		_('最后活动后继续标记为活跃的时长，最少 1000 ms。')));
 	rows.push(rowFor(viewState, 'active_client_min_bps', _('活跃最小速率'), refs.inputs.active_client_min_bps,
 		_('当前收发速率达到该值时才视为活跃。')));
-	rows.push(rowFor(viewState, 'show_client_status', _('显示客户端状态'), refs.toggleWrap.show_client_status,
-		_('在实时状态中显示采集来源与告警。')));
 	rows.push(rowFor(viewState, 'show_client_totals', _('显示客户端累计流量'), refs.toggleWrap.show_client_totals,
 		_('在客户端列表中显示累计上传和累计下载；关闭后仍会继续采集并持久化流量。')));
 	rows.push(rowFor(viewState, 'show_client_control', _('显示客户端控制'), refs.toggleWrap.show_client_control,
