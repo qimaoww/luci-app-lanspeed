@@ -149,11 +149,11 @@ var RESPONSIVE_CSS = [
 	'.lanspeed-clients-card .lanspeed-table th:nth-child(10){text-align:center!important}',
 	/* When either optional group is disabled, redistribute the remaining
 	 * columns so the fixed table still fills the card without a phantom gap. */
-	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"][data-client-control="hidden"] :is(th,td):nth-child(1){width:24%!important}',
-	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"][data-client-control="hidden"] :is(th,td):nth-child(2){width:22%!important}',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"][data-client-control="hidden"] :is(th,td):nth-child(1){width:22%!important}',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"][data-client-control="hidden"] :is(th,td):nth-child(2){width:20%!important}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"][data-client-control="hidden"] :is(th,td):is(:nth-child(3),:nth-child(4)){width:12%!important}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"][data-client-control="hidden"] :is(th,td):is(:nth-child(5),:nth-child(6)){width:10%!important}',
-	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"][data-client-control="hidden"] :is(th,td):is(:nth-child(7),:nth-child(8)){width:5%!important}',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="shown"][data-client-control="hidden"] :is(th,td):is(:nth-child(7),:nth-child(8)){width:7%!important}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="shown"][data-client-totals="shown"][data-client-control="hidden"] :is(th,td):nth-child(1){width:21%!important}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="shown"][data-client-totals="shown"][data-client-control="hidden"] :is(th,td):nth-child(2){width:18%!important}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="shown"][data-client-totals="shown"][data-client-control="hidden"] :is(th,td):is(:nth-child(3),:nth-child(4)){width:12%!important}',

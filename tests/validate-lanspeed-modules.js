@@ -5957,6 +5957,14 @@ function assertStatusStyleModule(src) {
 	    !responsiveCss.includes('width:5%;text-align:center}')) {
 		fail('client totals and connection controls must use a compact, aligned desktop table rhythm');
 	}
+	[
+		'[data-client-totals="hidden"][data-client-control="shown"]',
+		'[data-client-totals="shown"][data-client-control="hidden"]',
+		'[data-client-totals="hidden"][data-client-control="hidden"]'
+	].forEach(function(marker) {
+		if (!responsiveCss.includes(marker))
+			fail(`statusStyleResponsive.js must define a balanced desktop layout for every optional-column combination: ${marker}`);
+	});
 	if (!responsiveCss.includes('.lanspeed-table td:nth-child(2){text-align:left!important}')) {
 		fail('desktop MAC values must share the MAC heading reading edge');
 	}
