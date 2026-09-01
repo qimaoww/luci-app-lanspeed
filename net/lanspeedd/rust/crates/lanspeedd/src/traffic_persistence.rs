@@ -10,12 +10,13 @@
 
 use std::{
     collections::BTreeMap,
+    ffi::{CStr, CString},
     fs,
+    os::raw::{c_char, c_int, c_void},
     path::{Path, PathBuf},
+    ptr,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-
-use rusqlite::{params, Connection, OpenFlags};
 
 use crate::model::Client;
 
@@ -23,6 +24,221 @@ pub(crate) const DEFAULT_TRAFFIC_DB_PATH: &str = "/etc/lanspeed/traffic.db";
 const FLUSH_INTERVAL_MS: u64 = 5 * 60 * 1_000;
 const RETRY_INTERVAL_MS: u64 = 60 * 1_000;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(2);
+
+const SQLITE_OK: c_int = 0;
+const SQLITE_ROW: c_int = 100;
+const SQLITE_DONE: c_int = 101;
+const SQLITE_OPEN_READ_WRITE: c_int = 0x0000_0002;
+const SQLITE_OPEN_CREATE: c_int = 0x0000_0004;
+const SQLITE_OPEN_NO_MUTEX: c_int = 0x0000_8000;
+
+#[repr(C)]
+struct SqliteHandle {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+struct SqliteStatementHandle {
+    _private: [u8; 0],
+}
+
+#[link(name = "sqlite3")]
+extern "C" {
+    fn sqlite3_open_v2(
+        filename: *const c_char,
+        database: *mut *mut SqliteHandle,
+        flags: c_int,
+        vfs: *const c_char,
+    ) -> c_int;
+    fn sqlite3_close_v2(database: *mut SqliteHandle) -> c_int;
+    fn sqlite3_busy_timeout(database: *mut SqliteHandle, milliseconds: c_int) -> c_int;
+    fn sqlite3_errmsg(database: *mut SqliteHandle) -> *const c_char;
+    fn sqlite3_exec(
+        database: *mut SqliteHandle,
+        sql: *const c_char,
+        callback: Option<unsafe extern "C" fn(*mut c_void, c_int, *mut *mut c_char, *mut *mut c_char) -> c_int>,
+        callback_argument: *mut c_void,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
+    fn sqlite3_free(pointer: *mut c_void);
+    fn sqlite3_prepare_v2(
+        database: *mut SqliteHandle,
+        sql: *const c_char,
+        bytes: c_int,
+        statement: *mut *mut SqliteStatementHandle,
+        tail: *mut *const c_char,
+    ) -> c_int;
+    fn sqlite3_step(statement: *mut SqliteStatementHandle) -> c_int;
+    fn sqlite3_finalize(statement: *mut SqliteStatementHandle) -> c_int;
+    fn sqlite3_reset(statement: *mut SqliteStatementHandle) -> c_int;
+    fn sqlite3_clear_bindings(statement: *mut SqliteStatementHandle) -> c_int;
+    fn sqlite3_bind_text(
+        statement: *mut SqliteStatementHandle,
+        index: c_int,
+        value: *const c_char,
+        bytes: c_int,
+        destructor: Option<unsafe extern "C" fn(*mut c_void)>,
+    ) -> c_int;
+    fn sqlite3_bind_int64(statement: *mut SqliteStatementHandle, index: c_int, value: i64) -> c_int;
+    fn sqlite3_column_text(statement: *mut SqliteStatementHandle, column: c_int) -> *const u8;
+    fn sqlite3_column_int64(statement: *mut SqliteStatementHandle, column: c_int) -> i64;
+}
+
+struct SqliteConnection {
+    handle: *mut SqliteHandle,
+}
+
+impl Drop for SqliteConnection {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            // SAFETY: this connection exclusively owns the handle and all
+            // statements are dropped before their parent connection.
+            unsafe { sqlite3_close_v2(self.handle) };
+        }
+    }
+}
+
+impl SqliteConnection {
+    fn error(&self, context: &str) -> String {
+        // SAFETY: sqlite3_errmsg returns storage owned by the live connection.
+        let message = unsafe {
+            let pointer = sqlite3_errmsg(self.handle);
+            if pointer.is_null() {
+                "unknown SQLite error".to_owned()
+            } else {
+                CStr::from_ptr(pointer).to_string_lossy().into_owned()
+            }
+        };
+        format!("{context}: {message}")
+    }
+
+    fn execute_batch(&self, sql: &str, context: &str) -> Result<(), String> {
+        let sql = CString::new(sql).map_err(|_| format!("{context}: SQL contains NUL"))?;
+        let mut error_message = ptr::null_mut();
+        // SAFETY: the connection and SQL string are valid for the call; no
+        // callback is installed and SQLite owns any returned error message.
+        let result = unsafe {
+            sqlite3_exec(
+                self.handle,
+                sql.as_ptr(),
+                None,
+                ptr::null_mut(),
+                &mut error_message,
+            )
+        };
+        if result == SQLITE_OK {
+            return Ok(());
+        }
+        let message = if error_message.is_null() {
+            self.error(context)
+        } else {
+            // SAFETY: sqlite3_exec allocated this NUL-terminated error string.
+            let message = unsafe { CStr::from_ptr(error_message) }
+                .to_string_lossy()
+                .into_owned();
+            // SAFETY: sqlite3_free is the required allocator pair.
+            unsafe { sqlite3_free(error_message.cast()) };
+            format!("{context}: {message}")
+        };
+        Err(message)
+    }
+
+    fn prepare<'connection>(
+        &'connection self,
+        sql: &str,
+        context: &str,
+    ) -> Result<SqliteStatement<'connection>, String> {
+        let sql = CString::new(sql).map_err(|_| format!("{context}: SQL contains NUL"))?;
+        let mut handle = ptr::null_mut();
+        // SAFETY: SQLite copies/compiles the SQL before this call returns.
+        let result = unsafe {
+            sqlite3_prepare_v2(self.handle, sql.as_ptr(), -1, &mut handle, ptr::null_mut())
+        };
+        if result != SQLITE_OK || handle.is_null() {
+            return Err(self.error(context));
+        }
+        Ok(SqliteStatement {
+            connection: self,
+            handle,
+        })
+    }
+}
+
+struct SqliteStatement<'connection> {
+    connection: &'connection SqliteConnection,
+    handle: *mut SqliteStatementHandle,
+}
+
+impl Drop for SqliteStatement<'_> {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            // SAFETY: this statement exclusively owns its prepared handle.
+            unsafe { sqlite3_finalize(self.handle) };
+        }
+    }
+}
+
+impl SqliteStatement<'_> {
+    fn step(&mut self, context: &str) -> Result<c_int, String> {
+        // SAFETY: the prepared statement is live and exclusively borrowed.
+        let result = unsafe { sqlite3_step(self.handle) };
+        if result == SQLITE_ROW || result == SQLITE_DONE {
+            Ok(result)
+        } else {
+            Err(self.connection.error(context))
+        }
+    }
+
+    fn reset(&mut self, context: &str) -> Result<(), String> {
+        // SAFETY: resetting and clearing a live prepared statement is valid.
+        let reset = unsafe { sqlite3_reset(self.handle) };
+        let clear = unsafe { sqlite3_clear_bindings(self.handle) };
+        if reset == SQLITE_OK && clear == SQLITE_OK {
+            Ok(())
+        } else {
+            Err(self.connection.error(context))
+        }
+    }
+
+    fn bind_text(&mut self, index: c_int, value: &CString, context: &str) -> Result<(), String> {
+        // SAFETY: value remains alive through the following sqlite3_step call.
+        let result = unsafe {
+            sqlite3_bind_text(self.handle, index, value.as_ptr(), -1, None)
+        };
+        if result == SQLITE_OK {
+            Ok(())
+        } else {
+            Err(self.connection.error(context))
+        }
+    }
+
+    fn bind_i64(&mut self, index: c_int, value: i64, context: &str) -> Result<(), String> {
+        // SAFETY: binding an integer to a live statement is valid.
+        let result = unsafe { sqlite3_bind_int64(self.handle, index, value) };
+        if result == SQLITE_OK {
+            Ok(())
+        } else {
+            Err(self.connection.error(context))
+        }
+    }
+
+    fn column_text(&self, column: c_int, context: &str) -> Result<String, String> {
+        // SAFETY: called only while sqlite3_step is positioned on SQLITE_ROW.
+        let pointer = unsafe { sqlite3_column_text(self.handle, column) };
+        if pointer.is_null() {
+            return Err(format!("{context}: NULL text column {column}"));
+        }
+        // SAFETY: SQLite exposes a NUL-terminated UTF-8 byte sequence here.
+        Ok(unsafe { CStr::from_ptr(pointer.cast()) }
+            .to_string_lossy()
+            .into_owned())
+    }
+
+    fn column_i64(&self, column: c_int) -> i64 {
+        // SAFETY: called only while sqlite3_step is positioned on SQLITE_ROW.
+        unsafe { sqlite3_column_int64(self.handle, column) }
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 struct TrafficEntry {
@@ -184,7 +400,7 @@ fn unix_time_seconds() -> u64 {
         .as_secs()
 }
 
-fn open_database(path: &Path) -> Result<Connection, String> {
+fn open_database(path: &Path) -> Result<SqliteConnection, String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("create traffic database directory: {error}"))?;
@@ -194,22 +410,44 @@ fn open_database(path: &Path) -> Result<Connection, String> {
             let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
         }
     }
-    let connection = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|error| format!("open traffic database: {error}"))?;
+    let path_string = CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(|_| "open traffic database: path contains NUL".to_owned())?;
+    let mut handle = ptr::null_mut();
+    // SAFETY: path_string is NUL-terminated and handle is a valid out pointer.
+    let open_result = unsafe {
+        sqlite3_open_v2(
+            path_string.as_ptr(),
+            &mut handle,
+            SQLITE_OPEN_READ_WRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NO_MUTEX,
+            ptr::null(),
+        )
+    };
+    if open_result != SQLITE_OK || handle.is_null() {
+        let error = if handle.is_null() {
+            format!("open traffic database: SQLite result {open_result}")
+        } else {
+            let connection = SqliteConnection { handle };
+            connection.error("open traffic database")
+        };
+        return Err(error);
+    }
+    let connection = SqliteConnection { handle };
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))
             .map_err(|error| format!("secure traffic database: {error}"))?;
     }
-    connection
-        .busy_timeout(SQLITE_BUSY_TIMEOUT)
-        .map_err(|error| format!("configure traffic database timeout: {error}"))?;
+    // SAFETY: the connection is live and the timeout fits in c_int.
+    let busy_result = unsafe {
+        sqlite3_busy_timeout(
+            connection.handle,
+            SQLITE_BUSY_TIMEOUT.as_millis().min(c_int::MAX as u128) as c_int,
+        )
+    };
+    if busy_result != SQLITE_OK {
+        return Err(connection.error("configure traffic database timeout"));
+    }
     connection
         .execute_batch(
             "PRAGMA journal_mode=WAL;
@@ -225,8 +463,8 @@ fn open_database(path: &Path) -> Result<Connection, String> {
                  updated_at INTEGER NOT NULL CHECK (updated_at >= 0)
              ) WITHOUT ROWID;
              PRAGMA user_version=1;",
-        )
-        .map_err(|error| format!("initialize traffic database: {error}"))?;
+            "initialize traffic database",
+        )?;
     Ok(connection)
 }
 
@@ -236,24 +474,17 @@ fn load_entries(path: &Path) -> Result<BTreeMap<String, TrafficEntry>, String> {
         .prepare(
             "SELECT identity_key, mac, zone, tx_bytes, rx_bytes, updated_at
              FROM client_traffic",
+            "prepare traffic database read",
         )
-        .map_err(|error| format!("prepare traffic database read: {error}"))?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, i64>(5)?,
-            ))
-        })
-        .map_err(|error| format!("query traffic database: {error}"))?;
+        ?;
     let mut entries = BTreeMap::new();
-    for row in rows {
-        let (identity_key, mac, zone, tx_bytes, rx_bytes, updated_at) =
-            row.map_err(|error| format!("read traffic database row: {error}"))?;
+    while statement.step("query traffic database")? == SQLITE_ROW {
+        let identity_key = statement.column_text(0, "read traffic database row")?;
+        let mac = statement.column_text(1, "read traffic database row")?;
+        let zone = statement.column_text(2, "read traffic database row")?;
+        let tx_bytes = statement.column_i64(3);
+        let rx_bytes = statement.column_i64(4);
+        let updated_at = statement.column_i64(5);
         entries.insert(
             identity_key,
             TrafficEntry {
@@ -270,40 +501,49 @@ fn load_entries(path: &Path) -> Result<BTreeMap<String, TrafficEntry>, String> {
 }
 
 fn persist_entries(path: &Path, entries: &BTreeMap<String, TrafficEntry>) -> Result<(), String> {
-    let mut connection = open_database(path)?;
-    let transaction = connection
-        .transaction()
-        .map_err(|error| format!("start traffic database transaction: {error}"))?;
-    {
-        let mut statement = transaction
-            .prepare_cached(
-                "INSERT INTO client_traffic
-                    (identity_key, mac, zone, tx_bytes, rx_bytes, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(identity_key) DO UPDATE SET
-                    mac=excluded.mac,
-                    zone=excluded.zone,
-                    tx_bytes=excluded.tx_bytes,
-                    rx_bytes=excluded.rx_bytes,
-                    updated_at=excluded.updated_at",
-            )
-            .map_err(|error| format!("prepare traffic database write: {error}"))?;
+    let connection = open_database(path)?;
+    connection.execute_batch("BEGIN IMMEDIATE", "start traffic database transaction")?;
+    let result = (|| {
+        let mut statement = connection.prepare(
+            "INSERT INTO client_traffic
+                (identity_key, mac, zone, tx_bytes, rx_bytes, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(identity_key) DO UPDATE SET
+                mac=excluded.mac,
+                zone=excluded.zone,
+                tx_bytes=excluded.tx_bytes,
+                rx_bytes=excluded.rx_bytes,
+                updated_at=excluded.updated_at",
+            "prepare traffic database write",
+        )?;
         for (identity_key, entry) in entries.iter().filter(|(_, entry)| entry.dirty) {
-            statement
-                .execute(params![
-                    identity_key,
-                    entry.mac,
-                    entry.zone,
-                    sqlite_integer(entry.tx_bytes),
-                    sqlite_integer(entry.rx_bytes),
-                    sqlite_integer(entry.updated_at),
-                ])
-                .map_err(|error| format!("write traffic database row: {error}"))?;
+            let identity_key = sqlite_text(identity_key, "identity key")?;
+            let mac = sqlite_text(&entry.mac, "MAC")?;
+            let zone = sqlite_text(&entry.zone, "zone")?;
+            statement.bind_text(1, &identity_key, "bind traffic identity")?;
+            statement.bind_text(2, &mac, "bind traffic MAC")?;
+            statement.bind_text(3, &zone, "bind traffic zone")?;
+            statement.bind_i64(4, sqlite_integer(entry.tx_bytes), "bind traffic upload")?;
+            statement.bind_i64(5, sqlite_integer(entry.rx_bytes), "bind traffic download")?;
+            statement.bind_i64(6, sqlite_integer(entry.updated_at), "bind traffic timestamp")?;
+            if statement.step("write traffic database row")? != SQLITE_DONE {
+                return Err("write traffic database row: unexpected SQLite row".to_owned());
+            }
+            statement.reset("reset traffic database write")?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => connection.execute_batch("COMMIT", "commit traffic database"),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK", "rollback traffic database");
+            Err(error)
         }
     }
-    transaction
-        .commit()
-        .map_err(|error| format!("commit traffic database: {error}"))
+}
+
+fn sqlite_text(value: &str, field: &str) -> Result<CString, String> {
+    CString::new(value).map_err(|_| format!("write traffic database row: {field} contains NUL"))
 }
 
 fn sqlite_integer(value: u64) -> i64 {
