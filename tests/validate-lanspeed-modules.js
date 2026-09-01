@@ -5965,6 +5965,13 @@ function assertStatusStyleModule(src) {
 		if (!responsiveCss.includes(marker))
 			fail(`statusStyleResponsive.js must define a balanced desktop layout for every optional-column combination: ${marker}`);
 	});
+	[
+		':is(:nth-child(3),:nth-child(4),:nth-child(5),:nth-child(6)){width:9%;text-align:center}',
+		':is(:nth-child(3),:nth-child(4),:nth-child(5),:nth-child(6)){width:11%!important}'
+	].forEach(function(marker) {
+		if (!responsiveCss.includes(marker))
+			fail(`live and cumulative traffic columns must retain one compact, even desktop rhythm: ${marker}`);
+	});
 	if (!responsiveCss.includes('.lanspeed-table td:nth-child(2){text-align:left!important}')) {
 		fail('desktop MAC values must share the MAC heading reading edge');
 	}
