@@ -27,6 +27,7 @@ var RESPONSIVE_CSS = [
 	'.lanspeed-clients-card .lanspeed-client-name .ipline{max-width:100%}}',
 
 	'@media (max-width:700px){.lanspeed-header,.lanspeed-details>summary{align-items:center}',
+	'.lanspeed-clients-card .lanspeed-column-resize-handle{display:none}',
 	'.lanspeed-status-error{grid-template-columns:minmax(0,1fr);gap:.25em}',
 	'.lanspeed-status-error-title{white-space:normal}',
 	'.lanspeed-status-error-list{grid-column:auto;grid-template-columns:minmax(0,1fr)}',
@@ -100,6 +101,7 @@ var RESPONSIVE_CSS = [
 	 * descriptive columns. Upload and download totals are adjacent sortable
 	 * columns; TCP and UDP remain a compact pair. */
 	'@media (min-width:701px){',
+	'.lanspeed-clients-card .lanspeed-body{overflow-x:auto}',
 	'.lanspeed-clients-card .lanspeed-client-control-header{text-align:center}',
 	'.lanspeed-clients-card .lanspeed-control-actions{display:flex;flex-wrap:nowrap;justify-content:flex-start}',
 	'.lanspeed-clients-card .lanspeed-client-control{min-width:0}',
@@ -107,6 +109,15 @@ var RESPONSIVE_CSS = [
 	'.lanspeed-clients-card .lanspeed-client-mac{min-width:0;overflow:hidden;text-overflow:ellipsis}',
 	'.lanspeed-clients-card .lanspeed-control-state{display:none!important}',
 	'.lanspeed-clients-card .lanspeed-table{table-layout:fixed}',
+	/* A resized table uses explicit grid tracks. Native table sizing treats the
+	 * width as a minimum and redistributes narrow columns, so keep the tracks
+	 * independent and let the scroll container own any extra width. */
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout{display:block!important;table-layout:fixed!important}',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout thead,',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout tbody{display:block;width:100%}',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout thead>tr,',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout tbody>tr{display:grid;width:100%;grid-template-columns:var(--lanspeed-client-grid-template)}',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout :is(th,td){display:block!important;width:auto!important;min-width:0;box-sizing:border-box}',
 	'.lanspeed-clients-card .lanspeed-table th:nth-child(1),',
 	'.lanspeed-clients-card .lanspeed-table td:nth-child(1){width:22%}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] :is(th,td):nth-child(9){width:0}',

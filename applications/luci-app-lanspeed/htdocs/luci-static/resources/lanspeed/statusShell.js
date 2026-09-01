@@ -4,8 +4,252 @@
 'require lanspeed.theme as lsTheme';
 'require lanspeed.statusStyle as statusStyle';
 
+var COLUMN_WIDTHS_KEY = 'luci-app-lanspeed.client-column-widths.v1';
+
+function setImportantTableWidth(table, value) {
+	if (!table || !table.style) return;
+	if (typeof table.style.setProperty === 'function')
+		table.style.setProperty('width', value, 'important');
+	else
+		table.style.width = value;
+}
+
+function clearTableWidth(table) {
+	if (!table || !table.style) return;
+	if (typeof table.style.removeProperty === 'function')
+		table.style.removeProperty('width');
+	else
+		delete table.style.width;
+}
+
+function setImportantTableDisplay(table, value) {
+	if (!table || !table.style) return;
+	if (typeof table.style.setProperty === 'function')
+		table.style.setProperty('display', value, 'important');
+	else
+		table.style.display = value;
+}
+
+function clearTableDisplay(table) {
+	if (!table || !table.style) return;
+	if (typeof table.style.removeProperty === 'function')
+		table.style.removeProperty('display');
+	else
+		delete table.style.display;
+}
+
+function setColumnLayout(table, widths, tableWidth) {
+	if (!table || !table.style || !Array.isArray(widths) || !(tableWidth > 0)) return;
+	if (table.classList && typeof table.classList.add === 'function')
+		table.classList.add('lanspeed-custom-column-layout');
+	setImportantTableDisplay(table, 'block');
+	setImportantTableWidth(table, tableWidth.toFixed(2) + 'px');
+	table.style.setProperty('--lanspeed-client-grid-template', widths.map(function(width) {
+		return Math.max(0, Number(width) || 0).toFixed(2) + 'px';
+	}).join(' '));
+}
+
+function clearColumnLayout(table) {
+	if (!table || !table.style) return;
+	if (table.classList && typeof table.classList.remove === 'function')
+		table.classList.remove('lanspeed-custom-column-layout');
+	if (typeof table.style.removeProperty === 'function')
+		table.style.removeProperty('--lanspeed-client-grid-template');
+	clearTableWidth(table);
+	clearTableDisplay(table);
+}
+
+function columnLayoutKey(table) {
+	return [ 'status', 'totals', 'control' ].map(function(name) {
+		return name + '=' + (table.getAttribute('data-client-' + name) || 'shown');
+	}).join('|');
+}
+
+function visibleColumnHeaders(refs) {
+	return (refs.clientColumnHeaders || []).filter(function(column) {
+		return column.th && !column.th.hidden;
+	});
+}
+
+function loadColumnWidths(viewState) {
+	if (viewState.clientColumnWidthsLoaded) return viewState.clientColumnWidths;
+	var stored = {};
+	try {
+		var raw = window.localStorage.getItem(COLUMN_WIDTHS_KEY);
+		var parsed = raw ? JSON.parse(raw) : null;
+		if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+			stored = parsed;
+	} catch (e) {}
+	viewState.clientColumnWidths = stored;
+	viewState.clientColumnWidthsLoaded = true;
+	return stored;
+}
+
+function saveColumnWidths(viewState) {
+	try {
+		window.localStorage.setItem(COLUMN_WIDTHS_KEY,
+			JSON.stringify(viewState.clientColumnWidths || {}));
+	} catch (e) {}
+}
+
+function applyStoredColumnWidths(viewState, refs) {
+	var table = refs && refs.clientsTable;
+	if (!table) return;
+	var columns = visibleColumnHeaders(refs);
+	clearColumnLayout(table);
+	var stored = loadColumnWidths(viewState)[columnLayoutKey(table)];
+	/* Accept the short-lived pre-release shape as a best-effort migration. */
+	if (stored && typeof stored === 'object' && !stored.columns) {
+		var legacyColumns = {};
+		columns.forEach(function(column) {
+			var legacy = Number(stored[column.key]);
+			if (isFinite(legacy) && legacy > 0) legacyColumns[column.key] = legacy;
+		});
+		if (Object.keys(legacyColumns).length)
+			stored = { tableWidth: table.parentElement && table.parentElement.clientWidth || 0,
+				columns: legacyColumns };
+	}
+	if (!stored || typeof stored !== 'object' || Array.isArray(stored) ||
+		!stored.columns || typeof stored.columns !== 'object') return;
+	var storedTableWidth = Number(stored.tableWidth);
+	if (!(storedTableWidth > 0)) return;
+	var values = columns.map(function(column) {
+		var value = Number(stored.columns[column.key]);
+		return isFinite(value) && value > 0 ? value : 0;
+	});
+	var total = values.reduce(function(sum, value) { return sum + value; }, 0);
+	if (!(total > 0)) return;
+	var tableWidth = storedTableWidth;
+	setColumnLayout(table, values.map(function(value) {
+		return value / total * tableWidth;
+	}), tableWidth);
+}
+
+function persistCurrentColumnWidths(viewState, refs) {
+	var table = refs && refs.clientsTable;
+	if (!table || typeof table.getBoundingClientRect !== 'function') return;
+	var tableWidth = Number(table.getBoundingClientRect().width);
+	if (!(tableWidth > 0)) return;
+	var values = {};
+	visibleColumnHeaders(refs).forEach(function(column) {
+		if (!column.th || typeof column.th.getBoundingClientRect !== 'function') return;
+		var width = Number(column.th.getBoundingClientRect().width);
+		if (width > 0) values[column.key] = width / tableWidth * 100;
+	});
+	if (!Object.keys(values).length) return;
+	var stored = loadColumnWidths(viewState);
+	stored[columnLayoutKey(table)] = {
+		tableWidth: tableWidth,
+		columns: values
+	};
+	viewState.clientColumnWidths = stored;
+	saveColumnWidths(viewState);
+}
+
+function minimumColumnWidth(key) {
+	if (key === 'hostname') return 120;
+	if (key === 'mac') return 145;
+	if (key === 'control') return 145;
+	if (key === 'status') return 80;
+	if (key === 'tcp_conns' || key === 'udp_conns') return 62;
+	if (key === 'tx_bytes' || key === 'rx_bytes') return 92;
+	return 88;
+}
+
+function setupColumnResize(viewState, refs) {
+	var table = refs && refs.clientsTable;
+	if (!table) return;
+	loadColumnWidths(viewState);
+	(refs.clientColumnHeaders || []).forEach(function(column) {
+		var th = column.th;
+		if (!th || th.getAttribute('data-column-resize-ready') === '1') return;
+		th.setAttribute('data-column-resize-ready', '1');
+		th.className = String(th.className || '') + ' lanspeed-resizable-column';
+		var handle = E('span', {
+			'class': 'lanspeed-column-resize-handle',
+			'role': 'separator',
+			'aria-orientation': 'vertical',
+			'aria-label': _('拖动调整列宽'),
+			'tabindex': '0'
+		});
+		handle.addEventListener('click', function(event) {
+			if (event && event.preventDefault) event.preventDefault();
+			if (event && event.stopPropagation) event.stopPropagation();
+		});
+		handle.addEventListener('pointerdown', function(event) {
+			if (!event || (event.button !== undefined && event.button !== 0)) return;
+			var visible = visibleColumnHeaders(refs);
+			var index = visible.indexOf(column);
+			if (index < 0) return;
+			var next = index < visible.length - 1 ? visible[index + 1] : null;
+			if (typeof th.getBoundingClientRect !== 'function' ||
+				(next && (!next.th || typeof next.th.getBoundingClientRect !== 'function'))) return;
+			var tableWidth = Number(table.getBoundingClientRect().width);
+			var firstWidth = Number(th.getBoundingClientRect().width);
+			var nextWidth = next ? Number(next.th.getBoundingClientRect().width) : 0;
+			if (!(tableWidth > 0 && firstWidth > 0) || (next && !(nextWidth > 0))) return;
+			/* Freeze every visible column in pixels before dragging. This makes the
+			 * dragged column independent: the neighbour keeps its width and the
+			 * table grows or shrinks instead of redistributing both columns. */
+			var startWidths = visible.map(function(item) {
+				return Number(item.th.getBoundingClientRect().width) || 0;
+			});
+			setColumnLayout(table, startWidths, tableWidth);
+			viewState.clientColumnResizeActive = true;
+			var startX = Number(event.clientX);
+			var minFirst = minimumColumnWidth(column.key);
+			var minNext = next ? minimumColumnWidth(next.key) : 0;
+			var dragging = false;
+			var hostDocument = typeof document !== 'undefined' ? document : null;
+			function move(moveEvent) {
+				var delta = Number(moveEvent && moveEvent.clientX) - startX;
+				if (!isFinite(delta)) return;
+				/* A non-terminal boundary keeps the neighbour fixed. The terminal
+				 * column has no neighbour, so it can grow the table to the right. */
+				if (!next && delta <= 0) return;
+				var width = Math.max(minFirst, next
+					? Math.min(firstWidth + nextWidth - minNext, firstWidth + delta)
+					: firstWidth + delta);
+				var widths = startWidths.slice();
+				widths[index] = width;
+				setColumnLayout(table, widths, tableWidth + width - firstWidth);
+				dragging = true;
+				if (moveEvent && moveEvent.preventDefault) moveEvent.preventDefault();
+			}
+			function finish() {
+				if (hostDocument && typeof hostDocument.removeEventListener === 'function') {
+					hostDocument.removeEventListener('pointermove', move);
+					hostDocument.removeEventListener('pointerup', finish);
+					hostDocument.removeEventListener('pointercancel', finish);
+				}
+				viewState.clientColumnResizeActive = false;
+				if (dragging)
+					persistCurrentColumnWidths(viewState, refs);
+				else
+					applyStoredColumnWidths(viewState, refs);
+			}
+			if (event.preventDefault) event.preventDefault();
+			if (event.stopPropagation) event.stopPropagation();
+			if (hostDocument && typeof hostDocument.addEventListener === 'function') {
+				hostDocument.addEventListener('pointermove', move);
+				hostDocument.addEventListener('pointerup', finish);
+				hostDocument.addEventListener('pointercancel', finish);
+			}
+			if (typeof handle.setPointerCapture === 'function' && event.pointerId !== undefined)
+				handle.setPointerCapture(event.pointerId);
+		});
+		th.appendChild(handle);
+	});
+	refs.syncClientColumnWidths = function() {
+		if (viewState.clientColumnResizeActive === true) return;
+		applyStoredColumnWidths(viewState, refs);
+	};
+	applyStoredColumnWidths(viewState, refs);
+}
+
 function sortableHeader(viewState, refs, sortKey, label, attrs) {
 	var thAttrs = Object.assign({ 'aria-sort': 'none' }, attrs || {});
+	thAttrs['data-column-key'] = sortKey;
 	var button = E('button', {
 		'type': 'button',
 		'class': 'lanspeed-sort-button'
@@ -14,6 +258,8 @@ function sortableHeader(viewState, refs, sortKey, label, attrs) {
 		E('span', { 'class': 'lanspeed-sort-indicator', 'aria-hidden': 'true' }, '')
 	]);
 	var th = E('th', thAttrs, button);
+	if (refs.clientColumnHeaders)
+		refs.clientColumnHeaders.push({ key: sortKey, th: th });
 
 	refs.sortHeaders[sortKey] = {
 		th: th,
@@ -35,6 +281,7 @@ function buildShell(viewState) {
 	var refs = {};
 	var prefs = viewState.prefs;
 	refs.sortHeaders = {};
+	refs.clientColumnHeaders = [];
 
 	refs.collectorPill = E('span', { 'class': 'label lanspeed-collector-status' }, '-');
 	refs.meta     = E('span', { 'class': 'meta' }, '');
@@ -309,7 +556,8 @@ function buildShell(viewState) {
 
 	refs.tbody = E('tbody', {});
 	refs.statusHeader = E('th', {
-		'class': 'lanspeed-client-status-header'
+		'class': 'lanspeed-client-status-header',
+		'data-column-key': 'status'
 	}, _('状态'));
 	refs.statusHeader.hidden = viewState.showClientStatus !== true;
 	refs.totalUploadHeader = sortableHeader(viewState, refs, 'tx_bytes', _('累计上传'), {
@@ -320,7 +568,10 @@ function buildShell(viewState) {
 		'class': 'num lanspeed-client-total-header lanspeed-client-total-download-header'
 	});
 	refs.totalDownloadHeader.hidden = viewState.showClientTotals !== true;
-	refs.controlHeader = E('th', { 'class': 'lanspeed-client-control-header' }, _('控制'));
+	refs.controlHeader = E('th', {
+		'class': 'lanspeed-client-control-header',
+		'data-column-key': 'control'
+	}, _('控制'));
 	refs.controlHeader.hidden = viewState.showClientControl !== true;
 	refs.clientsTable = E('table', {
 		'id': 'lanspeed-clients-table',
@@ -364,6 +615,9 @@ function buildShell(viewState) {
 			refs.pageNav
 		])
 	]);
+	refs.clientColumnHeaders.push({ key: 'status', th: refs.statusHeader });
+	refs.clientColumnHeaders.push({ key: 'control', th: refs.controlHeader });
+	setupColumnResize(viewState, refs);
 
 	refs.ifacesSummary = E('span', { 'class': 'sum' }, '');
 	refs.ifacesBody    = E('tbody', {});

@@ -497,6 +497,8 @@ function refreshLive(viewState) {
 	var hidePrivateIpv6 = viewState.hidePrivateIpv6 === true;
 	var hideIpv6Ranges = statusIp.hideIpv6RangesValue(viewState.hideIpv6Ranges);
 	setClientStatusVisibility(refs, showClientStatus);
+	if (refs.syncClientColumnWidths)
+		refs.syncClientColumnWidths();
 	var availability = refreshAvailability(viewState, refs);
 
 	var collector = routedInternet ? (routedCollector || 'fast_routed_internet') : accessEdgeOwnsCurrentRate(status) ? 'access_edge' :

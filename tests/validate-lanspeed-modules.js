@@ -5934,6 +5934,9 @@ function assertStatusStyleModule(src) {
 		'.lanspeed-client-control-header{text-align:center}',
 		'.lanspeed-control-actions{display:flex;flex-wrap:nowrap;justify-content:flex-start}',
 		'.lanspeed-control-button{width:4.4em;min-width:4.4em}',
+		'.lanspeed-custom-column-layout',
+		'grid-template-columns:var(--lanspeed-client-grid-template)',
+		'width:auto!important;min-width:0;box-sizing:border-box',
 		'.lanspeed-table th:nth-child(1)',
 		'width:22%',
 		'width:13.6%;text-align:center}',
@@ -6066,6 +6069,15 @@ function assertStatusShellModule(src) {
 	    !src.includes("'class': 'lanspeed-connection-stat'") ||
 	    !src.includes("'class': 'lanspeed-connection-number'")) {
 		fail('lanspeed/statusShell.js must render connection totals with the same three-row metric structure as every other card');
+	}
+	if (!src.includes('lanspeed-column-resize-handle') ||
+		!src.includes('COLUMN_WIDTHS_KEY') ||
+		!src.includes('pointerdown') ||
+		!src.includes('pointercancel') ||
+		!src.includes('clientColumnResizeActive') ||
+		!src.includes('persistCurrentColumnWidths') ||
+		!src.includes('localStorage.setItem(COLUMN_WIDTHS_KEY')) {
+		fail('lanspeed/statusShell.js must provide persistent per-column resize handles');
 	}
 	const collectorBadges = src.match(/lanspeed-collector-status/g) || [];
 	if (collectorBadges.length !== 1 ||
