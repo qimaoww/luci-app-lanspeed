@@ -641,6 +641,10 @@ function createController(viewState, options) {
 	function destroy() {
 		if (destroyed) return;
 		destroyed = true;
+		if (viewState.clientColumnResizeObserver &&
+			typeof viewState.clientColumnResizeObserver.disconnect === 'function')
+			viewState.clientColumnResizeObserver.disconnect();
+		viewState.clientColumnResizeObserver = null;
 		requestSeq++;
 		stopTimer();
 		clearErrorNoticeTimer();
@@ -738,7 +742,22 @@ return baseclass.extend({
 			viewState.refs = built.refs;
 			if (viewState.attachRoot) viewState.attachRoot(built.root);
 			viewState.refreshLive();
-		viewState.schedule();
+			/* LuCI appends the returned root after render() returns. Apply the
+			 * initial column canvas after attachment and once more after the first
+			 * layout pass; the first callback can otherwise capture the table's
+			 * intrinsic width before the card expands to the content width. */
+			var syncClientColumns = function() {
+				if (viewState.destroyed !== true && viewState.refs &&
+					typeof viewState.refs.syncClientColumnWidths === 'function')
+					viewState.refs.syncClientColumnWidths();
+			};
+			if (typeof requestAnimationFrame === 'function')
+				requestAnimationFrame(syncClientColumns);
+			if (typeof setTimeout === 'function') {
+				setTimeout(syncClientColumns, 50);
+				setTimeout(syncClientColumns, 150);
+			}
+			viewState.schedule();
 		return built.root;
 	},
 

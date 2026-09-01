@@ -4,7 +4,9 @@
 'require lanspeed.theme as lsTheme';
 'require lanspeed.statusStyle as statusStyle';
 
-var COLUMN_WIDTHS_KEY = 'luci-app-lanspeed.client-column-widths.v1';
+var COLUMN_WIDTHS_KEY = 'luci-app-lanspeed.client-column-widths.v2';
+var DEFAULT_COLUMN_GAP = 16;
+var MAX_COLUMN_GAP = 32;
 
 function setImportantTableWidth(table, value) {
 	if (!table || !table.style) return;
@@ -38,8 +40,14 @@ function clearTableDisplay(table) {
 		delete table.style.display;
 }
 
-function setColumnLayout(table, widths, tableWidth) {
-	if (!table || !table.style || !Array.isArray(widths) || !(tableWidth > 0)) return;
+function setColumnLayout(table, widths) {
+	if (!table || !table.style || !Array.isArray(widths)) return;
+	var parentWidth = table.parentElement ? Number(table.parentElement.clientWidth) || 0 : 0;
+	var trackWidth = widths.reduce(function(sum, width) {
+		return sum + Math.max(0, Number(width) || 0);
+	}, 0);
+	var tableWidth = parentWidth > 0 ? parentWidth : trackWidth;
+	if (!(tableWidth > 0 && trackWidth > 0)) return;
 	if (table.classList && typeof table.classList.add === 'function')
 		table.classList.add('lanspeed-custom-column-layout');
 	setImportantTableDisplay(table, 'block');
@@ -97,9 +105,62 @@ function saveColumnWidths(viewState) {
 	} catch (e) {}
 }
 
+function sumColumnWidths(widths) {
+	return widths.reduce(function(sum, width) {
+		return sum + Math.max(0, Number(width) || 0);
+	}, 0);
+}
+
+function fitColumnWidths(columns, widths, parentWidth, preferredGap) {
+	var count = columns.length;
+	if (!count || !(parentWidth > 0)) return widths;
+	var minimums = columns.map(function(column) {
+		return minimumColumnWidth(column.key);
+	});
+	var gapCount = Math.max(0, count - 1);
+	var maximumTotal = parentWidth;
+	var minimumTotal = Math.max(sumColumnWidths(minimums),
+		parentWidth - MAX_COLUMN_GAP * gapCount);
+	var preferredTotal = Math.max(minimumTotal,
+		parentWidth - Math.max(0, Number(preferredGap) || 0) * gapCount);
+	var values = widths.map(function(width, index) {
+		return Math.max(minimums[index], Number(width) || minimums[index]);
+	});
+	var total = sumColumnWidths(values);
+	var target = total > maximumTotal ? maximumTotal :
+		total < minimumTotal ? Math.min(maximumTotal, preferredTotal) : total;
+	if (Math.abs(target - total) < .5) return values;
+	if (target > total) {
+		var grow = target - total;
+		var weight = total || count;
+		return values.map(function(width) {
+			return width + grow * (weight > 0 ? width / weight : 1 / count);
+		});
+	}
+	var remaining = total - target;
+	var result = values.slice();
+	for (var round = 0; round < count && remaining > .5; round++) {
+		var flexible = result.map(function(width, index) {
+			return Math.max(0, width - minimums[index]);
+		});
+		var capacity = sumColumnWidths(flexible);
+		if (!(capacity > 0)) break;
+		result = result.map(function(width, index) {
+			var take = Math.min(flexible[index], remaining * flexible[index] / capacity);
+			return width - take;
+		});
+		remaining = Math.max(0, sumColumnWidths(result) - target);
+	}
+	return result;
+}
+
 function applyStoredColumnWidths(viewState, refs) {
 	var table = refs && refs.clientsTable;
 	if (!table) return;
+	/* During render() LuCI builds the table in a detached fragment. Its parent
+	 * can report the table's intrinsic width rather than the final card width;
+	 * never freeze that transient measurement as the persisted canvas. */
+	if (table.isConnected === false) return;
 	var columns = visibleColumnHeaders(refs);
 	var layoutKey = columnLayoutKey(table);
 	var stored = loadColumnWidths(viewState)[layoutKey];
@@ -109,52 +170,49 @@ function applyStoredColumnWidths(viewState, refs) {
 	 * briefly exposes native table sizing and makes the columns visibly jump.
 	 * Keep an already-applied layout untouched until the visible-column state
 	 * actually changes. */
-	if (viewState.clientColumnLayoutKey === layoutKey &&
-		((stored && layoutActive) || (!stored && !layoutActive))) return;
-	clearColumnLayout(table);
-	viewState.clientColumnLayoutKey = layoutKey;
-	/* Accept the short-lived pre-release shape as a best-effort migration. */
-	if (stored && typeof stored === 'object' && !stored.columns) {
-		var legacyColumns = {};
-		columns.forEach(function(column) {
-			var legacy = Number(stored[column.key]);
-			if (isFinite(legacy) && legacy > 0) legacyColumns[column.key] = legacy;
+	var parentWidth = table.parentElement ? Number(table.parentElement.clientWidth) || 0 : 0;
+	if (!(parentWidth > 0) || !columns.length) return;
+	var tableWidth = typeof table.getBoundingClientRect === 'function'
+		? Number(table.getBoundingClientRect().width) || 0 : 0;
+	if (viewState.clientColumnLayoutKey === layoutKey && layoutActive &&
+		(tableWidth <= 0 || Math.abs(tableWidth - parentWidth) < 1)) return;
+	var values;
+	if (stored && typeof stored === 'object' && !Array.isArray(stored) &&
+		stored.columns && typeof stored.columns === 'object') {
+		values = columns.map(function(column) {
+			var value = Number(stored.columns[column.key]);
+			return isFinite(value) && value > 0 ? value : 0;
 		});
-		if (Object.keys(legacyColumns).length)
-			stored = { tableWidth: table.parentElement && table.parentElement.clientWidth || 0,
-				columns: legacyColumns };
 	}
-	if (!stored || typeof stored !== 'object' || Array.isArray(stored) ||
-		!stored.columns || typeof stored.columns !== 'object') return;
-	var storedTableWidth = Number(stored.tableWidth);
-	if (!(storedTableWidth > 0)) return;
-	var values = columns.map(function(column) {
-		var value = Number(stored.columns[column.key]);
-		return isFinite(value) && value > 0 ? value : 0;
-	});
-	var total = values.reduce(function(sum, value) { return sum + value; }, 0);
-	if (!(total > 0)) return;
-	var tableWidth = storedTableWidth;
-	setColumnLayout(table, values.map(function(value) {
-		return value / total * tableWidth;
-	}), tableWidth);
+	if (!values || !(sumColumnWidths(values) > 0)) {
+		values = columns.map(function(column) {
+			return Number(column.th.getBoundingClientRect().width) || minimumColumnWidth(column.key);
+		});
+		var target = Math.max(sumColumnWidths(columns.map(function(column) {
+			return minimumColumnWidth(column.key);
+		})), parentWidth - DEFAULT_COLUMN_GAP * Math.max(0, columns.length - 1));
+		var current = sumColumnWidths(values);
+		if (current > 0)
+			values = values.map(function(width) { return width * target / current; });
+	}
+	clearColumnLayout(table);
+	setColumnLayout(table, fitColumnWidths(columns, values, parentWidth, DEFAULT_COLUMN_GAP));
+	viewState.clientColumnLayoutKey = layoutKey;
 }
 
 function persistCurrentColumnWidths(viewState, refs) {
 	var table = refs && refs.clientsTable;
 	if (!table || typeof table.getBoundingClientRect !== 'function') return;
-	var tableWidth = Number(table.getBoundingClientRect().width);
-	if (!(tableWidth > 0)) return;
 	var values = {};
 	visibleColumnHeaders(refs).forEach(function(column) {
 		if (!column.th || typeof column.th.getBoundingClientRect !== 'function') return;
 		var width = Number(column.th.getBoundingClientRect().width);
-		if (width > 0) values[column.key] = width / tableWidth * 100;
+		if (width > 0) values[column.key] = width;
 	});
 	if (!Object.keys(values).length) return;
 	var stored = loadColumnWidths(viewState);
 	stored[columnLayoutKey(table)] = {
-		tableWidth: tableWidth,
+		version: 2,
 		columns: values
 	};
 	viewState.clientColumnWidths = stored;
@@ -196,38 +254,37 @@ function setupColumnResize(viewState, refs) {
 			var visible = visibleColumnHeaders(refs);
 			var index = visible.indexOf(column);
 			if (index < 0) return;
-			var next = index < visible.length - 1 ? visible[index + 1] : null;
-			if (typeof th.getBoundingClientRect !== 'function' ||
-				(next && (!next.th || typeof next.th.getBoundingClientRect !== 'function'))) return;
-			var tableWidth = Number(table.getBoundingClientRect().width);
-			var firstWidth = Number(th.getBoundingClientRect().width);
-			var nextWidth = next ? Number(next.th.getBoundingClientRect().width) : 0;
-			if (!(tableWidth > 0 && firstWidth > 0) || (next && !(nextWidth > 0))) return;
-			/* Freeze every visible column in pixels before dragging. This makes the
-			 * dragged column independent: the neighbour keeps its width and the
-			 * table grows or shrinks instead of redistributing both columns. */
+			if (typeof th.getBoundingClientRect !== 'function') return;
+			var parentWidth = table.parentElement ? Number(table.parentElement.clientWidth) || 0 : 0;
+			if (!(parentWidth > 0)) return;
+			/* LuCI may dispatch the first pointer event before the root has completed
+			 * its initial attachment. Establish the canvas before measuring tracks so
+			 * a first drag can never fall back to native table redistribution. */
+			applyStoredColumnWidths(viewState, refs);
+			if (!table.classList || !table.classList.contains('lanspeed-custom-column-layout')) return;
 			var startWidths = visible.map(function(item) {
 				return Number(item.th.getBoundingClientRect().width) || 0;
 			});
-			setColumnLayout(table, startWidths, tableWidth);
+			startWidths = fitColumnWidths(visible, startWidths, parentWidth, DEFAULT_COLUMN_GAP);
+			var firstWidth = startWidths[index];
+			if (!(firstWidth > 0)) return;
+			setColumnLayout(table, startWidths);
 			viewState.clientColumnResizeActive = true;
 			var startX = Number(event.clientX);
 			var minFirst = minimumColumnWidth(column.key);
-			var minNext = next ? minimumColumnWidth(next.key) : 0;
+			var gapCount = Math.max(0, visible.length - 1);
+			var otherWidth = sumColumnWidths(startWidths) - firstWidth;
+			var minAllowed = Math.max(minFirst, parentWidth - otherWidth - MAX_COLUMN_GAP * gapCount);
+			var maxAllowed = Math.max(minAllowed, parentWidth - otherWidth);
 			var dragging = false;
 			var hostDocument = typeof document !== 'undefined' ? document : null;
 			function move(moveEvent) {
 				var delta = Number(moveEvent && moveEvent.clientX) - startX;
 				if (!isFinite(delta)) return;
-				/* A non-terminal boundary keeps the neighbour fixed. The terminal
-				 * column has no neighbour, so it can grow the table to the right. */
-				if (!next && delta <= 0) return;
-				var width = Math.max(minFirst, next
-					? Math.min(firstWidth + nextWidth - minNext, firstWidth + delta)
-					: firstWidth + delta);
+				var width = Math.max(minAllowed, Math.min(maxAllowed, firstWidth + delta));
 				var widths = startWidths.slice();
 				widths[index] = width;
-				setColumnLayout(table, widths, tableWidth + width - firstWidth);
+				setColumnLayout(table, widths);
 				dragging = true;
 				if (moveEvent && moveEvent.preventDefault) moveEvent.preventDefault();
 			}
@@ -259,6 +316,17 @@ function setupColumnResize(viewState, refs) {
 		if (viewState.clientColumnResizeActive === true) return;
 		applyStoredColumnWidths(viewState, refs);
 	};
+	/* The first attachment can resize the card after the table has been
+	 * measured (notably when LuCI's content grid settles). Follow the body
+	 * itself so the canvas is corrected without requiring a manual refresh. */
+	if (typeof ResizeObserver === 'function' && table.parentElement &&
+		!viewState.clientColumnResizeObserver) {
+		viewState.clientColumnResizeObserver = new ResizeObserver(function() {
+			if (viewState.destroyed !== true && viewState.clientColumnResizeActive !== true)
+				applyStoredColumnWidths(viewState, refs);
+		});
+		viewState.clientColumnResizeObserver.observe(table.parentElement);
+	}
 	applyStoredColumnWidths(viewState, refs);
 }
 

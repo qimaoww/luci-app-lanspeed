@@ -101,7 +101,7 @@ var RESPONSIVE_CSS = [
 	 * descriptive columns. Upload and download totals are adjacent sortable
 	 * columns; TCP and UDP remain a compact pair. */
 	'@media (min-width:701px){',
-	'.lanspeed-clients-card .lanspeed-body{overflow-x:auto}',
+	'.lanspeed-clients-card .lanspeed-body{overflow-x:hidden}',
 	'.lanspeed-clients-card .lanspeed-client-control-header{text-align:center}',
 	'.lanspeed-clients-card .lanspeed-control-actions{display:flex;flex-wrap:nowrap;justify-content:flex-start}',
 	'.lanspeed-clients-card .lanspeed-client-control{min-width:0}',
@@ -111,13 +111,16 @@ var RESPONSIVE_CSS = [
 	'.lanspeed-clients-card .lanspeed-table{table-layout:fixed}',
 	/* A resized table uses explicit grid tracks. Native table sizing treats the
 	 * width as a minimum and redistributes narrow columns, so keep the tracks
-	 * independent and let the scroll container own any extra width. */
+	 * independent while distributing spare card space between the columns. */
 	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout{display:block!important;table-layout:fixed!important}',
 	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout thead,',
 	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout tbody{display:block;width:100%}',
 	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout thead>tr,',
-	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout tbody>tr{display:grid;width:100%;grid-template-columns:var(--lanspeed-client-grid-template)}',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout tbody>tr{display:grid;width:100%;grid-template-columns:var(--lanspeed-client-grid-template);justify-content:space-between}',
 	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout :is(th,td){display:block!important;width:auto!important;min-width:0;box-sizing:border-box}',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout thead>tr{border-bottom:1px solid var(--lanspeed-border)}',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout tbody>tr{border-bottom:1px solid var(--lanspeed-border)}',
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout :is(th,td){border-bottom:0}',
 	'.lanspeed-clients-card .lanspeed-table th:nth-child(1),',
 	'.lanspeed-clients-card .lanspeed-table td:nth-child(1){width:22%}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] :is(th,td):nth-child(9){width:0}',
@@ -175,7 +178,11 @@ var RESPONSIVE_CSS = [
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="shown"][data-client-totals="hidden"][data-client-control="hidden"] :is(th,td):nth-child(2){width:20%!important}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="shown"][data-client-totals="hidden"][data-client-control="hidden"] :is(th,td):is(:nth-child(3),:nth-child(4)){width:13%!important}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="shown"][data-client-totals="hidden"][data-client-control="hidden"] :is(th,td):is(:nth-child(7),:nth-child(8)){width:11%!important}',
-	'.lanspeed-clients-card .lanspeed-table[data-client-status="shown"][data-client-totals="hidden"][data-client-control="hidden"] :is(th,td):nth-child(9){width:10%!important}}',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="shown"][data-client-totals="hidden"][data-client-control="hidden"] :is(th,td):nth-child(9){width:10%!important}',
+	/* Grid tracks are the source of truth for the adjustable canvas. The
+	 * combination-specific percentage rules above are retained for the native
+	 * fallback, but must not shrink grid children inside their assigned track. */
+	'.lanspeed-clients-card .lanspeed-table.lanspeed-custom-column-layout[data-client-status][data-client-totals][data-client-control] :is(th,td):nth-child(n){width:100%!important;min-width:0!important;max-width:none!important}}',
 	'@media (min-width:701px) and (max-width:900px){',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] th:nth-child(1),',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"] td:nth-child(1){width:15%}',
