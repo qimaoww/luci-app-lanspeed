@@ -128,7 +128,12 @@ var RESPONSIVE_CSS = [
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="shown"][data-client-totals="shown"] :is(th,td):nth-child(9){width:6%;text-align:center}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="shown"][data-client-totals="shown"] :is(th,td):nth-child(10){width:14%;text-align:center}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="shown"][data-client-totals="shown"] :is(th,td):is(:nth-child(7),:nth-child(8)){width:5%;text-align:center}',
-	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="hidden"] :is(th,td):is(:nth-child(2),:nth-child(3),:nth-child(4),:nth-child(10)){width:17%;text-align:center}',
+	/* With cumulative traffic hidden, keep MAC readable and pull the live
+	 * upload/download pair together without moving the identity column. */
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="hidden"][data-client-control="shown"] :is(th,td):nth-child(2){width:20%;text-align:left}',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="hidden"][data-client-control="shown"] :is(th,td):is(:nth-child(3),:nth-child(4)){width:11%;text-align:center}',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="hidden"][data-client-control="shown"] :is(th,td):is(:nth-child(7),:nth-child(8)){width:6%;text-align:center}',
+	'.lanspeed-clients-card .lanspeed-table[data-client-status="hidden"][data-client-totals="hidden"][data-client-control="shown"] :is(th,td):nth-child(10){width:24%;text-align:center}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="shown"][data-client-totals="hidden"] :is(th,td):is(:nth-child(2),:nth-child(3),:nth-child(4),:nth-child(9),:nth-child(10)){width:13.6%;text-align:center}',
 	'.lanspeed-clients-card .lanspeed-table[data-client-status="shown"][data-client-totals="hidden"] :is(th,td):is(:nth-child(7),:nth-child(8)){width:5%;text-align:center}',
 	'.lanspeed-clients-card .lanspeed-control-actions{justify-content:center}',
