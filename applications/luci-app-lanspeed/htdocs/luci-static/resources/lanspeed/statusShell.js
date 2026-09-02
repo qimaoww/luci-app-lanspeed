@@ -4,11 +4,16 @@
 'require lanspeed.theme as lsTheme';
 'require lanspeed.statusStyle as statusStyle';
 
-var COLUMN_WIDTHS_KEY = 'luci-app-lanspeed.client-column-widths.v4';
-/* Keep an explicit per-column resize reserve. A larger reserve gives each
- * track useful drag range while preserving every following track's position. */
-var DEFAULT_COLUMN_GAP = 48;
-var MAX_COLUMN_GAP = 96;
+var COLUMN_WIDTHS_KEY = 'luci-app-lanspeed.client-column-widths.v9';
+var RESIZE_MIN_COLUMN_WIDTH = 32;
+
+function isResizeLockedColumn(columns, index) {
+	if (!(index >= 0 && index < columns.length)) return false;
+	var key = columns[index].key;
+	var controlVisible = columns.some(function(column) { return column.key === 'control'; });
+	return index === 0 || index === columns.length - 1 ||
+		(!controlVisible && (key === 'tcp_conns' || key === 'udp_conns'));
+}
 
 function setImportantTableWidth(table, value) {
 	if (!table || !table.style) return;
@@ -42,45 +47,103 @@ function clearTableDisplay(table) {
 		delete table.style.display;
 }
 
-function columnStyleIndex(column) {
-	return Math.max(1, (Number(column && column.th && column.th.cellIndex) || 0) + 1);
-}
-
-function columnWidthProperty(column) {
-	return '--lanspeed-client-column-' + columnStyleIndex(column) + '-width';
-}
-
-function columnGapProperty(column) {
-	return '--lanspeed-client-column-' + columnStyleIndex(column) + '-gap';
-}
-
-function setColumnLayout(table, columns, widths, gaps) {
-	if (!table || !table.style || !Array.isArray(columns) || !Array.isArray(widths)) return;
-	var parentWidth = table.parentElement ? Number(table.parentElement.clientWidth) || 0 : 0;
-	var trackWidth = widths.reduce(function(sum, width) {
+function sumColumnWidths(widths) {
+	return widths.reduce(function(sum, width) {
 		return sum + Math.max(0, Number(width) || 0);
 	}, 0);
-	var gapWidth = (gaps || []).reduce(function(sum, gap) {
-		return sum + Math.max(0, Number(gap) || 0);
-	}, 0);
-	var tableWidth = parentWidth > 0 ? parentWidth : trackWidth;
+}
+
+function preferredColumnWidth(key) {
+	if (key === 'hostname') return 120;
+	if (key === 'mac') return 145;
+	if (key === 'control') return 145;
+	if (key === 'tcp_conns' || key === 'udp_conns') return 62;
+	if (key === 'tx_bytes' || key === 'rx_bytes') return 92;
+	return 88;
+}
+
+function minimumColumnWidth(key, locked) {
+	if (locked) return preferredColumnWidth(key);
+	/* Keep a centered value readable while still allowing a useful left drag. */
+	if (key === 'mac') return 96;
+	if (key === 'tx' || key === 'rx' || key === 'tx_bytes' || key === 'rx_bytes') return 80;
+	if (key === 'tcp_conns' || key === 'udp_conns') return 44;
+	return RESIZE_MIN_COLUMN_WIDTH;
+}
+
+function normalizeColumnWidths(columns, widths) {
+	return columns.map(function(column, index) {
+		return Math.max(minimumColumnWidth(column.key,
+			isResizeLockedColumn(columns, index)), Number(widths[index]) || 0);
+	});
+}
+
+function fitInitialColumnWidths(columns, widths, parentWidth) {
+	var values = normalizeColumnWidths(columns, widths);
+	var total = sumColumnWidths(values);
+	if (!(parentWidth > 0) || total <= parentWidth) return values;
+	var minimums = columns.map(function(column, index) {
+		return minimumColumnWidth(column.key, isResizeLockedColumn(columns, index));
+	});
+	var remaining = total - parentWidth;
+	for (var round = 0; round < columns.length && remaining > .5; round++) {
+		var capacity = values.map(function(width, index) {
+			return Math.max(0, width - minimums[index]);
+		});
+		var totalCapacity = sumColumnWidths(capacity);
+		if (!(totalCapacity > 0)) break;
+		values = values.map(function(width, index) {
+			return width - Math.min(capacity[index], remaining * capacity[index] / totalCapacity);
+		});
+		remaining = Math.max(0, sumColumnWidths(values) - parentWidth);
+	}
+	return values;
+}
+
+function gridTemplate(widths) {
+	if (!widths.length) return '';
+	var tracks = widths.slice(0, -1).map(function(width) {
+		return Math.max(0, Number(width) || 0).toFixed(2) + 'px';
+	});
+	/* The flexible spacer keeps the locked terminal column on the card edge
+	 * while the other tracks shrink. It collapses to zero for wide layouts. */
+	tracks.push('minmax(0,1fr)');
+	tracks.push(Math.max(0, Number(widths[widths.length - 1]) || 0).toFixed(2) + 'px');
+	return tracks.join(' ');
+}
+
+function setColumnLayout(table, columns, widths) {
+	if (!table || !table.style || !Array.isArray(columns) || !Array.isArray(widths)) return;
+	var parentWidth = table.parentElement ? Number(table.parentElement.clientWidth) || 0 : 0;
+	var values = normalizeColumnWidths(columns, widths);
+	var trackWidth = sumColumnWidths(values);
+	var tableWidth = Math.max(parentWidth, trackWidth);
 	if (!(tableWidth > 0 && trackWidth > 0 && columns.length === widths.length)) return;
 	if (table.classList && typeof table.classList.add === 'function')
 		table.classList.add('lanspeed-custom-column-layout');
+	if (table.parentElement && table.parentElement.classList) {
+		if (parentWidth > 0 && tableWidth > parentWidth + 1)
+			table.parentElement.classList.add('lanspeed-column-overflow');
+		else {
+			table.parentElement.classList.remove('lanspeed-column-overflow');
+			/* Once the canvas fits again, an old horizontal offset can leave a
+			 * middle column stranded in the viewport while the rest is clipped. */
+			if ('scrollLeft' in table.parentElement)
+				table.parentElement.scrollLeft = 0;
+		}
+	}
 	setImportantTableDisplay(table, 'block');
 	setImportantTableWidth(table, tableWidth.toFixed(2) + 'px');
-	columns.forEach(function(column, index) {
-		table.style.setProperty(columnWidthProperty(column),
-			Math.max(0, Number(widths[index]) || 0).toFixed(2) + 'px');
-		table.style.setProperty(columnGapProperty(column),
-			Math.max(0, Number(gaps && gaps[index]) || 0).toFixed(2) + 'px');
-	});
-	/* Keep the last cell edge on the card edge despite sub-pixel rounding. */
-	if (columns.length && tableWidth > trackWidth + gapWidth) {
-		var last = columns.length - 1;
-		var lastGap = Math.max(0, Number(gaps && gaps[last]) || 0) +
-			(tableWidth - trackWidth - gapWidth);
-		table.style.setProperty(columnGapProperty(columns[last]), lastGap.toFixed(2) + 'px');
+	table.style.setProperty('--lanspeed-client-grid-template', gridTemplate(values));
+	table.style.setProperty('--lanspeed-client-first-column-width',
+		Math.max(0, Number(values[0]) || 0).toFixed(2) + 'px');
+	table.style.setProperty('--lanspeed-client-second-column-left',
+		Math.max(0, Number(values[0]) || 0).toFixed(2) + 'px');
+	if (table.parentElement && parentWidth > 0 &&
+		tableWidth > parentWidth + 1 && 'scrollLeft' in table.parentElement) {
+		var maxScrollLeft = Math.max(0, tableWidth - parentWidth);
+		if (Number(table.parentElement.scrollLeft) > maxScrollLeft)
+			table.parentElement.scrollLeft = maxScrollLeft;
 	}
 }
 
@@ -88,12 +151,12 @@ function clearColumnLayout(table) {
 	if (!table || !table.style) return;
 	if (table.classList && typeof table.classList.remove === 'function')
 		table.classList.remove('lanspeed-custom-column-layout');
+	if (table.parentElement && table.parentElement.classList)
+		table.parentElement.classList.remove('lanspeed-column-overflow');
 	if (typeof table.style.removeProperty === 'function') {
 		table.style.removeProperty('--lanspeed-client-grid-template');
-		for (var index = 1; index <= 12; index++) {
-			table.style.removeProperty('--lanspeed-client-column-' + index + '-width');
-			table.style.removeProperty('--lanspeed-client-column-' + index + '-gap');
-		}
+		table.style.removeProperty('--lanspeed-client-first-column-width');
+		table.style.removeProperty('--lanspeed-client-second-column-left');
 	}
 	clearTableWidth(table);
 	clearTableDisplay(table);
@@ -113,6 +176,22 @@ function visibleColumnHeaders(refs) {
 		 * the table row is assembled. Always use the final DOM order here so
 		 * cumulative columns cannot receive another column's width. */
 		return Number(left.th.cellIndex) - Number(right.th.cellIndex);
+	});
+}
+
+function syncColumnResizeHandles(refs) {
+	var visible = visibleColumnHeaders(refs);
+	(refs.clientColumnHeaders || []).forEach(function(column) {
+		var th = column.th;
+		var handle = column.resizeHandle;
+		if (!th || !handle) return;
+		var index = visible.indexOf(column);
+		var locked = isResizeLockedColumn(visible, index);
+		var attached = handle.parentNode === th;
+		if (locked && attached && typeof th.removeChild === 'function')
+			th.removeChild(handle);
+		else if (!locked && !attached && typeof th.appendChild === 'function')
+			th.appendChild(handle);
 	});
 }
 
@@ -137,86 +216,13 @@ function saveColumnWidths(viewState) {
 	} catch (e) {}
 }
 
-function sumColumnWidths(widths) {
-	return widths.reduce(function(sum, width) {
-		return sum + Math.max(0, Number(width) || 0);
-	}, 0);
-}
-
-function defaultColumnGaps(count) {
-	var gaps = [];
-	for (var index = 0; index < count; index++)
-		gaps.push(index < count - 1 ? DEFAULT_COLUMN_GAP : 0);
-	return gaps;
-}
-
-function fitColumnGaps(count, widths, parentWidth, gaps) {
-	var remaining = Math.max(0, parentWidth - sumColumnWidths(widths));
-	var values = Array.isArray(gaps) ? gaps.slice(0, count) : [];
-	while (values.length < count) values.push(0);
-	values = values.map(function(gap) { return Math.max(0, Number(gap) || 0); });
-	var total = sumColumnWidths(values);
-	if (!(total > 0)) {
-		values = defaultColumnGaps(count);
-		total = sumColumnWidths(values);
-	}
-	if (total > 0) {
-		values = values.map(function(gap) { return gap * remaining / total; });
-	} else if (count) {
-		values[count - 1] = remaining;
-	}
-	return values;
-}
-
-function currentColumnGaps(table, columns) {
-	var style = typeof getComputedStyle === 'function' ? getComputedStyle(table) : null;
-	return columns.map(function(column) {
-		var value = style ? parseFloat(style.getPropertyValue(columnGapProperty(column))) : 0;
-		return isFinite(value) && value >= 0 ? value : 0;
-	});
-}
-
-function fitColumnWidths(columns, widths, parentWidth, preferredGap) {
-	var count = columns.length;
-	if (!count || !(parentWidth > 0)) return widths;
-	var minimums = columns.map(function(column) {
-		return minimumColumnWidth(column.key);
-	});
-	var gapCount = Math.max(0, count - 1);
-	var maximumTotal = parentWidth;
-	var minimumTotal = Math.max(sumColumnWidths(minimums),
-		parentWidth - MAX_COLUMN_GAP * gapCount);
-	var preferredTotal = Math.max(minimumTotal,
-		parentWidth - Math.max(0, Number(preferredGap) || 0) * gapCount);
-	var values = widths.map(function(width, index) {
-		return Math.max(minimums[index], Number(width) || minimums[index]);
-	});
-	var total = sumColumnWidths(values);
-	var target = total > maximumTotal ? maximumTotal :
-		total < minimumTotal ? Math.min(maximumTotal, preferredTotal) : total;
-	if (Math.abs(target - total) < .5) return values;
-	if (target > total) {
-		var grow = target - total;
-		var weight = total || count;
-		return values.map(function(width) {
-			return width + grow * (weight > 0 ? width / weight : 1 / count);
-		});
-	}
-	var remaining = total - target;
-	var result = values.slice();
-	for (var round = 0; round < count && remaining > .5; round++) {
-		var flexible = result.map(function(width, index) {
-			return Math.max(0, width - minimums[index]);
-		});
-		var capacity = sumColumnWidths(flexible);
-		if (!(capacity > 0)) break;
-		result = result.map(function(width, index) {
-			var take = Math.min(flexible[index], remaining * flexible[index] / capacity);
-			return width - take;
-		});
-		remaining = Math.max(0, sumColumnWidths(result) - target);
-	}
-	return result;
+function resizeColumnTracks(columns, startWidths, index, delta) {
+	if (!columns.length || index < 0 || index >= columns.length ||
+		isResizeLockedColumn(columns, index)) return null;
+	var widths = normalizeColumnWidths(columns, startWidths);
+	widths[index] = Math.max(RESIZE_MIN_COLUMN_WIDTH,
+		widths[index] + (Number(delta) || 0));
+	return widths;
 }
 
 function applyStoredColumnWidths(viewState, refs) {
@@ -228,91 +234,58 @@ function applyStoredColumnWidths(viewState, refs) {
 	if (table.isConnected === false) return;
 	var columns = visibleColumnHeaders(refs);
 	var layoutKey = columnLayoutKey(table);
-	var stored = loadColumnWidths(viewState)[layoutKey];
 	var layoutActive = table.classList &&
 		table.classList.contains('lanspeed-custom-column-layout');
+	var stored = loadColumnWidths(viewState)[layoutKey];
 	/* Refreshes replace rows, not headers. Reapplying the layout on every poll
 	 * briefly exposes native table sizing and makes the columns visibly jump.
 	 * Keep an already-applied layout untouched until the visible-column state
 	 * actually changes. */
 	var parentWidth = table.parentElement ? Number(table.parentElement.clientWidth) || 0 : 0;
 	if (!(parentWidth > 0) || !columns.length) return;
-	var tableWidth = typeof table.getBoundingClientRect === 'function'
-		? Number(table.getBoundingClientRect().width) || 0 : 0;
 	if (viewState.clientColumnLayoutKey === layoutKey && layoutActive &&
-		(tableWidth <= 0 || Math.abs(tableWidth - parentWidth) < 1)) return;
+		Math.abs((Number(viewState.clientColumnViewportWidth) || 0) - parentWidth) < 1) return;
 	var values;
-	var gaps;
-	var storedCanvasWidth = 0;
 	if (stored && typeof stored === 'object' && !Array.isArray(stored) &&
 		stored.columns && typeof stored.columns === 'object') {
 		values = columns.map(function(column) {
 			var value = Number(stored.columns[column.key]);
 			return isFinite(value) && value > 0 ? value : 0;
 		});
-		gaps = columns.map(function(column) {
-			var value = Number(stored.gaps && stored.gaps[column.key]);
-			return isFinite(value) && value >= 0 ? value : 0;
-		});
-		storedCanvasWidth = Number(stored.canvasWidth) || 0;
 	}
 	if (!values || !(sumColumnWidths(values) > 0)) {
 		values = columns.map(function(column) {
-			return Number(column.th.getBoundingClientRect().width) || minimumColumnWidth(column.key);
+			return Number(column.th.getBoundingClientRect().width) ||
+				preferredColumnWidth(column.key);
 		});
-		var target = Math.max(sumColumnWidths(columns.map(function(column) {
-			return minimumColumnWidth(column.key);
-		})), parentWidth - DEFAULT_COLUMN_GAP * Math.max(0, columns.length - 1));
-		var current = sumColumnWidths(values);
-		if (current > 0)
-			values = values.map(function(width) { return width * target / current; });
-		gaps = defaultColumnGaps(columns.length);
-	}
-	values = values.map(function(width, index) {
-		return Math.max(minimumColumnWidth(columns[index].key), Number(width) || 0);
-	});
-	if (!(storedCanvasWidth > 0 && Math.abs(storedCanvasWidth - parentWidth) < 1 &&
-		Math.abs(sumColumnWidths(values) + sumColumnWidths(gaps || []) - parentWidth) < 2)) {
-		values = fitColumnWidths(columns, values, parentWidth, DEFAULT_COLUMN_GAP);
-		gaps = fitColumnGaps(columns.length, values, parentWidth, gaps);
+		values = fitInitialColumnWidths(columns, values, parentWidth);
+	} else {
+		values = normalizeColumnWidths(columns, values);
 	}
 	clearColumnLayout(table);
-	setColumnLayout(table, columns, values, gaps);
+	setColumnLayout(table, columns, values);
 	viewState.clientColumnLayoutKey = layoutKey;
+	viewState.clientColumnViewportWidth = parentWidth;
 }
 
 function persistCurrentColumnWidths(viewState, refs) {
 	var table = refs && refs.clientsTable;
 	if (!table || typeof table.getBoundingClientRect !== 'function') return;
 	var values = {};
-	var gaps = {};
 	var columns = visibleColumnHeaders(refs);
-	var currentGaps = currentColumnGaps(table, columns);
-	columns.forEach(function(column, index) {
+	columns.forEach(function(column) {
 		if (!column.th || typeof column.th.getBoundingClientRect !== 'function') return;
 		var width = Number(column.th.getBoundingClientRect().width);
 		if (width > 0) values[column.key] = width;
-		gaps[column.key] = Math.max(0, Number(currentGaps[index]) || 0);
 	});
 	if (!Object.keys(values).length) return;
 	var stored = loadColumnWidths(viewState);
 	stored[columnLayoutKey(table)] = {
-		version: 4,
-		canvasWidth: table.parentElement ? Number(table.parentElement.clientWidth) || 0 : 0,
-		columns: values,
-		gaps: gaps
+		version: 9,
+		columns: values
 	};
 	viewState.clientColumnWidths = stored;
 	saveColumnWidths(viewState);
-}
-
-function minimumColumnWidth(key) {
-	if (key === 'hostname') return 120;
-	if (key === 'mac') return 145;
-	if (key === 'control') return 145;
-	if (key === 'tcp_conns' || key === 'udp_conns') return 62;
-	if (key === 'tx_bytes' || key === 'rx_bytes') return 92;
-	return 88;
 }
 
 function setupColumnResize(viewState, refs) {
@@ -322,6 +295,12 @@ function setupColumnResize(viewState, refs) {
 	(refs.clientColumnHeaders || []).forEach(function(column) {
 		var th = column.th;
 		if (!th || th.getAttribute('data-column-resize-ready') === '1') return;
+		if (column.key === 'hostname' || column.key === 'control') {
+			/* The first identity column and control column are intentionally fixed.
+			 * MAC remains resizable so its readable width can be adjusted. */
+			th.setAttribute('data-column-resize-ready', '1');
+			return;
+		}
 		th.setAttribute('data-column-resize-ready', '1');
 		th.className = String(th.className || '') + ' lanspeed-resizable-column';
 		var handle = E('span', {
@@ -340,6 +319,9 @@ function setupColumnResize(viewState, refs) {
 			var visible = visibleColumnHeaders(refs);
 			var index = visible.indexOf(column);
 			if (index < 0) return;
+			/* The rightmost visible column is fixed in every totals/control display
+			 * combination. Its identity is dynamic (control or UDP). */
+			if (isResizeLockedColumn(visible, index)) return;
 			if (typeof th.getBoundingClientRect !== 'function') return;
 			var parentWidth = table.parentElement ? Number(table.parentElement.clientWidth) || 0 : 0;
 			if (!(parentWidth > 0)) return;
@@ -351,31 +333,19 @@ function setupColumnResize(viewState, refs) {
 			var startWidths = visible.map(function(item) {
 				return Number(item.th.getBoundingClientRect().width) || 0;
 			});
-			var startGaps = currentColumnGaps(table, visible);
 			var firstWidth = startWidths[index];
 			if (!(firstWidth > 0)) return;
-			if (!(startGaps[index] >= 0)) startGaps[index] = 0;
-			setColumnLayout(table, visible, startWidths, startGaps);
+			setColumnLayout(table, visible, startWidths);
 			viewState.clientColumnResizeActive = true;
 			var startX = Number(event.clientX);
-			var minFirst = minimumColumnWidth(column.key);
-			var gapIndex = index < visible.length - 1 ? index : Math.max(0, index - 1);
-			var startGap = startGaps[gapIndex];
-			/* Keep every following column's x-coordinate fixed. The selected track
-			 * borrows from (or returns to) only its own right-hand spacer. */
-			var minAllowed = minFirst;
-			var maxAllowed = firstWidth + startGap;
 			var dragging = false;
 			var hostDocument = typeof document !== 'undefined' ? document : null;
 			function move(moveEvent) {
 				var delta = Number(moveEvent && moveEvent.clientX) - startX;
 				if (!isFinite(delta)) return;
-				var width = Math.max(minAllowed, Math.min(maxAllowed, firstWidth + delta));
-				var widths = startWidths.slice();
-				var gaps = startGaps.slice();
-				widths[index] = width;
-				gaps[gapIndex] = Math.max(0, startGap - (width - firstWidth));
-				setColumnLayout(table, visible, widths, gaps);
+				var widths = resizeColumnTracks(visible, startWidths, index, delta);
+				if (!widths) return;
+				setColumnLayout(table, visible, widths);
 				dragging = true;
 				if (moveEvent && moveEvent.preventDefault) moveEvent.preventDefault();
 			}
@@ -398,13 +368,16 @@ function setupColumnResize(viewState, refs) {
 				hostDocument.addEventListener('pointerup', finish);
 				hostDocument.addEventListener('pointercancel', finish);
 			}
-			if (typeof handle.setPointerCapture === 'function' && event.pointerId !== undefined)
-				handle.setPointerCapture(event.pointerId);
+			if (typeof handle.setPointerCapture === 'function' && event.pointerId !== undefined) {
+				try { handle.setPointerCapture(event.pointerId); } catch (e) {}
+			}
 		});
+		column.resizeHandle = handle;
 		th.appendChild(handle);
 	});
 	refs.syncClientColumnWidths = function() {
 		if (viewState.clientColumnResizeActive === true) return;
+		syncColumnResizeHandles(refs);
 		applyStoredColumnWidths(viewState, refs);
 	};
 	/* The first attachment can resize the card after the table has been
@@ -418,6 +391,7 @@ function setupColumnResize(viewState, refs) {
 		});
 		viewState.clientColumnResizeObserver.observe(table.parentElement);
 	}
+	syncColumnResizeHandles(refs);
 	applyStoredColumnWidths(viewState, refs);
 }
 
@@ -777,7 +751,9 @@ function buildShell(viewState) {
 		clientsHeader,
 		E('div', { 'class': 'lanspeed-body' }, [
 			toolbar,
-			refs.clientsTable,
+			E('div', { 'class': 'lanspeed-table-scroll' }, [
+				refs.clientsTable
+			]),
 			refs.empty,
 			refs.pageNav
 		])

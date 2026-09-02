@@ -251,6 +251,14 @@ function captureClientViewport(refs) {
 	var scrollX = host ? Number(host.scrollX !== undefined ? host.scrollX : host.pageXOffset) || 0 : 0;
 	var scrollY = host ? Number(host.scrollY !== undefined ? host.scrollY : host.pageYOffset) || 0 : 0;
 	var scrollContainers = [];
+	var tableScroller = refs && refs.clientsTable ? refs.clientsTable.parentElement : null;
+	if (tableScroller) {
+		scrollContainers.push({
+			node: tableScroller,
+			left: Number(tableScroller.scrollLeft) || 0,
+			top: Number(tableScroller.scrollTop) || 0
+		});
+	}
 	var node = refs && refs.root ? refs.root.parentElement : null;
 	while (node) {
 		var style = host && typeof host.getComputedStyle === 'function' ? host.getComputedStyle(node) : null;
@@ -262,7 +270,7 @@ function captureClientViewport(refs) {
 			Number(node.scrollWidth) > Number(node.clientWidth);
 		var scrollsY = /^(?:auto|scroll|overlay)$/.test(overflowY) &&
 			Number(node.scrollHeight) > Number(node.clientHeight);
-		if (left || top || scrollsX || scrollsY) {
+		if ((left || top || scrollsX || scrollsY) && node !== tableScroller) {
 			scrollContainers.push({
 				node: node,
 				left: left,
@@ -635,6 +643,11 @@ function refreshLive(viewState) {
 			]);
 		}));
 	}
+	/* Rows may be created/reused after the initial layout sync. Reapply the
+	 * shared grid template so every freshly rendered data row follows its
+	 * header during and after a resize. */
+	if (refs.syncClientColumnWidths)
+		refs.syncClientColumnWidths();
 
 	var ifaces = fmt.asArray(viewState.interfaces && viewState.interfaces.interfaces);
 	var interfacesRpc = viewState.rpc && viewState.rpc.interfaces;

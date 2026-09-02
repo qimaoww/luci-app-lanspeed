@@ -79,7 +79,7 @@ var BASE_CSS = [
 	'.lanspeed-clients-card .lanspeed-resizable-column{position:relative}',
 	/* Keep each hit target inside its own header. Extending across the boundary
 	 * lets adjacent handles overlap, which can resize the wrong column. */
-	'.lanspeed-clients-card .lanspeed-column-resize-handle{position:absolute;z-index:3;top:0;right:0;width:.45em;height:100%;',
+	'.lanspeed-clients-card .lanspeed-column-resize-handle{position:absolute;z-index:3;top:0;right:0;width:.8em;height:100%;',
 		'display:block;cursor:col-resize;touch-action:none;user-select:none}',
 	'.lanspeed-clients-card .lanspeed-column-resize-handle::after{content:"";position:absolute;top:20%;bottom:20%;left:calc(50% - .5px);',
 		'width:1px;background:var(--lanspeed-accent);opacity:0;transition:opacity .15s ease}',

@@ -70,13 +70,24 @@ function findAllByClass(node, className, matches) {
 }
 
 function fakeElement(tag, attrs, children) {
+	const styleValues = {};
 	const node = {
 		tagName: String(tag).toLowerCase(),
 		attrs: Object.assign({}, attrs || {}),
 		children: [],
 		listeners: {},
 		parentNode: null,
-		style: {},
+		style: {
+			setProperty: function(name, value) {
+				styleValues[name] = String(value);
+				this[name] = String(value);
+			},
+			removeProperty: function(name) {
+				delete styleValues[name];
+				delete this[name];
+			},
+			getPropertyValue: function(name) { return styleValues[name] || ''; }
+		},
 		isConnected: false,
 		addEventListener: function(type, handler) { this.listeners[type] = handler; },
 		setAttribute: function(name, value) {
@@ -111,6 +122,26 @@ function fakeElement(tag, attrs, children) {
 			return child;
 		}
 	};
+	node.classList = {
+		_tokens: function() {
+			return String(node._className || '').split(/\s+/).filter(Boolean);
+		},
+		contains: function(value) { return this._tokens().includes(String(value)); },
+		add: function() {
+			const values = this._tokens();
+			Array.from(arguments).forEach(function(value) {
+				value = String(value);
+				if (!values.includes(value)) values.push(value);
+			});
+			node.className = values.join(' ');
+		},
+		remove: function() {
+			const remove = Array.from(arguments).map(String);
+			node.className = this._tokens().filter(function(value) {
+				return !remove.includes(value);
+			}).join(' ');
+		}
+	};
 	node._className = String(node.attrs.class || '');
 	node._value = Object.prototype.hasOwnProperty.call(node.attrs, 'value')
 		? String(node.attrs.value) : '';
@@ -126,6 +157,18 @@ function fakeElement(tag, attrs, children) {
 	Object.defineProperty(node, 'firstChild', {
 		get: function() { return this.children.length ? this.children[0] : null; }
 	});
+	Object.defineProperty(node, 'parentElement', {
+		get: function() { return this.parentNode; }
+	});
+	Object.defineProperty(node, 'cellIndex', {
+		get: function() {
+			return this.parentNode && Array.isArray(this.parentNode.children)
+				? this.parentNode.children.indexOf(this) : -1;
+		}
+	});
+	node.getBoundingClientRect = function() {
+		return this._rect || { width: 0, height: 0, left: 0, right: 0, top: 0, bottom: 0 };
+	};
 	Object.defineProperty(node, 'lastChild', {
 		get: function() { return this.children[this.children.length - 1]; }
 	});
@@ -172,6 +215,14 @@ function fakeElement(tag, attrs, children) {
 
 function createContext() {
 	const storage = new Map();
+	const documentListeners = {};
+	const document = {
+		createTextNode: function(value) { return String(value); },
+		body: {},
+		listeners: documentListeners,
+		addEventListener: function(name, handler) { documentListeners[name] = handler; },
+		removeEventListener: function(name) { delete documentListeners[name]; }
+	};
 	const context = vm.createContext({
 		console,
 		setTimeout,
@@ -184,7 +235,15 @@ function createContext() {
 				removeItem: function(key) { storage.delete(key); }
 			}
 		},
-		document: { createTextNode: function(value) { return String(value); }, body: {} },
+		document: document,
+		getComputedStyle: function(node) {
+			return {
+				getPropertyValue: function(name) {
+					return node && node.style && typeof node.style.getPropertyValue === 'function'
+						? node.style.getPropertyValue(name) : '';
+				}
+			};
+		},
 		E: fakeElement,
 		_: translate
 	});
@@ -1214,6 +1273,268 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.ok(refreshCount >= 10);
 }
 
+function testColumnResizeRange(context, fmt) {
+	const modules = loadShellAndRefresh(context, fmt);
+	const state = {
+		status: {},
+		showClientTotals: true,
+		showClientControl: true,
+		prefs: {
+			refreshMs: 1000, unit: 'bit', activeOnly: false,
+			sortKey: 'rx', sortDir: 'desc', sortCustom: false, paused: true
+		},
+		filter: '',
+		reload: function() {},
+		refreshLive: function() {},
+		stopTimer: function() {},
+		schedule: function() {}
+	};
+	const built = modules.shell.buildShell(state);
+	const refs = built.refs;
+	const table = refs.clientsTable;
+	const body = table.parentElement;
+	body.clientWidth = 920;
+	table.isConnected = true;
+	for (let rowIndex = 0; rowIndex < 3; rowIndex++) {
+		refs.tbody.appendChild(fakeElement('tr', {}, Array.from({ length: 9 }, function() {
+			return fakeElement('td', {});
+		})));
+	}
+	const defaults = {
+		hostname: 150, mac: 160, tx: 110, rx: 110,
+		tx_bytes: 110, rx_bytes: 110, tcp_conns: 70, udp_conns: 70, control: 180
+	};
+	refs.clientColumnHeaders.forEach(function(column) {
+		const th = column.th;
+		th.getBoundingClientRect = function() {
+			const visibleNow = refs.clientColumnHeaders.filter(function(item) { return !item.th.hidden; })
+				.sort(function(left, right) { return left.th.cellIndex - right.th.cellIndex; });
+			const position = visibleNow.indexOf(column);
+			const template = String(table.style.getPropertyValue('--lanspeed-client-grid-template') || '');
+			const tracks = template.split(/\s+/).filter(function(track) { return /px$/.test(track); });
+			const styled = position >= 0 && tracks.length
+				? parseFloat(tracks[position === visibleNow.length - 1 ? tracks.length - 1 : position]) : NaN;
+			const width = Number.isFinite(styled) && styled > 0 ? styled : defaults[column.key];
+			return { width: width, height: 32, left: 0, right: width, top: 0, bottom: 32 };
+		};
+	});
+	table.getBoundingClientRect = function() {
+		const styled = parseFloat(table.style.getPropertyValue('width'));
+		const width = Number.isFinite(styled) && styled > 0 ? styled : body.clientWidth;
+		return { width: width, height: 120, left: 0, right: width, top: 0, bottom: 120 };
+	};
+	refs.syncClientColumnWidths();
+	const visible = refs.clientColumnHeaders.filter(function(column) { return !column.th.hidden; })
+		.sort(function(left, right) { return left.th.cellIndex - right.th.cellIndex; });
+	const tx = visible.find(function(column) { return column.key === 'tx'; });
+	const mac = visible.find(function(column) { return column.key === 'mac'; });
+	const control = visible.find(function(column) { return column.key === 'control'; });
+	assert(tx && mac && control, 'resize fixture must expose live, MAC, and terminal columns');
+	const hostname = visible.find(function(column) { return column.key === 'hostname'; });
+	assert.strictEqual(findByClass(hostname.th, 'lanspeed-column-resize-handle'), null,
+		'first client column must not expose a resize handle');
+	assert(findByClass(mac.th, 'lanspeed-column-resize-handle'),
+		'MAC column must expose a resize handle');
+	assert.strictEqual(findByClass(control.th, 'lanspeed-column-resize-handle'), null,
+		'control column must not expose a resize handle');
+	const responsiveCss = readModule('statusStyleResponsive.js');
+	assert(responsiveCss.includes('[data-client-control="shown"] :is(th,td):nth-child(9)') &&
+		responsiveCss.includes('[data-client-control="hidden"] :is(th,td):nth-child(8)') &&
+		responsiveCss.includes('position:sticky!important;right:0') &&
+		responsiveCss.includes(':nth-child(1){position:sticky!important;left:0') &&
+		responsiveCss.includes(':nth-child(2){position:sticky!important;left:var(--lanspeed-client-second-column-left)'),
+		'left identity columns and terminal visible column must remain frozen for all display states');
+	assert(responsiveCss.includes('thead>tr,') &&
+		responsiveCss.includes('tbody>tr{display:grid;width:100%;grid-template-columns:var(--lanspeed-client-grid-template);align-items:center}') &&
+		responsiveCss.includes('tbody>tr{border-bottom:') &&
+		responsiveCss.includes(':is(th,td){text-align:center!important}') &&
+		responsiveCss.includes(':is(th,td):first-child{text-align:left!important;overflow:visible') &&
+		responsiveCss.includes('.lanspeed-sort-button{width:100%!important;justify-content:center!important}') &&
+		responsiveCss.includes('.lanspeed-control-actions{width:100%;align-items:center;justify-content:center!important}'),
+		'custom-width headers and data rows must center every cell and control actions');
+	assert(responsiveCss.includes('.lanspeed-table-scroll{width:100%;min-width:0;overflow-x:hidden}') &&
+		responsiveCss.includes('.lanspeed-table-scroll.lanspeed-column-overflow{overflow-x:auto!important}') &&
+		!responsiveCss.includes('.lanspeed-body.lanspeed-column-overflow{overflow-x:auto!important}'),
+		'wide table overflow must stay isolated from the toolbar body');
+	const widthOf = function(column) {
+		const position = visible.indexOf(column);
+		const template = String(table.style.getPropertyValue('--lanspeed-client-grid-template') || '');
+		const tracks = template.split(/\s+/).filter(function(track) { return /px$/.test(track); });
+		return parseFloat(tracks[position === visible.length - 1 ? tracks.length - 1 : position]);
+	};
+	const macBefore = widthOf(mac);
+	const macHandle = findByClass(mac.th, 'lanspeed-column-resize-handle');
+	macHandle.listeners.pointerdown({
+		button: 0, clientX: 100, pointerId: 0,
+		preventDefault: function() {}, stopPropagation: function() {}
+	});
+	context.document.listeners.pointermove({ clientX: 40, preventDefault: function() {} });
+	const macAfterLeft = widthOf(mac);
+	assert(macAfterLeft < macBefore - 25 && macAfterLeft >= 96,
+		'MAC column must remain draggable left below its readable default width');
+	context.document.listeners.pointerup({ clientX: 40 });
+	const txBefore = widthOf(tx);
+	const txHandle = findByClass(tx.th, 'lanspeed-column-resize-handle');
+	txHandle.listeners.pointerdown({
+		button: 0, clientX: 100, pointerId: 1,
+		preventDefault: function() {}, stopPropagation: function() {}
+	});
+	assert.strictEqual(typeof context.document.listeners.pointermove, 'function');
+	context.document.listeners.pointermove({ clientX: 40, preventDefault: function() {} });
+	const txAfterLeft = widthOf(tx);
+	assert(txAfterLeft < txBefore - 5 && txAfterLeft >= 80,
+		'live column must remain draggable left below its readable default width');
+	const refreshedRow = fakeElement('tr', {}, Array.from({ length: 9 }, function() {
+		return fakeElement('td', {});
+	}));
+	refs.tbody.appendChild(refreshedRow);
+	refs.syncClientColumnWidths();
+	assert.strictEqual(widthOf(tx), txAfterLeft,
+		'rows created during an active resize must retain the live grid track');
+	context.document.listeners.pointerup({ clientX: 40 });
+	const peerWidthsBefore = visible.map(function(column) { return widthOf(column); });
+	const txCompact = widthOf(tx);
+	txHandle.listeners.pointerdown({
+		button: 0, clientX: 100, pointerId: 2,
+		preventDefault: function() {}, stopPropagation: function() {}
+	});
+	assert.strictEqual(typeof context.document.listeners.pointermove, 'function');
+	context.document.listeners.pointermove({ clientX: 400, preventDefault: function() {} });
+	const txAfter = widthOf(tx);
+	assert(txAfter > txCompact + 250,
+		'live column must remain draggable beyond its initial spacer reserve');
+	visible.forEach(function(column, index) {
+		if (column === tx) return;
+		assert(Math.abs(widthOf(column) - peerWidthsBefore[index]) < .01,
+			'resizing one column must not redistribute peer track widths');
+	});
+	assert(parseFloat(table.style.getPropertyValue('width')) > body.clientWidth,
+		'wide resize must grow a scrollable canvas instead of locking');
+	assert(refs.clientsTable.parentElement.classList.contains('lanspeed-column-overflow'));
+	context.document.listeners.pointerup({ clientX: 400 });
+	const stored = JSON.parse(context.window.localStorage.getItem(
+		'luci-app-lanspeed.client-column-widths.v9'));
+	const saved = stored['totals=shown|control=shown'];
+	assert(saved && saved.version === 9,
+		'wide resize must persist grid column widths in the current storage format');
+	assert(saved.columns.tx > txCompact + 250);
+
+	refs.syncClientColumnWidths();
+	assert(widthOf(tx) > txCompact + 250,
+		're-applying stored widths must not collapse a wide live column');
+	body.scrollLeft = 180;
+	refs.syncClientColumnWidths();
+	assert.strictEqual(body.scrollLeft, 180,
+		're-applying stored widths must preserve the horizontal table viewport');
+	const viewport = modules.refresh.captureClientViewport({
+		clientsTable: table,
+		root: built.root
+	});
+	body.scrollLeft = 0;
+	modules.refresh.restoreClientViewport(viewport);
+	assert.strictEqual(body.scrollLeft, 180,
+		'real-time refreshes must restore the nested table viewport');
+	const txWideBeforeShrink = widthOf(tx);
+	body.scrollLeft = 280;
+	txHandle.listeners.pointerdown({
+		button: 0, clientX: 400, pointerId: 3,
+		preventDefault: function() {}, stopPropagation: function() {}
+	});
+	context.document.listeners.pointermove({ clientX: 100, preventDefault: function() {} });
+	assert(widthOf(tx) < txWideBeforeShrink - 250,
+		'dragging a wide live column back must release its overflow canvas');
+	assert(parseFloat(table.style.getPropertyValue('width')) <= body.clientWidth + .01,
+		'shrinking a wide column back must restore the compact card width');
+	assert.strictEqual(body.scrollLeft, 0,
+		'when the canvas fits again, the table viewport must return to the first column');
+	context.document.listeners.pointerup({ clientX: 100 });
+	assert(findByClass(mac.th, 'lanspeed-column-resize-handle'),
+		'MAC column must stay resizable after other columns are resized');
+	assert.strictEqual(findByClass(control.th, 'lanspeed-column-resize-handle'), null,
+		'control column must stay fixed after other columns are resized');
+
+	/* Every totals/control visibility combination gets its own layout key. The
+	 * same fixed columns and bidirectional resize contract must survive when
+	 * either optional pair is hidden. */
+	[ [ true, false ], [ false, true ], [ false, false ] ].forEach(function(scheme, schemeIndex) {
+		const variantState = Object.assign({}, state, {
+			showClientTotals: scheme[0], showClientControl: scheme[1]
+		});
+		const variantRefs = modules.shell.buildShell(variantState).refs;
+		const variantTable = variantRefs.clientsTable;
+		const variantBody = variantTable.parentElement;
+		variantBody.clientWidth = 920;
+		variantTable.isConnected = true;
+		variantRefs.clientColumnHeaders.forEach(function(column) {
+			const th = column.th;
+			th.getBoundingClientRect = function() {
+				const visibleNow = variantRefs.clientColumnHeaders.filter(function(item) { return !item.th.hidden; })
+					.sort(function(left, right) { return left.th.cellIndex - right.th.cellIndex; });
+				const position = visibleNow.indexOf(column);
+				const template = String(variantTable.style.getPropertyValue('--lanspeed-client-grid-template') || '');
+				const tracks = template.split(/\s+/).filter(function(track) { return /px$/.test(track); });
+				const styled = position >= 0 && tracks.length
+					? parseFloat(tracks[position === visibleNow.length - 1 ? tracks.length - 1 : position]) : NaN;
+				const width = Number.isFinite(styled) && styled > 0 ? styled : defaults[column.key];
+				return { width: width, height: 32, left: 0, right: width, top: 0, bottom: 32 };
+			};
+		});
+		variantTable.getBoundingClientRect = function() {
+			const styled = parseFloat(variantTable.style.getPropertyValue('width'));
+			const width = Number.isFinite(styled) && styled > 0 ? styled : variantBody.clientWidth;
+			return { width: width, height: 120, left: 0, right: width, top: 0, bottom: 120 };
+		};
+		variantRefs.syncClientColumnWidths();
+		const variantVisible = variantRefs.clientColumnHeaders.filter(function(column) {
+			return !column.th.hidden;
+		}).sort(function(left, right) { return left.th.cellIndex - right.th.cellIndex; });
+		const variantMac = variantVisible.find(function(column) { return column.key === 'mac'; });
+		const variantHostname = variantVisible.find(function(column) { return column.key === 'hostname'; });
+		const variantControl = variantVisible.find(function(column) { return column.key === 'control'; });
+		const variantLast = variantVisible[variantVisible.length - 1];
+		const variantTx = variantVisible.find(function(column) { return column.key === 'tx'; });
+		assert(variantMac && variantTx, 'scheme ' + schemeIndex + ' must retain MAC and live columns');
+		assert.strictEqual(Boolean(variantControl), scheme[1],
+			'scheme ' + schemeIndex + ' control visibility must match its setting');
+		assert(findByClass(variantMac.th, 'lanspeed-column-resize-handle'),
+			'scheme ' + schemeIndex + ' MAC column must remain resizable');
+		assert.strictEqual(findByClass(variantHostname.th, 'lanspeed-column-resize-handle'), null,
+			'scheme ' + schemeIndex + ' first client column must remain fixed');
+		if (variantControl)
+			assert.strictEqual(findByClass(variantControl.th, 'lanspeed-column-resize-handle'), null,
+				'scheme ' + schemeIndex + ' control column must remain fixed');
+		assert.strictEqual(findByClass(variantLast.th, 'lanspeed-column-resize-handle'), null,
+			'scheme ' + schemeIndex + ' terminal visible column must remain fixed');
+		const variantTcp = variantVisible.find(function(column) { return column.key === 'tcp_conns'; });
+		const variantUdp = variantVisible.find(function(column) { return column.key === 'udp_conns'; });
+		if (!scheme[1]) {
+			assert.strictEqual(findByClass(variantTcp.th, 'lanspeed-column-resize-handle'), null,
+				'scheme ' + schemeIndex + ' TCP must remain fixed when control is hidden');
+			assert.strictEqual(findByClass(variantUdp.th, 'lanspeed-column-resize-handle'), null,
+				'scheme ' + schemeIndex + ' UDP must remain fixed when control is hidden');
+		}
+		const variantHandle = findByClass(variantTx.th, 'lanspeed-column-resize-handle');
+		assert(variantHandle, 'scheme ' + schemeIndex + ' live column must remain resizable');
+		const variantPosition = variantVisible.indexOf(variantTx);
+		const variantTracks = String(variantTable.style.getPropertyValue('--lanspeed-client-grid-template') || '')
+			.split(/\s+/).filter(function(track) { return /px$/.test(track); });
+		const variantBefore = parseFloat(variantTracks[variantPosition === variantVisible.length - 1
+			? variantTracks.length - 1 : variantPosition]);
+		variantHandle.listeners.pointerdown({
+			button: 0, clientX: 100, pointerId: 10 + schemeIndex,
+			preventDefault: function() {}, stopPropagation: function() {}
+		});
+		context.document.listeners.pointermove({ clientX: 40, preventDefault: function() {} });
+		const variantAfterTracks = String(variantTable.style.getPropertyValue('--lanspeed-client-grid-template') || '')
+			.split(/\s+/).filter(function(track) { return /px$/.test(track); });
+		const variantAfter = parseFloat(variantAfterTracks[variantPosition === variantVisible.length - 1
+			? variantAfterTracks.length - 1 : variantPosition]);
+		assert(variantAfter < variantBefore - 5 && variantAfter >= 80,
+			'scheme ' + schemeIndex + ' live column must resize left');
+		context.document.listeners.pointerup({ clientX: 40 });
+	});
+}
+
 async function main() {
 	const context = createContext();
 	const fmt = loadFormat(context);
@@ -1223,6 +1544,7 @@ async function main() {
 	await testControllerLifecycle(context, fmt);
 	testRenderWiresLiveRefresh(context, fmt);
 	testPaginationAndUiStates(context, fmt);
+	testColumnResizeRange(context, fmt);
 	console.log('validate-lanspeed-status: PASS');
 	console.log('  atomic realtime snapshot, legacy RPC fallback, paired clocks, hard failure, single-flight refresh');
 	console.log('  timer lifecycle, destroy invalidation, pagination, keyboard, ARIA, and empty states');
