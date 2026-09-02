@@ -338,7 +338,6 @@ const MODULE_REQUIRES = {
 	],
 	'statusRefresh.js': [
 		'baseclass',
-		'lanspeed.vocab',
 		'lanspeed.format',
 		'lanspeed.clientConnections',
 		'lanspeed.clientControl',
@@ -1703,15 +1702,15 @@ function assertStatusOverviewInitialAlignment(src) {
 		status: function() { calls.status++; return Promise.resolve(responses.status.shift()); },
 		clients: function() { calls.clients++; return Promise.resolve(responses.clients.shift()); },
 		interfaces: function() { calls.interfaces++; return Promise.resolve(responses.interfaces.shift()); },
-		uciGet: function() { calls.uci++; return Promise.resolve({ show_client_status: '1' }); }
+		uciGet: function() { calls.uci++; return Promise.resolve({}); }
 	};
 	const mod = loadStatusOverviewModule(src, rpc);
 	let now = 10000;
 	asyncChecks.push(mod.loadAll(null, function() { return ++now; }).then(function(result) {
 		if (calls.status !== 2 || calls.clients !== 2 || calls.interfaces !== 2 || calls.uci !== 1 ||
 		    !result.livePair || result.livePair.aligned !== true || result.livePair.sampleMs !== 3000 ||
-		    !result.clients || !result.clients.clients || result.clients.clients.length !== 1 ||
-		    result.clients.clients[0].identity_key !== 'aligned@lan' || result.showClientStatus !== true) {
+			!result.clients || !result.clients.clients || result.clients.clients.length !== 1 ||
+			result.clients.clients[0].identity_key !== 'aligned@lan') {
 			fail('statusOverview.js must retry an initial split x86 live sample before rendering instead of publishing a false empty page');
 		}
 	}).catch(function(error) {
@@ -2151,14 +2150,13 @@ function nextDetailSort(state, sortKey) {
 
 function loadStatusRefreshModule(src, fakeWindow) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
-	const vocab = loadVocabModule(readModuleByName('vocab.js'));
 	const rateMeta = vm.compileFunction(readModuleByName('statusRateMeta.js'),
 		[ 'baseclass', 'E', '_' ])(fakeBaseclass, fakeElement, fakeTranslate);
 	return vm.compileFunction(src,
-		[ 'baseclass', 'vocab', 'fmt', 'clientConnections', 'clientControl', 'lsVersion',
+		[ 'baseclass', 'fmt', 'clientConnections', 'clientControl', 'lsVersion',
 		  'statusIp', 'statusCollector', 'statusRateMeta', 'E', '_', 'window', 'document' ],
 		{ filename: 'resources/lanspeed/statusRefresh.js' })(
-			fakeBaseclass, vocab, {},
+			fakeBaseclass, {},
 			loadClientConnectionsModule(readModuleByName('clientConnections.js')),
 			{ cell: function() { return fakeElement('td'); } },
 			{ FULL_VERSION: 'test' }, {}, {}, rateMeta, fakeElement, fakeTranslate,
@@ -4127,60 +4125,8 @@ function assertStatusRefreshSortingInteraction(src) {
 		fail('statusRefresh.js must expose its sort-header refresh behavior for validation');
 		return;
 	}
-	if (typeof mod.splitClientWarnings !== 'function') {
-		fail('statusRefresh.js must expose client warning classification for validation');
-	} else {
-		const connectionOnlyState = mod.splitClientWarnings([
-			'conntrack_connection_only'
-		], {});
-		const warningState = mod.splitClientWarnings([
-			'conntrack_connection_only',
-			'map_read_failed',
-			'counter_anomaly',
-			'global_warning'
-		], { global_warning: true });
-		if (JSON.stringify(Array.from(connectionOnlyState.info)) !== JSON.stringify([ 'conntrack_connection_only' ]) ||
-		    connectionOnlyState.warnings.length !== 0 ||
-		    JSON.stringify(Array.from(warningState.info)) !== JSON.stringify([ 'conntrack_connection_only' ]) ||
-		    JSON.stringify(Array.from(warningState.warnings)) !==
-			JSON.stringify([ 'map_read_failed', 'counter_anomaly' ])) {
-			fail('statusRefresh.js must render connection-only rows as information and keep only actionable client warnings');
-		}
-	}
-	if (typeof mod.rateMetaCells !== 'function') {
-		fail('statusRefresh.js must expose rate metadata rendering for validation');
-	} else {
-		const edgeCells = mod.rateMetaCells({
-			tx: { source: 'edge_port', coverage: 'partial' },
-			rx: { source: 'edge_port', coverage: 'partial' },
-			attachment: { kind: 'ethernet', ifname: 'lan2', trust: 'observed_exclusive' },
-			classification: { state: 'aligned', tx_coverage_pct: 96, rx_coverage_pct: 94 },
-			stale: false
-		});
-		const edgeText = edgeCells.map(fakeElementText).join(' · ');
-		if (!edgeText.includes('Edge-Port') || !edgeText.includes('Partial') ||
-		    !edgeText.includes('lan2') || !edgeText.includes('NSS分类覆盖率 94%')) {
-			fail('status client metadata must show owner, total coverage, attachment and compact NSS coverage');
-		}
-		const unknownCells = mod.rateMetaCells({
-			tx: { source: 'future_owner', coverage: 'degraded' },
-			rx: { source: 'future_owner', coverage: 'degraded' },
-			classification: { state: 'domain_mismatch' }, stale: false
-		});
-		if (!unknownCells.map(fakeElementText).join(' ').includes('其他来源') ||
-		    unknownCells.some(function(cell) {
-			    return fakeElementText(cell).includes('NSS分类覆盖率');
-		    })) {
-			fail('unknown sources need a generic label and missing U/coverage must not become a zero badge');
-		}
-		const directionalStaleCells = mod.rateMetaCells({
-			tx: { source: 'edge_port', coverage: 'full', stale: true },
-			rx: { source: 'edge_port', coverage: 'full' },
-			stale: false
-		});
-		if (!directionalStaleCells.map(fakeElementText).join(' ').includes('部分过期'))
-			fail('status client metadata must preserve per-direction stale overrides');
-	}
+	if (typeof mod.splitClientWarnings === 'function' || typeof mod.rateMetaCells === 'function')
+		fail('statusRefresh.js must not expose helpers for the removed per-client status column');
 	if (typeof mod.reconcileClientRows !== 'function') {
 		fail('statusRefresh.js must expose keyed client-row reconciliation for validation');
 	} else {
@@ -4273,28 +4219,9 @@ function assertStatusRefreshSortingInteraction(src) {
 			fail('statusRefresh.js must preserve window and theme scroll-container coordinates without obsolete hover locks');
 		}
 	}
-	if (typeof mod.setClientStatusVisibility !== 'function' ||
-	    typeof mod.clientStateCell !== 'function') {
-		fail('statusRefresh.js must expose configured client-status column visibility behavior');
-	} else {
-		const visibilityRefs = {
-			statusHeader: fakeElement('th', {}),
-			clientsTable: fakeElement('table', {})
-		};
-		mod.setClientStatusVisibility(visibilityRefs, false);
-		const headerHiddenByDefault = visibilityRefs.statusHeader.hidden;
-		const hiddenLayout = visibilityRefs.clientsTable.attrs['data-client-status'];
-		const hiddenCell = mod.clientStateCell([ fakeElement('span', {}, 'BPF') ], false);
-		mod.setClientStatusVisibility(visibilityRefs, true);
-		const shownLayout = visibilityRefs.clientsTable.attrs['data-client-status'];
-		const visibleCell = mod.clientStateCell([ fakeElement('span', {}, 'BPF') ], true);
-		if (!headerHiddenByDefault || visibilityRefs.statusHeader.hidden ||
-		    hiddenLayout !== 'hidden' || shownLayout !== 'shown' ||
-		    !hiddenCell.hidden || visibleCell.hidden ||
-		    hiddenCell.attrs.class !== 'lanspeed-client-state-cell' ||
-		    fakeElementText(visibleCell) !== 'BPF') {
-			fail('statusRefresh.js must switch the hidden six-column layout with the status header and cells');
-		}
+	if (typeof mod.setClientStatusVisibility === 'function' ||
+		typeof mod.clientStateCell === 'function') {
+		fail('statusRefresh.js must remove the obsolete client-status column helpers');
 	}
 
 	function makeRef(label, description) {
@@ -4511,7 +4438,7 @@ function daemonRefsForSave() {
 		connCollectorMode: { value: 'auto' },
 		activeWindow: { value: '10000' },
 		activeMin: { value: '1' },
-		showClientStatus: { checked: false },
+		showClientTotals: { checked: true },
 		showIpv6: { checked: true },
 		hidePrivateIpv6: { checked: false },
 		hideIpv6RangesItems: [ 'fc00::/7', 'fe80::/10' ],
@@ -4577,7 +4504,6 @@ function assertConfigCompatibility(src) {
 	}, noRpc, ifaceCfg);
 	asyncChecks.push(loadMod.loadValues().then(function(values) {
 		if (!values ||
-		    values.show_client_status !== '0' ||
 		    sortedJson(values.interfaceConfig && values.interfaceConfig.ifname) !== sortedJson(originalLists.ifname) ||
 		    sortedJson(values.interfaceConfig && values.interfaceConfig.interface_include) !== sortedJson(originalLists.interface_include) ||
 		    sortedJson(values.interfaceConfig && values.interfaceConfig.observe) !== sortedJson(originalLists.observe)) {
@@ -4634,9 +4560,10 @@ function assertConfigSaveBehavior(configSrc, ifaceSrc) {
 
 	asyncChecks.push(probe.form.saveAll(probe.state).then(function(result) {
 		if (result !== true || probe.calls.filter(function(v) { return v === 'set'; }).length !== 1 ||
-		    probe.calls.indexOf('unload:lanspeed') === -1 ||
-		    probe.calls.indexOf('load:lanspeed') === -1 ||
-		    !probe.savedDaemonValues() || probe.savedDaemonValues().show_client_status !== '0') {
+			    probe.calls.indexOf('unload:lanspeed') === -1 ||
+			    probe.calls.indexOf('load:lanspeed') === -1 ||
+			    !probe.savedDaemonValues() ||
+			    Object.prototype.hasOwnProperty.call(probe.savedDaemonValues(), 'show_client_status')) {
 			fail('configForm.js must stage daemon settings for LuCI native apply and refresh the LuCI UCI cache');
 		}
 	}).catch(function(err) {
@@ -4670,7 +4597,8 @@ function assertConfigSaveBehavior(configSrc, ifaceSrc) {
 		const refs = busy.state.daemonRefs;
 		const daemonControls = [
 			refs.rateCollectorMode, refs.connCollectorMode, refs.activeWindow,
-			refs.activeMin, refs.showClientStatus, refs.showIpv6, refs.hidePrivateIpv6,
+				refs.activeMin, refs.showClientTotals,
+			refs.showIpv6, refs.hidePrivateIpv6,
 			refs.hideIpv6RangeInput, refs.addRangeBtn, refs.resetBtn
 		].concat(refs.rangeRemoveButtons);
 		if (!daemonControls.every(function(control) { return control.disabled; }) ||
@@ -4937,7 +4865,7 @@ function assertStatusShellInteraction(src) {
 			function(value) { return value; }
 		);
 	const viewState = {
-		showClientStatus: false,
+		showClientTotals: true,
 		prefs: { refreshMs: 3000, unit: 'bit', activeOnly: false, sortKey: 'rx', sortDir: 'desc', sortCustom: false, paused: false },
 		filter: '',
 		reload: function(force) { if (force === true) reloads++; },
@@ -4968,19 +4896,9 @@ function assertStatusShellInteraction(src) {
 	if (reloads !== 1 || refreshPrevented !== 1 || refreshStopped !== 1) {
 		fail('statusShell.js immediate refresh must stay local without bubbling into client navigation');
 	}
-	if (!refs.statusHeader || !refs.statusHeader.hidden || refs.showClientStatus ||
-	    !refs.clientsTable || refs.clientsTable.attrs['data-client-status'] !== 'hidden') {
-		fail('statusShell.js must initialize the hidden six-column layout without a realtime-page toggle');
-	}
-	const visibleState = Object.assign({}, viewState, {
-		showClientStatus: true,
-		prefs: Object.assign({}, viewState.prefs)
-	});
-	const visibleBuilt = shell.buildShell(visibleState);
-	if (!visibleBuilt.refs.statusHeader || visibleBuilt.refs.statusHeader.hidden ||
-	    !visibleBuilt.refs.clientsTable ||
-	    visibleBuilt.refs.clientsTable.attrs['data-client-status'] !== 'shown') {
-		fail('statusShell.js must retain the original shown-status layout when configuration enables it');
+	if (refs.statusHeader || !refs.clientsTable ||
+		Object.prototype.hasOwnProperty.call(refs.clientsTable.attrs, 'data-client-status')) {
+		fail('statusShell.js must remove the obsolete client status column and configuration toggle');
 	}
 	if (!refs.sortHeaders || !refs.sortHeaders.rx || !refs.sortHeaders.hostname ||
 	    !refs.sortHeaders.rx.button || !refs.sortHeaders.rx.button.listeners.click ||
@@ -5173,14 +5091,8 @@ function assertConfigView(src) {
 	if (!src.includes('conn_collector_mode')) {
 		fail('view/lanspeed/config.js must expose conn_collector_mode');
 	}
-	if (!src.includes("show_client_status: '0'") ||
-	    !src.includes('show_client_status: refs.showClientStatus.checked') ||
-	    !src.includes("uci.get('lanspeed', 'main', 'show_client_status')")) {
-		fail('view/lanspeed/config.js must persist a default-off show_client_status option');
-	}
-	if (!src.includes('显示客户端状态') ||
-	    !src.includes('显示采集来源和告警状态；默认隐藏。')) {
-		fail('view/lanspeed/config.js must explain the default-hidden LAN client status column');
+	if (src.includes('show_client_status') || src.includes('显示客户端状态')) {
+		fail('view/lanspeed/config.js must remove the obsolete client status option');
 	}
 	if (!src.includes('show_ipv6')) {
 		fail('view/lanspeed/config.js must expose show_ipv6 for client IP display');
@@ -5449,11 +5361,13 @@ function assertStatusViewSourceOnlyState(src) {
 	    !src.includes('hide_ipv6_ranges')) {
 		fail('LAN Speed status modules must isolate UCI loading and read IPv6 display options before rendering client IPs');
 	}
-	if (!src.includes("showClientStatus: uciMain.show_client_status === '1'") ||
-	    !src.includes('showClientStatus: normalized.showClientStatus') ||
-	    !src.includes('viewState.showClientStatus = normalized.showClientStatus') ||
-	    !src.includes('var showClientStatus = viewState.showClientStatus === true;')) {
-		fail('LAN Speed status modules must load show_client_status as a default-off UCI display option');
+	if (src.includes('showClientStatus') || src.includes('show_client_status')) {
+		fail('LAN Speed status modules must remove the obsolete client status option and state column');
+	}
+	if (!src.includes("showClientTotals: uciMain.show_client_totals !== '0'") ||
+		!src.includes('showClientTotals: normalized.showClientTotals') ||
+		src.includes('showClientControl') || src.includes('show_client_control')) {
+		fail('LAN Speed status modules must load only the remaining client display option');
 	}
 	if (!src.includes('function loadUiConfig()') ||
 	    !src.includes('retained ? previousValue(previous, key) : emptySource(key)') ||
@@ -5925,10 +5839,16 @@ function assertStatusStyleModule(src) {
 		'.lanspeed-client-control-header{text-align:center}',
 		'.lanspeed-control-actions{display:flex;flex-wrap:nowrap;justify-content:flex-start}',
 		'.lanspeed-control-button{width:5.5em;min-width:5.5em}',
+		'.lanspeed-custom-column-layout',
+		'.lanspeed-custom-column-layout[data-client-totals][data-client-control]',
+		'width:auto!important;min-width:0;max-width:none!important;justify-self:stretch!important;box-sizing:border-box;border-bottom:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap',
+		':is(th,td).num{padding-left:0!important;padding-right:0!important}',
+		':nth-child(1){position:sticky!important;left:0',
+		':nth-child(2){position:sticky!important;left:var(--lanspeed-client-second-column-left)',
 		'.lanspeed-table th:nth-child(1)',
 		'width:22%',
-		'width:13.6%;text-align:center}',
-		'width:5%;text-align:center}'
+		'width:16%;text-align:center}',
+		'width:7.6667%;text-align:center}'
 	].forEach(function(marker) {
 		if (!responsiveCss.includes(marker))
 			fail(`statusStyleResponsive.js must retain responsive status behavior: ${marker}`);
@@ -5944,9 +5864,30 @@ function assertStatusStyleModule(src) {
 		fail('cumulative traffic values must use the same typography as live rate values');
 	}
 	if (!baseCss.includes('.lanspeed-client-total-header,.lanspeed-client-total-cell{text-align:center}') ||
-	    !responsiveCss.includes('width:13.6%;text-align:center}') ||
-	    !responsiveCss.includes('width:5%;text-align:center}')) {
+		!responsiveCss.includes('width:16%;text-align:center}') ||
+		!responsiveCss.includes('width:7.6667%;text-align:center}')) {
 		fail('client totals and connection controls must use a compact, aligned desktop table rhythm');
+	}
+	[
+		'[data-client-totals="hidden"][data-client-control="shown"]',
+		'[data-client-totals="shown"][data-client-control="hidden"]',
+		'[data-client-totals="hidden"][data-client-control="hidden"]'
+	].forEach(function(marker) {
+		if (!responsiveCss.includes(marker))
+			fail(`statusStyleResponsive.js must define a balanced desktop layout for every optional-column combination: ${marker}`);
+	});
+	[
+		':is(:nth-child(3),:nth-child(4),:nth-child(5),:nth-child(6),:nth-child(7),:nth-child(8)){width:7.6667%;text-align:center}',
+		':is(:nth-child(3),:nth-child(4),:nth-child(5),:nth-child(6),:nth-child(7),:nth-child(8)){width:9.6667%!important;text-align:center}'
+	].forEach(function(marker) {
+		if (!responsiveCss.includes(marker))
+			fail(`live and cumulative traffic columns must retain one compact, even desktop rhythm: ${marker}`);
+	});
+	if (!responsiveCss.includes('.lanspeed-table td:nth-child(2){text-align:left!important}')) {
+		fail('desktop MAC values must share the MAC heading reading edge');
+	}
+	if (responsiveCss.includes('data-client-status') || responsiveCss.includes('nth-child(10)')) {
+		fail('statusStyleResponsive.js must use the nine-column layout after removing client status');
 	}
 	themeCss.forEach(function(theme) {
 		if (!theme[2].includes(`lanspeed-theme-${theme[1]}`) ||
@@ -6030,15 +5971,24 @@ function assertStatusShellModule(src) {
 	    !src.includes("E('label', { 'class': 'lanspeed-refresh-control' }, [ _('刷新'), refs.intervalSel ])")) {
 		fail('lanspeed/statusShell.js must place unit/filter controls left and refresh controls right');
 	}
-	if (!src.includes('refs.statusHeader') ||
-	    !src.includes('refs.statusHeader.hidden = viewState.showClientStatus !== true') ||
-	    src.includes("_('显示客户端状态')")) {
-		fail('lanspeed/statusShell.js must apply config-driven status-column visibility without an inline switch');
+	if (src.includes('refs.statusHeader') || src.includes('showClientStatus') ||
+		src.includes('data-client-status') || src.includes("_('状态')")) {
+		fail('lanspeed/statusShell.js must remove the obsolete client status column and toggle');
 	}
 	if (!src.includes("'class': 'big lanspeed-connection-values'") ||
 	    !src.includes("'class': 'lanspeed-connection-stat'") ||
 	    !src.includes("'class': 'lanspeed-connection-number'")) {
 		fail('lanspeed/statusShell.js must render connection totals with the same three-row metric structure as every other card');
+	}
+	if (!src.includes('lanspeed-column-resize-handle') ||
+		!src.includes('COLUMN_WIDTHS_KEY') ||
+		!src.includes('pointerdown') ||
+		!src.includes('pointercancel') ||
+		!src.includes('clientColumnResizeActive') ||
+		!src.includes('clientColumnLayoutKey') ||
+		!src.includes('persistCurrentColumnWidths') ||
+		!src.includes('localStorage.setItem(COLUMN_WIDTHS_KEY')) {
+		fail('lanspeed/statusShell.js must provide persistent per-column resize handles');
 	}
 	const collectorBadges = src.match(/lanspeed-collector-status/g) || [];
 	if (collectorBadges.length !== 1 ||
@@ -6063,15 +6013,14 @@ function assertStatusRefreshModule(src) {
 	if (!src.includes("'class': 'lanspeed-client-name'") ||
 	    !src.includes("'class': 'mono lanspeed-client-mac'") ||
 	    !src.includes("'class': 'num lanspeed-client-value'") ||
-	    !src.includes("'class': 'num lanspeed-client-total-cell '") ||
-	    !src.includes("'class': 'lanspeed-client-state-cell'") ||
-	    (!src.includes("'data-label': _('上行')") && !src.includes('clientTrafficCell(c, \'tx\'')) ||
-	    (!src.includes("'data-label': _('下行')") && !src.includes('clientTrafficCell(c, \'rx\'')) ||
-	    !src.includes("'data-label': _('状态')")) {
+		!src.includes("'class': 'num lanspeed-client-total-cell '") ||
+		(!src.includes("'data-label': _('上行')") && !src.includes('clientTrafficCell(c, \'tx\'')) ||
+		(!src.includes("'data-label': _('下行')") && !src.includes('clientTrafficCell(c, \'rx\'')) ||
+		src.includes("'data-label': _('状态')")) {
 		fail('lanspeed/statusRefresh.js must label client fields for the narrow stacked layout');
 	}
-	if (!src.includes("clientTrafficTotalCell(c, 'tx', !nssProfile)") ||
-	    !src.includes("clientTrafficTotalCell(c, 'rx', !nssProfile)") ||
+	if (!src.includes("clientTrafficTotalCell(c, 'tx', showClientTotals)") ||
+	    !src.includes("clientTrafficTotalCell(c, 'rx', showClientTotals)") ||
 	    !src.includes("var label = isUpload ? _('累计上传') : _('累计下载')") ||
 	    !src.includes("lanspeed-client-total-upload-cell") ||
 	    !src.includes("lanspeed-client-total-download-cell")) {
@@ -6091,11 +6040,12 @@ function assertStatusRefreshModule(src) {
 	    !src.includes('state.scrollContainers || []')) {
 		fail('statusRefresh.js must preserve theme-owned scroll containers as well as the window viewport');
 	}
-	if (!src.includes('var showClientStatus = viewState.showClientStatus === true;') ||
-	    !src.includes('setClientStatusVisibility(refs, showClientStatus);') ||
-	    !src.includes('clientStateCell(stateCells, showClientStatus)') ||
-	    !src.includes('cell.hidden = !visible;')) {
-		fail('lanspeed/statusRefresh.js must hide or show the complete client status column from UCI state');
+	if (src.includes('showClientStatus') || src.includes('setClientStatusVisibility') ||
+		src.includes('clientStateCell') || src.includes('data-client-status') ||
+		src.includes('showClientControl') || src.includes('show_client_control') ||
+		!src.includes('var showClientTotals = viewState.showClientTotals === true && !nssProfile;') ||
+		!src.includes('controlCell.hidden = false;')) {
+		fail('lanspeed/statusRefresh.js must remove the client-control visibility option');
 	}
 	if (src.includes('refreshDiagnostics') || src.includes('lanspeed-diagnostic-') ||
 	    src.includes('diagnosticsSummary') || src.includes('importantWarnings(status.warnings')) {
@@ -6108,11 +6058,9 @@ function assertStatusRefreshModule(src) {
 	if (!/if \(isLan\)\s*\{\s*totalIfTx \+= ifUp;\s*totalIfRx \+= ifDn;/.test(src)) {
 		fail('statusRefresh.js must summarize only LAN collection boundaries without adding observe-path duplicates');
 	}
-	if (!src.includes('splitClientWarnings(rawWarnings, globalWarnings)') ||
-	    !src.includes("modeTitle += '\\n' + vocab.warningText('conntrack_connection_only');") ||
-	    src.includes("_('仅连接')") ||
-	    !src.includes("_('%d 告警').format(specificWarnings.length)")) {
-		fail('statusRefresh.js must fold connection-only details into the collector tooltip without rendering another label');
+	if (src.includes('splitClientWarnings') || src.includes('specificWarnings') ||
+		src.includes('clientStateCell') || src.includes('仅连接')) {
+		fail('statusRefresh.js must not build the removed per-client status cell');
 	}
 	if (!src.includes("String(status && status.rate_collector_mode || '') === 'auto'") ||
 	    !src.includes("String(status && status.access_edge_mode || '') === 'active'") ||
@@ -6327,6 +6275,10 @@ function assertConfigStyleModule(src) {
 	[
 		'.lanspeed-config-root{display:flex;flex-direction:column',
 		'.lanspeed-config-table,.lanspeed-ifcfg-table{width:100%',
+		'.lanspeed-config-groups{display:flex;flex-direction:column',
+		'.lanspeed-config-group-heading{display:flex;align-items:baseline',
+		'.lanspeed-config-list{display:flex;flex-direction:column',
+		'.lanspeed-config-compact-field{display:grid;grid-template-columns',
 		'.lanspeed-range-stack{display:flex;flex-direction:column',
 		'.lanspeed-config-actions,.lanspeed-ifcfg-actions{display:flex',
 		'.lanspeed-ifcfg-seg{display:inline-flex',
@@ -6374,7 +6326,11 @@ function assertConfigStyleModule(src) {
 		}
 	});
 	if (!auroraCss.includes('.lanspeed-ifcfg-seg>button.active{') ||
-	    !auroraCss.includes('var(--lanspeed-surface-sunken)'))
+	    !auroraCss.includes('var(--lanspeed-surface-sunken)') ||
+	    !auroraCss.includes('.lanspeed-config-group-heading') ||
+	    !auroraCss.includes('.lanspeed-config-group-subtitle') ||
+	    !auroraCss.includes('var(--lanspeed-accent-soft)') ||
+	    !auroraCss.includes('.lanspeed-config-root.lanspeed-theme-aurora.lanspeed-config-x86 .lanspeed-ifcfg-table tbody'))
 		fail('configStyleAurora.js must implement an Aurora-native segmented interface control');
 	if (new Set([ auroraCss, argonCss, bootstrapCss ]).size !== 3)
 		fail('Aurora, Argon and Bootstrap configuration layouts must remain independent implementations');
@@ -6416,6 +6372,15 @@ function assertConfigFormModule(src) {
 	    !src.includes("conntrack_netlink: _('内核连接接口')")) {
 		fail('configForm.js must translate the effective runtime configuration into user-facing traffic meanings');
 	}
+	if (!src.includes('x86 关闭后同时停止采集和持久化累计流量'))
+		fail('configForm.js must explain that disabling cumulative traffic also stops its collection');
+	if (!src.includes('function configList(') || !src.includes('function configGroup(') ||
+		!src.includes('configList(rows)') || !src.includes('lanspeed-config-groups') ||
+		!src.includes('lanspeed-config-group-heading') ||
+		!src.includes('lanspeed-config-compact-field') ||
+		!src.includes("configPlatform.isX86(viewState.runtimeStatus)") ||
+		src.includes("E('details'") || src.includes("E('summary'"))
+		fail('configForm.js must use fixed x86 setting groups without expandable controls or changing the NSS form');
 	if (!src.includes("E('tr', { 'class': 'lanspeed-range-row' }, [")) {
 		fail('configForm.js must identify the multi-control IPv6 range row for theme-specific alignment');
 	}
@@ -6427,7 +6392,6 @@ function assertConfigFormModule(src) {
 		'conn_collector_mode',
 		'active_client_window_ms',
 		'active_client_min_bps',
-		'show_client_status',
 		'show_ipv6',
 		'hide_private_ipv6',
 		'hide_ipv6_ranges'
@@ -6447,7 +6411,8 @@ function assertConfigModelRewrite(src) {
 		'nss_low_rate_high_watermark_bps', 'nss_fifo_target_delay_ms',
 		'nss_fifo_min_queue_packets', 'rate_compensation_factor',
 		'enable_proxy_connections', 'mihomo_controller_port', 'mihomo_controller_secret',
-		'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges',
+		'show_client_totals',
+		'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges',
 		'collector_mode', 'max_clients', 'ifname', 'interface_include',
 		'interface_exclude', 'observe', 'enable_bpf', 'enable_conntrack_fallback'
 	];
@@ -6467,9 +6432,10 @@ function assertConfigModelRewrite(src) {
 	}
 	if (Object.prototype.hasOwnProperty.call(readableLabels, 'dedicated_port'))
 		fail('configModel.js must remove the obsolete dedicated-port field from the visible contract');
-	if (JSON.stringify(model.REMOVED_UCI_FIELDS) !== JSON.stringify([ 'dedicated_port' ]))
+	if (JSON.stringify(model.REMOVED_UCI_FIELDS) !== JSON.stringify([ 'dedicated_port', 'show_client_status', 'show_client_control' ]))
 		fail('configModel.js must keep removed UCI fields explicit for compatibility cleanup');
-	if (model.DEFAULTS.access_edge_mode !== 'active' ||
+	if (model.DEFAULTS.show_client_totals !== '1' ||
+		model.DEFAULTS.access_edge_mode !== 'active' ||
 		model.DEFAULTS.internet_view_mode !== 'off' ||
 		model.DEFAULTS.nss_low_rate_window_ms !== 18000 ||
 		model.DEFAULTS.nss_low_rate_high_watermark_bps !== 8000000 ||
@@ -6759,7 +6725,7 @@ function makeConfigFormState(model, overrides) {
 		'overview_window_samples', 'max_clients', 'nss_low_rate_window_ms',
 		'nss_low_rate_high_watermark_bps', 'nss_fifo_target_delay_ms',
 		'nss_fifo_min_queue_packets', 'rate_compensation_factor' ];
-	const booleans = [ 'show_client_status', 'show_ipv6', 'hide_private_ipv6',
+	const booleans = [ 'show_client_totals', 'show_ipv6', 'hide_private_ipv6',
 		'enable_bpf', 'enable_conntrack_fallback' ];
 	const editable = [ 'rate_collector_mode', 'access_edge_mode', 'internet_view_mode',
 		'conn_collector_mode', 'enable_bpf',
@@ -6767,7 +6733,7 @@ function makeConfigFormState(model, overrides) {
 		'max_clients', 'active_client_window_ms', 'active_client_min_bps',
 		'nss_low_rate_window_ms', 'nss_low_rate_high_watermark_bps',
 		'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets', 'rate_compensation_factor',
-		'show_client_status', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges' ];
+		'show_client_totals', 'show_ipv6', 'hide_private_ipv6', 'hide_ipv6_ranges' ];
 	const inputs = {};
 	numbers.forEach(function(name) { inputs[name] = fakeElement('input', { value: String(values[name]) }); });
 	[ 'rate_collector_mode', 'access_edge_mode', 'internet_view_mode', 'conn_collector_mode' ].forEach(function(name) {
@@ -6851,6 +6817,7 @@ function assertIfaceConfigRewrite(src) {
 		!src.includes("'degraded'") || !src.includes("'empty'") ||
 		!src.includes('orphanRemovals') || !src.includes('collect_reason') ||
 		!src.includes('max_configured') || !src.includes("'class': 'lanspeed-hint'") ||
+		!src.includes('compactHint') || !src.includes('采集=客户端测速；观察=接口总吞吐。') ||
 		src.includes('lanspeed-hint lanspeed-state-message')) {
 		fail('ifaceConfig.js must implement tokenized scan states, orphan handling, and v1 capability limits');
 	}
@@ -7073,7 +7040,8 @@ function assertConfigFormRewrite(src) {
 		'enable_proxy_connections', 'mihomo_controller_port', 'mihomo_controller_secret' ].forEach(name => {
 		if (!src.includes(name)) fail(`configForm.js must preserve ${name} in the owned data contract`);
 	});
-	if (!src.includes("values.dedicated_port = uci.get('lanspeed', 'main', 'dedicated_port')") ||
+	if (!src.includes('REMOVED_UCI_FIELDS.forEach(function(name)') ||
+		!src.includes("values[name] = uci.get('lanspeed', 'main', name)") ||
 		src.includes("rowFor(viewState, 'dedicated_port'") ||
 		src.includes('refs.inputs.dedicated_port') ||
 		!src.includes('FIELD_NAMES.concat(REMOVED_UCI_FIELDS)'))

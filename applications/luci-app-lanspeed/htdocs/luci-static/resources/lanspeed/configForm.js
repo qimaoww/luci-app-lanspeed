@@ -9,7 +9,7 @@
 var FIELD_NAMES = cfgModel.FIELDS.map(function(field) { return field.name; });
 var REMOVED_UCI_FIELDS = cfgModel.REMOVED_UCI_FIELDS || [];
 var LIST_FIELDS = [ 'ifname', 'interface_include', 'interface_exclude', 'observe' ];
-var BOOLEAN_FIELDS = [ 'show_client_status', 'show_ipv6', 'hide_private_ipv6',
+var BOOLEAN_FIELDS = [ 'show_client_totals', 'show_ipv6', 'hide_private_ipv6',
 	'enable_bpf', 'enable_conntrack_fallback' ];
 var NUMBER_FIELDS = [ 'refresh_interval_ms', 'active_client_window_ms',
 	'active_client_min_bps', 'overview_window_samples', 'max_clients' ];
@@ -139,7 +139,9 @@ function rawUciValues() {
 		values[name] = uci.get('lanspeed', 'main', name);
 	});
 	/* Read removed options only so the next save can clean them up. */
-	values.dedicated_port = uci.get('lanspeed', 'main', 'dedicated_port');
+	REMOVED_UCI_FIELDS.forEach(function(name) {
+		values[name] = uci.get('lanspeed', 'main', name);
+	});
 	return values;
 }
 
@@ -295,6 +297,7 @@ function interfaceListInput(name, values, placeholder) {
 
 function rowFor(viewState, name, label, control, hint, attrs) {
 	var refs = viewState.daemonRefs;
+	var labelNode = E('label', { 'for': fieldId(name) }, label);
 	var error = E('div', {
 		'id': fieldId(name) + '-error',
 		'class': 'lanspeed-config-field-error',
@@ -304,13 +307,48 @@ function rowFor(viewState, name, label, control, hint, attrs) {
 	}, '');
 	var hintNode = E('div', { 'id': fieldId(name) + '-hint', 'class': 'hint' }, hint || '');
 	var rowAttrs = Object.assign({ 'class': 'lanspeed-config-field', 'data-field': name }, attrs || {});
-	var row = E('tr', rowAttrs, [
-		E('th', { 'scope': 'row' }, E('label', { 'for': fieldId(name) }, label)),
-		E('td', { 'class': 'value' }, control),
-		E('td', {}, [ hintNode, error ])
-	]);
+	var row;
+	if (viewState.compactX86) {
+		rowAttrs.class += ' lanspeed-config-compact-field';
+		row = E('div', rowAttrs, [
+			E('div', { 'class': 'lanspeed-config-field-label' }, labelNode),
+			E('div', { 'class': 'lanspeed-config-field-control value' }, control),
+			E('div', { 'class': 'lanspeed-config-field-hint' }, [ hintNode, error ])
+		]);
+	} else {
+		row = E('tr', rowAttrs, [
+			E('th', { 'scope': 'row' }, labelNode),
+			E('td', { 'class': 'value' }, control),
+			E('td', {}, [ hintNode, error ])
+		]);
+	}
 	refs.fields[name] = { row: row, controlWrap: control, input: control, error: error, hint: hintNode };
 	return row;
+}
+
+function configTable(rows) {
+	return E('table', { 'class': 'lanspeed-config-table' }, [
+		E('thead', {}, E('tr', {}, [
+			E('th', {}, _('项目')),
+			E('th', { 'class': 'value' }, _('值')),
+			E('th', {}, _('说明'))
+		])),
+		E('tbody', {}, rows || [])
+	]);
+}
+
+function configList(rows) {
+	return E('div', { 'class': 'lanspeed-config-list' }, rows || []);
+}
+
+function configGroup(title, subtitle, rows) {
+	return E('section', { 'class': 'lanspeed-config-group' }, [
+		E('div', { 'class': 'lanspeed-config-group-heading' }, [
+			E('span', { 'class': 'lanspeed-config-group-title' }, title),
+			E('span', { 'class': 'lanspeed-config-group-subtitle' }, subtitle)
+		]),
+		E('div', { 'class': 'lanspeed-config-group-body' }, configList(rows))
+	]);
 }
 
 function inputOf(field) {
@@ -582,6 +620,12 @@ function buildDaemonSection(data, viewState) {
 	viewState.ifaceOriginal = data.interfaceConfig || interfaceConfigFrom(data.raw || {});
 	viewState.initialIfaceOriginal = cloneValues(viewState.ifaceOriginal);
 	viewState.initialIfaceOriginal.present = Object.assign({}, viewState.ifaceOriginal.present || {});
+	var isX86Profile = configPlatform.isX86(viewState.runtimeStatus);
+	viewState.compactX86 = isX86Profile;
+	viewState.isX86Profile = isX86Profile;
+	var settingHint = function(compact, detailed) {
+		return _(isX86Profile ? compact : detailed);
+	};
 
 	NUMBER_FIELDS.forEach(function(name) { refs.inputs[name] = numberInput(name, values[name]); });
 	if (viewState.platformPolicy.showProxyConnections) {
@@ -657,40 +701,67 @@ function buildDaemonSection(data, viewState) {
 			_('NSSHTB 的独立有效速率系数；默认 1.10，严格模式可设为 1.00。')));
 	}
 	rows.push(rowFor(viewState, 'conn_collector_mode', _('连接详情来源'), refs.inputs.conn_collector_mode,
-			viewState.platformPolicy.connectionHint));
+		settingHint('TCP/UDP 连接详情来源。', viewState.platformPolicy.connectionHint)));
 	if (viewState.platformPolicy.showProxyConnections) {
 		rows.push(rowFor(viewState, 'enable_proxy_connections', _('代理连接补全'),
 			refs.toggleWrap.enable_proxy_connections,
-			_('从本机 Mihomo/OpenClash API 与 dae/daed 进程补全透明代理后的真实连接；仅影响连接详情。')));
+			settingHint('补全代理连接。', '从本机 Mihomo/OpenClash API 与 dae/daed 进程补全透明代理后的真实连接；仅影响连接详情。')));
 		rows.push(rowFor(viewState, 'mihomo_controller_port', _('Mihomo 控制器端口'),
 			refs.inputs.mihomo_controller_port,
-			_('填 0 自动读取 OpenClash 控制器端口；未检测到时使用 9090。只连接 127.0.0.1。')));
+			settingHint('0 为自动检测。', '填 0 自动读取 OpenClash 控制器端口；未检测到时使用 9090。只连接 127.0.0.1。')));
 		rows.push(rowFor(viewState, 'mihomo_controller_secret', _('Mihomo API 认证码'),
 			refs.inputs.mihomo_controller_secret,
-			_('留空自动读取 OpenClash 认证码；手动值仅保存到 LAN Speed UCI，页面不会读取或回显 OpenClash 原认证码。')));
+			settingHint('留空读取 OpenClash。', _('留空自动读取 OpenClash 认证码；手动值仅保存到 LAN Speed UCI，页面不会读取或回显 OpenClash 原认证码。'))));
 	}
 	rows.push(rowFor(viewState, 'enable_bpf', _('启用 CPU 流量检测（BPF）'), refs.toggleWrap.enable_bpf,
-			viewState.platformPolicy.bpfHint));
+		viewState.platformPolicy.bpfHint));
 	rows.push(rowFor(viewState, 'enable_conntrack_fallback', _('允许兼容连接详情'), refs.toggleWrap.enable_conntrack_fallback,
-		_('只用于读取客户端连接详情，不参与客户端网速计算。')));
+		settingHint('仅用于连接详情。', '只用于读取客户端连接详情，不参与客户端网速计算。')));
 	rows.push(rowFor(viewState, 'refresh_interval_ms', _('采样间隔'), refs.inputs.refresh_interval_ms,
 			viewState.platformPolicy.refreshHint));
 	rows.push(rowFor(viewState, 'overview_window_samples', _('历史采样点'), refs.inputs.overview_window_samples,
-		_('内存中保留的概览样本数，范围 2 到 240。')));
+		settingHint('内存历史点数。', '内存中保留的概览样本数，范围 2 到 240。')));
 	rows.push(rowFor(viewState, 'max_clients', _('客户端上限'), refs.inputs.max_clients,
-		_('客户端与连接聚合容量，范围 64 到 16384。')));
+		settingHint('客户端容量上限。', '客户端与连接聚合容量，范围 64 到 16384。')));
 	rows.push(rowFor(viewState, 'active_client_window_ms', _('活跃客户端窗口'), refs.inputs.active_client_window_ms,
-		_('最后活动后继续标记为活跃的时长，最少 1000 ms。')));
+		settingHint('无流量后的活跃时长。', '最后活动后继续标记为活跃的时长，最少 1000 ms。')));
 	rows.push(rowFor(viewState, 'active_client_min_bps', _('活跃最小速率'), refs.inputs.active_client_min_bps,
-		_('当前收发速率达到该值时才视为活跃。')));
-	rows.push(rowFor(viewState, 'show_client_status', _('显示客户端状态'), refs.toggleWrap.show_client_status,
-		_('在实时状态中显示采集来源与告警。')));
+		settingHint('达到此速率才算活跃。', '当前收发速率达到该值时才视为活跃。')));
+	rows.push(rowFor(viewState, 'show_client_totals', _('显示客户端累计流量'), refs.toggleWrap.show_client_totals,
+		settingHint('显示并采集累计流量。', '在客户端列表中显示累计上传和累计下载；x86 关闭后同时停止采集和持久化累计流量。')));
 	rows.push(rowFor(viewState, 'show_ipv6', _('显示 IPv6 地址'), refs.toggleWrap.show_ipv6,
-		_('关闭后实时状态只显示 IPv4，并禁用 IPv6 隐藏规则。')));
+		settingHint('客户端 IPv6 显示。', '关闭后实时状态只显示 IPv4，并禁用 IPv6 隐藏规则。')));
 	rows.push(rowFor(viewState, 'hide_private_ipv6', _('隐藏私有 IPv6 地址'), refs.toggleWrap.hide_private_ipv6,
-		_('仅在显示 IPv6 时可用。'), { 'class': 'lanspeed-config-field lanspeed-private-ipv6-row' }));
+		settingHint('隐藏私有 IPv6。', '仅在显示 IPv6 时可用。'), { 'class': 'lanspeed-config-field lanspeed-private-ipv6-row' }));
 	rows.push(rowFor(viewState, 'hide_ipv6_ranges', _('隐藏 IPv6 范围'), refs.rangeEditor,
-		_('严格 IPv6 CIDR；仅在上项启用时生效。'), { 'class': 'lanspeed-config-field lanspeed-range-row' }));
+		settingHint('自定义 IPv6 范围。', '严格 IPv6 CIDR；仅在上项启用时生效。'), { 'class': 'lanspeed-config-field lanspeed-range-row' }));
+
+	var settingsContent;
+	if (isX86Profile) {
+		var groupedRows = function(names) {
+			return names.map(function(name) {
+				return refs.fields[name] && refs.fields[name].row;
+			}).filter(Boolean);
+		};
+		settingsContent = E('div', { 'class': 'lanspeed-config-groups' }, [
+			configGroup(_('常用设置'), _('网速与显示'), groupedRows([
+				'rate_collector_mode', 'enable_bpf', 'show_client_totals', 'show_ipv6'
+			])),
+			configGroup(_('采集参数'), _('周期与活跃'), groupedRows([
+				'refresh_interval_ms', 'max_clients', 'overview_window_samples',
+				'active_client_window_ms', 'active_client_min_bps'
+			])),
+			configGroup(_('连接与代理'), _('TCP/UDP 与代理'), groupedRows([
+				'conn_collector_mode', 'enable_conntrack_fallback', 'enable_proxy_connections',
+				'mihomo_controller_port', 'mihomo_controller_secret'
+			])),
+			configGroup(_('IPv6 过滤'), _('地址显示规则'), groupedRows([
+				'hide_private_ipv6', 'hide_ipv6_ranges'
+			]))
+		]);
+	} else {
+		settingsContent = configTable(rows);
+	}
 
 	refs.runtimeInfo = E('span', { 'class': 'lanspeed-config-runtime', 'role': 'status', 'aria-live': 'polite' }, '');
 	refs.saveState = E('span', { 'class': 'lanspeed-config-save-state', 'role': 'status', 'aria-live': 'polite' }, '');
@@ -729,15 +800,13 @@ function buildDaemonSection(data, viewState) {
 			});
 		});
 
-	var section = E('section', { 'class': 'lanspeed-config-subsection lanspeed-config-runtime-section' }, [
+	var section = E('section', { 'class': 'lanspeed-config-subsection lanspeed-config-runtime-section' +
+		(isX86Profile ? ' lanspeed-config-runtime-x86' : '') }, [
 		E('div', { 'class': 'lanspeed-config-subheader' }, [
 			E('h4', {}, _('运行与显示设置')), E('span', { 'class': 'spacer' }), refs.runtimeInfo
 		]),
 		E('div', { 'class': 'lanspeed-config-body' }, [
-			E('table', { 'class': 'lanspeed-config-table' }, [
-				E('thead', {}, E('tr', {}, [ E('th', {}, _('项目')), E('th', { 'class': 'value' }, _('值')), E('th', {}, _('说明')) ])),
-				E('tbody', {}, rows)
-			]),
+			settingsContent,
 			E('div', { 'class': 'lanspeed-config-actions' }, [ refs.resetDefaultsBtn, E('span', { 'class': 'spacer' }), refs.saveState ])
 		])
 	]);

@@ -291,6 +291,10 @@ pub struct RuntimeConfig {
     pub overview_window_samples: usize,
     pub enable_bpf: bool,
     pub enable_conntrack_fallback: bool,
+    /// Whether x86 lifetime client upload/download totals should be collected,
+    /// persisted and exposed in the client response.
+    #[cfg(not(feature = "nss-platform"))]
+    pub show_client_totals: bool,
     pub refresh_interval_clamped: bool,
     pub active_client_window_clamped: bool,
     pub active_client_min_bps_clamped: bool,
@@ -345,6 +349,8 @@ impl Default for RuntimeConfig {
             overview_window_samples: DEFAULT_OVERVIEW_WINDOW_SAMPLES,
             enable_bpf: false,
             enable_conntrack_fallback: true,
+            #[cfg(not(feature = "nss-platform"))]
+            show_client_totals: true,
             refresh_interval_clamped: false,
             active_client_window_clamped: false,
             active_client_min_bps_clamped: false,
@@ -524,6 +530,10 @@ impl RuntimeConfig {
         }
         if let Some(value) = scalar(source, "enable_conntrack_fallback")? {
             config.enable_conntrack_fallback = legacy_bool(&value);
+        }
+        #[cfg(not(feature = "nss-platform"))]
+        if let Some(value) = scalar(source, "show_client_totals")? {
+            config.show_client_totals = legacy_bool(&value);
         }
 
         #[cfg(feature = "nss-platform")]

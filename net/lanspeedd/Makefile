@@ -42,7 +42,7 @@ define Package/lanspeedd
   CATEGORY:=Network
   TITLE:=LAN speed monitor daemon
   SOURCE:=lanspeedd
-  DEPENDS:=@(aarch64||x86_64) +libgcc +kmod-nf-conntrack-netlink $(LANSPEED_X86_CONTROL_DEPENDS) $(LANSPEED_NSS_CONTROL_DEPENDS)
+  DEPENDS:=@(aarch64||x86_64) +libgcc +kmod-nf-conntrack-netlink +TARGET_x86:libsqlite3 $(LANSPEED_X86_CONTROL_DEPENDS) $(LANSPEED_NSS_CONTROL_DEPENDS)
 endef
 
 define Package/lanspeedd/description

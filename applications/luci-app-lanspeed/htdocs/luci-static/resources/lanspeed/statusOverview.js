@@ -442,7 +442,8 @@ function normalizeData(data) {
 		clients: clients,
 		interfaces: interfaces,
 		uci: uciMain,
-		showClientStatus: uciMain.show_client_status === '1',
+		/* Cumulative traffic remains enabled unless explicitly disabled. */
+		showClientTotals: uciMain.show_client_totals !== '0',
 		showIpv6: uciMain.show_ipv6 !== '0',
 		hidePrivateIpv6: uciMain.hide_private_ipv6 === '1',
 		hideIpv6Ranges: statusIp.hideIpv6RangesValue(uciMain.hide_ipv6_ranges),
@@ -581,8 +582,7 @@ function createController(viewState, options) {
 		viewState.clients = normalized.clients;
 		viewState.interfaces = normalized.interfaces;
 		viewState.uci = normalized.uci;
-		viewState.showClientStatus = normalized.showClientStatus;
-		viewState.showClientControl = true;
+		viewState.showClientTotals = normalized.showClientTotals;
 		viewState.showIpv6 = normalized.showIpv6;
 		viewState.hidePrivateIpv6 = normalized.hidePrivateIpv6;
 		viewState.hideIpv6Ranges = normalized.hideIpv6Ranges;
@@ -638,6 +638,10 @@ function createController(viewState, options) {
 	function destroy() {
 		if (destroyed) return;
 		destroyed = true;
+		if (viewState.clientColumnResizeObserver &&
+			typeof viewState.clientColumnResizeObserver.disconnect === 'function')
+			viewState.clientColumnResizeObserver.disconnect();
+		viewState.clientColumnResizeObserver = null;
 		requestSeq++;
 		stopTimer();
 		clearErrorNoticeTimer();
@@ -705,8 +709,7 @@ return baseclass.extend({
 			clients: normalized.clients,
 			interfaces: normalized.interfaces,
 			uci: normalized.uci,
-			showClientStatus: normalized.showClientStatus,
-			showClientControl: true,
+			showClientTotals: normalized.showClientTotals,
 			showIpv6: normalized.showIpv6,
 			hidePrivateIpv6: normalized.hidePrivateIpv6,
 				hideIpv6Ranges: normalized.hideIpv6Ranges,
@@ -734,7 +737,22 @@ return baseclass.extend({
 			viewState.refs = built.refs;
 			if (viewState.attachRoot) viewState.attachRoot(built.root);
 			viewState.refreshLive();
-		viewState.schedule();
+			/* LuCI appends the returned root after render() returns. Apply the
+			 * initial column canvas after attachment and once more after the first
+			 * layout pass; the first callback can otherwise capture the table's
+			 * intrinsic width before the card expands to the content width. */
+			var syncClientColumns = function() {
+				if (viewState.destroyed !== true && viewState.refs &&
+					typeof viewState.refs.syncClientColumnWidths === 'function')
+					viewState.refs.syncClientColumnWidths();
+			};
+			if (typeof requestAnimationFrame === 'function')
+				requestAnimationFrame(syncClientColumns);
+			if (typeof setTimeout === 'function') {
+				setTimeout(syncClientColumns, 50);
+				setTimeout(syncClientColumns, 150);
+			}
+			viewState.schedule();
 		return built.root;
 	},
 

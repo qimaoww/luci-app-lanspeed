@@ -1,6 +1,5 @@
 'use strict';
 'require baseclass';
-'require lanspeed.vocab as vocab';
 'require lanspeed.format as fmt';
 'require lanspeed.clientConnections as clientConnections';
 'require lanspeed.clientControl as clientControl';
@@ -8,10 +7,6 @@
 'require lanspeed.statusIp as statusIp';
 'require lanspeed.statusCollector as statusCollector';
 'require lanspeed.statusRateMeta as statusRateMeta';
-
-var CLIENT_INFO_WARNINGS = {
-	conntrack_connection_only: true
-};
 
 var ERROR_NOTICE_MS = 3000;
 
@@ -79,6 +74,11 @@ function refreshAvailability(viewState, refs) {
 	var samplePending = !failed.length && !liveUnavailable && sampleSyncPending(viewState);
 
 	if (refs.root) {
+		var platform = status.evidence && status.evidence.platform || {};
+		var profile = String(platform.profile || '');
+		var platformName = profile === 'x86_tc_bpf' || String(platform.target_arch || '') === 'x86_64' ||
+			platform.nss_compiled === false ? 'x86' : fmt.nssPlatform(status) ? 'nss' : 'unknown';
+		refs.root.setAttribute('data-lanspeed-platform', platformName);
 		refs.root.setAttribute('aria-busy', viewState.loading || samplePending ? 'true' : 'false');
 		refs.root.setAttribute('data-state', samplePending ? 'loading' :
 			hardFailure || runtimeUnavailable ? 'bad' :
@@ -251,38 +251,19 @@ function clientTrafficTotalCell(c, direction, showTotal) {
 	}, total) : []);
 }
 
-function splitClientWarnings(rawWarnings, globalWarnings) {
-	var info = [], warnings = [];
-	(rawWarnings || []).forEach(function(w) {
-		if (CLIENT_INFO_WARNINGS[w])
-			info.push(w);
-		else if (!(globalWarnings || {})[w] && vocab.isImportantWarning(w))
-			warnings.push(w);
-	});
-	return { info: info, warnings: warnings };
-}
-
-function setClientStatusVisibility(refs, visible) {
-	if (refs && refs.statusHeader)
-		refs.statusHeader.hidden = !visible;
-	if (refs && refs.clientsTable)
-		refs.clientsTable.setAttribute('data-client-status', visible ? 'shown' : 'hidden');
-}
-
-function clientStateCell(stateCells, visible) {
-	var cell = E('td', {
-		'class': 'lanspeed-client-state-cell',
-		'data-label': _('状态')
-	}, E('span', { 'class': 'state' }, stateCells));
-	cell.hidden = !visible;
-	return cell;
-}
-
 function captureClientViewport(refs) {
 	var host = typeof window !== 'undefined' ? window : null;
 	var scrollX = host ? Number(host.scrollX !== undefined ? host.scrollX : host.pageXOffset) || 0 : 0;
 	var scrollY = host ? Number(host.scrollY !== undefined ? host.scrollY : host.pageYOffset) || 0 : 0;
 	var scrollContainers = [];
+	var tableScroller = refs && refs.clientsTable ? refs.clientsTable.parentElement : null;
+	if (tableScroller) {
+		scrollContainers.push({
+			node: tableScroller,
+			left: Number(tableScroller.scrollLeft) || 0,
+			top: Number(tableScroller.scrollTop) || 0
+		});
+	}
 	var node = refs && refs.root ? refs.root.parentElement : null;
 	while (node) {
 		var style = host && typeof host.getComputedStyle === 'function' ? host.getComputedStyle(node) : null;
@@ -294,7 +275,7 @@ function captureClientViewport(refs) {
 			Number(node.scrollWidth) > Number(node.clientWidth);
 		var scrollsY = /^(?:auto|scroll|overlay)$/.test(overflowY) &&
 			Number(node.scrollHeight) > Number(node.clientHeight);
-		if (left || top || scrollsX || scrollsY) {
+		if ((left || top || scrollsX || scrollsY) && node !== tableScroller) {
 			scrollContainers.push({
 				node: node,
 				left: left,
@@ -478,23 +459,23 @@ function refreshLive(viewState) {
 			var mode = statusRateMeta.routedCollector(client && client.rate_meta);
 			return mode === 'fast_routed_lease' ? mode : current || mode;
 		}, '') : '';
-	viewState.showClientControl = true;
+	var showClientTotals = viewState.showClientTotals === true && !nssProfile;
 	if (refs.controlHeader) refs.controlHeader.hidden = false;
-	if (refs.totalUploadHeader) refs.totalUploadHeader.hidden = nssProfile;
-	if (refs.totalDownloadHeader) refs.totalDownloadHeader.hidden = nssProfile;
+	if (refs.totalUploadHeader) refs.totalUploadHeader.hidden = !showClientTotals;
+	if (refs.totalDownloadHeader) refs.totalDownloadHeader.hidden = !showClientTotals;
 	if (refs.clientsTable) {
 		refs.clientsTable.setAttribute('data-client-control', 'shown');
-		refs.clientsTable.setAttribute('data-client-totals', nssProfile ? 'hidden' : 'shown');
+		refs.clientsTable.setAttribute('data-client-totals', showClientTotals ? 'shown' : 'hidden');
 	}
 	refreshIntervalControl(viewState, refs, status);
 	var clientsAll = fmt.asArray(viewState.clients && viewState.clients.clients);
 	var prefs = viewState.prefs;
 	var activeCfg = fmt.activeConfig(status);
-	var showClientStatus = viewState.showClientStatus === true;
 	var showIpv6 = viewState.showIpv6 !== false;
 	var hidePrivateIpv6 = viewState.hidePrivateIpv6 === true;
 	var hideIpv6Ranges = statusIp.hideIpv6RangesValue(viewState.hideIpv6Ranges);
-	setClientStatusVisibility(refs, showClientStatus);
+	if (refs.syncClientColumnWidths)
+		refs.syncClientColumnWidths();
 	var availability = refreshAvailability(viewState, refs);
 
 	var collector = routedInternet ? (routedCollector || 'fast_routed_internet') : accessEdgeOwnsCurrentRate(status) ? 'access_edge' :
@@ -616,63 +597,11 @@ function refreshLive(viewState) {
 		refs.empty.style.display = 'none';
 		refs.empty.setAttribute('data-state', 'ready');
 
-		var globalWarnings = {};
-		fmt.asArray(status.warnings).forEach(function(w) {
-			globalWarnings[vocab.normalizeWarningId(w)] = true;
-		});
-
 		reconcileClientRows(refs.tbody, page.items.map(function(c) {
 			var tx = routedInternet ? routedRate(c, 'tx') : Number(c.tx_bps) || 0;
 			var rx = routedInternet ? routedRate(c, 'rx') : Number(c.rx_bps) || 0;
 			var idle = !fmt.isActiveClient(c, latestSample, activeCfg);
 			var ips = statusIp.displayIpsForClient(c.ips, showIpv6, hidePrivateIpv6, hideIpv6Ranges);
-			var rawWarnings = fmt.asArray(c.warnings).map(function(w) {
-				return vocab.normalizeWarningId(w);
-			});
-			var clientWarningState = splitClientWarnings(rawWarnings, globalWarnings);
-			var connectionOnly = clientWarningState.info.indexOf('conntrack_connection_only') !== -1;
-			var specificWarnings = clientWarningState.warnings;
-			var critClient = specificWarnings.some(function(w) { return vocab.CRITICAL_WARNINGS[w]; });
-
-			var mode = String(c.collector_mode || '-');
-			var routedMode = routedInternet && statusRateMeta.routedCollector(c.rate_meta);
-			if (routedMode)
-				mode = routedMode;
-			if (!nssProfile && (mode === 'nss_ecm_node' || mode === 'nss_ecm_bpf'))
-				mode = 'unsupported';
-			var modeLabel = statusCollector.collectorLabel(mode), modeTitle;
-			if (mode === 'access_edge') {
-				modeTitle = _('自动精准按客户端、按方向选择唯一总速率来源；具体来源显示在相邻标签中。');
-			} else if (mode === 'bpf') {
-				modeTitle = _('BPF 在 LAN 接口按 MAC 统计客户端实时速率。');
-			} else if (mode === 'nss_ecm_node') {
-				modeTitle = _('NSS ECM node 按客户端 MAC 读取真实字节与包计数并立即发布；独立 LAN 窗口只验证覆盖率。');
-			} else if (mode === 'nss_ecm_bpf') {
-				modeTitle = _('ECM+BPF 按原有 NSS + CPU 路径统计客户端流量。');
-			} else if (mode === 'conntrack_netlink') {
-				modeTitle = _('CT-Netlink 仅补充当前连接数，不参与非 NSS 设备的实时速率统计。');
-			} else if (mode === 'conntrack_procfs') {
-				modeTitle = _('CT-Procfs 是连接数的备用来源，不参与非 NSS 设备的实时速率统计。');
-			} else if (mode === 'conntrack') {
-				modeTitle = _('Conntrack 仅补充当前连接数，不参与非 NSS 设备的实时速率统计。');
-			} else {
-				modeTitle = _('未知采集方式');
-			}
-			if (connectionOnly)
-				modeTitle += '\n' + vocab.warningText('conntrack_connection_only');
-
-			var stateCells = statusRateMeta.cells(c.rate_meta, nssProfile);
-			stateCells.push(E('span', {
-				'class': 'label',
-				'title': c.rate_meta ? _('采集流水线：') + modeTitle : modeTitle
-			}, c.rate_meta ? _('流水线 ') + modeLabel : modeLabel));
-			if (specificWarnings.length)
-				stateCells.push(E('span', {
-					'class': critClient ? 'label danger' : 'label warning',
-					'title': specificWarnings.map(vocab.warningText.bind(vocab)).join('\n')
-				}, _('%d 告警').format(specificWarnings.length)));
-			var stateCell = clientStateCell(stateCells, showClientStatus);
-
 			var displayName;
 			if (c.hostname) {
 				displayName = c.hostname;
@@ -681,6 +610,9 @@ function refreshLive(viewState) {
 			} else {
 				displayName = c.mac || '-';
 			}
+
+			var controlCell = clientControl.cell(viewState, c);
+			controlCell.hidden = false;
 
 			return E('tr', {
 				'class': idle ? 'idle' : '',
@@ -694,8 +626,8 @@ function refreshLive(viewState) {
 				}, fmt.textOrDash(c.mac)),
 				clientTrafficCell(c, 'tx', tx, prefs.unit),
 				clientTrafficCell(c, 'rx', rx, prefs.unit),
-				clientTrafficTotalCell(c, 'tx', !nssProfile),
-				clientTrafficTotalCell(c, 'rx', !nssProfile),
+				clientTrafficTotalCell(c, 'tx', showClientTotals),
+				clientTrafficTotalCell(c, 'rx', showClientTotals),
 				E('td', {
 					'class': 'num lanspeed-client-value',
 					'data-label': 'TCP'
@@ -710,11 +642,15 @@ function refreshLive(viewState) {
 						  ].join(' · ')
 						: ''
 				}, typeof c.udp_conns === 'number' ? String(c.udp_conns) : '-'),
-				stateCell,
-				clientControl.cell(viewState, c)
+				controlCell
 			]);
 		}));
 	}
+	/* Rows may be created/reused after the initial layout sync. Reapply the
+	 * shared grid template so every freshly rendered data row follows its
+	 * header during and after a resize. */
+	if (refs.syncClientColumnWidths)
+		refs.syncClientColumnWidths();
 
 	var ifaces = fmt.asArray(viewState.interfaces && viewState.interfaces.interfaces);
 	var interfacesRpc = viewState.rpc && viewState.rpc.interfaces;
@@ -797,10 +733,6 @@ return baseclass.extend({
 	clientTrafficCell: clientTrafficCell,
 	clientTrafficTotalCell: clientTrafficTotalCell,
 	refreshSortHeaders: refreshSortHeaders,
-	splitClientWarnings: splitClientWarnings,
-	setClientStatusVisibility: setClientStatusVisibility,
-	clientStateCell: clientStateCell,
-	rateMetaCells: statusRateMeta.cells,
 	captureClientViewport: captureClientViewport,
 	restoreClientViewport: restoreClientViewport,
 	reconcileClientRows: reconcileClientRows,

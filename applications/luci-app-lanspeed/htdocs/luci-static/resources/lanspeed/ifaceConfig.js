@@ -433,9 +433,11 @@ function renderIfaceConfig(viewState) {
 			counts.collect, counts.observe, devices.length);
 	}
 	if (refs.ifcfgHint) {
+		var compactHint = viewState.platformProfile === 'x86_tc_bpf';
 		refs.ifcfgHint.setAttribute('data-state', devices.length ? 'ready' : 'empty');
 		refs.ifcfgHint.textContent = devices.length
-			? _('“采集”用于 LAN 客户端测速；“观察”只显示接口总吞吐。不可采集接口会显示原因。')
+			? (compactHint ? _('采集=客户端测速；观察=接口总吞吐。') :
+				_('“采集”用于 LAN 客户端测速；“观察”只显示接口总吞吐。不可采集接口会显示原因。'))
 			: _('没有发现可配置的网络接口，可重新扫描。');
 	}
 	if (refs.ifcfgLimit) {

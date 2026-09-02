@@ -253,7 +253,7 @@ return baseclass.extend({
 			E('div', { 'class': 'lanspeed-config-page-body' }, [ runtimeSection, interfaceSection ])
 		]);
 		var root = E('div', {
-			'class': 'cbi-map lanspeed-config-root',
+			'class': 'cbi-map lanspeed-config-root' + (viewState.isX86Profile ? ' lanspeed-config-x86' : ''),
 			'aria-busy': 'true',
 			'data-state': values && values.pageState || 'loading'
 		}, [

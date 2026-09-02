@@ -1879,7 +1879,7 @@ async page => {
 						'conn_collector_mode',
 						'enable_bpf', 'enable_conntrack_fallback', 'refresh_interval_ms',
 						'overview_window_samples', 'max_clients', 'active_client_window_ms',
-						'active_client_min_bps', 'show_client_status', 'show_ipv6',
+						'active_client_min_bps', 'show_ipv6',
 						'hide_private_ipv6', 'hide_ipv6_ranges'
 					]);
 					const uniqueFields = Array.from(new Set(configContract.fieldNames));
