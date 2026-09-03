@@ -67,6 +67,9 @@ use crate::control::ControlManager;
 use crate::control_worker::{self, ControlWorkerNotice, ControlWorkerTask};
 use crate::workers::{QueueError, RuntimeWorker};
 
+#[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+use crate::traffic_persistence::TrafficLedger;
+
 #[cfg(not(feature = "nss-platform"))]
 use crate::platform::x86::{
     runtime::{
@@ -227,6 +230,8 @@ struct ProductionRuntime {
     interface_rates: InterfaceRateBook,
     rate_owner: Option<RateCollector>,
     hostnames: HostnameCache,
+    #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+    traffic_ledger: Option<TrafficLedger>,
     /// Only the committed NSS runtime may mutate or remove shared client
     /// control objects. Reload candidates inspect them read-only until the
     /// ownership handoff is committed.
@@ -261,6 +266,8 @@ struct RuntimeCheckpoint {
     interface_rates: InterfaceRateBook,
     rate_owner: Option<RateCollector>,
     hostnames: HostnameCache,
+    #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+    traffic_ledger: Option<TrafficLedger>,
     conntrack_snapshot: Option<Arc<CollectedSnapshot>>,
     connection_rates: ConnectionRateBook,
     conntrack_observation: ConntrackObservation,
@@ -274,6 +281,11 @@ impl ProductionRuntime {
     fn stage(config: RuntimeConfig) -> Result<Self, DaemonError> {
         let mut runtime = Self::prepare(config)?;
         runtime.activate_new_bpf()?;
+        // Traffic persistence is intentionally lazy. Opening SQLite (and
+        // creating its WAL files) is not part of the daemon's boot-critical
+        // path; it starts only after the first successful BPF collection.
+        // This keeps a missing/unwritable database from preventing TC-BPF
+        // startup or making LuCI unavailable.
         #[cfg(feature = "nss-platform")]
         runtime.nss.activate(&runtime.config, &runtime.probe_report);
         Ok(runtime)
@@ -324,6 +336,8 @@ impl ProductionRuntime {
             next_probe_ms: 0,
             rate_owner: None,
             hostnames: HostnameCache::new(),
+            #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+            traffic_ledger: None,
             adapter: SystemAyaAdapter::with_max_clients(config.max_clients),
             control,
             control_work: None,
@@ -462,6 +476,8 @@ impl ProductionRuntime {
             interface_rates: self.interface_rates.clone(),
             rate_owner: self.rate_owner,
             hostnames: self.hostnames.clone(),
+            #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+            traffic_ledger: self.traffic_ledger.clone(),
             conntrack_snapshot: self.conntrack_snapshot.clone(),
             connection_rates: self.connection_rates.clone(),
             conntrack_observation: self.conntrack_observation.clone(),
@@ -498,6 +514,10 @@ impl ProductionRuntime {
         self.interface_rates = checkpoint.interface_rates;
         self.rate_owner = checkpoint.rate_owner;
         self.hostnames = checkpoint.hostnames;
+        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+        {
+            self.traffic_ledger = checkpoint.traffic_ledger;
+        }
         self.conntrack_snapshot = checkpoint.conntrack_snapshot;
         self.connection_rates = checkpoint.connection_rates;
         self.conntrack_observation = checkpoint.conntrack_observation;
@@ -716,6 +736,13 @@ impl ProductionRuntime {
         };
         let actual_live = decision.rate == RateCollector::Bpf && bpf_snapshot.is_some();
         let actual_degraded = !actual_live;
+        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+        if self.config.show_client_totals && actual_live && self.traffic_ledger.is_none() {
+            // Defer filesystem and SQLite work until BPF has produced a valid
+            // sample. Database errors remain in memory and raw live counters
+            // continue to be served.
+            self.traffic_ledger = Some(TrafficLedger::open_default(now_ms));
+        }
         self.hostnames.refresh_from_paths(
             &HostnamePaths::default(),
             now_ms,
@@ -724,6 +751,17 @@ impl ProductionRuntime {
         for client in &mut clients.clients {
             let ips = client.ips.iter().map(String::as_str).collect::<Vec<_>>();
             client.hostname = self.hostnames.lookup(&client.mac, &ips).map(str::to_owned);
+        }
+        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+        if self.config.show_client_totals {
+            if let Some(ledger) = self.traffic_ledger.as_mut() {
+                ledger.overlay_clients(&mut clients.clients);
+            }
+        } else {
+            // Dropping the ledger makes the switch a real collection gate:
+            // no new deltas are observed and no SQLite checkpoint can be
+            // written while cumulative totals are disabled.
+            self.traffic_ledger = None;
         }
         if let Some(snapshot) = conntrack.as_ref() {
             clients.conntrack_entries_seen = Some(snapshot.stats.entries_seen as u64);
@@ -763,6 +801,7 @@ impl ProductionRuntime {
         let coverage = self
             .x86_coverage
             .update(now_ms, &clients, &interfaces, bpf_snapshot_fresh);
+        suppress_client_totals(&mut clients, self.config.show_client_totals);
         let sysdevices = sysdevices(&self.config)?;
         let mut capabilities = capabilities(&report.capabilities, &report);
         capabilities.nss = false;
@@ -2995,6 +3034,10 @@ impl ProductionRuntime {
         if self.shutdown_complete {
             return Ok(());
         }
+        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+        if let Some(ledger) = self.traffic_ledger.as_mut() {
+            ledger.flush_shutdown(production_now_ms().unwrap_or(0));
+        }
         let mut failures = Vec::new();
         if let Some(runtime) = self.bpf.as_mut() {
             if let Err(error) = runtime.shutdown(&mut self.adapter) {
@@ -3237,6 +3280,20 @@ fn observed_bytes(bps: u64, window_ms: u64) -> u64 {
     bytes.min(u128::from(u64::MAX)) as u64
 }
 
+#[cfg(not(feature = "nss-platform"))]
+fn suppress_client_totals(clients: &mut ClientsResponse, enabled: bool) {
+    if enabled {
+        return;
+    }
+    // Raw BPF byte counters are required internally to calculate live rates,
+    // but they are not lifetime totals. Do not publish them when the feature
+    // is disabled, so the switch gates both collection output and persistence.
+    for client in &mut clients.clients {
+        client.tx_bytes = None;
+        client.rx_bytes = None;
+    }
+}
+
 impl Drop for ProductionRuntime {
     fn drop(&mut self) {
         if !self.shutdown_complete {
@@ -3278,6 +3335,16 @@ impl Runtime for ProductionRuntime {
             self.rate_owner,
             configured_ms,
         )
+    }
+
+    fn collection_committed(&mut self) {
+        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+        if let Some(ledger) = self.traffic_ledger.as_mut() {
+            // A staged reload candidate may collect for validation, but must
+            // not write to the shared database until it is committed.
+            ledger.activate_storage_owner();
+            ledger.flush_committed(production_now_ms().unwrap_or(0));
+        }
     }
 
     fn shutdown(&mut self) -> Result<(), DaemonError> {

@@ -56,6 +56,8 @@ pub mod realtime;
 #[cfg(any(feature = "openwrt", test))]
 mod runtime_worker;
 pub mod state;
+#[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+mod traffic_persistence;
 pub mod ubus;
 pub mod workers;
 

@@ -728,7 +728,6 @@ function validateUci(config) {
     "option nss_fifo_min_queue_packets '8'",
     "option rate_compensation_factor '1.10'",
     "option conn_collector_mode 'auto'",
-    "option show_client_status '0'",
     "option show_ipv6 '1'",
     "option hide_private_ipv6 '0'",
     "option hide_ipv6_ranges 'fc00::/7 fe80::/10'",

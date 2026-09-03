@@ -99,6 +99,8 @@ fn defaults_and_limits_match_the_legacy_c_contract() {
     assert_eq!(config.overview_window_samples, 240);
     assert!(!config.enable_bpf);
     assert!(config.enable_conntrack_fallback);
+    #[cfg(not(feature = "nss-platform"))]
+    assert!(config.show_client_totals);
     assert_eq!(config.rate_collector_mode, RateCollectorMode::Auto);
     assert_eq!(config.internet_view_mode, InternetViewMode::Off);
     assert_eq!(
@@ -397,7 +399,8 @@ fn scalar_options_preserve_legacy_boole_and_clamp_client_limits() {
             .with("active_client_min_bps", "128")
             .with("overview_window_samples", "42")
             .with("enable_bpf", "true")
-            .with("enable_conntrack_fallback", "0"),
+            .with("enable_conntrack_fallback", "0")
+            .with("show_client_totals", "0"),
     );
 
     assert_eq!(config.refresh_interval_ms, 2_500);
@@ -408,6 +411,8 @@ fn scalar_options_preserve_legacy_boole_and_clamp_client_limits() {
     assert_eq!(config.overview_window_samples, 42);
     assert!(config.enable_bpf);
     assert!(!config.enable_conntrack_fallback);
+    #[cfg(not(feature = "nss-platform"))]
+    assert!(!config.show_client_totals);
 
     let strict_boolean = load(
         MemorySource::default()

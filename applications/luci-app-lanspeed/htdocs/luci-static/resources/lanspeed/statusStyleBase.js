@@ -76,6 +76,15 @@ var BASE_CSS = [
 		'box-shadow:none!important;color:inherit!important;cursor:pointer;font:inherit;font-weight:inherit;',
 		'line-height:inherit;text-align:inherit;text-transform:none}',
 	'.lanspeed-sort-indicator{display:inline-block;min-width:.75em;color:var(--lanspeed-accent)}',
+	'.lanspeed-clients-card .lanspeed-resizable-column{position:relative}',
+	/* Keep each hit target inside its own header. Extending across the boundary
+	 * lets adjacent handles overlap, which can resize the wrong column. */
+	'.lanspeed-clients-card .lanspeed-column-resize-handle{position:absolute;z-index:3;top:0;right:0;width:.8em;height:100%;',
+		'display:block;cursor:col-resize;touch-action:none;user-select:none}',
+	'.lanspeed-clients-card .lanspeed-column-resize-handle::after{content:"";position:absolute;top:20%;bottom:20%;left:calc(50% - .5px);',
+		'width:1px;background:var(--lanspeed-accent);opacity:0;transition:opacity .15s ease}',
+	'.lanspeed-clients-card .lanspeed-resizable-column:hover .lanspeed-column-resize-handle::after,',
+	'.lanspeed-clients-card .lanspeed-column-resize-handle:active::after{opacity:.7}',
 	'.lanspeed-table tbody tr:last-child td{border-bottom:0}',
 	'.lanspeed-clients-card .lanspeed-table :is(th,td)[hidden]{display:none!important}',
 	'.lanspeed-table th:first-child,.lanspeed-table td:first-child{padding-left:0}',

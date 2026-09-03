@@ -273,7 +273,7 @@ async function main() {
   assert(nssModule.includes('#[cfg(feature = "nss-platform")]\npub(crate) mod control;') &&
     production.includes('control: ControlManager') &&
     !production.includes('client_control_x86_only') &&
-    statusOverview.includes('showClientControl: true') &&
+	    !statusOverview.includes('showClientControl') &&
     statusRefresh.includes('clientControl.cell(viewState, c)') &&
     !statusRefresh.includes("nssProfile ? [] : [ clientControl.cell(viewState, c) ]"),
     'NSS builds and real-time status rows must expose their isolated client-control implementation');
