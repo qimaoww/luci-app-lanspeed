@@ -275,7 +275,7 @@ function loadRefresh(vocabulary) {
   return vm.compileFunction(readModule('diagnosticsRefresh.js'),
     [ 'baseclass', 'fmt', 'vocab', 'lsVersion', 'statusCollector', 'diagnosticsModel', 'clientControl', 'E', '_' ],
     { filename: 'diagnosticsRefresh.js', parsingContext: context })(
-      baseclass, format, vocabulary || vocab, { FULL_VERSION: '1.2.0-r3' }, statusCollector, model,
+      baseclass, format, vocabulary || vocab, { FULL_VERSION: '1.2.1-r1' }, statusCollector, model,
       clientControl, fakeElement, translate
     );
 }
@@ -285,7 +285,7 @@ function loadView(rpc, shell, refresh, navigatorValue, windowValue) {
     'baseclass', 'lsRpc', 'lsVersion', 'diagnosticsModel',
     'diagnosticsShell', 'diagnosticsRefresh', 'navigator', 'document', 'window', '_'
   ], { filename: 'diagnosticsView.js', parsingContext: context })(
-    baseclass, rpc, { FULL_VERSION: '1.2.0-r3' }, model,
+    baseclass, rpc, { FULL_VERSION: '1.2.1-r1' }, model,
     shell || loadShell(), refresh || loadRefresh(), navigatorValue || {},
     { body: null }, windowValue || { setTimeout }, translate
   );
@@ -322,7 +322,7 @@ function healthyDiagnostics() {
   return value;
 }
 
-function healthyStatus(version = '1.2.0-r3') {
+function healthyStatus(version = '1.2.1-r1') {
   const value = clone(readFixture('lanspeed-status.json'));
   value.mode = 'Full';
   value.confidence = 'high';
@@ -716,10 +716,10 @@ async function testStrictContracts() {
   assert.strictEqual(model.validateRuntimeResponse(badOverviewRelation, 'overview').valid, false);
   assert.strictEqual(model.validateRuntimeResponse({}, 'unknown').valid, false);
 
-  const versionMismatch = payloads('1.2.0-r3');
+  const versionMismatch = payloads('1.2.1-r1');
   versionMismatch.status.version = '1.1.1-r6';
   const mismatchState = model.normalizeResults(await settled(versionMismatch), null, 9000, 1);
-  assert.strictEqual(model.versionStateWithRpc(mismatchState, mismatchState.status.version, '1.2.0-r3').state, 'warning');
+  assert.strictEqual(model.versionStateWithRpc(mismatchState, mismatchState.status.version, '1.2.1-r1').state, 'warning');
 
   const timeout = await model.runCall({ key: 'overview', call: () => new Promise(() => {}) }, 250);
   assert.strictEqual(timeout.ok, false);
@@ -773,7 +773,7 @@ async function testResourceStateMachine() {
 	assert.strictEqual(goodControl.nssVerifiedDirections, 2);
 	assert.strictEqual(goodControl.cpuVerifiedDirections, 1);
 	assert.strictEqual(goodControl.blockActiveClients, 1);
-	const controlReport = model.buildReport(good, '1.2.0-r3');
+	const controlReport = model.buildReport(good, '1.2.1-r1');
 	assert(controlReport.includes('NSS 客户端控制') && controlReport.includes('NSS 2 · CPU 1'),
 	  'the redacted report must include NSS control executor counts');
 	assert(!controlReport.includes(good.clients.clients[0].identity_key),
@@ -1104,7 +1104,7 @@ async function testRequestOrdering() {
   assert.strictEqual(state.refs.btnCopy.disabled, true);
   assert.strictEqual(refreshCount, 1,
     'starting overlapping diagnostic refreshes must keep the last rendered page intact');
-  const secondPayload = payloads('1.2.0-r3');
+  const secondPayload = payloads('1.2.1-r1');
   model.RPC_KEYS.forEach((key) => queues[key][1](secondPayload[key]));
   const secondResult = await second;
   assert.strictEqual(secondResult.ignored, false);
@@ -1121,8 +1121,8 @@ async function testRequestOrdering() {
   const firstResult = await first;
   assert.strictEqual(firstResult.ignored, true);
   assert.strictEqual(state.requestId, 2);
-  assert.strictEqual(state.status.version, '1.2.0-r3');
-  assert.strictEqual(state.diagnostics.versions.daemon, '1.2.0-r3');
+  assert.strictEqual(state.status.version, '1.2.1-r1');
+  assert.strictEqual(state.diagnostics.versions.daemon, '1.2.1-r1');
   assert.strictEqual(state.refs.btnRefresh.disabled, false);
   assert.strictEqual(state.refs.root.getAttribute('aria-busy'), 'false');
 }
@@ -1528,11 +1528,11 @@ async function testAlertsAndReport() {
   ], 'warning aliases from status, health conflicts and diagnostics must collapse to root causes');
   assert.strictEqual(new Set(Array.from(deduplicated.all, (item) => item.text)).size,
     deduplicated.all.length, 'deduplicated diagnostics must not render repeated warning text');
-  const deduplicatedReport = model.buildReport(duplicateState, '1.2.0-r3');
+	const deduplicatedReport = model.buildReport(duplicateState, '1.2.1-r1');
   assert.strictEqual((deduplicatedReport.match(/localized:software_flow_offload_enabled/g) || []).length, 1);
   assert.strictEqual((deduplicatedReport.match(/localized:fullcone_detected/g) || []).length, 1);
 
-  const report = model.buildReport(state, '1.2.0-r3');
+  const report = model.buildReport(state, '1.2.1-r1');
   [ 'router.private.example', '10.77.0.20', 'secret-lan-interface',
     'collector-secret', 'token_secret_reason', 'command:ip_route_private', 'ip_route_private' ].forEach((secret) => {
     assert(!report.includes(secret), `report leaked ${secret}`);
@@ -1552,7 +1552,7 @@ async function testAlertsAndReport() {
     direction: 'root', object: 'cake / 8000:', owner: 'other'
   } ];
   const tcConflictState = model.normalizeResults(await settled(tcConflictValues), null, 30400, 2);
-  const tcConflictReport = model.buildReport(tcConflictState, '1.2.0-r3');
+  const tcConflictReport = model.buildReport(tcConflictState, '1.2.1-r1');
   assert(tcConflictReport.includes('TC 异常:'), 'TC conflicts must be surfaced in the diagnostic report');
   assert(tcConflictReport.includes('外部根队列会阻止 LAN Speed'));
   assert(tcConflictReport.includes('归属: 其他组件'));
@@ -1573,7 +1573,7 @@ async function testAlertsAndReport() {
     message_public: rawBpfSecret
   } ];
   const mapFailureState = model.normalizeResults(await settled(mapFailureValues), null, 30500, 2);
-  const mapFailureReport = model.buildReport(mapFailureState, '1.2.0-r3');
+  const mapFailureReport = model.buildReport(mapFailureState, '1.2.1-r1');
   assert(mapFailureReport.includes('分类映射表'));
   assert(mapFailureReport.includes('localized:map_read_failed') || mapFailureReport.includes('映射表'));
   [ rawBpfSecret, '/sys/fs/bpf/private-map', 'eth1', 'bpf-secret' ].forEach((secret) => {
@@ -1615,7 +1615,7 @@ async function testAlertsAndReport() {
       error: model.rpcErrorInfo({ code: 'TOKEN_SECRET', message: 'token=do-not-copy router.private.example' }, 'transport') })
   });
   const secretFailure = model.normalizeResults(secretFailureResults, null, 31000, 2);
-  const failureReport = model.buildReport(secretFailure, '1.2.0-r3');
+  const failureReport = model.buildReport(secretFailure, '1.2.1-r1');
   [ 'TOKEN_SECRET', 'do-not-copy', 'router.private.example' ].forEach((secret) => {
     assert(!failureReport.includes(secret), `RPC report leaked ${secret}`);
   });
