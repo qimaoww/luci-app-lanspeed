@@ -175,6 +175,23 @@ use crate::{
 const RECONNECT_MS: u32 = 1_000;
 const RUNTIME_NOTICE_POLL_MS: u32 = 20;
 const RELOAD_WAIT_MS: u64 = 7_500;
+// Reclaim a transient conflict after a restart: the previous daemon's BPF
+// link may persist in the kernel for a moment after the process exits. If the
+// first attach fails, retry at this cadence instead of staying degraded until
+// a manual second restart.
+#[cfg(not(feature = "nss-platform"))]
+const BPF_RETRY_INTERVAL_MS: u64 = 5_000;
+// Repeated attach failures must not re-run the full object load + attach +
+// shutdown path every collection cycle. Back off exponentially, capped here.
+#[cfg(not(feature = "nss-platform"))]
+const BPF_RETRY_MAX_MS: u64 = 60_000;
+
+#[cfg(not(feature = "nss-platform"))]
+fn bpf_retry_interval_ms(failures: u32) -> u64 {
+    let shift = failures.min(4);
+    (BPF_RETRY_INTERVAL_MS << shift).min(BPF_RETRY_MAX_MS)
+}
+
 // Kept as a policy/timer constant so the x86 build does not need to link the
 // NSS platform module merely to compile common scheduling code.
 const ACCESS_EDGE_INTERVAL_MS: u64 = 1_000;
@@ -223,6 +240,10 @@ struct ProductionRuntime {
     process_tracker: DaeProcessTracker,
     probe_report: Arc<ProbeReport>,
     next_probe_ms: u64,
+    #[cfg(not(feature = "nss-platform"))]
+    next_bpf_retry_ms: u64,
+    #[cfg(not(feature = "nss-platform"))]
+    bpf_retry_failures: u32,
     overview: OverviewRing,
     x86_coverage: X86Coverage,
     #[cfg(feature = "nss-platform")]
@@ -334,6 +355,10 @@ impl ProductionRuntime {
             process_tracker,
             probe_report: Arc::new(preflight),
             next_probe_ms: 0,
+            #[cfg(not(feature = "nss-platform"))]
+            next_bpf_retry_ms: 0,
+            #[cfg(not(feature = "nss-platform"))]
+            bpf_retry_failures: 0,
             rate_owner: None,
             hostnames: HostnameCache::new(),
             #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
@@ -443,6 +468,37 @@ impl ProductionRuntime {
         self.bpf = Some(loaded);
         self.bpf_error = None;
         self.bpf_error_stage = None;
+        Ok(())
+    }
+
+    // A failed first attach (for example the previous daemon's BPF link still
+    // lingering in the kernel during a rapid restart) was previously a dead
+    // end: `self.bpf` stayed `None` and the sticky conflict only cleared with
+    // a manual second restart. Retry on a cooldown so a transient conflict
+    // reclaims the owned slot as soon as the kernel releases it.
+    #[cfg(not(feature = "nss-platform"))]
+    fn maybe_retry_bpf_activation(&mut self, now_ms: u64) -> Result<(), DaemonError> {
+        if self.bpf.is_some() || !self.config.enable_bpf {
+            return Ok(());
+        }
+        if now_ms < self.next_bpf_retry_ms {
+            return Ok(());
+        }
+        self.next_bpf_retry_ms =
+            now_ms.saturating_add(bpf_retry_interval_ms(self.bpf_retry_failures));
+        if let Err(error) = self.activate_new_bpf() {
+            // activate_new_bpf already records most attach failures into
+            // bpf_error. A hard error (for example a failed rollback) must not
+            // fail the collection cycle either; keep the cooldown so the next
+            // pass re-probes instead of spinning.
+            self.bpf_error_stage = Some("bpf_retry_failed");
+            self.bpf_error = Some(error.to_string());
+        }
+        if self.bpf.is_some() {
+            self.bpf_retry_failures = 0;
+        } else {
+            self.bpf_retry_failures = self.bpf_retry_failures.saturating_add(1);
+        }
         Ok(())
     }
 
@@ -3325,6 +3381,11 @@ impl Runtime for ProductionRuntime {
     fn collect(&mut self) -> Result<ResponseSnapshot, DaemonError> {
         // The runtime worker owns the hot-cycle transaction. Candidate reload
         // collection keeps its separate local rollback path.
+        // Only the committed runtime may retry activation. Reload candidates
+        // intentionally have no local BPF while borrowing or replacing the
+        // current runtime's hooks; this must never run during their collection.
+        #[cfg(not(feature = "nss-platform"))]
+        self.maybe_retry_bpf_activation(production_now_ms()?)?;
         self.collect_inner(ProbeMethod::Status, None)
     }
 
@@ -4404,4 +4465,20 @@ fn record_fatal_cleanup(
     fatal: &RefCell<Option<String>>,
 ) -> DaemonError {
     system::record_fatal_cleanup(context, primary, cleanup, fatal)
+}
+
+#[cfg(all(test, not(feature = "nss-platform")))]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn bpf_retry_interval_backs_off_exponentially_and_caps() {
+        assert_eq!(bpf_retry_interval_ms(0), 5_000);
+        assert_eq!(bpf_retry_interval_ms(1), 10_000);
+        assert_eq!(bpf_retry_interval_ms(2), 20_000);
+        assert_eq!(bpf_retry_interval_ms(3), 40_000);
+        // cap is 60s, so the 80s candidate from (5000 << 4) is clamped
+        assert_eq!(bpf_retry_interval_ms(4), 60_000);
+        assert_eq!(bpf_retry_interval_ms(20), 60_000);
+    }
 }
