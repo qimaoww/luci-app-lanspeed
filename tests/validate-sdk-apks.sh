@@ -272,6 +272,8 @@ while IFS= read -r library; do
 			;;
 		libgcc.so|libgcc.so.*|libgcc_s.so|libgcc_s.so.*)
 			;;
+		libsqlite3.so|libsqlite3.so.*)
+			;;
 		*)
 			fail "daemon has forbidden DT_NEEDED library: $library"
 			;;
