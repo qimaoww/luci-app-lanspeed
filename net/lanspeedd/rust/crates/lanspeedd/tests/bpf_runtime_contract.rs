@@ -376,6 +376,34 @@ fn production_mode_switch_suspends_before_attaching_on_the_same_bpf_object() {
     assert!(mode_switch.contains("let fatal = !runtime.is_attached()"));
 }
 
+#[test]
+fn production_activation_retry_is_exclusive_to_committed_runtime_collection() {
+    let source = include_str!("../src/production.rs");
+    let worker_runtime = source
+        .split("impl Runtime for ProductionRuntime {")
+        .nth(1)
+        .unwrap();
+    let collect = worker_runtime
+        .split("fn collect(&mut self)")
+        .nth(1)
+        .unwrap()
+        .split("fn collection_interval_ms")
+        .next()
+        .unwrap();
+    assert!(collect.contains("self.maybe_retry_bpf_activation("));
+    assert_eq!(
+        source.matches("self.maybe_retry_bpf_activation(").count(),
+        1
+    );
+
+    // Both reuse (external BPF) and pre-suspend validation (no external BPF)
+    // must stay on candidate collection paths, outside Runtime::collect.
+    let reload = include_str!("../src/production/reload_worker.rs");
+    assert!(reload.contains("candidate.collect_with_external_bpf("));
+    assert!(reload.contains("candidate.collect(ProbeMethod::Reload)"));
+    assert!(!reload.contains("Runtime::collect("));
+}
+
 fn assert_suspended_mode_switch_abort_is_rate_safe(old_mode: AttachMode, new_mode: AttachMode) {
     let identities = identities();
     let mut old_adapter = FakeAya::default();
@@ -1109,6 +1137,126 @@ fn an_existing_owned_orphan_is_atomically_replaced_without_a_detach_gap() {
     );
     assert!(adapter.detached.is_empty());
     assert!(runtime.is_attached());
+}
+
+#[test]
+fn startup_reclaims_other_generation_hooks_atomically_on_all_interfaces_and_modes() {
+    for mode in [AttachMode::Normal, AttachMode::EarlyPassthrough] {
+        let mut adapter = FakeAya::default();
+        let interfaces: Vec<String> = vec!["br-lan".into(), "br-guest".into()];
+        for interface in &interfaces {
+            for spec in LinkSpec::all(interface, mode) {
+                adapter.hooks.insert(spec, HookState::OtherGeneration);
+            }
+        }
+        let mut runtime = BpfRuntime::loaded_for_test();
+        runtime
+            .attach_interfaces(&mut adapter, &interfaces, mode)
+            .unwrap();
+        assert!(runtime.is_attached());
+        assert!(adapter.detached.is_empty());
+        assert_eq!(
+            adapter
+                .events
+                .iter()
+                .filter(|event| event.starts_with("replace:"))
+                .count(),
+            4
+        );
+        assert!(adapter
+            .hooks
+            .values()
+            .all(|state| *state == HookState::Owned));
+    }
+}
+
+#[test]
+fn a_live_runtime_never_reclaims_or_detaches_another_generations_replacement() {
+    for mode in [AttachMode::Normal, AttachMode::EarlyPassthrough] {
+        // Test shutdown both directly and after the audit/reconcile path.
+        for audit in [false, true] {
+            let mut adapter = FakeAya::default();
+            let mut runtime = BpfRuntime::loaded_for_test();
+            runtime
+                .attach_interface(&mut adapter, "br-lan", mode)
+                .unwrap();
+            let specs = LinkSpec::all("br-lan", mode);
+            for spec in &specs {
+                adapter
+                    .hooks
+                    .insert(spec.clone(), HookState::OtherGeneration);
+            }
+            let attached_before = adapter.attached.len();
+            let error = runtime
+                .attach_interface(&mut adapter, "br-lan", mode)
+                .unwrap_err();
+            assert_eq!(error.kind(), AdapterErrorKind::OwnershipConflict);
+            if audit {
+                for _ in 0..2 {
+                    let error = runtime
+                        .ensure_attached(&mut adapter, "replacement")
+                        .unwrap_err();
+                    assert_eq!(error.kind(), AdapterErrorKind::OwnershipConflict);
+                    assert!(!runtime.runtime_health(10_000, 3_000).bpf_attached);
+                }
+            }
+            runtime.shutdown(&mut adapter).unwrap();
+            assert_eq!(adapter.attached.len(), attached_before);
+            assert!(adapter.detached.is_empty());
+            for spec in &specs {
+                assert_eq!(adapter.hooks.get(spec), Some(&HookState::OtherGeneration));
+                assert!(adapter.forgotten.contains(spec));
+            }
+        }
+    }
+}
+
+#[test]
+fn reload_reconfigure_and_suspend_reject_other_generation_hooks() {
+    for suspend in [false, true] {
+        let mut adapter = FakeAya::default();
+        let mut runtime = BpfRuntime::loaded_for_test();
+        runtime
+            .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+            .unwrap();
+        let spec = LinkSpec::all("br-lan", AttachMode::Normal)[0].clone();
+        adapter
+            .hooks
+            .insert(spec.clone(), HookState::OtherGeneration);
+        let error = if suspend {
+            runtime.suspend_for_replacement(&mut adapter).err().unwrap()
+        } else {
+            runtime
+                .prepare_reconfigure(&mut adapter, &["br-lan".into()], AttachMode::Normal)
+                .unwrap_err()
+        };
+        assert_eq!(error.kind(), AdapterErrorKind::OwnershipConflict);
+        assert!(adapter.detached.is_empty());
+        assert_eq!(adapter.attached.len(), 2);
+        assert_eq!(adapter.hooks.get(&spec), Some(&HookState::OtherGeneration));
+    }
+}
+
+#[test]
+fn shutdown_retry_preserves_other_generation_in_an_unresolved_slot() {
+    let mut adapter = FakeAya::default();
+    let mut runtime = BpfRuntime::loaded_for_test();
+    runtime
+        .attach_interface(&mut adapter, "br-lan", AttachMode::Normal)
+        .unwrap();
+    adapter.fail_detach = true;
+    assert!(runtime.shutdown(&mut adapter).is_err());
+    for spec in LinkSpec::all("br-lan", AttachMode::Normal) {
+        adapter.hooks.insert(spec, HookState::OtherGeneration);
+    }
+    adapter.detached.clear();
+    adapter.fail_detach = false;
+    runtime.shutdown(&mut adapter).unwrap();
+    assert!(adapter.detached.is_empty());
+    assert!(adapter
+        .hooks
+        .values()
+        .all(|state| *state == HookState::OtherGeneration));
 }
 
 #[test]

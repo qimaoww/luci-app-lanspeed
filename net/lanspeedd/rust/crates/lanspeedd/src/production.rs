@@ -484,7 +484,8 @@ impl ProductionRuntime {
         if now_ms < self.next_bpf_retry_ms {
             return Ok(());
         }
-        self.next_bpf_retry_ms = now_ms.saturating_add(bpf_retry_interval_ms(self.bpf_retry_failures));
+        self.next_bpf_retry_ms =
+            now_ms.saturating_add(bpf_retry_interval_ms(self.bpf_retry_failures));
         if let Err(error) = self.activate_new_bpf() {
             // activate_new_bpf already records most attach failures into
             // bpf_error. A hard error (for example a failed rollback) must not
@@ -688,7 +689,6 @@ impl ProductionRuntime {
         mut external_bpf: Option<(&mut Bpf, &mut SystemAyaAdapter)>,
     ) -> Result<ResponseSnapshot, DaemonError> {
         let mut now_ms = production_now_ms()?;
-        self.maybe_retry_bpf_activation(now_ms)?;
         let (identities, identity_errors) = read_identities(&self.config, now_ms);
         let conntrack = self.conntrack_snapshot.clone();
         let overlay = connection_overlay(conntrack.as_deref());
@@ -3381,6 +3381,11 @@ impl Runtime for ProductionRuntime {
     fn collect(&mut self) -> Result<ResponseSnapshot, DaemonError> {
         // The runtime worker owns the hot-cycle transaction. Candidate reload
         // collection keeps its separate local rollback path.
+        // Only the committed runtime may retry activation. Reload candidates
+        // intentionally have no local BPF while borrowing or replacing the
+        // current runtime's hooks; this must never run during their collection.
+        #[cfg(not(feature = "nss-platform"))]
+        self.maybe_retry_bpf_activation(production_now_ms()?)?;
         self.collect_inner(ProbeMethod::Status, None)
     }
 

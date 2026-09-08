@@ -161,6 +161,9 @@ impl LinkSpec {
 pub enum HookState {
     Absent,
     Owned,
+    /// A lanspeed mount marker with a different program ID. A fresh runtime
+    /// may reclaim it, but it is never proof that our maps receive packets.
+    OtherGeneration,
     Foreign,
 }
 
@@ -173,14 +176,16 @@ fn hook_ownership(
         || filter.program_name.as_deref() == Some(spec.kernel_program_name()),
         |program_id| program_id == expected_program_id,
     );
-    // A filter from a previous daemon generation keeps the stable lanspeed
-    // mount marker (pref + handle + name) but carries a different loaded
-    // program id. Treat that as ours so the reconcile replaces it atomically
-    // instead of reporting a foreign conflict that would need a second restart.
+    // Mount identity permits startup recovery, not live ownership. In
+    // particular, an old runtime must not audit or detach a newer one's hooks.
     let owner_owned = filter.filter.owner == "lanspeed";
     let execution_owned = tc_probe::has_software_direct_action_semantics(filter);
-    if filter.kind.as_deref() == Some("bpf") && (program_owned || owner_owned) && execution_owned {
+    if filter.kind.as_deref() != Some("bpf") || !execution_owned {
+        HookState::Foreign
+    } else if program_owned {
         HookState::Owned
+    } else if owner_owned {
+        HookState::OtherGeneration
     } else {
         HookState::Foreign
     }
@@ -456,7 +461,7 @@ impl<L> BpfRuntime<L> {
         for spec in tracked_specs {
             match adapter.inspect_hook(&spec) {
                 Ok(HookState::Owned) => {}
-                Ok(HookState::Absent | HookState::Foreign) => {
+                Ok(HookState::Absent | HookState::OtherGeneration | HookState::Foreign) => {
                     let error = AdapterError::new(
                         AdapterErrorKind::OwnershipConflict,
                         format!(
@@ -549,7 +554,7 @@ impl<L> BpfRuntime<L> {
             };
             match state {
                 HookState::Absent => {}
-                HookState::Owned | HookState::Foreign => {
+                HookState::Owned | HookState::OtherGeneration | HookState::Foreign => {
                     let error = AdapterError::new(
                         AdapterErrorKind::OwnershipConflict,
                         format!(
@@ -612,7 +617,11 @@ impl<L> BpfRuntime<L> {
             .map(|spec| adapter.inspect_hook(spec))
             .collect::<Result<Vec<_>, _>>()?;
         for (spec, state) in specs.iter().zip(&states) {
-            if *state == HookState::Foreign {
+            if *state == HookState::Foreign
+                || (*state == HookState::OtherGeneration
+                    && (self.expected_specs.contains(spec)
+                        || self.links.iter().any(|owned| owned.spec == *spec)))
+            {
                 return Err(AdapterError::new(
                     AdapterErrorKind::OwnershipConflict,
                     format!("foreign filter occupies {} {:?}", interface, spec.direction),
@@ -629,7 +638,7 @@ impl<L> BpfRuntime<L> {
             if state == HookState::Owned && self.links.iter().any(|owned| owned.spec == spec) {
                 continue;
             }
-            let attached = if state == HookState::Owned {
+            let attached = if matches!(state, HookState::Owned | HookState::OtherGeneration) {
                 adapter.replace_owned_netlink_atomic(&spec)
             } else {
                 adapter.attach_netlink(&spec)
@@ -808,7 +817,7 @@ impl<L> BpfRuntime<L> {
                         );
                         return Err(self.abort_prepared_specs(adapter, added_specs, error));
                     }
-                    HookState::Foreign => {
+                    HookState::OtherGeneration | HookState::Foreign => {
                         let error = AdapterError::new(
                             AdapterErrorKind::OwnershipConflict,
                             format!(
@@ -974,7 +983,7 @@ impl<L> BpfRuntime<L> {
                     return Err(error);
                 }
             };
-            if state == HookState::Foreign {
+            if matches!(state, HookState::OtherGeneration | HookState::Foreign) {
                 let error = AdapterError::new(
                     AdapterErrorKind::OwnershipConflict,
                     "foreign filter replaced an owned slot",
@@ -1058,7 +1067,7 @@ impl<L> BpfRuntime<L> {
                         }
                     }
                 }
-                Ok(HookState::Foreign) => {
+                Ok(HookState::OtherGeneration | HookState::Foreign) => {
                     first_error.get_or_insert_with(|| {
                         AdapterError::new(
                             AdapterErrorKind::OwnershipConflict,
@@ -1102,7 +1111,7 @@ impl<L> BpfRuntime<L> {
                         push_unique_spec(&mut self.unresolved_specs, spec);
                     }
                 }
-                Ok(HookState::Foreign) => {
+                Ok(HookState::OtherGeneration | HookState::Foreign) => {
                     let error = AdapterError::new(
                         AdapterErrorKind::OwnershipConflict,
                         "foreign filter occupies a reconciliation slot",
@@ -1286,7 +1295,7 @@ impl<L> BpfRuntime<L> {
         for spec in pending {
             match adapter.inspect_hook(&spec) {
                 Ok(HookState::Absent) => {}
-                Ok(HookState::Foreign) => {
+                Ok(HookState::OtherGeneration | HookState::Foreign) => {
                     self.last_runtime_error = Some(format!(
                         "foreign filter replaced owned shutdown slot {} {:?}",
                         spec.interface, spec.direction
@@ -1308,7 +1317,7 @@ impl<L> BpfRuntime<L> {
         let tracked = core::mem::take(&mut self.links);
         for owned in tracked {
             match adapter.inspect_hook(&owned.spec) {
-                Ok(HookState::Foreign) => {
+                Ok(HookState::OtherGeneration | HookState::Foreign) => {
                     let spec = owned.spec;
                     match adapter.abandon_link(&spec, owned.link) {
                         Ok(()) => {
@@ -1984,7 +1993,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_lanspeed_filter_with_different_program_id_is_owned() {
+    fn stale_lanspeed_filter_with_different_program_id_is_reclaimable_not_owned() {
         let spec = LinkSpec {
             interface: "br-lan".into(),
             direction: LinkDirection::Ingress,
@@ -2006,7 +2015,7 @@ mod tests {
                 ),
                 123,
             ),
-            HookState::Owned,
+            HookState::OtherGeneration,
         );
         // A foreign program at the same slot stays a conflict.
         assert_eq!(
@@ -2037,7 +2046,13 @@ mod tests {
         assert_eq!(
             hook_ownership(
                 &spec,
-                &details("unknown", u32::from(NORMAL_PRIORITY), "0x1eed", None, Some(123)),
+                &details(
+                    "unknown",
+                    u32::from(NORMAL_PRIORITY),
+                    "0x1eed",
+                    None,
+                    Some(123)
+                ),
                 123,
             ),
             HookState::Owned,
