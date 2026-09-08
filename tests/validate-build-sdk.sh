@@ -78,6 +78,7 @@ grep -F "package APK files through the SDK fakeroot ownership database" "$DRY_RU
 grep -F "FAKEROOT=$ROOT/scripts/apk-owner-fakeroot.sh" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "route SDK Bash commands through the Rust configure wrapper" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "BASH=$ROOT/scripts/rust-configure-wrapper.sh" "$DRY_RUN_EVIDENCE" >/dev/null
+grep -F "CONFIG_AUTOREMOVE=" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "./scripts/feeds install -p lanspeed lanspeedd-bpf" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "select CONFIG_PACKAGE_lanspeedd=m before compiling package/lanspeedd/compile" "$DRY_RUN_EVIDENCE" >/dev/null
 grep -F "disable CONFIG_PACKAGE_lanspeedd-bpf before compiling package/lanspeedd/compile" "$DRY_RUN_EVIDENCE" >/dev/null
@@ -126,8 +127,10 @@ chmod +x "$TMP_SDK/bin/bash-recorder"
 WRAPPER_ARG_LOG="$TMP_SDK/rust-wrapper.args"
 LANSPEED_REAL_BASH="$TMP_SDK/bin/bash-recorder" LANSPEED_ARG_LOG="$WRAPPER_ARG_LOG" \
 	"$ROOT/scripts/rust-configure-wrapper.sh" ./configure --build=fake \
-	--set=llvm.download-ci-llvm=true
+	--target=x86_64-unknown-linux-musl --set=llvm.download-ci-llvm=true
 grep -Fx -- '--set=llvm.download-ci-llvm=false' "$WRAPPER_ARG_LOG" >/dev/null
+grep -Fx -- '--set=llvm.targets=X86;BPF' "$WRAPPER_ARG_LOG" >/dev/null
+grep -Fx -- '--set=llvm.experimental-targets=' "$WRAPPER_ARG_LOG" >/dev/null
 if grep -F -- '--set=llvm.download-ci-llvm=true' "$WRAPPER_ARG_LOG" >/dev/null; then
 	printf '%s\n' "Rust configure wrapper retained the expiring CI LLVM download" >&2
 	exit 1
@@ -140,9 +143,33 @@ if LANSPEED_REAL_BASH="$TMP_SDK/bin/bash-recorder" LANSPEED_ARG_LOG="$WRAPPER_AR
 fi
 if LANSPEED_REAL_BASH="$TMP_SDK/bin/bash-recorder" LANSPEED_ARG_LOG="$WRAPPER_ARG_LOG" \
 	"$ROOT/scripts/rust-configure-wrapper.sh" ./configure \
+	--target=x86_64-unknown-linux-musl \
 	--set=llvm.download-ci-llvm=true --set=llvm.download-ci-llvm=true \
 	>> "$IDENTITY_TAMPER_EVIDENCE" 2>&1; then
 	printf '%s\n' "Rust configure wrapper accepted duplicate CI LLVM options" >&2
+	exit 1
+fi
+LANSPEED_REAL_BASH="$TMP_SDK/bin/bash-recorder" LANSPEED_ARG_LOG="$WRAPPER_ARG_LOG" \
+	"$ROOT/scripts/rust-configure-wrapper.sh" ./configure \
+	--target=aarch64-unknown-linux-musl --set=llvm.download-ci-llvm=true
+grep -Fx -- '--set=llvm.targets=AArch64;BPF' "$WRAPPER_ARG_LOG" >/dev/null
+grep -Fx -- '--set=llvm.experimental-targets=' "$WRAPPER_ARG_LOG" >/dev/null
+# The packages feed pins llvm.download-ci-llvm=false, so trimming must not depend
+# on seeing the expiring true value.
+LANSPEED_REAL_BASH="$TMP_SDK/bin/bash-recorder" LANSPEED_ARG_LOG="$WRAPPER_ARG_LOG" \
+	"$ROOT/scripts/rust-configure-wrapper.sh" ./configure \
+	--target=x86_64-unknown-linux-musl --set=llvm.download-ci-llvm=false
+grep -Fx -- '--set=llvm.targets=X86;BPF' "$WRAPPER_ARG_LOG" >/dev/null
+grep -Fx -- '--set=llvm.experimental-targets=' "$WRAPPER_ARG_LOG" >/dev/null
+# A non-rust ./configure routed through $BASH must pass through untouched.
+LANSPEED_REAL_BASH="$TMP_SDK/bin/bash-recorder" LANSPEED_ARG_LOG="$WRAPPER_ARG_LOG" \
+	"$ROOT/scripts/rust-configure-wrapper.sh" ./configure --prefix=/opt/release \
+	--host=x86_64-linux-gnu
+grep -Fx -- './configure' "$WRAPPER_ARG_LOG" >/dev/null
+grep -Fx -- '--prefix=/opt/release' "$WRAPPER_ARG_LOG" >/dev/null
+grep -Fx -- '--host=x86_64-linux-gnu' "$WRAPPER_ARG_LOG" >/dev/null
+if grep -F -- '--set=llvm' "$WRAPPER_ARG_LOG" >/dev/null; then
+	printf '%s\n' "Rust configure wrapper altered a non-rust configure" >&2
 	exit 1
 fi
 LANSPEED_REAL_BASH="$TMP_SDK/bin/bash-recorder" LANSPEED_ARG_LOG="$WRAPPER_ARG_LOG" \
@@ -289,6 +316,7 @@ PATH="$TMP_SDK/bin:$PATH" SDK_DIR="$TMP_SDK" ENABLE_BPF=0 "$ROOT/scripts/build-s
 grep -F "defconfig" "$TMP_SDK/make.log" >/dev/null
 grep -F "package/lanspeedd/compile V=s LANSPEED_BUILD_BPF=0 CONFIG_PACKAGE_lanspeedd=m CONFIG_PACKAGE_lanspeedd-bpf=" "$TMP_SDK/make.log" >/dev/null
 grep -F "BASH=$ROOT/scripts/rust-configure-wrapper.sh" "$TMP_SDK/make.log" >/dev/null
+grep -F "CONFIG_AUTOREMOVE=" "$TMP_SDK/make.log" >/dev/null
 if grep -F "package/luci-app-lanspeed/compile V=s" "$TMP_SDK/make.log" >/dev/null; then
 	printf '%s\n' "base-only daemon pass must not build the LuCI package" >&2
 	exit 1
