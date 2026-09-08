@@ -549,7 +549,7 @@ try {
   });
   const rustCacheRestoreStep = extractNamedStep(buildJob, 'Restore SDK Rust host cache');
   const rustCacheSaveStep = extractNamedStep(buildJob, 'Save SDK Rust host cache');
-  const rustCacheKey = "lanspeed-sdk-rust-v3-source-llvm-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target_arch }}-${{ matrix.sdk_sha256 }}-feeds-${{ steps.sdk-identity.outputs.feeds_hash }}-rust-${{ steps.sdk-identity.outputs.rust_version }}-recipe-${{ steps.sdk-identity.outputs.rust_recipe_hash }}-policy-${{ hashFiles('scripts/rust-configure-wrapper.sh') }}";
+  const rustCacheKey = "lanspeed-sdk-rust-v4-source-llvm-build-tree-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target_arch }}-${{ matrix.sdk_sha256 }}-feeds-${{ steps.sdk-identity.outputs.feeds_hash }}-rust-${{ steps.sdk-identity.outputs.rust_version }}-recipe-${{ steps.sdk-identity.outputs.rust_recipe_hash }}-policy-${{ hashFiles('scripts/rust-configure-wrapper.sh') }}";
   assert(rustCacheRestoreStep.includes(`key: ${rustCacheKey}`),
     'Rust cache restore must be isolated by runner, target, SDK, feeds, recipe, and bootstrap policy');
   assert(rustCacheSaveStep.includes(`key: ${rustCacheKey}`),
@@ -562,9 +562,7 @@ try {
     '/dl/rustc-*.tar.xz',
     '/staging_dir/hostpkg/stamp/.rust_installed',
     '/staging_dir/target-*/host',
-    '/build_dir/target-*/host/rustc-*/.built*',
-    '/build_dir/target-*/host/rustc-*/.configured',
-    '/build_dir/target-*/host/rustc-*/.prepared*'
+    '/build_dir/target-*/host/rustc-*'
   ].forEach((cachePath) => {
     assert(rustCacheRestoreStep.includes(cachePath), `Rust cache restore must include ${cachePath}`);
     assert(rustCacheSaveStep.includes(cachePath), `Rust cache save must include ${cachePath}`);
@@ -583,19 +581,25 @@ try {
     baseBuildStep.includes('SDK_RUST_RECIPE_HASH=') &&
     baseBuildStep.includes('TARGET_ARCH="${{ matrix.target_arch }}"'),
   'base SDK build must reuse the measured feed tree for the explicit target architecture');
-  const pruneRustStep = extractNamedStep(buildJob, 'Prune SDK Rust build tree');
-  assert(pruneRustStep.includes("-path '*/host/bin/rustc'"),
+  const verifyRustStep = extractNamedStep(buildJob, 'Verify SDK Rust host toolchain');
+  assert(verifyRustStep.includes("-path '*/host/bin/rustc'"),
     'Rust pruning must first verify the installed rustc');
-  assert(pruneRustStep.includes("-path '*/host/bin/cargo'"),
+  assert(verifyRustStep.includes("-path '*/host/bin/cargo'"),
     'Rust pruning must first verify the installed cargo');
-  assert(pruneRustStep.includes('steps.sdk-identity.outputs.rust_version') &&
-    pruneRustStep.includes('rustc release $rustc_release does not match recipe $expected_rust'),
+  assert(verifyRustStep.includes('steps.sdk-identity.outputs.rust_version') &&
+    verifyRustStep.includes('rustc release $rustc_release does not match recipe $expected_rust'),
   'cache restore must be rejected unless the installed rustc matches the measured SDK recipe');
-  assert(pruneRustStep.includes('! -name \'.built\''), 'Rust pruning must retain the built stamp');
-  assert(pruneRustStep.includes('! -name \'.configured\''), 'Rust pruning must retain the configured stamp');
-  assert(pruneRustStep.includes('! -name \'.prepared*\''), 'Rust pruning must retain prepared stamps');
+  assert(verifyRustStep.includes('[ -f "$rust_build/.built" ]') &&
+    verifyRustStep.includes('[ -d "$rust_build/build" ]'),
+  'Rust verification must require a completed and reusable host build tree');
+  assert(!verifyRustStep.includes('rm -rf'),
+    'Rust verification must preserve source and build output for the cache');
+  const pruneRustStep = extractNamedStep(buildJob, 'Prune SDK Rust build tree for BPF clone');
+  assert(pruneRustStep.includes('! -name \'.built\''), 'BPF clone pruning must retain the built stamp');
+  assert(pruneRustStep.includes('! -name \'.configured\''), 'BPF clone pruning must retain the configured stamp');
+  assert(pruneRustStep.includes('! -name \'.prepared*\''), 'BPF clone pruning must retain prepared stamps');
   assert(pruneRustStep.includes('-exec rm -rf {} +'),
-    'Rust pruning must remove the large compiler source and build products');
+    'BPF clone pruning must remove the large compiler source and build products');
 
   const clonePreparedStep = extractNamedStep(buildJob, 'Clone prepared SDK for BPF build');
   assert(clonePreparedStep.includes('cp -a "$base_sdk/." "$bpf_sdk/"'),
@@ -619,11 +623,13 @@ try {
     'SDK extraction must precede feed and Rust identity measurement');
   assertBefore(buildJob, 'name: Resolve SDK feed and Rust identity', 'name: Restore SDK Rust host cache',
     'the complete SDK identity must be known before cache restore');
-  assertBefore(buildJob, 'name: Build base package', 'name: Prune SDK Rust build tree',
-    'base build must finish before pruning');
-  assertBefore(buildJob, 'name: Prune SDK Rust build tree', 'name: Save SDK Rust host cache',
-    'pruning must precede cache save');
-  assertBefore(buildJob, 'name: Save SDK Rust host cache', 'name: Clone prepared SDK for BPF build',
+  assertBefore(buildJob, 'name: Build base package', 'name: Verify SDK Rust host toolchain',
+    'base build must finish before Rust verification');
+  assertBefore(buildJob, 'name: Verify SDK Rust host toolchain', 'name: Save SDK Rust host cache',
+    'Rust verification must precede cache save');
+  assertBefore(buildJob, 'name: Save SDK Rust host cache', 'name: Prune SDK Rust build tree for BPF clone',
+    'the complete Rust tree must be saved before pruning the BPF clone source');
+  assertBefore(buildJob, 'name: Prune SDK Rust build tree for BPF clone', 'name: Clone prepared SDK for BPF build',
     'the first successful base build must save its cache before the BPF phase');
   assertBefore(buildJob, 'name: Clone prepared SDK for BPF build', 'name: Build BPF packages',
     'the prepared SDK clone must precede the BPF build');

@@ -221,10 +221,8 @@ jobs:
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/dl/rustc-*.tar.xz
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/staging_dir/hostpkg/stamp/.rust_installed
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/staging_dir/target-*/host
-            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.built*
-            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.configured
-            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.prepared*
-          key: lanspeed-sdk-rust-v3-source-llvm-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target_arch }}-${{ matrix.sdk_sha256 }}-feeds-${{ steps.sdk-identity.outputs.feeds_hash }}-rust-${{ steps.sdk-identity.outputs.rust_version }}-recipe-${{ steps.sdk-identity.outputs.rust_recipe_hash }}-policy-${{ hashFiles('scripts/rust-configure-wrapper.sh') }}
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*
+          key: lanspeed-sdk-rust-v4-source-llvm-build-tree-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target_arch }}-${{ matrix.sdk_sha256 }}-feeds-${{ steps.sdk-identity.outputs.feeds_hash }}-rust-${{ steps.sdk-identity.outputs.rust_version }}-recipe-${{ steps.sdk-identity.outputs.rust_recipe_hash }}-policy-${{ hashFiles('scripts/rust-configure-wrapper.sh') }}
 
       - name: Build base package
         shell: bash
@@ -241,7 +239,7 @@ jobs:
             TARGET_ARCH="${{ matrix.target_arch }}" \
             ./scripts/build-sdk.sh lanspeedd 2>&1 | sed -u 's/^/[base] /'
 
-      - name: Prune SDK Rust build tree
+      - name: Verify SDK Rust host toolchain
         shell: bash
         run: |
           set -euo pipefail
@@ -273,12 +271,16 @@ jobs:
             printf '%s\n' "error: expected one Rust host build tree, found ${#rust_builds[@]}" >&2
             exit 1
           fi
-          find "${rust_builds[0]}" -mindepth 1 -maxdepth 1 \
-            ! -name '.built' \
-            ! -name '.built_check' \
-            ! -name '.configured' \
-            ! -name '.prepared*' \
-            -exec rm -rf {} +
+          rust_build="${rust_builds[0]}"
+          [ -f "$rust_build/.built" ] || {
+            printf '%s\n' "error: Rust host build tree is missing its completed .built stamp: $rust_build" >&2
+            exit 1
+          }
+          [ -d "$rust_build/build" ] || {
+            printf '%s\n' "warning: Rust host build tree has no reusable build output at $rust_build/build; the cache will rely on the installed host toolchain and build stamps" >&2
+            exit 0
+          }
+          printf '%s\n' "retaining Rust host source and build output for the reusable SDK cache: $rust_build"
 
       - name: Save SDK Rust host cache
         if: steps.sdk-rust-cache.outputs.cache-hit != 'true'
@@ -290,10 +292,28 @@ jobs:
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/dl/rustc-*.tar.xz
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/staging_dir/hostpkg/stamp/.rust_installed
             ${{ runner.temp }}/sdk-base-${{ matrix.id }}/staging_dir/target-*/host
-            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.built*
-            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.configured
-            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*/.prepared*
-          key: lanspeed-sdk-rust-v3-source-llvm-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target_arch }}-${{ matrix.sdk_sha256 }}-feeds-${{ steps.sdk-identity.outputs.feeds_hash }}-rust-${{ steps.sdk-identity.outputs.rust_version }}-recipe-${{ steps.sdk-identity.outputs.rust_recipe_hash }}-policy-${{ hashFiles('scripts/rust-configure-wrapper.sh') }}
+            ${{ runner.temp }}/sdk-base-${{ matrix.id }}/build_dir/target-*/host/rustc-*
+          key: lanspeed-sdk-rust-v4-source-llvm-build-tree-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target_arch }}-${{ matrix.sdk_sha256 }}-feeds-${{ steps.sdk-identity.outputs.feeds_hash }}-rust-${{ steps.sdk-identity.outputs.rust_version }}-recipe-${{ steps.sdk-identity.outputs.rust_recipe_hash }}-policy-${{ hashFiles('scripts/rust-configure-wrapper.sh') }}
+
+      - name: Prune SDK Rust build tree for BPF clone
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          base_sdk="$RUNNER_TEMP/sdk-base-${{ matrix.id }}"
+          shopt -s nullglob
+          rust_builds=("$base_sdk"/build_dir/target-*/host/rustc-*)
+          shopt -u nullglob
+          if [ "${#rust_builds[@]}" -ne 1 ]; then
+            printf '%s\n' "error: expected one Rust host build tree before BPF clone, found ${#rust_builds[@]}" >&2
+            exit 1
+          fi
+          find "${rust_builds[0]}" -mindepth 1 -maxdepth 1 \
+            ! -name '.built' \
+            ! -name '.built_check' \
+            ! -name '.configured' \
+            ! -name '.prepared*' \
+            -exec rm -rf {} +
 
       - name: Clone prepared SDK for BPF build
         shell: bash

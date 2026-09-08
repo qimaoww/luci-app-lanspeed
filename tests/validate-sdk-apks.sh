@@ -177,7 +177,7 @@ case "$expected_arch" in
 	x86_64)
 		assert_dependencies daemon "$daemon_metadata" \
 			conntrack ip kmod-ifb kmod-nf-conntrack-netlink kmod-sched kmod-sched-core \
-			libc libgcc1 nftables tc-full
+			libc libgcc1 libsqlite3-0 nftables tc-full
 		;;
 	aarch64*)
 		assert_dependencies daemon "$daemon_metadata" \

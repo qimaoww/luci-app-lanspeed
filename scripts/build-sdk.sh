@@ -367,6 +367,7 @@ compile_package() {
 	package=$1
 	fakeroot_arg=
 	rust_bash_arg="BASH=$RUST_CONFIGURE_WRAPPER"
+	autoremove_arg="CONFIG_AUTOREMOVE="
 	if [ -n "${PACKAGE_FAKEROOT:-}" ]; then
 		fakeroot_arg="FAKEROOT=$PACKAGE_FAKEROOT"
 	fi
@@ -379,15 +380,15 @@ compile_package() {
 			base_package_config=m
 		fi
 		if [ -n "$fakeroot_arg" ]; then
-			run_in_sdk make "package/$package/compile" V=s "LANSPEED_BUILD_BPF=$ENABLE_BPF" "CONFIG_PACKAGE_lanspeedd=$base_package_config" "CONFIG_PACKAGE_lanspeedd-bpf=$bpf_package_config" "$rust_bash_arg" "$fakeroot_arg"
+			run_in_sdk make "package/$package/compile" V=s "LANSPEED_BUILD_BPF=$ENABLE_BPF" "CONFIG_PACKAGE_lanspeedd=$base_package_config" "CONFIG_PACKAGE_lanspeedd-bpf=$bpf_package_config" "$autoremove_arg" "$rust_bash_arg" "$fakeroot_arg"
 		else
-			run_in_sdk make "package/$package/compile" V=s "LANSPEED_BUILD_BPF=$ENABLE_BPF" "CONFIG_PACKAGE_lanspeedd=$base_package_config" "CONFIG_PACKAGE_lanspeedd-bpf=$bpf_package_config" "$rust_bash_arg"
+			run_in_sdk make "package/$package/compile" V=s "LANSPEED_BUILD_BPF=$ENABLE_BPF" "CONFIG_PACKAGE_lanspeedd=$base_package_config" "CONFIG_PACKAGE_lanspeedd-bpf=$bpf_package_config" "$autoremove_arg" "$rust_bash_arg"
 		fi
 	else
 		if [ -n "$fakeroot_arg" ]; then
-			run_in_sdk make "package/$package/compile" V=s "$rust_bash_arg" "$fakeroot_arg"
+			run_in_sdk make "package/$package/compile" V=s "$autoremove_arg" "$rust_bash_arg" "$fakeroot_arg"
 		else
-			run_in_sdk make "package/$package/compile" V=s "$rust_bash_arg"
+			run_in_sdk make "package/$package/compile" V=s "$autoremove_arg" "$rust_bash_arg"
 		fi
 	fi
 }
