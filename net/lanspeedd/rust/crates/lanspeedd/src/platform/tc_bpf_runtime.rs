@@ -164,6 +164,28 @@ pub enum HookState {
     Foreign,
 }
 
+fn hook_ownership(
+    spec: &LinkSpec,
+    filter: &tc_probe::TcFilterDetails,
+    expected_program_id: u32,
+) -> HookState {
+    let program_owned = filter.program_id.map_or_else(
+        || filter.program_name.as_deref() == Some(spec.kernel_program_name()),
+        |program_id| program_id == expected_program_id,
+    );
+    // A filter from a previous daemon generation keeps the stable lanspeed
+    // mount marker (pref + handle + name) but carries a different loaded
+    // program id. Treat that as ours so the reconcile replaces it atomically
+    // instead of reporting a foreign conflict that would need a second restart.
+    let owner_owned = filter.filter.owner == "lanspeed";
+    let execution_owned = tc_probe::has_software_direct_action_semantics(filter);
+    if filter.kind.as_deref() == Some("bpf") && (program_owned || owner_owned) && execution_owned {
+        HookState::Owned
+    } else {
+        HookState::Foreign
+    }
+}
+
 pub trait AyaAdapter {
     type Link;
 
@@ -1656,18 +1678,7 @@ impl AyaAdapter for SystemAyaAdapter {
                 && filter.filter.pref == u32::from(spec.priority)
                 && tc_probe::handles_equal(&filter.filter.handle, &expected_handle)
             {
-                let program_owned = filter.program_id.map_or_else(
-                    || filter.program_name.as_deref() == Some(spec.kernel_program_name()),
-                    |program_id| program_id == expected_program_id,
-                );
-                let execution_owned = tc_probe::has_software_direct_action_semantics(&filter);
-                return Ok(
-                    if filter.kind.as_deref() == Some("bpf") && program_owned && execution_owned {
-                        HookState::Owned
-                    } else {
-                        HookState::Foreign
-                    },
-                );
+                return Ok(hook_ownership(spec, &filter, expected_program_id));
             }
         }
         Ok(HookState::Absent)
@@ -1938,4 +1949,98 @@ fn classify_program_load_error(error: aya::programs::ProgramError) -> AdapterErr
         _ => AdapterErrorKind::LoadFailed,
     };
     AdapterError::new(kind, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::probe::{tc::TcFilterDetails, TcFilter};
+
+    fn details(
+        owner: &str,
+        pref: u32,
+        handle: &str,
+        program_name: Option<&str>,
+        program_id: Option<u32>,
+    ) -> TcFilterDetails {
+        TcFilterDetails {
+            filter: TcFilter {
+                interface: "br-lan".into(),
+                direction: "ingress".into(),
+                chain: 0,
+                pref,
+                handle: handle.into(),
+                owner: owner.into(),
+                source: "test".into(),
+            },
+            kind: Some("bpf".into()),
+            protocol: Some("all".into()),
+            program_name: program_name.map(str::to_owned),
+            program_id,
+            direct_action: Some(true),
+            in_hw: Some(false),
+            not_in_hw: None,
+        }
+    }
+
+    #[test]
+    fn stale_lanspeed_filter_with_different_program_id_is_owned() {
+        let spec = LinkSpec {
+            interface: "br-lan".into(),
+            direction: LinkDirection::Ingress,
+            program: lanspeed_common::INGRESS_PROGRAM_NAME,
+            priority: NORMAL_PRIORITY,
+            handle: NORMAL_HANDLE,
+        };
+        // Matches the owned slot by marker, but the loaded program id changed
+        // after a restart. It must be reclaimable, not a foreign conflict.
+        assert_eq!(
+            hook_ownership(
+                &spec,
+                &details(
+                    "lanspeed",
+                    u32::from(NORMAL_PRIORITY),
+                    "0x1eed",
+                    Some("lanspeed_ingres"),
+                    Some(999),
+                ),
+                123,
+            ),
+            HookState::Owned,
+        );
+        // A foreign program at the same slot stays a conflict.
+        assert_eq!(
+            hook_ownership(
+                &spec,
+                &details(
+                    "unknown",
+                    u32::from(NORMAL_PRIORITY),
+                    "0x1eed",
+                    Some("other_prog"),
+                    Some(999),
+                ),
+                123,
+            ),
+            HookState::Foreign,
+        );
+    }
+
+    #[test]
+    fn matching_program_id_without_name_remains_owned() {
+        let spec = LinkSpec {
+            interface: "br-lan".into(),
+            direction: LinkDirection::Ingress,
+            program: lanspeed_common::INGRESS_PROGRAM_NAME,
+            priority: NORMAL_PRIORITY,
+            handle: NORMAL_HANDLE,
+        };
+        assert_eq!(
+            hook_ownership(
+                &spec,
+                &details("unknown", u32::from(NORMAL_PRIORITY), "0x1eed", None, Some(123)),
+                123,
+            ),
+            HookState::Owned,
+        );
+    }
 }
