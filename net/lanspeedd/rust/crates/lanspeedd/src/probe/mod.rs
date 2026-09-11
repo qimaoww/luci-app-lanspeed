@@ -293,6 +293,52 @@ pub struct TcFacts {
     pub filters: Vec<TcFilter>,
     pub host_status: tc_status::TcHostStatus,
 }
+
+impl TcFacts {
+    /// Assess the attach-safety facts for one TC observation set.
+    ///
+    /// Shared by the scheduled probe and the activation retry path so a
+    /// refreshed snapshot cannot drift from the periodic one. The scheduled
+    /// probe caches its result for `PROBE_REFRESH_INTERVAL_MS`; a restart race
+    /// can release the reserved slots long before that, so the retry path
+    /// re-reads the slots and rebuilds these facts through this function.
+    pub fn assess(
+        config: &RuntimeConfig,
+        observations: &TcObservations,
+        available: bool,
+        bpf_package: bool,
+        bpf_object: bool,
+        lan_edge: bool,
+    ) -> Self {
+        let attach_ifnames = config
+            .ifnames
+            .iter()
+            .chain(config.interface_include.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        let conflict = tc::has_owned_identity_collision(&observations.filters);
+        Self {
+            available,
+            clsact: observations.clsact,
+            bpf: observations.bpf,
+            existing_filters: observations.existing_filters,
+            conflict,
+            dae_preempts_lan_ingress: tc::dae_preempts_lan_ingress(
+                &observations.filters,
+                &attach_ifnames,
+            ),
+            safe_attach: config.enable_bpf
+                && available
+                && bpf_package
+                && bpf_object
+                && lan_edge
+                && config.max_clients >= 1
+                && !conflict,
+            filters: observations.filters.clone(),
+            host_status: observations.host_status.clone(),
+        }
+    }
+}
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FileFacts {
     pub nf_conntrack_acct_present: bool,
@@ -619,14 +665,6 @@ pub fn assess(
     observations: ProbeObservations,
     runtime: &RuntimeHealth,
 ) -> ProbeReport {
-    let conflict = tc::has_owned_identity_collision(&observations.tc.filters);
-    let attach_ifnames = config
-        .ifnames
-        .iter()
-        .chain(config.interface_include.iter())
-        .cloned()
-        .collect::<Vec<_>>();
-    let dae_preempts = tc::dae_preempts_lan_ingress(&observations.tc.filters, &attach_ifnames);
     let (proxy_facts, proxy_evidence) = proxy::evaluate(
         &observations.proxy,
         observations.uci.dae,
@@ -637,14 +675,18 @@ pub fn assess(
         observations.files.lan_bridge || observations.files.vlan || observations.files.wlan;
     let nf_acct = observations.files.nf_conntrack_acct_present
         && observations.files.nf_conntrack_acct_value.as_deref() == Some("1");
+    let tc_facts = TcFacts::assess(
+        config,
+        &observations.tc,
+        observations.commands.tc,
+        observations.bpf.package,
+        observations.bpf.object,
+        lan_edge,
+    );
+    let safe_attach = tc_facts.safe_attach;
+    let conflict = tc_facts.conflict;
+    let dae_preempts = tc_facts.dae_preempts_lan_ingress;
     let map_full = config.max_clients < 1;
-    let safe_attach = config.enable_bpf
-        && observations.commands.tc
-        && observations.bpf.package
-        && observations.bpf.object
-        && lan_edge
-        && !map_full
-        && !conflict;
     let bpf_runtime = config.enable_bpf
         && safe_attach
         && runtime.bpf_object_loaded
@@ -671,17 +713,7 @@ pub fn assess(
         lan_edge,
         probe_error,
         lan_probe_error,
-        tc: TcFacts {
-            available: observations.commands.tc,
-            clsact: observations.tc.clsact,
-            bpf: observations.tc.bpf,
-            existing_filters: observations.tc.existing_filters,
-            conflict,
-            dae_preempts_lan_ingress: dae_preempts,
-            safe_attach,
-            filters: observations.tc.filters.clone(),
-            host_status: observations.tc.host_status.clone(),
-        },
+        tc: tc_facts,
         files: FileFacts {
             nf_conntrack_acct_present: observations.files.nf_conntrack_acct_present,
             nf_conntrack_acct: nf_acct,
