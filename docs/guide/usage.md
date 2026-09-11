@@ -76,7 +76,7 @@ x86 配置页额外提供透明代理连接补全：
 
 Mihomo 控制器始终只连接 `127.0.0.1`。认证码字段使用密码输入框；手动值保存在 `/etc/config/lanspeed`，自动模式不会把 OpenClash 原认证码复制到 LAN Speed 配置。
 
-dae/daed 没有逐连接 API。x86 后端只读取运行中 dae/daed 进程实际持有的数据：TCP 来自 `daens` 网络命名空间中的 ESTABLISHED socket，并通过内核 SOCK_DIAG/TCP_INFO 累计字节计算逐连接速率；UDP 同时校验 `udp_conn_state_map` 与 `routing_tuples_map`，仅接收用户定义代理 outbound，排除 direct、block 和中间路由状态。UDP 生命周期遵循 dae 1.27 的 300 秒状态定时器；内核诊断或 BPF map 名称、类型、ABI 尺寸不匹配时该适配器直接跳过，不猜测解析。
+dae/daed 没有逐连接 API。x86 后端只读取运行中 dae/daed 进程实际持有的数据：TCP 来自 `daens` 网络命名空间中的 ESTABLISHED socket，并通过内核 SOCK_DIAG/TCP_INFO 累计字节计算逐连接速率；UDP 在 dae 1.x 上同时校验 `udp_conn_state_map` 与 `routing_tuples_map`，在 dae main 及跟踪 main 的第三方构建（如 kenzok8/openwrt-daede）上读取合并后的 `conn_state_map` 内嵌路由，仅接收用户定义代理 outbound，排除 direct、block 和中间路由状态。UDP 条目生命周期由上游状态定时器决定；内核诊断或 BPF map 名称、类型、ABI 尺寸不匹配时该适配器直接跳过，不猜测解析。 OpenWrt 包与 daed 镜像把上游二进制重命名为 `daed`，dae-wing 镜像和未覆盖 `APPNAME`/`OUTPUT` 的本地构建保留 `dae-wing`；后端同时识别 `dae`、`daed`、`dae-wing` 三种进程名，并在容器不共享宿主 `/run` 时通过进程根目录解析 `daens`。
 
 历史配置中的 `dedicated_port` 已停用；配置页保存时会自动清理该遗留项。客户端详情中的主机名按 MAC 写入 `/etc/config/dhcp`，不会强制配置静态 IP。
 

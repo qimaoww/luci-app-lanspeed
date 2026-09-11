@@ -13,6 +13,11 @@ use std::{
 
 const PROC_ROOT: &str = "/proc";
 const DAE_NETNS_PATHS: [&str; 2] = ["/var/run/netns/daens", "/run/netns/daens"];
+// Binary names that own the dae datapath. The OpenWrt package and the daed
+// image rename the upstream `dae-wing` binary to `daed`; the legacy dae-wing
+// image and `make` builds without APPNAME/OUTPUT overrides keep the upstream
+// name.
+const DAE_PROCESS_NAMES: [&str; 3] = ["dae", "daed", "dae-wing"];
 const MAX_PROC_ENTRIES: usize = 65_536;
 const MAX_DAE_PROCESSES: usize = 4;
 const MAX_PROCESS_FDS: usize = 65_536;
@@ -35,6 +40,13 @@ const DAE_TUPLE_KEY_SIZE: usize = 40;
 const DAE_UDP_STATE_SIZE: usize = 24;
 const DAE_ROUTING_RESULT_SIZE: usize = 36;
 const DAE_ROUTING_OUTBOUND_OFFSET: usize = 11;
+// dae main replaces `udp_conn_state_map` with a shared `conn_state_map` whose
+// value embeds the routing decision (`union routing_meta`) instead of keeping
+// it in `routing_tuples_map`. Field offsets come from the upstream struct
+// layout: flags, timestamp, then `data.outbound`/`data.has_routing`.
+const DAE_CONN_STATE_SIZE: usize = 56;
+const DAE_CONN_STATE_OUTBOUND_OFFSET: usize = 20;
+const DAE_CONN_STATE_HAS_ROUTING_OFFSET: usize = 23;
 const DAE_OUTBOUND_USER_MIN: u8 = 2;
 const DAE_OUTBOUND_USER_MAX: u8 = 0xfb;
 const MAX_DAE_UDP_MAP_ENTRIES: u32 = 1_048_576;
@@ -71,7 +83,8 @@ fn read_samples_from(
     // root namespace instead and mostly contains controller and outbound
     // sockets, so it cannot recover LAN-facing logical connections.
     if !owned_inodes.is_empty() {
-        let sockets = read_dae_netns_tcp_sockets().unwrap_or_default();
+        let sockets =
+            read_dae_netns_tcp_sockets(&dae_netns_candidates(&processes)).unwrap_or_default();
         samples.extend(samples_from_sockets(
             identities,
             &owned_inodes,
@@ -82,9 +95,9 @@ fn read_samples_from(
     }
 
     // UDP does not create one process socket per logical flow. dae keeps live
-    // UDP tuples in a timer-backed eBPF map. The map is not pinned, so resolve
-    // only map IDs held by a running dae/daed process and require the official
-    // name and ABI before reading it.
+    // tuples in timer-backed eBPF maps held as file descriptors of the running
+    // dae/daed process, so resolve map IDs from those processes and require the
+    // documented name and ABI before reading anything.
     if samples.len() < MAX_PROXY_CONNECTIONS {
         if let Ok(current) = udp_samples_from_maps(
             identities,
@@ -98,10 +111,29 @@ fn read_samples_from(
     Ok(samples)
 }
 
-fn read_dae_netns_tcp_sockets() -> io::Result<Vec<ProcessTcpSocket>> {
+/// dae creates a named `daens` network namespace for transparent sockets.
+/// Package and host installs run daed in the host mount namespace, so the
+/// namespace file is reachable through the documented host paths. Container
+/// images keep `/run` inside their own mount namespace, so also resolve the
+/// file through every dae process root instead of guessing a container path.
+fn dae_netns_candidates(processes: &[PathBuf]) -> Vec<PathBuf> {
+    let mut candidates = DAE_NETNS_PATHS
+        .iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    for process in processes {
+        for path in DAE_NETNS_PATHS {
+            candidates.push(process.join("root").join(path.trim_start_matches('/')));
+        }
+    }
+    candidates.dedup();
+    candidates
+}
+
+fn read_dae_netns_tcp_sockets(candidates: &[PathBuf]) -> io::Result<Vec<ProcessTcpSocket>> {
     let current =
         File::open("/proc/thread-self/ns/net").or_else(|_| File::open("/proc/self/ns/net"))?;
-    let target = DAE_NETNS_PATHS
+    let target = candidates
         .iter()
         .find_map(|path| File::open(path).ok())
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "dae network namespace missing"))?;
@@ -514,77 +546,125 @@ fn align4(value: usize) -> Option<usize> {
     value.checked_add(3).map(|value| value & !3)
 }
 
+/// dae 1.x keeps UDP flows in `udp_conn_state_map` and their routing decision in
+/// the separate `routing_tuples_map`; dae main merges both into `conn_state_map`,
+/// whose value embeds the routing result. Accept either ABI and keep the existing
+/// "skip when the map shape does not match" contract.
 fn udp_samples_from_maps(
     identities: &IdentityTable,
     map_ids: &BTreeSet<u32>,
     remaining: usize,
 ) -> io::Result<Vec<ProxyConnectionSample>> {
-    let routing_map = dae_map_by_abi::<DAE_ROUTING_RESULT_SIZE>(
+    let legacy_routing = dae_map_by_abi::<DAE_ROUTING_RESULT_SIZE>(
         map_ids,
         "routing_tuples",
         &[MapType::LruHash, MapType::Hash],
-    )?
-    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "dae routing map missing"))?;
+    )?;
     let mut samples = Vec::new();
     let mut emitted = BTreeSet::new();
+    let mut recognized = false;
     for &map_id in map_ids {
         let Ok(info) = MapInfo::from_id(map_id) else {
             continue;
         };
         let name = std::str::from_utf8(info.name()).unwrap_or_default();
-        if !name.starts_with("udp_conn_state")
-            || info.map_type().ok() != Some(MapType::Hash)
+        if info.map_type().ok() != Some(MapType::Hash)
             || info.key_size() != DAE_TUPLE_KEY_SIZE as u32
-            || info.value_size() != DAE_UDP_STATE_SIZE as u32
             || info.max_entries() > MAX_DAE_UDP_MAP_ENTRIES
         {
             continue;
         }
-        let data = MapData::from_id(map_id).map_err(aya_error)?;
-        let map = Map::from_map_data(data).map_err(aya_error)?;
-        let map =
-            BpfHashMap::<_, [u8; DAE_TUPLE_KEY_SIZE], [u8; DAE_UDP_STATE_SIZE]>::try_from(map)
-                .map_err(aya_error)?;
-        for key in map.keys() {
-            let key = key.map_err(aya_error)?;
-            if !emitted.insert(key) {
-                continue;
-            }
-            let Ok(routing) = routing_map.get(&key, 0) else {
+        if name.starts_with("udp_conn_state") && info.value_size() == DAE_UDP_STATE_SIZE as u32 {
+            recognized = true;
+            let Some(routing_map) = legacy_routing.as_ref() else {
                 continue;
             };
-            if !dae_routing_is_proxied(&routing) {
-                continue;
+            let map = dae_map_from_id::<DAE_UDP_STATE_SIZE>(map_id)?;
+            for key in map.keys() {
+                let key = key.map_err(aya_error)?;
+                if !emitted.insert(key) {
+                    continue;
+                }
+                let Ok(routing) = routing_map.get(&key, 0) else {
+                    continue;
+                };
+                if !dae_routing_is_proxied(&routing) {
+                    continue;
+                }
+                push_udp_sample(identities, &mut samples, &key, remaining)?;
             }
-            let tuple = parse_dae_tuple(&key)?;
-            if tuple.protocol != ConnectionProtocol::Udp {
-                continue;
+        } else if name.starts_with("conn_state_map")
+            && info.value_size() == DAE_CONN_STATE_SIZE as u32
+        {
+            recognized = true;
+            let map = dae_map_from_id::<DAE_CONN_STATE_SIZE>(map_id)?;
+            for entry in map.iter() {
+                let (key, value) = entry.map_err(aya_error)?;
+                if !emitted.insert(key) || !dae_conn_state_is_proxied(&value) {
+                    continue;
+                }
+                push_udp_sample(identities, &mut samples, &key, remaining)?;
             }
-            let generation = format!(
-                "udp:{}:{}>{}:{}",
-                tuple.source_ip, tuple.source_port, tuple.destination_ip, tuple.destination_port
-            );
-            let Some(sample) = sample_from_endpoints(
-                identities,
-                generation,
-                tuple.source_ip,
-                tuple.source_port,
-                tuple.destination_ip,
-                tuple.destination_port,
-                tuple.protocol,
-            ) else {
-                continue;
-            };
-            if samples.len() >= remaining {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "dae connection count exceeds limit",
-                ));
-            }
-            samples.push(sample);
         }
     }
+    if !recognized {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "dae connection state map missing",
+        ));
+    }
     Ok(samples)
+}
+
+fn dae_conn_state_is_proxied(state: &[u8; DAE_CONN_STATE_SIZE]) -> bool {
+    state[DAE_CONN_STATE_HAS_ROUTING_OFFSET] != 0
+        && (DAE_OUTBOUND_USER_MIN..=DAE_OUTBOUND_USER_MAX)
+            .contains(&state[DAE_CONN_STATE_OUTBOUND_OFFSET])
+}
+
+fn push_udp_sample(
+    identities: &IdentityTable,
+    samples: &mut Vec<ProxyConnectionSample>,
+    key: &[u8; DAE_TUPLE_KEY_SIZE],
+    remaining: usize,
+) -> io::Result<()> {
+    let Ok(tuple) = parse_dae_tuple(key) else {
+        return Ok(());
+    };
+    if tuple.protocol != ConnectionProtocol::Udp {
+        return Ok(());
+    }
+    let generation = format!(
+        "udp:{}:{}>{}:{}",
+        tuple.source_ip, tuple.source_port, tuple.destination_ip, tuple.destination_port
+    );
+    let Some(sample) = sample_from_endpoints(
+        identities,
+        generation,
+        tuple.source_ip,
+        tuple.source_port,
+        tuple.destination_ip,
+        tuple.destination_port,
+        tuple.protocol,
+    ) else {
+        return Ok(());
+    };
+    if samples.len() >= remaining {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "dae connection count exceeds limit",
+        ));
+    }
+    samples.push(sample);
+    Ok(())
+}
+
+fn dae_map_from_id<const VALUE_SIZE: usize>(
+    map_id: u32,
+) -> io::Result<BpfHashMap<MapData, [u8; DAE_TUPLE_KEY_SIZE], [u8; VALUE_SIZE]>> {
+    let data = MapData::from_id(map_id).map_err(aya_error)?;
+    let map = Map::from_map_data(data).map_err(aya_error)?;
+    BpfHashMap::try_from(map).map_err(aya_error)
 }
 
 fn dae_map_by_abi<const VALUE_SIZE: usize>(
@@ -807,7 +887,7 @@ fn dae_processes(proc_root: &Path) -> io::Result<Vec<PathBuf>> {
             continue;
         };
         let comm = trim_ascii(&comm);
-        if comm != b"dae" && comm != b"daed" {
+        if !DAE_PROCESS_NAMES.iter().any(|name| comm == name.as_bytes()) {
             continue;
         }
         processes.push(entry.path());
@@ -1173,5 +1253,120 @@ mod tests {
             routing[DAE_ROUTING_OUTBOUND_OFFSET] = outbound;
             assert!(!dae_routing_is_proxied(&routing));
         }
+    }
+
+    fn temporary_proc_root(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "lanspeedd-dae-{label}-{}-{unique}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn recognizes_openwrt_daed_and_docker_dae_wing_processes() {
+        let root = temporary_proc_root("processes");
+        for (pid, comm) in [
+            ("11", "dae"),
+            ("12", "daed"),
+            ("13", "dae-wing"),
+            ("14", "daemon"),
+            ("15", "daed\r\n"),
+        ] {
+            let directory = root.join(pid);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join("comm"), comm).unwrap();
+        }
+        fs::create_dir_all(root.join("self")).unwrap();
+        fs::write(root.join("self").join("comm"), "daed").unwrap();
+
+        let mut pids = dae_processes(&root)
+            .unwrap()
+            .iter()
+            .map(|process| {
+                process
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        pids.sort();
+        assert_eq!(pids, ["11", "12", "13", "15"]);
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn daens_candidates_cover_host_and_container_mount_namespaces() {
+        let candidates = dae_netns_candidates(&[PathBuf::from("/proc/4242")]);
+        assert_eq!(
+            candidates,
+            [
+                PathBuf::from("/var/run/netns/daens"),
+                PathBuf::from("/run/netns/daens"),
+                PathBuf::from("/proc/4242/root/var/run/netns/daens"),
+                PathBuf::from("/proc/4242/root/run/netns/daens"),
+            ]
+        );
+    }
+
+    #[test]
+    fn conn_state_value_uses_embedded_routing_bytes() {
+        let mut state = [0u8; DAE_CONN_STATE_SIZE];
+        assert!(!dae_conn_state_is_proxied(&state));
+        state[DAE_CONN_STATE_OUTBOUND_OFFSET] = DAE_OUTBOUND_USER_MIN;
+        assert!(!dae_conn_state_is_proxied(&state));
+        state[DAE_CONN_STATE_HAS_ROUTING_OFFSET] = 1;
+        assert!(dae_conn_state_is_proxied(&state));
+        state[DAE_CONN_STATE_OUTBOUND_OFFSET] = DAE_OUTBOUND_USER_MAX;
+        assert!(dae_conn_state_is_proxied(&state));
+        for outbound in [0, 1, 0xfc, 0xfd, 0xfe, 0xff] {
+            state[DAE_CONN_STATE_OUTBOUND_OFFSET] = outbound;
+            assert!(!dae_conn_state_is_proxied(&state));
+        }
+        state[DAE_CONN_STATE_OUTBOUND_OFFSET] = 8;
+        state[DAE_CONN_STATE_HAS_ROUTING_OFFSET] = 0;
+        assert!(!dae_conn_state_is_proxied(&state));
+    }
+
+    #[test]
+    fn shared_conn_state_map_skips_tcp_and_malformed_keys() {
+        let table = identities();
+        let mut samples = Vec::new();
+        let tcp = tuple_key(
+            "192.0.2.10".parse().unwrap(),
+            50_123,
+            "198.51.100.20".parse().unwrap(),
+            443,
+            6,
+        );
+        push_udp_sample(&table, &mut samples, &tcp, 8).unwrap();
+        assert!(samples.is_empty());
+
+        let malformed = tuple_key(
+            "192.0.2.10".parse().unwrap(),
+            0,
+            "198.51.100.20".parse().unwrap(),
+            443,
+            17,
+        );
+        push_udp_sample(&table, &mut samples, &malformed, 8).unwrap();
+        assert!(samples.is_empty());
+
+        let udp = tuple_key(
+            "192.0.2.10".parse().unwrap(),
+            50_123,
+            "198.51.100.20".parse().unwrap(),
+            4_433,
+            17,
+        );
+        push_udp_sample(&table, &mut samples, &udp, 8).unwrap();
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].client_port, 50_123);
+        assert_eq!(samples[0].remote_port, 4_433);
     }
 }
