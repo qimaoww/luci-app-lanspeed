@@ -2292,3 +2292,119 @@ fn read(entries: Vec<RawMapSample>) -> MapRead {
         truncated: false,
     }
 }
+
+#[test]
+fn production_retry_rechecks_reserved_slots_before_waiting_out_backoff() {
+    let source = include_str!("../src/production.rs");
+    let retry = source
+        .split("fn maybe_retry_bpf_activation")
+        .nth(1)
+        .unwrap()
+        .split("fn refresh_attach_tc_facts")
+        .next()
+        .unwrap();
+    // The cheap slot recheck must run before the backoff gate so a restart
+    // race that clears within a second recovers on the current cycle.
+    let recheck = retry.find("self.bpf_retry.recheck_due(").unwrap();
+    let gate = retry.find("self.bpf_retry.attempt_due(").unwrap();
+    assert!(recheck < gate);
+    assert!(retry.contains("self.refresh_attach_tc_facts()"));
+    assert!(retry.contains("self.bpf_retry.observe_slots("));
+    assert_eq!(source.matches("self.refresh_attach_tc_facts()").count(), 2);
+
+    // The startup wait is bounded, reuses the same refresh, and runs before
+    // the first attach of the committed runtime.
+    let startup = source
+        .split("fn wait_for_attach_slots")
+        .nth(1)
+        .unwrap()
+        .split("fn checkpoint")
+        .next()
+        .unwrap();
+    assert!(startup.contains("BPF_STARTUP_TC_WAIT_MS"));
+    assert!(startup.contains("BPF_STARTUP_TC_POLL_MS"));
+    assert!(startup.contains("self.refresh_attach_tc_facts()"));
+    assert!(source.contains("runtime.wait_for_attach_slots()?;"));
+
+    // Every x86 retry entry point stays behind the non-NSS cfg gate: the NSS
+    // platform keeps its own activation and recovery path.
+    for needle in [
+        "struct BpfRetrySchedule",
+        "fn maybe_retry_bpf_activation",
+        "fn refresh_attach_tc_facts",
+        "fn wait_for_attach_slots",
+    ] {
+        let index = source.find(needle).unwrap();
+        let gate = source[..index]
+            .rfind("#[cfg(not(feature = \"nss-platform\"))]")
+            .unwrap();
+        assert!(
+            index - gate < 120,
+            "{needle} must stay behind the non-NSS cfg gate"
+        );
+    }
+
+    // The refresh reads only the attach-safety subset and shares one
+    // assessment with the scheduled probe.
+    let collector = include_str!("../src/probe/collector.rs");
+    assert!(collector.contains("pub fn refresh_attach_probe("));
+    // A gate-only refresh must not blank the host-wide diagnostics snapshot.
+    assert!(source.contains("refreshed.host_status = facts.tc.host_status.clone();"));
+    assert!(collector.contains("fn attach_tc_available("));
+    assert!(collector.contains("fn collect_attach_tc_commands("));
+    assert!(collector.contains("pub struct AttachProbeRefresh"));
+    // A read error during the refresh must never be published as a free slot.
+    assert!(collector.contains("pub probe_error: bool,"));
+    assert!(source.contains("let safe = !refresh.probe_error && refreshed.safe_attach;"));
+    // (M1) An unchanged refresh still reports fresh safety, so a slot released
+    // between scheduled probes drops the backoff instead of waiting it out.
+    assert!(source.contains("matches!(self.refresh_attach_tc_facts(), Some(true))"));
+    assert!(source.contains("fn refresh_attach_tc_facts(&mut self) -> Option<bool>"));
+    // (L1) The gate code follows the live facts in both directions and only
+    // clears the detail it wrote itself.
+    assert!(source.contains("fn publish_gate_reason(&mut self, safe: bool)"));
+    assert!(source.contains("GATE_TC_CONFLICT_DETAIL"));
+    // (M2) The published capabilities follow the refreshed TC facts.
+    assert!(source.contains("report.capabilities.safe_attach = refreshed.safe_attach;"));
+    assert!(
+        source.contains("report.capabilities.existing_tc_filters = refreshed.existing_filters;")
+    );
+
+    // The scheduled probe must keep every availability gate it publishes:
+    // dropping one silently removes whole probe sources from the report.
+    let collect = collector
+        .split("    pub fn collect(")
+        .nth(1)
+        .unwrap()
+        .split("\n    fn ")
+        .next()
+        .unwrap();
+    for needle in [
+        "self.attach_tc_available(",
+        "ReadOnlyCommand::NftListFlowtables",
+        "ReadOnlyCommand::UbusNetworkLanStatus",
+        "ReadOnlyCommand::Fw4",
+        "ReadOnlyCommand::Qosify",
+    ] {
+        assert!(
+            collect.contains(needle),
+            "scheduled probe must keep its {needle} availability gate"
+        );
+    }
+    // Availability gates run before the attach-safety TC commands, matching
+    // the published probe source order.
+    let attach_commands = collect.find("self.collect_attach_tc_commands(").unwrap();
+    for gate in [
+        "ReadOnlyCommand::NftListFlowtables",
+        "ReadOnlyCommand::UbusNetworkLanStatus",
+    ] {
+        assert!(
+            collect.find(gate).unwrap() < attach_commands,
+            "{gate} must run before the attach-safety TC commands"
+        );
+    }
+    let probe = include_str!("../src/probe/mod.rs");
+    assert!(probe.contains("impl TcFacts {"));
+    assert_eq!(probe.matches("TcFacts::assess(").count(), 1);
+    assert_eq!(source.matches("TcFacts::assess(").count(), 1);
+}

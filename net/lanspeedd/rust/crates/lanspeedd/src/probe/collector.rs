@@ -1,7 +1,7 @@
 use super::{
     assess, commands::CommandResult, files::BoundedFile, CollectedEvidence, CommandEvidence,
-    FileEvidence, ProbeFailure, ProbeObservations, ProbeReport, RuntimeHealth, UbusEvidence,
-    UciEvidence,
+    FileEvidence, ProbeFailure, ProbeObservations, ProbeReport, RuntimeHealth, TcObservations,
+    UbusEvidence, UciEvidence,
 };
 use super::{commands::ReadOnlyCommand, tc, tc_status};
 use crate::config::RuntimeConfig;
@@ -309,6 +309,23 @@ pub fn system_collector() -> lanspeed_openwrt_sys::Result<SystemProbeCollector> 
     .with_nss_probe(cfg!(feature = "nss-platform")))
 }
 
+/// Refreshed attach-gate inputs produced without a scheduled probe.
+pub struct AttachProbeRefresh {
+    pub observations: TcObservations,
+    pub environment: AttachEnvironment,
+    /// Any read error observed while refreshing. A failed or truncated tc read
+    /// must never be mistaken for a free reserved slot.
+    pub probe_error: bool,
+}
+
+/// Cheap attach-gate inputs that can change faster than the scheduled probe.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AttachEnvironment {
+    pub bpf_package: bool,
+    pub bpf_object: bool,
+    pub lan_edge: bool,
+}
+
 pub struct ProbeCollector<C, F, U, B> {
     commands: C,
     files: F,
@@ -340,6 +357,170 @@ where
         (self.commands, self.files, self.uci, self.ubus)
     }
 
+    /// Probe the tc binary the attach gate depends on.
+    fn attach_tc_available(
+        &mut self,
+        evidence: &mut CollectedEvidence,
+        probe_error: &mut bool,
+    ) -> bool {
+        self.availability(ReadOnlyCommand::TcFilterHelp, "tc", evidence, probe_error)
+    }
+
+    /// Read the attach-safety TC commands for the configured LAN devices.
+    ///
+    /// Only this subset influences the BPF activation gate. The host-wide TC
+    /// dumps used by diagnostics stay in collect because they are heavier and
+    /// do not change attach safety. The two capability help exit codes are
+    /// returned for the probe report.
+    #[allow(clippy::too_many_arguments)]
+    fn collect_attach_tc_commands(
+        &mut self,
+        config: &RuntimeConfig,
+        runtime: &RuntimeHealth,
+        evidence: &mut CollectedEvidence,
+        probe_error: &mut bool,
+        observations: &mut TcObservations,
+    ) -> (i32, i32) {
+        let mut filter_help_exit_code = -1;
+        let mut qdisc_help_exit_code = -1;
+        if let Some(result) = self.command(
+            ReadOnlyCommand::TcFilterHelp,
+            &[],
+            "tc filter help",
+            evidence,
+            probe_error,
+        ) {
+            filter_help_exit_code = result.exit_code.unwrap_or(-1);
+            observations.bpf = ReadOnlyCommand::TcFilterHelp
+                .recognized_capability_help(&result.stdout, &result.stderr);
+        }
+        if let Some(result) = self.command(
+            ReadOnlyCommand::TcQdiscHelp,
+            &[],
+            "tc qdisc help",
+            evidence,
+            probe_error,
+        ) {
+            qdisc_help_exit_code = result.exit_code.unwrap_or(-1);
+            observations.clsact = ReadOnlyCommand::TcQdiscHelp
+                .recognized_capability_help(&result.stdout, &result.stderr);
+        }
+        let mut tc_filter_details = Vec::new();
+        for ifname in config.ifnames.iter().chain(config.interface_include.iter()) {
+            for direction in ["ingress", "egress"] {
+                let args = ["dev", ifname.as_str(), direction];
+                if let Some(result) = self.command(
+                    ReadOnlyCommand::TcFilterShow,
+                    &args,
+                    &format!("tc filter show dev {ifname} {direction}"),
+                    evidence,
+                    probe_error,
+                ) {
+                    if result.exit_code == Some(0) {
+                        match tc::parse_filter_json(ifname, direction, &result.stdout) {
+                            Ok(details) => tc_filter_details.extend(details),
+                            Err(_) => {
+                                *probe_error = true;
+                                record_failure(
+                                    evidence,
+                                    "command",
+                                    canonical_command_source(ReadOnlyCommand::TcFilterShow, &args),
+                                    "invalid_json",
+                                    result.exit_code,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        tc::reconcile_runtime_owned_filters(
+            &mut tc_filter_details,
+            &config.runtime_collect_ifnames(),
+            runtime,
+        );
+        observations.filters = tc_filter_details
+            .into_iter()
+            .map(|detail| detail.filter)
+            .collect();
+        observations.existing_filters = tc::has_foreign_filters(&observations.filters);
+        (filter_help_exit_code, qdisc_help_exit_code)
+    }
+
+    /// Re-read every attach-gate input without running the scheduled probe.
+    ///
+    /// The scheduled probe caches its result for `PROBE_REFRESH_INTERVAL_MS`.
+    /// A restart race, an object restore, or a package upgrade can clear long
+    /// before that, so the activation retry path re-reads the reserved slots
+    /// and the cheap file-backed inputs here instead of staying degraded until
+    /// the next scheduled probe.
+    pub fn refresh_attach_probe(
+        &mut self,
+        config: &RuntimeConfig,
+        runtime: &RuntimeHealth,
+    ) -> Option<AttachProbeRefresh> {
+        let mut evidence = CollectedEvidence::default();
+        let mut probe_error = false;
+        let available = self.attach_tc_available(&mut evidence, &mut probe_error);
+        let mut observations = TcObservations::default();
+        if available {
+            let _ = self.collect_attach_tc_commands(
+                config,
+                runtime,
+                &mut evidence,
+                &mut probe_error,
+                &mut observations,
+            );
+        }
+        let environment = self.attach_environment(config, &mut evidence, &mut probe_error);
+        available.then_some(AttachProbeRefresh {
+            observations,
+            environment,
+            probe_error,
+        })
+    }
+
+    /// Read the file-backed attach-gate inputs: the collector model, both BPF
+    /// objects, and the LAN edge. These are single stat or directory probes, so
+    /// the activation retry may re-read them on every recheck.
+    fn attach_environment(
+        &mut self,
+        config: &RuntimeConfig,
+        evidence: &mut CollectedEvidence,
+        probe_error: &mut bool,
+    ) -> AttachEnvironment {
+        let package = self.exists(
+            "/usr/share/lanspeed/bpf/collector-model.json",
+            evidence,
+            probe_error,
+        );
+        let primary = self.exists(
+            crate::platform::tc_bpf_runtime::PRIMARY_OBJECT_PATH,
+            evidence,
+            probe_error,
+        );
+        let fallback = self.exists(
+            crate::platform::tc_bpf_runtime::FALLBACK_OBJECT_PATH,
+            evidence,
+            probe_error,
+        );
+        let lan_bridge = config
+            .ifnames
+            .iter()
+            .chain(config.interface_include.iter())
+            .any(|ifname| {
+                let path = format!("/sys/class/net/{ifname}/bridge");
+                self.exists(&path, evidence, probe_error)
+            });
+        let vlan = self.exists("/proc/net/vlan/config", evidence, probe_error);
+        let wlan = self.dir_entries("/sys/class/ieee80211", evidence, probe_error);
+        AttachEnvironment {
+            bpf_package: package,
+            bpf_object: primary && fallback,
+            lan_edge: lan_bridge || vlan || wlan,
+        }
+    }
+
     pub fn collect(
         &mut self,
         config: &RuntimeConfig,
@@ -349,12 +530,8 @@ where
         let mut observations = ProbeObservations::default();
         let mut evidence = CollectedEvidence::default();
 
-        observations.commands.tc = self.availability(
-            ReadOnlyCommand::TcFilterHelp,
-            "tc",
-            &mut evidence,
-            &mut observations.probe_error,
-        );
+        observations.commands.tc =
+            self.attach_tc_available(&mut evidence, &mut observations.probe_error);
         observations.commands.nft = self.availability(
             ReadOnlyCommand::NftListFlowtables,
             "nft",
@@ -381,71 +558,15 @@ where
         );
 
         if observations.commands.tc {
-            let mut tc_filter_details = Vec::new();
-            if let Some(result) = self.command(
-                ReadOnlyCommand::TcFilterHelp,
-                &[],
-                "tc filter help",
-                &mut evidence,
-                &mut observations.probe_error,
-            ) {
-                observations.commands.tc_filter_help_exit_code = result.exit_code.unwrap_or(-1);
-                observations.tc.bpf = ReadOnlyCommand::TcFilterHelp
-                    .recognized_capability_help(&result.stdout, &result.stderr);
-            }
-            if let Some(result) = self.command(
-                ReadOnlyCommand::TcQdiscHelp,
-                &[],
-                "tc qdisc help",
-                &mut evidence,
-                &mut observations.probe_error,
-            ) {
-                observations.commands.tc_qdisc_help_exit_code = result.exit_code.unwrap_or(-1);
-                observations.tc.clsact = ReadOnlyCommand::TcQdiscHelp
-                    .recognized_capability_help(&result.stdout, &result.stderr);
-            }
-            for ifname in config.ifnames.iter().chain(config.interface_include.iter()) {
-                for direction in ["ingress", "egress"] {
-                    let args = ["dev", ifname.as_str(), direction];
-                    if let Some(result) = self.command(
-                        ReadOnlyCommand::TcFilterShow,
-                        &args,
-                        &format!("tc filter show dev {ifname} {direction}"),
-                        &mut evidence,
-                        &mut observations.probe_error,
-                    ) {
-                        if result.exit_code == Some(0) {
-                            match tc::parse_filter_json(ifname, direction, &result.stdout) {
-                                Ok(details) => tc_filter_details.extend(details),
-                                Err(_) => {
-                                    observations.probe_error = true;
-                                    record_failure(
-                                        &mut evidence,
-                                        "command",
-                                        canonical_command_source(
-                                            ReadOnlyCommand::TcFilterShow,
-                                            &args,
-                                        ),
-                                        "invalid_json",
-                                        result.exit_code,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            tc::reconcile_runtime_owned_filters(
-                &mut tc_filter_details,
-                &config.runtime_collect_ifnames(),
+            let (filter_help_exit_code, qdisc_help_exit_code) = self.collect_attach_tc_commands(
+                config,
                 runtime,
+                &mut evidence,
+                &mut observations.probe_error,
+                &mut observations.tc,
             );
-            observations.tc.filters = tc_filter_details
-                .into_iter()
-                .map(|detail| detail.filter)
-                .collect();
-            observations.tc.existing_filters = tc::has_foreign_filters(&observations.tc.filters);
-
+            observations.commands.tc_filter_help_exit_code = filter_help_exit_code;
+            observations.commands.tc_qdisc_help_exit_code = qdisc_help_exit_code;
             /*
              * The attach-safety probe above stays scoped to configured LAN
              * devices.  Diagnostics additionally take three read-only rtnetlink

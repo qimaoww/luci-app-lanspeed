@@ -67,6 +67,8 @@ use crate::control::ControlManager;
 use crate::control_worker::{self, ControlWorkerNotice, ControlWorkerTask};
 use crate::workers::{QueueError, RuntimeWorker};
 
+#[cfg(not(feature = "nss-platform"))]
+use crate::probe::TcFacts;
 #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
 use crate::traffic_persistence::TrafficLedger;
 
@@ -192,6 +194,74 @@ fn bpf_retry_interval_ms(failures: u32) -> u64 {
     (BPF_RETRY_INTERVAL_MS << shift).min(BPF_RETRY_MAX_MS)
 }
 
+// The attach gate reads the scheduled probe report, which caches TC state for
+// `PROBE_REFRESH_INTERVAL_MS`. Re-read the reserved slots on this much shorter
+// cadence so an exponential backoff can never keep the daemon degraded after a
+// restart race has already cleared.
+#[cfg(not(feature = "nss-platform"))]
+const BPF_RETRY_RECHECK_MS: u64 = 1_000;
+// Bounded startup wait for a restart race to release a reserved TC slot before
+// the first attach, so a slot that clears immediately is never published as a
+// conflict.
+#[cfg(not(feature = "nss-platform"))]
+const BPF_STARTUP_TC_WAIT_MS: u64 = 2_000;
+#[cfg(not(feature = "nss-platform"))]
+const BPF_STARTUP_TC_POLL_MS: u64 = 200;
+// Detail published while the live gate reports a foreign occupant in a
+// reserved LAN Speed slot. Only this exact value is cleared again, so a real
+// attach failure keeps its own code.
+#[cfg(not(feature = "nss-platform"))]
+const GATE_TC_CONFLICT_DETAIL: &str = "a foreign filter occupies a reserved LAN Speed TC slot";
+
+/// Backoff schedule for the x86 BPF activation retry path.
+///
+/// The cheap reserved-slot recheck is deliberately separate from the expensive
+/// object load: a restart race that clears within a second must recover on the
+/// next collection cycle instead of waiting out a full backoff interval.
+#[cfg(not(feature = "nss-platform"))]
+#[derive(Debug, Default)]
+struct BpfRetrySchedule {
+    failures: u32,
+    next_attempt_ms: u64,
+    next_recheck_ms: u64,
+}
+
+#[cfg(not(feature = "nss-platform"))]
+impl BpfRetrySchedule {
+    /// Claim the reserved-slot recheck when its cadence elapses.
+    fn recheck_due(&mut self, now_ms: u64) -> bool {
+        if now_ms < self.next_recheck_ms {
+            return false;
+        }
+        self.next_recheck_ms = now_ms.saturating_add(BPF_RETRY_RECHECK_MS);
+        true
+    }
+
+    /// Accept a refreshed reserved-slot snapshot. A safe snapshot clears the
+    /// backoff so the next attempt runs on this collection cycle.
+    fn observe_slots(&mut self, now_ms: u64, safe: bool) {
+        if safe {
+            self.next_attempt_ms = now_ms;
+            self.failures = 0;
+        }
+    }
+
+    fn attempt_due(&self, now_ms: u64) -> bool {
+        now_ms >= self.next_attempt_ms
+    }
+
+    /// Record one activation attempt and schedule the next one from the
+    /// failure count observed before it ran.
+    fn record_attempt(&mut self, now_ms: u64, attached: bool) {
+        self.next_attempt_ms = now_ms.saturating_add(bpf_retry_interval_ms(self.failures));
+        if attached {
+            self.failures = 0;
+        } else {
+            self.failures = self.failures.saturating_add(1);
+        }
+    }
+}
+
 // Kept as a policy/timer constant so the x86 build does not need to link the
 // NSS platform module merely to compile common scheduling code.
 const ACCESS_EDGE_INTERVAL_MS: u64 = 1_000;
@@ -241,9 +311,7 @@ struct ProductionRuntime {
     probe_report: Arc<ProbeReport>,
     next_probe_ms: u64,
     #[cfg(not(feature = "nss-platform"))]
-    next_bpf_retry_ms: u64,
-    #[cfg(not(feature = "nss-platform"))]
-    bpf_retry_failures: u32,
+    bpf_retry: BpfRetrySchedule,
     overview: OverviewRing,
     x86_coverage: X86Coverage,
     #[cfg(feature = "nss-platform")]
@@ -301,6 +369,8 @@ struct RuntimeCheckpoint {
 impl ProductionRuntime {
     fn stage(config: RuntimeConfig) -> Result<Self, DaemonError> {
         let mut runtime = Self::prepare(config)?;
+        #[cfg(not(feature = "nss-platform"))]
+        runtime.wait_for_attach_slots()?;
         runtime.activate_new_bpf()?;
         // Traffic persistence is intentionally lazy. Opening SQLite (and
         // creating its WAL files) is not part of the daemon's boot-critical
@@ -356,9 +426,7 @@ impl ProductionRuntime {
             probe_report: Arc::new(preflight),
             next_probe_ms: 0,
             #[cfg(not(feature = "nss-platform"))]
-            next_bpf_retry_ms: 0,
-            #[cfg(not(feature = "nss-platform"))]
-            bpf_retry_failures: 0,
+            bpf_retry: BpfRetrySchedule::default(),
             rate_owner: None,
             hostnames: HostnameCache::new(),
             #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
@@ -476,16 +544,27 @@ impl ProductionRuntime {
     // end: `self.bpf` stayed `None` and the sticky conflict only cleared with
     // a manual second restart. Retry on a cooldown so a transient conflict
     // reclaims the owned slot as soon as the kernel releases it.
+    //
+    // The cooldown alone is not enough: the attach gate reads the scheduled
+    // probe report, which caches TC state for `PROBE_REFRESH_INTERVAL_MS`. A
+    // restart race clears far sooner than that, so every retry re-reads the
+    // reserved slots first and drops the backoff as soon as they are free.
     #[cfg(not(feature = "nss-platform"))]
     fn maybe_retry_bpf_activation(&mut self, now_ms: u64) -> Result<(), DaemonError> {
         if self.bpf.is_some() || !self.config.enable_bpf {
             return Ok(());
         }
-        if now_ms < self.next_bpf_retry_ms {
+        let mut slots_safe = self.probe_report.facts.tc.safe_attach;
+        if self.bpf_retry.recheck_due(now_ms) {
+            // A refresh that finds the same facts as the scheduled probe must
+            // still drop the backoff: the verdict is what matters, not whether
+            // the published snapshot changed.
+            slots_safe = matches!(self.refresh_attach_tc_facts(), Some(true));
+            self.bpf_retry.observe_slots(now_ms, slots_safe);
+        }
+        if !self.bpf_retry.attempt_due(now_ms) {
             return Ok(());
         }
-        self.next_bpf_retry_ms =
-            now_ms.saturating_add(bpf_retry_interval_ms(self.bpf_retry_failures));
         if let Err(error) = self.activate_new_bpf() {
             // activate_new_bpf already records most attach failures into
             // bpf_error. A hard error (for example a failed rollback) must not
@@ -494,11 +573,105 @@ impl ProductionRuntime {
             self.bpf_error_stage = Some("bpf_retry_failed");
             self.bpf_error = Some(error.to_string());
         }
-        if self.bpf.is_some() {
-            self.bpf_retry_failures = 0;
-        } else {
-            self.bpf_retry_failures = self.bpf_retry_failures.saturating_add(1);
+        if self.bpf.is_none() {
+            self.publish_gate_reason(slots_safe);
         }
+        self.bpf_retry.record_attempt(now_ms, self.bpf.is_some());
+        Ok(())
+    }
+
+    /// Align the published failure code with the live attach gate.
+    ///
+    /// The gate can hold activation without attempting a load, so the published
+    /// code follows the live facts in both directions: a confirmed reserved-slot
+    /// occupant replaces an unrelated older code, and a cleared occupant may not
+    /// leave a stale conflict behind. Only the gate detail written here is
+    /// cleared again, so a real attach failure keeps its own code.
+    #[cfg(not(feature = "nss-platform"))]
+    fn publish_gate_reason(&mut self, safe: bool) {
+        let facts = &self.probe_report.facts;
+        if !safe && facts.tc.conflict {
+            self.bpf_error_stage = Some("tc_conflict");
+            self.bpf_error = Some(GATE_TC_CONFLICT_DETAIL.into());
+        } else if self.bpf_error_stage == Some("tc_conflict")
+            && self.bpf_error.as_deref() == Some(GATE_TC_CONFLICT_DETAIL)
+        {
+            self.bpf_error_stage = None;
+            self.bpf_error = None;
+        }
+    }
+
+    /// Re-read the attach-safety TC facts without running the full probe.
+    ///
+    /// The scheduled probe caches TC state for `PROBE_REFRESH_INTERVAL_MS`,
+    /// which is far longer than a restart race takes to clear. The activation
+    /// path refreshes the reserved slots instead of waiting for it, and the
+    /// refreshed facts keep the attach gate and the published diagnostics on
+    /// the same snapshot.
+    ///
+    /// Returns the freshly observed slot safety, or `None` when the tc snapshot
+    /// could not be read. The verdict is always fresh even when the published
+    /// facts are unchanged, because a slot that cleared between scheduled
+    /// probes must still drop the retry backoff.
+    #[cfg(not(feature = "nss-platform"))]
+    fn refresh_attach_tc_facts(&mut self) -> Option<bool> {
+        let refresh = self
+            .probe
+            .refresh_attach_probe(&self.config, &RuntimeHealth::default())?;
+        let mut refreshed = TcFacts::assess(
+            &self.config,
+            &refresh.observations,
+            true,
+            refresh.environment.bpf_package,
+            refresh.environment.bpf_object,
+            refresh.environment.lan_edge,
+        );
+        // A failed or truncated read must never be published as a free slot.
+        let safe = !refresh.probe_error && refreshed.safe_attach;
+        let current = Arc::clone(&self.probe_report);
+        let facts = &current.facts;
+        // The refresh covers only the attach gate. The host-wide TC snapshot
+        // comes from the heavier scheduled dump, so keep the last one instead
+        // of blanking the diagnostics view.
+        refreshed.host_status = facts.tc.host_status.clone();
+        if refreshed != facts.tc {
+            let report = Arc::make_mut(&mut self.probe_report);
+            report.capabilities.tc = refreshed.available;
+            report.capabilities.tc_clsact = refreshed.clsact;
+            report.capabilities.existing_tc_filters = refreshed.existing_filters;
+            report.capabilities.safe_attach = refreshed.safe_attach;
+            report.facts.tc = refreshed;
+        }
+        Some(safe)
+    }
+
+    /// Give a restart race a bounded moment to release a reserved TC slot
+    /// before the first attach.
+    ///
+    /// Without this the daemon publishes a conflict for a slot that clears
+    /// milliseconds later, and the scheduled probe keeps that sticky error in
+    /// place until its next refresh. The wait only applies while a foreign
+    /// occupant still holds a reserved slot, so a genuinely external program
+    /// is never delayed beyond the bounded window.
+    #[cfg(not(feature = "nss-platform"))]
+    fn wait_for_attach_slots(&mut self) -> Result<(), DaemonError> {
+        if !self.config.enable_bpf || !self.probe_report.facts.tc.conflict {
+            return Ok(());
+        }
+        let deadline = production_now_ms()?.saturating_add(BPF_STARTUP_TC_WAIT_MS);
+        loop {
+            std::thread::sleep(Duration::from_millis(BPF_STARTUP_TC_POLL_MS));
+            // Check the budget again after sleeping and after refreshing: the
+            // wait must stay bounded even when a tc read runs into its timeout.
+            if production_now_ms()? >= deadline {
+                break;
+            }
+            self.refresh_attach_tc_facts();
+            if production_now_ms()? >= deadline || !self.probe_report.facts.tc.conflict {
+                break;
+            }
+        }
+        self.publish_gate_reason(self.probe_report.facts.tc.safe_attach);
         Ok(())
     }
 
@@ -4480,5 +4653,39 @@ mod retry_tests {
         // cap is 60s, so the 80s candidate from (5000 << 4) is clamped
         assert_eq!(bpf_retry_interval_ms(4), 60_000);
         assert_eq!(bpf_retry_interval_ms(20), 60_000);
+    }
+
+    #[test]
+    fn retry_schedule_rechecks_fast_and_clears_backoff_when_slots_free() {
+        let mut schedule = BpfRetrySchedule::default();
+        assert!(schedule.attempt_due(0));
+        schedule.record_attempt(0, false);
+        // The failed attempt holds the next load until its backoff elapses.
+        assert!(!schedule.attempt_due(1_000));
+        assert!(schedule.attempt_due(5_000));
+        // The reserved-slot recheck keeps its own much shorter cadence.
+        assert!(schedule.recheck_due(500));
+        assert!(!schedule.recheck_due(1_000));
+        assert!(schedule.recheck_due(1_500));
+        // A freed slot drops the backoff so the same cycle may load again.
+        schedule.observe_slots(1_500, true);
+        assert!(schedule.attempt_due(1_500));
+        schedule.record_attempt(1_500, true);
+        assert_eq!(schedule.failures, 0);
+        // A successful attach restarts the schedule from the base interval.
+        assert!(schedule.attempt_due(6_500));
+    }
+
+    #[test]
+    fn retry_schedule_keeps_backoff_while_slots_stay_contended() {
+        let mut schedule = BpfRetrySchedule::default();
+        schedule.record_attempt(0, false);
+        schedule.record_attempt(5_000, false);
+        schedule.observe_slots(6_000, false);
+        // A still-contended slot set must not shorten the exponential backoff.
+        assert!(!schedule.attempt_due(6_000));
+        assert!(schedule.attempt_due(15_000));
+        schedule.record_attempt(15_000, true);
+        assert_eq!(schedule.failures, 0);
     }
 }
