@@ -46,7 +46,7 @@ function formPolicy(status) {
 	if (value === nssPlatform.PROFILE) {
 		return {
 			showAccessEdge: true,
-			showProxyConnections: false,
+			showProxyConnections: true,
 			rateHint: _('推荐“自动精准”：优先显示每个客户端接入口的总速率；NSS 与 CPU 检测用于流量分类，并在总速率不可用时降级显示。旧版 ECM+BPF 模式保持原有采集语义。'),
 			internetViewHint: _('独立于客户端网速模式，仅显示 NSS FastN+FastS 观察到的互联网/路由流量；关闭时保持原有总速率或 ECM+BPF 语义。'),
 			accessEdgeHint: _('“精准总速率”在自动模式中使用有线端口或无线客户端计数；“仅后台验证”只采集核对，不改变页面速率；“关闭”完全停用。'),
@@ -108,7 +108,7 @@ function applyPatchPolicy(status, originalRaw, patch) {
 	var nssOnly = [ 'access_edge_mode', 'internet_view_mode', 'nss_low_rate_window_ms',
 		'nss_low_rate_high_watermark_bps', 'nss_fifo_target_delay_ms',
 		'nss_fifo_min_queue_packets', 'rate_compensation_factor' ];
-	var x86Only = [ 'enable_proxy_connections', 'mihomo_controller_port',
+	var proxyFields = [ 'enable_proxy_connections', 'mihomo_controller_port',
 		'mihomo_controller_secret' ];
 	if (value !== nssPlatform.PROFILE)
 		nssOnly.forEach(function(name) { delete patch.set[name]; });
@@ -125,9 +125,9 @@ function applyPatchPolicy(status, originalRaw, patch) {
 			if ((originalRaw || {})[name] !== undefined && patch.unset.indexOf(name) === -1)
 				patch.unset.push(name);
 		});
-	if (value !== x86Platform.PROFILE) {
-		x86Only.forEach(function(name) { delete patch.set[name]; });
-		patch.unset = patch.unset.filter(function(name) { return x86Only.indexOf(name) === -1; });
+	if (value !== x86Platform.PROFILE && value !== nssPlatform.PROFILE) {
+		proxyFields.forEach(function(name) { delete patch.set[name]; });
+		patch.unset = patch.unset.filter(function(name) { return proxyFields.indexOf(name) === -1; });
 	}
 	return patch;
 }

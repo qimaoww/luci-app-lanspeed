@@ -4,16 +4,16 @@
 
 ## 平台模块
 
-x86/TC-BPF 与 Qualcomm NSS 使用独立编译配置和生产采集循环，只共享稳定 RPC 模型与平台无关组件。
+x86/TC-BPF 与 Qualcomm NSS 使用独立编译配置和生产采集循环，共享稳定 RPC 模型、连接元数据和 `proxy_connections/` 透明代理连接补全组件。
 
 | 模块 | 用户态源码 | eBPF 源码 | 速率来源 |
 |---|---|---|---|
 | x86/TC-BPF | `platform/x86/` | `lanspeed-ebpf/src/x86/` | LAN ingress/egress TC map，按 MAC + zone/VLAN 聚合 |
 | Qualcomm NSS | `platform/nss/` | `lanspeed-ebpf/src/nss/` | NSS TC 慢路径、ECM node 与 totals-update kprobe |
 | Access Edge | `platform/access_edge/` | 无 | Bridge FDB、NL80211 station 与 netdev 计数 |
-| 公共层 | `platform/counters.rs`、RPC 模型 | `lanspeed-common` | 无平台计数结构与统一响应契约 |
+| 公共层 | `platform/counters.rs`、`proxy_connections/`、RPC 模型 | `lanspeed-common` | 无平台计数结构、连接补全与统一响应契约 |
 
-`platform/x86` 与 `platform/nss` 双向零引用。x86_64 用户态构建不包含 NSS、ECM、Access Edge、分类窗口或 RateMux；NSS 融合层不接收 x86 类型。客户端控制分别位于 `platform/x86/control/` 与 `platform/nss/control/`；NSS 的 CPU 执行器只位于 `platform/nss/control/cpu_path/`，不导入、调用或编译 x86 控制。eBPF 分别启用 `x86-tc` 与 `nss-tc` 源入口，x86_64 构建不会安装 ECM 对象，也不会探测 NSS 文件族。
+`platform/x86` 与 `platform/nss` 双向零引用。x86_64 用户态构建不包含 NSS、ECM、Access Edge、分类窗口或 RateMux；NSS 融合层不接收 x86 类型。共享的 `proxy_connections/` 只补全连接详情，不参与客户端总速率、NSS/CPU 分类或控制路径。客户端控制分别位于 `platform/x86/control/` 与 `platform/nss/control/`；NSS 的 CPU 执行器只位于 `platform/nss/control/cpu_path/`，不导入、调用或编译 x86 控制。eBPF 分别启用 `x86-tc` 与 `nss-tc` 源入口，x86_64 构建不会安装 ECM 对象，也不会探测 NSS 文件族。
 
 ## Access Edge 与分类语义
 
@@ -27,6 +27,8 @@ U = E - (N + S)，仅在同窗口且 ByteDomain 兼容时发布
 ```
 
 主表总速率显示 `E`，`N`、`S` 只做分类，不与 `E` 相加。分类器只在严格同窗且口径兼容时合并原始增量，不叠加已经计算过的速率。不同 ByteDomain、map loss、attachment 变化或 `N+S>E` 时保留 N/S，但省略 U 和覆盖率。
+
+NSS 的客户端累计上传/下载只在自动精准模式且互联网/路由视图关闭时，由可信 Access Edge 原始片段逐方向持久化。必须确认客户端身份、接入拓扑、方向来源、字节口径、attachment 代次和不重叠的采样窗口；任一方向缺少可信片段时暂停该方向累加，不用实时速率、N/S 分类或 conntrack 推算缺口。手动 NSS 模式保留原有字节字段展示，不进入持久累计记录。关闭 `show_client_totals` 后隐藏累计列并停止持久化。
 
 Edge 每 1 秒采样，ECM/TC 每 2 秒采样，连续三个稳定 epoch 形成 6 秒比较窗。Wi-Fi station 的 802.11 字节无法通过标准接口精确还原为以太网口径，因此保持 `domain_mismatch`。
 

@@ -101,6 +101,24 @@ fn reload_transaction(mut current: ProductionRuntime) -> ReloadOutcome {
         Ok(config) => config,
         Err(error) => return failure(current, error, false),
     };
+    #[cfg(feature = "traffic-persistence")]
+    if !config.show_client_totals {
+        if let Some(ledger) = current.traffic_ledger.as_mut() {
+            // A disabled candidate will not inherit this ledger. Checkpoint
+            // while the current runtime still owns storage, before any BPF
+            // transfer or other irreversible reload work. A failed write
+            // leaves its dirty totals in the current runtime for retry.
+            if let Err(error) = ledger.flush_before_disabling(production_now_ms().unwrap_or(0)) {
+                return failure(
+                    current,
+                    DaemonError::reload(format!(
+                        "cannot disable client totals before checkpoint: {error}"
+                    )),
+                    false,
+                );
+            }
+        }
+    }
     let process_tracker = current.process_tracker.clone();
     #[cfg(feature = "nss-platform")]
     let attachment_generation_floor = current.access_edge.attachment_generation_watermark();
@@ -109,7 +127,7 @@ fn reload_transaction(mut current: ProductionRuntime) -> ReloadOutcome {
             Ok(candidate) => candidate,
             Err(error) => return failure(current, error, false),
         };
-    #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+    #[cfg(feature = "traffic-persistence")]
     {
         candidate.traffic_ledger = if config.show_client_totals {
             current
@@ -323,7 +341,7 @@ fn reload_transaction(mut current: ProductionRuntime) -> ReloadOutcome {
         current.control_platform_owner = false;
     }
 
-    #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+    #[cfg(feature = "traffic-persistence")]
     {
         if let Some(ledger) = candidate.traffic_ledger.as_mut() {
             ledger.activate_storage_owner();
@@ -332,6 +350,25 @@ fn reload_transaction(mut current: ProductionRuntime) -> ReloadOutcome {
             ledger.deactivate_storage_owner();
         }
         candidate.collection_committed();
+        if let Some(ledger) = candidate.traffic_ledger.as_ref() {
+            // A newly enabled ledger deferred its database read during
+            // validation. After ownership commits, refresh this first
+            // published snapshot from the rebased lifetime totals.
+            #[cfg(not(feature = "nss-platform"))]
+            for client in &mut snapshot.clients.clients {
+                ledger.publish_saved_raw_client(client);
+            }
+            #[cfg(feature = "nss-platform")]
+            if active_access_edge_owns_display_rate(
+                candidate.config.access_edge_mode,
+                candidate.config.rate_collector_mode,
+            ) && !explicit_internet_rate_view(candidate.config.internet_view_mode)
+            {
+                for client in &mut snapshot.clients.clients {
+                    ledger.publish_saved_edge_client(client);
+                }
+            }
+        }
     }
 
     let mut fatal_errors = Vec::new();

@@ -37,6 +37,7 @@ net/lanspeedd/rust/crates/lanspeedd/src/
   platform/x86/                                x86 TC-BPF 与独立客户端控制
   platform/nss/                                NSS/ECM 分类、融合与独立混合路径控制
   collectors/conntrack/                        连接元数据
+  proxy_connections/                           两平台共享的透明代理连接补全
 net/lanspeedd/rust/crates/lanspeed-ebpf/src/
   x86/                                         x86 TC accounting
   nss/                                         NSS TC 与 ECM kprobe

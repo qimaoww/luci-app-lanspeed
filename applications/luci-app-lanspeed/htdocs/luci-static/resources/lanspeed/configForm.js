@@ -13,9 +13,9 @@ var BOOLEAN_FIELDS = [ 'show_client_totals', 'show_ipv6', 'hide_private_ipv6',
 	'enable_bpf', 'enable_conntrack_fallback' ];
 var NUMBER_FIELDS = [ 'refresh_interval_ms', 'active_client_window_ms',
 	'active_client_min_bps', 'overview_window_samples', 'max_clients' ];
-var X86_BOOLEAN_FIELDS = [ 'enable_proxy_connections' ];
-var X86_NUMBER_FIELDS = [ 'mihomo_controller_port' ];
-var X86_SECRET_FIELDS = [ 'mihomo_controller_secret' ];
+var PROXY_BOOLEAN_FIELDS = [ 'enable_proxy_connections' ];
+var PROXY_NUMBER_FIELDS = [ 'mihomo_controller_port' ];
+var PROXY_SECRET_FIELDS = [ 'mihomo_controller_secret' ];
 var NSS_NUMBER_FIELDS = [ 'nss_low_rate_window_ms', 'nss_low_rate_high_watermark_bps',
 	'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets', 'rate_compensation_factor' ];
 var STATUS_RATE_MODES = [ 'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf' ];
@@ -443,7 +443,7 @@ function readForm(viewState) {
 	var refs = viewState.daemonRefs;
 	var values = cloneValues(viewState.currentValues || cfgModel.DEFAULTS);
 	NUMBER_FIELDS.forEach(function(name) { values[name] = refs.inputs[name].value; });
-	X86_NUMBER_FIELDS.forEach(function(name) {
+	PROXY_NUMBER_FIELDS.forEach(function(name) {
 		if (refs.inputs[name]) values[name] = refs.inputs[name].value;
 	});
 	NSS_NUMBER_FIELDS.forEach(function(name) {
@@ -456,10 +456,10 @@ function readForm(viewState) {
 		? refs.inputs.access_edge_mode.value : 'off';
 	values.conn_collector_mode = refs.inputs.conn_collector_mode.value;
 	BOOLEAN_FIELDS.forEach(function(name) { values[name] = refs.inputs[name].checked ? '1' : '0'; });
-	X86_BOOLEAN_FIELDS.forEach(function(name) {
+	PROXY_BOOLEAN_FIELDS.forEach(function(name) {
 		if (refs.inputs[name]) values[name] = refs.inputs[name].checked ? '1' : '0';
 	});
-	X86_SECRET_FIELDS.forEach(function(name) {
+	PROXY_SECRET_FIELDS.forEach(function(name) {
 		if (refs.inputs[name]) values[name] = refs.inputs[name].value;
 	});
 	values.hide_ipv6_ranges = rangeValues(refs);
@@ -560,7 +560,7 @@ function fillForm(viewState, values) {
 	var refs = viewState.daemonRefs;
 	values = configPlatform.normalizeValues(viewState.runtimeStatus, cfgModel.normalize(values || cfgModel.DEFAULTS).values);
 	NUMBER_FIELDS.forEach(function(name) { refs.inputs[name].value = String(values[name]); });
-	X86_NUMBER_FIELDS.forEach(function(name) {
+	PROXY_NUMBER_FIELDS.forEach(function(name) {
 		if (refs.inputs[name]) refs.inputs[name].value = String(values[name]);
 	});
 	NSS_NUMBER_FIELDS.forEach(function(name) {
@@ -579,14 +579,14 @@ function fillForm(viewState, values) {
 		var label = wrap && wrap.querySelector && wrap.querySelector('.lanspeed-toggle-label');
 		if (label) label.textContent = refs.inputs[name].checked ? _('已启用') : _('已停用');
 	});
-	X86_BOOLEAN_FIELDS.forEach(function(name) {
+	PROXY_BOOLEAN_FIELDS.forEach(function(name) {
 		if (!refs.inputs[name]) return;
 		refs.inputs[name].checked = values[name] === '1';
 		var wrap = refs.inputs[name].parentNode;
 		var label = wrap && wrap.querySelector && wrap.querySelector('.lanspeed-toggle-label');
 		if (label) label.textContent = refs.inputs[name].checked ? _('已启用') : _('已停用');
 	});
-	X86_SECRET_FIELDS.forEach(function(name) {
+	PROXY_SECRET_FIELDS.forEach(function(name) {
 		if (refs.inputs[name]) refs.inputs[name].value = text(values[name]);
 	});
 	refs.hideIpv6RangesItems = cfgModel.parseCidrList(values.hide_ipv6_ranges).valid;
@@ -629,8 +629,8 @@ function buildDaemonSection(data, viewState) {
 
 	NUMBER_FIELDS.forEach(function(name) { refs.inputs[name] = numberInput(name, values[name]); });
 	if (viewState.platformPolicy.showProxyConnections) {
-		X86_NUMBER_FIELDS.forEach(function(name) { refs.inputs[name] = numberInput(name, values[name]); });
-		X86_SECRET_FIELDS.forEach(function(name) { refs.inputs[name] = secretInput(name, values[name]); });
+		PROXY_NUMBER_FIELDS.forEach(function(name) { refs.inputs[name] = numberInput(name, values[name]); });
+		PROXY_SECRET_FIELDS.forEach(function(name) { refs.inputs[name] = secretInput(name, values[name]); });
 	}
 	if (viewState.platformPolicy.showAccessEdge)
 		NSS_NUMBER_FIELDS.forEach(function(name) {
@@ -654,7 +654,7 @@ function buildDaemonSection(data, viewState) {
 		refs.toggleWrap[name] = wrap;
 	});
 	if (viewState.platformPolicy.showProxyConnections)
-		X86_BOOLEAN_FIELDS.forEach(function(name) {
+		PROXY_BOOLEAN_FIELDS.forEach(function(name) {
 			var field = cfgModel.FIELDS.filter(function(item) { return item.name === name; })[0];
 			var wrap = toggleInput(name, field ? field.label : name, values[name] === '1');
 			refs.inputs[name] = wrap.querySelector('input');
@@ -728,7 +728,7 @@ function buildDaemonSection(data, viewState) {
 	rows.push(rowFor(viewState, 'active_client_min_bps', _('活跃最小速率'), refs.inputs.active_client_min_bps,
 		settingHint('达到此速率才算活跃。', '当前收发速率达到该值时才视为活跃。')));
 	rows.push(rowFor(viewState, 'show_client_totals', _('显示客户端累计流量'), refs.toggleWrap.show_client_totals,
-		settingHint('显示并采集累计流量。', '在客户端列表中显示累计上传和累计下载；x86 关闭后同时停止采集和持久化累计流量。')));
+		settingHint('显示并采集累计流量。', '显示客户端累计上传和下载。NSS 仅在自动精准模式且互联网/路由视图关闭时，按已验证的接入点窗口分别累计各方向；接入数据暂不可用时保留已有累计值，不补算缺口。手动 NSS 模式显示原有字节字段，不写入持久记录。关闭后隐藏累计列并停止持久化。')));
 	rows.push(rowFor(viewState, 'show_ipv6', _('显示 IPv6 地址'), refs.toggleWrap.show_ipv6,
 		settingHint('客户端 IPv6 显示。', '关闭后实时状态只显示 IPv4，并禁用 IPv6 隐藏规则。')));
 	rows.push(rowFor(viewState, 'hide_private_ipv6', _('隐藏私有 IPv6 地址'), refs.toggleWrap.hide_private_ipv6,
@@ -778,7 +778,7 @@ function buildDaemonSection(data, viewState) {
 		if (event.key === 'Enter') { event.preventDefault(); addRange(viewState); }
 	});
 	NUMBER_FIELDS.concat(viewState.platformPolicy.showAccessEdge ? NSS_NUMBER_FIELDS : []).concat(
-		viewState.platformPolicy.showProxyConnections ? X86_NUMBER_FIELDS.concat(X86_SECRET_FIELDS) : []).concat(
+		viewState.platformPolicy.showProxyConnections ? PROXY_NUMBER_FIELDS.concat(PROXY_SECRET_FIELDS) : []).concat(
 		[ 'rate_collector_mode', 'conn_collector_mode' ]).concat(
 		refs.inputs.internet_view_mode ? [ 'internet_view_mode' ] : []).concat(
 		refs.inputs.access_edge_mode ? [ 'access_edge_mode' ] : []).forEach(function(name) {
@@ -792,7 +792,7 @@ function buildDaemonSection(data, viewState) {
 		});
 	});
 	if (viewState.platformPolicy.showProxyConnections)
-		X86_BOOLEAN_FIELDS.forEach(function(name) {
+		PROXY_BOOLEAN_FIELDS.forEach(function(name) {
 			refs.inputs[name].addEventListener('change', function() {
 				var label = refs.toggleWrap[name].querySelector('.lanspeed-toggle-label');
 				if (label) label.textContent = refs.inputs[name].checked ? _('已启用') : _('已停用');

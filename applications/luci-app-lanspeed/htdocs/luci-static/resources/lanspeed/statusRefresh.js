@@ -231,8 +231,6 @@ function clientTrafficCell(c, direction, rate, rateUnit) {
 }
 
 function clientTrafficTotalCell(c, direction, showTotal) {
-	/* The first rollout is intentionally x86-only. NSS has different counter
-	 * ownership semantics and must not gain a second, unverified total here. */
 	var isUpload = direction === 'tx';
 	var label = isUpload ? _('累计上传') : _('累计下载');
 	var field = isUpload ? 'tx_bytes' : 'rx_bytes';
@@ -459,7 +457,7 @@ function refreshLive(viewState) {
 			var mode = statusRateMeta.routedCollector(client && client.rate_meta);
 			return mode === 'fast_routed_lease' ? mode : current || mode;
 		}, '') : '';
-	var showClientTotals = viewState.showClientTotals === true && !nssProfile;
+	var showClientTotals = viewState.showClientTotals === true;
 	if (refs.controlHeader) refs.controlHeader.hidden = false;
 	if (refs.totalUploadHeader) refs.totalUploadHeader.hidden = !showClientTotals;
 	if (refs.totalDownloadHeader) refs.totalDownloadHeader.hidden = !showClientTotals;

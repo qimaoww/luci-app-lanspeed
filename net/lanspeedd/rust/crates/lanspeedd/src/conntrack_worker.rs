@@ -10,8 +10,7 @@ use std::{
     sync::Arc,
 };
 
-#[cfg(not(feature = "nss-platform"))]
-use crate::platform::x86::proxy_connections::ProxyConnectionCollector;
+use crate::proxy_connections::ProxyConnectionCollector;
 use crate::{
     collectors::conntrack::{self, CollectorMode},
     config::ConnectionCollectorMode,
@@ -41,7 +40,6 @@ pub struct ConntrackTask {
 
 pub fn spawn(snapshots: SnapshotStore) -> Result<RuntimeWorker<ConntrackTask>, std::io::Error> {
     let mut connection_rates = ConnectionRateBook::default();
-    #[cfg(not(feature = "nss-platform"))]
     let mut proxy_connections = ProxyConnectionCollector::default();
     spawn_runtime_worker(1, move |task| {
         // A malformed kernel response must not permanently remove the runtime
@@ -52,7 +50,6 @@ pub fn spawn(snapshots: SnapshotStore) -> Result<RuntimeWorker<ConntrackTask>, s
                 &snapshots,
                 task,
                 &mut connection_rates,
-                #[cfg(not(feature = "nss-platform"))]
                 &mut proxy_connections,
             )
         })) {
@@ -94,7 +91,7 @@ fn run_task(
     snapshots: &SnapshotStore,
     task: ConntrackTask,
     connection_rates: &mut ConnectionRateBook,
-    #[cfg(not(feature = "nss-platform"))] proxy_connections: &mut ProxyConnectionCollector,
+    proxy_connections: &mut ProxyConnectionCollector,
 ) {
     // Build the identity table on the worker from the latest immutable client
     // snapshot.  This keeps both the potentially slow read and identity
@@ -121,7 +118,6 @@ fn run_task(
                 &collected.connection_counters,
                 &mut collected.connection_details,
             );
-            #[cfg(not(feature = "nss-platform"))]
             proxy_connections.enrich(&identities, task.now_ms, task.max_clients, &mut collected);
             apply_conntrack_success(&latest, &collected, task.mode.as_str())
         }

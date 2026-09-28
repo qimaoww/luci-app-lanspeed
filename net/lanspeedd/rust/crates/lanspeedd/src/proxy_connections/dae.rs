@@ -7,6 +7,7 @@ use std::{
     io::{self, Read},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -20,6 +21,7 @@ const DAE_NETNS_PATHS: [&str; 2] = ["/var/run/netns/daens", "/run/netns/daens"];
 const DAE_PROCESS_NAMES: [&str; 3] = ["dae", "daed", "dae-wing"];
 const MAX_PROC_ENTRIES: usize = 65_536;
 const MAX_DAE_PROCESSES: usize = 4;
+const MAX_DAE_NETNS_CANDIDATES: usize = DAE_NETNS_PATHS.len() * (MAX_DAE_PROCESSES + 1);
 const MAX_PROCESS_FDS: usize = 65_536;
 const MAX_PROCESS_MAPS: usize = 1_024;
 const MAX_SOCKET_TABLE_BYTES: usize = 8 * 1024 * 1024;
@@ -83,8 +85,8 @@ fn read_samples_from(
     // root namespace instead and mostly contains controller and outbound
     // sockets, so it cannot recover LAN-facing logical connections.
     if !owned_inodes.is_empty() {
-        let sockets =
-            read_dae_netns_tcp_sockets(&dae_netns_candidates(&processes)).unwrap_or_default();
+        let sockets = read_dae_netns_tcp_sockets(&dae_netns_candidates(&processes), &owned_inodes)
+            .unwrap_or_default();
         samples.extend(samples_from_sockets(
             identities,
             &owned_inodes,
@@ -130,24 +132,81 @@ fn dae_netns_candidates(processes: &[PathBuf]) -> Vec<PathBuf> {
     candidates
 }
 
-fn read_dae_netns_tcp_sockets(candidates: &[PathBuf]) -> io::Result<Vec<ProcessTcpSocket>> {
-    let current =
-        File::open("/proc/thread-self/ns/net").or_else(|_| File::open("/proc/self/ns/net"))?;
-    let target = candidates
-        .iter()
-        .find_map(|path| File::open(path).ok())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "dae network namespace missing"))?;
+fn read_dae_netns_tcp_sockets(
+    candidates: &[PathBuf],
+    owned_inodes: &BTreeSet<u64>,
+) -> io::Result<Vec<ProcessTcpSocket>> {
+    let targets = open_distinct_netns_candidates(candidates)?;
+    scan_namespace_candidates(targets, owned_inodes.clone(), |target| {
+        set_network_namespace(target)?;
+        tcp_diag_sockets().or_else(|_| proc_tcp_sockets())
+    })
+}
 
-    set_network_namespace(&target)?;
-    let result = tcp_diag_sockets().or_else(|_| proc_tcp_sockets());
-    let restored = set_network_namespace(&current);
-    match (result, restored) {
-        (_, Err(error)) => Err(io::Error::new(
-            error.kind(),
-            format!("failed to restore network namespace: {error}"),
-        )),
-        (result, Ok(())) => result,
+fn open_distinct_netns_candidates(candidates: &[PathBuf]) -> io::Result<Vec<File>> {
+    let mut seen = BTreeSet::new();
+    let mut targets = Vec::new();
+    for candidate in candidates.iter().take(MAX_DAE_NETNS_CANDIDATES) {
+        let Ok(target) = File::open(candidate) else {
+            continue;
+        };
+        let Ok(metadata) = target.metadata() else {
+            continue;
+        };
+        if seen.insert((metadata.dev(), metadata.ino())) {
+            targets.push(target);
+        }
     }
+    if targets.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "dae network namespace missing",
+        ));
+    }
+    Ok(targets)
+}
+
+fn scan_namespace_candidates(
+    targets: Vec<File>,
+    owned_inodes: BTreeSet<u64>,
+    mut scan: impl FnMut(&File) -> io::Result<Vec<ProcessTcpSocket>> + Send + 'static,
+) -> io::Result<Vec<ProcessTcpSocket>> {
+    // Every namespace switch runs on one disposable OS thread. A failed
+    // switch contributes no sockets; if no candidate can be read, fail closed.
+    scan_in_disposable_thread(move || {
+        let mut sockets = Vec::new();
+        let mut emitted = BTreeSet::new();
+        let mut read_any = false;
+        let mut last_error = None;
+        for target in &targets {
+            match scan(target) {
+                Ok(current) => {
+                    read_any = true;
+                    sockets.extend(current.into_iter().filter(|socket| {
+                        owned_inodes.contains(&socket.inode) && emitted.insert(socket.inode)
+                    }));
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        if read_any {
+            Ok(sockets)
+        } else {
+            Err(last_error.unwrap_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "dae network namespace unreadable")
+            }))
+        }
+    })
+}
+
+fn scan_in_disposable_thread<T: Send + 'static>(
+    scan: impl FnOnce() -> io::Result<T> + Send + 'static,
+) -> io::Result<T> {
+    std::thread::Builder::new()
+        .name("lanspeedd-dae-netns".to_owned())
+        .spawn(scan)?
+        .join()
+        .map_err(|_| io::Error::other("dae network namespace scan panicked"))?
 }
 
 fn proc_tcp_sockets() -> io::Result<Vec<ProcessTcpSocket>> {
@@ -156,13 +215,7 @@ fn proc_tcp_sockets() -> io::Result<Vec<ProcessTcpSocket>> {
         let bytes = read_bounded(
             &Path::new("/proc/thread-self/net").join(name),
             MAX_SOCKET_TABLE_BYTES,
-        )
-        .or_else(|_| {
-            read_bounded(
-                &Path::new("/proc/self/net").join(name),
-                MAX_SOCKET_TABLE_BYTES,
-            )
-        })?;
+        )?;
         sockets.extend(parse_socket_table(&bytes, ipv6)?);
     }
     Ok(sockets)
@@ -170,8 +223,8 @@ fn proc_tcp_sockets() -> io::Result<Vec<ProcessTcpSocket>> {
 
 fn set_network_namespace(namespace: &File) -> io::Result<()> {
     // SAFETY: `namespace` is an open namespace descriptor and setns only
-    // changes the calling OS thread. The caller retains and restores the
-    // original namespace descriptor before returning.
+    // changes the disposable scan thread, which exits without touching the
+    // long-lived conntrack worker's namespace.
     if unsafe { libc::setns(namespace.as_raw_fd(), libc::CLONE_NEWNET) } == 0 {
         Ok(())
     } else {
@@ -1046,6 +1099,80 @@ mod tests {
             })
             .unwrap();
         table
+    }
+
+    #[test]
+    fn namespace_scan_error_stays_on_disposable_thread() {
+        let conntrack_thread = std::thread::current().id();
+        let error = scan_in_disposable_thread(move || {
+            assert_ne!(std::thread::current().id(), conntrack_thread);
+            Err::<(), _>(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "simulated namespace scan failure",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(std::thread::current().id(), conntrack_thread);
+    }
+
+    #[test]
+    fn readable_host_and_container_daens_merge_only_owned_sockets() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let root = temporary_proc_root("netns-candidates");
+        let host = root.join("run/netns/daens");
+        let host_alias = root.join("var/run/netns/daens");
+        let container = root.join("proc/4242/root/run/netns/daens");
+        for path in [&host, &host_alias, &container] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+        fs::write(&host, b"host namespace").unwrap();
+        fs::hard_link(&host, &host_alias).unwrap();
+        fs::write(&container, b"container namespace").unwrap();
+        let host_inode = fs::metadata(&host).unwrap().ino();
+        let container_inode = fs::metadata(&container).unwrap().ino();
+
+        let targets = open_distinct_netns_candidates(&[host, host_alias, container]).unwrap();
+        assert_eq!(targets.len(), 2);
+        let scans = Arc::new(AtomicUsize::new(0));
+        let scan_count = Arc::clone(&scans);
+        let sockets = scan_namespace_candidates(targets, BTreeSet::from([11, 22]), move |target| {
+            scan_count.fetch_add(1, Ordering::Relaxed);
+            let socket = |inode| ProcessTcpSocket {
+                local_ip: "198.51.100.20".parse().unwrap(),
+                local_port: 443,
+                remote_ip: "192.0.2.10".parse().unwrap(),
+                remote_port: 50_123,
+                inode,
+                tx_bytes: None,
+                rx_bytes: None,
+            };
+            let inode = target.metadata()?.ino();
+            if inode == host_inode {
+                Ok(vec![socket(11), socket(99)])
+            } else if inode == container_inode {
+                Ok(vec![socket(22)])
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unknown namespace",
+                ))
+            }
+        })
+        .unwrap();
+        assert_eq!(scans.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            sockets
+                .iter()
+                .map(|socket| socket.inode)
+                .collect::<Vec<_>>(),
+            [11, 22]
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn tuple_key(

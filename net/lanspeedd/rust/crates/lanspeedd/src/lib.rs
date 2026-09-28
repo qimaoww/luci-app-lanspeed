@@ -51,12 +51,14 @@ pub mod probe;
 pub mod production;
 #[cfg(any(feature = "openwrt", test))]
 mod production_evidence;
+#[cfg(feature = "openwrt")]
+pub(crate) mod proxy_connections;
 pub mod rate;
 pub mod realtime;
 #[cfg(any(feature = "openwrt", test))]
 mod runtime_worker;
 pub mod state;
-#[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+#[cfg(feature = "traffic-persistence")]
 mod traffic_persistence;
 pub mod ubus;
 pub mod workers;

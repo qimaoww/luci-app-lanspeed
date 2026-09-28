@@ -1080,18 +1080,16 @@ function testPaginationAndUiStates(context, fmt) {
 		'explicit routed view must not be presented as automatic Access Edge');
 	assert(String(nssState.refs.collectorPill.title || '').includes('互联网/路由'),
 		'explicit routed view must describe its FastN+FastS scope');
-	assert(!textOf(nssState.refs.tbody.children[0]).includes('累计'),
-		'NSS rows must retain their existing rate-only presentation in the x86-first rollout');
-	assert.strictEqual(nssState.refs.totalUploadHeader.hidden, true,
-		'NSS must hide the x86-only cumulative upload column');
-	assert.strictEqual(nssState.refs.totalDownloadHeader.hidden, true,
-		'NSS must hide the x86-only cumulative download column');
-	assert.strictEqual(findByClass(nssState.refs.tbody.children[0], 'lanspeed-client-total-upload-cell').hidden, true,
-		'NSS client rows must hide their cumulative upload cell');
-	assert.strictEqual(findByClass(nssState.refs.tbody.children[0], 'lanspeed-client-total-download-cell').hidden, true,
-		'NSS client rows must hide their cumulative download cell');
+	assert.strictEqual(nssState.refs.totalUploadHeader.hidden, false,
+		'NSS cumulative upload column follows the enabled UCI setting');
+	assert.strictEqual(nssState.refs.totalDownloadHeader.hidden, false,
+		'NSS cumulative download column follows the enabled UCI setting');
+	assert.strictEqual(textOf(findByClass(nssState.refs.tbody.children[0], 'lanspeed-client-total-upload-cell')), '1.00 KB',
+		'NSS displays a published upload byte field without recalculating it');
+	assert.strictEqual(textOf(findByClass(nssState.refs.tbody.children[0], 'lanspeed-client-total-download-cell')), '1.00 MB',
+		'NSS displays a published download byte field without recalculating it');
 	const pendingClient = Object.assign({}, client(2), {
-		tx_bps: 0, rx_bps: 0, collector_mode: 'access_edge',
+		tx_bps: 0, rx_bps: 0, tx_bytes: null, rx_bytes: null, collector_mode: 'access_edge',
 		rate_meta: { scope: 'none',
 			tx: { source: 'none', coverage: 'unavailable' },
 			rx: { source: 'none', coverage: 'unavailable' } }
@@ -1102,6 +1100,18 @@ function testPaginationAndUiStates(context, fmt) {
 		coverage: 'fast_routed_window_pending'
 	} ] };
 	nssState.livePair = { pendingClientSampleMs: 14200 };
+	modules.refresh.refreshLive(nssState);
+	assert.strictEqual(textOf(findByClass(nssState.refs.tbody.children[0], 'lanspeed-client-total-upload-cell')), '-',
+		'NSS without a verified upload total must show the unavailable placeholder');
+	assert.strictEqual(textOf(findByClass(nssState.refs.tbody.children[0], 'lanspeed-client-total-download-cell')), '-',
+		'NSS without a verified download total must show the unavailable placeholder');
+	nssState.showClientTotals = false;
+	modules.refresh.refreshLive(nssState);
+	assert.strictEqual(nssState.refs.totalUploadHeader.hidden, true,
+		'disabling totals hides the NSS cumulative upload column');
+	assert.strictEqual(nssState.refs.totalDownloadHeader.hidden, true,
+		'disabling totals hides the NSS cumulative download column');
+	nssState.showClientTotals = true;
 	modules.refresh.refreshLive(nssState);
 	assert.strictEqual(nssState.refs.mTx.textContent, '0');
 	assert.strictEqual(nssState.refs.mRx.textContent, '0');
