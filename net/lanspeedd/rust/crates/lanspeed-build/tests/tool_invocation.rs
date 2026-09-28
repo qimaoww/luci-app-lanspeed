@@ -136,7 +136,7 @@ fn userspace_build_does_not_invoke_bpf_linker() {
         .lines()
         .collect::<Vec<_>>()
         .windows(2)
-        .any(|pair| pair == ["--features", "openwrt,nss-platform"]));
+        .any(|pair| pair == ["--features", "openwrt,nss-platform,traffic-persistence"]));
     assert!(args
         .lines()
         .collect::<Vec<_>>()

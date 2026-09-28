@@ -69,7 +69,7 @@ use crate::workers::{QueueError, RuntimeWorker};
 
 #[cfg(not(feature = "nss-platform"))]
 use crate::probe::TcFacts;
-#[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+#[cfg(feature = "traffic-persistence")]
 use crate::traffic_persistence::TrafficLedger;
 
 #[cfg(not(feature = "nss-platform"))]
@@ -319,7 +319,7 @@ struct ProductionRuntime {
     interface_rates: InterfaceRateBook,
     rate_owner: Option<RateCollector>,
     hostnames: HostnameCache,
-    #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+    #[cfg(feature = "traffic-persistence")]
     traffic_ledger: Option<TrafficLedger>,
     /// Only the committed NSS runtime may mutate or remove shared client
     /// control objects. Reload candidates inspect them read-only until the
@@ -355,7 +355,7 @@ struct RuntimeCheckpoint {
     interface_rates: InterfaceRateBook,
     rate_owner: Option<RateCollector>,
     hostnames: HostnameCache,
-    #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+    #[cfg(feature = "traffic-persistence")]
     traffic_ledger: Option<TrafficLedger>,
     conntrack_snapshot: Option<Arc<CollectedSnapshot>>,
     connection_rates: ConnectionRateBook,
@@ -429,7 +429,7 @@ impl ProductionRuntime {
             bpf_retry: BpfRetrySchedule::default(),
             rate_owner: None,
             hostnames: HostnameCache::new(),
-            #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+            #[cfg(feature = "traffic-persistence")]
             traffic_ledger: None,
             adapter: SystemAyaAdapter::with_max_clients(config.max_clients),
             control,
@@ -705,7 +705,7 @@ impl ProductionRuntime {
             interface_rates: self.interface_rates.clone(),
             rate_owner: self.rate_owner,
             hostnames: self.hostnames.clone(),
-            #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+            #[cfg(feature = "traffic-persistence")]
             traffic_ledger: self.traffic_ledger.clone(),
             conntrack_snapshot: self.conntrack_snapshot.clone(),
             connection_rates: self.connection_rates.clone(),
@@ -743,7 +743,7 @@ impl ProductionRuntime {
         self.interface_rates = checkpoint.interface_rates;
         self.rate_owner = checkpoint.rate_owner;
         self.hostnames = checkpoint.hostnames;
-        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+        #[cfg(feature = "traffic-persistence")]
         {
             self.traffic_ledger = checkpoint.traffic_ledger;
         }
@@ -1619,6 +1619,8 @@ impl ProductionRuntime {
             bpf_classifier_read_end_ms,
             &runtime_health,
         );
+        #[cfg(feature = "traffic-persistence")]
+        self.overlay_nss_client_totals(&mut clients, &identities, now_ms);
         if explicit_internet_rate_view(self.config.internet_view_mode) {
             // The explicit routed view is owned by the FastRate publication.
             // Do not let the independent Access Edge/kernel interface sample
@@ -2837,6 +2839,87 @@ impl ProductionRuntime {
             .retain(|identity_key, _| published_identity_keys.contains(identity_key));
     }
 
+    #[cfg(all(feature = "nss-platform", feature = "traffic-persistence"))]
+    fn overlay_nss_client_totals(
+        &mut self,
+        clients: &mut ClientsResponse,
+        identities: &IdentityTable,
+        now_ms: u64,
+    ) {
+        let edge_display = active_access_edge_owns_display_rate(
+            self.config.access_edge_mode,
+            self.config.rate_collector_mode,
+        ) && !explicit_internet_rate_view(self.config.internet_view_mode);
+        if !nss_totals_gate(
+            &mut clients.clients,
+            self.config.show_client_totals,
+            edge_display,
+        ) {
+            if !self.config.show_client_totals {
+                self.traffic_ledger = None;
+            }
+            // Manual and disabled Access Edge modes retain their published
+            // legacy bytes, but never feed them into the lifetime ledger.
+            return;
+        }
+
+        let edge_index = edge_mac_index(&self.access_edge.latest().clients);
+        let identity_index = identity_mac_index(identities);
+        let mut eligible = Vec::new();
+        for (index, client) in clients.clients.iter().enumerate() {
+            let mac = mac_lookup_key(&client.mac);
+            let Some(identity) = identity_index.unique.get(&mac) else {
+                continue;
+            };
+            if identity.key.to_string() != client.identity_key {
+                continue;
+            }
+            let Some(edge) = edge_index.unique.get(&mac).copied() else {
+                continue;
+            };
+            if !edge.is_authoritative()
+                || !self
+                    .access_edge
+                    .attachment_topology_complete(&edge.attachment)
+            {
+                continue;
+            }
+            let Some(meta) = client.rate_meta.as_ref() else {
+                continue;
+            };
+            if meta.generation != edge.attachment.generation {
+                continue;
+            }
+            let edge_source = match edge.attachment.point.kind {
+                EdgeAttachmentKind::Wifi => ModelRateSource::EdgeWifi,
+                EdgeAttachmentKind::Ethernet => ModelRateSource::EdgePort,
+            };
+            let tx_edge_owner = meta.tx.source == edge_source;
+            let rx_edge_owner = meta.rx.source == edge_source;
+            if !TrafficLedger::has_valid_edge_delta(edge, tx_edge_owner, rx_edge_owner) {
+                continue;
+            }
+            eligible.push((index, edge, tx_edge_owner, rx_edge_owner));
+        }
+        if eligible.is_empty() {
+            return;
+        }
+        // Keep SQLite off the NSS startup path until a valid Edge delta
+        // actually exists. A reload candidate only reads the database and
+        // never becomes its writer until collection is committed.
+        let ledger = self
+            .traffic_ledger
+            .get_or_insert_with(|| TrafficLedger::open_default(now_ms));
+        for (index, edge, tx_edge_owner, rx_edge_owner) in eligible {
+            ledger.overlay_edge_client(
+                &mut clients.clients[index],
+                edge,
+                tx_edge_owner,
+                rx_edge_owner,
+            );
+        }
+    }
+
     fn update_overview(&mut self, now_ms: u64, response: &ClientsResponse) -> OverviewResponse {
         let clients = response
             .clients
@@ -3263,7 +3346,7 @@ impl ProductionRuntime {
         if self.shutdown_complete {
             return Ok(());
         }
-        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+        #[cfg(feature = "traffic-persistence")]
         if let Some(ledger) = self.traffic_ledger.as_mut() {
             ledger.flush_shutdown(production_now_ms().unwrap_or(0));
         }
@@ -3523,6 +3606,20 @@ fn suppress_client_totals(clients: &mut ClientsResponse, enabled: bool) {
     }
 }
 
+#[cfg(all(feature = "nss-platform", feature = "traffic-persistence"))]
+fn nss_totals_gate(clients: &mut [Client], enabled: bool, edge_display: bool) -> bool {
+    if !enabled {
+        for client in clients {
+            client.tx_bytes = None;
+            client.rx_bytes = None;
+        }
+        return false;
+    }
+    // Legacy ECM/BPF cumulative bytes remain visible in manual modes, but
+    // only the active Edge display path may populate the lifetime ledger.
+    edge_display
+}
+
 impl Drop for ProductionRuntime {
     fn drop(&mut self) {
         if !self.shutdown_complete {
@@ -3572,7 +3669,7 @@ impl Runtime for ProductionRuntime {
     }
 
     fn collection_committed(&mut self) {
-        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+        #[cfg(feature = "traffic-persistence")]
         if let Some(ledger) = self.traffic_ledger.as_mut() {
             // A staged reload candidate may collect for validation, but must
             // not write to the shared database until it is committed.

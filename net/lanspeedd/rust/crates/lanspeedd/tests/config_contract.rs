@@ -411,7 +411,6 @@ fn scalar_options_preserve_legacy_boole_and_clamp_client_limits() {
     assert_eq!(config.overview_window_samples, 42);
     assert!(config.enable_bpf);
     assert!(!config.enable_conntrack_fallback);
-    #[cfg(not(feature = "nss-platform"))]
     assert!(!config.show_client_totals);
 
     let strict_boolean = load(

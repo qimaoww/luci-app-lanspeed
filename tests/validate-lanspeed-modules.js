@@ -2180,6 +2180,16 @@ function fakeElement(tag, attrs, children) {
 			fakeDocument.activeElement = this;
 		},
 		addEventListener: function(type, handler) { this.listeners[type] = handler; },
+		querySelector: function(selector) {
+			let found = null;
+			walkFakeElements(this, function(child) {
+				if (found || child === node) return;
+				if (selector[0] === '.' ?
+					String(child.attrs && child.attrs.class || '').split(/\s+/).includes(selector.slice(1)) :
+					child.tagName === selector) found = child;
+			});
+			return found;
+		},
 		setAttribute: function(name, value) {
 			this.attrs[name] = String(value);
 			if (name === 'class') this._className = String(value);
@@ -6025,7 +6035,7 @@ function assertStatusRefreshModule(src) {
 	    !src.includes("var label = isUpload ? _('累计上传') : _('累计下载')") ||
 	    !src.includes("lanspeed-client-total-upload-cell") ||
 	    !src.includes("lanspeed-client-total-download-cell")) {
-		fail('statusRefresh.js must render adjacent, independently labelled x86 cumulative upload/download columns');
+		fail('statusRefresh.js must render adjacent, independently labelled cumulative upload/download columns');
 	}
 	if (!src.includes('reconcileClientRows(refs.tbody') ||
 	    !src.includes("'data-client-key': String(fmt.identityOf(c))") ||
@@ -6044,9 +6054,9 @@ function assertStatusRefreshModule(src) {
 	if (src.includes('showClientStatus') || src.includes('setClientStatusVisibility') ||
 		src.includes('clientStateCell') || src.includes('data-client-status') ||
 		src.includes('showClientControl') || src.includes('show_client_control') ||
-		!src.includes('var showClientTotals = viewState.showClientTotals === true && !nssProfile;') ||
+		!src.includes('var showClientTotals = viewState.showClientTotals === true;') ||
 		!src.includes('controlCell.hidden = false;')) {
-		fail('lanspeed/statusRefresh.js must remove the client-control visibility option');
+		fail('lanspeed/statusRefresh.js must gate cumulative columns by configuration on both platforms');
 	}
 	if (src.includes('refreshDiagnostics') || src.includes('lanspeed-diagnostic-') ||
 	    src.includes('diagnosticsSummary') || src.includes('importantWarnings(status.warnings')) {
@@ -6373,8 +6383,11 @@ function assertConfigFormModule(src) {
 	    !src.includes("conntrack_netlink: _('内核连接接口')")) {
 		fail('configForm.js must translate the effective runtime configuration into user-facing traffic meanings');
 	}
-	if (!src.includes('x86 关闭后同时停止采集和持久化累计流量'))
-		fail('configForm.js must explain that disabling cumulative traffic also stops its collection');
+	if (!src.includes('NSS 仅在自动精准模式且互联网/路由视图关闭时，按已验证的接入点窗口分别累计各方向') ||
+		!src.includes('接入数据暂不可用时保留已有累计值，不补算缺口') ||
+		!src.includes('手动 NSS 模式显示原有字节字段，不写入持久记录') ||
+		!src.includes('关闭后隐藏累计列并停止持久化'))
+		fail('configForm.js must explain NSS Edge-only persistence, gaps, manual modes, and the off switch');
 	if (!src.includes('function configList(') || !src.includes('function configGroup(') ||
 		!src.includes('configList(rows)') || !src.includes('lanspeed-config-groups') ||
 		!src.includes('lanspeed-config-group-heading') ||
@@ -6596,7 +6609,7 @@ function assertConfigModelRewrite(src) {
 	if (manualMihomoPatch.set.enable_proxy_connections !== '1' ||
 		manualMihomoPatch.set.mihomo_controller_port !== '9091' ||
 		manualMihomoPatch.set.mihomo_controller_secret !== 'manual-token')
-		fail('configModel.js must persist x86 Mihomo manual overrides through its owned UCI patch');
+		fail('configModel.js must persist Mihomo manual overrides through its owned UCI patch');
 	const automaticMihomoPatch = model.buildUciPatch(model.DEFAULTS, {
 		mihomo_controller_secret: 'old-token'
 	});
@@ -6606,6 +6619,46 @@ function assertConfigModelRewrite(src) {
 	if (!src.includes('legacy-enum') || !src.includes('compatibility: true') ||
 		!src.includes('MAX_INTERFACE_NAMES'))
 		fail('configModel.js must explicitly identify compatibility fields and interface limits');
+}
+
+function assertConfigPlatformProxyContract() {
+	const platform = loadConfigPlatformModule();
+	const x86 = { evidence: { platform: { profile: 'x86_tc_bpf' } } };
+	const nss = { evidence: { platform: { profile: 'nss_aarch64' } } };
+	const unknown = { evidence: { platform: { profile: 'unrecognized' } } };
+	if (!platform.formPolicy(x86).showProxyConnections ||
+	    !platform.formPolicy(nss).showProxyConnections ||
+	    platform.formPolicy(unknown).showProxyConnections ||
+	    platform.formPolicy(unknown).showAccessEdge) {
+		fail('configPlatform.js must expose proxy completion on known x86/NSS profiles and hide platform settings when unknown');
+	}
+	[ x86, nss ].forEach(function(status) {
+		const patch = platform.applyPatchPolicy(status, {}, {
+			set: { enable_proxy_connections: '1', mihomo_controller_port: '9091',
+				mihomo_controller_secret: 'manual-token' }, unset: []
+		});
+		if (patch.set.enable_proxy_connections !== '1' ||
+		    patch.set.mihomo_controller_port !== '9091' ||
+		    patch.set.mihomo_controller_secret !== 'manual-token') {
+			fail('configPlatform.js must preserve proxy UCI writes on both known profiles');
+		}
+		const cleared = platform.applyPatchPolicy(status, {}, {
+			set: {}, unset: [ 'mihomo_controller_secret' ]
+		});
+		if (cleared.unset.indexOf('mihomo_controller_secret') === -1)
+			fail('configPlatform.js must allow both profiles to clear a manual Mihomo secret');
+	});
+	const guarded = platform.applyPatchPolicy(unknown, {}, {
+		set: { enable_proxy_connections: '1', mihomo_controller_port: '9091',
+			mihomo_controller_secret: 'new-token' },
+		unset: [ 'mihomo_controller_secret', 'dedicated_port' ]
+	});
+	if ([ 'enable_proxy_connections', 'mihomo_controller_port', 'mihomo_controller_secret' ]
+		.some(function(name) { return Object.prototype.hasOwnProperty.call(guarded.set, name); }) ||
+	    guarded.unset.indexOf('mihomo_controller_secret') !== -1 ||
+	    guarded.unset.indexOf('dedicated_port') === -1) {
+		fail('configPlatform.js must leave existing proxy UCI untouched while the runtime profile is unknown');
+	}
 }
 
 function assertBrowserAuditConfigContract() {
@@ -6621,7 +6674,8 @@ function assertBrowserAuditConfigContract() {
 		'rate_collector_mode', 'access_edge_mode', 'internet_view_mode',
 		'nss_low_rate_window_ms', 'nss_low_rate_high_watermark_bps',
 		'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets',
-		'rate_compensation_factor', 'conn_collector_mode'
+		'rate_compensation_factor', 'conn_collector_mode',
+		'enable_proxy_connections', 'mihomo_controller_port', 'mihomo_controller_secret'
 	].forEach(function(name) {
 		if (!contract.includes("'" + name + "'"))
 			fail(`browser audit configuration contract must include ${name}`);
@@ -7076,7 +7130,7 @@ function assertConfigFormRewrite(src) {
 	if (!src.includes("'type': 'password'") || !src.includes("'autocomplete': 'new-password'") ||
 		!src.includes('showProxyConnections') ||
 		!src.includes("_('留空自动读取 OpenClash 认证码"))
-		fail('configForm.js must render x86 Mihomo overrides as an explicitly gated password form');
+		fail('configForm.js must render Mihomo overrides as an explicitly gated password form');
 }
 
 function matchingConfigStatus(values) {
@@ -7106,6 +7160,20 @@ function matchingConfigStatus(values) {
 
 function assertConfigFormBehavior(src) {
 	const model = loadConfigModelModule(readModuleByName('configModel.js'));
+	const formForRender = loadConfigFormModule(src, makeConfigUci(model), {}, makeConfigIfaceStub(), model);
+	[ 'x86_tc_bpf', 'nss_aarch64', 'unknown_profile' ].forEach(function(profile) {
+		const state = {};
+		formForRender.buildDaemonSection({ values: model.DEFAULTS, rpc: { status: { ok: true } },
+			status: { evidence: { platform: { profile: profile } } } }, state);
+		const proxyFields = [ 'enable_proxy_connections', 'mihomo_controller_port',
+			'mihomo_controller_secret' ];
+		const visible = profile !== 'unknown_profile';
+		if (proxyFields.some(function(name) {
+			return Boolean(state.daemonRefs.fields[name] && state.daemonRefs.inputs[name]) !== visible;
+		}) || (visible && state.daemonRefs.inputs.mihomo_controller_secret.attrs.type !== 'password')) {
+			fail('configForm.js must render proxy controls on x86/NSS and hide them for an unknown profile');
+		}
+	});
 	const invalidLoadForm = loadConfigFormModule(src, makeConfigUci(model), {
 		status: function() { return Promise.resolve({}); }
 	}, makeConfigIfaceStub(), model);
@@ -7175,17 +7243,32 @@ function assertConfigFormBehavior(src) {
 	const profileGuardForm = loadConfigFormModule(src, makeConfigUci(model),
 		{ status: function() { return Promise.resolve({}); } }, makeConfigIfaceStub(), model);
 	const unknownProfileState = makeConfigFormState(model, {
-		values: { rate_collector_mode: 'nss_ecm_bpf', access_edge_mode: 'shadow', internet_view_mode: 'routed' },
+		values: { rate_collector_mode: 'nss_ecm_bpf', access_edge_mode: 'shadow', internet_view_mode: 'routed',
+			mihomo_controller_port: 9091 },
 		runtimeStatus: {}
 	});
 	unknownProfileState.originalRaw.internet_view_mode = 'routed';
+	unknownProfileState.originalRaw.mihomo_controller_secret = 'existing-token';
 	const unknownProfilePlan = profileGuardForm.prepareSave(unknownProfileState);
 	if (unknownProfilePlan.values.rate_collector_mode !== 'nss_ecm_bpf' ||
 	    Object.prototype.hasOwnProperty.call(unknownProfilePlan.patch.set, 'access_edge_mode') ||
 	    Object.prototype.hasOwnProperty.call(unknownProfilePlan.patch.set, 'internet_view_mode') ||
+	    Object.prototype.hasOwnProperty.call(unknownProfilePlan.patch.set, 'enable_proxy_connections') ||
+	    Object.prototype.hasOwnProperty.call(unknownProfilePlan.patch.set, 'mihomo_controller_port') ||
 	    unknownProfilePlan.patch.unset.indexOf('access_edge_mode') !== -1 ||
-	    unknownProfilePlan.patch.unset.indexOf('internet_view_mode') !== -1) {
-		fail('configForm.js must preserve NSS mode and Access Edge UCI when the runtime platform is temporarily unknown');
+	    unknownProfilePlan.patch.unset.indexOf('internet_view_mode') !== -1 ||
+	    unknownProfilePlan.patch.unset.indexOf('mihomo_controller_secret') !== -1) {
+		fail('configForm.js must preserve platform-specific UCI when the runtime platform is temporarily unknown');
+	}
+	const nssProfileState = makeConfigFormState(model, {
+		values: { mihomo_controller_port: 9091, mihomo_controller_secret: 'manual-token' },
+		runtimeStatus: { evidence: { platform: { profile: 'nss_aarch64' } } }
+	});
+	const nssProfilePlan = profileGuardForm.prepareSave(nssProfileState);
+	if (nssProfilePlan.patch.set.enable_proxy_connections !== '1' ||
+	    nssProfilePlan.patch.set.mihomo_controller_port !== '9091' ||
+	    nssProfilePlan.patch.set.mihomo_controller_secret !== 'manual-token') {
+		fail('configForm.js must stage proxy completion overrides on an explicit NSS profile');
 	}
 	const x86ProfileState = makeConfigFormState(model, {
 		values: {
@@ -7202,7 +7285,9 @@ function assertConfigFormBehavior(src) {
 	    Object.prototype.hasOwnProperty.call(x86ProfilePlan.patch.set, 'access_edge_mode') ||
 	    Object.prototype.hasOwnProperty.call(x86ProfilePlan.patch.set, 'internet_view_mode') ||
 	    x86ProfilePlan.patch.unset.indexOf('access_edge_mode') === -1 ||
-	    x86ProfilePlan.patch.unset.indexOf('internet_view_mode') === -1) {
+	    x86ProfilePlan.patch.unset.indexOf('internet_view_mode') === -1 ||
+	    x86ProfilePlan.patch.set.enable_proxy_connections !== '1' ||
+	    x86ProfilePlan.patch.set.mihomo_controller_port !== '0') {
 		fail('configForm.js must normalize forged NSS settings only for an explicit x86 profile');
 	}
 
@@ -7672,6 +7757,7 @@ EXPECTED_MODULES.forEach(function(name) {
 		}
 });
 assertManifestCoverage();
+assertConfigPlatformProxyContract();
 assertBrowserAuditConfigContract();
 
 assertStyleAggregation();

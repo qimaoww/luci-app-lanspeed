@@ -41,6 +41,9 @@ config lanspeed 'main'
     option rate_collector_mode 'auto'
     option access_edge_mode 'active'
     option conn_collector_mode 'auto'
+    option enable_proxy_connections '1'
+    option mihomo_controller_port '0'
+    option show_client_totals '1'
     option show_ipv6 '1'
     option hide_private_ipv6 '0'
     option hide_ipv6_ranges 'fc00::/7 fe80::/10'
@@ -65,8 +68,11 @@ config lanspeed 'main'
 | `observe` | `wan` | 只显示接口吞吐 |
 | `enable_bpf` | `1` | BPF 运行开关，不改变包依赖 |
 | `enable_conntrack_fallback` | `1` | 连接元数据回退，不参与总速率 |
+| `show_client_totals` | `1` | 显示客户端累计上传/下载；关闭后隐藏累计列并停止持久化 |
 
-x86 配置页额外提供透明代理连接补全：
+x86 的客户端累计流量由 TC-BPF 字节增量持久化。NSS 仅在 `rate_collector_mode=auto`、`access_edge_mode=active` 且 `internet_view_mode=off` 的精准接入点模式下，逐方向持久化已验证的 Access Edge 原始计数片段。接入归属、计数口径或采样窗口不可信时，该方向暂停累加；已有记录会保留，不会用 ECM/TC 分类值、连接明细或速率估算补算缺口。NSS 手动采集模式仍显示原有字节字段，但不将它们写入持久累计记录。尚无可信累计值的客户端方向在页面显示 `-`。
+
+x86 与 NSS 配置页均提供透明代理连接补全；该功能只补全连接详情，不参与客户端总速率、NSS/CPU 分类或限速路径判断：
 
 | 选项 | 默认 | 行为 |
 |---|---:|---|
@@ -76,7 +82,7 @@ x86 配置页额外提供透明代理连接补全：
 
 Mihomo 控制器始终只连接 `127.0.0.1`。认证码字段使用密码输入框；手动值保存在 `/etc/config/lanspeed`，自动模式不会把 OpenClash 原认证码复制到 LAN Speed 配置。
 
-dae/daed 没有逐连接 API。x86 后端只读取运行中 dae/daed 进程实际持有的数据：TCP 来自 `daens` 网络命名空间中的 ESTABLISHED socket，并通过内核 SOCK_DIAG/TCP_INFO 累计字节计算逐连接速率；UDP 在 dae 1.x 上同时校验 `udp_conn_state_map` 与 `routing_tuples_map`，在 dae main 及跟踪 main 的第三方构建（如 kenzok8/openwrt-daede）上读取合并后的 `conn_state_map` 内嵌路由，仅接收用户定义代理 outbound，排除 direct、block 和中间路由状态。UDP 条目生命周期由上游状态定时器决定；内核诊断或 BPF map 名称、类型、ABI 尺寸不匹配时该适配器直接跳过，不猜测解析。 OpenWrt 包与 daed 镜像把上游二进制重命名为 `daed`，dae-wing 镜像和未覆盖 `APPNAME`/`OUTPUT` 的本地构建保留 `dae-wing`；后端同时识别 `dae`、`daed`、`dae-wing` 三种进程名，并在容器不共享宿主 `/run` 时通过进程根目录解析 `daens`。
+dae/daed 没有逐连接 API。两种平台的连接补全只读取运行中 dae/daed 进程实际持有的数据：TCP 来自 `daens` 网络命名空间中的 ESTABLISHED socket，并通过内核 SOCK_DIAG/TCP_INFO 累计字节计算逐连接速率；UDP 在 dae 1.x 上同时校验 `udp_conn_state_map` 与 `routing_tuples_map`，在 dae main 及跟踪 main 的第三方构建（如 kenzok8/openwrt-daede）上读取合并后的 `conn_state_map` 内嵌路由，仅接收用户定义代理 outbound，排除 direct、block 和中间路由状态。UDP 条目生命周期由上游状态定时器决定；内核诊断或 BPF map 名称、类型、ABI 尺寸不匹配时该适配器直接跳过，不猜测解析。OpenWrt 包与 daed 镜像把上游二进制重命名为 `daed`，dae-wing 镜像和未覆盖 `APPNAME`/`OUTPUT` 的本地构建保留 `dae-wing`；后端同时识别 `dae`、`daed`、`dae-wing` 三种进程名，并在容器不共享宿主 `/run` 时通过进程根目录解析 `daens`。
 
 历史配置中的 `dedicated_port` 已停用；配置页保存时会自动清理该遗留项。客户端详情中的主机名按 MAC 写入 `/etc/config/dhcp`，不会强制配置静态 IP。
 
@@ -104,7 +110,7 @@ ubus call lanspeed client_control_delete \
 
 `client_control_set` 只接受十进制 bit/s 和 `0`/`1` 开关。两个方向分别观察自有 class counter，只有对应计数增长后才标记已验证。
 
-`client_connections` 以当前 conntrack 快照为基础：TCP 仅统计 ESTABLISHED + ASSURED，UDP 仅统计 ASSURED；x86 启用透明代理补全后，还会合并上述 Mihomo 或 dae/daed 逻辑连接。`client.rx_bps`/`client.tx_bps` 是该客户端当前已发布快照的下行/上行总速率，不从受限的连接明细列表求和；因此即使明细被截断，摘要总速率仍保持完整。`client.rate_sample_ms`、`client.rate_collector_mode` 和 `client.rate_meta` 同时给出这组总速率的采样时间、采集器和方向级来源/窗口，不能与响应顶层的 conntrack `sample_ms` 混用。
+`client_connections` 以当前 conntrack 快照为基础：TCP 仅统计 ESTABLISHED + ASSURED，UDP 仅统计 ASSURED；x86 与 NSS 启用透明代理补全后，还会合并上述 Mihomo 或 dae/daed 逻辑连接。`client.rx_bps`/`client.tx_bps` 是该客户端当前已发布快照的下行/上行总速率，不从受限的连接明细列表求和；因此即使明细被截断，摘要总速率仍保持完整。`client.rate_sample_ms`、`client.rate_collector_mode` 和 `client.rate_meta` 同时给出这组总速率的采样时间、采集器和方向级来源/窗口，不能与响应顶层的 conntrack `sample_ms` 混用。
 
 连接跟踪快照不可用或不完整时，`client_connections` 仍可能返回客户端总速率；此时连接数量和明细必须按不可用处理，前端会明确标注“连接数据暂不可用”，不会把缺失的连接明细当成零速率或与总速率相加。
 

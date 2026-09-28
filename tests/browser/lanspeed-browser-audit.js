@@ -1867,7 +1867,7 @@ async page => {
 				} else {
 					const requiredSubsections = [ 'lanspeed-config-runtime-section', 'lanspeed-ifcfg' ];
 					const nssPlatform = configContract.fieldNames.indexOf('access_edge_mode') !== -1;
-					const x86ProxyConnections = configContract.fieldNames.indexOf(
+					const proxyConnections = configContract.fieldNames.indexOf(
 						'enable_proxy_connections') !== -1;
 					const requiredFields = [
 						'rate_collector_mode'
@@ -1875,7 +1875,7 @@ async page => {
 						'nss_low_rate_window_ms',
 						'nss_low_rate_high_watermark_bps', 'nss_fifo_target_delay_ms',
 						'nss_fifo_min_queue_packets', 'rate_compensation_factor' ] : []).concat(
-						x86ProxyConnections ? [ 'enable_proxy_connections', 'mihomo_controller_port',
+						proxyConnections ? [ 'enable_proxy_connections', 'mihomo_controller_port',
 							'mihomo_controller_secret' ] : []).concat([
 						'conn_collector_mode',
 						'enable_bpf', 'enable_conntrack_fallback', 'refresh_interval_ms',
@@ -1907,6 +1907,10 @@ async page => {
 							!configContract.compatibilityVisible &&
 							configContract.compatibilityTerms === 0 && configContract.compatibilityValues === 0,
 							configContract);
+					if (nssPlatform)
+						addCheck('config-nss-proxy-fields', [ 'enable_proxy_connections',
+							'mihomo_controller_port', 'mihomo_controller_secret' ].every(field =>
+								uniqueFields.indexOf(field) !== -1), configContract);
 					addCheck('config-interface-mode-contract', configContract.groups.length ===
 						configContract.interfaceRows && invalidGroups.length === 0 &&
 						(configContract.groups.length > 0 || configContract.interfaceHint === 'empty' ||

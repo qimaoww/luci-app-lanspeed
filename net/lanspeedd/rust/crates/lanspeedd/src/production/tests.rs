@@ -1,6 +1,49 @@
 use super::*;
 use crate::config::InternetViewMode;
 
+#[cfg(feature = "traffic-persistence")]
+#[test]
+fn nss_total_gate_preserves_manual_legacy_bytes_and_hides_disabled_totals() {
+    let mut client = Client {
+        mac: "02:00:00:00:00:01".into(),
+        identity_key: "02:00:00:00:00:01@lan".into(),
+        zone: "lan".into(),
+        interface: "br-lan".into(),
+        ips: Vec::new(),
+        hostname: None,
+        rx_bps: 10,
+        tx_bps: 20,
+        last_seen: 1,
+        sample_ms: Some(1),
+        rx_bytes: Some(100),
+        tx_bytes: Some(200),
+        collector_mode: "nss_ecm_bpf".into(),
+        confidence: Confidence::High,
+        warnings: Vec::new(),
+        tcp_conns: None,
+        udp_conns: None,
+        udp_dns_conns: None,
+        udp_other_conns: None,
+        rate_meta: None,
+        control: None,
+    };
+    let manual_edge_display =
+        active_access_edge_owns_display_rate(AccessEdgeMode::Active, RateCollectorMode::NssEcmBpf);
+    assert!(!manual_edge_display);
+    assert!(!nss_totals_gate(
+        std::slice::from_mut(&mut client),
+        true,
+        manual_edge_display
+    ));
+    assert_eq!((client.tx_bytes, client.rx_bytes), (Some(200), Some(100)));
+    assert!(!nss_totals_gate(
+        std::slice::from_mut(&mut client),
+        false,
+        false
+    ));
+    assert_eq!((client.tx_bytes, client.rx_bytes), (None, None));
+}
+
 #[test]
 fn fast_rate_notices_wait_for_runtime_collection_ownership_to_return() {
     assert!(!fast_rate_notices_can_drain(false));

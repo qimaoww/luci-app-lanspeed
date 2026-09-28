@@ -1,7 +1,8 @@
-//! Flash-conscious lifetime traffic accounting for the x86 TC-BPF collector.
+//! Flash-conscious lifetime traffic accounting for client-owned counters.
 //!
-//! The BPF maps remain the source for live counters. This ledger converts map
-//! deltas into lifetime totals and checkpoints only dirty rows in a batched
+//! The live collectors remain the source for rates. This ledger converts x86
+//! BPF raw counters or NSS Access Edge segments into lifetime totals and
+//! checkpoints only dirty rows in a batched
 //! SQLite transaction. Reload candidates can collect for validation without
 //! becoming storage owners, so a rejected candidate can never write totals.
 //! SQLite is opened lazily after the first successful live sample rather than
@@ -19,6 +20,10 @@ use std::{
 };
 
 use crate::model::Client;
+#[cfg(feature = "nss-platform")]
+use crate::platform::access_edge::{
+    ByteDomain, CounterSegment, Direction, EdgeClientObservation, RateSource,
+};
 
 pub(crate) const DEFAULT_TRAFFIC_DB_PATH: &str = "/etc/lanspeed/traffic.db";
 const FLUSH_INTERVAL_MS: u64 = 5 * 60 * 1_000;
@@ -56,7 +61,9 @@ extern "C" {
     fn sqlite3_exec(
         database: *mut SqliteHandle,
         sql: *const c_char,
-        callback: Option<unsafe extern "C" fn(*mut c_void, c_int, *mut *mut c_char, *mut *mut c_char) -> c_int>,
+        callback: Option<
+            unsafe extern "C" fn(*mut c_void, c_int, *mut *mut c_char, *mut *mut c_char) -> c_int,
+        >,
         callback_argument: *mut c_void,
         error_message: *mut *mut c_char,
     ) -> c_int;
@@ -79,7 +86,8 @@ extern "C" {
         bytes: c_int,
         destructor: Option<unsafe extern "C" fn(*mut c_void)>,
     ) -> c_int;
-    fn sqlite3_bind_int64(statement: *mut SqliteStatementHandle, index: c_int, value: i64) -> c_int;
+    fn sqlite3_bind_int64(statement: *mut SqliteStatementHandle, index: c_int, value: i64)
+        -> c_int;
     fn sqlite3_column_text(statement: *mut SqliteStatementHandle, column: c_int) -> *const u8;
     fn sqlite3_column_int64(statement: *mut SqliteStatementHandle, column: c_int) -> i64;
 }
@@ -202,9 +210,7 @@ impl SqliteStatement<'_> {
 
     fn bind_text(&mut self, index: c_int, value: &CString, context: &str) -> Result<(), String> {
         // SAFETY: value remains alive through the following sqlite3_step call.
-        let result = unsafe {
-            sqlite3_bind_text(self.handle, index, value.as_ptr(), -1, None)
-        };
+        let result = unsafe { sqlite3_bind_text(self.handle, index, value.as_ptr(), -1, None) };
         if result == SQLITE_OK {
             Ok(())
         } else {
@@ -246,8 +252,14 @@ struct TrafficEntry {
     zone: String,
     tx_bytes: u64,
     rx_bytes: u64,
+    #[cfg(not(feature = "nss-platform"))]
     last_raw_tx_bytes: Option<u64>,
+    #[cfg(not(feature = "nss-platform"))]
     last_raw_rx_bytes: Option<u64>,
+    #[cfg(feature = "nss-platform")]
+    last_edge_tx_end_ms: Option<u64>,
+    #[cfg(feature = "nss-platform")]
+    last_edge_rx_end_ms: Option<u64>,
     updated_at: u64,
     dirty: bool,
 }
@@ -298,6 +310,7 @@ impl TrafficLedger {
         self.storage_owner = false;
     }
 
+    #[cfg(not(feature = "nss-platform"))]
     pub(crate) fn overlay_clients(&mut self, clients: &mut [Client]) {
         for client in clients {
             let (Some(raw_tx_bytes), Some(raw_rx_bytes)) = (client.tx_bytes, client.rx_bytes)
@@ -319,6 +332,49 @@ impl TrafficLedger {
         }
     }
 
+    /// Count only the nonoverlapping, single-read Edge deltas. The published
+    /// low-rate Edge window rolls over several reads and must never enter the
+    /// lifetime ledger. Missing or reset directions retain their prior total.
+    #[cfg(feature = "nss-platform")]
+    pub(crate) fn has_valid_edge_delta(
+        edge: &EdgeClientObservation,
+        tx_edge_owner: bool,
+        rx_edge_owner: bool,
+    ) -> bool {
+        let (tx, rx) = validated_edge_segments(edge, tx_edge_owner, rx_edge_owner);
+        tx.is_some() || rx.is_some()
+    }
+
+    #[cfg(feature = "nss-platform")]
+    pub(crate) fn overlay_edge_client(
+        &mut self,
+        client: &mut Client,
+        edge: &EdgeClientObservation,
+        tx_edge_owner: bool,
+        rx_edge_owner: bool,
+    ) {
+        let (tx, rx) = validated_edge_segments(edge, tx_edge_owner, rx_edge_owner);
+        if tx.is_none() && rx.is_none() {
+            return;
+        }
+        let entry = self.entries.entry(client.identity_key.clone()).or_default();
+        let tx_delta = edge_delta(&mut entry.last_edge_tx_end_ms, tx);
+        let rx_delta = edge_delta(&mut entry.last_edge_rx_end_ms, rx);
+        let metadata_changed = entry.mac != client.mac || entry.zone != client.zone;
+        entry.tx_bytes = entry.tx_bytes.saturating_add(tx_delta);
+        entry.rx_bytes = entry.rx_bytes.saturating_add(rx_delta);
+        entry.mac.clone_from(&client.mac);
+        entry.zone.clone_from(&client.zone);
+        if tx_delta != 0 || rx_delta != 0 || metadata_changed {
+            entry.updated_at = unix_time_seconds();
+            entry.dirty = true;
+        }
+        client.tx_bytes =
+            (entry.last_edge_tx_end_ms.is_some() || entry.tx_bytes != 0).then_some(entry.tx_bytes);
+        client.rx_bytes =
+            (entry.last_edge_rx_end_ms.is_some() || entry.rx_bytes != 0).then_some(entry.rx_bytes);
+    }
+
     pub(crate) fn flush_committed(&mut self, now_ms: u64) {
         if now_ms >= self.next_flush_ms {
             self.flush_now(now_ms);
@@ -334,6 +390,7 @@ impl TrafficLedger {
         self.last_error.as_deref()
     }
 
+    #[cfg(not(feature = "nss-platform"))]
     fn observe_raw(
         &mut self,
         identity_key: &str,
@@ -386,6 +443,65 @@ impl TrafficLedger {
     }
 }
 
+#[cfg(feature = "nss-platform")]
+fn validated_edge_segments(
+    edge: &EdgeClientObservation,
+    tx_edge_owner: bool,
+    rx_edge_owner: bool,
+) -> (Option<CounterSegment>, Option<CounterSegment>) {
+    if !edge.is_authoritative() {
+        return (None, None);
+    }
+    (
+        tx_edge_owner
+            .then(|| valid_edge_segment(edge, Direction::Tx))
+            .flatten(),
+        rx_edge_owner
+            .then(|| valid_edge_segment(edge, Direction::Rx))
+            .flatten(),
+    )
+}
+
+#[cfg(feature = "nss-platform")]
+fn valid_edge_segment(
+    edge: &EdgeClientObservation,
+    direction: Direction,
+) -> Option<CounterSegment> {
+    let segment = match direction {
+        Direction::Tx => edge.tx.segment?,
+        Direction::Rx => edge.rx.segment?,
+    };
+    let valid_source = match edge.attachment.point.kind {
+        crate::platform::access_edge::AttachmentKind::Wifi => {
+            segment.source == RateSource::EdgeWifi && segment.byte_domain == ByteDomain::StationData
+        }
+        crate::platform::access_edge::AttachmentKind::Ethernet => {
+            segment.source == RateSource::EdgePort && segment.byte_domain == ByteDomain::L2NoFcs
+        }
+    };
+    (segment.is_well_formed()
+        && segment.direction == direction
+        && segment.attachment_generation == edge.attachment.generation
+        && valid_source)
+        .then_some(segment)
+}
+
+#[cfg(feature = "nss-platform")]
+fn edge_delta(last_end_ms: &mut Option<u64>, segment: Option<CounterSegment>) -> u64 {
+    let Some(segment) = segment else {
+        return 0;
+    };
+    // A source/attachment change is warm-started by Access Edge. Also reject
+    // duplicate or overlapping publication here, including after a reload
+    // candidate inherits the active ledger's in-memory cursor.
+    if last_end_ms.is_some_and(|end_ms| segment.start_ms < end_ms) {
+        return 0;
+    }
+    *last_end_ms = Some(segment.end_ms);
+    segment.bytes
+}
+
+#[cfg(not(feature = "nss-platform"))]
 fn counter_delta(previous: Option<u64>, current: u64) -> u64 {
     match previous {
         Some(previous) if current >= previous => current - previous,
@@ -448,9 +564,8 @@ fn open_database(path: &Path) -> Result<SqliteConnection, String> {
     if busy_result != SQLITE_OK {
         return Err(connection.error("configure traffic database timeout"));
     }
-    connection
-        .execute_batch(
-            "PRAGMA journal_mode=WAL;
+    connection.execute_batch(
+        "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
              PRAGMA temp_store=MEMORY;
              PRAGMA wal_autocheckpoint=100;
@@ -463,20 +578,18 @@ fn open_database(path: &Path) -> Result<SqliteConnection, String> {
                  updated_at INTEGER NOT NULL CHECK (updated_at >= 0)
              ) WITHOUT ROWID;
              PRAGMA user_version=1;",
-            "initialize traffic database",
-        )?;
+        "initialize traffic database",
+    )?;
     Ok(connection)
 }
 
 fn load_entries(path: &Path) -> Result<BTreeMap<String, TrafficEntry>, String> {
     let connection = open_database(path)?;
-    let mut statement = connection
-        .prepare(
-            "SELECT identity_key, mac, zone, tx_bytes, rx_bytes, updated_at
+    let mut statement = connection.prepare(
+        "SELECT identity_key, mac, zone, tx_bytes, rx_bytes, updated_at
              FROM client_traffic",
-            "prepare traffic database read",
-        )
-        ?;
+        "prepare traffic database read",
+    )?;
     let mut entries = BTreeMap::new();
     while statement.step("query traffic database")? == SQLITE_ROW {
         let identity_key = statement.column_text(0, "read traffic database row")?;
@@ -525,7 +638,11 @@ fn persist_entries(path: &Path, entries: &BTreeMap<String, TrafficEntry>) -> Res
             statement.bind_text(3, &zone, "bind traffic zone")?;
             statement.bind_i64(4, sqlite_integer(entry.tx_bytes), "bind traffic upload")?;
             statement.bind_i64(5, sqlite_integer(entry.rx_bytes), "bind traffic download")?;
-            statement.bind_i64(6, sqlite_integer(entry.updated_at), "bind traffic timestamp")?;
+            statement.bind_i64(
+                6,
+                sqlite_integer(entry.updated_at),
+                "bind traffic timestamp",
+            )?;
             if statement.step("write traffic database row")? != SQLITE_DONE {
                 return Err("write traffic database row: unexpected SQLite row".to_owned());
             }
@@ -559,6 +676,15 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use super::TrafficLedger;
+    #[cfg(feature = "nss-platform")]
+    use crate::{
+        model::{Client, Confidence},
+        platform::access_edge::{
+            Attachment, AttachmentKey, AttachmentKind, AttachmentPoint, AttachmentTrust,
+            ByteDomain, CounterSegment, Coverage, Direction, EdgeClientObservation,
+            EdgeDirectionObservation, RateSource, TrafficScope,
+        },
+    };
 
     fn test_path(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -570,6 +696,7 @@ mod tests {
         path.join("traffic.db")
     }
 
+    #[cfg(not(feature = "nss-platform"))]
     #[test]
     fn converts_monotonic_and_reset_raw_counters_into_lifetime_totals() {
         let path = test_path("counter-delta");
@@ -589,6 +716,7 @@ mod tests {
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
+    #[cfg(not(feature = "nss-platform"))]
     #[test]
     fn reload_fork_does_not_double_count_the_same_raw_snapshot() {
         let path = test_path("reload-fork");
@@ -606,6 +734,7 @@ mod tests {
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
+    #[cfg(not(feature = "nss-platform"))]
     #[test]
     fn sqlite_checkpoint_survives_a_new_daemon_ledger() {
         let path = test_path("restart");
@@ -625,6 +754,181 @@ mod tests {
                 restarted.observe_raw("mac@lan", "mac", "lan", 20, 30),
                 (120, 230)
             );
+        }
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[cfg(feature = "nss-platform")]
+    fn nss_client() -> Client {
+        Client {
+            mac: "02:00:00:00:00:01".into(),
+            identity_key: "02:00:00:00:00:01@lan".into(),
+            zone: "lan".into(),
+            interface: "br-lan".into(),
+            ips: vec!["192.0.2.2".into()],
+            hostname: None,
+            rx_bps: 99,
+            tx_bps: 88,
+            last_seen: 0,
+            sample_ms: None,
+            rx_bytes: None,
+            tx_bytes: None,
+            collector_mode: "access_edge".into(),
+            confidence: Confidence::High,
+            warnings: Vec::new(),
+            tcp_conns: None,
+            udp_conns: None,
+            udp_dns_conns: None,
+            udp_other_conns: None,
+            rate_meta: None,
+            control: None,
+        }
+    }
+
+    #[cfg(feature = "nss-platform")]
+    fn edge_segment(
+        generation: u64,
+        start_ms: u64,
+        end_ms: u64,
+        tx_bytes: u64,
+        rx_bytes: u64,
+    ) -> EdgeClientObservation {
+        let segment = |direction, bytes| CounterSegment {
+            epoch_id: end_ms,
+            start_ms,
+            end_ms,
+            read_begin_ms: end_ms - 1,
+            read_end_ms: end_ms,
+            source: RateSource::EdgeWifi,
+            direction,
+            bytes,
+            packets: bytes / 100,
+            attachment_generation: generation,
+            byte_domain: ByteDomain::StationData,
+            uncertainty_ms: 1,
+        };
+        let observation = |direction, bytes| EdgeDirectionObservation {
+            segment: Some(segment(direction, bytes)),
+            coverage: Coverage::Full,
+            scope: TrafficScope::Unicast,
+            failure: None,
+            reason_codes: Vec::new(),
+        };
+        EdgeClientObservation {
+            attachment: Attachment {
+                key: AttachmentKey {
+                    mac: [2, 0, 0, 0, 0, 1],
+                    bridge_ifindex: Some(10),
+                    vlan_id: None,
+                },
+                point: AttachmentPoint {
+                    kind: AttachmentKind::Wifi,
+                    ifindex: 11,
+                    ifname: "wlan0".into(),
+                    bridge_ifindex: Some(10),
+                    vlan_id: None,
+                },
+                trust: AttachmentTrust::AssociatedStation,
+                generation,
+                source_generation: generation,
+                stable_observations: 2,
+                ambiguous: false,
+            },
+            tx: observation(Direction::Tx, tx_bytes),
+            rx: observation(Direction::Rx, rx_bytes),
+        }
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn nss_edge_ledger_rejects_duplicate_and_overlapping_windows_across_generations() {
+        let path = test_path("edge-nonoverlap");
+        let mut ledger = TrafficLedger::open(&path, 0);
+        let mut client = nss_client();
+        let first = edge_segment(1, 1_000, 2_000, 100, 200);
+        ledger.overlay_edge_client(&mut client, &first, true, true);
+        assert_eq!((client.tx_bytes, client.rx_bytes), (Some(100), Some(200)));
+        ledger.overlay_edge_client(&mut client, &first, true, true);
+        assert_eq!((client.tx_bytes, client.rx_bytes), (Some(100), Some(200)));
+
+        let overlap = edge_segment(2, 1_500, 2_500, 1_000, 2_000);
+        ledger.overlay_edge_client(&mut client, &overlap, true, true);
+        assert_eq!((client.tx_bytes, client.rx_bytes), (Some(100), Some(200)));
+
+        let next = edge_segment(2, 2_500, 3_500, 30, 40);
+        ledger.overlay_edge_client(&mut client, &next, true, true);
+        assert_eq!((client.tx_bytes, client.rx_bytes), (Some(130), Some(240)));
+        assert_eq!((client.tx_bps, client.rx_bps), (88, 99));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn nss_edge_ledger_rejects_untrusted_or_mismatched_counter_domains() {
+        let path = test_path("edge-proof");
+        let mut ledger = TrafficLedger::open(&path, 0);
+        let mut client = nss_client();
+        let mut edge = edge_segment(1, 1_000, 2_000, 100, 200);
+        edge.attachment.trust = AttachmentTrust::Unknown;
+        ledger.overlay_edge_client(&mut client, &edge, true, true);
+        assert_eq!((client.tx_bytes, client.rx_bytes), (None, None));
+
+        edge.attachment.trust = AttachmentTrust::AssociatedStation;
+        edge.tx.segment.as_mut().unwrap().byte_domain = ByteDomain::EcmData;
+        ledger.overlay_edge_client(&mut client, &edge, true, true);
+        assert_eq!((client.tx_bytes, client.rx_bytes), (None, Some(200)));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn nss_edge_ledger_counts_only_directions_owned_by_edge() {
+        let path = test_path("edge-mixed-owner");
+        let mut ledger = TrafficLedger::open(&path, 0);
+        let mut client = nss_client();
+        ledger.overlay_edge_client(
+            &mut client,
+            &edge_segment(1, 1_000, 2_000, 100, 900),
+            true,
+            false,
+        );
+        assert_eq!((client.tx_bytes, client.rx_bytes), (Some(100), None));
+        ledger.overlay_edge_client(
+            &mut client,
+            &edge_segment(1, 2_000, 3_000, 800, 30),
+            false,
+            true,
+        );
+        assert_eq!((client.tx_bytes, client.rx_bytes), (Some(100), Some(30)));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn nss_edge_checkpoint_adds_only_post_restart_segments() {
+        let path = test_path("edge-restart");
+        let mut client = nss_client();
+        {
+            let mut first = TrafficLedger::open(&path, 0);
+            first.overlay_edge_client(
+                &mut client,
+                &edge_segment(1, 1_000, 2_000, 100, 200),
+                true,
+                true,
+            );
+            first.activate_storage_owner();
+            first.flush_shutdown(2_000);
+            assert!(first.last_error().is_none());
+        }
+        {
+            let mut restarted = TrafficLedger::open(&path, 3_000);
+            restarted.overlay_edge_client(
+                &mut client,
+                &edge_segment(1, 3_000, 4_000, 20, 30),
+                true,
+                true,
+            );
+            assert_eq!((client.tx_bytes, client.rx_bytes), (Some(120), Some(230)));
         }
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }

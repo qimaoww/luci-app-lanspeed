@@ -39,7 +39,7 @@ RUSTC="$RUSTC" \
 	--release \
 	--manifest-path "$ROOT/net/lanspeedd/rust/Cargo.toml" \
 	-p lanspeedd \
-	--features openwrt \
+	--features openwrt,traffic-persistence \
 	--target x86_64-unknown-linux-musl \
 	--locked \
 	--offline
@@ -54,7 +54,7 @@ RUSTC_BOOTSTRAP=1 \
 	--manifest-path "$ROOT/net/lanspeedd/rust/Cargo.toml" \
 	-p lanspeedd \
 	--lib \
-	--features openwrt,nss-platform \
+	--features openwrt,nss-platform,traffic-persistence \
 	--target aarch64-unknown-linux-musl \
 	--locked \
 	--offline

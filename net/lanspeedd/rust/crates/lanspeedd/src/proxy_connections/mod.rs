@@ -1,13 +1,12 @@
-//! x86-only logical connection recovery for transparent proxy processes.
+//! Logical connection recovery for transparent proxy processes.
 //!
-//! TC-BPF sees the complete LAN-edge byte stream, while conntrack may expose
-//! only the client-to-proxy half after a transparent proxy takes ownership of
-//! the socket. Mihomo supplies its logical connection ledger through the
-//! loopback external-controller API. dae/daed does not expose an equivalent
+//! Conntrack may expose only the client-to-proxy half after a transparent proxy
+//! takes ownership of the socket. Mihomo supplies its logical connection ledger
+//! through the loopback external-controller API. dae/daed does not expose an equivalent
 //! per-connection API, so active TCP sockets are recovered from its dedicated
 //! `daens` network namespace, TCP byte counters from SOCK_DIAG, and UDP tuples
-//! from its timer-backed eBPF state map. Neither adapter is compiled into the
-//! NSS backend.
+//! from its timer-backed eBPF state map. The recovered entries enrich connection
+//! metadata only; they do not contribute to either platform's total rate.
 
 mod dae;
 mod http;
@@ -463,7 +462,10 @@ mod tests {
     use crate::{
         collectors::conntrack::{CollectStats, NETLINK_COUNTER_SOURCE},
         connection_details::ClientConnectionSet,
+        connections::apply_conntrack_success,
         identity::{IdentityObservation, ObservationSource},
+        model::{Client, Confidence},
+        state::ResponseSnapshot,
     };
 
     const IDENTITY_KEY: &str = "02:00:00:00:00:01@lan";
@@ -644,5 +646,58 @@ mod tests {
             443
         );
         assert_eq!(snapshot.clients[0].tcp_conns, 1);
+    }
+
+    #[test]
+    fn proxy_enrichment_does_not_change_published_client_rate_or_bytes() {
+        let mut published = ResponseSnapshot::unsupported("test");
+        published.clients.clients.push(Client {
+            mac: "02:00:00:00:00:01".into(),
+            identity_key: IDENTITY_KEY.into(),
+            zone: "lan".into(),
+            interface: "br-lan".into(),
+            ips: vec!["192.0.2.10".into()],
+            hostname: None,
+            rx_bps: 88_000,
+            tx_bps: 44_000,
+            last_seen: 1_000,
+            sample_ms: Some(1_000),
+            rx_bytes: Some(800_000),
+            tx_bytes: Some(400_000),
+            collector_mode: "edge_authority".into(),
+            confidence: Confidence::High,
+            warnings: Vec::new(),
+            tcp_conns: None,
+            udp_conns: None,
+            udp_dns_conns: None,
+            udp_other_conns: None,
+            rate_meta: None,
+            control: None,
+        });
+        let mut snapshot = collected(None);
+        let result = merge_samples(
+            &mut snapshot,
+            &identities(),
+            4,
+            vec![RatedProxyConnection {
+                sample: sample(ProxySource::Mihomo, "proxy-flow"),
+                tx_bps: Some(1_000_000),
+                rx_bps: Some(2_000_000),
+            }],
+        );
+        assert_eq!(result.added, 1);
+        let overlaid = apply_conntrack_success(&published, &snapshot, "auto");
+        let client = &overlaid.clients.clients[0];
+        assert_eq!((client.tx_bps, client.rx_bps), (44_000, 88_000));
+        assert_eq!(
+            (client.tx_bytes, client.rx_bytes),
+            (Some(400_000), Some(800_000))
+        );
+        assert_eq!(client.collector_mode, "edge_authority");
+        assert_eq!(client.tcp_conns, Some(1));
+        assert_eq!(
+            overlaid.client_connections(IDENTITY_KEY).connections[0].tx_bps,
+            1_000_000
+        );
     }
 }

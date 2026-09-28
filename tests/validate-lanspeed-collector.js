@@ -726,13 +726,15 @@ assert(production.includes('x86_coverage: X86Coverage') &&
   production.includes('nss_bpf_coverage: NssBpfCoverage') &&
   production.includes('RateCollector::Bpf if report.facts.nss.present'),
   'production must checkpoint and select independent x86 and NSS-BPF coverage states');
-assert(config.includes('#[cfg(not(feature = "nss-platform"))]\n    pub show_client_totals: bool') &&
+assert(config.includes('pub show_client_totals: bool') &&
   config.includes('scalar(source, "show_client_totals")') &&
   production.includes('self.config.show_client_totals && actual_live') &&
   production.includes('#[cfg(not(feature = "nss-platform"))]\nfn suppress_client_totals') &&
   (production.match(/suppress_client_totals\(&mut clients, self\.config\.show_client_totals\)/g) || []).length === 1 &&
+  production.includes('self.overlay_nss_client_totals(&mut clients, &identities, now_ms)') &&
+  production.includes('let edge_index = edge_mac_index(&self.access_edge.latest().clients)') &&
   production.includes('self.traffic_ledger = None'),
-  'cumulative client totals must gate the x86 ledger and published byte fields');
+  'cumulative client totals must gate both platform ledgers and publish only raw NSS Edge deltas');
 for (const removedPath of [
   'net/lanspeedd/rust/crates/lanspeedd/src/collectors/bpf',
   'net/lanspeedd/rust/crates/lanspeedd/src/collectors/ecm_node.rs',
