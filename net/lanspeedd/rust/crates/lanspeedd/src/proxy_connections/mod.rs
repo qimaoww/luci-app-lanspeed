@@ -279,7 +279,7 @@ struct LogicalKey {
     client_ip: IpAddr,
     client_port: u16,
     remote_ip: Option<IpAddr>,
-    remote_port: Option<u16>,
+    remote_port: u16,
     protocol: ConnectionProtocol,
 }
 
@@ -298,6 +298,63 @@ fn merge_samples(
         .map(|set| set.connections.len())
         .sum::<usize>();
     let sets = Arc::make_mut(&mut collected.connection_details);
+    let original_lengths = sets
+        .iter()
+        .map(|(identity, set)| (identity.clone(), set.connections.len()))
+        .collect::<BTreeMap<_, _>>();
+    let original_tcp_details = sets
+        .values()
+        .flat_map(|set| &set.connections)
+        .filter(|detail| {
+            detail.direction == ConnectionDirection::Outbound
+                && detail.protocol == ConnectionProtocol::Tcp
+        })
+        .map(|detail| {
+            (
+                detail.client_ip,
+                detail.client_port,
+                detail.remote_ip,
+                detail.remote_port,
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let claimed_tcp_details = samples
+        .iter()
+        .filter(|rated| rated.sample.protocol == ConnectionProtocol::Tcp)
+        .filter_map(|rated| {
+            let sample = &rated.sample;
+            sample.remote_ip.map(|remote_ip| {
+                (
+                    sample.client_ip,
+                    sample.client_port,
+                    remote_ip,
+                    sample.remote_port,
+                )
+            })
+        })
+        .collect::<BTreeSet<_>>();
+    let unmatched_tcp_targets = samples
+        .iter()
+        .filter(|rated| rated.sample.protocol == ConnectionProtocol::Tcp)
+        .filter(|rated| {
+            let sample = &rated.sample;
+            sample.remote_ip.is_none_or(|remote_ip| {
+                !original_tcp_details.contains(&(
+                    sample.client_ip,
+                    sample.client_port,
+                    remote_ip,
+                    sample.remote_port,
+                ))
+            })
+        })
+        .fold(BTreeMap::<_, BTreeSet<_>>::new(), |mut targets, rated| {
+            let sample = &rated.sample;
+            targets
+                .entry((sample.client_ip, sample.client_port))
+                .or_default()
+                .insert((sample.remote_ip, sample.remote_port));
+            targets
+        });
 
     for rated in samples {
         let sample = &rated.sample;
@@ -309,10 +366,8 @@ fn merge_samples(
             identity_key: identity_key.clone(),
             client_ip: sample.client_ip,
             client_port: sample.client_port,
-            remote_ip: (sample.protocol == ConnectionProtocol::Udp)
-                .then_some(sample.remote_ip)
-                .flatten(),
-            remote_port: (sample.protocol == ConnectionProtocol::Udp).then_some(sample.remote_port),
+            remote_ip: sample.remote_ip,
+            remote_port: sample.remote_port,
             protocol: sample.protocol,
         };
         if !seen.insert(logical_key) {
@@ -320,11 +375,18 @@ fn merge_samples(
         }
 
         let set = sets.entry(identity_key.clone()).or_default();
-        if let Some(detail) = set
-            .connections
-            .iter_mut()
-            .find(|detail| detail_matches(detail, sample))
-        {
+        let original_len = original_lengths.get(&identity_key).copied().unwrap_or(0);
+        let unique_unmatched_tcp_target = unmatched_tcp_targets
+            .get(&(sample.client_ip, sample.client_port))
+            .is_some_and(|targets| targets.len() == 1);
+        if let Some(index) = matching_detail_index(
+            &set.connections,
+            sample,
+            original_len,
+            unique_unmatched_tcp_target,
+            &claimed_tcp_details,
+        ) {
+            let detail = &mut set.connections[index];
             if let Some(remote_ip) = sample.remote_ip {
                 detail.remote_ip = remote_ip;
                 detail.remote_port = sample.remote_port;
@@ -385,25 +447,66 @@ fn merge_samples(
     result
 }
 
-fn detail_matches(detail: &ClientConnectionDetail, sample: &ProxyConnectionSample) -> bool {
-    if detail.direction != ConnectionDirection::Outbound
-        || detail.client_ip != sample.client_ip
-        || detail.client_port != sample.client_port
-        || detail.protocol != sample.protocol
-    {
-        return false;
-    }
+fn matching_detail_index(
+    details: &[ClientConnectionDetail],
+    sample: &ProxyConnectionSample,
+    original_len: usize,
+    unique_unmatched_tcp_target: bool,
+    claimed_tcp_details: &BTreeSet<(IpAddr, u16, IpAddr, u16)>,
+) -> Option<usize> {
+    let same_client_socket = |detail: &ClientConnectionDetail| {
+        detail.direction == ConnectionDirection::Outbound
+            && detail.client_ip == sample.client_ip
+            && detail.client_port == sample.client_port
+            && detail.protocol == sample.protocol
+    };
     match sample.protocol {
-        // A live TCP source port identifies one client socket. This fallback
-        // is required when REDIRECT makes conntrack and the proxy API expose
-        // different destination addresses for the same logical connection.
-        ConnectionProtocol::Tcp => true,
-        ConnectionProtocol::Udp => {
-            detail.remote_port == sample.remote_port
+        ConnectionProtocol::Tcp => {
+            if let Some(remote_ip) = sample.remote_ip {
+                if let Some(index) = details.iter().position(|detail| {
+                    same_client_socket(detail)
+                        && detail.remote_ip == remote_ip
+                        && detail.remote_port == sample.remote_port
+                }) {
+                    return Some(index);
+                }
+            }
+            if !unique_unmatched_tcp_target {
+                return None;
+            }
+            // A mismatched destination is safe to relabel only when conntrack
+            // shows a loopback REDIRECT endpoint. A router-interface address
+            // could instead be an unrelated direct connection to the router.
+            // With an unresolved proxy destination, keep a unique same-port
+            // conntrack endpoint and update its rate without relabeling it.
+            let mut candidates =
+                details
+                    .iter()
+                    .take(original_len)
+                    .enumerate()
+                    .filter(|(_, detail)| {
+                        same_client_socket(detail)
+                            && !claimed_tcp_details.contains(&(
+                                detail.client_ip,
+                                detail.client_port,
+                                detail.remote_ip,
+                                detail.remote_port,
+                            ))
+                            && match sample.remote_ip {
+                                Some(_) => detail.remote_ip.is_loopback(),
+                                None => detail.remote_port == sample.remote_port,
+                            }
+                    });
+            let (index, _) = candidates.next()?;
+            candidates.next().is_none().then_some(index)
+        }
+        ConnectionProtocol::Udp => details.iter().position(|detail| {
+            same_client_socket(detail)
+                && detail.remote_port == sample.remote_port
                 && sample
                     .remote_ip
                     .is_none_or(|remote| detail.remote_ip == remote)
-        }
+        }),
     }
 }
 
@@ -487,16 +590,22 @@ mod tests {
     }
 
     fn collected(detail: Option<ClientConnectionDetail>) -> CollectedSnapshot {
-        let connection_details = detail.map_or_else(BTreeMap::new, |detail| {
+        collected_with_details(detail.into_iter().collect())
+    }
+
+    fn collected_with_details(details: Vec<ClientConnectionDetail>) -> CollectedSnapshot {
+        let connection_details = if details.is_empty() {
+            BTreeMap::new()
+        } else {
             BTreeMap::from([(
                 IDENTITY_KEY.into(),
                 ClientConnectionSet {
-                    total_connections: 1,
-                    connections: vec![detail],
+                    total_connections: details.len() as u64,
+                    connections: details,
                     truncated: false,
                 },
             )])
-        });
+        };
         CollectedSnapshot {
             clients: Vec::new(),
             sample_ms: 2_000,
@@ -518,6 +627,20 @@ mod tests {
             protocol: ConnectionProtocol::Tcp,
             tx_bytes: Some(400),
             rx_bytes: Some(900),
+        }
+    }
+
+    fn tcp_detail(remote_ip: &str, remote_port: u16) -> ClientConnectionDetail {
+        ClientConnectionDetail {
+            client_ip: "192.0.2.10".parse().unwrap(),
+            client_port: 50_123,
+            remote_ip: remote_ip.parse().unwrap(),
+            remote_port,
+            protocol: ConnectionProtocol::Tcp,
+            state: ConnectionState::Established,
+            direction: ConnectionDirection::Outbound,
+            tx_bps: 7,
+            rx_bps: 9,
         }
     }
 
@@ -550,17 +673,7 @@ mod tests {
 
     #[test]
     fn proxy_sample_replaces_redirect_detail_rate_and_adds_missing_flow() {
-        let existing = ClientConnectionDetail {
-            client_ip: "192.0.2.10".parse().unwrap(),
-            client_port: 50_123,
-            remote_ip: "192.0.2.1".parse().unwrap(),
-            remote_port: 7892,
-            protocol: ConnectionProtocol::Tcp,
-            state: ConnectionState::Established,
-            direction: ConnectionDirection::Outbound,
-            tx_bps: 7,
-            rx_bps: 9,
-        };
+        let existing = tcp_detail("127.0.0.1", 7892);
         let mut snapshot = collected(Some(existing));
         let replacement = RatedProxyConnection {
             sample: sample(ProxySource::Mihomo, "a"),
@@ -604,9 +717,7 @@ mod tests {
     fn duplicate_proxy_sources_and_unresolved_targets_do_not_inflate_counts() {
         let mut snapshot = collected(None);
         let first = sample(ProxySource::Mihomo, "a");
-        let mut duplicate = sample(ProxySource::Dae, "b");
-        duplicate.remote_ip = Some("203.0.113.40".parse().unwrap());
-        duplicate.remote_port = 8_443;
+        let duplicate = sample(ProxySource::Dae, "b");
         let mut unresolved = sample(ProxySource::Dae, "c");
         unresolved.client_port = 50_124;
         unresolved.remote_ip = None;
@@ -646,6 +757,220 @@ mod tests {
             443
         );
         assert_eq!(snapshot.clients[0].tcp_conns, 1);
+    }
+
+    #[test]
+    fn distinct_tcp_destinations_with_same_client_source_port_are_retained() {
+        let mut snapshot = collected(None);
+        let first = sample(ProxySource::Mihomo, "a");
+        let mut second = sample(ProxySource::Dae, "b");
+        second.remote_ip = Some("203.0.113.40".parse().unwrap());
+        second.remote_port = 8_443;
+        let result = merge_samples(
+            &mut snapshot,
+            &identities(),
+            4,
+            vec![
+                RatedProxyConnection {
+                    sample: first,
+                    tx_bps: Some(8_000),
+                    rx_bps: Some(16_000),
+                },
+                RatedProxyConnection {
+                    sample: second,
+                    tx_bps: Some(24_000),
+                    rx_bps: Some(32_000),
+                },
+            ],
+        );
+        assert_eq!((result.replaced, result.added, result.omitted), (0, 2, 0));
+        let set = &snapshot.connection_details[IDENTITY_KEY];
+        assert_eq!(set.total_connections, 2);
+        assert_eq!(set.connections.len(), 2);
+        assert!(set.connections.iter().any(|detail| {
+            detail.remote_ip == "198.51.100.20".parse::<IpAddr>().unwrap()
+                && detail.remote_port == 443
+                && detail.tx_bps == 8_000
+        }));
+        assert!(set.connections.iter().any(|detail| {
+            detail.remote_ip == "203.0.113.40".parse::<IpAddr>().unwrap()
+                && detail.remote_port == 8_443
+                && detail.tx_bps == 24_000
+        }));
+        assert_eq!(snapshot.clients[0].tcp_conns, 2);
+    }
+
+    #[test]
+    fn proxy_sample_does_not_replace_unrelated_direct_tcp_detail() {
+        let direct = tcp_detail("203.0.113.40", 443);
+        let mut snapshot = collected(Some(direct.clone()));
+        let result = merge_samples(
+            &mut snapshot,
+            &identities(),
+            4,
+            vec![RatedProxyConnection {
+                sample: sample(ProxySource::Mihomo, "proxy"),
+                tx_bps: Some(80_000),
+                rx_bps: Some(160_000),
+            }],
+        );
+        assert_eq!((result.replaced, result.added), (0, 1));
+        let set = &snapshot.connection_details[IDENTITY_KEY];
+        assert_eq!(set.total_connections, 2);
+        assert!(set.connections.contains(&direct));
+        assert!(set.connections.iter().any(|detail| {
+            detail.remote_ip == "198.51.100.20".parse::<IpAddr>().unwrap()
+                && detail.tx_bps == 80_000
+        }));
+    }
+
+    #[test]
+    fn exact_tcp_tuple_wins_when_a_proxy_sample_arrives_first() {
+        let direct = tcp_detail("203.0.113.40", 443);
+        let mut snapshot = collected(Some(direct));
+        let mut exact = sample(ProxySource::Dae, "direct");
+        exact.remote_ip = Some("203.0.113.40".parse().unwrap());
+        let result = merge_samples(
+            &mut snapshot,
+            &identities(),
+            4,
+            vec![
+                RatedProxyConnection {
+                    sample: sample(ProxySource::Mihomo, "proxy"),
+                    tx_bps: Some(80_000),
+                    rx_bps: Some(160_000),
+                },
+                RatedProxyConnection {
+                    sample: exact,
+                    tx_bps: Some(8_000),
+                    rx_bps: Some(16_000),
+                },
+            ],
+        );
+        assert_eq!((result.replaced, result.added), (1, 1));
+        let set = &snapshot.connection_details[IDENTITY_KEY];
+        let direct = set
+            .connections
+            .iter()
+            .find(|detail| detail.remote_ip == "203.0.113.40".parse::<IpAddr>().unwrap())
+            .unwrap();
+        assert_eq!((direct.tx_bps, direct.rx_bps), (8_000, 16_000));
+        let proxy = set
+            .connections
+            .iter()
+            .find(|detail| detail.remote_ip == "198.51.100.20".parse::<IpAddr>().unwrap())
+            .unwrap();
+        assert_eq!((proxy.tx_bps, proxy.rx_bps), (80_000, 160_000));
+    }
+
+    #[test]
+    fn redirect_fallback_preserves_colliding_exact_direct_flow() {
+        let direct = tcp_detail("203.0.113.40", 443);
+        let redirect = tcp_detail("127.0.0.1", 7892);
+        let mut snapshot = collected_with_details(vec![direct, redirect]);
+        let mut exact = sample(ProxySource::Dae, "direct");
+        exact.remote_ip = Some("203.0.113.40".parse().unwrap());
+        let result = merge_samples(
+            &mut snapshot,
+            &identities(),
+            4,
+            vec![
+                RatedProxyConnection {
+                    sample: sample(ProxySource::Mihomo, "proxy"),
+                    tx_bps: Some(80_000),
+                    rx_bps: Some(160_000),
+                },
+                RatedProxyConnection {
+                    sample: exact,
+                    tx_bps: Some(8_000),
+                    rx_bps: Some(16_000),
+                },
+            ],
+        );
+        assert_eq!((result.replaced, result.added), (2, 0));
+        let set = &snapshot.connection_details[IDENTITY_KEY];
+        assert_eq!(set.total_connections, 2);
+        let direct = set
+            .connections
+            .iter()
+            .find(|detail| detail.remote_ip == "203.0.113.40".parse::<IpAddr>().unwrap())
+            .unwrap();
+        assert_eq!((direct.tx_bps, direct.rx_bps), (8_000, 16_000));
+        let proxy = set
+            .connections
+            .iter()
+            .find(|detail| detail.remote_ip == "198.51.100.20".parse::<IpAddr>().unwrap())
+            .unwrap();
+        assert_eq!((proxy.tx_bps, proxy.rx_bps), (80_000, 160_000));
+    }
+
+    #[test]
+    fn router_address_mismatch_remains_separate_without_redirect_evidence() {
+        let router_service = tcp_detail("192.0.2.1", 7892);
+        let mut snapshot = collected(Some(router_service.clone()));
+        let result = merge_samples(
+            &mut snapshot,
+            &identities(),
+            4,
+            vec![RatedProxyConnection {
+                sample: sample(ProxySource::Mihomo, "proxy"),
+                tx_bps: Some(80_000),
+                rx_bps: Some(160_000),
+            }],
+        );
+        assert_eq!((result.replaced, result.added), (0, 1));
+        let set = &snapshot.connection_details[IDENTITY_KEY];
+        assert_eq!(set.total_connections, 2);
+        assert!(set.connections.contains(&router_service));
+    }
+
+    #[test]
+    fn ambiguous_redirect_candidates_are_not_replaced() {
+        let first = tcp_detail("127.0.0.1", 7892);
+        let second = tcp_detail("127.0.0.2", 7893);
+        let mut snapshot = collected_with_details(vec![first.clone(), second.clone()]);
+        let result = merge_samples(
+            &mut snapshot,
+            &identities(),
+            4,
+            vec![RatedProxyConnection {
+                sample: sample(ProxySource::Mihomo, "proxy"),
+                tx_bps: Some(80_000),
+                rx_bps: Some(160_000),
+            }],
+        );
+        assert_eq!((result.replaced, result.added), (0, 1));
+        let set = &snapshot.connection_details[IDENTITY_KEY];
+        assert_eq!(set.total_connections, 3);
+        assert!(set.connections.contains(&first));
+        assert!(set.connections.contains(&second));
+    }
+
+    #[test]
+    fn unresolved_tcp_target_updates_only_unique_same_port_detail() {
+        let existing = tcp_detail("203.0.113.40", 443);
+        let mut snapshot = collected(Some(existing.clone()));
+        let mut unresolved = sample(ProxySource::Mihomo, "unknown");
+        unresolved.remote_ip = None;
+        let result = merge_samples(
+            &mut snapshot,
+            &identities(),
+            4,
+            vec![RatedProxyConnection {
+                sample: unresolved,
+                tx_bps: Some(80_000),
+                rx_bps: Some(160_000),
+            }],
+        );
+        assert_eq!((result.replaced, result.added, result.omitted), (1, 0, 0));
+        let set = &snapshot.connection_details[IDENTITY_KEY];
+        assert_eq!(set.total_connections, 1);
+        assert_eq!(set.connections[0].remote_ip, existing.remote_ip);
+        assert_eq!(set.connections[0].remote_port, existing.remote_port);
+        assert_eq!(
+            (set.connections[0].tx_bps, set.connections[0].rx_bps),
+            (80_000, 160_000)
+        );
     }
 
     #[test]

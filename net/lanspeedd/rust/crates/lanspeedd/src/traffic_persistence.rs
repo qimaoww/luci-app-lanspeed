@@ -268,6 +268,9 @@ struct TrafficEntry {
 pub(crate) struct TrafficLedger {
     path: PathBuf,
     entries: BTreeMap<String, TrafficEntry>,
+    // An unsuccessful initial read leaves only this session's deltas in
+    // entries. They must be rebased onto the stored totals before any write.
+    storage_loaded: bool,
     next_flush_ms: u64,
     storage_owner: bool,
     last_error: Option<String>,
@@ -280,19 +283,44 @@ impl TrafficLedger {
 
     fn open(path: impl Into<PathBuf>, now_ms: u64) -> Self {
         let path = path.into();
-        let (entries, last_error) = match load_entries(&path) {
-            Ok(entries) => (entries, None),
-            Err(error) => (BTreeMap::new(), Some(error)),
+        let (entries, storage_loaded, last_error) = match load_entries(&path) {
+            Ok(entries) => (entries, true, None),
+            Err(error) => (BTreeMap::new(), false, Some(error)),
         };
         Self {
             path,
             entries,
-            next_flush_ms: now_ms.saturating_add(FLUSH_INTERVAL_MS),
+            storage_loaded,
+            next_flush_ms: now_ms.saturating_add(if storage_loaded {
+                FLUSH_INTERVAL_MS
+            } else {
+                RETRY_INTERVAL_MS
+            }),
             // The runtime becomes the storage owner only after its first
             // collection has been validated and committed. This also keeps
             // reload candidates read/compute-only until activation.
             storage_owner: false,
             last_error,
+        }
+    }
+
+    /// Reload validation never opens SQLite: even a read-only WAL connection
+    /// can create a shared-memory sidecar. On commit, pending observations
+    /// are rebased onto the persisted rows before their first write.
+    pub(crate) fn open_staged_default(now_ms: u64) -> Self {
+        Self::open_staged(DEFAULT_TRAFFIC_DB_PATH, now_ms)
+    }
+
+    fn open_staged(path: impl Into<PathBuf>, now_ms: u64) -> Self {
+        Self {
+            path: path.into(),
+            entries: BTreeMap::new(),
+            storage_loaded: false,
+            // Reconcile the pending sample as soon as this candidate owns
+            // storage; until then it is strictly read/compute-only.
+            next_flush_ms: now_ms,
+            storage_owner: false,
+            last_error: None,
         }
     }
 
@@ -308,6 +336,19 @@ impl TrafficLedger {
 
     pub(crate) fn deactivate_storage_owner(&mut self) {
         self.storage_owner = false;
+    }
+
+    /// A disabled candidate discards its ledger, so the current owner must
+    /// save every dirty row before the reload can proceed. Failed writes keep
+    /// the active runtime and its in-memory totals intact for a later retry.
+    pub(crate) fn flush_before_disabling(&mut self, now_ms: u64) -> Result<(), String> {
+        if !self.entries.values().any(|entry| entry.dirty) {
+            return Ok(());
+        }
+        if !self.storage_owner {
+            return Err("traffic ledger has no storage owner".to_owned());
+        }
+        self.flush_now(now_ms)
     }
 
     #[cfg(not(feature = "nss-platform"))]
@@ -375,14 +416,39 @@ impl TrafficLedger {
             (entry.last_edge_rx_end_ms.is_some() || entry.rx_bytes != 0).then_some(entry.rx_bytes);
     }
 
+    /// Publish only previously verified totals during an Edge gap. This does
+    /// not touch rate/control state, cursors, timestamps, or dirty flags.
+    #[cfg(feature = "nss-platform")]
+    pub(crate) fn publish_saved_edge_client(&self, client: &mut Client) {
+        let Some(entry) = self.entries.get(&client.identity_key) else {
+            return;
+        };
+        client.tx_bytes =
+            (entry.last_edge_tx_end_ms.is_some() || entry.tx_bytes != 0).then_some(entry.tx_bytes);
+        client.rx_bytes =
+            (entry.last_edge_rx_end_ms.is_some() || entry.rx_bytes != 0).then_some(entry.rx_bytes);
+    }
+
+    #[cfg(not(feature = "nss-platform"))]
+    pub(crate) fn publish_saved_raw_client(&self, client: &mut Client) {
+        if client.collector_mode != "bpf" {
+            return;
+        }
+        let Some(entry) = self.entries.get(&client.identity_key) else {
+            return;
+        };
+        client.tx_bytes = Some(entry.tx_bytes);
+        client.rx_bytes = Some(entry.rx_bytes);
+    }
+
     pub(crate) fn flush_committed(&mut self, now_ms: u64) {
         if now_ms >= self.next_flush_ms {
-            self.flush_now(now_ms);
+            let _ = self.flush_now(now_ms);
         }
     }
 
     pub(crate) fn flush_shutdown(&mut self, now_ms: u64) {
-        self.flush_now(now_ms);
+        let _ = self.flush_now(now_ms);
     }
 
     #[cfg(test)]
@@ -419,25 +485,55 @@ impl TrafficLedger {
         (entry.tx_bytes, entry.rx_bytes)
     }
 
-    fn flush_now(&mut self, now_ms: u64) {
+    fn flush_now(&mut self, now_ms: u64) -> Result<(), String> {
         if !self.storage_owner {
-            return;
+            return Ok(());
         }
-        if !self.entries.values().any(|entry| entry.dirty) {
-            self.next_flush_ms = now_ms.saturating_add(FLUSH_INTERVAL_MS);
-            return;
-        }
-        match persist_entries(&self.path, &self.entries) {
-            Ok(()) => {
+        let result: Result<(), String> = (|| {
+            if !self.storage_loaded {
+                let mut stored = load_entries(&self.path)?;
+                for (key, pending) in std::mem::take(&mut self.entries) {
+                    let entry = stored.entry(key).or_default();
+                    entry.tx_bytes = entry.tx_bytes.saturating_add(pending.tx_bytes);
+                    entry.rx_bytes = entry.rx_bytes.saturating_add(pending.rx_bytes);
+                    if pending.dirty {
+                        entry.mac = pending.mac;
+                        entry.zone = pending.zone;
+                        entry.updated_at = pending.updated_at;
+                        entry.dirty = true;
+                    }
+                    #[cfg(not(feature = "nss-platform"))]
+                    {
+                        entry.last_raw_tx_bytes = pending.last_raw_tx_bytes;
+                        entry.last_raw_rx_bytes = pending.last_raw_rx_bytes;
+                    }
+                    #[cfg(feature = "nss-platform")]
+                    {
+                        entry.last_edge_tx_end_ms = pending.last_edge_tx_end_ms;
+                        entry.last_edge_rx_end_ms = pending.last_edge_rx_end_ms;
+                    }
+                }
+                self.entries = stored;
+                self.storage_loaded = true;
+            }
+            if self.entries.values().any(|entry| entry.dirty) {
+                persist_entries(&self.path, &self.entries)?;
                 for entry in self.entries.values_mut() {
                     entry.dirty = false;
                 }
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
                 self.last_error = None;
                 self.next_flush_ms = now_ms.saturating_add(FLUSH_INTERVAL_MS);
+                Ok(())
             }
             Err(error) => {
-                self.last_error = Some(error);
+                self.last_error = Some(error.clone());
                 self.next_flush_ms = now_ms.saturating_add(RETRY_INTERVAL_MS);
+                Err(error)
             }
         }
     }
@@ -585,6 +681,10 @@ fn open_database(path: &Path) -> Result<SqliteConnection, String> {
 
 fn load_entries(path: &Path) -> Result<BTreeMap<String, TrafficEntry>, String> {
     let connection = open_database(path)?;
+    query_entries(&connection)
+}
+
+fn query_entries(connection: &SqliteConnection) -> Result<BTreeMap<String, TrafficEntry>, String> {
     let mut statement = connection.prepare(
         "SELECT identity_key, mac, zone, tx_bytes, rx_bytes, updated_at
              FROM client_traffic",
@@ -675,7 +775,7 @@ fn nonnegative_u64(value: i64) -> u64 {
 mod tests {
     use std::{fs, path::PathBuf};
 
-    use super::TrafficLedger;
+    use super::{TrafficEntry, TrafficLedger};
     #[cfg(feature = "nss-platform")]
     use crate::{
         model::{Client, Confidence},
@@ -694,6 +794,137 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&path);
         path.join("traffic.db")
+    }
+
+    fn dirty_entry(tx_bytes: u64, rx_bytes: u64) -> TrafficEntry {
+        TrafficEntry {
+            mac: "02:00:00:00:00:01".into(),
+            zone: "lan".into(),
+            tx_bytes,
+            rx_bytes,
+            updated_at: 1,
+            dirty: true,
+            ..TrafficEntry::default()
+        }
+    }
+
+    #[test]
+    fn disabling_totals_checkpoints_dirty_rows_and_retains_them_on_write_failure() {
+        let path = test_path("disable-checkpoint");
+        let mut ledger = TrafficLedger::open(&path, 0);
+        ledger
+            .entries
+            .insert("client@lan".into(), dirty_entry(100, 200));
+        ledger.activate_storage_owner();
+
+        let obstacle = path.parent().unwrap().join("obstacle");
+        fs::write(&obstacle, "not a directory").unwrap();
+        ledger.path = obstacle.join("traffic.db");
+        assert!(ledger.flush_before_disabling(1).is_err());
+        assert!(ledger.storage_owner);
+        assert!(ledger.entries["client@lan"].dirty);
+
+        ledger.path = path.clone();
+        assert!(ledger.flush_before_disabling(2).is_ok());
+        assert!(!ledger.entries["client@lan"].dirty);
+        ledger.deactivate_storage_owner();
+        let restarted = TrafficLedger::open(&path, 3);
+        assert_eq!(restarted.entries["client@lan"].tx_bytes, 100);
+        assert_eq!(restarted.entries["client@lan"].rx_bytes, 200);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn failed_initial_load_rebases_pending_deltas_before_writing_history() {
+        let path = test_path("load-recovery");
+        let mut first = TrafficLedger::open(&path, 0);
+        first
+            .entries
+            .insert("client@lan".into(), dirty_entry(1_000, 2_000));
+        first.activate_storage_owner();
+        first.flush_shutdown(1);
+        assert!(first.last_error().is_none());
+
+        let backup = path.with_extension("saved");
+        fs::rename(&path, &backup).unwrap();
+        fs::write(&path, "not a SQLite database").unwrap();
+        let mut recovering = TrafficLedger::open(&path, 2);
+        assert!(!recovering.storage_loaded);
+        recovering
+            .entries
+            .insert("client@lan".into(), dirty_entry(10, 20));
+        recovering.activate_storage_owner();
+        recovering.flush_shutdown(3);
+        assert!(recovering.last_error().is_some());
+        assert!(recovering.entries["client@lan"].dirty);
+
+        fs::remove_file(&path).unwrap();
+        fs::rename(&backup, &path).unwrap();
+        recovering.flush_shutdown(4);
+        assert!(recovering.last_error().is_none());
+        assert!(recovering.storage_loaded);
+        let restarted = TrafficLedger::open(&path, 5);
+        assert_eq!(restarted.entries["client@lan"].tx_bytes, 1_010);
+        assert_eq!(restarted.entries["client@lan"].rx_bytes, 2_020);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn uncommitted_candidate_does_not_create_database_or_parent_directory() {
+        let path = test_path("staged-readonly");
+        assert!(!path.parent().unwrap().exists());
+        let mut candidate = TrafficLedger::open_staged(&path, 0);
+        candidate
+            .entries
+            .insert("client@lan".into(), dirty_entry(10, 20));
+        candidate.flush_shutdown(1);
+        assert!(!path.parent().unwrap().exists());
+
+        candidate.activate_storage_owner();
+        candidate.flush_committed(2);
+        assert!(candidate.last_error().is_none());
+        let restarted = TrafficLedger::open(&path, 3);
+        assert_eq!(restarted.entries["client@lan"].tx_bytes, 10);
+        assert_eq!(restarted.entries["client@lan"].rx_bytes, 20);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn uncommitted_candidate_does_not_touch_existing_database_sidecars() {
+        let path = test_path("staged-existing");
+        let mut first = TrafficLedger::open(&path, 0);
+        first
+            .entries
+            .insert("client@lan".into(), dirty_entry(1_000, 2_000));
+        first.activate_storage_owner();
+        first.flush_shutdown(1);
+        assert!(first.last_error().is_none());
+        let mut files_before = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        files_before.sort();
+
+        let mut candidate = TrafficLedger::open_staged(&path, 2);
+        candidate
+            .entries
+            .insert("client@lan".into(), dirty_entry(10, 20));
+        candidate.flush_shutdown(3);
+        let mut files_after = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        files_after.sort();
+        assert_eq!(files_before, files_after);
+        assert!(!candidate.storage_loaded);
+
+        candidate.activate_storage_owner();
+        candidate.flush_committed(4);
+        assert!(candidate.last_error().is_none());
+        let restarted = TrafficLedger::open(&path, 5);
+        assert_eq!(restarted.entries["client@lan"].tx_bytes, 1_010);
+        assert_eq!(restarted.entries["client@lan"].rx_bytes, 2_020);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[cfg(not(feature = "nss-platform"))]
@@ -900,6 +1131,44 @@ mod tests {
             true,
         );
         assert_eq!((client.tx_bytes, client.rx_bytes), (Some(100), Some(30)));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[cfg(feature = "nss-platform")]
+    #[test]
+    fn nss_edge_gap_publishes_verified_totals_without_counting_or_dirtying() {
+        let path = test_path("edge-gap");
+        let mut ledger = TrafficLedger::open(&path, 0);
+        let mut first_client = nss_client();
+        ledger.overlay_edge_client(
+            &mut first_client,
+            &edge_segment(1, 1_000, 2_000, 100, 200),
+            true,
+            true,
+        );
+        ledger.activate_storage_owner();
+        ledger.flush_shutdown(2_000);
+        assert!(ledger.last_error().is_none());
+
+        let mut next_client = nss_client();
+        let mut unavailable = edge_segment(1, 2_000, 3_000, 999, 999);
+        unavailable.tx.segment = None;
+        unavailable.rx.segment = None;
+        ledger.overlay_edge_client(&mut next_client, &unavailable, true, true);
+        ledger.publish_saved_edge_client(&mut next_client);
+        assert_eq!(
+            (next_client.tx_bytes, next_client.rx_bytes),
+            (Some(100), Some(200))
+        );
+        assert!(!ledger.entries[&next_client.identity_key].dirty);
+
+        let mut tx_only = edge_segment(1, 2_000, 3_000, 30, 1_000);
+        tx_only.rx.segment = None;
+        ledger.overlay_edge_client(&mut next_client, &tx_only, true, true);
+        assert_eq!(
+            (next_client.tx_bytes, next_client.rx_bytes),
+            (Some(130), Some(200))
+        );
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 

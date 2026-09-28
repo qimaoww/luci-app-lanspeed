@@ -731,8 +731,9 @@ assert(config.includes('pub show_client_totals: bool') &&
   production.includes('self.config.show_client_totals && actual_live') &&
   production.includes('#[cfg(not(feature = "nss-platform"))]\nfn suppress_client_totals') &&
   (production.match(/suppress_client_totals\(&mut clients, self\.config\.show_client_totals\)/g) || []).length === 1 &&
-  production.includes('self.overlay_nss_client_totals(&mut clients, &identities, now_ms)') &&
+  production.includes('self.overlay_nss_client_totals(&mut clients, &identities, now_ms, method)') &&
   production.includes('let edge_index = edge_mac_index(&self.access_edge.latest().clients)') &&
+  production.includes('ledger.publish_saved_edge_client(client)') &&
   production.includes('self.traffic_ledger = None'),
   'cumulative client totals must gate both platform ledgers and publish only raw NSS Edge deltas');
 for (const removedPath of [

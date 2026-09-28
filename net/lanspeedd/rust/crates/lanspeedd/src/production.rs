@@ -970,7 +970,11 @@ impl ProductionRuntime {
             // Defer filesystem and SQLite work until BPF has produced a valid
             // sample. Database errors remain in memory and raw live counters
             // continue to be served.
-            self.traffic_ledger = Some(TrafficLedger::open_default(now_ms));
+            self.traffic_ledger = Some(if method == ProbeMethod::Reload {
+                TrafficLedger::open_staged_default(now_ms)
+            } else {
+                TrafficLedger::open_default(now_ms)
+            });
         }
         self.hostnames.refresh_from_paths(
             &HostnamePaths::default(),
@@ -1620,7 +1624,7 @@ impl ProductionRuntime {
             &runtime_health,
         );
         #[cfg(feature = "traffic-persistence")]
-        self.overlay_nss_client_totals(&mut clients, &identities, now_ms);
+        self.overlay_nss_client_totals(&mut clients, &identities, now_ms, method);
         if explicit_internet_rate_view(self.config.internet_view_mode) {
             // The explicit routed view is owned by the FastRate publication.
             // Do not let the independent Access Edge/kernel interface sample
@@ -2845,6 +2849,7 @@ impl ProductionRuntime {
         clients: &mut ClientsResponse,
         identities: &IdentityTable,
         now_ms: u64,
+        method: ProbeMethod,
     ) {
         let edge_display = active_access_edge_owns_display_rate(
             self.config.access_edge_mode,
@@ -2901,15 +2906,19 @@ impl ProductionRuntime {
             }
             eligible.push((index, edge, tx_edge_owner, rx_edge_owner));
         }
-        if eligible.is_empty() {
-            return;
-        }
         // Keep SQLite off the NSS startup path until a valid Edge delta
-        // actually exists. A reload candidate only reads the database and
-        // never becomes its writer until collection is committed.
-        let ledger = self
-            .traffic_ledger
-            .get_or_insert_with(|| TrafficLedger::open_default(now_ms));
+        // actually exists. A reload candidate only stores observations in
+        // memory; it reads and reconciles the database after commit.
+        if self.traffic_ledger.is_none() && !eligible.is_empty() {
+            self.traffic_ledger = Some(if method == ProbeMethod::Reload {
+                TrafficLedger::open_staged_default(now_ms)
+            } else {
+                TrafficLedger::open_default(now_ms)
+            });
+        }
+        let Some(ledger) = self.traffic_ledger.as_mut() else {
+            return;
+        };
         for (index, edge, tx_edge_owner, rx_edge_owner) in eligible {
             ledger.overlay_edge_client(
                 &mut clients.clients[index],
@@ -2917,6 +2926,12 @@ impl ProductionRuntime {
                 tx_edge_owner,
                 rx_edge_owner,
             );
+        }
+        // RateMux clears legacy bytes on every collection. A missing or
+        // invalid Edge segment pauses accounting, but historical verified
+        // totals remain visible independently in each direction.
+        for client in &mut clients.clients {
+            ledger.publish_saved_edge_client(client);
         }
     }
 
