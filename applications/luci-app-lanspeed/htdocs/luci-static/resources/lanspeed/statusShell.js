@@ -588,7 +588,7 @@ function buildShell(viewState) {
 		'type': 'search',
 		'class': 'cbi-input-text',
 		'aria-label': _('过滤客户端'),
-		'placeholder': _('过滤 MAC / 主机名 / IP'),
+		'placeholder': _('过滤 MAC / 厂商 / 主机名 / IP'),
 		'value': viewState.filter || ''
 	});
 	refs.filterInput.addEventListener('input', function(ev) {

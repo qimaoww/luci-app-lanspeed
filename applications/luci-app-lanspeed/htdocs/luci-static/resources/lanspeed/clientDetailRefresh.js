@@ -319,7 +319,7 @@ function metaFact(label, value) {
 	]);
 }
 
-function renderClientMeta(ref, client, ips, identityKey) {
+function renderClientMeta(ref, client, ips, identityKey, vendorLookup) {
 	clearElement(ref);
 
 	if (ips.length) {
@@ -344,6 +344,8 @@ function renderClientMeta(ref, client, ips, identityKey) {
 	var facts = [];
 	if (client && client.mac)
 		facts.push(metaFact(_('MAC 地址'), client.mac));
+	if (client && client.mac && vendorLookup)
+		facts.push(metaFact(_('设备厂商'), vendorLookup(client.mac).label));
 	if (client && client.interface)
 		facts.push(metaFact(_('接口'), client.interface));
 	if (!ips.length && !facts.length && identityKey)
@@ -510,7 +512,7 @@ function render(viewState) {
 		: null;
 
 	refs.clientName.textContent = displayName;
-	renderClientMeta(refs.clientMeta, client, ips, viewState.identityKey);
+	renderClientMeta(refs.clientMeta, client, ips, viewState.identityKey, viewState.vendorLookup);
 	if (refs.clientHeading) {
 		var hostnameEditable = Boolean(viewState.hostnameMac) &&
 			viewState.hostnameOpening !== true;

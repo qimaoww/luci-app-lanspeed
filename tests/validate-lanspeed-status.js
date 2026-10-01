@@ -272,7 +272,7 @@ function loadFormat(context) {
 function loadOverview(context, fmt, rpc, modules) {
 	modules = modules || {};
 	return vm.compileFunction(readModule('statusOverview.js'), [
-		'baseclass', 'fmt', 'lsRpc', 'statusIp', 'statusShell', 'statusRefresh', 'statusRateMeta'
+		'baseclass', 'fmt', 'lsRpc', 'statusIp', 'statusShell', 'statusRefresh', 'statusRateMeta', 'macVendor'
 	], { filename: 'resources/lanspeed/statusOverview.js', parsingContext: context })(
 		{ extend: function(value) { return value; } },
 		fmt,
@@ -292,7 +292,9 @@ function loadOverview(context, fmt, rpc, modules) {
 			if (!valid(tx) || !valid(rx)) return '';
 			return tx === 'fast_routed_lease' || rx === 'fast_routed_lease'
 				? 'fast_routed_lease' : 'fast_routed_internet';
-		} }
+		} },
+		modules.macVendor || { lookup: function() { return { vendor: '', label: '未知厂商' }; },
+			load: function() { return new Promise(function() {}); } }
 	);
 }
 
@@ -915,6 +917,30 @@ function testRenderWiresLiveRefresh(context, fmt) {
 	assert.strictEqual(typeof renderedState.reload, 'function');
 }
 
+async function testVendorDownloadLifecycle(context, fmt) {
+	for (const destroyBeforeDownload of [ false, true ]) {
+		const deferred = makeDeferred();
+		let state;
+		let renders = 0;
+		const vendor = { lookup: function() { return { vendor: 'Example', label: 'Example' }; },
+			load: function() { return deferred.promise; } };
+		const overview = loadOverview(context, fmt, {}, {
+			shell: { buildShell: function(next) { state = next; return { root: fakeElement('div'), refs: {} }; } },
+			refresh: { refreshLive: function() { renders++; } },
+			macVendor: vendor
+		});
+		overview.render(normalizedResult('vendor', 100));
+		assert.strictEqual(renders, 1, 'database downloads must not block the initial live render');
+		assert.strictEqual(state.vendorLookup, vendor.lookup);
+		if (destroyBeforeDownload) state.destroy();
+		deferred.resolve();
+		await Promise.resolve();
+		assert.strictEqual(renders, destroyBeforeDownload ? 1 : 2,
+			'vendor completion must refresh the open page and ignore destroyed pages');
+		state.destroy();
+	}
+}
+
 function loadShellAndRefresh(context, fmt) {
 	const baseclass = { extend: function(value) { return value; } };
 	const shell = vm.compileFunction(readModule('statusShell.js'), [
@@ -1141,6 +1167,21 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.strictEqual(toolbarRight.children[2], state.refs.btnPause);
 	assert.strictEqual(state.refs.tbody.children.length, 10);
 	assert.ok(textOf(state.refs.tbody.children[0]).includes('client-30'));
+	state.vendorLookup = function(mac) {
+		return mac === clients[29].mac
+			? { kind: 'vendor', vendor: 'Example Network Cards', label: 'Example Network Cards' }
+			: { kind: 'local', vendor: '', label: '随机 / 本地 MAC' };
+	};
+	state.refreshLive();
+	const vendorLine = findByClass(state.refs.tbody.children[0], 'lanspeed-client-vendor');
+	assert.strictEqual(textOf(vendorLine), 'Example Network Cards');
+	assert.strictEqual(vendorLine.attrs.title, 'Example Network Cards', 'truncated labels retain the full name');
+	assert.strictEqual(vendorLine.attrs['data-vendor-state'], 'vendor');
+	state.refs.filterInput.listeners.input({ target: { value: 'network cards' } });
+	assert.strictEqual(state.refs.tbody.children.length, 1, 'vendor names must be searchable without case sensitivity');
+	assert.ok(textOf(state.refs.tbody.children[0]).includes('client-30'));
+	state.refs.filterInput.listeners.input({ target: { value: '' } });
+	assert.strictEqual(findByClass(state.refs.tbody.children[1], 'lanspeed-client-vendor').attrs['data-vendor-state'], 'local');
 	assert.strictEqual(state.refs.totalUploadHeader.hidden, false);
 	assert.strictEqual(state.refs.totalDownloadHeader.hidden, false);
 	const firstUploadCell = findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-upload-cell');
@@ -1493,6 +1534,7 @@ async function main() {
 	await testLiveSamplePairing(context, fmt);
 	await testControllerLifecycle(context, fmt);
 	testRenderWiresLiveRefresh(context, fmt);
+	await testVendorDownloadLifecycle(context, fmt);
 	testPaginationAndUiStates(context, fmt);
 	testColumnResizeRange(context, fmt);
 	console.log('validate-lanspeed-status: PASS');
