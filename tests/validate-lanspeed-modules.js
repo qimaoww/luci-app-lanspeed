@@ -52,6 +52,7 @@ const EXPECTED_MODULES = [
 	'designSystemArgon.js',
 	'designSystemBootstrap.js',
 	'geoLocation.js',
+	'macVendor.js',
 	'clientConnections.js',
 	'clientControl.js',
 	'clientControlReasons.js',
@@ -205,6 +206,7 @@ const MODULE_REQUIRES = {
 	'designSystemArgon.js': [ 'baseclass' ],
 	'designSystemBootstrap.js': [ 'baseclass' ],
 	'geoLocation.js': [ 'baseclass' ],
+	'macVendor.js': [ 'baseclass', 'request' ],
 	'clientConnections.js': [ 'baseclass', 'lanspeed.format' ],
 	'clientControl.js': [ 'baseclass', 'ui', 'lanspeed.rpc', 'lanspeed.clientControlReasons' ],
 	'clientControlReasons.js': [
@@ -2370,14 +2372,17 @@ function fakeDhcpHostnamesModule() {
 	};
 }
 
-function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow, fakeDate, fakeGeo) {
+function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow, fakeDate, fakeGeo, fakeVendor) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	return vm.compileFunction(src, [
-		'baseclass', 'ui', 'fmt', 'lsRpc', 'dhcpHostnames', 'geoLocation',
+		'baseclass', 'ui', 'fmt', 'lsRpc', 'dhcpHostnames', 'geoLocation', 'macVendor',
 		'clientDetailShell', 'clientDetailRefresh', 'window', 'Date', 'E', '_'
 	], { filename: 'resources/lanspeed/clientDetailView.js' })(
 		fakeBaseclass, fakeUiModule(), fmt, lsRpc, fakeDhcpHostnamesModule(),
-		fakeGeo || fakeGeoLocationModule(), shell, refresh, fakeWindow,
+		fakeGeo || fakeGeoLocationModule(),
+		fakeVendor || { lookup: function() { return { vendor: '', label: '未知厂商' }; },
+			load: function() { return new Promise(function() {}); } },
+		shell, refresh, fakeWindow,
 		fakeDate || Date, fakeElement, function(value) { return value; }
 	);
 }
@@ -2385,7 +2390,7 @@ function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow,
 function assertClientDetailViewSource(src) {
 	if (JSON.stringify(moduleRequireNames(src)) !== JSON.stringify([
 		'baseclass', 'ui', 'lanspeed.format', 'lanspeed.rpc',
-		'lanspeed.dhcpHostnames', 'lanspeed.geoLocation',
+		'lanspeed.dhcpHostnames', 'lanspeed.geoLocation', 'lanspeed.macVendor',
 		'lanspeed.clientDetailShell', 'lanspeed.clientDetailRefresh'
 	])) {
 		fail('clientDetailView.js must require UI, format, shared RPC, DHCP hostnames, geolocation, detail shell and detail refresh in dependency order');
@@ -2399,6 +2404,37 @@ function assertClientDetailViewSource(src) {
 	    /lsRpc\.(?:clients|interfaces|uciGet|overview)\s*\(/.test(cleaned)) {
 		fail('clientDetailView.js must pair shared clientConnections and status RPCs without unrelated requests');
 	}
+}
+
+function assertClientDetailVendorLifecycle(src) {
+	asyncChecks.push(Promise.resolve().then(async function() {
+		for (const destroyBeforeDownload of [ false, true ]) {
+			const deferred = makeDeferred();
+			let state;
+			let renders = 0;
+			const vendor = { lookup: function() { return { label: 'Example' }; },
+				load: function() { return deferred.promise; } };
+			const view = loadClientDetailViewModule(src, {
+				MIN_REFRESH_MS: 1000, DEFAULT_PREFS: { refreshMs: 1000 },
+				loadPrefs: function() { return { refreshMs: 1000 }; }
+			}, {}, { buildShell: function(next) {
+				state = next; return { root: fakeElement('div'), refs: {} };
+			} }, { render: function() { renders++; } }, {
+				location: { pathname: '/admin/status/lanspeed/overview' },
+				setTimeout: function() { return 1; }, clearTimeout: function() {},
+				addEventListener: function() {}
+			}, Date, null, vendor);
+			view.render({ identityKey: 'vendor@lan', response: { available: true } });
+			if (renders !== 1 || state.vendorLookup !== vendor.lookup)
+				fail('client detail must render immediately while its optional vendor database is pending');
+			if (destroyBeforeDownload) state.destroy();
+			deferred.resolve();
+			await Promise.resolve();
+			if (renders !== (destroyBeforeDownload ? 1 : 2))
+				fail('client detail vendor completion must only refresh a page that is still open');
+			state.destroy();
+		}
+	}).catch(function(error) { fail('client detail vendor lifecycle: ' + error.stack); }));
 }
 
 function assertClientDetailViewLifecycle(src) {
@@ -3163,6 +3199,14 @@ function assertClientDetailRefreshBehavior(src) {
 		fail('clientDetailRefresh.js must render identity/meta, real summaries, and destination groups with highest download speed first by default');
 	}
 	const threeDigitResponse = JSON.parse(JSON.stringify(state.response));
+	state.vendorLookup = function() { return { label: '<img src=x onerror=alert(1)>' }; };
+	refresh.render(state);
+	const vendorFact = findFakeElementsByClass(refs.clientMeta, 'lanspeed-connection-meta-fact')
+		.find(function(fact) { return fakeElementText(fact).includes('设备厂商'); });
+	if (!vendorFact || fakeElementText(vendorFact) !== '设备厂商<img src=x onerror=alert(1)>' ||
+	    !vendorFact.children[1].children.includes('<img src=x onerror=alert(1)>'))
+		fail('client detail must display vendor names as text, including labels containing HTML');
+	delete state.vendorLookup;
 	threeDigitResponse.client.tx_bps = 123456789;
 	threeDigitResponse.client.rx_bps = 987654321;
 	state.response = threeDigitResponse;
@@ -7588,6 +7632,7 @@ EXPECTED_MODULES.forEach(function(name) {
 	}
 	if (name === 'clientDetailView.js') {
 		assertClientDetailViewSource(src);
+		assertClientDetailVendorLifecycle(src);
 		assertClientDetailViewLifecycle(src);
 		assertClientDetailGeoLifecycle(src);
 		assertClientDetailIntegratedState(src);

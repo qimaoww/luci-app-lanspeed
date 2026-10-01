@@ -21,7 +21,7 @@ var MODULE_GROUPS = {
 	client: [
 		'clientConnections.js', 'clientControl.js', 'clientControlReasons.js',
 		'clientControlReasonsShared.js', 'clientControlReasonsX86.js',
-		'clientControlReasonsNss.js', 'dhcpHostnames.js', 'geoLocation.js',
+		'clientControlReasonsNss.js', 'dhcpHostnames.js', 'geoLocation.js', 'macVendor.js',
 		'clientDetailShell.js', 'clientDetailStyle.js', 'clientDetailStyleBase.js',
 		'clientDetailStyleAurora.js', 'clientDetailStyleArgon.js',
 		'clientDetailStyleBootstrap.js', 'clientDetailStyleResponsive.js',

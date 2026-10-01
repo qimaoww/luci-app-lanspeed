@@ -5,6 +5,7 @@
 'require lanspeed.rpc as lsRpc';
 'require lanspeed.dhcpHostnames as dhcpHostnames';
 'require lanspeed.geoLocation as geoLocation';
+'require lanspeed.macVendor as macVendor';
 'require lanspeed.clientDetailShell as clientDetailShell';
 'require lanspeed.clientDetailRefresh as clientDetailRefresh';
 
@@ -337,6 +338,7 @@ return baseclass.extend({
 			hostnameOpening: false,
 			hostnameSaving: false,
 			destroyed: false,
+			vendorLookup: macVendor.lookup,
 
 			stopTimer: function() {
 				if (this.timer !== null) {
@@ -576,9 +578,13 @@ return baseclass.extend({
 			}
 		};
 
+		var vendorLoad = macVendor.load();
 		var built = clientDetailShell.buildShell(viewState);
 		viewState.refs = built.refs;
 		clientDetailRefresh.render(viewState);
+		vendorLoad.then(function() {
+			if (!viewState.destroyed) clientDetailRefresh.render(viewState);
+		});
 		viewState.schedule();
 		window.addEventListener('beforeunload', function() {
 			viewState.destroy();

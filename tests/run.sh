@@ -120,6 +120,7 @@ run_node_check() {
 		"$SCRIPT_DIR/validate-lanspeed-ubus-lifecycle.js" \
 		"$SCRIPT_DIR/validate-release-version.js" \
 		"$SCRIPT_DIR/validate-lanspeed-geo.js" \
+		"$SCRIPT_DIR/validate-lanspeed-mac-vendor.js" \
 		"$SCRIPT_DIR/validate-lanspeed-modules.js"; do
 		name=$(basename "$validator" .js)
 		run_logged "node-check-$name" node --check "$validator" || return $?
@@ -258,6 +259,7 @@ run_unit() {
 		RUST_CARGO="$rust_cargo_path" \
 		node "$SCRIPT_DIR/validate-release-version.js" || return $?
 	run_logged "lanspeed-geo" node "$SCRIPT_DIR/validate-lanspeed-geo.js" || return $?
+	run_logged "lanspeed-mac-vendor" node "$SCRIPT_DIR/validate-lanspeed-mac-vendor.js" || return $?
 	run_logged "lanspeed-modules" node "$SCRIPT_DIR/validate-lanspeed-modules.js" || return $?
 	run_logged "build-sdk" sh "$SCRIPT_DIR/validate-build-sdk.sh" || return $?
 	append_unit_evidence "coverage=rust_workspace lanspeedd_no_openwrt openwrt_sys_host openwrt_feature_pure_rust openwrt_sys_ubus_tests contract identity collector lifecycle probes diagnostics realtime_status lanspeed-geo lanspeed-modules build-sdk"

@@ -99,6 +99,7 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/moduleManifest.js \
 		./htdocs/luci-static/resources/lanspeed/format.js \
 		./htdocs/luci-static/resources/lanspeed/geoLocation.js \
+		./htdocs/luci-static/resources/lanspeed/macVendor.js \
 		./htdocs/luci-static/resources/lanspeed/ifaceConfig.js \
 		./htdocs/luci-static/resources/lanspeed/rpc.js \
 		./htdocs/luci-static/resources/lanspeed/statusCollector.js \

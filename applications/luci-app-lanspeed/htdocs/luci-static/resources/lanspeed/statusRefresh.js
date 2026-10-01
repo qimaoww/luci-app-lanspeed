@@ -554,7 +554,8 @@ function refreshLive(viewState) {
 
 	var latestSample = fmt.latestClientSampleMs(clientsAll);
 	var filtered = clientsAll.filter(function(c) {
-		if (!fmt.matchesFilter(c, viewState.filter)) return false;
+		var vendor = viewState.vendorLookup ? viewState.vendorLookup(c.mac) : null;
+		if (!fmt.matchesFilter(c, viewState.filter, vendor && vendor.vendor)) return false;
 		if (prefs.activeOnly && !fmt.isActiveClient(c, latestSample, activeCfg)) return false;
 		return true;
 	});
@@ -613,6 +614,12 @@ function refreshLive(viewState) {
 
 			var controlCell = clientControl.cell(viewState, c);
 			controlCell.hidden = false;
+			var vendor = viewState.vendorLookup ? viewState.vendorLookup(c.mac) : null;
+			var macContent = [ E('span', {}, fmt.textOrDash(c.mac)) ];
+			if (vendor) macContent.push(E('span', {
+				'class': 'lanspeed-client-vendor', 'title': vendor.label,
+				'data-vendor-state': vendor.kind
+			}, vendor.label));
 
 			return E('tr', {
 				'class': idle ? 'idle' : '',
@@ -623,7 +630,7 @@ function refreshLive(viewState) {
 				E('td', {
 					'class': 'mono lanspeed-client-mac',
 					'data-label': 'MAC'
-				}, fmt.textOrDash(c.mac)),
+				}, macContent),
 				clientTrafficCell(c, 'tx', tx, prefs.unit),
 				clientTrafficCell(c, 'rx', rx, prefs.unit),
 				clientTrafficTotalCell(c, 'tx', showClientTotals),

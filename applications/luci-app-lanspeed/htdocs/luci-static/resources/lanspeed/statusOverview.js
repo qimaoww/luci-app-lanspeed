@@ -6,6 +6,7 @@
 'require lanspeed.statusShell as statusShell';
 'require lanspeed.statusRefresh as statusRefresh';
 'require lanspeed.statusRateMeta as statusRateMeta';
+'require lanspeed.macVendor as macVendor';
 
 var SOURCE_KEYS = [ 'status', 'clients', 'interfaces', 'uci' ];
 var LIVE_SOURCE_KEYS = [ 'status', 'clients', 'interfaces' ];
@@ -720,6 +721,7 @@ return baseclass.extend({
 				hardFailure: normalized.hardFailure,
 				livePair: normalized.livePair,
 				filter: '',
+				vendorLookup: macVendor.lookup,
 			page: 1,
 			loading: false,
 				manualBusy: false,
@@ -733,10 +735,14 @@ return baseclass.extend({
 				return statusRefresh.refreshAvailability(viewState, viewState.refs);
 			};
 			var controller = createController(viewState);
+			var vendorLoad = macVendor.load();
 			var built = statusShell.buildShell(viewState);
 			viewState.refs = built.refs;
 			if (viewState.attachRoot) viewState.attachRoot(built.root);
 			viewState.refreshLive();
+			vendorLoad.then(function() {
+				if (!viewState.isDestroyed()) viewState.refreshLive();
+			});
 			/* LuCI appends the returned root after render() returns. Apply the
 			 * initial column canvas after attachment and once more after the first
 			 * layout pass; the first callback can otherwise capture the table's
