@@ -23,7 +23,7 @@ SETTLE_MS=${LANSPEED_AUDIT_SETTLE_MS:-600}
 
 usage() {
 	cat <<EOF
-Usage: $0 --theme {aurora|argon|bootstrap} --mode {light|dark} [options]
+Usage: $0 --theme {aurora|argon|bootstrap|shadcn} --mode {light|dark} [options]
 
 Required environment:
   LANSPEED_BASE_URL            Router origin, for example http://192.0.2.1.
@@ -129,8 +129,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$THEME" in
-	aurora|argon|bootstrap) ;;
-	*) die "--theme must be aurora, argon, or bootstrap" ;;
+	aurora|argon|bootstrap|shadcn) ;;
+	*) die "--theme must be aurora, argon, bootstrap, or shadcn" ;;
 esac
 
 case "$MODE" in

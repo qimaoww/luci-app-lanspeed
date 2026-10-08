@@ -5,6 +5,7 @@
 'require lanspeed.statusStyleAurora as statusStyleAurora';
 'require lanspeed.statusStyleArgon as statusStyleArgon';
 'require lanspeed.statusStyleBootstrap as statusStyleBootstrap';
+'require lanspeed.statusStyleShadcn as statusStyleShadcn';
 'require lanspeed.statusStyleResponsive as statusStyleResponsive';
 
 /* Theme modules precede shared responsive rules so mobile fixes win the cascade. */
@@ -13,6 +14,7 @@ var STATUS_LAYOUT_CSS = [
 	statusStyleAurora.CSS,
 	statusStyleArgon.CSS,
 	statusStyleBootstrap.CSS,
+	statusStyleShadcn.CSS,
 	statusStyleResponsive.CSS
 ].join('\n');
 

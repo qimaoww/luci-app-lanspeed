@@ -7,6 +7,7 @@ var PAGE_CHROME_NODE = '__lanspeedPageChromeNode';
 var PAGE_CHROME_THEME = 'data-lanspeed-page-theme';
 var ARGON_CLASS = 'lanspeed-theme-argon';
 var BOOTSTRAP_CLASS = 'lanspeed-theme-bootstrap';
+var SHADCN_CLASS = 'lanspeed-theme-shadcn';
 var COLOR_MODE_CLEANUP = '__lanspeedColorModeCleanup';
 var AURORA_CONTRAST_PROPERTIES = [
 	'--lanspeed-accent-safe',
@@ -823,6 +824,16 @@ function isBootstrap(doc) {
 	return !!(doc && hasBootstrapAsset(doc));
 }
 
+function hasShadcnAsset(doc) {
+	return hasSelector(doc, 'link[href*="/luci-static/shadcn/"]') ||
+		hasSelector(doc, 'html[data-shadcn-media]');
+}
+
+function isShadcn(doc) {
+	doc = docOrGlobal(doc);
+	return !!(doc && hasShadcnAsset(doc));
+}
+
 return baseclass.extend({
 	detect: function(doc) {
 		if (isAurora(doc))
@@ -831,6 +842,8 @@ return baseclass.extend({
 			return 'argon';
 		if (isBootstrap(doc))
 			return 'bootstrap';
+		if (isShadcn(doc))
+			return 'shadcn';
 		return '';
 	},
 
@@ -842,6 +855,8 @@ return baseclass.extend({
 			return ARGON_CLASS;
 		if (theme === 'bootstrap')
 			return BOOTSTRAP_CLASS;
+		if (theme === 'shadcn')
+			return SHADCN_CLASS;
 		return '';
 	},
 
@@ -860,6 +875,7 @@ return baseclass.extend({
 			root.classList.remove(AURORA_CLASS);
 			root.classList.remove(ARGON_CLASS);
 			root.classList.remove(BOOTSTRAP_CLASS);
+			root.classList.remove(SHADCN_CLASS);
 		}
 		if (root.removeAttribute)
 			root.removeAttribute('data-lanspeed-theme');

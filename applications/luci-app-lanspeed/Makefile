@@ -57,6 +57,7 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/configStyleAurora.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleBase.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleBootstrap.js \
+		./htdocs/luci-static/resources/lanspeed/configStyleShadcn.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleResponsive.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleShared.js \
 		./htdocs/luci-static/resources/lanspeed/configView.js \
@@ -65,6 +66,7 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/designSystemAurora.js \
 		./htdocs/luci-static/resources/lanspeed/designSystemBase.js \
 		./htdocs/luci-static/resources/lanspeed/designSystemBootstrap.js \
+		./htdocs/luci-static/resources/lanspeed/designSystemShadcn.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsRefresh.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsShell.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyle.js \
@@ -72,6 +74,7 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleAurora.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleBase.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleBootstrap.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleShadcn.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleResponsive.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsSchema.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsResources.js \
@@ -93,6 +96,7 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/clientDetailStyleBootstrap.js \
 		./htdocs/luci-static/resources/lanspeed/clientDetailStyleArgon.js \
 		./htdocs/luci-static/resources/lanspeed/clientDetailStyleAurora.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailStyleShadcn.js \
 		./htdocs/luci-static/resources/lanspeed/clientDetailStyleResponsive.js \
 		./htdocs/luci-static/resources/lanspeed/clientDetailRefresh.js \
 		./htdocs/luci-static/resources/lanspeed/clientDetailView.js \
@@ -111,6 +115,7 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/statusStyleAurora.js \
 		./htdocs/luci-static/resources/lanspeed/statusStyleBase.js \
 		./htdocs/luci-static/resources/lanspeed/statusStyleBootstrap.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyleShadcn.js \
 		./htdocs/luci-static/resources/lanspeed/statusStyleResponsive.js \
 		./htdocs/luci-static/resources/lanspeed/statusOverview.js \
 		./htdocs/luci-static/resources/lanspeed/statusView.js \
