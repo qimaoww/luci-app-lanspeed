@@ -5,6 +5,7 @@
 'require lanspeed.diagnosticsStyleAurora as diagnosticsStyleAurora';
 'require lanspeed.diagnosticsStyleArgon as diagnosticsStyleArgon';
 'require lanspeed.diagnosticsStyleBootstrap as diagnosticsStyleBootstrap';
+'require lanspeed.diagnosticsStyleShadcn as diagnosticsStyleShadcn';
 'require lanspeed.diagnosticsStyleResponsive as diagnosticsStyleResponsive';
 
 var DIAGNOSTICS_LAYOUT_CSS = [
@@ -12,6 +13,7 @@ var DIAGNOSTICS_LAYOUT_CSS = [
 	diagnosticsStyleAurora.CSS,
 	diagnosticsStyleArgon.CSS,
 	diagnosticsStyleBootstrap.CSS,
+	diagnosticsStyleShadcn.CSS,
 	diagnosticsStyleResponsive.CSS
 ].join('\n');
 

@@ -51,6 +51,7 @@ const EXPECTED_MODULES = [
 	'designSystemAurora.js',
 	'designSystemArgon.js',
 	'designSystemBootstrap.js',
+	'designSystemShadcn.js',
 	'geoLocation.js',
 	'clientConnections.js',
 	'clientControl.js',
@@ -66,6 +67,7 @@ const EXPECTED_MODULES = [
 	'clientDetailStyleAurora.js',
 	'clientDetailStyleArgon.js',
 	'clientDetailStyleBootstrap.js',
+	'clientDetailStyleShadcn.js',
 	'clientDetailStyleResponsive.js',
 	'diagnosticsRefresh.js',
 	'diagnosticsShell.js',
@@ -74,6 +76,7 @@ const EXPECTED_MODULES = [
 	'diagnosticsStyleAurora.js',
 	'diagnosticsStyleArgon.js',
 	'diagnosticsStyleBootstrap.js',
+	'diagnosticsStyleShadcn.js',
 	'diagnosticsStyleResponsive.js',
 	'diagnosticsSchema.js',
 	'diagnosticsResources.js',
@@ -91,6 +94,7 @@ const EXPECTED_MODULES = [
 	'statusStyleAurora.js',
 	'statusStyleArgon.js',
 	'statusStyleBootstrap.js',
+	'statusStyleShadcn.js',
 	'statusStyleResponsive.js',
 	'statusView.js',
 	'statusIp.js',
@@ -104,6 +108,7 @@ const EXPECTED_MODULES = [
 	'configStyleAurora.js',
 	'configStyleArgon.js',
 	'configStyleBootstrap.js',
+	'configStyleShadcn.js',
 	'configStyleShared.js',
 	'configStyleResponsive.js',
 	'configModel.js',
@@ -135,7 +140,8 @@ const DESIGN_SYSTEM_PARTS = [
 	'designSystemBase.js',
 	'designSystemAurora.js',
 	'designSystemArgon.js',
-	'designSystemBootstrap.js'
+	'designSystemBootstrap.js',
+	'designSystemShadcn.js'
 ];
 
 const STATUS_STYLE_PARTS = [
@@ -143,6 +149,7 @@ const STATUS_STYLE_PARTS = [
 	'statusStyleAurora.js',
 	'statusStyleArgon.js',
 	'statusStyleBootstrap.js',
+	'statusStyleShadcn.js',
 	'statusStyleResponsive.js'
 ];
 
@@ -151,6 +158,7 @@ const CLIENT_DETAIL_STYLE_PARTS = [
 	'clientDetailStyleAurora.js',
 	'clientDetailStyleArgon.js',
 	'clientDetailStyleBootstrap.js',
+	'clientDetailStyleShadcn.js',
 	'clientDetailStyleResponsive.js'
 ];
 
@@ -159,6 +167,7 @@ const DIAGNOSTICS_STYLE_PARTS = [
 	'diagnosticsStyleAurora.js',
 	'diagnosticsStyleArgon.js',
 	'diagnosticsStyleBootstrap.js',
+	'diagnosticsStyleShadcn.js',
 	'diagnosticsStyleResponsive.js'
 ];
 
@@ -168,6 +177,7 @@ const CONFIG_STYLE_PARTS = [
 	'configStyleAurora.js',
 	'configStyleArgon.js',
 	'configStyleBootstrap.js',
+	'configStyleShadcn.js',
 	'configStyleResponsive.js'
 ];
 
@@ -198,12 +208,14 @@ const MODULE_REQUIRES = {
 		'lanspeed.designSystemBase',
 		'lanspeed.designSystemAurora',
 		'lanspeed.designSystemArgon',
-		'lanspeed.designSystemBootstrap'
+		'lanspeed.designSystemBootstrap',
+		'lanspeed.designSystemShadcn'
 	],
 	'designSystemBase.js': [ 'baseclass' ],
 	'designSystemAurora.js': [ 'baseclass' ],
 	'designSystemArgon.js': [ 'baseclass' ],
 	'designSystemBootstrap.js': [ 'baseclass' ],
+	'designSystemShadcn.js': [ 'baseclass' ],
 	'geoLocation.js': [ 'baseclass' ],
 	'clientConnections.js': [ 'baseclass', 'lanspeed.format' ],
 	'clientControl.js': [ 'baseclass', 'ui', 'lanspeed.rpc', 'lanspeed.clientControlReasons' ],
@@ -242,12 +254,14 @@ const MODULE_REQUIRES = {
 		'lanspeed.clientDetailStyleAurora',
 		'lanspeed.clientDetailStyleArgon',
 		'lanspeed.clientDetailStyleBootstrap',
+		'lanspeed.clientDetailStyleShadcn',
 		'lanspeed.clientDetailStyleResponsive'
 	],
 	'clientDetailStyleBase.js': [ 'baseclass' ],
 	'clientDetailStyleAurora.js': [ 'baseclass' ],
 	'clientDetailStyleArgon.js': [ 'baseclass' ],
 	'clientDetailStyleBootstrap.js': [ 'baseclass' ],
+	'clientDetailStyleShadcn.js': [ 'baseclass' ],
 	'clientDetailStyleResponsive.js': [ 'baseclass' ],
 	'diagnosticsRefresh.js': [
 		'baseclass',
@@ -270,12 +284,14 @@ const MODULE_REQUIRES = {
 		'lanspeed.diagnosticsStyleAurora',
 		'lanspeed.diagnosticsStyleArgon',
 		'lanspeed.diagnosticsStyleBootstrap',
+		'lanspeed.diagnosticsStyleShadcn',
 		'lanspeed.diagnosticsStyleResponsive'
 	],
 	'diagnosticsStyleBase.js': [ 'baseclass' ],
 	'diagnosticsStyleAurora.js': [ 'baseclass' ],
 	'diagnosticsStyleArgon.js': [ 'baseclass' ],
 	'diagnosticsStyleBootstrap.js': [ 'baseclass' ],
+	'diagnosticsStyleShadcn.js': [ 'baseclass' ],
 	'diagnosticsStyleResponsive.js': [ 'baseclass' ],
 	'diagnosticsSchema.js': [ 'baseclass' ],
 	'diagnosticsResources.js': [ 'baseclass', 'lanspeed.diagnosticsSchema' ],
@@ -306,12 +322,14 @@ const MODULE_REQUIRES = {
 		'lanspeed.statusStyleAurora',
 		'lanspeed.statusStyleArgon',
 		'lanspeed.statusStyleBootstrap',
+		'lanspeed.statusStyleShadcn',
 		'lanspeed.statusStyleResponsive'
 	],
 	'statusStyleBase.js': [ 'baseclass' ],
 	'statusStyleAurora.js': [ 'baseclass' ],
 	'statusStyleArgon.js': [ 'baseclass' ],
 	'statusStyleBootstrap.js': [ 'baseclass' ],
+	'statusStyleShadcn.js': [ 'baseclass' ],
 	'statusStyleResponsive.js': [ 'baseclass' ],
 	'statusView.js': [
 		'baseclass',
@@ -355,12 +373,14 @@ const MODULE_REQUIRES = {
 		'lanspeed.configStyleAurora',
 		'lanspeed.configStyleArgon',
 		'lanspeed.configStyleBootstrap',
+		'lanspeed.configStyleShadcn',
 		'lanspeed.configStyleResponsive'
 	],
 	'configStyleBase.js': [ 'baseclass' ],
 	'configStyleAurora.js': [ 'baseclass' ],
 	'configStyleArgon.js': [ 'baseclass' ],
 	'configStyleBootstrap.js': [ 'baseclass' ],
+	'configStyleShadcn.js': [ 'baseclass' ],
 	'configStyleShared.js': [ 'baseclass' ],
 	'configStyleResponsive.js': [ 'baseclass' ],
 	'configForm.js': [ 'baseclass', 'uci', 'lanspeed.rpc', 'lanspeed.ifaceConfig', 'lanspeed.configModel', 'lanspeed.configPlatform' ],
@@ -464,6 +484,13 @@ function assertStyleModuleIsolation(name, src) {
 	     src.includes('lanspeed-theme-argon'))) {
 		fail(`${name} must contain Bootstrap selectors only`);
 	}
+	if (/StyleShadcn\.js$/.test(name) &&
+	    (!src.includes('lanspeed-theme-shadcn') ||
+	     src.includes('lanspeed-theme-aurora') ||
+	     src.includes('lanspeed-theme-argon') ||
+	     src.includes('lanspeed-theme-bootstrap'))) {
+		fail(`${name} must contain shadcn selectors only`);
+	}
 	if ((name === 'statusStyleResponsive.js' || name === 'configStyleResponsive.js') &&
 	    (!src.includes('lanspeed-theme-aurora') ||
 	     !src.includes('lanspeed-theme-argon') ||
@@ -483,6 +510,7 @@ function assertProductDesignSystem() {
 	const auroraCss = loadStyleLeaf('designSystemAurora.js').CSS;
 	const argonCss = loadStyleLeaf('designSystemArgon.js').CSS;
 	const bootstrapCss = loadStyleLeaf('designSystemBootstrap.js').CSS;
+	const shadcnCss = loadStyleLeaf('designSystemShadcn.js').CSS;
 	const requiredTokens = [
 		'page-bg', 'surface', 'surface-muted', 'surface-raised',
 		'text', 'text-muted', 'text-subtle', 'border', 'border-strong',
@@ -500,7 +528,8 @@ function assertProductDesignSystem() {
 		[ 'designSystemBase.js', baseCss ],
 		[ 'designSystemAurora.js', auroraCss ],
 		[ 'designSystemArgon.js', argonCss ],
-		[ 'designSystemBootstrap.js', bootstrapCss ]
+		[ 'designSystemBootstrap.js', bootstrapCss ],
+		[ 'designSystemShadcn.js', shadcnCss ]
 	].forEach(function(entry) {
 		requiredTokens.forEach(function(token) {
 			if (!entry[1].includes(`--lanspeed-${token}:`))
@@ -655,7 +684,8 @@ function assertProductDesignSystem() {
 	const themeBundles = [
 		[ 'Aurora', 'Aurora', 'aurora' ],
 		[ 'Argon', 'Argon', 'argon' ],
-		[ 'Bootstrap', 'Bootstrap', 'bootstrap' ]
+		[ 'Bootstrap', 'Bootstrap', 'bootstrap' ],
+		[ 'Shadcn', 'Shadcn', 'shadcn' ]
 	].map(function(theme) {
 		const pageFiles = [
 			`statusStyle${theme[1]}.js`,
@@ -671,8 +701,8 @@ function assertProductDesignSystem() {
 		}).join('\n');
 		return [ theme[0], css ];
 	});
-	if (new Set(themeBundles.map(function(theme) { return theme[1]; })).size !== 3) {
-		fail('Aurora, Argon and Bootstrap must retain independent page layout implementations');
+	if (new Set(themeBundles.map(function(theme) { return theme[1]; })).size !== 4) {
+		fail('Aurora, Argon, Bootstrap and Shadcn must retain independent page layout implementations');
 	}
 	const bootstrapDiagnosticsCss = loadStyleLeaf('diagnosticsStyleBootstrap.js').CSS;
 	if (!bootstrapDiagnosticsCss.includes(
@@ -910,19 +940,20 @@ function assertStyleAggregation() {
 	const designAurora = loadStyleLeaf('designSystemAurora.js');
 	const designArgon = loadStyleLeaf('designSystemArgon.js');
 	const designBootstrap = loadStyleLeaf('designSystemBootstrap.js');
+	const designShadcn = loadStyleLeaf('designSystemShadcn.js');
 	const designSystem = vm.compileFunction(readModuleByName('designSystem.js'), [
 		'baseclass', 'designSystemBase', 'designSystemAurora',
-		'designSystemArgon', 'designSystemBootstrap'
+		'designSystemArgon', 'designSystemBootstrap', 'designSystemShadcn'
 	], { filename: 'resources/lanspeed/designSystem.js' })(
-		fakeBaseclass, designBase, designAurora, designArgon, designBootstrap
+		fakeBaseclass, designBase, designAurora, designArgon, designBootstrap, designShadcn
 	);
 	const expectedDesign = [
-		designBase.CSS, designAurora.CSS, designArgon.CSS, designBootstrap.CSS
+		designBase.CSS, designAurora.CSS, designArgon.CSS, designBootstrap.CSS, designShadcn.CSS
 	].join('\n');
 	if (designSystem.CSS !== expectedDesign)
-		fail('designSystem.js must aggregate Base, Aurora, Argon and Bootstrap tokens in cascade order');
+		fail('designSystem.js must aggregate Base, Aurora, Argon, Bootstrap and Shadcn tokens in cascade order');
 	[ 'designSystemBase.js', 'designSystemAurora.js', 'designSystemArgon.js',
-		'designSystemBootstrap.js' ].forEach(function(name) {
+		'designSystemBootstrap.js', 'designSystemShadcn.js' ].forEach(function(name) {
 		const css = loadStyleLeaf(name).CSS;
 		if (!css.includes('--lanspeed-accent') || !css.includes('--lanspeed-surface') ||
 		    !css.includes('--lanspeed-border') || !css.includes('--lanspeed-focus-ring'))
@@ -945,17 +976,18 @@ function assertStyleAggregation() {
 	const statusAurora = loadStyleLeaf('statusStyleAurora.js');
 	const statusArgon = loadStyleLeaf('statusStyleArgon.js');
 	const statusBootstrap = loadStyleLeaf('statusStyleBootstrap.js');
+	const statusShadcn = loadStyleLeaf('statusStyleShadcn.js');
 	const statusResponsive = loadStyleLeaf('statusStyleResponsive.js');
 	const status = vm.compileFunction(readModuleByName('statusStyle.js'), [
 		'baseclass', 'designSystem', 'statusStyleBase', 'statusStyleAurora',
-		'statusStyleArgon', 'statusStyleBootstrap', 'statusStyleResponsive'
+		'statusStyleArgon', 'statusStyleBootstrap', 'statusStyleShadcn', 'statusStyleResponsive'
 	], { filename: 'resources/lanspeed/statusStyle.js' })(
 		fakeBaseclass, designSystem, statusBase, statusAurora, statusArgon,
-		statusBootstrap, statusResponsive
+		statusBootstrap, statusShadcn, statusResponsive
 	);
 	const expectedStatus = [
 		statusBase.CSS, statusAurora.CSS, statusArgon.CSS,
-		statusBootstrap.CSS, statusResponsive.CSS
+		statusBootstrap.CSS, statusShadcn.CSS, statusResponsive.CSS
 	].join('\n');
 	if (status.CSS !== designSystem.CSS + '\n' + expectedStatus ||
 	    status.LAYOUT_CSS !== expectedStatus)
@@ -965,17 +997,19 @@ function assertStyleAggregation() {
 	const diagnosticsAurora = loadStyleLeaf('diagnosticsStyleAurora.js');
 	const diagnosticsArgon = loadStyleLeaf('diagnosticsStyleArgon.js');
 	const diagnosticsBootstrap = loadStyleLeaf('diagnosticsStyleBootstrap.js');
+	const diagnosticsShadcn = loadStyleLeaf('diagnosticsStyleShadcn.js');
 	const diagnosticsResponsive = loadStyleLeaf('diagnosticsStyleResponsive.js');
 	const diagnostics = vm.compileFunction(readModuleByName('diagnosticsStyle.js'), [
 		'baseclass', 'designSystem', 'diagnosticsStyleBase', 'diagnosticsStyleAurora',
-		'diagnosticsStyleArgon', 'diagnosticsStyleBootstrap', 'diagnosticsStyleResponsive'
+		'diagnosticsStyleArgon', 'diagnosticsStyleBootstrap', 'diagnosticsStyleShadcn',
+		'diagnosticsStyleResponsive'
 	], { filename: 'resources/lanspeed/diagnosticsStyle.js' })(
 		fakeBaseclass, designSystem, diagnosticsBase, diagnosticsAurora, diagnosticsArgon,
-		diagnosticsBootstrap, diagnosticsResponsive
+		diagnosticsBootstrap, diagnosticsShadcn, diagnosticsResponsive
 	);
 	const expectedDiagnostics = [
 		diagnosticsBase.CSS, diagnosticsAurora.CSS, diagnosticsArgon.CSS,
-		diagnosticsBootstrap.CSS, diagnosticsResponsive.CSS
+		diagnosticsBootstrap.CSS, diagnosticsShadcn.CSS, diagnosticsResponsive.CSS
 	].join('\n');
 	if (diagnostics.CSS !== designSystem.CSS + '\n' + expectedDiagnostics ||
 	    diagnostics.LAYOUT_CSS !== expectedDiagnostics)
@@ -985,19 +1019,20 @@ function assertStyleAggregation() {
 	const configAurora = loadStyleLeaf('configStyleAurora.js');
 	const configArgon = loadStyleLeaf('configStyleArgon.js');
 	const configBootstrap = loadStyleLeaf('configStyleBootstrap.js');
+	const configShadcn = loadStyleLeaf('configStyleShadcn.js');
 	const configShared = loadStyleLeaf('configStyleShared.js');
 	const configResponsive = loadStyleLeaf('configStyleResponsive.js');
 	const config = vm.compileFunction(readModuleByName('configStyle.js'), [
 		'baseclass', 'designSystem', 'configStyleBase', 'configStyleShared',
 		'configStyleAurora', 'configStyleArgon', 'configStyleBootstrap',
-		'configStyleResponsive'
+		'configStyleShadcn', 'configStyleResponsive'
 	], { filename: 'resources/lanspeed/configStyle.js' })(
 		fakeBaseclass, designSystem, configBase, configShared, configAurora,
-		configArgon, configBootstrap, configResponsive
+		configArgon, configBootstrap, configShadcn, configResponsive
 	);
 	const expectedConfig = [
 		configBase.CSS, configShared.CSS, configAurora.CSS,
-		configArgon.CSS, configBootstrap.CSS, configResponsive.CSS
+		configArgon.CSS, configBootstrap.CSS, configShadcn.CSS, configResponsive.CSS
 	].join('\n');
 	if (config.CSS !== designSystem.CSS + '\n' + expectedConfig ||
 	    config.LAYOUT_CSS !== expectedConfig)
@@ -1520,6 +1555,7 @@ function assertClientDetailStyleComposer(src) {
 		'lanspeed.clientDetailStyleAurora',
 		'lanspeed.clientDetailStyleArgon',
 		'lanspeed.clientDetailStyleBootstrap',
+		'lanspeed.clientDetailStyleShadcn',
 		'lanspeed.clientDetailStyleResponsive'
 	];
 	if (JSON.stringify(moduleRequireNames(src)) !== JSON.stringify(expectedRequires)) {
@@ -1540,14 +1576,15 @@ function assertClientDetailStyleComposer(src) {
 	const Aurora = { CSS: 'aurora' };
 	const Argon = { CSS: 'argon' };
 	const Bootstrap = { CSS: 'bootstrap' };
+	const Shadcn = { CSS: 'shadcn' };
 	const Responsive = { CSS: 'responsive' };
 	const detail = vm.compileFunction(src, [
-		'baseclass', 'DesignSystem', 'statusStyle', 'Base', 'Aurora', 'Argon', 'Bootstrap', 'Responsive'
+		'baseclass', 'DesignSystem', 'statusStyle', 'Base', 'Aurora', 'Argon', 'Bootstrap', 'Shadcn', 'Responsive'
 	], { filename: 'resources/lanspeed/clientDetailStyle.js' })(
-		fakeBaseclass, designSystem, statusStyle, Base, Aurora, Argon, Bootstrap, Responsive
+		fakeBaseclass, designSystem, statusStyle, Base, Aurora, Argon, Bootstrap, Shadcn, Responsive
 	);
-	if (!detail || detail.CSS !== 'design\nstatus\nbase\naurora\nargon\nbootstrap\nresponsive') {
-		fail('clientDetailStyle.js must compose design tokens, status, Base, Aurora, Argon, Bootstrap and Responsive CSS in exact order');
+	if (!detail || detail.CSS !== 'design\nstatus\nbase\naurora\nargon\nbootstrap\nshadcn\nresponsive') {
+		fail('clientDetailStyle.js must compose design tokens, status, Base, Aurora, Argon, Bootstrap, Shadcn and Responsive CSS in exact order');
 	}
 }
 
@@ -5804,7 +5841,8 @@ function assertStatusStyleModule(src) {
 	const themeCss = [
 		[ 'Aurora', 'aurora', loadStyleLeaf('statusStyleAurora.js').CSS ],
 		[ 'Argon', 'argon', loadStyleLeaf('statusStyleArgon.js').CSS ],
-		[ 'Bootstrap', 'bootstrap', loadStyleLeaf('statusStyleBootstrap.js').CSS ]
+		[ 'Bootstrap', 'bootstrap', loadStyleLeaf('statusStyleBootstrap.js').CSS ],
+		[ 'Shadcn', 'shadcn', loadStyleLeaf('statusStyleShadcn.js').CSS ]
 	];
 
 	if (!src.includes('CSS: LAYOUT_CSS') || !src.includes('LAYOUT_CSS: STATUS_LAYOUT_CSS'))
@@ -6090,7 +6128,8 @@ function assertDiagnosticsStyleModule(src) {
 	const themeCss = [
 		[ 'Aurora', 'aurora', loadStyleLeaf('diagnosticsStyleAurora.js').CSS ],
 		[ 'Argon', 'argon', loadStyleLeaf('diagnosticsStyleArgon.js').CSS ],
-		[ 'Bootstrap', 'bootstrap', loadStyleLeaf('diagnosticsStyleBootstrap.js').CSS ]
+		[ 'Bootstrap', 'bootstrap', loadStyleLeaf('diagnosticsStyleBootstrap.js').CSS ],
+		[ 'Shadcn', 'shadcn', loadStyleLeaf('diagnosticsStyleShadcn.js').CSS ]
 	];
 
 	if (!src.includes('CSS: DIAGNOSTICS_CSS') ||
@@ -6267,6 +6306,7 @@ function assertConfigStyleModule(src) {
 	const auroraCss = loadStyleLeaf('configStyleAurora.js').CSS;
 	const argonCss = loadStyleLeaf('configStyleArgon.js').CSS;
 	const bootstrapCss = loadStyleLeaf('configStyleBootstrap.js').CSS;
+	const shadcnCss = loadStyleLeaf('configStyleShadcn.js').CSS;
 
 	if (!src.includes('CSS: CONFIG_CSS') || !src.includes('LAYOUT_CSS: CONFIG_LAYOUT_CSS'))
 		fail('configStyle.js must export composed design-system CSS and config-only layout CSS');
@@ -6317,7 +6357,8 @@ function assertConfigStyleModule(src) {
 	[
 		[ 'Aurora', 'aurora', auroraCss ],
 		[ 'Argon', 'argon', argonCss ],
-		[ 'Bootstrap', 'bootstrap', bootstrapCss ]
+		[ 'Bootstrap', 'bootstrap', bootstrapCss ],
+		[ 'Shadcn', 'shadcn', shadcnCss ]
 	].forEach(function(theme) {
 		if (!theme[2].includes(`lanspeed-theme-${theme[1]}`) ||
 		    !theme[2].includes('.lanspeed-config-table') ||
@@ -6333,8 +6374,8 @@ function assertConfigStyleModule(src) {
 	    !auroraCss.includes('var(--lanspeed-accent-soft)') ||
 	    !auroraCss.includes('.lanspeed-config-root.lanspeed-theme-aurora.lanspeed-config-x86 .lanspeed-ifcfg-table tbody'))
 		fail('configStyleAurora.js must implement an Aurora-native segmented interface control');
-	if (new Set([ auroraCss, argonCss, bootstrapCss ]).size !== 3)
-		fail('Aurora, Argon and Bootstrap configuration layouts must remain independent implementations');
+	if (new Set([ auroraCss, argonCss, bootstrapCss, shadcnCss ]).size !== 4)
+		fail('Aurora, Argon, Bootstrap and Shadcn configuration layouts must remain independent implementations');
 }
 
 function assertConfigFormModule(src) {

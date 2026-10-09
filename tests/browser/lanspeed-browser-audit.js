@@ -55,10 +55,56 @@ async page => {
 		addCheck('screenshot', true, screenshotSegments);
 	}
 
+	function parseOklch(body) {
+		const parts = String(body || '').replace(/\//g, ' ').split(/[\s,]+/).filter(Boolean);
+		if (parts.length < 3) return null;
+		function scalar(part) {
+			if (part === undefined) return null;
+			const percent = /%$/.test(part);
+			const number = Number(String(part).replace(/%$/, ''));
+			if (!isFinite(number)) return null;
+			return percent ? number / 100 : number;
+		}
+		function hue(part) {
+			const number = Number(String(part).replace(/(?:deg|grad|rad|turn)$/i, ''));
+			if (!isFinite(number)) return null;
+			if (/grad$/i.test(part)) return number * 0.9;
+			if (/rad$/i.test(part)) return number * 180 / Math.PI;
+			if (/turn$/i.test(part)) return number * 360;
+			return number;
+		}
+		const lightness = scalar(parts[0]);
+		const chroma = scalar(parts[1]);
+		const hueValue = hue(parts[2]);
+		if (lightness === null || chroma === null || hueValue === null) return null;
+		const aAxis = chroma * Math.cos(hueValue * Math.PI / 180);
+		const bAxis = chroma * Math.sin(hueValue * Math.PI / 180);
+		const lPrime = lightness + 0.3963377774 * aAxis + 0.2158037573 * bAxis;
+		const mPrime = lightness - 0.1055613458 * aAxis - 0.0638541728 * bAxis;
+		const sPrime = lightness - 0.0894841775 * aAxis - 1.2914855480 * bAxis;
+		const l = lPrime * lPrime * lPrime;
+		const m = mPrime * mPrime * mPrime;
+		const s = sPrime * sPrime * sPrime;
+		function gamma(channel) {
+			const linear = channel <= 0.0031308
+				? 12.92 * channel : 1.055 * Math.pow(channel, 1 / 2.4) - 0.055;
+			return Math.max(0, Math.min(255, linear * 255));
+		}
+		const alphaValue = parts[3] === undefined ? 1 : scalar(parts[3]);
+		return {
+			r: gamma(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+			g: gamma(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+			b: gamma(-0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s),
+			a: alphaValue === null ? 1 : Math.max(0, Math.min(1, alphaValue))
+		};
+	}
+
 	function parseRgb(value) {
 		const source = String(value || '').trim();
 		const rgb = source.match(/^rgba?\((.*)\)$/i);
 		const srgb = source.match(/^color\(srgb\s+(.+)\)$/i);
+		const oklch = source.match(/^oklch\((.*)\)$/i);
+		if (oklch) return parseOklch(oklch[1]);
 		let parts;
 		let scale;
 		if (rgb) {
@@ -330,7 +376,8 @@ async page => {
 					'--brand', '--surface', '--text', '--text-muted', '--hairline', '--control-bg',
 					'--primary', '--dark-primary', '--gray',
 					'--primary-color-high', '--background-color-high', '--text-color-high',
-					'--text-color-medium', '--border-color-low', '--warn-color-high', '--error-color-high'
+					'--text-color-medium', '--border-color-low', '--warn-color-high', '--error-color-high',
+					'--bg', '--muted-foreground', '--border', '--warning', '--danger'
 				];
 				const nativeTokens = {};
 				nativeTokenNames.forEach(name => {
@@ -367,6 +414,12 @@ async page => {
 					bootstrapBorder: resolveColor('var(--border-color-low,transparent)'),
 					bootstrapWarning: resolveColor('var(--warn-color-high,transparent)'),
 					bootstrapDanger: resolveColor('var(--error-color-high,transparent)'),
+					shadcnSurface: resolveColor('var(--surface,transparent)'),
+					shadcnText: resolveColor('var(--text,transparent)'),
+					shadcnMuted: resolveColor('var(--muted-foreground,transparent)'),
+					shadcnBorder: resolveColor('var(--border,transparent)'),
+					shadcnWarning: resolveColor('var(--warning,transparent)'),
+					shadcnDanger: resolveColor('var(--danger,transparent)'),
 					expectedAccent: args.expectedAccent && CSS.supports('color', args.expectedAccent)
 						? resolveColor(args.expectedAccent) : null
 				};
@@ -542,6 +595,27 @@ async page => {
 						mixedColor(themeEvidence.resolved.bootstrapWarning, themeEvidence.resolved.bootstrapText, .35), 3) &&
 					colorsNear(themeEvidence.resolved.danger,
 						mixedColor(themeEvidence.resolved.bootstrapDanger, themeEvidence.resolved.bootstrapText, .55), 3),
+					themeEvidence.resolved);
+			}
+			if (config.expectedTheme === 'shadcn') {
+				const requiredNative = [ '--brand', '--surface', '--text', '--muted-foreground',
+					'--border', '--warning', '--danger' ];
+				const missingNative = requiredNative.filter(name => !themeEvidence.nativeTokens[name]);
+				addCheck('shadcn-native-tokens', missingNative.length === 0, {
+					missing: missingNative,
+					values: themeEvidence.nativeTokens
+				});
+				addCheck('shadcn-native-mapping',
+					colorsNear(themeEvidence.resolved.accent, themeEvidence.resolved.brand, 3) &&
+					colorsNear(themeEvidence.resolved.surface, themeEvidence.resolved.shadcnSurface, 3) &&
+					colorsNear(themeEvidence.resolved.text, themeEvidence.resolved.shadcnText, 3) &&
+					colorsNear(themeEvidence.resolved.textMuted,
+						mixedColor(themeEvidence.resolved.shadcnMuted, themeEvidence.resolved.shadcnText, .65), 3) &&
+					colorsNear(themeEvidence.resolved.border, themeEvidence.resolved.shadcnBorder, 3) &&
+					colorsNear(themeEvidence.resolved.warning,
+						mixedColor(themeEvidence.resolved.shadcnWarning, themeEvidence.resolved.shadcnText, .56), 6) &&
+					colorsNear(themeEvidence.resolved.danger,
+						mixedColor(themeEvidence.resolved.shadcnDanger, themeEvidence.resolved.shadcnText, .80), 3),
 					themeEvidence.resolved);
 			}
 
@@ -851,6 +925,49 @@ async page => {
 					const source = String(value || '').trim();
 					const rgb = source.match(/^rgba?\((.*)\)$/i);
 					const srgb = source.match(/^color\(srgb\s+(.+)\)$/i);
+					const oklch = source.match(/^oklch\((.*)\)$/i);
+					if (oklch) {
+						const channels = oklch[1].replace(/\//g, ' ').split(/[\s,]+/).filter(Boolean);
+						if (channels.length < 3) return null;
+						function scalar(part) {
+							const percent = /%$/.test(part);
+							const number = Number(String(part).replace(/%$/, ''));
+							if (!isFinite(number)) return null;
+							return percent ? number / 100 : number;
+						}
+						function hue(part) {
+							const number = Number(String(part).replace(/(?:deg|grad|rad|turn)$/i, ''));
+							if (!isFinite(number)) return null;
+							if (/grad$/i.test(part)) return number * 0.9;
+							if (/rad$/i.test(part)) return number * 180 / Math.PI;
+							if (/turn$/i.test(part)) return number * 360;
+							return number;
+						}
+						const lightness = scalar(channels[0]);
+						const chroma = scalar(channels[1]);
+						const hueValue = hue(channels[2]);
+						if (lightness === null || chroma === null || hueValue === null) return null;
+						const aAxis = chroma * Math.cos(hueValue * Math.PI / 180);
+						const bAxis = chroma * Math.sin(hueValue * Math.PI / 180);
+						const lPrime = lightness + 0.3963377774 * aAxis + 0.2158037573 * bAxis;
+						const mPrime = lightness - 0.1055613458 * aAxis - 0.0638541728 * bAxis;
+						const sPrime = lightness - 0.0894841775 * aAxis - 1.2914855480 * bAxis;
+						const l = lPrime * lPrime * lPrime;
+						const m = mPrime * mPrime * mPrime;
+						const s = sPrime * sPrime * sPrime;
+						function gamma(channel) {
+							const linear = channel <= 0.0031308
+								? 12.92 * channel : 1.055 * Math.pow(channel, 1 / 2.4) - 0.055;
+							return Math.max(0, Math.min(255, linear * 255));
+						}
+						const alphaValue = channels[3] === undefined ? 1 : scalar(channels[3]);
+						return {
+							r: gamma(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+							g: gamma(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+							b: gamma(-0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s),
+							a: alphaValue === null ? 1 : Math.max(0, Math.min(1, alphaValue))
+						};
+					}
 					let parts;
 					let scale;
 					if (rgb) {
@@ -1880,7 +1997,7 @@ async page => {
 						'conn_collector_mode',
 						'enable_bpf', 'enable_conntrack_fallback', 'refresh_interval_ms',
 						'overview_window_samples', 'max_clients', 'active_client_window_ms',
-						'active_client_min_bps', 'show_ipv6',
+						'active_client_min_bps', 'show_client_totals', 'show_ipv6',
 						'hide_private_ipv6', 'hide_ipv6_ranges'
 					]);
 					const uniqueFields = Array.from(new Set(configContract.fieldNames));

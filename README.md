@@ -25,7 +25,7 @@ x86_64 使用独立 TC-BPF 路径；Qualcomm aarch64 NSS 使用 Access Edge 提�
 - CT-Netlink 连接采集失败时回退 CT-Procfs；连接计数不参与客户端总速率。
 - 速率、连接、reload 和慢探针在独立 worker 中执行，普通 RPC 只读取完整发布快照。
 - 诊断页检查 RPC、BPF、ECM、Access Edge、接口和版本契约，并给出机器可读原因。
-- Aurora、Argon、Bootstrap 三主题支持桌面和移动端布局。
+- Aurora、Argon、Bootstrap、shadcn 四主题支持桌面和移动端布局与亮暗模式。
 
 ## 平台一览
 
