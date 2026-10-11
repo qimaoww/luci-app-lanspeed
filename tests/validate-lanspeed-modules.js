@@ -706,9 +706,9 @@ function assertProductDesignSystem() {
 	}
 	const bootstrapDiagnosticsCss = loadStyleLeaf('diagnosticsStyleBootstrap.js').CSS;
 	if (!bootstrapDiagnosticsCss.includes(
-		'.lanspeed-diagnostics-root.lanspeed-theme-bootstrap .lanspeed-diagnostic-stage-heading>h4,') ||
+		'.lanspeed-diagnostic-alert-text') ||
 		!bootstrapDiagnosticsCss.includes('color:var(--lanspeed-text)')) {
-		fail('diagnosticsStyleBootstrap.js must protect diagnostic stage and alert text from low-contrast native inheritance');
+		fail('diagnosticsStyleBootstrap.js must protect diagnostic alert text from low-contrast native inheritance');
 	}
 	const bootstrapStatusCss = loadStyleLeaf('statusStyleBootstrap.js').CSS;
 	[
@@ -920,14 +920,9 @@ function assertAuroraNativeVisualSystem() {
 		fail('statusStyleAurora.js must vertically center each Aurora overview metric');
 	}
 
-	const diagnostic1100Css = mediaSlice(diagnosticsResponsiveCss, 1100, 900);
-	if (diagnostic1100Css.includes('.lanspeed-diagnostics-pipeline{grid-template-columns:repeat(2,minmax(0,1fr))') ||
-	    diagnostic1100Css.includes('.lanspeed-diagnostic-stage:nth-child(3)')) {
-		fail('diagnostics responsive layout must keep the three-stage pipeline intact until mobile width');
-	}
-	const diagnostic900Css = mediaSlice(diagnosticsResponsiveCss, 900, 700);
-	if (!diagnostic900Css.includes('.lanspeed-diagnostic-stage-evidence{grid-template-columns:minmax(0,1fr)}')) {
-		fail('diagnostics responsive layout must stack stage evidence at 900px');
+	if (!diagnosticsResponsiveCss.includes('.lanspeed-diagnostics-facts') ||
+	    !diagnosticsResponsiveCss.includes('grid-template-columns:repeat(2,minmax(0,1fr))')) {
+		fail('diagnostics responsive layout must keep facts readable at narrow widths');
 	}
 
 	if (/\.lanspeed-diagnostics-root\.lanspeed-theme-aurora\{[^}]*font-size\s*:/s.test(diagnosticsCss))
@@ -1206,7 +1201,6 @@ function assertArgonAlignmentContracts() {
 
 	[
 		[ 'statusStyleArgon.js', statusCss ],
-		[ 'diagnosticsStyleArgon.js', diagnosticsCss ],
 		[ 'configStyleArgon.js', configCss ]
 	].forEach(function(entry) {
 		[
@@ -1224,7 +1218,6 @@ function assertArgonAlignmentContracts() {
 		'.lanspeed-theme-argon .lanspeed-metrics{grid-template-columns:repeat(4,minmax(0,1fr));',
 		'@media (max-width:1100px){.lanspeed-theme-argon .lanspeed-metrics{',
 		'grid-template-columns:repeat(2,minmax(0,1fr))',
-		'.lanspeed-theme-argon .lanspeed-sort-button{height:auto!important',
 		'.lanspeed-theme-argon .lanspeed-toolbar label{font-size:.95rem;line-height:1.5rem}',
 		'.lanspeed-root.lanspeed-theme-argon .lanspeed-active-only>input[type="checkbox"]{',
 		'.lanspeed-theme-argon .lanspeed-hint:empty{display:none}'
@@ -1243,10 +1236,7 @@ function assertArgonAlignmentContracts() {
 
 	[
 		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-header>h3{font-size:1.3rem;line-height:1.25!important}',
-		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-body{padding:1rem 1.25rem 1.1rem}',
-		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostic-stage-heading>h4{font-size:.74rem;line-height:1.3!important}',
-		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostics-health-group>h4,',
-		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostics-alert-group>h4{line-height:1.35!important}'
+		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-body{padding:',
 	].forEach(function(rule) {
 		if (!diagnosticsCss.includes(rule))
 			fail(`diagnosticsStyleArgon.js must retain reviewed Argon alignment rule: ${rule}`);

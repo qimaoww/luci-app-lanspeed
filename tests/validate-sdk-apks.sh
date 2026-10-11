@@ -358,7 +358,9 @@ case "$expected_arch" in
 		if grep -aq 'lanspeed_control_clients_0' "$daemon" "$bpf_root/usr/lib/bpf/lanspeed-ebpf-fallback.o"; then
 			fail 'aarch64 NSS packages must not contain the independent x86 control classifier'
 		fi
-		if grep -aq 'ifb-lanspeed\|lanspeedd:x86-client-control:v1' "$daemon"; then
+		# Shared TC diagnostics recognize interface names from both platforms.
+		# The ownership alias identifies the actual x86 control implementation.
+		if grep -aq 'lanspeedd:x86-client-control:v1' "$daemon"; then
 			fail 'aarch64 NSS daemon must not contain the x86 IFB control implementation'
 		fi
 		for marker in \

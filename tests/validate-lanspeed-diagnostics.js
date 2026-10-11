@@ -515,22 +515,6 @@ async function settled(values, overrides = {}) {
 function applyRefs(state, shell, refresh) {
   const built = shell.buildShell(state);
   state.refs = built.refs;
-  if (typeof state.mountPipeline !== 'function') {
-    state.mountPipeline = function() {
-      if (this.refs.pipelineSection) return this.refs.pipelineSection;
-      const section = shell.buildPipelineSection(this.refs);
-      this.refs.root.insertBefore(section, this.refs.healthSection);
-      return section;
-    };
-  }
-	if (typeof state.mountControl !== 'function') {
-	  state.mountControl = function() {
-	    if (this.refs.controlSection) return this.refs.controlSection;
-	    const section = shell.buildControlSection(this.refs);
-	    this.refs.root.insertBefore(section, this.refs.healthSection);
-	    return section;
-	  };
-	}
   refresh.refresh(state);
   return built;
 }
@@ -1075,7 +1059,7 @@ async function testRequestOrdering() {
       rootNode.parentElement = scrollContainer;
       return { root: rootNode, refs: {
         root: rootNode, btnRefresh: fakeElement('button'), btnCopy: fakeElement('button'),
-        reportPreview: fakeElement('pre'), reportFeedback: fakeElement('span')
+        reportFeedback: fakeElement('span')
       } };
     }
   };
@@ -1136,7 +1120,7 @@ async function testFinallyRestoresControls() {
       const rootNode = fakeElement('div', {}, []);
       return { root: rootNode, refs: {
         root: rootNode, btnRefresh: fakeElement('button'), btnCopy: fakeElement('button'),
-        reportPreview: fakeElement('pre'), reportFeedback: fakeElement('span')
+        reportFeedback: fakeElement('span')
       } };
     }
   };
@@ -1209,175 +1193,98 @@ async function testRestartControl() {
   assert.strictEqual(denied.refs.restartFeedbackTitle.textContent, '服务重启失败');
 }
 
+function alertTexts(built) {
+  return findAllByClass(built.refs.importantWarnings, 'lanspeed-diagnostic-alert-text')
+    .map((item) => item.textContent);
+}
+
 async function testDomAndPresenter() {
   const shell = loadShell();
   const refresh = loadRefresh(loadVocabulary());
   const view = loadView({});
   const loading = view.createLoadingState(null, 0);
-  loading.reload = () => Promise.resolve();
-  loading.copyReport = () => Promise.resolve();
   const loadingBuilt = applyRefs(loading, shell, refresh);
-  const topSections = loadingBuilt.root.children.filter((child) => hasClass(child, 'cbi-section'));
-  assert.strictEqual(topSections.length, 3);
-  assert.strictEqual(findAllByClass(loadingBuilt.root, 'cbi-section').length, 3,
-    'the unclassified loading state must not preconstruct an NSS pipeline');
-  [ 'summary', 'health', 'support' ].forEach((name) => {
-    assert(findByClass(loadingBuilt.root, `lanspeed-diagnostics-${name}-section`));
+  const sections = loadingBuilt.root.children.filter((child) => hasClass(child, 'cbi-section'));
+  assert.strictEqual(sections.length, 3);
+  [ 'summary', 'support', 'health' ].forEach((name, index) => {
+    assert(hasClass(sections[index], `lanspeed-diagnostics-${name}-section`));
   });
-  assert.strictEqual(findByClass(loadingBuilt.root, 'lanspeed-diagnostics-pipeline-section'), null);
-  assert.strictEqual(findByClass(loadingBuilt.root, 'lanspeed-diagnostic-card'), null);
-  assert.strictEqual(findByClass(loadingBuilt.root, 'lanspeed-diagnostic-panel'), null);
+  const removed = [ 'pipeline', 'control', 'subsystem-table', 'rpc-table', 'tc-table', 'report-preview' ];
+  removed.forEach((name) => {
+    assert.strictEqual(findByClass(loadingBuilt.root, `lanspeed-diagnostics-${name}`), null);
+  });
   assert.strictEqual(loadingBuilt.refs.root.getAttribute('data-page-state'), 'loading');
   assert.strictEqual(loadingBuilt.refs.root.getAttribute('aria-busy'), 'true');
-  assert.strictEqual(loadingBuilt.refs.btnRefresh.disabled, true, 'initial refresh must expose a real loading lock');
-  assert.strictEqual(loadingBuilt.refs.btnRestart.disabled, true, 'restart must remain locked until diagnostics finish');
-  assert.strictEqual(loadingBuilt.refs.btnCopy.disabled, true, 'report copy must be disabled before a completed check');
-  assert.strictEqual(loadingBuilt.refs.rpcBody.children.length, 6);
+  [ 'btnRefresh', 'btnRestart', 'btnCopy' ].forEach((key) => {
+    assert.strictEqual(loadingBuilt.refs[key].disabled, true, 'initial controls must expose the loading lock');
+  });
 
   const good = model.normalizeResults(await settled(payloads()), null, 20000, 1);
-  good.reload = () => Promise.resolve();
-  good.copyReport = () => Promise.resolve();
   const goodBuilt = applyRefs(good, shell, refresh);
-  assert.strictEqual(findAllByClass(goodBuilt.root, 'cbi-section').length, 5,
-	'an explicit NSS platform must mount the precise-rate and client-control pipelines');
+  assert.strictEqual(findAllByClass(goodBuilt.root, 'cbi-section').length, 3,
+    'NSS and x86 must use the same compact shell');
   assert.strictEqual(goodBuilt.refs.root.getAttribute('data-page-state'), 'ready');
   assert.strictEqual(goodBuilt.refs.root.getAttribute('aria-busy'), 'false');
-  assert.strictEqual(goodBuilt.refs.btnRefresh.disabled, false);
-  assert.strictEqual(goodBuilt.refs.btnRestart.disabled, false);
-  assert.strictEqual(goodBuilt.refs.btnCopy.disabled, false);
+  [ 'btnRefresh', 'btnRestart', 'btnCopy' ].forEach((key) => assert.strictEqual(goodBuilt.refs[key].disabled, false));
   assert.strictEqual(goodBuilt.refs.pageNotice.style.display, 'none');
-  assert.strictEqual(goodBuilt.refs.rpcDetails.tag, 'details');
-  assert.strictEqual(goodBuilt.refs.reportDetails.tag, 'details');
-  assert.strictEqual(goodBuilt.refs.rpcDetails.open, false);
-  assert.strictEqual(goodBuilt.refs.reportDetails.open, false);
-  assert.strictEqual(goodBuilt.refs.rateDescription.textContent, '');
-  assert.strictEqual(goodBuilt.refs.edgeDescription.textContent, '');
-  assert.strictEqual(goodBuilt.refs.classificationDescription.textContent, '');
-  assert.strictEqual(goodBuilt.refs.integrityDescription, undefined,
-    'normal capability boundaries belong only in the folded report');
-  assert.strictEqual(goodBuilt.refs.rateEvidence.children.length, 4);
-  assert.strictEqual(goodBuilt.refs.rateEvidence.children[0].textContent, '客户端采集覆盖率');
-  assert.strictEqual(goodBuilt.refs.rateEvidence.children[1].textContent, '100%');
-  assert.strictEqual(goodBuilt.refs.edgeEvidence.children.length, 4);
-  assert.strictEqual(goodBuilt.refs.classificationEvidence.children.length, 6);
-  assert.strictEqual(goodBuilt.refs.pipeline.children.length, 3);
-	assert.strictEqual(goodBuilt.refs.controlPipeline.children.length, 4);
-	assert.strictEqual(goodBuilt.refs.controlSummary.textContent, '已验证 · 1/1 个活动客户端已生效');
-	assert.strictEqual(goodBuilt.refs.controlPathValue.textContent, '2/2 个方向');
-	assert.strictEqual(goodBuilt.refs.controlQueueValue.textContent, '1/1 个客户端已生效');
-	assert.strictEqual(goodBuilt.refs.controlBlockValue.textContent, '1/1 个客户端');
-  assert.strictEqual(goodBuilt.refs.pipelineSummary.textContent, '总速率 2/2 方向 · 分类 1/1 客户端');
-	assert.strictEqual(goodBuilt.refs.interfacesBody.children.length, 1);
-	assert.strictEqual(goodBuilt.refs.tcSummary.textContent, '无冲突');
-	assert.strictEqual(goodBuilt.refs.tcObjectsBody.children.length, 4,
-	  'full host TC status must render qdiscs, classes, and filters together');
-	assert.strictEqual(goodBuilt.refs.tcConflictGroup.hidden, true);
-	assert.strictEqual(goodBuilt.refs.tcDetails.tag, 'details');
-	assert.strictEqual(goodBuilt.refs.tcDetails.open, false,
-		'TC object table must stay collapsed until the operator asks for details');
-	assert.strictEqual(goodBuilt.refs.tcDetails.children[0].children[0].textContent, '展开 TC 详情');
-	assert.strictEqual(goodBuilt.refs.tcDetails.children[0].children[1].textContent,
-		'查看全部 qdisc、class、filter');
-	assert(goodBuilt.refs.tcDetailsMeta.textContent.includes('4 个对象 · 1 个接口'));
-	assert(goodBuilt.refs.tcObjectsCaption.textContent.includes('qdisc 2、class 1、filter 1'));
-	assert(goodBuilt.refs.tcObjectsBody.children[0].children[6].textContent.includes('队列长度 4'));
-	assert(goodBuilt.refs.tcObjectsBody.children[1].children[7].textContent.includes('default=1'));
-  assert.strictEqual(goodBuilt.refs.interfacesBody.children[0].children[3].textContent, '500 毫秒',
-    'interface sample timestamps must render as age relative to the interface clock');
-  assert.strictEqual(states.sampleAge(9500, 9503), 0,
-    'interface samples captured just after the aggregate clock must remain usable');
-  assert.strictEqual(states.sampleAge(9500, 9551), null,
-    'interface samples beyond the clock skew tolerance must remain unavailable');
-  assert.strictEqual(goodBuilt.refs.subsystemsBody.children.length, 8);
-  const nssRow = goodBuilt.refs.subsystemsBody.children.find((row) =>
-    row.children[0] && row.children[0].textContent === 'NSS 加速识别');
-  assert(nssRow, 'diagnostics must retain the optional NSS subsystem row');
-  assert.strictEqual(nssRow.attrs['data-state'], 'neutral',
-    'an unavailable optional platform component must not render as a hard failure');
-  assert.strictEqual(nssRow.children[1].textContent, '未启用');
-  assert.strictEqual(nssRow.children[2].textContent, '当前设备未检测到 NSS，该组件不适用。',
-    'the stable nss_not_present code must render as a localized non-error explanation');
-  assert(!goodBuilt.refs.subsystemsBody.children.some((row) =>
-    row.children.some((cell) => String(cell.textContent || '').includes('未识别的诊断代码'))),
-  'known subsystem codes must never fall through to the unknown-code UI');
-  assert(goodBuilt.refs.reportPreview.textContent.includes('运行诊断报告 v2'));
-	assert(goodBuilt.refs.versionValue.textContent.includes('一致'));
+  assert.strictEqual(findAllByClass(goodBuilt.root, 'lanspeed-diagnostic-fact').length, 4);
+  assert.deepStrictEqual(findAllByClass(goodBuilt.root, 'lanspeed-diagnostic-fact-label').map(node => node.textContent),
+    [ '服务状态', '数据采集', '连接详情', '版本' ]);
+  assert.strictEqual(goodBuilt.refs.serviceValue.textContent, '运行中');
+  assert.strictEqual(goodBuilt.refs.versionValue.textContent, '1.2.1-r2');
+  assert.strictEqual(goodBuilt.refs.interfacesBody.children.length, 1);
+  assert.strictEqual(goodBuilt.refs.interfacesBody.children[0].children.length, 3,
+    'interface status must omit throughput and sampling age');
+  assert.deepStrictEqual(alertTexts(goodBuilt), []);
+  assert.strictEqual(goodBuilt.refs.importantWarnings.children.length, 1);
+  assert(hasClass(goodBuilt.refs.importantWarnings.children[0], 'lanspeed-diagnostic-alert-empty'));
+  assert.strictEqual(goodBuilt.refs.reportPreview, undefined);
+  assert.strictEqual(goodBuilt.refs.environmentWarnings, undefined);
+  assert.strictEqual(states.sampleAge(9500, 9503), 0);
+  assert.strictEqual(states.sampleAge(9500, 9551), null);
 
-	const conflictValues = payloads();
-	Object.assign(conflictValues.health.evidence.tc_status, {
-	  state: 'conflict', foreign_objects: 1,
-	  conflicts: [ { id: 'foreign_root_qdisc', severity: 'warning', interface: 'br-lan',
-	    direction: 'root', object: 'cake / 8000:', owner: 'other' } ]
-	});
-	conflictValues.health.evidence.tc_status.qdiscs.push({
-	  interface: 'br-lan', kind: 'cake', handle: '8000:', parent: null, root: true,
-	  ingress_block: null, egress_block: null, owner: 'other', detail: null,
-	  counters: { bytes: 0, packets: 0, drops: 0, overlimits: 0, backlog: 0 }
-	});
-	conflictValues.health.evidence.tc_status.qdisc_count = 3;
-	const conflictState = model.normalizeResults(await settled(conflictValues), null, 20200, 2);
-	conflictState.reload = () => Promise.resolve();
-	conflictState.copyReport = () => Promise.resolve();
-	const conflictBuilt = applyRefs(conflictState, shell, refresh);
-	assert.strictEqual(conflictBuilt.refs.tcSummary.textContent, '检测到冲突');
-	assert.strictEqual(conflictBuilt.refs.tcConflictGroup.hidden, false);
-	assert.strictEqual(conflictBuilt.refs.tcConflictBody.children.length, 1);
-	assert(conflictBuilt.refs.tcConflictBody.children[0].children[5].textContent.includes('外部根队列'));
+  const conflictValues = payloads();
+  Object.assign(conflictValues.health.evidence.tc_status, {
+    state: 'conflict', foreign_objects: 1,
+    conflicts: [ { id: 'foreign_root_qdisc', severity: 'warning', interface: 'br-lan',
+      direction: 'root', object: 'cake / 8000:', owner: 'other' } ]
+  });
+  const conflictState = model.normalizeResults(await settled(conflictValues), null, 20200, 2);
+  const conflictBuilt = applyRefs(conflictState, shell, refresh);
+  assert(alertTexts(conflictBuilt).some(text => text.includes('流量规则冲突')),
+    'removing the TC inventory must retain actionable conflict warnings');
+  assert.notStrictEqual(conflictBuilt.refs.root.getAttribute('data-page-state'), 'ready');
 
   const x86Values = payloads();
   x86Values.status.evidence.platform = {
-    profile: 'x86_tc_bpf', target_arch: 'x86_64', nss_compiled: false,
-    access_edge_compiled: false
+    profile: 'x86_tc_bpf', target_arch: 'x86_64', nss_compiled: false, access_edge_compiled: false
   };
   x86Values.status.access_edge_mode = 'off';
   const x86 = model.normalizeResults(await settled(x86Values), null, 20500, 2);
-  x86.reload = () => Promise.resolve();
-  x86.copyReport = () => Promise.resolve();
   const x86Built = applyRefs(x86, shell, refresh);
-  assert.strictEqual(findAllByClass(x86Built.root, 'cbi-section').length, 3,
-    'x86 diagnostics must contain only base diagnostics, interface health, and support sections');
-  assert.strictEqual(findByClass(x86Built.root, 'lanspeed-diagnostics-pipeline-section'), null);
-	assert.strictEqual(findByClass(x86Built.root, 'lanspeed-diagnostics-control-section'), null);
-  assert.strictEqual(x86Built.refs.pipelineSection, null);
-	assert.strictEqual(x86Built.refs.controlSection, null);
-  assert.strictEqual(x86Built.refs.intro.textContent, 'x86 使用原生 TC-BPF 客户端总速率。');
-  assert(x86Built.refs.subsystemsBody.children.some((row) =>
-    row.children[0] && row.children[0].textContent === '客户端身份识别') &&
-    !x86Built.refs.subsystemsBody.children.some((row) =>
-      row.children[0] && row.children[0].textContent === '客户端接入归属') &&
-    x86Built.refs.reportPreview.textContent.includes('客户端身份识别') &&
-    !x86Built.refs.reportPreview.textContent.includes('客户端接入归属'),
-  'x86 diagnostics must label the shared identity subsystem without Access Edge wording');
-  assert(!x86Built.refs.subsystemsBody.children.some((row) =>
-    row.children[0] && row.children[0].textContent === 'NSS 加速识别'),
-  'x86 diagnostics must discard a stale NSS subsystem row');
-  assert(!x86Built.refs.reportPreview.textContent.includes('NSS') &&
-    !x86Built.refs.reportPreview.textContent.includes('Access Edge'),
-  'x86 diagnostic reports must not surface a stale NSS or Access Edge path');
+  assert.strictEqual(findAllByClass(x86Built.root, 'cbi-section').length, 3);
+  const x86Report = model.buildReport(x86, '1.2.1-r2');
+  assert(x86Report.includes('客户端身份识别') && !x86Report.includes('客户端接入归属'));
+  assert(!x86Report.includes('NSS') && !x86Report.includes('Access Edge'));
 
   const allFailedResults = model.RPC_KEYS.map((key) => ({
     key, ok: false, error: model.rpcErrorInfo(new Error(`${key} failed`), 'transport')
   }));
   const hard = model.normalizeResults(allFailedResults, null, 21000, 2);
-  hard.reload = () => Promise.resolve();
-  hard.copyReport = () => Promise.resolve();
   const hardBuilt = applyRefs(hard, shell, refresh);
   assert.strictEqual(hardBuilt.refs.root.getAttribute('data-page-state'), 'error');
   assert.strictEqual(hardBuilt.refs.errorDetails.hidden, false);
   assert.strictEqual(hardBuilt.refs.errorList.children.length, 6);
-  assert(hardBuilt.refs.summary.textContent.includes('无法'));
+  assert.deepStrictEqual(alertTexts(hardBuilt), [], 'RPC failures must not be duplicated as issue rows');
 
   const emptyValues = payloads();
   emptyValues.clients = { clients: [] };
   emptyValues.interfaces = { interfaces: [] };
   emptyValues.overview = { samples: [] };
   const empty = model.normalizeResults(await settled(emptyValues), null, 22000, 3);
-  empty.reload = () => Promise.resolve();
-  empty.copyReport = () => Promise.resolve();
   const emptyBuilt = applyRefs(empty, shell, refresh);
-  assert.strictEqual(emptyBuilt.refs.root.getAttribute('data-page-state'), 'empty');
-  assert(emptyBuilt.refs.pageNoticeTitle.textContent.includes('没有可用数据'));
-  assert.strictEqual(model.connectionStateWithRpc(empty).state, 'warning');
+  assert.notStrictEqual(emptyBuilt.refs.root.getAttribute('data-page-state'), 'ready');
+  assert.strictEqual(emptyBuilt.refs.interfacesBody.children[0].attrs['data-state'], 'empty');
   assert.strictEqual(model.interfaceStateWithRpc(empty).state, 'bad',
     'an empty interface RPC must not hide a non-empty diagnostic summary');
 }
@@ -1386,11 +1293,6 @@ async function testSubsystemCodeContracts() {
   const vocabulary = loadVocabulary();
   const shell = loadShell();
   const refresh = loadRefresh(vocabulary);
-  const labels = {
-    bpf: 'CPU 慢路径检测（BPF）', tc: 'CPU 路径挂载（TC）', bpf_map: '分类映射表',
-    conntrack: '连接跟踪', nss: 'NSS 加速识别', nss_control: 'NSS 客户端控制',
-	identity: '客户端接入归属'
-  };
   const cases = [
     { id: 'bpf', state: 'disabled', code: 'bpf_disabled', rowState: 'neutral' },
     { id: 'bpf', state: 'disabled', code: 'no_collect_interface', rowState: 'bad' },
@@ -1457,15 +1359,15 @@ async function testSubsystemCodeContracts() {
     Object.assign(subsystem, { state: itemCase.state, code: itemCase.code });
     const state = model.normalizeResults(await settled(values), null, 23000 + index, 10 + index);
     const built = applyRefs(state, shell, refresh);
-    const row = built.refs.subsystemsBody.children.find((candidate) =>
-      candidate.children[0] && candidate.children[0].textContent === labels[itemCase.id]);
-    assert(row, `missing rendered subsystem row ${itemCase.id}`);
-    assert.strictEqual(row.attrs['data-state'], itemCase.rowState,
-      `${itemCase.state} + ${itemCase.code} must render as ${itemCase.rowState}`);
-    assert.strictEqual(row.children[2].textContent, vocabulary.warningText(itemCase.code),
-      `${itemCase.code} must not fall through to the unknown-code UI`);
-    assert(built.refs.reportPreview.textContent.includes(`localized:${itemCase.code}`),
-      `${itemCase.code} must have a localized explanation in the redacted report`);
+    const issues = alertTexts(built);
+    if (itemCase.rowState === 'neutral')
+      assert(!issues.some(text => text.includes(vocabulary.warningText(itemCase.code))),
+        `${itemCase.code} must stay out of the actionable issue list`);
+    else
+      assert(issues.some(text => text.includes(vocabulary.warningText(itemCase.code))),
+        `${itemCase.code} must remain visible after removing subsystem details`);
+    assert(model.buildReport(state, '1.2.1-r2').includes(`localized:${itemCase.code}`),
+      `${itemCase.code} must retain its explanation in the redacted report`);
   }
 
   const futureValues = payloads();
@@ -1474,11 +1376,116 @@ async function testSubsystemCodeContracts() {
   });
   const futureState = model.normalizeResults(await settled(futureValues), null, 24000, 40);
   const futureBuilt = applyRefs(futureState, shell, refresh);
-  const futureRow = futureBuilt.refs.subsystemsBody.children.find((row) =>
-    row.children[0] && row.children[0].textContent === labels.bpf);
-  assert.strictEqual(futureRow.attrs['data-state'], 'warning',
-    'an unknown disabled reason must require attention instead of being silently neutralized');
-  assert(futureRow.children[2].textContent.includes('未识别的诊断代码'));
+  assert(alertTexts(futureBuilt).some(text => text.includes('future_disabled_reason')),
+    'an unknown disabled reason must remain visible instead of being silently neutralized');
+}
+
+async function testCompactIssueSelection() {
+  const shell = loadShell();
+  const refresh = loadRefresh(loadVocabulary());
+  async function present(values) {
+    const state = model.normalizeResults(await settled(values), null, 25000, 1);
+    const built = applyRefs(state, shell, refresh);
+    return { state, built, result: refresh.refresh(state), texts: alertTexts(built) };
+  }
+
+  const informational = payloads();
+  informational.status.warnings = [ 'dae_detected', 'existing_tc_filters_detected',
+    'nss_ecm_node_active', 'nss_ecm_node_ecm_flows_only', 'interface_exclude_compatibility_only' ];
+  informational.health.conflicts = [ { id: 'fullcone_detected', severity: 'info', message: 'Fullcone detected' } ];
+  informational.health.evidence.tc_status.state = 'coexisting';
+  informational.health.evidence.tc_status.foreign_objects = 2;
+  const quiet = await present(informational);
+  assert.strictEqual(quiet.result.warnings.importantCount, 0,
+    'component presence, active collector descriptions and coexisting TC objects do not need action');
+  assert.strictEqual(quiet.built.refs.root.getAttribute('data-page-state'), 'ready');
+
+  const conflict = payloads();
+  conflict.status.warnings = [ 'dae_tc_preempts_bpf_ingress' ];
+  conflict.health.warnings = [ 'tc_filter_conflict' ];
+  conflict.health.evidence.tc_status.state = 'conflict';
+  conflict.health.evidence.tc_status.conflicts = [ { id: 'foreign_root_qdisc', severity: 'critical',
+    interface: 'br-lan', direction: 'root', object: 'cake / 8000:', owner: 'other' } ];
+  const deduplicated = await present(conflict);
+  assert.strictEqual(deduplicated.result.warnings.items.filter(item => item.id === 'tc_conflict').length, 1,
+    'the same TC issue from status, health and TC evidence must appear only once');
+  assert.strictEqual(deduplicated.result.warnings.items[0].severity, 'critical',
+    'deduplication must retain the most severe evidence');
+
+  const criticalInfo = payloads();
+  criticalInfo.diagnostics.alerts = [ { id: 'dae_detected', severity: 'critical', component: 'runtime',
+    state: 'active', message_public: 'A critical proxy failure requires attention.' } ];
+  const important = await present(criticalInfo);
+  assert(important.result.warnings.items.some(item => item.id === 'dae_detected' && item.severity === 'critical'),
+    'an explicitly critical backend alert must override the informational filter');
+
+  const unknown = payloads();
+  unknown.status.warnings = [ 'future_collection_failure' ];
+  const unknownResult = await present(unknown);
+  assert(unknownResult.texts.some(text => text.includes('future_collection_failure')),
+    'new backend warnings must remain identifiable');
+
+  const missingRate = payloads();
+  Object.assign(missingRate.clients.clients[0].rate_meta.rx, { source: 'none', coverage: 'unavailable' });
+  const missingRateResult = await present(missingRate);
+  assert(missingRateResult.texts.some(text => text.includes('缺少速率数据')));
+  assert.strictEqual(missingRateResult.built.refs.root.getAttribute('data-page-state'), 'error',
+    'a successful RPC batch must not hide missing total-rate directions');
+
+  const incompleteEdge = payloads();
+  incompleteEdge.clients.evidence.access_edge.published_attachments = 0;
+  const edgeResult = await present(incompleteEdge);
+  assert(edgeResult.result.warnings.items.length > 0,
+    'removing the Access Edge panel must retain incomplete ownership evidence');
+
+  const mapLoss = payloads();
+  mapLoss.clients.evidence.classifier_maps.tc_bpf.map_loss = true;
+  const mapResult = await present(mapLoss);
+  assert(mapResult.result.warnings.items.some(item => item.severity === 'critical' &&
+    item.text.includes('分类映射')), 'classification map loss must remain visible');
+
+  const scanFailure = payloads();
+  scanFailure.health.evidence.tc_status.state = 'partial';
+  scanFailure.health.evidence.tc_status.scan_complete = false;
+  const scanResult = await present(scanFailure);
+  assert(scanResult.texts.some(text => text.includes('检查未完成')),
+    'an incomplete TC scan cannot silently become a clean status');
+
+  const missingInterface = payloads();
+  missingInterface.interfaces.interfaces[0].status = 'missing';
+  const missingInterfaceResult = await present(missingInterface);
+  assert.strictEqual(missingInterfaceResult.built.refs.interfacesBody.children[0].attrs['data-state'], 'bad');
+  assert.strictEqual(missingInterfaceResult.result.interfaces.state, 'bad');
+  assert.strictEqual(missingInterfaceResult.built.refs.root.getAttribute('data-page-state'), 'error',
+    'healthy summary evidence cannot override a missing interface from the same request batch');
+  assert(missingInterfaceResult.result.warnings.items.some(item => item.id === 'interfaces_unavailable' &&
+    item.severity === 'critical'), 'a missing interface must remain actionable when counts agree');
+
+  const missingControlSummary = payloads();
+  delete missingControlSummary.clients.evidence.nss_control;
+  missingControlSummary.clients.clients[0].control.state = 'error';
+  missingControlSummary.clients.clients[0].control.reason = 'nss_control_executor_failed';
+  const controlFailure = await present(missingControlSummary);
+  assert.strictEqual(controlFailure.state.rpc.clients.phase, 'success');
+  assert(controlFailure.result.warnings.items.some(item => item.id === 'nss_control_executor_failed' &&
+    item.severity === 'critical'), 'per-client control errors must remain visible without aggregate evidence');
+  assert.strictEqual(controlFailure.built.refs.root.getAttribute('data-page-state'), 'error');
+
+  const missingControlProof = payloads();
+  delete missingControlProof.clients.evidence.nss_control;
+  const controlUnconfirmed = await present(missingControlProof);
+  assert(controlUnconfirmed.result.warnings.items.some(item => item.id === 'nss_control_diagnostics_unavailable'),
+    'configured client rules need an explicit warning when their aggregate verification is absent');
+
+  const noClients = payloads();
+  noClients.clients.clients = [];
+  noClients.clients.evidence.access_edge.active_attachments = 0;
+  noClients.clients.evidence.access_edge.published_attachments = 0;
+  const noClientsResult = await present(noClients);
+  assert(!noClientsResult.result.warnings.items.some(item => item.severity === 'critical'),
+    'no clients is an empty state, not a missing-rate failure');
+  assert(!noClientsResult.texts.some(text => /分类|缺少速率/.test(text)),
+    'zero clients must not create classification warmup noise');
 }
 
 async function testAlertsAndReport() {
@@ -1605,7 +1612,8 @@ async function testAlertsAndReport() {
   const viewState = rootNode.__lanspeedDiagnosticsState;
   const copyResult = await viewState.copyReport();
   assert.strictEqual(copyResult, true);
-  assert.strictEqual(copied, viewState.refs.reportPreview.textContent);
+  assert.strictEqual(copied, model.buildReport(viewState, '1.2.1-r2'));
+  assert.strictEqual(viewState.refs.reportPreview, undefined, 'copy must work without a report preview');
   assert(copied.includes('运行诊断报告 v2'));
   assert.strictEqual(viewState.refs.btnCopy.disabled, false);
   assert.strictEqual(viewState.refs.btnCopy.getAttribute('data-state'), 'success');
@@ -1648,6 +1656,7 @@ async function run() {
   await testRestartControl();
   await testDomAndPresenter();
   await testSubsystemCodeContracts();
+  await testCompactIssueSelection();
   await testAlertsAndReport();
   console.log('validate-lanspeed-diagnostics: PASS');
 }
