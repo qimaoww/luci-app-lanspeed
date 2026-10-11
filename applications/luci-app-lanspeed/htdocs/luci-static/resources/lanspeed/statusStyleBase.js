@@ -3,6 +3,8 @@
 
 /* Theme-neutral status information architecture. Visual values come from the product tokens. */
 var BASE_CSS = [
+	'.lanspeed-client-direction-label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;',
+		'overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}',
 	'.lanspeed-root{display:flex;flex-direction:column;gap:var(--lanspeed-page-gap);margin:0;font-weight:400}',
 	'.lanspeed-root .cbi-section{font-weight:400}',
 
@@ -54,12 +56,13 @@ var BASE_CSS = [
 		'flex:1 1 36em;gap:.5em;align-items:center;min-width:0}',
 	'.lanspeed-toolbar-filter,.lanspeed-toolbar-right{display:flex;flex-wrap:nowrap;gap:.5em;align-items:center}',
 	'.lanspeed-toolbar-filter{min-width:0;width:100%;justify-content:flex-start}',
-	'.lanspeed-toolbar-right{flex:0 0 auto;justify-content:flex-end;margin-left:auto;white-space:nowrap}',
+	'.lanspeed-toolbar-right{flex:0 1 auto;flex-wrap:wrap;min-width:0;max-width:100%;justify-content:flex-end;margin-left:auto}',
 	'.lanspeed-toolbar label{display:inline-flex;gap:.35em;align-items:center;color:var(--lanspeed-text);font-size:.88em}',
 	'.lanspeed-toolbar .lanspeed-active-only{display:inline-flex;gap:.45em;align-items:center;',
 		'flex:0 0 auto;white-space:nowrap;line-height:1.25}',
-	'.lanspeed-toolbar :is(.lanspeed-unit-control,.lanspeed-refresh-control){flex:0 0 auto;white-space:nowrap}',
+	'.lanspeed-toolbar :is(.lanspeed-unit-control,.lanspeed-sort-control,.lanspeed-refresh-control){flex:0 0 auto;white-space:nowrap}',
 	'.lanspeed-toolbar .lanspeed-unit-control select{width:7.5em!important;min-width:7.5em;max-width:7.5em}',
+	'.lanspeed-toolbar .lanspeed-sort-control select{width:12.5em!important;min-width:12.5em;max-width:12.5em}',
 	'.lanspeed-toolbar .lanspeed-refresh-control select{width:6.5em!important;min-width:6.5em;max-width:6.5em}',
 	'.lanspeed-toolbar .lanspeed-active-only>input[type="checkbox"],',
 	'.lanspeed-toolbar .lanspeed-active-only input[type="checkbox"]{position:relative;top:auto;right:auto;',
@@ -71,11 +74,6 @@ var BASE_CSS = [
 	'.lanspeed-table th,.lanspeed-table td{padding:.48em .6em;border-bottom:1px solid var(--lanspeed-border);',
 		'background:transparent;text-align:left;vertical-align:middle}',
 	'.lanspeed-table thead th{color:var(--lanspeed-text-muted);font-weight:600}',
-	'.lanspeed-sort-button{display:inline-flex;align-items:center;gap:.3em;min-height:0;margin:0;',
-		'padding:0!important;border:0!important;appearance:none;background:transparent!important;',
-		'box-shadow:none!important;color:inherit!important;cursor:pointer;font:inherit;font-weight:inherit;',
-		'line-height:inherit;text-align:inherit;text-transform:none}',
-	'.lanspeed-sort-indicator{display:inline-block;min-width:.75em;color:var(--lanspeed-accent)}',
 	'.lanspeed-clients-card .lanspeed-resizable-column{position:relative}',
 	/* Keep each hit target inside its own header. Extending across the boundary
 	 * lets adjacent handles overlap, which can resize the wrong column. */
@@ -90,12 +88,15 @@ var BASE_CSS = [
 	'.lanspeed-table th:first-child,.lanspeed-table td:first-child{padding-left:0}',
 	'.lanspeed-table th:last-child,.lanspeed-table td:last-child{padding-right:0}',
 	'.lanspeed-table .num{text-align:left;font-variant-numeric:tabular-nums;white-space:nowrap}',
+	'.lanspeed-client-traffic-stack{display:inline-grid;gap:.18em;max-width:100%;vertical-align:middle}',
+	'.lanspeed-client-traffic-line{display:grid;grid-template-columns:1em auto;gap:.35em;align-items:baseline;',
+		'line-height:1.35;text-align:left;white-space:nowrap;font-variant-numeric:tabular-nums}',
+	'.lanspeed-client-direction{color:var(--lanspeed-text-muted);font-weight:650;text-align:center}',
 	'.lanspeed-client-rate{display:inline-block}',
 	'.lanspeed-client-total-header,.lanspeed-client-total-cell{text-align:center}',
 	'.lanspeed-client-total-cell{white-space:nowrap}',
 	'.lanspeed-client-total{display:inline-block;color:inherit;font-size:inherit;',
 		'font-weight:inherit;line-height:inherit;white-space:nowrap}',
-	'.lanspeed-client-total+.lanspeed-client-total{margin-left:.65em}',
 	'.lanspeed-table .mono{font-family:var(--font-mono,var(--font-monospace,ui-monospace,monospace));',
 		'font-size:.9em;white-space:nowrap}',
 	'.lanspeed-table tr.idle td,.lanspeed-table tr.idle:hover td{color:var(--lanspeed-text-muted)!important}',

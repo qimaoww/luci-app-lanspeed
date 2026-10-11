@@ -4,7 +4,7 @@
 'require lanspeed.theme as lsTheme';
 'require lanspeed.statusStyle as statusStyle';
 
-var COLUMN_WIDTHS_KEY = 'luci-app-lanspeed.client-column-widths.v11';
+var COLUMN_WIDTHS_KEY = 'luci-app-lanspeed.client-column-widths.v12';
 var RESIZE_MIN_COLUMN_WIDTH = 32;
 
 function isResizeLockedColumn(columns, index) {
@@ -57,7 +57,8 @@ function preferredColumnWidth(key) {
 	if (key === 'mac') return 145;
 	if (key === 'control') return 145;
 	if (key === 'tcp_conns' || key === 'udp_conns') return 62;
-	if (key === 'tx_bytes' || key === 'rx_bytes') return 92;
+	if (key === 'totals') return 100;
+	if (key === 'rate') return 105;
 	return 88;
 }
 
@@ -65,7 +66,7 @@ function minimumColumnWidth(key, locked) {
 	if (locked) return preferredColumnWidth(key);
 	/* Keep a centered value readable while still allowing a useful left drag. */
 	if (key === 'mac') return 96;
-	if (key === 'tx' || key === 'rx' || key === 'tx_bytes' || key === 'rx_bytes') return 80;
+	if (key === 'rate' || key === 'totals') return 90;
 	if (key === 'tcp_conns' || key === 'udp_conns') return 44;
 	return RESIZE_MIN_COLUMN_WIDTH;
 }
@@ -221,7 +222,7 @@ function visibleColumnHeaders(refs) {
 	return (refs.clientColumnHeaders || []).filter(function(column) {
 		return column.th && !column.th.hidden;
 	}).slice().sort(function(left, right) {
-		/* sortableHeader() is also used to create the optional headers before
+		/* clientHeader() is also used to create the optional headers before
 		 * the table row is assembled. Always use the final DOM order here so
 		 * cumulative columns cannot receive another column's width. */
 		return Number(left.th.cellIndex) - Number(right.th.cellIndex);
@@ -331,7 +332,7 @@ function persistCurrentColumnWidths(viewState, refs) {
 	if (!Object.keys(values).length) return;
 	var stored = loadColumnWidths(viewState);
 	stored[columnLayoutKey(table)] = {
-		version: 11,
+		version: 12,
 		columns: values
 	};
 	viewState.clientColumnWidths = stored;
@@ -445,34 +446,33 @@ function setupColumnResize(viewState, refs) {
 	applyStoredColumnWidths(viewState, refs);
 }
 
-function sortableHeader(viewState, refs, sortKey, label, attrs) {
-	var thAttrs = Object.assign({ 'aria-sort': 'none' }, attrs || {});
-	thAttrs['data-column-key'] = sortKey;
-	var button = E('button', {
-		'type': 'button',
-		'class': 'lanspeed-sort-button'
-	}, [
-		E('span', { 'class': 'lanspeed-sort-label' }, label),
-		E('span', { 'class': 'lanspeed-sort-indicator', 'aria-hidden': 'true' }, '')
-	]);
-	var th = E('th', thAttrs, button);
-	if (refs.clientColumnHeaders)
-		refs.clientColumnHeaders.push({ key: sortKey, th: th });
-
-	refs.sortHeaders[sortKey] = {
+function clientHeader(refs, columnKey, label, attrs) {
+	var thAttrs = Object.assign({ 'scope': 'col', 'aria-sort': 'none' }, attrs || {});
+	thAttrs['data-column-key'] = columnKey;
+	var th = E('th', thAttrs, label);
+	refs.clientColumnHeaders.push({ key: columnKey, th: th });
+	refs.sortHeaders[columnKey] = {
 		th: th,
-		button: button,
-		label: label,
-		description: attrs && attrs.title || ''
+		keys: columnKey === 'rate' ? [ 'rx', 'tx' ]
+			: columnKey === 'totals' ? [ 'rx_bytes', 'tx_bytes' ] : [ columnKey ],
+		label: label
 	};
-	button.addEventListener('click', function() {
-		Object.assign(viewState.prefs, fmt.nextSort(viewState.prefs, sortKey));
-		viewState.page = 1;
-		fmt.savePrefs(viewState.prefs);
-		viewState.refreshLive();
-	});
-
 	return th;
+}
+
+function sortChoices() {
+	var fields = [
+		[ 'rx', _('下载速度') ], [ 'tx', _('上传速度') ],
+		[ 'rx_bytes', _('累计下载') ], [ 'tx_bytes', _('累计上传') ],
+		[ 'hostname', _('客户端') ], [ 'mac', 'MAC' ],
+		[ 'tcp_conns', _('TCP 连接') ], [ 'udp_conns', _('UDP 连接') ]
+	];
+	var choices = [ { value: 'default', label: _('默认（下载优先）') } ];
+	fields.forEach(function(field) {
+		choices.push({ value: field[0] + ':desc', label: field[1] + ' · ' + _('降序') });
+		choices.push({ value: field[0] + ':asc', label: field[1] + ' · ' + _('升序') });
+	});
+	return choices;
 }
 
 function buildShell(viewState) {
@@ -637,6 +637,28 @@ function buildShell(viewState) {
 		}
 	});
 
+	var sortingChoices = sortChoices();
+	var sortValue = prefs.sortCustom ? prefs.sortKey + ':' + prefs.sortDir : 'default';
+	refs.sortSelect = E('select', {
+		'class': 'cbi-input-select lanspeed-sort-select',
+		'aria-label': _('客户端排序'),
+		'aria-controls': 'lanspeed-clients-table'
+	}, sortingChoices.map(function(choice) {
+		return fmt.opt(choice.value, choice.label, choice.value === sortValue);
+	}));
+	refs.sortSelect.addEventListener('change', function(ev) {
+		var value = ev.target.value;
+		if (!sortingChoices.some(function(choice) { return choice.value === value; })) return;
+		var parts = value.split(':');
+		var defaults = fmt.DEFAULT_PREFS || { sortKey: 'rx', sortDir: 'desc' };
+		viewState.prefs.sortKey = value === 'default' ? defaults.sortKey : parts[0];
+		viewState.prefs.sortDir = value === 'default' ? defaults.sortDir : parts[1];
+		viewState.prefs.sortCustom = value !== 'default';
+		viewState.page = 1;
+		fmt.savePrefs(viewState.prefs);
+		viewState.refreshLive();
+	});
+
 	refs.unitSel = E('select', { 'class': 'cbi-input-select' }, [
 		fmt.opt('bit',  'bit/s',  prefs.unit === 'bit'),
 		fmt.opt('byte', 'Byte/s', prefs.unit === 'byte')
@@ -739,6 +761,7 @@ function buildShell(viewState) {
 			])
 		]),
 		E('div', { 'class': 'lanspeed-toolbar-right' }, [
+			E('label', { 'class': 'lanspeed-sort-control' }, [ _('排序'), refs.sortSelect ]),
 			E('label', { 'class': 'lanspeed-refresh-control' }, [ _('刷新'), refs.intervalSel ]),
 			refs.btnRefresh,
 			refs.btnPause
@@ -753,14 +776,10 @@ function buildShell(viewState) {
 	]);
 
 	refs.tbody = E('tbody', {});
-	refs.totalUploadHeader = sortableHeader(viewState, refs, 'tx_bytes', _('累计上传'), {
-		'class': 'num lanspeed-client-total-header lanspeed-client-total-upload-header'
+	refs.totalHeader = clientHeader(refs, 'totals', _('累计流量'), {
+		'class': 'num lanspeed-client-total-header'
 	});
-	refs.totalUploadHeader.hidden = viewState.showClientTotals !== true;
-	refs.totalDownloadHeader = sortableHeader(viewState, refs, 'rx_bytes', _('累计下载'), {
-		'class': 'num lanspeed-client-total-header lanspeed-client-total-download-header'
-	});
-	refs.totalDownloadHeader.hidden = viewState.showClientTotals !== true;
+	refs.totalHeader.hidden = viewState.showClientTotals !== true;
 	refs.controlHeader = E('th', {
 		'class': 'lanspeed-client-control-header',
 		'data-column-key': 'control'
@@ -773,16 +792,14 @@ function buildShell(viewState) {
 		'data-client-control': 'shown'
 	}, [
 		E('thead', {}, E('tr', {}, [
-			sortableHeader(viewState, refs, 'hostname', _('客户端')),
-			sortableHeader(viewState, refs, 'mac', 'MAC'),
-			sortableHeader(viewState, refs, 'tx', _('上行'), { 'class': 'num' }),
-			sortableHeader(viewState, refs, 'rx', _('下行'), { 'class': 'num' }),
-			refs.totalUploadHeader,
-			refs.totalDownloadHeader,
-			sortableHeader(viewState, refs, 'tcp_conns', 'TCP', {
+			clientHeader(refs, 'hostname', _('客户端')),
+			clientHeader(refs, 'mac', 'MAC'),
+			clientHeader(refs, 'rate', _('网速'), { 'class': 'num lanspeed-client-rate-header' }),
+			refs.totalHeader,
+			clientHeader(refs, 'tcp_conns', 'TCP', {
 				'class': 'num', 'title': _('当前已建立并确认的 TCP 连接')
 			}),
-			sortableHeader(viewState, refs, 'udp_conns', 'UDP', {
+			clientHeader(refs, 'udp_conns', 'UDP', {
 				'class': 'num', 'title': _('当前已确认的 UDP 连接')
 			}),
 			refs.controlHeader

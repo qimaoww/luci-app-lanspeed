@@ -1485,18 +1485,62 @@ async page => {
 				} else {
 					addCheck('overview-pause', false, 'Pause control missing');
 				}
-				const sort = root.locator('.lanspeed-sort-button:visible').first();
+				const sort = root.locator('.lanspeed-sort-select:visible').first();
 				if (await sort.count()) {
-					const header = sort.locator('xpath=..');
-					const before = await header.getAttribute('aria-sort');
-					await sort.click();
-					const after = await header.getAttribute('aria-sort');
-					evidence.interactions.sort = { before: before, after: after };
-					addCheck('overview-sort', before !== after && /^(none|ascending|descending)$/.test(after || ''),
+					const before = await sort.inputValue();
+					await sort.focus();
+					await sort.press('Home');
+					await sort.press('ArrowDown');
+					await sort.press('Enter');
+					const keyboardValue = await sort.inputValue();
+					await sort.selectOption('tx_bytes:asc');
+					const saved = await page.evaluate(() => JSON.parse(
+						window.localStorage.getItem('luci-app-lanspeed.prefs.v5') || '{}'));
+					const after = await root.locator('th[data-column-key="totals"]').getAttribute('aria-sort');
+					const adjacency = await sort.evaluate(select => {
+						const group = select.closest('.lanspeed-sort-control');
+						const adjacent = group && (group.nextElementSibling || group.previousElementSibling);
+						return !!adjacent && adjacent.classList.contains('lanspeed-refresh-control');
+					});
+					evidence.interactions.sort = { before, keyboardValue, after, saved, adjacency };
+					addCheck('overview-sort', keyboardValue === 'rx:desc' && after === 'ascending' && adjacency &&
+						saved.sortKey === 'tx_bytes' && saved.sortDir === 'asc' && saved.sortCustom === true &&
+						await root.locator('#lanspeed-clients-table thead button').count() === 0,
 						evidence.interactions.sort);
+					await sort.selectOption(before);
 				} else {
-					addCheck('overview-sort', false, 'Sort control missing');
+					addCheck('overview-sort', false, 'Sort selector missing');
 				}
+				const trafficColumns = await root.locator('#lanspeed-clients-table').evaluate(table => {
+					function lines(cell) {
+						return cell ? Array.from(cell.querySelectorAll('.lanspeed-client-traffic-line')).map(line => ({
+							direction: line.getAttribute('data-direction'),
+							arrow: (line.querySelector('.lanspeed-client-direction') || {}).textContent,
+							value: (line.querySelector('.lanspeed-client-rate,.lanspeed-client-total') || {}).textContent,
+							top: line.getBoundingClientRect().top,
+							title: line.getAttribute('title') || ''
+						})) : [];
+					}
+					return {
+						headers: Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim()),
+						totals: table.getAttribute('data-client-totals'),
+						rows: Array.from(table.querySelectorAll('tbody tr')).map(row => ({
+							cells: row.cells.length,
+							rate: lines(row.querySelector('.lanspeed-client-rate-cell')),
+							total: lines(row.querySelector('.lanspeed-client-total-cell'))
+						}))
+					};
+				});
+				function validDirections(lines) {
+					return lines.length === 2 && lines[0].direction === 'rx' && lines[0].arrow === '↓' &&
+						lines[1].direction === 'tx' && lines[1].arrow === '↑' && lines[0].top < lines[1].top &&
+						lines.every(line => line.value && (line.value !== '-' || line.title.includes('暂不可用')));
+				}
+				addCheck('overview-traffic-columns', trafficColumns.headers.length === 7 &&
+					trafficColumns.headers[2] === '网速' && trafficColumns.headers[3] === '累计流量' &&
+					trafficColumns.rows.every(row => row.cells === 7 && validDirections(row.rate) &&
+						(trafficColumns.totals !== 'shown' || validDirections(row.total))), trafficColumns);
+
 			const next = root.locator('.lanspeed-page-button[aria-label="下一页"]:visible').first();
 			if (await next.count() && !(await next.isDisabled())) {
 				const summary = root.locator('.lanspeed-page-summary').first();

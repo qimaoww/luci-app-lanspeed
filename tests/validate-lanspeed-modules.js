@@ -4422,41 +4422,20 @@ function assertStatusRefreshSortingInteraction(src) {
 		fail('statusRefresh.js must remove the obsolete client-status column helpers');
 	}
 
-	function makeRef(label, description) {
-		return {
-			label: label,
-			description: description || '',
-			th: fakeElement('th', {}),
-			button: fakeElement('button', {}, [
-				fakeElement('span', {}, label),
-				fakeElement('span', {}, '')
-			])
-		};
-	}
-
-	const refs = { sortHeaders: {
-		rx: makeRef('下行'),
-		tcp_conns: makeRef('TCP', 'TCP 仅统计 ESTABLISHED + ASSURED')
+	const refs = { sortSelect: fakeElement('select', {}), sortHeaders: {
+		rate: { th: fakeElement('th', {}), keys: [ 'rx', 'tx' ] },
+		totals: { th: fakeElement('th', {}), keys: [ 'rx_bytes', 'tx_bytes' ] },
+		tcp_conns: { th: fakeElement('th', {}), keys: [ 'tcp_conns' ] }
 	} };
-	mod.refreshSortHeaders(refs, {
-		sortKey: 'rx', sortDir: 'desc', sortCustom: false
-	});
-	if (refs.sortHeaders.rx.th.attrs['aria-sort'] !== 'descending' ||
-	    refs.sortHeaders.rx.button.lastChild.textContent !== '' ||
-	    !String(refs.sortHeaders.rx.button.attrs['aria-label']).includes('默认排序') ||
-	    refs.sortHeaders.tcp_conns.th.attrs['aria-sort'] !== 'none') {
-		fail('statusRefresh.js must expose default RX descending to assistive tech without a visual arrow');
-	}
+	mod.refreshSortHeaders(refs, { sortKey: 'rx', sortDir: 'desc', sortCustom: false });
+	if (refs.sortSelect.value !== 'default' || refs.sortHeaders.rate.th.attrs['aria-sort'] !== 'descending' ||
+		refs.sortHeaders.tcp_conns.th.attrs['aria-sort'] !== 'none')
+		fail('statusRefresh.js must synchronize the sort selector and accessible merged rate header');
+	mod.refreshSortHeaders(refs, { sortKey: 'tx_bytes', sortDir: 'asc', sortCustom: true });
+	if (refs.sortSelect.value !== 'tx_bytes:asc' || refs.sortHeaders.totals.th.attrs['aria-sort'] !== 'ascending' ||
+		refs.sortHeaders.rate.th.attrs['aria-sort'] !== 'none')
+		fail('statusRefresh.js must map either cumulative direction to its merged accessible header');
 
-	mod.refreshSortHeaders(refs, {
-		sortKey: 'tcp_conns', sortDir: 'asc', sortCustom: true
-	});
-	if (refs.sortHeaders.tcp_conns.th.attrs['aria-sort'] !== 'ascending' ||
-	    refs.sortHeaders.tcp_conns.button.lastChild.textContent !== '↑' ||
-	    !String(refs.sortHeaders.tcp_conns.button.attrs.title).includes('TCP 仅统计 ESTABLISHED + ASSURED') ||
-	    !String(refs.sortHeaders.tcp_conns.button.attrs['aria-label']).includes('升序')) {
-		fail('statusRefresh.js must combine TCP/UDP connection semantics with accessible sorting instructions');
-	}
 }
 
 function assertStatusRefreshClientDetailLink(src) {
@@ -5078,10 +5057,11 @@ function assertStatusShellInteraction(src) {
 	const right = findFakeElement(built.root, 'lanspeed-toolbar-right');
 
 	if (!left || !filter || !right || left.children[1] !== filter ||
-	    filter.children[0] !== refs.filterInput || right.children[1] !== refs.btnRefresh ||
-	    right.children[2] !== refs.btnPause || refs.sortSel) {
-		fail('statusShell.js toolbar DOM must keep unit/filter left and refresh actions right without a sort select');
-	}
+		filter.children[0] !== refs.filterInput || right.children[0].children[1] !== refs.sortSelect ||
+		right.children[1].children[1] !== refs.intervalSel || right.children[2] !== refs.btnRefresh ||
+		right.children[3] !== refs.btnPause)
+		fail('statusShell.js must place the sort selector adjacent to refresh cadence and actions');
+
 	if (refs.btnRefresh.attrs.type !== 'button' || refs.btnPause.attrs.type !== 'button') {
 		fail('statusShell.js refresh actions must never submit or navigate away from the LuCI page');
 	}
@@ -5098,34 +5078,32 @@ function assertStatusShellInteraction(src) {
 		Object.prototype.hasOwnProperty.call(refs.clientsTable.attrs, 'data-client-status')) {
 		fail('statusShell.js must remove the obsolete client status column and configuration toggle');
 	}
-	if (!refs.sortHeaders || !refs.sortHeaders.rx || !refs.sortHeaders.hostname ||
-	    !refs.sortHeaders.rx.button || !refs.sortHeaders.rx.button.listeners.click ||
-	    !refs.sortHeaders.hostname.button || !refs.sortHeaders.hostname.button.listeners.click) {
-		fail('statusShell.js must expose clickable sortable table headers');
+	if (!refs.sortSelect || !refs.sortSelect.listeners.change ||
+		refs.sortSelect.attrs['aria-label'] !== '客户端排序' || refs.sortSelect.attrs['aria-controls'] !== 'lanspeed-clients-table') {
+		fail('statusShell.js must expose a labelled native sort selector for keyboard and assistive technology');
 		return;
 	}
-	if (!refs.sortHeaders.tcp_conns ||
-	    refs.sortHeaders.tcp_conns.description !== '当前已建立并确认的 TCP 连接' ||
-	    !refs.sortHeaders.udp_conns ||
-	    refs.sortHeaders.udp_conns.description !== '当前已确认的 UDP 连接') {
-		fail('statusShell.js sortable TCP/UDP headers must retain their connection-statistics semantics');
-	}
-	refs.sortHeaders.rx.button.listeners.click();
-	if (viewState.prefs.sortKey !== 'rx' || viewState.prefs.sortDir !== 'desc' || !viewState.prefs.sortCustom || saved !== 1 || refreshed !== 1) {
-		fail('statusShell.js must start an active default sort header in descending order');
-	}
-	refs.sortHeaders.rx.button.listeners.click();
-	if (viewState.prefs.sortKey !== 'rx' || viewState.prefs.sortDir !== 'asc' || !viewState.prefs.sortCustom || saved !== 2 || refreshed !== 2) {
-		fail('statusShell.js must switch an active descending header to ascending');
-	}
-	refs.sortHeaders.rx.button.listeners.click();
-	if (viewState.prefs.sortKey !== 'rx' || viewState.prefs.sortDir !== 'desc' || viewState.prefs.sortCustom || saved !== 3 || refreshed !== 3) {
-		fail('statusShell.js must restore default sorting after ascending');
-	}
-	refs.sortHeaders.hostname.button.listeners.click();
-	if (viewState.prefs.sortKey !== 'hostname' || viewState.prefs.sortDir !== 'desc' || !viewState.prefs.sortCustom || saved !== 4 || refreshed !== 4) {
-		fail('statusShell.js must start a different sort header in descending order');
-	}
+	if (findFakeElementsByClass(refs.clientsTable, 'lanspeed-sort-button').length ||
+		findFakeElementsByTag(refs.clientsTable.children[0], 'button').length)
+		fail('statusShell.js client headers must contain no sorting buttons');
+	const values = refs.sortSelect.children.map(option => option.attrs.value);
+	const keys = [ 'hostname', 'mac', 'tx', 'rx', 'tx_bytes', 'rx_bytes', 'tcp_conns', 'udp_conns' ];
+	if (values.length !== 17 || !values.includes('default') || keys.some(key =>
+		!values.includes(key + ':asc') || !values.includes(key + ':desc')))
+		fail('statusShell.js must retain both directions of all eight prior sort choices');
+	[ 'rx:desc', 'rx:asc', 'default', 'hostname:asc' ].forEach((value, index) => {
+		viewState.page = 3;
+		refs.sortSelect.listeners.change({ target: { value } });
+		const parts = value === 'default' ? [ 'rx', 'desc' ] : value.split(':');
+		if (viewState.prefs.sortKey !== parts[0] || viewState.prefs.sortDir !== parts[1] ||
+			viewState.prefs.sortCustom !== (value !== 'default') || viewState.page !== 1 ||
+			saved !== index + 1 || refreshed !== index + 1)
+			fail('statusShell.js sort selection must persist preferences, reset pagination and refresh: ' + value);
+	});
+	refs.sortSelect.listeners.change({ target: { value: 'invalid:asc' } });
+	if (saved !== 4 || refreshed !== 4)
+		fail('statusShell.js must reject unknown sort selections without changing preferences');
+
 }
 
 function assertRpcModule(src) {
@@ -5169,7 +5147,7 @@ function assertViewRequires(src) {
 	});
 }
 
-function assertCacheAwareViewEntry(src, moduleName, label) {
+function assertCacheAwareViewEntry(src, moduleName, label, pageKind) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
 	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.2.1-r2';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
@@ -5178,7 +5156,7 @@ function assertCacheAwareViewEntry(src, moduleName, label) {
 	    !src.includes('L.env.resource_version = previousVersion;') ||
 	    !src.includes('return view.extend({') ||
 	    !src.includes('return module.load();') ||
-	    !src.includes('return pageModule.render(data);')) {
+	    !src.includes(pageKind ? "return pageModule.render(data, '" + pageKind + "');" : 'return pageModule.render(data);')) {
 		fail(`${label} must load ${moduleName} through the 1.2.1 resource cache boundary`);
 	}
 	if (src.includes('buildShell(') || src.includes('refreshLive(') || src.includes('loadAll()')) {
@@ -6012,7 +5990,7 @@ function assertStatusStyleModule(src) {
 		'.lanspeed-metrics{display:grid',
 		'.lanspeed-toolbar-left{display:grid',
 		'.lanspeed-toolbar-right{',
-		'.lanspeed-sort-button{',
+		'.lanspeed-toolbar .lanspeed-sort-control select{',
 		'.lanspeed-pagination{display:flex',
 		'.lanspeed-details>summary{display:flex',
 		'.lanspeed-control-client{display:flex;flex-wrap:wrap'
@@ -6044,10 +6022,10 @@ function assertStatusStyleModule(src) {
 		':is(th,td).num{padding-left:0!important;padding-right:0!important}',
 		':nth-child(1){position:sticky!important;left:0',
 		':nth-child(2){position:sticky!important;left:var(--lanspeed-client-second-column-left)',
-		'.lanspeed-table th:nth-child(1)',
+		':is(th,td):nth-child(1)',
 		'width:22%',
 		'width:16%;text-align:center}',
-		'width:7.6667%;text-align:center}'
+		'width:11.5000%;text-align:center}'
 	].forEach(function(marker) {
 		if (!responsiveCss.includes(marker))
 			fail(`statusStyleResponsive.js must retain responsive status behavior: ${marker}`);
@@ -6064,7 +6042,7 @@ function assertStatusStyleModule(src) {
 	}
 	if (!baseCss.includes('.lanspeed-client-total-header,.lanspeed-client-total-cell{text-align:center}') ||
 		!responsiveCss.includes('width:16%;text-align:center}') ||
-		!responsiveCss.includes('width:7.6667%;text-align:center}')) {
+		!responsiveCss.includes('width:11.5000%;text-align:center}')) {
 		fail('client totals and connection controls must use a compact, aligned desktop table rhythm');
 	}
 	[
@@ -6076,17 +6054,17 @@ function assertStatusStyleModule(src) {
 			fail(`statusStyleResponsive.js must define a balanced desktop layout for every optional-column combination: ${marker}`);
 	});
 	[
-		':is(:nth-child(3),:nth-child(4),:nth-child(5),:nth-child(6),:nth-child(7),:nth-child(8)){width:7.6667%;text-align:center}',
-		':is(:nth-child(3),:nth-child(4),:nth-child(5),:nth-child(6),:nth-child(7),:nth-child(8)){width:9.6667%!important;text-align:center}'
+		':is(:nth-child(3),:nth-child(4),:nth-child(5),:nth-child(6)){width:11.5000%;text-align:center}',
+		':is(:nth-child(3),:nth-child(4),:nth-child(5),:nth-child(6)){width:14.5000%;text-align:center}'
 	].forEach(function(marker) {
 		if (!responsiveCss.includes(marker))
 			fail(`live and cumulative traffic columns must retain one compact, even desktop rhythm: ${marker}`);
 	});
-	if (!responsiveCss.includes('.lanspeed-table td:nth-child(2){text-align:left!important}')) {
+	if (!responsiveCss.includes(':is(th,td):nth-child(2){width:19.5%;text-align:left}')) {
 		fail('desktop MAC values must share the MAC heading reading edge');
 	}
-	if (responsiveCss.includes('data-client-status') || responsiveCss.includes('nth-child(10)')) {
-		fail('statusStyleResponsive.js must use the nine-column layout after removing client status');
+	if (responsiveCss.includes('data-client-status') || responsiveCss.includes('nth-child(8)')) {
+		fail('statusStyleResponsive.js must use seven columns after combining traffic directions');
 	}
 	themeCss.forEach(function(theme) {
 		if (!theme[2].includes(`lanspeed-theme-${theme[1]}`) ||
@@ -6156,14 +6134,11 @@ function assertStatusShellModule(src) {
 	    src.includes('lanspeed-diagnostic-') || src.includes('diagnosticsCard')) {
 		fail('lanspeed/statusShell.js must not render the dedicated diagnostics page inside realtime status');
 	}
-	const sortableKeys = [ 'hostname', 'mac', 'tx', 'rx', 'tx_bytes', 'rx_bytes', 'tcp_conns', 'udp_conns' ];
-	if (!src.includes('function sortableHeader(viewState, refs, sortKey, label, attrs)') ||
-	    sortableKeys.some(function(key) { return !src.includes(`sortableHeader(viewState, refs, '${key}'`); })) {
-		fail('lanspeed/statusShell.js must sort directly from all eight requested client table headers');
-	}
-	if (src.includes('refs.sortSel') || src.includes("_('排序')")) {
-		fail('lanspeed/statusShell.js must not render a separate sorting control');
-	}
+	if (!src.includes("clientHeader(refs, 'rate', _('网速')") ||
+		!src.includes("clientHeader(refs, 'totals', _('累计流量')") ||
+		!src.includes('refs.sortSelect') || src.includes('function sortableHeader('))
+		fail('statusShell.js must combine traffic directions and move sorting out of headers');
+
 	if (!src.includes("E('div', { 'class': 'lanspeed-toolbar-left' }") ||
 	    !src.includes("E('div', { 'class': 'lanspeed-toolbar-right' }") ||
 	    !src.includes("E('label', { 'class': 'lanspeed-unit-control' }, [ _('单位'), refs.unitSel ])") ||
@@ -6204,27 +6179,13 @@ function assertStatusRefreshModule(src) {
 		fail('lanspeed/statusRefresh.js must own status page live refresh rendering');
 	}
 	if (!src.includes('fmt.sortClients(filtered, prefs.sortKey, prefs.sortDir, latestSample, activeCfg)') ||
-	    !src.includes('var active = prefs.sortCustom && prefs.sortKey === sortKey;') ||
-	    !src.includes("setAttribute('aria-sort'") ||
-	    !src.includes("ascending ? '↑' : '↓'")) {
-		fail('lanspeed/statusRefresh.js must only render arrows for an explicit client sort');
-	}
-	if (!src.includes("'class': 'lanspeed-client-name'") ||
-	    !src.includes("'class': 'mono lanspeed-client-mac'") ||
-	    !src.includes("'class': 'num lanspeed-client-value'") ||
-		!src.includes("'class': 'num lanspeed-client-total-cell '") ||
-		(!src.includes("'data-label': _('上行')") && !src.includes('clientTrafficCell(c, \'tx\'')) ||
-		(!src.includes("'data-label': _('下行')") && !src.includes('clientTrafficCell(c, \'rx\'')) ||
-		src.includes("'data-label': _('状态')")) {
-		fail('lanspeed/statusRefresh.js must label client fields for the narrow stacked layout');
-	}
-	if (!src.includes("clientTrafficTotalCell(c, 'tx', showClientTotals)") ||
-	    !src.includes("clientTrafficTotalCell(c, 'rx', showClientTotals)") ||
-	    !src.includes("var label = isUpload ? _('累计上传') : _('累计下载')") ||
-	    !src.includes("lanspeed-client-total-upload-cell") ||
-	    !src.includes("lanspeed-client-total-download-cell")) {
-		fail('statusRefresh.js must render adjacent, independently labelled x86 cumulative upload/download columns');
-	}
+		!src.includes("setAttribute('aria-sort'") || !src.includes('refs.sortSelect'))
+		fail('statusRefresh.js must preserve ordering preferences and accessible merged column state');
+	if (!src.includes('lanspeed-client-rate-cell') || !src.includes('lanspeed-client-total-cell') ||
+		!src.includes("'data-label': _('网速')") || !src.includes("'data-label': _('累计流量')") ||
+		!src.includes("trafficLine('rx'") || !src.includes("trafficLine('tx'"))
+		fail('statusRefresh.js must render two labelled directions in each merged traffic column');
+
 	if (!src.includes('reconcileClientRows(refs.tbody') ||
 	    !src.includes("'data-client-key': String(fmt.identityOf(c))") ||
 	    !src.includes('captureClientViewport(refs)') ||
@@ -6242,7 +6203,7 @@ function assertStatusRefreshModule(src) {
 	if (src.includes('showClientStatus') || src.includes('setClientStatusVisibility') ||
 		src.includes('clientStateCell') || src.includes('data-client-status') ||
 		src.includes('showClientControl') || src.includes('show_client_control') ||
-		!src.includes('var showClientTotals = viewState.showClientTotals === true && !nssProfile;') ||
+		!src.includes('var showClientTotals = viewState.showClientTotals === true;') ||
 		!src.includes('controlCell.hidden = false;')) {
 		fail('lanspeed/statusRefresh.js must remove the client-control visibility option');
 	}
@@ -6285,104 +6246,58 @@ function assertStatusRefreshModule(src) {
 function assertDiagnosticsStyleModule(src) {
 	const baseCss = loadStyleLeaf('diagnosticsStyleBase.js').CSS;
 	const responsiveCss = loadStyleLeaf('diagnosticsStyleResponsive.js').CSS;
-	const themeCss = [
-		[ 'Aurora', 'aurora', loadStyleLeaf('diagnosticsStyleAurora.js').CSS ],
-		[ 'Argon', 'argon', loadStyleLeaf('diagnosticsStyleArgon.js').CSS ],
-		[ 'Bootstrap', 'bootstrap', loadStyleLeaf('diagnosticsStyleBootstrap.js').CSS ],
-		[ 'Shadcn', 'shadcn', loadStyleLeaf('diagnosticsStyleShadcn.js').CSS ]
-	];
-
-	if (!src.includes('CSS: DIAGNOSTICS_CSS') ||
-	    !src.includes('LAYOUT_CSS: DIAGNOSTICS_LAYOUT_CSS')) {
+	if (!src.includes('CSS: DIAGNOSTICS_CSS') || !src.includes('LAYOUT_CSS: DIAGNOSTICS_LAYOUT_CSS'))
 		fail('diagnosticsStyle.js must export composed design-system CSS and diagnostics-only layout CSS');
-	}
 	[
 		'.lanspeed-diagnostics-root .lanspeed-header{display:flex',
 		'.lanspeed-diagnostics-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))',
-		'.lanspeed-diagnostics-pipeline{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))',
-		'.lanspeed-diagnostic-stage{', '.lanspeed-diagnostics-health-group{',
-		'.lanspeed-diagnostics-table-wrap{', '.lanspeed-diagnostic-alert,',
-		'.lanspeed-diagnostics-report-preview{'
+		'.lanspeed-diagnostics-table-wrap{', '.lanspeed-diagnostic-alert{'
 	].forEach(function(marker) {
 		if (!baseCss.includes(marker))
-			fail(`diagnosticsStyleBase.js must retain diagnostic information architecture: ${marker}`);
+			fail(`diagnosticsStyleBase.js must retain the compact diagnostics layout: ${marker}`);
 	});
 	[
-		'@media (max-width:1100px)', '@media (max-width:900px)',
-		'@media (max-width:700px)', '@media (max-width:480px)',
-		'.lanspeed-diagnostic-stage-evidence{grid-template-columns:minmax(0,1fr)}',
-		'.lanspeed-diagnostics-tc-table tbody>tr>td[data-label]::before{content:attr(data-label);'
+		'@media (max-width:1100px)', '@media (max-width:700px)', '@media (max-width:480px)',
+		'.lanspeed-diagnostics-health-table :is(th,td)'
 	].forEach(function(marker) {
 		if (!responsiveCss.includes(marker))
 			fail(`diagnosticsStyleResponsive.js must retain responsive diagnostics behavior: ${marker}`);
 	});
-	themeCss.forEach(function(theme) {
-		if (!theme[2].includes(`lanspeed-theme-${theme[1]}`) ||
-		    !theme[2].includes('.lanspeed-diagnostic-stage') ||
-		    !theme[2].includes('.lanspeed-diagnostics-report-preview')) {
-			fail(`diagnosticsStyle${theme[0]}.js must independently implement pipeline and report treatment`);
-		}
+	[ 'Aurora', 'Argon', 'Bootstrap', 'Shadcn' ].forEach(function(theme) {
+		const css = loadStyleLeaf(`diagnosticsStyle${theme}.js`).CSS;
+		if (!css.includes(`lanspeed-theme-${theme.toLowerCase()}`) ||
+		    !css.includes('.lanspeed-diagnostic-fact'))
+			fail(`diagnosticsStyle${theme}.js must style the compact diagnostic facts`);
 	});
 }
 
 function assertDiagnosticsShellModule(src) {
-	if (!src.includes('buildShell: function(viewState)') ||
-	    !src.includes('diagnosticsStyle.CSS') ||
-	    !src.includes('lsTheme.applyRoot(root)') ||
-	    !src.includes('buildSummarySection(refs, viewState)') ||
-	    !src.includes('buildPipelineSection(refs)') ||
-	    !src.includes('buildHealthSection(refs)') ||
-	    !src.includes("sectionHeader(_('基础接口与 RPC 健康')") ||
-	    !src.includes("E('h4', {}, _('本机 TC 状态'))") ||
-	    !src.includes('refs.tcObjectsBody') ||
-	    !src.includes('buildSupportSection(refs, viewState)') ||
-	    !src.includes("stage(refs, 'rate'") ||
-	    !src.includes("stage(refs, 'edge'") ||
-	    !src.includes("stage(refs, 'classification'") ||
-	    !src.includes("refs.rpcDetails = E('details'") ||
-	    !src.includes("refs.reportDetails = E('details'") ||
-	    !src.includes('refs.btnCopy') ||
-	    !src.includes('refs.btnRestart') ||
-	    !src.includes('lanspeed-diagnostics-restart-feedback') ||
-	    !src.includes('lanspeed-diagnostics-error-details') ||
-	    !src.includes('lanspeed-diagnostics-rpc-group') ||
-	    !src.includes('lanspeed-diagnostics-report-details') ||
-	    !src.includes('lanspeed-diagnostics-facts') ||
-	    !src.includes("sectionHeader(_('运行诊断')")) {
-		fail('lanspeed/diagnosticsShell.js must own the independent diagnostics page DOM');
-	}
-	if ((src.match(/'class': 'cbi-section/g) || []).length !== 5 ||
-	    src.includes('lanspeed-diagnostic-card') || src.includes("stage(refs, 'integrity'")) {
-		fail('lanspeed/diagnosticsShell.js must expose four peer task sections without nested cards');
-	}
+	[
+		'buildShell: function(viewState)', 'diagnosticsStyle.CSS', 'lsTheme.applyRoot(root)',
+		'buildSummarySection(refs, viewState)', 'buildHealthSection(refs)',
+		'refs.btnCopy', 'refs.btnRestart', 'refs.btnRefresh',
+		'lanspeed-diagnostics-restart-feedback', 'lanspeed-diagnostics-report-feedback',
+		'lanspeed-diagnostics-facts', "sectionHeader(_('运行诊断')",
+		"sectionHeader(_('需要关注')", "sectionHeader(_('接口状态')"
+	].forEach(function(marker) {
+		if (!src.includes(marker)) fail(`diagnosticsShell.js must retain compact diagnostic control: ${marker}`);
+	});
+	if ((src.match(/'class': 'cbi-section/g) || []).length !== 3 ||
+	    /reportPreview|environmentWarnings|rpcBody|subsystemsBody|tcObjectsBody|buildPipelineSection|buildControlSection/.test(src))
+		fail('diagnosticsShell.js must expose only summary, actionable issues and interface status');
 }
 
 function assertDiagnosticsRefreshModule(src) {
-	if (!src.includes('refreshStatusCards: refreshStatusCards') ||
-	    !src.includes('renderRpcChecks: renderRpcChecks') ||
-	    !src.includes('diagnosticsModel.rateOwnerStateWithRpc(viewState)') ||
-	    !src.includes('diagnosticsModel.accessEdgeStateWithRpc(viewState)') ||
-	    !src.includes('diagnosticsModel.classificationStateWithRpc(viewState)') ||
-	    !src.includes('diagnosticsModel.nssControlStateWithRpc(viewState)') ||
-	    !src.includes('diagnosticsModel.connectionStateWithRpc(') ||
-	    !src.includes('diagnosticsModel.interfaceStateWithRpc(viewState)') ||
-	    !src.includes('diagnosticsModel.warningGroups(status, health, rpcData, diagnostics)') ||
-	    !src.includes("refs.pageNotice.setAttribute('data-state', state)") ||
-	    !src.includes("refs.root.setAttribute('data-page-state', state)") ||
-	    !src.includes('renderPipeline(refs, viewState)') ||
-	    !src.includes('renderInterfaces(refs, viewState)') ||
-	    !src.includes('renderTcStatus(refs, viewState)') ||
-	    !src.includes('TC_CONFLICT_LABELS') ||
-	    !src.includes('renderSubsystems(refs, viewState)') ||
-	    !src.includes('renderWarnings(refs, viewState.status') ||
-	    !src.includes("'data-label': _('结果')") ||
-	    !src.includes('lsVersion.FULL_VERSION')) {
-		fail('lanspeed/diagnosticsRefresh.js must render total-rate, Access Edge, classification, NSS control, RPC and health states');
-	}
-	if (!src.includes("rateEvidence[_('客户端采集覆盖率')]") || !src.includes("rateEvidence[_('范围')]") ||
-	    !src.includes("classificationEvidence[_('覆盖率')]") ||
-	    src.includes('diagnosticsModel.integrityStateWithRpc(viewState)') || src.includes('rate.description, rate.meta'))
-		fail('lanspeed/diagnosticsRefresh.js must render a concise total-rate and classification summary');
+	[
+		'diagnosticsModel.rateOwnerStateWithRpc(', 'diagnosticsModel.classificationStateWithRpc(',
+		'diagnosticsModel.nssControlStateWithRpc(', 'diagnosticsModel.connectionStateWithRpc(',
+		'diagnosticsModel.interfaceStateWithRpc(', 'diagnosticsModel.warningGroups(',
+		"refs.root.setAttribute('data-page-state',", 'lsVersion.FULL_VERSION'
+	].forEach(function(marker) {
+		if (!src.includes(marker)) fail(`diagnosticsRefresh.js must retain diagnostic issue evidence: ${marker}`);
+	});
+	if (/reportPreview|environmentWarnings|rpcBody|subsystemsBody|tcObjectsBody|renderPipeline/.test(src))
+		fail('diagnosticsRefresh.js must not rebuild removed diagnostic detail panels');
 }
 
 function assertDiagnosticsModelModule(src) {
