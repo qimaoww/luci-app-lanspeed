@@ -2407,13 +2407,13 @@ function fakeDhcpHostnamesModule() {
 	};
 }
 
-function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow, fakeDate, fakeGeo) {
+function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow, fakeDate, fakeGeo, ui, dhcp) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	return vm.compileFunction(src, [
 		'baseclass', 'ui', 'fmt', 'lsRpc', 'dhcpHostnames', 'geoLocation',
 		'clientDetailShell', 'clientDetailRefresh', 'window', 'Date', 'E', '_'
 	], { filename: 'resources/lanspeed/clientDetailView.js' })(
-		fakeBaseclass, fakeUiModule(), fmt, lsRpc, fakeDhcpHostnamesModule(),
+		fakeBaseclass, ui || fakeUiModule(), fmt, lsRpc, dhcp || fakeDhcpHostnamesModule(),
 		fakeGeo || fakeGeoLocationModule(), shell, refresh, fakeWindow,
 		fakeDate || Date, fakeElement, function(value) { return value; }
 	);
@@ -2712,8 +2712,8 @@ function assertClientDetailViewLifecycle(src) {
 
 		state.schedule();
 		if (timers.size !== 1) fail('clientDetailView.js schedule must replace, not accumulate, timers');
-		listeners.beforeunload();
-		if (timers.size !== 0) fail('clientDetailView.js beforeunload must leave no detail refresh timer behind');
+		listeners.pagehide();
+		if (timers.size !== 0) fail('clientDetailView.js pagehide must leave no detail refresh timer behind');
 		state.schedule();
 		state.back();
 		if (timers.size !== 0 || fakeWindow.location.assigned !== fakeWindow.location.pathname) {
@@ -2783,6 +2783,168 @@ function assertClientDetailViewLifecycle(src) {
 		}
 	}).catch(function(err) {
 		fail('clientDetailView.js lifecycle behavior could not execute: ' + (err && err.stack || err));
+	}));
+}
+
+function assertClientDetailDisposalAndHostnameApply(src) {
+	const assert = require('assert');
+	const fmt = {
+		MIN_REFRESH_MS: 1000,
+		loadPrefs: function() { return { refreshMs: 1000, paused: false }; }
+	};
+	function harness(ui, dhcp) {
+		const timers = new Map();
+		const events = {};
+		const visibility = {};
+		let nextTimer = 0;
+		let state, mutation;
+		let calls = 0, renders = 0, disposals = 0, disconnects = 0;
+		let deferred = makeDeferred();
+		const document = {
+			body: {}, hidden: false,
+			addEventListener: function(name, handler) { visibility[name] = handler; },
+			removeEventListener: function(name) { delete visibility[name]; }
+		};
+		const window = {
+			document: document,
+			setTimeout: function(handler) { timers.set(++nextTimer, handler); return nextTimer; },
+			clearTimeout: function(id) { timers.delete(id); },
+			addEventListener: function(name, handler) { events[name] = handler; },
+			removeEventListener: function(name) { delete events[name]; },
+			MutationObserver: function(handler) {
+				mutation = handler;
+				this.observe = function() {};
+				this.disconnect = function() { disconnects++; };
+			}
+		};
+		const root = { isConnected: false };
+		const geo = fakeGeoLocationModule();
+		geo.createResolver = function() { return { dispose: function() { disposals++; } }; };
+		const view = loadClientDetailViewModule(src, fmt, {
+			clientConnections: function() { calls++; return deferred.promise; }
+		}, {
+			buildShell: function(value) { state = value; return { root: root, refs: {} }; }
+		}, { render: function() { renders++; } }, window, Date, geo, ui, dhcp);
+		const original = { available: true, marker: 'original' };
+		view.render({ identityKey: '00:11:22:33:44:55@lan', response: original });
+		return {
+			state, events, visibility, document, root, timers, original,
+			mutation: function() { mutation(); },
+			deferred: function() { return deferred; },
+			nextRequest: function() { deferred = makeDeferred(); },
+			counts: function() { return { calls, renders, disposals, disconnects }; }
+		};
+	}
+
+	asyncChecks.push(Promise.resolve().then(async function() {
+		const h = harness();
+		h.mutation();
+		assert.strictEqual(h.state.destroyed, false, 'rendered detail root can await initial DOM attachment');
+		h.root.isConnected = true;
+		h.mutation();
+		h.document.hidden = true;
+		h.visibility.visibilitychange();
+		assert.strictEqual(h.timers.size, 0, 'hidden detail must stop polling');
+		h.state.schedule();
+		await h.state.reload(false);
+		assert.strictEqual(h.counts().calls, 0);
+		const manual = h.state.reload(true);
+		h.deferred().resolve({ available: true, marker: 'manual' });
+		await manual;
+		assert.strictEqual(h.timers.size, 0, 'in-flight completion while hidden must not schedule polling');
+		h.nextRequest();
+		h.document.hidden = false;
+		h.visibility.visibilitychange();
+		h.visibility.visibilitychange();
+		assert.strictEqual(h.counts().calls, 2, 'visibility restoration starts only one detail request');
+		const visible = h.state.reload(false);
+		h.deferred().resolve({ available: true, marker: 'visible' });
+		await visible;
+		assert.strictEqual(h.timers.size, 1);
+		h.state.setPaused(true);
+		h.document.hidden = true;
+		h.visibility.visibilitychange();
+		h.document.hidden = false;
+		h.visibility.visibilitychange();
+		assert.strictEqual(h.counts().calls, 2, 'returning to a paused detail page must keep it paused');
+		h.nextRequest();
+		const late = h.state.reload(true);
+		h.root.isConnected = false;
+		h.mutation();
+		const before = h.counts();
+		h.deferred().resolve({ available: true, marker: 'late' });
+		await late;
+		await h.state.reload(true);
+		assert.strictEqual(h.state.response.marker, 'visible', 'late RPC must not overwrite disposed state');
+		assert.deepStrictEqual(h.counts(), before, 'disposed state must ignore rendering and future RPC calls');
+		assert.strictEqual(before.disposals, 1);
+		assert.strictEqual(before.disconnects, 1);
+		assert.strictEqual(h.timers.size, 0);
+		assert.strictEqual(Object.keys(h.events).length, 0);
+		assert.strictEqual(Object.keys(h.visibility).length, 0);
+
+		const rejected = harness();
+		const request = rejected.state.reload(true);
+		rejected.events.pagehide();
+		const beforeReject = rejected.counts();
+		rejected.deferred().reject(new Error('late transport error'));
+		await request;
+		assert.strictEqual(rejected.state.error, null);
+		assert.deepStrictEqual(rejected.counts(), beforeReject);
+
+		const restored = harness();
+		restored.events.pagehide({ persisted: true });
+		assert.strictEqual(restored.state.destroyed, false, 'bfcache must preserve detail state');
+		assert.strictEqual(restored.timers.size, 0, 'bfcache must suspend detail polling');
+		restored.state.schedule();
+		assert.strictEqual(restored.timers.size, 0);
+		restored.events.pageshow({ persisted: true });
+		restored.events.pageshow({ persisted: true });
+		assert.strictEqual(restored.counts().calls, 1, 'bfcache restoration must refresh detail once');
+		const restoredRequest = restored.state.reload(false);
+		restored.deferred().resolve({ available: true, marker: 'restored' });
+		await restoredRequest;
+		assert.strictEqual(restored.state.response.marker, 'restored');
+		assert.strictEqual(restored.timers.size, 1);
+		restored.state.destroy();
+
+		for (const applyFailure of [ false, true ]) {
+			let dialog, input, save, feedback, hidden = 0, notifications = 0, applyCalls = 0;
+			const ui = {
+				showModal: function(title, children) {
+					dialog = fakeElement('div', {}, children);
+					input = findFakeElementsByTag(dialog, 'input')[0];
+					input.select = function() {};
+					save = findFakeElementsByTag(dialog, 'button')[1];
+					feedback = findFakeElement(dialog, 'lanspeed-connection-hostname-modal-status');
+				},
+				hideModal: function() { hidden++; },
+				addNotification: function() { notifications++; },
+				changes: { apply: function() {
+					applyCalls++;
+					if (applyFailure) throw new Error('apply rejected');
+					/* The actual LuCI API returns void and owns completion UI. */
+				} }
+			};
+			const naming = harness(ui);
+			await naming.state.openHostnameDialog();
+			input.value = 'new-host';
+			input.listeners.input();
+			save.listeners.click();
+			for (let i = 0; i < 8; i++) await Promise.resolve();
+			assert.strictEqual(applyCalls, 1);
+			assert.strictEqual(hidden + notifications + naming.counts().calls, 0,
+				'void native Apply must retain ownership of its modal without early success or reload');
+			assert.strictEqual(naming.state.customHostname, '',
+				'staged hostname must not be presented as applied before native confirmation');
+			if (applyFailure) {
+				assert(feedback.textContent.includes('apply rejected') && !save.disabled,
+					'synchronous Apply failure must retain the editable dialog and expose the actual error');
+			}
+			naming.state.destroy();
+		}
+	}).catch(function(error) {
+		fail('clientDetailView.js visibility, disposal or hostname Apply regression: ' + (error && error.stack || error));
 	}));
 }
 
@@ -2868,7 +3030,7 @@ function assertClientDetailGeoLifecycle(src) {
 
 		state.requestLocations([ '4.4.4.4' ]);
 		const beforeUnload = renders;
-		listeners.beforeunload();
+		listeners.pagehide();
 		deferred['4.4.4.4'].resolve({ kind: 'country', label: '美国', queryable: false });
 		await Promise.resolve();
 		await Promise.resolve();
@@ -7406,7 +7568,7 @@ function assertConfigFormBehavior(src) {
 
 function assertConfigViewRewrite(src) {
 	[ "'loading'", "'ready'", "'empty'", "'degraded'", "'hard-error'",
-		'configForm.verifyAll(viewState)', 'setNativeActionState', 'setNativeActionFailureState',
+		'applying: true', 'setNativeActionState', 'setNativeActionFailureState',
 		"actions.setAttribute('data-lanspeed-state', 'hard-error')", 'aria-busy' ].forEach(marker => {
 		if (!src.includes(marker)) fail(`configView.js state machine is missing ${marker}`);
 	});
@@ -7429,7 +7591,7 @@ function assertConfigViewBehavior(src) {
 		changes: {
 			changes: {},
 			init: function() { calls.push('changes-init'); return Promise.resolve(); },
-			apply: function(checked) { calls.push('apply:' + checked); return Promise.resolve(); }
+			apply: function(checked) { calls.push('apply:' + checked); }
 		},
 		hideIndicator: function() { calls.push('hide-indicator'); },
 		addNotification: function(title, body, level) { calls.push('notify:' + level); }
@@ -7462,9 +7624,9 @@ function assertConfigViewBehavior(src) {
 	}
 	view.viewState = { daemonRefs: {}, localDirty: true };
 	asyncChecks.push(view.handleSaveApply(null, '0').then(function(result) {
-		if (!result || !result.ok || calls.join(',') !==
-			'save,hide-indicator,changes-init,apply:true,mark-applied,verify') {
-			fail('configView.js Save & Apply must stage, apply, advance the baseline, then verify in order');
+		if (!result || !result.ok || !result.applying || view.viewState.applied || calls.join(',') !==
+			'save,hide-indicator,changes-init,apply:true') {
+			fail('configView.js Save & Apply must hand staged changes to the void native API without advancing the baseline or verifying before confirmation');
 		}
 		return view.handleReset();
 	}).then(function(result) {
@@ -7475,42 +7637,6 @@ function assertConfigViewBehavior(src) {
 		fail('configView.js native staged/apply/reset behavior failed: ' + (error && error.stack || error));
 	}));
 
-	let verifyCalls = 0;
-	const retryDelays = [];
-	const retryFeedback = [];
-	const retryView = loadConfigViewModule(src, {
-		saveAll: function() { return Promise.resolve({ ok: true }); },
-		markApplied: function() { return true; },
-		verifyAll: function() {
-			verifyCalls++;
-			return Promise.resolve({ ok: verifyCalls === 6 });
-		},
-		setFeedback: function(state, status, message) {
-			retryFeedback.push([ status, String(message) ]);
-		}
-	}, {
-		changes: {
-			changes: {}, init: function() { return Promise.resolve(); },
-			apply: function() { return Promise.resolve(); }
-		},
-		hideIndicator: function() {}
-	}, null, function(handler, delay) {
-		retryDelays.push(delay);
-		handler();
-	});
-	retryView.viewState = { daemonRefs: {} };
-	asyncChecks.push(retryView.handleSaveApply(null, '0').then(function(result) {
-		if (!result || !result.ok || verifyCalls !== 6 ||
-			JSON.stringify(retryDelays) !== JSON.stringify([ 500, 750, 1000, 1500, 2000 ]) ||
-			retryFeedback.length !== 5 || retryFeedback.some(function(entry) {
-				return entry[0] !== 'verifying' || !entry[1].includes('等待守护进程与接口就绪');
-			})) {
-			fail('configView.js must keep post-Apply verification pending across the bounded daemon reload window');
-		}
-	}).catch(function(error) {
-		fail('configView.js post-Apply retry behavior failed: ' + (error && error.stack || error));
-	}));
-
 	const failedCalls = [];
 	const failedView = loadConfigViewModule(src, {
 		saveAll: function() { failedCalls.push('save'); return Promise.resolve({ ok: true }); },
@@ -7519,7 +7645,7 @@ function assertConfigViewBehavior(src) {
 	}, {
 		changes: {
 			changes: {}, init: function() { failedCalls.push('changes-init'); return Promise.resolve(); },
-			apply: function() { failedCalls.push('apply'); return Promise.reject(new Error('apply failed')); }
+			apply: function() { failedCalls.push('apply'); throw new Error('apply failed'); }
 		},
 		hideIndicator: function() { failedCalls.push('hide'); },
 		addNotification: function(title, body, level) { failedCalls.push('notify:' + level); }
@@ -7630,6 +7756,7 @@ EXPECTED_MODULES.forEach(function(name) {
 	if (name === 'clientDetailView.js') {
 		assertClientDetailViewSource(src);
 		assertClientDetailViewLifecycle(src);
+		assertClientDetailDisposalAndHostnameApply(src);
 		assertClientDetailGeoLifecycle(src);
 		assertClientDetailIntegratedState(src);
 	}

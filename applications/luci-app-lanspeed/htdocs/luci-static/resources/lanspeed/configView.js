@@ -188,24 +188,6 @@ function failureRoot(error) {
 	return root;
 }
 
-function applyAndVerify(viewState) {
-	var retryDelays = [ 500, 750, 1000, 1500, 2000 ];
-	var attempt = 0;
-	function run() {
-		return configForm.verifyAll(viewState).then(function(result) {
-			if (result && result.ok) return result;
-			if (attempt < retryDelays.length) {
-				configForm.setFeedback(viewState, 'verifying',
-					_('配置已应用，正在等待守护进程与接口就绪…'));
-				var delay = retryDelays[attempt++];
-				return new Promise(function(resolve) { setTimeout(resolve, delay); }).then(run);
-			}
-			return result;
-		});
-	}
-	return run();
-}
-
 return baseclass.extend({
 	load: function() {
 		return configForm.loadValues().then(function(values) {
@@ -291,11 +273,11 @@ return baseclass.extend({
 			if (!result || !result.ok) return result;
 			return refreshNativeChanges(viewState).then(function() {
 				if (!ui.changes || typeof ui.changes.apply !== 'function') return result;
-				return Promise.resolve(ui.changes.apply(mode == '0')).then(function() {
-					if (typeof configForm.markApplied === 'function')
-						configForm.markApplied(viewState);
-					return applyAndVerify(viewState);
-				});
+				/* apply() starts LuCI's confirmation/rollback UI and returns void.
+				 * A successful native apply reloads the page and its UCI baseline;
+				 * do not mark staged data as applied before that confirmation. */
+				ui.changes.apply(mode == '0');
+				return Object.assign({}, result, { applying: true });
 			});
 		}).catch(notifyError);
 	},

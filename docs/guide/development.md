@@ -60,6 +60,16 @@ sh tests/validate-lanspeed-docs.sh
 
 测试输出默认进入每次运行唯一的临时目录并在退出时清理。只有显式设置 `LANSPEED_TEST_OUTPUT_DIR=/path` 才保留日志；实机 `qa-device.sh` 必须显式提供 `OUT_DIR`。
 
+只读实机基准可用于部署前后对照，无需安装额外设备依赖：
+
+```sh
+python3 tests/benchmark-device.py root@192.0.2.1 --output /tmp/lanspeed-before.json
+# 部署待测版本并等待采集窗口稳定后，使用相同采样参数再次运行
+python3 tests/benchmark-device.py root@192.0.2.1 --output /tmp/lanspeed-after.json
+```
+
+脚本需要 Python 3.9+ 和已有 SSH 密钥认证；默认对八个只读 RPC 各采样五次，同时记录 RSS 与 CPU。输出只保存延迟、计数和白名单状态，不保存客户端原始响应，也不触发 reload 或修改配置。RPC 延迟包含 SSH 与网络开销，报告另列空命令基线；真实流量不同会影响结果，不能仅由一次对比推断性能提升。
+
 ## 发布
 
 发布 workflow 默认禁用，不监听 `main`、tag 或 pull request；仓库内仅保留 `workflow_dispatch` 手动触发。需要发布时，由仓库管理员临时启用 `Build SDK Packages` 并手动运行，只为 x86_64 构建 `lanspeedd`、`lanspeedd-bpf`、`luci-app-lanspeed` 三个 APK 和一个整合归档，完成后重新禁用该 workflow。

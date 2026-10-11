@@ -885,6 +885,88 @@ async function testControllerLifecycle(context, fmt) {
 	assert.ok(busyRefreshes >= 3);
 }
 
+async function testControllerVisibility(context, fmt) {
+	const overview = loadOverview(context, fmt, {});
+	const timers = fakeTimers();
+	const listeners = {};
+	const document = {
+		body: {}, hidden: false,
+		addEventListener: function(name, handler) { listeners[name] = handler; },
+		removeEventListener: function(name) { delete listeners[name]; }
+	};
+	const events = {};
+	const target = {
+		addEventListener: function(name, handler) { events[name] = handler; },
+		removeEventListener: function(name) { delete events[name]; }
+	};
+	let calls = 0;
+	let deferred = makeDeferred();
+	let mutation;
+	let disconnected = false;
+	const state = Object.assign(normalizedResult('initial', 100), {
+		prefs: { paused: false, refreshMs: 1000 }
+	});
+	const controller = overview.createController(state, {
+		document: document, timerApi: timers, eventTarget: target,
+		load: function() { calls++; return deferred.promise; },
+		MutationObserver: function(handler) {
+			mutation = handler;
+			this.observe = function() {};
+			this.disconnect = function() { disconnected = true; };
+		}
+	});
+	controller.schedule();
+	document.hidden = true;
+	listeners.visibilitychange();
+	assert.strictEqual(timers.count(), 0, 'hidden overview must stop automatic refresh');
+	controller.schedule();
+	await controller.reload(false);
+	assert.strictEqual(calls, 0, 'hidden overview must ignore automatic scheduling and reload');
+	const manual = controller.reload(true);
+	await Promise.resolve();
+	assert.strictEqual(calls, 1, 'explicit manual refresh remains available while hidden');
+	deferred.resolve(normalizedResult('manual', 200));
+	await manual;
+	assert.strictEqual(timers.count(), 0, 'a hidden in-flight completion must not restart polling');
+	deferred = makeDeferred();
+	document.hidden = false;
+	listeners.visibilitychange();
+	listeners.visibilitychange();
+	await Promise.resolve();
+	assert.strictEqual(calls, 2, 'returning to a visible overview refreshes immediately exactly once');
+	deferred.resolve(normalizedResult('visible', 300));
+	await controller.getPending();
+	assert.strictEqual(timers.count(), 1);
+	state.prefs.paused = true;
+	document.hidden = true;
+	listeners.visibilitychange();
+	document.hidden = false;
+	listeners.visibilitychange();
+	await Promise.resolve();
+	assert.strictEqual(calls, 2, 'visibility restoration must respect the user pause preference');
+	state.prefs.paused = false;
+	controller.schedule();
+	events.pagehide({ persisted: true });
+	assert.strictEqual(controller.isDestroyed(), false, 'bfcache entry must preserve the overview controller');
+	assert.strictEqual(timers.count(), 0, 'bfcache entry must suspend polling');
+	deferred = makeDeferred();
+	events.pageshow({ persisted: true });
+	events.pageshow({ persisted: true });
+	await Promise.resolve();
+	assert.strictEqual(calls, 3, 'bfcache restoration must refresh exactly once');
+	deferred.resolve(normalizedResult('restored', 400));
+	await controller.getPending();
+	assert.strictEqual(timers.count(), 1);
+	const root = { isConnected: true };
+	controller.attachRoot(root);
+	root.isConnected = false;
+	mutation();
+	assert(controller.isDestroyed() && disconnected,
+		'removing an already mounted root must destroy its observer and controller');
+	assert.strictEqual(listeners.visibilitychange, undefined);
+	assert.strictEqual(Object.keys(events).length, 0);
+}
+
 function testRenderWiresLiveRefresh(context, fmt) {
 	let renderedState = null;
 	let refreshes = 0;
@@ -1492,6 +1574,7 @@ async function main() {
 	await testAtomicRealtimeSnapshot(context, fmt);
 	await testLiveSamplePairing(context, fmt);
 	await testControllerLifecycle(context, fmt);
+	await testControllerVisibility(context, fmt);
 	testRenderWiresLiveRefresh(context, fmt);
 	testPaginationAndUiStates(context, fmt);
 	testColumnResizeRange(context, fmt);

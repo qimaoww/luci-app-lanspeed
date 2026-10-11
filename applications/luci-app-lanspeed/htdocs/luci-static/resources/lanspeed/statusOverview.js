@@ -506,6 +506,27 @@ function createController(viewState, options) {
 	var root = null;
 	var observer = null;
 	var connected = false;
+	var suspended = false;
+	var hidden = isHidden();
+
+	function isHidden() {
+		return suspended || !!(visibilityTarget &&
+			(visibilityTarget.hidden === true || visibilityTarget.visibilityState === 'hidden'));
+	}
+
+	function pageHide(event) {
+		if (!event || !event.persisted) return destroy();
+		suspended = true;
+		stopTimer();
+		clearErrorNoticeTimer();
+	}
+
+	function pageShow() {
+		if (!suspended || destroyed) return;
+		suspended = false;
+		hidden = isHidden();
+		if (!hidden && !(viewState.prefs && viewState.prefs.paused)) reload(false);
+	}
 
 	function refresh(busyOnly) {
 		if (busyOnly && typeof viewState.refreshBusy === 'function') viewState.refreshBusy();
@@ -542,9 +563,11 @@ function createController(viewState, options) {
 	}
 
 	function visibilityChanged() {
-		var hidden = visibilityTarget &&
-			(visibilityTarget.hidden === true || visibilityTarget.visibilityState === 'hidden');
+		var wasHidden = hidden;
+		hidden = isHidden();
+		if (destroyed) return;
 		if (hidden) {
+			stopTimer();
 			clearErrorNoticeTimer();
 			viewState.errorNoticeVisible = false;
 			viewState.errorNoticeUntil = 0;
@@ -555,11 +578,13 @@ function createController(viewState, options) {
 			triggerErrorNotice();
 			if (viewState.refs) refresh(true);
 		}
+		if (wasHidden && !(viewState.prefs && viewState.prefs.paused))
+			reload(false);
 	}
 
 	function schedule(anchorAt) {
 		stopTimer();
-		if (destroyed || pending || (viewState.prefs && viewState.prefs.paused)) return;
+		if (destroyed || isHidden() || pending || (viewState.prefs && viewState.prefs.paused)) return;
 		var interval = typeof fmt.effectiveRefreshMs === 'function'
 			? fmt.effectiveRefreshMs(viewState.status, viewState.prefs)
 			: Math.max(fmt.MIN_REFRESH_MS,
@@ -596,7 +621,7 @@ function createController(viewState, options) {
 	}
 
 	function reload(manual) {
-		if (destroyed) return Promise.resolve(null);
+		if (destroyed || (manual !== true && isHidden())) return Promise.resolve(null);
 		if (pending) {
 			if (manual) {
 				viewState.manualBusy = true;
@@ -649,8 +674,8 @@ function createController(viewState, options) {
 		if (observer && typeof observer.disconnect === 'function') observer.disconnect();
 		observer = null;
 		if (eventTarget && typeof eventTarget.removeEventListener === 'function') {
-			eventTarget.removeEventListener('pagehide', destroy);
-			eventTarget.removeEventListener('beforeunload', destroy);
+			eventTarget.removeEventListener('pagehide', pageHide);
+			eventTarget.removeEventListener('pageshow', pageShow);
 		}
 		if (visibilityTarget && typeof visibilityTarget.removeEventListener === 'function')
 			visibilityTarget.removeEventListener('visibilitychange', visibilityChanged);
@@ -658,8 +683,11 @@ function createController(viewState, options) {
 	}
 
 	function attachRoot(nextRoot) {
+		if (observer && typeof observer.disconnect === 'function') observer.disconnect();
+		observer = null;
 		root = nextRoot;
-		if (!root) return;
+		connected = !!(root && root.isConnected);
+		if (!root || destroyed) return;
 		if (Observer && hostDocument && hostDocument.body) {
 			observer = new Observer(function() {
 				if (root && root.isConnected) connected = true;
@@ -670,8 +698,8 @@ function createController(viewState, options) {
 	}
 
 	if (eventTarget && typeof eventTarget.addEventListener === 'function') {
-		eventTarget.addEventListener('pagehide', destroy);
-		eventTarget.addEventListener('beforeunload', destroy);
+		eventTarget.addEventListener('pagehide', pageHide);
+		eventTarget.addEventListener('pageshow', pageShow);
 	}
 	if (visibilityTarget && typeof visibilityTarget.addEventListener === 'function')
 		visibilityTarget.addEventListener('visibilitychange', visibilityChanged);

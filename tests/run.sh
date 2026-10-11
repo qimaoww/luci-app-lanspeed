@@ -136,7 +136,8 @@ resolve_bpf_linker() {
 	fi
 
 	candidate=$(command -v bpf-linker 2>/dev/null || true)
-	if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+	if [ -n "$candidate" ] && [ -x "$candidate" ] &&
+		[ "$("$candidate" --version 2>/dev/null || true)" = 'bpf-linker 0.10.3' ]; then
 		printf '%s\n' "$candidate"
 		return 0
 	fi
@@ -144,7 +145,11 @@ resolve_bpf_linker() {
 	if [ -n "$IMMORTALWRT_ROOT" ]; then
 		candidate=$(find "$IMMORTALWRT_ROOT/build_dir" -type f \
 			-path '*/host-tools/bin/bpf-linker' -perm -u+x -print 2>/dev/null \
-			| sort | head -n 1)
+			| sort | while IFS= read -r tool; do
+				[ "$("$tool" --version 2>/dev/null || true)" = 'bpf-linker 0.10.3' ] || continue
+				printf '%s\n' "$tool"
+				break
+			done)
 		if [ -n "$candidate" ]; then
 			printf '%s\n' "$candidate"
 			return 0

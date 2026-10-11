@@ -49,6 +49,10 @@ define Package/lanspeedd/description
  Rust/Aya daemon for LAN client speed monitoring.
 endef
 
+define Package/lanspeedd/conffiles
+/etc/config/lanspeed
+endef
+
 define Package/lanspeedd/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT:-}" ] && exit 0

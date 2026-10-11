@@ -65,6 +65,56 @@ mod diagnostics_tests {
             .is_none());
     }
 
+    #[test]
+    fn base_overlay_retries_when_a_collection_publishes_during_preparation() {
+        let store = SnapshotStore::new(Arc::new(ResponseSnapshot::unsupported("old")));
+        let attempts = std::cell::Cell::new(0);
+
+        let generations = store.update_base(|previous| {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() == 1 {
+                // Deterministically interleave a rate publication between
+                // reading the base and committing the connection overlay.
+                store.publish(Arc::new(ResponseSnapshot::unsupported("new")));
+            }
+            let mut next = previous.clone();
+            next.clients.tcp_conns_total = Some(42);
+            next
+        });
+
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(store.load().reload.version, "new");
+        assert_eq!(store.load().clients.tcp_conns_total, Some(42));
+        assert_eq!(generations, store.generations());
+        assert_eq!(generations.fast_generation, 0);
+    }
+
+    #[test]
+    fn base_overlay_preserves_a_fast_publication_with_the_same_base_generation() {
+        let store = SnapshotStore::new(Arc::new(ResponseSnapshot::unsupported("base")));
+        let base = store.generations();
+        let attempts = std::cell::Cell::new(0);
+
+        store.update_base(|previous| {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() == 1 {
+                store
+                    .publish_fast(base.base_generation, |snapshot| {
+                        snapshot.reload.version = "fast".into();
+                    })
+                    .unwrap();
+            }
+            let mut next = previous.clone();
+            next.clients.tcp_conns_total = Some(42);
+            next
+        });
+
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(store.load().reload.version, "fast");
+        assert_eq!(store.load().clients.tcp_conns_total, Some(42));
+        assert!(store.generations().base_generation > base.base_generation);
+    }
+
     fn set_bpf_evidence(snapshot: &mut ResponseSnapshot, value: Value, live_metrics: bool) {
         snapshot
             .status

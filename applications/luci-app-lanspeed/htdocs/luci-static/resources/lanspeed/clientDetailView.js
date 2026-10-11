@@ -230,10 +230,17 @@ function showHostnameDialog(viewState, mac, currentName) {
 		setSaving(true);
 		setStatus(_('正在保存并应用 DHCP 配置…'), 'info');
 		dhcpHostnames.saveForMac(mac, name).then(function(result) {
-			if (result.changed)
+			if (viewState.destroyed) return null;
+			if (result.changed) {
+				/* LuCI apply() returns void. Its own modal reports failures and its
+				 * confirmation flow reloads the page after success. */
+				setSaving(false);
 				ui.changes.apply(false);
+				return null;
+			}
 			return result;
 		}).then(function(result) {
+			if (viewState.destroyed || !result) return;
 			viewState.customHostname = result && result.name !== undefined
 				? String(result.name) : name;
 			viewState.hostnameAvailable = true;
@@ -245,6 +252,7 @@ function showHostnameDialog(viewState, mac, currentName) {
 				: _('自定义主机名已清除。')), 'info');
 			return viewState.reload(true);
 		}, function(error) {
+			if (viewState.destroyed) return;
 			setSaving(false);
 			setStatus(_('保存失败：') + hostnameError(error), 'error');
 			input.focus();
@@ -304,6 +312,42 @@ return baseclass.extend({
 			initialUpdatedAt = Date.now();
 		}
 		var pending = null;
+		var hostDocument = window.document || (typeof document !== 'undefined' ? document : null);
+		var observer = null;
+		var connected = false;
+		var suspended = false;
+		var hidden = isHidden();
+
+		function isHidden() {
+			return suspended || !!(hostDocument &&
+				(hostDocument.hidden === true || hostDocument.visibilityState === 'hidden'));
+		}
+
+		function destroy() {
+			viewState.destroy();
+		}
+
+		function pageHide(event) {
+			if (!event || !event.persisted) return destroy();
+			suspended = true;
+			viewState.stopTimer();
+		}
+
+		function pageShow() {
+			if (!suspended || viewState.destroyed) return;
+			suspended = false;
+			hidden = isHidden();
+			if (!hidden && !viewState.prefs.paused) viewState.reload(false);
+		}
+
+		function visibilityChanged() {
+			var wasHidden = hidden;
+			hidden = isHidden();
+			if (viewState.destroyed) return;
+			if (hidden) viewState.stopTimer();
+			else if (wasHidden && !viewState.prefs.paused) viewState.reload(false);
+		}
+
 		var geoResolver = geoLocation.createResolver();
 		var viewState = {
 			identityKey: data && data.identityKey || '',
@@ -348,7 +392,7 @@ return baseclass.extend({
 			schedule: function(anchorAt) {
 				var self = this;
 				this.stopTimer();
-				if (this.destroyed || this.prefs.paused)
+				if (this.destroyed || isHidden() || pending || this.prefs.paused)
 					return;
 				var interval = this.effectiveRefreshMs();
 				var delay = interval;
@@ -370,6 +414,8 @@ return baseclass.extend({
 				var request;
 				var startedAt = Date.now();
 				var requestedManually = manual === true;
+				if (this.destroyed || (!requestedManually && isHidden()))
+					return Promise.resolve(this.response);
 				if (pending) {
 					if (requestedManually && !this.manualLoading) {
 						this.manualLoading = true;
@@ -392,6 +438,7 @@ return baseclass.extend({
 				}
 
 				pending = Promise.resolve(request).then(function(result) {
+					if (self.destroyed) return;
 					var response = result[0];
 					self.response = response;
 					self.lastGood = response && response.available
@@ -403,13 +450,14 @@ return baseclass.extend({
 					self.refreshPolicy = nssRefreshRestricted(self.status) ? 'nss' : 'default';
 					self.error = null;
 				}, function(error) {
-					self.error = error;
+					if (!self.destroyed) self.error = error;
 				}).then(function() {
+					pending = null;
+					if (self.destroyed) return self.response;
 					self.loading = false;
 					self.manualLoading = false;
 					clientDetailRefresh.render(self);
 					self.schedule(startedAt);
-					pending = null;
 					return self.response;
 				});
 				return pending;
@@ -432,7 +480,7 @@ return baseclass.extend({
 			openHostnameDialog: function() {
 				var self = this;
 				var mac = this.hostnameMac;
-				if (this.hostnameOpening || this.hostnameSaving)
+				if (this.destroyed || this.hostnameOpening || this.hostnameSaving)
 					return Promise.resolve(false);
 				if (!mac) {
 					ui.addNotification(null,
@@ -442,6 +490,7 @@ return baseclass.extend({
 				this.hostnameOpening = true;
 				clientDetailRefresh.render(this);
 				return dhcpHostnames.loadForMac(mac).then(function(data) {
+					if (self.destroyed) return false;
 					self.hostnameOpening = false;
 					if (!data.available) {
 						self.hostnameAvailable = false;
@@ -456,6 +505,7 @@ return baseclass.extend({
 					showHostnameDialog(self, mac, self.customHostname);
 					return true;
 				}, function(error) {
+					if (self.destroyed) return false;
 					self.hostnameOpening = false;
 					self.hostnameAvailable = false;
 					clientDetailRefresh.render(self);
@@ -562,6 +612,16 @@ return baseclass.extend({
 					return;
 				this.destroyed = true;
 				this.stopTimer();
+				this.loading = false;
+				this.manualLoading = false;
+				if (observer) observer.disconnect();
+				observer = null;
+				if (typeof window.removeEventListener === 'function') {
+					window.removeEventListener('pagehide', pageHide);
+					window.removeEventListener('pageshow', pageShow);
+				}
+				if (hostDocument && typeof hostDocument.removeEventListener === 'function')
+					hostDocument.removeEventListener('visibilitychange', visibilityChanged);
 				this.geoBatch = null;
 				this.geoPageSignature = '';
 				geoResolver.dispose();
@@ -578,11 +638,20 @@ return baseclass.extend({
 
 		var built = clientDetailShell.buildShell(viewState);
 		viewState.refs = built.refs;
+		connected = !!built.root.isConnected;
+		if (typeof window.MutationObserver === 'function' && hostDocument && hostDocument.body) {
+			observer = new window.MutationObserver(function() {
+				if (built.root.isConnected) connected = true;
+				else if (connected) destroy();
+			});
+			observer.observe(hostDocument.body, { childList: true, subtree: true });
+		}
 		clientDetailRefresh.render(viewState);
 		viewState.schedule();
-		window.addEventListener('beforeunload', function() {
-			viewState.destroy();
-		});
+		window.addEventListener('pagehide', pageHide);
+		window.addEventListener('pageshow', pageShow);
+		if (hostDocument && typeof hostDocument.addEventListener === 'function')
+			hostDocument.addEventListener('visibilitychange', visibilityChanged);
 		return built.root;
 	},
 
