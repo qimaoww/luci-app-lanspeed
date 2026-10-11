@@ -137,7 +137,7 @@ resolve_bpf_linker() {
 
 	candidate=$(command -v bpf-linker 2>/dev/null || true)
 	if [ -n "$candidate" ] && [ -x "$candidate" ] &&
-		[ "$("$candidate" --version 2>/dev/null || true)" = 'bpf-linker 0.10.3' ]; then
+		[ "$("$candidate" --version 2>/dev/null || true)" = 'bpf-linker 0.11.1' ]; then
 		printf '%s\n' "$candidate"
 		return 0
 	fi
@@ -146,7 +146,7 @@ resolve_bpf_linker() {
 		candidate=$(find "$IMMORTALWRT_ROOT/build_dir" -type f \
 			-path '*/host-tools/bin/bpf-linker' -perm -u+x -print 2>/dev/null \
 			| sort | while IFS= read -r tool; do
-				[ "$("$tool" --version 2>/dev/null || true)" = 'bpf-linker 0.10.3' ] || continue
+				[ "$("$tool" --version 2>/dev/null || true)" = 'bpf-linker 0.11.1' ] || continue
 				printf '%s\n' "$tool"
 				break
 			done)
@@ -160,8 +160,8 @@ resolve_bpf_linker() {
 		printf 'missing bpf-linker; set BPF_LINKER or IMMORTALWRT_ROOT\n' >&2
 		return 1
 	fi
-	archive="$IMMORTALWRT_ROOT/dl/bpf-linker-0.10.3-x86_64-unknown-linux-musl.tar.gz"
-	expected=0fa4645d2dfbb5cafe6231b0aa9fad4f1430bd0871e3bd7319e82d827bf6262c
+	archive="$IMMORTALWRT_ROOT/dl/bpf-linker-0.11.1-x86_64-unknown-linux-musl.tar.zst"
+	expected=e058a6aecc9e65fa4c977b298a8e4b738424d7629769fd352eed409fb57e16e8
 	if [ ! -f "$archive" ]; then
 		printf 'missing pinned bpf-linker archive: %s\n' "$archive" >&2
 		return 1
@@ -173,16 +173,16 @@ resolve_bpf_linker() {
 		return 1
 	fi
 
-	tool_dir="${CARGO_TARGET_DIR:-$EVIDENCE_DIR}/test-tools/bpf-linker-0.10.3"
+	tool_dir="${CARGO_TARGET_DIR:-$EVIDENCE_DIR}/test-tools/bpf-linker-0.11.1"
 	candidate="$tool_dir/bpf-linker"
 	if [ -x "$candidate" ] &&
-		[ "$("$candidate" --version 2>/dev/null || true)" = "bpf-linker 0.10.3" ]; then
+		[ "$("$candidate" --version 2>/dev/null || true)" = "bpf-linker 0.11.1" ]; then
 		printf '%s\n' "$candidate"
 		return 0
 	fi
 	rm -rf -- "$tool_dir"
 	mkdir -p "$tool_dir"
-	tar -C "$tool_dir" -xzf "$archive"
+	tar -C "$tool_dir" --zstd -xf "$archive"
 	candidate=$(find "$tool_dir" -type f -name bpf-linker -perm -u+x -print | head -n 1)
 	if [ -z "$candidate" ]; then
 		printf 'pinned archive did not contain an executable bpf-linker\n' >&2

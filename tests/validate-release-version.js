@@ -467,14 +467,14 @@ try {
   assert(workflow.includes('Acquire::Retries=3'), 'APT network operations must retry transient failures');
   assert(workflow.includes('RUSTUP_MAX_RETRIES=3'), 'Rust toolchain downloads must retry transient failures');
   assert(workflow.includes('rustup toolchain install 1.96.0 --profile minimal --component rust-src'), 'validation must install Rust 1.96.0 with rust-src');
-  assert(workflow.includes('https://github.com/aya-rs/bpf-linker/releases/download/v0.10.3/bpf-linker-x86_64-unknown-linux-musl.tar.gz'),
-    'validation must download the official bpf-linker 0.10.3 archive');
-  assert(workflow.includes('0fa4645d2dfbb5cafe6231b0aa9fad4f1430bd0871e3bd7319e82d827bf6262c'),
-    'validation must pin the official bpf-linker 0.10.3 archive checksum');
+  assert(workflow.includes('https://github.com/aya-rs/bpf-linker/releases/download/v0.11.1/bpf-linker-x86_64-unknown-linux-musl.tar.zst'),
+    'validation must download the official bpf-linker 0.11.1 archive');
+  assert(workflow.includes('e058a6aecc9e65fa4c977b298a8e4b738424d7629769fd352eed409fb57e16e8'),
+    'validation must pin the official bpf-linker 0.11.1 archive checksum');
   assert(workflow.includes('printf \'%s  %s\\n\' "$bpf_linker_sha256" "$bpf_linker_archive" | sha256sum -c -'),
     'validation must verify bpf-linker before extraction');
   assert(!workflow.includes('cargo install bpf-linker'), 'workflow must not compile an unpinned bpf-linker dependency graph');
-  assert(workflow.includes("test \"$(bpf-linker --version)\" = 'bpf-linker 0.10.3'"), 'validation must verify the installed bpf-linker version');
+  assert(workflow.includes("test \"$(bpf-linker --version)\" = 'bpf-linker 0.11.1'"), 'validation must verify the installed bpf-linker version');
   assert(workflow.includes('./tests/run.sh unit'), 'validate job must run the complete unit suite');
   assert(!workflow.includes('ipk_version='), 'Rust release workflow must not prepare unsupported IPK version names');
   assert(!/^      [A-Z_]+:\s*\$\{\{\s*env\./m.test(workflow), 'workflow job env must not reference the env context');

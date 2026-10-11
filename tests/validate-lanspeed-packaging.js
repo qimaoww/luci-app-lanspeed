@@ -829,17 +829,27 @@ try {
   assert(userspaceBuild >= 0 && bpfConditional >= 0 && userspaceBuild < bpfConditional,
     'userspace must always build before the separate eBPF package step');
   assert(ebpfBuild > bpfConditional, 'eBPF build must be conditional and additive');
-  assertMatch(pkgMakefile, /^\s*FILE:=bpf-linker-0\.10\.3-x86_64-unknown-linux-musl\.tar\.gz$/m, 'bpf-linker cache name must include its pinned version');
-  assertMatch(pkgMakefile, /^\s*URL_FILE:=bpf-linker-x86_64-unknown-linux-musl\.tar\.gz$/m, 'bpf-linker remote archive name must remain official');
+  assertMatch(pkgMakefile, /^\s*FILE:=bpf-linker-0\.11\.1-x86_64-unknown-linux-musl\.tar\.zst$/m, 'bpf-linker cache name must include its pinned version');
+  assertMatch(pkgMakefile, /^\s*URL_FILE:=bpf-linker-x86_64-unknown-linux-musl\.tar\.zst$/m, 'bpf-linker remote archive name must remain official');
   assertMatch(
     pkgMakefile,
-    /^\s*URL:=https:\/\/github\.com\/aya-rs\/bpf-linker\/releases\/download\/v0\.10\.3\/$/m,
-    'bpf-linker 0.10.3 download URL must be official'
+    /^\s*URL:=https:\/\/github\.com\/aya-rs\/bpf-linker\/releases\/download\/v0\.11\.1\/$/m,
+    'bpf-linker 0.11.1 download URL must be official'
   );
   assertMatch(
     pkgMakefile,
-    /^\s*HASH:=0fa4645d2dfbb5cafe6231b0aa9fad4f1430bd0871e3bd7319e82d827bf6262c$/m,
+    /^\s*HASH:=e058a6aecc9e65fa4c977b298a8e4b738424d7629769fd352eed409fb57e16e8$/m,
     'bpf-linker archive SHA256 must be pinned'
+  );
+  assertMatch(
+    pkgMakefile,
+    /command -v zstd >\/dev\/null 2>&1 \|\|/,
+    'BPF Build/Prepare must require the host zstd utility for the pinned archive'
+  );
+  assertMatch(
+    pkgMakefile,
+    /zstd -dc \$\(DL_DIR\)\/\$\(BPF_LINKER_ARCHIVE\) \| \$\(TAR\) -C \$\(BPF_LINKER_DIR\) -xf -/,
+    'BPF Build/Prepare must decompress the zstd archive through the host tar'
   );
   assertMatch(
     pkgMakefile,
@@ -854,11 +864,11 @@ try {
   assertMatch(pkgMakefile, /BPF_LINKER="\$\(BPF_LINKER\)"/, 'eBPF build must use the extracted pinned linker');
 	assertMatch(pkgMakefile, /LANSPEED_BPF_TARGET_ARCH="\$\(ARCH\)"/,
 		'eBPF build must receive the OpenWrt target architecture explicitly');
-	assert(buildDriver.includes('PINNED_BPF_LINKER: &str = "0.10.3"'), 'build driver must retain the packaged bpf-linker version');
+	assert(buildDriver.includes('PINNED_BPF_LINKER: &str = "0.11.1"'), 'build driver must retain the packaged bpf-linker version');
 	assert(buildDriver.includes('MINIMUM_BPF_LINKER: &str = PINNED_BPF_LINKER') &&
-		buildDriver.includes('MAXIMUM_BPF_LINKER_EXCLUSIVE: &str = "0.11.0"') &&
+		buildDriver.includes('MAXIMUM_BPF_LINKER_EXCLUSIVE: &str = "0.12.0"') &&
 		buildDriver.includes('validate_version_range('),
-		'build driver must accept the compatible stable bpf-linker 0.10.x range');
+		'build driver must accept the compatible stable bpf-linker 0.11.x range');
   assert(buildDriver.includes('"--locked"') && buildDriver.includes('"--offline"'), 'build driver must use locked offline Cargo');
 	assert(buildDriver.includes('BPF_TARGET_ARCH_ENV: &str = "LANSPEED_BPF_TARGET_ARCH"') &&
 		buildDriver.includes('command.env("AYA_BPF_TARGET_ARCH", target_arch.aya_name())') &&

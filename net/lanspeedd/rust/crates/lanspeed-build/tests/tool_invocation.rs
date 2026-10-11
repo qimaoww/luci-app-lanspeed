@@ -289,7 +289,7 @@ fn ebpf_build_separates_x86_tc_and_aarch64_nss_objects() {
     write_executable(&rustc, "#!/bin/sh\nprintf 'rustc 1.100.0 (fake)\\n'\n");
     write_executable(
         &bpf_linker,
-        "#!/bin/sh\nprintf 'bpf-linker 0.10.3 (fake)\\n'\n",
+        "#!/bin/sh\nprintf 'bpf-linker 0.11.1 (fake)\\n'\n",
     );
     write_executable(
         &cargo,

@@ -10,13 +10,15 @@ use semver::Version;
 use thiserror::Error;
 
 pub const MINIMUM_RUSTC: &str = env!("CARGO_PKG_RUST_VERSION");
-/// Version pinned by the reproducible OpenWrt package download.
-pub const PINNED_BPF_LINKER: &str = "0.10.3";
+/// Version pinned by the reproducible OpenWrt package download. The 0.11 series
+/// bundles the LLVM bitcode reader that can consume objects emitted by current
+/// stable Rust toolchains; 0.10 crashes on their debug metadata.
+pub const PINNED_BPF_LINKER: &str = "0.11.1";
 pub const MINIMUM_BPF_LINKER: &str = PINNED_BPF_LINKER;
-pub const MAXIMUM_BPF_LINKER_EXCLUSIVE: &str = "0.11.0";
-pub const BPF_LINKER_ARCHIVE_URL: &str = "https://github.com/aya-rs/bpf-linker/releases/download/v0.10.3/bpf-linker-x86_64-unknown-linux-musl.tar.gz";
+pub const MAXIMUM_BPF_LINKER_EXCLUSIVE: &str = "0.12.0";
+pub const BPF_LINKER_ARCHIVE_URL: &str = "https://github.com/aya-rs/bpf-linker/releases/download/v0.11.1/bpf-linker-x86_64-unknown-linux-musl.tar.zst";
 pub const BPF_LINKER_ARCHIVE_SHA256: &str =
-    "0fa4645d2dfbb5cafe6231b0aa9fad4f1430bd0871e3bd7319e82d827bf6262c";
+    "e058a6aecc9e65fa4c977b298a8e4b738424d7629769fd352eed409fb57e16e8";
 pub const BPF_TARGET_ARCH_ENV: &str = "LANSPEED_BPF_TARGET_ARCH";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -435,7 +437,7 @@ mod tests {
 
     #[test]
     fn accepts_supported_stable_bpf_linker_versions() {
-        for bpf_linker in ["0.10.3", "0.10.4", "0.10.99", "0.10.3+distribution.1"] {
+        for bpf_linker in ["0.11.1", "0.11.2", "0.11.99", "0.11.1+distribution.1"] {
             let versions = ToolVersions {
                 rustc: MINIMUM_RUSTC.into(),
                 bpf_linker: bpf_linker.into(),
@@ -450,7 +452,7 @@ mod tests {
 
     #[test]
     fn rejects_bpf_linker_outside_the_supported_series() {
-        for bpf_linker in ["0.10.2", "0.9.99"] {
+        for bpf_linker in ["0.11.0", "0.10.3", "0.9.99"] {
             let versions = ToolVersions {
                 rustc: MINIMUM_RUSTC.into(),
                 bpf_linker: bpf_linker.into(),
@@ -464,7 +466,7 @@ mod tests {
             ));
         }
 
-        for bpf_linker in ["0.11.0", "0.11.1", "1.0.0"] {
+        for bpf_linker in ["0.12.0", "0.12.1", "1.0.0"] {
             let versions = ToolVersions {
                 rustc: MINIMUM_RUSTC.into(),
                 bpf_linker: bpf_linker.into(),
@@ -481,7 +483,7 @@ mod tests {
 
     #[test]
     fn rejects_prerelease_bpf_linker_versions() {
-        for bpf_linker in ["0.10.3-rc.1", "0.10.4-alpha.1", "0.11.0-beta.1"] {
+        for bpf_linker in ["0.11.1-rc.1", "0.11.2-alpha.1", "0.12.0-beta.1"] {
             let versions = ToolVersions {
                 rustc: MINIMUM_RUSTC.into(),
                 bpf_linker: bpf_linker.into(),

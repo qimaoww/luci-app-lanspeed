@@ -17,7 +17,7 @@ LANSPEED_X86_CONTROL_DEPENDS:=+TARGET_x86:tc-full +TARGET_x86:ip +TARGET_x86:nft
 LANSPEED_NSS_CONTROL_DEPENDS:=+TARGET_qualcommax:tc-full +TARGET_qualcommax:ip +TARGET_qualcommax:nftables +TARGET_qualcommax:conntrack +TARGET_qualcommax:kmod-ifb +TARGET_qualcommax:kmod-sched-core +TARGET_qualcommax:kmod-qca-nss-drv-igs +TARGET_qualcommax:kmod-lanspeed-nss-control
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)$(if $(LANSPEED_BPF_ENABLED),-bpf,)
 
-BPF_LINKER_ARCHIVE:=bpf-linker-0.10.3-x86_64-unknown-linux-musl.tar.gz
+BPF_LINKER_ARCHIVE:=bpf-linker-0.11.1-x86_64-unknown-linux-musl.tar.zst
 BPF_LINKER_DIR:=$(PKG_BUILD_DIR)/host-tools/bin
 BPF_LINKER:=$(BPF_LINKER_DIR)/bpf-linker
 
@@ -25,10 +25,10 @@ include $(INCLUDE_DIR)/package.mk
 include $(TOPDIR)/feeds/packages/lang/rust/rust-package.mk
 
 define Download/bpf-linker
-  FILE:=bpf-linker-0.10.3-x86_64-unknown-linux-musl.tar.gz
-  URL:=https://github.com/aya-rs/bpf-linker/releases/download/v0.10.3/
-  URL_FILE:=bpf-linker-x86_64-unknown-linux-musl.tar.gz
-  HASH:=0fa4645d2dfbb5cafe6231b0aa9fad4f1430bd0871e3bd7319e82d827bf6262c
+  FILE:=bpf-linker-0.11.1-x86_64-unknown-linux-musl.tar.zst
+  URL:=https://github.com/aya-rs/bpf-linker/releases/download/v0.11.1/
+  URL_FILE:=bpf-linker-x86_64-unknown-linux-musl.tar.zst
+  HASH:=e058a6aecc9e65fa4c977b298a8e4b738424d7629769fd352eed409fb57e16e8
 endef
 
 ifneq ($(LANSPEED_BPF_ENABLED),)
@@ -101,6 +101,7 @@ endef
 
 define Build/Prepare
 	$(if $(LANSPEED_BPF_ENABLED),test "$(HOST_ARCH)" = "x86_64" || { echo "lanspeedd-bpf requires an x86_64 build host for the pinned bpf-linker binary" >&2; exit 1; },:)
+	$(if $(LANSPEED_BPF_ENABLED),command -v zstd >/dev/null 2>&1 || { echo "lanspeedd-bpf requires the host zstd utility to unpack the pinned bpf-linker archive" >&2; exit 1; },:)
 	mkdir -p $(PKG_BUILD_DIR)
 	$(CP) ./rust/Cargo.toml ./rust/Cargo.lock $(PKG_BUILD_DIR)/
 	$(CP) ./rust/.cargo $(PKG_BUILD_DIR)/
@@ -108,7 +109,7 @@ define Build/Prepare
 	$(CP) ./rust/vendor $(PKG_BUILD_DIR)/
 	$(CP) ./src/collector-model.json $(PKG_BUILD_DIR)/
 	$(if $(LANSPEED_BPF_ENABLED),mkdir -p $(BPF_LINKER_DIR),:)
-	$(if $(LANSPEED_BPF_ENABLED),$(TAR) -C $(BPF_LINKER_DIR) -xzf $(DL_DIR)/$(BPF_LINKER_ARCHIVE),:)
+	$(if $(LANSPEED_BPF_ENABLED),zstd -dc $(DL_DIR)/$(BPF_LINKER_ARCHIVE) | $(TAR) -C $(BPF_LINKER_DIR) -xf -,:)
 endef
 
 define Build/Compile
