@@ -79,7 +79,8 @@ for required_map in lanspeed_conntrack_scratch lanspeed_seen_conns; do
 		fail "kfunc object is missing map $required_map"
 done
 kfunc_disassembly=$("$objdump_bin" -d "$kfunc_object")
-grep -Eq 'lock[[:space:]]+\*\(u32 \*\).*\+= r[0-9]+' <<<"$kfunc_disassembly" || \
+# LLVM versions spell the 32-bit source register as either rN or wN.
+grep -Eq 'lock[[:space:]]+\*\(u32 \*\).*\+= [rw][0-9]+' <<<"$kfunc_disassembly" || \
 	fail 'kfunc object has no 32-bit BPF atomic add instruction'
 for forbidden in \
 	lanspeed_ecm_update \
