@@ -19,7 +19,7 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 
 `luci-app-lanspeed` 强制依赖 `lanspeedd-bpf`。同一 `package/lanspeedd/compile` 目标按 SDK 架构生成 TC 对象，并只在 aarch64 生成 ECM 对象。
 
-`luci-app-lanspeed` 在 menuconfig 中提供 `NSS hardware acceleration support` 子菜单开关（`CONFIG_LUCI_APP_LANSPEED_NSS`），默认在 `TARGET_qualcommax` 上启用。关闭后不安装 NSS 配置页面和对应菜单入口，适合无 NSS 引擎的设备。
+`luci-app-lanspeed` 在 menuconfig 中提供 `NSS hardware acceleration support` 子菜单开关（`CONFIG_LUCI_APP_LANSPEED_NSS`），默认在 `TARGET_qualcommax` 上启用。它同时控制 daemon 的 Rust `nss-platform` feature、NSS 专用的 ECM eBPF 对象与 `kmod-lanspeed-nss-control`/`kmod-qca-nss-drv-igs` 依赖、NSS 内核模块加载器与整形迁移脚本，以及 NSS 配置页面和菜单入口；关闭后仅保留 TC-BPF 路径，适合无 NSS 引擎的设备。
 
 本地 checkout：
 

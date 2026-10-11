@@ -20,6 +20,10 @@ pub const BPF_LINKER_ARCHIVE_URL: &str = "https://github.com/aya-rs/bpf-linker/r
 pub const BPF_LINKER_ARCHIVE_SHA256: &str =
     "e058a6aecc9e65fa4c977b298a8e4b738424d7629769fd352eed409fb57e16e8";
 pub const BPF_TARGET_ARCH_ENV: &str = "LANSPEED_BPF_TARGET_ARCH";
+/// Set to `0` to build the aarch64 userspace daemon without the `nss-platform`
+/// feature. Any other value, or an unset variable, keeps the architecture
+/// default (aarch64 enables NSS, x86_64 never does).
+pub const NSS_PLATFORM_ENV: &str = "LANSPEED_NSS_PLATFORM";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BpfTargetArch {
@@ -57,6 +61,24 @@ impl BpfTargetArch {
             Self::Aarch64 => "nss-tc",
             Self::X86_64 => "x86-tc",
         }
+    }
+
+    fn userspace_features(self) -> &'static str {
+        match self {
+            Self::Aarch64 if nss_platform_requested() => {
+                "openwrt,nss-platform,traffic-persistence"
+            }
+            _ => "openwrt,traffic-persistence",
+        }
+    }
+}
+
+/// Whether the userspace daemon should enable the `nss-platform` feature. The
+/// architecture gate always wins: only aarch64 can request it.
+fn nss_platform_requested() -> bool {
+    match env::var_os(NSS_PLATFORM_ENV) {
+        Some(value) => value.as_os_str() != OsStr::new("0"),
+        None => true,
     }
 }
 
@@ -122,10 +144,7 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
             command.arg("--no-default-features");
             command.args([
                 "--features",
-                match userspace_profile {
-                    BpfTargetArch::Aarch64 => "openwrt,nss-platform,traffic-persistence",
-                    BpfTargetArch::X86_64 => "openwrt,traffic-persistence",
-                },
+                userspace_profile.userspace_features(),
                 "--locked",
                 "--offline",
             ]);

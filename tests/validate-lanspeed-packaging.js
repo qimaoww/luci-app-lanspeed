@@ -734,10 +734,23 @@ try {
     /LANSPEED_X86_CONTROL_DEPENDS:=\+TARGET_x86:tc-full \+TARGET_x86:ip \+TARGET_x86:nftables \+TARGET_x86:conntrack \+TARGET_x86:kmod-ifb \+TARGET_x86:kmod-sched-core \+TARGET_x86:kmod-sched/,
     'x86 client control must request the IFB and scheduler modules only behind the x86 architecture gate'
   );
+  assertMatch(pkgMakefile, /^PKG_CONFIG_DEPENDS:=CONFIG_LUCI_APP_LANSPEED_NSS$/m,
+    'daemon package must rebuild when the NSS support toggle changes');
+  assertMatch(pkgMakefile, /LANSPEED_NSS_PLATFORM \?= \$\(if \$\(CONFIG_LUCI_APP_LANSPEED_NSS\),1,0\)/,
+    'daemon NSS platform flag must follow the luci-app-lanspeed NSS toggle');
+  assertMatch(pkgMakefile, /LANSPEED_NSS_PLATFORM_ENABLED:=\$\(filter 1,\$\(LANSPEED_NSS_PLATFORM\)\)/,
+    'daemon must normalize the NSS platform flag before using it');
+  assertMatch(pkgMakefile, /LANSPEED_NSS_PLATFORM="\$\(LANSPEED_NSS_PLATFORM\)"/,
+    'daemon userspace build must receive the NSS platform flag');
   assertMatch(
     pkgMakefile,
-    /LANSPEED_NSS_CONTROL_DEPENDS:=\+TARGET_qualcommax:tc-full \+TARGET_qualcommax:ip \+TARGET_qualcommax:nftables \+TARGET_qualcommax:conntrack \+TARGET_qualcommax:kmod-ifb \+TARGET_qualcommax:kmod-sched-core \+TARGET_qualcommax:kmod-qca-nss-drv-igs \+TARGET_qualcommax:kmod-lanspeed-nss-control/,
-    'NSS client control must request its CPU-path modules only behind the qualcommax architecture gate'
+    /LANSPEED_AARCH64_CONTROL_DEPENDS:=\+TARGET_qualcommax:tc-full \+TARGET_qualcommax:ip \+TARGET_qualcommax:nftables \+TARGET_qualcommax:conntrack \+TARGET_qualcommax:kmod-ifb \+TARGET_qualcommax:kmod-sched-core/,
+    'aarch64 TC-BPF control must request its CPU-path modules only behind the qualcommax architecture gate'
+  );
+  assertMatch(
+    pkgMakefile,
+    /LANSPEED_NSS_CONTROL_DEPENDS:=\+LUCI_APP_LANSPEED_NSS:kmod-qca-nss-drv-igs \+LUCI_APP_LANSPEED_NSS:kmod-lanspeed-nss-control/,
+    'NSS-only kernel modules must be requested only when the NSS switch is enabled'
   );
   assertMatch(nssControlKmodMakefile, /^PKG_VERSION:=1\.2\.1$/m,
     'NSS control kmod must stay on the daemon version');
@@ -899,8 +912,8 @@ try {
       `lanspeedd-bpf must preserve the runtime path for ${object} through a relative symlink`
     );
   }
-	assertMatch(pkgMakefile, /LANSPEED_NSS_ECM_BPF_ENABLED:=\$\(filter aarch64,\$\(ARCH\)\)/,
-		'ECM object packaging must be gated to aarch64');
+	assertMatch(pkgMakefile, /LANSPEED_NSS_ECM_BPF_ENABLED:=\$\(if \$\(LANSPEED_NSS_PLATFORM_ENABLED\),\$\(filter aarch64,\$\(ARCH\)\),\)/,
+		'ECM object packaging must be gated to aarch64 NSS builds');
 	assert(
 		pkgMakefile.includes('target/bpfel-unknown-none/release/lanspeed-ebpf-ecm $(1)/usr/lib/bpf/lanspeed-ebpf-ecm.o') &&
 		pkgMakefile.includes('$(LN) lanspeed-ebpf-ecm.o $(1)/usr/lib/bpf/lanspeed-ebpf-ecm'),
@@ -913,8 +926,8 @@ try {
   );
   assertMatch(
     pkgMakefile,
-    /if \[ "\$\(CONFIG_TARGET_qualcommax\)" = "y" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/etc\/uci-defaults; \\\s*\$\(INSTALL_BIN\) \.\/files\/etc\/uci-defaults\/94-lanspeed-nss-shaping \$\(1\)\/etc\/uci-defaults\/94-lanspeed-nss-shaping; \\\s*fi/,
-    'only the qualcommax package may install the NSS shaping migration'
+    /if \[ "\$\(CONFIG_TARGET_qualcommax\)" = "y" \] && \[ -n "\$\(LANSPEED_NSS_PLATFORM_ENABLED\)" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/etc\/uci-defaults; \\\s*\$\(INSTALL_BIN\) \.\/files\/etc\/uci-defaults\/94-lanspeed-nss-shaping \$\(1\)\/etc\/uci-defaults\/94-lanspeed-nss-shaping; \\\s*fi/,
+    'only the qualcommax package may install the NSS shaping migration when NSS is enabled'
   );
   assertNoMatch(pkgMakefile, /procd_set_param respawn\/a\\\tprocd_set_param term_timeout/,
     'package installation must not patch platform-specific service termination timing');
@@ -930,13 +943,13 @@ try {
   );
   assertMatch(
     pkgMakefile,
-    /if \[ "\$\(CONFIG_TARGET_qualcommax\)" = "y" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/usr\/libexec\/lanspeed; \\\s*\$\(INSTALL_BIN\) \.\/files\/usr\/libexec\/lanspeed\/load-control-modules\.nss \$\(1\)\/usr\/libexec\/lanspeed\/load-control-modules; \\\s*fi/,
-    'only the qualcommax package may install the NSS kernel-module loader'
+    /if \[ "\$\(CONFIG_TARGET_qualcommax\)" = "y" \] && \[ -n "\$\(LANSPEED_NSS_PLATFORM_ENABLED\)" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/usr\/libexec\/lanspeed; \\\s*\$\(INSTALL_BIN\) \.\/files\/usr\/libexec\/lanspeed\/load-control-modules\.nss \$\(1\)\/usr\/libexec\/lanspeed\/load-control-modules; \\\s*fi/,
+    'only the qualcommax NSS build may install the NSS kernel-module loader'
   );
   assertMatch(
     pkgMakefile,
-    /if \[ "\$\(CONFIG_TARGET_qualcommax\)" != "y" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/etc\/hotplug\.d\/iface; \\\s*\$\(INSTALL_BIN\) \.\/files\/etc\/hotplug\.d\/iface\/90-lanspeedd \$\(1\)\/etc\/hotplug\.d\/iface\/90-lanspeedd; \\\s*fi/,
-    'qualcommax must use only procd reload triggers while x86 retains its existing hotplug entry'
+    /if \[ "\$\(CONFIG_TARGET_qualcommax\)" != "y" \] \|\| \[ -z "\$\(LANSPEED_NSS_PLATFORM_ENABLED\)" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/etc\/hotplug\.d\/iface; \\\s*\$\(INSTALL_BIN\) \.\/files\/etc\/hotplug\.d\/iface\/90-lanspeedd \$\(1\)\/etc\/hotplug\.d\/iface\/90-lanspeedd; \\\s*fi/,
+    'non-NSS builds must retain the interface hotplug entry'
   );
   assertMatch(initScript, /procd_set_param term_timeout 15/,
     'all platforms must allow bounded graceful dataplane shutdown before forced termination');
@@ -972,9 +985,9 @@ try {
     'x86 migration must normalize retained forced NSS modes to BPF');
   assertMatch(pkgMakefile, /LANSPEED_X86_CONTROL_DEPENDS:=\+TARGET_x86:tc-full \+TARGET_x86:ip \+TARGET_x86:nftables \+TARGET_x86:conntrack \+TARGET_x86:kmod-ifb \+TARGET_x86:kmod-sched-core \+TARGET_x86:kmod-sched/,
     'client-control userspace tools and kernel queue modules must be requested only by the x86 package');
-  assertMatch(pkgMakefile, /LANSPEED_NSS_CONTROL_DEPENDS:=\+TARGET_qualcommax:tc-full \+TARGET_qualcommax:ip \+TARGET_qualcommax:nftables \+TARGET_qualcommax:conntrack \+TARGET_qualcommax:kmod-ifb \+TARGET_qualcommax:kmod-sched-core \+TARGET_qualcommax:kmod-qca-nss-drv-igs \+TARGET_qualcommax:kmod-lanspeed-nss-control/,
-    'NSS client control must package only its verified CPU-path kernel dependencies');
-  assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+libgcc \+kmod-nf-conntrack-netlink \+libsqlite3 \$\(LANSPEED_X86_CONTROL_DEPENDS\) \$\(LANSPEED_NSS_CONTROL_DEPENDS\)/,
+  assertMatch(pkgMakefile, /LANSPEED_NSS_CONTROL_DEPENDS:=\+LUCI_APP_LANSPEED_NSS:kmod-qca-nss-drv-igs \+LUCI_APP_LANSPEED_NSS:kmod-lanspeed-nss-control/,
+    'NSS client control must package its NSS-only kernel dependencies only when NSS support is enabled');
+  assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+libgcc \+kmod-nf-conntrack-netlink \+libsqlite3 \$\(LANSPEED_X86_CONTROL_DEPENDS\) \$\(LANSPEED_AARCH64_CONTROL_DEPENDS\) \$\(LANSPEED_NSS_CONTROL_DEPENDS\)/,
     'base daemon must retain collector dependencies and append isolated platform controls');
   assertNoMatch(pkgMakefile, /\+libubox|\+libubus|\+libuci|\+libblobmsg-json/,
     'pure Rust userspace must not retain versioned OpenWrt library dependencies');

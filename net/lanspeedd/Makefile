@@ -12,9 +12,13 @@ RUST_PKG_LOCKED:=1
 
 LANSPEED_BUILD_BPF ?= $(if $(CONFIG_PACKAGE_lanspeedd-bpf),1,0)
 LANSPEED_BPF_ENABLED:=$(filter 1,$(LANSPEED_BUILD_BPF))
-LANSPEED_NSS_ECM_BPF_ENABLED:=$(filter aarch64,$(ARCH))
+LANSPEED_NSS_PLATFORM ?= $(if $(CONFIG_LUCI_APP_LANSPEED_NSS),1,0)
+LANSPEED_NSS_PLATFORM_ENABLED:=$(filter 1,$(LANSPEED_NSS_PLATFORM))
+LANSPEED_NSS_ECM_BPF_ENABLED:=$(if $(LANSPEED_NSS_PLATFORM_ENABLED),$(filter aarch64,$(ARCH)),)
 LANSPEED_X86_CONTROL_DEPENDS:=+TARGET_x86:tc-full +TARGET_x86:ip +TARGET_x86:nftables +TARGET_x86:conntrack +TARGET_x86:kmod-ifb +TARGET_x86:kmod-sched-core +TARGET_x86:kmod-sched
-LANSPEED_NSS_CONTROL_DEPENDS:=+TARGET_qualcommax:tc-full +TARGET_qualcommax:ip +TARGET_qualcommax:nftables +TARGET_qualcommax:conntrack +TARGET_qualcommax:kmod-ifb +TARGET_qualcommax:kmod-sched-core +TARGET_qualcommax:kmod-qca-nss-drv-igs +TARGET_qualcommax:kmod-lanspeed-nss-control
+LANSPEED_AARCH64_CONTROL_DEPENDS:=+TARGET_qualcommax:tc-full +TARGET_qualcommax:ip +TARGET_qualcommax:nftables +TARGET_qualcommax:conntrack +TARGET_qualcommax:kmod-ifb +TARGET_qualcommax:kmod-sched-core
+LANSPEED_NSS_CONTROL_DEPENDS:=+LUCI_APP_LANSPEED_NSS:kmod-qca-nss-drv-igs +LUCI_APP_LANSPEED_NSS:kmod-lanspeed-nss-control
+PKG_CONFIG_DEPENDS:=CONFIG_LUCI_APP_LANSPEED_NSS
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)$(if $(LANSPEED_BPF_ENABLED),-bpf,)
 
 BPF_LINKER_ARCHIVE:=bpf-linker-0.11.1-x86_64-unknown-linux-musl.tar.zst
@@ -42,7 +46,7 @@ define Package/lanspeedd
   CATEGORY:=Network
   TITLE:=LAN speed monitor daemon
   SOURCE:=lanspeedd
-  DEPENDS:=@(aarch64||x86_64) +libgcc +kmod-nf-conntrack-netlink +libsqlite3 $(LANSPEED_X86_CONTROL_DEPENDS) $(LANSPEED_NSS_CONTROL_DEPENDS)
+  DEPENDS:=@(aarch64||x86_64) +libgcc +kmod-nf-conntrack-netlink +libsqlite3 $(LANSPEED_X86_CONTROL_DEPENDS) $(LANSPEED_AARCH64_CONTROL_DEPENDS) $(LANSPEED_NSS_CONTROL_DEPENDS)
 endef
 
 define Package/lanspeedd/description
@@ -119,6 +123,7 @@ define Build/Compile
 		cargo build -v --manifest-path Cargo.toml -p lanspeed-build --release --target $(RUSTC_HOST_ARCH) --locked --offline
 	+$(CARGO_PKG_VARS) \
 		LANSPEED_USERSPACE_TARGET="$(RUSTC_TARGET_ARCH)" \
+		LANSPEED_NSS_PLATFORM="$(LANSPEED_NSS_PLATFORM)" \
 		LANSPEED_VERSION="$(PKG_VERSION)" \
 		LANSPEED_RELEASE="$(PKG_RELEASE)" \
 		$(PKG_BUILD_DIR)/target/$(RUSTC_HOST_ARCH)/release/lanspeed-build build-userspace
@@ -140,11 +145,11 @@ define Package/lanspeedd/install
 	$(INSTALL_DIR) $(1)/usr/libexec/lanspeed
 	$(INSTALL_BIN) ./files/usr/libexec/lanspeed/process-barrier $(1)/usr/libexec/lanspeed/process-barrier
 	$(INSTALL_BIN) ./files/usr/libexec/lanspeed/start-daemon $(1)/usr/libexec/lanspeed/start-daemon
-	if [ "$(CONFIG_TARGET_qualcommax)" = "y" ]; then \
+	if [ "$(CONFIG_TARGET_qualcommax)" = "y" ] && [ -n "$(LANSPEED_NSS_PLATFORM_ENABLED)" ]; then \
 		$(INSTALL_DIR) $(1)/usr/libexec/lanspeed; \
 		$(INSTALL_BIN) ./files/usr/libexec/lanspeed/load-control-modules.nss $(1)/usr/libexec/lanspeed/load-control-modules; \
 	fi
-	if [ "$(CONFIG_TARGET_qualcommax)" != "y" ]; then \
+	if [ "$(CONFIG_TARGET_qualcommax)" != "y" ] || [ -z "$(LANSPEED_NSS_PLATFORM_ENABLED)" ]; then \
 		$(INSTALL_DIR) $(1)/etc/hotplug.d/iface; \
 		$(INSTALL_BIN) ./files/etc/hotplug.d/iface/90-lanspeedd $(1)/etc/hotplug.d/iface/90-lanspeedd; \
 	fi
@@ -158,7 +163,7 @@ define Package/lanspeedd/install
 		$(INSTALL_DIR) $(1)/etc/uci-defaults; \
 		$(INSTALL_BIN) ./files/etc/uci-defaults/95-lanspeed-x86-profile $(1)/etc/uci-defaults/95-lanspeed-x86-profile; \
 	fi
-	if [ "$(CONFIG_TARGET_qualcommax)" = "y" ]; then \
+	if [ "$(CONFIG_TARGET_qualcommax)" = "y" ] && [ -n "$(LANSPEED_NSS_PLATFORM_ENABLED)" ]; then \
 		$(INSTALL_DIR) $(1)/etc/uci-defaults; \
 		$(INSTALL_BIN) ./files/etc/uci-defaults/94-lanspeed-nss-shaping $(1)/etc/uci-defaults/94-lanspeed-nss-shaping; \
 	fi

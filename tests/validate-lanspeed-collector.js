@@ -588,7 +588,7 @@ assert(buildDriver.includes('LANSPEED_BPF_TARGET_ARCH') &&
   buildDriver.includes('"nss-ecm"') && buildDriver.includes('target_arch.builds_ecm()'),
   'build driver must select platform-owned TC sources and compile ECM only for aarch64');
 assert(packageMakefile.includes('LANSPEED_BPF_TARGET_ARCH="$(ARCH)"') &&
-  packageMakefile.includes('LANSPEED_NSS_ECM_BPF_ENABLED:=$(filter aarch64,$(ARCH))') &&
+  packageMakefile.includes('LANSPEED_NSS_ECM_BPF_ENABLED:=$(if $(LANSPEED_NSS_PLATFORM_ENABLED),$(filter aarch64,$(ARCH)),)') &&
   packageMakefile.includes('/usr/lib/bpf/lanspeed-ebpf-ecm.o'),
   'OpenWrt packaging must install the isolated ECM object only on aarch64');
 assert(nssRuntime.includes('#[cfg(target_arch = "aarch64")]') &&
