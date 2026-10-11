@@ -7,10 +7,13 @@ const childProcess = require('child_process');
 const root = path.resolve(__dirname, '..');
 const daemonMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
 const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/Makefile'), 'utf8');
-const luciMenuSource = fs.readFileSync(path.join(
-  root,
-  'applications/luci-app-lanspeed/root/usr/share/luci/menu.d/luci-app-lanspeed.json'
-), 'utf8');
+const luciMenuSources = [ 'luci-app-lanspeed.json', 'luci-app-lanspeed-nss.json' ].map((name) =>
+  fs.readFileSync(path.join(
+    root,
+    'applications/luci-app-lanspeed/root/usr/share/luci/menu.d',
+    name
+  ), 'utf8'));
+const luciMenuSource = luciMenuSources.join('\n');
 const versionJs = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/version.js'), 'utf8');
 const workflow = fs.readFileSync(path.join(root, '.github/workflows/build-sdk.yml'), 'utf8');
 const sdkIdentityScript = fs.readFileSync(path.join(root, 'scripts/sdk-rust-identity.sh'), 'utf8');
@@ -312,14 +315,20 @@ try {
   const installedViews = [...viewInstall[1].matchAll(
     /\.\/htdocs\/luci-static\/resources\/view\/lanspeed\/([^\s\\/]+\.js)/g
   )].map((match) => match[1]);
-  assertExactList(installedViews, luciViews,
-    'LuCI release views must be exactly config.js, diagnostics.js, nss.js and overview.js');
+  assertExactList(installedViews, luciViews.filter((name) => name !== 'nss.js'),
+    'LuCI release views must be exactly config.js, diagnostics.js and overview.js');
+  assert(luciMakefile.includes(
+    '$(if $(CONFIG_LUCI_APP_LANSPEED_NSS),$(INSTALL_DATA) ./htdocs/luci-static/resources/view/lanspeed/nss.js $(1)/www/luci-static/resources/view/lanspeed/nss.js,:)'),
+    'LuCI release must install the NSS view only when NSS support is enabled');
+  assert(luciMakefile.includes(
+    '$(if $(CONFIG_LUCI_APP_LANSPEED_NSS),$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-lanspeed-nss.json $(1)/usr/share/luci/menu.d/luci-app-lanspeed-nss.json,:)'),
+    'LuCI release must install the NSS menu entry only when NSS support is enabled');
 
   assert(!versionedCachePattern.test(luciMakefile),
     'LuCI release Makefile must not contain LiveN or _liveN cache names');
   assert(!versionedCachePattern.test(luciMenuSource),
     'LuCI release menu must not contain LiveN or _liveN cache names');
-  const luciMenu = JSON.parse(luciMenuSource);
+  const luciMenu = Object.assign({}, ...luciMenuSources.map((source) => JSON.parse(source)));
   const menuViewPaths = Object.values(luciMenu)
     .filter((entry) => entry.action && entry.action.type === 'view')
     .map((entry) => entry.action.path)

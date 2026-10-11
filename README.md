@@ -51,6 +51,7 @@ echo "src-git lanspeed https://github.com/qimaoww/luci-app-lanspeed.git" >> feed
 
 # 在 menuconfig 中选中 LuCI -> Applications -> luci-app-lanspeed
 # BPF 是必选依赖，会自动选择 Network -> lanspeedd-bpf 和 lanspeedd
+# 进入 luci-app-lanspeed 子菜单可开关 NSS 硬件加速支持（默认按目标平台启用）
 make menuconfig
 
 # 多线程编译
@@ -59,6 +60,8 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 ```
 
 `luci-app-lanspeed` 强制依赖 `lanspeedd-bpf`，`lanspeedd-bpf` 依赖 `lanspeedd`。同一个 `package/lanspeedd/compile` 目标根据 SDK 架构生成 TC 对象，并只在 aarch64 生成 ECM 对象。
+
+`luci-app-lanspeed` 在 menuconfig 中是一个子菜单，包含 `NSS hardware acceleration support` 开关。它默认在 Qualcomm NSS 目标（`TARGET_qualcommax`）上启用，其它设备保持关闭；关闭时不会安装独立的 NSS 配置页面及其菜单入口。
 
 ### 预编译发布
 

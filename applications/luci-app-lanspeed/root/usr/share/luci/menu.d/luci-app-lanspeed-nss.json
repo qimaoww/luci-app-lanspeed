@@ -1,0 +1,21 @@
+{
+  "admin/status/lanspeed/nss": {
+    "title": "NSS 配置",
+    "order": 4,
+    "action": {
+      "type": "view",
+      "path": "lanspeed/nss"
+    },
+    "depends": {
+      "acl": [ "luci-app-lanspeed" ],
+      "fs": [
+        { "/sys/module/qca_nss_drv": "directory" },
+        { "/sys/bus/platform/drivers/qca-nss": "directory" },
+        { "/sys/kernel/debug/qca-nss-drv": "directory" },
+        { "/proc/sys/dev/nss": "directory" },
+        { "/sys/module/qca_nss_dp": "directory" },
+        { "/sys/module/nss_dp": "directory" }
+      ]
+    }
+  }
+}

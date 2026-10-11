@@ -60,11 +60,14 @@ const luciStaticRoot = path.join(
 );
 const luciResourceRoot = path.join(luciStaticRoot, 'lanspeed');
 const luciViewRoot = path.join(luciStaticRoot, 'view/lanspeed');
-const luciMenuPath = path.join(
+const luciMenuDir = path.join(
   root,
-  'applications/luci-app-lanspeed/root/usr/share/luci/menu.d/luci-app-lanspeed.json'
+  'applications/luci-app-lanspeed/root/usr/share/luci/menu.d'
 );
-const luciMenuSource = fs.readFileSync(luciMenuPath, 'utf8');
+const luciMenuFiles = [ 'luci-app-lanspeed.json', 'luci-app-lanspeed-nss.json' ];
+const luciMenuSources = luciMenuFiles.map(
+  (name) => fs.readFileSync(path.join(luciMenuDir, name), 'utf8'));
+const luciMenuSource = luciMenuSources.join('\n');
 const readmeLanding = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
 const readme = [
   readmeLanding,
@@ -1063,8 +1066,11 @@ try {
   const installedViews = [...viewInstall[1].matchAll(
     /\.\/htdocs\/luci-static\/resources\/view\/lanspeed\/([^\s\\/]+\.js)/g
   )].map((match) => match[1]);
-  assertExactNames(installedViews, luciViews,
-    'LuCI package view/lanspeed install list must include exactly the active configuration and status views');
+  assertExactNames(installedViews, luciViews.filter((name) => name !== 'nss.js'),
+    'LuCI package view/lanspeed install block must include every unconditional view');
+  assertMatch(luciMakefile,
+    /\$\(if \$\(CONFIG_LUCI_APP_LANSPEED_NSS\),\$\(INSTALL_DATA\) \.\/htdocs\/luci-static\/resources\/view\/lanspeed\/nss\.js \$\(1\)\/www\/luci-static\/resources\/view\/lanspeed\/nss\.js,:\)/,
+    'LuCI package must install the NSS view only when NSS support is enabled');
 
   assertExactNames(
     fs.readdirSync(luciResourceRoot, { withFileTypes: true })
@@ -1086,7 +1092,7 @@ try {
   assertNoVersionedCacheFiles(luciResourceRoot, 'resources/lanspeed');
   assertNoVersionedCacheFiles(luciViewRoot, 'view/lanspeed');
 
-  const luciMenu = JSON.parse(luciMenuSource);
+  const luciMenu = Object.assign({}, ...luciMenuSources.map((source) => JSON.parse(source)));
   const menuViewPaths = Object.values(luciMenu)
     .filter((entry) => entry.action && entry.action.type === 'view')
     .map((entry) => entry.action.path);
@@ -1103,6 +1109,16 @@ try {
   assert(luciMenu['admin/status/lanspeed/nss'].depends &&
     Object.keys(luciMenu['admin/status/lanspeed/nss'].depends.fs || {}).length > 0,
     'LuCI NSS submenu must be gated by NSS platform support on the router');
+  assertMatch(luciMakefile, /^\s*MENU:=1$/m,
+    'LuCI package must expose its options as a menuconfig submenu');
+  assertMatch(luciMakefile, /^PKG_CONFIG_DEPENDS:=CONFIG_LUCI_APP_LANSPEED_NSS$/m,
+    'LuCI package must rebuild when the NSS support toggle changes');
+  assertMatch(luciMakefile,
+    /define Package\/luci-app-lanspeed\/config\n\tconfig LUCI_APP_LANSPEED_NSS\n\t\tbool "NSS hardware acceleration support"\n\t\tdefault y if TARGET_qualcommax/,
+    'LuCI package must declare an NSS support toggle that defaults on for Qualcomm NSS targets');
+  assertMatch(luciMakefile,
+    /\$\(if \$\(CONFIG_LUCI_APP_LANSPEED_NSS\),\$\(INSTALL_DATA\) \.\/root\/usr\/share\/luci\/menu\.d\/luci-app-lanspeed-nss\.json \$\(1\)\/usr\/share\/luci\/menu\.d\/luci-app-lanspeed-nss\.json,:\)/,
+    'LuCI package must install the NSS menu entry only when NSS support is enabled');
 
 	const installedClientDetailResources = installedResources.filter((name) =>
 		/^(?:clientConnections|dhcpHostnames|clientDetail|geoLocation)/.test(name));
