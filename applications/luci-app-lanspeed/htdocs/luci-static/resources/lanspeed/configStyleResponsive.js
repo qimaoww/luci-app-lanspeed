@@ -4,7 +4,8 @@
 /* Shared compact-screen structure for the explicitly supported themes. */
 var ROOT_SCOPE = ':is(.lanspeed-config-root.lanspeed-theme-aurora,' +
 	'.lanspeed-config-root.lanspeed-theme-argon,' +
-	'.lanspeed-config-root.lanspeed-theme-bootstrap)';
+	'.lanspeed-config-root.lanspeed-theme-bootstrap,' +
+	'.lanspeed-config-root.lanspeed-theme-shadcn)';
 
 var RESPONSIVE_CSS = [
 	'@media (max-width:800px){' + ROOT_SCOPE + '{width:100%;min-width:0;max-width:100%;',

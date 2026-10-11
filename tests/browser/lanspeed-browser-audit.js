@@ -659,7 +659,7 @@ async page => {
 			};
 			if (config.consistencyKey) {
 				const consistency = await page.evaluate(args => {
-					const expectedPages = [ 'overview', 'diagnostics', 'config' ];
+					const expectedPages = args.expectedPages;
 					const result = { available: true, pages: [], missing: [], mismatches: [], records: {} };
 					let records = {};
 					try {
@@ -696,6 +696,8 @@ async page => {
 				}, {
 					key: config.consistencyKey,
 					pageName: config.pageName,
+					expectedPages: config.expectedPages || [ 'overview', 'diagnostics', 'config' ].concat(
+						config.pageName === 'nss' ? [ 'nss' ] : []),
 					reset: config.consistencyReset === true,
 					final: config.consistencyFinal === true,
 					signature: shellSignature

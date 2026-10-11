@@ -108,7 +108,7 @@ const luciResources = [
   'theme.js',
   'vocab.js'
 ];
-const luciViews = [ 'config.js', 'diagnostics.js', 'overview.js' ];
+const luciViews = [ 'config.js', 'diagnostics.js', 'nss.js', 'overview.js' ];
 const versionedCachePattern = /(?:Live\d+|_live\d+)/;
 
 function assert(condition, message) {
@@ -313,7 +313,7 @@ try {
     /\.\/htdocs\/luci-static\/resources\/view\/lanspeed\/([^\s\\/]+\.js)/g
   )].map((match) => match[1]);
   assertExactList(installedViews, luciViews,
-    'LuCI release views must be exactly config.js, diagnostics.js and overview.js');
+    'LuCI release views must be exactly config.js, diagnostics.js, nss.js and overview.js');
 
   assert(!versionedCachePattern.test(luciMakefile),
     'LuCI release Makefile must not contain LiveN or _liveN cache names');
@@ -324,8 +324,8 @@ try {
     .filter((entry) => entry.action && entry.action.type === 'view')
     .map((entry) => entry.action.path)
     .sort();
-  assertExactList(menuViewPaths, [ 'lanspeed/config', 'lanspeed/diagnostics', 'lanspeed/overview' ],
-    'LuCI release menu must use the semantic config, diagnostics and overview views');
+  assertExactList(menuViewPaths, [ 'lanspeed/config', 'lanspeed/diagnostics', 'lanspeed/nss', 'lanspeed/overview' ],
+    'LuCI release menu must use the semantic config, diagnostics, nss and overview views');
   assert(releaseScript.includes('printf \'%s\\n\' "${daemon_version}-r${daemon_release}"'), 'scripts/release-version.sh must print the full code version');
   assert(releaseScript.includes('[ "$daemon_version" = "$luci_version" ]'), 'scripts/release-version.sh must verify daemon and LuCI PKG_VERSION match');
   assert(releaseScript.includes('[ "$daemon_release" = "$luci_release" ]'), 'scripts/release-version.sh must verify daemon and LuCI PKG_RELEASE match');

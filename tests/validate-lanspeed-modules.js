@@ -36,6 +36,7 @@ const viewDir = path.join(resDir, 'view/lanspeed');
 const viewFile = path.join(resDir, 'view/lanspeed/overview.js');
 const diagnosticsEntryFile = path.join(resDir, 'view/lanspeed/diagnostics.js');
 const configViewFile = path.join(resDir, 'view/lanspeed/config.js');
+const nssViewFile = path.join(resDir, 'view/lanspeed/nss.js');
 const statusViewFile = path.join(modDir, 'statusView.js');
 const daemonMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
 const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/Makefile'), 'utf8');
@@ -118,7 +119,10 @@ const EXPECTED_MODULES = [
 	'configForm.js',
 	'configView.js'
 ];
-const EXPECTED_VIEW_ENTRIES = [ 'config.js', 'diagnostics.js', 'overview.js' ];
+const EXPECTED_VIEW_ENTRIES = [ 'config.js', 'diagnostics.js', 'nss.js', 'overview.js' ];
+const NSS_CONFIG_FIELDS = [ 'access_edge_mode', 'internet_view_mode',
+	'nss_low_rate_window_ms', 'nss_low_rate_high_watermark_bps',
+	'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets', 'rate_compensation_factor' ];
 const VERSIONED_RESOURCE_TOKEN = /(?:Live\d+|_live\d+)/;
 
 const EXPECTED_VIEW_REQUIRES = [
@@ -2236,6 +2240,10 @@ function fakeElement(tag, attrs, children) {
 				fakeDocument.activeElement = null;
 			if (child && typeof child === 'object') child.parentNode = null;
 			return child;
+		},
+		querySelector: function(selector) {
+			const match = selector.match(/^[a-z]+$/i);
+			return match ? findFakeElementsByTag(this, selector).find(function(item) { return item !== node; }) || null : null;
 		}
 	};
 	node._className = String(node.attrs.class || '');
@@ -6489,7 +6497,7 @@ function assertConfigStyleModule(src) {
 	}
 
 	if (!responsiveCss.includes(':is(.lanspeed-config-root.lanspeed-theme-aurora,') ||
-	    !responsiveCss.includes('.lanspeed-config-root.lanspeed-theme-bootstrap)') ||
+	    !responsiveCss.includes('.lanspeed-config-root.lanspeed-theme-bootstrap') ||
 	    !responsiveCss.includes('.lanspeed-config-table tbody,') ||
 	    !responsiveCss.includes('.lanspeed-ifcfg-table tbody{display:grid;') ||
 	    !responsiveCss.includes('.lanspeed-ifcfg-table tbody tr{display:grid;') ||
@@ -6810,15 +6818,19 @@ function assertBrowserAuditConfigContract() {
 		return;
 	}
 	const contract = src.slice(start, end);
-	[
-		'rate_collector_mode', 'access_edge_mode', 'internet_view_mode',
-		'nss_low_rate_window_ms', 'nss_low_rate_high_watermark_bps',
-		'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets',
-		'rate_compensation_factor', 'conn_collector_mode'
-	].forEach(function(name) {
+	[ 'rate_collector_mode', 'conn_collector_mode' ].forEach(function(name) {
 		if (!contract.includes("'" + name + "'"))
 			fail(`browser audit configuration contract must include ${name}`);
 	});
+	NSS_CONFIG_FIELDS.forEach(function(name) {
+		if (contract.includes("'" + name + "'"))
+			fail(`browser audit general configuration must exclude ${name}`);
+	});
+	const nssStart = src.indexOf('const requiredNssFields = [');
+	const nssEnd = src.indexOf('const nssContract', nssStart);
+	if (nssStart === -1 || nssEnd === -1 || NSS_CONFIG_FIELDS.some(name =>
+		!src.slice(nssStart, nssEnd).includes("'" + name + "'")))
+		fail('browser audit NSS configuration contract must include exactly its seven dedicated fields');
 }
 
 function cloneConfigValue(value) {
@@ -7394,9 +7406,9 @@ function assertConfigFormBehavior(src) {
 	    x86ProfilePlan.patch.set.rate_collector_mode !== 'bpf' ||
 	    Object.prototype.hasOwnProperty.call(x86ProfilePlan.patch.set, 'access_edge_mode') ||
 	    Object.prototype.hasOwnProperty.call(x86ProfilePlan.patch.set, 'internet_view_mode') ||
-	    x86ProfilePlan.patch.unset.indexOf('access_edge_mode') === -1 ||
-	    x86ProfilePlan.patch.unset.indexOf('internet_view_mode') === -1) {
-		fail('configForm.js must normalize forged NSS settings only for an explicit x86 profile');
+	    x86ProfilePlan.patch.unset.indexOf('access_edge_mode') !== -1 ||
+	    x86ProfilePlan.patch.unset.indexOf('internet_view_mode') !== -1) {
+		fail('configForm.js must normalize x86 behavior without rewriting fields owned by the NSS page');
 	}
 
 	const stagedUci = makeConfigUci(model, { initial: {
@@ -7554,6 +7566,119 @@ function assertConfigFormBehavior(src) {
 	}).catch(function(error) {
 		fail('configForm.js post-Apply verification behavior failed: ' + (error && error.stack || error));
 	}));
+}
+
+function assertNssConfigSplit(src) {
+	const model = loadConfigModelModule(readModuleByName('configModel.js'));
+	function harness(kind, options) {
+		options = options || {};
+		const uci = makeConfigUci(model, options.uci);
+		const ifaceCalls = [];
+		const iface = makeConfigIfaceStub({
+			prepareSave: function() { ifaceCalls.push('prepare'); return { changed: false, errors: {} }; },
+			load: function() { ifaceCalls.push('load'); return Promise.resolve(true); }
+		});
+		const status = options.status || Object.assign(matchingConfigStatus(uci.local), {
+			capabilities: { bpf: true, conntrack_fallback: true, nss: true }
+		});
+		const form = loadConfigFormModule(src, uci, { status: function() { return Promise.resolve(status); } }, iface, model);
+		const state = { pageKind: kind, refs: {}, ifcfgLoaded: true, updatePageState: function() {} };
+		const data = Object.assign(cloneConfigRecord(uci.local), {
+			raw: cloneConfigRecord(uci.local), status: status,
+			model: model.normalize(uci.local), rpc: { status: { ok: true } }
+		});
+		const section = form.buildDaemonSection(data, state);
+		return { form, state, section, uci, ifaceCalls, data };
+	}
+	const general = harness('general', { uci: { initial: {
+		nss_fifo_target_delay_ms: 80, nss_low_rate_window_ms: 20000, rate_compensation_factor: 1.2
+	} } });
+	const nss = harness('nss', { uci: { initial: {
+		refresh_interval_ms: 1500, active_client_window_ms: 15000, interface_include: [ 'br-lan' ]
+	} } });
+	if (NSS_CONFIG_FIELDS.some(name => general.state.daemonRefs.fields[name] || general.state.daemonRefs.inputs[name]) ||
+		JSON.stringify(Object.keys(nss.state.daemonRefs.fields).sort()) !== JSON.stringify(NSS_CONFIG_FIELDS.slice().sort()) ||
+		JSON.stringify(Object.keys(nss.state.daemonRefs.inputs).sort()) !== JSON.stringify(NSS_CONFIG_FIELDS.slice().sort())) {
+		fail('configForm.js must split exactly seven NSS fields from the general configuration form');
+	}
+	const originalNss = cloneConfigRecord(general.state.currentValues);
+	general.state.daemonRefs.resetDefaultsBtn.listeners.click();
+	if (NSS_CONFIG_FIELDS.some(name => general.state.currentValues[name] !== originalNss[name]))
+		fail('general Restore Defaults must preserve every NSS setting');
+	const originalGeneral = cloneConfigRecord(nss.state.currentValues);
+	nss.state.daemonRefs.resetDefaultsBtn.listeners.click();
+	if (Object.keys(originalGeneral).filter(name => !NSS_CONFIG_FIELDS.includes(name)).some(name =>
+		JSON.stringify(nss.state.currentValues[name]) !== JSON.stringify(originalGeneral[name])))
+		fail('NSS Restore Defaults must preserve all general and interface settings');
+	general.state.currentValues.nss_fifo_target_delay_ms = 'invalid-other-page';
+	if (!general.form.validate(general.state).valid)
+		fail('invalid hidden NSS parameters must not block a valid general configuration save');
+	nss.state.currentValues.refresh_interval_ms = 'invalid-other-page';
+	if (!nss.form.validate(nss.state).valid)
+		fail('invalid hidden general parameters must not block a valid NSS configuration save');
+
+	[ 'general', 'nss' ].forEach(kind => {
+		const h = harness(kind);
+		const own = kind === 'nss' ? 'nss_fifo_target_delay_ms' : 'refresh_interval_ms';
+		const other = kind === 'nss' ? 'refresh_interval_ms' : 'nss_fifo_target_delay_ms';
+		const ownOriginal = h.uci.remote[own];
+		h.state.daemonRefs.inputs[own].value = kind === 'nss' ? '70' : '1500';
+		asyncChecks.push(h.form.saveAll(h.state).then(result => {
+			const writes = h.uci.calls.filter(call => call[0] === 'set' || call[0] === 'unset').map(call => call[1]);
+			if (!result.ok || writes.some(name => kind === 'nss' ? !NSS_CONFIG_FIELDS.includes(name) : NSS_CONFIG_FIELDS.includes(name)) ||
+				(kind === 'nss' && h.ifaceCalls.length))
+				fail(kind + ' Save must stage only its own fields and NSS must never prepare interface changes');
+			h.uci.remote[other] = kind === 'nss' ? 2500 : 90;
+			h.uci.local[other] = h.uci.remote[other];
+			return h.form.resetAll(h.state);
+		}).then(result => {
+			if (!result.ok || String(h.uci.remote[own]) !== String(ownOriginal) ||
+				Number(h.uci.remote[other]) !== (kind === 'nss' ? 2500 : 90) ||
+				(kind === 'nss' && h.ifaceCalls.length))
+				fail(kind + ' Reset must reverse its own save while preserving changes staged by the other page');
+		}).catch(error => fail(kind + ' scoped Save/Reset failed: ' + (error.stack || error))));
+
+		const rollback = harness(kind, { uci: { saveBehaviors: [ function(api) {
+			api.commit();
+			api.remote[other] = kind === 'nss' ? 3500 : 80;
+			return Promise.reject(new Error('scope rollback test'));
+		} ] } });
+		rollback.state.daemonRefs.inputs[own].value = kind === 'nss' ? '75' : '1700';
+		asyncChecks.push(rollback.form.saveAll(rollback.state).then(() => {
+			fail(kind + ' failing Save must reject');
+		}, error => {
+			if (!String(error.message).includes('scope rollback test') ||
+				String(rollback.uci.remote[own]) !== String(ownOriginal) ||
+				Number(rollback.uci.remote[other]) !== (kind === 'nss' ? 3500 : 80))
+				fail(kind + ' failure rollback must preserve the other page\'s concurrent staged value');
+		}));
+	});
+
+	const unsupported = [
+		{ evidence: { platform: { profile: 'x86_tc_bpf', nss_modes_exposed: true } }, capabilities: { nss: true } },
+		{ evidence: { platform: { profile: 'nss_aarch64', nss_modes_exposed: false } }, capabilities: { nss: true } },
+		{ evidence: { platform: { profile: 'nss_aarch64' } }, capabilities: { nss: false } }
+	];
+	unsupported.forEach(status => {
+		const blocked = harness('general', { status });
+		if (blocked.form.supportsNss(status)) fail('NSS configuration must require usable NSS runtime capability');
+		blocked.state.pageKind = 'nss';
+		asyncChecks.push(blocked.form.saveAll(blocked.state).then(() => fail('unsupported NSS Save must reject'), () => {
+			if (blocked.uci.calls.some(call => [ 'set', 'unset', 'save' ].includes(call[0])))
+				fail('unsupported NSS Save must not mutate UCI');
+		}));
+		const view = loadConfigViewModule(readModuleByName('configView.js'), blocked.form, {});
+		const rootNode = view.render({ values: blocked.data }, 'nss');
+		if (!view.viewState.failed || !findFakeElement(rootNode, 'lanspeed-page-failure') ||
+			findFakeElement(rootNode, 'lanspeed-config-table'))
+			fail('unsupported NSS direct view must expose no editable form');
+		asyncChecks.push(Promise.all([ view.handleSave(), view.handleSaveApply(null, '0'), view.handleReset() ]).then(results => {
+			if (results.some(result => result !== false)) fail('unsupported NSS view must disable every native mutation action');
+		}));
+	});
+	if (!nss.form.supportsNss({ evidence: { platform: { profile: 'nss_aarch64' } }, capabilities: { nss: true } }) ||
+		!nss.form.supportsNss({ evidence: { platform: { profile: 'nss_aarch64', nss_modes_exposed: true } }, capabilities: { nss: false } }))
+		fail('NSS support must accept the explicit exposure contract and legacy capability fallback');
 }
 
 function assertConfigViewRewrite(src) {
@@ -7824,6 +7949,7 @@ EXPECTED_MODULES.forEach(function(name) {
 		if (name === 'configForm.js') {
 			assertConfigFormRewrite(src);
 			assertConfigFormBehavior(src);
+			assertNssConfigSplit(src);
 		}
 		if (name === 'configModel.js') {
 			assertConfigModelRewrite(src);
@@ -7911,6 +8037,15 @@ if (fs.existsSync(configViewFile)) {
 	assertNoInlineNavigation(csrc, 'view/lanspeed/config.js');
 	assertSyntax(csrc, 'view/lanspeed/config.js');
 	assertNoRpcDeclare(ccleaned, 'view/lanspeed/config.js');
+}
+
+if (fs.existsSync(nssViewFile)) {
+	const src = readModule(nssViewFile);
+	assertStrict(src, 'view/lanspeed/nss.js');
+	assertCacheAwareViewEntry(src, 'lanspeed.configView', 'view/lanspeed/nss.js', 'nss');
+	assertConfigViewEntryIsThin(src);
+	assertSyntax(src, 'view/lanspeed/nss.js');
+	assertNoRpcDeclare(stripComments(src), 'view/lanspeed/nss.js');
 }
 
 function finish() {

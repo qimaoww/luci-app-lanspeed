@@ -155,7 +155,7 @@ const luciResources = [
   'theme.js',
   'vocab.js'
 ];
-const luciViews = [ 'config.js', 'diagnostics.js', 'overview.js' ];
+const luciViews = [ 'config.js', 'diagnostics.js', 'nss.js', 'overview.js' ];
 const clientDetailResources = [
 	'clientConnections.js',
 	'dhcpHostnames.js',
@@ -1054,7 +1054,7 @@ try {
     /\.\/htdocs\/luci-static\/resources\/view\/lanspeed\/([^\s\\/]+\.js)/g
   )].map((match) => match[1]);
   assertExactNames(installedViews, luciViews,
-    'LuCI package view/lanspeed install list must be exactly config.js, diagnostics.js and overview.js');
+    'LuCI package view/lanspeed install list must include exactly the active configuration and status views');
 
   assertExactNames(
     fs.readdirSync(luciResourceRoot, { withFileTypes: true })
@@ -1066,7 +1066,7 @@ try {
     fs.readdirSync(luciViewRoot, { withFileTypes: true })
       .filter((entry) => entry.isFile()).map((entry) => entry.name),
     luciViews,
-    'view/lanspeed source directory must contain only config.js, diagnostics.js and overview.js'
+    'view/lanspeed source directory must contain only the active configuration and status views'
   );
 
   assertNoMatch(luciMakefile, versionedCachePattern,
@@ -1080,14 +1080,19 @@ try {
   const menuViewPaths = Object.values(luciMenu)
     .filter((entry) => entry.action && entry.action.type === 'view')
     .map((entry) => entry.action.path);
-  assertExactNames(menuViewPaths, [ 'lanspeed/config', 'lanspeed/diagnostics', 'lanspeed/overview' ],
-    'LuCI menu view actions must use config, diagnostics and overview views');
+  assertExactNames(menuViewPaths, [ 'lanspeed/config', 'lanspeed/diagnostics', 'lanspeed/nss', 'lanspeed/overview' ],
+    'LuCI menu view actions must include the dedicated NSS configuration view');
   assert(luciMenu['admin/status/lanspeed/overview'].action.path === 'lanspeed/overview',
     'LuCI overview menu must use the semantic overview view');
   assert(luciMenu['admin/status/lanspeed/diagnostics'].action.path === 'lanspeed/diagnostics',
     'LuCI diagnostics menu must use the dedicated diagnostics view');
   assert(luciMenu['admin/status/lanspeed/config'].action.path === 'lanspeed/config',
     'LuCI config menu must use the semantic config view');
+  assert(luciMenu['admin/status/lanspeed/nss'].action.path === 'lanspeed/nss',
+    'LuCI NSS menu must use the dedicated NSS view');
+  assert(luciMenu['admin/status/lanspeed/nss'].depends &&
+    Object.keys(luciMenu['admin/status/lanspeed/nss'].depends.fs || {}).length > 0,
+    'LuCI NSS submenu must be gated by NSS platform support on the router');
 
 	const installedClientDetailResources = installedResources.filter((name) =>
 		/^(?:clientConnections|dhcpHostnames|clientDetail|geoLocation)/.test(name));

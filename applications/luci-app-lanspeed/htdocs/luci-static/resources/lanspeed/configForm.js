@@ -18,6 +18,7 @@ var X86_NUMBER_FIELDS = [ 'mihomo_controller_port' ];
 var X86_SECRET_FIELDS = [ 'mihomo_controller_secret' ];
 var NSS_NUMBER_FIELDS = [ 'nss_low_rate_window_ms', 'nss_low_rate_high_watermark_bps',
 	'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets', 'rate_compensation_factor' ];
+var NSS_FIELDS = [ 'access_edge_mode', 'internet_view_mode' ].concat(NSS_NUMBER_FIELDS);
 var STATUS_RATE_MODES = [ 'auto', 'bpf', 'nss_ecm_node', 'nss_ecm_bpf' ];
 var STATUS_CONNECTION_MODES = [ 'auto', 'conntrack_netlink', 'conntrack_procfs' ];
 var STATUS_ACCESS_EDGE_MODES = [ 'off', 'shadow', 'active' ];
@@ -439,38 +440,41 @@ function addRange(viewState) {
 	return true;
 }
 
+function supportsNss(status) {
+	var platform = status && status.evidence && status.evidence.platform || {};
+	return configPlatform.isNss(status) && (platform.nss_modes_exposed !== undefined
+		? platform.nss_modes_exposed === true : Boolean(status && status.capabilities && status.capabilities.nss === true));
+}
+
+function pageFields(viewState) {
+	var x86Fields = X86_BOOLEAN_FIELDS.concat(X86_NUMBER_FIELDS, X86_SECRET_FIELDS);
+	return viewState.pageKind === 'nss' ? NSS_FIELDS : FIELD_NAMES.concat(REMOVED_UCI_FIELDS).filter(function(name) {
+		return NSS_FIELDS.indexOf(name) === -1 && (x86Fields.indexOf(name) === -1 ||
+			configPlatform.formPolicy(viewState.runtimeStatus).showProxyConnections);
+	});
+}
+
 function readForm(viewState) {
 	var refs = viewState.daemonRefs;
 	var values = cloneValues(viewState.currentValues || cfgModel.DEFAULTS);
-	NUMBER_FIELDS.forEach(function(name) { values[name] = refs.inputs[name].value; });
-	X86_NUMBER_FIELDS.forEach(function(name) {
-		if (refs.inputs[name]) values[name] = refs.inputs[name].value;
+	Object.keys(refs.inputs).forEach(function(name) {
+		var input = refs.inputs[name];
+		values[name] = BOOLEAN_FIELDS.concat(X86_BOOLEAN_FIELDS).indexOf(name) >= 0
+			? (input.checked ? '1' : '0') : input.value;
 	});
-	NSS_NUMBER_FIELDS.forEach(function(name) {
-		if (refs.inputs[name]) values[name] = refs.inputs[name].value;
-	});
-	values.rate_collector_mode = refs.inputs.rate_collector_mode.value;
-	values.internet_view_mode = refs.inputs.internet_view_mode
-		? refs.inputs.internet_view_mode.value : 'off';
-	values.access_edge_mode = refs.inputs.access_edge_mode
-		? refs.inputs.access_edge_mode.value : 'off';
-	values.conn_collector_mode = refs.inputs.conn_collector_mode.value;
-	BOOLEAN_FIELDS.forEach(function(name) { values[name] = refs.inputs[name].checked ? '1' : '0'; });
-	X86_BOOLEAN_FIELDS.forEach(function(name) {
-		if (refs.inputs[name]) values[name] = refs.inputs[name].checked ? '1' : '0';
-	});
-	X86_SECRET_FIELDS.forEach(function(name) {
-		if (refs.inputs[name]) values[name] = refs.inputs[name].value;
-	});
-	values.hide_ipv6_ranges = rangeValues(refs);
-	values.collector_mode = cfgModel.collectorModeFor(values);
-	LIST_FIELDS.forEach(function(name) {
-		values[name] = cloneValues((viewState.ifaceOriginal || {})[name] || []);
-	});
+	if (refs.hideIpv6RangeInput)
+		values.hide_ipv6_ranges = rangeValues(refs);
+	if (viewState.pageKind !== 'nss') {
+		values.collector_mode = cfgModel.collectorModeFor(values);
+		LIST_FIELDS.forEach(function(name) {
+			values[name] = cloneValues((viewState.ifaceOriginal || {})[name] || []);
+		});
+	}
 	return values;
 }
 
 function interfacePlanFor(viewState) {
+	if (viewState.pageKind === 'nss') return { changed: false, errors: {}, skipped: true };
 	var plan = ifaceCfg.prepareSave(viewState);
 	return plan || { changed: false, errors: {} };
 }
@@ -481,6 +485,16 @@ function validateForm(viewState) {
 	if (interfacePlan.desired)
 		LIST_FIELDS.forEach(function(name) { values[name] = cloneValues(interfacePlan.desired[name] || []); });
 	var validation = cfgModel.validate(values, viewState.runtimeStatus || {}, interfacePlan);
+	var owned = pageFields(viewState);
+	/* Validate the page's fields without allowing an unrelated page's invalid
+	 * UCI value to block edits. Keep dependencies on the visible BPF switch. */
+	if (viewState.pageKind !== 'nss' && validation.errors.internet_view_mode === 'bpf_disabled')
+		validation.errors.enable_bpf = 'bpf_disabled';
+	Object.keys(validation.errors).forEach(function(name) {
+		if (owned.indexOf(name) === -1 && !(name === 'interfaces' && viewState.pageKind !== 'nss'))
+			delete validation.errors[name];
+	});
+	validation.valid = Object.keys(validation.errors).length === 0;
 	viewState.currentValues = validation.values;
 	viewState.currentValidation = validation;
 	viewState.currentInterfacePlan = interfacePlan;
@@ -519,14 +533,14 @@ function updateDependencies(viewState) {
 		return;
 	var values = readForm(viewState);
 	var busy = Boolean(viewState.configSaving);
-	replaceSelectOptions(refs.inputs.rate_collector_mode,
+	if (refs.inputs.rate_collector_mode) replaceSelectOptions(refs.inputs.rate_collector_mode,
 		cfgModel.modeChoices('rate', viewState.runtimeStatus || {}, values), values.rate_collector_mode,
 		'rate_collector_mode');
-	replaceSelectOptions(refs.inputs.conn_collector_mode,
+	if (refs.inputs.conn_collector_mode) replaceSelectOptions(refs.inputs.conn_collector_mode,
 		cfgModel.modeChoices('connection', viewState.runtimeStatus || {}, values), values.conn_collector_mode,
 		'conn_collector_mode');
 	var rangesEnabled = !busy && values.show_ipv6 === '1' && values.hide_private_ipv6 === '1';
-	refs.inputs.hide_private_ipv6.disabled = busy || values.show_ipv6 !== '1';
+	if (refs.inputs.hide_private_ipv6) refs.inputs.hide_private_ipv6.disabled = busy || values.show_ipv6 !== '1';
 	if (refs.inputs.access_edge_mode)
 		refs.inputs.access_edge_mode.disabled = busy || !configPlatform.formPolicy(viewState.runtimeStatus).showAccessEdge;
 	if (refs.inputs.internet_view_mode)
@@ -539,8 +553,8 @@ function updateDependencies(viewState) {
 			if (refs.fields[name]) refs.fields[name].row.setAttribute('data-disabled', proxyEnabled ? 'false' : 'true');
 		});
 	}
-	refs.hideIpv6RangeInput.disabled = !rangesEnabled;
-	refs.addRangeBtn.disabled = !rangesEnabled;
+	if (refs.hideIpv6RangeInput) refs.hideIpv6RangeInput.disabled = !rangesEnabled;
+	if (refs.addRangeBtn) refs.addRangeBtn.disabled = !rangesEnabled;
 	(refs.rangeRemoveButtons || []).forEach(function(button) { button.disabled = !rangesEnabled; });
 	if (refs.fields.hide_ipv6_ranges)
 		refs.fields.hide_ipv6_ranges.row.setAttribute('data-disabled', rangesEnabled ? 'false' : 'true');
@@ -559,39 +573,22 @@ function formChanged(viewState) {
 function fillForm(viewState, values) {
 	var refs = viewState.daemonRefs;
 	values = configPlatform.normalizeValues(viewState.runtimeStatus, cfgModel.normalize(values || cfgModel.DEFAULTS).values);
-	NUMBER_FIELDS.forEach(function(name) { refs.inputs[name].value = String(values[name]); });
-	X86_NUMBER_FIELDS.forEach(function(name) {
-		if (refs.inputs[name]) refs.inputs[name].value = String(values[name]);
+	Object.keys(refs.inputs).forEach(function(name) {
+		var input = refs.inputs[name];
+		if (BOOLEAN_FIELDS.concat(X86_BOOLEAN_FIELDS).indexOf(name) >= 0) {
+			input.checked = values[name] === '1';
+			var wrap = input.parentNode;
+			var label = wrap && wrap.querySelector && wrap.querySelector('.lanspeed-toggle-label');
+			if (label) label.textContent = input.checked ? _('已启用') : _('已停用');
+		} else if (values[name] !== undefined) {
+			input.value = text(values[name]);
+		}
 	});
-	NSS_NUMBER_FIELDS.forEach(function(name) {
-		if (refs.inputs[name] && values[name] !== undefined)
-			refs.inputs[name].value = String(values[name]);
-	});
-	refs.inputs.rate_collector_mode.value = values.rate_collector_mode;
-	if (refs.inputs.internet_view_mode)
-		refs.inputs.internet_view_mode.value = values.internet_view_mode;
-	if (refs.inputs.access_edge_mode)
-		refs.inputs.access_edge_mode.value = values.access_edge_mode;
-	refs.inputs.conn_collector_mode.value = values.conn_collector_mode;
-	BOOLEAN_FIELDS.forEach(function(name) {
-		refs.inputs[name].checked = values[name] === '1';
-		var wrap = refs.inputs[name].parentNode;
-		var label = wrap && wrap.querySelector && wrap.querySelector('.lanspeed-toggle-label');
-		if (label) label.textContent = refs.inputs[name].checked ? _('已启用') : _('已停用');
-	});
-	X86_BOOLEAN_FIELDS.forEach(function(name) {
-		if (!refs.inputs[name]) return;
-		refs.inputs[name].checked = values[name] === '1';
-		var wrap = refs.inputs[name].parentNode;
-		var label = wrap && wrap.querySelector && wrap.querySelector('.lanspeed-toggle-label');
-		if (label) label.textContent = refs.inputs[name].checked ? _('已启用') : _('已停用');
-	});
-	X86_SECRET_FIELDS.forEach(function(name) {
-		if (refs.inputs[name]) refs.inputs[name].value = text(values[name]);
-	});
-	refs.hideIpv6RangesItems = cfgModel.parseCidrList(values.hide_ipv6_ranges).valid;
-	refs.hideIpv6RangeInput.value = '';
-	buildRangeList(viewState);
+	if (refs.hideIpv6RangeInput) {
+		refs.hideIpv6RangesItems = cfgModel.parseCidrList(values.hide_ipv6_ranges).valid;
+		refs.hideIpv6RangeInput.value = '';
+		buildRangeList(viewState);
+	}
 	viewState.currentValues = cloneValues(values);
 	updateDependencies(viewState);
 }
@@ -602,6 +599,68 @@ function applyRuntimeInfo(viewState, status) {
 	refs.runtimeInfo.setAttribute('data-state', viewState.loadData && viewState.loadData.rpc.status.ok ? 'ready' : 'degraded');
 }
 
+function buildSectionActions(viewState) {
+	var refs = viewState.daemonRefs;
+	refs.runtimeInfo = E('span', { 'class': 'lanspeed-config-runtime', 'role': 'status', 'aria-live': 'polite' }, '');
+	refs.saveState = E('span', { 'class': 'lanspeed-config-save-state', 'role': 'status', 'aria-live': 'polite' }, '');
+	refs.resetDefaultsBtn = E('button', { 'type': 'button', 'class': 'cbi-button' },
+		viewState.pageKind === 'nss' ? _('恢复 NSS 参数默认值') : _('恢复运行参数默认值'));
+	refs.resetDefaultsBtn.addEventListener('click', function() {
+		var defaults = cloneValues(viewState.currentValues);
+		pageFields(viewState).forEach(function(name) {
+			if (LIST_FIELDS.indexOf(name) < 0 && cfgModel.DEFAULTS[name] !== undefined)
+				defaults[name] = cloneValues(cfgModel.DEFAULTS[name]);
+		});
+		fillForm(viewState, defaults);
+		formChanged(viewState);
+	});
+}
+
+function buildNssSection(viewState, values) {
+	if (!supportsNss(viewState.runtimeStatus))
+		throw new Error(_('当前设备不支持 NSS 配置'));
+	var refs = viewState.daemonRefs;
+	var rows = [];
+	NSS_NUMBER_FIELDS.forEach(function(name) { refs.inputs[name] = numberInput(name, values[name]); });
+	refs.inputs.access_edge_mode = choiceSelect('access_edge_mode', cfgModel.ACCESS_EDGE_MODES, values.access_edge_mode);
+	refs.inputs.internet_view_mode = choiceSelect('internet_view_mode', cfgModel.INTERNET_VIEW_MODES, values.internet_view_mode);
+	rows.push(rowFor(viewState, 'access_edge_mode', _('客户端总速率'), refs.inputs.access_edge_mode,
+		viewState.platformPolicy.accessEdgeHint));
+	rows.push(rowFor(viewState, 'internet_view_mode', _('互联网/路由视图'), refs.inputs.internet_view_mode,
+		viewState.platformPolicy.internetViewHint));
+	rows.push(rowFor(viewState, 'nss_low_rate_window_ms', _('NSS 低速对齐窗口'),
+		refs.inputs.nss_low_rate_window_ms,
+		_('低流量时用同一累计窗口对齐接入点与 WAN 接口；默认 18000 ms。')));
+	rows.push(rowFor(viewState, 'nss_low_rate_high_watermark_bps', _('NSS 低速高水位'),
+		refs.inputs.nss_low_rate_high_watermark_bps,
+		_('总速率达到该值后恢复 1 秒原始速率；默认 8000000 bps。')));
+	rows.push(rowFor(viewState, 'nss_fifo_target_delay_ms', _('NSS 队列目标延迟'),
+		refs.inputs.nss_fifo_target_delay_ms,
+		_('按限速值计算 NSSBFIFO 容量；默认 50 ms，可独立调整。')));
+	rows.push(rowFor(viewState, 'nss_fifo_min_queue_packets', _('NSS 最小队列'),
+		refs.inputs.nss_fifo_min_queue_packets,
+		_('低速时的最小 MTU 包数；默认 8，避免沿用旧版 256 KiB 下限。')));
+	rows.push(rowFor(viewState, 'rate_compensation_factor', _('NSS 速率补偿系数'),
+		refs.inputs.rate_compensation_factor,
+		_('NSSHTB 的独立有效速率系数；默认 1.10，严格模式可设为 1.00。')));
+	buildSectionActions(viewState);
+	Object.keys(refs.inputs).forEach(function(name) {
+		refs.inputs[name].addEventListener(name.indexOf('_mode') >= 0 ? 'change' : 'input', function() { formChanged(viewState); });
+	});
+	var section = E('section', { 'class': 'lanspeed-config-subsection lanspeed-config-runtime-section lanspeed-config-nss-section' }, [
+		E('div', { 'class': 'lanspeed-config-subheader' }, [ E('h4', {}, _('NSS 采集与限速参数')) ]),
+		E('div', { 'class': 'lanspeed-config-body' }, [
+			configTable(rows),
+			E('div', { 'class': 'lanspeed-config-actions' }, [ refs.resetDefaultsBtn, E('span', { 'class': 'spacer' }), refs.saveState ])
+		])
+	]);
+	Object.keys((viewState.loadData.model || {}).errors || {}).forEach(function(name) {
+		setFieldError(viewState, name, viewState.loadData.model.errors[name]);
+	});
+	updateDependencies(viewState);
+	return section;
+}
+
 function buildDaemonSection(data, viewState) {
 	data = data || {};
 	var values = configPlatform.normalizeValues(data.status || {}, cfgModel.normalize(data.values || data).values);
@@ -609,8 +668,14 @@ function buildDaemonSection(data, viewState) {
 	var rows = [];
 	viewState = viewState || {};
 	viewState.daemonRefs = refs;
-	viewState.loadData = data;
 	viewState.runtimeStatus = data.status || {};
+	viewState.loadData = Object.assign({}, data);
+	var ownErrors = Object.keys((data.model || {}).errors || {}).filter(function(name) {
+		return pageFields(viewState).indexOf(name) >= 0;
+	});
+	viewState.loadData.invalidFields = ownErrors;
+	viewState.loadData.pageState = (data.rpc && data.rpc.status && !data.rpc.status.ok) || ownErrors.length
+		? 'degraded' : data.sectionMissing ? 'empty' : 'ready';
 	viewState.platformProfile = configPlatform.profile(viewState.runtimeStatus);
 	viewState.platformPolicy = configPlatform.formPolicy(viewState.runtimeStatus);
 	viewState.originalRaw = cloneValues(data.raw || data.values || data);
@@ -623,6 +688,9 @@ function buildDaemonSection(data, viewState) {
 	var isX86Profile = configPlatform.isX86(viewState.runtimeStatus);
 	viewState.compactX86 = isX86Profile;
 	viewState.isX86Profile = isX86Profile;
+	viewState.ownedFields = pageFields(viewState);
+	if (viewState.pageKind === 'nss')
+		return buildNssSection(viewState, values);
 	var settingHint = function(compact, detailed) {
 		return _(isX86Profile ? compact : detailed);
 	};
@@ -632,18 +700,8 @@ function buildDaemonSection(data, viewState) {
 		X86_NUMBER_FIELDS.forEach(function(name) { refs.inputs[name] = numberInput(name, values[name]); });
 		X86_SECRET_FIELDS.forEach(function(name) { refs.inputs[name] = secretInput(name, values[name]); });
 	}
-	if (viewState.platformPolicy.showAccessEdge)
-		NSS_NUMBER_FIELDS.forEach(function(name) {
-			refs.inputs[name] = numberInput(name, values[name]);
-		});
 	refs.inputs.rate_collector_mode = choiceSelect('rate_collector_mode',
 		cfgModel.modeChoices('rate', viewState.runtimeStatus, values), values.rate_collector_mode);
-	if (viewState.platformPolicy.showAccessEdge) {
-		refs.inputs.access_edge_mode = choiceSelect('access_edge_mode',
-			cfgModel.ACCESS_EDGE_MODES, values.access_edge_mode);
-		refs.inputs.internet_view_mode = choiceSelect('internet_view_mode',
-			cfgModel.INTERNET_VIEW_MODES, values.internet_view_mode);
-	}
 	refs.inputs.conn_collector_mode = choiceSelect('conn_collector_mode',
 		cfgModel.modeChoices('connection', viewState.runtimeStatus, values), values.conn_collector_mode);
 	BOOLEAN_FIELDS.forEach(function(name) {
@@ -677,29 +735,6 @@ function buildDaemonSection(data, viewState) {
 
 	rows.push(rowFor(viewState, 'rate_collector_mode', _('客户端网速模式'), refs.inputs.rate_collector_mode,
 			viewState.platformPolicy.rateHint));
-	if (viewState.platformPolicy.showAccessEdge)
-		rows.push(rowFor(viewState, 'access_edge_mode', _('客户端总速率'), refs.inputs.access_edge_mode,
-			viewState.platformPolicy.accessEdgeHint));
-	if (viewState.platformPolicy.showAccessEdge)
-		rows.push(rowFor(viewState, 'internet_view_mode', _('互联网/路由视图'), refs.inputs.internet_view_mode,
-			viewState.platformPolicy.internetViewHint));
-	if (viewState.platformPolicy.showAccessEdge) {
-		rows.push(rowFor(viewState, 'nss_low_rate_window_ms', _('NSS 低速对齐窗口'),
-			refs.inputs.nss_low_rate_window_ms,
-			_('低流量时用同一累计窗口对齐接入点与 WAN 接口；默认 18000 ms。')));
-		rows.push(rowFor(viewState, 'nss_low_rate_high_watermark_bps', _('NSS 低速高水位'),
-			refs.inputs.nss_low_rate_high_watermark_bps,
-			_('总速率达到该值后恢复 1 秒原始速率；默认 8000000 bps。')));
-		rows.push(rowFor(viewState, 'nss_fifo_target_delay_ms', _('NSS 队列目标延迟'),
-			refs.inputs.nss_fifo_target_delay_ms,
-			_('按限速值计算 NSSBFIFO 容量；默认 50 ms，可独立调整。')));
-		rows.push(rowFor(viewState, 'nss_fifo_min_queue_packets', _('NSS 最小队列'),
-			refs.inputs.nss_fifo_min_queue_packets,
-			_('低速时的最小 MTU 包数；默认 8，避免沿用旧版 256 KiB 下限。')));
-		rows.push(rowFor(viewState, 'rate_compensation_factor', _('NSS 速率补偿系数'),
-			refs.inputs.rate_compensation_factor,
-			_('NSSHTB 的独立有效速率系数；默认 1.10，严格模式可设为 1.00。')));
-	}
 	rows.push(rowFor(viewState, 'conn_collector_mode', _('连接详情来源'), refs.inputs.conn_collector_mode,
 		settingHint('TCP/UDP 连接详情来源。', viewState.platformPolicy.connectionHint)));
 	if (viewState.platformPolicy.showProxyConnections) {
@@ -728,7 +763,7 @@ function buildDaemonSection(data, viewState) {
 	rows.push(rowFor(viewState, 'active_client_min_bps', _('活跃最小速率'), refs.inputs.active_client_min_bps,
 		settingHint('达到此速率才算活跃。', '当前收发速率达到该值时才视为活跃。')));
 	rows.push(rowFor(viewState, 'show_client_totals', _('显示客户端累计流量'), refs.toggleWrap.show_client_totals,
-		settingHint('显示并采集累计流量。', '在客户端列表中显示累计上传和累计下载；x86 关闭后同时停止采集和持久化累计流量。')));
+		settingHint('显示并采集累计流量。', '累计下载和上传跨重启保留；关闭后停止累计，已保存的历史保留。')));
 	rows.push(rowFor(viewState, 'show_ipv6', _('显示 IPv6 地址'), refs.toggleWrap.show_ipv6,
 		settingHint('客户端 IPv6 显示。', '关闭后实时状态只显示 IPv4，并禁用 IPv6 隐藏规则。')));
 	rows.push(rowFor(viewState, 'hide_private_ipv6', _('隐藏私有 IPv6 地址'), refs.toggleWrap.hide_private_ipv6,
@@ -763,21 +798,12 @@ function buildDaemonSection(data, viewState) {
 		settingsContent = configTable(rows);
 	}
 
-	refs.runtimeInfo = E('span', { 'class': 'lanspeed-config-runtime', 'role': 'status', 'aria-live': 'polite' }, '');
-	refs.saveState = E('span', { 'class': 'lanspeed-config-save-state', 'role': 'status', 'aria-live': 'polite' }, '');
-	refs.resetDefaultsBtn = E('button', { 'type': 'button', 'class': 'cbi-button' }, _('恢复运行参数默认值'));
-	refs.resetDefaultsBtn.addEventListener('click', function() {
-		var defaults = cloneValues(cfgModel.DEFAULTS);
-			defaults = configPlatform.normalizeValues(viewState.runtimeStatus, defaults);
-		LIST_FIELDS.forEach(function(name) { defaults[name] = cloneValues((viewState.ifaceOriginal || {})[name] || []); });
-		fillForm(viewState, defaults);
-		formChanged(viewState);
-	});
+	buildSectionActions(viewState);
 	refs.addRangeBtn.addEventListener('click', function() { addRange(viewState); });
 	refs.hideIpv6RangeInput.addEventListener('keydown', function(event) {
 		if (event.key === 'Enter') { event.preventDefault(); addRange(viewState); }
 	});
-	NUMBER_FIELDS.concat(viewState.platformPolicy.showAccessEdge ? NSS_NUMBER_FIELDS : []).concat(
+	NUMBER_FIELDS.concat(
 		viewState.platformPolicy.showProxyConnections ? X86_NUMBER_FIELDS.concat(X86_SECRET_FIELDS) : []).concat(
 		[ 'rate_collector_mode', 'conn_collector_mode' ]).concat(
 		refs.inputs.internet_view_mode ? [ 'internet_view_mode' ] : []).concat(
@@ -830,7 +856,7 @@ function formControls(viewState) {
 function setBusy(viewState, busy) {
 	viewState.configSaving = busy;
 	formControls(viewState).forEach(function(control) { control.disabled = busy; });
-	ifaceCfg.setBusy(viewState, busy);
+	if (viewState.pageKind !== 'nss') ifaceCfg.setBusy(viewState, busy);
 	if (!busy) updateDependencies(viewState);
 	if (typeof viewState.onValidityChange === 'function')
 		viewState.onValidityChange(viewState.currentValidation ? viewState.currentValidation.valid : true, busy);
@@ -845,9 +871,9 @@ function ensureSection(viewState) {
 	viewState.sectionMissing = false;
 }
 
-function snapshotOwnedValues() {
+function snapshotOwnedValues(viewState) {
 	var values = {};
-	FIELD_NAMES.concat(REMOVED_UCI_FIELDS).forEach(function(name) {
+	pageFields(viewState).forEach(function(name) {
 		values[name] = uci.get('lanspeed', 'main', name);
 	});
 	return values;
@@ -861,7 +887,7 @@ function applyLocalPatch(patch) {
 }
 
 function restoreOwnedValues(snapshot) {
-	FIELD_NAMES.concat(REMOVED_UCI_FIELDS).forEach(function(name) {
+	Object.keys(snapshot).forEach(function(name) {
 		if (snapshot[name] === undefined || snapshot[name] === null)
 			uci.unset('lanspeed', 'main', name);
 		else
@@ -909,10 +935,18 @@ function rollbackOwnedValues(snapshot, sectionMissing) {
 
 function platformPatch(viewState, values) {
 	var patch = cfgModel.buildUciPatch(values, viewState.originalRaw || {});
-	return configPlatform.applyPatchPolicy(viewState.runtimeStatus, viewState.originalRaw, patch);
+	patch = configPlatform.applyPatchPolicy(viewState.runtimeStatus, viewState.originalRaw, patch);
+	var owned = pageFields(viewState);
+	Object.keys(patch.set).forEach(function(name) {
+		if (owned.indexOf(name) === -1) delete patch.set[name];
+	});
+	patch.unset = patch.unset.filter(function(name) { return owned.indexOf(name) >= 0; });
+	return patch;
 }
 
 function prepareSave(viewState) {
+	if (viewState.pageKind === 'nss' && !supportsNss(viewState.runtimeStatus))
+		throw new Error(_('当前设备不支持 NSS 配置'));
 	var validation = validateForm(viewState);
 	var interfacePlan = viewState.currentInterfacePlan || interfacePlanFor(viewState);
 	if (!validation.valid)
@@ -940,7 +974,7 @@ function saveAllSettings(viewState) {
 		plan = prepareSave(viewState);
 		sectionMissing = viewState.sectionMissing === true;
 		ensureSection(viewState);
-		snapshot = snapshotOwnedValues();
+		snapshot = snapshotOwnedValues(viewState);
 		applyLocalPatch(plan.patch);
 	} catch (error) {
 		if (snapshot) {
@@ -961,7 +995,7 @@ function saveAllSettings(viewState) {
 		viewState.lastSavePlan = plan;
 		viewState.hasStagedSave = true;
 		viewState.sectionMissing = false;
-		ifaceCfg.markSaved(plan.interfacePlan);
+		if (viewState.pageKind !== 'nss') ifaceCfg.markSaved(plan.interfacePlan);
 		setFeedback(viewState, 'staged', _('配置已暂存，等待应用'));
 		return { ok: true, staged: true, plan: plan };
 	}).catch(function(writeError) {
@@ -985,11 +1019,17 @@ function saveAllSettings(viewState) {
 	});
 }
 
+function reloadInterfaces(viewState) {
+	return viewState.pageKind === 'nss' ? Promise.resolve() : ifaceCfg.load(viewState);
+}
+
 function resetAllSettings(viewState) {
 	if (!viewState || !viewState.daemonRefs)
 		return Promise.reject(new Error(_('配置页面尚未准备完成')));
 	if (viewState.configSaving)
 		return Promise.reject(new Error(_('配置保存正在进行中')));
+	if (viewState.pageKind === 'nss' && !supportsNss(viewState.runtimeStatus))
+		return Promise.reject(new Error(_('当前设备不支持 NSS 配置')));
 	var values = cloneValues(viewState.initialValues || cfgModel.DEFAULTS);
 	var iface = viewState.initialIfaceOriginal || { ifname: [], interface_include: [], interface_exclude: [], observe: [], present: {} };
 	var stagedValues = cloneValues(viewState.originalRaw || {});
@@ -1007,10 +1047,10 @@ function resetAllSettings(viewState) {
 	fillForm(viewState, values);
 	if (!viewState.hasStagedSave) {
 		setFeedback(viewState, 'ready', _('已恢复到页面加载时的值'));
-		return ifaceCfg.load(viewState).then(function() { return { ok: true, staged: false }; });
+		return reloadInterfaces(viewState).then(function() { return { ok: true, staged: false }; });
 	}
 	var patch = platformPatch(viewState, values);
-	var snapshot = snapshotOwnedValues();
+	var snapshot = snapshotOwnedValues(viewState);
 	var sectionMissing = viewState.sectionMissing === true;
 	try { applyLocalPatch(patch); }
 	catch (error) { return Promise.reject(error); }
@@ -1020,7 +1060,7 @@ function resetAllSettings(viewState) {
 		viewState.hasStagedSave = false;
 		viewState.originalRaw = cloneValues(values);
 		setFeedback(viewState, 'ready', _('已撤销本页暂存值'));
-		return ifaceCfg.load(viewState).then(function() { return { ok: true, staged: true }; });
+		return reloadInterfaces(viewState).then(function() { return { ok: true, staged: true }; });
 	}).catch(function(error) {
 		return rollbackOwnedValues(snapshot, sectionMissing).then(function(rollback) {
 			viewState.originalRaw = stagedValues;
@@ -1044,10 +1084,14 @@ function resetAllSettings(viewState) {
 	});
 }
 
-function statusMatches(status, values) {
+function statusMatches(status, values, pageKind) {
 	if (statusContractIssue(status)) return false;
+	/* The status contract exposes only the two NSS mode settings. Queue and
+	 * alignment tunables cannot be confirmed through this read-only RPC. */
+	if (pageKind === 'nss')
+		return supportsNss(status) && status.access_edge_mode === values.access_edge_mode &&
+			status.internet_view_mode === values.internet_view_mode;
 	return status.rate_collector_mode === values.rate_collector_mode &&
-		(!configPlatform.formPolicy(status).showAccessEdge || status.access_edge_mode === values.access_edge_mode) &&
 		status.conn_collector_mode === values.conn_collector_mode &&
 		Number(status.refresh_interval_ms) === Number(values.refresh_interval_ms) &&
 		Number(status.active_client_window_ms) === Number(values.active_client_window_ms) &&
@@ -1088,12 +1132,13 @@ function verifyAll(viewState) {
 	var plan = viewState && viewState.lastSavePlan;
 	if (!plan)
 		return Promise.resolve({ ok: false, skipped: true });
-	setFeedback(viewState, 'verifying', _('正在验证守护进程与接口运行态…'));
+	setFeedback(viewState, 'verifying', viewState.pageKind === 'nss' ? _('正在验证 NSS 模式…') : _('正在验证守护进程与接口运行态…'));
 	return Promise.all([
 		Promise.resolve().then(function() { return lsRpc.status(); }).then(function(status) {
-			return { ok: statusMatches(status, plan.values), status: status };
+			return { ok: statusMatches(status, plan.values, viewState.pageKind), status: status };
 			}, function(error) { return { ok: false, error: error }; }),
 		Promise.resolve().then(function() {
+			if (viewState.pageKind === 'nss') return { ok: true, skipped: true };
 			return ifaceCfg.verify(viewState, plan.values || (plan.interfacePlan && plan.interfacePlan.desired));
 		})
 	]).then(function(results) {
@@ -1104,7 +1149,7 @@ function verifyAll(viewState) {
 			applyRuntimeInfo(viewState, results[0].status);
 		}
 		setFeedback(viewState, ok ? 'success' : 'degraded', ok
-			? _('配置已应用并通过运行态验证')
+			? (viewState.pageKind === 'nss' ? _('NSS 模式已生效') : _('配置已应用并通过运行态验证'))
 			: _('配置已应用，但运行态尚未完全匹配；请查看运行诊断'));
 		return { ok: ok, status: results[0], interfaces: interfaceResult };
 	});
@@ -1113,6 +1158,8 @@ function verifyAll(viewState) {
 return baseclass.extend({
 	DEFAULTS: cfgModel.DEFAULTS,
 	FIELDS: cfgModel.FIELDS,
+	NSS_FIELDS: NSS_FIELDS,
+	supportsNss: supportsNss,
 	loadValues: loadValues,
 	buildDaemonSection: buildDaemonSection,
 	readForm: readForm,

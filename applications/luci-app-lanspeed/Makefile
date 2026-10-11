@@ -43,6 +43,7 @@ define Package/luci-app-lanspeed/install
 	$(INSTALL_DATA) \
 		./htdocs/luci-static/resources/view/lanspeed/config.js \
 		./htdocs/luci-static/resources/view/lanspeed/diagnostics.js \
+		./htdocs/luci-static/resources/view/lanspeed/nss.js \
 		./htdocs/luci-static/resources/view/lanspeed/overview.js \
 		$(1)/www/luci-static/resources/view/lanspeed/
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/lanspeed
