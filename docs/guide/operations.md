@@ -8,6 +8,8 @@
 
 原有实时统计依赖为 `libgcc`、`kmod-nf-conntrack-netlink`、`tc-full` 和 `kmod-sched-bpf`。
 
+x86 与 NSS 的客户端累计流量均依赖 `libsqlite3`，安装 `lanspeedd` 时自动安装。累计数据库与保存周期见[使用指南](usage.md#界面入口)。
+
 x86 客户端控制额外依赖 `ip`、`nftables`、`conntrack`、`kmod-ifb`、`kmod-sched-core` 与 `kmod-sched`；这些依赖保持原有 x86 条件，不被 NSS 实现复用。缺少能力或目标钩子被其他服务占用时，控制按钮会显示结构化原因，不会覆盖外部对象。
 
 NSS 客户端控制依赖 `tc-full`、`ip`、`nftables`、`conntrack`、`kmod-ifb`、`kmod-sched-core`、`kmod-qca-nss-drv-igs` 与 NSS 专属 `kmod-lanspeed-nss-control`。直连方向还要求固件已有 `qca_nss_qdisc`、NSSHTB/NSSBFIFO 和已启用的 ECM DSCP classifier；`platform/nss/control/cpu_path/` 只负责证明身份、建立每边一个聚合 IGS IFB、上传 MAC 分类和下载 egress classid，不导入或调用 x86 控制代码。CPU/透明代理流量与 NSS 直连流量进入同一客户端方向队列。

@@ -13,6 +13,8 @@ pub(super) struct PublishedRateDirection {
     pub(super) window_ms: Option<u64>,
     pub(super) stale: bool,
     pub(super) mux_owner: bool,
+    pub(super) accounting:
+        Option<crate::platform::nss::fast_rate_clients::FastClientAccounting>,
 }
 
 #[cfg(feature = "nss-platform")]
@@ -28,6 +30,7 @@ impl PublishedRateDirection {
             window_ms: None,
             stale: false,
             mux_owner: false,
+            accounting: None,
         }
     }
 }
@@ -452,6 +455,7 @@ pub(super) fn published_from_candidate(
         window_ms: Some(candidate.window_ms),
         stale,
         mux_owner: true,
+        accounting: None,
     }
 }
 
@@ -507,6 +511,7 @@ fn published_from_fast_lease(sample: FastClientSample) -> PublishedRateDirection
         window_ms: Some(sample.window_ms),
         stale: false,
         mux_owner: true,
+        accounting: sample.accounting,
     }
 }
 
@@ -522,6 +527,7 @@ fn published_from_fast_internet(sample: FastClientSample) -> PublishedRateDirect
         window_ms: Some(sample.window_ms),
         stale: false,
         mux_owner: true,
+        accounting: sample.accounting,
     }
 }
 
@@ -597,6 +603,7 @@ pub(super) fn pipeline_direction(
         window_ms: Some(u64::from(refresh_interval_ms)),
         stale: false,
         mux_owner: false,
+        accounting: None,
     }
 }
 

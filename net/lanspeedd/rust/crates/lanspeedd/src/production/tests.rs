@@ -661,6 +661,7 @@ fn direction_rate_meta_emits_only_summary_overrides() {
         window_ms: Some(900),
         stale: false,
         mux_owner: true,
+        accounting: None,
     };
 
     let exact = rate_direction_meta(direction, Some(9_000), Some(900), false);
@@ -713,6 +714,7 @@ fn active_rate_mux_publishes_only_current_normalized_leased_fast_window() {
         fast_s_bps: 500,
         fast_total_bps: 1_500,
         routed_l2_with_fcs_bps: 1_800,
+        accounting: None,
     };
     assert!(fast_client_sample_current(13_500, sample));
     assert!(!fast_client_sample_current(13_501, sample));
@@ -740,6 +742,7 @@ fn explicit_internet_view_publishes_routed_fast_window_without_a_lease() {
         fast_s_bps: 700,
         fast_total_bps: 2_700,
         routed_l2_with_fcs_bps: 3_000,
+        accounting: None,
     };
     let published = active_rate_direction(RateView::RoutedInternet, None, Some(sample));
     assert_eq!(published.bps, 3_000);

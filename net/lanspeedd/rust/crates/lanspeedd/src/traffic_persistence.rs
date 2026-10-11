@@ -1,4 +1,4 @@
-//! Flash-conscious lifetime traffic accounting for the x86 TC-BPF collector.
+//! Flash-conscious lifetime traffic accounting for selected live counters.
 //!
 //! The BPF maps remain the source for live counters. This ledger converts map
 //! deltas into lifetime totals and checkpoints only dirty rows in a batched
@@ -18,7 +18,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::model::Client;
+use crate::model::{ByteDomain, Client, RateSource};
 
 pub(crate) const DEFAULT_TRAFFIC_DB_PATH: &str = "/etc/lanspeed/traffic.db";
 const FLUSH_INTERVAL_MS: u64 = 5 * 60 * 1_000;
@@ -56,7 +56,9 @@ extern "C" {
     fn sqlite3_exec(
         database: *mut SqliteHandle,
         sql: *const c_char,
-        callback: Option<unsafe extern "C" fn(*mut c_void, c_int, *mut *mut c_char, *mut *mut c_char) -> c_int>,
+        callback: Option<
+            unsafe extern "C" fn(*mut c_void, c_int, *mut *mut c_char, *mut *mut c_char) -> c_int,
+        >,
         callback_argument: *mut c_void,
         error_message: *mut *mut c_char,
     ) -> c_int;
@@ -79,7 +81,8 @@ extern "C" {
         bytes: c_int,
         destructor: Option<unsafe extern "C" fn(*mut c_void)>,
     ) -> c_int;
-    fn sqlite3_bind_int64(statement: *mut SqliteStatementHandle, index: c_int, value: i64) -> c_int;
+    fn sqlite3_bind_int64(statement: *mut SqliteStatementHandle, index: c_int, value: i64)
+        -> c_int;
     fn sqlite3_column_text(statement: *mut SqliteStatementHandle, column: c_int) -> *const u8;
     fn sqlite3_column_int64(statement: *mut SqliteStatementHandle, column: c_int) -> i64;
 }
@@ -202,9 +205,7 @@ impl SqliteStatement<'_> {
 
     fn bind_text(&mut self, index: c_int, value: &CString, context: &str) -> Result<(), String> {
         // SAFETY: value remains alive through the following sqlite3_step call.
-        let result = unsafe {
-            sqlite3_bind_text(self.handle, index, value.as_ptr(), -1, None)
-        };
+        let result = unsafe { sqlite3_bind_text(self.handle, index, value.as_ptr(), -1, None) };
         if result == SQLITE_OK {
             Ok(())
         } else {
@@ -240,6 +241,72 @@ impl SqliteStatement<'_> {
     }
 }
 
+/// Exact accounting input, separate from display-rate windows. NSS cumulative
+/// counters always establish a baseline on startup/owner changes; persisted
+/// totals must never import the hardware counter's pre-existing history.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ExactTrafficSample {
+    pub source: RateSource,
+    pub byte_domain: ByteDomain,
+    pub generation: u64,
+    pub epoch: u64,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub bytes: u64,
+    pub cumulative: bool,
+}
+
+impl ExactTrafficSample {
+    fn same_counter(self, other: Self) -> bool {
+        self.source == other.source
+            && self.byte_domain == other.byte_domain
+            && self.generation == other.generation
+            && self.epoch == other.epoch
+            && self.cumulative == other.cumulative
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ExactTrafficCursor {
+    previous: Option<ExactTrafficSample>,
+    end_ms: u64,
+}
+
+impl ExactTrafficCursor {
+    fn observe(&mut self, sample: Option<ExactTrafficSample>, now_ms: u64) -> u64 {
+        let Some(sample) = sample else {
+            self.previous = None;
+            self.end_ms = self.end_ms.max(now_ms);
+            return 0;
+        };
+        // Held samples and out-of-order publications are not fresh bytes.
+        if sample.end_ms <= self.end_ms || sample.end_ms < sample.start_ms {
+            if self
+                .previous
+                .is_some_and(|previous| !sample.same_counter(previous))
+            {
+                self.previous = None;
+            }
+            return 0;
+        }
+        let delta = if sample.cumulative {
+            self.previous
+                .filter(|previous| sample.same_counter(*previous))
+                .and_then(|previous| sample.bytes.checked_sub(previous.bytes))
+                .unwrap_or(0)
+        } else if sample.start_ms >= self.end_ms {
+            // Never prorate a segment across an owner transition. Its raw
+            // delta is indivisible; an overlapping interval is discarded.
+            sample.bytes
+        } else {
+            0
+        };
+        self.previous = Some(sample);
+        self.end_ms = sample.end_ms;
+        delta
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct TrafficEntry {
     mac: String,
@@ -248,6 +315,10 @@ struct TrafficEntry {
     rx_bytes: u64,
     last_raw_tx_bytes: Option<u64>,
     last_raw_rx_bytes: Option<u64>,
+    tx_seen: bool,
+    rx_seen: bool,
+    exact_tx: ExactTrafficCursor,
+    exact_rx: ExactTrafficCursor,
     updated_at: u64,
     dirty: bool,
 }
@@ -294,7 +365,13 @@ impl TrafficLedger {
         self.storage_owner = true;
     }
 
-    pub(crate) fn deactivate_storage_owner(&mut self) {
+    pub(crate) fn finish_reload_replacement(&mut self, successor_has_ledger: bool, now_ms: u64) {
+        // A normal successor inherits dirty rows. A committed disable has no
+        // successor ledger, so save its final exact deltas before relinquishing
+        // the old writer. Rejected candidates never reach this boundary.
+        if !successor_has_ledger {
+            self.flush_shutdown(now_ms);
+        }
         self.storage_owner = false;
     }
 
@@ -316,6 +393,55 @@ impl TrafficLedger {
             );
             client.tx_bytes = Some(tx_bytes);
             client.rx_bytes = Some(rx_bytes);
+        }
+    }
+
+    /// Apply only the two sources selected to own the published directions.
+    /// Unknown directions retain their already recorded totals and reset the
+    /// transient baseline; neither rates nor classification counters enter it.
+    pub(crate) fn overlay_exact(
+        &mut self,
+        client: &mut Client,
+        tx: Option<ExactTrafficSample>,
+        rx: Option<ExactTrafficSample>,
+        now_ms: u64,
+    ) {
+        client.tx_bytes = None;
+        client.rx_bytes = None;
+        if tx.is_none() && rx.is_none() && !self.entries.contains_key(&client.identity_key) {
+            return;
+        }
+        let entry = self.entries.entry(client.identity_key.clone()).or_default();
+        let tx_delta = entry.exact_tx.observe(tx, now_ms);
+        let rx_delta = entry.exact_rx.observe(rx, now_ms);
+        let metadata_changed = entry.mac != client.mac
+            || entry.zone != client.zone
+            || (!entry.tx_seen && tx.is_some())
+            || (!entry.rx_seen && rx.is_some());
+        entry.tx_seen |= tx.is_some();
+        entry.rx_seen |= rx.is_some();
+        entry.tx_bytes = entry.tx_bytes.saturating_add(tx_delta);
+        entry.rx_bytes = entry.rx_bytes.saturating_add(rx_delta);
+        entry.mac.clone_from(&client.mac);
+        entry.zone.clone_from(&client.zone);
+        if tx_delta != 0 || rx_delta != 0 || metadata_changed {
+            entry.updated_at = unix_time_seconds();
+            entry.dirty = true;
+        }
+        client.tx_bytes = entry.tx_seen.then_some(entry.tx_bytes);
+        client.rx_bytes = entry.rx_seen.then_some(entry.rx_bytes);
+    }
+
+    pub(crate) fn retain_exact_clients(&mut self, clients: &[Client], now_ms: u64) {
+        let present = clients
+            .iter()
+            .map(|client| client.identity_key.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        for (identity_key, entry) in &mut self.entries {
+            if !present.contains(identity_key.as_str()) {
+                entry.exact_tx.observe(None, now_ms);
+                entry.exact_rx.observe(None, now_ms);
+            }
         }
     }
 
@@ -349,6 +475,8 @@ impl TrafficLedger {
 
         entry.tx_bytes = entry.tx_bytes.saturating_add(tx_delta);
         entry.rx_bytes = entry.rx_bytes.saturating_add(rx_delta);
+        entry.tx_seen = true;
+        entry.rx_seen = true;
         entry.last_raw_tx_bytes = Some(raw_tx_bytes);
         entry.last_raw_rx_bytes = Some(raw_rx_bytes);
         entry.mac.clear();
@@ -448,9 +576,8 @@ fn open_database(path: &Path) -> Result<SqliteConnection, String> {
     if busy_result != SQLITE_OK {
         return Err(connection.error("configure traffic database timeout"));
     }
-    connection
-        .execute_batch(
-            "PRAGMA journal_mode=WAL;
+    connection.execute_batch(
+        "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
              PRAGMA temp_store=MEMORY;
              PRAGMA wal_autocheckpoint=100;
@@ -462,21 +589,26 @@ fn open_database(path: &Path) -> Result<SqliteConnection, String> {
                  rx_bytes INTEGER NOT NULL CHECK (rx_bytes >= 0),
                  updated_at INTEGER NOT NULL CHECK (updated_at >= 0)
              ) WITHOUT ROWID;
-             PRAGMA user_version=1;",
-            "initialize traffic database",
-        )?;
+             CREATE TABLE IF NOT EXISTS client_traffic_seen (
+                 identity_key TEXT PRIMARY KEY NOT NULL,
+                 tx_seen INTEGER NOT NULL CHECK (tx_seen IN (0, 1)),
+                 rx_seen INTEGER NOT NULL CHECK (rx_seen IN (0, 1))
+             ) WITHOUT ROWID;
+             PRAGMA user_version=2;",
+        "initialize traffic database",
+    )?;
     Ok(connection)
 }
 
 fn load_entries(path: &Path) -> Result<BTreeMap<String, TrafficEntry>, String> {
     let connection = open_database(path)?;
-    let mut statement = connection
-        .prepare(
-            "SELECT identity_key, mac, zone, tx_bytes, rx_bytes, updated_at
-             FROM client_traffic",
-            "prepare traffic database read",
-        )
-        ?;
+    let mut statement = connection.prepare(
+        "SELECT t.identity_key, t.mac, t.zone, t.tx_bytes, t.rx_bytes, t.updated_at,
+                    COALESCE(s.tx_seen, 1), COALESCE(s.rx_seen, 1)
+             FROM client_traffic t LEFT JOIN client_traffic_seen s
+             ON t.identity_key = s.identity_key",
+        "prepare traffic database read",
+    )?;
     let mut entries = BTreeMap::new();
     while statement.step("query traffic database")? == SQLITE_ROW {
         let identity_key = statement.column_text(0, "read traffic database row")?;
@@ -493,6 +625,8 @@ fn load_entries(path: &Path) -> Result<BTreeMap<String, TrafficEntry>, String> {
                 tx_bytes: nonnegative_u64(tx_bytes),
                 rx_bytes: nonnegative_u64(rx_bytes),
                 updated_at: nonnegative_u64(updated_at),
+                tx_seen: statement.column_i64(6) != 0,
+                rx_seen: statement.column_i64(7) != 0,
                 ..TrafficEntry::default()
             },
         );
@@ -516,6 +650,13 @@ fn persist_entries(path: &Path, entries: &BTreeMap<String, TrafficEntry>) -> Res
                 updated_at=excluded.updated_at",
             "prepare traffic database write",
         )?;
+        let mut seen_statement = connection.prepare(
+            "INSERT INTO client_traffic_seen (identity_key, tx_seen, rx_seen)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(identity_key) DO UPDATE SET
+                tx_seen=excluded.tx_seen, rx_seen=excluded.rx_seen",
+            "prepare traffic direction state write",
+        )?;
         for (identity_key, entry) in entries.iter().filter(|(_, entry)| entry.dirty) {
             let identity_key = sqlite_text(identity_key, "identity key")?;
             let mac = sqlite_text(&entry.mac, "MAC")?;
@@ -525,11 +666,22 @@ fn persist_entries(path: &Path, entries: &BTreeMap<String, TrafficEntry>) -> Res
             statement.bind_text(3, &zone, "bind traffic zone")?;
             statement.bind_i64(4, sqlite_integer(entry.tx_bytes), "bind traffic upload")?;
             statement.bind_i64(5, sqlite_integer(entry.rx_bytes), "bind traffic download")?;
-            statement.bind_i64(6, sqlite_integer(entry.updated_at), "bind traffic timestamp")?;
+            statement.bind_i64(
+                6,
+                sqlite_integer(entry.updated_at),
+                "bind traffic timestamp",
+            )?;
             if statement.step("write traffic database row")? != SQLITE_DONE {
                 return Err("write traffic database row: unexpected SQLite row".to_owned());
             }
             statement.reset("reset traffic database write")?;
+            seen_statement.bind_text(1, &identity_key, "bind traffic direction identity")?;
+            seen_statement.bind_i64(2, i64::from(entry.tx_seen), "bind traffic upload state")?;
+            seen_statement.bind_i64(3, i64::from(entry.rx_seen), "bind traffic download state")?;
+            if seen_statement.step("write traffic direction state")? != SQLITE_DONE {
+                return Err("write traffic direction state: unexpected SQLite row".to_owned());
+            }
+            seen_statement.reset("reset traffic direction state write")?;
         }
         Ok(())
     })();
@@ -558,7 +710,8 @@ fn nonnegative_u64(value: i64) -> u64 {
 mod tests {
     use std::{fs, path::PathBuf};
 
-    use super::TrafficLedger;
+    use super::{ExactTrafficCursor, ExactTrafficSample, TrafficLedger};
+    use crate::model::{ByteDomain, Client, Confidence, RateSource};
 
     fn test_path(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -568,6 +721,175 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&path);
         path.join("traffic.db")
+    }
+
+    fn exact(cumulative: bool, start_ms: u64, end_ms: u64, bytes: u64) -> ExactTrafficSample {
+        ExactTrafficSample {
+            source: if cumulative {
+                RateSource::FastRoutedInternet
+            } else {
+                RateSource::EdgePort
+            },
+            byte_domain: ByteDomain::L2WithFcs,
+            generation: 1,
+            epoch: 1,
+            start_ms,
+            end_ms,
+            bytes,
+            cumulative,
+        }
+    }
+
+    fn client() -> Client {
+        Client {
+            mac: "02:00:00:00:00:01".into(),
+            identity_key: "lan|02:00:00:00:00:01".into(),
+            zone: "lan".into(),
+            interface: "br-lan".into(),
+            ips: vec![],
+            hostname: None,
+            rx_bps: 999_999,
+            tx_bps: 999_999,
+            last_seen: 0,
+            sample_ms: None,
+            rx_bytes: None,
+            tx_bytes: None,
+            collector_mode: "access_edge".into(),
+            confidence: Confidence::High,
+            warnings: vec![],
+            tcp_conns: None,
+            udp_conns: None,
+            udp_dns_conns: None,
+            udp_other_conns: None,
+            rate_meta: None,
+            control: None,
+        }
+    }
+
+    #[test]
+    fn exact_cumulative_catches_skipped_notices_without_integrating_rates() {
+        let mut cursor = ExactTrafficCursor::default();
+        assert_eq!(cursor.observe(Some(exact(true, 10, 20, 10_000)), 20), 0);
+        assert_eq!(cursor.observe(Some(exact(true, 10, 20, 10_000)), 20), 0);
+        assert_eq!(cursor.observe(Some(exact(true, 10, 50, 12_000)), 50), 2_000);
+        assert_eq!(cursor.observe(Some(exact(true, 10, 40, 11_000)), 50), 0);
+        assert_eq!(cursor.observe(Some(exact(true, 10, 60, 12_100)), 60), 100);
+        // Counter rollback and a new epoch each establish a fresh baseline.
+        assert_eq!(cursor.observe(Some(exact(true, 10, 70, 2)), 70), 0);
+        assert_eq!(
+            cursor.observe(
+                Some(ExactTrafficSample {
+                    epoch: 2,
+                    ..exact(true, 70, 80, 500)
+                }),
+                80
+            ),
+            0
+        );
+        assert_eq!(
+            cursor.observe(
+                Some(ExactTrafficSample {
+                    epoch: 2,
+                    ..exact(true, 70, 90, 560)
+                }),
+                90
+            ),
+            60
+        );
+    }
+
+    #[test]
+    fn exact_owner_transitions_reject_overlapping_segments_and_old_fast_history() {
+        let mut cursor = ExactTrafficCursor::default();
+        assert_eq!(cursor.observe(Some(exact(false, 10, 20, 100)), 20), 100);
+        assert_eq!(cursor.observe(Some(exact(false, 10, 20, 100)), 20), 0);
+        assert_eq!(cursor.observe(Some(exact(true, 10, 30, 1_000)), 30), 0);
+        assert_eq!(cursor.observe(Some(exact(true, 10, 40, 1_200)), 40), 200);
+        assert_eq!(cursor.observe(Some(exact(false, 35, 45, 900)), 45), 0);
+        assert_eq!(cursor.observe(Some(exact(false, 45, 50, 30)), 50), 30);
+        assert_eq!(cursor.observe(None, 60), 0);
+        assert_eq!(cursor.observe(Some(exact(false, 55, 65, 900)), 65), 0);
+        assert_eq!(cursor.observe(Some(exact(false, 65, 70, 40)), 70), 40);
+        assert_eq!(cursor.observe(Some(exact(true, 10, 80, 9_000)), 80), 0);
+        assert_eq!(cursor.observe(Some(exact(true, 10, 90, 9_020)), 90), 20);
+        assert_eq!(
+            cursor.observe(
+                Some(ExactTrafficSample {
+                    generation: 2,
+                    ..exact(true, 10, 100, 12_000)
+                }),
+                100
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn unknown_direction_survives_restart_and_fast_counter_rebases() {
+        let path = test_path("exact-restart");
+        let mut client = client();
+        let mut ledger = TrafficLedger::open(&path, 0);
+        ledger.overlay_exact(&mut client, None, None, 10);
+        assert_eq!((client.tx_bytes, client.rx_bytes), (None, None));
+        ledger.overlay_exact(&mut client, Some(exact(true, 10, 20, 1_000)), None, 20);
+        assert_eq!((client.tx_bytes, client.rx_bytes), (Some(0), None));
+        ledger.overlay_exact(&mut client, Some(exact(true, 10, 30, 1_070)), None, 30);
+        assert_eq!((client.tx_bytes, client.rx_bytes), (Some(70), None));
+        ledger.activate_storage_owner();
+        ledger.flush_shutdown(30);
+        assert_eq!(ledger.last_error(), None);
+        let mut restarted = TrafficLedger::open(&path, 40);
+        restarted.overlay_exact(&mut client, Some(exact(true, 10, 50, 9_000)), None, 50);
+        assert_eq!((client.tx_bytes, client.rx_bytes), (Some(70), None));
+        restarted.overlay_exact(&mut client, Some(exact(true, 10, 60, 9_050)), None, 60);
+        assert_eq!((client.tx_bytes, client.rx_bytes), (Some(120), None));
+        let mut candidate = restarted.fork_for_reload();
+        candidate.overlay_exact(&mut client, Some(exact(true, 10, 60, 9_050)), None, 60);
+        assert_eq!(client.tx_bytes, Some(120));
+        assert!(!candidate.storage_owner);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn committed_disable_flushes_pending_history_before_relinquishing_storage() {
+        let path = test_path("disable-reload");
+        let mut client = client();
+        let mut current = TrafficLedger::open(&path, 0);
+        current.activate_storage_owner();
+        current.overlay_exact(&mut client, Some(exact(false, 10, 20, 75)), None, 20);
+        // Merely preparing/rejecting a candidate cannot alter persistent state.
+        let mut rejected = current.fork_for_reload();
+        rejected.overlay_exact(&mut client, Some(exact(false, 20, 30, 900)), None, 30);
+        rejected.flush_shutdown(30);
+        assert!(TrafficLedger::open(&path, 31).entries.is_empty());
+        current.finish_reload_replacement(false, 40);
+        assert!(!current.storage_owner);
+        assert_eq!(current.last_error(), None);
+        let mut reenabled = TrafficLedger::open(&path, 50);
+        reenabled.overlay_exact(&mut client, None, None, 50);
+        assert_eq!((client.tx_bytes, client.rx_bytes), (Some(75), None));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn legacy_database_rows_remain_known_after_direction_schema_upgrade() {
+        let path = test_path("legacy-migration");
+        let mut ledger = TrafficLedger::open(&path, 0);
+        let mut client = client();
+        ledger.observe_raw(&client.identity_key, &client.mac, &client.zone, 50, 80);
+        ledger.activate_storage_owner();
+        ledger.flush_shutdown(1);
+        super::open_database(&path)
+            .unwrap()
+            .execute_batch(
+                "DROP TABLE client_traffic_seen; PRAGMA user_version=1",
+                "simulate v1 database",
+            )
+            .unwrap();
+        let mut upgraded = TrafficLedger::open(&path, 2);
+        upgraded.overlay_exact(&mut client, None, None, 2);
+        assert_eq!((client.tx_bytes, client.rx_bytes), (Some(50), Some(80)));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

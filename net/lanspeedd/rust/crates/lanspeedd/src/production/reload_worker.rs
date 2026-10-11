@@ -109,7 +109,7 @@ fn reload_transaction(mut current: ProductionRuntime) -> ReloadOutcome {
             Ok(candidate) => candidate,
             Err(error) => return failure(current, error, false),
         };
-    #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+    #[cfg(feature = "traffic-persistence")]
     {
         candidate.traffic_ledger = if config.show_client_totals {
             current
@@ -323,13 +323,16 @@ fn reload_transaction(mut current: ProductionRuntime) -> ReloadOutcome {
         current.control_platform_owner = false;
     }
 
-    #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+    #[cfg(feature = "traffic-persistence")]
     {
         if let Some(ledger) = candidate.traffic_ledger.as_mut() {
             ledger.activate_storage_owner();
         }
         if let Some(ledger) = current.traffic_ledger.as_mut() {
-            ledger.deactivate_storage_owner();
+            ledger.finish_reload_replacement(
+                candidate.traffic_ledger.is_some(),
+                production_now_ms().unwrap_or(0),
+            );
         }
         candidate.collection_committed();
     }

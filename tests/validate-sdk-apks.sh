@@ -183,7 +183,7 @@ case "$expected_arch" in
 		assert_dependencies daemon "$daemon_metadata" \
 			conntrack ip kmod-ifb kmod-lanspeed-nss-control kmod-nf-conntrack-netlink \
 			kmod-qca-nss-drv-igs kmod-sched-core \
-			libc libgcc1 nftables tc-full
+			libc libgcc1 libsqlite3-0 nftables tc-full
 		;;
 esac
 assert_dependencies BPF "$bpf_metadata" \

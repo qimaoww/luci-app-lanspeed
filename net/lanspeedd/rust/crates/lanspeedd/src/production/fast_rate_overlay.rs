@@ -105,8 +105,8 @@ pub(super) fn apply_fast_rate_overlay(
         }
 
         stats.clients = stats.clients.saturating_add(1);
-        client.tx_bytes = None;
-        client.rx_bytes = None;
+        // The collection worker owns exact byte accounting. A rate-only
+        // publication retains its last committed persisted totals.
         client.sample_ms = [
             client.sample_ms,
             tx_published.map(|sample| sample.sample_ms),
@@ -339,6 +339,7 @@ fn add_client_direction(
         fast_s_bps: 0,
         fast_total_bps: bps,
         routed_l2_with_fcs_bps: bps,
+        accounting: None,
     };
     total_rate.add(direction, sample);
     logical_rates
@@ -499,6 +500,7 @@ mod tests {
             fast_s_bps: bps / 2,
             fast_total_bps: bps,
             routed_l2_with_fcs_bps: bps,
+            accounting: None,
         };
         FastRatePublication {
             observed_ms: 2_000,
@@ -602,6 +604,7 @@ mod tests {
         let client = &snapshot.clients.clients[0];
         let meta = client.rate_meta.as_ref().unwrap();
         assert_eq!((client.tx_bps, client.rx_bps), (800, 1_600));
+        assert_eq!((client.tx_bytes, client.rx_bytes), (Some(10), Some(20)));
         assert_eq!(client.sample_ms, Some(3_000));
         assert_eq!(meta.sample_ms, Some(3_000));
         assert_eq!(meta.window_ms, Some(1_000));
