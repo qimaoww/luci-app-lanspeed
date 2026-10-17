@@ -67,6 +67,20 @@ fn vendors_build_std_dependencies_for_supported_rust_releases() {
             "rustc-literal-escaper",
             "0.0.8",
         ),
+        // Rust 1.99.0 ships a `library/Cargo.lock` whose `-Z build-std` graph
+        // needs newer pinned versions than the releases above.
+        ("addr2line-0.27.1", "addr2line", "0.27.1"),
+        ("dlmalloc-0.2.14", "dlmalloc", "0.2.14"),
+        ("gimli-0.34.0", "gimli", "0.34.0"),
+        ("libc-0.2.189", "libc", "0.2.189"),
+        ("miniz_oxide-0.9.1", "miniz_oxide", "0.9.1"),
+        ("moto-rt-0.16.4", "moto-rt", "0.16.4"),
+        ("rand-0.9.5", "rand", "0.9.5"),
+        ("rand_core-0.9.5", "rand_core", "0.9.5"),
+        ("rustc-demangle-0.1.28", "rustc-demangle", "0.1.28"),
+        ("unwinding-0.2.10", "unwinding", "0.2.10"),
+        ("wasip2-1.0.4+wasi-0.2.12", "wasip2", "1.0.4+wasi-0.2.12"),
+        ("wasip3-0.7.0+wasi-0.3.0", "wasip3", "0.7.0+wasi-0.3.0"),
     ] {
         let manifest =
             fs::read_to_string(workspace.join("vendor").join(directory).join("Cargo.toml"))
@@ -97,6 +111,14 @@ fn vendors_build_std_dependencies_for_supported_rust_releases() {
         (
             "rustc-literal-escaper-0.0.8",
             "bfe6f213fb658c8fb95baabd5420393438cf5a98d707f5dd701d9197c705f71e",
+        ),
+        (
+            "libc-0.2.189",
+            "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2",
+        ),
+        (
+            "rustc-demangle-0.1.28",
+            "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb",
         ),
     ] {
         let checksums = fs::read_to_string(

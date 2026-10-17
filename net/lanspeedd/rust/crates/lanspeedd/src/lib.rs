@@ -7,14 +7,6 @@
 ))]
 compile_error!("the nss-platform feature is valid only for aarch64 production builds");
 
-#[cfg(all(
-    feature = "openwrt",
-    target_arch = "aarch64",
-    not(feature = "nss-platform"),
-    not(debug_assertions)
-))]
-compile_error!("aarch64 OpenWrt builds must enable the nss-platform feature");
-
 use aya::maps::MapError;
 use aya_obj::btf::{Btf, BtfKind};
 use aya_obj::generated::{bpf_attr, bpf_btf_info, bpf_cmd};
@@ -56,7 +48,7 @@ pub mod realtime;
 #[cfg(any(feature = "openwrt", test))]
 mod runtime_worker;
 pub mod state;
-#[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+#[cfg(feature = "traffic-persistence")]
 mod traffic_persistence;
 pub mod ubus;
 pub mod workers;

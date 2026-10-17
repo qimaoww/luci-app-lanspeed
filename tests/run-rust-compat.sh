@@ -116,8 +116,8 @@ fi
 bpf_linker_request=${RUST_COMPAT_BPF_LINKER:-${BPF_LINKER:-bpf-linker}}
 bpf_linker_bin=$(resolve_executable "$bpf_linker_request") || \
 	fail "bpf-linker executable not found: $bpf_linker_request"
-[[ $("$bpf_linker_bin" --version) == 'bpf-linker 0.10.3' ]] || \
-	fail "expected bpf-linker 0.10.3, found $("$bpf_linker_bin" --version)"
+[[ $("$bpf_linker_bin" --version) == 'bpf-linker 0.11.1' ]] || \
+	fail "expected bpf-linker 0.11.1, found $("$bpf_linker_bin" --version)"
 export BPF_LINKER=$bpf_linker_bin
 export LANSPEED_BPF_TARGET_ARCH=aarch64
 

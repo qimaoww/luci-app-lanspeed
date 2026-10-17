@@ -11,13 +11,15 @@ echo "src-git lanspeed https://github.com/qimaoww/luci-app-lanspeed.git" >> feed
 ./scripts/feeds update lanspeed
 ./scripts/feeds install -a -p lanspeed
 
-# LuCI -> Applications -> luci-app-lanspeed
+# LuCI -> Applications -> luci-app-lanspeed -> NSS hardware acceleration support
 make menuconfig
 make -j"$(nproc)" package/lanspeedd/compile
 make -j"$(nproc)" package/luci-app-lanspeed/compile
 ```
 
 `luci-app-lanspeed` 强制依赖 `lanspeedd-bpf`。同一 `package/lanspeedd/compile` 目标按 SDK 架构生成 TC 对象，并只在 aarch64 生成 ECM 对象。
+
+`luci-app-lanspeed` 在 menuconfig 中提供 `NSS hardware acceleration support` 子菜单开关（`CONFIG_LUCI_APP_LANSPEED_NSS`），默认在 `TARGET_qualcommax` 上启用。它同时控制 daemon 的 Rust `nss-platform` feature、NSS 专用的 ECM eBPF 对象与 `kmod-lanspeed-nss-control`/`kmod-qca-nss-drv-igs` 依赖、NSS 内核模块加载器与整形迁移脚本，以及 NSS 配置页面和菜单入口；关闭后仅保留 TC-BPF 路径，适合无 NSS 引擎的设备。
 
 本地 checkout：
 
@@ -59,6 +61,16 @@ sh tests/validate-lanspeed-docs.sh
 测试覆盖平台边界、Rust 单元测试、eBPF 对象、RPC/schema、LuCI、探针 fixtures 和打包契约。最终验收还需要真实 SDK 编译、目标设备安装及真实浏览器检查。
 
 测试输出默认进入每次运行唯一的临时目录并在退出时清理。只有显式设置 `LANSPEED_TEST_OUTPUT_DIR=/path` 才保留日志；实机 `qa-device.sh` 必须显式提供 `OUT_DIR`。
+
+只读实机基准可用于部署前后对照，无需安装额外设备依赖：
+
+```sh
+python3 tests/benchmark-device.py root@192.0.2.1 --output /tmp/lanspeed-before.json
+# 部署待测版本并等待采集窗口稳定后，使用相同采样参数再次运行
+python3 tests/benchmark-device.py root@192.0.2.1 --output /tmp/lanspeed-after.json
+```
+
+脚本需要 Python 3.9+ 和已有 SSH 密钥认证；默认对八个只读 RPC 各采样五次，同时记录 RSS 与 CPU。输出只保存延迟、计数和白名单状态，不保存客户端原始响应，也不触发 reload 或修改配置。RPC 延迟包含 SSH 与网络开销，报告另列空命令基线；真实流量不同会影响结果，不能仅由一次对比推断性能提升。
 
 ## 发布
 

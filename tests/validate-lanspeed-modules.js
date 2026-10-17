@@ -36,6 +36,7 @@ const viewDir = path.join(resDir, 'view/lanspeed');
 const viewFile = path.join(resDir, 'view/lanspeed/overview.js');
 const diagnosticsEntryFile = path.join(resDir, 'view/lanspeed/diagnostics.js');
 const configViewFile = path.join(resDir, 'view/lanspeed/config.js');
+const nssViewFile = path.join(resDir, 'view/lanspeed/nss.js');
 const statusViewFile = path.join(modDir, 'statusView.js');
 const daemonMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
 const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/Makefile'), 'utf8');
@@ -51,6 +52,7 @@ const EXPECTED_MODULES = [
 	'designSystemAurora.js',
 	'designSystemArgon.js',
 	'designSystemBootstrap.js',
+	'designSystemShadcn.js',
 	'geoLocation.js',
 	'macVendor.js',
 	'clientConnections.js',
@@ -67,6 +69,7 @@ const EXPECTED_MODULES = [
 	'clientDetailStyleAurora.js',
 	'clientDetailStyleArgon.js',
 	'clientDetailStyleBootstrap.js',
+	'clientDetailStyleShadcn.js',
 	'clientDetailStyleResponsive.js',
 	'diagnosticsRefresh.js',
 	'diagnosticsShell.js',
@@ -75,6 +78,7 @@ const EXPECTED_MODULES = [
 	'diagnosticsStyleAurora.js',
 	'diagnosticsStyleArgon.js',
 	'diagnosticsStyleBootstrap.js',
+	'diagnosticsStyleShadcn.js',
 	'diagnosticsStyleResponsive.js',
 	'diagnosticsSchema.js',
 	'diagnosticsResources.js',
@@ -92,6 +96,7 @@ const EXPECTED_MODULES = [
 	'statusStyleAurora.js',
 	'statusStyleArgon.js',
 	'statusStyleBootstrap.js',
+	'statusStyleShadcn.js',
 	'statusStyleResponsive.js',
 	'statusView.js',
 	'statusIp.js',
@@ -105,6 +110,7 @@ const EXPECTED_MODULES = [
 	'configStyleAurora.js',
 	'configStyleArgon.js',
 	'configStyleBootstrap.js',
+	'configStyleShadcn.js',
 	'configStyleShared.js',
 	'configStyleResponsive.js',
 	'configModel.js',
@@ -114,7 +120,10 @@ const EXPECTED_MODULES = [
 	'configForm.js',
 	'configView.js'
 ];
-const EXPECTED_VIEW_ENTRIES = [ 'config.js', 'diagnostics.js', 'overview.js' ];
+const EXPECTED_VIEW_ENTRIES = [ 'config.js', 'diagnostics.js', 'nss.js', 'overview.js' ];
+const NSS_CONFIG_FIELDS = [ 'access_edge_mode', 'internet_view_mode',
+	'nss_low_rate_window_ms', 'nss_low_rate_high_watermark_bps',
+	'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets', 'rate_compensation_factor' ];
 const VERSIONED_RESOURCE_TOKEN = /(?:Live\d+|_live\d+)/;
 
 const EXPECTED_VIEW_REQUIRES = [
@@ -136,7 +145,8 @@ const DESIGN_SYSTEM_PARTS = [
 	'designSystemBase.js',
 	'designSystemAurora.js',
 	'designSystemArgon.js',
-	'designSystemBootstrap.js'
+	'designSystemBootstrap.js',
+	'designSystemShadcn.js'
 ];
 
 const STATUS_STYLE_PARTS = [
@@ -144,6 +154,7 @@ const STATUS_STYLE_PARTS = [
 	'statusStyleAurora.js',
 	'statusStyleArgon.js',
 	'statusStyleBootstrap.js',
+	'statusStyleShadcn.js',
 	'statusStyleResponsive.js'
 ];
 
@@ -152,6 +163,7 @@ const CLIENT_DETAIL_STYLE_PARTS = [
 	'clientDetailStyleAurora.js',
 	'clientDetailStyleArgon.js',
 	'clientDetailStyleBootstrap.js',
+	'clientDetailStyleShadcn.js',
 	'clientDetailStyleResponsive.js'
 ];
 
@@ -160,6 +172,7 @@ const DIAGNOSTICS_STYLE_PARTS = [
 	'diagnosticsStyleAurora.js',
 	'diagnosticsStyleArgon.js',
 	'diagnosticsStyleBootstrap.js',
+	'diagnosticsStyleShadcn.js',
 	'diagnosticsStyleResponsive.js'
 ];
 
@@ -169,6 +182,7 @@ const CONFIG_STYLE_PARTS = [
 	'configStyleAurora.js',
 	'configStyleArgon.js',
 	'configStyleBootstrap.js',
+	'configStyleShadcn.js',
 	'configStyleResponsive.js'
 ];
 
@@ -199,12 +213,14 @@ const MODULE_REQUIRES = {
 		'lanspeed.designSystemBase',
 		'lanspeed.designSystemAurora',
 		'lanspeed.designSystemArgon',
-		'lanspeed.designSystemBootstrap'
+		'lanspeed.designSystemBootstrap',
+		'lanspeed.designSystemShadcn'
 	],
 	'designSystemBase.js': [ 'baseclass' ],
 	'designSystemAurora.js': [ 'baseclass' ],
 	'designSystemArgon.js': [ 'baseclass' ],
 	'designSystemBootstrap.js': [ 'baseclass' ],
+	'designSystemShadcn.js': [ 'baseclass' ],
 	'geoLocation.js': [ 'baseclass' ],
 	'macVendor.js': [ 'baseclass', 'request' ],
 	'clientConnections.js': [ 'baseclass', 'lanspeed.format' ],
@@ -244,12 +260,14 @@ const MODULE_REQUIRES = {
 		'lanspeed.clientDetailStyleAurora',
 		'lanspeed.clientDetailStyleArgon',
 		'lanspeed.clientDetailStyleBootstrap',
+		'lanspeed.clientDetailStyleShadcn',
 		'lanspeed.clientDetailStyleResponsive'
 	],
 	'clientDetailStyleBase.js': [ 'baseclass' ],
 	'clientDetailStyleAurora.js': [ 'baseclass' ],
 	'clientDetailStyleArgon.js': [ 'baseclass' ],
 	'clientDetailStyleBootstrap.js': [ 'baseclass' ],
+	'clientDetailStyleShadcn.js': [ 'baseclass' ],
 	'clientDetailStyleResponsive.js': [ 'baseclass' ],
 	'diagnosticsRefresh.js': [
 		'baseclass',
@@ -272,12 +290,14 @@ const MODULE_REQUIRES = {
 		'lanspeed.diagnosticsStyleAurora',
 		'lanspeed.diagnosticsStyleArgon',
 		'lanspeed.diagnosticsStyleBootstrap',
+		'lanspeed.diagnosticsStyleShadcn',
 		'lanspeed.diagnosticsStyleResponsive'
 	],
 	'diagnosticsStyleBase.js': [ 'baseclass' ],
 	'diagnosticsStyleAurora.js': [ 'baseclass' ],
 	'diagnosticsStyleArgon.js': [ 'baseclass' ],
 	'diagnosticsStyleBootstrap.js': [ 'baseclass' ],
+	'diagnosticsStyleShadcn.js': [ 'baseclass' ],
 	'diagnosticsStyleResponsive.js': [ 'baseclass' ],
 	'diagnosticsSchema.js': [ 'baseclass' ],
 	'diagnosticsResources.js': [ 'baseclass', 'lanspeed.diagnosticsSchema' ],
@@ -308,12 +328,14 @@ const MODULE_REQUIRES = {
 		'lanspeed.statusStyleAurora',
 		'lanspeed.statusStyleArgon',
 		'lanspeed.statusStyleBootstrap',
+		'lanspeed.statusStyleShadcn',
 		'lanspeed.statusStyleResponsive'
 	],
 	'statusStyleBase.js': [ 'baseclass' ],
 	'statusStyleAurora.js': [ 'baseclass' ],
 	'statusStyleArgon.js': [ 'baseclass' ],
 	'statusStyleBootstrap.js': [ 'baseclass' ],
+	'statusStyleShadcn.js': [ 'baseclass' ],
 	'statusStyleResponsive.js': [ 'baseclass' ],
 	'statusView.js': [
 		'baseclass',
@@ -357,12 +379,14 @@ const MODULE_REQUIRES = {
 		'lanspeed.configStyleAurora',
 		'lanspeed.configStyleArgon',
 		'lanspeed.configStyleBootstrap',
+		'lanspeed.configStyleShadcn',
 		'lanspeed.configStyleResponsive'
 	],
 	'configStyleBase.js': [ 'baseclass' ],
 	'configStyleAurora.js': [ 'baseclass' ],
 	'configStyleArgon.js': [ 'baseclass' ],
 	'configStyleBootstrap.js': [ 'baseclass' ],
+	'configStyleShadcn.js': [ 'baseclass' ],
 	'configStyleShared.js': [ 'baseclass' ],
 	'configStyleResponsive.js': [ 'baseclass' ],
 	'configForm.js': [ 'baseclass', 'uci', 'lanspeed.rpc', 'lanspeed.ifaceConfig', 'lanspeed.configModel', 'lanspeed.configPlatform' ],
@@ -466,6 +490,13 @@ function assertStyleModuleIsolation(name, src) {
 	     src.includes('lanspeed-theme-argon'))) {
 		fail(`${name} must contain Bootstrap selectors only`);
 	}
+	if (/StyleShadcn\.js$/.test(name) &&
+	    (!src.includes('lanspeed-theme-shadcn') ||
+	     src.includes('lanspeed-theme-aurora') ||
+	     src.includes('lanspeed-theme-argon') ||
+	     src.includes('lanspeed-theme-bootstrap'))) {
+		fail(`${name} must contain shadcn selectors only`);
+	}
 	if ((name === 'statusStyleResponsive.js' || name === 'configStyleResponsive.js') &&
 	    (!src.includes('lanspeed-theme-aurora') ||
 	     !src.includes('lanspeed-theme-argon') ||
@@ -485,6 +516,7 @@ function assertProductDesignSystem() {
 	const auroraCss = loadStyleLeaf('designSystemAurora.js').CSS;
 	const argonCss = loadStyleLeaf('designSystemArgon.js').CSS;
 	const bootstrapCss = loadStyleLeaf('designSystemBootstrap.js').CSS;
+	const shadcnCss = loadStyleLeaf('designSystemShadcn.js').CSS;
 	const requiredTokens = [
 		'page-bg', 'surface', 'surface-muted', 'surface-raised',
 		'text', 'text-muted', 'text-subtle', 'border', 'border-strong',
@@ -502,7 +534,8 @@ function assertProductDesignSystem() {
 		[ 'designSystemBase.js', baseCss ],
 		[ 'designSystemAurora.js', auroraCss ],
 		[ 'designSystemArgon.js', argonCss ],
-		[ 'designSystemBootstrap.js', bootstrapCss ]
+		[ 'designSystemBootstrap.js', bootstrapCss ],
+		[ 'designSystemShadcn.js', shadcnCss ]
 	].forEach(function(entry) {
 		requiredTokens.forEach(function(token) {
 			if (!entry[1].includes(`--lanspeed-${token}:`))
@@ -657,7 +690,8 @@ function assertProductDesignSystem() {
 	const themeBundles = [
 		[ 'Aurora', 'Aurora', 'aurora' ],
 		[ 'Argon', 'Argon', 'argon' ],
-		[ 'Bootstrap', 'Bootstrap', 'bootstrap' ]
+		[ 'Bootstrap', 'Bootstrap', 'bootstrap' ],
+		[ 'Shadcn', 'Shadcn', 'shadcn' ]
 	].map(function(theme) {
 		const pageFiles = [
 			`statusStyle${theme[1]}.js`,
@@ -673,14 +707,14 @@ function assertProductDesignSystem() {
 		}).join('\n');
 		return [ theme[0], css ];
 	});
-	if (new Set(themeBundles.map(function(theme) { return theme[1]; })).size !== 3) {
-		fail('Aurora, Argon and Bootstrap must retain independent page layout implementations');
+	if (new Set(themeBundles.map(function(theme) { return theme[1]; })).size !== 4) {
+		fail('Aurora, Argon, Bootstrap and Shadcn must retain independent page layout implementations');
 	}
 	const bootstrapDiagnosticsCss = loadStyleLeaf('diagnosticsStyleBootstrap.js').CSS;
 	if (!bootstrapDiagnosticsCss.includes(
-		'.lanspeed-diagnostics-root.lanspeed-theme-bootstrap .lanspeed-diagnostic-stage-heading>h4,') ||
+		'.lanspeed-diagnostic-alert-text') ||
 		!bootstrapDiagnosticsCss.includes('color:var(--lanspeed-text)')) {
-		fail('diagnosticsStyleBootstrap.js must protect diagnostic stage and alert text from low-contrast native inheritance');
+		fail('diagnosticsStyleBootstrap.js must protect diagnostic alert text from low-contrast native inheritance');
 	}
 	const bootstrapStatusCss = loadStyleLeaf('statusStyleBootstrap.js').CSS;
 	[
@@ -892,14 +926,9 @@ function assertAuroraNativeVisualSystem() {
 		fail('statusStyleAurora.js must vertically center each Aurora overview metric');
 	}
 
-	const diagnostic1100Css = mediaSlice(diagnosticsResponsiveCss, 1100, 900);
-	if (diagnostic1100Css.includes('.lanspeed-diagnostics-pipeline{grid-template-columns:repeat(2,minmax(0,1fr))') ||
-	    diagnostic1100Css.includes('.lanspeed-diagnostic-stage:nth-child(3)')) {
-		fail('diagnostics responsive layout must keep the three-stage pipeline intact until mobile width');
-	}
-	const diagnostic900Css = mediaSlice(diagnosticsResponsiveCss, 900, 700);
-	if (!diagnostic900Css.includes('.lanspeed-diagnostic-stage-evidence{grid-template-columns:minmax(0,1fr)}')) {
-		fail('diagnostics responsive layout must stack stage evidence at 900px');
+	if (!diagnosticsResponsiveCss.includes('.lanspeed-diagnostics-facts') ||
+	    !diagnosticsResponsiveCss.includes('grid-template-columns:repeat(2,minmax(0,1fr))')) {
+		fail('diagnostics responsive layout must keep facts readable at narrow widths');
 	}
 
 	if (/\.lanspeed-diagnostics-root\.lanspeed-theme-aurora\{[^}]*font-size\s*:/s.test(diagnosticsCss))
@@ -912,19 +941,20 @@ function assertStyleAggregation() {
 	const designAurora = loadStyleLeaf('designSystemAurora.js');
 	const designArgon = loadStyleLeaf('designSystemArgon.js');
 	const designBootstrap = loadStyleLeaf('designSystemBootstrap.js');
+	const designShadcn = loadStyleLeaf('designSystemShadcn.js');
 	const designSystem = vm.compileFunction(readModuleByName('designSystem.js'), [
 		'baseclass', 'designSystemBase', 'designSystemAurora',
-		'designSystemArgon', 'designSystemBootstrap'
+		'designSystemArgon', 'designSystemBootstrap', 'designSystemShadcn'
 	], { filename: 'resources/lanspeed/designSystem.js' })(
-		fakeBaseclass, designBase, designAurora, designArgon, designBootstrap
+		fakeBaseclass, designBase, designAurora, designArgon, designBootstrap, designShadcn
 	);
 	const expectedDesign = [
-		designBase.CSS, designAurora.CSS, designArgon.CSS, designBootstrap.CSS
+		designBase.CSS, designAurora.CSS, designArgon.CSS, designBootstrap.CSS, designShadcn.CSS
 	].join('\n');
 	if (designSystem.CSS !== expectedDesign)
-		fail('designSystem.js must aggregate Base, Aurora, Argon and Bootstrap tokens in cascade order');
+		fail('designSystem.js must aggregate Base, Aurora, Argon, Bootstrap and Shadcn tokens in cascade order');
 	[ 'designSystemBase.js', 'designSystemAurora.js', 'designSystemArgon.js',
-		'designSystemBootstrap.js' ].forEach(function(name) {
+		'designSystemBootstrap.js', 'designSystemShadcn.js' ].forEach(function(name) {
 		const css = loadStyleLeaf(name).CSS;
 		if (!css.includes('--lanspeed-accent') || !css.includes('--lanspeed-surface') ||
 		    !css.includes('--lanspeed-border') || !css.includes('--lanspeed-focus-ring'))
@@ -947,17 +977,18 @@ function assertStyleAggregation() {
 	const statusAurora = loadStyleLeaf('statusStyleAurora.js');
 	const statusArgon = loadStyleLeaf('statusStyleArgon.js');
 	const statusBootstrap = loadStyleLeaf('statusStyleBootstrap.js');
+	const statusShadcn = loadStyleLeaf('statusStyleShadcn.js');
 	const statusResponsive = loadStyleLeaf('statusStyleResponsive.js');
 	const status = vm.compileFunction(readModuleByName('statusStyle.js'), [
 		'baseclass', 'designSystem', 'statusStyleBase', 'statusStyleAurora',
-		'statusStyleArgon', 'statusStyleBootstrap', 'statusStyleResponsive'
+		'statusStyleArgon', 'statusStyleBootstrap', 'statusStyleShadcn', 'statusStyleResponsive'
 	], { filename: 'resources/lanspeed/statusStyle.js' })(
 		fakeBaseclass, designSystem, statusBase, statusAurora, statusArgon,
-		statusBootstrap, statusResponsive
+		statusBootstrap, statusShadcn, statusResponsive
 	);
 	const expectedStatus = [
 		statusBase.CSS, statusAurora.CSS, statusArgon.CSS,
-		statusBootstrap.CSS, statusResponsive.CSS
+		statusBootstrap.CSS, statusShadcn.CSS, statusResponsive.CSS
 	].join('\n');
 	if (status.CSS !== designSystem.CSS + '\n' + expectedStatus ||
 	    status.LAYOUT_CSS !== expectedStatus)
@@ -967,17 +998,19 @@ function assertStyleAggregation() {
 	const diagnosticsAurora = loadStyleLeaf('diagnosticsStyleAurora.js');
 	const diagnosticsArgon = loadStyleLeaf('diagnosticsStyleArgon.js');
 	const diagnosticsBootstrap = loadStyleLeaf('diagnosticsStyleBootstrap.js');
+	const diagnosticsShadcn = loadStyleLeaf('diagnosticsStyleShadcn.js');
 	const diagnosticsResponsive = loadStyleLeaf('diagnosticsStyleResponsive.js');
 	const diagnostics = vm.compileFunction(readModuleByName('diagnosticsStyle.js'), [
 		'baseclass', 'designSystem', 'diagnosticsStyleBase', 'diagnosticsStyleAurora',
-		'diagnosticsStyleArgon', 'diagnosticsStyleBootstrap', 'diagnosticsStyleResponsive'
+		'diagnosticsStyleArgon', 'diagnosticsStyleBootstrap', 'diagnosticsStyleShadcn',
+		'diagnosticsStyleResponsive'
 	], { filename: 'resources/lanspeed/diagnosticsStyle.js' })(
 		fakeBaseclass, designSystem, diagnosticsBase, diagnosticsAurora, diagnosticsArgon,
-		diagnosticsBootstrap, diagnosticsResponsive
+		diagnosticsBootstrap, diagnosticsShadcn, diagnosticsResponsive
 	);
 	const expectedDiagnostics = [
 		diagnosticsBase.CSS, diagnosticsAurora.CSS, diagnosticsArgon.CSS,
-		diagnosticsBootstrap.CSS, diagnosticsResponsive.CSS
+		diagnosticsBootstrap.CSS, diagnosticsShadcn.CSS, diagnosticsResponsive.CSS
 	].join('\n');
 	if (diagnostics.CSS !== designSystem.CSS + '\n' + expectedDiagnostics ||
 	    diagnostics.LAYOUT_CSS !== expectedDiagnostics)
@@ -987,19 +1020,20 @@ function assertStyleAggregation() {
 	const configAurora = loadStyleLeaf('configStyleAurora.js');
 	const configArgon = loadStyleLeaf('configStyleArgon.js');
 	const configBootstrap = loadStyleLeaf('configStyleBootstrap.js');
+	const configShadcn = loadStyleLeaf('configStyleShadcn.js');
 	const configShared = loadStyleLeaf('configStyleShared.js');
 	const configResponsive = loadStyleLeaf('configStyleResponsive.js');
 	const config = vm.compileFunction(readModuleByName('configStyle.js'), [
 		'baseclass', 'designSystem', 'configStyleBase', 'configStyleShared',
 		'configStyleAurora', 'configStyleArgon', 'configStyleBootstrap',
-		'configStyleResponsive'
+		'configStyleShadcn', 'configStyleResponsive'
 	], { filename: 'resources/lanspeed/configStyle.js' })(
 		fakeBaseclass, designSystem, configBase, configShared, configAurora,
-		configArgon, configBootstrap, configResponsive
+		configArgon, configBootstrap, configShadcn, configResponsive
 	);
 	const expectedConfig = [
 		configBase.CSS, configShared.CSS, configAurora.CSS,
-		configArgon.CSS, configBootstrap.CSS, configResponsive.CSS
+		configArgon.CSS, configBootstrap.CSS, configShadcn.CSS, configResponsive.CSS
 	].join('\n');
 	if (config.CSS !== designSystem.CSS + '\n' + expectedConfig ||
 	    config.LAYOUT_CSS !== expectedConfig)
@@ -1173,7 +1207,6 @@ function assertArgonAlignmentContracts() {
 
 	[
 		[ 'statusStyleArgon.js', statusCss ],
-		[ 'diagnosticsStyleArgon.js', diagnosticsCss ],
 		[ 'configStyleArgon.js', configCss ]
 	].forEach(function(entry) {
 		[
@@ -1191,7 +1224,6 @@ function assertArgonAlignmentContracts() {
 		'.lanspeed-theme-argon .lanspeed-metrics{grid-template-columns:repeat(4,minmax(0,1fr));',
 		'@media (max-width:1100px){.lanspeed-theme-argon .lanspeed-metrics{',
 		'grid-template-columns:repeat(2,minmax(0,1fr))',
-		'.lanspeed-theme-argon .lanspeed-sort-button{height:auto!important',
 		'.lanspeed-theme-argon .lanspeed-toolbar label{font-size:.95rem;line-height:1.5rem}',
 		'.lanspeed-root.lanspeed-theme-argon .lanspeed-active-only>input[type="checkbox"]{',
 		'.lanspeed-theme-argon .lanspeed-hint:empty{display:none}'
@@ -1210,10 +1242,7 @@ function assertArgonAlignmentContracts() {
 
 	[
 		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-header>h3{font-size:1.3rem;line-height:1.25!important}',
-		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-body{padding:1rem 1.25rem 1.1rem}',
-		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostic-stage-heading>h4{font-size:.74rem;line-height:1.3!important}',
-		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostics-health-group>h4,',
-		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-diagnostics-alert-group>h4{line-height:1.35!important}'
+		'.lanspeed-diagnostics-root.lanspeed-theme-argon .lanspeed-body{padding:',
 	].forEach(function(rule) {
 		if (!diagnosticsCss.includes(rule))
 			fail(`diagnosticsStyleArgon.js must retain reviewed Argon alignment rule: ${rule}`);
@@ -1522,6 +1551,7 @@ function assertClientDetailStyleComposer(src) {
 		'lanspeed.clientDetailStyleAurora',
 		'lanspeed.clientDetailStyleArgon',
 		'lanspeed.clientDetailStyleBootstrap',
+		'lanspeed.clientDetailStyleShadcn',
 		'lanspeed.clientDetailStyleResponsive'
 	];
 	if (JSON.stringify(moduleRequireNames(src)) !== JSON.stringify(expectedRequires)) {
@@ -1542,14 +1572,15 @@ function assertClientDetailStyleComposer(src) {
 	const Aurora = { CSS: 'aurora' };
 	const Argon = { CSS: 'argon' };
 	const Bootstrap = { CSS: 'bootstrap' };
+	const Shadcn = { CSS: 'shadcn' };
 	const Responsive = { CSS: 'responsive' };
 	const detail = vm.compileFunction(src, [
-		'baseclass', 'DesignSystem', 'statusStyle', 'Base', 'Aurora', 'Argon', 'Bootstrap', 'Responsive'
+		'baseclass', 'DesignSystem', 'statusStyle', 'Base', 'Aurora', 'Argon', 'Bootstrap', 'Shadcn', 'Responsive'
 	], { filename: 'resources/lanspeed/clientDetailStyle.js' })(
-		fakeBaseclass, designSystem, statusStyle, Base, Aurora, Argon, Bootstrap, Responsive
+		fakeBaseclass, designSystem, statusStyle, Base, Aurora, Argon, Bootstrap, Shadcn, Responsive
 	);
-	if (!detail || detail.CSS !== 'design\nstatus\nbase\naurora\nargon\nbootstrap\nresponsive') {
-		fail('clientDetailStyle.js must compose design tokens, status, Base, Aurora, Argon, Bootstrap and Responsive CSS in exact order');
+	if (!detail || detail.CSS !== 'design\nstatus\nbase\naurora\nargon\nbootstrap\nshadcn\nresponsive') {
+		fail('clientDetailStyle.js must compose design tokens, status, Base, Aurora, Argon, Bootstrap, Shadcn and Responsive CSS in exact order');
 	}
 }
 
@@ -2211,6 +2242,10 @@ function fakeElement(tag, attrs, children) {
 				fakeDocument.activeElement = null;
 			if (child && typeof child === 'object') child.parentNode = null;
 			return child;
+		},
+		querySelector: function(selector) {
+			const match = selector.match(/^[a-z]+$/i);
+			return match ? findFakeElementsByTag(this, selector).find(function(item) { return item !== node; }) || null : null;
 		}
 	};
 	node._className = String(node.attrs.class || '');
@@ -2372,13 +2407,13 @@ function fakeDhcpHostnamesModule() {
 	};
 }
 
-function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow, fakeDate, fakeGeo, fakeVendor) {
+function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow, fakeDate, fakeGeo, ui, dhcp, fakeVendor) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	return vm.compileFunction(src, [
 		'baseclass', 'ui', 'fmt', 'lsRpc', 'dhcpHostnames', 'geoLocation', 'macVendor',
 		'clientDetailShell', 'clientDetailRefresh', 'window', 'Date', 'E', '_'
 	], { filename: 'resources/lanspeed/clientDetailView.js' })(
-		fakeBaseclass, fakeUiModule(), fmt, lsRpc, fakeDhcpHostnamesModule(),
+		fakeBaseclass, ui || fakeUiModule(), fmt, lsRpc, dhcp || fakeDhcpHostnamesModule(),
 		fakeGeo || fakeGeoLocationModule(),
 		fakeVendor || { lookup: function() { return { vendor: '', label: '未知厂商' }; },
 			load: function() { return new Promise(function() {}); } },
@@ -2423,7 +2458,7 @@ function assertClientDetailVendorLifecycle(src) {
 				location: { pathname: '/admin/status/lanspeed/overview' },
 				setTimeout: function() { return 1; }, clearTimeout: function() {},
 				addEventListener: function() {}
-			}, Date, null, vendor);
+			}, Date, null, null, null, vendor);
 			view.render({ identityKey: 'vendor@lan', response: { available: true } });
 			if (renders !== 1 || state.vendorLookup !== vendor.lookup)
 				fail('client detail must render immediately while its optional vendor database is pending');
@@ -2711,8 +2746,8 @@ function assertClientDetailViewLifecycle(src) {
 
 		state.schedule();
 		if (timers.size !== 1) fail('clientDetailView.js schedule must replace, not accumulate, timers');
-		listeners.beforeunload();
-		if (timers.size !== 0) fail('clientDetailView.js beforeunload must leave no detail refresh timer behind');
+		listeners.pagehide();
+		if (timers.size !== 0) fail('clientDetailView.js pagehide must leave no detail refresh timer behind');
 		state.schedule();
 		state.back();
 		if (timers.size !== 0 || fakeWindow.location.assigned !== fakeWindow.location.pathname) {
@@ -2782,6 +2817,168 @@ function assertClientDetailViewLifecycle(src) {
 		}
 	}).catch(function(err) {
 		fail('clientDetailView.js lifecycle behavior could not execute: ' + (err && err.stack || err));
+	}));
+}
+
+function assertClientDetailDisposalAndHostnameApply(src) {
+	const assert = require('assert');
+	const fmt = {
+		MIN_REFRESH_MS: 1000,
+		loadPrefs: function() { return { refreshMs: 1000, paused: false }; }
+	};
+	function harness(ui, dhcp) {
+		const timers = new Map();
+		const events = {};
+		const visibility = {};
+		let nextTimer = 0;
+		let state, mutation;
+		let calls = 0, renders = 0, disposals = 0, disconnects = 0;
+		let deferred = makeDeferred();
+		const document = {
+			body: {}, hidden: false,
+			addEventListener: function(name, handler) { visibility[name] = handler; },
+			removeEventListener: function(name) { delete visibility[name]; }
+		};
+		const window = {
+			document: document,
+			setTimeout: function(handler) { timers.set(++nextTimer, handler); return nextTimer; },
+			clearTimeout: function(id) { timers.delete(id); },
+			addEventListener: function(name, handler) { events[name] = handler; },
+			removeEventListener: function(name) { delete events[name]; },
+			MutationObserver: function(handler) {
+				mutation = handler;
+				this.observe = function() {};
+				this.disconnect = function() { disconnects++; };
+			}
+		};
+		const root = { isConnected: false };
+		const geo = fakeGeoLocationModule();
+		geo.createResolver = function() { return { dispose: function() { disposals++; } }; };
+		const view = loadClientDetailViewModule(src, fmt, {
+			clientConnections: function() { calls++; return deferred.promise; }
+		}, {
+			buildShell: function(value) { state = value; return { root: root, refs: {} }; }
+		}, { render: function() { renders++; } }, window, Date, geo, ui, dhcp);
+		const original = { available: true, marker: 'original' };
+		view.render({ identityKey: '00:11:22:33:44:55@lan', response: original });
+		return {
+			state, events, visibility, document, root, timers, original,
+			mutation: function() { mutation(); },
+			deferred: function() { return deferred; },
+			nextRequest: function() { deferred = makeDeferred(); },
+			counts: function() { return { calls, renders, disposals, disconnects }; }
+		};
+	}
+
+	asyncChecks.push(Promise.resolve().then(async function() {
+		const h = harness();
+		h.mutation();
+		assert.strictEqual(h.state.destroyed, false, 'rendered detail root can await initial DOM attachment');
+		h.root.isConnected = true;
+		h.mutation();
+		h.document.hidden = true;
+		h.visibility.visibilitychange();
+		assert.strictEqual(h.timers.size, 0, 'hidden detail must stop polling');
+		h.state.schedule();
+		await h.state.reload(false);
+		assert.strictEqual(h.counts().calls, 0);
+		const manual = h.state.reload(true);
+		h.deferred().resolve({ available: true, marker: 'manual' });
+		await manual;
+		assert.strictEqual(h.timers.size, 0, 'in-flight completion while hidden must not schedule polling');
+		h.nextRequest();
+		h.document.hidden = false;
+		h.visibility.visibilitychange();
+		h.visibility.visibilitychange();
+		assert.strictEqual(h.counts().calls, 2, 'visibility restoration starts only one detail request');
+		const visible = h.state.reload(false);
+		h.deferred().resolve({ available: true, marker: 'visible' });
+		await visible;
+		assert.strictEqual(h.timers.size, 1);
+		h.state.setPaused(true);
+		h.document.hidden = true;
+		h.visibility.visibilitychange();
+		h.document.hidden = false;
+		h.visibility.visibilitychange();
+		assert.strictEqual(h.counts().calls, 2, 'returning to a paused detail page must keep it paused');
+		h.nextRequest();
+		const late = h.state.reload(true);
+		h.root.isConnected = false;
+		h.mutation();
+		const before = h.counts();
+		h.deferred().resolve({ available: true, marker: 'late' });
+		await late;
+		await h.state.reload(true);
+		assert.strictEqual(h.state.response.marker, 'visible', 'late RPC must not overwrite disposed state');
+		assert.deepStrictEqual(h.counts(), before, 'disposed state must ignore rendering and future RPC calls');
+		assert.strictEqual(before.disposals, 1);
+		assert.strictEqual(before.disconnects, 1);
+		assert.strictEqual(h.timers.size, 0);
+		assert.strictEqual(Object.keys(h.events).length, 0);
+		assert.strictEqual(Object.keys(h.visibility).length, 0);
+
+		const rejected = harness();
+		const request = rejected.state.reload(true);
+		rejected.events.pagehide();
+		const beforeReject = rejected.counts();
+		rejected.deferred().reject(new Error('late transport error'));
+		await request;
+		assert.strictEqual(rejected.state.error, null);
+		assert.deepStrictEqual(rejected.counts(), beforeReject);
+
+		const restored = harness();
+		restored.events.pagehide({ persisted: true });
+		assert.strictEqual(restored.state.destroyed, false, 'bfcache must preserve detail state');
+		assert.strictEqual(restored.timers.size, 0, 'bfcache must suspend detail polling');
+		restored.state.schedule();
+		assert.strictEqual(restored.timers.size, 0);
+		restored.events.pageshow({ persisted: true });
+		restored.events.pageshow({ persisted: true });
+		assert.strictEqual(restored.counts().calls, 1, 'bfcache restoration must refresh detail once');
+		const restoredRequest = restored.state.reload(false);
+		restored.deferred().resolve({ available: true, marker: 'restored' });
+		await restoredRequest;
+		assert.strictEqual(restored.state.response.marker, 'restored');
+		assert.strictEqual(restored.timers.size, 1);
+		restored.state.destroy();
+
+		for (const applyFailure of [ false, true ]) {
+			let dialog, input, save, feedback, hidden = 0, notifications = 0, applyCalls = 0;
+			const ui = {
+				showModal: function(title, children) {
+					dialog = fakeElement('div', {}, children);
+					input = findFakeElementsByTag(dialog, 'input')[0];
+					input.select = function() {};
+					save = findFakeElementsByTag(dialog, 'button')[1];
+					feedback = findFakeElement(dialog, 'lanspeed-connection-hostname-modal-status');
+				},
+				hideModal: function() { hidden++; },
+				addNotification: function() { notifications++; },
+				changes: { apply: function() {
+					applyCalls++;
+					if (applyFailure) throw new Error('apply rejected');
+					/* The actual LuCI API returns void and owns completion UI. */
+				} }
+			};
+			const naming = harness(ui);
+			await naming.state.openHostnameDialog();
+			input.value = 'new-host';
+			input.listeners.input();
+			save.listeners.click();
+			for (let i = 0; i < 8; i++) await Promise.resolve();
+			assert.strictEqual(applyCalls, 1);
+			assert.strictEqual(hidden + notifications + naming.counts().calls, 0,
+				'void native Apply must retain ownership of its modal without early success or reload');
+			assert.strictEqual(naming.state.customHostname, '',
+				'staged hostname must not be presented as applied before native confirmation');
+			if (applyFailure) {
+				assert(feedback.textContent.includes('apply rejected') && !save.disabled,
+					'synchronous Apply failure must retain the editable dialog and expose the actual error');
+			}
+			naming.state.destroy();
+		}
+	}).catch(function(error) {
+		fail('clientDetailView.js visibility, disposal or hostname Apply regression: ' + (error && error.stack || error));
 	}));
 }
 
@@ -2867,7 +3064,7 @@ function assertClientDetailGeoLifecycle(src) {
 
 		state.requestLocations([ '4.4.4.4' ]);
 		const beforeUnload = renders;
-		listeners.beforeunload();
+		listeners.pagehide();
 		deferred['4.4.4.4'].resolve({ kind: 'country', label: '美国', queryable: false });
 		await Promise.resolve();
 		await Promise.resolve();
@@ -4269,41 +4466,20 @@ function assertStatusRefreshSortingInteraction(src) {
 		fail('statusRefresh.js must remove the obsolete client-status column helpers');
 	}
 
-	function makeRef(label, description) {
-		return {
-			label: label,
-			description: description || '',
-			th: fakeElement('th', {}),
-			button: fakeElement('button', {}, [
-				fakeElement('span', {}, label),
-				fakeElement('span', {}, '')
-			])
-		};
-	}
-
-	const refs = { sortHeaders: {
-		rx: makeRef('下行'),
-		tcp_conns: makeRef('TCP', 'TCP 仅统计 ESTABLISHED + ASSURED')
+	const refs = { sortSelect: fakeElement('select', {}), sortHeaders: {
+		rate: { th: fakeElement('th', {}), keys: [ 'rx', 'tx' ] },
+		totals: { th: fakeElement('th', {}), keys: [ 'rx_bytes', 'tx_bytes' ] },
+		tcp_conns: { th: fakeElement('th', {}), keys: [ 'tcp_conns' ] }
 	} };
-	mod.refreshSortHeaders(refs, {
-		sortKey: 'rx', sortDir: 'desc', sortCustom: false
-	});
-	if (refs.sortHeaders.rx.th.attrs['aria-sort'] !== 'descending' ||
-	    refs.sortHeaders.rx.button.lastChild.textContent !== '' ||
-	    !String(refs.sortHeaders.rx.button.attrs['aria-label']).includes('默认排序') ||
-	    refs.sortHeaders.tcp_conns.th.attrs['aria-sort'] !== 'none') {
-		fail('statusRefresh.js must expose default RX descending to assistive tech without a visual arrow');
-	}
+	mod.refreshSortHeaders(refs, { sortKey: 'rx', sortDir: 'desc', sortCustom: false });
+	if (refs.sortSelect.value !== 'default' || refs.sortHeaders.rate.th.attrs['aria-sort'] !== 'descending' ||
+		refs.sortHeaders.tcp_conns.th.attrs['aria-sort'] !== 'none')
+		fail('statusRefresh.js must synchronize the sort selector and accessible merged rate header');
+	mod.refreshSortHeaders(refs, { sortKey: 'tx_bytes', sortDir: 'asc', sortCustom: true });
+	if (refs.sortSelect.value !== 'tx_bytes:asc' || refs.sortHeaders.totals.th.attrs['aria-sort'] !== 'ascending' ||
+		refs.sortHeaders.rate.th.attrs['aria-sort'] !== 'none')
+		fail('statusRefresh.js must map either cumulative direction to its merged accessible header');
 
-	mod.refreshSortHeaders(refs, {
-		sortKey: 'tcp_conns', sortDir: 'asc', sortCustom: true
-	});
-	if (refs.sortHeaders.tcp_conns.th.attrs['aria-sort'] !== 'ascending' ||
-	    refs.sortHeaders.tcp_conns.button.lastChild.textContent !== '↑' ||
-	    !String(refs.sortHeaders.tcp_conns.button.attrs.title).includes('TCP 仅统计 ESTABLISHED + ASSURED') ||
-	    !String(refs.sortHeaders.tcp_conns.button.attrs['aria-label']).includes('升序')) {
-		fail('statusRefresh.js must combine TCP/UDP connection semantics with accessible sorting instructions');
-	}
 }
 
 function assertStatusRefreshClientDetailLink(src) {
@@ -4925,10 +5101,11 @@ function assertStatusShellInteraction(src) {
 	const right = findFakeElement(built.root, 'lanspeed-toolbar-right');
 
 	if (!left || !filter || !right || left.children[1] !== filter ||
-	    filter.children[0] !== refs.filterInput || right.children[1] !== refs.btnRefresh ||
-	    right.children[2] !== refs.btnPause || refs.sortSel) {
-		fail('statusShell.js toolbar DOM must keep unit/filter left and refresh actions right without a sort select');
-	}
+		filter.children[0] !== refs.filterInput || right.children[0].children[1] !== refs.sortSelect ||
+		right.children[1].children[1] !== refs.intervalSel || right.children[2] !== refs.btnRefresh ||
+		right.children[3] !== refs.btnPause)
+		fail('statusShell.js must place the sort selector adjacent to refresh cadence and actions');
+
 	if (refs.btnRefresh.attrs.type !== 'button' || refs.btnPause.attrs.type !== 'button') {
 		fail('statusShell.js refresh actions must never submit or navigate away from the LuCI page');
 	}
@@ -4945,34 +5122,32 @@ function assertStatusShellInteraction(src) {
 		Object.prototype.hasOwnProperty.call(refs.clientsTable.attrs, 'data-client-status')) {
 		fail('statusShell.js must remove the obsolete client status column and configuration toggle');
 	}
-	if (!refs.sortHeaders || !refs.sortHeaders.rx || !refs.sortHeaders.hostname ||
-	    !refs.sortHeaders.rx.button || !refs.sortHeaders.rx.button.listeners.click ||
-	    !refs.sortHeaders.hostname.button || !refs.sortHeaders.hostname.button.listeners.click) {
-		fail('statusShell.js must expose clickable sortable table headers');
+	if (!refs.sortSelect || !refs.sortSelect.listeners.change ||
+		refs.sortSelect.attrs['aria-label'] !== '客户端排序' || refs.sortSelect.attrs['aria-controls'] !== 'lanspeed-clients-table') {
+		fail('statusShell.js must expose a labelled native sort selector for keyboard and assistive technology');
 		return;
 	}
-	if (!refs.sortHeaders.tcp_conns ||
-	    refs.sortHeaders.tcp_conns.description !== '当前已建立并确认的 TCP 连接' ||
-	    !refs.sortHeaders.udp_conns ||
-	    refs.sortHeaders.udp_conns.description !== '当前已确认的 UDP 连接') {
-		fail('statusShell.js sortable TCP/UDP headers must retain their connection-statistics semantics');
-	}
-	refs.sortHeaders.rx.button.listeners.click();
-	if (viewState.prefs.sortKey !== 'rx' || viewState.prefs.sortDir !== 'desc' || !viewState.prefs.sortCustom || saved !== 1 || refreshed !== 1) {
-		fail('statusShell.js must start an active default sort header in descending order');
-	}
-	refs.sortHeaders.rx.button.listeners.click();
-	if (viewState.prefs.sortKey !== 'rx' || viewState.prefs.sortDir !== 'asc' || !viewState.prefs.sortCustom || saved !== 2 || refreshed !== 2) {
-		fail('statusShell.js must switch an active descending header to ascending');
-	}
-	refs.sortHeaders.rx.button.listeners.click();
-	if (viewState.prefs.sortKey !== 'rx' || viewState.prefs.sortDir !== 'desc' || viewState.prefs.sortCustom || saved !== 3 || refreshed !== 3) {
-		fail('statusShell.js must restore default sorting after ascending');
-	}
-	refs.sortHeaders.hostname.button.listeners.click();
-	if (viewState.prefs.sortKey !== 'hostname' || viewState.prefs.sortDir !== 'desc' || !viewState.prefs.sortCustom || saved !== 4 || refreshed !== 4) {
-		fail('statusShell.js must start a different sort header in descending order');
-	}
+	if (findFakeElementsByClass(refs.clientsTable, 'lanspeed-sort-button').length ||
+		findFakeElementsByTag(refs.clientsTable.children[0], 'button').length)
+		fail('statusShell.js client headers must contain no sorting buttons');
+	const values = refs.sortSelect.children.map(option => option.attrs.value);
+	const keys = [ 'hostname', 'mac', 'tx', 'rx', 'tx_bytes', 'rx_bytes', 'tcp_conns', 'udp_conns' ];
+	if (values.length !== 17 || !values.includes('default') || keys.some(key =>
+		!values.includes(key + ':asc') || !values.includes(key + ':desc')))
+		fail('statusShell.js must retain both directions of all eight prior sort choices');
+	[ 'rx:desc', 'rx:asc', 'default', 'hostname:asc' ].forEach((value, index) => {
+		viewState.page = 3;
+		refs.sortSelect.listeners.change({ target: { value } });
+		const parts = value === 'default' ? [ 'rx', 'desc' ] : value.split(':');
+		if (viewState.prefs.sortKey !== parts[0] || viewState.prefs.sortDir !== parts[1] ||
+			viewState.prefs.sortCustom !== (value !== 'default') || viewState.page !== 1 ||
+			saved !== index + 1 || refreshed !== index + 1)
+			fail('statusShell.js sort selection must persist preferences, reset pagination and refresh: ' + value);
+	});
+	refs.sortSelect.listeners.change({ target: { value: 'invalid:asc' } });
+	if (saved !== 4 || refreshed !== 4)
+		fail('statusShell.js must reject unknown sort selections without changing preferences');
+
 }
 
 function assertRpcModule(src) {
@@ -5016,7 +5191,7 @@ function assertViewRequires(src) {
 	});
 }
 
-function assertCacheAwareViewEntry(src, moduleName, label) {
+function assertCacheAwareViewEntry(src, moduleName, label, pageKind) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
 	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.2.1-r2';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
@@ -5025,7 +5200,7 @@ function assertCacheAwareViewEntry(src, moduleName, label) {
 	    !src.includes('L.env.resource_version = previousVersion;') ||
 	    !src.includes('return view.extend({') ||
 	    !src.includes('return module.load();') ||
-	    !src.includes('return pageModule.render(data);')) {
+	    !src.includes(pageKind ? "return pageModule.render(data, '" + pageKind + "');" : 'return pageModule.render(data);')) {
 		fail(`${label} must load ${moduleName} through the 1.2.1 resource cache boundary`);
 	}
 	if (src.includes('buildShell(') || src.includes('refreshLive(') || src.includes('loadAll()')) {
@@ -5848,7 +6023,8 @@ function assertStatusStyleModule(src) {
 	const themeCss = [
 		[ 'Aurora', 'aurora', loadStyleLeaf('statusStyleAurora.js').CSS ],
 		[ 'Argon', 'argon', loadStyleLeaf('statusStyleArgon.js').CSS ],
-		[ 'Bootstrap', 'bootstrap', loadStyleLeaf('statusStyleBootstrap.js').CSS ]
+		[ 'Bootstrap', 'bootstrap', loadStyleLeaf('statusStyleBootstrap.js').CSS ],
+		[ 'Shadcn', 'shadcn', loadStyleLeaf('statusStyleShadcn.js').CSS ]
 	];
 
 	if (!src.includes('CSS: LAYOUT_CSS') || !src.includes('LAYOUT_CSS: STATUS_LAYOUT_CSS'))
@@ -5858,7 +6034,7 @@ function assertStatusStyleModule(src) {
 		'.lanspeed-metrics{display:grid',
 		'.lanspeed-toolbar-left{display:grid',
 		'.lanspeed-toolbar-right{',
-		'.lanspeed-sort-button{',
+		'.lanspeed-toolbar .lanspeed-sort-control select{',
 		'.lanspeed-pagination{display:flex',
 		'.lanspeed-details>summary{display:flex',
 		'.lanspeed-control-client{display:flex;flex-wrap:wrap'
@@ -5890,10 +6066,10 @@ function assertStatusStyleModule(src) {
 		':is(th,td).num{padding-left:0!important;padding-right:0!important}',
 		':nth-child(1){position:sticky!important;left:0',
 		':nth-child(2){position:sticky!important;left:var(--lanspeed-client-second-column-left)',
-		'.lanspeed-table th:nth-child(1)',
+		':is(th,td):nth-child(1)',
 		'width:22%',
 		'width:16%;text-align:center}',
-		'width:7.6667%;text-align:center}'
+		'width:11.5000%;text-align:center}'
 	].forEach(function(marker) {
 		if (!responsiveCss.includes(marker))
 			fail(`statusStyleResponsive.js must retain responsive status behavior: ${marker}`);
@@ -5910,7 +6086,7 @@ function assertStatusStyleModule(src) {
 	}
 	if (!baseCss.includes('.lanspeed-client-total-header,.lanspeed-client-total-cell{text-align:center}') ||
 		!responsiveCss.includes('width:16%;text-align:center}') ||
-		!responsiveCss.includes('width:7.6667%;text-align:center}')) {
+		!responsiveCss.includes('width:11.5000%;text-align:center}')) {
 		fail('client totals and connection controls must use a compact, aligned desktop table rhythm');
 	}
 	[
@@ -5922,17 +6098,17 @@ function assertStatusStyleModule(src) {
 			fail(`statusStyleResponsive.js must define a balanced desktop layout for every optional-column combination: ${marker}`);
 	});
 	[
-		':is(:nth-child(3),:nth-child(4),:nth-child(5),:nth-child(6),:nth-child(7),:nth-child(8)){width:7.6667%;text-align:center}',
-		':is(:nth-child(3),:nth-child(4),:nth-child(5),:nth-child(6),:nth-child(7),:nth-child(8)){width:9.6667%!important;text-align:center}'
+		':is(:nth-child(3),:nth-child(4),:nth-child(5),:nth-child(6)){width:11.5000%;text-align:center}',
+		':is(:nth-child(3),:nth-child(4),:nth-child(5),:nth-child(6)){width:14.5000%;text-align:center}'
 	].forEach(function(marker) {
 		if (!responsiveCss.includes(marker))
 			fail(`live and cumulative traffic columns must retain one compact, even desktop rhythm: ${marker}`);
 	});
-	if (!responsiveCss.includes('.lanspeed-table td:nth-child(2){text-align:left!important}')) {
+	if (!responsiveCss.includes(':is(th,td):nth-child(2){width:19.5%;text-align:left}')) {
 		fail('desktop MAC values must share the MAC heading reading edge');
 	}
-	if (responsiveCss.includes('data-client-status') || responsiveCss.includes('nth-child(10)')) {
-		fail('statusStyleResponsive.js must use the nine-column layout after removing client status');
+	if (responsiveCss.includes('data-client-status') || responsiveCss.includes('nth-child(8)')) {
+		fail('statusStyleResponsive.js must use seven columns after combining traffic directions');
 	}
 	themeCss.forEach(function(theme) {
 		if (!theme[2].includes(`lanspeed-theme-${theme[1]}`) ||
@@ -6002,14 +6178,11 @@ function assertStatusShellModule(src) {
 	    src.includes('lanspeed-diagnostic-') || src.includes('diagnosticsCard')) {
 		fail('lanspeed/statusShell.js must not render the dedicated diagnostics page inside realtime status');
 	}
-	const sortableKeys = [ 'hostname', 'mac', 'tx', 'rx', 'tx_bytes', 'rx_bytes', 'tcp_conns', 'udp_conns' ];
-	if (!src.includes('function sortableHeader(viewState, refs, sortKey, label, attrs)') ||
-	    sortableKeys.some(function(key) { return !src.includes(`sortableHeader(viewState, refs, '${key}'`); })) {
-		fail('lanspeed/statusShell.js must sort directly from all eight requested client table headers');
-	}
-	if (src.includes('refs.sortSel') || src.includes("_('排序')")) {
-		fail('lanspeed/statusShell.js must not render a separate sorting control');
-	}
+	if (!src.includes("clientHeader(refs, 'rate', _('网速')") ||
+		!src.includes("clientHeader(refs, 'totals', _('累计流量')") ||
+		!src.includes('refs.sortSelect') || src.includes('function sortableHeader('))
+		fail('statusShell.js must combine traffic directions and move sorting out of headers');
+
 	if (!src.includes("E('div', { 'class': 'lanspeed-toolbar-left' }") ||
 	    !src.includes("E('div', { 'class': 'lanspeed-toolbar-right' }") ||
 	    !src.includes("E('label', { 'class': 'lanspeed-unit-control' }, [ _('单位'), refs.unitSel ])") ||
@@ -6050,27 +6223,13 @@ function assertStatusRefreshModule(src) {
 		fail('lanspeed/statusRefresh.js must own status page live refresh rendering');
 	}
 	if (!src.includes('fmt.sortClients(filtered, prefs.sortKey, prefs.sortDir, latestSample, activeCfg)') ||
-	    !src.includes('var active = prefs.sortCustom && prefs.sortKey === sortKey;') ||
-	    !src.includes("setAttribute('aria-sort'") ||
-	    !src.includes("ascending ? '↑' : '↓'")) {
-		fail('lanspeed/statusRefresh.js must only render arrows for an explicit client sort');
-	}
-	if (!src.includes("'class': 'lanspeed-client-name'") ||
-	    !src.includes("'class': 'mono lanspeed-client-mac'") ||
-	    !src.includes("'class': 'num lanspeed-client-value'") ||
-		!src.includes("'class': 'num lanspeed-client-total-cell '") ||
-		(!src.includes("'data-label': _('上行')") && !src.includes('clientTrafficCell(c, \'tx\'')) ||
-		(!src.includes("'data-label': _('下行')") && !src.includes('clientTrafficCell(c, \'rx\'')) ||
-		src.includes("'data-label': _('状态')")) {
-		fail('lanspeed/statusRefresh.js must label client fields for the narrow stacked layout');
-	}
-	if (!src.includes("clientTrafficTotalCell(c, 'tx', showClientTotals)") ||
-	    !src.includes("clientTrafficTotalCell(c, 'rx', showClientTotals)") ||
-	    !src.includes("var label = isUpload ? _('累计上传') : _('累计下载')") ||
-	    !src.includes("lanspeed-client-total-upload-cell") ||
-	    !src.includes("lanspeed-client-total-download-cell")) {
-		fail('statusRefresh.js must render adjacent, independently labelled x86 cumulative upload/download columns');
-	}
+		!src.includes("setAttribute('aria-sort'") || !src.includes('refs.sortSelect'))
+		fail('statusRefresh.js must preserve ordering preferences and accessible merged column state');
+	if (!src.includes('lanspeed-client-rate-cell') || !src.includes('lanspeed-client-total-cell') ||
+		!src.includes("'data-label': _('网速')") || !src.includes("'data-label': _('累计流量')") ||
+		!src.includes("trafficLine('rx'") || !src.includes("trafficLine('tx'"))
+		fail('statusRefresh.js must render two labelled directions in each merged traffic column');
+
 	if (!src.includes('reconcileClientRows(refs.tbody') ||
 	    !src.includes("'data-client-key': String(fmt.identityOf(c))") ||
 	    !src.includes('captureClientViewport(refs)') ||
@@ -6088,7 +6247,7 @@ function assertStatusRefreshModule(src) {
 	if (src.includes('showClientStatus') || src.includes('setClientStatusVisibility') ||
 		src.includes('clientStateCell') || src.includes('data-client-status') ||
 		src.includes('showClientControl') || src.includes('show_client_control') ||
-		!src.includes('var showClientTotals = viewState.showClientTotals === true && !nssProfile;') ||
+		!src.includes('var showClientTotals = viewState.showClientTotals === true;') ||
 		!src.includes('controlCell.hidden = false;')) {
 		fail('lanspeed/statusRefresh.js must remove the client-control visibility option');
 	}
@@ -6131,103 +6290,58 @@ function assertStatusRefreshModule(src) {
 function assertDiagnosticsStyleModule(src) {
 	const baseCss = loadStyleLeaf('diagnosticsStyleBase.js').CSS;
 	const responsiveCss = loadStyleLeaf('diagnosticsStyleResponsive.js').CSS;
-	const themeCss = [
-		[ 'Aurora', 'aurora', loadStyleLeaf('diagnosticsStyleAurora.js').CSS ],
-		[ 'Argon', 'argon', loadStyleLeaf('diagnosticsStyleArgon.js').CSS ],
-		[ 'Bootstrap', 'bootstrap', loadStyleLeaf('diagnosticsStyleBootstrap.js').CSS ]
-	];
-
-	if (!src.includes('CSS: DIAGNOSTICS_CSS') ||
-	    !src.includes('LAYOUT_CSS: DIAGNOSTICS_LAYOUT_CSS')) {
+	if (!src.includes('CSS: DIAGNOSTICS_CSS') || !src.includes('LAYOUT_CSS: DIAGNOSTICS_LAYOUT_CSS'))
 		fail('diagnosticsStyle.js must export composed design-system CSS and diagnostics-only layout CSS');
-	}
 	[
 		'.lanspeed-diagnostics-root .lanspeed-header{display:flex',
 		'.lanspeed-diagnostics-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))',
-		'.lanspeed-diagnostics-pipeline{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))',
-		'.lanspeed-diagnostic-stage{', '.lanspeed-diagnostics-health-group{',
-		'.lanspeed-diagnostics-table-wrap{', '.lanspeed-diagnostic-alert,',
-		'.lanspeed-diagnostics-report-preview{'
+		'.lanspeed-diagnostics-table-wrap{', '.lanspeed-diagnostic-alert{'
 	].forEach(function(marker) {
 		if (!baseCss.includes(marker))
-			fail(`diagnosticsStyleBase.js must retain diagnostic information architecture: ${marker}`);
+			fail(`diagnosticsStyleBase.js must retain the compact diagnostics layout: ${marker}`);
 	});
 	[
-		'@media (max-width:1100px)', '@media (max-width:900px)',
-		'@media (max-width:700px)', '@media (max-width:480px)',
-		'.lanspeed-diagnostic-stage-evidence{grid-template-columns:minmax(0,1fr)}',
-		'.lanspeed-diagnostics-tc-table tbody>tr>td[data-label]::before{content:attr(data-label);'
+		'@media (max-width:1100px)', '@media (max-width:700px)', '@media (max-width:480px)',
+		'.lanspeed-diagnostics-health-table :is(th,td)'
 	].forEach(function(marker) {
 		if (!responsiveCss.includes(marker))
 			fail(`diagnosticsStyleResponsive.js must retain responsive diagnostics behavior: ${marker}`);
 	});
-	themeCss.forEach(function(theme) {
-		if (!theme[2].includes(`lanspeed-theme-${theme[1]}`) ||
-		    !theme[2].includes('.lanspeed-diagnostic-stage') ||
-		    !theme[2].includes('.lanspeed-diagnostics-report-preview')) {
-			fail(`diagnosticsStyle${theme[0]}.js must independently implement pipeline and report treatment`);
-		}
+	[ 'Aurora', 'Argon', 'Bootstrap', 'Shadcn' ].forEach(function(theme) {
+		const css = loadStyleLeaf(`diagnosticsStyle${theme}.js`).CSS;
+		if (!css.includes(`lanspeed-theme-${theme.toLowerCase()}`) ||
+		    !css.includes('.lanspeed-diagnostic-fact'))
+			fail(`diagnosticsStyle${theme}.js must style the compact diagnostic facts`);
 	});
 }
 
 function assertDiagnosticsShellModule(src) {
-	if (!src.includes('buildShell: function(viewState)') ||
-	    !src.includes('diagnosticsStyle.CSS') ||
-	    !src.includes('lsTheme.applyRoot(root)') ||
-	    !src.includes('buildSummarySection(refs, viewState)') ||
-	    !src.includes('buildPipelineSection(refs)') ||
-	    !src.includes('buildHealthSection(refs)') ||
-	    !src.includes("sectionHeader(_('基础接口与 RPC 健康')") ||
-	    !src.includes("E('h4', {}, _('本机 TC 状态'))") ||
-	    !src.includes('refs.tcObjectsBody') ||
-	    !src.includes('buildSupportSection(refs, viewState)') ||
-	    !src.includes("stage(refs, 'rate'") ||
-	    !src.includes("stage(refs, 'edge'") ||
-	    !src.includes("stage(refs, 'classification'") ||
-	    !src.includes("refs.rpcDetails = E('details'") ||
-	    !src.includes("refs.reportDetails = E('details'") ||
-	    !src.includes('refs.btnCopy') ||
-	    !src.includes('refs.btnRestart') ||
-	    !src.includes('lanspeed-diagnostics-restart-feedback') ||
-	    !src.includes('lanspeed-diagnostics-error-details') ||
-	    !src.includes('lanspeed-diagnostics-rpc-group') ||
-	    !src.includes('lanspeed-diagnostics-report-details') ||
-	    !src.includes('lanspeed-diagnostics-facts') ||
-	    !src.includes("sectionHeader(_('运行诊断')")) {
-		fail('lanspeed/diagnosticsShell.js must own the independent diagnostics page DOM');
-	}
-	if ((src.match(/'class': 'cbi-section/g) || []).length !== 5 ||
-	    src.includes('lanspeed-diagnostic-card') || src.includes("stage(refs, 'integrity'")) {
-		fail('lanspeed/diagnosticsShell.js must expose four peer task sections without nested cards');
-	}
+	[
+		'buildShell: function(viewState)', 'diagnosticsStyle.CSS', 'lsTheme.applyRoot(root)',
+		'buildSummarySection(refs, viewState)', 'buildHealthSection(refs)',
+		'refs.btnCopy', 'refs.btnRestart', 'refs.btnRefresh',
+		'lanspeed-diagnostics-restart-feedback', 'lanspeed-diagnostics-report-feedback',
+		'lanspeed-diagnostics-facts', "sectionHeader(_('运行诊断')",
+		"sectionHeader(_('需要关注')", "sectionHeader(_('接口状态')"
+	].forEach(function(marker) {
+		if (!src.includes(marker)) fail(`diagnosticsShell.js must retain compact diagnostic control: ${marker}`);
+	});
+	if ((src.match(/'class': 'cbi-section/g) || []).length !== 3 ||
+	    /reportPreview|environmentWarnings|rpcBody|subsystemsBody|tcObjectsBody|buildPipelineSection|buildControlSection/.test(src))
+		fail('diagnosticsShell.js must expose only summary, actionable issues and interface status');
 }
 
 function assertDiagnosticsRefreshModule(src) {
-	if (!src.includes('refreshStatusCards: refreshStatusCards') ||
-	    !src.includes('renderRpcChecks: renderRpcChecks') ||
-	    !src.includes('diagnosticsModel.rateOwnerStateWithRpc(viewState)') ||
-	    !src.includes('diagnosticsModel.accessEdgeStateWithRpc(viewState)') ||
-	    !src.includes('diagnosticsModel.classificationStateWithRpc(viewState)') ||
-	    !src.includes('diagnosticsModel.nssControlStateWithRpc(viewState)') ||
-	    !src.includes('diagnosticsModel.connectionStateWithRpc(') ||
-	    !src.includes('diagnosticsModel.interfaceStateWithRpc(viewState)') ||
-	    !src.includes('diagnosticsModel.warningGroups(status, health, rpcData, diagnostics)') ||
-	    !src.includes("refs.pageNotice.setAttribute('data-state', state)") ||
-	    !src.includes("refs.root.setAttribute('data-page-state', state)") ||
-	    !src.includes('renderPipeline(refs, viewState)') ||
-	    !src.includes('renderInterfaces(refs, viewState)') ||
-	    !src.includes('renderTcStatus(refs, viewState)') ||
-	    !src.includes('TC_CONFLICT_LABELS') ||
-	    !src.includes('renderSubsystems(refs, viewState)') ||
-	    !src.includes('renderWarnings(refs, viewState.status') ||
-	    !src.includes("'data-label': _('结果')") ||
-	    !src.includes('lsVersion.FULL_VERSION')) {
-		fail('lanspeed/diagnosticsRefresh.js must render total-rate, Access Edge, classification, NSS control, RPC and health states');
-	}
-	if (!src.includes("rateEvidence[_('客户端采集覆盖率')]") || !src.includes("rateEvidence[_('范围')]") ||
-	    !src.includes("classificationEvidence[_('覆盖率')]") ||
-	    src.includes('diagnosticsModel.integrityStateWithRpc(viewState)') || src.includes('rate.description, rate.meta'))
-		fail('lanspeed/diagnosticsRefresh.js must render a concise total-rate and classification summary');
+	[
+		'diagnosticsModel.rateOwnerStateWithRpc(', 'diagnosticsModel.classificationStateWithRpc(',
+		'diagnosticsModel.nssControlStateWithRpc(', 'diagnosticsModel.connectionStateWithRpc(',
+		'diagnosticsModel.interfaceStateWithRpc(', 'diagnosticsModel.warningGroups(',
+		"refs.root.setAttribute('data-page-state',", 'lsVersion.FULL_VERSION'
+	].forEach(function(marker) {
+		if (!src.includes(marker)) fail(`diagnosticsRefresh.js must retain diagnostic issue evidence: ${marker}`);
+	});
+	if (/reportPreview|environmentWarnings|rpcBody|subsystemsBody|tcObjectsBody|renderPipeline/.test(src))
+		fail('diagnosticsRefresh.js must not rebuild removed diagnostic detail panels');
 }
 
 function assertDiagnosticsModelModule(src) {
@@ -6311,6 +6425,7 @@ function assertConfigStyleModule(src) {
 	const auroraCss = loadStyleLeaf('configStyleAurora.js').CSS;
 	const argonCss = loadStyleLeaf('configStyleArgon.js').CSS;
 	const bootstrapCss = loadStyleLeaf('configStyleBootstrap.js').CSS;
+	const shadcnCss = loadStyleLeaf('configStyleShadcn.js').CSS;
 
 	if (!src.includes('CSS: CONFIG_CSS') || !src.includes('LAYOUT_CSS: CONFIG_LAYOUT_CSS'))
 		fail('configStyle.js must export composed design-system CSS and config-only layout CSS');
@@ -6341,7 +6456,7 @@ function assertConfigStyleModule(src) {
 	}
 
 	if (!responsiveCss.includes(':is(.lanspeed-config-root.lanspeed-theme-aurora,') ||
-	    !responsiveCss.includes('.lanspeed-config-root.lanspeed-theme-bootstrap)') ||
+	    !responsiveCss.includes('.lanspeed-config-root.lanspeed-theme-bootstrap') ||
 	    !responsiveCss.includes('.lanspeed-config-table tbody,') ||
 	    !responsiveCss.includes('.lanspeed-ifcfg-table tbody{display:grid;') ||
 	    !responsiveCss.includes('.lanspeed-ifcfg-table tbody tr{display:grid;') ||
@@ -6361,7 +6476,8 @@ function assertConfigStyleModule(src) {
 	[
 		[ 'Aurora', 'aurora', auroraCss ],
 		[ 'Argon', 'argon', argonCss ],
-		[ 'Bootstrap', 'bootstrap', bootstrapCss ]
+		[ 'Bootstrap', 'bootstrap', bootstrapCss ],
+		[ 'Shadcn', 'shadcn', shadcnCss ]
 	].forEach(function(theme) {
 		if (!theme[2].includes(`lanspeed-theme-${theme[1]}`) ||
 		    !theme[2].includes('.lanspeed-config-table') ||
@@ -6377,8 +6493,8 @@ function assertConfigStyleModule(src) {
 	    !auroraCss.includes('var(--lanspeed-accent-soft)') ||
 	    !auroraCss.includes('.lanspeed-config-root.lanspeed-theme-aurora.lanspeed-config-x86 .lanspeed-ifcfg-table tbody'))
 		fail('configStyleAurora.js must implement an Aurora-native segmented interface control');
-	if (new Set([ auroraCss, argonCss, bootstrapCss ]).size !== 3)
-		fail('Aurora, Argon and Bootstrap configuration layouts must remain independent implementations');
+	if (new Set([ auroraCss, argonCss, bootstrapCss, shadcnCss ]).size !== 4)
+		fail('Aurora, Argon, Bootstrap and Shadcn configuration layouts must remain independent implementations');
 }
 
 function assertConfigFormModule(src) {
@@ -6661,15 +6777,19 @@ function assertBrowserAuditConfigContract() {
 		return;
 	}
 	const contract = src.slice(start, end);
-	[
-		'rate_collector_mode', 'access_edge_mode', 'internet_view_mode',
-		'nss_low_rate_window_ms', 'nss_low_rate_high_watermark_bps',
-		'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets',
-		'rate_compensation_factor', 'conn_collector_mode'
-	].forEach(function(name) {
+	[ 'rate_collector_mode', 'conn_collector_mode' ].forEach(function(name) {
 		if (!contract.includes("'" + name + "'"))
 			fail(`browser audit configuration contract must include ${name}`);
 	});
+	NSS_CONFIG_FIELDS.forEach(function(name) {
+		if (contract.includes("'" + name + "'"))
+			fail(`browser audit general configuration must exclude ${name}`);
+	});
+	const nssStart = src.indexOf('const requiredNssFields = [');
+	const nssEnd = src.indexOf('const nssContract', nssStart);
+	if (nssStart === -1 || nssEnd === -1 || NSS_CONFIG_FIELDS.some(name =>
+		!src.slice(nssStart, nssEnd).includes("'" + name + "'")))
+		fail('browser audit NSS configuration contract must include exactly its seven dedicated fields');
 }
 
 function cloneConfigValue(value) {
@@ -7245,9 +7365,9 @@ function assertConfigFormBehavior(src) {
 	    x86ProfilePlan.patch.set.rate_collector_mode !== 'bpf' ||
 	    Object.prototype.hasOwnProperty.call(x86ProfilePlan.patch.set, 'access_edge_mode') ||
 	    Object.prototype.hasOwnProperty.call(x86ProfilePlan.patch.set, 'internet_view_mode') ||
-	    x86ProfilePlan.patch.unset.indexOf('access_edge_mode') === -1 ||
-	    x86ProfilePlan.patch.unset.indexOf('internet_view_mode') === -1) {
-		fail('configForm.js must normalize forged NSS settings only for an explicit x86 profile');
+	    x86ProfilePlan.patch.unset.indexOf('access_edge_mode') !== -1 ||
+	    x86ProfilePlan.patch.unset.indexOf('internet_view_mode') !== -1) {
+		fail('configForm.js must normalize x86 behavior without rewriting fields owned by the NSS page');
 	}
 
 	const stagedUci = makeConfigUci(model, { initial: {
@@ -7407,9 +7527,122 @@ function assertConfigFormBehavior(src) {
 	}));
 }
 
+function assertNssConfigSplit(src) {
+	const model = loadConfigModelModule(readModuleByName('configModel.js'));
+	function harness(kind, options) {
+		options = options || {};
+		const uci = makeConfigUci(model, options.uci);
+		const ifaceCalls = [];
+		const iface = makeConfigIfaceStub({
+			prepareSave: function() { ifaceCalls.push('prepare'); return { changed: false, errors: {} }; },
+			load: function() { ifaceCalls.push('load'); return Promise.resolve(true); }
+		});
+		const status = options.status || Object.assign(matchingConfigStatus(uci.local), {
+			capabilities: { bpf: true, conntrack_fallback: true, nss: true }
+		});
+		const form = loadConfigFormModule(src, uci, { status: function() { return Promise.resolve(status); } }, iface, model);
+		const state = { pageKind: kind, refs: {}, ifcfgLoaded: true, updatePageState: function() {} };
+		const data = Object.assign(cloneConfigRecord(uci.local), {
+			raw: cloneConfigRecord(uci.local), status: status,
+			model: model.normalize(uci.local), rpc: { status: { ok: true } }
+		});
+		const section = form.buildDaemonSection(data, state);
+		return { form, state, section, uci, ifaceCalls, data };
+	}
+	const general = harness('general', { uci: { initial: {
+		nss_fifo_target_delay_ms: 80, nss_low_rate_window_ms: 20000, rate_compensation_factor: 1.2
+	} } });
+	const nss = harness('nss', { uci: { initial: {
+		refresh_interval_ms: 1500, active_client_window_ms: 15000, interface_include: [ 'br-lan' ]
+	} } });
+	if (NSS_CONFIG_FIELDS.some(name => general.state.daemonRefs.fields[name] || general.state.daemonRefs.inputs[name]) ||
+		JSON.stringify(Object.keys(nss.state.daemonRefs.fields).sort()) !== JSON.stringify(NSS_CONFIG_FIELDS.slice().sort()) ||
+		JSON.stringify(Object.keys(nss.state.daemonRefs.inputs).sort()) !== JSON.stringify(NSS_CONFIG_FIELDS.slice().sort())) {
+		fail('configForm.js must split exactly seven NSS fields from the general configuration form');
+	}
+	const originalNss = cloneConfigRecord(general.state.currentValues);
+	general.state.daemonRefs.resetDefaultsBtn.listeners.click();
+	if (NSS_CONFIG_FIELDS.some(name => general.state.currentValues[name] !== originalNss[name]))
+		fail('general Restore Defaults must preserve every NSS setting');
+	const originalGeneral = cloneConfigRecord(nss.state.currentValues);
+	nss.state.daemonRefs.resetDefaultsBtn.listeners.click();
+	if (Object.keys(originalGeneral).filter(name => !NSS_CONFIG_FIELDS.includes(name)).some(name =>
+		JSON.stringify(nss.state.currentValues[name]) !== JSON.stringify(originalGeneral[name])))
+		fail('NSS Restore Defaults must preserve all general and interface settings');
+	general.state.currentValues.nss_fifo_target_delay_ms = 'invalid-other-page';
+	if (!general.form.validate(general.state).valid)
+		fail('invalid hidden NSS parameters must not block a valid general configuration save');
+	nss.state.currentValues.refresh_interval_ms = 'invalid-other-page';
+	if (!nss.form.validate(nss.state).valid)
+		fail('invalid hidden general parameters must not block a valid NSS configuration save');
+
+	[ 'general', 'nss' ].forEach(kind => {
+		const h = harness(kind);
+		const own = kind === 'nss' ? 'nss_fifo_target_delay_ms' : 'refresh_interval_ms';
+		const other = kind === 'nss' ? 'refresh_interval_ms' : 'nss_fifo_target_delay_ms';
+		const ownOriginal = h.uci.remote[own];
+		h.state.daemonRefs.inputs[own].value = kind === 'nss' ? '70' : '1500';
+		asyncChecks.push(h.form.saveAll(h.state).then(result => {
+			const writes = h.uci.calls.filter(call => call[0] === 'set' || call[0] === 'unset').map(call => call[1]);
+			if (!result.ok || writes.some(name => kind === 'nss' ? !NSS_CONFIG_FIELDS.includes(name) : NSS_CONFIG_FIELDS.includes(name)) ||
+				(kind === 'nss' && h.ifaceCalls.length))
+				fail(kind + ' Save must stage only its own fields and NSS must never prepare interface changes');
+			h.uci.remote[other] = kind === 'nss' ? 2500 : 90;
+			h.uci.local[other] = h.uci.remote[other];
+			return h.form.resetAll(h.state);
+		}).then(result => {
+			if (!result.ok || String(h.uci.remote[own]) !== String(ownOriginal) ||
+				Number(h.uci.remote[other]) !== (kind === 'nss' ? 2500 : 90) ||
+				(kind === 'nss' && h.ifaceCalls.length))
+				fail(kind + ' Reset must reverse its own save while preserving changes staged by the other page');
+		}).catch(error => fail(kind + ' scoped Save/Reset failed: ' + (error.stack || error))));
+
+		const rollback = harness(kind, { uci: { saveBehaviors: [ function(api) {
+			api.commit();
+			api.remote[other] = kind === 'nss' ? 3500 : 80;
+			return Promise.reject(new Error('scope rollback test'));
+		} ] } });
+		rollback.state.daemonRefs.inputs[own].value = kind === 'nss' ? '75' : '1700';
+		asyncChecks.push(rollback.form.saveAll(rollback.state).then(() => {
+			fail(kind + ' failing Save must reject');
+		}, error => {
+			if (!String(error.message).includes('scope rollback test') ||
+				String(rollback.uci.remote[own]) !== String(ownOriginal) ||
+				Number(rollback.uci.remote[other]) !== (kind === 'nss' ? 3500 : 80))
+				fail(kind + ' failure rollback must preserve the other page\'s concurrent staged value');
+		}));
+	});
+
+	const unsupported = [
+		{ evidence: { platform: { profile: 'x86_tc_bpf', nss_modes_exposed: true } }, capabilities: { nss: true } },
+		{ evidence: { platform: { profile: 'nss_aarch64', nss_modes_exposed: false } }, capabilities: { nss: true } },
+		{ evidence: { platform: { profile: 'nss_aarch64' } }, capabilities: { nss: false } }
+	];
+	unsupported.forEach(status => {
+		const blocked = harness('general', { status });
+		if (blocked.form.supportsNss(status)) fail('NSS configuration must require usable NSS runtime capability');
+		blocked.state.pageKind = 'nss';
+		asyncChecks.push(blocked.form.saveAll(blocked.state).then(() => fail('unsupported NSS Save must reject'), () => {
+			if (blocked.uci.calls.some(call => [ 'set', 'unset', 'save' ].includes(call[0])))
+				fail('unsupported NSS Save must not mutate UCI');
+		}));
+		const view = loadConfigViewModule(readModuleByName('configView.js'), blocked.form, {});
+		const rootNode = view.render({ values: blocked.data }, 'nss');
+		if (!view.viewState.failed || !findFakeElement(rootNode, 'lanspeed-page-failure') ||
+			findFakeElement(rootNode, 'lanspeed-config-table'))
+			fail('unsupported NSS direct view must expose no editable form');
+		asyncChecks.push(Promise.all([ view.handleSave(), view.handleSaveApply(null, '0'), view.handleReset() ]).then(results => {
+			if (results.some(result => result !== false)) fail('unsupported NSS view must disable every native mutation action');
+		}));
+	});
+	if (!nss.form.supportsNss({ evidence: { platform: { profile: 'nss_aarch64' } }, capabilities: { nss: true } }) ||
+		!nss.form.supportsNss({ evidence: { platform: { profile: 'nss_aarch64', nss_modes_exposed: true } }, capabilities: { nss: false } }))
+		fail('NSS support must accept the explicit exposure contract and legacy capability fallback');
+}
+
 function assertConfigViewRewrite(src) {
 	[ "'loading'", "'ready'", "'empty'", "'degraded'", "'hard-error'",
-		'configForm.verifyAll(viewState)', 'setNativeActionState', 'setNativeActionFailureState',
+		'applying: true', 'setNativeActionState', 'setNativeActionFailureState',
 		"actions.setAttribute('data-lanspeed-state', 'hard-error')", 'aria-busy' ].forEach(marker => {
 		if (!src.includes(marker)) fail(`configView.js state machine is missing ${marker}`);
 	});
@@ -7432,7 +7665,7 @@ function assertConfigViewBehavior(src) {
 		changes: {
 			changes: {},
 			init: function() { calls.push('changes-init'); return Promise.resolve(); },
-			apply: function(checked) { calls.push('apply:' + checked); return Promise.resolve(); }
+			apply: function(checked) { calls.push('apply:' + checked); }
 		},
 		hideIndicator: function() { calls.push('hide-indicator'); },
 		addNotification: function(title, body, level) { calls.push('notify:' + level); }
@@ -7465,9 +7698,9 @@ function assertConfigViewBehavior(src) {
 	}
 	view.viewState = { daemonRefs: {}, localDirty: true };
 	asyncChecks.push(view.handleSaveApply(null, '0').then(function(result) {
-		if (!result || !result.ok || calls.join(',') !==
-			'save,hide-indicator,changes-init,apply:true,mark-applied,verify') {
-			fail('configView.js Save & Apply must stage, apply, advance the baseline, then verify in order');
+		if (!result || !result.ok || !result.applying || view.viewState.applied || calls.join(',') !==
+			'save,hide-indicator,changes-init,apply:true') {
+			fail('configView.js Save & Apply must hand staged changes to the void native API without advancing the baseline or verifying before confirmation');
 		}
 		return view.handleReset();
 	}).then(function(result) {
@@ -7478,42 +7711,6 @@ function assertConfigViewBehavior(src) {
 		fail('configView.js native staged/apply/reset behavior failed: ' + (error && error.stack || error));
 	}));
 
-	let verifyCalls = 0;
-	const retryDelays = [];
-	const retryFeedback = [];
-	const retryView = loadConfigViewModule(src, {
-		saveAll: function() { return Promise.resolve({ ok: true }); },
-		markApplied: function() { return true; },
-		verifyAll: function() {
-			verifyCalls++;
-			return Promise.resolve({ ok: verifyCalls === 6 });
-		},
-		setFeedback: function(state, status, message) {
-			retryFeedback.push([ status, String(message) ]);
-		}
-	}, {
-		changes: {
-			changes: {}, init: function() { return Promise.resolve(); },
-			apply: function() { return Promise.resolve(); }
-		},
-		hideIndicator: function() {}
-	}, null, function(handler, delay) {
-		retryDelays.push(delay);
-		handler();
-	});
-	retryView.viewState = { daemonRefs: {} };
-	asyncChecks.push(retryView.handleSaveApply(null, '0').then(function(result) {
-		if (!result || !result.ok || verifyCalls !== 6 ||
-			JSON.stringify(retryDelays) !== JSON.stringify([ 500, 750, 1000, 1500, 2000 ]) ||
-			retryFeedback.length !== 5 || retryFeedback.some(function(entry) {
-				return entry[0] !== 'verifying' || !entry[1].includes('等待守护进程与接口就绪');
-			})) {
-			fail('configView.js must keep post-Apply verification pending across the bounded daemon reload window');
-		}
-	}).catch(function(error) {
-		fail('configView.js post-Apply retry behavior failed: ' + (error && error.stack || error));
-	}));
-
 	const failedCalls = [];
 	const failedView = loadConfigViewModule(src, {
 		saveAll: function() { failedCalls.push('save'); return Promise.resolve({ ok: true }); },
@@ -7522,7 +7719,7 @@ function assertConfigViewBehavior(src) {
 	}, {
 		changes: {
 			changes: {}, init: function() { failedCalls.push('changes-init'); return Promise.resolve(); },
-			apply: function() { failedCalls.push('apply'); return Promise.reject(new Error('apply failed')); }
+			apply: function() { failedCalls.push('apply'); throw new Error('apply failed'); }
 		},
 		hideIndicator: function() { failedCalls.push('hide'); },
 		addNotification: function(title, body, level) { failedCalls.push('notify:' + level); }
@@ -7634,6 +7831,7 @@ EXPECTED_MODULES.forEach(function(name) {
 		assertClientDetailViewSource(src);
 		assertClientDetailVendorLifecycle(src);
 		assertClientDetailViewLifecycle(src);
+		assertClientDetailDisposalAndHostnameApply(src);
 		assertClientDetailGeoLifecycle(src);
 		assertClientDetailIntegratedState(src);
 	}
@@ -7711,6 +7909,7 @@ EXPECTED_MODULES.forEach(function(name) {
 		if (name === 'configForm.js') {
 			assertConfigFormRewrite(src);
 			assertConfigFormBehavior(src);
+			assertNssConfigSplit(src);
 		}
 		if (name === 'configModel.js') {
 			assertConfigModelRewrite(src);
@@ -7798,6 +7997,15 @@ if (fs.existsSync(configViewFile)) {
 	assertNoInlineNavigation(csrc, 'view/lanspeed/config.js');
 	assertSyntax(csrc, 'view/lanspeed/config.js');
 	assertNoRpcDeclare(ccleaned, 'view/lanspeed/config.js');
+}
+
+if (fs.existsSync(nssViewFile)) {
+	const src = readModule(nssViewFile);
+	assertStrict(src, 'view/lanspeed/nss.js');
+	assertCacheAwareViewEntry(src, 'lanspeed.configView', 'view/lanspeed/nss.js', 'nss');
+	assertConfigViewEntryIsThin(src);
+	assertSyntax(src, 'view/lanspeed/nss.js');
+	assertNoRpcDeclare(stripComments(src), 'view/lanspeed/nss.js');
 }
 
 function finish() {

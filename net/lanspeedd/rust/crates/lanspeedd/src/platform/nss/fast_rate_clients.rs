@@ -5,22 +5,38 @@
 //! rolling counter history per MAC/direction and drops a window when either
 //! source or its reset generation becomes invalid.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use lanspeed_common::{DIR_RX, DIR_TX};
 
 use super::{
-    fast_n_runtime::FastNSnapshot,
-    fast_rate::{FastCounterSample, FastWindow},
+    fast_n_runtime::{FastNKey, FastNSnapshot},
+    fast_rate::{FastCounterSample, FastWindow, FAST_WINDOW_MAX_READ_END_SKEW_MS},
     fast_rate_contract::FastRateBaseContract,
     fast_rate_rolling::FastRateRollingWindow,
-    fast_s_runtime::FastSSnapshot,
+    fast_s_runtime::{FastSKey, FastSSnapshot},
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct FastClientKey {
     pub mac: [u8; 6],
     pub direction: u8,
+}
+
+/// Exact, non-overlapping raw counter deltas accumulated independently of
+/// the overlapping display-rate window. Consumers compare cumulative totals
+/// only within one epoch and attachment; skipped publications lose no bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FastClientAccounting {
+    pub total_bytes: u64,
+    pub epoch: u64,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub attachment_generation: u64,
+    pub byte_domain: crate::model::ByteDomain,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -35,6 +51,7 @@ pub(crate) struct FastClientSample {
     /// FastS is TC L2 data (+ FCS). This is the only combined value eligible
     /// for comparison with a wired Access Edge authority.
     pub routed_l2_with_fcs_bps: u64,
+    pub accounting: Option<FastClientAccounting>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -44,6 +61,7 @@ pub(crate) struct FastClientRateBook {
     bindings: BTreeMap<FastClientKey, ClientBinding>,
     latest: BTreeMap<FastClientKey, FastClientSample>,
     invalid_windows: u64,
+    accounting: FastClientAccountingBook,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -118,6 +136,15 @@ impl FastClientRateBook {
         s_read_end_ms: u64,
         contract: Option<&FastRateBaseContract>,
     ) {
+        self.accounting.observe(
+            fast_n,
+            fast_s,
+            n_read_begin_ms,
+            n_read_end_ms,
+            s_read_begin_ms,
+            s_read_end_ms,
+            contract,
+        );
         if fast_n.truncated
             || fast_n.invalid_entries != 0
             || fast_s.truncated
@@ -250,6 +277,7 @@ impl FastClientRateBook {
     }
 
     pub(crate) fn clear(&mut self) {
+        self.accounting.invalidate();
         self.rolling.clear();
         self.last_counters.clear();
         self.bindings.clear();
@@ -261,13 +289,25 @@ impl FastClientRateBook {
     }
 
     pub(crate) fn get(&self, mac: [u8; 6], direction: u8) -> Option<FastClientSample> {
-        self.latest.get(&FastClientKey { mac, direction }).copied()
+        let key = FastClientKey { mac, direction };
+        self.latest.get(&key).map(|sample| FastClientSample {
+            accounting: self.accounting.get(key),
+            ..*sample
+        })
     }
 
     pub(crate) fn samples(&self) -> Vec<(FastClientKey, FastClientSample)> {
         self.latest
             .iter()
-            .map(|(key, sample)| (*key, *sample))
+            .map(|(key, sample)| {
+                (
+                    *key,
+                    FastClientSample {
+                        accounting: self.accounting.get(*key),
+                        ..*sample
+                    },
+                )
+            })
             .collect()
     }
 
@@ -319,6 +359,7 @@ fn client_sample(window: FastWindow) -> FastClientSample {
         fast_s_bps: bytes_to_bps(window.s_bytes, window.duration_ms()),
         fast_total_bps: bytes_to_bps(window.total_bytes(), window.duration_ms()),
         routed_l2_with_fcs_bps: bytes_to_bps(l2_with_fcs_bytes(window), window.duration_ms()),
+        accounting: None,
     }
 }
 
@@ -417,6 +458,274 @@ fn add_aggregate(
         });
 }
 
+// Raw keys must remain distinct: adding/removing an ECM connection changes a
+// MAC aggregate even when no traffic moved. Only one key's consecutive stable
+// cumulative observations can provide an exact byte delta.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum AccountingRawKey {
+    N(FastNKey),
+    S(FastSKey),
+}
+
+impl AccountingRawKey {
+    fn packet_overhead(self) -> u64 {
+        match self {
+            Self::N(_) => 18,
+            Self::S(_) => 4,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AccountingRawCounter {
+    bytes: u64,
+    packets: u64,
+    generation: u32,
+    seen_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AccountingClient {
+    binding: ClientBinding,
+    value: FastClientAccounting,
+    counters: BTreeMap<AccountingRawKey, AccountingRawCounter>,
+    n_generation: u32,
+    s_generation: u32,
+}
+
+// Epochs remain unique even when a worker is replaced within one daemon.
+static NEXT_ACCOUNTING_EPOCH: AtomicU64 = AtomicU64::new(1);
+// FastN keys contain an ECM connection generation; retain them until a
+// bounded key-count eviction. FastS keys lack a per-entry incarnation, so a
+// briefly missing key is retained for only this grace period.
+const ACCOUNTING_MISSING_S_KEY_GRACE_MS: u64 = 30_000;
+const ACCOUNTING_RAW_KEY_LIMIT: usize = lanspeed_common::ECM_FAST_COUNTERS_MAP_CAPACITY as usize
+    + lanspeed_common::FAST_COUNTERS_MAP_CAPACITY as usize;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct FastClientAccountingBook {
+    available: bool,
+    clients: BTreeMap<FastClientKey, AccountingClient>,
+}
+
+impl FastClientAccountingBook {
+    fn invalidate(&mut self) {
+        self.available = false;
+    }
+
+    fn get(&self, key: FastClientKey) -> Option<FastClientAccounting> {
+        self.available
+            .then(|| self.clients.get(&key).map(|client| client.value))
+            .flatten()
+    }
+
+    fn observe(
+        &mut self,
+        fast_n: &FastNSnapshot,
+        fast_s: &FastSSnapshot,
+        n_begin: u64,
+        n_end: u64,
+        s_begin: u64,
+        s_end: u64,
+        contract: Option<&FastRateBaseContract>,
+    ) {
+        if fast_n.truncated
+            || fast_s.truncated
+            || fast_n.invalid_entries != 0
+            || fast_s.invalid_entries != 0
+            || n_end < n_begin
+            || s_end < s_begin
+            || n_end.abs_diff(s_end) > FAST_WINDOW_MAX_READ_END_SKEW_MS
+            || fast_n.sample_ms.abs_diff(fast_s.sample_ms) > FAST_WINDOW_MAX_READ_END_SKEW_MS
+        {
+            self.invalidate();
+            return;
+        }
+        self.available = true;
+        let now_ms = n_end.max(s_end).max(fast_n.sample_ms).max(fast_s.sample_ms);
+        let mut current =
+            BTreeMap::<FastClientKey, BTreeMap<AccountingRawKey, AccountingRawCounter>>::new();
+        for entry in &fast_n.entries {
+            if !matches!(entry.key.direction, DIR_TX | DIR_RX) {
+                continue;
+            }
+            current
+                .entry(FastClientKey {
+                    mac: entry.key.mac,
+                    direction: entry.key.direction,
+                })
+                .or_default()
+                .insert(
+                    AccountingRawKey::N(entry.key),
+                    AccountingRawCounter {
+                        bytes: entry.aggregate.bytes,
+                        packets: entry.aggregate.packets,
+                        generation: entry.aggregate.reset_generation,
+                        seen_ms: now_ms,
+                    },
+                );
+        }
+        for entry in &fast_s.entries {
+            if !matches!(entry.key.direction, DIR_TX | DIR_RX) {
+                continue;
+            }
+            current
+                .entry(FastClientKey {
+                    mac: entry.key.mac,
+                    direction: entry.key.direction,
+                })
+                .or_default()
+                .insert(
+                    AccountingRawKey::S(entry.key),
+                    AccountingRawCounter {
+                        bytes: entry.aggregate.bytes,
+                        packets: entry.aggregate.packets,
+                        generation: entry.aggregate.reset_generation,
+                        seen_ms: now_ms,
+                    },
+                );
+        }
+        if let Some(contract) = contract {
+            self.clients.retain(|key, value| {
+                contract.client_matches(
+                    key.mac,
+                    &value.binding.identity_key,
+                    value.binding.attachment_generation,
+                )
+            });
+            current.retain(|key, _| contract.client(key.mac).is_some());
+            for mac in contract.client_macs() {
+                for direction in [DIR_TX, DIR_RX] {
+                    current.entry(FastClientKey { mac, direction }).or_default();
+                }
+            }
+        } else {
+            // Tests and standalone shadow readers have no identity contract.
+            self.clients.retain(|key, _| current.contains_key(key));
+        }
+        for (key, counters) in current {
+            if counters.values().any(|counter| counter.generation == 0) {
+                self.clients.remove(&key);
+                continue;
+            }
+            let binding = contract.and_then(|value| value.client(key.mac)).map_or(
+                ClientBinding {
+                    identity_key: String::new(),
+                    attachment_generation: 0,
+                },
+                |client| ClientBinding {
+                    identity_key: client.identity_key.clone(),
+                    attachment_generation: client.attachment_generation,
+                },
+            );
+            let reset = self.clients.get(&key).is_none_or(|previous| {
+                binding != previous.binding
+                    || now_ms < previous.value.end_ms
+                    || (fast_n.reset_generation != 0
+                        && previous.n_generation != 0
+                        && fast_n.reset_generation != previous.n_generation)
+                    || (fast_s.reset_generation != 0
+                        && previous.s_generation != 0
+                        && fast_s.reset_generation != previous.s_generation)
+                    || counters.iter().any(|(raw_key, counter)| {
+                        previous.counters.get(raw_key).is_some_and(|old| {
+                            counter.generation != old.generation
+                                || counter.bytes < old.bytes
+                                || counter.packets < old.packets
+                        })
+                    })
+            });
+            if reset {
+                self.clients.insert(
+                    key,
+                    AccountingClient {
+                        binding: binding.clone(),
+                        value: FastClientAccounting {
+                            total_bytes: 0,
+                            epoch: NEXT_ACCOUNTING_EPOCH.fetch_add(1, Ordering::Relaxed),
+                            start_ms: now_ms,
+                            end_ms: now_ms,
+                            attachment_generation: binding.attachment_generation,
+                            byte_domain: crate::model::ByteDomain::L2WithFcs,
+                        },
+                        counters,
+                        n_generation: fast_n.reset_generation,
+                        s_generation: fast_s.reset_generation,
+                    },
+                );
+                continue;
+            }
+            let previous = self.clients.get_mut(&key).expect("accounting baseline");
+            if now_ms == previous.value.end_ms {
+                continue;
+            }
+            let mut delta = Some(0u64);
+            for (raw_key, counter) in &counters {
+                if let Some(old) = previous.counters.get(raw_key).filter(|old| {
+                    matches!(raw_key, AccountingRawKey::N(_))
+                        || now_ms.saturating_sub(old.seen_ms) <= ACCOUNTING_MISSING_S_KEY_GRACE_MS
+                }) {
+                    delta = delta.and_then(|sum| {
+                        let bytes = counter.bytes.checked_sub(old.bytes)?;
+                        let overhead = counter
+                            .packets
+                            .checked_sub(old.packets)?
+                            .checked_mul(raw_key.packet_overhead())?;
+                        sum.checked_add(bytes)?.checked_add(overhead)
+                    });
+                }
+            }
+            if let Some(total) =
+                delta.and_then(|delta| previous.value.total_bytes.checked_add(delta))
+            {
+                previous.value.total_bytes = total;
+            } else {
+                // Saturation must not masquerade as an exact delta.
+                previous.value.epoch = NEXT_ACCOUNTING_EPOCH.fetch_add(1, Ordering::Relaxed);
+                previous.value.total_bytes = 0;
+                previous.value.start_ms = now_ms;
+            }
+            previous.value.end_ms = now_ms;
+            previous.counters.retain(|raw_key, counter| {
+                matches!(raw_key, AccountingRawKey::N(_))
+                    || now_ms.saturating_sub(counter.seen_ms) <= ACCOUNTING_MISSING_S_KEY_GRACE_MS
+            });
+            previous.counters.extend(counters);
+            if fast_n.reset_generation != 0 {
+                previous.n_generation = fast_n.reset_generation;
+            }
+            if fast_s.reset_generation != 0 {
+                previous.s_generation = fast_s.reset_generation;
+            }
+        }
+        let count: usize = self
+            .clients
+            .values()
+            .map(|client| client.counters.len())
+            .sum();
+        if count > ACCOUNTING_RAW_KEY_LIMIT {
+            let mut retained = self
+                .clients
+                .iter()
+                .flat_map(|(client_key, client)| {
+                    client
+                        .counters
+                        .iter()
+                        .map(move |(raw_key, counter)| (counter.seen_ms, *client_key, *raw_key))
+                })
+                .collect::<Vec<_>>();
+            retained.sort_unstable();
+            for (_, client_key, raw_key) in
+                retained.into_iter().take(count - ACCOUNTING_RAW_KEY_LIMIT)
+            {
+                if let Some(client) = self.clients.get_mut(&client_key) {
+                    client.counters.remove(&raw_key);
+                }
+            }
+        }
+    }
+}
+
 fn bytes_to_bps(bytes: u64, window_ms: u64) -> u64 {
     if window_ms == 0 {
         return 0;
@@ -495,6 +804,187 @@ mod tests {
                 attachment_generation: generation,
             }],
         )
+    }
+
+    fn accounting_observe(
+        book: &mut super::FastClientAccountingBook,
+        mut fast_n: FastNSnapshot,
+        mut fast_s: crate::platform::nss::fast_s_runtime::FastSSnapshot,
+        now_ms: u64,
+        attachment: u64,
+    ) -> super::FastClientAccounting {
+        fast_n.sample_ms = now_ms;
+        fast_s.sample_ms = now_ms;
+        book.observe(
+            &fast_n,
+            &fast_s,
+            now_ms,
+            now_ms,
+            now_ms,
+            now_ms,
+            Some(&contract(attachment)),
+        );
+        book.get(super::FastClientKey {
+            mac: [2, 0, 0, 0, 0, 1],
+            direction: DIR_TX,
+        })
+        .expect("bound accounting")
+    }
+
+    #[test]
+    fn accounting_uses_adjacent_raw_deltas_without_integrating_rolling_rates() {
+        let mut book = super::FastClientAccountingBook::default();
+        let first = accounting_observe(&mut book, n(100), s(50), 1_000, 7);
+        assert_eq!(first.total_bytes, 0);
+        let second = accounting_observe(&mut book, n(300), s(250), 2_000, 7);
+        assert_eq!(second.total_bytes, 200 + 20 * 18 + 200 + 20 * 4);
+        let repeated = accounting_observe(&mut book, n(300), s(250), 2_000, 7);
+        assert_eq!(repeated, second);
+        let unchanged = accounting_observe(&mut book, n(300), s(250), 3_000, 7);
+        assert_eq!(unchanged.total_bytes, second.total_bytes);
+        let third = accounting_observe(&mut book, n(500), s(450), 4_000, 7);
+        assert_eq!(
+            third.total_bytes - first.total_bytes,
+            2 * second.total_bytes
+        );
+        assert_eq!(third.epoch, first.epoch);
+        assert_eq!(third.start_ms, 1_000);
+        assert_eq!(third.end_ms, 4_000);
+        assert_eq!(third.byte_domain, crate::model::ByteDomain::L2WithFcs);
+    }
+
+    #[test]
+    fn accounting_connection_churn_does_not_count_an_added_keys_historical_bytes() {
+        let mut book = super::FastClientAccountingBook::default();
+        accounting_observe(&mut book, n(100), s(50), 1_000, 7);
+        let mut with_new_connection = n(200);
+        let mut new_key = n(100_000).entries[0];
+        new_key.key.connection = 123;
+        with_new_connection.entries.push(new_key);
+        let second = accounting_observe(&mut book, with_new_connection.clone(), s(50), 2_000, 7);
+        assert_eq!(second.total_bytes, 100 + 10 * 18);
+        with_new_connection.entries.remove(0);
+        with_new_connection.entries[0].aggregate.bytes += 100;
+        with_new_connection.entries[0].aggregate.packets += 10;
+        let third = accounting_observe(&mut book, with_new_connection, s(50), 3_000, 7);
+        assert_eq!(third.epoch, second.epoch);
+        assert_eq!(third.total_bytes - second.total_bytes, 100 + 10 * 18);
+    }
+
+    #[test]
+    fn accounting_reset_and_attachment_change_rebaseline_in_a_new_epoch() {
+        let mut book = super::FastClientAccountingBook::default();
+        accounting_observe(&mut book, n(100), s(50), 1_000, 7);
+        let before = accounting_observe(&mut book, n(300), s(250), 2_000, 7);
+        let reset = accounting_observe(&mut book, n(20), s(10), 3_000, 7);
+        assert_ne!(reset.epoch, before.epoch);
+        assert_eq!(reset.total_bytes, 0);
+        let moved = accounting_observe(&mut book, n(500), s(450), 4_000, 8);
+        assert_ne!(moved.epoch, reset.epoch);
+        assert_eq!(moved.total_bytes, 0);
+        assert_eq!(moved.attachment_generation, 8);
+        let mut new_epoch = n(700);
+        new_epoch.reset_generation = 5;
+        new_epoch.entries[0].aggregate.reset_generation = 5;
+        let generation = accounting_observe(&mut book, new_epoch, s(650), 5_000, 8);
+        assert_ne!(generation.epoch, moved.epoch);
+        assert_eq!(generation.total_bytes, 0);
+        let mut restarted_worker = super::FastClientAccountingBook::default();
+        let restarted = accounting_observe(&mut restarted_worker, n(800), s(700), 6_000, 8);
+        assert_ne!(restarted.epoch, generation.epoch);
+    }
+
+    #[test]
+    fn accounting_invalid_read_hides_output_then_catches_up_from_confirmed_baseline() {
+        let mut book = super::FastClientAccountingBook::default();
+        let first = accounting_observe(&mut book, n(100), s(50), 1_000, 7);
+        let mut invalid = s(250);
+        invalid.invalid_entries = 1;
+        book.observe(
+            &n(300),
+            &invalid,
+            2_000,
+            2_000,
+            2_000,
+            2_000,
+            Some(&contract(7)),
+        );
+        assert!(!book.available);
+        let recovered = accounting_observe(&mut book, n(500), s(450), 3_000, 7);
+        assert_eq!(recovered.epoch, first.epoch);
+        assert_eq!(recovered.total_bytes, 1_680);
+        book.observe(
+            &n(600),
+            &s(550),
+            4_000,
+            4_000,
+            4_500,
+            4_500,
+            Some(&contract(7)),
+        );
+        assert!(
+            !book.available,
+            "skewed read must not become accounting evidence"
+        );
+    }
+
+    #[test]
+    fn accounting_holds_quiet_keys_without_double_counting_and_bounds_missing_keys() {
+        let mut book = super::FastClientAccountingBook::default();
+        accounting_observe(&mut book, n(100), s(50), 1_000, 7);
+        let mut empty_n = n(100);
+        empty_n.entries.clear();
+        let mut empty_s = s(50);
+        empty_s.entries.clear();
+        let held = accounting_observe(&mut book, empty_n.clone(), empty_s.clone(), 2_000, 7);
+        assert_eq!(held.total_bytes, 0);
+        let resumed = accounting_observe(&mut book, n(300), s(250), 3_000, 7);
+        assert_eq!(resumed.total_bytes, 840);
+        accounting_observe(&mut book, empty_n, empty_s, 34_000, 7);
+        let expired = accounting_observe(&mut book, n(900), s(850), 35_000, 7);
+        assert_eq!(
+            expired.total_bytes,
+            resumed.total_bytes + 600 + 60 * 18,
+            "FastN generation-bound key catches up while expired FastS rebaselines"
+        );
+    }
+
+    #[test]
+    fn published_sample_carries_catchup_accounting_independent_of_rolling_hold() {
+        let mut book = FastClientRateBook::default();
+        let mut fast_n = n(100);
+        let mut fast_s = s(50);
+        book.observe_with_contract(&fast_n, &fast_s, 1_000, 1_000, 1_000, 1_000, &contract(7));
+        fast_n.sample_ms = 3_000;
+        fast_n.entries[0].aggregate.bytes = 300;
+        fast_n.entries[0].aggregate.packets = 30;
+        fast_n.entries[0].sample_ms = 3_000;
+        fast_s.sample_ms = 3_000;
+        fast_s.entries[0].aggregate.bytes = 250;
+        fast_s.entries[0].aggregate.packets = 25;
+        fast_s.entries[0].sample_ms = 3_000;
+        book.observe_with_contract(&fast_n, &fast_s, 3_000, 3_000, 3_000, 3_000, &contract(7));
+        let published = book.get([2, 0, 0, 0, 0, 1], DIR_TX).unwrap();
+        assert_eq!(published.accounting.unwrap().total_bytes, 840);
+        fast_n.sample_ms = 4_000;
+        fast_s.sample_ms = 4_000;
+        fast_s.entries[0].aggregate.bytes += 100;
+        fast_s.entries[0].aggregate.packets += 10;
+        fast_s.entries[0].sample_ms = 4_000;
+        book.observe_with_contract(&fast_n, &fast_s, 4_000, 4_000, 4_000, 4_000, &contract(7));
+        let next = book
+            .samples()
+            .into_iter()
+            .find(|(key, _)| key.direction == DIR_TX)
+            .unwrap()
+            .1;
+        let accounting = next.accounting.unwrap();
+        assert_eq!(accounting.total_bytes, 980);
+        assert_eq!(accounting.epoch, published.accounting.unwrap().epoch);
+        assert_eq!(accounting.end_ms, 4_000);
+        // A lost intermediate worker notice is recovered by subtracting the
+        // last consumed accounting total, never by integrating either rate.
+        assert_eq!(accounting.total_bytes - 0, 980);
     }
 
     #[test]

@@ -618,6 +618,7 @@ mod tests {
                         fast_s_bps: 0,
                         fast_total_bps: 8_000,
                         routed_l2_with_fcs_bps: 8_000,
+                        accounting: None,
                     },
                 )],
                 ..FastRatePublication::default()

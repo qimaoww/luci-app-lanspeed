@@ -230,16 +230,18 @@ impl CoordinatorState {
 
     pub fn publish_collection_success(
         &self,
-        mut snapshot: ResponseSnapshot,
+        snapshot: ResponseSnapshot,
         now_ms: u64,
         collection_interval_ms: u32,
     ) {
-        let previous = self.snapshot();
-        preserve_conntrack_overlay(&mut snapshot, &previous);
-        let generation = self.snapshot().diagnostic_generation().saturating_add(1);
-        snapshot.mark_collection_success(generation, now_ms, collection_interval_ms);
-        snapshot.set_config_issues(&self.config);
-        self.publish(Arc::new(snapshot));
+        self.snapshots.update_base(|previous| {
+            let mut snapshot = snapshot.clone();
+            preserve_conntrack_overlay(&mut snapshot, previous);
+            let generation = previous.diagnostic_generation().saturating_add(1);
+            snapshot.mark_collection_success(generation, now_ms, collection_interval_ms);
+            snapshot.set_config_issues(&self.config);
+            snapshot
+        });
     }
 
     pub fn publish_collection_failure(
@@ -248,10 +250,12 @@ impl CoordinatorState {
         collection_interval_ms: u32,
         error: &DaemonError,
     ) {
-        let mut retained = self.snapshot().as_ref().clone();
-        retained.mark_collection_failure(now_ms, collection_interval_ms, error);
-        retained.set_config_issues(&self.config);
-        self.publish(Arc::new(retained));
+        self.snapshots.update_base(|previous| {
+            let mut retained = previous.clone();
+            retained.mark_collection_failure(now_ms, collection_interval_ms, error);
+            retained.set_config_issues(&self.config);
+            retained
+        });
     }
 
     pub fn publish_runtime_snapshot(&self, mut snapshot: ResponseSnapshot) {

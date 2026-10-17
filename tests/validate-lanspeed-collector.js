@@ -588,7 +588,7 @@ assert(buildDriver.includes('LANSPEED_BPF_TARGET_ARCH') &&
   buildDriver.includes('"nss-ecm"') && buildDriver.includes('target_arch.builds_ecm()'),
   'build driver must select platform-owned TC sources and compile ECM only for aarch64');
 assert(packageMakefile.includes('LANSPEED_BPF_TARGET_ARCH="$(ARCH)"') &&
-  packageMakefile.includes('LANSPEED_NSS_ECM_BPF_ENABLED:=$(filter aarch64,$(ARCH))') &&
+  packageMakefile.includes('LANSPEED_NSS_ECM_BPF_ENABLED:=$(if $(LANSPEED_NSS_PLATFORM_ENABLED),$(filter aarch64,$(ARCH)),)') &&
   packageMakefile.includes('/usr/lib/bpf/lanspeed-ebpf-ecm.o'),
   'OpenWrt packaging must install the isolated ECM object only on aarch64');
 assert(nssRuntime.includes('#[cfg(target_arch = "aarch64")]') &&
@@ -726,13 +726,14 @@ assert(production.includes('x86_coverage: X86Coverage') &&
   production.includes('nss_bpf_coverage: NssBpfCoverage') &&
   production.includes('RateCollector::Bpf if report.facts.nss.present'),
   'production must checkpoint and select independent x86 and NSS-BPF coverage states');
-assert(config.includes('#[cfg(not(feature = "nss-platform"))]\n    pub show_client_totals: bool') &&
+assert(config.includes('pub show_client_totals: bool') &&
+  !config.includes('#[cfg(not(feature = "nss-platform"))]\n    pub show_client_totals: bool') &&
   config.includes('scalar(source, "show_client_totals")') &&
   production.includes('self.config.show_client_totals && actual_live') &&
-  production.includes('#[cfg(not(feature = "nss-platform"))]\nfn suppress_client_totals') &&
-  (production.match(/suppress_client_totals\(&mut clients, self\.config\.show_client_totals\)/g) || []).length === 1 &&
+  production.includes('fn suppress_client_totals') &&
+  (production.match(/suppress_client_totals\(&mut clients, self\.config\.show_client_totals\)/g) || []).length === 2 &&
   production.includes('self.traffic_ledger = None'),
-  'cumulative client totals must gate the x86 ledger and published byte fields');
+  'cumulative client totals must gate both platform ledgers and published byte fields');
 for (const removedPath of [
   'net/lanspeedd/rust/crates/lanspeedd/src/collectors/bpf',
   'net/lanspeedd/rust/crates/lanspeedd/src/collectors/ecm_node.rs',

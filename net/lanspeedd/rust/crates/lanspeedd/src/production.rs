@@ -69,8 +69,10 @@ use crate::workers::{QueueError, RuntimeWorker};
 
 #[cfg(not(feature = "nss-platform"))]
 use crate::probe::TcFacts;
-#[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+#[cfg(feature = "traffic-persistence")]
 use crate::traffic_persistence::TrafficLedger;
+#[cfg(all(feature = "nss-platform", feature = "traffic-persistence"))]
+use crate::traffic_persistence::ExactTrafficSample;
 
 #[cfg(not(feature = "nss-platform"))]
 use crate::platform::x86::{
@@ -319,7 +321,7 @@ struct ProductionRuntime {
     interface_rates: InterfaceRateBook,
     rate_owner: Option<RateCollector>,
     hostnames: HostnameCache,
-    #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+    #[cfg(feature = "traffic-persistence")]
     traffic_ledger: Option<TrafficLedger>,
     /// Only the committed NSS runtime may mutate or remove shared client
     /// control objects. Reload candidates inspect them read-only until the
@@ -355,7 +357,7 @@ struct RuntimeCheckpoint {
     interface_rates: InterfaceRateBook,
     rate_owner: Option<RateCollector>,
     hostnames: HostnameCache,
-    #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+    #[cfg(feature = "traffic-persistence")]
     traffic_ledger: Option<TrafficLedger>,
     conntrack_snapshot: Option<Arc<CollectedSnapshot>>,
     connection_rates: ConnectionRateBook,
@@ -429,7 +431,7 @@ impl ProductionRuntime {
             bpf_retry: BpfRetrySchedule::default(),
             rate_owner: None,
             hostnames: HostnameCache::new(),
-            #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+            #[cfg(feature = "traffic-persistence")]
             traffic_ledger: None,
             adapter: SystemAyaAdapter::with_max_clients(config.max_clients),
             control,
@@ -705,7 +707,7 @@ impl ProductionRuntime {
             interface_rates: self.interface_rates.clone(),
             rate_owner: self.rate_owner,
             hostnames: self.hostnames.clone(),
-            #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+            #[cfg(feature = "traffic-persistence")]
             traffic_ledger: self.traffic_ledger.clone(),
             conntrack_snapshot: self.conntrack_snapshot.clone(),
             connection_rates: self.connection_rates.clone(),
@@ -743,7 +745,7 @@ impl ProductionRuntime {
         self.interface_rates = checkpoint.interface_rates;
         self.rate_owner = checkpoint.rate_owner;
         self.hostnames = checkpoint.hostnames;
-        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+        #[cfg(feature = "traffic-persistence")]
         {
             self.traffic_ledger = checkpoint.traffic_ledger;
         }
@@ -965,7 +967,7 @@ impl ProductionRuntime {
         };
         let actual_live = decision.rate == RateCollector::Bpf && bpf_snapshot.is_some();
         let actual_degraded = !actual_live;
-        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+        #[cfg(feature = "traffic-persistence")]
         if self.config.show_client_totals && actual_live && self.traffic_ledger.is_none() {
             // Defer filesystem and SQLite work until BPF has produced a valid
             // sample. Database errors remain in memory and raw live counters
@@ -981,7 +983,7 @@ impl ProductionRuntime {
             let ips = client.ips.iter().map(String::as_str).collect::<Vec<_>>();
             client.hostname = self.hostnames.lookup(&client.mac, &ips).map(str::to_owned);
         }
-        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+        #[cfg(feature = "traffic-persistence")]
         if self.config.show_client_totals {
             if let Some(ledger) = self.traffic_ledger.as_mut() {
                 ledger.overlay_clients(&mut clients.clients);
@@ -1606,6 +1608,14 @@ impl ProductionRuntime {
                 apply_ecm_bpf_rate_batch(&mut clients, &mut interfaces, batch);
             }
         }
+        #[cfg(feature = "traffic-persistence")]
+        if self.config.show_client_totals {
+            if self.traffic_ledger.is_none() {
+                self.traffic_ledger = Some(TrafficLedger::open_default(now_ms));
+            }
+        } else {
+            self.traffic_ledger = None;
+        }
         self.apply_access_edge_rates(
             &mut clients,
             &published_edge,
@@ -1619,6 +1629,41 @@ impl ProductionRuntime {
             bpf_classifier_read_end_ms,
             &runtime_health,
         );
+        #[cfg(feature = "traffic-persistence")]
+        if let Some(ledger) = self.traffic_ledger.as_mut() {
+            if !rate_mux_owns_display_rate(
+                self.config.access_edge_mode,
+                self.config.rate_collector_mode,
+                self.config.internet_view_mode,
+            ) {
+                for client in &mut clients.clients {
+                    // Manual BPF exposes raw cumulative counters. Legacy ECM
+                    // display windows do not prove an exact lifetime delta:
+                    // preserve recorded totals rather than integrate rates.
+                    let sample = |bytes| {
+                        (client.collector_mode == "bpf")
+                            .then_some(bytes)
+                            .flatten()
+                            .zip(client.sample_ms)
+                            .map(|(bytes, end_ms)| ExactTrafficSample {
+                                source: ModelRateSource::TcBpfLowerBound,
+                                byte_domain: ModelByteDomain::L2NoFcs,
+                                generation: 0,
+                                epoch: 0,
+                                start_ms: 0,
+                                end_ms,
+                                bytes,
+                                cumulative: true,
+                            })
+                    };
+                    let tx = sample(client.tx_bytes);
+                    let rx = sample(client.rx_bytes);
+                    ledger.overlay_exact(client, tx, rx, now_ms);
+                }
+            }
+            ledger.retain_exact_clients(&clients.clients, now_ms);
+        }
+        suppress_client_totals(&mut clients, self.config.show_client_totals);
         if explicit_internet_rate_view(self.config.internet_view_mode) {
             // The explicit routed view is owned by the FastRate publication.
             // Do not let the independent Access Edge/kernel interface sample
@@ -2792,6 +2837,49 @@ impl ProductionRuntime {
                 // warmup state may expose displaced cumulative totals.
                 client.tx_bytes = None;
                 client.rx_bytes = None;
+                #[cfg(feature = "traffic-persistence")]
+                if let Some(ledger) = self.traffic_ledger.as_mut() {
+                    let exact_sample = |published: PublishedRateDirection, direction| {
+                        if published.stale {
+                            return None;
+                        }
+                        if matches!(published.source,
+                            ModelRateSource::FastRoutedLease | ModelRateSource::FastRoutedInternet
+                        ) {
+                            return published.accounting.map(|accounting| ExactTrafficSample {
+                                source: published.source,
+                                byte_domain: accounting.byte_domain,
+                                generation: accounting.attachment_generation,
+                                epoch: accounting.epoch,
+                                start_ms: accounting.start_ms,
+                                end_ms: accounting.end_ms,
+                                bytes: accounting.total_bytes,
+                                cumulative: true,
+                            });
+                        }
+                        edge.and_then(|edge| match direction {
+                            EdgeDirection::Tx => edge.tx.segment,
+                            EdgeDirection::Rx => edge.rx.segment,
+                        })
+                        .filter(|segment| model_rate_source(segment.source) == published.source)
+                        .map(|segment| ExactTrafficSample {
+                            source: published.source,
+                            byte_domain: model_byte_domain(segment.byte_domain),
+                            generation: segment.attachment_generation,
+                            epoch: segment.epoch_id,
+                            start_ms: segment.start_ms,
+                            end_ms: segment.end_ms,
+                            bytes: segment.bytes,
+                            cumulative: false,
+                        })
+                    };
+                    ledger.overlay_exact(
+                        client,
+                        exact_sample(tx, EdgeDirection::Tx),
+                        exact_sample(rx, EdgeDirection::Rx),
+                        runtime_health.now_ms,
+                    );
+                }
             }
             let classification = self
                 .classification_results
@@ -3263,7 +3351,7 @@ impl ProductionRuntime {
         if self.shutdown_complete {
             return Ok(());
         }
-        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+        #[cfg(feature = "traffic-persistence")]
         if let Some(ledger) = self.traffic_ledger.as_mut() {
             ledger.flush_shutdown(production_now_ms().unwrap_or(0));
         }
@@ -3509,7 +3597,6 @@ fn observed_bytes(bps: u64, window_ms: u64) -> u64 {
     bytes.min(u128::from(u64::MAX)) as u64
 }
 
-#[cfg(not(feature = "nss-platform"))]
 fn suppress_client_totals(clients: &mut ClientsResponse, enabled: bool) {
     if enabled {
         return;
@@ -3572,7 +3659,7 @@ impl Runtime for ProductionRuntime {
     }
 
     fn collection_committed(&mut self) {
-        #[cfg(all(not(feature = "nss-platform"), feature = "traffic-persistence"))]
+        #[cfg(feature = "traffic-persistence")]
         if let Some(ledger) = self.traffic_ledger.as_mut() {
             // A staged reload candidate may collect for validation, but must
             // not write to the shared database until it is committed.

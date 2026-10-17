@@ -55,10 +55,56 @@ async page => {
 		addCheck('screenshot', true, screenshotSegments);
 	}
 
+	function parseOklch(body) {
+		const parts = String(body || '').replace(/\//g, ' ').split(/[\s,]+/).filter(Boolean);
+		if (parts.length < 3) return null;
+		function scalar(part) {
+			if (part === undefined) return null;
+			const percent = /%$/.test(part);
+			const number = Number(String(part).replace(/%$/, ''));
+			if (!isFinite(number)) return null;
+			return percent ? number / 100 : number;
+		}
+		function hue(part) {
+			const number = Number(String(part).replace(/(?:deg|grad|rad|turn)$/i, ''));
+			if (!isFinite(number)) return null;
+			if (/grad$/i.test(part)) return number * 0.9;
+			if (/rad$/i.test(part)) return number * 180 / Math.PI;
+			if (/turn$/i.test(part)) return number * 360;
+			return number;
+		}
+		const lightness = scalar(parts[0]);
+		const chroma = scalar(parts[1]);
+		const hueValue = hue(parts[2]);
+		if (lightness === null || chroma === null || hueValue === null) return null;
+		const aAxis = chroma * Math.cos(hueValue * Math.PI / 180);
+		const bAxis = chroma * Math.sin(hueValue * Math.PI / 180);
+		const lPrime = lightness + 0.3963377774 * aAxis + 0.2158037573 * bAxis;
+		const mPrime = lightness - 0.1055613458 * aAxis - 0.0638541728 * bAxis;
+		const sPrime = lightness - 0.0894841775 * aAxis - 1.2914855480 * bAxis;
+		const l = lPrime * lPrime * lPrime;
+		const m = mPrime * mPrime * mPrime;
+		const s = sPrime * sPrime * sPrime;
+		function gamma(channel) {
+			const linear = channel <= 0.0031308
+				? 12.92 * channel : 1.055 * Math.pow(channel, 1 / 2.4) - 0.055;
+			return Math.max(0, Math.min(255, linear * 255));
+		}
+		const alphaValue = parts[3] === undefined ? 1 : scalar(parts[3]);
+		return {
+			r: gamma(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+			g: gamma(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+			b: gamma(-0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s),
+			a: alphaValue === null ? 1 : Math.max(0, Math.min(1, alphaValue))
+		};
+	}
+
 	function parseRgb(value) {
 		const source = String(value || '').trim();
 		const rgb = source.match(/^rgba?\((.*)\)$/i);
 		const srgb = source.match(/^color\(srgb\s+(.+)\)$/i);
+		const oklch = source.match(/^oklch\((.*)\)$/i);
+		if (oklch) return parseOklch(oklch[1]);
 		let parts;
 		let scale;
 		if (rgb) {
@@ -330,7 +376,8 @@ async page => {
 					'--brand', '--surface', '--text', '--text-muted', '--hairline', '--control-bg',
 					'--primary', '--dark-primary', '--gray',
 					'--primary-color-high', '--background-color-high', '--text-color-high',
-					'--text-color-medium', '--border-color-low', '--warn-color-high', '--error-color-high'
+					'--text-color-medium', '--border-color-low', '--warn-color-high', '--error-color-high',
+					'--bg', '--muted-foreground', '--border', '--warning', '--danger'
 				];
 				const nativeTokens = {};
 				nativeTokenNames.forEach(name => {
@@ -367,6 +414,12 @@ async page => {
 					bootstrapBorder: resolveColor('var(--border-color-low,transparent)'),
 					bootstrapWarning: resolveColor('var(--warn-color-high,transparent)'),
 					bootstrapDanger: resolveColor('var(--error-color-high,transparent)'),
+					shadcnSurface: resolveColor('var(--surface,transparent)'),
+					shadcnText: resolveColor('var(--text,transparent)'),
+					shadcnMuted: resolveColor('var(--muted-foreground,transparent)'),
+					shadcnBorder: resolveColor('var(--border,transparent)'),
+					shadcnWarning: resolveColor('var(--warning,transparent)'),
+					shadcnDanger: resolveColor('var(--danger,transparent)'),
 					expectedAccent: args.expectedAccent && CSS.supports('color', args.expectedAccent)
 						? resolveColor(args.expectedAccent) : null
 				};
@@ -544,6 +597,27 @@ async page => {
 						mixedColor(themeEvidence.resolved.bootstrapDanger, themeEvidence.resolved.bootstrapText, .55), 3),
 					themeEvidence.resolved);
 			}
+			if (config.expectedTheme === 'shadcn') {
+				const requiredNative = [ '--brand', '--surface', '--text', '--muted-foreground',
+					'--border', '--warning', '--danger' ];
+				const missingNative = requiredNative.filter(name => !themeEvidence.nativeTokens[name]);
+				addCheck('shadcn-native-tokens', missingNative.length === 0, {
+					missing: missingNative,
+					values: themeEvidence.nativeTokens
+				});
+				addCheck('shadcn-native-mapping',
+					colorsNear(themeEvidence.resolved.accent, themeEvidence.resolved.brand, 3) &&
+					colorsNear(themeEvidence.resolved.surface, themeEvidence.resolved.shadcnSurface, 3) &&
+					colorsNear(themeEvidence.resolved.text, themeEvidence.resolved.shadcnText, 3) &&
+					colorsNear(themeEvidence.resolved.textMuted,
+						mixedColor(themeEvidence.resolved.shadcnMuted, themeEvidence.resolved.shadcnText, .65), 3) &&
+					colorsNear(themeEvidence.resolved.border, themeEvidence.resolved.shadcnBorder, 3) &&
+					colorsNear(themeEvidence.resolved.warning,
+						mixedColor(themeEvidence.resolved.shadcnWarning, themeEvidence.resolved.shadcnText, .56), 6) &&
+					colorsNear(themeEvidence.resolved.danger,
+						mixedColor(themeEvidence.resolved.shadcnDanger, themeEvidence.resolved.shadcnText, .80), 3),
+					themeEvidence.resolved);
+			}
 
 			const styleKeys = {
 				root: [ 'color', 'backgroundColor', 'fontFamily', 'fontSize', 'lineHeight',
@@ -585,7 +659,7 @@ async page => {
 			};
 			if (config.consistencyKey) {
 				const consistency = await page.evaluate(args => {
-					const expectedPages = [ 'overview', 'diagnostics', 'config' ];
+					const expectedPages = args.expectedPages;
 					const result = { available: true, pages: [], missing: [], mismatches: [], records: {} };
 					let records = {};
 					try {
@@ -622,6 +696,8 @@ async page => {
 				}, {
 					key: config.consistencyKey,
 					pageName: config.pageName,
+					expectedPages: config.expectedPages || [ 'overview', 'diagnostics', 'config' ].concat(
+						config.pageName === 'nss' ? [ 'nss' ] : []),
 					reset: config.consistencyReset === true,
 					final: config.consistencyFinal === true,
 					signature: shellSignature
@@ -851,6 +927,49 @@ async page => {
 					const source = String(value || '').trim();
 					const rgb = source.match(/^rgba?\((.*)\)$/i);
 					const srgb = source.match(/^color\(srgb\s+(.+)\)$/i);
+					const oklch = source.match(/^oklch\((.*)\)$/i);
+					if (oklch) {
+						const channels = oklch[1].replace(/\//g, ' ').split(/[\s,]+/).filter(Boolean);
+						if (channels.length < 3) return null;
+						function scalar(part) {
+							const percent = /%$/.test(part);
+							const number = Number(String(part).replace(/%$/, ''));
+							if (!isFinite(number)) return null;
+							return percent ? number / 100 : number;
+						}
+						function hue(part) {
+							const number = Number(String(part).replace(/(?:deg|grad|rad|turn)$/i, ''));
+							if (!isFinite(number)) return null;
+							if (/grad$/i.test(part)) return number * 0.9;
+							if (/rad$/i.test(part)) return number * 180 / Math.PI;
+							if (/turn$/i.test(part)) return number * 360;
+							return number;
+						}
+						const lightness = scalar(channels[0]);
+						const chroma = scalar(channels[1]);
+						const hueValue = hue(channels[2]);
+						if (lightness === null || chroma === null || hueValue === null) return null;
+						const aAxis = chroma * Math.cos(hueValue * Math.PI / 180);
+						const bAxis = chroma * Math.sin(hueValue * Math.PI / 180);
+						const lPrime = lightness + 0.3963377774 * aAxis + 0.2158037573 * bAxis;
+						const mPrime = lightness - 0.1055613458 * aAxis - 0.0638541728 * bAxis;
+						const sPrime = lightness - 0.0894841775 * aAxis - 1.2914855480 * bAxis;
+						const l = lPrime * lPrime * lPrime;
+						const m = mPrime * mPrime * mPrime;
+						const s = sPrime * sPrime * sPrime;
+						function gamma(channel) {
+							const linear = channel <= 0.0031308
+								? 12.92 * channel : 1.055 * Math.pow(channel, 1 / 2.4) - 0.055;
+							return Math.max(0, Math.min(255, linear * 255));
+						}
+						const alphaValue = channels[3] === undefined ? 1 : scalar(channels[3]);
+						return {
+							r: gamma(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+							g: gamma(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+							b: gamma(-0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s),
+							a: alphaValue === null ? 1 : Math.max(0, Math.min(1, alphaValue))
+						};
+					}
 					let parts;
 					let scale;
 					if (rgb) {
@@ -1366,18 +1485,62 @@ async page => {
 				} else {
 					addCheck('overview-pause', false, 'Pause control missing');
 				}
-				const sort = root.locator('.lanspeed-sort-button:visible').first();
+				const sort = root.locator('.lanspeed-sort-select:visible').first();
 				if (await sort.count()) {
-					const header = sort.locator('xpath=..');
-					const before = await header.getAttribute('aria-sort');
-					await sort.click();
-					const after = await header.getAttribute('aria-sort');
-					evidence.interactions.sort = { before: before, after: after };
-					addCheck('overview-sort', before !== after && /^(none|ascending|descending)$/.test(after || ''),
+					const before = await sort.inputValue();
+					await sort.focus();
+					await sort.press('Home');
+					await sort.press('ArrowDown');
+					await sort.press('Enter');
+					const keyboardValue = await sort.inputValue();
+					await sort.selectOption('tx_bytes:asc');
+					const saved = await page.evaluate(() => JSON.parse(
+						window.localStorage.getItem('luci-app-lanspeed.prefs.v5') || '{}'));
+					const after = await root.locator('th[data-column-key="totals"]').getAttribute('aria-sort');
+					const adjacency = await sort.evaluate(select => {
+						const group = select.closest('.lanspeed-sort-control');
+						const adjacent = group && (group.nextElementSibling || group.previousElementSibling);
+						return !!adjacent && adjacent.classList.contains('lanspeed-refresh-control');
+					});
+					evidence.interactions.sort = { before, keyboardValue, after, saved, adjacency };
+					addCheck('overview-sort', keyboardValue === 'rx:desc' && after === 'ascending' && adjacency &&
+						saved.sortKey === 'tx_bytes' && saved.sortDir === 'asc' && saved.sortCustom === true &&
+						await root.locator('#lanspeed-clients-table thead button').count() === 0,
 						evidence.interactions.sort);
+					await sort.selectOption(before);
 				} else {
-					addCheck('overview-sort', false, 'Sort control missing');
+					addCheck('overview-sort', false, 'Sort selector missing');
 				}
+				const trafficColumns = await root.locator('#lanspeed-clients-table').evaluate(table => {
+					function lines(cell) {
+						return cell ? Array.from(cell.querySelectorAll('.lanspeed-client-traffic-line')).map(line => ({
+							direction: line.getAttribute('data-direction'),
+							arrow: (line.querySelector('.lanspeed-client-direction') || {}).textContent,
+							value: (line.querySelector('.lanspeed-client-rate,.lanspeed-client-total') || {}).textContent,
+							top: line.getBoundingClientRect().top,
+							title: line.getAttribute('title') || ''
+						})) : [];
+					}
+					return {
+						headers: Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim()),
+						totals: table.getAttribute('data-client-totals'),
+						rows: Array.from(table.querySelectorAll('tbody tr')).map(row => ({
+							cells: row.cells.length,
+							rate: lines(row.querySelector('.lanspeed-client-rate-cell')),
+							total: lines(row.querySelector('.lanspeed-client-total-cell'))
+						}))
+					};
+				});
+				function validDirections(lines) {
+					return lines.length === 2 && lines[0].direction === 'rx' && lines[0].arrow === '↓' &&
+						lines[1].direction === 'tx' && lines[1].arrow === '↑' && lines[0].top < lines[1].top &&
+						lines.every(line => line.value && (line.value !== '-' || line.title.includes('暂不可用')));
+				}
+				addCheck('overview-traffic-columns', trafficColumns.headers.length === 7 &&
+					trafficColumns.headers[2] === '网速' && trafficColumns.headers[3] === '累计流量' &&
+					trafficColumns.rows.every(row => row.cells === 7 && validDirections(row.rate) &&
+						(trafficColumns.totals !== 'shown' || validDirections(row.total))), trafficColumns);
+
 			const next = root.locator('.lanspeed-page-button[aria-label="下一页"]:visible').first();
 			if (await next.count() && !(await next.isDisabled())) {
 				const summary = root.locator('.lanspeed-page-summary').first();
@@ -1526,41 +1689,48 @@ async page => {
 					const captureSetup = await page.evaluate(() => {
 						const marker = '__lanspeedBrowserAuditClipboard';
 						const state = {
-							text: '', method: '', installed: false,
-							navigatorDescriptor: Object.getOwnPropertyDescriptor(navigator, 'clipboard'),
+							text: '', method: '', installed: false, nativeSuccess: false,
+							clipboard: navigator.clipboard,
 							originalExecCommand: document.execCommand
 						};
-						const capture = function(value) {
-							state.text = String(value || '');
-							return Promise.resolve();
-						};
-						try {
-							Object.defineProperty(navigator, 'clipboard', {
-								configurable: true, value: { writeText: capture }
-							});
-							state.method = 'clipboard.writeText';
-							state.installed = navigator.clipboard && navigator.clipboard.writeText === capture;
-						} catch (error) {}
-						if (!state.installed) {
+						if (state.clipboard && typeof state.clipboard.writeText === 'function') {
+							state.writeDescriptor = Object.getOwnPropertyDescriptor(state.clipboard, 'writeText');
+							state.originalWriteText = state.clipboard.writeText;
+							try {
+								const capture = function(value) {
+									return state.originalWriteText.call(state.clipboard, value).then(result => {
+										state.text = String(value || '');
+										state.method = 'clipboard.writeText';
+										state.nativeSuccess = true;
+										return result;
+									});
+								};
+								Object.defineProperty(state.clipboard, 'writeText', { configurable: true, value: capture });
+								state.installed = state.clipboard.writeText === capture;
+							} catch (error) {}
+						}
+						if (typeof state.originalExecCommand === 'function') {
 							try {
 								document.execCommand = function(command) {
-									if (String(command).toLowerCase() === 'copy') {
-										const active = document.activeElement;
-										state.text = active && typeof active.value === 'string'
-											? active.value.slice(active.selectionStart || 0,
-												active.selectionEnd === null ? active.value.length : active.selectionEnd)
-											: String(window.getSelection && window.getSelection() || '');
-										return true;
+									const isCopy = String(command).toLowerCase() === 'copy';
+									const active = document.activeElement;
+									const text = isCopy && active && typeof active.value === 'string'
+										? active.value.slice(active.selectionStart || 0,
+											active.selectionEnd === null ? active.value.length : active.selectionEnd)
+										: String(window.getSelection && window.getSelection() || '');
+									const result = state.originalExecCommand.apply(document, arguments);
+									if (isCopy && result === true) {
+										state.text = text;
+										state.method = 'document.execCommand';
+										state.nativeSuccess = true;
 									}
-									return state.originalExecCommand
-										? state.originalExecCommand.apply(document, arguments) : false;
+									return result;
 								};
-								state.method = 'document.execCommand';
 								state.installed = true;
 							} catch (error) {}
 						}
 						window[marker] = state;
-						return { installed: state.installed, method: state.method };
+						return { installed: state.installed };
 					});
 					await copy.click();
 					await page.waitForFunction(selector => {
@@ -1587,15 +1757,16 @@ async page => {
 						if (/\b(?:host(?:name)?|client(?:[_-]?(?:name|id|identity|ip|mac|host))?|identity(?:[_-]?(?:key|name|id))?|ip(?:v4|v6)?|mac)\b\s*[:=]\s*(?!\[(?:REDACTED|IP|MAC|HOST|IDENTITY)\])/i.test(text))
 							sensitivePatterns.push('sensitive-assignment');
 						try {
-							if (state.navigatorDescriptor)
-								Object.defineProperty(navigator, 'clipboard', state.navigatorDescriptor);
-							else
-								delete navigator.clipboard;
+							if (state.clipboard && state.originalWriteText) {
+								if (state.writeDescriptor) Object.defineProperty(state.clipboard, 'writeText', state.writeDescriptor);
+								else delete state.clipboard.writeText;
+							}
 						} catch (error) {}
 						try { document.execCommand = state.originalExecCommand; } catch (error) {}
 						delete window[marker];
 						return {
 							captured: text.length > 0,
+							nativeSuccess: state.nativeSuccess === true, method: state.method,
 							reportLength: text.length,
 							firstLine: (text.split(/\r?\n/)[0] || '').slice(0, 120),
 							missingFields: requiredFields.filter(field => text.indexOf(field) === -1),
@@ -1606,19 +1777,12 @@ async page => {
 						feedback: feedback, feedbackState: feedbackState
 					}, captureSetup, reportEvidence);
 					addCheck('diagnostics-copy', feedbackState === 'success' && feedback === '已复制' &&
-						reportEvidence.captured && reportEvidence.missingFields.length === 0 &&
+						reportEvidence.nativeSuccess && reportEvidence.captured && reportEvidence.missingFields.length === 0 &&
 						reportEvidence.sensitivePatterns.length === 0, evidence.interactions.copy);
 				}
 
 				const diagnosticsContract = await root.evaluate(node => {
-				function rows(selector) {
-					return Array.from(node.querySelectorAll(selector)).map(element => ({
-						state: element.getAttribute('data-state') || '',
-						cells: Array.from(element.querySelectorAll('th,td')).map(cell =>
-							cell.textContent.replace(/\s+/g, ' ').trim()),
-						text: element.textContent.replace(/\s+/g, ' ').trim()
-					}));
-				}
+					const runtime = node.__lanspeedDiagnosticsState || {};
 					const sections = Array.from(node.children).filter(element =>
 						element.matches && element.matches('.cbi-section')).map(element => ({
 						classes: Array.from(element.classList),
@@ -1630,141 +1794,122 @@ async page => {
 						value: (element.querySelector('.lanspeed-diagnostic-fact-value') || {}).textContent || '',
 						meta: (element.querySelector('.lanspeed-diagnostic-fact-meta') || {}).textContent || ''
 					}));
-					const stages = Array.from(node.querySelectorAll('.lanspeed-diagnostic-stage')).map(element => ({
+					const rpc = Object.keys(runtime.rpc || {}).map(key => {
+						const item = runtime.rpc[key];
+						return { key: key, ok: item.ok, retained: item.retained, phase: item.phase };
+					});
+					const interfaceRows = Array.from(node.querySelectorAll(
+						'.lanspeed-diagnostics-health-table tbody>tr')).map(element => ({
 						state: element.getAttribute('data-state') || '',
-						heading: (element.querySelector('h4') || {}).textContent || '',
-						badge: (element.querySelector('.lanspeed-diagnostic-stage-badge') || {}).textContent || '',
-						value: (element.querySelector('.lanspeed-diagnostic-stage-value') || {}).textContent || '',
-						description: (element.querySelector('.lanspeed-diagnostic-stage-description') || {}).textContent || '',
-						meta: (element.querySelector('.lanspeed-diagnostic-stage-meta') || {}).textContent || '',
-						evidenceItems: element.querySelectorAll('.lanspeed-diagnostic-stage-evidence dt').length
+						cells: Array.from(element.querySelectorAll('th,td')).map(cell =>
+							cell.textContent.replace(/\s+/g, ' ').trim()),
+						text: element.textContent.replace(/\s+/g, ' ').trim()
 					}));
-					const rpcRows = rows('.lanspeed-diagnostics-rpc-table tbody>tr');
-					const errorDetails = node.querySelector('.lanspeed-diagnostics-error-details');
-					const errors = Array.from(node.querySelectorAll('.lanspeed-diagnostics-error-list>li')).map(element => ({
-						state: element.getAttribute('data-state') || '',
-						text: element.innerText.replace(/\s+/g, ' ').trim()
-					}));
-					const importantAlerts = Array.from(node.querySelectorAll('.lanspeed-diagnostic-important-alerts>li'));
-					const environmentAlerts = Array.from(node.querySelectorAll('.lanspeed-diagnostic-environment-alerts>li'));
-					const report = node.querySelector('.lanspeed-diagnostics-report-preview');
-					const summary = node.querySelector('.lanspeed-diagnostics-summary');
 					return {
 						pageState: node.getAttribute('data-page-state') || '',
 						busy: node.getAttribute('aria-busy'),
-						summary: summary ? summary.textContent.trim() : '',
+						summary: (node.querySelector('.lanspeed-diagnostics-summary') || {}).textContent || '',
 						checked: (node.querySelector('.lanspeed-diagnostics-checked') || {}).textContent || '',
-						sections: sections,
-						facts: facts,
-						stages: stages,
-						rpcRows: rpcRows,
-						interfaceRows: rows('.lanspeed-diagnostics-health-table tbody>tr'),
-						subsystemRows: rows('.lanspeed-diagnostics-subsystem-table tbody>tr'),
-						errorHidden: !errorDetails || errorDetails.hidden || errorDetails.getAttribute('aria-hidden') === 'true',
-						errors: errors,
-						importantAlerts: importantAlerts.map(element => ({
-							severity: element.getAttribute('data-severity') || '', text: element.innerText.trim()
+						sections: sections, facts: facts, rpc: rpc, interfaceRows: interfaceRows,
+						errorCount: node.querySelectorAll('.lanspeed-diagnostics-error-list>li').length,
+						importantAlerts: Array.from(node.querySelectorAll(
+							'.lanspeed-diagnostic-important-alerts>li')).map(element => ({
+							severity: element.getAttribute('data-severity') || '',
+							empty: element.classList.contains('lanspeed-diagnostic-alert-empty'),
+							text: element.innerText.trim()
 						})),
-						environmentAlerts: environmentAlerts.map(element => ({
-							severity: element.getAttribute('data-severity') || '', text: element.innerText.trim()
-						})),
-						reportLength: report ? report.textContent.length : 0,
-						reportFields: report ? [ 'LAN Speed', 'RPC 检查', '客户端总速率', '精准接入点',
-							'NSS/CPU 流量分类', '降级与能力边界', '数据新鲜度', '连接健康',
-							'版本一致性', '接口健康', '隐私说明' ].map(field => ({
-								field: field, found: report.textContent.indexOf(field) !== -1
-							})) : [],
 						nestedSections: node.querySelectorAll('.cbi-section .cbi-section').length,
-						legacyPanels: node.querySelectorAll('.lanspeed-diagnostic-card,.lanspeed-diagnostic-panel,.lanspeed-diagnostic-check').length
+						removedPanels: node.querySelectorAll('.lanspeed-diagnostic-stage,' +
+							'.lanspeed-diagnostics-tc-table,.lanspeed-diagnostics-rpc-table,' +
+							'.lanspeed-diagnostics-subsystem-table,.lanspeed-diagnostics-report-preview,' +
+							'.lanspeed-diagnostic-environment-alerts').length
 					};
 				});
 				evidence.observations.status = diagnosticsContract;
-				const expectedSections = [ 'lanspeed-diagnostics-summary-section' ]
-					.concat(nssPlatform ? [ 'lanspeed-diagnostics-pipeline-section',
-						'lanspeed-diagnostics-control-section' ] : [])
-					.concat([ 'lanspeed-diagnostics-health-section',
-						'lanspeed-diagnostics-support-section' ]);
-				const allowedItemState = /^(good|warning|bad|neutral)$/;
-				const allowedRowState = /^(good|warning|bad|empty|neutral)$/;
-				const allowedErrorState = /^(stale|degraded|error|invalid)$/;
-				const allowedPageState = /^(ready|degraded|partial|empty|error)$/;
-				const invalidRpcRows = diagnosticsContract.rpcRows.filter(row =>
-					!/^(good|warning|bad)$/.test(row.state) || row.cells.length !== 4 ||
-					row.cells.some(cell => !cell));
-				const rpcFailures = diagnosticsContract.rpcRows.filter(row => row.state === 'bad').length;
-				const rpcErrors = diagnosticsContract.rpcRows.filter(row =>
-					row.cells[3] && row.cells[3] !== '已返回数据').length;
-				const disabledSubsystems = diagnosticsContract.subsystemRows.filter(row =>
-					row.cells[1] === '未启用');
-				const disabledNss = disabledSubsystems.filter(row => row.cells[0] === 'NSS');
-				const disabledNoCollect = disabledSubsystems.filter(row =>
-					row.cells[2] === '没有 LAN 接口设为“采集”，客户端实时测速不会启动。');
-				const invalidDisabledStates = disabledSubsystems.filter(row =>
-					disabledNoCollect.indexOf(row) !== -1 ? row.state !== 'bad' : row.state !== 'neutral');
-				const unknownSubsystemCodes = diagnosticsContract.subsystemRows.filter(row =>
-					row.cells[2] && row.cells[2].indexOf('未识别的诊断代码') !== -1);
-				const expectedFactLabels = [ '服务与 RPC', '采集循环', '连接详情', '版本一致性',
-					'冲突结论', '扫描完整性', 'TC 对象', '对象归属' ];
-				addCheck('diagnostics-platform-section-shell', diagnosticsContract.sections.length ===
-					expectedSections.length &&
-					expectedSections.every(className => diagnosticsContract.sections.some(section =>
-						section.classes.indexOf(className) !== -1 && section.heading.trim())) &&
-					diagnosticsContract.nestedSections === 0 && diagnosticsContract.legacyPanels === 0,
+				const expectedSections = [ 'summary', 'support', 'health' ];
+				const expectedFactLabels = [ '服务状态', '数据采集', '连接详情', '版本' ];
+				addCheck('diagnostics-compact-section-shell', diagnosticsContract.sections.length === 3 &&
+					expectedSections.every((name, index) => diagnosticsContract.sections[index].classes.includes(
+						`lanspeed-diagnostics-${name}-section`)) &&
+					diagnosticsContract.nestedSections === 0 && diagnosticsContract.removedPanels === 0,
 					diagnosticsContract.sections);
-				addCheck('diagnostics-summary-contract', allowedPageState.test(diagnosticsContract.pageState) &&
+				addCheck('diagnostics-summary-contract', /^(ready|degraded|partial|empty|error)$/.test(diagnosticsContract.pageState) &&
 					diagnosticsContract.busy === 'false' && diagnosticsContract.summary.trim() &&
-					diagnosticsContract.checked.trim() &&
-					diagnosticsContract.facts.length === expectedFactLabels.length &&
-					expectedFactLabels.every(label => diagnosticsContract.facts.some(item =>
-						item.label.trim() === label)) &&
-					diagnosticsContract.facts.every(item => allowedItemState.test(item.state) &&
-						item.label.trim() && item.value.trim()), diagnosticsContract);
-				const expectedStageHeadings = nssPlatform ? [ '总速率', '接入归属',
-					'NSS / CPU 分类', '控制能力', '混合路径证明', '聚合整形队列',
-					'互联网禁用' ] : [];
-				addCheck('diagnostics-platform-pipeline-contract', diagnosticsContract.stages.length ===
-					expectedStageHeadings.length &&
-					expectedStageHeadings.every(heading => diagnosticsContract.stages.some(item =>
-						item.heading.trim() === heading)) &&
-					diagnosticsContract.stages.every(item => allowedItemState.test(item.state) &&
-						item.heading.trim() && item.badge.trim() && item.value.trim() &&
-						(item.description.trim() || item.meta.trim() || item.evidenceItems > 0)),
-					diagnosticsContract.stages);
-				addCheck('diagnostics-six-rpc-contract', diagnosticsContract.rpcRows.length === 6 &&
-					invalidRpcRows.length === 0 && diagnosticsContract.errors.length === rpcErrors &&
-					diagnosticsContract.errors.every(item => allowedErrorState.test(item.state) && item.text) &&
-					(diagnosticsContract.errorHidden === (diagnosticsContract.errors.length === 0)),
-					{ rpcRows: diagnosticsContract.rpcRows, errors: diagnosticsContract.errors,
-						invalidRpcRows: invalidRpcRows });
-				addCheck('diagnostics-health-contract', diagnosticsContract.interfaceRows.length > 0 &&
-					diagnosticsContract.subsystemRows.length > 0 &&
-					diagnosticsContract.interfaceRows.concat(diagnosticsContract.subsystemRows).every(row =>
-						allowedRowState.test(row.state) && row.text), {
-						interfaces: diagnosticsContract.interfaceRows,
-						subsystems: diagnosticsContract.subsystemRows
-					});
-				addCheck('diagnostics-subsystem-code-contract', unknownSubsystemCodes.length === 0 &&
-					invalidDisabledStates.length === 0 &&
-					disabledNss.every(row => row.cells[2] === '当前设备未检测到 NSS，该组件不适用。'), {
-						disabled: disabledSubsystems,
-						disabledNoCollect: disabledNoCollect,
-						invalidDisabledStates: invalidDisabledStates,
-						disabledNss: disabledNss,
-						unknown: unknownSubsystemCodes
-					});
-				const expectedReportFieldCount = nssPlatform ? 11 : 9;
-				const expectedReportFields = nssPlatform ? diagnosticsContract.reportFields :
-					diagnosticsContract.reportFields.filter(item => [ '精准接入点',
-					'NSS/CPU 流量分类' ].indexOf(item.field) === -1);
-				addCheck('diagnostics-alert-report-contract', diagnosticsContract.importantAlerts.length > 0 &&
-					diagnosticsContract.environmentAlerts.length > 0 &&
-					diagnosticsContract.importantAlerts.concat(diagnosticsContract.environmentAlerts).every(item =>
-						/^(critical|warning|info)$/.test(item.severity) && item.text) &&
-					diagnosticsContract.reportLength >= 100 && expectedReportFields.length === expectedReportFieldCount &&
-					expectedReportFields.every(item => item.found), diagnosticsContract);
+					diagnosticsContract.checked.trim() && diagnosticsContract.facts.length === 4 &&
+					expectedFactLabels.every(label => diagnosticsContract.facts.some(item => item.label.trim() === label)) &&
+					diagnosticsContract.facts.every(item => /^(good|warning|bad|neutral)$/.test(item.state) &&
+						item.value.trim()), diagnosticsContract);
+				const rpcFailures = diagnosticsContract.rpc.filter(item => !item.ok && !item.retained);
+				addCheck('diagnostics-six-rpc-contract', diagnosticsContract.rpc.length === 6 &&
+					diagnosticsContract.rpc.every(item => /^(success|empty|stale|degraded|error|invalid)$/.test(item.phase)) &&
+					diagnosticsContract.errorCount === diagnosticsContract.rpc.filter(item => !item.ok).length,
+					diagnosticsContract.rpc);
+				addCheck('diagnostics-interface-contract', diagnosticsContract.interfaceRows.length > 0 &&
+					diagnosticsContract.interfaceRows.every(row => /^(good|warning|bad|empty|neutral)$/.test(row.state) &&
+						row.text && (row.state === 'empty' ? row.cells.length === 1 : row.cells.length === 3)),
+					diagnosticsContract.interfaceRows);
+				const alerts = diagnosticsContract.importantAlerts;
+				addCheck('diagnostics-actionable-alert-contract', alerts.length > 0 &&
+					alerts.every(item => item.text && (item.empty || /^(critical|warning)$/.test(item.severity))) &&
+					new Set(alerts.map(item => item.text)).size === alerts.length &&
+					(!alerts.some(item => item.empty) || alerts.length === 1), alerts);
+				addCheck('diagnostics-report-contract', !!evidence.interactions.copy &&
+					evidence.interactions.copy.captured && evidence.interactions.copy.reportLength >= 100 &&
+					evidence.interactions.copy.missingFields.length === 0 &&
+					evidence.interactions.copy.sensitivePatterns.length === 0, evidence.interactions.copy);
 				if (!config.allowBadState)
-					addCheck('diagnostics-no-hard-failure', diagnosticsContract.pageState !== 'error' &&
-						rpcFailures === 0, diagnosticsContract);
+					addCheck('diagnostics-rpc-available', rpcFailures.length === 0, diagnosticsContract.rpc);
+
+			}
+
+			if (config.pageName === 'nss') {
+				const requiredNssFields = [ 'access_edge_mode', 'internet_view_mode',
+					'nss_low_rate_window_ms', 'nss_low_rate_high_watermark_bps',
+					'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets', 'rate_compensation_factor' ];
+				const nssContract = await root.evaluate(node => ({
+					page: node.getAttribute('data-config-page'), state: node.getAttribute('data-state'),
+					busy: node.getAttribute('aria-busy'),
+					fields: Array.from(node.querySelectorAll('.lanspeed-config-table tr[data-field]')).map(row => row.getAttribute('data-field')),
+					interfaceSections: node.querySelectorAll('.lanspeed-ifcfg').length,
+					subsections: node.querySelectorAll('.lanspeed-config-subsection').length,
+					failure: !!node.querySelector('.lanspeed-page-failure')
+				}));
+				evidence.observations.status = nssContract;
+				const actions = page.locator('.cbi-page-actions .cbi-button-save, .cbi-page-actions .cbi-button-apply');
+				if (nssContract.failure) {
+					addCheck('nss-unavailable-readonly', nssContract.state === 'hard-error' && nssContract.fields.length === 0 &&
+						await actions.evaluateAll(buttons => buttons.every(button => button.disabled)), nssContract);
+					if (!config.allowBadState) addCheck('nss-capability-available', false, nssContract);
+				} else {
+					addCheck('nss-fields-contract', nssContract.page === 'nss' && nssContract.fields.length === requiredNssFields.length &&
+						new Set(nssContract.fields).size === requiredNssFields.length &&
+						requiredNssFields.every(name => nssContract.fields.includes(name)) &&
+						nssContract.interfaceSections === 0 && nssContract.subsections === 1, nssContract);
+					addCheck('nss-state-contract', /^(ready|degraded|empty)$/.test(nssContract.state || '') &&
+						nssContract.busy !== 'true', nssContract);
+					const input = root.locator('#lanspeed-config-nss-fifo-target-delay-ms');
+					const original = await input.inputValue();
+					await input.fill('0');
+					await page.waitForFunction(() => {
+						const input = document.querySelector('#lanspeed-config-nss-fifo-target-delay-ms');
+						return input && input.getAttribute('aria-invalid') === 'true';
+					}, null, { timeout: config.timeoutMs });
+					const invalidButtons = await actions.evaluateAll(buttons => buttons.map(button => button.disabled));
+					await input.fill(original);
+					await page.waitForFunction(() => {
+						const input = document.querySelector('#lanspeed-config-nss-fifo-target-delay-ms');
+						return input && input.getAttribute('aria-invalid') !== 'true';
+					}, null, { timeout: config.timeoutMs });
+					const restoredButtons = await actions.evaluateAll(buttons => buttons.map(button => button.disabled));
+					addCheck('nss-validation', invalidButtons.length >= 2 && invalidButtons.every(Boolean) &&
+						restoredButtons.every(disabled => !disabled) && await input.inputValue() === original,
+						{ invalidButtons, restoredButtons });
+					await page.reload({ waitUntil: 'domcontentloaded', timeout: config.timeoutMs });
+					await root.waitFor({ state: 'visible', timeout: config.timeoutMs });
+					await page.waitForTimeout(config.settleMs);
+					addCheck('nss-interaction-reset', await input.inputValue() === original,
+						{ value: await input.inputValue(), original });
+				}
 			}
 
 			if (config.pageName === 'config') {
@@ -1866,21 +2011,17 @@ async page => {
 						addCheck('config-no-hard-failure', false, configContract);
 				} else {
 					const requiredSubsections = [ 'lanspeed-config-runtime-section', 'lanspeed-ifcfg' ];
-					const nssPlatform = configContract.fieldNames.indexOf('access_edge_mode') !== -1;
 					const x86ProxyConnections = configContract.fieldNames.indexOf(
 						'enable_proxy_connections') !== -1;
 					const requiredFields = [
 						'rate_collector_mode'
-					].concat(nssPlatform ? [ 'access_edge_mode', 'internet_view_mode',
-						'nss_low_rate_window_ms',
-						'nss_low_rate_high_watermark_bps', 'nss_fifo_target_delay_ms',
-						'nss_fifo_min_queue_packets', 'rate_compensation_factor' ] : []).concat(
+					].concat(
 						x86ProxyConnections ? [ 'enable_proxy_connections', 'mihomo_controller_port',
 							'mihomo_controller_secret' ] : []).concat([
 						'conn_collector_mode',
 						'enable_bpf', 'enable_conntrack_fallback', 'refresh_interval_ms',
 						'overview_window_samples', 'max_clients', 'active_client_window_ms',
-						'active_client_min_bps', 'show_ipv6',
+						'active_client_min_bps', 'show_client_totals', 'show_ipv6',
 						'hide_private_ipv6', 'hide_ipv6_ranges'
 					]);
 					const uniqueFields = Array.from(new Set(configContract.fieldNames));

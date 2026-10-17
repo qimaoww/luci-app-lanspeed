@@ -6,6 +6,7 @@
 'require lanspeed.configStyleAurora as configStyleAurora';
 'require lanspeed.configStyleArgon as configStyleArgon';
 'require lanspeed.configStyleBootstrap as configStyleBootstrap';
+'require lanspeed.configStyleShadcn as configStyleShadcn';
 'require lanspeed.configStyleResponsive as configStyleResponsive';
 
 /* Shared shell precedes theme visuals; responsive structure must win last. */
@@ -15,6 +16,7 @@ var CONFIG_LAYOUT_CSS = [
 	configStyleAurora.CSS,
 	configStyleArgon.CSS,
 	configStyleBootstrap.CSS,
+	configStyleShadcn.CSS,
 	configStyleResponsive.CSS
 ].join('\n');
 

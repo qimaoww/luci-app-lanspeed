@@ -99,7 +99,10 @@ fn visit_reader<R: BufRead>(
 ) -> Result<(usize, usize), ProcfsError> {
     let mut entries_seen = 0usize;
     let mut malformed_lines = 0usize;
-    while let Some((line, oversized)) = read_bounded_line(reader)? {
+    // A dump may contain tens of thousands of entries. Reuse one bounded
+    // buffer rather than allocating and growing a new Vec for every flow.
+    let mut line = Vec::with_capacity(CONNTRACK_LINE_MAX);
+    while let Some(oversized) = read_bounded_line(reader, &mut line)? {
         entries_seen = entries_seen.saturating_add(1);
         if oversized {
             malformed_lines = malformed_lines.saturating_add(1);
@@ -149,14 +152,17 @@ pub fn read_aggregate(
     }
 }
 
-fn read_bounded_line<R: BufRead>(reader: &mut R) -> Result<Option<(Vec<u8>, bool)>, ProcfsError> {
-    let mut line = Vec::new();
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+) -> Result<Option<bool>, ProcfsError> {
+    line.clear();
     let mut oversized = false;
     let mut saw_data = false;
     loop {
         let available = reader.fill_buf().map_err(ProcfsError::Io)?;
         if available.is_empty() {
-            return Ok(saw_data.then_some((line, oversized)));
+            return Ok(saw_data.then_some(oversized));
         }
         saw_data = true;
         let take = available
@@ -173,24 +179,35 @@ fn read_bounded_line<R: BufRead>(reader: &mut R) -> Result<Option<(Vec<u8>, bool
         let ended = available[..take].last() == Some(&b'\n');
         reader.consume(take);
         if ended {
-            return Ok(Some((line, oversized)));
+            return Ok(Some(oversized));
         }
     }
 }
 
 fn parse_line(bytes: &[u8]) -> Option<FlowSample> {
     let line = std::str::from_utf8(bytes).ok()?;
-    let tokens: Vec<&str> = line.split_ascii_whitespace().collect();
-    let protocol = match *tokens.get(2)? {
+    let mut tokens = line.split_ascii_whitespace();
+    let first = tokens.next()?;
+    // nf_conntrack includes an L3 family prefix; legacy ip_conntrack starts
+    // directly with the L4 protocol. Both paths are used by read_aggregate.
+    let protocol_name = if matches!(first, "ipv4" | "ipv6") {
+        tokens.next()?;
+        tokens.next()?
+    } else {
+        first
+    };
+    let protocol_number = tokens.next()?;
+    let protocol = match protocol_name {
         "tcp" => Protocol::Tcp,
         "udp" => Protocol::Udp,
-        _ => Protocol::Other(tokens.get(3)?.parse().ok()?),
+        _ => Protocol::Other(protocol_number.parse().ok()?),
     };
+    let mut state_tokens = tokens.clone();
     let tcp_state = (protocol == Protocol::Tcp
-        && tokens
-            .get(4)
+        && state_tokens
+            .next()
             .is_some_and(|value| value.parse::<u64>().is_ok()))
-    .then(|| parse_tcp_state(tokens.get(5).copied().unwrap_or("")));
+    .then(|| parse_tcp_state(state_tokens.next().unwrap_or("")));
     let mut flow = FlowSample {
         protocol,
         tcp_state,

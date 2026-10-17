@@ -6,6 +6,7 @@
 'require lanspeed.clientDetailStyleAurora as Aurora';
 'require lanspeed.clientDetailStyleArgon as Argon';
 'require lanspeed.clientDetailStyleBootstrap as Bootstrap';
+'require lanspeed.clientDetailStyleShadcn as Shadcn';
 'require lanspeed.clientDetailStyleResponsive as Responsive';
 
 var CSS = [
@@ -15,6 +16,7 @@ var CSS = [
 	Aurora.CSS,
 	Argon.CSS,
 	Bootstrap.CSS,
+	Shadcn.CSS,
 	Responsive.CSS
 ].join('\n');
 

@@ -60,11 +60,14 @@ const luciStaticRoot = path.join(
 );
 const luciResourceRoot = path.join(luciStaticRoot, 'lanspeed');
 const luciViewRoot = path.join(luciStaticRoot, 'view/lanspeed');
-const luciMenuPath = path.join(
+const luciMenuDir = path.join(
   root,
-  'applications/luci-app-lanspeed/root/usr/share/luci/menu.d/luci-app-lanspeed.json'
+  'applications/luci-app-lanspeed/root/usr/share/luci/menu.d'
 );
-const luciMenuSource = fs.readFileSync(luciMenuPath, 'utf8');
+const luciMenuFiles = [ 'luci-app-lanspeed.json', 'luci-app-lanspeed-nss.json' ];
+const luciMenuSources = luciMenuFiles.map(
+  (name) => fs.readFileSync(path.join(luciMenuDir, name), 'utf8'));
+const luciMenuSource = luciMenuSources.join('\n');
 const readmeLanding = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
 const readme = [
   readmeLanding,
@@ -91,6 +94,7 @@ const luciResources = [
   'configStyleAurora.js',
   'configStyleBase.js',
   'configStyleBootstrap.js',
+  'configStyleShadcn.js',
   'configStyleResponsive.js',
   'configStyleShared.js',
 	'configView.js',
@@ -99,6 +103,7 @@ const luciResources = [
 	'designSystemAurora.js',
 	'designSystemBase.js',
 	'designSystemBootstrap.js',
+	'designSystemShadcn.js',
   'diagnosticsRefresh.js',
   'diagnosticsShell.js',
   'diagnosticsStyle.js',
@@ -106,6 +111,7 @@ const luciResources = [
   'diagnosticsStyleAurora.js',
   'diagnosticsStyleBase.js',
   'diagnosticsStyleBootstrap.js',
+  'diagnosticsStyleShadcn.js',
   'diagnosticsStyleResponsive.js',
 	'diagnosticsSchema.js',
 	'diagnosticsResources.js',
@@ -127,6 +133,7 @@ const luciResources = [
   'clientDetailStyleBootstrap.js',
   'clientDetailStyleArgon.js',
   'clientDetailStyleAurora.js',
+  'clientDetailStyleShadcn.js',
   'clientDetailStyleResponsive.js',
   'clientDetailRefresh.js',
   'clientDetailView.js',
@@ -145,13 +152,14 @@ const luciResources = [
   'statusStyleAurora.js',
   'statusStyleBase.js',
   'statusStyleBootstrap.js',
+  'statusStyleShadcn.js',
   'statusStyleResponsive.js',
   'statusOverview.js',
   'statusView.js',
   'theme.js',
   'vocab.js'
 ];
-const luciViews = [ 'config.js', 'diagnostics.js', 'overview.js' ];
+const luciViews = [ 'config.js', 'diagnostics.js', 'nss.js', 'overview.js' ];
 const clientDetailResources = [
 	'clientConnections.js',
 	'dhcpHostnames.js',
@@ -161,6 +169,7 @@ const clientDetailResources = [
   'clientDetailStyleBootstrap.js',
   'clientDetailStyleArgon.js',
   'clientDetailStyleAurora.js',
+  'clientDetailStyleShadcn.js',
   'clientDetailStyleResponsive.js',
   'clientDetailRefresh.js',
   'clientDetailView.js',
@@ -727,10 +736,23 @@ try {
     /LANSPEED_X86_CONTROL_DEPENDS:=\+TARGET_x86:tc-full \+TARGET_x86:ip \+TARGET_x86:nftables \+TARGET_x86:conntrack \+TARGET_x86:kmod-ifb \+TARGET_x86:kmod-sched-core \+TARGET_x86:kmod-sched/,
     'x86 client control must request the IFB and scheduler modules only behind the x86 architecture gate'
   );
+  assertMatch(pkgMakefile, /^PKG_CONFIG_DEPENDS:=CONFIG_LUCI_APP_LANSPEED_NSS$/m,
+    'daemon package must rebuild when the NSS support toggle changes');
+  assertMatch(pkgMakefile, /LANSPEED_NSS_PLATFORM \?= \$\(if \$\(CONFIG_LUCI_APP_LANSPEED_NSS\),1,0\)/,
+    'daemon NSS platform flag must follow the luci-app-lanspeed NSS toggle');
+  assertMatch(pkgMakefile, /LANSPEED_NSS_PLATFORM_ENABLED:=\$\(filter 1,\$\(LANSPEED_NSS_PLATFORM\)\)/,
+    'daemon must normalize the NSS platform flag before using it');
+  assertMatch(pkgMakefile, /LANSPEED_NSS_PLATFORM="\$\(LANSPEED_NSS_PLATFORM\)"/,
+    'daemon userspace build must receive the NSS platform flag');
   assertMatch(
     pkgMakefile,
-    /LANSPEED_NSS_CONTROL_DEPENDS:=\+TARGET_qualcommax:tc-full \+TARGET_qualcommax:ip \+TARGET_qualcommax:nftables \+TARGET_qualcommax:conntrack \+TARGET_qualcommax:kmod-ifb \+TARGET_qualcommax:kmod-sched-core \+TARGET_qualcommax:kmod-qca-nss-drv-igs \+TARGET_qualcommax:kmod-lanspeed-nss-control/,
-    'NSS client control must request its CPU-path modules only behind the qualcommax architecture gate'
+    /LANSPEED_AARCH64_CONTROL_DEPENDS:=\+TARGET_qualcommax:tc-full \+TARGET_qualcommax:ip \+TARGET_qualcommax:nftables \+TARGET_qualcommax:conntrack \+TARGET_qualcommax:kmod-ifb \+TARGET_qualcommax:kmod-sched-core/,
+    'aarch64 TC-BPF control must request its CPU-path modules only behind the qualcommax architecture gate'
+  );
+  assertMatch(
+    pkgMakefile,
+    /LANSPEED_NSS_CONTROL_DEPENDS:=\+LUCI_APP_LANSPEED_NSS:kmod-qca-nss-drv-igs \+LUCI_APP_LANSPEED_NSS:kmod-lanspeed-nss-control/,
+    'NSS-only kernel modules must be requested only when the NSS switch is enabled'
   );
   assertMatch(nssControlKmodMakefile, /^PKG_VERSION:=1\.2\.1$/m,
     'NSS control kmod must stay on the daemon version');
@@ -825,17 +847,27 @@ try {
   assert(userspaceBuild >= 0 && bpfConditional >= 0 && userspaceBuild < bpfConditional,
     'userspace must always build before the separate eBPF package step');
   assert(ebpfBuild > bpfConditional, 'eBPF build must be conditional and additive');
-  assertMatch(pkgMakefile, /^\s*FILE:=bpf-linker-0\.10\.3-x86_64-unknown-linux-musl\.tar\.gz$/m, 'bpf-linker cache name must include its pinned version');
-  assertMatch(pkgMakefile, /^\s*URL_FILE:=bpf-linker-x86_64-unknown-linux-musl\.tar\.gz$/m, 'bpf-linker remote archive name must remain official');
+  assertMatch(pkgMakefile, /^\s*FILE:=bpf-linker-0\.11\.1-x86_64-unknown-linux-musl\.tar\.zst$/m, 'bpf-linker cache name must include its pinned version');
+  assertMatch(pkgMakefile, /^\s*URL_FILE:=bpf-linker-x86_64-unknown-linux-musl\.tar\.zst$/m, 'bpf-linker remote archive name must remain official');
   assertMatch(
     pkgMakefile,
-    /^\s*URL:=https:\/\/github\.com\/aya-rs\/bpf-linker\/releases\/download\/v0\.10\.3\/$/m,
-    'bpf-linker 0.10.3 download URL must be official'
+    /^\s*URL:=https:\/\/github\.com\/aya-rs\/bpf-linker\/releases\/download\/v0\.11\.1\/$/m,
+    'bpf-linker 0.11.1 download URL must be official'
   );
   assertMatch(
     pkgMakefile,
-    /^\s*HASH:=0fa4645d2dfbb5cafe6231b0aa9fad4f1430bd0871e3bd7319e82d827bf6262c$/m,
+    /^\s*HASH:=e058a6aecc9e65fa4c977b298a8e4b738424d7629769fd352eed409fb57e16e8$/m,
     'bpf-linker archive SHA256 must be pinned'
+  );
+  assertMatch(
+    pkgMakefile,
+    /command -v zstd >\/dev\/null 2>&1 \|\|/,
+    'BPF Build/Prepare must require the host zstd utility for the pinned archive'
+  );
+  assertMatch(
+    pkgMakefile,
+    /zstd -dc \$\(DL_DIR\)\/\$\(BPF_LINKER_ARCHIVE\) \| \$\(TAR\) -C \$\(BPF_LINKER_DIR\) -xf -/,
+    'BPF Build/Prepare must decompress the zstd archive through the host tar'
   );
   assertMatch(
     pkgMakefile,
@@ -850,11 +882,11 @@ try {
   assertMatch(pkgMakefile, /BPF_LINKER="\$\(BPF_LINKER\)"/, 'eBPF build must use the extracted pinned linker');
 	assertMatch(pkgMakefile, /LANSPEED_BPF_TARGET_ARCH="\$\(ARCH\)"/,
 		'eBPF build must receive the OpenWrt target architecture explicitly');
-	assert(buildDriver.includes('PINNED_BPF_LINKER: &str = "0.10.3"'), 'build driver must retain the packaged bpf-linker version');
+	assert(buildDriver.includes('PINNED_BPF_LINKER: &str = "0.11.1"'), 'build driver must retain the packaged bpf-linker version');
 	assert(buildDriver.includes('MINIMUM_BPF_LINKER: &str = PINNED_BPF_LINKER') &&
-		buildDriver.includes('MAXIMUM_BPF_LINKER_EXCLUSIVE: &str = "0.11.0"') &&
+		buildDriver.includes('MAXIMUM_BPF_LINKER_EXCLUSIVE: &str = "0.12.0"') &&
 		buildDriver.includes('validate_version_range('),
-		'build driver must accept the compatible stable bpf-linker 0.10.x range');
+		'build driver must accept the compatible stable bpf-linker 0.11.x range');
   assert(buildDriver.includes('"--locked"') && buildDriver.includes('"--offline"'), 'build driver must use locked offline Cargo');
 	assert(buildDriver.includes('BPF_TARGET_ARCH_ENV: &str = "LANSPEED_BPF_TARGET_ARCH"') &&
 		buildDriver.includes('command.env("AYA_BPF_TARGET_ARCH", target_arch.aya_name())') &&
@@ -882,8 +914,8 @@ try {
       `lanspeedd-bpf must preserve the runtime path for ${object} through a relative symlink`
     );
   }
-	assertMatch(pkgMakefile, /LANSPEED_NSS_ECM_BPF_ENABLED:=\$\(filter aarch64,\$\(ARCH\)\)/,
-		'ECM object packaging must be gated to aarch64');
+	assertMatch(pkgMakefile, /LANSPEED_NSS_ECM_BPF_ENABLED:=\$\(if \$\(LANSPEED_NSS_PLATFORM_ENABLED\),\$\(filter aarch64,\$\(ARCH\)\),\)/,
+		'ECM object packaging must be gated to aarch64 NSS builds');
 	assert(
 		pkgMakefile.includes('target/bpfel-unknown-none/release/lanspeed-ebpf-ecm $(1)/usr/lib/bpf/lanspeed-ebpf-ecm.o') &&
 		pkgMakefile.includes('$(LN) lanspeed-ebpf-ecm.o $(1)/usr/lib/bpf/lanspeed-ebpf-ecm'),
@@ -896,8 +928,8 @@ try {
   );
   assertMatch(
     pkgMakefile,
-    /if \[ "\$\(CONFIG_TARGET_qualcommax\)" = "y" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/etc\/uci-defaults; \\\s*\$\(INSTALL_BIN\) \.\/files\/etc\/uci-defaults\/94-lanspeed-nss-shaping \$\(1\)\/etc\/uci-defaults\/94-lanspeed-nss-shaping; \\\s*fi/,
-    'only the qualcommax package may install the NSS shaping migration'
+    /if \[ "\$\(CONFIG_TARGET_qualcommax\)" = "y" \] && \[ -n "\$\(LANSPEED_NSS_PLATFORM_ENABLED\)" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/etc\/uci-defaults; \\\s*\$\(INSTALL_BIN\) \.\/files\/etc\/uci-defaults\/94-lanspeed-nss-shaping \$\(1\)\/etc\/uci-defaults\/94-lanspeed-nss-shaping; \\\s*fi/,
+    'only the qualcommax package may install the NSS shaping migration when NSS is enabled'
   );
   assertNoMatch(pkgMakefile, /procd_set_param respawn\/a\\\tprocd_set_param term_timeout/,
     'package installation must not patch platform-specific service termination timing');
@@ -913,13 +945,13 @@ try {
   );
   assertMatch(
     pkgMakefile,
-    /if \[ "\$\(CONFIG_TARGET_qualcommax\)" = "y" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/usr\/libexec\/lanspeed; \\\s*\$\(INSTALL_BIN\) \.\/files\/usr\/libexec\/lanspeed\/load-control-modules\.nss \$\(1\)\/usr\/libexec\/lanspeed\/load-control-modules; \\\s*fi/,
-    'only the qualcommax package may install the NSS kernel-module loader'
+    /if \[ "\$\(CONFIG_TARGET_qualcommax\)" = "y" \] && \[ -n "\$\(LANSPEED_NSS_PLATFORM_ENABLED\)" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/usr\/libexec\/lanspeed; \\\s*\$\(INSTALL_BIN\) \.\/files\/usr\/libexec\/lanspeed\/load-control-modules\.nss \$\(1\)\/usr\/libexec\/lanspeed\/load-control-modules; \\\s*fi/,
+    'only the qualcommax NSS build may install the NSS kernel-module loader'
   );
   assertMatch(
     pkgMakefile,
-    /if \[ "\$\(CONFIG_TARGET_qualcommax\)" != "y" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/etc\/hotplug\.d\/iface; \\\s*\$\(INSTALL_BIN\) \.\/files\/etc\/hotplug\.d\/iface\/90-lanspeedd \$\(1\)\/etc\/hotplug\.d\/iface\/90-lanspeedd; \\\s*fi/,
-    'qualcommax must use only procd reload triggers while x86 retains its existing hotplug entry'
+    /if \[ "\$\(CONFIG_TARGET_qualcommax\)" != "y" \] \|\| \[ -z "\$\(LANSPEED_NSS_PLATFORM_ENABLED\)" \]; then \\\s*\$\(INSTALL_DIR\) \$\(1\)\/etc\/hotplug\.d\/iface; \\\s*\$\(INSTALL_BIN\) \.\/files\/etc\/hotplug\.d\/iface\/90-lanspeedd \$\(1\)\/etc\/hotplug\.d\/iface\/90-lanspeedd; \\\s*fi/,
+    'non-NSS builds must retain the interface hotplug entry'
   );
   assertMatch(initScript, /procd_set_param term_timeout 15/,
     'all platforms must allow bounded graceful dataplane shutdown before forced termination');
@@ -955,9 +987,9 @@ try {
     'x86 migration must normalize retained forced NSS modes to BPF');
   assertMatch(pkgMakefile, /LANSPEED_X86_CONTROL_DEPENDS:=\+TARGET_x86:tc-full \+TARGET_x86:ip \+TARGET_x86:nftables \+TARGET_x86:conntrack \+TARGET_x86:kmod-ifb \+TARGET_x86:kmod-sched-core \+TARGET_x86:kmod-sched/,
     'client-control userspace tools and kernel queue modules must be requested only by the x86 package');
-  assertMatch(pkgMakefile, /LANSPEED_NSS_CONTROL_DEPENDS:=\+TARGET_qualcommax:tc-full \+TARGET_qualcommax:ip \+TARGET_qualcommax:nftables \+TARGET_qualcommax:conntrack \+TARGET_qualcommax:kmod-ifb \+TARGET_qualcommax:kmod-sched-core \+TARGET_qualcommax:kmod-qca-nss-drv-igs \+TARGET_qualcommax:kmod-lanspeed-nss-control/,
-    'NSS client control must package only its verified CPU-path kernel dependencies');
-  assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+libgcc \+kmod-nf-conntrack-netlink \+TARGET_x86:libsqlite3 \$\(LANSPEED_X86_CONTROL_DEPENDS\) \$\(LANSPEED_NSS_CONTROL_DEPENDS\)/,
+  assertMatch(pkgMakefile, /LANSPEED_NSS_CONTROL_DEPENDS:=\+LUCI_APP_LANSPEED_NSS:kmod-qca-nss-drv-igs \+LUCI_APP_LANSPEED_NSS:kmod-lanspeed-nss-control/,
+    'NSS client control must package its NSS-only kernel dependencies only when NSS support is enabled');
+  assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+libgcc \+kmod-nf-conntrack-netlink \+libsqlite3 \$\(LANSPEED_X86_CONTROL_DEPENDS\) \$\(LANSPEED_AARCH64_CONTROL_DEPENDS\) \$\(LANSPEED_NSS_CONTROL_DEPENDS\)/,
     'base daemon must retain collector dependencies and append isolated platform controls');
   assertNoMatch(pkgMakefile, /\+libubox|\+libubus|\+libuci|\+libblobmsg-json/,
     'pure Rust userspace must not retain versioned OpenWrt library dependencies');
@@ -1049,8 +1081,11 @@ try {
   const installedViews = [...viewInstall[1].matchAll(
     /\.\/htdocs\/luci-static\/resources\/view\/lanspeed\/([^\s\\/]+\.js)/g
   )].map((match) => match[1]);
-  assertExactNames(installedViews, luciViews,
-    'LuCI package view/lanspeed install list must be exactly config.js, diagnostics.js and overview.js');
+  assertExactNames(installedViews, luciViews.filter((name) => name !== 'nss.js'),
+    'LuCI package view/lanspeed install block must include every unconditional view');
+  assertMatch(luciMakefile,
+    /\$\(if \$\(CONFIG_LUCI_APP_LANSPEED_NSS\),\$\(INSTALL_DATA\) \.\/htdocs\/luci-static\/resources\/view\/lanspeed\/nss\.js \$\(1\)\/www\/luci-static\/resources\/view\/lanspeed\/nss\.js,:\)/,
+    'LuCI package must install the NSS view only when NSS support is enabled');
 
   assertExactNames(
     fs.readdirSync(luciResourceRoot, { withFileTypes: true })
@@ -1062,7 +1097,7 @@ try {
     fs.readdirSync(luciViewRoot, { withFileTypes: true })
       .filter((entry) => entry.isFile()).map((entry) => entry.name),
     luciViews,
-    'view/lanspeed source directory must contain only config.js, diagnostics.js and overview.js'
+    'view/lanspeed source directory must contain only the active configuration and status views'
   );
 
   assertNoMatch(luciMakefile, versionedCachePattern,
@@ -1072,18 +1107,33 @@ try {
   assertNoVersionedCacheFiles(luciResourceRoot, 'resources/lanspeed');
   assertNoVersionedCacheFiles(luciViewRoot, 'view/lanspeed');
 
-  const luciMenu = JSON.parse(luciMenuSource);
+  const luciMenu = Object.assign({}, ...luciMenuSources.map((source) => JSON.parse(source)));
   const menuViewPaths = Object.values(luciMenu)
     .filter((entry) => entry.action && entry.action.type === 'view')
     .map((entry) => entry.action.path);
-  assertExactNames(menuViewPaths, [ 'lanspeed/config', 'lanspeed/diagnostics', 'lanspeed/overview' ],
-    'LuCI menu view actions must use config, diagnostics and overview views');
+  assertExactNames(menuViewPaths, [ 'lanspeed/config', 'lanspeed/diagnostics', 'lanspeed/nss', 'lanspeed/overview' ],
+    'LuCI menu view actions must include the dedicated NSS configuration view');
   assert(luciMenu['admin/status/lanspeed/overview'].action.path === 'lanspeed/overview',
     'LuCI overview menu must use the semantic overview view');
   assert(luciMenu['admin/status/lanspeed/diagnostics'].action.path === 'lanspeed/diagnostics',
     'LuCI diagnostics menu must use the dedicated diagnostics view');
   assert(luciMenu['admin/status/lanspeed/config'].action.path === 'lanspeed/config',
     'LuCI config menu must use the semantic config view');
+  assert(luciMenu['admin/status/lanspeed/nss'].action.path === 'lanspeed/nss',
+    'LuCI NSS menu must use the dedicated NSS view');
+  assert(luciMenu['admin/status/lanspeed/nss'].depends &&
+    Object.keys(luciMenu['admin/status/lanspeed/nss'].depends.fs || {}).length > 0,
+    'LuCI NSS submenu must be gated by NSS platform support on the router');
+  assertMatch(luciMakefile, /^\s*MENU:=1$/m,
+    'LuCI package must expose its options as a menuconfig submenu');
+  assertMatch(luciMakefile, /^PKG_CONFIG_DEPENDS:=CONFIG_LUCI_APP_LANSPEED_NSS$/m,
+    'LuCI package must rebuild when the NSS support toggle changes');
+  assertMatch(luciMakefile,
+    /define Package\/luci-app-lanspeed\/config\n\tconfig LUCI_APP_LANSPEED_NSS\n\t\tbool "NSS hardware acceleration support"\n\t\tdefault y if TARGET_qualcommax/,
+    'LuCI package must declare an NSS support toggle that defaults on for Qualcomm NSS targets');
+  assertMatch(luciMakefile,
+    /\$\(if \$\(CONFIG_LUCI_APP_LANSPEED_NSS\),\$\(INSTALL_DATA\) \.\/root\/usr\/share\/luci\/menu\.d\/luci-app-lanspeed-nss\.json \$\(1\)\/usr\/share\/luci\/menu\.d\/luci-app-lanspeed-nss\.json,:\)/,
+    'LuCI package must install the NSS menu entry only when NSS support is enabled');
 
 	const installedClientDetailResources = installedResources.filter((name) =>
 		/^(?:clientConnections|dhcpHostnames|clientDetail|geoLocation|macVendor)/.test(name));

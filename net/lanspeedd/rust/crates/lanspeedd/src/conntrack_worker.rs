@@ -7,7 +7,6 @@
 use std::{
     any::Any,
     panic::{catch_unwind, AssertUnwindSafe},
-    sync::Arc,
 };
 
 #[cfg(not(feature = "nss-platform"))]
@@ -56,12 +55,11 @@ pub fn spawn(snapshots: SnapshotStore) -> Result<RuntimeWorker<ConntrackTask>, s
                 &mut proxy_connections,
             )
         })) {
-            let latest = snapshots.load();
             let error = format!(
                 "conntrack worker panic: {}",
                 panic_message(payload.as_ref())
             );
-            snapshots.publish(Arc::new(apply_conntrack_failure(&latest, &error)));
+            snapshots.update_base(|latest| apply_conntrack_failure(latest, &error));
         }
     })
 }
@@ -108,11 +106,7 @@ fn run_task(
         task.max_clients,
     );
 
-    // A rate collection may have published while conntrack was being read.
-    // Overlay onto the newest generation so the worker never rolls back rate
-    // or topology data; only the connection fields are replaced.
-    let latest = snapshots.load();
-    let overlaid = match result {
+    match result {
         Ok(mut collected) => {
             update_connection_rates(
                 connection_rates,
@@ -123,14 +117,18 @@ fn run_task(
             );
             #[cfg(not(feature = "nss-platform"))]
             proxy_connections.enrich(&identities, task.now_ms, task.max_clients, &mut collected);
-            apply_conntrack_success(&latest, &collected, task.mode.as_str())
+            // Rate and proxy processing can outlast a rate publication. Merge
+            // only after that work and retry if publication races the overlay.
+            snapshots.update_base(|latest| {
+                apply_conntrack_success(latest, &collected, task.mode.as_str())
+            });
         }
         Err(error) => {
             connection_rates.clear();
-            apply_conntrack_failure(&latest, &error.to_string())
+            let error = error.to_string();
+            snapshots.update_base(|latest| apply_conntrack_failure(latest, &error));
         }
-    };
-    snapshots.publish(Arc::new(overlaid));
+    }
 }
 
 fn collector_mode(mode: ConnectionCollectorMode) -> CollectorMode {

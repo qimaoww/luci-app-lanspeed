@@ -514,12 +514,14 @@ function createResolver(options) {
 		return result('unknown', '未知', false);
 	}
 
-	function lookupSource(source, ip, requestOptions) {
+	function lookupSource(source, ip, requestOptions, requestRecord) {
 		var endpoint = source && typeof source.url === 'function'
 			? source.url(ip) : '';
 		if (!endpoint)
 			return Promise.reject(new Error('geolocation source endpoint missing'));
 		return Promise.resolve().then(function() {
+			if (disposed || requestRecord.cancelled)
+				throw new Error('geolocation request cancelled');
 			if (typeof fetcher !== 'function')
 				throw new Error('fetch unavailable');
 			return fetcher(endpoint, requestOptions);
@@ -541,18 +543,18 @@ function createResolver(options) {
 		});
 	}
 
-	function fallbackLookup(ip, requestOptions, index) {
-		if (index >= secondarySources.length)
+	function fallbackLookup(ip, requestOptions, requestRecord, index) {
+		if (disposed || requestRecord.cancelled || index >= secondarySources.length)
 			return Promise.reject(new Error('geolocation providers unavailable'));
-		return lookupSource(secondarySources[index], ip, requestOptions).then(
+		return lookupSource(secondarySources[index], ip, requestOptions, requestRecord).then(
 			function(entry) { return entry.fields; },
-			function() { return fallbackLookup(ip, requestOptions, index + 1); }
+			function() { return fallbackLookup(ip, requestOptions, requestRecord, index + 1); }
 		);
 	}
 
 	function fetchOne(ip) {
 		var controller = null;
-		var requestRecord = { controller: null, timer: null, reject: null, done: false };
+		var requestRecord = { controller: null, timer: null, reject: null, done: false, cancelled: false };
 		var requestOptions = {
 			credentials: 'omit',
 			/* ipapi.co varies CORS headers by Origin; no-referrer suppresses it. */
@@ -588,12 +590,14 @@ function createResolver(options) {
 				requestRecord.timer = requestSchedule(function() {
 					if (requestRecord.done)
 						return;
+					requestRecord.cancelled = true;
 					if (controller) {
 						try { controller.abort(); } catch (e) {}
 					}
 					rejectTimeout(new Error('geolocation request timed out'));
 				}, REQUEST_TIMEOUT_MS);
 			} catch (e) {
+				requestRecord.cancelled = true;
 				rejectTimeout(e);
 			}
 		});
@@ -603,10 +607,10 @@ function createResolver(options) {
 				return LOOKUP_ENDPOINT + encodeURIComponent(value);
 			}
 		};
-		var request = lookupSource(primary, ip, requestOptions).then(function(entry) {
+		var request = lookupSource(primary, ip, requestOptions, requestRecord).then(function(entry) {
 			return entry.fields;
 		}, function() {
-			return fallbackLookup(ip, requestOptions, 0);
+			return fallbackLookup(ip, requestOptions, requestRecord, 0);
 		});
 		return Promise.race([ request, timeout ]).then(function(fields) {
 			return disposed ? result('unknown', '未知', false) : storeSuccess(ip, fields);
@@ -673,6 +677,7 @@ function createResolver(options) {
 			persistTimer = null;
 		}
 		activeRequests.slice().forEach(function(request) {
+			request.cancelled = true;
 			if (request.timer !== null) {
 				try { requestCancel(request.timer); } catch (e) {}
 				request.timer = null;

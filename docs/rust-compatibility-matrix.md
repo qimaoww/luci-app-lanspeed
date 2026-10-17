@@ -4,9 +4,11 @@
 
 ## 稳定版矩阵
 
-测试条件：每个 Rust 版本使用独立 `CARGO_TARGET_DIR`，固定 `bpf-linker 0.10.3`，`--locked --offline`，eBPF 使用 `-Z build-std=core`。两个对象均检查 ELF64 little-endian、EM_BPF、`classifier`、`maps`、`license`、`.BTF`、`.BTF.ext`，并检查反汇编中的 BPF 原子加法。
+测试条件：每个 Rust 版本使用独立 `CARGO_TARGET_DIR`，固定 `bpf-linker 0.11.1`，`--locked --offline`，eBPF 使用 `-Z build-std=core`。两个对象均检查 ELF64 little-endian、EM_BPF、`classifier`、`maps`、`license`、`.BTF`、`.BTF.ext`，并检查反汇编中的 BPF 原子加法。
 
 CI 对 `1.87.0` 至 `1.96.0` 以及 `1.97.1` 逐个使用精确 toolchain，并额外运行 `stable` 探测后续稳定版；每个成功点都执行生产 `lanspeedd/openwrt` feature、两个 eBPF 对象深检和离线用户态测试。
+
+`bpf-linker` 固定为 `0.11.1`：0.10.x 系列的 LLVM 位码读取器无法解析当前稳定 Rust（如 `rustc 1.99.0`）生成的调试元数据，链接 eBPF 对象时会触发内部断言或 `Invalid record`。0.11.1 升级了位码读取器，并用 `.tar.zst` 分发，构建主机与 CI 需要 `zstd`。
 
 | Rust | 用户态测试（合并汇总） | kfunc 对象 | fallback 对象 | 备注 |
 |---|---:|---:|---:|---|

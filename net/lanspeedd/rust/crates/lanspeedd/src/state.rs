@@ -1655,6 +1655,34 @@ impl SnapshotStore {
         self.publish_base_inner(snapshot)
     }
 
+    /// Merge an overlay into the latest snapshot without holding the reader
+    /// lock during cloning or preparation. If another publisher wins the race,
+    /// recompute the overlay against its snapshot rather than rolling it back.
+    /// `apply` can run more than once and must not perform external side effects.
+    pub(crate) fn update_base(
+        &self,
+        apply: impl Fn(&ResponseSnapshot) -> ResponseSnapshot,
+    ) -> SnapshotGenerations {
+        loop {
+            let previous = self.load();
+            let snapshot = Arc::new(apply(&previous));
+            let mut state = self.0.write().unwrap_or_else(|error| error.into_inner());
+            // Check the Arc, not just base_generation: a fast overlay may have
+            // published a newer snapshot without advancing that generation.
+            if !Arc::ptr_eq(&state.published, &previous) {
+                continue;
+            }
+            state.generations.base_generation = state
+                .generations
+                .base_generation
+                .saturating_add(1)
+                .max(snapshot.diagnostic_generation());
+            state.generations.fast_generation = 0;
+            state.published = snapshot;
+            return state.generations;
+        }
+    }
+
     /// Apply a bounded FastRate overlay only to the exact base generation from
     /// which it was sampled. The closure runs while the immutable snapshot is
     /// copied, then readers receive one new Arc atomically.

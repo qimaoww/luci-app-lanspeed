@@ -172,6 +172,45 @@ fn procfs_parser_preserves_orig_reply_nat_state_and_unknown_tokens() {
 }
 
 #[test]
+fn procfs_legacy_fallback_matches_nf_conntrack_without_the_l3_prefix() {
+    for record in [
+        "tcp 6 431999 ESTABLISHED src=192.168.1.42 dst=8.8.8.8 sport=41000 dport=443 bytes=1000 src=8.8.8.8 dst=203.0.113.2 sport=443 dport=41000 bytes=2000 [ASSURED] zone=7",
+        "udp 17 20 src=192.168.1.42 dst=8.8.8.8 sport=53000 dport=53 bytes=300 src=8.8.8.8 dst=192.168.1.42 sport=53 dport=53000 bytes=400 [ASSURED]",
+        "icmp 1 20 src=192.168.1.42 dst=8.8.8.8 type=8 code=0 id=42 bytes=100 src=8.8.8.8 dst=192.168.1.42 type=0 code=0 id=42 bytes=100",
+        "tcp 6 src=192.168.1.42 dst=8.8.8.8 sport=41000 dport=443 bytes=1000 src=8.8.8.8 dst=192.168.1.42 sport=443 dport=41000 bytes=2000 [HW_OFFLOAD]",
+    ] {
+        let legacy = parse_reader(Cursor::new(record), "/proc/net/ip_conntrack").unwrap();
+        let current = parse_reader(
+            Cursor::new(format!("ipv4 2 {record}")),
+            "/proc/net/nf_conntrack",
+        )
+        .unwrap();
+        assert_eq!(legacy.flows.len(), 1, "legacy record: {record}");
+        assert_eq!(legacy.flows, current.flows);
+        assert_eq!(legacy.malformed_lines, 0);
+    }
+}
+
+#[test]
+fn procfs_reused_buffer_handles_fragmented_lines_boundaries_and_unterminated_eof() {
+    let record = "ipv4 2 udp 17 20 src=192.168.1.42 dst=8.8.8.8 sport=1 dport=2 packets=1 bytes=3";
+    let mut text = record.to_owned();
+    text.push_str(&" ".repeat(CONNTRACK_LINE_MAX - record.len() - 1));
+    text.push('\n'); // Exactly the inclusive line bound remains valid.
+    text.push_str(&"x".repeat(CONNTRACK_LINE_MAX + 1));
+    text.push('\n'); // The oversized line must be completely drained.
+    text.push_str(record); // An EOF without a newline still finishes a flow.
+    for capacity in [1, 7, CONNTRACK_LINE_MAX, CONNTRACK_LINE_MAX + 1] {
+        let reader = std::io::BufReader::with_capacity(capacity, Cursor::new(&text));
+        let parsed = parse_reader(reader, "fixture").unwrap();
+        assert_eq!(parsed.entries_seen, 3, "capacity {capacity}");
+        assert_eq!(parsed.malformed_lines, 1, "capacity {capacity}");
+        assert_eq!(parsed.flows.len(), 2, "capacity {capacity}");
+        assert_eq!(parsed.flows[0], parsed.flows[1]);
+    }
+}
+
+#[test]
 fn procfs_recovers_assured_state_hidden_by_flow_offload_markers() {
     let text = concat!(
         "ipv4 2 tcp 6 src=192.168.1.42 dst=8.8.8.8 sport=40000 dport=443 ",

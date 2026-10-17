@@ -9,6 +9,8 @@ PKG_MAINTAINER:=
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 
+PKG_CONFIG_DEPENDS:=CONFIG_LUCI_APP_LANSPEED_NSS
+
 include $(INCLUDE_DIR)/package.mk
 
 define Package/luci-app-lanspeed
@@ -18,7 +20,18 @@ define Package/luci-app-lanspeed
   TITLE:=LuCI support for LAN speed monitor
   SOURCE:=luci-app-lanspeed
   PKGARCH:=all
+  MENU:=1
   DEPENDS:=+lanspeedd +lanspeedd-bpf +luci-base
+endef
+
+define Package/luci-app-lanspeed/config
+	config LUCI_APP_LANSPEED_NSS
+		bool "NSS hardware acceleration support"
+		default y if TARGET_qualcommax
+		help
+		  Install the dedicated NSS configuration page and expose the NSS/ECM
+		  collection controls for Qualcomm NSS routers. Keep it disabled on
+		  devices without a QCA NSS offload engine.
 endef
 
 define Package/luci-app-lanspeed/description
@@ -45,6 +58,7 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/view/lanspeed/diagnostics.js \
 		./htdocs/luci-static/resources/view/lanspeed/overview.js \
 		$(1)/www/luci-static/resources/view/lanspeed/
+	$(if $(CONFIG_LUCI_APP_LANSPEED_NSS),$(INSTALL_DATA) ./htdocs/luci-static/resources/view/lanspeed/nss.js $(1)/www/luci-static/resources/view/lanspeed/nss.js,:)
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/lanspeed
 	$(INSTALL_DATA) \
 		./htdocs/luci-static/resources/lanspeed/configForm.js \
@@ -57,6 +71,7 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/configStyleAurora.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleBase.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleBootstrap.js \
+		./htdocs/luci-static/resources/lanspeed/configStyleShadcn.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleResponsive.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleShared.js \
 		./htdocs/luci-static/resources/lanspeed/configView.js \
@@ -65,6 +80,7 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/designSystemAurora.js \
 		./htdocs/luci-static/resources/lanspeed/designSystemBase.js \
 		./htdocs/luci-static/resources/lanspeed/designSystemBootstrap.js \
+		./htdocs/luci-static/resources/lanspeed/designSystemShadcn.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsRefresh.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsShell.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyle.js \
@@ -72,6 +88,7 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleAurora.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleBase.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleBootstrap.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleShadcn.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleResponsive.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsSchema.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsResources.js \
@@ -93,6 +110,7 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/clientDetailStyleBootstrap.js \
 		./htdocs/luci-static/resources/lanspeed/clientDetailStyleArgon.js \
 		./htdocs/luci-static/resources/lanspeed/clientDetailStyleAurora.js \
+		./htdocs/luci-static/resources/lanspeed/clientDetailStyleShadcn.js \
 		./htdocs/luci-static/resources/lanspeed/clientDetailStyleResponsive.js \
 		./htdocs/luci-static/resources/lanspeed/clientDetailRefresh.js \
 		./htdocs/luci-static/resources/lanspeed/clientDetailView.js \
@@ -112,6 +130,7 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/statusStyleAurora.js \
 		./htdocs/luci-static/resources/lanspeed/statusStyleBase.js \
 		./htdocs/luci-static/resources/lanspeed/statusStyleBootstrap.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyleShadcn.js \
 		./htdocs/luci-static/resources/lanspeed/statusStyleResponsive.js \
 		./htdocs/luci-static/resources/lanspeed/statusOverview.js \
 		./htdocs/luci-static/resources/lanspeed/statusView.js \
@@ -132,6 +151,7 @@ define Package/luci-app-lanspeed/install
 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
 	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-lanspeed.json \
 		$(1)/usr/share/luci/menu.d/luci-app-lanspeed.json
+	$(if $(CONFIG_LUCI_APP_LANSPEED_NSS),$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-lanspeed-nss.json $(1)/usr/share/luci/menu.d/luci-app-lanspeed-nss.json,:)
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
 	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/luci-app-lanspeed.json \
 		$(1)/usr/share/rpcd/acl.d/luci-app-lanspeed.json

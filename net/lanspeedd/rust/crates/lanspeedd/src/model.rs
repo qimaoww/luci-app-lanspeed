@@ -357,8 +357,8 @@ pub struct Client {
         serialize_with = "saturated_option_u64"
     )]
     pub sample_ms: Option<u64>,
-    /// Lifetime byte counter. On x86 the daemon persists collector deltas in
-    /// SQLite, independently from `rx_bps`/`tx_bps` and BPF map resets.
+    /// Recorded lifetime bytes, persisted from exact selected-owner counter
+    /// deltas independently from display rates. An unobserved direction is absent.
     #[serde(
         skip_serializing_if = "Option::is_none",
         serialize_with = "saturated_option_u64"

@@ -139,7 +139,7 @@ function resetCopyFeedback(refs) {
 	refs.btnCopy.textContent = _('复制脱敏报告');
 	refs.btnCopy.setAttribute('data-state', 'neutral');
 	if (refs.reportFeedback) {
-		refs.reportFeedback.textContent = _('报告仅包含白名单状态与计数，不复制客户端或接口身份。');
+		refs.reportFeedback.textContent = '';
 		refs.reportFeedback.setAttribute('data-state', 'neutral');
 	}
 }
@@ -267,28 +267,6 @@ return baseclass.extend({
 			restartPending: false,
 			restartPromise: null,
 			restartDelayMs: 1000,
-			mountPipeline: function() {
-				var refs = this.refs;
-				if (!refs || refs.pipelineSection)
-					return refs && refs.pipelineSection || null;
-				var section = diagnosticsShell.buildPipelineSection(refs);
-				if (refs.root && refs.healthSection && typeof refs.root.insertBefore === 'function')
-					refs.root.insertBefore(section, refs.healthSection);
-				else if (refs.root && typeof refs.root.appendChild === 'function')
-					refs.root.appendChild(section);
-				return section;
-			},
-			mountControl: function() {
-				var refs = this.refs;
-				if (!refs || refs.controlSection)
-					return refs && refs.controlSection || null;
-				var section = diagnosticsShell.buildControlSection(refs);
-				if (refs.root && refs.healthSection && typeof refs.root.insertBefore === 'function')
-					refs.root.insertBefore(section, refs.healthSection);
-				else if (refs.root && typeof refs.root.appendChild === 'function')
-					refs.root.appendChild(section);
-				return section;
-			},
 
 			reload: function() {
 				var self = this;
@@ -401,8 +379,6 @@ return baseclass.extend({
 					setCopyFeedback(self.refs, _('报告生成失败'), 'error');
 					return Promise.resolve(false);
 				}
-				if (self.refs && self.refs.reportPreview)
-					self.refs.reportPreview.textContent = report;
 				self.copyPending = true;
 				if (self.refs && self.refs.btnCopy) self.refs.btnCopy.disabled = true;
 				setCopyFeedback(self.refs, _('复制中…'), 'loading');
@@ -410,7 +386,7 @@ return baseclass.extend({
 					setCopyFeedback(self.refs, _('已复制'), 'success');
 					return true;
 				}, function(error) {
-					setCopyFeedback(self.refs, _('复制失败，请手动选择报告内容'), 'error');
+					setCopyFeedback(self.refs, _('复制失败，请重试或检查浏览器剪贴板权限'), 'error');
 					return false;
 				}).then(function(result) {
 					self.copyPending = false;

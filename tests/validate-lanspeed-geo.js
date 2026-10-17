@@ -473,6 +473,49 @@ async function main() {
 		timeoutHandlers.size === 0 && timeoutSignals.every((signal) => signal.aborted),
 		'disposal must abort hanging lookups and clear every request timeout');
 
+	for (const Controller of [ undefined, AbortController ]) {
+		for (const reason of [ 'timeout', 'dispose' ]) {
+			const cancellableGeo = loadGeo(Controller);
+			const requestTimers = new Map();
+			let fetches = 0;
+			let rejectPrimary;
+			const resolver = cancellableGeo.createResolver({
+				storage: null,
+				requestSchedule: (handler) => { requestTimers.set(1, handler); return 1; },
+				requestCancel: (id) => requestTimers.delete(id),
+				fetch: (url, options) => {
+					fetches++;
+					return new Promise((resolve, reject) => {
+						rejectPrimary = reject;
+						if (options.signal)
+							options.signal.addEventListener('abort', () => reject(new Error('aborted')));
+					});
+				}
+			});
+			const pending = resolver.resolve('8.8.8.8');
+			await flushMicrotasks();
+			assert(fetches === 1, 'cancellation regression must begin with one primary provider');
+			if (reason === 'timeout') requestTimers.get(1)();
+			else resolver.dispose();
+			assert((await pending).label === '未知', `${reason} must finish without waiting for the transport`);
+			rejectPrimary(new Error('late transport failure'));
+			await flushMicrotasks(30);
+			assert(fetches === 1 && requestTimers.size === 0,
+				`${reason} must not continue the provider fallback chain, with or without AbortController`);
+			resolver.dispose();
+		}
+	}
+	let immediateFetches = 0;
+	const immediatelyDisposed = geo.createResolver({
+		storage: null,
+		fetch: () => { immediateFetches++; return Promise.reject(new Error('cancelled')); }
+	});
+	const cancelledBeforeStart = immediatelyDisposed.resolve('9.9.9.9');
+	immediatelyDisposed.dispose();
+	await cancelledBeforeStart;
+	await flushMicrotasks();
+	assert(immediateFetches === 0, 'disposal before the fetch microtask must prevent every provider request');
+
 	const boundedNow = 3_000_000;
 	const oversized = { version: 6, entries: {} };
 	for (let i = 0; i < 4100; i++) {

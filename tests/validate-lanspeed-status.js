@@ -887,6 +887,88 @@ async function testControllerLifecycle(context, fmt) {
 	assert.ok(busyRefreshes >= 3);
 }
 
+async function testControllerVisibility(context, fmt) {
+	const overview = loadOverview(context, fmt, {});
+	const timers = fakeTimers();
+	const listeners = {};
+	const document = {
+		body: {}, hidden: false,
+		addEventListener: function(name, handler) { listeners[name] = handler; },
+		removeEventListener: function(name) { delete listeners[name]; }
+	};
+	const events = {};
+	const target = {
+		addEventListener: function(name, handler) { events[name] = handler; },
+		removeEventListener: function(name) { delete events[name]; }
+	};
+	let calls = 0;
+	let deferred = makeDeferred();
+	let mutation;
+	let disconnected = false;
+	const state = Object.assign(normalizedResult('initial', 100), {
+		prefs: { paused: false, refreshMs: 1000 }
+	});
+	const controller = overview.createController(state, {
+		document: document, timerApi: timers, eventTarget: target,
+		load: function() { calls++; return deferred.promise; },
+		MutationObserver: function(handler) {
+			mutation = handler;
+			this.observe = function() {};
+			this.disconnect = function() { disconnected = true; };
+		}
+	});
+	controller.schedule();
+	document.hidden = true;
+	listeners.visibilitychange();
+	assert.strictEqual(timers.count(), 0, 'hidden overview must stop automatic refresh');
+	controller.schedule();
+	await controller.reload(false);
+	assert.strictEqual(calls, 0, 'hidden overview must ignore automatic scheduling and reload');
+	const manual = controller.reload(true);
+	await Promise.resolve();
+	assert.strictEqual(calls, 1, 'explicit manual refresh remains available while hidden');
+	deferred.resolve(normalizedResult('manual', 200));
+	await manual;
+	assert.strictEqual(timers.count(), 0, 'a hidden in-flight completion must not restart polling');
+	deferred = makeDeferred();
+	document.hidden = false;
+	listeners.visibilitychange();
+	listeners.visibilitychange();
+	await Promise.resolve();
+	assert.strictEqual(calls, 2, 'returning to a visible overview refreshes immediately exactly once');
+	deferred.resolve(normalizedResult('visible', 300));
+	await controller.getPending();
+	assert.strictEqual(timers.count(), 1);
+	state.prefs.paused = true;
+	document.hidden = true;
+	listeners.visibilitychange();
+	document.hidden = false;
+	listeners.visibilitychange();
+	await Promise.resolve();
+	assert.strictEqual(calls, 2, 'visibility restoration must respect the user pause preference');
+	state.prefs.paused = false;
+	controller.schedule();
+	events.pagehide({ persisted: true });
+	assert.strictEqual(controller.isDestroyed(), false, 'bfcache entry must preserve the overview controller');
+	assert.strictEqual(timers.count(), 0, 'bfcache entry must suspend polling');
+	deferred = makeDeferred();
+	events.pageshow({ persisted: true });
+	events.pageshow({ persisted: true });
+	await Promise.resolve();
+	assert.strictEqual(calls, 3, 'bfcache restoration must refresh exactly once');
+	deferred.resolve(normalizedResult('restored', 400));
+	await controller.getPending();
+	assert.strictEqual(timers.count(), 1);
+	const root = { isConnected: true };
+	controller.attachRoot(root);
+	root.isConnected = false;
+	mutation();
+	assert(controller.isDestroyed() && disconnected,
+		'removing an already mounted root must destroy its observer and controller');
+	assert.strictEqual(listeners.visibilitychange, undefined);
+	assert.strictEqual(Object.keys(events).length, 0);
+}
+
 function testRenderWiresLiveRefresh(context, fmt) {
 	let renderedState = null;
 	let refreshes = 0;
@@ -1106,16 +1188,13 @@ function testPaginationAndUiStates(context, fmt) {
 		'explicit routed view must not be presented as automatic Access Edge');
 	assert(String(nssState.refs.collectorPill.title || '').includes('互联网/路由'),
 		'explicit routed view must describe its FastN+FastS scope');
-	assert(!textOf(nssState.refs.tbody.children[0]).includes('累计'),
-		'NSS rows must retain their existing rate-only presentation in the x86-first rollout');
-	assert.strictEqual(nssState.refs.totalUploadHeader.hidden, true,
-		'NSS must hide the x86-only cumulative upload column');
-	assert.strictEqual(nssState.refs.totalDownloadHeader.hidden, true,
-		'NSS must hide the x86-only cumulative download column');
-	assert.strictEqual(findByClass(nssState.refs.tbody.children[0], 'lanspeed-client-total-upload-cell').hidden, true,
-		'NSS client rows must hide their cumulative upload cell');
-	assert.strictEqual(findByClass(nssState.refs.tbody.children[0], 'lanspeed-client-total-download-cell').hidden, true,
-		'NSS client rows must hide their cumulative download cell');
+	assert.strictEqual(nssState.refs.totalHeader.hidden, false,
+		'NSS must show cumulative traffic when explicitly enabled');
+	const nssTotals = findByClass(nssState.refs.tbody.children[0], 'lanspeed-client-total-cell');
+	assert.strictEqual(nssTotals.hidden, false);
+	assert.deepStrictEqual(findAllByClass(nssTotals, 'lanspeed-client-total').map(textOf), [ '1.00 MB', '1.00 KB' ],
+		'NSS cumulative traffic must display actual counters in download/upload order');
+
 	const pendingClient = Object.assign({}, client(2), {
 		tx_bps: 0, rx_bps: 0, collector_mode: 'access_edge',
 		rate_meta: { scope: 'none',
@@ -1163,8 +1242,9 @@ function testPaginationAndUiStates(context, fmt) {
 	state.refreshLive = function() { refreshCount++; modules.refresh.refreshLive(state); };
 	state.refreshLive();
 	const toolbarRight = findByClass(built.root, 'lanspeed-toolbar-right');
-	assert.strictEqual(toolbarRight.children[1], state.refs.btnRefresh);
-	assert.strictEqual(toolbarRight.children[2], state.refs.btnPause);
+	assert.strictEqual(toolbarRight.children[0].children[1], state.refs.sortSelect);
+	assert.strictEqual(toolbarRight.children[2], state.refs.btnRefresh);
+	assert.strictEqual(toolbarRight.children[3], state.refs.btnPause);
 	assert.strictEqual(state.refs.tbody.children.length, 10);
 	assert.ok(textOf(state.refs.tbody.children[0]).includes('client-30'));
 	state.vendorLookup = function(mac) {
@@ -1182,18 +1262,20 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.ok(textOf(state.refs.tbody.children[0]).includes('client-30'));
 	state.refs.filterInput.listeners.input({ target: { value: '' } });
 	assert.strictEqual(findByClass(state.refs.tbody.children[1], 'lanspeed-client-vendor').attrs['data-vendor-state'], 'local');
-	assert.strictEqual(state.refs.totalUploadHeader.hidden, false);
-	assert.strictEqual(state.refs.totalDownloadHeader.hidden, false);
-	const firstUploadCell = findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-upload-cell');
-	const firstDownloadCell = findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-download-cell');
-	assert.ok(firstUploadCell && firstDownloadCell,
-		'x86 rows must render adjacent cumulative upload and download cells');
-	assert.strictEqual(textOf(firstUploadCell), '30.0 KB');
-	assert.strictEqual(textOf(firstDownloadCell), '30.0 MB');
-	assert(!textOf(state.refs.tbody.children[0].children[2]).includes('累计'),
-		'live upload rate cells must no longer contain cumulative traffic');
-	assert(!textOf(state.refs.tbody.children[0].children[3]).includes('累计'),
-		'live download rate cells must no longer contain cumulative traffic');
+	assert.strictEqual(state.refs.totalHeader.hidden, false);
+	const firstRateCell = findByClass(state.refs.tbody.children[0], 'lanspeed-client-rate-cell');
+	const firstTotalCell = findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-cell');
+	assert.deepStrictEqual(findAllByClass(firstTotalCell, 'lanspeed-client-total').map(textOf), [ '30.0 MB', '30.0 KB' ]);
+	assert.deepStrictEqual(findAllByClass(firstRateCell, 'lanspeed-client-rate').map(textOf),
+		[ fmt.formatRate(clients[29].rx_bps, 'bit'), fmt.formatRate(clients[29].tx_bps, 'bit') ],
+		'combined rate cell must preserve download RX first and upload TX second');
+	[ firstRateCell, firstTotalCell ].forEach(cell => {
+		assert.deepStrictEqual(findAllByClass(cell, 'lanspeed-client-traffic-line').map(line => line.attrs['data-direction']), [ 'rx', 'tx' ]);
+		assert.deepStrictEqual(findAllByClass(cell, 'lanspeed-client-direction').map(textOf), [ '↓', '↑' ]);
+	});
+	assert.strictEqual(findAllByClass(state.refs.clientsTable, 'lanspeed-sort-button').length, 0,
+		'client table headers must contain no sorting buttons');
+
 	assert.ok(state.refs.collectorPill.className.includes('lanspeed-collector-status'));
 	assert.strictEqual(findAllByClass(built.root, 'lanspeed-collector-status').length, 1);
 	assert.strictEqual(findAllByClass(built.root, 'lanspeed-service-status').length, 0);
@@ -1215,20 +1297,36 @@ function testPaginationAndUiStates(context, fmt) {
 		'a changed live rate must render the real backend value immediately without interpolation');
 	assert.strictEqual(findByClass(stableFirstRow, 'lanspeed-live-rate'), null,
 		'rate rendering must not introduce animation-only DOM');
-	assert.strictEqual(textOf(findByClass(stableFirstRow, 'lanspeed-client-total-upload-cell')), '30.0 KB',
-		'cumulative upload counters must automatically use the largest readable unit');
-	assert.strictEqual(textOf(findByClass(stableFirstRow, 'lanspeed-client-total-download-cell')), '30.0 MB',
-		'cumulative download counters must automatically use the largest readable unit');
+	assert.deepStrictEqual(findAllByClass(findByClass(stableFirstRow, 'lanspeed-client-total-cell'),
+		'lanspeed-client-total').map(textOf), [ '30.0 MB', '30.0 KB' ],
+		'cumulative counters retain their independent values when live rates update');
+	[ undefined, null, NaN, -1 ].forEach(value => {
+		clients[29].rx_bytes = value;
+		clients[29].tx_bytes = value;
+		state.refreshLive();
+		assert.deepStrictEqual(findAllByClass(findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-cell'),
+			'lanspeed-client-total').map(textOf), [ '-', '-' ],
+			'missing or invalid counters must not become fabricated zero totals');
+	});
+	clients[29].rx_bytes = 0;
+	clients[29].tx_bytes = 0;
+	state.refreshLive();
+	assert.deepStrictEqual(findAllByClass(findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-cell'),
+		'lanspeed-client-total').map(textOf), [ '0 B', '0 B' ], 'real zero counters must remain distinguishable from missing data');
+	clients[29].rx_bytes = 30 * 1024 * 1024;
+	clients[29].tx_bytes = 30 * 1024;
 
 	state.refs.pageNext.listeners.click({ preventDefault: function() {} });
 	assert.strictEqual(state.page, 2);
 	assert.strictEqual(state.refs.tbody.children.length, 10);
 	assert.ok(textOf(state.refs.tbody.children[0]).includes('client-20'));
-	state.refs.sortHeaders.hostname.button.listeners.click();
-	assert.strictEqual(state.page, 1);
-	state.refs.sortHeaders.hostname.button.listeners.click();
+	state.refs.sortSelect.value = 'hostname:asc';
+	state.refs.sortSelect.listeners.change({ target: state.refs.sortSelect });
 	assert.strictEqual(state.page, 1);
 	assert.ok(textOf(state.refs.tbody.children[0]).includes('client-01'));
+	assert.strictEqual(fmt.loadPrefs().sortKey, 'hostname');
+	assert.strictEqual(fmt.loadPrefs().sortDir, 'asc');
+	assert.strictEqual(fmt.loadPrefs().sortCustom, true);
 	state.page = 3;
 	state.refs.filterInput.listeners.input({ target: { value: 'client-29' } });
 	assert.strictEqual(state.page, 1);
@@ -1337,13 +1435,12 @@ function testColumnResizeRange(context, fmt) {
 	body.clientWidth = 920;
 	table.isConnected = true;
 	for (let rowIndex = 0; rowIndex < 3; rowIndex++) {
-		refs.tbody.appendChild(fakeElement('tr', {}, Array.from({ length: 9 }, function() {
+		refs.tbody.appendChild(fakeElement('tr', {}, Array.from({ length: 7 }, function() {
 			return fakeElement('td', {});
 		})));
 	}
 	const defaults = {
-		hostname: 150, mac: 160, tx: 110, rx: 110,
-		tx_bytes: 110, rx_bytes: 110, tcp_conns: 70, udp_conns: 70, control: 180
+		hostname: 150, mac: 160, rate: 160, totals: 160, tcp_conns: 70, udp_conns: 70, control: 180
 	};
 	refs.clientColumnHeaders.forEach(function(column) {
 		const th = column.th;
@@ -1367,7 +1464,7 @@ function testColumnResizeRange(context, fmt) {
 	refs.syncClientColumnWidths();
 	const visible = refs.clientColumnHeaders.filter(function(column) { return !column.th.hidden; })
 		.sort(function(left, right) { return left.th.cellIndex - right.th.cellIndex; });
-	const tx = visible.find(function(column) { return column.key === 'tx'; });
+	const tx = visible.find(function(column) { return column.key === 'rate'; });
 	const mac = visible.find(function(column) { return column.key === 'mac'; });
 	const control = visible.find(function(column) { return column.key === 'control'; });
 	assert(tx && mac && control, 'resize fixture must expose live, MAC, and terminal columns');
@@ -1379,8 +1476,8 @@ function testColumnResizeRange(context, fmt) {
 	assert.strictEqual(findByClass(control.th, 'lanspeed-column-resize-handle'), null,
 		'control column must not expose a resize handle');
 	const responsiveCss = readModule('statusStyleResponsive.js');
-	assert(responsiveCss.includes('[data-client-control="shown"] :is(th,td):nth-child(9)') &&
-		responsiveCss.includes('[data-client-control="hidden"] :is(th,td):nth-child(8)') &&
+	assert(responsiveCss.includes('[data-client-control="shown"] :is(th,td):nth-child(7)') &&
+		responsiveCss.includes('[data-client-control="hidden"] :is(th,td):nth-child(6)') &&
 		responsiveCss.includes('position:sticky!important;right:0') &&
 		responsiveCss.includes(':nth-child(1){position:sticky!important;left:0') &&
 		responsiveCss.includes(':nth-child(2){position:sticky!important;left:var(--lanspeed-client-second-column-left)'),
@@ -1390,7 +1487,6 @@ function testColumnResizeRange(context, fmt) {
 		responsiveCss.includes('tbody>tr{border-bottom:') &&
 		responsiveCss.includes(':is(th,td){text-align:center!important}') &&
 		responsiveCss.includes(':is(th,td):first-child{text-align:left!important;overflow:visible') &&
-		responsiveCss.includes('.lanspeed-sort-button{width:100%!important;justify-content:center!important}') &&
 		responsiveCss.includes('.lanspeed-control-actions{width:100%;align-items:center;justify-content:center!important}'),
 		'custom-width headers and data rows must center every cell and control actions');
 	assert(responsiveCss.includes('.lanspeed-table-scroll{width:100%;min-width:0;overflow-x:hidden}') &&
@@ -1407,8 +1503,8 @@ function testColumnResizeRange(context, fmt) {
 		return column.key !== 'hostname' && column.key !== 'mac' && column.key !== 'control';
 	});
 	const middleWidth = widthOf(middle[0]);
-	assert(middle.length === 6 && middleWidth > 0,
-		'visible data block must expose six fixed columns');
+	assert(middle.length === 4 && middleWidth > 0,
+		'visible data block must expose four fixed columns');
 	middle.forEach(function(column) {
 		assert(Math.abs(widthOf(column) - middleWidth) < .01,
 			'all visible data columns must use one equal fixed width');
@@ -1420,7 +1516,7 @@ function testColumnResizeRange(context, fmt) {
 	assert.strictEqual(context.window.localStorage.getItem(
 		'luci-app-lanspeed.client-column-widths.v11'), null,
 		'fixed columns must not create a persisted drag layout');
-	const refreshedRow = fakeElement('tr', {}, Array.from({ length: 9 }, function() {
+	const refreshedRow = fakeElement('tr', {}, Array.from({ length: 7 }, function() {
 		return fakeElement('td', {});
 	}));
 	refs.tbody.appendChild(refreshedRow);
@@ -1485,7 +1581,7 @@ function testColumnResizeRange(context, fmt) {
 		const variantHostname = variantVisible.find(function(column) { return column.key === 'hostname'; });
 		const variantControl = variantVisible.find(function(column) { return column.key === 'control'; });
 		const variantLast = variantVisible[variantVisible.length - 1];
-		const variantTx = variantVisible.find(function(column) { return column.key === 'tx'; });
+		const variantTx = variantVisible.find(function(column) { return column.key === 'rate'; });
 		assert(variantMac && variantTx, 'scheme ' + schemeIndex + ' must retain MAC and live columns');
 		assert.strictEqual(Boolean(variantControl), scheme[1],
 			'scheme ' + schemeIndex + ' control visibility must match its setting');
@@ -1533,6 +1629,7 @@ async function main() {
 	await testAtomicRealtimeSnapshot(context, fmt);
 	await testLiveSamplePairing(context, fmt);
 	await testControllerLifecycle(context, fmt);
+	await testControllerVisibility(context, fmt);
 	testRenderWiresLiveRefresh(context, fmt);
 	await testVendorDownloadLifecycle(context, fmt);
 	testPaginationAndUiStates(context, fmt);

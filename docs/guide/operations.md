@@ -1,10 +1,14 @@
 # 部署与排障
 
+`/etc/config/lanspeed` 已声明为包配置文件，供包管理器保留本地修改，并纳入固件升级配置备份。升级前仍建议导出当前配置；客户端限速与接口选择均保存在此文件中。
+
 [首页](../../README.md) · [使用指南](usage.md) · [平台与采集](platforms.md) · **部署与排障** · [构建与发布](development.md)
 
 ## 运行依赖
 
 原有实时统计依赖为 `libgcc`、`kmod-nf-conntrack-netlink`、`tc-full` 和 `kmod-sched-bpf`。
+
+x86 与 NSS 的客户端累计流量均依赖 `libsqlite3`，安装 `lanspeedd` 时自动安装。累计数据库与保存周期见[使用指南](usage.md#界面入口)。
 
 x86 客户端控制额外依赖 `ip`、`nftables`、`conntrack`、`kmod-ifb`、`kmod-sched-core` 与 `kmod-sched`；这些依赖保持原有 x86 条件，不被 NSS 实现复用。缺少能力或目标钩子被其他服务占用时，控制按钮会显示结构化原因，不会覆盖外部对象。
 
@@ -74,7 +78,7 @@ ECM+BPF 还要求可读的 `/sys/kernel/btf/ecm` 和受支持的 `ecm_db_connect
 | 没有客户端 | 检查 LAN 接口、BPF attach 与 ECM node MAC 映射 |
 | 速率长时间为 0 | 检查 `effective_collector`、map/state 和 `sample_ms` |
 | OpenClash 或 dae/daed 共存 | 检查 TC hook、NSS state 和诊断 evidence |
-| 其他 SQM/QoS/代理的 TC 共存 | 在“运行诊断 -> 本机 TC 状态”核对完整 qdisc/class/filter 清单；“可共存”只表示未发现保留位置冲突，“检测到冲突”会列出根队列、pref/handle 或抢先动作 |
+| 其他 SQM/QoS/代理的 TC 共存 | 在“运行诊断 -> 需要关注”查看实际冲突；正常共存不显示为故障。复制脱敏报告查看 TC 扫描摘要，需要具体 qdisc/class/filter 时执行 `ubus call lanspeed health` |
 | 覆盖率低 | 检查 offload、旁路路径、LAN-to-LAN、IFB/TUN 和接口边界 |
 | x86 限速应用失败 | 检查外部 qdisc/IFB 所有权及 HTB、FQ、u32、mirred 模块 |
 | NSS 限速应用失败 | 检查路径确认状态、真实 WAN/Access Edge、NSS 根或专属 IFB 队列所有权和结构化原因 |

@@ -173,11 +173,11 @@ function retryButton() {
 	return button;
 }
 
-function failureRoot(error) {
+function failureRoot(error, pageKind) {
 	var root = E('div', { 'class': 'cbi-map lanspeed-config-root', 'data-state': 'hard-error' }, [
 		E('style', {}, configStyle.CSS),
 		E('section', { 'class': 'cbi-section lanspeed-page-failure', 'role': 'alert', 'aria-live': 'assertive' }, [
-			E('div', { 'class': 'lanspeed-header' }, [ E('h3', {}, _('LAN Speed 配置不可用')) ]),
+			E('div', { 'class': 'lanspeed-header' }, [ E('h3', {}, pageKind === 'nss' ? _('NSS 配置不可用') : _('LAN Speed 配置不可用')) ]),
 			E('div', { 'class': 'lanspeed-config-body' }, [
 				E('p', { class: 'lanspeed-state-message', 'data-state': 'error' }, errorText(error)),
 				retryButton()
@@ -186,24 +186,6 @@ function failureRoot(error) {
 	]);
 	lsTheme.applyRoot(root);
 	return root;
-}
-
-function applyAndVerify(viewState) {
-	var retryDelays = [ 500, 750, 1000, 1500, 2000 ];
-	var attempt = 0;
-	function run() {
-		return configForm.verifyAll(viewState).then(function(result) {
-			if (result && result.ok) return result;
-			if (attempt < retryDelays.length) {
-				configForm.setFeedback(viewState, 'verifying',
-					_('配置已应用，正在等待守护进程与接口就绪…'));
-				var delay = retryDelays[attempt++];
-				return new Promise(function(resolve) { setTimeout(resolve, delay); }).then(run);
-			}
-			return result;
-		});
-	}
-	return run();
 }
 
 return baseclass.extend({
@@ -215,17 +197,25 @@ return baseclass.extend({
 		});
 	},
 
-	render: function(data) {
+	render: function(data, pageKind) {
+		pageKind = pageKind === 'nss' ? 'nss' : 'general';
 		var loadError = data && data.error;
 		if (loadError) {
 			this.viewState = { failed: true };
-			return failureRoot(loadError);
+			return failureRoot(loadError, pageKind);
 		}
 		var values = data && Object.prototype.hasOwnProperty.call(data, 'values') ? data.values : data;
+		if (pageKind === 'nss' && !configForm.supportsNss(values && values.status)) {
+			this.viewState = { failed: true };
+			return failureRoot(new Error(values && values.rpc && values.rpc.status && !values.rpc.status.ok
+				? _('无法确认 NSS 能力，请恢复服务后重新加载') : _('当前设备不支持 NSS 配置')), pageKind);
+		}
 		var viewState = {
+			pageKind: pageKind,
 			refs: {},
 			loadData: values || {},
-			interfaceStatus: 'loading',
+			interfaceStatus: pageKind === 'nss' ? 'ready' : 'loading',
+			ifcfgLoaded: pageKind === 'nss',
 			localDirty: false,
 			configSaving: false
 		};
@@ -244,16 +234,19 @@ return baseclass.extend({
 			'role': 'status', 'aria-live': 'polite'
 		}, _('正在加载'));
 		var runtimeSection = configForm.buildDaemonSection(values || configForm.DEFAULTS, viewState);
-		var interfaceSection = ifaceCfg.buildSection(viewState, _('接口分配'));
+		var pageContent = [ runtimeSection ];
+		if (pageKind !== 'nss') pageContent.push(ifaceCfg.buildSection(viewState, _('接口分配')));
 		var pageSection = E('section', { 'class': 'cbi-section lanspeed-config-page-section' }, [
 			E('div', { 'class': 'lanspeed-header lanspeed-config-primary-header' }, [
-				E('h3', {}, _('LAN Speed 配置')),
+				E('h3', {}, pageKind === 'nss' ? _('NSS 配置') : _('LAN Speed 配置')),
 				viewState.refs.pageState
 			]),
-			E('div', { 'class': 'lanspeed-config-page-body' }, [ runtimeSection, interfaceSection ])
+			E('div', { 'class': 'lanspeed-config-page-body' }, pageContent)
 		]);
 		var root = E('div', {
-			'class': 'cbi-map lanspeed-config-root' + (viewState.isX86Profile ? ' lanspeed-config-x86' : ''),
+			'class': 'cbi-map lanspeed-config-root' + (viewState.isX86Profile ? ' lanspeed-config-x86' : '') +
+				(pageKind === 'nss' ? ' lanspeed-config-nss' : ''),
+			'data-config-page': pageKind,
 			'aria-busy': 'true',
 			'data-state': values && values.pageState || 'loading'
 		}, [
@@ -262,14 +255,14 @@ return baseclass.extend({
 		]);
 		viewState.root = root;
 		lsTheme.applyRoot(root);
-		if (values && values.model && !values.model.valid)
+		if (viewState.loadData.invalidFields && viewState.loadData.invalidFields.length)
 			configForm.setFeedback(viewState, 'degraded', _('部分 UCI 值无效，已显示安全默认值，请确认后保存'));
 		else if (values && values.rpc && values.rpc.status && !values.rpc.status.ok)
 			configForm.setFeedback(viewState, 'degraded', _('运行状态读取失败，能力选项将在重新检查后更新'));
 		else
 			configForm.setFeedback(viewState, values && values.pageState === 'empty' ? 'empty' : 'ready', '');
 		updatePageState(viewState);
-		ifaceCfg.load(viewState).then(function() {
+		(pageKind === 'nss' ? Promise.resolve() : ifaceCfg.load(viewState)).then(function() {
 			updatePageState(viewState);
 			if (typeof configForm.validate === 'function') configForm.validate(viewState);
 		});
@@ -291,11 +284,11 @@ return baseclass.extend({
 			if (!result || !result.ok) return result;
 			return refreshNativeChanges(viewState).then(function() {
 				if (!ui.changes || typeof ui.changes.apply !== 'function') return result;
-				return Promise.resolve(ui.changes.apply(mode == '0')).then(function() {
-					if (typeof configForm.markApplied === 'function')
-						configForm.markApplied(viewState);
-					return applyAndVerify(viewState);
-				});
+				/* apply() starts LuCI's confirmation/rollback UI and returns void.
+				 * A successful native apply reloads the page and its UCI baseline;
+				 * do not mark staged data as applied before that confirmation. */
+				ui.changes.apply(mode == '0');
+				return Object.assign({}, result, { applying: true });
 			});
 		}).catch(notifyError);
 	},

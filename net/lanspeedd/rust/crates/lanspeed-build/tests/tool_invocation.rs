@@ -123,6 +123,7 @@ fn userspace_build_does_not_invoke_bpf_linker() {
     variables.set("BOOTSTRAP", &bootstrap);
     variables.set("LANSPEED_BUILD_WORKSPACE", &workspace);
     variables.set("LANSPEED_USERSPACE_TARGET", "aarch64-unknown-linux-musl");
+    variables.set("LANSPEED_NSS_PLATFORM", "1");
 
     build(BuildTarget::Userspace).unwrap();
     assert!(!marker.exists());
@@ -136,7 +137,7 @@ fn userspace_build_does_not_invoke_bpf_linker() {
         .lines()
         .collect::<Vec<_>>()
         .windows(2)
-        .any(|pair| pair == ["--features", "openwrt,nss-platform"]));
+        .any(|pair| pair == ["--features", "openwrt,nss-platform,traffic-persistence"]));
     assert!(args
         .lines()
         .collect::<Vec<_>>()
@@ -179,6 +180,7 @@ fn x86_userspace_build_excludes_nss_platform() {
     variables.set("CARGO_ARGS", &cargo_args);
     variables.set("LANSPEED_BUILD_WORKSPACE", &workspace);
     variables.set("LANSPEED_USERSPACE_TARGET", "x86_64-unknown-linux-musl");
+    variables.set("LANSPEED_NSS_PLATFORM", "1");
 
     build(BuildTarget::Userspace).unwrap();
     let args = fs::read_to_string(&cargo_args).unwrap();
@@ -195,6 +197,38 @@ fn x86_userspace_build_excludes_nss_platform() {
         .collect::<Vec<_>>()
         .windows(2)
         .any(|pair| pair == ["--no-default-features", "--features"]));
+}
+
+#[test]
+fn aarch64_userspace_build_can_disable_nss_platform() {
+    let _lock = environment_lock();
+    let tools = TempDir::new("userspace-aarch64-no-nss");
+    let rustc = tools.path().join("rustc");
+    let cargo = tools.path().join("cargo");
+    let cargo_args = tools.path().join("cargo-args");
+    let workspace = tools.path().join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    write_executable(&rustc, "#!/bin/sh\nprintf 'rustc 1.96.0 (fake)\n'\n");
+    write_executable(
+        &cargo,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CARGO_ARGS\"\nexit 0\n",
+    );
+    let mut variables = Environment::new();
+    variables.set("RUSTC", &rustc);
+    variables.set("CARGO", &cargo);
+    variables.set("CARGO_ARGS", &cargo_args);
+    variables.set("LANSPEED_BUILD_WORKSPACE", &workspace);
+    variables.set("LANSPEED_USERSPACE_TARGET", "aarch64-unknown-linux-musl");
+    variables.set("LANSPEED_NSS_PLATFORM", "0");
+
+    build(BuildTarget::Userspace).unwrap();
+    let args = fs::read_to_string(&cargo_args).unwrap();
+    assert!(args
+        .lines()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|pair| pair == ["--features", "openwrt,traffic-persistence"]));
+    assert!(!args.contains("nss-platform"));
 }
 
 #[test]
@@ -289,7 +323,7 @@ fn ebpf_build_separates_x86_tc_and_aarch64_nss_objects() {
     write_executable(&rustc, "#!/bin/sh\nprintf 'rustc 1.100.0 (fake)\\n'\n");
     write_executable(
         &bpf_linker,
-        "#!/bin/sh\nprintf 'bpf-linker 0.10.3 (fake)\\n'\n",
+        "#!/bin/sh\nprintf 'bpf-linker 0.11.1 (fake)\\n'\n",
     );
     write_executable(
         &cargo,

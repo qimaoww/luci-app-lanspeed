@@ -25,7 +25,7 @@ x86_64 使用独立 TC-BPF 路径；Qualcomm aarch64 NSS 使用 Access Edge 提�
 - CT-Netlink 连接采集失败时回退 CT-Procfs；连接计数不参与客户端总速率。
 - 速率、连接、reload 和慢探针在独立 worker 中执行，普通 RPC 只读取完整发布快照。
 - 诊断页检查 RPC、BPF、ECM、Access Edge、接口和版本契约，并给出机器可读原因。
-- Aurora、Argon、Bootstrap 三主题支持桌面和移动端布局。
+- Aurora、Argon、Bootstrap、shadcn 四主题支持桌面和移动端布局与亮暗模式。
 
 ## 平台一览
 
@@ -51,6 +51,7 @@ echo "src-git lanspeed https://github.com/qimaoww/luci-app-lanspeed.git" >> feed
 
 # 在 menuconfig 中选中 LuCI -> Applications -> luci-app-lanspeed
 # BPF 是必选依赖，会自动选择 Network -> lanspeedd-bpf 和 lanspeedd
+# 进入 luci-app-lanspeed 子菜单可开关 NSS 硬件加速支持（默认按目标平台启用）
 make menuconfig
 
 # 多线程编译
@@ -59,6 +60,8 @@ make -j"$(nproc)" package/luci-app-lanspeed/compile
 ```
 
 `luci-app-lanspeed` 强制依赖 `lanspeedd-bpf`，`lanspeedd-bpf` 依赖 `lanspeedd`。同一个 `package/lanspeedd/compile` 目标根据 SDK 架构生成 TC 对象，并只在 aarch64 生成 ECM 对象。
+
+`luci-app-lanspeed` 在 menuconfig 中是一个子菜单，包含 `NSS hardware acceleration support` 开关（`CONFIG_LUCI_APP_LANSPEED_NSS`）。它默认在 Qualcomm NSS 目标（`TARGET_qualcommax`）上启用，其它设备保持关闭。关闭后：daemon 不再编译 Rust `nss-platform` feature，只保留 TC-BPF 路径；不再打包 NSS 专用的 ECM eBPF 对象、`kmod-lanspeed-nss-control` 与 `kmod-qca-nss-drv-igs`；不再安装 NSS 内核模块加载器、NSS 整形迁移脚本，也不安装独立的 NSS 配置页面及其菜单入口。
 
 ### 预编译发布
 

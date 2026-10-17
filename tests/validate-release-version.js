@@ -7,10 +7,13 @@ const childProcess = require('child_process');
 const root = path.resolve(__dirname, '..');
 const daemonMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
 const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/Makefile'), 'utf8');
-const luciMenuSource = fs.readFileSync(path.join(
-  root,
-  'applications/luci-app-lanspeed/root/usr/share/luci/menu.d/luci-app-lanspeed.json'
-), 'utf8');
+const luciMenuSources = [ 'luci-app-lanspeed.json', 'luci-app-lanspeed-nss.json' ].map((name) =>
+  fs.readFileSync(path.join(
+    root,
+    'applications/luci-app-lanspeed/root/usr/share/luci/menu.d',
+    name
+  ), 'utf8'));
+const luciMenuSource = luciMenuSources.join('\n');
 const versionJs = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/version.js'), 'utf8');
 const workflow = fs.readFileSync(path.join(root, '.github/workflows/build-sdk.yml'), 'utf8');
 const sdkIdentityScript = fs.readFileSync(path.join(root, 'scripts/sdk-rust-identity.sh'), 'utf8');
@@ -43,6 +46,7 @@ const luciResources = [
   'configStyleAurora.js',
   'configStyleBase.js',
   'configStyleBootstrap.js',
+  'configStyleShadcn.js',
   'configStyleResponsive.js',
   'configStyleShared.js',
 	'configView.js',
@@ -51,6 +55,7 @@ const luciResources = [
 	'designSystemAurora.js',
 	'designSystemBase.js',
 	'designSystemBootstrap.js',
+	'designSystemShadcn.js',
   'diagnosticsRefresh.js',
   'diagnosticsShell.js',
   'diagnosticsStyle.js',
@@ -58,6 +63,7 @@ const luciResources = [
   'diagnosticsStyleAurora.js',
   'diagnosticsStyleBase.js',
   'diagnosticsStyleBootstrap.js',
+  'diagnosticsStyleShadcn.js',
   'diagnosticsStyleResponsive.js',
 	'diagnosticsSchema.js',
 	'diagnosticsResources.js',
@@ -79,6 +85,7 @@ const luciResources = [
   'clientDetailStyleBootstrap.js',
   'clientDetailStyleArgon.js',
   'clientDetailStyleAurora.js',
+  'clientDetailStyleShadcn.js',
   'clientDetailStyleResponsive.js',
   'clientDetailRefresh.js',
   'clientDetailView.js',
@@ -97,13 +104,14 @@ const luciResources = [
   'statusStyleAurora.js',
   'statusStyleBase.js',
   'statusStyleBootstrap.js',
+  'statusStyleShadcn.js',
   'statusStyleResponsive.js',
   'statusOverview.js',
   'statusView.js',
   'theme.js',
   'vocab.js'
 ];
-const luciViews = [ 'config.js', 'diagnostics.js', 'overview.js' ];
+const luciViews = [ 'config.js', 'diagnostics.js', 'nss.js', 'overview.js' ];
 const versionedCachePattern = /(?:Live\d+|_live\d+)/;
 
 function assert(condition, message) {
@@ -307,20 +315,26 @@ try {
   const installedViews = [...viewInstall[1].matchAll(
     /\.\/htdocs\/luci-static\/resources\/view\/lanspeed\/([^\s\\/]+\.js)/g
   )].map((match) => match[1]);
-  assertExactList(installedViews, luciViews,
+  assertExactList(installedViews, luciViews.filter((name) => name !== 'nss.js'),
     'LuCI release views must be exactly config.js, diagnostics.js and overview.js');
+  assert(luciMakefile.includes(
+    '$(if $(CONFIG_LUCI_APP_LANSPEED_NSS),$(INSTALL_DATA) ./htdocs/luci-static/resources/view/lanspeed/nss.js $(1)/www/luci-static/resources/view/lanspeed/nss.js,:)'),
+    'LuCI release must install the NSS view only when NSS support is enabled');
+  assert(luciMakefile.includes(
+    '$(if $(CONFIG_LUCI_APP_LANSPEED_NSS),$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-lanspeed-nss.json $(1)/usr/share/luci/menu.d/luci-app-lanspeed-nss.json,:)'),
+    'LuCI release must install the NSS menu entry only when NSS support is enabled');
 
   assert(!versionedCachePattern.test(luciMakefile),
     'LuCI release Makefile must not contain LiveN or _liveN cache names');
   assert(!versionedCachePattern.test(luciMenuSource),
     'LuCI release menu must not contain LiveN or _liveN cache names');
-  const luciMenu = JSON.parse(luciMenuSource);
+  const luciMenu = Object.assign({}, ...luciMenuSources.map((source) => JSON.parse(source)));
   const menuViewPaths = Object.values(luciMenu)
     .filter((entry) => entry.action && entry.action.type === 'view')
     .map((entry) => entry.action.path)
     .sort();
-  assertExactList(menuViewPaths, [ 'lanspeed/config', 'lanspeed/diagnostics', 'lanspeed/overview' ],
-    'LuCI release menu must use the semantic config, diagnostics and overview views');
+  assertExactList(menuViewPaths, [ 'lanspeed/config', 'lanspeed/diagnostics', 'lanspeed/nss', 'lanspeed/overview' ],
+    'LuCI release menu must use the semantic config, diagnostics, nss and overview views');
   assert(releaseScript.includes('printf \'%s\\n\' "${daemon_version}-r${daemon_release}"'), 'scripts/release-version.sh must print the full code version');
   assert(releaseScript.includes('[ "$daemon_version" = "$luci_version" ]'), 'scripts/release-version.sh must verify daemon and LuCI PKG_VERSION match');
   assert(releaseScript.includes('[ "$daemon_release" = "$luci_release" ]'), 'scripts/release-version.sh must verify daemon and LuCI PKG_RELEASE match');
@@ -462,14 +476,14 @@ try {
   assert(workflow.includes('Acquire::Retries=3'), 'APT network operations must retry transient failures');
   assert(workflow.includes('RUSTUP_MAX_RETRIES=3'), 'Rust toolchain downloads must retry transient failures');
   assert(workflow.includes('rustup toolchain install 1.96.0 --profile minimal --component rust-src'), 'validation must install Rust 1.96.0 with rust-src');
-  assert(workflow.includes('https://github.com/aya-rs/bpf-linker/releases/download/v0.10.3/bpf-linker-x86_64-unknown-linux-musl.tar.gz'),
-    'validation must download the official bpf-linker 0.10.3 archive');
-  assert(workflow.includes('0fa4645d2dfbb5cafe6231b0aa9fad4f1430bd0871e3bd7319e82d827bf6262c'),
-    'validation must pin the official bpf-linker 0.10.3 archive checksum');
+  assert(workflow.includes('https://github.com/aya-rs/bpf-linker/releases/download/v0.11.1/bpf-linker-x86_64-unknown-linux-musl.tar.zst'),
+    'validation must download the official bpf-linker 0.11.1 archive');
+  assert(workflow.includes('e058a6aecc9e65fa4c977b298a8e4b738424d7629769fd352eed409fb57e16e8'),
+    'validation must pin the official bpf-linker 0.11.1 archive checksum');
   assert(workflow.includes('printf \'%s  %s\\n\' "$bpf_linker_sha256" "$bpf_linker_archive" | sha256sum -c -'),
     'validation must verify bpf-linker before extraction');
   assert(!workflow.includes('cargo install bpf-linker'), 'workflow must not compile an unpinned bpf-linker dependency graph');
-  assert(workflow.includes("test \"$(bpf-linker --version)\" = 'bpf-linker 0.10.3'"), 'validation must verify the installed bpf-linker version');
+  assert(workflow.includes("test \"$(bpf-linker --version)\" = 'bpf-linker 0.11.1'"), 'validation must verify the installed bpf-linker version');
   assert(workflow.includes('./tests/run.sh unit'), 'validate job must run the complete unit suite');
   assert(!workflow.includes('ipk_version='), 'Rust release workflow must not prepare unsupported IPK version names');
   assert(!/^      [A-Z_]+:\s*\$\{\{\s*env\./m.test(workflow), 'workflow job env must not reference the env context');

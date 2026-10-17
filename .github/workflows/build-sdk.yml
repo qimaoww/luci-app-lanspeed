@@ -131,14 +131,14 @@ jobs:
           rustup toolchain install 1.96.0 --profile minimal --component rust-src
           rustup default 1.96.0
 
-          bpf_linker_url=https://github.com/aya-rs/bpf-linker/releases/download/v0.10.3/bpf-linker-x86_64-unknown-linux-musl.tar.gz
-          bpf_linker_sha256=0fa4645d2dfbb5cafe6231b0aa9fad4f1430bd0871e3bd7319e82d827bf6262c
-          bpf_linker_archive="$RUNNER_TEMP/bpf-linker-0.10.3.tar.gz"
+          bpf_linker_url=https://github.com/aya-rs/bpf-linker/releases/download/v0.11.1/bpf-linker-x86_64-unknown-linux-musl.tar.zst
+          bpf_linker_sha256=e058a6aecc9e65fa4c977b298a8e4b738424d7629769fd352eed409fb57e16e8
+          bpf_linker_archive="$RUNNER_TEMP/bpf-linker-0.11.1.tar.zst"
           curl --fail --location --retry 3 --retry-all-errors "$bpf_linker_url" --output "$bpf_linker_archive"
           printf '%s  %s\n' "$bpf_linker_sha256" "$bpf_linker_archive" | sha256sum -c -
           mkdir -p "$HOME/.cargo/bin"
-          tar -xzf "$bpf_linker_archive" -C "$HOME/.cargo/bin"
-          test "$(bpf-linker --version)" = 'bpf-linker 0.10.3'
+          tar --zstd -xf "$bpf_linker_archive" -C "$HOME/.cargo/bin"
+          test "$(bpf-linker --version)" = 'bpf-linker 0.11.1'
 
       - name: Run unit validations
         run: ./tests/run.sh unit

@@ -447,7 +447,7 @@ async function main() {
     nssTopologyProduction.includes('/sys/class/net/{device}/phy80211') &&
     !nssTopologyProduction.includes('"wan"') &&
     !nssTopologyProduction.includes('"br-lan"') &&
-    daemonMakefile.includes('LANSPEED_NSS_CONTROL_DEPENDS:=+TARGET_qualcommax:tc-full') &&
+    daemonMakefile.includes('LANSPEED_AARCH64_CONTROL_DEPENDS:=+TARGET_qualcommax:tc-full') &&
     daemonMakefile.includes('TARGET_qualcommax:kmod-ifb') &&
     daemonMakefile.includes('TARGET_qualcommax:kmod-sched-core') &&
     daemonMakefile.includes('LANSPEED_X86_CONTROL_DEPENDS:=+TARGET_x86:tc-full +TARGET_x86:ip +TARGET_x86:nftables +TARGET_x86:conntrack +TARGET_x86:kmod-ifb +TARGET_x86:kmod-sched-core +TARGET_x86:kmod-sched'),
