@@ -16,11 +16,12 @@
  * section surfaces, and a pinned cell cannot match them while content
  * scrolls underneath.
  */
-var CARD_MAX = '50em';
-var CARD_WIDE_MIN = '34em';
+var CARD_MAX = '64em';
+var CARD_WIDE_MIN = '40em';
 
 /* One client per card: identity and MAC/vendor span the card, the two-line
- * rate/total/connection stacks follow, and actions close the card. */
+ * rate and total stacks follow next to the TCP/UDP counts, and actions close
+ * the card. */
 var CARD_RULES = [
 	'.lanspeed-clients-card .lanspeed-table-scroll{overflow-x:visible}',
 	'.lanspeed-clients-card .lanspeed-clients-table,',
@@ -42,26 +43,21 @@ var CARD_RULES = [
 	'.lanspeed-clients-card .lanspeed-client-mac-value{flex:0 0 auto}',
 	'.lanspeed-clients-card .lanspeed-client-vendor{flex:1 1 10em;margin:0;white-space:normal;overflow-wrap:anywhere}',
 	'.lanspeed-clients-card .lanspeed-clients-table td:is(.lanspeed-client-rate-cell,.lanspeed-client-total-cell,',
-	'  .lanspeed-client-conns-cell)[data-label]::before{content:attr(data-label);',
+	'  .lanspeed-client-tcp-cell,.lanspeed-client-udp-cell)[data-label]::before{content:attr(data-label);',
 	'  display:block;margin:0 0 .2em;font-size:.72em;font-family:inherit;font-weight:600;',
 	'  line-height:1.2;color:var(--lanspeed-text-muted)}',
 	'.lanspeed-clients-card .lanspeed-client-traffic-stack{width:auto;max-width:10.5em}',
-	'.lanspeed-clients-card .lanspeed-client-conns-cell .lanspeed-client-traffic-stack{max-width:none}',
-	'.lanspeed-clients-card .lanspeed-client-conns-cell .lanspeed-client-conn-line{grid-template-columns:auto auto;gap:.35em}',
-	'.lanspeed-clients-card .lanspeed-client-control{align-self:center}',
-	/* Connections are short; let them share the last row with the actions. */
-	'.lanspeed-clients-card .lanspeed-client-conns-cell .lanspeed-client-traffic-stack{grid-template-columns:repeat(2,max-content);column-gap:1.1em}',
-	'.lanspeed-clients-card .lanspeed-client-conns-cell[data-label]::before{grid-column:1/-1}',
-	'.lanspeed-clients-card .lanspeed-clients-table[data-client-totals="hidden"] .lanspeed-client-control{grid-column:1/-1}',
+	'.lanspeed-clients-card .lanspeed-client-count-cell{text-align:left;font-size:1.05em}',
+	'.lanspeed-clients-card .lanspeed-client-control{grid-column:1/-1;align-self:center}',
 	'.lanspeed-clients-card .lanspeed-control-actions{flex-wrap:wrap;justify-content:flex-end}'
 ];
 
-/* Wider cards (tablet, split view) keep all live numbers on one line. */
+/* Wider cards (tablet, split view) keep every live number on one line. */
 var WIDE_CARD_RULES = [
 	'.lanspeed-clients-card .lanspeed-clients-table tbody>tr{',
-	'  grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,.75fr) auto}',
+	'  grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,.55fr) minmax(0,.55fr) auto}',
 	'.lanspeed-clients-card .lanspeed-clients-table[data-client-totals="hidden"] tbody>tr{',
-	'  grid-template-columns:minmax(0,1fr) minmax(0,.75fr) auto}',
+	'  grid-template-columns:minmax(0,1fr) minmax(0,.55fr) minmax(0,.55fr) auto}',
 	'.lanspeed-clients-card .lanspeed-clients-table[data-client-totals] .lanspeed-client-control{grid-column:auto}'
 ];
 
@@ -81,14 +77,14 @@ var RESPONSIVE_CSS = [
 	'.lanspeed-header,.lanspeed-details>summary{align-items:center}',
 	'.lanspeed-root .lanspeed-status-actions{gap:.45em}',
 	'.lanspeed-root .lanspeed-status-actions .cbi-button{flex:1 1 0;min-width:0}',
-	'.lanspeed-root .lanspeed-status-actions .lanspeed-refresh-control{flex:0 0 auto}',
 	'.lanspeed-root .lanspeed-toolbar-left{flex-basis:100%}',
-	'.lanspeed-root .lanspeed-toolbar-right{flex:1 1 100%;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.5em}',
-	'.lanspeed-root .lanspeed-toolbar .lanspeed-unit-control select{width:6.5em!important;min-width:6.5em;max-width:6.5em}',
+	'.lanspeed-root .lanspeed-toolbar-right{flex:1 1 100%;display:flex;flex-wrap:wrap;justify-content:flex-start;gap:.45em}',
+	'.lanspeed-root .lanspeed-toolbar .lanspeed-sort-control{flex:1 1 12em;min-width:0}',
+	'.lanspeed-root .lanspeed-toolbar .lanspeed-refresh-control{flex:1 1 8em;min-width:0}',
+	'.lanspeed-root .lanspeed-toolbar .lanspeed-unit-control{flex:0 0 auto}',
+	'.lanspeed-root .lanspeed-toolbar .lanspeed-sort-control select{flex:1 1 auto;width:100%!important;min-width:0;max-width:none}',
 	'.lanspeed-root .lanspeed-toolbar-filter{min-width:0;flex:1 1 100%}',
 	'.lanspeed-root .lanspeed-toolbar input[type="search"]{min-width:0;max-width:none}',
-	'.lanspeed-root .lanspeed-toolbar .lanspeed-sort-control{flex:1 1 auto;min-width:0}',
-	'.lanspeed-root .lanspeed-toolbar .lanspeed-sort-control select{flex:1 1 auto;width:100%!important;min-width:0;max-width:none}',
 	'.lanspeed-status-error{grid-template-columns:minmax(0,1fr);gap:.25em}',
 	'.lanspeed-status-error-title{white-space:normal}',
 	'.lanspeed-status-error-list{grid-column:auto;grid-template-columns:minmax(0,1fr)}',

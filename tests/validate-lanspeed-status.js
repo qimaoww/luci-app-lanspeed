@@ -1245,14 +1245,18 @@ function testPaginationAndUiStates(context, fmt) {
 	const toolbarRight = findByClass(built.root, 'lanspeed-toolbar-right');
 	const statusActions = findByClass(built.root, 'lanspeed-status-actions');
 	assert.strictEqual(toolbarRight.children[0].children[1], state.refs.sortSelect);
-	assert.strictEqual(toolbarRight.children[1].children[1], state.refs.unitSel);
-	assert.strictEqual(statusActions.children[0].children[1], state.refs.intervalSel);
-	assert.strictEqual(statusActions.children[1], state.refs.btnRefresh);
-	assert.strictEqual(statusActions.children[2], state.refs.btnPause);
+	assert.strictEqual(toolbarRight.children[1].children[1], state.refs.intervalSel,
+		'the refresh cadence control sits next to the client ordering control');
+	assert.strictEqual(toolbarRight.children[2].children[1], state.refs.unitSel);
+	assert.ok(String(toolbarRight.children[1].attrs.class || '').includes('lanspeed-refresh-control'));
+	assert.strictEqual(statusActions.children[0], state.refs.btnRefresh);
+	assert.strictEqual(statusActions.children[1], state.refs.btnPause);
+	assert.strictEqual(statusActions.children.length, 2,
+		'the status bar keeps only the page-level refresh actions');
 	assert.deepStrictEqual(findByClass(built.root, 'lanspeed-metrics').children.map(node => node.attrs['data-metric']),
 		[ 'rx', 'tx', 'clients', 'conns' ], 'core metrics must list download before upload like the client rows');
 	assert.deepStrictEqual(state.refs.clientsTable.children[0].children[0].children
-		.map(th => th.attrs['data-column-key']), [ 'hostname', 'mac', 'rate', 'totals', 'conns', 'control' ],
+		.map(th => th.attrs['data-column-key']), [ 'hostname', 'mac', 'rate', 'totals', 'tcp_conns', 'udp_conns', 'control' ],
 		'client table columns must be keyed for fixed CSS tracks');
 	assert.strictEqual(state.refs.liveState.attrs['data-state'], 'live');
 	assert.strictEqual(state.refs.tbody.children.length, 10);
@@ -1270,11 +1274,15 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.deepStrictEqual(firstRow.children.map(cell => String(cell.attrs.class || '')).map(name =>
 		name.split(/\s+/).filter(part => /^lanspeed-client-/.test(part))[0]), [
 		'lanspeed-client-name', 'lanspeed-client-mac', 'lanspeed-client-value',
-		'lanspeed-client-total-cell', 'lanspeed-client-conns-cell', 'lanspeed-client-control'
+		'lanspeed-client-total-cell', 'lanspeed-client-count-cell', 'lanspeed-client-count-cell',
+		'lanspeed-client-control'
 	], 'each client row must render one cell per keyed column');
-	const conns = findAllByClass(findByClass(firstRow, 'lanspeed-client-conns-cell'), 'lanspeed-client-conn-line');
-	assert.deepStrictEqual(conns.map(line => line.attrs['data-protocol']), [ 'tcp', 'udp' ]);
-	assert.deepStrictEqual(conns.map(line => textOf(findByClass(line, 'lanspeed-client-conn-value'))), [ '30', '30' ]);
+	assert.deepStrictEqual([ firstRow.children[4], firstRow.children[5] ].map(cell => cell.attrs['data-label']),
+		[ 'TCP', 'UDP' ], 'connection counts keep one numeric column per transport');
+	assert.deepStrictEqual([ firstRow.children[4], firstRow.children[5] ].map(textOf), [ '30', '30' ],
+		'TCP and UDP counts render as plain right-aligned numbers');
+	assert.strictEqual(findByClass(firstRow.children[5], 'lanspeed-client-traffic-stack'), null,
+		'connection counts must not nest a traffic stack');
 	assert.strictEqual(vendorLine.attrs['data-vendor-state'], 'vendor');
 	state.refs.filterInput.listeners.input({ target: { value: 'network cards' } });
 	assert.strictEqual(state.refs.tbody.children.length, 1, 'vendor names must be searchable without case sensitivity');

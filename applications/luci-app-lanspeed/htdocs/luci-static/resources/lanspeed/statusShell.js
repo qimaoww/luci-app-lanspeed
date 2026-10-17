@@ -10,11 +10,11 @@ var IFACES_OPEN_KEY = 'luci-app-lanspeed.ifaces-open.v1';
  * fixed CSS tracks, so drop the obsolete preference instead of leaving it. */
 var LEGACY_COLUMN_WIDTHS_KEY = 'luci-app-lanspeed.client-column-widths.v12';
 
-/* Direction keys for every merged column, ordered download first. */
+/* Columns that stack both directions sort by their download key first. TCP and
+ * UDP get one column each so connection counts line up with the header. */
 var SORT_KEYS_BY_COLUMN = {
 	rate: [ 'rx', 'tx' ],
-	totals: [ 'rx_bytes', 'tx_bytes' ],
-	conns: [ 'tcp_conns', 'udp_conns' ]
+	totals: [ 'rx_bytes', 'tx_bytes' ]
 };
 
 function readFlag(key) {
@@ -88,7 +88,7 @@ function buildShell(viewState) {
 	refs.sortHeaders = {};
 	forgetLegacyColumnWidths();
 
-	/* --- Status bar: identity, collection state and the page-level refresh actions. */
+	/* --- Status bar parts. */
 	refs.collectorPill = E('span', { 'class': 'label lanspeed-collector-status' }, '-');
 	refs.liveState = E('span', {
 		'class': 'lanspeed-live-state',
@@ -153,6 +153,8 @@ function buildShell(viewState) {
 		if (typeof viewState.refreshLive === 'function') viewState.refreshLive();
 	});
 
+	/* --- Status bar: identity, collection state and the page-level actions. The
+	 * refresh cadence belongs to the client toolbar, next to sorting. */
 	var statusHeader = E('div', { 'class': 'lanspeed-header lanspeed-status-bar' }, [
 		E('div', { 'class': 'lanspeed-status-title' }, [
 			E('h3', {}, _('LAN Speed')),
@@ -162,7 +164,6 @@ function buildShell(viewState) {
 		]),
 		E('span', { 'class': 'spacer' }),
 		E('div', { 'class': 'lanspeed-status-actions' }, [
-			E('label', { 'class': 'lanspeed-refresh-control' }, [ _('刷新'), refs.intervalSel ]),
 			refs.btnRefresh,
 			refs.btnPause
 		])
@@ -292,6 +293,7 @@ function buildShell(viewState) {
 		]),
 		E('div', { 'class': 'lanspeed-toolbar-right' }, [
 			E('label', { 'class': 'lanspeed-sort-control' }, [ _('排序'), refs.sortSelect ]),
+			E('label', { 'class': 'lanspeed-refresh-control' }, [ _('刷新'), refs.intervalSel ]),
 			E('label', { 'class': 'lanspeed-unit-control' }, [ _('单位'), refs.unitSel ])
 		])
 	]);
@@ -375,9 +377,9 @@ function buildShell(viewState) {
 		viewState.refreshLive();
 	});
 
-	/* --- Client table: identity first, then rate, totals and connections as
-	 * right-aligned numeric columns, and row actions last. Column tracks are
-	 * fixed in CSS so live values never resize the table between samples. */
+	/* --- Client table: identity first, then rate, totals and one numeric column
+	 * per transport, and row actions last. Column tracks are fixed in CSS so live
+	 * values never resize the table between samples. */
 	refs.clientsHeaderSummary = E('span', { 'class': 'meta lanspeed-clients-summary' }, '');
 	var clientsHeader = E('div', { 'class': 'lanspeed-header' }, [
 		E('h3', {}, _('LAN 客户端')),
@@ -408,9 +410,13 @@ function buildShell(viewState) {
 			}),
 			clientHeader(refs, 'rate', _('网速'), { 'class': 'num lanspeed-client-rate-header' }),
 			refs.totalHeader,
-			clientHeader(refs, 'conns', _('连接'), {
-				'class': 'num lanspeed-client-conns-header',
-				'title': _('当前已建立并确认的 TCP 连接与已确认的 UDP 连接')
+			clientHeader(refs, 'tcp_conns', 'TCP', {
+				'class': 'num lanspeed-client-count-header',
+				'title': _('当前已建立并确认的 TCP 连接数')
+			}),
+			clientHeader(refs, 'udp_conns', 'UDP', {
+				'class': 'num lanspeed-client-count-header',
+				'title': _('当前已确认的 UDP 连接数，含 DNS 与其它流')
 			}),
 			refs.controlHeader
 		])),

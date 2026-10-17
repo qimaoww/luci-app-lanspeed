@@ -5104,10 +5104,11 @@ function assertStatusShellInteraction(src) {
 	const statusBar = findFakeElement(built.root, 'lanspeed-status-bar');
 	if (!left || !filter || !right || !actions || !statusBar || left.children[0] !== filter ||
 		filter.children[0] !== refs.filterInput || right.children[0].children[1] !== refs.sortSelect ||
-		right.children[1].children[1] !== refs.unitSel ||
-		actions.children[0].children[1] !== refs.intervalSel || actions.children[1] !== refs.btnRefresh ||
-		actions.children[2] !== refs.btnPause)
-		fail('statusShell.js must keep sort/unit in the client toolbar and cadence, refresh and pause together in the status bar');
+		right.children[1].children[1] !== refs.intervalSel ||
+		right.children[2].children[1] !== refs.unitSel ||
+		actions.children[0] !== refs.btnRefresh || actions.children[1] !== refs.btnPause ||
+		actions.children.length !== 2)
+		fail('statusShell.js must keep sort/cadence/unit in the client toolbar and refresh/pause in the status bar');
 	if (refs.btnRefresh.attrs.type !== 'button' || refs.btnPause.attrs.type !== 'button') {
 		fail('statusShell.js refresh actions must never submit or navigate away from the LuCI page');
 	}
@@ -6059,7 +6060,7 @@ function assertStatusStyleModule(src) {
 		'@supports not (container-type:inline-size)',
 		'.lanspeed-clients-card .lanspeed-clients-table tbody>tr{display:grid;',
 		'.lanspeed-clients-card .lanspeed-clients-table thead{display:none}',
-		'.lanspeed-conns-cell)[data-label]::before{content:attr(data-label);'.replace('.lanspeed-conns', '  .lanspeed-client-conns'),
+		'  .lanspeed-client-tcp-cell,.lanspeed-client-udp-cell)[data-label]::before{content:attr(data-label);',
 		'.lanspeed-ifaces-table tbody>tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));',
 		'.lanspeed-ifaces-table tbody td[data-label]::before{content:attr(data-label);',
 		'.lanspeed-clients-card .lanspeed-connection-link{font-size:1.05em;white-space:normal;overflow-wrap:anywhere}',
@@ -6081,7 +6082,8 @@ function assertStatusStyleModule(src) {
 		'.lanspeed-clients-table [data-column-key="mac"]{width:',
 		'.lanspeed-clients-table [data-column-key="rate"]{width:',
 		'.lanspeed-clients-table [data-column-key="totals"]{width:',
-		'.lanspeed-clients-table [data-column-key="conns"]{width:',
+		'.lanspeed-clients-table [data-column-key="tcp_conns"],',
+		'.lanspeed-clients-table [data-column-key="udp_conns"]{width:',
 		'.lanspeed-clients-table [data-column-key="control"]{width:',
 		'.lanspeed-status-root .lanspeed-table .num{text-align:right}',
 		'.lanspeed-control-actions{display:flex;flex-wrap:nowrap;gap:.35em;align-items:center;justify-content:flex-end}'
@@ -6094,7 +6096,8 @@ function assertStatusStyleModule(src) {
 	    !baseCss.includes('font-weight:inherit!important;line-height:inherit!important')) {
 		fail('client control buttons must use compact theme-native control sizing');
 	}
-	if (!baseCss.includes('.lanspeed-client-rate,.lanspeed-client-total,.lanspeed-client-conn-value{display:block;') ||
+	if (!baseCss.includes('.lanspeed-client-rate,.lanspeed-client-total{display:block;') ||
+	    !baseCss.includes('.lanspeed-client-count-cell{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}') ||
 	    !baseCss.includes('text-align:right;text-overflow:ellipsis;color:inherit;font-size:inherit;') ||
 	    !baseCss.includes('font-weight:inherit;line-height:inherit;white-space:nowrap}')) {
 		fail('rates, totals and connection counts must share one right-aligned numeric typography');

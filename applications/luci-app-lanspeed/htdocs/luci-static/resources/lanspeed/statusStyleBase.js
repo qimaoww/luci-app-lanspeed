@@ -17,7 +17,7 @@ var BASE_CSS = [
 	'.lanspeed-root .cbi-section{font-weight:400}',
 
 	/* Section headers: title cluster left, actions or summary right. */
-	'.lanspeed-header{display:flex;flex-wrap:wrap;gap:.5em 1em;align-items:center;',
+	'.lanspeed-header{display:flex;flex-wrap:wrap;gap:.4em 1em;align-items:center;',
 		'padding:var(--lanspeed-section-y) var(--lanspeed-section-x) .78em;margin:0;',
 		'border-bottom:1px solid var(--lanspeed-border)}',
 	'.lanspeed-header h3{display:inline;flex:0 0 auto;width:auto;margin:0;padding:0;border:0;',
@@ -29,9 +29,6 @@ var BASE_CSS = [
 	'.lanspeed-status-title .lanspeed-collector-status{flex:0 0 auto;white-space:nowrap}',
 	'.lanspeed-status-version{font-size:.78em;font-variant-numeric:tabular-nums}',
 	'.lanspeed-status-actions{display:flex;flex-wrap:wrap;gap:.5em;align-items:center;justify-content:flex-end}',
-	'.lanspeed-status-actions .lanspeed-refresh-control{display:inline-flex;gap:.35em;align-items:center;',
-		'color:var(--lanspeed-text-muted);font-size:.88em;white-space:nowrap}',
-	'.lanspeed-status-actions .lanspeed-refresh-control select{width:6.5em!important;min-width:6.5em;max-width:6.5em}',
 	'.lanspeed-status-actions .cbi-button{margin:0!important;white-space:nowrap}',
 	/* Live state: a dot plus one phrase, coloured only by semantic tokens. */
 	'.lanspeed-live-state{display:inline-flex;gap:.4em;align-items:center;color:var(--lanspeed-text-muted);',
@@ -119,13 +116,23 @@ var BASE_CSS = [
 	'.lanspeed-clients-card .lanspeed-table tbody tr:hover{',
 		'background:transparent!important;background-image:none!important}',
 	'.lanspeed-table-scroll{width:100%;min-width:0;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain}',
-	'.lanspeed-clients-table{table-layout:fixed;min-width:58em;font-weight:500}',
+	'.lanspeed-clients-table{table-layout:fixed;min-width:64em;font-weight:500}',
 	'.lanspeed-clients-table :is(th,td){overflow:hidden}',
+	'.lanspeed-clients-table thead th{position:relative;padding-top:.62em;padding-bottom:.62em;',
+		'font-size:.8em;letter-spacing:.02em}',
+	'.lanspeed-clients-table thead th[aria-sort="ascending"]::after,',
+	'.lanspeed-clients-table thead th[aria-sort="descending"]::after{',
+		'content:"";display:inline-block;margin-left:.3em;border:.28em solid transparent;vertical-align:middle}',
+	'.lanspeed-clients-table thead th[aria-sort="ascending"]::after{border-bottom-color:currentColor;',
+		'transform:translateY(-.08em)}',
+	'.lanspeed-clients-table thead th[aria-sort="descending"]::after{border-top-color:currentColor;',
+		'transform:translateY(.08em)}',
 	'.lanspeed-clients-table [data-column-key="hostname"]{width:auto}',
-	'.lanspeed-clients-table [data-column-key="mac"]{width:12em}',
+	'.lanspeed-clients-table [data-column-key="mac"]{width:14em}',
 	'.lanspeed-clients-table [data-column-key="rate"]{width:10.6em}',
 	'.lanspeed-clients-table [data-column-key="totals"]{width:8.4em}',
-	'.lanspeed-clients-table [data-column-key="conns"]{width:7em}',
+	'.lanspeed-clients-table [data-column-key="tcp_conns"],',
+	'.lanspeed-clients-table [data-column-key="udp_conns"]{width:4.4em}',
 	'.lanspeed-clients-table [data-column-key="control"]{width:11.4em;text-align:right}',
 	'.lanspeed-client-name{min-width:0}',
 	'.lanspeed-client-name>:is(a,span){max-width:100%}',
@@ -145,21 +152,23 @@ var BASE_CSS = [
 		'[data-vendor-state="invalid"],[data-vendor-state="loading"],[data-vendor-state="unavailable"]){font-style:italic}',
 	'.lanspeed-client-vendor[data-vendor-stale="true"]::after{content:" *";opacity:.7}',
 
-	/* Rate, totals and connections share one two-line stack: download over
-	 * upload, value right-aligned so digits line up across rows. */
+	/* Rate and totals share one two-line stack: download over upload, value
+	 * right-aligned so digits line up across rows. */
 	'.lanspeed-client-traffic-stack{display:grid;gap:.12em;justify-items:stretch;width:100%}',
-	'.lanspeed-client-traffic-line,.lanspeed-client-conn-line{display:grid;grid-template-columns:1.1em minmax(0,1fr);',
+	'.lanspeed-client-traffic-line{display:grid;grid-template-columns:1.1em minmax(0,1fr);',
 		'gap:.3em;align-items:baseline;line-height:1.35;white-space:nowrap;font-variant-numeric:tabular-nums}',
-	'.lanspeed-client-direction,.lanspeed-client-conn-label{color:var(--lanspeed-text-muted);text-align:left}',
-	'.lanspeed-client-direction{font-weight:700}',
-	'.lanspeed-client-conn-line{grid-template-columns:2.4em minmax(0,1fr)}',
-	'.lanspeed-client-conn-label{font-size:.72em;font-weight:700;letter-spacing:.02em}',
-	'.lanspeed-client-rate,.lanspeed-client-total,.lanspeed-client-conn-value{display:block;min-width:0;',
+	'.lanspeed-client-direction{color:var(--lanspeed-text-muted);text-align:left;font-weight:700}',
+	'.lanspeed-client-rate,.lanspeed-client-total{display:block;min-width:0;',
 		'overflow:hidden;text-align:right;text-overflow:ellipsis;color:inherit;font-size:inherit;',
 		'font-weight:inherit;line-height:inherit;white-space:nowrap}',
 	'.lanspeed-client-traffic-line[data-direction="tx"] .lanspeed-client-rate,',
 	'.lanspeed-client-traffic-line[data-direction="tx"] .lanspeed-client-total{color:var(--lanspeed-text-muted)}',
 	'.lanspeed-client-total-cell{white-space:nowrap}',
+	/* TCP and UDP counts: plain right-aligned numbers, UDP a notch quieter. */
+	'.lanspeed-client-count-cell{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}',
+	/* UDP is the quieter of the two counts; weight, not opacity, keeps it readable. */
+	'.lanspeed-client-udp-cell{font-weight:500}',
+	'.lanspeed-clients-table tbody tr.idle .lanspeed-client-count-cell{font-weight:400}',
 
 	/* Row actions. */
 	'.lanspeed-client-control{min-width:0}',

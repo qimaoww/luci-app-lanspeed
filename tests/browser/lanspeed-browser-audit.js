@@ -1309,6 +1309,13 @@ async page => {
 
 			if (config.pageName === 'overview') {
 				if (config.viewport.name === 'mobile') {
+					/* Interface throughput is collapsed evidence by design; open it
+					 * before measuring the labelled mobile rows. */
+					const ifaceDetails = root.locator('.lanspeed-ifaces-card details').first();
+					if (await ifaceDetails.count() && await ifaceDetails.getAttribute('open') === null) {
+						await ifaceDetails.locator('summary').first().click();
+						await page.waitForTimeout(260);
+					}
 					const interfaceLayout = await root.locator('.lanspeed-ifaces-table:visible').first()
 						.evaluate(table => {
 							const body = table.closest('.lanspeed-details-body');
@@ -1869,7 +1876,7 @@ async page => {
 				const nssContract = await root.evaluate(node => ({
 					page: node.getAttribute('data-config-page'), state: node.getAttribute('data-state'),
 					busy: node.getAttribute('aria-busy'),
-					fields: Array.from(node.querySelectorAll('.lanspeed-config-table tr[data-field]')).map(row => row.getAttribute('data-field')),
+					fields: Array.from(node.querySelectorAll('[data-field]')).map(row => row.getAttribute('data-field')),
 					interfaceSections: node.querySelectorAll('.lanspeed-ifcfg').length,
 					subsections: node.querySelectorAll('.lanspeed-config-subsection').length,
 					failure: !!node.querySelector('.lanspeed-page-failure')
@@ -1944,7 +1951,7 @@ async page => {
 							classes: Array.from(element.classList),
 							heading: (element.querySelector(':scope > .lanspeed-config-subheader h4') || {}).textContent || ''
 						})),
-							fieldNames: Array.from(node.querySelectorAll('.lanspeed-config-table tbody>tr[data-field]'))
+							fieldNames: Array.from(node.querySelectorAll('[data-field]'))
 								.map(element => element.getAttribute('data-field')),
 							compatibilityVisible: !!compatibility,
 							compatibilityTerms: compatibility ? compatibility.querySelectorAll('dt').length : 0,
@@ -1954,7 +1961,7 @@ async page => {
 						interfaceStatusText: interfaceStatus ? interfaceStatus.textContent.trim() : '',
 						interfaceHint: interfaceHint ? interfaceHint.getAttribute('data-state') || '' : '',
 						checkboxes: Array.from(node.querySelectorAll(
-							'.lanspeed-config-table input[type="checkbox"]')).map(element => {
+							'[data-field] input[type="checkbox"]')).map(element => {
 							const rect = element.getBoundingClientRect();
 							const style = getComputedStyle(element);
 							const label = element.closest('.lanspeed-toggle');
@@ -2063,7 +2070,7 @@ async page => {
 						invalid: invalidCheckboxes
 					});
 					const checkboxFocusTarget = root.locator(
-						'.lanspeed-config-table input[type="checkbox"]:not(:disabled)').first();
+						'[data-field] input[type="checkbox"]:not(:disabled)').first();
 					if (await checkboxFocusTarget.count()) {
 						await page.keyboard.press('Tab');
 						await checkboxFocusTarget.focus();

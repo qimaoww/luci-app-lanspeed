@@ -303,31 +303,26 @@ function countText(value) {
 	return typeof value === 'number' ? String(value) : '-';
 }
 
-function connectionLine(protocol, value, title) {
-	return E('span', {
-		'class': 'lanspeed-client-conn-line',
-		'data-protocol': protocol.toLowerCase(),
-		'title': title || ''
-	}, [
-		E('span', { 'class': 'lanspeed-client-conn-label' }, protocol),
-		E('span', { 'class': 'lanspeed-client-conn-value' }, value)
-	]);
+function clientTcpCell(c) {
+	return E('td', {
+		'class': 'num lanspeed-client-count-cell lanspeed-client-tcp-cell',
+		'data-label': 'TCP',
+		'title': _('当前已建立并确认的 TCP 连接数')
+	}, countText(c && c.tcp_conns));
 }
 
-function clientConnectionsCell(c) {
+function clientUdpCell(c) {
 	var udpTitle = (typeof c.udp_dns_conns === 'number' || typeof c.udp_other_conns === 'number')
 		? [
 			'DNS ' + countText(c.udp_dns_conns),
 			_('其它 ') + countText(c.udp_other_conns)
 		  ].join(' · ')
-		: '';
+		: _('当前已确认的 UDP 连接数');
 	return E('td', {
-		'class': 'num lanspeed-client-conns-cell',
-		'data-label': _('连接')
-	}, E('div', { 'class': 'lanspeed-client-traffic-stack' }, [
-		connectionLine('TCP', countText(c.tcp_conns), ''),
-		connectionLine('UDP', countText(c.udp_conns), udpTitle)
-	]));
+		'class': 'num lanspeed-client-count-cell lanspeed-client-udp-cell',
+		'data-label': 'UDP',
+		'title': udpTitle
+	}, countText(c && c.udp_conns));
 }
 
 function captureClientViewport(refs) {
@@ -702,7 +697,8 @@ function refreshLive(viewState) {
 				clientMacCell(c, vendor),
 				clientTrafficCell(tx, rx, prefs.unit),
 				clientTrafficTotalCell(c, showClientTotals),
-				clientConnectionsCell(c),
+				clientTcpCell(c),
+				clientUdpCell(c),
 				controlCell
 			]);
 		}));
@@ -789,7 +785,8 @@ return baseclass.extend({
 	clientTrafficCell: clientTrafficCell,
 	clientTrafficTotalCell: clientTrafficTotalCell,
 	clientMacCell: clientMacCell,
-	clientConnectionsCell: clientConnectionsCell,
+	clientTcpCell: clientTcpCell,
+	clientUdpCell: clientUdpCell,
 	refreshSortHeaders: refreshSortHeaders,
 	captureClientViewport: captureClientViewport,
 	restoreClientViewport: restoreClientViewport,

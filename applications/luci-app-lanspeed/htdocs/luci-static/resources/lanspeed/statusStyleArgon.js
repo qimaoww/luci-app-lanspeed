@@ -41,9 +41,11 @@ var ARGON_CSS = [
 	'.lanspeed-theme-argon .lanspeed-table tbody tr,',
 	'.lanspeed-theme-argon .lanspeed-table tbody tr:nth-child(odd):hover{',
 		'background:transparent!important;background-image:none!important}',
+	/* Argon's 5% currentColor stripe pushes body-size link text under the 4.5:1
+	 * threshold; keep a visible stripe at a lighter tint instead. */
 	'.lanspeed-theme-argon .lanspeed-table tbody tr:nth-child(even),',
 	'.lanspeed-theme-argon .lanspeed-table tbody tr:nth-child(even):hover{',
-		'background:var(--lanspeed-native-row-stripe)!important;background-image:none!important}',
+		'background:color-mix(in srgb,currentColor 3%,transparent)!important;background-image:none!important}',
 	'.lanspeed-theme-argon .lanspeed-table tbody td{border-bottom:0!important}',
 	'.lanspeed-theme-argon .lanspeed-connection-link:link,',
 	'.lanspeed-theme-argon .lanspeed-connection-link:visited,',

@@ -21,7 +21,7 @@ var AURORA_CSS = [
 		'border-radius:var(--lanspeed-radius-section);box-shadow:var(--lanspeed-shadow-raised)}',
 	'@media (max-width:700px){',
 		ROOT + '>.cbi-section{padding:calc(var(--spacing,.25rem)*4)}',
-		ROOT + ' .lanspeed-header{margin-bottom:.8rem;padding:0 0 .65rem}',
+		ROOT + ' .lanspeed-header{margin-bottom:.8rem;padding:0 0 .7rem}',
 		ROOT + ' .lanspeed-body{padding:0}',
 		ROOT + ' .lanspeed-diagnostic-fact{padding:.1rem .7rem}',
 		ROOT + ' .lanspeed-diagnostics-health-table{font-size:.82rem}',
