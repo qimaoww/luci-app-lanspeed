@@ -312,14 +312,21 @@ function clearElement(node) {
 		node.removeChild(node.firstChild);
 }
 
-function metaFact(label, value) {
-	return E('span', { 'class': 'lanspeed-connection-meta-fact' }, [
+function metaFact(label, value, attrs) {
+	return E('span', Object.assign({ 'class': 'lanspeed-connection-meta-fact' }, attrs || {}), [
 		E('span', { 'class': 'lanspeed-connection-meta-label' }, label),
 		E('span', { 'class': 'lanspeed-connection-meta-value' }, value)
 	]);
 }
 
-function renderClientMeta(ref, client, ips, identityKey) {
+/* Same vocabulary and state attribute as the realtime client list. */
+function vendorFact(vendor) {
+	var attrs = { 'title': vendor.title || vendor.label };
+	if (vendor.kind) attrs['data-vendor-state'] = vendor.kind;
+	return metaFact(_('设备厂商'), vendor.label, attrs);
+}
+
+function renderClientMeta(ref, client, ips, identityKey, vendorLookup) {
 	clearElement(ref);
 
 	if (ips.length) {
@@ -344,6 +351,8 @@ function renderClientMeta(ref, client, ips, identityKey) {
 	var facts = [];
 	if (client && client.mac)
 		facts.push(metaFact(_('MAC 地址'), client.mac));
+	if (client && client.mac && vendorLookup)
+		facts.push(vendorFact(vendorLookup(client.mac)));
 	if (client && client.interface)
 		facts.push(metaFact(_('接口'), client.interface));
 	if (!ips.length && !facts.length && identityKey)
@@ -510,7 +519,7 @@ function render(viewState) {
 		: null;
 
 	refs.clientName.textContent = displayName;
-	renderClientMeta(refs.clientMeta, client, ips, viewState.identityKey);
+	renderClientMeta(refs.clientMeta, client, ips, viewState.identityKey, viewState.vendorLookup);
 	if (refs.clientHeading) {
 		var hostnameEditable = Boolean(viewState.hostnameMac) &&
 			viewState.hostnameOpening !== true;

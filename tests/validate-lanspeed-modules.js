@@ -54,6 +54,7 @@ const EXPECTED_MODULES = [
 	'designSystemBootstrap.js',
 	'designSystemShadcn.js',
 	'geoLocation.js',
+	'macVendor.js',
 	'clientConnections.js',
 	'clientControl.js',
 	'clientControlReasons.js',
@@ -221,6 +222,7 @@ const MODULE_REQUIRES = {
 	'designSystemBootstrap.js': [ 'baseclass' ],
 	'designSystemShadcn.js': [ 'baseclass' ],
 	'geoLocation.js': [ 'baseclass' ],
+	'macVendor.js': [ 'baseclass', 'request' ],
 	'clientConnections.js': [ 'baseclass', 'lanspeed.format' ],
 	'clientControl.js': [ 'baseclass', 'ui', 'lanspeed.rpc', 'lanspeed.clientControlReasons' ],
 	'clientControlReasons.js': [
@@ -2405,14 +2407,17 @@ function fakeDhcpHostnamesModule() {
 	};
 }
 
-function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow, fakeDate, fakeGeo, ui, dhcp) {
+function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow, fakeDate, fakeGeo, ui, dhcp, fakeVendor) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	return vm.compileFunction(src, [
-		'baseclass', 'ui', 'fmt', 'lsRpc', 'dhcpHostnames', 'geoLocation',
+		'baseclass', 'ui', 'fmt', 'lsRpc', 'dhcpHostnames', 'geoLocation', 'macVendor',
 		'clientDetailShell', 'clientDetailRefresh', 'window', 'Date', 'E', '_'
 	], { filename: 'resources/lanspeed/clientDetailView.js' })(
 		fakeBaseclass, ui || fakeUiModule(), fmt, lsRpc, dhcp || fakeDhcpHostnamesModule(),
-		fakeGeo || fakeGeoLocationModule(), shell, refresh, fakeWindow,
+		fakeGeo || fakeGeoLocationModule(),
+		fakeVendor || { lookup: function() { return { vendor: '', label: '未知厂商' }; },
+			load: function() { return new Promise(function() {}); } },
+		shell, refresh, fakeWindow,
 		fakeDate || Date, fakeElement, function(value) { return value; }
 	);
 }
@@ -2420,7 +2425,7 @@ function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow,
 function assertClientDetailViewSource(src) {
 	if (JSON.stringify(moduleRequireNames(src)) !== JSON.stringify([
 		'baseclass', 'ui', 'lanspeed.format', 'lanspeed.rpc',
-		'lanspeed.dhcpHostnames', 'lanspeed.geoLocation',
+		'lanspeed.dhcpHostnames', 'lanspeed.geoLocation', 'lanspeed.macVendor',
 		'lanspeed.clientDetailShell', 'lanspeed.clientDetailRefresh'
 	])) {
 		fail('clientDetailView.js must require UI, format, shared RPC, DHCP hostnames, geolocation, detail shell and detail refresh in dependency order');
@@ -2434,6 +2439,37 @@ function assertClientDetailViewSource(src) {
 	    /lsRpc\.(?:clients|interfaces|uciGet|overview)\s*\(/.test(cleaned)) {
 		fail('clientDetailView.js must pair shared clientConnections and status RPCs without unrelated requests');
 	}
+}
+
+function assertClientDetailVendorLifecycle(src) {
+	asyncChecks.push(Promise.resolve().then(async function() {
+		for (const destroyBeforeDownload of [ false, true ]) {
+			const deferred = makeDeferred();
+			let state;
+			let renders = 0;
+			const vendor = { lookup: function() { return { label: 'Example' }; },
+				load: function() { return deferred.promise; } };
+			const view = loadClientDetailViewModule(src, {
+				MIN_REFRESH_MS: 1000, DEFAULT_PREFS: { refreshMs: 1000 },
+				loadPrefs: function() { return { refreshMs: 1000 }; }
+			}, {}, { buildShell: function(next) {
+				state = next; return { root: fakeElement('div'), refs: {} };
+			} }, { render: function() { renders++; } }, {
+				location: { pathname: '/admin/status/lanspeed/overview' },
+				setTimeout: function() { return 1; }, clearTimeout: function() {},
+				addEventListener: function() {}
+			}, Date, null, null, null, vendor);
+			view.render({ identityKey: 'vendor@lan', response: { available: true } });
+			if (renders !== 1 || state.vendorLookup !== vendor.lookup)
+				fail('client detail must render immediately while its optional vendor database is pending');
+			if (destroyBeforeDownload) state.destroy();
+			deferred.resolve();
+			await Promise.resolve();
+			if (renders !== (destroyBeforeDownload ? 1 : 2))
+				fail('client detail vendor completion must only refresh a page that is still open');
+			state.destroy();
+		}
+	}).catch(function(error) { fail('client detail vendor lifecycle: ' + error.stack); }));
 }
 
 function assertClientDetailViewLifecycle(src) {
@@ -3360,6 +3396,14 @@ function assertClientDetailRefreshBehavior(src) {
 		fail('clientDetailRefresh.js must render identity/meta, real summaries, and destination groups with highest download speed first by default');
 	}
 	const threeDigitResponse = JSON.parse(JSON.stringify(state.response));
+	state.vendorLookup = function() { return { label: '<img src=x onerror=alert(1)>' }; };
+	refresh.render(state);
+	const vendorFact = findFakeElementsByClass(refs.clientMeta, 'lanspeed-connection-meta-fact')
+		.find(function(fact) { return fakeElementText(fact).includes('设备厂商'); });
+	if (!vendorFact || fakeElementText(vendorFact) !== '设备厂商<img src=x onerror=alert(1)>' ||
+	    !vendorFact.children[1].children.includes('<img src=x onerror=alert(1)>'))
+		fail('client detail must display vendor names as text, including labels containing HTML');
+	delete state.vendorLookup;
 	threeDigitResponse.client.tx_bps = 123456789;
 	threeDigitResponse.client.rx_bps = 987654321;
 	state.response = threeDigitResponse;
@@ -5056,12 +5100,14 @@ function assertStatusShellInteraction(src) {
 	const filter = findFakeElement(built.root, 'lanspeed-toolbar-filter');
 	const right = findFakeElement(built.root, 'lanspeed-toolbar-right');
 
-	if (!left || !filter || !right || left.children[1] !== filter ||
+	const actions = findFakeElement(built.root, 'lanspeed-status-actions');
+	const statusBar = findFakeElement(built.root, 'lanspeed-status-bar');
+	if (!left || !filter || !right || !actions || !statusBar || left.children[0] !== filter ||
 		filter.children[0] !== refs.filterInput || right.children[0].children[1] !== refs.sortSelect ||
-		right.children[1].children[1] !== refs.intervalSel || right.children[2] !== refs.btnRefresh ||
-		right.children[3] !== refs.btnPause)
-		fail('statusShell.js must place the sort selector adjacent to refresh cadence and actions');
-
+		right.children[1].children[1] !== refs.unitSel ||
+		actions.children[0].children[1] !== refs.intervalSel || actions.children[1] !== refs.btnRefresh ||
+		actions.children[2] !== refs.btnPause)
+		fail('statusShell.js must keep sort/unit in the client toolbar and cadence, refresh and pause together in the status bar');
 	if (refs.btnRefresh.attrs.type !== 'button' || refs.btnPause.attrs.type !== 'button') {
 		fail('statusShell.js refresh actions must never submit or navigate away from the LuCI page');
 	}
@@ -6008,64 +6054,54 @@ function assertStatusStyleModule(src) {
 	}
 	[
 		'@media (max-width:900px)', '@media (max-width:700px)', '@media (max-width:480px)',
-		'.lanspeed-clients-card .lanspeed-table tbody>tr{display:grid;',
-		'.lanspeed-clients-card .lanspeed-table td[data-label]::before{content:attr(data-label);',
+		'container:lanspeed-clients/inline-size',
+		'@container lanspeed-clients (max-width:',
+		'@supports not (container-type:inline-size)',
+		'.lanspeed-clients-card .lanspeed-clients-table tbody>tr{display:grid;',
+		'.lanspeed-clients-card .lanspeed-clients-table thead{display:none}',
+		'.lanspeed-conns-cell)[data-label]::before{content:attr(data-label);'.replace('.lanspeed-conns', '  .lanspeed-client-conns'),
 		'.lanspeed-ifaces-table tbody>tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));',
 		'.lanspeed-ifaces-table tbody td[data-label]::before{content:attr(data-label);',
-		'.lanspeed-table{table-layout:fixed}',
-		'.lanspeed-client-control-header{text-align:center}',
-		'.lanspeed-control-actions{display:flex;flex-wrap:nowrap;justify-content:flex-start}',
-		'.lanspeed-control-button{width:5.5em;min-width:5.5em}',
-		'.lanspeed-custom-column-layout',
-		'.lanspeed-custom-column-layout[data-client-totals][data-client-control]',
-		'width:auto!important;min-width:0;max-width:none!important;justify-self:stretch!important;box-sizing:border-box;border-bottom:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap',
-		':is(th,td).num{padding-left:0!important;padding-right:0!important}',
-		':nth-child(1){position:sticky!important;left:0',
-		':nth-child(2){position:sticky!important;left:var(--lanspeed-client-second-column-left)',
-		':is(th,td):nth-child(1)',
-		'width:22%',
-		'width:16%;text-align:center}',
-		'width:11.5000%;text-align:center}'
+		'.lanspeed-clients-card .lanspeed-connection-link{font-size:1.05em;white-space:normal;overflow-wrap:anywhere}',
+		'.lanspeed-clients-card .lanspeed-client-vendor{flex:1 1 10em;margin:0;white-space:normal;overflow-wrap:anywhere}',
+		'.lanspeed-clients-card .lanspeed-client-name .ipline{white-space:normal;overflow-wrap:anywhere}'
 	].forEach(function(marker) {
 		if (!responsiveCss.includes(marker))
 			fail(`statusStyleResponsive.js must retain responsive status behavior: ${marker}`);
 	});
+	if (/position\s*:\s*sticky/.test(responsiveCss) || /position\s*:\s*sticky/.test(baseCss))
+		fail('client table must not pin cells over translucent theme surfaces');
+	if (/nth-child\(\d\)/.test(responsiveCss) || /nth-child\(\d\)/.test(baseCss) ||
+	    responsiveCss.includes('lanspeed-custom-column-layout') || baseCss.includes('lanspeed-custom-column-layout'))
+		fail('client columns must be addressed by data-column-key, never by positional or runtime grid layouts');
+	[
+		'.lanspeed-clients-table{table-layout:fixed;min-width:',
+		'.lanspeed-table-scroll{width:100%;min-width:0;max-width:100%;overflow-x:auto',
+		'.lanspeed-clients-table [data-column-key="hostname"]{width:auto}',
+		'.lanspeed-clients-table [data-column-key="mac"]{width:',
+		'.lanspeed-clients-table [data-column-key="rate"]{width:',
+		'.lanspeed-clients-table [data-column-key="totals"]{width:',
+		'.lanspeed-clients-table [data-column-key="conns"]{width:',
+		'.lanspeed-clients-table [data-column-key="control"]{width:',
+		'.lanspeed-status-root .lanspeed-table .num{text-align:right}',
+		'.lanspeed-control-actions{display:flex;flex-wrap:nowrap;gap:.35em;align-items:center;justify-content:flex-end}'
+	].forEach(function(marker) {
+		if (!baseCss.includes(marker))
+			fail(`statusStyleBase.js must give the client table fixed, keyed tracks: ${marker}`);
+	});
 	if (!baseCss.includes('min-height:calc(var(--lanspeed-control-height)*.82)!important') ||
 	    !baseCss.includes('padding:.28em .7em!important') ||
-	    !baseCss.includes('font-size:inherit!important;') ||
 	    !baseCss.includes('font-weight:inherit!important;line-height:inherit!important')) {
 		fail('client control buttons must use compact theme-native control sizing');
 	}
-	if (!baseCss.includes('.lanspeed-client-total{display:inline-block;color:inherit;font-size:inherit;') ||
+	if (!baseCss.includes('.lanspeed-client-rate,.lanspeed-client-total,.lanspeed-client-conn-value{display:block;') ||
+	    !baseCss.includes('text-align:right;text-overflow:ellipsis;color:inherit;font-size:inherit;') ||
 	    !baseCss.includes('font-weight:inherit;line-height:inherit;white-space:nowrap}')) {
-		fail('cumulative traffic values must use the same typography as live rate values');
+		fail('rates, totals and connection counts must share one right-aligned numeric typography');
 	}
-	if (!baseCss.includes('.lanspeed-client-total-header,.lanspeed-client-total-cell{text-align:center}') ||
-		!responsiveCss.includes('width:16%;text-align:center}') ||
-		!responsiveCss.includes('width:11.5000%;text-align:center}')) {
-		fail('client totals and connection controls must use a compact, aligned desktop table rhythm');
-	}
-	[
-		'[data-client-totals="hidden"][data-client-control="shown"]',
-		'[data-client-totals="shown"][data-client-control="hidden"]',
-		'[data-client-totals="hidden"][data-client-control="hidden"]'
-	].forEach(function(marker) {
-		if (!responsiveCss.includes(marker))
-			fail(`statusStyleResponsive.js must define a balanced desktop layout for every optional-column combination: ${marker}`);
-	});
-	[
-		':is(:nth-child(3),:nth-child(4),:nth-child(5),:nth-child(6)){width:11.5000%;text-align:center}',
-		':is(:nth-child(3),:nth-child(4),:nth-child(5),:nth-child(6)){width:14.5000%;text-align:center}'
-	].forEach(function(marker) {
-		if (!responsiveCss.includes(marker))
-			fail(`live and cumulative traffic columns must retain one compact, even desktop rhythm: ${marker}`);
-	});
-	if (!responsiveCss.includes(':is(th,td):nth-child(2){width:19.5%;text-align:left}')) {
-		fail('desktop MAC values must share the MAC heading reading edge');
-	}
-	if (responsiveCss.includes('data-client-status') || responsiveCss.includes('nth-child(8)')) {
-		fail('statusStyleResponsive.js must use seven columns after combining traffic directions');
-	}
+	if (!baseCss.includes('.lanspeed-client-traffic-line[data-direction="tx"] .lanspeed-client-rate') ||
+	    !baseCss.includes('.lanspeed-live-state[data-state="live"]::before{background:var(--lanspeed-normal)}'))
+		fail('statusStyleBase.js must keep direction and live-state cues on semantic tokens');
 	themeCss.forEach(function(theme) {
 		if (!theme[2].includes(`lanspeed-theme-${theme[1]}`) ||
 		    !theme[2].includes('.lanspeed-metrics{') ||
@@ -6085,10 +6121,6 @@ function assertStatusStyleModule(src) {
 	}
 	if (!themeCss[1][2].includes('.lanspeed-theme-argon .lanspeed-metric .big{font-size:1.3rem}'))
 		fail('statusStyleArgon.js must keep live rate values on one line at narrow widths');
-	if (!themeCss[0][2].includes('.lanspeed-clients-card .lanspeed-body{overflow-x:auto}') ||
-	    !themeCss[1][2].includes('.lanspeed-clients-card .lanspeed-body{overflow-x:auto}')) {
-		fail('Aurora and Argon status styles must retain desktop client-table overflow containment');
-	}
 	if (/lanspeed-(?:caps|warnings|subhead|strip)/.test(src) || src.includes('CAPS_CSS')) {
 		fail('lanspeed/statusStyle.js must not retain obsolete capability or legacy warning styles');
 	}
@@ -6143,7 +6175,7 @@ function assertStatusShellModule(src) {
 	    !src.includes("E('div', { 'class': 'lanspeed-toolbar-right' }") ||
 	    !src.includes("E('label', { 'class': 'lanspeed-unit-control' }, [ _('单位'), refs.unitSel ])") ||
 	    !src.includes("E('label', { 'class': 'lanspeed-refresh-control' }, [ _('刷新'), refs.intervalSel ])")) {
-		fail('lanspeed/statusShell.js must place unit/filter controls left and refresh controls right');
+		fail('lanspeed/statusShell.js must group client filters left, display options right and page refresh in the status bar');
 	}
 	if (src.includes('refs.statusHeader') || src.includes('showClientStatus') ||
 		src.includes('data-client-status') || src.includes("_('状态')")) {
@@ -6154,16 +6186,15 @@ function assertStatusShellModule(src) {
 	    !src.includes("'class': 'lanspeed-connection-number'")) {
 		fail('lanspeed/statusShell.js must render connection totals with the same three-row metric structure as every other card');
 	}
-	if (!src.includes('lanspeed-column-resize-handle') ||
-		!src.includes('COLUMN_WIDTHS_KEY') ||
-		!src.includes('pointerdown') ||
-		!src.includes('pointercancel') ||
-		!src.includes('clientColumnResizeActive') ||
-		!src.includes('clientColumnLayoutKey') ||
-		!src.includes('persistCurrentColumnWidths') ||
-		!src.includes('localStorage.setItem(COLUMN_WIDTHS_KEY')) {
-		fail('lanspeed/statusShell.js must provide persistent per-column resize handles');
+	if (src.includes('lanspeed-column-resize-handle') || src.includes('pointerdown') ||
+	    src.includes('ResizeObserver') || src.includes('lanspeed-custom-column-layout') ||
+	    src.includes('--lanspeed-client-grid-template') || !src.includes('LEGACY_COLUMN_WIDTHS_KEY') ||
+	    !src.includes('localStorage.removeItem(LEGACY_COLUMN_WIDTHS_KEY)')) {
+		fail('lanspeed/statusShell.js must use fixed CSS column tracks and retire stored column widths');
 	}
+	if (!src.includes('IFACES_OPEN_KEY') || !src.includes("addEventListener('toggle'") ||
+	    src.includes("'open': 'open'"))
+		fail('lanspeed/statusShell.js must collapse interface throughput by default and remember the choice');
 	const collectorBadges = src.match(/lanspeed-collector-status/g) || [];
 	if (collectorBadges.length !== 1 ||
 	    /(?:servicePill|freshnessPill|lanspeed-(?:service|freshness)-status)/.test(src)) {
@@ -7785,6 +7816,7 @@ EXPECTED_MODULES.forEach(function(name) {
 	}
 	if (name === 'clientDetailView.js') {
 		assertClientDetailViewSource(src);
+		assertClientDetailVendorLifecycle(src);
 		assertClientDetailViewLifecycle(src);
 		assertClientDetailDisposalAndHostnameApply(src);
 		assertClientDetailGeoLifecycle(src);

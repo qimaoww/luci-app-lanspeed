@@ -5,6 +5,7 @@
 'require lanspeed.rpc as lsRpc';
 'require lanspeed.dhcpHostnames as dhcpHostnames';
 'require lanspeed.geoLocation as geoLocation';
+'require lanspeed.macVendor as macVendor';
 'require lanspeed.clientDetailShell as clientDetailShell';
 'require lanspeed.clientDetailRefresh as clientDetailRefresh';
 
@@ -381,6 +382,7 @@ return baseclass.extend({
 			hostnameOpening: false,
 			hostnameSaving: false,
 			destroyed: false,
+			vendorLookup: macVendor.lookup,
 
 			stopTimer: function() {
 				if (this.timer !== null) {
@@ -427,6 +429,7 @@ return baseclass.extend({
 				this.stopTimer();
 				this.loading = true;
 				this.manualLoading = requestedManually;
+				if (this.ensureVendors) this.ensureVendors();
 				clientDetailRefresh.render(this);
 				try {
 					request = Promise.all([
@@ -636,6 +639,12 @@ return baseclass.extend({
 			}
 		};
 
+		var ensureVendors = typeof macVendor.watch === 'function'
+			? macVendor.watch(function() { return !viewState.destroyed; },
+				function() { clientDetailRefresh.render(viewState); })
+			: null;
+		viewState.ensureVendors = ensureVendors;
+		var vendorLoad = ensureVendors ? null : macVendor.load();
 		var built = clientDetailShell.buildShell(viewState);
 		viewState.refs = built.refs;
 		connected = !!built.root.isConnected;
@@ -647,6 +656,10 @@ return baseclass.extend({
 			observer.observe(hostDocument.body, { childList: true, subtree: true });
 		}
 		clientDetailRefresh.render(viewState);
+		if (ensureVendors) ensureVendors();
+		else vendorLoad.then(function() {
+			if (!viewState.destroyed) clientDetailRefresh.render(viewState);
+		});
 		viewState.schedule();
 		window.addEventListener('pagehide', pageHide);
 		window.addEventListener('pageshow', pageShow);

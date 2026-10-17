@@ -272,7 +272,7 @@ function loadFormat(context) {
 function loadOverview(context, fmt, rpc, modules) {
 	modules = modules || {};
 	return vm.compileFunction(readModule('statusOverview.js'), [
-		'baseclass', 'fmt', 'lsRpc', 'statusIp', 'statusShell', 'statusRefresh', 'statusRateMeta'
+		'baseclass', 'fmt', 'lsRpc', 'statusIp', 'statusShell', 'statusRefresh', 'statusRateMeta', 'macVendor'
 	], { filename: 'resources/lanspeed/statusOverview.js', parsingContext: context })(
 		{ extend: function(value) { return value; } },
 		fmt,
@@ -292,7 +292,9 @@ function loadOverview(context, fmt, rpc, modules) {
 			if (!valid(tx) || !valid(rx)) return '';
 			return tx === 'fast_routed_lease' || rx === 'fast_routed_lease'
 				? 'fast_routed_lease' : 'fast_routed_internet';
-		} }
+		} },
+		modules.macVendor || { lookup: function() { return { vendor: '', label: '未知厂商' }; },
+			load: function() { return new Promise(function() {}); } }
 	);
 }
 
@@ -997,6 +999,30 @@ function testRenderWiresLiveRefresh(context, fmt) {
 	assert.strictEqual(typeof renderedState.reload, 'function');
 }
 
+async function testVendorDownloadLifecycle(context, fmt) {
+	for (const destroyBeforeDownload of [ false, true ]) {
+		const deferred = makeDeferred();
+		let state;
+		let renders = 0;
+		const vendor = { lookup: function() { return { vendor: 'Example', label: 'Example' }; },
+			load: function() { return deferred.promise; } };
+		const overview = loadOverview(context, fmt, {}, {
+			shell: { buildShell: function(next) { state = next; return { root: fakeElement('div'), refs: {} }; } },
+			refresh: { refreshLive: function() { renders++; } },
+			macVendor: vendor
+		});
+		overview.render(normalizedResult('vendor', 100));
+		assert.strictEqual(renders, 1, 'database downloads must not block the initial live render');
+		assert.strictEqual(state.vendorLookup, vendor.lookup);
+		if (destroyBeforeDownload) state.destroy();
+		deferred.resolve();
+		await Promise.resolve();
+		assert.strictEqual(renders, destroyBeforeDownload ? 1 : 2,
+			'vendor completion must refresh the open page and ignore destroyed pages');
+		state.destroy();
+	}
+}
+
 function loadShellAndRefresh(context, fmt) {
 	const baseclass = { extend: function(value) { return value; } };
 	const shell = vm.compileFunction(readModule('statusShell.js'), [
@@ -1189,7 +1215,8 @@ function testPaginationAndUiStates(context, fmt) {
 		'routed rows must retain numeric zero instead of replacing it with a placeholder');
 	assert.strictEqual(textOf(nssState.refs.ifacesBody.children[0]), 'br-lan0000',
 		'routed interface rows must retain numeric zero values');
-	assert.strictEqual(nssState.refs.ifacesSummary.textContent, '↑ 0 · ↓ 0');
+	assert.strictEqual(nssState.refs.ifacesSummary.textContent, '↓ 0 · ↑ 0',
+		'interface summary must use the page-wide download-first order');
 	assert.strictEqual(nssBuilt.refs.intervalSel.disabled, false);
 	assert.deepStrictEqual(
 		Array.from(nssBuilt.refs.intervalSel.children).map(textOf),
@@ -1216,11 +1243,44 @@ function testPaginationAndUiStates(context, fmt) {
 	state.refreshLive = function() { refreshCount++; modules.refresh.refreshLive(state); };
 	state.refreshLive();
 	const toolbarRight = findByClass(built.root, 'lanspeed-toolbar-right');
+	const statusActions = findByClass(built.root, 'lanspeed-status-actions');
 	assert.strictEqual(toolbarRight.children[0].children[1], state.refs.sortSelect);
-	assert.strictEqual(toolbarRight.children[2], state.refs.btnRefresh);
-	assert.strictEqual(toolbarRight.children[3], state.refs.btnPause);
+	assert.strictEqual(toolbarRight.children[1].children[1], state.refs.unitSel);
+	assert.strictEqual(statusActions.children[0].children[1], state.refs.intervalSel);
+	assert.strictEqual(statusActions.children[1], state.refs.btnRefresh);
+	assert.strictEqual(statusActions.children[2], state.refs.btnPause);
+	assert.deepStrictEqual(findByClass(built.root, 'lanspeed-metrics').children.map(node => node.attrs['data-metric']),
+		[ 'rx', 'tx', 'clients', 'conns' ], 'core metrics must list download before upload like the client rows');
+	assert.deepStrictEqual(state.refs.clientsTable.children[0].children[0].children
+		.map(th => th.attrs['data-column-key']), [ 'hostname', 'mac', 'rate', 'totals', 'conns', 'control' ],
+		'client table columns must be keyed for fixed CSS tracks');
+	assert.strictEqual(state.refs.liveState.attrs['data-state'], 'live');
 	assert.strictEqual(state.refs.tbody.children.length, 10);
 	assert.ok(textOf(state.refs.tbody.children[0]).includes('client-30'));
+	state.vendorLookup = function(mac) {
+		return mac === clients[29].mac
+			? { kind: 'vendor', vendor: 'Example Network Cards', label: 'Example Network Cards' }
+			: { kind: 'local', vendor: '', label: '随机 / 本地 MAC' };
+	};
+	state.refreshLive();
+	const vendorLine = findByClass(state.refs.tbody.children[0], 'lanspeed-client-vendor');
+	assert.strictEqual(textOf(vendorLine), 'Example Network Cards');
+	assert.ok(String(vendorLine.attrs.title).includes('Example Network Cards'), 'truncated labels retain the full name');
+	const firstRow = state.refs.tbody.children[0];
+	assert.deepStrictEqual(firstRow.children.map(cell => String(cell.attrs.class || '')).map(name =>
+		name.split(/\s+/).filter(part => /^lanspeed-client-/.test(part))[0]), [
+		'lanspeed-client-name', 'lanspeed-client-mac', 'lanspeed-client-value',
+		'lanspeed-client-total-cell', 'lanspeed-client-conns-cell', 'lanspeed-client-control'
+	], 'each client row must render one cell per keyed column');
+	const conns = findAllByClass(findByClass(firstRow, 'lanspeed-client-conns-cell'), 'lanspeed-client-conn-line');
+	assert.deepStrictEqual(conns.map(line => line.attrs['data-protocol']), [ 'tcp', 'udp' ]);
+	assert.deepStrictEqual(conns.map(line => textOf(findByClass(line, 'lanspeed-client-conn-value'))), [ '30', '30' ]);
+	assert.strictEqual(vendorLine.attrs['data-vendor-state'], 'vendor');
+	state.refs.filterInput.listeners.input({ target: { value: 'network cards' } });
+	assert.strictEqual(state.refs.tbody.children.length, 1, 'vendor names must be searchable without case sensitivity');
+	assert.ok(textOf(state.refs.tbody.children[0]).includes('client-30'));
+	state.refs.filterInput.listeners.input({ target: { value: '' } });
+	assert.strictEqual(findByClass(state.refs.tbody.children[1], 'lanspeed-client-vendor').attrs['data-vendor-state'], 'local');
 	assert.strictEqual(state.refs.totalHeader.hidden, false);
 	const firstRateCell = findByClass(state.refs.tbody.children[0], 'lanspeed-client-rate-cell');
 	const firstTotalCell = findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-cell');
@@ -1371,214 +1431,71 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.ok(refreshCount >= 10);
 }
 
-function testColumnResizeRange(context, fmt) {
+function testFixedClientLayout(context, fmt) {
 	const modules = loadShellAndRefresh(context, fmt);
+	context.window.localStorage.setItem('luci-app-lanspeed.client-column-widths.v12', '{"x":1}');
+	context.window.localStorage.removeItem('luci-app-lanspeed.ifaces-open.v1');
+	const clients = [ Object.assign(client(1), {
+		hostname: 'a-very-long-hostname-that-does-not-fit-in-one-line.example.lan',
+		ips: [ '192.0.2.1', '2001:db8:1234:5678:9abc:def0:1234:5678' ]
+	}), client(2) ];
 	const state = {
-		status: {},
-		showClientTotals: true,
-		showClientControl: true,
+		status: { version: '1.2.1-r2' },
+		clients: { clients: clients },
+		interfaces: { interfaces: [] },
+		rpc: successRpc(100000),
+		showClientTotals: false,
+		showIpv6: true,
 		prefs: {
-			refreshMs: 1000, unit: 'bit', activeOnly: false,
-			sortKey: 'rx', sortDir: 'desc', sortCustom: false, paused: true
+			refreshMs: 1000, unit: 'bit', activeOnly: false, pageSize: 25,
+			sortKey: 'rx', sortDir: 'desc', sortCustom: false, paused: false
 		},
 		filter: '',
+		page: 1,
 		reload: function() {},
-		refreshLive: function() {},
 		stopTimer: function() {},
 		schedule: function() {}
 	};
 	const built = modules.shell.buildShell(state);
-	const refs = built.refs;
-	const table = refs.clientsTable;
-	const body = table.parentElement;
-	body.clientWidth = 920;
-	table.isConnected = true;
-	for (let rowIndex = 0; rowIndex < 3; rowIndex++) {
-		refs.tbody.appendChild(fakeElement('tr', {}, Array.from({ length: 7 }, function() {
-			return fakeElement('td', {});
-		})));
-	}
-	const defaults = {
-		hostname: 150, mac: 160, rate: 160, totals: 160, tcp_conns: 70, udp_conns: 70, control: 180
-	};
-	refs.clientColumnHeaders.forEach(function(column) {
-		const th = column.th;
-		th.getBoundingClientRect = function() {
-			const visibleNow = refs.clientColumnHeaders.filter(function(item) { return !item.th.hidden; })
-				.sort(function(left, right) { return left.th.cellIndex - right.th.cellIndex; });
-			const position = visibleNow.indexOf(column);
-			const template = String(table.style.getPropertyValue('--lanspeed-client-grid-template') || '');
-			const tracks = template.split(/\s+/).filter(function(track) { return /px$/.test(track); });
-			const styled = position >= 0 && tracks.length
-				? parseFloat(tracks[position === visibleNow.length - 1 ? tracks.length - 1 : position]) : NaN;
-			const width = Number.isFinite(styled) && styled > 0 ? styled : defaults[column.key];
-			return { width: width, height: 32, left: 0, right: width, top: 0, bottom: 32 };
-		};
-	});
-	table.getBoundingClientRect = function() {
-		const styled = parseFloat(table.style.getPropertyValue('width'));
-		const width = Number.isFinite(styled) && styled > 0 ? styled : body.clientWidth;
-		return { width: width, height: 120, left: 0, right: width, top: 0, bottom: 120 };
-	};
-	refs.syncClientColumnWidths();
-	const visible = refs.clientColumnHeaders.filter(function(column) { return !column.th.hidden; })
-		.sort(function(left, right) { return left.th.cellIndex - right.th.cellIndex; });
-	const tx = visible.find(function(column) { return column.key === 'rate'; });
-	const mac = visible.find(function(column) { return column.key === 'mac'; });
-	const control = visible.find(function(column) { return column.key === 'control'; });
-	assert(tx && mac && control, 'resize fixture must expose live, MAC, and terminal columns');
-	const hostname = visible.find(function(column) { return column.key === 'hostname'; });
-	assert.strictEqual(findByClass(hostname.th, 'lanspeed-column-resize-handle'), null,
-		'first client column must not expose a resize handle');
-	assert.strictEqual(findByClass(mac.th, 'lanspeed-column-resize-handle'), null,
-		'MAC column must not expose a resize handle');
-	assert.strictEqual(findByClass(control.th, 'lanspeed-column-resize-handle'), null,
-		'control column must not expose a resize handle');
-	const responsiveCss = readModule('statusStyleResponsive.js');
-	assert(responsiveCss.includes('[data-client-control="shown"] :is(th,td):nth-child(7)') &&
-		responsiveCss.includes('[data-client-control="hidden"] :is(th,td):nth-child(6)') &&
-		responsiveCss.includes('position:sticky!important;right:0') &&
-		responsiveCss.includes(':nth-child(1){position:sticky!important;left:0') &&
-		responsiveCss.includes(':nth-child(2){position:sticky!important;left:var(--lanspeed-client-second-column-left)'),
-		'left identity columns and terminal visible column must remain frozen for all display states');
-	assert(responsiveCss.includes('thead>tr,') &&
-		responsiveCss.includes('tbody>tr{display:grid;width:100%;grid-template-columns:var(--lanspeed-client-grid-template);align-items:center}') &&
-		responsiveCss.includes('tbody>tr{border-bottom:') &&
-		responsiveCss.includes(':is(th,td){text-align:center!important}') &&
-		responsiveCss.includes(':is(th,td):first-child{text-align:left!important;overflow:visible') &&
-		responsiveCss.includes('.lanspeed-control-actions{width:100%;align-items:center;justify-content:center!important}'),
-		'custom-width headers and data rows must center every cell and control actions');
-	assert(responsiveCss.includes('.lanspeed-table-scroll{width:100%;min-width:0;overflow-x:hidden}') &&
-		responsiveCss.includes('.lanspeed-table-scroll.lanspeed-column-overflow{overflow-x:auto!important}') &&
-		!responsiveCss.includes('.lanspeed-body.lanspeed-column-overflow{overflow-x:auto!important}'),
-		'wide table overflow must stay isolated from the toolbar body');
-	const widthOf = function(column) {
-		const position = visible.indexOf(column);
-		const template = String(table.style.getPropertyValue('--lanspeed-client-grid-template') || '');
-		const tracks = template.split(/\s+/).filter(function(track) { return /px$/.test(track); });
-		return parseFloat(tracks[position === visible.length - 1 ? tracks.length - 1 : position]);
-	};
-	const middle = visible.filter(function(column) {
-		return column.key !== 'hostname' && column.key !== 'mac' && column.key !== 'control';
-	});
-	const middleWidth = widthOf(middle[0]);
-	assert(middle.length === 4 && middleWidth > 0,
-		'visible data block must expose four fixed columns');
-	middle.forEach(function(column) {
-		assert(Math.abs(widthOf(column) - middleWidth) < .01,
-			'all visible data columns must use one equal fixed width');
-		assert.strictEqual(findByClass(column.th, 'lanspeed-column-resize-handle'), null,
-			'visible data columns must not expose resize handles');
-	});
-	assert(Math.abs(parseFloat(table.style.getPropertyValue('width')) - body.clientWidth) < .01,
-		'fixed data columns must fill the space between the fixed side columns');
-	assert.strictEqual(context.window.localStorage.getItem(
-		'luci-app-lanspeed.client-column-widths.v11'), null,
-		'fixed columns must not create a persisted drag layout');
-	const refreshedRow = fakeElement('tr', {}, Array.from({ length: 7 }, function() {
-		return fakeElement('td', {});
-	}));
-	refs.tbody.appendChild(refreshedRow);
-	refs.syncClientColumnWidths();
-	middle.forEach(function(column) {
-		assert.strictEqual(widthOf(column), middleWidth,
-			'rows added during refresh must retain equal fixed tracks');
-	});
-	refs.syncClientColumnWidths();
-	body.scrollLeft = 180;
-	refs.syncClientColumnWidths();
-	assert.strictEqual(body.scrollLeft, 180,
-		're-applying fixed widths must preserve the horizontal table viewport');
-	const viewport = modules.refresh.captureClientViewport({
-		clientsTable: table,
-		root: built.root
-	});
-	body.scrollLeft = 0;
-	modules.refresh.restoreClientViewport(viewport);
-	assert.strictEqual(body.scrollLeft, 180,
-		'real-time refreshes must restore the nested table viewport');
-	assert.strictEqual(findByClass(mac.th, 'lanspeed-column-resize-handle'), null,
-		'MAC column must stay fixed after refreshes');
-	assert.strictEqual(findByClass(control.th, 'lanspeed-column-resize-handle'), null,
-		'control column must stay fixed after refreshes');
+	state.refs = built.refs;
+	state.refreshLive = function() { modules.refresh.refreshLive(state); };
+	assert.strictEqual(context.window.localStorage.getItem('luci-app-lanspeed.client-column-widths.v12'), null,
+		'obsolete measured column widths must be discarded');
+	assert.strictEqual(state.refs.ifacesDetails.attrs.open, undefined,
+		'interface throughput starts collapsed as supporting information');
+	state.refs.ifacesDetails.open = true;
+	state.refs.ifacesDetails.listeners.toggle();
+	assert.strictEqual(context.window.localStorage.getItem('luci-app-lanspeed.ifaces-open.v1'), '1');
+	assert.strictEqual(modules.shell.buildShell(state).refs.ifacesDetails.attrs.open, 'open',
+		'an expanded interface section stays expanded on the next visit');
+	context.window.localStorage.removeItem('luci-app-lanspeed.ifaces-open.v1');
 
-	/* Every totals/control visibility combination keeps the same fixed identity,
-	 * equal-width data block, and terminal column when optional fields are hidden. */
-	[ [ true, true ], [ false, true ] ].forEach(function(scheme, schemeIndex) {
-		const variantState = Object.assign({}, state, {
-			showClientTotals: scheme[0], showClientControl: scheme[1]
-		});
-		const variantRefs = modules.shell.buildShell(variantState).refs;
-		const variantTable = variantRefs.clientsTable;
-		const variantBody = variantTable.parentElement;
-		variantBody.clientWidth = 920;
-		variantTable.isConnected = true;
-		variantRefs.clientColumnHeaders.forEach(function(column) {
-			const th = column.th;
-			th.getBoundingClientRect = function() {
-				const visibleNow = variantRefs.clientColumnHeaders.filter(function(item) { return !item.th.hidden; })
-					.sort(function(left, right) { return left.th.cellIndex - right.th.cellIndex; });
-				const position = visibleNow.indexOf(column);
-				const template = String(variantTable.style.getPropertyValue('--lanspeed-client-grid-template') || '');
-				const tracks = template.split(/\s+/).filter(function(track) { return /px$/.test(track); });
-				const styled = position >= 0 && tracks.length
-					? parseFloat(tracks[position === visibleNow.length - 1 ? tracks.length - 1 : position]) : NaN;
-				const width = Number.isFinite(styled) && styled > 0 ? styled : defaults[column.key];
-				return { width: width, height: 32, left: 0, right: width, top: 0, bottom: 32 };
-			};
-		});
-		variantTable.getBoundingClientRect = function() {
-			const styled = parseFloat(variantTable.style.getPropertyValue('width'));
-			const width = Number.isFinite(styled) && styled > 0 ? styled : variantBody.clientWidth;
-			return { width: width, height: 120, left: 0, right: width, top: 0, bottom: 120 };
-		};
-		variantRefs.syncClientColumnWidths();
-		const variantVisible = variantRefs.clientColumnHeaders.filter(function(column) {
-			return !column.th.hidden;
-		}).sort(function(left, right) { return left.th.cellIndex - right.th.cellIndex; });
-		const variantMac = variantVisible.find(function(column) { return column.key === 'mac'; });
-		const variantHostname = variantVisible.find(function(column) { return column.key === 'hostname'; });
-		const variantControl = variantVisible.find(function(column) { return column.key === 'control'; });
-		const variantLast = variantVisible[variantVisible.length - 1];
-		const variantTx = variantVisible.find(function(column) { return column.key === 'rate'; });
-		assert(variantMac && variantTx, 'scheme ' + schemeIndex + ' must retain MAC and live columns');
-		assert.strictEqual(Boolean(variantControl), scheme[1],
-			'scheme ' + schemeIndex + ' control visibility must match its setting');
-		assert.strictEqual(findByClass(variantMac.th, 'lanspeed-column-resize-handle'), null,
-			'scheme ' + schemeIndex + ' MAC column must remain fixed');
-		assert.strictEqual(findByClass(variantHostname.th, 'lanspeed-column-resize-handle'), null,
-			'scheme ' + schemeIndex + ' first client column must remain fixed');
-		if (variantControl)
-			assert.strictEqual(findByClass(variantControl.th, 'lanspeed-column-resize-handle'), null,
-				'scheme ' + schemeIndex + ' control column must remain fixed');
-		assert.strictEqual(findByClass(variantLast.th, 'lanspeed-column-resize-handle'), null,
-			'scheme ' + schemeIndex + ' terminal visible column must remain fixed');
-		const variantTcp = variantVisible.find(function(column) { return column.key === 'tcp_conns'; });
-		const variantUdp = variantVisible.find(function(column) { return column.key === 'udp_conns'; });
-		if (!scheme[1]) {
-			assert.strictEqual(findByClass(variantTcp.th, 'lanspeed-column-resize-handle'), null,
-				'scheme ' + schemeIndex + ' TCP must remain fixed when control is hidden');
-			assert.strictEqual(findByClass(variantUdp.th, 'lanspeed-column-resize-handle'), null,
-				'scheme ' + schemeIndex + ' UDP must remain fixed when control is hidden');
-		}
-		const variantData = variantVisible.filter(function(column) {
-			return column.key !== 'hostname' && column.key !== 'mac' && column.key !== 'control';
-		});
-		const variantPosition = variantVisible.indexOf(variantTx);
-		const variantTracks = String(variantTable.style.getPropertyValue('--lanspeed-client-grid-template') || '')
-			.split(/\s+/).filter(function(track) { return /px$/.test(track); });
-		const variantWidth = parseFloat(variantTracks[variantPosition === variantVisible.length - 1
-			? variantTracks.length - 1 : variantPosition]);
-		variantData.forEach(function(column) {
-			const position = variantVisible.indexOf(column);
-			const width = parseFloat(variantTracks[position === variantVisible.length - 1
-				? variantTracks.length - 1 : position]);
-			assert(Math.abs(width - variantWidth) < .01,
-				'scheme ' + schemeIndex + ' data columns must remain equal width');
-			assert.strictEqual(findByClass(column.th, 'lanspeed-column-resize-handle'), null,
-				'scheme ' + schemeIndex + ' data columns must remain fixed');
-		});
-	});
+	state.refreshLive();
+	assert.strictEqual(state.refs.totalHeader.hidden, true);
+	assert.strictEqual(state.refs.clientsTable.attrs['data-client-totals'], 'hidden');
+	assert.strictEqual(findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-cell').attrs.hidden, 'hidden',
+		'hidden totals stay in place so keyed columns never shift');
+	assert.strictEqual(state.refs.syncClientColumnWidths, undefined,
+		'live refresh must not measure or rewrite column widths');
+	const name = textOf(findByClass(state.refs.tbody.children[1], 'lanspeed-client-name'));
+	assert.ok(name.includes('a-very-long-hostname') && name.includes('2001:db8:1234:5678:9abc:def0:1234:5678'),
+		'long names and IPv6 addresses render in full and are left to CSS wrapping');
+
+	const firstRow = state.refs.tbody.children[0];
+	state.refs.filterInput.value = 'client';
+	state.refs.filterInput.listeners.input({ target: { value: 'client' } });
+	assert.strictEqual(state.refs.filterInput.value, 'client',
+		'live refresh must never rewrite the search box while the user types');
+	state.refreshLive();
+	assert.strictEqual(state.refs.tbody.children[0], firstRow, 'refresh keeps keyed rows in place');
+	state.prefs.paused = true;
+	state.refreshLive();
+	assert.strictEqual(state.refs.liveState.attrs['data-state'], 'paused');
+	assert.strictEqual(textOf(state.refs.liveState), '已暂停');
+	state.prefs.paused = false;
+	state.rpc.clients = { ok: false, retained: true, error: new Error('slow'), checkedAt: 102000, lastSuccessAt: 100000 };
+	state.refreshLive();
+	assert.strictEqual(state.refs.liveState.attrs['data-state'], 'warning');
 }
 
 async function main() {
@@ -1590,8 +1507,9 @@ async function main() {
 	await testControllerLifecycle(context, fmt);
 	await testControllerVisibility(context, fmt);
 	testRenderWiresLiveRefresh(context, fmt);
+	await testVendorDownloadLifecycle(context, fmt);
 	testPaginationAndUiStates(context, fmt);
-	testColumnResizeRange(context, fmt);
+	testFixedClientLayout(context, fmt);
 	console.log('validate-lanspeed-status: PASS');
 	console.log('  atomic realtime snapshot, legacy RPC fallback, paired clocks, hard failure, single-flight refresh');
 	console.log('  timer lifecycle, destroy invalidation, pagination, keyboard, ARIA, and empty states');
