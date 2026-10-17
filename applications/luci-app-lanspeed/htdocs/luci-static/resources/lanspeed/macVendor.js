@@ -2,13 +2,15 @@
 'require baseclass';
 'require request';
 
-/* Same complete OUI export used by luci-app-nlbwmon. Matching stays in the
- * browser: neither a device MAC nor its prefix is sent to the data source. */
-var DATABASE_URL = 'https://raw.githubusercontent.com/jow-/oui-database/master/oui.json';
-var CACHE_KEY = 'lanspeed.mac-vendors.v1';
+/* Wireshark's generated manuf list carries the full IEEE registry (24, 28 and
+ * 36 bit blocks) in one static file. Matching stays in the browser: neither a
+ * device MAC nor its prefix is ever sent to the data source. */
+var DATABASE_URL = 'https://www.wireshark.org/download/automated/data/manuf';
+var CACHE_KEY = 'lanspeed.mac-vendors.v2';
 var CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 var STALE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 var RETRY_MS = 60 * 1000;
+var REQUEST_TIMEOUT_MS = 15000;
 var PREFIX_LENGTHS = [ 36, 28, 24 ];
 var database = null;
 var pending = null;
@@ -26,6 +28,42 @@ function normalizeMac(value) {
 	return '';
 }
 
+/* manuf lines are "OUI<TAB>short<TAB>long"; the OUI block is a dashed hex
+ * prefix, optionally suffixed with "/28" or "/36" for sub-allocations. */
+function parseManuf(text) {
+	var entries = [];
+	var lines = String(text === null || text === undefined ? '' : text).split('\n');
+	for (var i = 0; i < lines.length; i++) {
+		var line = lines[i];
+		if (!line || line.charAt(0) === '#')
+			continue;
+		var columns = line.split('\t');
+		if (columns.length < 3)
+			continue;
+		var raw = columns[0].trim();
+		var vendor = (columns[2] || '').trim() || (columns[1] || '').trim();
+		if (!raw || !vendor || vendor.length > 512)
+			continue;
+		var bits = 24;
+		var hex = raw;
+		var slash = raw.indexOf('/');
+		if (slash !== -1) {
+			bits = parseInt(raw.slice(slash + 1), 10);
+			hex = raw.slice(0, slash);
+		}
+		if (PREFIX_LENGTHS.indexOf(bits) === -1)
+			continue;
+		hex = hex.replace(/[:-]/g, '').toLowerCase();
+		if (!/^[0-9a-fx]+$/.test(hex))
+			continue;
+		hex = hex.replace(/x/g, '').slice(0, bits / 4);
+		if (hex.length < bits / 4)
+			continue;
+		entries.push(hex, bits, vendor);
+	}
+	return entries;
+}
+
 function indexDatabase(entries) {
 	if (!Array.isArray(entries) || !entries.length || entries.length % 3 ||
 	    entries.length > 300000)
@@ -33,14 +71,13 @@ function indexDatabase(entries) {
 	var index = { 24: Object.create(null), 28: Object.create(null), 36: Object.create(null) };
 	for (var i = 0; i < entries.length; i += 3) {
 		var prefix = entries[i], bits = entries[i + 1], vendor = entries[i + 2];
-		if (typeof prefix !== 'string' || !/^[0-9a-f]{1,12}$/i.test(prefix) ||
-		    PREFIX_LENGTHS.indexOf(bits) === -1 || typeof vendor !== 'string' ||
-		    !vendor.trim() || vendor.length > 512)
+		if (typeof prefix !== 'string' || PREFIX_LENGTHS.indexOf(bits) === -1 ||
+		    typeof vendor !== 'string' || !vendor.trim() || vendor.length > 512)
 			throw new Error('Invalid OUI entry');
-		prefix = ('000000000000' + prefix.toLowerCase()).slice(-12);
-		if (!/^0+$/.test(prefix.slice(bits / 4)))
-			throw new Error('Unaligned OUI prefix');
-		index[bits][prefix.slice(0, bits / 4)] = vendor.trim();
+		prefix = prefix.toLowerCase().slice(0, bits / 4);
+		if (prefix.length !== bits / 4 || !/^[0-9a-f]+$/.test(prefix))
+			throw new Error('Invalid OUI prefix');
+		index[bits][prefix] = vendor.trim();
 	}
 	return index;
 }
@@ -69,12 +106,13 @@ function load() {
 		return Promise.resolve();
 	if (pending) return pending;
 	pending = Promise.resolve().then(function() {
-		return request.get(DATABASE_URL, { cache: true, timeout: 5000 });
+		return request.get(DATABASE_URL, { cache: true, timeout: REQUEST_TIMEOUT_MS });
 	}).then(function(response) {
 		if (!response || !response.ok)
 			throw new Error('OUI database unavailable');
-		return response.json();
-	}).then(function(entries) {
+		return response.text();
+	}).then(function(text) {
+		var entries = parseManuf(text);
 		database = indexDatabase(entries);
 		cacheFresh = true;
 		try {
@@ -114,9 +152,12 @@ function lookup(value) {
 			};
 		}
 		return { kind: 'unknown', vendor: '', label: _('未知厂商'), stale: !cacheFresh,
-			title: _('OUI 数据库中没有该前缀') };
+			title: _('OUI 数据库中没有该前缀') +
+				(cacheFresh ? '' : ' · ' + _('缓存已过期，等待更新')) };
 	}
-	return pending
+	/* Before the first download settles the honest state is "loading", not
+	 * "unavailable": the page has only just started the shared request. */
+	return (pending || needsLoad())
 		? { kind: 'loading', vendor: '', label: _('查询中…'), title: _('正在下载 OUI 数据库') }
 		: { kind: 'unavailable', vendor: '', label: _('厂商查询不可用'),
 			title: _('OUI 数据库下载失败，稍后自动重试') };

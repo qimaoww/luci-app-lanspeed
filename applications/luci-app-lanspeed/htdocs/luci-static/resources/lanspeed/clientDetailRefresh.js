@@ -319,11 +319,13 @@ function metaFact(label, value, attrs) {
 	]);
 }
 
-/* Same vocabulary and state attribute as the realtime client list. */
+/* Same vocabulary, state attribute and stale marker as the realtime client
+ * list, so both pages describe an OUI match identically. */
 function vendorFact(vendor) {
 	var attrs = { 'title': vendor.title || vendor.label };
 	if (vendor.kind) attrs['data-vendor-state'] = vendor.kind;
-	return metaFact(_('设备厂商'), vendor.label, attrs);
+	if (vendor.stale) attrs['data-vendor-stale'] = 'true';
+	return metaFact(_('设备厂商'), vendor.stale ? vendor.label + ' *' : vendor.label, attrs);
 }
 
 function renderClientMeta(ref, client, ips, identityKey, vendorLookup) {

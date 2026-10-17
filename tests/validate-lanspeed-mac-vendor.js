@@ -9,11 +9,18 @@ const vm = require('vm');
 const moduleDir = path.resolve(__dirname,
 	'../applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed');
 const source = fs.readFileSync(path.join(moduleDir, 'macVendor.js'), 'utf8');
+const databaseText = [
+	'# manuf fixture',
+	'00:11:22\tExampleCards\tExample Network Cards',
+	'00:11:22:30/28\tExampleModules\tExample Modules',
+	'00:11:22:33:40/36\tExampleDevices\tExample Devices',
+	'00:11:24\tUnsafe\t<img src=x onerror=alert(1)>'
+].join('\n');
 const database = [
-	'001122000000', 24, 'Example Network Cards',
-	'001122300000', 28, 'Example Modules',
-	'001122334000', 36, 'Example Devices',
-	'001124000000', 24, '<img src=x onerror=alert(1)>'
+	'001122', 24, 'Example Network Cards',
+	'0011223', 28, 'Example Modules',
+	'001122334', 36, 'Example Devices',
+	'001124', 24, '<img src=x onerror=alert(1)>'
 ];
 const day = 24 * 60 * 60 * 1000;
 
@@ -34,10 +41,10 @@ function resolver(options = {}) {
 		{ get: (url, requestOptions) => {
 			requests++;
 			urls.push(url);
-			assert.strictEqual(requestOptions.timeout, 5000);
+			assert.strictEqual(requestOptions.timeout, 15000);
 			assert.strictEqual(requestOptions.cache, true);
 			return options.request ? options.request() : Promise.resolve({
-				ok: true, json: () => database
+				ok: true, text: () => databaseText
 			});
 		} },
 		{ get localStorage() {
@@ -63,7 +70,7 @@ async function main() {
 	assert.strictEqual(active.instance.lookup('00:11:22:33:44:55').kind, 'loading');
 	await Promise.resolve();
 	assert.strictEqual(active.requests(), 1);
-	complete({ ok: true, json: () => database });
+	complete({ ok: true, text: () => databaseText });
 	await first;
 	for (const mac of [ '00:11:22:33:44:55', '00-11-22-33-44-55', '001122334455' ]) {
 		assert.strictEqual(active.instance.lookup(mac).vendor, 'Example Devices',
@@ -85,7 +92,7 @@ async function main() {
 	await active.instance.load();
 	assert.strictEqual(active.requests(), 1, 'refreshing rows never downloads per-client data');
 	assert.deepStrictEqual(active.urls, [
-		'https://raw.githubusercontent.com/jow-/oui-database/master/oui.json'
+		'https://www.wireshark.org/download/automated/data/manuf'
 	], 'the database request must contain no device MAC or prefix');
 	assert.deepStrictEqual(JSON.parse(active.saved()).entries, database);
 	assert(!active.saved().includes('001122334455'), 'cache stores registrations, not queried devices');
@@ -115,16 +122,15 @@ async function main() {
 		await expired.instance.load();
 		assert.strictEqual(expired.instance.lookup('00:11:22:33:44:55').kind, 'unavailable');
 	}
-	for (const entries of [ [], {}, [ '001122000000', 24 ],
-		[ '001122000001', 24, 'Unaligned' ], [ '001122000000', 25, 'Unsupported' ],
-		[ '001122000000', 24, '' ], [ 'ZZ1122000000', 24, 'Invalid' ] ]) {
-		const invalid = resolver({ request: () => Promise.resolve({ ok: true, json: () => entries }) });
+	for (const text of [ '', 'not a manuf line', '# comment only',
+		'00:11/28\tShort\tVendor', '00:11:22\t\t' ]) {
+		const invalid = resolver({ request: () => Promise.resolve({ ok: true, text: () => text }) });
 		await invalid.instance.load();
 		assert.strictEqual(invalid.instance.lookup('00:11:22:33:44:55').kind, 'unavailable');
 		assert.strictEqual(invalid.saved(), null, 'invalid responses must never poison the cache');
 	}
 	for (const request of [ () => Promise.resolve({ ok: false }),
-		() => Promise.resolve({ ok: true, json: () => { throw new Error('bad JSON'); } }),
+		() => Promise.resolve({ ok: true, text: () => { throw new Error('bad payload'); } }),
 		() => { throw new Error('request unavailable'); } ]) {
 		const invalid = resolver({ request });
 		await invalid.instance.load();
@@ -142,7 +148,7 @@ async function main() {
 	const flaky = resolver({ request: () => {
 		attempt++;
 		if (attempt === 1) return Promise.reject(new Error('offline'));
-		return new Promise(resolve => { release = () => resolve({ ok: true, json: () => database }); });
+		return new Promise(resolve => { release = () => resolve({ ok: true, text: () => databaseText }); });
 	} });
 	let open = true;
 	let renders = 0;
@@ -181,8 +187,8 @@ async function main() {
 
 	// Optional verification against a downloaded complete upstream export.
 	if (process.env.LANSPEED_OUI_DATABASE) {
-		const entries = JSON.parse(fs.readFileSync(process.env.LANSPEED_OUI_DATABASE, 'utf8'));
-		const real = resolver({ request: () => Promise.resolve({ ok: true, json: () => entries }) });
+		const text = fs.readFileSync(process.env.LANSPEED_OUI_DATABASE, 'utf8');
+		const real = resolver({ request: () => Promise.resolve({ ok: true, text: () => text }) });
 		await real.instance.load();
 		assert.strictEqual(real.instance.lookup('00:00:0c:00:00:01').kind, 'vendor');
 		assert(/Cisco/i.test(real.instance.lookup('00:00:0c:00:00:01').vendor));
