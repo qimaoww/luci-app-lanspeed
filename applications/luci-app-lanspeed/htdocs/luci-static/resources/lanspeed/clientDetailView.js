@@ -429,6 +429,7 @@ return baseclass.extend({
 				this.stopTimer();
 				this.loading = true;
 				this.manualLoading = requestedManually;
+				if (this.ensureVendors) this.ensureVendors();
 				clientDetailRefresh.render(this);
 				try {
 					request = Promise.all([
@@ -638,7 +639,12 @@ return baseclass.extend({
 			}
 		};
 
-		var vendorLoad = macVendor.load();
+		var ensureVendors = typeof macVendor.watch === 'function'
+			? macVendor.watch(function() { return !viewState.destroyed; },
+				function() { clientDetailRefresh.render(viewState); })
+			: null;
+		viewState.ensureVendors = ensureVendors;
+		var vendorLoad = ensureVendors ? null : macVendor.load();
 		var built = clientDetailShell.buildShell(viewState);
 		viewState.refs = built.refs;
 		connected = !!built.root.isConnected;
@@ -650,7 +656,8 @@ return baseclass.extend({
 			observer.observe(hostDocument.body, { childList: true, subtree: true });
 		}
 		clientDetailRefresh.render(viewState);
-		vendorLoad.then(function() {
+		if (ensureVendors) ensureVendors();
+		else vendorLoad.then(function() {
 			if (!viewState.destroyed) clientDetailRefresh.render(viewState);
 		});
 		viewState.schedule();

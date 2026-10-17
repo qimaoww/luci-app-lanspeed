@@ -88,25 +88,59 @@ function load() {
 	return pending;
 }
 
+/* True when a view should (re)start the shared download: no fresh database,
+ * nothing in flight, and the failure backoff has elapsed. */
+function needsLoad() {
+	readCache();
+	return !cacheFresh && !pending && Date.now() >= nextRetryAt;
+}
+
 function lookup(value) {
 	var mac = normalizeMac(value);
 	if (!mac || mac === '000000000000' || (parseInt(mac.slice(0, 2), 16) & 1))
-		return { kind: 'invalid', vendor: '', label: _('未知厂商') };
+		return { kind: 'invalid', vendor: '', label: _('未知厂商'),
+			title: _('MAC 地址无效，无法查询 OUI') };
 	if (parseInt(mac.slice(0, 2), 16) & 2)
-		return { kind: 'local', vendor: '', label: _('随机 / 本地 MAC') };
+		return { kind: 'local', vendor: '', label: _('随机 / 本地 MAC'),
+			title: _('本地管理地址（常见于隐私随机 MAC），不对应 OUI 注册厂商') };
 	if (database) {
 		for (var i = 0; i < PREFIX_LENGTHS.length; i++) {
 			var bits = PREFIX_LENGTHS[i];
 			var vendor = database[bits][mac.slice(0, bits / 4)];
-			if (vendor) return { kind: 'vendor', vendor: vendor, label: vendor };
+			if (vendor) return {
+				kind: 'vendor', vendor: vendor, label: vendor, stale: !cacheFresh,
+				title: _('OUI 注册厂商：') + vendor +
+					(cacheFresh ? '' : ' · ' + _('缓存已过期，等待更新'))
+			};
 		}
-		return { kind: 'unknown', vendor: '', label: _('未知厂商') };
+		return { kind: 'unknown', vendor: '', label: _('未知厂商'), stale: !cacheFresh,
+			title: _('OUI 数据库中没有该前缀') };
 	}
-	return { kind: pending ? 'loading' : 'unavailable', vendor: '',
-		label: pending ? _('查询中…') : _('厂商查询不可用') };
+	return pending
+		? { kind: 'loading', vendor: '', label: _('查询中…'), title: _('正在下载 OUI 数据库') }
+		: { kind: 'unavailable', vendor: '', label: _('厂商查询不可用'),
+			title: _('OUI 数据库下载失败，稍后自动重试') };
+}
+
+/* One per page: starts the shared download when needed, or joins one that
+ * another page already started, and re-renders once it settles while the page
+ * is still active. Callers invoke the returned function on every render; it
+ * is a cheap no-op while a download is joined or not needed. */
+function watch(isActive, rerender) {
+	var waiting = false;
+	return function ensure() {
+		if (waiting || !(pending || needsLoad())) return;
+		waiting = true;
+		load().then(function() {
+			waiting = false;
+			if (isActive()) rerender();
+		});
+	};
 }
 
 return baseclass.extend({
 	load: load,
-	lookup: lookup
+	lookup: lookup,
+	needsLoad: needsLoad,
+	watch: watch
 });

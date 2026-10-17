@@ -135,6 +135,50 @@ async function main() {
 		await noStorage.instance.load();
 		assert.strictEqual(noStorage.instance.lookup('00:11:22:33:44:55').vendor, 'Example Devices');
 	}
+	// A page keeps one watcher: it joins a shared download, re-renders once,
+	// retries only after the failure backoff, and never repaints a closed page.
+	let attempt = 0;
+	let release;
+	const flaky = resolver({ request: () => {
+		attempt++;
+		if (attempt === 1) return Promise.reject(new Error('offline'));
+		return new Promise(resolve => { release = () => resolve({ ok: true, json: () => database }); });
+	} });
+	let open = true;
+	let renders = 0;
+	const ensure = flaky.instance.watch(() => open, () => { renders++; });
+	ensure();
+	ensure();
+	assert.strictEqual(flaky.instance.lookup('00:11:22:33:44:55').kind, 'loading');
+	await new Promise(resolve => setTimeout(resolve, 0));
+	assert.strictEqual(renders, 1, 'a failed download re-renders once to show the unavailable state');
+	assert.strictEqual(flaky.instance.lookup('00:11:22:33:44:55').kind, 'unavailable');
+	assert.strictEqual(flaky.instance.lookup('00:11:22:33:44:55').title.includes('重试'), true);
+	ensure();
+	assert.strictEqual(flaky.requests(), 1, 'refreshes inside the backoff must not re-download');
+	flaky.advance(60000);
+	ensure();
+	ensure();
+	await Promise.resolve();
+	assert.strictEqual(flaky.requests(), 2, 'the next refresh after backoff retries once');
+	open = false;
+	release();
+	await new Promise(resolve => setTimeout(resolve, 0));
+	assert.strictEqual(renders, 1, 'a page closed during the download must not repaint');
+	assert.strictEqual(flaky.instance.lookup('00:11:22:33:44:55').vendor, 'Example Devices');
+	ensure();
+	assert.strictEqual(flaky.requests(), 2, 'a fresh database needs no further downloads');
+	const local = flaky.instance.lookup('02:11:22:33:44:55');
+	assert(/OUI/.test(local.title) && local.kind === 'local', 'random MACs explain why no registration applies');
+	const registered = flaky.instance.lookup('00:11:22:33:44:55');
+	assert(registered.title.startsWith('OUI 注册厂商：'), 'registered names are described as OUI registrants');
+
+	const stalePage = resolver({ cache: cache(8 * day), request: () => Promise.reject(new Error('offline')) });
+	await stalePage.instance.load();
+	assert.strictEqual(stalePage.instance.lookup('00:11:22:33:44:55').stale, true,
+		'stale cache results are flagged until a refresh succeeds');
+	assert(stalePage.instance.lookup('00:11:22:33:44:55').title.includes('缓存已过期'));
+
 	// Optional verification against a downloaded complete upstream export.
 	if (process.env.LANSPEED_OUI_DATABASE) {
 		const entries = JSON.parse(fs.readFileSync(process.env.LANSPEED_OUI_DATABASE, 'utf8'));
@@ -144,7 +188,7 @@ async function main() {
 		assert(/Cisco/i.test(real.instance.lookup('00:00:0c:00:00:01').vendor));
 	}
 	console.log('validate-lanspeed-mac-vendor: PASS');
-	console.log('  longest prefix, MAC validation, shared download, fresh/stale cache, offline recovery');
+	console.log('  longest prefix, MAC validation, shared download, fresh/stale cache, offline recovery, page watcher');
 }
 
 main().catch(error => {
