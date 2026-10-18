@@ -719,12 +719,10 @@ function assertProductDesignSystem() {
 	const bootstrapStatusCss = loadStyleLeaf('statusStyleBootstrap.js').CSS;
 	[
 		'align-items:stretch',
-		'grid-template-columns:repeat(4,minmax(0,1fr))',
-		'grid-template-rows:.9rem 1.85rem minmax(1rem,auto)',
+		'.lanspeed-theme-bootstrap .lanspeed-metrics{grid-template-columns:repeat(4,minmax(0,1fr));',
 		'border-top:2px solid var(--lanspeed-accent)',
-		'border-left-color:var(--lanspeed-border-strong)',
-		'box-shadow:none',
-		'.lanspeed-theme-bootstrap .lanspeed-connection-values{flex-wrap:nowrap;gap:.6rem}'
+		'border-left:1px solid var(--lanspeed-border-strong)',
+		'box-shadow:none'
 	].forEach(function(marker) {
 		if (!bootstrapStatusCss.includes(marker))
 			fail(`statusStyleBootstrap.js must retain aligned metric treatment: ${marker}`);
@@ -5103,10 +5101,11 @@ function assertStatusShellInteraction(src) {
 	const actions = findFakeElement(built.root, 'lanspeed-status-actions');
 	const statusBar = findFakeElement(built.root, 'lanspeed-status-bar');
 	if (!left || !filter || !right || !actions || !statusBar || left.children[0] !== filter ||
-		filter.children[0] !== refs.filterInput || right.children[0].children[1] !== refs.sortSelect ||
-		right.children[1].children[1] !== refs.intervalSel ||
+		filter.children[0] !== refs.filterInput || left.children.length !== 2 ||
+		right.children[0].children[1] !== refs.intervalSel ||
+		right.children[1].children[1] !== refs.sortSelect ||
 		right.children[2].children[1] !== refs.unitSel ||
-		actions.children[0] !== refs.btnRefresh || actions.children[1] !== refs.btnPause ||
+		actions.children[0] !== refs.btnPause || actions.children[1] !== refs.btnRefresh ||
 		actions.children.length !== 2)
 		fail('statusShell.js must keep sort/cadence/unit in the client toolbar and refresh/pause in the status bar');
 	if (refs.btnRefresh.attrs.type !== 'button' || refs.btnPause.attrs.type !== 'button') {
@@ -6032,52 +6031,28 @@ function assertStatusStyleModule(src) {
 
 	if (!src.includes('CSS: LAYOUT_CSS') || !src.includes('LAYOUT_CSS: STATUS_LAYOUT_CSS'))
 		fail('statusStyle.js must export composed design-system CSS and status-only layout CSS');
+
+	/* Page skeleton: one vertical stack of cards, the client list as the main
+	 * surface, and one flat row of four comparable stats on top. */
 	[
-		'.lanspeed-root{display:flex;flex-direction:column',
-		'.lanspeed-metrics{display:grid',
-		'.lanspeed-toolbar-left{display:grid',
-		'.lanspeed-toolbar-right{',
-		'.lanspeed-toolbar .lanspeed-sort-control select{',
-		'.lanspeed-pagination{display:flex',
+		'.lanspeed-root{display:flex;flex-direction:column;gap:',
+		'.lanspeed-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))',
+		'.lanspeed-metric{display:flex;flex-direction:column',
+		'.lanspeed-toolbar{display:flex;flex-wrap:wrap',
+		'.lanspeed-toolbar-left{display:flex;flex:1 1 18em',
+		'.lanspeed-toolbar-right{display:flex;flex-wrap:wrap',
+		'.lanspeed-pagination{display:flex;flex-wrap:wrap',
 		'.lanspeed-details>summary{display:flex',
-		'.lanspeed-control-client{display:flex;flex-wrap:wrap'
+		'.lanspeed-control-actions{display:flex;flex-wrap:nowrap'
 	].forEach(function(marker) {
 		if (!baseCss.includes(marker))
-			fail(`statusStyleBase.js must retain status information architecture: ${marker}`);
+			fail(`statusStyleBase.js must retain the status page information architecture: ${marker}`);
 	});
-	if (!baseCss.includes('.lanspeed-clients-card{overflow-anchor:none}') ||
-	    !baseCss.includes('line-height:1.2;white-space:nowrap') ||
-	    !baseCss.includes('tbody tr:hover{') ||
-	    !baseCss.includes('background:transparent!important;background-image:none!important') ||
-	    baseCss.includes('lanspeed-client-hover-lock') ||
-	    baseCss.includes('lanspeed-client-refresh-lock')) {
-		fail('statusStyleBase.js must prevent scroll anchoring and neutralize client-row hover without obsolete locks');
-	}
+
+	/* Fixed, keyed tracks: a live sample may change text but never the layout. */
 	[
-		'@media (max-width:900px)', '@media (max-width:700px)', '@media (max-width:480px)',
-		'container:lanspeed-clients/inline-size',
-		'@container lanspeed-clients (max-width:',
-		'@supports not (container-type:inline-size)',
-		'.lanspeed-clients-card .lanspeed-clients-table tbody>tr{display:grid;',
-		'.lanspeed-clients-card .lanspeed-clients-table thead{display:none}',
-		'  .lanspeed-client-tcp-cell,.lanspeed-client-udp-cell)[data-label]::before{content:attr(data-label);',
-		'.lanspeed-ifaces-table tbody>tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));',
-		'.lanspeed-ifaces-table tbody td[data-label]::before{content:attr(data-label);',
-		'.lanspeed-clients-card .lanspeed-connection-link{font-size:1.05em;white-space:normal;overflow-wrap:anywhere}',
-		'.lanspeed-clients-card .lanspeed-client-vendor{flex:1 1 10em;margin:0;white-space:normal;overflow-wrap:anywhere}',
-		'.lanspeed-clients-card .lanspeed-client-name .ipline{white-space:normal;overflow-wrap:anywhere}'
-	].forEach(function(marker) {
-		if (!responsiveCss.includes(marker))
-			fail(`statusStyleResponsive.js must retain responsive status behavior: ${marker}`);
-	});
-	if (/position\s*:\s*sticky/.test(responsiveCss) || /position\s*:\s*sticky/.test(baseCss))
-		fail('client table must not pin cells over translucent theme surfaces');
-	if (/nth-child\(\d\)/.test(responsiveCss) || /nth-child\(\d\)/.test(baseCss) ||
-	    responsiveCss.includes('lanspeed-custom-column-layout') || baseCss.includes('lanspeed-custom-column-layout'))
-		fail('client columns must be addressed by data-column-key, never by positional or runtime grid layouts');
-	[
+		'.lanspeed-table-scroll{overflow-x:auto',
 		'.lanspeed-clients-table{table-layout:fixed;min-width:',
-		'.lanspeed-table-scroll{width:100%;min-width:0;max-width:100%;overflow-x:auto',
 		'.lanspeed-clients-table [data-column-key="hostname"]{width:auto}',
 		'.lanspeed-clients-table [data-column-key="mac"]{width:',
 		'.lanspeed-clients-table [data-column-key="rate"]{width:',
@@ -6085,45 +6060,70 @@ function assertStatusStyleModule(src) {
 		'.lanspeed-clients-table [data-column-key="tcp_conns"],',
 		'.lanspeed-clients-table [data-column-key="udp_conns"]{width:',
 		'.lanspeed-clients-table [data-column-key="control"]{width:',
-		'.lanspeed-status-root .lanspeed-table .num{text-align:right}',
-		'.lanspeed-control-actions{display:flex;flex-wrap:nowrap;gap:.35em;align-items:center;justify-content:flex-end}'
+		'.lanspeed-table .num{text-align:right',
+		'.lanspeed-client-count-cell{text-align:right;font-variant-numeric:tabular-nums',
+		'.lanspeed-clients-table thead th[aria-sort="ascending"]::after'
 	].forEach(function(marker) {
 		if (!baseCss.includes(marker))
 			fail(`statusStyleBase.js must give the client table fixed, keyed tracks: ${marker}`);
 	});
-	if (!baseCss.includes('min-height:calc(var(--lanspeed-control-height)*.82)!important') ||
-	    !baseCss.includes('padding:.28em .7em!important') ||
-	    !baseCss.includes('font-weight:inherit!important;line-height:inherit!important')) {
-		fail('client control buttons must use compact theme-native control sizing');
-	}
-	if (!baseCss.includes('.lanspeed-client-rate,.lanspeed-client-total{display:block;') ||
-	    !baseCss.includes('.lanspeed-client-count-cell{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}') ||
-	    !baseCss.includes('text-align:right;text-overflow:ellipsis;color:inherit;font-size:inherit;') ||
-	    !baseCss.includes('font-weight:inherit;line-height:inherit;white-space:nowrap}')) {
-		fail('rates, totals and connection counts must share one right-aligned numeric typography');
-	}
-	if (!baseCss.includes('.lanspeed-client-traffic-line[data-direction="tx"] .lanspeed-client-rate') ||
-	    !baseCss.includes('.lanspeed-live-state[data-state="live"]::before{background:var(--lanspeed-normal)}'))
-		fail('statusStyleBase.js must keep direction and live-state cues on semantic tokens');
+
+	/* One typographic contract for every number on the page. */
+	if (!baseCss.includes('.lanspeed-stat-value{font-size:') ||
+	    !baseCss.includes('.lanspeed-client-rate{text-align:right;font-weight:500;white-space:nowrap') ||
+	    !baseCss.includes('.lanspeed-client-total{text-align:right;font-size:'))
+		fail('stat values, rates and totals must share one right-aligned numeric typography of the same scale');
+
+	/* State cues stay on semantic tokens so each theme can re-map them. */
+	if (!baseCss.includes('.lanspeed-live-state[data-state="live"]::before{background:var(--lanspeed-normal)}') ||
+	    !baseCss.includes('.lanspeed-live-state[data-state="bad"]::before{background:var(--lanspeed-danger)}') ||
+	    !baseCss.includes('.lanspeed-client-traffic-line[data-direction="rx"] .lanspeed-client-direction{'))
+		fail('statusStyleBase.js must keep live-state and direction cues on semantic tokens');
+
+	if (/position\s*:\s*sticky/.test(responsiveCss) || /position\s*:\s*sticky/.test(baseCss))
+		fail('client table must not pin cells over translucent theme surfaces');
+	if (/nth-child\(\d\)/.test(responsiveCss) || /nth-child\(\d\)/.test(baseCss) ||
+	    baseCss.includes('lanspeed-custom-column-layout') ||
+	    baseCss.includes('--lanspeed-client-grid-template'))
+		fail('client columns must be addressed by data-column-key, never by positional or runtime grid layouts');
+	if (baseCss.includes('lanspeed-client-hover-lock') || baseCss.includes('lanspeed-client-refresh-lock') ||
+	    responsiveCss.includes('lanspeed-client-hover-lock'))
+		fail('status styles must not reintroduce hover or refresh lock classes');
+
+	/* Below the card width every row becomes a card, with a viewport fallback
+	 * for engines without container queries. */
+	[
+		'container:lanspeed-clients/inline-size',
+		'@container lanspeed-clients (max-width:',
+		'@supports not (container-type:inline-size)',
+		'.lanspeed-clients-table tbody>tr{display:grid',
+		'.lanspeed-clients-table thead{display:none}',
+		'.lanspeed-clients-table td[data-label]::before{content:attr(data-label)',
+		'.lanspeed-clients-table .lanspeed-connection-link,',
+		'.lanspeed-clients-table .lanspeed-client-vendor{white-space:normal;overflow-wrap:anywhere}',
+		'.lanspeed-ifaces-table tbody>tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))'
+	].forEach(function(marker) {
+		if (!responsiveCss.includes(marker))
+			fail(`statusStyleResponsive.js must retain responsive status behavior: ${marker}`);
+	});
+
+	/* Themes only tune density and surfaces; the skeleton stays in the base leaf. */
 	themeCss.forEach(function(theme) {
-		if (!theme[2].includes(`lanspeed-theme-${theme[1]}`) ||
-		    !theme[2].includes('.lanspeed-metrics{') ||
-		    !theme[2].includes('.lanspeed-table') ||
-		    !theme[2].includes('background-image:none!important') ||
-		    theme[2].includes('background:var(--lanspeed-hover)') ||
-		    theme[2].includes('lanspeed-client-hover-lock')) {
-			fail(`statusStyle${theme[0]}.js must independently implement metrics and table density`);
+		const css = theme[2];
+		if (!css.includes(`.lanspeed-theme-${theme[1]}`) ||
+		    !css.includes('.lanspeed-metric') || !css.includes('.lanspeed-table') ||
+		    css.includes('lanspeed-client-hover-lock') ||
+		    /(?:^|\n)\s*(?:body|html|:root)\s*\{/.test(css)) {
+			fail(`statusStyle${theme[0]}.js must only tune its own theme scope and keep metric/table density`);
 		}
 	});
-	if (!themeCss[0][2].includes('background:transparent!important') ||
-	    !themeCss[1][2].includes('background:transparent!important') ||
-	    !themeCss[2][2].includes('tr:nth-child(odd):hover') ||
-	    !themeCss[2][2].includes('tr:nth-child(even):hover') ||
-	    !themeCss[2][2].includes('background:var(--lanspeed-surface-muted)!important')) {
-		fail('all status themes must neutralize client-row hover while preserving Bootstrap zebra stripes');
+	if (!themeCss[2][2].includes('tr:nth-child(even)') ||
+	    !themeCss[2][2].includes('background:var(--lanspeed-surface-muted)')) {
+		fail('statusStyleBootstrap.js must keep the zebra body its tables already use');
 	}
-	if (!themeCss[1][2].includes('.lanspeed-theme-argon .lanspeed-metric .big{font-size:1.3rem}'))
-		fail('statusStyleArgon.js must keep live rate values on one line at narrow widths');
+	if (!themeCss[1][2].includes('color-mix('))
+		fail('statusStyleArgon.js must stripe translucent rows through one composited tint');
+
 	if (/lanspeed-(?:caps|warnings|subhead|strip)/.test(src) || src.includes('CAPS_CSS')) {
 		fail('lanspeed/statusStyle.js must not retain obsolete capability or legacy warning styles');
 	}
@@ -6150,7 +6150,7 @@ function assertStatusCollectorModule(src) {
 }
 
 function assertStatusShellModule(src) {
-	if (!src.includes('buildShell: function(viewState)') ||
+	if (!src.includes('function buildShell(viewState)') ||
 	    !src.includes('statusStyle.CSS') ||
 	    !src.includes('lsTheme.applyRoot(root)')) {
 		fail('lanspeed/statusShell.js must own status page DOM shell construction');
@@ -6176,15 +6176,16 @@ function assertStatusShellModule(src) {
 
 	if (!src.includes("E('div', { 'class': 'lanspeed-toolbar-left' }") ||
 	    !src.includes("E('div', { 'class': 'lanspeed-toolbar-right' }") ||
-	    !src.includes("E('label', { 'class': 'lanspeed-unit-control' }, [ _('单位'), refs.unitSel ])") ||
-	    !src.includes("E('label', { 'class': 'lanspeed-refresh-control' }, [ _('刷新'), refs.intervalSel ])")) {
+	    !src.includes("'class': 'lanspeed-unit-control'") ||
+	    !src.includes("'class': 'lanspeed-refresh-control'") ||
+	    !src.includes("'class': 'lanspeed-sort-control'")) {
 		fail('lanspeed/statusShell.js must group client filters left, display options right and page refresh in the status bar');
 	}
 	if (src.includes('refs.statusHeader') || src.includes('showClientStatus') ||
 		src.includes('data-client-status') || src.includes("_('状态')")) {
 		fail('lanspeed/statusShell.js must remove the obsolete client status column and toggle');
 	}
-	if (!src.includes("'class': 'big lanspeed-connection-values'") ||
+	if (!src.includes("'class': 'lanspeed-stat-value lanspeed-connection-values'") ||
 	    !src.includes("'class': 'lanspeed-connection-stat'") ||
 	    !src.includes("'class': 'lanspeed-connection-number'")) {
 		fail('lanspeed/statusShell.js must render connection totals with the same three-row metric structure as every other card');

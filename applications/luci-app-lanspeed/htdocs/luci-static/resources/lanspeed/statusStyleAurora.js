@@ -1,55 +1,41 @@
 'use strict';
 'require baseclass';
-
-/* Aurora keeps a spacious, softly elevated status hierarchy. */
-var AURORA_CSS = [
-	'.lanspeed-root.lanspeed-theme-aurora{gap:var(--lanspeed-page-gap)}',
-	'.lanspeed-root.lanspeed-theme-aurora>.cbi-section{padding:var(--lanspeed-section-x);overflow:visible}',
-	'.lanspeed-theme-aurora :is(.lanspeed-header,.lanspeed-details>summary){',
-		'margin:0 0 var(--lanspeed-section-y);padding:0 0 var(--lanspeed-section-y);',
-		'background:transparent;gap:.45rem .75rem}',
-	'.lanspeed-theme-aurora :is(.lanspeed-body,.lanspeed-details-body){padding:0}',
-	'.lanspeed-theme-aurora .lanspeed-details:not([open])>summary{margin-bottom:0;padding-bottom:0;border-bottom:0}',
-	'.lanspeed-theme-aurora :is(.lanspeed-header,.lanspeed-details>summary) h3{font-size:1.2rem}',
-	'.lanspeed-theme-aurora .lanspeed-header>.meta{padding:0}',
-	'.lanspeed-theme-aurora .lanspeed-overview-card>.lanspeed-header{margin-bottom:.9rem}',
-	'.lanspeed-theme-aurora .lanspeed-details>summary .sum{padding:.22rem .6rem;',
-		'border-radius:var(--lanspeed-radius-badge);background:var(--lanspeed-surface-sunken)}',
-	'.lanspeed-theme-aurora .lanspeed-page-size{width:calc(var(--spacing,.25rem)*28)!important;',
-		'min-width:calc(var(--spacing,.25rem)*28);max-width:calc(var(--spacing,.25rem)*28);',
-		'padding-right:calc(var(--spacing,.25rem)*11)!important;text-overflow:clip}',
-	'.lanspeed-theme-aurora .lanspeed-pagination{padding-right:.25rem}',
-	'.lanspeed-theme-aurora .lanspeed-clients-card .lanspeed-body{overflow-x:auto}',
-	'.lanspeed-theme-aurora .lanspeed-metrics{grid-template-columns:repeat(4,minmax(0,1fr));',
-		'gap:0;align-items:stretch}',
-	'.lanspeed-theme-aurora .lanspeed-metric{display:flex;flex-direction:column;justify-content:center;',
-		'min-height:5.8rem;padding:.28rem 1.15rem .22rem;border-left:1px solid var(--lanspeed-border)}',
-	'.lanspeed-theme-aurora .lanspeed-metric:first-child{padding-left:0;border-left:0}',
-	'.lanspeed-theme-aurora .lanspeed-metric .big{font-size:1.45rem}',
-	'.lanspeed-theme-aurora .lanspeed-toolbar{gap:.65rem 1rem;margin-bottom:.85rem;padding-bottom:.85rem}',
-	'.lanspeed-theme-aurora .lanspeed-toolbar input[type="search"]{min-width:14rem;max-width:22rem}',
-	'.lanspeed-theme-aurora .lanspeed-table :is(th,td){padding:.58rem .65rem}',
-	'.lanspeed-theme-aurora .lanspeed-table thead th{background:var(--lanspeed-surface-sunken);',
-		'font-size:.78rem}',
-	'.lanspeed-theme-aurora .lanspeed-table tbody tr:hover{',
-		'background:transparent!important;background-image:none!important}',
-	'.lanspeed-theme-aurora .lanspeed-table .mono{font-size:.85em}',
-	'@media (max-width:1100px){.lanspeed-theme-aurora .lanspeed-metrics{',
-		'grid-template-columns:repeat(2,minmax(0,1fr));gap:.8rem 0}',
-	'.lanspeed-theme-aurora .lanspeed-metric:nth-child(odd){padding-left:0;border-left:0}}',
-	'@media (max-width:700px){',
-	'.lanspeed-root.lanspeed-theme-aurora>.cbi-section{padding:calc(var(--spacing,.25rem)*4)}',
-	'.lanspeed-theme-aurora :is(.lanspeed-header,.lanspeed-details>summary){',
-		'margin-bottom:.85rem;padding:0 0 .7rem}',
-	'.lanspeed-theme-aurora :is(.lanspeed-body,.lanspeed-details-body){padding:0}',
-	'.lanspeed-theme-aurora .lanspeed-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:.7rem 0}',
-	'.lanspeed-theme-aurora .lanspeed-metric{min-height:5.1rem;padding:.2rem .75rem}',
-	'.lanspeed-theme-aurora .lanspeed-metric:nth-child(odd){padding-left:0;border-left:0}',
-	'.lanspeed-theme-aurora .lanspeed-metric:nth-child(even){border-left:1px solid var(--lanspeed-border)}',
-	'.lanspeed-theme-aurora .lanspeed-toolbar input[type="search"]{min-width:0;width:100%;max-width:none}}',
-	'@media (max-width:480px){.lanspeed-theme-aurora .lanspeed-metric .big{font-size:1.3rem}}'
-].join('\n');
-
+/*
+ * Aurora: the section is the surface and owns the page padding, so the head is
+ * flush with the card edge exactly like the configuration and diagnostics
+ * pages. Metrics keep the theme's hairline dividers and the table head sits on
+ * the sunken surface.
+ */
 return baseclass.extend({
-	CSS: AURORA_CSS
+	__name__: 'LuCILanspeedStatusStyleAurora',
+	CSS: [
+		'.lanspeed-root.lanspeed-theme-aurora>.cbi-section{padding:var(--lanspeed-section-x);overflow:visible}',
+		'.lanspeed-root.lanspeed-theme-aurora .lanspeed-header{margin:0 0 var(--lanspeed-section-y);',
+			'padding:0 0 var(--lanspeed-section-y);background:transparent;gap:.45rem .75rem}',
+		'.lanspeed-root.lanspeed-theme-aurora .lanspeed-header h3{font-size:1.2rem!important;line-height:1.25!important;letter-spacing:normal!important}',
+		'.lanspeed-theme-aurora .lanspeed-body{padding:0}',
+		'.lanspeed-theme-aurora .lanspeed-stats-card>.lanspeed-body{padding:6px 0 4px}',
+		'.lanspeed-theme-aurora .lanspeed-metric{display:flex;flex-direction:column;justify-content:center;',
+			'min-height:5.6rem;padding:10px 16px}',
+		'.lanspeed-theme-aurora .lanspeed-metric:first-child{padding-left:0}',
+		'.lanspeed-theme-aurora .lanspeed-stat-value{font-size:23px}',
+		'.lanspeed-theme-aurora .lanspeed-toolbar,.lanspeed-theme-aurora .lanspeed-pagination,',
+		'.lanspeed-theme-aurora .lanspeed-details>summary{padding-left:0;padding-right:0}',
+		'.lanspeed-theme-aurora .lanspeed-details-body{padding-left:0;padding-right:0}',
+		'.lanspeed-theme-aurora .lanspeed-empty{margin-left:0;margin-right:0}',
+		'.lanspeed-theme-aurora .lanspeed-status-error{margin-left:0;margin-right:0}',
+		'.lanspeed-theme-aurora .lanspeed-table :is(th,td){padding:9px 10px}',
+		'.lanspeed-theme-aurora .lanspeed-table thead th{background:var(--lanspeed-surface-sunken)}',
+		'.lanspeed-theme-aurora .lanspeed-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}',
+		'.lanspeed-theme-aurora .lanspeed-page-size{width:5.6em!important;min-width:5.2em;max-width:6.4em;',
+			'padding-right:1.6em}',
+		'.lanspeed-theme-aurora .lanspeed-header>.meta{background:transparent;border-radius:0;box-shadow:none}',
+		'@media (max-width:1100px){.lanspeed-theme-aurora .lanspeed-metrics{',
+			'grid-template-columns:repeat(2,minmax(0,1fr))}}',
+		'@media (max-width:800px){',
+			'.lanspeed-root.lanspeed-theme-aurora>.cbi-section{padding:calc(var(--spacing,.25rem)*4)}',
+			'.lanspeed-root.lanspeed-theme-aurora .lanspeed-header{margin:0 0 .85rem;padding:0 0 .7rem}',
+			'.lanspeed-theme-aurora .lanspeed-stat-value{font-size:19px}',
+		'}'
+	].join('\n')
 });

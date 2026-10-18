@@ -1408,9 +1408,9 @@ async page => {
 						const items = nodes.map((node, index) => {
 							const box = node.getBoundingClientRect();
 							const style = getComputedStyle(node);
-							const bigTops = Array.from(node.querySelectorAll('.big')).map(element =>
+							const bigTops = Array.from(node.querySelectorAll('.lanspeed-stat-value')).map(element =>
 								element.getBoundingClientRect().top);
-							const hint = node.querySelector('.hint');
+							const hint = node.querySelector('.lanspeed-stat-hint');
 							return {
 								index: index,
 								top: box.top,
@@ -1506,8 +1506,9 @@ async page => {
 					const after = await root.locator('th[data-column-key="totals"]').getAttribute('aria-sort');
 					const adjacency = await sort.evaluate(select => {
 						const group = select.closest('.lanspeed-sort-control');
-						const adjacent = group && (group.nextElementSibling || group.previousElementSibling);
-						return !!adjacent && adjacent.classList.contains('lanspeed-refresh-control');
+						if (!group) return false;
+						const neighbours = [ group.nextElementSibling, group.previousElementSibling ];
+						return neighbours.some(node => node && node.classList.contains('lanspeed-refresh-control'));
 					});
 					evidence.interactions.sort = { before, keyboardValue, after, saved, adjacency };
 					addCheck('overview-sort', keyboardValue === 'rx:desc' && after === 'ascending' && adjacency &&

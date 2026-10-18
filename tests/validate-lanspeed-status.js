@@ -1244,13 +1244,14 @@ function testPaginationAndUiStates(context, fmt) {
 	state.refreshLive();
 	const toolbarRight = findByClass(built.root, 'lanspeed-toolbar-right');
 	const statusActions = findByClass(built.root, 'lanspeed-status-actions');
-	assert.strictEqual(toolbarRight.children[0].children[1], state.refs.sortSelect);
-	assert.strictEqual(toolbarRight.children[1].children[1], state.refs.intervalSel,
-		'the refresh cadence control sits next to the client ordering control');
+	assert.strictEqual(toolbarRight.children[0].children[1], state.refs.intervalSel,
+		'the refresh cadence control opens the display preference group');
+	assert.strictEqual(toolbarRight.children[1].children[1], state.refs.sortSelect,
+		'ordering sits next to the refresh cadence control');
 	assert.strictEqual(toolbarRight.children[2].children[1], state.refs.unitSel);
-	assert.ok(String(toolbarRight.children[1].attrs.class || '').includes('lanspeed-refresh-control'));
-	assert.strictEqual(statusActions.children[0], state.refs.btnRefresh);
-	assert.strictEqual(statusActions.children[1], state.refs.btnPause);
+	assert.ok(String(toolbarRight.children[0].attrs.class || '').includes('lanspeed-refresh-control'));
+	assert.strictEqual(statusActions.children[0], state.refs.btnPause);
+	assert.strictEqual(statusActions.children[1], state.refs.btnRefresh);
 	assert.strictEqual(statusActions.children.length, 2,
 		'the status bar keeps only the page-level refresh actions');
 	assert.deepStrictEqual(findByClass(built.root, 'lanspeed-metrics').children.map(node => node.attrs['data-metric']),

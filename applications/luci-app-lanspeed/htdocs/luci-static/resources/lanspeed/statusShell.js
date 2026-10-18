@@ -4,14 +4,15 @@
 'require lanspeed.theme as lsTheme';
 'require lanspeed.statusStyle as statusStyle';
 
-/* Interface throughput is secondary; remember whether the viewer expanded it. */
+/* Interface throughput is secondary evidence: keep whether the viewer expanded
+ * it so the page opens the same way on the next visit. */
 var IFACES_OPEN_KEY = 'luci-app-lanspeed.ifaces-open.v1';
-/* Column widths used to be measured and stored per browser. The table now uses
- * fixed CSS tracks, so drop the obsolete preference instead of leaving it. */
+/* Column widths were once measured per browser. The table now owns its tracks,
+ * so drop the obsolete preference instead of leaving it behind. */
 var LEGACY_COLUMN_WIDTHS_KEY = 'luci-app-lanspeed.client-column-widths.v12';
 
 /* Columns that stack both directions sort by their download key first. TCP and
- * UDP get one column each so connection counts line up with the header. */
+ * UDP get one column each so connection counts line up with the headers. */
 var SORT_KEYS_BY_COLUMN = {
 	rate: [ 'rx', 'tx' ],
 	totals: [ 'rx_bytes', 'tx_bytes' ]
@@ -29,6 +30,8 @@ function forgetLegacyColumnWidths() {
 	try { window.localStorage.removeItem(LEGACY_COLUMN_WIDTHS_KEY); } catch (e) {}
 }
 
+/* Sortable header cell. The sort control itself lives in the toolbar, so the
+ * table only advertises its state through aria-sort. */
 function clientHeader(refs, columnKey, label, attrs) {
 	var thAttrs = Object.assign({ 'scope': 'col', 'aria-sort': 'none' }, attrs || {});
 	thAttrs['data-column-key'] = columnKey;
@@ -56,11 +59,11 @@ function sortChoices() {
 	return choices;
 }
 
-/* One metric tile: caption, a single value line and one hint line, so every
- * tile keeps the same three-row rhythm across themes. */
+/* One stat: caption, value line and one hint line. Keeping every stat on the
+ * same three-row rhythm is what lets the numbers be compared at a glance. */
 function metric(key, caption, value, hint, attrs) {
 	return E('div', Object.assign({ 'class': 'lanspeed-metric', 'data-metric': key }, attrs || {}), [
-		E('div', { 'class': 'caption' }, caption),
+		E('div', { 'class': 'lanspeed-metric-caption' }, caption),
 		value,
 		hint
 	]);
@@ -88,7 +91,8 @@ function buildShell(viewState) {
 	refs.sortHeaders = {};
 	forgetLegacyColumnWidths();
 
-	/* --- Status bar parts. */
+	/* --- Page head: identity and collection state on the left, the two global
+	 * actions on the right. Per-list controls stay inside the client card. */
 	refs.collectorPill = E('span', { 'class': 'label lanspeed-collector-status' }, '-');
 	refs.liveState = E('span', {
 		'class': 'lanspeed-live-state',
@@ -96,7 +100,7 @@ function buildShell(viewState) {
 		'role': 'status',
 		'aria-live': 'polite'
 	}, '-');
-	refs.meta = E('span', { 'class': 'meta lanspeed-status-version' }, '');
+	refs.meta = E('span', { 'class': 'lanspeed-status-version meta' }, '');
 
 	refs.btnRefresh = E('button', {
 		'type': 'button',
@@ -130,7 +134,7 @@ function buildShell(viewState) {
 		? fmt.NSS_REFRESH_CHOICES
 		: fmt.REFRESH_CHOICES;
 	refs.intervalSel = E('select', {
-		'class': 'cbi-input-select',
+		'class': 'cbi-input-select lanspeed-refresh-select',
 		'aria-label': _('刷新间隔'),
 		'data-refresh-policy': nssRefreshRestricted ? 'nss' : 'default',
 		'title': nssRefreshRestricted ? _('ECM 采集方案最低每 2 秒刷新') : ''
@@ -153,8 +157,6 @@ function buildShell(viewState) {
 		if (typeof viewState.refreshLive === 'function') viewState.refreshLive();
 	});
 
-	/* --- Status bar: identity, collection state and the page-level actions. The
-	 * refresh cadence belongs to the client toolbar, next to sorting. */
 	var statusHeader = E('div', { 'class': 'lanspeed-header lanspeed-status-bar' }, [
 		E('div', { 'class': 'lanspeed-status-title' }, [
 			E('h3', {}, _('LAN Speed')),
@@ -162,10 +164,10 @@ function buildShell(viewState) {
 			refs.liveState,
 			refs.meta
 		]),
-		E('span', { 'class': 'spacer' }),
+		E('span', { 'class': 'lanspeed-spacer' }),
 		E('div', { 'class': 'lanspeed-status-actions' }, [
-			refs.btnRefresh,
-			refs.btnPause
+			refs.btnPause,
+			refs.btnRefresh
 		])
 	]);
 
@@ -186,16 +188,17 @@ function buildShell(viewState) {
 		refs.errorPre,
 		refs.errorList
 	]);
-	/* --- Core metrics: download, upload, clients, connections. Download comes
-	 * first everywhere on the page, matching the per-client columns. */
-	refs.mRx          = E('div', { 'class': 'big' }, '—');
-	refs.mTx          = E('div', { 'class': 'big' }, '—');
-	refs.mClients     = E('div', { 'class': 'big' }, '—');
-	refs.mClientsSub  = E('div', { 'class': 'hint' }, '-');
+
+	/* --- Core stats: download and upload first, then clients and connections.
+	 * The four tiles share one row on wide screens and two columns below. */
+	refs.mRx          = E('div', { 'class': 'lanspeed-stat-value' }, '—');
+	refs.mTx          = E('div', { 'class': 'lanspeed-stat-value' }, '—');
+	refs.mClients     = E('div', { 'class': 'lanspeed-stat-value' }, '—');
+	refs.mClientsSub  = E('div', { 'class': 'lanspeed-stat-hint' }, '-');
 	refs.mTcpConns    = E('span', { 'class': 'lanspeed-connection-number' }, '-');
 	refs.mUdpConns    = E('span', { 'class': 'lanspeed-connection-number' }, '-');
-	refs.mUdpConnsSub = E('div', { 'class': 'hint' }, '-');
-	refs.mConnsValue  = E('div', { 'class': 'big lanspeed-connection-values' }, [
+	refs.mUdpConnsSub = E('div', { 'class': 'lanspeed-stat-hint' }, '-');
+	refs.mConnsValue  = E('div', { 'class': 'lanspeed-stat-value lanspeed-connection-values' }, [
 		E('span', { 'class': 'lanspeed-connection-stat' }, [
 			E('span', { 'class': 'lanspeed-connection-label' }, 'TCP'),
 			refs.mTcpConns
@@ -210,21 +213,19 @@ function buildShell(viewState) {
 	});
 	var metrics = E('div', { 'class': 'lanspeed-metrics' }, [
 		metric('rx', directionCaption('rx', _('下载')), refs.mRx,
-			E('div', { 'class': 'hint' }, _('客户端接收 · rx'))),
+			E('div', { 'class': 'lanspeed-stat-hint' }, _('客户端接收 · rx'))),
 		metric('tx', directionCaption('tx', _('上传')), refs.mTx,
-			E('div', { 'class': 'hint' }, _('客户端发出 · tx'))),
+			E('div', { 'class': 'lanspeed-stat-hint' }, _('客户端发出 · tx'))),
 		metric('clients', _('客户端'), refs.mClients, refs.mClientsSub),
 		refs.mConnsWrap
 	]);
-
-	var overviewCard = E('div', { 'class': 'cbi-section lanspeed-overview-card' }, [
+	var statsCard = E('div', { 'class': 'cbi-section lanspeed-stats-card' }, [
 		statusHeader,
-		E('div', { 'class': 'lanspeed-body' }, [
-			refs.errorBox,
-			metrics
-		])
+		E('div', { 'class': 'lanspeed-body' }, [ refs.errorBox, metrics ])
 	]);
-	/* --- Client toolbar: narrowing (search, active) left, ordering and display right. */
+
+	/* --- Client toolbar: narrowing on the left; cadence, ordering and units are
+	 * display preferences and stay together on the right. */
 	refs.filterInput = E('input', {
 		'type': 'search',
 		'class': 'cbi-input-text',
@@ -271,7 +272,7 @@ function buildShell(viewState) {
 		viewState.refreshLive();
 	});
 
-	refs.unitSel = E('select', { 'class': 'cbi-input-select', 'aria-label': _('速率单位') }, [
+	refs.unitSel = E('select', { 'class': 'cbi-input-select lanspeed-unit-select', 'aria-label': _('速率单位') }, [
 		fmt.opt('bit',  'bit/s',  prefs.unit === 'bit'),
 		fmt.opt('byte', 'Byte/s', prefs.unit === 'byte')
 	]);
@@ -283,20 +284,28 @@ function buildShell(viewState) {
 
 	var toolbar = E('div', { 'class': 'lanspeed-toolbar lanspeed-clients-toolbar' }, [
 		E('div', { 'class': 'lanspeed-toolbar-left' }, [
-			E('div', { 'class': 'lanspeed-toolbar-filter' }, [
-				refs.filterInput,
-				E('label', { 'class': 'lanspeed-active-only cbi-checkbox', 'for': 'lanspeed-active' }, [
-					refs.activeChk,
-					E('span', { 'class': 'lanspeed-active-label' }, _('仅活跃'))
-				])
+			E('div', { 'class': 'lanspeed-toolbar-filter' }, [ refs.filterInput ]),
+			E('label', { 'class': 'lanspeed-active-only cbi-checkbox', 'for': 'lanspeed-active' }, [
+				refs.activeChk,
+				E('span', { 'class': 'lanspeed-active-label' }, _('仅活跃'))
 			])
 		]),
 		E('div', { 'class': 'lanspeed-toolbar-right' }, [
-			E('label', { 'class': 'lanspeed-sort-control' }, [ _('排序'), refs.sortSelect ]),
-			E('label', { 'class': 'lanspeed-refresh-control' }, [ _('刷新'), refs.intervalSel ]),
-			E('label', { 'class': 'lanspeed-unit-control' }, [ _('单位'), refs.unitSel ])
+			E('label', { 'class': 'lanspeed-refresh-control' }, [
+				E('span', { 'class': 'lanspeed-control-label' }, _('刷新')),
+				refs.intervalSel
+			]),
+			E('label', { 'class': 'lanspeed-sort-control' }, [
+				E('span', { 'class': 'lanspeed-control-label' }, _('排序')),
+				refs.sortSelect
+			]),
+			E('label', { 'class': 'lanspeed-unit-control' }, [
+				E('span', { 'class': 'lanspeed-control-label' }, _('单位')),
+				refs.unitSel
+			])
 		])
 	]);
+
 	var pageSizeChoices = fmt.PAGE_SIZE_CHOICES || [ 10, 25, 50, 100 ];
 	var initialPageSize = pageSizeChoices.indexOf(Number(prefs.pageSize)) !== -1
 		? Number(prefs.pageSize) : 25;
@@ -351,7 +360,8 @@ function buildShell(viewState) {
 		'tabindex': '0'
 	}, [
 		E('label', { 'class': 'lanspeed-page-size-control' }, [
-			_('每页'), refs.pageSizeSel
+			E('span', { 'class': 'lanspeed-control-label' }, _('每页')),
+			refs.pageSizeSel
 		]),
 		E('div', { 'class': 'lanspeed-page-actions' }, [
 			refs.pageFirst,
@@ -378,12 +388,12 @@ function buildShell(viewState) {
 	});
 
 	/* --- Client table: identity first, then rate, totals and one numeric column
-	 * per transport, and row actions last. Column tracks are fixed in CSS so live
-	 * values never resize the table between samples. */
-	refs.clientsHeaderSummary = E('span', { 'class': 'meta lanspeed-clients-summary' }, '');
-	var clientsHeader = E('div', { 'class': 'lanspeed-header' }, [
+	 * per transport, with row actions last. Column tracks are fixed in CSS so a
+	 * live sample never reflows the table. */
+	refs.clientsHeaderSummary = E('span', { 'class': 'lanspeed-clients-summary' }, '');
+	var clientsHeader = E('div', { 'class': 'lanspeed-header lanspeed-clients-header' }, [
 		E('h3', {}, _('LAN 客户端')),
-		E('span', { 'class': 'spacer' }),
+		E('span', { 'class': 'lanspeed-spacer' }),
 		refs.clientsHeaderSummary
 	]);
 
@@ -439,9 +449,10 @@ function buildShell(viewState) {
 			refs.pageNav
 		])
 	]);
+
 	/* --- Interface throughput: supporting evidence, collapsed by default with
 	 * its LAN summary still visible on the summary line. */
-	refs.ifacesSummary = E('span', { 'class': 'sum' }, '');
+	refs.ifacesSummary = E('span', { 'class': 'lanspeed-ifaces-summary' }, '');
 	refs.ifacesBody    = E('tbody', {});
 	refs.ifacesHint    = E('p', { 'class': 'lanspeed-hint' }, '');
 	var ifacesTable = E('table', { 'class': 'lanspeed-table lanspeed-ifaces-table' }, [
@@ -459,7 +470,7 @@ function buildShell(viewState) {
 	refs.ifacesDetails = E('details', ifacesAttrs, [
 		E('summary', {}, [
 			E('h3', {}, _('接口吞吐')),
-			E('span', { 'class': 'spacer' }),
+			E('span', { 'class': 'lanspeed-spacer' }),
 			refs.ifacesSummary
 		]),
 		E('div', { 'class': 'lanspeed-details-body' }, [
@@ -478,7 +489,7 @@ function buildShell(viewState) {
 		'data-state': 'loading'
 	}, [
 		E('style', {}, statusStyle.CSS),
-		overviewCard,
+		statsCard,
 		clientsCard,
 		ifacesCard
 	]);
@@ -490,7 +501,5 @@ function buildShell(viewState) {
 }
 
 return baseclass.extend({
-	buildShell: function(viewState) {
-		return buildShell(viewState);
-	}
+	buildShell: buildShell
 });
