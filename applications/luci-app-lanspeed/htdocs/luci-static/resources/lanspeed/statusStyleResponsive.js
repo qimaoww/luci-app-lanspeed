@@ -10,7 +10,7 @@
  * theme column behaves like a narrow phone. Engines without container queries
  * use the viewport fallback.
  */
-var CARD_MAX = '68em';
+var CARD_MAX = '70em';
 
 var CARD_RULES = [
 	'.lanspeed-clients-table{display:block;min-width:0;table-layout:auto}',
@@ -102,13 +102,17 @@ return baseclass.extend({
 
 		'@media (max-width:1100px){',
 		'.lanspeed-root .lanspeed-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}',
-		'.lanspeed-root .lanspeed-metric[data-metric="clients"]{border-left:0}',
-		'.lanspeed-root .lanspeed-metric[data-metric="conns"]{border-left:1px solid var(--lanspeed-border)}}',
+		'.lanspeed-root .lanspeed-metric{padding-left:16px}',
+		'.lanspeed-root .lanspeed-metric:nth-child(odd){padding-left:var(--lanspeed-section-x);',
+		'  border-left:0}',
+		'.lanspeed-root .lanspeed-metric:nth-child(even){border-left:1px solid var(--lanspeed-border)}}',
 
 		'@media (max-width:700px){',
 		'.lanspeed-root .lanspeed-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}',
-		'.lanspeed-root .lanspeed-metric[data-metric="clients"]{border-left:0}',
-		'.lanspeed-root .lanspeed-metric[data-metric="conns"]{border-left:1px solid var(--lanspeed-border)}',
+		'.lanspeed-root .lanspeed-metric{padding-left:16px}',
+		'.lanspeed-root .lanspeed-metric:nth-child(odd){padding-left:var(--lanspeed-section-x);',
+		'  border-left:0}',
+		'.lanspeed-root .lanspeed-metric:nth-child(even){border-left:1px solid var(--lanspeed-border)}',
 		'.lanspeed-root .lanspeed-status-bar{flex-wrap:wrap;align-items:flex-start}',
 		'.lanspeed-root .lanspeed-status-title{flex:1 1 100%}',
 		'.lanspeed-root .lanspeed-status-actions{flex:1 1 100%;justify-content:stretch}',
@@ -135,9 +139,17 @@ return baseclass.extend({
 		'.lanspeed-root .lanspeed-ifaces-table tbody td:first-child{grid-column:1/-1}}',
 
 		'@media (max-width:480px){',
-		'.lanspeed-root .lanspeed-stat-hint{white-space:normal;overflow:visible;text-overflow:clip}',
+		/* A one-line hint keeps the four readings on one rhythm; the full text
+		 * stays reachable through the metric title. */
+		'.lanspeed-root .lanspeed-stat-hint{white-space:nowrap;overflow:hidden;',
+		'  text-overflow:ellipsis}',
 		'.lanspeed-root .lanspeed-stat-value{font-size:18px}',
 		'.lanspeed-root .lanspeed-metric{padding:8px 12px}',
-		'.lanspeed-root .lanspeed-status-title h3{font-size:15px}}'
+		'.lanspeed-root .lanspeed-status-title h3{font-size:15px}',
+		/* First screen belongs to the readings and the client list. */
+		'.lanspeed-root .lanspeed-status-version{display:none}',
+		'.lanspeed-root .lanspeed-toolbar-left{flex-wrap:nowrap;gap:8px}',
+		'.lanspeed-root .lanspeed-toolbar-filter{flex:1 1 auto;min-width:0;max-width:none}',
+		'.lanspeed-root .lanspeed-active-only{flex:0 0 auto}}'
 	].join('\n')
 });

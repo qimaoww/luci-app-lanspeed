@@ -6039,7 +6039,7 @@ function assertStatusStyleModule(src) {
 		'.lanspeed-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))',
 		'.lanspeed-metric{display:flex;flex-direction:column',
 		'.lanspeed-toolbar{display:flex;flex-wrap:wrap',
-		'.lanspeed-toolbar-left{display:flex;flex:1 1 20em',
+		'.lanspeed-toolbar-left{display:flex;flex:1 1 20rem',
 		'.lanspeed-toolbar-right{display:flex;flex-wrap:wrap',
 		'.lanspeed-pagination{display:flex;flex-wrap:wrap',
 		'.lanspeed-details>summary{display:flex',
@@ -6053,7 +6053,7 @@ function assertStatusStyleModule(src) {
 	[
 		'.lanspeed-table-scroll{overflow-x:auto',
 		'.lanspeed-clients-table{table-layout:fixed;min-width:',
-		'.lanspeed-clients-table [data-column-key="hostname"]{width:20em}',
+		'.lanspeed-clients-table [data-column-key="hostname"]{width:auto;min-width:15rem}',
 		'.lanspeed-clients-table [data-column-key="mac"]{width:',
 		'.lanspeed-clients-table [data-column-key="rate"]{width:',
 		'.lanspeed-clients-table [data-column-key="totals"]{width:',
@@ -6061,7 +6061,7 @@ function assertStatusStyleModule(src) {
 		'.lanspeed-clients-table [data-column-key="udp_conns"]{width:',
 		'.lanspeed-clients-table [data-column-key="control"]{width:',
 		'.lanspeed-table .num{text-align:right',
-		'.lanspeed-client-count-cell{text-align:center;font-variant-numeric:tabular-nums',
+		'.lanspeed-client-count-cell{text-align:right;font-variant-numeric:tabular-nums',
 		'.lanspeed-clients-table thead th[aria-sort="ascending"]::after'
 	].forEach(function(marker) {
 		if (!baseCss.includes(marker))

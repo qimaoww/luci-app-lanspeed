@@ -613,12 +613,12 @@ function refreshLive(viewState) {
 		setText(refs.mClientsSub, _('正在同步实时采样…'));
 	} else {
 		var nssEv = nssProfile && status.evidence && status.evidence.nss;
-		var subParts = [ _('%d 个活跃').format(totals.active) ];
+		var subParts = [ _('%d 活跃').format(totals.active) ];
 		if (nssEv && typeof nssEv.host_count === 'number' &&
 		    nssEv.host_count > clientsAll.length) {
 			subParts.push(_('NSS 发现 %d 个').format(nssEv.host_count));
 		}
-		subParts.push(_('活跃判定 %d 秒').format(Math.round(activeCfg.activeWindowMs / 1000)));
+		subParts.push(_('%d 秒').format(Math.round(activeCfg.activeWindowMs / 1000)));
 		if (activeCfg.activeMinBps > 1)
 			subParts.push(_('≥ ') + fmt.formatRate(activeCfg.activeMinBps, prefs.unit));
 		setText(refs.mClientsSub, subParts.join(' · '));
