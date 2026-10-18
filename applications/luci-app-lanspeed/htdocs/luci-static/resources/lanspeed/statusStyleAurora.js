@@ -25,7 +25,7 @@ return baseclass.extend({
 		'.lanspeed-theme-aurora .lanspeed-empty{margin-left:0;margin-right:0}',
 		'.lanspeed-theme-aurora .lanspeed-status-error{margin-left:0;margin-right:0}',
 		'.lanspeed-theme-aurora .lanspeed-table :is(th,td){padding:9px 10px}',
-		'.lanspeed-theme-aurora .lanspeed-table thead th{background:var(--lanspeed-surface-sunken)}',
+		'.lanspeed-theme-aurora .lanspeed-table thead th{background:transparent}',
 		'.lanspeed-theme-aurora .lanspeed-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}',
 		'.lanspeed-theme-aurora .lanspeed-page-size{width:5.6em!important;min-width:5.2em;max-width:6.4em;',
 			'padding-right:1.6em}',

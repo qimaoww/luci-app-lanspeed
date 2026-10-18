@@ -213,9 +213,9 @@ function buildShell(viewState) {
 	});
 	var metrics = E('div', { 'class': 'lanspeed-metrics' }, [
 		metric('rx', directionCaption('rx', _('下载')), refs.mRx,
-			E('div', { 'class': 'lanspeed-stat-hint' }, _('客户端接收 · rx'))),
+			E('div', { 'class': 'lanspeed-stat-hint' }, _('客户端接收'))),
 		metric('tx', directionCaption('tx', _('上传')), refs.mTx,
-			E('div', { 'class': 'lanspeed-stat-hint' }, _('客户端发出 · tx'))),
+			E('div', { 'class': 'lanspeed-stat-hint' }, _('客户端发出'))),
 		metric('clients', _('客户端'), refs.mClients, refs.mClientsSub),
 		refs.mConnsWrap
 	]);
@@ -440,16 +440,6 @@ function buildShell(viewState) {
 		'style': 'display:none'
 	}, '-');
 
-	var clientsCard = E('div', { 'class': 'cbi-section lanspeed-clients-card' }, [
-		clientsHeader,
-		E('div', { 'class': 'lanspeed-body' }, [
-			toolbar,
-			E('div', { 'class': 'lanspeed-table-scroll' }, [ refs.clientsTable ]),
-			refs.empty,
-			refs.pageNav
-		])
-	]);
-
 	/* --- Interface throughput: supporting evidence, collapsed by default with
 	 * its LAN summary still visible on the summary line. */
 	refs.ifacesSummary = E('span', { 'class': 'lanspeed-ifaces-summary' }, '');
@@ -481,7 +471,20 @@ function buildShell(viewState) {
 	refs.ifacesDetails.addEventListener('toggle', function() {
 		writeFlag(IFACES_OPEN_KEY, !!refs.ifacesDetails.open);
 	});
-	var ifacesCard = E('div', { 'class': 'cbi-section lanspeed-ifaces-card' }, [ refs.ifacesDetails ]);
+	/* Interface throughput lives inside the client card: it is supporting
+	 * evidence for the rates above, not a page of its own. */
+	refs.ifacesBlock = E('div', { 'class': 'lanspeed-ifaces-block' }, [ refs.ifacesDetails ]);
+
+	var clientsCard = E('div', { 'class': 'cbi-section lanspeed-clients-card' }, [
+		clientsHeader,
+		E('div', { 'class': 'lanspeed-body' }, [
+			toolbar,
+			E('div', { 'class': 'lanspeed-table-scroll' }, [ refs.clientsTable ]),
+			refs.empty,
+			refs.pageNav,
+			refs.ifacesBlock
+		])
+	]);
 
 	var root = E('div', {
 		'class': 'cbi-map lanspeed-root lanspeed-status-root',
@@ -490,8 +493,7 @@ function buildShell(viewState) {
 	}, [
 		E('style', {}, statusStyle.CSS),
 		statsCard,
-		clientsCard,
-		ifacesCard
+		clientsCard
 	]);
 
 	refs.root = root;

@@ -708,17 +708,17 @@ function refreshLive(viewState) {
 	var interfacesRpc = viewState.rpc && viewState.rpc.interfaces;
 	if (!ifaces.length) {
 		if (interfacesRpc && interfacesRpc.ok === false) {
-			refs.ifacesDetails.parentNode.style.display = '';
+			refs.ifacesBlock.style.display = '';
 			fmt.replaceChildren(refs.ifacesBody, []);
 			setText(refs.ifacesSummary, interfacesRpc.retained ? _('上次结果为空') : _('接口数据不可用'));
 			refs.ifacesHint.textContent = interfacesRpc.retained
 				? _('接口请求失败；上次成功结果中没有接口采样。')
 				: _('无法读取接口吞吐，请检查服务状态后重试。');
 		} else {
-			refs.ifacesDetails.parentNode.style.display = 'none';
+			refs.ifacesBlock.style.display = 'none';
 		}
 	} else {
-		refs.ifacesDetails.parentNode.style.display = '';
+		refs.ifacesBlock.style.display = '';
 		var clientSumByIf = {};
 		clientsAll.forEach(function(c) {
 			var k = c.interface || '-';

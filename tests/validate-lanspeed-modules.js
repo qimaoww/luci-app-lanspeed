@@ -6039,7 +6039,7 @@ function assertStatusStyleModule(src) {
 		'.lanspeed-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))',
 		'.lanspeed-metric{display:flex;flex-direction:column',
 		'.lanspeed-toolbar{display:flex;flex-wrap:wrap',
-		'.lanspeed-toolbar-left{display:flex;flex:1 1 18em',
+		'.lanspeed-toolbar-left{display:flex;flex:1 1 20em',
 		'.lanspeed-toolbar-right{display:flex;flex-wrap:wrap',
 		'.lanspeed-pagination{display:flex;flex-wrap:wrap',
 		'.lanspeed-details>summary{display:flex',
@@ -6053,7 +6053,7 @@ function assertStatusStyleModule(src) {
 	[
 		'.lanspeed-table-scroll{overflow-x:auto',
 		'.lanspeed-clients-table{table-layout:fixed;min-width:',
-		'.lanspeed-clients-table [data-column-key="hostname"]{width:auto}',
+		'.lanspeed-clients-table [data-column-key="hostname"]{width:20em}',
 		'.lanspeed-clients-table [data-column-key="mac"]{width:',
 		'.lanspeed-clients-table [data-column-key="rate"]{width:',
 		'.lanspeed-clients-table [data-column-key="totals"]{width:',
@@ -6061,7 +6061,7 @@ function assertStatusStyleModule(src) {
 		'.lanspeed-clients-table [data-column-key="udp_conns"]{width:',
 		'.lanspeed-clients-table [data-column-key="control"]{width:',
 		'.lanspeed-table .num{text-align:right',
-		'.lanspeed-client-count-cell{text-align:right;font-variant-numeric:tabular-nums',
+		'.lanspeed-client-count-cell{text-align:center;font-variant-numeric:tabular-nums',
 		'.lanspeed-clients-table thead th[aria-sort="ascending"]::after'
 	].forEach(function(marker) {
 		if (!baseCss.includes(marker))
@@ -6077,7 +6077,7 @@ function assertStatusStyleModule(src) {
 	/* State cues stay on semantic tokens so each theme can re-map them. */
 	if (!baseCss.includes('.lanspeed-live-state[data-state="live"]::before{background:var(--lanspeed-normal)}') ||
 	    !baseCss.includes('.lanspeed-live-state[data-state="bad"]::before{background:var(--lanspeed-danger)}') ||
-	    !baseCss.includes('.lanspeed-client-traffic-line[data-direction="rx"] .lanspeed-client-direction{'))
+	    !baseCss.includes('.lanspeed-client-direction{font-size:'))
 		fail('statusStyleBase.js must keep live-state and direction cues on semantic tokens');
 
 	if (/position\s*:\s*sticky/.test(responsiveCss) || /position\s*:\s*sticky/.test(baseCss))
@@ -6099,9 +6099,10 @@ function assertStatusStyleModule(src) {
 		'.lanspeed-clients-table tbody>tr{display:grid',
 		'.lanspeed-clients-table thead{display:none}',
 		'.lanspeed-clients-table td[data-label]::before{content:attr(data-label)',
-		'.lanspeed-clients-table .lanspeed-connection-link,',
-		'.lanspeed-clients-table .lanspeed-client-vendor{white-space:normal;overflow-wrap:anywhere}',
-		'.lanspeed-ifaces-table tbody>tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))'
+		'.lanspeed-root .lanspeed-clients-table .lanspeed-client-mac-value,',
+		'.lanspeed-root .lanspeed-clients-table .lanspeed-client-vendor{display:inline;margin:0;',
+		'.lanspeed-root .lanspeed-ifaces-table tbody>tr{display:grid;',
+		'  grid-template-columns:minmax(0,1fr) minmax(0,1fr)'
 	].forEach(function(marker) {
 		if (!responsiveCss.includes(marker))
 			fail(`statusStyleResponsive.js must retain responsive status behavior: ${marker}`);
@@ -6160,7 +6161,7 @@ function assertStatusShellModule(src) {
 		fail('lanspeed/statusShell.js must remove the obsolete capability, metadata, and standalone NSS diagnostics');
 	}
 	if (!src.includes('接口吞吐') || !src.includes('refs.ifacesDetails') ||
-	    !src.includes('refs.ifacesBody') || !src.includes('ifacesCard')) {
+	    !src.includes('refs.ifacesBody') || !src.includes('refs.ifacesBlock')) {
 		fail('lanspeed/statusShell.js must preserve the interface throughput details');
 	}
 	if (src.includes('当前网速覆盖') || src.includes('refs.mCoverage'))

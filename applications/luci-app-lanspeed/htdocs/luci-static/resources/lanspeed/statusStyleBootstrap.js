@@ -30,7 +30,7 @@ return baseclass.extend({
 		'.lanspeed-theme-bootstrap .lanspeed-details-body{padding-left:0;padding-right:0}',
 		'.lanspeed-theme-bootstrap .lanspeed-empty{margin-left:0;margin-right:0}',
 		'.lanspeed-theme-bootstrap .lanspeed-table :is(th,td){padding:6px 8px}',
-		'.lanspeed-theme-bootstrap .lanspeed-table thead th{background:var(--lanspeed-surface-muted)}',
+		'.lanspeed-theme-bootstrap .lanspeed-table thead th{background:transparent}',
 		'.lanspeed-theme-bootstrap .lanspeed-table tbody tr:nth-child(even){',
 			'background:var(--lanspeed-surface-muted)}',
 		'@media (max-width:800px){',

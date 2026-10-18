@@ -1311,7 +1311,7 @@ async page => {
 				if (config.viewport.name === 'mobile') {
 					/* Interface throughput is collapsed evidence by design; open it
 					 * before measuring the labelled mobile rows. */
-					const ifaceDetails = root.locator('.lanspeed-ifaces-card details').first();
+					const ifaceDetails = root.locator('.lanspeed-ifaces-block details').first();
 					if (await ifaceDetails.count() && await ifaceDetails.getAttribute('open') === null) {
 						await ifaceDetails.locator('summary').first().click();
 						await page.waitForTimeout(260);
