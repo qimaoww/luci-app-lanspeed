@@ -251,6 +251,20 @@ function clientNameContent(c, displayName, ips) {
 	];
 }
 
+function valueParts(value) {
+	var match = /^([\d.,]+)(\s*.+)$/.exec(value || '');
+	return match ? { number: match[1], unit: match[2] } : null;
+}
+
+function valueContent(value, className) {
+	var parts = valueParts(value);
+	if (!parts) return value;
+	return [
+		E('span', { 'class': 'lanspeed-value-number' }, parts.number),
+		E('span', { 'class': 'lanspeed-value-unit' }, parts.unit)
+	];
+}
+
 function trafficLine(direction, value, total) {
 	var download = direction === 'rx';
 	var label = total ? (download ? _('累计下载') : _('累计上传'))
@@ -263,7 +277,8 @@ function trafficLine(direction, value, total) {
 	}, [
 		E('span', { 'class': 'lanspeed-client-direction', 'aria-hidden': 'true' }, download ? '↓' : '↑'),
 		E('span', { 'class': 'lanspeed-client-direction-label' }, label + (unavailable ? ' ' + _('暂不可用') : '') + ' '),
-		E('span', { 'class': total ? 'lanspeed-client-total' : 'lanspeed-client-rate' }, value)
+		E('span', { 'class': total ? 'lanspeed-client-total' : 'lanspeed-client-rate' },
+			valueContent(value))
 	]);
 }
 

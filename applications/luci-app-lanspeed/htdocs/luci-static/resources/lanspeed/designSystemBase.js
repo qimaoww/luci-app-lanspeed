@@ -38,7 +38,7 @@ var BASE_CSS = [
 		'--lanspeed-action-text:var(--lanspeed-accent-contrast);',
 		'--lanspeed-action-hover-text:var(--lanspeed-action-text);',
 		'--lanspeed-action-border:var(--lanspeed-accent);',
-		'--lanspeed-hover:transparent;--lanspeed-control-bg:transparent;',
+		'--lanspeed-hover:transparent;--lanspeed-control-bg:var(--lanspeed-surface-sunken);',
 		'--lanspeed-control-border:currentColor;--lanspeed-normal:var(--lanspeed-accent);',
 		'--lanspeed-normal-soft:var(--lanspeed-accent-soft);--lanspeed-normal-border:var(--lanspeed-accent);',
 		'--lanspeed-normal-text:var(--lanspeed-text);',

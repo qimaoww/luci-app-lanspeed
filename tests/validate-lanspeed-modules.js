@@ -6062,7 +6062,7 @@ function assertStatusStyleModule(src) {
 	[
 		'.lanspeed-table-scroll{overflow-x:auto',
 		'.lanspeed-clients-table{table-layout:fixed;min-width:',
-		'.lanspeed-clients-table [data-column-key="hostname"]{width:auto;min-width:15rem}',
+		'.lanspeed-clients-table [data-column-key="hostname"]{width:auto;min-width:13rem}',
 		'.lanspeed-clients-table [data-column-key="mac"]{width:',
 		'.lanspeed-clients-table [data-column-key="rate"]{width:',
 		'.lanspeed-clients-table [data-column-key="totals"]{width:',

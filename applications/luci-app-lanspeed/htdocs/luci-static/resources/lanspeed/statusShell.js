@@ -415,7 +415,7 @@ function buildShell(viewState) {
 	}, [
 		E('thead', {}, E('tr', {}, [
 			clientHeader(refs, 'hostname', _('客户端')),
-			clientHeader(refs, 'mac', _('MAC / OUI 厂商'), {
+			clientHeader(refs, 'mac', _('MAC / 厂商'), {
 				'title': _('厂商按 MAC 前缀（OUI）在浏览器本地匹配，表示地址注册机构，可能是网卡或模块厂商')
 			}),
 			clientHeader(refs, 'rate', _('网速'), { 'class': 'num lanspeed-client-rate-header' }),
