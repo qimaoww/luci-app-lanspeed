@@ -166,8 +166,24 @@ var BASE_CSS = [
 	'.lanspeed-client-mac-value{display:block;font-family:' + MONO + ';font-size:11.5px;',
 		'line-height:1.5;color:var(--lanspeed-text-muted);overflow:hidden;text-overflow:ellipsis;',
 		'white-space:nowrap}',
-	'.lanspeed-client-vendor{display:block;margin-top:1px;font-size:11px;line-height:1.35;',
-		'color:var(--lanspeed-text-subtle);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+	'.lanspeed-client-vendor{display:flex;align-items:center;gap:6px;margin-top:2px;',
+		'font-size:11px;line-height:1.35;color:var(--lanspeed-text-subtle);min-width:0}',
+	'.lanspeed-client-vendor-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+	/* Square mark in front of an organisation name: brand glyph, letter fallback.
+	 * The chip tints itself from the brand colour and mixes it back towards the
+	 * theme text colour so the glyph stays legible in both light and dark UIs. */
+	'.lanspeed-vendor-logo{display:inline-flex;flex:0 0 auto;align-items:center;justify-content:center;',
+		'width:18px;height:18px;border-radius:5px;overflow:hidden;',
+		'background:color-mix(in srgb,var(--vendor-brand,var(--lanspeed-text-subtle)) 14%,transparent);',
+		'box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--vendor-brand,var(--lanspeed-text-subtle)) 24%,transparent);',
+		'color:color-mix(in srgb,var(--vendor-brand,var(--lanspeed-text-subtle)) 68%,var(--lanspeed-text))}',
+	'.lanspeed-vendor-logo svg{display:block;width:13px;height:13px;fill:currentColor}',
+	/* Near-black marks have no tint of their own; they follow the theme text. */
+	'.lanspeed-vendor-logo[data-vendor-tone="mono"]{background:var(--lanspeed-surface-muted);',
+		'color:var(--lanspeed-text);box-shadow:inset 0 0 0 1px var(--lanspeed-border)}',
+	'.lanspeed-vendor-logo[data-vendor-tone="ink"]{color:color-mix(in srgb,',
+		'var(--vendor-brand,var(--lanspeed-text-subtle)) 46%,var(--lanspeed-text))}',
+	'.lanspeed-vendor-logo--text{font-size:10px;font-weight:700;line-height:1;letter-spacing:0}',
 	'.lanspeed-client-vendor[data-vendor-state="local"],',
 	'.lanspeed-client-vendor[data-vendor-state="unknown"],',
 	'.lanspeed-client-vendor[data-vendor-state="loading"],',

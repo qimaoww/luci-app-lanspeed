@@ -237,7 +237,8 @@ const MODULE_REQUIRES = {
 	'clientDetailRefresh.js': [
 		'baseclass',
 		'lanspeed.format',
-		'lanspeed.clientConnections'
+		'lanspeed.clientConnections',
+		'lanspeed.vendorLogo'
 	],
 	'clientDetailShell.js': [
 		'baseclass',
@@ -369,7 +370,8 @@ const MODULE_REQUIRES = {
 		'lanspeed.version',
 		'lanspeed.statusIp',
 		'lanspeed.statusCollector',
-		'lanspeed.statusRateMeta'
+		'lanspeed.statusRateMeta',
+		'lanspeed.vendorLogo'
 	],
 	'configStyle.js': [
 		'baseclass',
@@ -2186,12 +2188,15 @@ function loadStatusRefreshModule(src, fakeWindow) {
 		[ 'baseclass', 'E', '_' ])(fakeBaseclass, fakeElement, fakeTranslate);
 	return vm.compileFunction(src,
 		[ 'baseclass', 'fmt', 'clientConnections', 'clientControl', 'lsVersion',
-		  'statusIp', 'statusCollector', 'statusRateMeta', 'E', '_', 'window', 'document' ],
+		  'statusIp', 'statusCollector', 'statusRateMeta', 'vendorLogo', 'E', '_',
+		  'window', 'document' ],
 		{ filename: 'resources/lanspeed/statusRefresh.js' })(
 			fakeBaseclass, {},
 			loadClientConnectionsModule(readModuleByName('clientConnections.js')),
 			{ cell: function() { return fakeElement('td'); } },
-			{ FULL_VERSION: 'test' }, {}, {}, rateMeta, fakeElement, fakeTranslate,
+			{ FULL_VERSION: 'test' }, {}, {}, rateMeta,
+			{ logo: function() { return fakeElement('span', { class: 'lanspeed-vendor-logo' }); } },
+			fakeElement, fakeTranslate,
 			fakeWindow || { location: { pathname: '/admin/status/lanspeed/overview' } }, fakeDocument
 		);
 }
@@ -3252,11 +3257,12 @@ function assertClientDetailIntegratedState(viewSrc) {
 function loadClientDetailRefreshModule(src, fakeDate) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	return vm.compileFunction(src, [
-		'baseclass', 'fmt', 'clientConnections', 'E', '_', 'Date', 'document'
+		'baseclass', 'fmt', 'clientConnections', 'vendorLogo', 'E', '_', 'Date', 'document'
 	], { filename: 'resources/lanspeed/clientDetailRefresh.js' })(
 		fakeBaseclass,
 		loadFormatModule(readModuleByName('format.js')),
 		loadClientConnectionsModule(readModuleByName('clientConnections.js')),
+		{ logo: function() { return fakeElement('span', { class: 'lanspeed-vendor-logo' }); } },
 		fakeElement,
 		fakeTranslate,
 		fakeDate || Date,
@@ -3277,9 +3283,9 @@ function buildClientDetailShellForRefresh(viewState) {
 
 function assertClientDetailRefreshSource(src) {
 	if (JSON.stringify(moduleRequireNames(src)) !== JSON.stringify([
-		'baseclass', 'lanspeed.format', 'lanspeed.clientConnections'
+		'baseclass', 'lanspeed.format', 'lanspeed.clientConnections', 'lanspeed.vendorLogo'
 	])) {
-		fail('clientDetailRefresh.js must require only baseclass, format and pure client connection helpers in dependency order');
+		fail('clientDetailRefresh.js must require only baseclass, format, pure client connection helpers and the offline vendor marks in dependency order');
 	}
 	const cleaned = stripComments(src);
 	if (/\brpc\b|set(?:Timeout|Interval)|clear(?:Timeout|Interval)|\bwindow\b|\blocation\s*\.\s*(?:href|assign|pathname|search)|innerHTML|\bCSS\b|clientDetailStyle/.test(cleaned)) {
@@ -3398,9 +3404,12 @@ function assertClientDetailRefreshBehavior(src) {
 	refresh.render(state);
 	const vendorFact = findFakeElementsByClass(refs.clientMeta, 'lanspeed-connection-meta-fact')
 		.find(function(fact) { return fakeElementText(fact).includes('设备厂商'); });
+	const vendorValue = vendorFact && vendorFact.children[1];
+	const vendorName = vendorValue && findFakeElementsByClass(vendorValue, 'lanspeed-client-vendor-name')[0];
 	if (!vendorFact || fakeElementText(vendorFact) !== '设备厂商<img src=x onerror=alert(1)>' ||
-	    !vendorFact.children[1].children.includes('<img src=x onerror=alert(1)>'))
-		fail('client detail must display vendor names as text, including labels containing HTML');
+	    !vendorName || !vendorName.children.includes('<img src=x onerror=alert(1)>') ||
+	    findFakeElementsByClass(vendorValue, 'lanspeed-vendor-logo').length !== 1)
+		fail('client detail must display the vendor mark plus the vendor name as text, including labels containing HTML');
 	delete state.vendorLookup;
 	threeDigitResponse.client.tx_bps = 123456789;
 	threeDigitResponse.client.rx_bps = 987654321;

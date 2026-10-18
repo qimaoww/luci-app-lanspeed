@@ -1037,7 +1037,7 @@ function loadShellAndRefresh(context, fmt) {
 	);
 	const refresh = vm.compileFunction(readModule('statusRefresh.js'), [
 		'baseclass', 'vocab', 'fmt', 'clientConnections', 'clientControl', 'lsVersion',
-		'statusIp', 'statusCollector', 'statusRateMeta', 'E', '_', 'window'
+		'statusIp', 'statusCollector', 'statusRateMeta', 'vendorLogo', 'E', '_', 'window'
 	], { filename: 'resources/lanspeed/statusRefresh.js', parsingContext: context })(
 		baseclass,
 		{
@@ -1061,6 +1061,7 @@ function loadShellAndRefresh(context, fmt) {
 				return mode === 'fast_routed_internet' ? 'FastN+FastS routed Internet' : 'BPF';
 			}
 		}, rateMeta,
+		{ logo: function() { return fakeElement('span', { class: 'lanspeed-vendor-logo' }); } },
 		fakeElement,
 		translate,
 		context.window

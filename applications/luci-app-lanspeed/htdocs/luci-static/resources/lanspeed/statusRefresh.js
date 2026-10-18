@@ -7,6 +7,7 @@
 'require lanspeed.statusIp as statusIp';
 'require lanspeed.statusCollector as statusCollector';
 'require lanspeed.statusRateMeta as statusRateMeta';
+'require lanspeed.vendorLogo as vendorLogo';
 
 var ERROR_NOTICE_MS = 3000;
 
@@ -294,7 +295,10 @@ function clientMacCell(c, vendor) {
 			'data-vendor-state': vendor.kind
 		};
 		if (vendor.stale) attrs['data-vendor-stale'] = 'true';
-		content.push(E('span', attrs, vendor.label));
+		content.push(E('span', attrs, [
+			vendorLogo.logo(vendor.vendor || vendor.label, vendor.kind),
+			E('span', { 'class': 'lanspeed-client-vendor-name' }, vendor.label)
+		]));
 	}
 	return E('td', { 'class': 'lanspeed-client-mac', 'data-label': _('MAC / 厂商') }, content);
 }

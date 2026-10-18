@@ -140,6 +140,7 @@ const luciResources = [
   'format.js',
   'geoLocation.js',
   'macVendor.js',
+  'vendorLogo.js',
   'ifaceConfig.js',
   'rpc.js',
   'statusCollector.js',
@@ -174,7 +175,8 @@ const clientDetailResources = [
   'clientDetailRefresh.js',
   'clientDetailView.js',
   'geoLocation.js',
-  'macVendor.js'
+  'macVendor.js',
+  'vendorLogo.js'
 ];
 const clientConnectionsConntrackSemantics =
   'TCP 仅统计 ESTABLISHED + ASSURED，UDP 仅统计 ASSURED';
@@ -1136,7 +1138,7 @@ try {
     'LuCI package must install the NSS menu entry only when NSS support is enabled');
 
 	const installedClientDetailResources = installedResources.filter((name) =>
-		/^(?:clientConnections|dhcpHostnames|clientDetail|geoLocation|macVendor)/.test(name));
+		/^(?:clientConnections|dhcpHostnames|clientDetail|geoLocation|macVendor|vendorLogo)/.test(name));
   assertExactNames(installedClientDetailResources, clientDetailResources,
     'LuCI package must install exactly the active client detail resources');
 

@@ -2,6 +2,7 @@
 'require baseclass';
 'require lanspeed.format as fmt';
 'require lanspeed.clientConnections as clientConnections';
+'require lanspeed.vendorLogo as vendorLogo';
 
 var CONNECTION_PAGE_SIZE = 100;
 var LAZY_DETAIL_THRESHOLD = 32;
@@ -322,10 +323,15 @@ function metaFact(label, value, attrs) {
 /* Same vocabulary, state attribute and stale marker as the realtime client
  * list, so both pages describe an OUI match identically. */
 function vendorFact(vendor) {
-	var attrs = { 'title': vendor.title || vendor.label };
+	var attrs = { 'title': vendor.title || vendor.label,
+		'class': 'lanspeed-connection-meta-fact lanspeed-connection-meta-fact--vendor' };
 	if (vendor.kind) attrs['data-vendor-state'] = vendor.kind;
 	if (vendor.stale) attrs['data-vendor-stale'] = 'true';
-	return metaFact(_('设备厂商'), vendor.stale ? vendor.label + ' *' : vendor.label, attrs);
+	return metaFact(_('设备厂商'), [
+		vendorLogo.logo(vendor.vendor || vendor.label, vendor.kind),
+		E('span', { 'class': 'lanspeed-client-vendor-name' },
+			vendor.stale ? vendor.label + ' *' : vendor.label)
+	], attrs);
 }
 
 function renderClientMeta(ref, client, ips, identityKey, vendorLookup) {
