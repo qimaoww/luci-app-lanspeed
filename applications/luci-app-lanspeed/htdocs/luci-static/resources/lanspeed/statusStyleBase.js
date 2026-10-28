@@ -37,6 +37,7 @@ var BASE_CSS = [
 	'.lanspeed-root .lanspeed-header>.lanspeed-spacer{flex:1 1 auto}',
 	'.lanspeed-spacer{flex:1 1 auto}',
 	'.lanspeed-status-title{display:flex;flex-wrap:wrap;align-items:center;gap:4px 9px;min-width:0}',
+	'.lanspeed-root .lanspeed-stats-card .lanspeed-status-title{align-self:flex-start}',
 	'.lanspeed-status-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}',
 	'.lanspeed-control-label{font-size:11.5px;color:var(--lanspeed-text-muted);white-space:nowrap}',
 	'.lanspeed-refresh-control{display:inline-flex;align-items:center;gap:5px}',
