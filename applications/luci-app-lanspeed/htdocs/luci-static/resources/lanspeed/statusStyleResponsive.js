@@ -47,6 +47,7 @@ var CARD_RULES = [
 	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-udp-cell{grid-area:4/3/5/5}',
 	'.lanspeed-root .lanspeed-clients-table .lanspeed-client-traffic-stack{gap:0;max-width:none;',
 	'  justify-items:stretch}',
+	'.lanspeed-root .lanspeed-clients-table .lanspeed-client-traffic-line{justify-content:flex-start}',
 	'.lanspeed-root .lanspeed-clients-table .lanspeed-client-rate,',
 	'.lanspeed-root .lanspeed-clients-table .lanspeed-client-total{text-align:left;font-size:12px}',
 	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-count-cell{text-align:left;font-size:13px}',
