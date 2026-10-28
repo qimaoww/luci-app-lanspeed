@@ -6,7 +6,7 @@
  *
  * The client list stays a fixed-track table only while its own card is wide
  * enough to show every column; below that each row becomes a card. The switch
- * follows the card width (container query), so a LuCI sidebar or a narrow
+ * follows the card width (a container query), so a LuCI sidebar or a narrow
  * theme column behaves like a narrow phone. Engines without container queries
  * use the viewport fallback.
  */
@@ -20,14 +20,14 @@ var CARD_RULES = [
 	 * then a two-by-two block of readings so nothing is ever truncated. */
 	'.lanspeed-root .lanspeed-clients-table tbody>tr{display:grid;line-height:1.4;',
 	'  grid-template-columns:repeat(4,minmax(0,1fr));',
-	'  column-gap:12px;row-gap:9px;padding:12px 14px;',
+	'  column-gap:12px;row-gap:8px;padding:10px 12px;',
 	'  border-bottom:1px solid var(--lanspeed-border)}',
 	'.lanspeed-clients-table tbody>tr:last-child{border-bottom:0}',
 	'.lanspeed-root .lanspeed-clients-table tbody td{display:block;min-width:0;padding:0;border:0;',
 	'  text-align:left;white-space:normal;overflow-wrap:anywhere}',
 	'.lanspeed-root .lanspeed-clients-table tbody td.num{text-align:left}',
 	'.lanspeed-root .lanspeed-clients-table td[data-label]::before{content:attr(data-label);display:block;',
-	'  margin-bottom:2px;font-size:10px;font-weight:600;letter-spacing:.04em;',
+	'  margin-bottom:1px;font-size:10px;font-weight:600;letter-spacing:.04em;',
 	'  color:var(--lanspeed-text-subtle)}',
 	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-name{grid-area:1/1/2/3}',
 	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-control{grid-area:1/3/2/5;justify-self:end;',
@@ -45,18 +45,18 @@ var CARD_RULES = [
 	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-total-cell{grid-area:3/3/4/5}',
 	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-tcp-cell{grid-area:4/1/5/3}',
 	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-udp-cell{grid-area:4/3/5/5}',
-	'.lanspeed-root .lanspeed-clients-table .lanspeed-client-traffic-stack{gap:1px;max-width:none;',
+	'.lanspeed-root .lanspeed-clients-table .lanspeed-client-traffic-stack{gap:0;max-width:none;',
 	'  justify-items:stretch}',
 	'.lanspeed-root .lanspeed-clients-table .lanspeed-client-rate,',
 	'.lanspeed-root .lanspeed-clients-table .lanspeed-client-total{text-align:left;font-size:12px}',
 	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-count-cell{text-align:left;font-size:13px}',
-	'.lanspeed-root .lanspeed-clients-table .lanspeed-control-actions{flex-wrap:nowrap;gap:12px;',
+	'.lanspeed-root .lanspeed-clients-table .lanspeed-control-actions{flex-wrap:nowrap;gap:10px;',
 	'  justify-content:flex-end}',
 	'.lanspeed-root .lanspeed-clients-table .lanspeed-control-button{font-size:12px}'
 ].join('\n');
 
 var NARROW_RULES = [
-	'.lanspeed-root .lanspeed-clients-table tbody>tr{padding:11px 12px;row-gap:8px}',
+	'.lanspeed-root .lanspeed-clients-table tbody>tr{padding:9px 12px;row-gap:7px}',
 	'.lanspeed-root .lanspeed-clients-table .lanspeed-client-rate,',
 	'.lanspeed-root .lanspeed-clients-table .lanspeed-client-total{font-size:11.5px}'
 ].join('\n');
@@ -74,21 +74,20 @@ return baseclass.extend({
 	'.lanspeed-root .lanspeed-toolbar{flex-direction:column;align-items:stretch;gap:8px}',
 	'.lanspeed-root .lanspeed-toolbar-left{flex:0 0 auto;width:100%;flex-wrap:wrap;gap:8px}',
 	'.lanspeed-root .lanspeed-toolbar-right{flex:0 0 auto;width:100%;display:grid;',
-	'  grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}',
+	'  grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:8px}',
 	'.lanspeed-root .lanspeed-toolbar-filter{flex:1 1 auto;min-width:0}',
-	'.lanspeed-root .lanspeed-toolbar-input{max-width:none;width:100%;min-width:0}',
+	'.lanspeed-root .lanspeed-toolbar-left input[type="search"]{max-width:none;width:100%;min-width:0}',
 	'.lanspeed-root .lanspeed-toolbar-right>label{display:flex;align-items:center;',
 	'  justify-content:space-between;gap:8px;min-width:0;margin:0}',
-	'.lanspeed-root .lanspeed-sort-control{grid-column:1/-1;order:1}',
-	'.lanspeed-root .lanspeed-refresh-control{order:2}',
-	'.lanspeed-root .lanspeed-unit-control{order:3}',
+	'.lanspeed-root .lanspeed-sort-control{grid-column:1;order:1}',
+	'.lanspeed-root .lanspeed-unit-control{grid-column:2;order:2}',
 	'.lanspeed-root .lanspeed-toolbar-right select{flex:1 1 auto;width:auto;min-width:0;',
 	'  max-width:none}}',
 
 	/* Theme-scoped card tweaks: Aurora keeps its generous padding, Argon drops
 	 * its row stripe inside cards, Bootstrap strengthens the card border. */
 	'@container lanspeed-clients (max-width:' + CARD_MAX + '){',
-	'.lanspeed-theme-aurora .lanspeed-clients-table tbody>tr{padding:14px 16px}',
+	'.lanspeed-theme-aurora .lanspeed-clients-table tbody>tr{padding:12px 14px}',
 	'.lanspeed-theme-argon .lanspeed-clients-table tbody>tr:nth-child(even){background:transparent}',
 	'.lanspeed-theme-bootstrap .lanspeed-clients-table tbody>tr{border-bottom-color:var(--lanspeed-border-strong)}}',
 
@@ -102,14 +101,14 @@ return baseclass.extend({
 
 		'@media (max-width:1100px){',
 		'.lanspeed-root .lanspeed-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}',
-		'.lanspeed-root .lanspeed-metric{padding-left:16px}',
+		'.lanspeed-root .lanspeed-metric{padding-left:14px}',
 		'.lanspeed-root .lanspeed-metric:nth-child(odd){padding-left:var(--lanspeed-section-x);',
 		'  border-left:0}',
 		'.lanspeed-root .lanspeed-metric:nth-child(even){border-left:1px solid var(--lanspeed-border)}}',
 
 		'@media (max-width:700px){',
 		'.lanspeed-root .lanspeed-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}',
-		'.lanspeed-root .lanspeed-metric{padding-left:16px}',
+		'.lanspeed-root .lanspeed-metric{padding-left:12px}',
 		'.lanspeed-root .lanspeed-metric:nth-child(odd){padding-left:var(--lanspeed-section-x);',
 		'  border-left:0}',
 		'.lanspeed-root .lanspeed-metric:nth-child(even){border-left:1px solid var(--lanspeed-border)}',
@@ -122,14 +121,13 @@ return baseclass.extend({
 		'.lanspeed-root .lanspeed-clients-card>.lanspeed-body{overflow-x:hidden}',
 		'.lanspeed-root .lanspeed-toolbar-left{flex-wrap:wrap;gap:8px}',
 		'.lanspeed-root .lanspeed-toolbar-right{flex:1 1 100%;display:grid;',
-		'  grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}',
+		'  grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:8px}',
 		'.lanspeed-root .lanspeed-toolbar-filter{flex:1 1 auto;min-width:0}',
-		'.lanspeed-root .lanspeed-toolbar-input{max-width:none;width:100%;min-width:0}',
+		'.lanspeed-root .lanspeed-toolbar-left input[type="search"]{max-width:none;width:100%;min-width:0}',
 		'.lanspeed-root .lanspeed-toolbar-right>label{display:flex;align-items:center;',
 		'  justify-content:space-between;gap:8px;min-width:0;margin:0}',
-		'.lanspeed-root .lanspeed-sort-control{grid-column:1/-1;order:1}',
-		'.lanspeed-root .lanspeed-refresh-control{order:2}',
-		'.lanspeed-root .lanspeed-unit-control{order:3}',
+		'.lanspeed-root .lanspeed-sort-control{grid-column:1;order:1}',
+		'.lanspeed-root .lanspeed-unit-control{grid-column:2;order:2}',
 		'.lanspeed-root .lanspeed-toolbar-right select{flex:1 1 auto;width:auto;min-width:0;max-width:none}',
 		'.lanspeed-root .lanspeed-pagination{flex-wrap:wrap;gap:8px}',
 		'.lanspeed-root .lanspeed-page-actions{margin-left:auto}',
@@ -143,13 +141,19 @@ return baseclass.extend({
 		 * stays reachable through the metric title. */
 		'.lanspeed-root .lanspeed-stat-hint{white-space:nowrap;overflow:hidden;',
 		'  text-overflow:ellipsis}',
-		'.lanspeed-root .lanspeed-stat-value{font-size:18px}',
-		'.lanspeed-root .lanspeed-metric{padding:8px 12px}',
-		'.lanspeed-root .lanspeed-status-title h3{font-size:15px}',
+		'.lanspeed-root .lanspeed-stat-value{font-size:17px}',
+		'.lanspeed-root .lanspeed-metric{padding:6px 10px}',
+		'.lanspeed-root .lanspeed-metric:nth-child(odd){padding-left:var(--lanspeed-section-x)}',
+		'.lanspeed-root .lanspeed-status-title h3{font-size:16px}',
 		/* First screen belongs to the readings and the client list. */
 		'.lanspeed-root .lanspeed-status-version{display:none}',
+		'.lanspeed-root .lanspeed-status-actions .lanspeed-refresh-control{flex:0 0 auto}',
+		'.lanspeed-root .lanspeed-status-actions .lanspeed-refresh-select{width:4.5rem}',
 		'.lanspeed-root .lanspeed-toolbar-left{flex-wrap:nowrap;gap:8px}',
 		'.lanspeed-root .lanspeed-toolbar-filter{flex:1 1 auto;min-width:0;max-width:none}',
-		'.lanspeed-root .lanspeed-active-only{flex:0 0 auto}}'
+		'.lanspeed-root .lanspeed-active-only{flex:0 0 auto}',
+		/* The selects carry aria-labels; hiding the visible labels gives the
+		 * longer sort wording room without another toolbar row. */
+		'.lanspeed-root .lanspeed-toolbar-right .lanspeed-control-label{display:none}}'
 	].join('\n')
 });

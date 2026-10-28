@@ -1245,16 +1245,19 @@ function testPaginationAndUiStates(context, fmt) {
 	state.refreshLive();
 	const toolbarRight = findByClass(built.root, 'lanspeed-toolbar-right');
 	const statusActions = findByClass(built.root, 'lanspeed-status-actions');
-	assert.strictEqual(toolbarRight.children[0].children[1], state.refs.intervalSel,
-		'the refresh cadence control opens the display preference group');
-	assert.strictEqual(toolbarRight.children[1].children[1], state.refs.sortSelect,
-		'ordering sits next to the refresh cadence control');
-	assert.strictEqual(toolbarRight.children[2].children[1], state.refs.unitSel);
-	assert.ok(String(toolbarRight.children[0].attrs.class || '').includes('lanspeed-refresh-control'));
-	assert.strictEqual(statusActions.children[0], state.refs.btnPause);
-	assert.strictEqual(statusActions.children[1], state.refs.btnRefresh);
-	assert.strictEqual(statusActions.children.length, 2,
-		'the status bar keeps only the page-level refresh actions');
+	assert.strictEqual(toolbarRight.children[0].children[1], state.refs.sortSelect,
+		'ordering opens the client display preference group');
+	assert.strictEqual(toolbarRight.children[1].children[1], state.refs.unitSel,
+		'the unit selector sits next to ordering');
+	assert.strictEqual(toolbarRight.children.length, 2,
+		'the client toolbar only keeps filtering, ordering and units');
+	assert.strictEqual(statusActions.children[0].children[1], state.refs.intervalSel,
+		'the refresh cadence control opens the page-level action group');
+	assert.ok(String(statusActions.children[0].attrs.class || '').includes('lanspeed-refresh-control'));
+	assert.strictEqual(statusActions.children[1], state.refs.btnPause);
+	assert.strictEqual(statusActions.children[2], state.refs.btnRefresh);
+	assert.strictEqual(statusActions.children.length, 3,
+		'the status bar groups cadence, pause and immediate refresh');
 	assert.deepStrictEqual(findByClass(built.root, 'lanspeed-metrics').children.map(node => node.attrs['data-metric']),
 		[ 'rx', 'tx', 'clients', 'conns' ], 'core metrics must list download before upload like the client rows');
 	assert.deepStrictEqual(state.refs.clientsTable.children[0].children[0].children

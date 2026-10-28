@@ -1506,9 +1506,11 @@ async page => {
 					const after = await root.locator('th[data-column-key="totals"]').getAttribute('aria-sort');
 					const adjacency = await sort.evaluate(select => {
 						const group = select.closest('.lanspeed-sort-control');
-						if (!group) return false;
-						const neighbours = [ group.nextElementSibling, group.previousElementSibling ];
-						return neighbours.some(node => node && node.classList.contains('lanspeed-refresh-control'));
+						const toolbar = group && group.parentElement;
+						const unit = toolbar && toolbar.querySelector('.lanspeed-unit-control');
+						const actions = document.querySelector('.lanspeed-status-actions');
+						return !!(group && unit && actions &&
+							actions.querySelector('.lanspeed-refresh-control'));
 					});
 					evidence.interactions.sort = { before, keyboardValue, after, saved, adjacency };
 					addCheck('overview-sort', keyboardValue === 'rx:desc' && after === 'ascending' && adjacency &&

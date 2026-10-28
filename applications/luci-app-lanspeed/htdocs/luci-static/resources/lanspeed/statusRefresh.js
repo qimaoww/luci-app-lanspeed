@@ -232,7 +232,7 @@ function clientNameContent(c, displayName, ips) {
 		name = E('a', {
 			'class': 'lanspeed-connection-link',
 			'href': clientConnections.detailHref(window.location.pathname, c.identity_key),
-			'title': label,
+			'title': displayName + ' · ' + label,
 			'aria-label': label
 		}, displayName);
 	}
@@ -632,15 +632,18 @@ function refreshLive(viewState) {
 		setText(refs.mClientsSub, _('正在同步实时采样…'));
 	} else {
 		var nssEv = nssProfile && status.evidence && status.evidence.nss;
-		var subParts = [ _('%d 活跃').format(totals.active) ];
+		var subParts = [ _('%d 个活跃').format(totals.active) ];
 		if (nssEv && typeof nssEv.host_count === 'number' &&
 		    nssEv.host_count > clientsAll.length) {
 			subParts.push(_('NSS 发现 %d 个').format(nssEv.host_count));
 		}
-		subParts.push(_('%d 秒').format(Math.round(activeCfg.activeWindowMs / 1000)));
-		if (activeCfg.activeMinBps > 1)
-			subParts.push(_('≥ ') + fmt.formatRate(activeCfg.activeMinBps, prefs.unit));
 		setText(refs.mClientsSub, subParts.join(' · '));
+		var activeWindow = Math.round(activeCfg.activeWindowMs / 1000);
+		var activeDetail = _('最近 %d 秒内有流量的客户端计为活跃').format(activeWindow);
+		if (activeCfg.activeMinBps > 1)
+			activeDetail += ' · ' + _('最低 %s').format(fmt.formatRate(activeCfg.activeMinBps, prefs.unit));
+		if (refs.mClientsWrap)
+			refs.mClientsWrap.title = activeDetail;
 	}
 
 	var latestSample = fmt.latestClientSampleMs(clientsAll);

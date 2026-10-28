@@ -5111,12 +5111,13 @@ function assertStatusShellInteraction(src) {
 	const statusBar = findFakeElement(built.root, 'lanspeed-status-bar');
 	if (!left || !filter || !right || !actions || !statusBar || left.children[0] !== filter ||
 		filter.children[0] !== refs.filterInput || left.children.length !== 2 ||
-		right.children[0].children[1] !== refs.intervalSel ||
-		right.children[1].children[1] !== refs.sortSelect ||
-		right.children[2].children[1] !== refs.unitSel ||
-		actions.children[0] !== refs.btnPause || actions.children[1] !== refs.btnRefresh ||
-		actions.children.length !== 2)
-		fail('statusShell.js must keep sort/cadence/unit in the client toolbar and refresh/pause in the status bar');
+		right.children[0].children[1] !== refs.sortSelect ||
+		right.children[1].children[1] !== refs.unitSel ||
+		right.children.length !== 2 ||
+		actions.children[0].children[1] !== refs.intervalSel ||
+		actions.children[1] !== refs.btnPause || actions.children[2] !== refs.btnRefresh ||
+		actions.children.length !== 3)
+		fail('statusShell.js must keep filters left and sort/unit right, with cadence/pause/refresh grouped in the status bar');
 	if (refs.btnRefresh.attrs.type !== 'button' || refs.btnPause.attrs.type !== 'button') {
 		fail('statusShell.js refresh actions must never submit or navigate away from the LuCI page');
 	}

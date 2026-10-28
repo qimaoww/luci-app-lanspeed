@@ -93,6 +93,7 @@ const luciResources = [
   'format.js',
   'geoLocation.js',
   'macVendor.js',
+  'vendorLogo.js',
   'ifaceConfig.js',
   'rpc.js',
   'statusCollector.js',

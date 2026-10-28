@@ -166,6 +166,10 @@ function buildShell(viewState) {
 		]),
 		E('span', { 'class': 'lanspeed-spacer' }),
 		E('div', { 'class': 'lanspeed-status-actions' }, [
+			E('label', { 'class': 'lanspeed-refresh-control' }, [
+				E('span', { 'class': 'lanspeed-control-label' }, _('刷新')),
+				refs.intervalSel
+			]),
 			refs.btnPause,
 			refs.btnRefresh
 		])
@@ -198,6 +202,7 @@ function buildShell(viewState) {
 	refs.mTcpConns    = E('span', { 'class': 'lanspeed-connection-number' }, '-');
 	refs.mUdpConns    = E('span', { 'class': 'lanspeed-connection-number' }, '-');
 	refs.mUdpConnsSub = E('div', { 'class': 'lanspeed-stat-hint' }, '-');
+	refs.mClientsWrap = metric('clients', _('客户端'), refs.mClients, refs.mClientsSub);
 	refs.mConnsValue  = E('div', { 'class': 'lanspeed-stat-value lanspeed-connection-values' }, [
 		E('span', { 'class': 'lanspeed-connection-stat' }, [
 			E('span', { 'class': 'lanspeed-connection-label' }, 'TCP'),
@@ -216,7 +221,7 @@ function buildShell(viewState) {
 			E('div', { 'class': 'lanspeed-stat-hint' }, _('客户端接收'))),
 		metric('tx', directionCaption('tx', _('上传')), refs.mTx,
 			E('div', { 'class': 'lanspeed-stat-hint' }, _('客户端发出'))),
-		metric('clients', _('客户端'), refs.mClients, refs.mClientsSub),
+		refs.mClientsWrap,
 		refs.mConnsWrap
 	]);
 	var statsCard = E('div', { 'class': 'cbi-section lanspeed-stats-card' }, [
@@ -291,10 +296,6 @@ function buildShell(viewState) {
 			])
 		]),
 		E('div', { 'class': 'lanspeed-toolbar-right' }, [
-			E('label', { 'class': 'lanspeed-refresh-control' }, [
-				E('span', { 'class': 'lanspeed-control-label' }, _('刷新')),
-				refs.intervalSel
-			]),
 			E('label', { 'class': 'lanspeed-sort-control' }, [
 				E('span', { 'class': 'lanspeed-control-label' }, _('排序')),
 				refs.sortSelect
