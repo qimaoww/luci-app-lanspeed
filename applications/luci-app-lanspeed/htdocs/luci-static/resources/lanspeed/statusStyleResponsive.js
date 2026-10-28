@@ -20,7 +20,7 @@ var CARD_RULES = [
 	 * then a two-by-two block of readings so nothing is ever truncated. */
 	'.lanspeed-root .lanspeed-clients-table tbody>tr{display:grid;line-height:1.4;',
 	'  grid-template-columns:repeat(4,minmax(0,1fr));',
-	'  column-gap:12px;row-gap:8px;padding:10px 12px;',
+	'  column-gap:12px;row-gap:8px;padding:10px 0;',
 	'  border-bottom:1px solid var(--lanspeed-border)}',
 	'.lanspeed-clients-table tbody>tr:last-child{border-bottom:0}',
 	'.lanspeed-root .lanspeed-clients-table tbody td{display:block;min-width:0;padding:0;border:0;',
@@ -56,7 +56,7 @@ var CARD_RULES = [
 ].join('\n');
 
 var NARROW_RULES = [
-	'.lanspeed-root .lanspeed-clients-table tbody>tr{padding:9px 12px;row-gap:7px}',
+	'.lanspeed-root .lanspeed-clients-table tbody>tr{padding:9px 0;row-gap:7px}',
 	'.lanspeed-root .lanspeed-clients-table .lanspeed-client-rate,',
 	'.lanspeed-root .lanspeed-clients-table .lanspeed-client-total{font-size:11.5px}'
 ].join('\n');
@@ -89,7 +89,7 @@ return baseclass.extend({
 	 * instead of the tall phone block. */
 	'@container lanspeed-clients (min-width:34rem) and (max-width:' + CARD_MAX + '){',
 	'.lanspeed-root .lanspeed-clients-table tbody>tr{grid-template-columns:repeat(8,minmax(0,1fr));',
-	'  column-gap:12px;row-gap:10px;padding:12px 14px}',
+	'  column-gap:12px;row-gap:10px;padding:12px 0}',
 	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-name{grid-area:1/1/2/5}',
 	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-control{grid-area:1/5/2/9}',
 	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-mac{grid-area:2/1/3/9}',
@@ -101,7 +101,7 @@ return baseclass.extend({
 	/* Theme-scoped card tweaks: Aurora keeps its generous padding, Argon drops
 	 * its row stripe inside cards, Bootstrap strengthens the card border. */
 	'@container lanspeed-clients (max-width:' + CARD_MAX + '){',
-	'.lanspeed-theme-aurora .lanspeed-clients-table tbody>tr{padding:12px 14px}',
+	'.lanspeed-theme-aurora .lanspeed-clients-table tbody>tr{padding:12px 0}',
 	'.lanspeed-theme-argon .lanspeed-clients-table tbody>tr:nth-child(even){background:transparent}',
 	'.lanspeed-theme-bootstrap .lanspeed-clients-table tbody>tr{border-bottom-color:var(--lanspeed-border-strong)}}',
 
