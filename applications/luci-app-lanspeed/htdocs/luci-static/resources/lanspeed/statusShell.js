@@ -199,21 +199,10 @@ function buildShell(viewState) {
 	refs.mTx          = E('div', { 'class': 'lanspeed-stat-value' }, '—');
 	refs.mClients     = E('div', { 'class': 'lanspeed-stat-value' }, '—');
 	refs.mClientsSub  = E('div', { 'class': 'lanspeed-stat-hint' }, '-');
-	refs.mTcpConns    = E('span', { 'class': 'lanspeed-connection-number' }, '-');
-	refs.mUdpConns    = E('span', { 'class': 'lanspeed-connection-number' }, '-');
-	refs.mUdpConnsSub = E('div', { 'class': 'lanspeed-stat-hint' }, '-');
 	refs.mClientsWrap = metric('clients', _('客户端'), refs.mClients, refs.mClientsSub);
-	refs.mConnsValue  = E('div', { 'class': 'lanspeed-stat-value lanspeed-connection-values' }, [
-		E('span', { 'class': 'lanspeed-connection-stat' }, [
-			E('span', { 'class': 'lanspeed-connection-label' }, 'TCP'),
-			refs.mTcpConns
-		]),
-		E('span', { 'class': 'lanspeed-connection-stat' }, [
-			E('span', { 'class': 'lanspeed-connection-label' }, 'UDP'),
-			refs.mUdpConns
-		])
-	]);
-	refs.mConnsWrap = metric('conns', _('连接数'), refs.mConnsValue, refs.mUdpConnsSub, {
+	refs.mConnsValue  = E('div', { 'class': 'lanspeed-stat-value' }, '—');
+	refs.mConnsSub    = E('div', { 'class': 'lanspeed-stat-hint' }, 'TCP — · UDP —');
+	refs.mConnsWrap = metric('conns', _('连接数'), refs.mConnsValue, refs.mConnsSub, {
 		'title': _('当前连接来自 conntrack：TCP 统计已建立且确认的连接，UDP 统计已确认的连接。')
 	});
 	var metrics = E('div', { 'class': 'lanspeed-metrics' }, [

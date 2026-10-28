@@ -610,19 +610,21 @@ function refreshLive(viewState) {
 	setText(refs.mClients, String(clientsAll.length));
 
 	var clientsData = viewState.clients || {};
-	var udpSub;
 	if (typeof clientsData.tcp_conns_total === 'number' || typeof clientsData.udp_conns_total === 'number') {
+		var tcpTotal = typeof clientsData.tcp_conns_total === 'number' ? clientsData.tcp_conns_total : null;
+		var udpTotal = typeof clientsData.udp_conns_total === 'number' ? clientsData.udp_conns_total : null;
+		var connTotal = (tcpTotal !== null && udpTotal !== null) ? tcpTotal + udpTotal : null;
 		refs.mConnsWrap.style.display = '';
-		setText(refs.mTcpConns, String(typeof clientsData.tcp_conns_total === 'number' ? clientsData.tcp_conns_total : '-'));
-		setText(refs.mUdpConns, String(typeof clientsData.udp_conns_total === 'number' ? clientsData.udp_conns_total : '-'));
+		setText(refs.mConnsValue, connTotal !== null ? String(connTotal) : '—');
+		var connParts = [
+			'TCP ' + (tcpTotal !== null ? tcpTotal : '—'),
+			'UDP ' + (udpTotal !== null ? udpTotal : '—')
+		];
+		setText(refs.mConnsSub, connParts.join(' · '));
 		if (typeof clientsData.udp_dns_conns_total === 'number' || typeof clientsData.udp_other_conns_total === 'number') {
-			udpSub = [
-				'DNS ' + (typeof clientsData.udp_dns_conns_total === 'number' ? clientsData.udp_dns_conns_total : '-'),
-				_('其它 ') + (typeof clientsData.udp_other_conns_total === 'number' ? clientsData.udp_other_conns_total : '-')
-			];
-			setText(refs.mUdpConnsSub, udpSub.join(' · '));
-		} else {
-			setText(refs.mUdpConnsSub, '-');
+			refs.mConnsWrap.title = _('当前连接来自 conntrack：TCP 统计已建立且确认的连接，UDP 统计已确认的连接。') +
+				' · DNS ' + (typeof clientsData.udp_dns_conns_total === 'number' ? clientsData.udp_dns_conns_total : '—') +
+				' · ' + _('其它 ') + (typeof clientsData.udp_other_conns_total === 'number' ? clientsData.udp_other_conns_total : '—');
 		}
 	} else {
 		refs.mConnsWrap.style.display = 'none';

@@ -6196,9 +6196,8 @@ function assertStatusShellModule(src) {
 		src.includes('data-client-status') || src.includes("_('状态')")) {
 		fail('lanspeed/statusShell.js must remove the obsolete client status column and toggle');
 	}
-	if (!src.includes("'class': 'lanspeed-stat-value lanspeed-connection-values'") ||
-	    !src.includes("'class': 'lanspeed-connection-stat'") ||
-	    !src.includes("'class': 'lanspeed-connection-number'")) {
+	if (!src.includes("refs.mConnsValue  = E('div', { 'class': 'lanspeed-stat-value' }, '—')") ||
+	    !src.includes("refs.mConnsSub    = E('div', { 'class': 'lanspeed-stat-hint' }, 'TCP — · UDP —')")) {
 		fail('lanspeed/statusShell.js must render connection totals with the same three-row metric structure as every other card');
 	}
 	if (src.includes('lanspeed-column-resize-handle') || src.includes('pointerdown') ||

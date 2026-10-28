@@ -10,7 +10,7 @@
  * theme column behaves like a narrow phone. Engines without container queries
  * use the viewport fallback.
  */
-var CARD_MAX = '70em';
+var CARD_MAX = '50rem';
 
 var CARD_RULES = [
 	'.lanspeed-clients-table{display:block;min-width:0;table-layout:auto}',
@@ -74,7 +74,7 @@ return baseclass.extend({
 	'.lanspeed-root .lanspeed-toolbar{flex-direction:column;align-items:stretch;gap:8px}',
 	'.lanspeed-root .lanspeed-toolbar-left{flex:0 0 auto;width:100%;flex-wrap:wrap;gap:8px}',
 	'.lanspeed-root .lanspeed-toolbar-right{flex:0 0 auto;width:100%;display:grid;',
-	'  grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:8px}',
+	'  grid-template-columns:minmax(0,12rem) 7rem;gap:8px;justify-content:start}',
 	'.lanspeed-root .lanspeed-toolbar-filter{flex:1 1 auto;min-width:0}',
 	'.lanspeed-root .lanspeed-toolbar-left input[type="search"]{max-width:none;width:100%;min-width:0}',
 	'.lanspeed-root .lanspeed-toolbar-right>label{display:flex;align-items:center;',
@@ -83,6 +83,20 @@ return baseclass.extend({
 	'.lanspeed-root .lanspeed-unit-control{grid-column:2;order:2}',
 	'.lanspeed-root .lanspeed-toolbar-right select{flex:1 1 auto;width:auto;min-width:0;',
 	'  max-width:none}}',
+
+	/* Mid-width desktops get a wide card: identity/actions on one row,
+	 * address on the next, and the four readings on a single compact line
+	 * instead of the tall phone block. */
+	'@container lanspeed-clients (min-width:34rem) and (max-width:' + CARD_MAX + '){',
+	'.lanspeed-root .lanspeed-clients-table tbody>tr{grid-template-columns:repeat(8,minmax(0,1fr));',
+	'  column-gap:12px;row-gap:10px;padding:12px 14px}',
+	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-name{grid-area:1/1/2/5}',
+	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-control{grid-area:1/5/2/9}',
+	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-mac{grid-area:2/1/3/9}',
+	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-value{grid-area:3/1/4/3}',
+	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-total-cell{grid-area:3/3/4/5}',
+	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-tcp-cell{grid-area:3/5/4/7}',
+	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-udp-cell{grid-area:3/7/4/9}}',
 
 	/* Theme-scoped card tweaks: Aurora keeps its generous padding, Argon drops
 	 * its row stripe inside cards, Bootstrap strengthens the card border. */
