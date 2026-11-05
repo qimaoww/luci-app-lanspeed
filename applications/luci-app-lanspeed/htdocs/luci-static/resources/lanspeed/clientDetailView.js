@@ -381,8 +381,13 @@ return baseclass.extend({
 			hostnameMac: dhcpHostnames.identityMac(data && data.identityKey || ''),
 			hostnameOpening: false,
 			hostnameSaving: false,
+			controlBusy: {},
 			destroyed: false,
 			vendorLookup: macVendor.lookup,
+
+			refreshLive: function() {
+				clientDetailRefresh.render(this);
+			},
 
 			stopTimer: function() {
 				if (this.timer !== null) {

@@ -29,13 +29,10 @@ var CARD_RULES = [
 	'.lanspeed-root .lanspeed-clients-table td[data-label]::before{content:attr(data-label);display:block;',
 	'  margin-bottom:1px;font-size:10px;font-weight:600;letter-spacing:.04em;',
 	'  color:var(--lanspeed-text-subtle)}',
-	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-name{grid-area:1/1/2/3}',
-	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-control{grid-area:1/3/2/5;justify-self:end;',
-	'  align-self:start}',
+	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-name{grid-area:1/1/2/5}',
 	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-mac{grid-area:2/1/3/5;white-space:nowrap;',
 	'  overflow:hidden;text-overflow:ellipsis}',
 	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-mac[data-label]::before{display:none}',
-	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-control[data-label]::before{display:none}',
 	'.lanspeed-root .lanspeed-clients-table .lanspeed-client-mac-value,',
 	'.lanspeed-root .lanspeed-clients-table .lanspeed-client-vendor{display:inline;margin:0;',
 	'  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
@@ -51,9 +48,6 @@ var CARD_RULES = [
 	'.lanspeed-root .lanspeed-clients-table .lanspeed-client-rate,',
 	'.lanspeed-root .lanspeed-clients-table .lanspeed-client-total{text-align:left;font-size:12px}',
 	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-count-cell{text-align:left;font-size:13px}',
-	'.lanspeed-root .lanspeed-clients-table .lanspeed-control-actions{flex-wrap:nowrap;gap:10px;',
-	'  justify-content:flex-end}',
-	'.lanspeed-root .lanspeed-clients-table .lanspeed-control-button{font-size:12px}'
 ].join('\n');
 
 var NARROW_RULES = [
@@ -91,8 +85,7 @@ return baseclass.extend({
 	'@container lanspeed-clients (min-width:34rem) and (max-width:' + CARD_MAX + '){',
 	'.lanspeed-root .lanspeed-clients-table tbody>tr{grid-template-columns:repeat(8,minmax(0,1fr));',
 	'  column-gap:12px;row-gap:10px;padding:12px 0}',
-	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-name{grid-area:1/1/2/5}',
-	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-control{grid-area:1/5/2/9}',
+	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-name{grid-area:1/1/2/9}',
 	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-mac{grid-area:2/1/3/9}',
 	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-value{grid-area:3/1/4/3}',
 	'.lanspeed-root .lanspeed-clients-table td.lanspeed-client-total-cell{grid-area:3/3/4/5}',

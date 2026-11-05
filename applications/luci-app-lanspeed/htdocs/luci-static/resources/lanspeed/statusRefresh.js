@@ -2,7 +2,6 @@
 'require baseclass';
 'require lanspeed.format as fmt';
 'require lanspeed.clientConnections as clientConnections';
-'require lanspeed.clientControl as clientControl';
 'require lanspeed.version as lsVersion';
 'require lanspeed.statusIp as statusIp';
 'require lanspeed.statusCollector as statusCollector';
@@ -555,7 +554,6 @@ function refreshLive(viewState) {
 			return mode === 'fast_routed_lease' ? mode : current || mode;
 		}, '') : '';
 	var showClientTotals = viewState.showClientTotals === true;
-	if (refs.controlHeader) refs.controlHeader.hidden = false;
 	if (refs.totalHeader) refs.totalHeader.hidden = !showClientTotals;
 	if (refs.clientsTable)
 		refs.clientsTable.setAttribute('data-client-totals', showClientTotals ? 'shown' : 'hidden');
@@ -708,8 +706,6 @@ function refreshLive(viewState) {
 				displayName = c.mac || '-';
 			}
 
-			var controlCell = clientControl.cell(viewState, c);
-			controlCell.hidden = false;
 			var vendor = viewState.vendorLookup ? viewState.vendorLookup(c.mac) : null;
 
 			return E('tr', {
@@ -722,8 +718,7 @@ function refreshLive(viewState) {
 				clientTrafficCell(tx, rx, prefs.unit),
 				clientTrafficTotalCell(c, showClientTotals),
 				clientTcpCell(c),
-				clientUdpCell(c),
-				controlCell
+				clientUdpCell(c)
 			]);
 		}));
 	}

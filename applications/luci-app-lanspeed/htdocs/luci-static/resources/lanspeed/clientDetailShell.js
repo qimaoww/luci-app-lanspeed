@@ -161,6 +161,22 @@ function buildShell(viewState) {
 		])
 	]);
 
+	refs.controlState = E('span', {
+		'class': 'lanspeed-connection-control-state'
+	}, _('控制信息加载中…'));
+	refs.controlActions = E('div', {
+		'class': 'lanspeed-connection-control-slot'
+	});
+	var controlBar = E('div', {
+		'class': 'lanspeed-connection-control-bar'
+	}, [
+		E('div', { 'class': 'lanspeed-connection-control-copy' }, [
+			E('span', { 'class': 'lanspeed-connection-control-title' }, _('设备控制')),
+			refs.controlState
+		]),
+		refs.controlActions
+	]);
+
 	var identityCard = E('div', {
 		'class': 'cbi-section lanspeed-connection-identity-card'
 	}, [
@@ -174,7 +190,8 @@ function buildShell(viewState) {
 			E('div', { 'class': 'lanspeed-connection-identity' }, [
 				E('div', { 'class': 'lanspeed-connection-client' }, [
 					refs.clientHeading,
-					refs.clientMeta
+					refs.clientMeta,
+					controlBar
 				]),
 				refs.summary
 			])

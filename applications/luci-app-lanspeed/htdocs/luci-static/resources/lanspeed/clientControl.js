@@ -47,6 +47,8 @@ function run(viewState, identityKey, task) {
 					client.control = response.control;
 			});
 		}
+		if (viewState.controlClient && viewState.controlClient.identity_key === identityKey && response.control)
+			viewState.controlClient.control = response.control;
 		viewState.refreshLive();
 		ui.hideModal();
 		return viewState.reload(true);
@@ -179,7 +181,7 @@ function stateLabel(control) {
 	return _('已配置');
 }
 
-function cell(viewState, client) {
+function actions(viewState, client, className) {
 	var control = client.control || {};
 	var busy = !!(viewState.controlBusy && viewState.controlBusy[client.identity_key]);
 	var hasLimit = Number(control.upload_bps) > 0 || Number(control.download_bps) > 0;
@@ -210,13 +212,28 @@ function cell(viewState, client) {
 		if (event) event.preventDefault();
 		toggleBlock(viewState, client);
 	});
+	return E('div', { 'class': className || 'lanspeed-control-actions' }, [ limit, block ]);
+}
+
+function cell(viewState, client) {
 	return E('td', { 'class': 'lanspeed-client-control', 'data-label': _('控制') }, [
-		E('div', { 'class': 'lanspeed-control-actions' }, [ limit, block ])
+		actions(viewState, client)
 	]);
 }
 
+function summary(control) {
+	if (!control) return _('控制信息不可用');
+	if (control.shaping_supported !== true && control.blocking_supported !== true)
+		return _('当前平台不支持客户端控制');
+	if (!control.configured) return _('未配置限速');
+	return stateLabel(control) || _('已配置');
+}
+
 return baseclass.extend({
+	actions: actions,
 	cell: cell,
+	summary: summary,
+	stateLabel: stateLabel,
 	openLimit: openLimit,
 	toggleBlock: toggleBlock,
 	reasonText: reasonText,

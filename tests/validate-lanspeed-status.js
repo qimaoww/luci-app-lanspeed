@@ -1036,7 +1036,7 @@ function loadShellAndRefresh(context, fmt) {
 		baseclass, fakeElement, translate
 	);
 	const refresh = vm.compileFunction(readModule('statusRefresh.js'), [
-		'baseclass', 'vocab', 'fmt', 'clientConnections', 'clientControl', 'lsVersion',
+		'baseclass', 'vocab', 'fmt', 'clientConnections', 'lsVersion',
 		'statusIp', 'statusCollector', 'statusRateMeta', 'vendorLogo', 'E', '_', 'window'
 	], { filename: 'resources/lanspeed/statusRefresh.js', parsingContext: context })(
 		baseclass,
@@ -1048,7 +1048,6 @@ function loadShellAndRefresh(context, fmt) {
 		},
 		fmt,
 		{ detailHref: function(pathname, key) { return pathname + '?client=' + encodeURIComponent(key); } },
-		{ cell: function() { return fakeElement('td', { class: 'lanspeed-client-control' }); } },
 		{ FULL_VERSION: '1.2.1-r2' },
 		{
 			hideIpv6RangesValue: function(value) { return value || ''; },
@@ -1261,7 +1260,7 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.deepStrictEqual(findByClass(built.root, 'lanspeed-metrics').children.map(node => node.attrs['data-metric']),
 		[ 'rx', 'tx', 'clients', 'conns' ], 'core metrics must list download before upload like the client rows');
 	assert.deepStrictEqual(state.refs.clientsTable.children[0].children[0].children
-		.map(th => th.attrs['data-column-key']), [ 'hostname', 'mac', 'rate', 'totals', 'tcp_conns', 'udp_conns', 'control' ],
+		.map(th => th.attrs['data-column-key']), [ 'hostname', 'mac', 'rate', 'totals', 'tcp_conns', 'udp_conns' ],
 		'client table columns must be keyed for fixed CSS tracks');
 	assert.strictEqual(state.refs.liveState.attrs['data-state'], 'live');
 	assert.strictEqual(state.refs.tbody.children.length, 10);
@@ -1279,8 +1278,7 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.deepStrictEqual(firstRow.children.map(cell => String(cell.attrs.class || '')).map(name =>
 		name.split(/\s+/).filter(part => /^lanspeed-client-/.test(part))[0]), [
 		'lanspeed-client-name', 'lanspeed-client-mac', 'lanspeed-client-value',
-		'lanspeed-client-total-cell', 'lanspeed-client-count-cell', 'lanspeed-client-count-cell',
-		'lanspeed-client-control'
+		'lanspeed-client-total-cell', 'lanspeed-client-count-cell', 'lanspeed-client-count-cell'
 	], 'each client row must render one cell per keyed column');
 	assert.deepStrictEqual([ firstRow.children[4], firstRow.children[5] ].map(cell => cell.attrs['data-label']),
 		[ 'TCP', 'UDP' ], 'connection counts keep one numeric column per transport');

@@ -238,6 +238,7 @@ const MODULE_REQUIRES = {
 		'baseclass',
 		'lanspeed.format',
 		'lanspeed.clientConnections',
+		'lanspeed.clientControl',
 		'lanspeed.vendorLogo'
 	],
 	'clientDetailShell.js': [
@@ -366,7 +367,6 @@ const MODULE_REQUIRES = {
 		'baseclass',
 		'lanspeed.format',
 		'lanspeed.clientConnections',
-		'lanspeed.clientControl',
 		'lanspeed.version',
 		'lanspeed.statusIp',
 		'lanspeed.statusCollector',
@@ -3257,11 +3257,13 @@ function assertClientDetailIntegratedState(viewSrc) {
 function loadClientDetailRefreshModule(src, fakeDate) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	return vm.compileFunction(src, [
-		'baseclass', 'fmt', 'clientConnections', 'vendorLogo', 'E', '_', 'Date', 'document'
+		'baseclass', 'fmt', 'clientConnections', 'clientControl', 'vendorLogo', 'E', '_', 'Date', 'document'
 	], { filename: 'resources/lanspeed/clientDetailRefresh.js' })(
 		fakeBaseclass,
 		loadFormatModule(readModuleByName('format.js')),
 		loadClientConnectionsModule(readModuleByName('clientConnections.js')),
+		{ actions: function() { return fakeElement('div', { class: 'lanspeed-connection-control-actions' }); },
+			summary: function() { return '未配置限速'; } },
 		{ logo: function() { return fakeElement('span', { class: 'lanspeed-vendor-logo' }); } },
 		fakeElement,
 		fakeTranslate,
@@ -3283,9 +3285,10 @@ function buildClientDetailShellForRefresh(viewState) {
 
 function assertClientDetailRefreshSource(src) {
 	if (JSON.stringify(moduleRequireNames(src)) !== JSON.stringify([
-		'baseclass', 'lanspeed.format', 'lanspeed.clientConnections', 'lanspeed.vendorLogo'
+		'baseclass', 'lanspeed.format', 'lanspeed.clientConnections', 'lanspeed.clientControl',
+		'lanspeed.vendorLogo'
 	])) {
-		fail('clientDetailRefresh.js must require only baseclass, format, pure client connection helpers and the offline vendor marks in dependency order');
+		fail('clientDetailRefresh.js must require baseclass, format, client connections, client control and offline vendor marks in dependency order');
 	}
 	const cleaned = stripComments(src);
 	if (/\brpc\b|set(?:Timeout|Interval)|clear(?:Timeout|Interval)|\bwindow\b|\blocation\s*\.\s*(?:href|assign|pathname|search)|innerHTML|\bCSS\b|clientDetailStyle/.test(cleaned)) {
@@ -6069,7 +6072,6 @@ function assertStatusStyleModule(src) {
 		'.lanspeed-clients-table [data-column-key="totals"]{width:',
 		'.lanspeed-clients-table [data-column-key="tcp_conns"],',
 		'.lanspeed-clients-table [data-column-key="udp_conns"]{width:',
-		'.lanspeed-clients-table [data-column-key="control"]{width:',
 		'.lanspeed-table .num{text-align:right',
 		'.lanspeed-client-count-cell{text-align:right;font-variant-numeric:tabular-nums',
 		'.lanspeed-clients-table thead th[aria-sort="ascending"]::after'
@@ -6248,9 +6250,9 @@ function assertStatusRefreshModule(src) {
 	if (src.includes('showClientStatus') || src.includes('setClientStatusVisibility') ||
 		src.includes('clientStateCell') || src.includes('data-client-status') ||
 		src.includes('showClientControl') || src.includes('show_client_control') ||
-		!src.includes('var showClientTotals = viewState.showClientTotals === true;') ||
-		!src.includes('controlCell.hidden = false;')) {
-		fail('lanspeed/statusRefresh.js must remove the client-control visibility option');
+		src.includes('controlCell') || src.includes('clientControl') ||
+		!src.includes('var showClientTotals = viewState.showClientTotals === true;')) {
+		fail('lanspeed/statusRefresh.js must remove client controls while keeping cumulative totals');
 	}
 	if (src.includes('refreshDiagnostics') || src.includes('lanspeed-diagnostic-') ||
 	    src.includes('diagnosticsSummary') || src.includes('importantWarnings(status.warnings')) {

@@ -78,6 +78,8 @@ const statusOverview = fs.readFileSync(path.join(root,
   'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/statusOverview.js'), 'utf8');
 const statusRefresh = fs.readFileSync(path.join(root,
   'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/statusRefresh.js'), 'utf8');
+const detailRefresh = fs.readFileSync(path.join(root,
+  'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/clientDetailRefresh.js'), 'utf8');
 
 function translate(value) {
   const text = String(value);
@@ -274,9 +276,10 @@ async function main() {
     production.includes('control: ControlManager') &&
     !production.includes('client_control_x86_only') &&
 	    !statusOverview.includes('showClientControl') &&
-    statusRefresh.includes('clientControl.cell(viewState, c)') &&
-    !statusRefresh.includes("nssProfile ? [] : [ clientControl.cell(viewState, c) ]"),
-    'NSS builds and real-time status rows must expose their isolated client-control implementation');
+    !statusRefresh.includes('clientControl.cell') &&
+    detailRefresh.includes('clientControl.actions') &&
+    detailRefresh.includes("renderControls(viewState, refs, controlClient)"),
+    'NSS builds must expose client control on the device detail page instead of the status table');
   assert(nssControlByModule['qdisc.rs'].includes('"nsshtb"') &&
     nssControlByModule['qdisc.rs'].includes('"nssbfifo"') &&
     nssControlByModule['qdisc.rs'].includes('"accel_mode",\n            "0"') &&

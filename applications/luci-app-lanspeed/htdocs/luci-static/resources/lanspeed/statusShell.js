@@ -393,11 +393,6 @@ function buildShell(viewState) {
 		'title': _('启用采集后累计的实际字节数')
 	});
 	refs.totalHeader.hidden = viewState.showClientTotals !== true;
-	refs.controlHeader = E('th', {
-		'scope': 'col',
-		'class': 'lanspeed-client-control-header',
-		'data-column-key': 'control'
-	}, _('控制'));
 	refs.clientsTable = E('table', {
 		'id': 'lanspeed-clients-table',
 		'class': 'lanspeed-table lanspeed-clients-table',
@@ -417,8 +412,7 @@ function buildShell(viewState) {
 			clientHeader(refs, 'udp_conns', 'UDP', {
 				'class': 'num lanspeed-client-count-header',
 				'title': _('当前已确认的 UDP 连接数，含 DNS 与其它流')
-			}),
-			refs.controlHeader
+			})
 		])),
 		refs.tbody
 	]);

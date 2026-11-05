@@ -1546,9 +1546,9 @@ async page => {
 						lines[1].direction === 'tx' && lines[1].arrow === '↑' && lines[0].top < lines[1].top &&
 						lines.every(line => line.value && (line.value !== '-' || line.title.includes('暂不可用')));
 				}
-				addCheck('overview-traffic-columns', trafficColumns.headers.length === 7 &&
+				addCheck('overview-traffic-columns', trafficColumns.headers.length === 6 &&
 					trafficColumns.headers[2] === '网速' && trafficColumns.headers[3] === '累计流量' &&
-					trafficColumns.rows.every(row => row.cells === 7 && validDirections(row.rate) &&
+					trafficColumns.rows.every(row => row.cells === 6 && validDirections(row.rate) &&
 						(trafficColumns.totals !== 'shown' || validDirections(row.total))), trafficColumns);
 
 			const next = root.locator('.lanspeed-page-button[aria-label="下一页"]:visible').first();
