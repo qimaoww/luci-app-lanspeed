@@ -92,6 +92,8 @@ const luciResources = [
 	'moduleManifest.js',
   'format.js',
   'geoLocation.js',
+  'macVendor.js',
+  'vendorLogo.js',
   'ifaceConfig.js',
   'rpc.js',
   'statusCollector.js',

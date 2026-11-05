@@ -1,7 +1,7 @@
 use crate::{
     collectors::conntrack::{FlowSample, Protocol, TcpState},
     identity::{ClientIdentity, IdentityTable},
-    model::{ClassificationState, ClientRateMeta},
+    model::{ClassificationState, ClientControlSummary, ClientRateMeta},
 };
 use serde::Serialize;
 use std::{cmp::Ordering, collections::BTreeMap, net::IpAddr, sync::Arc};
@@ -29,6 +29,8 @@ pub struct ClientConnectionSummary {
     pub rate_sample_ms: Option<u64>,
     pub rate_collector_mode: String,
     pub rate_meta: Option<ClientRateMeta>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub control: Option<ClientControlSummary>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

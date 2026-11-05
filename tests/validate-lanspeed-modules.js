@@ -54,6 +54,7 @@ const EXPECTED_MODULES = [
 	'designSystemBootstrap.js',
 	'designSystemShadcn.js',
 	'geoLocation.js',
+	'macVendor.js',
 	'clientConnections.js',
 	'clientControl.js',
 	'clientControlReasons.js',
@@ -221,6 +222,7 @@ const MODULE_REQUIRES = {
 	'designSystemBootstrap.js': [ 'baseclass' ],
 	'designSystemShadcn.js': [ 'baseclass' ],
 	'geoLocation.js': [ 'baseclass' ],
+	'macVendor.js': [ 'baseclass', 'request' ],
 	'clientConnections.js': [ 'baseclass', 'lanspeed.format' ],
 	'clientControl.js': [ 'baseclass', 'ui', 'lanspeed.rpc', 'lanspeed.clientControlReasons' ],
 	'clientControlReasons.js': [
@@ -235,7 +237,9 @@ const MODULE_REQUIRES = {
 	'clientDetailRefresh.js': [
 		'baseclass',
 		'lanspeed.format',
-		'lanspeed.clientConnections'
+		'lanspeed.clientConnections',
+		'lanspeed.clientControl',
+		'lanspeed.vendorLogo'
 	],
 	'clientDetailShell.js': [
 		'baseclass',
@@ -363,11 +367,11 @@ const MODULE_REQUIRES = {
 		'baseclass',
 		'lanspeed.format',
 		'lanspeed.clientConnections',
-		'lanspeed.clientControl',
 		'lanspeed.version',
 		'lanspeed.statusIp',
 		'lanspeed.statusCollector',
-		'lanspeed.statusRateMeta'
+		'lanspeed.statusRateMeta',
+		'lanspeed.vendorLogo'
 	],
 	'configStyle.js': [
 		'baseclass',
@@ -717,12 +721,10 @@ function assertProductDesignSystem() {
 	const bootstrapStatusCss = loadStyleLeaf('statusStyleBootstrap.js').CSS;
 	[
 		'align-items:stretch',
-		'grid-template-columns:repeat(4,minmax(0,1fr))',
-		'grid-template-rows:.9rem 1.85rem minmax(1rem,auto)',
+		'.lanspeed-theme-bootstrap .lanspeed-metrics{grid-template-columns:repeat(4,minmax(0,1fr));',
 		'border-top:2px solid var(--lanspeed-accent)',
-		'border-left-color:var(--lanspeed-border-strong)',
-		'box-shadow:none',
-		'.lanspeed-theme-bootstrap .lanspeed-connection-values{flex-wrap:nowrap;gap:.6rem}'
+		'border-left:1px solid var(--lanspeed-border-strong)',
+		'box-shadow:none'
 	].forEach(function(marker) {
 		if (!bootstrapStatusCss.includes(marker))
 			fail(`statusStyleBootstrap.js must retain aligned metric treatment: ${marker}`);
@@ -2186,12 +2188,15 @@ function loadStatusRefreshModule(src, fakeWindow) {
 		[ 'baseclass', 'E', '_' ])(fakeBaseclass, fakeElement, fakeTranslate);
 	return vm.compileFunction(src,
 		[ 'baseclass', 'fmt', 'clientConnections', 'clientControl', 'lsVersion',
-		  'statusIp', 'statusCollector', 'statusRateMeta', 'E', '_', 'window', 'document' ],
+		  'statusIp', 'statusCollector', 'statusRateMeta', 'vendorLogo', 'E', '_',
+		  'window', 'document' ],
 		{ filename: 'resources/lanspeed/statusRefresh.js' })(
 			fakeBaseclass, {},
 			loadClientConnectionsModule(readModuleByName('clientConnections.js')),
 			{ cell: function() { return fakeElement('td'); } },
-			{ FULL_VERSION: 'test' }, {}, {}, rateMeta, fakeElement, fakeTranslate,
+			{ FULL_VERSION: 'test' }, {}, {}, rateMeta,
+			{ logo: function() { return fakeElement('span', { class: 'lanspeed-vendor-logo' }); } },
+			fakeElement, fakeTranslate,
 			fakeWindow || { location: { pathname: '/admin/status/lanspeed/overview' } }, fakeDocument
 		);
 }
@@ -2405,14 +2410,17 @@ function fakeDhcpHostnamesModule() {
 	};
 }
 
-function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow, fakeDate, fakeGeo, ui, dhcp) {
+function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow, fakeDate, fakeGeo, ui, dhcp, fakeVendor) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	return vm.compileFunction(src, [
-		'baseclass', 'ui', 'fmt', 'lsRpc', 'dhcpHostnames', 'geoLocation',
+		'baseclass', 'ui', 'fmt', 'lsRpc', 'dhcpHostnames', 'geoLocation', 'macVendor',
 		'clientDetailShell', 'clientDetailRefresh', 'window', 'Date', 'E', '_'
 	], { filename: 'resources/lanspeed/clientDetailView.js' })(
 		fakeBaseclass, ui || fakeUiModule(), fmt, lsRpc, dhcp || fakeDhcpHostnamesModule(),
-		fakeGeo || fakeGeoLocationModule(), shell, refresh, fakeWindow,
+		fakeGeo || fakeGeoLocationModule(),
+		fakeVendor || { lookup: function() { return { vendor: '', label: '未知厂商' }; },
+			load: function() { return new Promise(function() {}); } },
+		shell, refresh, fakeWindow,
 		fakeDate || Date, fakeElement, function(value) { return value; }
 	);
 }
@@ -2420,7 +2428,7 @@ function loadClientDetailViewModule(src, fmt, lsRpc, shell, refresh, fakeWindow,
 function assertClientDetailViewSource(src) {
 	if (JSON.stringify(moduleRequireNames(src)) !== JSON.stringify([
 		'baseclass', 'ui', 'lanspeed.format', 'lanspeed.rpc',
-		'lanspeed.dhcpHostnames', 'lanspeed.geoLocation',
+		'lanspeed.dhcpHostnames', 'lanspeed.geoLocation', 'lanspeed.macVendor',
 		'lanspeed.clientDetailShell', 'lanspeed.clientDetailRefresh'
 	])) {
 		fail('clientDetailView.js must require UI, format, shared RPC, DHCP hostnames, geolocation, detail shell and detail refresh in dependency order');
@@ -2434,6 +2442,37 @@ function assertClientDetailViewSource(src) {
 	    /lsRpc\.(?:clients|interfaces|uciGet|overview)\s*\(/.test(cleaned)) {
 		fail('clientDetailView.js must pair shared clientConnections and status RPCs without unrelated requests');
 	}
+}
+
+function assertClientDetailVendorLifecycle(src) {
+	asyncChecks.push(Promise.resolve().then(async function() {
+		for (const destroyBeforeDownload of [ false, true ]) {
+			const deferred = makeDeferred();
+			let state;
+			let renders = 0;
+			const vendor = { lookup: function() { return { label: 'Example' }; },
+				load: function() { return deferred.promise; } };
+			const view = loadClientDetailViewModule(src, {
+				MIN_REFRESH_MS: 1000, DEFAULT_PREFS: { refreshMs: 1000 },
+				loadPrefs: function() { return { refreshMs: 1000 }; }
+			}, {}, { buildShell: function(next) {
+				state = next; return { root: fakeElement('div'), refs: {} };
+			} }, { render: function() { renders++; } }, {
+				location: { pathname: '/admin/status/lanspeed/overview' },
+				setTimeout: function() { return 1; }, clearTimeout: function() {},
+				addEventListener: function() {}
+			}, Date, null, null, null, vendor);
+			view.render({ identityKey: 'vendor@lan', response: { available: true } });
+			if (renders !== 1 || state.vendorLookup !== vendor.lookup)
+				fail('client detail must render immediately while its optional vendor database is pending');
+			if (destroyBeforeDownload) state.destroy();
+			deferred.resolve();
+			await Promise.resolve();
+			if (renders !== (destroyBeforeDownload ? 1 : 2))
+				fail('client detail vendor completion must only refresh a page that is still open');
+			state.destroy();
+		}
+	}).catch(function(error) { fail('client detail vendor lifecycle: ' + error.stack); }));
 }
 
 function assertClientDetailViewLifecycle(src) {
@@ -3218,11 +3257,14 @@ function assertClientDetailIntegratedState(viewSrc) {
 function loadClientDetailRefreshModule(src, fakeDate) {
 	const fakeBaseclass = { extend: function(value) { return value; } };
 	return vm.compileFunction(src, [
-		'baseclass', 'fmt', 'clientConnections', 'E', '_', 'Date', 'document'
+		'baseclass', 'fmt', 'clientConnections', 'clientControl', 'vendorLogo', 'E', '_', 'Date', 'document'
 	], { filename: 'resources/lanspeed/clientDetailRefresh.js' })(
 		fakeBaseclass,
 		loadFormatModule(readModuleByName('format.js')),
 		loadClientConnectionsModule(readModuleByName('clientConnections.js')),
+		{ actions: function() { return fakeElement('div', { class: 'lanspeed-connection-control-actions' }); },
+			summary: function() { return '未配置限速'; } },
+		{ logo: function() { return fakeElement('span', { class: 'lanspeed-vendor-logo' }); } },
 		fakeElement,
 		fakeTranslate,
 		fakeDate || Date,
@@ -3243,9 +3285,10 @@ function buildClientDetailShellForRefresh(viewState) {
 
 function assertClientDetailRefreshSource(src) {
 	if (JSON.stringify(moduleRequireNames(src)) !== JSON.stringify([
-		'baseclass', 'lanspeed.format', 'lanspeed.clientConnections'
+		'baseclass', 'lanspeed.format', 'lanspeed.clientConnections', 'lanspeed.clientControl',
+		'lanspeed.vendorLogo'
 	])) {
-		fail('clientDetailRefresh.js must require only baseclass, format and pure client connection helpers in dependency order');
+		fail('clientDetailRefresh.js must require baseclass, format, client connections, client control and offline vendor marks in dependency order');
 	}
 	const cleaned = stripComments(src);
 	if (/\brpc\b|set(?:Timeout|Interval)|clear(?:Timeout|Interval)|\bwindow\b|\blocation\s*\.\s*(?:href|assign|pathname|search)|innerHTML|\bCSS\b|clientDetailStyle/.test(cleaned)) {
@@ -3360,6 +3403,17 @@ function assertClientDetailRefreshBehavior(src) {
 		fail('clientDetailRefresh.js must render identity/meta, real summaries, and destination groups with highest download speed first by default');
 	}
 	const threeDigitResponse = JSON.parse(JSON.stringify(state.response));
+	state.vendorLookup = function() { return { label: '<img src=x onerror=alert(1)>' }; };
+	refresh.render(state);
+	const vendorFact = findFakeElementsByClass(refs.clientMeta, 'lanspeed-connection-meta-fact')
+		.find(function(fact) { return fakeElementText(fact).includes('设备厂商'); });
+	const vendorValue = vendorFact && vendorFact.children[1];
+	const vendorName = vendorValue && findFakeElementsByClass(vendorValue, 'lanspeed-client-vendor-name')[0];
+	if (!vendorFact || fakeElementText(vendorFact) !== '设备厂商<img src=x onerror=alert(1)>' ||
+	    !vendorName || !vendorName.children.includes('<img src=x onerror=alert(1)>') ||
+	    findFakeElementsByClass(vendorValue, 'lanspeed-vendor-logo').length !== 1)
+		fail('client detail must display the vendor mark plus the vendor name as text, including labels containing HTML');
+	delete state.vendorLookup;
 	threeDigitResponse.client.tx_bps = 123456789;
 	threeDigitResponse.client.rx_bps = 987654321;
 	state.response = threeDigitResponse;
@@ -5056,12 +5110,17 @@ function assertStatusShellInteraction(src) {
 	const filter = findFakeElement(built.root, 'lanspeed-toolbar-filter');
 	const right = findFakeElement(built.root, 'lanspeed-toolbar-right');
 
-	if (!left || !filter || !right || left.children[1] !== filter ||
-		filter.children[0] !== refs.filterInput || right.children[0].children[1] !== refs.sortSelect ||
-		right.children[1].children[1] !== refs.intervalSel || right.children[2] !== refs.btnRefresh ||
-		right.children[3] !== refs.btnPause)
-		fail('statusShell.js must place the sort selector adjacent to refresh cadence and actions');
-
+	const actions = findFakeElement(built.root, 'lanspeed-status-actions');
+	const statusBar = findFakeElement(built.root, 'lanspeed-status-bar');
+	if (!left || !filter || !right || !actions || !statusBar || left.children[0] !== filter ||
+		filter.children[0] !== refs.filterInput || left.children.length !== 2 ||
+		right.children[0].children[1] !== refs.sortSelect ||
+		right.children[1].children[1] !== refs.unitSel ||
+		right.children.length !== 2 ||
+		actions.children[0].children[1] !== refs.intervalSel ||
+		actions.children[1] !== refs.btnPause || actions.children[2] !== refs.btnRefresh ||
+		actions.children.length !== 3)
+		fail('statusShell.js must keep filters left and sort/unit right, with cadence/pause/refresh grouped in the status bar');
 	if (refs.btnRefresh.attrs.type !== 'button' || refs.btnPause.attrs.type !== 'button') {
 		fail('statusShell.js refresh actions must never submit or navigate away from the LuCI page');
 	}
@@ -5985,110 +6044,99 @@ function assertStatusStyleModule(src) {
 
 	if (!src.includes('CSS: LAYOUT_CSS') || !src.includes('LAYOUT_CSS: STATUS_LAYOUT_CSS'))
 		fail('statusStyle.js must export composed design-system CSS and status-only layout CSS');
+
+	/* Page skeleton: one vertical stack of cards, the client list as the main
+	 * surface, and one flat row of four comparable stats on top. */
 	[
-		'.lanspeed-root{display:flex;flex-direction:column',
-		'.lanspeed-metrics{display:grid',
-		'.lanspeed-toolbar-left{display:grid',
-		'.lanspeed-toolbar-right{',
-		'.lanspeed-toolbar .lanspeed-sort-control select{',
-		'.lanspeed-pagination{display:flex',
+		'.lanspeed-root{display:flex;flex-direction:column;gap:',
+		'.lanspeed-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))',
+		'.lanspeed-metric{display:flex;flex-direction:column',
+		'.lanspeed-toolbar{display:flex;flex-wrap:wrap',
+		'.lanspeed-toolbar-left{display:flex;flex:1 1 20rem',
+		'.lanspeed-toolbar-right{display:flex;flex-wrap:wrap',
+		'.lanspeed-pagination{display:flex;flex-wrap:wrap',
 		'.lanspeed-details>summary{display:flex',
-		'.lanspeed-control-client{display:flex;flex-wrap:wrap'
+		'.lanspeed-control-actions{display:flex;flex-wrap:nowrap'
 	].forEach(function(marker) {
 		if (!baseCss.includes(marker))
-			fail(`statusStyleBase.js must retain status information architecture: ${marker}`);
+			fail(`statusStyleBase.js must retain the status page information architecture: ${marker}`);
 	});
-	if (!baseCss.includes('.lanspeed-clients-card{overflow-anchor:none}') ||
-	    !baseCss.includes('line-height:1.2;white-space:nowrap') ||
-	    !baseCss.includes('tbody tr:hover{') ||
-	    !baseCss.includes('background:transparent!important;background-image:none!important') ||
-	    baseCss.includes('lanspeed-client-hover-lock') ||
-	    baseCss.includes('lanspeed-client-refresh-lock')) {
-		fail('statusStyleBase.js must prevent scroll anchoring and neutralize client-row hover without obsolete locks');
-	}
+
+	/* Fixed, keyed tracks: a live sample may change text but never the layout. */
 	[
-		'@media (max-width:900px)', '@media (max-width:700px)', '@media (max-width:480px)',
-		'.lanspeed-clients-card .lanspeed-table tbody>tr{display:grid;',
-		'.lanspeed-clients-card .lanspeed-table td[data-label]::before{content:attr(data-label);',
-		'.lanspeed-ifaces-table tbody>tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));',
-		'.lanspeed-ifaces-table tbody td[data-label]::before{content:attr(data-label);',
-		'.lanspeed-table{table-layout:fixed}',
-		'.lanspeed-client-control-header{text-align:center}',
-		'.lanspeed-control-actions{display:flex;flex-wrap:nowrap;justify-content:flex-start}',
-		'.lanspeed-control-button{width:5.5em;min-width:5.5em}',
-		'.lanspeed-custom-column-layout',
-		'.lanspeed-custom-column-layout[data-client-totals][data-client-control]',
-		'width:auto!important;min-width:0;max-width:none!important;justify-self:stretch!important;box-sizing:border-box;border-bottom:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap',
-		':is(th,td).num{padding-left:0!important;padding-right:0!important}',
-		':nth-child(1){position:sticky!important;left:0',
-		':nth-child(2){position:sticky!important;left:var(--lanspeed-client-second-column-left)',
-		':is(th,td):nth-child(1)',
-		'width:22%',
-		'width:16%;text-align:center}',
-		'width:11.5000%;text-align:center}'
+		'.lanspeed-table-scroll{overflow-x:auto',
+		'.lanspeed-clients-table{table-layout:fixed;min-width:',
+		'.lanspeed-clients-table [data-column-key="hostname"]{width:auto;min-width:13rem}',
+		'.lanspeed-clients-table [data-column-key="mac"]{width:',
+		'.lanspeed-clients-table [data-column-key="rate"]{width:',
+		'.lanspeed-clients-table [data-column-key="totals"]{width:',
+		'.lanspeed-clients-table [data-column-key="tcp_conns"],',
+		'.lanspeed-clients-table [data-column-key="udp_conns"]{width:',
+		'.lanspeed-table .num{text-align:right',
+		'.lanspeed-client-count-cell{text-align:right;font-variant-numeric:tabular-nums',
+		'.lanspeed-clients-table thead th[aria-sort="ascending"]::after'
+	].forEach(function(marker) {
+		if (!baseCss.includes(marker))
+			fail(`statusStyleBase.js must give the client table fixed, keyed tracks: ${marker}`);
+	});
+
+	/* One typographic contract for every number on the page. */
+	if (!baseCss.includes('.lanspeed-stat-value{font-size:') ||
+	    !baseCss.includes('.lanspeed-client-rate{text-align:right;font-weight:500;white-space:nowrap') ||
+	    !baseCss.includes('.lanspeed-client-total{text-align:right;font-size:'))
+		fail('stat values, rates and totals must share one right-aligned numeric typography of the same scale');
+
+	/* State cues stay on semantic tokens so each theme can re-map them. */
+	if (!baseCss.includes('.lanspeed-live-state[data-state="live"]::before{background:var(--lanspeed-normal)}') ||
+	    !baseCss.includes('.lanspeed-live-state[data-state="bad"]::before{background:var(--lanspeed-danger)}') ||
+	    !baseCss.includes('.lanspeed-client-direction{font-size:'))
+		fail('statusStyleBase.js must keep live-state and direction cues on semantic tokens');
+
+	if (/position\s*:\s*sticky/.test(responsiveCss) || /position\s*:\s*sticky/.test(baseCss))
+		fail('client table must not pin cells over translucent theme surfaces');
+	if (/nth-child\(\d\)/.test(responsiveCss) || /nth-child\(\d\)/.test(baseCss) ||
+	    baseCss.includes('lanspeed-custom-column-layout') ||
+	    baseCss.includes('--lanspeed-client-grid-template'))
+		fail('client columns must be addressed by data-column-key, never by positional or runtime grid layouts');
+	if (baseCss.includes('lanspeed-client-hover-lock') || baseCss.includes('lanspeed-client-refresh-lock') ||
+	    responsiveCss.includes('lanspeed-client-hover-lock'))
+		fail('status styles must not reintroduce hover or refresh lock classes');
+
+	/* Below the card width every row becomes a card, with a viewport fallback
+	 * for engines without container queries. */
+	[
+		'container:lanspeed-clients/inline-size',
+		'@container lanspeed-clients (max-width:',
+		'@supports not (container-type:inline-size)',
+		'.lanspeed-clients-table tbody>tr{display:grid',
+		'.lanspeed-clients-table thead{display:none}',
+		'.lanspeed-clients-table td[data-label]::before{content:attr(data-label)',
+		'.lanspeed-root .lanspeed-clients-table .lanspeed-client-mac-value,',
+		'.lanspeed-root .lanspeed-clients-table .lanspeed-client-vendor{display:inline;margin:0;',
+		'.lanspeed-root .lanspeed-ifaces-table tbody>tr{display:grid;',
+		'  grid-template-columns:minmax(0,1fr) minmax(0,1fr)'
 	].forEach(function(marker) {
 		if (!responsiveCss.includes(marker))
 			fail(`statusStyleResponsive.js must retain responsive status behavior: ${marker}`);
 	});
-	if (!baseCss.includes('min-height:calc(var(--lanspeed-control-height)*.82)!important') ||
-	    !baseCss.includes('padding:.28em .7em!important') ||
-	    !baseCss.includes('font-size:inherit!important;') ||
-	    !baseCss.includes('font-weight:inherit!important;line-height:inherit!important')) {
-		fail('client control buttons must use compact theme-native control sizing');
-	}
-	if (!baseCss.includes('.lanspeed-client-total{display:inline-block;color:inherit;font-size:inherit;') ||
-	    !baseCss.includes('font-weight:inherit;line-height:inherit;white-space:nowrap}')) {
-		fail('cumulative traffic values must use the same typography as live rate values');
-	}
-	if (!baseCss.includes('.lanspeed-client-total-header,.lanspeed-client-total-cell{text-align:center}') ||
-		!responsiveCss.includes('width:16%;text-align:center}') ||
-		!responsiveCss.includes('width:11.5000%;text-align:center}')) {
-		fail('client totals and connection controls must use a compact, aligned desktop table rhythm');
-	}
-	[
-		'[data-client-totals="hidden"][data-client-control="shown"]',
-		'[data-client-totals="shown"][data-client-control="hidden"]',
-		'[data-client-totals="hidden"][data-client-control="hidden"]'
-	].forEach(function(marker) {
-		if (!responsiveCss.includes(marker))
-			fail(`statusStyleResponsive.js must define a balanced desktop layout for every optional-column combination: ${marker}`);
-	});
-	[
-		':is(:nth-child(3),:nth-child(4),:nth-child(5),:nth-child(6)){width:11.5000%;text-align:center}',
-		':is(:nth-child(3),:nth-child(4),:nth-child(5),:nth-child(6)){width:14.5000%;text-align:center}'
-	].forEach(function(marker) {
-		if (!responsiveCss.includes(marker))
-			fail(`live and cumulative traffic columns must retain one compact, even desktop rhythm: ${marker}`);
-	});
-	if (!responsiveCss.includes(':is(th,td):nth-child(2){width:19.5%;text-align:left}')) {
-		fail('desktop MAC values must share the MAC heading reading edge');
-	}
-	if (responsiveCss.includes('data-client-status') || responsiveCss.includes('nth-child(8)')) {
-		fail('statusStyleResponsive.js must use seven columns after combining traffic directions');
-	}
+
+	/* Themes only tune density and surfaces; the skeleton stays in the base leaf. */
 	themeCss.forEach(function(theme) {
-		if (!theme[2].includes(`lanspeed-theme-${theme[1]}`) ||
-		    !theme[2].includes('.lanspeed-metrics{') ||
-		    !theme[2].includes('.lanspeed-table') ||
-		    !theme[2].includes('background-image:none!important') ||
-		    theme[2].includes('background:var(--lanspeed-hover)') ||
-		    theme[2].includes('lanspeed-client-hover-lock')) {
-			fail(`statusStyle${theme[0]}.js must independently implement metrics and table density`);
+		const css = theme[2];
+		if (!css.includes(`.lanspeed-theme-${theme[1]}`) ||
+		    !css.includes('.lanspeed-metric') || !css.includes('.lanspeed-table') ||
+		    css.includes('lanspeed-client-hover-lock') ||
+		    /(?:^|\n)\s*(?:body|html|:root)\s*\{/.test(css)) {
+			fail(`statusStyle${theme[0]}.js must only tune its own theme scope and keep metric/table density`);
 		}
 	});
-	if (!themeCss[0][2].includes('background:transparent!important') ||
-	    !themeCss[1][2].includes('background:transparent!important') ||
-	    !themeCss[2][2].includes('tr:nth-child(odd):hover') ||
-	    !themeCss[2][2].includes('tr:nth-child(even):hover') ||
-	    !themeCss[2][2].includes('background:var(--lanspeed-surface-muted)!important')) {
-		fail('all status themes must neutralize client-row hover while preserving Bootstrap zebra stripes');
+	if (!themeCss[2][2].includes('tr:nth-child(even)') ||
+	    !themeCss[2][2].includes('background:var(--lanspeed-surface-muted)')) {
+		fail('statusStyleBootstrap.js must keep the zebra body its tables already use');
 	}
-	if (!themeCss[1][2].includes('.lanspeed-theme-argon .lanspeed-metric .big{font-size:1.3rem}'))
-		fail('statusStyleArgon.js must keep live rate values on one line at narrow widths');
-	if (!themeCss[0][2].includes('.lanspeed-clients-card .lanspeed-body{overflow-x:auto}') ||
-	    !themeCss[1][2].includes('.lanspeed-clients-card .lanspeed-body{overflow-x:auto}')) {
-		fail('Aurora and Argon status styles must retain desktop client-table overflow containment');
-	}
+	if (!themeCss[1][2].includes('color-mix('))
+		fail('statusStyleArgon.js must stripe translucent rows through one composited tint');
+
 	if (/lanspeed-(?:caps|warnings|subhead|strip)/.test(src) || src.includes('CAPS_CSS')) {
 		fail('lanspeed/statusStyle.js must not retain obsolete capability or legacy warning styles');
 	}
@@ -6115,7 +6163,7 @@ function assertStatusCollectorModule(src) {
 }
 
 function assertStatusShellModule(src) {
-	if (!src.includes('buildShell: function(viewState)') ||
+	if (!src.includes('function buildShell(viewState)') ||
 	    !src.includes('statusStyle.CSS') ||
 	    !src.includes('lsTheme.applyRoot(root)')) {
 		fail('lanspeed/statusShell.js must own status page DOM shell construction');
@@ -6125,7 +6173,7 @@ function assertStatusShellModule(src) {
 		fail('lanspeed/statusShell.js must remove the obsolete capability, metadata, and standalone NSS diagnostics');
 	}
 	if (!src.includes('接口吞吐') || !src.includes('refs.ifacesDetails') ||
-	    !src.includes('refs.ifacesBody') || !src.includes('ifacesCard')) {
+	    !src.includes('refs.ifacesBody') || !src.includes('refs.ifacesBlock')) {
 		fail('lanspeed/statusShell.js must preserve the interface throughput details');
 	}
 	if (src.includes('当前网速覆盖') || src.includes('refs.mCoverage'))
@@ -6141,29 +6189,28 @@ function assertStatusShellModule(src) {
 
 	if (!src.includes("E('div', { 'class': 'lanspeed-toolbar-left' }") ||
 	    !src.includes("E('div', { 'class': 'lanspeed-toolbar-right' }") ||
-	    !src.includes("E('label', { 'class': 'lanspeed-unit-control' }, [ _('单位'), refs.unitSel ])") ||
-	    !src.includes("E('label', { 'class': 'lanspeed-refresh-control' }, [ _('刷新'), refs.intervalSel ])")) {
-		fail('lanspeed/statusShell.js must place unit/filter controls left and refresh controls right');
+	    !src.includes("'class': 'lanspeed-unit-control'") ||
+	    !src.includes("'class': 'lanspeed-refresh-control'") ||
+	    !src.includes("'class': 'lanspeed-sort-control'")) {
+		fail('lanspeed/statusShell.js must group client filters left, display options right and page refresh in the status bar');
 	}
 	if (src.includes('refs.statusHeader') || src.includes('showClientStatus') ||
 		src.includes('data-client-status') || src.includes("_('状态')")) {
 		fail('lanspeed/statusShell.js must remove the obsolete client status column and toggle');
 	}
-	if (!src.includes("'class': 'big lanspeed-connection-values'") ||
-	    !src.includes("'class': 'lanspeed-connection-stat'") ||
-	    !src.includes("'class': 'lanspeed-connection-number'")) {
+	if (!src.includes("refs.mConnsValue  = E('div', { 'class': 'lanspeed-stat-value' }, '—')") ||
+	    !src.includes("refs.mConnsSub    = E('div', { 'class': 'lanspeed-stat-hint' }, 'TCP — · UDP —')")) {
 		fail('lanspeed/statusShell.js must render connection totals with the same three-row metric structure as every other card');
 	}
-	if (!src.includes('lanspeed-column-resize-handle') ||
-		!src.includes('COLUMN_WIDTHS_KEY') ||
-		!src.includes('pointerdown') ||
-		!src.includes('pointercancel') ||
-		!src.includes('clientColumnResizeActive') ||
-		!src.includes('clientColumnLayoutKey') ||
-		!src.includes('persistCurrentColumnWidths') ||
-		!src.includes('localStorage.setItem(COLUMN_WIDTHS_KEY')) {
-		fail('lanspeed/statusShell.js must provide persistent per-column resize handles');
+	if (src.includes('lanspeed-column-resize-handle') || src.includes('pointerdown') ||
+	    src.includes('ResizeObserver') || src.includes('lanspeed-custom-column-layout') ||
+	    src.includes('--lanspeed-client-grid-template') || !src.includes('LEGACY_COLUMN_WIDTHS_KEY') ||
+	    !src.includes('localStorage.removeItem(LEGACY_COLUMN_WIDTHS_KEY)')) {
+		fail('lanspeed/statusShell.js must use fixed CSS column tracks and retire stored column widths');
 	}
+	if (!src.includes('IFACES_OPEN_KEY') || !src.includes("addEventListener('toggle'") ||
+	    src.includes("'open': 'open'"))
+		fail('lanspeed/statusShell.js must collapse interface throughput by default and remember the choice');
 	const collectorBadges = src.match(/lanspeed-collector-status/g) || [];
 	if (collectorBadges.length !== 1 ||
 	    /(?:servicePill|freshnessPill|lanspeed-(?:service|freshness)-status)/.test(src)) {
@@ -6203,9 +6250,9 @@ function assertStatusRefreshModule(src) {
 	if (src.includes('showClientStatus') || src.includes('setClientStatusVisibility') ||
 		src.includes('clientStateCell') || src.includes('data-client-status') ||
 		src.includes('showClientControl') || src.includes('show_client_control') ||
-		!src.includes('var showClientTotals = viewState.showClientTotals === true;') ||
-		!src.includes('controlCell.hidden = false;')) {
-		fail('lanspeed/statusRefresh.js must remove the client-control visibility option');
+		src.includes('controlCell') || src.includes('clientControl') ||
+		!src.includes('var showClientTotals = viewState.showClientTotals === true;')) {
+		fail('lanspeed/statusRefresh.js must remove client controls while keeping cumulative totals');
 	}
 	if (src.includes('refreshDiagnostics') || src.includes('lanspeed-diagnostic-') ||
 	    src.includes('diagnosticsSummary') || src.includes('importantWarnings(status.warnings')) {
@@ -7785,6 +7832,7 @@ EXPECTED_MODULES.forEach(function(name) {
 	}
 	if (name === 'clientDetailView.js') {
 		assertClientDetailViewSource(src);
+		assertClientDetailVendorLifecycle(src);
 		assertClientDetailViewLifecycle(src);
 		assertClientDetailDisposalAndHostnameApply(src);
 		assertClientDetailGeoLifecycle(src);

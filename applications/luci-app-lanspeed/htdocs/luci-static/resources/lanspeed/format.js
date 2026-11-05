@@ -269,9 +269,9 @@ function sortClients(clients, sortKey, sortDir, nowMs, config) {
 	return sorted;
 }
 
-function matchesFilter(c, term) {
+function matchesFilter(c, term, vendor) {
 	if (!term) return true;
-	var hay = [clientDisplayName(c), c.mac, c.zone, c.interface, asArray(c.ips).join(' ')]
+	var hay = [clientDisplayName(c), c.mac, vendor, c.zone, c.interface, asArray(c.ips).join(' ')]
 		.filter(Boolean).join(' ').toLowerCase();
 	return hay.indexOf(term.toLowerCase()) !== -1;
 }

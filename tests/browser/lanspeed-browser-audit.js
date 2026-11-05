@@ -1309,6 +1309,13 @@ async page => {
 
 			if (config.pageName === 'overview') {
 				if (config.viewport.name === 'mobile') {
+					/* Interface throughput is collapsed evidence by design; open it
+					 * before measuring the labelled mobile rows. */
+					const ifaceDetails = root.locator('.lanspeed-ifaces-block details').first();
+					if (await ifaceDetails.count() && await ifaceDetails.getAttribute('open') === null) {
+						await ifaceDetails.locator('summary').first().click();
+						await page.waitForTimeout(260);
+					}
 					const interfaceLayout = await root.locator('.lanspeed-ifaces-table:visible').first()
 						.evaluate(table => {
 							const body = table.closest('.lanspeed-details-body');
@@ -1401,9 +1408,9 @@ async page => {
 						const items = nodes.map((node, index) => {
 							const box = node.getBoundingClientRect();
 							const style = getComputedStyle(node);
-							const bigTops = Array.from(node.querySelectorAll('.big')).map(element =>
+							const bigTops = Array.from(node.querySelectorAll('.lanspeed-stat-value')).map(element =>
 								element.getBoundingClientRect().top);
-							const hint = node.querySelector('.hint');
+							const hint = node.querySelector('.lanspeed-stat-hint');
 							return {
 								index: index,
 								top: box.top,
@@ -1499,8 +1506,11 @@ async page => {
 					const after = await root.locator('th[data-column-key="totals"]').getAttribute('aria-sort');
 					const adjacency = await sort.evaluate(select => {
 						const group = select.closest('.lanspeed-sort-control');
-						const adjacent = group && (group.nextElementSibling || group.previousElementSibling);
-						return !!adjacent && adjacent.classList.contains('lanspeed-refresh-control');
+						const toolbar = group && group.parentElement;
+						const unit = toolbar && toolbar.querySelector('.lanspeed-unit-control');
+						const actions = document.querySelector('.lanspeed-status-actions');
+						return !!(group && unit && actions &&
+							actions.querySelector('.lanspeed-refresh-control'));
 					});
 					evidence.interactions.sort = { before, keyboardValue, after, saved, adjacency };
 					addCheck('overview-sort', keyboardValue === 'rx:desc' && after === 'ascending' && adjacency &&
@@ -1536,9 +1546,9 @@ async page => {
 						lines[1].direction === 'tx' && lines[1].arrow === '↑' && lines[0].top < lines[1].top &&
 						lines.every(line => line.value && (line.value !== '-' || line.title.includes('暂不可用')));
 				}
-				addCheck('overview-traffic-columns', trafficColumns.headers.length === 7 &&
+				addCheck('overview-traffic-columns', trafficColumns.headers.length === 6 &&
 					trafficColumns.headers[2] === '网速' && trafficColumns.headers[3] === '累计流量' &&
-					trafficColumns.rows.every(row => row.cells === 7 && validDirections(row.rate) &&
+					trafficColumns.rows.every(row => row.cells === 6 && validDirections(row.rate) &&
 						(trafficColumns.totals !== 'shown' || validDirections(row.total))), trafficColumns);
 
 			const next = root.locator('.lanspeed-page-button[aria-label="下一页"]:visible').first();
@@ -1869,7 +1879,7 @@ async page => {
 				const nssContract = await root.evaluate(node => ({
 					page: node.getAttribute('data-config-page'), state: node.getAttribute('data-state'),
 					busy: node.getAttribute('aria-busy'),
-					fields: Array.from(node.querySelectorAll('.lanspeed-config-table tr[data-field]')).map(row => row.getAttribute('data-field')),
+					fields: Array.from(node.querySelectorAll('[data-field]')).map(row => row.getAttribute('data-field')),
 					interfaceSections: node.querySelectorAll('.lanspeed-ifcfg').length,
 					subsections: node.querySelectorAll('.lanspeed-config-subsection').length,
 					failure: !!node.querySelector('.lanspeed-page-failure')
@@ -1944,7 +1954,7 @@ async page => {
 							classes: Array.from(element.classList),
 							heading: (element.querySelector(':scope > .lanspeed-config-subheader h4') || {}).textContent || ''
 						})),
-							fieldNames: Array.from(node.querySelectorAll('.lanspeed-config-table tbody>tr[data-field]'))
+							fieldNames: Array.from(node.querySelectorAll('[data-field]'))
 								.map(element => element.getAttribute('data-field')),
 							compatibilityVisible: !!compatibility,
 							compatibilityTerms: compatibility ? compatibility.querySelectorAll('dt').length : 0,
@@ -1954,7 +1964,7 @@ async page => {
 						interfaceStatusText: interfaceStatus ? interfaceStatus.textContent.trim() : '',
 						interfaceHint: interfaceHint ? interfaceHint.getAttribute('data-state') || '' : '',
 						checkboxes: Array.from(node.querySelectorAll(
-							'.lanspeed-config-table input[type="checkbox"]')).map(element => {
+							'[data-field] input[type="checkbox"]')).map(element => {
 							const rect = element.getBoundingClientRect();
 							const style = getComputedStyle(element);
 							const label = element.closest('.lanspeed-toggle');
@@ -2063,7 +2073,7 @@ async page => {
 						invalid: invalidCheckboxes
 					});
 					const checkboxFocusTarget = root.locator(
-						'.lanspeed-config-table input[type="checkbox"]:not(:disabled)').first();
+						'[data-field] input[type="checkbox"]:not(:disabled)').first();
 					if (await checkboxFocusTarget.count()) {
 						await page.keyboard.press('Tab');
 						await checkboxFocusTarget.focus();

@@ -2,6 +2,8 @@
 'require baseclass';
 'require lanspeed.format as fmt';
 'require lanspeed.clientConnections as clientConnections';
+'require lanspeed.clientControl as clientControl';
+'require lanspeed.vendorLogo as vendorLogo';
 
 var CONNECTION_PAGE_SIZE = 100;
 var LAZY_DETAIL_THRESHOLD = 32;
@@ -312,14 +314,28 @@ function clearElement(node) {
 		node.removeChild(node.firstChild);
 }
 
-function metaFact(label, value) {
-	return E('span', { 'class': 'lanspeed-connection-meta-fact' }, [
+function metaFact(label, value, attrs) {
+	return E('span', Object.assign({ 'class': 'lanspeed-connection-meta-fact' }, attrs || {}), [
 		E('span', { 'class': 'lanspeed-connection-meta-label' }, label),
 		E('span', { 'class': 'lanspeed-connection-meta-value' }, value)
 	]);
 }
 
-function renderClientMeta(ref, client, ips, identityKey) {
+/* Same vocabulary, state attribute and stale marker as the realtime client
+ * list, so both pages describe an OUI match identically. */
+function vendorFact(vendor) {
+	var attrs = { 'title': vendor.title || vendor.label,
+		'class': 'lanspeed-connection-meta-fact lanspeed-connection-meta-fact--vendor' };
+	if (vendor.kind) attrs['data-vendor-state'] = vendor.kind;
+	if (vendor.stale) attrs['data-vendor-stale'] = 'true';
+	return metaFact(_('设备厂商'), [
+		vendorLogo.logo(vendor.vendor || vendor.label, vendor.kind),
+		E('span', { 'class': 'lanspeed-client-vendor-name' },
+			vendor.stale ? vendor.label + ' *' : vendor.label)
+	], attrs);
+}
+
+function renderClientMeta(ref, client, ips, identityKey, vendorLookup) {
 	clearElement(ref);
 
 	if (ips.length) {
@@ -344,6 +360,8 @@ function renderClientMeta(ref, client, ips, identityKey) {
 	var facts = [];
 	if (client && client.mac)
 		facts.push(metaFact(_('MAC 地址'), client.mac));
+	if (client && client.mac && vendorLookup)
+		facts.push(vendorFact(vendorLookup(client.mac)));
 	if (client && client.interface)
 		facts.push(metaFact(_('接口'), client.interface));
 	if (!ips.length && !facts.length && identityKey)
@@ -485,6 +503,41 @@ function errorText(error, response) {
 	return detail ? prefix + '：' + detail : prefix;
 }
 
+function controlSignature(viewState, controlClient) {
+	if (!controlClient) return 'missing';
+	var control = controlClient.control || {};
+	return [
+		controlClient.identity_key || '',
+		control.configured === true ? '1' : '0',
+		control.internet_disabled === true ? '1' : '0',
+		control.shaping_supported === true ? '1' : '0',
+		control.blocking_supported === true ? '1' : '0',
+		control.queue_overflow === true ? '1' : '0',
+		String(control.state || ''),
+		String(control.reason || ''),
+		Number(control.upload_bps) || 0,
+		Number(control.download_bps) || 0,
+		viewState.controlBusy && viewState.controlBusy[controlClient.identity_key] ? '1' : '0'
+	].join('|');
+}
+
+function renderControls(viewState, refs, controlClient) {
+	if (!refs.controlState || !refs.controlActions) return;
+	var control = controlClient && controlClient.control;
+	refs.controlState.textContent = controlClient
+		? clientControl.summary(control) : _('控制信息不可用');
+	refs.controlState.setAttribute('data-state',
+		control && control.internet_disabled ? 'blocked' :
+			control && control.configured ? 'active' : 'idle');
+	var signature = controlSignature(viewState, controlClient);
+	if (refs.controlActions.__signature === signature) return;
+	clearElement(refs.controlActions);
+	if (controlClient)
+		refs.controlActions.appendChild(clientControl.actions(
+			viewState, controlClient, 'lanspeed-connection-control-actions'));
+	refs.controlActions.__signature = signature;
+}
+
 function render(viewState) {
 	var refs = viewState && viewState.refs;
 	if (!refs) return;
@@ -498,6 +551,7 @@ function render(viewState) {
 	var incomplete = Boolean(response && response.available === false &&
 		warnings.indexOf('conntrack_snapshot_incomplete') !== -1);
 	var client = response && response.client;
+	var controlClient = client && client.control ? client : null;
 	/* The client rate plane is published independently of the conntrack detail
 	 * plane.  Keep showing a present client's totals when conntrack is
 	 * unavailable, while counts/rows remain explicitly unknown or empty. */
@@ -510,7 +564,7 @@ function render(viewState) {
 		: null;
 
 	refs.clientName.textContent = displayName;
-	renderClientMeta(refs.clientMeta, client, ips, viewState.identityKey);
+	renderClientMeta(refs.clientMeta, client, ips, viewState.identityKey, viewState.vendorLookup);
 	if (refs.clientHeading) {
 		var hostnameEditable = Boolean(viewState.hostnameMac) &&
 			viewState.hostnameOpening !== true;
@@ -660,6 +714,7 @@ function render(viewState) {
 		: _('每 %s 秒自动刷新').format(String(Math.round(Number(interval) / 100) / 10)));
 	footer.push(_('国家/地区及中国省份按 IP 推测，由浏览器查询并缓存，结果可能不准确'));
 	refs.footer.textContent = footer.join(' · ');
+	renderControls(viewState, refs, controlClient);
 	restoreViewport(viewport);
 }
 
