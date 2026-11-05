@@ -50,13 +50,7 @@
 
 ### 截图
 
-- 对比总览：`docs/screenshots/data-page-2026-10-28/comparison-desktop-light.png`、`comparison-mobile-light.png`
-- 暗色总览：`themes-dark.png`
-- 平板总览：`themes-tablet.png`
-- 逐主题原图：同目录下 `<theme>-<viewport>-<light|dark>-<before|after>.png`
-- 设备详情控制条：`aurora-client-detail-light-after.png`、`client-detail-control.png`
-
-前后截图使用同一份真实 RPC 快照（15 个客户端、相同速率/累计/连接数据），桌面 1920×1080、手机 390×844、平板 768×1024。旧版页面为当前分支基线 `01713d7` 的旧前端，新版为本次工作树前端。
+历史截图及预览附件已按用户要求移除，不再随 PR 发布。后续截图仅保存在本地输出目录。
 
 ## 未覆盖/说明
 
