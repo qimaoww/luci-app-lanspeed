@@ -11,13 +11,6 @@ var IFACES_OPEN_KEY = 'luci-app-lanspeed.ifaces-open.v1';
  * so drop the obsolete preference instead of leaving it behind. */
 var LEGACY_COLUMN_WIDTHS_KEY = 'luci-app-lanspeed.client-column-widths.v12';
 
-/* Columns that stack both directions sort by their download key first. TCP and
- * UDP get one column each so connection counts line up with the headers. */
-var SORT_KEYS_BY_COLUMN = {
-	rate: [ 'rx', 'tx' ],
-	totals: [ 'rx_bytes', 'tx_bytes' ]
-};
-
 function readFlag(key) {
 	try { return window.localStorage.getItem(key) === '1'; } catch (e) { return false; }
 }
@@ -38,7 +31,7 @@ function clientHeader(refs, columnKey, label, attrs) {
 	var th = E('th', thAttrs, label);
 	refs.sortHeaders[columnKey] = {
 		th: th,
-		keys: SORT_KEYS_BY_COLUMN[columnKey] || [ columnKey ],
+		keys: [ columnKey ],
 		label: label
 	};
 	return th;
@@ -48,8 +41,8 @@ function sortChoices() {
 	var fields = [
 		[ 'rx', _('下载速度') ], [ 'tx', _('上传速度') ],
 		[ 'rx_bytes', _('累计下载') ], [ 'tx_bytes', _('累计上传') ],
-		[ 'hostname', _('客户端') ], [ 'mac', 'MAC' ],
-		[ 'tcp_conns', _('TCP 连接') ], [ 'udp_conns', _('UDP 连接') ]
+		[ 'hostname', _('客户端') ], [ 'mac', _('MAC') ],
+		[ 'tcp_conns', _('TCP') ], [ 'udp_conns', _('UDP') ]
 	];
 	var choices = [ { value: 'default', label: _('默认（下载优先）') } ];
 	fields.forEach(function(field) {
@@ -70,14 +63,11 @@ function metric(key, caption, value, hint, attrs) {
 }
 
 function directionCaption(direction, label) {
-	return [
-		E('span', {
-			'class': 'lanspeed-direction-mark',
-			'data-direction': direction,
-			'aria-hidden': 'true'
-		}, direction === 'rx' ? '↓' : '↑'),
-		' ', label
-	];
+	return [ label, E('span', {
+		'class': 'lanspeed-direction-mark',
+		'data-direction': direction,
+		'aria-hidden': 'true'
+	}, direction === 'rx' ? '↓' : '↑') ];
 }
 
 function stopEvent(event) {
@@ -157,9 +147,9 @@ function buildShell(viewState) {
 		if (typeof viewState.refreshLive === 'function') viewState.refreshLive();
 	});
 
-	var statusHeader = E('div', { 'class': 'lanspeed-header lanspeed-status-bar' }, [
+	var statusHeader = E('header', { 'class': 'lanspeed-page-header lanspeed-status-bar' }, [
 		E('div', { 'class': 'lanspeed-status-title' }, [
-			E('h3', {}, _('LAN Speed')),
+			E('h2', {}, _('实时状态')),
 			refs.collectorPill,
 			refs.liveState,
 			refs.meta
@@ -201,9 +191,13 @@ function buildShell(viewState) {
 	refs.mClientsSub  = E('div', { 'class': 'lanspeed-stat-hint' }, '-');
 	refs.mClientsWrap = metric('clients', _('客户端'), refs.mClients, refs.mClientsSub);
 	refs.mConnsValue  = E('div', { 'class': 'lanspeed-stat-value' }, '—');
-	refs.mConnsSub    = E('div', { 'class': 'lanspeed-stat-hint' }, 'TCP — · UDP —');
+	refs.mConnsTcpHint = E('span', {}, _('TCP —'));
+	refs.mConnsUdpHint = E('span', {}, _('UDP —'));
+	refs.mConnsSub = E('div', { 'class': 'lanspeed-stat-hint lanspeed-connection-hints' }, [
+		refs.mConnsTcpHint, refs.mConnsUdpHint
+	]);
 	refs.mConnsWrap = metric('conns', _('连接数'), refs.mConnsValue, refs.mConnsSub, {
-		'title': _('当前连接来自 conntrack：TCP 统计已建立且确认的连接，UDP 统计已确认的连接。')
+		'title': _('当前连接来自连接跟踪：TCP 统计已建立且确认的传输控制协议连接，UDP 统计已确认的用户数据报协议连接。')
 	});
 	var metrics = E('div', { 'class': 'lanspeed-metrics' }, [
 		metric('rx', directionCaption('rx', _('下载')), refs.mRx,
@@ -214,7 +208,6 @@ function buildShell(viewState) {
 		refs.mConnsWrap
 	]);
 	var statsCard = E('div', { 'class': 'cbi-section lanspeed-stats-card' }, [
-		statusHeader,
 		E('div', { 'class': 'lanspeed-body' }, [ refs.errorBox, metrics ])
 	]);
 
@@ -225,7 +218,7 @@ function buildShell(viewState) {
 		'class': 'cbi-input-text',
 		'aria-label': _('过滤客户端'),
 		'aria-controls': 'lanspeed-clients-table',
-		'placeholder': _('搜索名称 / IP / MAC / 厂商'),
+		'placeholder': _('搜索名称、网络地址、MAC或厂商'),
 		'value': viewState.filter || ''
 	});
 	refs.filterInput.addEventListener('input', function(ev) {
@@ -267,22 +260,45 @@ function buildShell(viewState) {
 	});
 
 	refs.unitSel = E('select', { 'class': 'cbi-input-select lanspeed-unit-select', 'aria-label': _('速率单位') }, [
-		fmt.opt('bit',  'bit/s',  prefs.unit === 'bit'),
-		fmt.opt('byte', 'Byte/s', prefs.unit === 'byte')
+		fmt.opt('bit',  'bps', prefs.unit === 'bit'),
+		fmt.opt('byte', 'B/s', prefs.unit === 'byte')
 	]);
 	refs.unitSel.addEventListener('change', function(ev) {
 		viewState.prefs.unit = ev.target.value;
+		viewState.page = 1;
 		fmt.savePrefs(viewState.prefs);
 		viewState.refreshLive();
 	});
 
+	refs.clearFilters = E('button', {
+		'type': 'button', 'class': 'cbi-button lanspeed-clear-filters', 'hidden': 'hidden'
+	}, _('清除筛选'));
+	refs.clearFilters.addEventListener('click', function() {
+		viewState.filter = '';
+		refs.filterInput.value = '';
+		viewState.prefs.activeOnly = false;
+		refs.activeChk.checked = false;
+		viewState.page = 1;
+		fmt.savePrefs(viewState.prefs);
+		viewState.refreshLive();
+		refs.filterInput.focus();
+	});
+
+	refs.clientsHeaderSummary = E('span', { 'class': 'lanspeed-clients-summary' }, '');
+	var clientsHeader = E('div', { 'class': 'lanspeed-clients-heading' }, [
+		E('h3', {}, _('客户端')),
+		refs.clientsHeaderSummary
+	]);
+
+
 	var toolbar = E('div', { 'class': 'lanspeed-toolbar lanspeed-clients-toolbar' }, [
+		clientsHeader,
 		E('div', { 'class': 'lanspeed-toolbar-left' }, [
 			E('div', { 'class': 'lanspeed-toolbar-filter' }, [ refs.filterInput ]),
 			E('label', { 'class': 'lanspeed-active-only cbi-checkbox', 'for': 'lanspeed-active' }, [
 				refs.activeChk,
 				E('span', { 'class': 'lanspeed-active-label' }, _('仅活跃'))
-			])
+			]), refs.clearFilters
 		]),
 		E('div', { 'class': 'lanspeed-toolbar-right' }, [
 			E('label', { 'class': 'lanspeed-sort-control' }, [
@@ -378,21 +394,20 @@ function buildShell(viewState) {
 	});
 
 	/* --- Client table: identity first, then rate, totals and one numeric column
-	 * per transport, with row actions last. Column tracks are fixed in CSS so a
+	 * per transport. Column tracks are fixed in CSS so a
 	 * live sample never reflows the table. */
-	refs.clientsHeaderSummary = E('span', { 'class': 'lanspeed-clients-summary' }, '');
-	var clientsHeader = E('div', { 'class': 'lanspeed-header lanspeed-clients-header' }, [
-		E('h3', {}, _('LAN 客户端')),
-		E('span', { 'class': 'lanspeed-spacer' }),
-		refs.clientsHeaderSummary
-	]);
 
 	refs.tbody = E('tbody', {});
-	refs.totalHeader = clientHeader(refs, 'totals', _('累计流量'), {
+	refs.totalHeader = clientHeader(refs, 'rx_bytes', _('累计下载'), {
 		'class': 'num lanspeed-client-total-header',
 		'title': _('启用采集后累计的实际字节数')
 	});
 	refs.totalHeader.hidden = viewState.showClientTotals !== true;
+	refs.totalUploadHeader = clientHeader(refs, 'tx_bytes', _('累计上传'), {
+		'class': 'num lanspeed-client-total-header',
+		'title': _('启用采集后累计的实际字节数')
+	});
+	refs.totalUploadHeader.hidden = viewState.showClientTotals !== true;
 	refs.clientsTable = E('table', {
 		'id': 'lanspeed-clients-table',
 		'class': 'lanspeed-table lanspeed-clients-table',
@@ -400,18 +415,20 @@ function buildShell(viewState) {
 	}, [
 		E('thead', {}, E('tr', {}, [
 			clientHeader(refs, 'hostname', _('客户端')),
-			clientHeader(refs, 'mac', _('MAC / 厂商'), {
-				'title': _('厂商按 MAC 前缀（OUI）在浏览器本地匹配，表示地址注册机构，可能是网卡或模块厂商')
+			clientHeader(refs, 'mac', _('MAC'), {
+				'title': _('厂商按MAC前缀在浏览器本地匹配，表示地址注册机构，可能是网卡或模块厂商')
 			}),
-			clientHeader(refs, 'rate', _('网速'), { 'class': 'num lanspeed-client-rate-header' }),
+			clientHeader(refs, 'rx', _('下载速度'), { 'class': 'num lanspeed-client-rate-header' }),
+			clientHeader(refs, 'tx', _('上传速度'), { 'class': 'num lanspeed-client-rate-header' }),
 			refs.totalHeader,
-			clientHeader(refs, 'tcp_conns', 'TCP', {
+			refs.totalUploadHeader,
+			clientHeader(refs, 'tcp_conns', _('TCP'), {
 				'class': 'num lanspeed-client-count-header',
-				'title': _('当前已建立并确认的 TCP 连接数')
+				'title': _('传输控制协议：统计当前已建立且确认的连接')
 			}),
-			clientHeader(refs, 'udp_conns', 'UDP', {
+			clientHeader(refs, 'udp_conns', _('UDP'), {
 				'class': 'num lanspeed-client-count-header',
-				'title': _('当前已确认的 UDP 连接数，含 DNS 与其它流')
+				'title': _('用户数据报协议：统计当前已确认的连接，含域名查询与其他流')
 			})
 		])),
 		refs.tbody
@@ -460,22 +477,27 @@ function buildShell(viewState) {
 	refs.ifacesBlock = E('div', { 'class': 'lanspeed-ifaces-block' }, [ refs.ifacesDetails ]);
 
 	var clientsCard = E('div', { 'class': 'cbi-section lanspeed-clients-card' }, [
-		clientsHeader,
 		E('div', { 'class': 'lanspeed-body' }, [
 			toolbar,
+
 			E('div', { 'class': 'lanspeed-table-scroll' }, [ refs.clientsTable ]),
 			refs.empty,
 			refs.pageNav,
+			E('details', { 'class': 'lanspeed-list-help' }, [
+				E('summary', {}, _('列表说明')),
+				E('p', {}, _('点击设备名称可查看连接详情并进行限速、禁网或恢复。厂商表示MAC前缀的注册机构，可能是网卡或模块厂商，不能据此确认整机品牌。TCP 统计已建立且确认的传输控制协议连接；UDP 统计已确认的用户数据报协议连接。厂商数据库仅在浏览器内匹配，过期缓存最长保留三十天。'))
+			]),
 			refs.ifacesBlock
 		])
 	]);
 
 	var root = E('div', {
-		'class': 'cbi-map lanspeed-root lanspeed-status-root',
+		'class': 'cbi-map lanspeed-root lanspeed-page lanspeed-status-root',
 		'aria-busy': 'true',
 		'data-state': 'loading'
 	}, [
 		E('style', {}, statusStyle.CSS),
+		statusHeader,
 		statsCard,
 		clientsCard
 	]);

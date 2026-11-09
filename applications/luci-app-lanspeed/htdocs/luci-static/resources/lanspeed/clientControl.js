@@ -121,7 +121,14 @@ function openLimit(viewState, client) {
 		try {
 			var up = mbpsToBps(upload.value, control.max_rate_bps);
 			var down = mbpsToBps(download.value, control.max_rate_bps);
-			setRule(viewState, client, up, down, control.internet_disabled === true);
+			save.disabled = true;
+			save.setAttribute('aria-busy', 'true');
+			save.textContent = _('处理中…');
+			setRule(viewState, client, up, down, control.internet_disabled === true).finally(function() {
+				save.disabled = false;
+				save.setAttribute('aria-busy', 'false');
+				save.textContent = _('保存');
+			});
 		} catch (error) {
 			feedback.style.display = '';
 			feedback.textContent = error.message;
@@ -137,7 +144,7 @@ function openLimit(viewState, client) {
 				'class': 'lanspeed-control-client-meta', 'title': identity.details
 			}, identity.details) : ''
 		]),
-		E('p', {}, _('仅限制访问互联网的流量，路由器管理和 LAN/NAS 流量不受影响。正常整形不主动丢包。')),
+		E('p', {}, _('仅限制访问互联网的流量，路由器管理和 局域网及网络存储流量不受影响。正常整形不主动丢包。')),
 		E('div', { 'class': 'cbi-section-node lanspeed-control-form' }, [
 			E('label', {}, [ E('span', {}, _('上传 Mbps')), upload ]),
 			E('label', {}, [ E('span', {}, _('下载 Mbps')), download ])

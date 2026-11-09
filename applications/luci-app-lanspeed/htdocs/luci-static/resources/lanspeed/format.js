@@ -21,19 +21,19 @@ var DELTA_SIGNIFICANT_RATIO   = 0.10;
 var DELTA_SIGNIFICANT_MIN_BPS = 20000;
 
 var REFRESH_CHOICES = [
-	{ value:  1000, label: '1s'  },
-	{ value:  2000, label: '2s'  },
-	{ value:  3000, label: '3s'  },
-	{ value:  5000, label: '5s'  },
-	{ value: 10000, label: '10s' }
+	{ value:  1000, label: '1 秒'  },
+	{ value:  2000, label: '2 秒'  },
+	{ value:  3000, label: '3 秒'  },
+	{ value:  5000, label: '5 秒'  },
+	{ value: 10000, label: '10 秒' }
 ];
 
 var NSS_REFRESH_CHOICES = [
-	{ value:  1000, label: '1s'  },
-	{ value:  2000, label: '2s'  },
-	{ value:  4000, label: '4s'  },
-	{ value:  8000, label: '8s'  },
-	{ value: 10000, label: '10s' }
+	{ value:  1000, label: '1 秒'  },
+	{ value:  2000, label: '2 秒'  },
+	{ value:  4000, label: '4 秒'  },
+	{ value:  8000, label: '8 秒'  },
+	{ value: 10000, label: '10 秒' }
 ];
 
 var PAGE_SIZE_CHOICES = [ 10, 25, 50, 100 ];
@@ -124,7 +124,7 @@ function formatRate(valueBps, unit) {
 	var n = Number(valueBps) || 0, units, div;
 	if (unit === 'byte') { n /= 8; units = ['B/s','KB/s','MB/s','GB/s','TB/s']; div = 1024; }
 	else                 { units = ['bps','Kbps','Mbps','Gbps','Tbps']; div = 1000; }
-	if (n < 1) return '0';
+	if (n < 1) return '0 ' + units[0];
 	var i = 0;
 	while (n >= div && i < units.length - 1) { n /= div; i++; }
 	return (i === 0 ? '%d %s' : '%.2f %s').format(n, units[i]);
@@ -271,9 +271,14 @@ function sortClients(clients, sortKey, sortDir, nowMs, config) {
 
 function matchesFilter(c, term, vendor) {
 	if (!term) return true;
+	var query = String(term).trim().toLowerCase();
 	var hay = [clientDisplayName(c), c.mac, vendor, c.zone, c.interface, asArray(c.ips).join(' ')]
 		.filter(Boolean).join(' ').toLowerCase();
-	return hay.indexOf(term.toLowerCase()) !== -1;
+	if (hay.indexOf(query) !== -1) return true;
+	// A physical-address search may use colon, dash, dotted or compact notation.
+	var compact = query.replace(/[:.\-]/g, '');
+	return /^[0-9a-f]{4,12}$/.test(compact) &&
+		String(c.mac || '').replace(/[:.\-]/g, '').toLowerCase().indexOf(compact) !== -1;
 }
 
 function normalizePageSize(value) {

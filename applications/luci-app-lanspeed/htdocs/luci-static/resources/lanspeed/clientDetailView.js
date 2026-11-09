@@ -286,7 +286,7 @@ function showHostnameDialog(viewState, mac, currentName) {
 			E('p', {
 				'id': 'lanspeed-hostname-modal-hint',
 				'class': 'lanspeed-connection-hostname-modal-hint'
-			}, _('保存到 /etc/config/dhcp，仅绑定 MAC，不固定 IP；留空可清除自定义名称。')),
+			}, _('保存到 /etc/config/dhcp，仅绑定MAC，不固定网络地址；留空可清除自定义名称。')),
 			status
 		]),
 		E('div', { 'class': 'right lanspeed-connection-hostname-modal-actions' }, [
@@ -492,7 +492,7 @@ return baseclass.extend({
 					return Promise.resolve(false);
 				if (!mac) {
 					ui.addNotification(null,
-						E('p', {}, _('无法确定客户端 MAC 地址。')), 'danger');
+						E('p', {}, _('无法确定客户端 MAC。')), 'danger');
 					return Promise.resolve(false);
 				}
 				this.hostnameOpening = true;

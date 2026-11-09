@@ -9,9 +9,11 @@
 return baseclass.extend({
 	__name__: 'LuCILanspeedStatusStyleAurora',
 	CSS: [
-		'.lanspeed-root.lanspeed-theme-aurora>.cbi-section{padding:var(--lanspeed-section-x);overflow:visible}',
+		'.lanspeed-root.lanspeed-theme-aurora>.cbi-section{padding:16px;overflow:visible}',
 		'.lanspeed-root.lanspeed-theme-aurora .lanspeed-header{margin:0 0 var(--lanspeed-section-y);',
-			'padding:0 0 var(--lanspeed-section-y);background:transparent;gap:.45rem .75rem}',
+			'padding:0 0 12px;background:transparent;gap:.45rem .75rem}',
+		'.lanspeed-root.lanspeed-theme-aurora .lanspeed-status-bar{align-items:center;margin-bottom:12px}',
+		'.lanspeed-root.lanspeed-theme-aurora .lanspeed-status-title{align-self:center}',
 		'.lanspeed-root.lanspeed-theme-aurora .lanspeed-header h3{font-size:1.2rem!important;line-height:1.25!important;letter-spacing:normal!important}',
 		'.lanspeed-theme-aurora .lanspeed-body{padding:0}',
 		'.lanspeed-theme-aurora .lanspeed-stats-card>.lanspeed-body{padding:4px 0 2px}',
@@ -36,6 +38,9 @@ return baseclass.extend({
 			'.lanspeed-theme-aurora .lanspeed-metric:nth-child(odd){padding-left:0;border-left:0}',
 			'.lanspeed-theme-aurora .lanspeed-metric:nth-child(even){border-left:1px solid var(--lanspeed-border)}}',
 		'@media (max-width:800px){',
+			'.lanspeed-root.lanspeed-theme-aurora .lanspeed-status-bar{align-items:stretch}',
+			'.lanspeed-root.lanspeed-theme-aurora .lanspeed-status-title{align-self:stretch}',
+			'.lanspeed-root.lanspeed-theme-aurora .lanspeed-status-actions{width:100%}',
 			'.lanspeed-root.lanspeed-theme-aurora>.cbi-section{padding:calc(var(--spacing,.25rem)*4)}',
 			'.lanspeed-root.lanspeed-theme-aurora .lanspeed-header{margin:0 0 8px;padding:0 0 .7rem}',
 			'.lanspeed-theme-aurora .lanspeed-metric{min-height:3.6rem;padding:6px 12px}',

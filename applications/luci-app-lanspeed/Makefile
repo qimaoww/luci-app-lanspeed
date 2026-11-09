@@ -73,9 +73,11 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/configStyleBootstrap.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleShadcn.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleResponsive.js \
+		./htdocs/luci-static/resources/lanspeed/configStyleLayout.js \
 		./htdocs/luci-static/resources/lanspeed/configStyleShared.js \
 		./htdocs/luci-static/resources/lanspeed/configView.js \
 		./htdocs/luci-static/resources/lanspeed/designSystem.js \
+		./htdocs/luci-static/resources/lanspeed/pageLayout.js \
 		./htdocs/luci-static/resources/lanspeed/designSystemArgon.js \
 		./htdocs/luci-static/resources/lanspeed/designSystemAurora.js \
 		./htdocs/luci-static/resources/lanspeed/designSystemBase.js \
@@ -90,6 +92,7 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleBootstrap.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleShadcn.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleResponsive.js \
+		./htdocs/luci-static/resources/lanspeed/diagnosticsStyleLayout.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsSchema.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsResources.js \
 		./htdocs/luci-static/resources/lanspeed/diagnosticsStates.js \
@@ -118,6 +121,9 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/format.js \
 		./htdocs/luci-static/resources/lanspeed/geoLocation.js \
 		./htdocs/luci-static/resources/lanspeed/macVendor.js \
+		./htdocs/luci-static/resources/lanspeed/vendorNames.js \
+		./htdocs/luci-static/resources/lanspeed/vendorDatabase.js \
+		./htdocs/luci-static/resources/lanspeed/vendorSeed.js \
 		./htdocs/luci-static/resources/lanspeed/vendorLogo.js \
 		./htdocs/luci-static/resources/lanspeed/ifaceConfig.js \
 		./htdocs/luci-static/resources/lanspeed/rpc.js \
@@ -133,6 +139,7 @@ define Package/luci-app-lanspeed/install
 		./htdocs/luci-static/resources/lanspeed/statusStyleBootstrap.js \
 		./htdocs/luci-static/resources/lanspeed/statusStyleShadcn.js \
 		./htdocs/luci-static/resources/lanspeed/statusStyleResponsive.js \
+		./htdocs/luci-static/resources/lanspeed/statusStyleLayout.js \
 		./htdocs/luci-static/resources/lanspeed/statusOverview.js \
 		./htdocs/luci-static/resources/lanspeed/statusView.js \
 		./htdocs/luci-static/resources/lanspeed/theme.js \

@@ -343,6 +343,37 @@ async page => {
 		evidence.title = await page.title();
 		addCheck('url-path', page.url().indexOf(config.expectedUrlPath) !== -1, page.url());
 
+		const headerFlow = await root.evaluate(async node => {
+			const header = node.querySelector(':scope > .lanspeed-page-header');
+			if (!header) return { missing: true };
+			let scroller = node.parentElement;
+			while (scroller && !(scroller.scrollHeight > scroller.clientHeight + 1 &&
+				/auto|scroll/.test(getComputedStyle(scroller).overflowY)))
+				scroller = scroller.parentElement;
+			scroller = scroller || document.scrollingElement;
+			const saved = { left: scroller.scrollLeft, top: scroller.scrollTop };
+			const settle = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+			scroller.scrollTo({ top: 0, behavior: 'instant' });
+			await settle();
+			const before = { top: header.getBoundingClientRect().top, scroll: scroller.scrollTop };
+			const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+			scroller.scrollTo({ top: Math.min(400, maximum), behavior: 'instant' });
+			await settle();
+			const style = getComputedStyle(header);
+			const result = {
+				position: style.position, zIndex: style.zIndex,
+				scrolled: scroller.scrollTop - before.scroll,
+				moved: before.top - header.getBoundingClientRect().top
+			};
+			scroller.scrollTo({ left: saved.left, top: saved.top, behavior: 'instant' });
+			await settle();
+			return result;
+		});
+		evidence.observations.headerFlow = headerFlow;
+		addCheck('page-header-scrolls-with-content', !headerFlow.missing &&
+			headerFlow.position === 'static' && headerFlow.zIndex === 'auto' &&
+			Math.abs(headerFlow.scrolled - headerFlow.moved) <= 1, headerFlow);
+
 		const themeEvidence = await root.evaluate((node, args) => {
 			const computed = getComputedStyle(node);
 			const requiredTokens = [
@@ -460,9 +491,9 @@ async page => {
 					nativeTokens: nativeTokens,
 					resolved: resolved,
 					rootStyle: styleOf(node),
-				sectionStyle: styleOf(':scope > .cbi-section'),
-				headerStyle: styleOf(':scope > .cbi-section .lanspeed-header'),
-				headingStyle: styleOf(':scope > .cbi-section .lanspeed-header h3'),
+				sectionStyle: styleOf(':scope > .cbi-section, .lanspeed-config-group'),
+				headerStyle: styleOf(':scope > .lanspeed-page-header'),
+				headingStyle: styleOf(':scope > .lanspeed-page-header h2'),
 				tabActiveStyle: styleOf(document.querySelector('#tabmenu .tabs>li.active')),
 				controlStyle: styleOf('input:not([type="hidden"]),select,textarea'),
 				buttonStyle: styleOf('.cbi-button,button'),
@@ -561,14 +592,14 @@ async page => {
 					});
 				const headerBackground = parseRgb(themeEvidence.headerStyle &&
 					themeEvidence.headerStyle.backgroundColor);
-				addCheck('aurora-native-card-heading', !!themeEvidence.sectionStyle &&
+				addCheck('aurora-native-surface-and-page-heading', !!themeEvidence.sectionStyle &&
 					!!themeEvidence.headerStyle &&
 					colorsNear(themeEvidence.sectionStyle.backgroundColor,
 						themeEvidence.resolved.auroraSurface, 3) &&
 					parseFloat(themeEvidence.sectionStyle.paddingLeft) > 0 &&
 					parseFloat(themeEvidence.headerStyle.paddingLeft) === 0 &&
-					parseFloat(themeEvidence.headerStyle.paddingTop) === 0 &&
-					parseFloat(themeEvidence.headerStyle.paddingBottom) > 0 &&
+					parseFloat(themeEvidence.headerStyle.paddingTop) === 2 &&
+					parseFloat(themeEvidence.headerStyle.paddingBottom) === 0 &&
 					!!headerBackground && headerBackground.a === 0, {
 					section: themeEvidence.sectionStyle,
 					header: themeEvidence.headerStyle,
@@ -865,6 +896,7 @@ async page => {
 		if (config.viewport.name === 'mobile') {
 			const overlayClearance = await root.evaluate(node => {
 				function visible(element) {
+					if (typeof element.checkVisibility === 'function' && !element.checkVisibility()) return false;
 					let current = element;
 					while (current && current.nodeType === 1) {
 						const style = getComputedStyle(current);
@@ -885,8 +917,9 @@ async page => {
 						element.getAttribute('data-label') || element.className || element.tagName)
 						.replace(/\s+/g, ' ').trim().slice(0, 100);
 				}
-				const overlays = Array.from(document.querySelectorAll('#floating-toolbar .toolbar-btn'))
-					.filter(visible);
+				const toolbar = document.querySelector('#floating-toolbar');
+				const floating = toolbar && /^(fixed|sticky)$/.test(getComputedStyle(toolbar).position);
+				const overlays = floating ? Array.from(toolbar.querySelectorAll('.toolbar-btn')).filter(visible) : [];
 				const targets = Array.from(node.querySelectorAll(
 					'input,select,button,a[href],summary>h3,.lanspeed-header>.meta,' +
 					'.lanspeed-toggle-label,.lanspeed-active-label,.lanspeed-hint,.hint,.sum,th,td'))
@@ -979,6 +1012,17 @@ async page => {
 						parts = srgb[1].replace(/\//g, ' ').split(/[\s,]+/).filter(Boolean);
 						scale = 1;
 					} else {
+						// Native themes may expose Lab or color-mix values in CSSOM.
+						// Resolve those through the browser instead of assuming white.
+						if (CSS.supports('color', source)) {
+							const canvas = document.createElement('canvas');
+							canvas.width = canvas.height = 1;
+							const context = canvas.getContext('2d');
+							context.fillStyle = source;
+							context.fillRect(0, 0, 1, 1);
+							const pixel = context.getImageData(0, 0, 1, 1).data;
+							return { r: pixel[0], g: pixel[1], b: pixel[2], a: pixel[3] / 255 };
+						}
 						return null;
 					}
 					if (parts.length < 3) return null;
@@ -1503,7 +1547,7 @@ async page => {
 					await sort.selectOption('tx_bytes:asc');
 					const saved = await page.evaluate(() => JSON.parse(
 						window.localStorage.getItem('luci-app-lanspeed.prefs.v5') || '{}'));
-					const after = await root.locator('th[data-column-key="totals"]').getAttribute('aria-sort');
+					const after = await root.locator('th[data-column-key="tx_bytes"]').getAttribute('aria-sort');
 					const adjacency = await sort.evaluate(select => {
 						const group = select.closest('.lanspeed-sort-control');
 						const toolbar = group && group.parentElement;
@@ -1536,19 +1580,18 @@ async page => {
 						totals: table.getAttribute('data-client-totals'),
 						rows: Array.from(table.querySelectorAll('tbody tr')).map(row => ({
 							cells: row.cells.length,
-							rate: lines(row.querySelector('.lanspeed-client-rate-cell')),
-							total: lines(row.querySelector('.lanspeed-client-total-cell'))
+							rate: lines(row.querySelector('.lanspeed-client-rate-rx')).concat(lines(row.querySelector('.lanspeed-client-rate-tx'))),
+							total: lines(row.querySelector('.lanspeed-client-total-rx')).concat(lines(row.querySelector('.lanspeed-client-total-tx')))
 						}))
 					};
 				});
 				function validDirections(lines) {
 					return lines.length === 2 && lines[0].direction === 'rx' && lines[0].arrow === '↓' &&
-						lines[1].direction === 'tx' && lines[1].arrow === '↑' && lines[0].top < lines[1].top &&
+						lines[1].direction === 'tx' && lines[1].arrow === '↑' &&
 						lines.every(line => line.value && (line.value !== '-' || line.title.includes('暂不可用')));
 				}
-				addCheck('overview-traffic-columns', trafficColumns.headers.length === 6 &&
-					trafficColumns.headers[2] === '网速' && trafficColumns.headers[3] === '累计流量' &&
-					trafficColumns.rows.every(row => row.cells === 6 && validDirections(row.rate) &&
+				addCheck('overview-traffic-columns', trafficColumns.headers.join('|') === '客户端|MAC|下载速度|上传速度|累计下载|累计上传|TCP|UDP' &&
+					trafficColumns.rows.every(row => row.cells === 8 && validDirections(row.rate) &&
 						(trafficColumns.totals !== 'shown' || validDirections(row.total))), trafficColumns);
 
 			const next = root.locator('.lanspeed-page-button[aria-label="下一页"]:visible').first();
@@ -1578,7 +1621,7 @@ async page => {
 			const collectorBadges = await root.locator('.lanspeed-collector-status').allInnerTexts();
 			const serviceCount = await root.locator('.lanspeed-service-status').count();
 			const freshnessCount = await root.locator('.lanspeed-freshness-status').count();
-			const headerText = await root.locator('.lanspeed-header').first().innerText();
+			const headerText = await root.locator('.lanspeed-page-header').first().innerText();
 			evidence.observations.status = {
 				state: state,
 				collectorBadges: collectorBadges,
@@ -1829,23 +1872,25 @@ async page => {
 							text: element.innerText.trim()
 						})),
 						nestedSections: node.querySelectorAll('.cbi-section .cbi-section').length,
-						removedPanels: node.querySelectorAll('.lanspeed-diagnostic-stage,' +
-							'.lanspeed-diagnostics-tc-table,.lanspeed-diagnostics-rpc-table,' +
-							'.lanspeed-diagnostics-subsystem-table,.lanspeed-diagnostics-report-preview,' +
-							'.lanspeed-diagnostic-environment-alerts').length
+						fullPanels: [ '.lanspeed-diagnostics-tc-table', '.lanspeed-diagnostics-rpc-table',
+							'.lanspeed-diagnostics-subsystem-table', '.lanspeed-diagnostics-report-preview',
+							'.lanspeed-diagnostic-environment-alerts' ].every(selector => node.querySelector(selector)),
+						reportTargets: node.querySelectorAll('.lanspeed-diagnostics-report-feedback').length,
+						rpcRows: node.querySelectorAll('.lanspeed-diagnostics-rpc-table tbody>tr').length
 					};
 				});
 				evidence.observations.status = diagnosticsContract;
 				const expectedSections = [ 'summary', 'support', 'health' ];
 				const expectedFactLabels = [ '服务状态', '数据采集', '连接详情', '版本' ];
-				addCheck('diagnostics-compact-section-shell', diagnosticsContract.sections.length === 3 &&
+				addCheck('diagnostics-full-section-shell', diagnosticsContract.sections.length === 3 &&
 					expectedSections.every((name, index) => diagnosticsContract.sections[index].classes.includes(
 						`lanspeed-diagnostics-${name}-section`)) &&
-					diagnosticsContract.nestedSections === 0 && diagnosticsContract.removedPanels === 0,
+					diagnosticsContract.nestedSections === 0 && diagnosticsContract.fullPanels &&
+					diagnosticsContract.reportTargets === 1 && diagnosticsContract.rpcRows === 6,
 					diagnosticsContract.sections);
 				addCheck('diagnostics-summary-contract', /^(ready|degraded|partial|empty|error)$/.test(diagnosticsContract.pageState) &&
 					diagnosticsContract.busy === 'false' && diagnosticsContract.summary.trim() &&
-					diagnosticsContract.checked.trim() && diagnosticsContract.facts.length === 4 &&
+					diagnosticsContract.checked.trim() && diagnosticsContract.facts.length === 8 &&
 					expectedFactLabels.every(label => diagnosticsContract.facts.some(item => item.label.trim() === label)) &&
 					diagnosticsContract.facts.every(item => /^(good|warning|bad|neutral)$/.test(item.state) &&
 						item.value.trim()), diagnosticsContract);
@@ -1856,7 +1901,7 @@ async page => {
 					diagnosticsContract.rpc);
 				addCheck('diagnostics-interface-contract', diagnosticsContract.interfaceRows.length > 0 &&
 					diagnosticsContract.interfaceRows.every(row => /^(good|warning|bad|empty|neutral)$/.test(row.state) &&
-						row.text && (row.state === 'empty' ? row.cells.length === 1 : row.cells.length === 3)),
+						row.text && (row.state === 'empty' ? row.cells.length === 1 : row.cells.length === 5)),
 					diagnosticsContract.interfaceRows);
 				const alerts = diagnosticsContract.importantAlerts;
 				addCheck('diagnostics-actionable-alert-contract', alerts.length > 0 &&
@@ -1894,7 +1939,7 @@ async page => {
 					addCheck('nss-fields-contract', nssContract.page === 'nss' && nssContract.fields.length === requiredNssFields.length &&
 						new Set(nssContract.fields).size === requiredNssFields.length &&
 						requiredNssFields.every(name => nssContract.fields.includes(name)) &&
-						nssContract.interfaceSections === 0 && nssContract.subsections === 1, nssContract);
+						nssContract.interfaceSections === 0 && nssContract.subsections === 3, nssContract);
 					addCheck('nss-state-contract', /^(ready|degraded|empty)$/.test(nssContract.state || '') &&
 						nssContract.busy !== 'true', nssContract);
 					const input = root.locator('#lanspeed-config-nss-fifo-target-delay-ms');
@@ -1927,7 +1972,7 @@ async page => {
 					const topSections = Array.from(node.children).filter(element =>
 						element.matches && element.matches('.cbi-section'));
 					const subsections = Array.from(node.querySelectorAll(
-						':scope > .lanspeed-config-page-section > .lanspeed-config-page-body > .lanspeed-config-subsection'));
+						':scope > .lanspeed-config-page-body > .lanspeed-config-subsection'));
 					const groups = Array.from(node.querySelectorAll('.lanspeed-ifcfg-seg')).map(element => ({
 						name: element.getAttribute('data-name') || '',
 						buttons: Array.from(element.querySelectorAll('button')).map(button => ({
@@ -1952,7 +1997,7 @@ async page => {
 						nestedSections: node.querySelectorAll('.cbi-section .cbi-section').length,
 						subsections: subsections.map(element => ({
 							classes: Array.from(element.classList),
-							heading: (element.querySelector(':scope > .lanspeed-config-subheader h4') || {}).textContent || ''
+								heading: (element.querySelector(':scope > .lanspeed-config-subheader h4, .lanspeed-config-group-title') || {}).textContent || ''
 						})),
 							fieldNames: Array.from(node.querySelectorAll('[data-field]'))
 								.map(element => element.getAttribute('data-field')),
@@ -2047,8 +2092,7 @@ async page => {
 						item.width < 10 || item.height < 10 || item.width > 24 || item.height > 24 ||
 						Math.abs(item.width - item.height) > 4 ||
 						(item.centerDelta !== null && Math.abs(item.centerDelta) > 2));
-					addCheck('config-single-section-shell', configContract.topSections.length === 1 &&
-						configContract.topSections[0].indexOf('lanspeed-config-page-section') !== -1 &&
+					addCheck('config-grouped-section-shell', configContract.topSections.length === 0 &&
 						configContract.nestedSections === 0 && configContract.subsections.length === 2 &&
 						requiredSubsections.every(className => configContract.subsections.some(section =>
 							section.classes.indexOf(className) !== -1 && section.heading.trim())), configContract);

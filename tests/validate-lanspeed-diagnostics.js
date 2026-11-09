@@ -1209,9 +1209,9 @@ async function testDomAndPresenter() {
   [ 'summary', 'support', 'health' ].forEach((name, index) => {
     assert(hasClass(sections[index], `lanspeed-diagnostics-${name}-section`));
   });
-  const removed = [ 'pipeline', 'control', 'subsystem-table', 'rpc-table', 'tc-table', 'report-preview' ];
-  removed.forEach((name) => {
-    assert.strictEqual(findByClass(loadingBuilt.root, `lanspeed-diagnostics-${name}`), null);
+  const retained = [ 'subsystem-table', 'rpc-table', 'tc-table', 'report-preview' ];
+  retained.forEach((name) => {
+    assert(findByClass(loadingBuilt.root, `lanspeed-diagnostics-${name}`));
   });
   assert.strictEqual(loadingBuilt.refs.root.getAttribute('data-page-state'), 'loading');
   assert.strictEqual(loadingBuilt.refs.root.getAttribute('aria-busy'), 'true');
@@ -1222,24 +1222,34 @@ async function testDomAndPresenter() {
   const good = model.normalizeResults(await settled(payloads()), null, 20000, 1);
   const goodBuilt = applyRefs(good, shell, refresh);
   assert.strictEqual(findAllByClass(goodBuilt.root, 'cbi-section').length, 3,
-    'NSS and x86 must use the same compact shell');
+    'the shared shell must retain full diagnostics without mounting NSS stages on x86');
   assert.strictEqual(goodBuilt.refs.root.getAttribute('data-page-state'), 'ready');
   assert.strictEqual(goodBuilt.refs.root.getAttribute('aria-busy'), 'false');
   [ 'btnRefresh', 'btnRestart', 'btnCopy' ].forEach((key) => assert.strictEqual(goodBuilt.refs[key].disabled, false));
   assert.strictEqual(goodBuilt.refs.pageNotice.style.display, 'none');
-  assert.strictEqual(findAllByClass(goodBuilt.root, 'lanspeed-diagnostic-fact').length, 4);
-  assert.deepStrictEqual(findAllByClass(goodBuilt.root, 'lanspeed-diagnostic-fact-label').map(node => node.textContent),
+  assert.strictEqual(findAllByClass(goodBuilt.root, 'lanspeed-diagnostic-fact').length, 8);
+  assert.deepStrictEqual(findAllByClass(goodBuilt.root, 'lanspeed-diagnostic-fact-label').slice(0, 4).map(node => node.textContent),
     [ '服务状态', '数据采集', '连接详情', '版本' ]);
   assert.strictEqual(goodBuilt.refs.serviceValue.textContent, '运行中');
   assert.strictEqual(goodBuilt.refs.versionValue.textContent, '1.2.1-r2');
   assert.strictEqual(goodBuilt.refs.interfacesBody.children.length, 1);
-  assert.strictEqual(goodBuilt.refs.interfacesBody.children[0].children.length, 3,
-    'interface status must omit throughput and sampling age');
+  assert.strictEqual(goodBuilt.refs.interfacesBody.children[0].children.length, 5,
+    'interface status must retain throughput and sampling age');
   assert.deepStrictEqual(alertTexts(goodBuilt), []);
+  assert.strictEqual(goodBuilt.refs.rpcBody.children.length, 6, 'all independent request results stay available');
+  assert(goodBuilt.refs.subsystemsBody.children.length > 0, 'runtime subsystems must be rendered');
+  assert(goodBuilt.refs.tcObjectsBody.children.length > 0, 'full TC objects must remain reachable');
+  assert.strictEqual(findAllByClass(goodBuilt.root, 'lanspeed-diagnostics-report-feedback').length, 1,
+    'copy feedback must have one accessible target');
+  const noTc = payloads();
+  delete noTc.health.evidence.tc_status;
+  const noTcBuilt = applyRefs(model.normalizeResults(await settled(noTc), null, 20001, 2), shell, refresh);
+  assert.strictEqual(noTcBuilt.refs.tcObjectsValue.textContent, '未知', 'missing TC data cannot become zero objects');
+  assert.strictEqual(noTcBuilt.refs.tcOwnersValue.textContent, '未知');
   assert.strictEqual(goodBuilt.refs.importantWarnings.children.length, 1);
   assert(hasClass(goodBuilt.refs.importantWarnings.children[0], 'lanspeed-diagnostic-alert-empty'));
-  assert.strictEqual(goodBuilt.refs.reportPreview, undefined);
-  assert.strictEqual(goodBuilt.refs.environmentWarnings, undefined);
+  assert(goodBuilt.refs.reportPreview.textContent.includes('TC'));
+  assert(goodBuilt.refs.environmentWarnings);
   assert.strictEqual(states.sampleAge(9500, 9503), 0);
   assert.strictEqual(states.sampleAge(9500, 9551), null);
 
@@ -1613,7 +1623,7 @@ async function testAlertsAndReport() {
   const copyResult = await viewState.copyReport();
   assert.strictEqual(copyResult, true);
   assert.strictEqual(copied, model.buildReport(viewState, '1.2.1-r2'));
-  assert.strictEqual(viewState.refs.reportPreview, undefined, 'copy must work without a report preview');
+  assert(viewState.refs.reportPreview, 'the report preview must remain available beside copy');
   assert(copied.includes('运行诊断报告 v2'));
   assert.strictEqual(viewState.refs.btnCopy.disabled, false);
   assert.strictEqual(viewState.refs.btnCopy.getAttribute('data-state'), 'success');

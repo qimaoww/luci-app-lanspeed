@@ -10,18 +10,18 @@ var MODULE_GROUPS = {
 	core: [ 'moduleManifest.js', 'vocab.js', 'format.js', 'rpc.js', 'theme.js', 'version.js' ],
 	design: [
 		'designSystem.js', 'designSystemBase.js', 'designSystemAurora.js',
-		'designSystemArgon.js', 'designSystemBootstrap.js', 'designSystemShadcn.js'
+		'designSystemArgon.js', 'designSystemBootstrap.js', 'designSystemShadcn.js', 'pageLayout.js'
 	],
 	status: [
 			'statusCollector.js', 'statusIp.js', 'statusRateMeta.js', 'statusRefresh.js', 'statusShell.js',
 		'statusStyle.js', 'statusStyleBase.js', 'statusStyleAurora.js',
 		'statusStyleArgon.js', 'statusStyleBootstrap.js', 'statusStyleShadcn.js',
-		'statusStyleResponsive.js', 'statusOverview.js', 'statusView.js'
+		'statusStyleResponsive.js', 'statusStyleLayout.js', 'statusOverview.js', 'statusView.js'
 	],
 	client: [
 		'clientConnections.js', 'clientControl.js', 'clientControlReasons.js',
 		'clientControlReasonsShared.js', 'clientControlReasonsX86.js',
-		'clientControlReasonsNss.js', 'dhcpHostnames.js', 'geoLocation.js', 'macVendor.js',
+		'clientControlReasonsNss.js', 'dhcpHostnames.js', 'geoLocation.js', 'macVendor.js', 'vendorNames.js', 'vendorDatabase.js', 'vendorSeed.js',
 		'vendorLogo.js',
 		'clientDetailShell.js', 'clientDetailStyle.js', 'clientDetailStyleBase.js',
 		'clientDetailStyleAurora.js', 'clientDetailStyleArgon.js',
@@ -34,7 +34,7 @@ var MODULE_GROUPS = {
 		'diagnosticsStyleBase.js', 'diagnosticsStyleAurora.js',
 		'diagnosticsStyleArgon.js', 'diagnosticsStyleBootstrap.js',
 		'diagnosticsStyleShadcn.js',
-		'diagnosticsStyleResponsive.js', 'diagnosticsSchema.js', 'diagnosticsResources.js',
+		'diagnosticsStyleResponsive.js', 'diagnosticsStyleLayout.js', 'diagnosticsSchema.js', 'diagnosticsResources.js',
 		'diagnosticsStates.js', 'diagnosticsModel.js', 'diagnosticsReport.js',
 		'diagnosticsReportModel.js', 'diagnosticsView.js'
 	],
@@ -43,7 +43,7 @@ var MODULE_GROUPS = {
 		'configStyle.js', 'configStyleBase.js', 'configStyleShared.js',
 		'configStyleAurora.js', 'configStyleArgon.js', 'configStyleBootstrap.js',
 		'configStyleShadcn.js',
-		'configStyleResponsive.js', 'configModel.js', 'configForm.js', 'configView.js'
+		'configStyleResponsive.js', 'configStyleLayout.js', 'configModel.js', 'configForm.js', 'configView.js'
 	]
 };
 

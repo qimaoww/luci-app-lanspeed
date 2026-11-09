@@ -102,35 +102,35 @@ function warningLabel(warning) {
 }
 
 function sourceLabel(source) {
-	if (source === 'conntrack_netlink') return 'Conntrack Netlink';
-	if (source === 'conntrack_procfs') return 'Conntrack Procfs';
-	return source ? String(source) : _('未知');
+	if (source === 'conntrack_netlink') return '连接跟踪消息接口';
+	if (source === 'conntrack_procfs') return '连接跟踪文件接口';
+	return _('未知采集方式');
 }
 
 function rateSourceLabel(source) {
 	var labels = {
-		edge_port: 'Edge-Port',
-		edge_wifi: 'Edge-WiFi',
-		fast_routed_lease: 'FastN+FastS lease',
-		fast_routed_internet: 'FastN+FastS routed Internet',
-		ecm_bpf_fallback: 'ECM+BPF fallback',
-		ecm_nss_lower_bound: 'ECM NSS lower-bound',
-		tc_bpf_lower_bound: 'TC-BPF lower-bound',
+		edge_port: '有线接入采样',
+		edge_wifi: '无线接入采样',
+		fast_routed_lease: '互联网流量租约',
+		fast_routed_internet: '互联网流量观察',
+		ecm_bpf_fallback: '加速与包过滤回退',
+		ecm_nss_lower_bound: '加速路径下界',
+		tc_bpf_lower_bound: '包过滤路径下界',
 		none: _('不可用')
 	};
-	return labels[String(source || '')] || (source ? String(source) : _('未知'));
+	return labels[String(source || '')] || _('未知采集方式');
 }
 
 function collectorLabel(mode) {
 	var labels = {
-		access_edge: 'Access Edge',
-		bpf: 'TC-BPF',
-		nss_ecm_node: 'NSS ECM',
-		nss_ecm_bpf: 'NSS ECM+BPF',
-		conntrack_netlink: 'Conntrack Netlink',
-		conntrack_procfs: 'Conntrack Procfs'
+		access_edge: '接入边缘采样',
+		bpf: '包过滤采集',
+		nss_ecm_node: '加速引擎采集',
+		nss_ecm_bpf: '加速与包过滤采集',
+		conntrack_netlink: '连接跟踪消息接口',
+		conntrack_procfs: '连接跟踪文件接口'
 	};
-	return labels[String(mode || '')] || (mode ? String(mode) : _('未知'));
+	return labels[String(mode || '')] || _('未知采集方式');
 }
 
 function rateWindowLabel(value) {
@@ -138,7 +138,7 @@ function rateWindowLabel(value) {
 	if (!isFinite(milliseconds) || milliseconds <= 0) return '';
 	var seconds = milliseconds / 1000;
 	var precision = seconds >= 10 || Math.floor(seconds) === seconds ? 0 : 1;
-	return (Math.round(seconds * Math.pow(10, precision)) / Math.pow(10, precision)) + ' s ' + _('窗口');
+	return (Math.round(seconds * Math.pow(10, precision)) / Math.pow(10, precision)) + ' 秒 ' + _('窗口');
 }
 
 function clientRateSource(client) {
@@ -149,7 +149,7 @@ function clientRateSource(client) {
 		if (tx || rx) {
 			var txLabel = rateSourceLabel(tx);
 			var rxLabel = rateSourceLabel(rx);
-			return txLabel === rxLabel ? txLabel : '↑ ' + txLabel + ' / ↓ ' + rxLabel;
+			return txLabel === rxLabel ? txLabel : '↓ ' + rxLabel + ' / ↑ ' + txLabel;
 		}
 	}
 	return collectorLabel(client && client.rate_collector_mode);
@@ -328,10 +328,10 @@ function vendorFact(vendor) {
 		'class': 'lanspeed-connection-meta-fact lanspeed-connection-meta-fact--vendor' };
 	if (vendor.kind) attrs['data-vendor-state'] = vendor.kind;
 	if (vendor.stale) attrs['data-vendor-stale'] = 'true';
-	return metaFact(_('设备厂商'), [
+	return metaFact(_('厂商'), [
 		vendorLogo.logo(vendor.vendor || vendor.label, vendor.kind),
 		E('span', { 'class': 'lanspeed-client-vendor-name' },
-			vendor.stale ? vendor.label + ' *' : vendor.label)
+			vendor.label + (vendor.stale ? _('（缓存已过期）') : ''))
 	], attrs);
 }
 
@@ -344,7 +344,7 @@ function renderClientMeta(ref, client, ips, identityKey, vendorLookup) {
 		}, [
 			E('div', { 'class': 'lanspeed-connection-meta-heading' }, [
 				E('span', { 'class': 'lanspeed-connection-meta-heading-label' },
-					_('IP 地址')),
+					_('网络地址')),
 				E('span', { 'class': 'lanspeed-connection-meta-count' },
 					String(ips.length))
 			]),
@@ -359,7 +359,7 @@ function renderClientMeta(ref, client, ips, identityKey, vendorLookup) {
 
 	var facts = [];
 	if (client && client.mac)
-		facts.push(metaFact(_('MAC 地址'), client.mac));
+		facts.push(metaFact(_('MAC'), client.mac));
 	if (client && client.mac && vendorLookup)
 		facts.push(vendorFact(vendorLookup(client.mac)));
 	if (client && client.interface)
@@ -413,7 +413,7 @@ function buildGroupRows(viewState, group) {
 	}, [
 		E('td', {
 			'class': 'lanspeed-connection-target-cell lanspeed-connection-endpoint',
-			'data-label': _('目标 IP')
+			'data-label': _('目标网络地址')
 		}, group.remoteIp || '-'),
 		E('td', {
 			'class': 'lanspeed-connection-location-cell',
@@ -424,12 +424,12 @@ function buildGroupRows(viewState, group) {
 		E('td', { 'data-label': _('状态') }, group.stateLabel),
 		E('td', {
 			'class': 'num lanspeed-connection-rate-cell',
-			'data-label': _('上行')
-		}, fmt.formatRate(group.txBps, unit)),
+			'data-label': _('下载')
+		}, fmt.formatRate(group.rxBps, unit)),
 		E('td', {
 			'class': 'num lanspeed-connection-rate-cell',
-			'data-label': _('下行')
-		}, fmt.formatRate(group.rxBps, unit)),
+			'data-label': _('上传')
+		}, fmt.formatRate(group.txBps, unit)),
 		E('td', { 'data-label': _('连接数') }, String(group.count))
 	]);
 
@@ -458,13 +458,13 @@ function buildGroupRows(viewState, group) {
 			E('span', { 'class': 'lanspeed-connection-detail-meta' }, [
 				directionLabel(connection && connection.direction),
 				' · ',
-				String(connection && connection.protocol || '-').toUpperCase(),
+				connection && connection.protocol === 'tcp' ? _('可靠连接') : connection && connection.protocol === 'udp' ? _('数据报连接') : _('未知协议'),
 				' · ',
 				stateLabel(connection && connection.state)
 			]),
 			E('span', { 'class': 'lanspeed-connection-detail-rates' }, [
-				detailRate(_('上行'), '↑', connection && connection.tx_bps, unit),
-				detailRate(_('下行'), '↓', connection && connection.rx_bps, unit)
+				detailRate(_('下载'), '↓', connection && connection.rx_bps, unit),
+				detailRate(_('上传'), '↑', connection && connection.tx_bps, unit)
 			])
 		]);
 	}
@@ -508,6 +508,10 @@ function controlSignature(viewState, controlClient) {
 	var control = controlClient.control || {};
 	return [
 		controlClient.identity_key || '',
+		controlClient.hostname || '',
+		controlClient.mac || '',
+		JSON.stringify(controlClient.ips || []),
+		Number(control.max_rate_bps) || 0,
 		control.configured === true ? '1' : '0',
 		control.internet_disabled === true ? '1' : '0',
 		control.shaping_supported === true ? '1' : '0',
@@ -705,14 +709,14 @@ function render(viewState) {
 			footer.push(_('告警：') + warnings.map(warningLabel).join('，'));
 		if (rateUsable && fmt.nssPlatform(viewState.status)) {
 			footer.push(routedRateView(client, viewState.status)
-				? _('NSS：总速率来自 FastN+FastS 互联网/路由观察；连接明细来自独立 Conntrack 窗口，卸载流量可能不出现在逐连接字节中，不能与总速率相加核对')
-				: _('NSS：总速率来自接入 Edge；连接明细来自独立 Conntrack 窗口，卸载流量可能不出现在逐连接字节中，不能与总速率相加核对'));
+				? _('硬件加速：总速率来自互联网与路由流量观察；连接明细来自独立连接跟踪窗口，卸载流量可能不出现在逐连接字节中，不能与总速率相加核对')
+				: _('硬件加速：总速率来自接入边缘；连接明细来自独立连接跟踪窗口，卸载流量可能不出现在逐连接字节中，不能与总速率相加核对'));
 		}
 	}
 	footer.push(viewState.prefs && viewState.prefs.paused
 		? _('自动刷新已暂停')
 		: _('每 %s 秒自动刷新').format(String(Math.round(Number(interval) / 100) / 10)));
-	footer.push(_('国家/地区及中国省份按 IP 推测，由浏览器查询并缓存，结果可能不准确'));
+	footer.push(_('国家/地区及中国省份按网络地址推测，由浏览器查询并缓存，结果可能不准确'));
 	refs.footer.textContent = footer.join(' · ');
 	renderControls(viewState, refs, controlClient);
 	restoreViewport(viewport);

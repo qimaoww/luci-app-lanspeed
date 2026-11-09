@@ -510,6 +510,7 @@ async function main() {
 
   assert.strictEqual(module.mbpsToBps('4000', 4_000_000_000), 4_000_000_000);
   assert(String(module.reasonText('ifb_module_unavailable')).includes('IFB'));
+  assert.strictEqual(String(module.reasonText('unrecognized_backend_reason')), '控制不可用，请查看诊断信息。');
   assert(!String(module.reasonText('dae_upload_preempts_control')).includes('DAE 当前'));
   assert(String(module.reasonText('identity_interface_unavailable')).includes('LAN'));
   assert.throws(() => module.mbpsToBps('4000.1', 4_000_000_000));
@@ -595,6 +596,12 @@ async function main() {
     'an existing limit must remain removable after an apply failure');
   assert.strictEqual(recoverable.children[0].children[1].attrs.disabled, undefined,
     'an existing block must remain restorable after an apply failure');
+
+  await recoverable.children[0].children[1].listeners.click({ preventDefault() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepStrictEqual(calls[1], [client.identity_key, '8000', '0', '0'],
+    'restore must preserve rate limits while removing the internet block');
+  assert.strictEqual(reloads, 2);
 
   console.log('validate-lanspeed-client-control: PASS');
 }

@@ -122,6 +122,22 @@ function fakeElement(tag, attrs, children) {
 			return child;
 		}
 	};
+	node.replaceChild = function(child, previous) {
+		const index = this.children.indexOf(previous);
+		if (index < 0) throw new Error('child not found');
+		if (child && child.parentNode) child.parentNode.removeChild(child);
+		this.children[index] = child;
+		if (typeof child === 'object') child.parentNode = this;
+		if (typeof previous === 'object') previous.parentNode = null;
+		return previous;
+	};
+	node.isEqualNode = function(other) {
+		if (!other || this.tagName !== other.tagName) return false;
+		const attrs = value => JSON.stringify(Object.keys(value.attrs).sort().map(key => [key, String(value.attrs[key])]));
+		return attrs(this) === attrs(other) && this.children.length === other.children.length &&
+			this.children.every((child, i) => child && typeof child.isEqualNode === 'function'
+				? child.isEqualNode(other.children[i]) : child === other.children[i]);
+	};
 	node.classList = {
 		_tokens: function() {
 			return String(node._className || '').split(/\s+/).filter(Boolean);
@@ -1060,7 +1076,7 @@ function loadShellAndRefresh(context, fmt) {
 				return mode === 'fast_routed_internet' ? 'FastN+FastS routed Internet' : 'BPF';
 			}
 		}, rateMeta,
-		{ logo: function() { return fakeElement('span', { class: 'lanspeed-vendor-logo' }); } },
+		{ brand: function(name) { return name === 'Example Network Cards' ? {} : null; }, logo: function() { return fakeElement('span', { class: 'lanspeed-vendor-logo' }); } },
 		fakeElement,
 		translate,
 		context.window
@@ -1088,6 +1104,10 @@ function client(index) {
 }
 
 function testPaginationAndUiStates(context, fmt) {
+	assert.strictEqual(fmt.formatRate(0, 'byte'), '0 B/s');
+	assert.strictEqual(fmt.formatRate(0, 'bit'), '0 bps');
+	assert.strictEqual(fmt.formatRate(1, 'byte'), '0 B/s');
+	assert.strictEqual(fmt.formatBytes(0), '0 B');
 	assert.strictEqual(fmt.formatBytes(1024), '1.00 KB');
 	assert.strictEqual(fmt.formatBytes(1024 * 1024 * 1024), '1.00 GB');
 	assert.strictEqual(fmt.formatBytes(1024 * 1024 * 1024 * 1024), '1.00 TB');
@@ -1192,7 +1212,7 @@ function testPaginationAndUiStates(context, fmt) {
 		'NSS must show cumulative traffic when explicitly enabled');
 	const nssTotals = findByClass(nssState.refs.tbody.children[0], 'lanspeed-client-total-cell');
 	assert.strictEqual(nssTotals.hidden, false);
-	assert.deepStrictEqual(findAllByClass(nssTotals, 'lanspeed-client-total').map(textOf), [ '1.00 MB', '1.00 KB' ],
+	assert.deepStrictEqual(findAllByClass(nssState.refs.tbody.children[0], 'lanspeed-client-total').map(textOf), [ '1.00 MB', '1.00 KB' ],
 		'NSS cumulative traffic must display actual counters in download/upload order');
 
 	const pendingClient = Object.assign({}, client(2), {
@@ -1208,19 +1228,19 @@ function testPaginationAndUiStates(context, fmt) {
 	} ] };
 	nssState.livePair = { pendingClientSampleMs: 14200 };
 	modules.refresh.refreshLive(nssState);
-	assert.strictEqual(nssState.refs.mTx.textContent, '0');
-	assert.strictEqual(nssState.refs.mRx.textContent, '0');
+	assert.strictEqual(nssState.refs.mTx.textContent, '0 bps');
+	assert.strictEqual(nssState.refs.mRx.textContent, '0 bps');
 	assert.strictEqual(nssState.refs.mClients.textContent, '1');
 	assert(!textOf(nssState.refs.tbody.children[0]).includes('—'),
 		'routed rows must retain numeric zero instead of replacing it with a placeholder');
-	assert.strictEqual(textOf(nssState.refs.ifacesBody.children[0]), 'br-lan0000',
+	assert.strictEqual(textOf(nssState.refs.ifacesBody.children[0]), 'br-lan0 bps0 bps0 bps0 bps',
 		'routed interface rows must retain numeric zero values');
-	assert.strictEqual(nssState.refs.ifacesSummary.textContent, '↓ 0 · ↑ 0',
+	assert.strictEqual(nssState.refs.ifacesSummary.textContent, '↓ 0 bps · ↑ 0 bps',
 		'interface summary must use the page-wide download-first order');
 	assert.strictEqual(nssBuilt.refs.intervalSel.disabled, false);
 	assert.deepStrictEqual(
 		Array.from(nssBuilt.refs.intervalSel.children).map(textOf),
-		[ '1s', '2s', '4s', '8s', '10s' ],
+		[ '1 秒', '2 秒', '4 秒', '8 秒', '10 秒' ],
 		'ECM pages must expose only the five NSS-safe refresh cadences');
 	modules.refresh.refreshIntervalControl(nssState, nssBuilt.refs, nssState.status);
 	assert.strictEqual(nssBuilt.refs.intervalSel.value, '8000');
@@ -1260,7 +1280,7 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.deepStrictEqual(findByClass(built.root, 'lanspeed-metrics').children.map(node => node.attrs['data-metric']),
 		[ 'rx', 'tx', 'clients', 'conns' ], 'core metrics must list download before upload like the client rows');
 	assert.deepStrictEqual(state.refs.clientsTable.children[0].children[0].children
-		.map(th => th.attrs['data-column-key']), [ 'hostname', 'mac', 'rate', 'totals', 'tcp_conns', 'udp_conns' ],
+		.map(th => th.attrs['data-column-key']), [ 'hostname', 'mac', 'rx', 'tx', 'rx_bytes', 'tx_bytes', 'tcp_conns', 'udp_conns' ],
 		'client table columns must be keyed for fixed CSS tracks');
 	assert.strictEqual(state.refs.liveState.attrs['data-state'], 'live');
 	assert.strictEqual(state.refs.tbody.children.length, 10);
@@ -1271,38 +1291,51 @@ function testPaginationAndUiStates(context, fmt) {
 			: { kind: 'local', vendor: '', label: '随机 / 本地 MAC' };
 	};
 	state.refreshLive();
-	const vendorLine = findByClass(state.refs.tbody.children[0], 'lanspeed-client-vendor');
-	assert.strictEqual(textOf(vendorLine), 'Example Network Cards');
+	const vendorLine = findByClass(state.refs.tbody.children[0], 'lanspeed-vendor-trigger');
+	assert.strictEqual(vendorLine.attrs['aria-label'], '厂商：Example Network Cards');
 	assert.ok(String(vendorLine.attrs.title).includes('Example Network Cards'), 'truncated labels retain the full name');
 	const firstRow = state.refs.tbody.children[0];
 	assert.deepStrictEqual(firstRow.children.map(cell => String(cell.attrs.class || '')).map(name =>
 		name.split(/\s+/).filter(part => /^lanspeed-client-/.test(part))[0]), [
-		'lanspeed-client-name', 'lanspeed-client-mac', 'lanspeed-client-value',
-		'lanspeed-client-total-cell', 'lanspeed-client-count-cell', 'lanspeed-client-count-cell'
+		'lanspeed-client-name', 'lanspeed-client-mac', 'lanspeed-client-value', 'lanspeed-client-value',
+		'lanspeed-client-total-cell', 'lanspeed-client-total-cell', 'lanspeed-client-count-cell', 'lanspeed-client-count-cell'
 	], 'each client row must render one cell per keyed column');
-	assert.deepStrictEqual([ firstRow.children[4], firstRow.children[5] ].map(cell => cell.attrs['data-label']),
+	assert.deepStrictEqual([ firstRow.children[6], firstRow.children[7] ].map(cell => String(cell.attrs['data-label'])),
 		[ 'TCP', 'UDP' ], 'connection counts keep one numeric column per transport');
-	assert.deepStrictEqual([ firstRow.children[4], firstRow.children[5] ].map(textOf), [ '30', '30' ],
+	assert.deepStrictEqual([ firstRow.children[6], firstRow.children[7] ].map(textOf), [ '30', '30' ],
 		'TCP and UDP counts render as plain right-aligned numbers');
-	assert.strictEqual(findByClass(firstRow.children[5], 'lanspeed-client-traffic-stack'), null,
+	assert.strictEqual(findByClass(firstRow.children[7], 'lanspeed-client-traffic-stack'), null,
 		'connection counts must not nest a traffic stack');
-	assert.strictEqual(vendorLine.attrs['data-vendor-state'], 'vendor');
+	assert.strictEqual(findByClass(firstRow.children[1], 'lanspeed-client-vendor'), null);
+	const originalLookup = state.vendorLookup;
+	const selectedMac = firstRow.children[1].firstChild;
+	const selectedName = firstRow.children[0].firstChild.firstChild;
+	state.vendorLookup = mac => Object.assign({}, originalLookup(mac), {label: '中文名称待补充'});
+	state.refreshLive();
+	assert.ok(firstRow.children[1].firstChild === selectedMac,
+		'vendor completion must preserve the physical-address node used for copying');
+	assert.strictEqual(firstRow.children[0].firstChild.firstChild, selectedName, 'vendor completion preserves the name link');
+	state.vendorLookup = originalLookup;
+	state.refreshLive();
+
 	state.refs.filterInput.listeners.input({ target: { value: 'network cards' } });
 	assert.strictEqual(state.refs.tbody.children.length, 1, 'vendor names must be searchable without case sensitivity');
 	assert.ok(textOf(state.refs.tbody.children[0]).includes('client-30'));
 	state.refs.filterInput.listeners.input({ target: { value: '' } });
-	assert.strictEqual(findByClass(state.refs.tbody.children[1], 'lanspeed-client-vendor').attrs['data-vendor-state'], 'local');
+	assert.strictEqual(findByClass(state.refs.tbody.children[1], 'lanspeed-vendor-trigger'), null);
 	assert.strictEqual(state.refs.totalHeader.hidden, false);
 	const firstRateCell = findByClass(state.refs.tbody.children[0], 'lanspeed-client-rate-cell');
 	const firstTotalCell = findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-cell');
-	assert.deepStrictEqual(findAllByClass(firstTotalCell, 'lanspeed-client-total').map(textOf), [ '30.0 MB', '30.0 KB' ]);
-	assert.deepStrictEqual(findAllByClass(firstRateCell, 'lanspeed-client-rate').map(textOf),
+	assert.deepStrictEqual(findAllByClass(state.refs.tbody.children[0], 'lanspeed-client-total').map(textOf), [ '30.0 MB', '30.0 KB' ]);
+	assert.deepStrictEqual(findAllByClass(state.refs.tbody.children[0], 'lanspeed-client-rate').map(textOf),
 		[ fmt.formatRate(clients[29].rx_bps, 'bit'), fmt.formatRate(clients[29].tx_bps, 'bit') ],
-		'combined rate cell must preserve download RX first and upload TX second');
-	[ firstRateCell, firstTotalCell ].forEach(cell => {
-		assert.deepStrictEqual(findAllByClass(cell, 'lanspeed-client-traffic-line').map(line => line.attrs['data-direction']), [ 'rx', 'tx' ]);
-		assert.deepStrictEqual(findAllByClass(cell, 'lanspeed-client-direction').map(textOf), [ '↓', '↑' ]);
-	});
+		'separate rate columns preserve download RX first and upload TX second');
+	const readingCells = state.refs.tbody.children[0].children.slice(2, 6);
+	assert.deepStrictEqual(readingCells.map(cell => String(cell.attrs['data-label'])),
+		[ '下载速度', '上传速度', '累计下载', '累计上传' ]);
+	assert.deepStrictEqual(readingCells.map(cell => findAllByClass(cell, 'lanspeed-client-traffic-line').map(line => line.attrs['data-direction'])),
+		[ [ 'rx' ], [ 'tx' ], [ 'rx' ], [ 'tx' ] ], 'each independent reading cell has exactly one direction');
+	assert.strictEqual(state.refs.totalUploadHeader.hidden, false);
 	assert.strictEqual(findAllByClass(state.refs.clientsTable, 'lanspeed-sort-button').length, 0,
 		'client table headers must contain no sorting buttons');
 
@@ -1312,7 +1345,7 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.strictEqual(findAllByClass(built.root, 'lanspeed-freshness-status').length, 0);
 	assert.strictEqual(state.refs.servicePill, undefined);
 	assert.strictEqual(state.refs.freshnessPill, undefined);
-	assert.strictEqual(state.refs.meta.textContent, '后端 1.2.1-r2 · luci 1.2.1-r2');
+	assert.strictEqual(state.refs.meta.textContent, '后端 1.2.1-r2 · 前端 1.2.1-r2');
 	assert.ok(!state.refs.meta.textContent.includes('检查于'));
 	assert.strictEqual(state.pageCount, 3);
 	assert.strictEqual(state.refs.root.attrs['aria-busy'], 'false');
@@ -1327,21 +1360,21 @@ function testPaginationAndUiStates(context, fmt) {
 		'a changed live rate must render the real backend value immediately without interpolation');
 	assert.strictEqual(findByClass(stableFirstRow, 'lanspeed-live-rate'), null,
 		'rate rendering must not introduce animation-only DOM');
-	assert.deepStrictEqual(findAllByClass(findByClass(stableFirstRow, 'lanspeed-client-total-cell'),
+	assert.deepStrictEqual(findAllByClass(stableFirstRow,
 		'lanspeed-client-total').map(textOf), [ '30.0 MB', '30.0 KB' ],
 		'cumulative counters retain their independent values when live rates update');
 	[ undefined, null, NaN, -1 ].forEach(value => {
 		clients[29].rx_bytes = value;
 		clients[29].tx_bytes = value;
 		state.refreshLive();
-		assert.deepStrictEqual(findAllByClass(findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-cell'),
+		assert.deepStrictEqual(findAllByClass(state.refs.tbody.children[0],
 			'lanspeed-client-total').map(textOf), [ '-', '-' ],
 			'missing or invalid counters must not become fabricated zero totals');
 	});
 	clients[29].rx_bytes = 0;
 	clients[29].tx_bytes = 0;
 	state.refreshLive();
-	assert.deepStrictEqual(findAllByClass(findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-cell'),
+	assert.deepStrictEqual(findAllByClass(state.refs.tbody.children[0],
 		'lanspeed-client-total').map(textOf), [ '0 B', '0 B' ], 'real zero counters must remain distinguishable from missing data');
 	clients[29].rx_bytes = 30 * 1024 * 1024;
 	clients[29].tx_bytes = 30 * 1024;
@@ -1399,6 +1432,26 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.strictEqual(state.refs.btnRefresh.disabled, true);
 	state.loading = false;
 	state.manualBusy = false;
+
+
+	assert(fmt.matchesFilter(clients[0], clients[0].mac.toUpperCase().replace(/:/g, '-')));
+	assert(fmt.matchesFilter(clients[0], clients[0].mac.replace(/:/g, '')));
+	state.clients = {clients: [clients[0]]};
+	state.filter = '苹果';
+	state.vendorLookup = () => ({kind: 'loading', vendor: '', label: '厂商数据库加载中…'});
+	state.refreshLive();
+	assert.strictEqual(state.refs.empty.attrs['data-state'], 'loading');
+	assert(textOf(state.refs.empty).includes('尚未完整'));
+	state.vendorLookup = () => ({kind: 'unavailable', vendor: '', label: '厂商数据库加载失败'});
+	state.refreshLive();
+	assert(textOf(state.refs.empty).includes('无法完整匹配'));
+	state.vendorLookup = () => ({kind: 'vendor', vendor: 'Apple, Inc.', label: '苹果'});
+	state.refreshLive();
+	assert.strictEqual(state.refs.tbody.children.length, 1, 'Chinese vendor completion refreshes results');
+	state.filter = 'Apple';
+	state.refreshLive();
+	assert.strictEqual(state.refs.tbody.children.length, 1, 'original registry name remains searchable');
+	state.filter = '';
 
 	state.clients = { clients: [] };
 	state.rpc.clients = successRpc(100000).clients;
@@ -1483,6 +1536,9 @@ function testFixedClientLayout(context, fmt) {
 
 	state.refreshLive();
 	assert.strictEqual(state.refs.totalHeader.hidden, true);
+	assert.strictEqual(state.refs.totalUploadHeader.hidden, true);
+	assert.ok(findAllByClass(state.refs.tbody.children[0], 'lanspeed-client-total-cell').every(cell => cell.attrs.hidden === 'hidden'),
+		'both cumulative directions hide together');
 	assert.strictEqual(state.refs.clientsTable.attrs['data-client-totals'], 'hidden');
 	assert.strictEqual(findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-cell').attrs.hidden, 'hidden',
 		'hidden totals stay in place so keyed columns never shift');

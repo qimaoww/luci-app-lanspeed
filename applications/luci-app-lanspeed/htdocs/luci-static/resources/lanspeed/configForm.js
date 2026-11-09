@@ -309,7 +309,7 @@ function rowFor(viewState, name, label, control, hint, attrs) {
 	var hintNode = E('div', { 'id': fieldId(name) + '-hint', 'class': 'hint' }, hint || '');
 	var rowAttrs = Object.assign({ 'class': 'lanspeed-config-field', 'data-field': name }, attrs || {});
 	var row;
-	if (viewState.compactX86) {
+	if (viewState.pageLayout) {
 		rowAttrs.class += ' lanspeed-config-compact-field';
 		row = E('div', rowAttrs, [
 			E('div', { 'class': 'lanspeed-config-field-label' }, labelNode),
@@ -345,7 +345,7 @@ function configList(rows) {
 function configGroup(title, subtitle, rows) {
 	return E('section', { 'class': 'lanspeed-config-group' }, [
 		E('div', { 'class': 'lanspeed-config-group-heading' }, [
-			E('span', { 'class': 'lanspeed-config-group-title' }, title),
+			E('h4', { 'class': 'lanspeed-config-group-title' }, title),
 			E('span', { 'class': 'lanspeed-config-group-subtitle' }, subtitle)
 		]),
 		E('div', { 'class': 'lanspeed-config-group-body' }, configList(rows))
@@ -647,10 +647,13 @@ function buildNssSection(viewState, values) {
 	Object.keys(refs.inputs).forEach(function(name) {
 		refs.inputs[name].addEventListener(name.indexOf('_mode') >= 0 ? 'change' : 'input', function() { formChanged(viewState); });
 	});
-	var section = E('section', { 'class': 'lanspeed-config-subsection lanspeed-config-runtime-section lanspeed-config-nss-section' }, [
-		E('div', { 'class': 'lanspeed-config-subheader' }, [ E('h4', {}, _('NSS 采集与限速参数')) ]),
+	var section = E('section', { 'class': 'lanspeed-config-subsection lanspeed-config-runtime-section lanspeed-config-nss-section', 'aria-label': _('NSS 采集与限速参数') }, [
 		E('div', { 'class': 'lanspeed-config-body' }, [
-			configTable(rows),
+			E('div', { 'class': 'lanspeed-config-groups' }, [
+				configGroup(_('流量视图'), _('客户端与互联网的统计口径'), rows.slice(0, 2)),
+				configGroup(_('低速对齐'), _('低流量时的采样窗口'), rows.slice(2, 4)),
+				configGroup(_('限速队列'), _('NSS 队列与速率补偿'), rows.slice(4))
+			]),
 			E('div', { 'class': 'lanspeed-config-actions' }, [ refs.resetDefaultsBtn, E('span', { 'class': 'spacer' }), refs.saveState ])
 		])
 	]);
@@ -687,6 +690,7 @@ function buildDaemonSection(data, viewState) {
 	viewState.initialIfaceOriginal.present = Object.assign({}, viewState.ifaceOriginal.present || {});
 	var isX86Profile = configPlatform.isX86(viewState.runtimeStatus);
 	viewState.compactX86 = isX86Profile;
+	viewState.pageLayout = true;
 	viewState.isX86Profile = isX86Profile;
 	viewState.ownedFields = pageFields(viewState);
 	if (viewState.pageKind === 'nss')
@@ -772,7 +776,7 @@ function buildDaemonSection(data, viewState) {
 		settingHint('自定义 IPv6 范围。', '严格 IPv6 CIDR；仅在上项启用时生效。'), { 'class': 'lanspeed-config-field lanspeed-range-row' }));
 
 	var settingsContent;
-	if (isX86Profile) {
+	if (viewState.pageLayout) {
 		var groupedRows = function(names) {
 			return names.map(function(name) {
 				return refs.fields[name] && refs.fields[name].row;
@@ -827,10 +831,7 @@ function buildDaemonSection(data, viewState) {
 		});
 
 	var section = E('section', { 'class': 'lanspeed-config-subsection lanspeed-config-runtime-section' +
-		(isX86Profile ? ' lanspeed-config-runtime-x86' : '') }, [
-		E('div', { 'class': 'lanspeed-config-subheader' }, [
-			E('h4', {}, _('运行与显示设置')), E('span', { 'class': 'spacer' }), refs.runtimeInfo
-		]),
+		(isX86Profile ? ' lanspeed-config-runtime-x86' : ''), 'aria-label': _('运行与显示设置') }, [
 		E('div', { 'class': 'lanspeed-config-body' }, [
 			settingsContent,
 			E('div', { 'class': 'lanspeed-config-actions' }, [ refs.resetDefaultsBtn, E('span', { 'class': 'spacer' }), refs.saveState ])

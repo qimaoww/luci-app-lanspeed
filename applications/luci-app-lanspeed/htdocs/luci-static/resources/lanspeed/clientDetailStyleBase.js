@@ -2,7 +2,7 @@
 'require baseclass';
 
 var CSS = [
-	'.lanspeed-connection-detail{display:flex;flex-direction:column;gap:1em;margin:0}',
+	'.lanspeed-connection-detail{display:flex;flex-direction:column;gap:1em;margin:0 auto;width:100%;max-width:112rem;min-width:0;box-sizing:border-box}',
 	'.lanspeed-connection-breadcrumb{display:flex;flex-wrap:wrap;align-items:center;gap:.65em}',
 	'.lanspeed-connection-breadcrumb-current{font-size:.9em;opacity:.72}',
 	'.lanspeed-connection-back{flex:0 0 auto}',
@@ -40,7 +40,7 @@ var CSS = [
 	'.lanspeed-connection-meta-fact--vendor .lanspeed-connection-meta-value{display:flex;',
 		'align-items:center;gap:6px;flex-wrap:nowrap}',
 	'.lanspeed-connection-meta-fact--vendor .lanspeed-client-vendor-name{min-width:0;',
-		'overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+		'overflow-wrap:anywhere;white-space:normal}',
 	'.lanspeed-connection-meta-empty{display:block;padding:.8em 0;opacity:.65}',
 	'.lanspeed-connection-hostname-modal-form{display:grid;gap:.7em;min-width:min(28em,80vw)}',
 	'.lanspeed-connection-hostname-modal-label{font-weight:600}',

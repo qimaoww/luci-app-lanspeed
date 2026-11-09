@@ -96,9 +96,11 @@ const luciResources = [
   'configStyleBootstrap.js',
   'configStyleShadcn.js',
   'configStyleResponsive.js',
+  'configStyleLayout.js',
   'configStyleShared.js',
 	'configView.js',
 	'designSystem.js',
+  'pageLayout.js',
 	'designSystemArgon.js',
 	'designSystemAurora.js',
 	'designSystemBase.js',
@@ -113,6 +115,7 @@ const luciResources = [
   'diagnosticsStyleBootstrap.js',
   'diagnosticsStyleShadcn.js',
   'diagnosticsStyleResponsive.js',
+  'diagnosticsStyleLayout.js',
 	'diagnosticsSchema.js',
 	'diagnosticsResources.js',
 	'diagnosticsStates.js',
@@ -139,7 +142,7 @@ const luciResources = [
   'clientDetailView.js',
   'format.js',
   'geoLocation.js',
-  'macVendor.js',
+  'macVendor.js', 'vendorNames.js', 'vendorDatabase.js', 'vendorSeed.js',
   'vendorLogo.js',
   'ifaceConfig.js',
   'rpc.js',
@@ -155,6 +158,7 @@ const luciResources = [
   'statusStyleBootstrap.js',
   'statusStyleShadcn.js',
   'statusStyleResponsive.js',
+  'statusStyleLayout.js',
   'statusOverview.js',
   'statusView.js',
   'theme.js',
@@ -175,7 +179,7 @@ const clientDetailResources = [
   'clientDetailRefresh.js',
   'clientDetailView.js',
   'geoLocation.js',
-  'macVendor.js',
+  'macVendor.js', 'vendorNames.js', 'vendorDatabase.js', 'vendorSeed.js',
   'vendorLogo.js'
 ];
 const clientConnectionsConntrackSemantics =
@@ -1138,7 +1142,7 @@ try {
     'LuCI package must install the NSS menu entry only when NSS support is enabled');
 
 	const installedClientDetailResources = installedResources.filter((name) =>
-		/^(?:clientConnections|dhcpHostnames|clientDetail|geoLocation|macVendor|vendorLogo)/.test(name));
+		/^(?:clientConnections|dhcpHostnames|clientDetail|geoLocation|macVendor|vendorLogo|vendorNames|vendorDatabase|vendorSeed)/.test(name));
   assertExactNames(installedClientDetailResources, clientDetailResources,
     'LuCI package must install exactly the active client detail resources');
 
