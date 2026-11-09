@@ -55,8 +55,9 @@ function assertSchemaRequired(schema, defName, fields) {
   }
 }
 
-function assertSchemaExactObject(schema, defName, fields) {
+function assertSchemaExactObject(schema, defName, fields, optionalFields) {
   const definition = schema.$defs && schema.$defs[defName];
+  const optional = optionalFields || [];
   assertObject(definition, `$defs.${defName}`);
   assert(definition.type === 'object', `schema $defs.${defName} must be an object schema`);
   assert(definition.additionalProperties === false,
@@ -64,8 +65,9 @@ function assertSchemaExactObject(schema, defName, fields) {
   assert(sameStringSet(Object.keys(definition.properties || {}), fields),
     `schema $defs.${defName} properties must be exactly ${fields.join(', ')}`);
   assertArray(definition.required, `$defs.${defName}.required`);
-  assert(sameStringSet(definition.required, fields),
-    `schema $defs.${defName}.required must be exactly ${fields.join(', ')}`);
+  assert(sameStringSet(definition.required, fields.filter(function(field) {
+    return optional.indexOf(field) === -1;
+  })), `schema $defs.${defName}.required must be exactly ${fields.join(', ')}`);
 }
 
 function sameStringSet(actual, expected) {
@@ -501,8 +503,10 @@ function validateClientConnectionsFixture(response, pathName) {
   assert(sameStringSet(Object.keys(response), envelopeFields),
     `${pathName} must keep the exact Rust envelope key set`);
   assertRequired(response.client, summaryFields, `${pathName}.client`);
-  assert(sameStringSet(Object.keys(response.client), summaryFields),
-    `${pathName}.client must keep the exact Rust summary key set`);
+  const summaryKeys = Object.keys(response.client);
+  assert(sameStringSet(summaryKeys, summaryFields) ||
+    sameStringSet(summaryKeys, summaryFields.concat([ 'control' ])),
+    `${pathName}.client must keep the exact Rust summary key set, with optional control metadata`);
   assertArray(response.client.ips, `${pathName}.client.ips`);
   assert(Number.isInteger(response.client.rx_bps) && response.client.rx_bps >= 0,
     `${pathName}.client.rx_bps must be a non-negative integer`);
@@ -886,8 +890,9 @@ assertSchemaExactObject(schema, 'clientConnectionSummary', [
   'tx_bps',
   'rate_sample_ms',
   'rate_collector_mode',
-  'rate_meta'
-]);
+  'rate_meta',
+  'control'
+], [ 'control' ]);
 const clientConnectionFields = [
   'available',
   'sample_ms',

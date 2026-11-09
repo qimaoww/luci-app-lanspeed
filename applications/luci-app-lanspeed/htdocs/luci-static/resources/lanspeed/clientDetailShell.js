@@ -82,7 +82,7 @@ function buildShell(viewState) {
 		E('div', { 'class': 'lanspeed-connection-client-title' }, [
 			E('span', {
 				'class': 'lanspeed-connection-client-kicker'
-			}, _('LAN 客户端')),
+			}, _('局域网客户端')),
 			E('span', { 'class': 'lanspeed-connection-client-name-row' }, [
 				refs.clientName,
 				E('span', {
@@ -110,7 +110,7 @@ function buildShell(viewState) {
 		'aria-label': _('客户端网络身份')
 	}, E('span', {
 		'class': 'lanspeed-connection-meta-empty'
-	}, _('MAC 与 IP 信息将在加载后显示')));
+	}, _('MAC与网络地址信息将在加载后显示')));
 	refs.connectionState = E('span', {
 		'class': 'label lanspeed-connection-state'
 	}, _('等待数据'));
@@ -140,7 +140,7 @@ function buildShell(viewState) {
 	}, [
 		E('h4', { 'class': 'lanspeed-connection-summary-title' }, _('连接摘要')),
 		E('div', { 'class': 'lanspeed-connection-summary-item' }, [
-			E('span', { 'class': 'lanspeed-connection-summary-label' }, _('目标 IP 数')),
+			E('span', { 'class': 'lanspeed-connection-summary-label' }, _('目标地址数')),
 			refs.summaryTargets
 		]),
 		E('div', { 'class': 'lanspeed-connection-summary-item' }, [
@@ -148,17 +148,33 @@ function buildShell(viewState) {
 			refs.summaryConnections
 		]),
 		E('div', { 'class': 'lanspeed-connection-summary-item' }, [
-			E('span', { 'class': 'lanspeed-connection-summary-label' }, _('上行总速率')),
-			refs.summaryTx
+			E('span', { 'class': 'lanspeed-connection-summary-label' }, _('下载总速率')),
+			refs.summaryRx
 		]),
 		E('div', { 'class': 'lanspeed-connection-summary-item' }, [
-			E('span', { 'class': 'lanspeed-connection-summary-label' }, _('下行总速率')),
-			refs.summaryRx
+			E('span', { 'class': 'lanspeed-connection-summary-label' }, _('上传总速率')),
+			refs.summaryTx
 		]),
 		E('div', { 'class': 'lanspeed-connection-summary-item' }, [
 			E('span', { 'class': 'lanspeed-connection-summary-label' }, _('页面更新时间')),
 			refs.summaryUpdated
 		])
+	]);
+
+	refs.controlState = E('span', {
+		'class': 'lanspeed-connection-control-state'
+	}, _('控制信息加载中…'));
+	refs.controlActions = E('div', {
+		'class': 'lanspeed-connection-control-slot'
+	});
+	var controlBar = E('div', {
+		'class': 'lanspeed-connection-control-bar'
+	}, [
+		E('div', { 'class': 'lanspeed-connection-control-copy' }, [
+			E('span', { 'class': 'lanspeed-connection-control-title' }, _('设备控制')),
+			refs.controlState
+		]),
+		refs.controlActions
 	]);
 
 	var identityCard = E('div', {
@@ -174,7 +190,8 @@ function buildShell(viewState) {
 			E('div', { 'class': 'lanspeed-connection-identity' }, [
 				E('div', { 'class': 'lanspeed-connection-client' }, [
 					refs.clientHeading,
-					refs.clientMeta
+					refs.clientMeta,
+					controlBar
 				]),
 				refs.summary
 			])
@@ -193,7 +210,7 @@ function buildShell(viewState) {
 		'type': 'button',
 		'class': 'cbi-button lanspeed-connection-protocol',
 		'aria-pressed': 'false'
-	}, 'TCP');
+	}, _('可靠连接'));
 	refs.protocolTcp.addEventListener('click', function() {
 		viewState.setProtocol('tcp');
 	});
@@ -201,7 +218,7 @@ function buildShell(viewState) {
 		'type': 'button',
 		'class': 'cbi-button lanspeed-connection-protocol',
 		'aria-pressed': 'false'
-	}, 'UDP');
+	}, _('数据报连接'));
 	refs.protocolUdp.addEventListener('click', function() {
 		viewState.setProtocol('udp');
 	});
@@ -210,7 +227,7 @@ function buildShell(viewState) {
 		'type': 'search',
 		'class': 'cbi-input-text lanspeed-connection-filter-input',
 		'aria-label': _('搜索连接'),
-		'placeholder': _('搜索目标 IP、端口或国家/地区')
+		'placeholder': _('搜索目标网络地址、端口或国家/地区')
 	});
 	refs.filter.addEventListener('input', function(ev) {
 		viewState.setFilter(ev.target.value);
@@ -312,13 +329,13 @@ function buildShell(viewState) {
 		'aria-label': _('客户端连接列表')
 	}, [
 		E('thead', {}, E('tr', {}, [
-			sortableHeader('remote_ip', _('目标 IP')),
+			sortableHeader('remote_ip', _('目标网络地址')),
 			sortableHeader('location', _('国家/地区')),
 			sortableHeader('remote_port', _('目标端口')),
 			sortableHeader('protocol', _('协议')),
 			sortableHeader('state', _('状态')),
-			sortableHeader('tx', _('上行'), { 'class': 'num' }),
-			sortableHeader('rx', _('下行'), { 'class': 'num' }),
+			sortableHeader('rx', _('下载'), { 'class': 'num' }),
+			sortableHeader('tx', _('上传'), { 'class': 'num' }),
 			sortableHeader('count', _('连接数'), { 'class': 'num' })
 		])),
 		refs.tbody
@@ -332,7 +349,7 @@ function buildShell(viewState) {
 	refs.footer = E('p', {
 		'class': 'lanspeed-connection-footer',
 		'aria-live': 'polite'
-	}, _('连接数据加载后会显示来源、刷新间隔和 IP 位置说明。'));
+	}, _('连接数据加载后会显示来源、刷新间隔和网络位置说明。'));
 
 	var connectionsCard = E('div', {
 		'class': 'cbi-section lanspeed-connections-card'

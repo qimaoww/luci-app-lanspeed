@@ -137,8 +137,14 @@ var AURORA_CSS = [
 	'@media (max-width:700px){' + ROOT + '>:is(.cbi-section,.lanspeed-config-subsection,.lanspeed-ifcfg){',
 		'padding:calc(var(--spacing,.25rem)*4)}',
 	'#floating-toolbar~#maincontent #view{',
-		'padding-right:calc(var(--spacing,.25rem)*12)}',
-	'#floating-toolbar~#maincontent ' + ROOT + '{width:100%!important;max-width:none!important;margin-right:0}}'
+		'padding-right:0}',
+	'#floating-toolbar~#maincontent ' + ROOT + '{width:100%!important;max-width:none!important;margin-right:0}',
+	/* Keep the theme shortcuts available after the page, without a permanent
+	 * empty rail or fixed buttons covering client data on a narrow screen. */
+	'body:has(' + ROOT + ') #floating-toolbar{position:static!important;inset:auto;order:1;',
+		'flex-direction:row;align-self:flex-end;width:auto;height:auto;max-width:calc(100% - 24px);margin:12px}',
+	'body:has(' + ROOT + ') #floating-toolbar .toolbar-list{flex-direction:row}',
+	'body:has(' + ROOT + ') #floating-toolbar .toolbar-btn{width:44px;height:44px}}'
 ].join('\n');
 
 return baseclass.extend({

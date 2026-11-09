@@ -87,9 +87,9 @@ function protocolLabel(connections) {
 		if (protocol === 'tcp') hasTcp = true;
 		if (protocol === 'udp') hasUdp = true;
 	});
-	if (hasTcp && hasUdp) return 'TCP/UDP';
-	if (hasTcp) return 'TCP';
-	if (hasUdp) return 'UDP';
+	if (hasTcp && hasUdp) return '可靠连接 / 数据报连接';
+	if (hasTcp) return '可靠连接';
+	if (hasUdp) return '数据报连接';
 	return '-';
 }
 

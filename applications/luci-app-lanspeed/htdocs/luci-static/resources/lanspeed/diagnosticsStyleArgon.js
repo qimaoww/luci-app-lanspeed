@@ -19,7 +19,7 @@ var ARGON_CSS = [
 	ROOT + ' .lanspeed-diagnostics-health-table :is(th,td){padding:.52rem .62rem}',
 	ROOT + ' .lanspeed-diagnostic-alert{border-radius:var(--lanspeed-radius-control);box-shadow:none}',
 	'@media (max-width:700px){',
-		ROOT + ' .lanspeed-header{padding:.8rem 1rem .65rem}',
+		ROOT + ' .lanspeed-header{padding:.85rem 1rem .7rem}',
 		ROOT + ' .lanspeed-body{padding:.75rem 1rem .85rem}',
 		ROOT + ' .lanspeed-diagnostic-fact{padding:.1rem .65rem}',
 		ROOT + ' .lanspeed-header>.sum{padding-left:.45rem}',
