@@ -17,6 +17,17 @@ make -j"$(nproc)" package/lanspeedd/compile
 make -j"$(nproc)" package/luci-app-lanspeed/compile
 ```
 
+源码树不是 SDK 时，`rust/host` 默认下载 `ci-artifacts.rust-lang.org` 上的预编译 LLVM。该地址只保留有限时间的构建产物，对应版本被清理后构建会以 404 失败。此时用仓库自带的 wrapper 改为本地构建 LLVM 并裁剪后端：
+
+```sh
+make -j"$(nproc)" package/lanspeedd/compile \
+	BASH="$PWD/feeds/lanspeed/scripts/rust-configure-wrapper.sh"
+```
+
+wrapper 把 `llvm.download-ci-llvm=true` 改写为 `false`，并按 `--build`/`--host`/`--target` 生成 `llvm.targets`。必须通过 make 命令行传入，因为 `rules.mk` 里的 `BASH:=bash` 会覆盖环境变量形式。首次本地构建 LLVM 明显慢于下载预编译产物；`ci-artifacts` 产物可用时无需该参数。
+
+裁剪后的后端集合就是该工具链能生成代码的全部架构，因此只保留 X86 的工具链无法再做 `--target aarch64-unknown-linux-musl` 交叉编译（`could not create LLVM TargetMachine for triple`）。需要多架构能力时设置 `LANSPEED_RUST_LLVM_KEEP_ALL_BACKENDS=1` 保留全部后端，只关闭 CI LLVM 下载。
+
 `luci-app-lanspeed` 强制依赖 `lanspeedd-bpf`。同一 `package/lanspeedd/compile` 目标按 SDK 架构生成 TC 对象，并只在 aarch64 生成 ECM 对象。
 
 `luci-app-lanspeed` 在 menuconfig 中提供 `NSS hardware acceleration support` 子菜单开关（`CONFIG_LUCI_APP_LANSPEED_NSS`），默认在 `TARGET_qualcommax` 上启用。它同时控制 daemon 的 Rust `nss-platform` feature、NSS 专用的 ECM eBPF 对象与 `kmod-lanspeed-nss-control`/`kmod-qca-nss-drv-igs` 依赖、NSS 内核模块加载器与整形迁移脚本，以及 NSS 配置页面和菜单入口；关闭后仅保留 TC-BPF 路径，适合无 NSS 引擎的设备。

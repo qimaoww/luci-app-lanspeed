@@ -59,6 +59,15 @@ make -j"$(nproc)" package/lanspeedd/compile
 make -j"$(nproc)" package/luci-app-lanspeed/compile
 ```
 
+源码树不是 SDK 时，`rust/host` 默认从 `ci-artifacts.rust-lang.org` 下载预编译 LLVM。该地址只保留有限时间的构建产物，一旦对应 Rust 版本的产物被清理，构建会以 404 失败。遇到这种情况，用仓库自带的 wrapper 让 Rust 改为本地构建 LLVM，并只保留实际需要的后端：
+
+```sh
+make -j"$(nproc)" package/lanspeedd/compile \
+	BASH="$PWD/feeds/lanspeed/scripts/rust-configure-wrapper.sh"
+```
+
+wrapper 把 `llvm.download-ci-llvm=true` 改写为 `false`，并按 `--build`/`--host`/`--target` 裁剪 `llvm.targets`。它必须通过 make 命令行传入（`BASH:=bash` 在 `rules.mk` 中定义，环境变量形式会被覆盖）。裁剪后的后端就是该工具链能生成代码的全部架构，需多架构交叉编译时设置 `LANSPEED_RUST_LLVM_KEEP_ALL_BACKENDS=1` 保留全部后端。首次本地构建 LLVM 明显慢于下载预编译产物。
+
 `luci-app-lanspeed` 强制依赖 `lanspeedd-bpf`，`lanspeedd-bpf` 依赖 `lanspeedd`。同一个 `package/lanspeedd/compile` 目标根据 SDK 架构生成 TC 对象，并只在 aarch64 生成 ECM 对象。
 
 `luci-app-lanspeed` 在 menuconfig 中是一个子菜单，包含 `NSS hardware acceleration support` 开关（`CONFIG_LUCI_APP_LANSPEED_NSS`）。它默认在 Qualcomm NSS 目标（`TARGET_qualcommax`）上启用，其它设备保持关闭。关闭后：daemon 不再编译 Rust `nss-platform` feature，只保留 TC-BPF 路径；不再打包 NSS 专用的 ECM eBPF 对象、`kmod-lanspeed-nss-control` 与 `kmod-qca-nss-drv-igs`；不再安装 NSS 内核模块加载器、NSS 整形迁移脚本，也不安装独立的 NSS 配置页面及其菜单入口。

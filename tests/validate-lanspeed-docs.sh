@@ -233,6 +233,8 @@ for phrase in \
 	"OpenClash 或 dae/daed 共存" \
 	"本地环境可以运行确定性检查脚本" \
 	"真实 SDK 编译" \
+	"rust-configure-wrapper.sh" \
+	"llvm.download-ci-llvm" \
 	"目标设备" \
 	"确定性合成数据" \
 	"文档保留地址" \

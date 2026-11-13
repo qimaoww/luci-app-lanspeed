@@ -65,6 +65,15 @@ fi
 # target, and the eBPF target. Rust's default enables every LLVM backend, and
 # the packages feed pins llvm.download-ci-llvm=false, so this is the dominant
 # cost of a cold SDK build. Trim it unconditionally on configure invocations.
+#
+# The trimmed backend set is what the resulting toolchain can ever emit code
+# for. A toolchain built for one target cannot then be used to cross-compile
+# another architecture (for example `cargo check --target
+# aarch64-unknown-linux-musl` against an X86-only host toolchain fails with
+# "could not create LLVM TargetMachine for triple"). Set
+# LANSPEED_RUST_LLVM_KEEP_ALL_BACKENDS=1 to leave llvm.targets untouched when
+# the toolchain must stay multi-arch capable.
+keep_all_backends=${LANSPEED_RUST_LLVM_KEEP_ALL_BACKENDS:-0}
 llvm_arch_targets=()
 saw_rust_target=0
 
@@ -155,25 +164,29 @@ policy_args=()
 for arg in "${args[@]}"; do
 	case "$arg" in
 		--set=llvm.targets=*)
-			if ((llvm_targets_options == 1)); then
+			if ((llvm_targets_options == 1)) && ((keep_all_backends == 0)); then
 				arg="--set=llvm.targets=${llvm_target_value}"
 			fi
 			;;
 		--set=llvm.experimental-targets=*)
-			if ((llvm_experimental_targets_options == 1)); then
+			if ((llvm_experimental_targets_options == 1)) && ((keep_all_backends == 0)); then
 				arg='--set=llvm.experimental-targets='
 			fi
 			;;
 	esac
 	policy_args+=("$arg")
 done
-if ((llvm_targets_options == 0)); then
-	policy_args+=("--set=llvm.targets=${llvm_target_value}")
-fi
-if ((llvm_experimental_targets_options == 0)); then
-	policy_args+=('--set=llvm.experimental-targets=')
+if ((keep_all_backends == 0)); then
+	if ((llvm_targets_options == 0)); then
+		policy_args+=("--set=llvm.targets=${llvm_target_value}")
+	fi
+	if ((llvm_experimental_targets_options == 0)); then
+		policy_args+=('--set=llvm.experimental-targets=')
+	fi
+	printf '%s\n' "# Rust bootstrap will build LLVM from source (targets: $llvm_target_value)" >&2
+else
+	printf '%s\n' "# Rust bootstrap will build LLVM from source (all backends kept)" >&2
 fi
 args=("${policy_args[@]}")
-printf '%s\n' "# Rust bootstrap will build LLVM from source (targets: $llvm_target_value)" >&2
 
 exec "$real_bash" "${args[@]}"

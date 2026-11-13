@@ -161,6 +161,23 @@ LANSPEED_REAL_BASH="$TMP_SDK/bin/bash-recorder" LANSPEED_ARG_LOG="$WRAPPER_ARG_L
 	--target=x86_64-unknown-linux-musl --set=llvm.download-ci-llvm=false
 grep -Fx -- '--set=llvm.targets=X86;BPF' "$WRAPPER_ARG_LOG" >/dev/null
 grep -Fx -- '--set=llvm.experimental-targets=' "$WRAPPER_ARG_LOG" >/dev/null
+# The trimmed backend set is final for the resulting toolchain. Keeping every
+# backend is the escape hatch for multi-arch cross-compilation against the same
+# host toolchain.
+: > "$WRAPPER_ARG_LOG"
+LANSPEED_RUST_LLVM_KEEP_ALL_BACKENDS=1 \
+LANSPEED_REAL_BASH="$TMP_SDK/bin/bash-recorder" LANSPEED_ARG_LOG="$WRAPPER_ARG_LOG" \
+	"$ROOT/scripts/rust-configure-wrapper.sh" ./configure \
+	--target=x86_64-unknown-linux-musl --set=llvm.download-ci-llvm=true
+grep -Fx -- '--set=llvm.download-ci-llvm=false' "$WRAPPER_ARG_LOG" >/dev/null
+if grep -F -- '--set=llvm.targets' "$WRAPPER_ARG_LOG" >/dev/null; then
+	printf '%s\n' "Rust configure wrapper trimmed backends despite KEEP_ALL_BACKENDS" >&2
+	exit 1
+fi
+if grep -F -- '--set=llvm.experimental-targets' "$WRAPPER_ARG_LOG" >/dev/null; then
+	printf '%s\n' "Rust configure wrapper set experimental targets despite KEEP_ALL_BACKENDS" >&2
+	exit 1
+fi
 # A non-rust ./configure routed through $BASH must pass through untouched.
 LANSPEED_REAL_BASH="$TMP_SDK/bin/bash-recorder" LANSPEED_ARG_LOG="$WRAPPER_ARG_LOG" \
 	"$ROOT/scripts/rust-configure-wrapper.sh" ./configure --prefix=/opt/release \
