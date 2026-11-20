@@ -236,22 +236,27 @@ return baseclass.extend({
 		var runtimeSection = configForm.buildDaemonSection(values || configForm.DEFAULTS, viewState);
 		var pageContent = [ runtimeSection ];
 		if (pageKind !== 'nss') pageContent.push(ifaceCfg.buildSection(viewState, _('接口分配')));
-		var pageSection = E('section', { 'class': 'cbi-section lanspeed-config-page-section' }, [
-			E('div', { 'class': 'lanspeed-header lanspeed-config-primary-header' }, [
-				E('h3', {}, pageKind === 'nss' ? _('NSS 配置') : _('LAN Speed 配置')),
-				viewState.refs.pageState
+		var pageHeader = E('header', { 'class': 'lanspeed-page-header lanspeed-config-primary-header' }, [
+			E('div', { 'class': 'lanspeed-page-heading' }, [
+				E('div', { 'class': 'lanspeed-page-title-line' }, [
+					E('h2', {}, pageKind === 'nss' ? _('NSS 配置') : _('LAN Speed 配置')),
+					viewState.refs.pageState
+				]),
+				E('p', { 'class': 'lanspeed-page-description' }, pageKind === 'nss'
+					? _('调整 NSS 流量统计、低速对齐与限速队列。') : _('管理流量采集、连接详情和接口分配。'))
 			]),
-			E('div', { 'class': 'lanspeed-config-page-body' }, pageContent)
+			pageKind === 'nss' ? '' : viewState.daemonRefs.runtimeInfo
 		]);
 		var root = E('div', {
-			'class': 'cbi-map lanspeed-config-root' + (viewState.isX86Profile ? ' lanspeed-config-x86' : '') +
+			'class': 'cbi-map lanspeed-page lanspeed-config-root' + (viewState.isX86Profile ? ' lanspeed-config-x86' : '') +
 				(pageKind === 'nss' ? ' lanspeed-config-nss' : ''),
 			'data-config-page': pageKind,
 			'aria-busy': 'true',
 			'data-state': values && values.pageState || 'loading'
 		}, [
 			E('style', {}, configStyle.CSS),
-			pageSection
+			pageHeader,
+			E('div', { 'class': 'lanspeed-config-page-body' }, pageContent)
 		]);
 		viewState.root = root;
 		lsTheme.applyRoot(root);

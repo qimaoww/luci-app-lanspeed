@@ -6,24 +6,24 @@ function collectorLabel(mode) {
 	if (mode === 'access_edge')
 		return _('自动精准');
 	if (mode === 'bpf')
-		return _('BPF');
+		return _('包过滤采集');
 	if (mode === 'nss_ecm_node')
-		return 'ECM';
+		return _('加速引擎采集');
 	if (mode === 'nss_ecm_bpf')
-		return _('ECM+BPF');
+		return _('加速引擎与包过滤采集');
 	if (mode === 'fast_routed_internet')
-		return 'FastN+FastS routed Internet';
+		return _('互联网流量观察');
 	if (mode === 'fast_routed_lease')
-		return 'FastN+FastS lease';
+		return _('互联网流量租约');
 	if (mode === 'conntrack_netlink')
-		return 'CT-Netlink';
+		return _('连接跟踪消息采集');
 	if (mode === 'conntrack_procfs')
-		return 'CT-Procfs';
+		return _('连接跟踪文件采集');
 	if (mode === 'conntrack')
-		return 'CT';
+		return _('连接跟踪');
 	if (mode === 'unsupported')
 		return _('不可用');
-	return mode === '-' ? '-' : mode;
+	return _('未知采集方式');
 }
 
 function collectorClass(mode) {

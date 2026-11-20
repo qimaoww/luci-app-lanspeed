@@ -387,7 +387,7 @@ for viewport_name in desktop mobile; do
 		/cgi-bin/luci/admin/status/lanspeed/overview \
 		.lanspeed-status-root .lanspeed-status-root 3 \
 		"$viewport_name" "$viewport_width" "$viewport_height" \
-		"LAN Speed" "LAN 客户端" "立即刷新"
+		"实时状态" "客户端" "立即刷新"
 
 	run_case diagnostics \
 		/cgi-bin/luci/admin/status/lanspeed/diagnostics \

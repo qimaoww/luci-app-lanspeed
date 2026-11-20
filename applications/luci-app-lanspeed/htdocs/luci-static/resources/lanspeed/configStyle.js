@@ -8,6 +8,8 @@
 'require lanspeed.configStyleBootstrap as configStyleBootstrap';
 'require lanspeed.configStyleShadcn as configStyleShadcn';
 'require lanspeed.configStyleResponsive as configStyleResponsive';
+'require lanspeed.pageLayout as pageLayout';
+'require lanspeed.configStyleLayout as configStyleLayout';
 
 /* Shared shell precedes theme visuals; responsive structure must win last. */
 var CONFIG_LAYOUT_CSS = [
@@ -17,7 +19,9 @@ var CONFIG_LAYOUT_CSS = [
 	configStyleArgon.CSS,
 	configStyleBootstrap.CSS,
 	configStyleShadcn.CSS,
-	configStyleResponsive.CSS
+	pageLayout.CSS,
+	configStyleResponsive.CSS,
+	configStyleLayout.CSS
 ].join('\n');
 
 var CONFIG_CSS = [

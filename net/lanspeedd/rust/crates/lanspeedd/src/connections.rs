@@ -510,6 +510,36 @@ mod tests {
     }
 
     #[test]
+    fn detail_serializes_optional_controls_without_requiring_connections() {
+        let mut snapshot = snapshot_with_detail_client();
+        let summary = crate::model::ClientControlSummary {
+            configured: true,
+            upload_bps: 8_000,
+            download_bps: 16_000,
+            internet_disabled: true,
+            shaping_supported: true,
+            blocking_supported: true,
+            max_rate_bps: 2_500_000_000,
+            state: "applied".into(),
+            reason: None,
+            queue_overflow: false,
+        };
+        snapshot.clients.clients[0].control = Some(summary.clone());
+        let response = snapshot.client_connections(DETAIL_KEY);
+        assert!(!response.available);
+        assert!(response.connections.is_empty());
+        assert_eq!(response.client.as_ref().unwrap().control, Some(summary));
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["client"]["control"]["download_bps"], 16_000);
+        assert_eq!(value["client"]["control"]["internet_disabled"], true);
+        assert!(value["client"]["control"].get("reason").is_none());
+        snapshot.clients.clients[0].control = None;
+        let old = serde_json::to_value(snapshot.client_connections(DETAIL_KEY)).unwrap();
+        assert!(old["client"].get("control").is_none());
+        assert!(snapshot.client_connections("offline").client.is_none());
+    }
+
+    #[test]
     fn shared_detail_publisher_replaces_some_generation_and_clears_none() {
         let mut snapshot = snapshot_with_detail_client();
         let (collected, details) = collected_with_detail();

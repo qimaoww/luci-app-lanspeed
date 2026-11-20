@@ -366,6 +366,7 @@ impl ResponseSnapshot {
             rate_sample_ms: client.sample_ms,
             rate_collector_mode: client.collector_mode.clone(),
             rate_meta: client.rate_meta.clone(),
+            control: client.control.clone(),
         });
         let mut warnings = Vec::new();
         let traffic_classification = self.traffic_classification.get(identity_key).cloned();

@@ -2,11 +2,11 @@
 'require baseclass';
 'require lanspeed.format as fmt';
 'require lanspeed.clientConnections as clientConnections';
-'require lanspeed.clientControl as clientControl';
 'require lanspeed.version as lsVersion';
 'require lanspeed.statusIp as statusIp';
 'require lanspeed.statusCollector as statusCollector';
 'require lanspeed.statusRateMeta as statusRateMeta';
+'require lanspeed.vendorLogo as vendorLogo';
 
 var ERROR_NOTICE_MS = 3000;
 
@@ -25,7 +25,7 @@ function bpfEvidence(status) {
 function emptyClientText(status) {
 	var reason = String(bpfEvidence(status).reason_code || '');
 	if (reason === 'no_collect_interface')
-		return _('没有接口设为“采集”。请在“LAN Speed 配置”的接口分配中选择实际 LAN 接口。');
+		return _('没有接口设为“采集”。请在“LAN Speed 配置”的接口分配中选择实际局域网接口。');
 	if (reason === 'tc_conflict' || reason === 'tc_attach_failed' || reason === 'tc_unavailable' || reason === 'tc_unsupported')
 		return _('BPF 组件已安装，但 TC 挂载未完成。请打开“运行诊断”查看挂载状态。');
 	if (reason === 'map_read_failed')
@@ -36,7 +36,7 @@ function emptyClientText(status) {
 		return _('BPF 已关闭，客户端实时测速不会启动。');
 	if (status && status.capabilities && status.capabilities.live_metrics === false)
 		return _('客户端实时采集尚未就绪。请打开“运行诊断”查看数据路径。');
-	return _('当前采样中没有 LAN 客户端流量。');
+	return _('当前采样中没有局域网客户端流量。');
 }
 
 function rpcErrorText(result) {
@@ -140,6 +140,32 @@ function refreshAvailability(viewState, refs) {
 	return { failed: failed, hardFailure: hardFailure, samplePending: false };
 }
 
+function setText(node, text) {
+	if (node && node.textContent !== String(text)) node.textContent = text;
+}
+
+/* One compact phrase next to the page title answering "is this live?". It
+ * reuses the availability result so it never disagrees with the error box. */
+function refreshLiveState(viewState, refs, status, availability) {
+	if (!refs.liveState) return;
+	var state, text;
+	var failed = availability && availability.failed || [];
+	if (viewState.prefs && viewState.prefs.paused) {
+		state = 'paused'; text = _('已暂停');
+	} else if (availability && availability.hardFailure) {
+		state = 'bad'; text = _('实时数据不可用');
+	} else if (failed.length) {
+		state = 'warning'; text = _('部分数据沿用上次');
+	} else if (availability && availability.samplePending) {
+		state = 'loading'; text = _('正在同步');
+	} else {
+		state = 'live';
+		text = _('实时');
+	}
+	refs.liveState.setAttribute('data-state', state);
+	setText(refs.liveState, text);
+}
+
 function refreshIntervalControl(viewState, refs, status) {
 	if (!refs || !refs.intervalSel) return;
 	var restricted = typeof fmt.nssRefreshRestricted === 'function' &&
@@ -195,15 +221,15 @@ function refreshPagination(viewState, refs, sorted) {
 	return page;
 }
 
-function clientNameContent(c, displayName, ips) {
-	var name = displayName;
+function clientNameContent(c, displayName, ips, vendor) {
+	var name = E('span', {}, displayName);
 	var ipText = '';
 	if (c.identity_key) {
-		var label = _('查看 %s 的当前连接').format(displayName);
+		var label = _('查看 %s 的连接与设备控制').format(displayName);
 		name = E('a', {
 			'class': 'lanspeed-connection-link',
 			'href': clientConnections.detailHref(window.location.pathname, c.identity_key),
-			'title': label,
+			'title': displayName + ' · ' + label,
 			'aria-label': label
 		}, displayName);
 	}
@@ -213,12 +239,34 @@ function clientNameContent(c, displayName, ips) {
 	else if (ips.length > 1)
 		ipText = ips.slice(1).join(', ');
 
-	if (!ipText)
-		return [ name ];
+	var line = E('span', { 'class': 'lanspeed-client-name-line' }, [ name ]);
+	if (vendor && vendorLogo.brand(vendor.vendor)) {
+		var label = vendor.label + (vendor.stale ? _('（缓存已过期）') : '');
+		var badge = E('span', { 'class': 'lanspeed-vendor-indicator', 'data-vendor-value': vendor.vendor + ':' + label }, [
+			E('button', {
+				'type': 'button', 'class': 'lanspeed-vendor-trigger',
+				'title': label, 'aria-label': _('厂商：') + label,
+				'click': function() { this.focus(); },
+				'keydown': function(event) { if (event.key === 'Escape') this.blur(); }
+			}, [ vendorLogo.logo(vendor.vendor, vendor.kind) ]),
+			E('span', { 'class': 'lanspeed-vendor-tooltip', 'aria-hidden': 'true' }, label)
+		]);
+		line.appendChild(badge);
+	}
+	return ipText ? [ line, E('span', { 'class': 'ipline', 'title': ips.join(', ') }, ipText) ] : [ line ];
+}
 
+function valueParts(value) {
+	var match = /^([\d.,]+)(\s*.+)$/.exec(value || '');
+	return match ? { number: match[1], unit: match[2] } : null;
+}
+
+function valueContent(value, className) {
+	var parts = valueParts(value);
+	if (!parts) return value;
 	return [
-		name,
-		E('span', { 'class': 'ipline', 'title': ips.join(', ') }, ipText)
+		E('span', { 'class': 'lanspeed-value-number' }, parts.number),
+		E('span', { 'class': 'lanspeed-value-unit' }, parts.unit)
 	];
 }
 
@@ -234,27 +282,57 @@ function trafficLine(direction, value, total) {
 	}, [
 		E('span', { 'class': 'lanspeed-client-direction', 'aria-hidden': 'true' }, download ? '↓' : '↑'),
 		E('span', { 'class': 'lanspeed-client-direction-label' }, label + (unavailable ? ' ' + _('暂不可用') : '') + ' '),
-		E('span', { 'class': total ? 'lanspeed-client-total' : 'lanspeed-client-rate' }, value)
+		E('span', { 'class': total ? 'lanspeed-client-total' : 'lanspeed-client-rate' },
+			valueContent(value))
 	]);
 }
 
-function clientTrafficCell(tx, rx, rateUnit) {
+function clientTrafficCell(value, direction, rateUnit) {
 	return E('td', {
-		'class': 'num lanspeed-client-value lanspeed-client-rate-cell',
-		'data-label': _('网速')
-	}, E('div', { 'class': 'lanspeed-client-traffic-stack' }, [
-		trafficLine('rx', fmt.formatRate(rx, rateUnit), false),
-		trafficLine('tx', fmt.formatRate(tx, rateUnit), false)
-	]));
+		'class': 'num lanspeed-client-value lanspeed-client-rate-cell lanspeed-client-rate-' + direction,
+		'data-label': direction === 'rx' ? _('下载速度') : _('上传速度')
+	}, trafficLine(direction, fmt.formatRate(value, rateUnit), false));
 }
 
-function clientTrafficTotalCell(c, showTotal) {
-	var attrs = { 'class': 'num lanspeed-client-total-cell', 'data-label': _('累计流量') };
+function clientTrafficTotalCell(c, direction, showTotal) {
+	var attrs = {
+		'class': 'num lanspeed-client-total-cell lanspeed-client-total-' + direction,
+		'data-label': direction === 'rx' ? _('累计下载') : _('累计上传')
+	};
 	if (!showTotal) attrs.hidden = 'hidden';
-	return E('td', attrs, showTotal ? E('div', { 'class': 'lanspeed-client-traffic-stack' }, [
-		trafficLine('rx', typeof fmt.formatBytes === 'function' ? fmt.formatBytes(c && c.rx_bytes) : '-', true),
-		trafficLine('tx', typeof fmt.formatBytes === 'function' ? fmt.formatBytes(c && c.tx_bytes) : '-', true)
-	]) : []);
+	return E('td', attrs, showTotal ? trafficLine(direction,
+		typeof fmt.formatBytes === 'function' ? fmt.formatBytes(c && c[direction + '_bytes']) : '-', true) : []);
+}
+
+function clientMacCell(c, vendor) {
+	var content = [ E('span', { 'class': 'mono lanspeed-client-mac-value' }, fmt.textOrDash(c && c.mac)) ];
+	return E('td', { 'class': 'lanspeed-client-mac', 'data-label': _('MAC') }, content);
+}
+
+function countText(value) {
+	return typeof value === 'number' ? String(value) : '-';
+}
+
+function clientTcpCell(c) {
+	return E('td', {
+		'class': 'num lanspeed-client-count-cell lanspeed-client-tcp-cell',
+		'data-label': _('TCP'),
+		'title': _('传输控制协议：统计当前已建立且确认的连接')
+	}, countText(c && c.tcp_conns));
+}
+
+function clientUdpCell(c) {
+	var udpTitle = (typeof c.udp_dns_conns === 'number' || typeof c.udp_other_conns === 'number')
+		? [
+			_('域名查询 ') + countText(c.udp_dns_conns),
+			_('其它 ') + countText(c.udp_other_conns)
+		  ].join(' · ')
+		: _('用户数据报协议：统计当前已确认的连接');
+	return E('td', {
+		'class': 'num lanspeed-client-count-cell lanspeed-client-udp-cell',
+		'data-label': _('UDP'),
+		'title': udpTitle
+	}, countText(c && c.udp_conns));
 }
 
 function captureClientViewport(refs) {
@@ -370,15 +448,53 @@ function restoreRowFocus(row, state) {
 	catch (e) { target.focus(); }
 }
 
+/* A cell can be kept when it renders identically and binds no handlers.
+ * Control buttons close over the sampled client, so they are always fresh. */
+function reusableCell(current, next) {
+	return !!current && !!next && typeof current.isEqualNode === 'function' &&
+		typeof next.querySelector === 'function' && !next.querySelector('button') &&
+		current.isEqualNode(next);
+}
+
+/* Patch the badge separately so vendor completion preserves selected names. */
+function patchNameCell(current, next) {
+	if (!current || !next || current.className !== 'lanspeed-client-name' ||
+	    next.className !== 'lanspeed-client-name') return false;
+	var oldLine = current.firstChild, newLine = next.firstChild;
+	if (!oldLine || !newLine || !oldLine.firstChild.isEqualNode(newLine.firstChild)) return false;
+	var oldBadge = oldLine.children[1], newBadge = newLine.children[1];
+	if (newBadge && !oldBadge) oldLine.appendChild(newBadge);
+	else if (!newBadge && oldBadge) oldLine.removeChild(oldBadge);
+	else if (newBadge && oldBadge.getAttribute('data-vendor-value') !== newBadge.getAttribute('data-vendor-value'))
+		oldLine.replaceChild(newBadge, oldBadge);
+	var oldIp = current.children[1], newIp = next.children[1];
+	if (newIp && !oldIp) current.appendChild(newIp);
+	else if (!newIp && oldIp) current.removeChild(oldIp);
+	else if (newIp && !oldIp.isEqualNode(newIp)) current.replaceChild(newIp, oldIp);
+	return true;
+}
+
 function replaceRowContents(target, source) {
 	var focusState = captureRowFocus(target);
 	var children = [];
 	while (source.firstChild)
 		children.push(source.removeChild(source.firstChild));
-	while (target.firstChild)
-		target.removeChild(target.firstChild);
-	target.className = source.className;
-	children.forEach(function(child) { target.appendChild(child); });
+	if (target.className !== source.className) target.className = source.className;
+	if (target.children && target.children.length === children.length &&
+	    typeof target.replaceChild === 'function') {
+		/* Patch only cells whose rendering changed so unchanged text, hover
+		 * targets and selections stay put between samples. */
+		children.forEach(function(child, index) {
+			var current = target.children[index];
+			if (!reusableCell(current, child) && !patchNameCell(current, child) &&
+			    !(current.getAttribute('class') === 'lanspeed-client-mac' && current.firstChild.isEqualNode(child.firstChild)))
+				target.replaceChild(child, current);
+		});
+	} else {
+		while (target.firstChild)
+			target.removeChild(target.firstChild);
+		children.forEach(function(child) { target.appendChild(child); });
+	}
 	restoreRowFocus(target, focusState);
 }
 
@@ -388,6 +504,13 @@ function replaceRowContents(target, source) {
  * continuity.
  */
 function reconcileClientRows(tbody, rows) {
+	var focused = typeof document !== 'undefined' ? document.activeElement : null;
+	var selection = typeof window !== 'undefined' && typeof window.getSelection === 'function'
+		? window.getSelection() : null;
+	var selected = selection && typeof tbody.contains === 'function' &&
+		tbody.contains(selection.anchorNode) && tbody.contains(selection.focusNode)
+		? { anchor: selection.anchorNode, start: selection.anchorOffset,
+			focus: selection.focusNode, end: selection.focusOffset } : null;
 	var existing = Object.create(null);
 	Array.prototype.forEach.call(tbody.children, function(row) {
 		var key = row.getAttribute('data-client-key');
@@ -407,11 +530,21 @@ function reconcileClientRows(tbody, rows) {
 
 	desired.forEach(function(row, index) {
 		var current = tbody.children[index] || null;
-		if (current !== row)
-			tbody.insertBefore(row, current);
+		if (current !== row) {
+			if (row.parentNode === tbody && typeof tbody.moveBefore === 'function')
+				tbody.moveBefore(row, current);
+			else tbody.insertBefore(row, current);
+		}
 	});
 	while (tbody.children.length > desired.length)
 		tbody.removeChild(tbody.lastChild);
+	if (focused && focused.isConnected && typeof tbody.contains === 'function' &&
+	    tbody.contains(focused) && document.activeElement !== focused) {
+		try { focused.focus({ preventScroll: true }); } catch (e) { focused.focus(); }
+	}
+	if (selected && selected.anchor.isConnected && selected.focus.isConnected &&
+	    typeof selection.setBaseAndExtent === 'function')
+		selection.setBaseAndExtent(selected.anchor, selected.start, selected.focus, selected.end);
 }
 
 function refreshSortHeaders(refs, prefs) {
@@ -450,12 +583,10 @@ function refreshLive(viewState) {
 			return mode === 'fast_routed_lease' ? mode : current || mode;
 		}, '') : '';
 	var showClientTotals = viewState.showClientTotals === true;
-	if (refs.controlHeader) refs.controlHeader.hidden = false;
 	if (refs.totalHeader) refs.totalHeader.hidden = !showClientTotals;
-	if (refs.clientsTable) {
-		refs.clientsTable.setAttribute('data-client-control', 'shown');
+	if (refs.totalUploadHeader) refs.totalUploadHeader.hidden = !showClientTotals;
+	if (refs.clientsTable)
 		refs.clientsTable.setAttribute('data-client-totals', showClientTotals ? 'shown' : 'hidden');
-	}
 	refreshIntervalControl(viewState, refs, status);
 	var clientsAll = fmt.asArray(viewState.clients && viewState.clients.clients);
 	var prefs = viewState.prefs;
@@ -463,8 +594,6 @@ function refreshLive(viewState) {
 	var showIpv6 = viewState.showIpv6 !== false;
 	var hidePrivateIpv6 = viewState.hidePrivateIpv6 === true;
 	var hideIpv6Ranges = statusIp.hideIpv6RangesValue(viewState.hideIpv6Ranges);
-	if (refs.syncClientColumnWidths)
-		refs.syncClientColumnWidths();
 	var availability = refreshAvailability(viewState, refs);
 
 	var collector = routedInternet ? (routedCollector || 'fast_routed_internet') : accessEdgeOwnsCurrentRate(status) ? 'access_edge' :
@@ -487,9 +616,9 @@ function refreshLive(viewState) {
 
 	var metaParts = [];
 	if (status.version) metaParts.push(_('后端 ') + status.version);
-	metaParts.push('luci ' + lsVersion.FULL_VERSION);
-	if (prefs.paused) metaParts.push(_('已暂停'));
-	refs.meta.textContent = metaParts.join(' · ');
+	metaParts.push(_('前端 ') + lsVersion.FULL_VERSION);
+	setText(refs.meta, metaParts.join(' · '));
+	refreshLiveState(viewState, refs, status, availability);
 
 	var totals = routedInternet ? clientsAll.reduce(function(sum, client) {
 		var tx = routedRate(client, 'tx');
@@ -503,31 +632,34 @@ function refreshLive(viewState) {
 	// that the rate has a special placeholder value.  Keep the numeric zero
 	// contract for rate fields; the surrounding busy/"正在同步" state already
 	// communicates that the next sample is still being assembled.
-	refs.mTx.textContent = fmt.formatRate(totals.tx, prefs.unit);
-	refs.mRx.textContent = fmt.formatRate(totals.rx, prefs.unit);
-	refs.mClients.textContent = String(clientsAll.length);
+	setText(refs.mTx, fmt.formatRate(totals.tx, prefs.unit));
+	setText(refs.mRx, fmt.formatRate(totals.rx, prefs.unit));
+	setText(refs.mClients, String(clientsAll.length));
 
 	var clientsData = viewState.clients || {};
-	var udpSub;
 	if (typeof clientsData.tcp_conns_total === 'number' || typeof clientsData.udp_conns_total === 'number') {
+		var tcpTotal = typeof clientsData.tcp_conns_total === 'number' ? clientsData.tcp_conns_total : null;
+		var udpTotal = typeof clientsData.udp_conns_total === 'number' ? clientsData.udp_conns_total : null;
+		var connTotal = (tcpTotal !== null && udpTotal !== null) ? tcpTotal + udpTotal : null;
 		refs.mConnsWrap.style.display = '';
-		refs.mTcpConns.textContent = String(typeof clientsData.tcp_conns_total === 'number' ? clientsData.tcp_conns_total : '-');
-		refs.mUdpConns.textContent = String(typeof clientsData.udp_conns_total === 'number' ? clientsData.udp_conns_total : '-');
+		setText(refs.mConnsValue, connTotal !== null ? String(connTotal) : '—');
+		var connParts = [
+			_('TCP ') + (tcpTotal !== null ? tcpTotal : '—'),
+			_('UDP ') + (udpTotal !== null ? udpTotal : '—')
+		];
+		setText(refs.mConnsTcpHint, connParts[0]);
+		setText(refs.mConnsUdpHint, connParts[1]);
 		if (typeof clientsData.udp_dns_conns_total === 'number' || typeof clientsData.udp_other_conns_total === 'number') {
-			udpSub = [
-				'DNS ' + (typeof clientsData.udp_dns_conns_total === 'number' ? clientsData.udp_dns_conns_total : '-'),
-				_('其它 ') + (typeof clientsData.udp_other_conns_total === 'number' ? clientsData.udp_other_conns_total : '-')
-			];
-			refs.mUdpConnsSub.textContent = udpSub.join(' · ');
-		} else {
-			refs.mUdpConnsSub.textContent = '-';
+			refs.mConnsWrap.title = _('当前连接来自连接跟踪：TCP 统计已建立且确认的传输控制协议连接，UDP 统计已确认的用户数据报协议连接。') +
+				_(' · 域名查询 ') + (typeof clientsData.udp_dns_conns_total === 'number' ? clientsData.udp_dns_conns_total : '—') +
+				' · ' + _('其它 ') + (typeof clientsData.udp_other_conns_total === 'number' ? clientsData.udp_other_conns_total : '—');
 		}
 	} else {
 		refs.mConnsWrap.style.display = 'none';
 	}
 
 	if (availability.samplePending) {
-		refs.mClientsSub.textContent = _('正在同步实时采样…');
+		setText(refs.mClientsSub, _('正在同步实时采样…'));
 	} else {
 		var nssEv = nssProfile && status.evidence && status.evidence.nss;
 		var subParts = [ _('%d 个活跃').format(totals.active) ];
@@ -535,15 +667,23 @@ function refreshLive(viewState) {
 		    nssEv.host_count > clientsAll.length) {
 			subParts.push(_('NSS 发现 %d 个').format(nssEv.host_count));
 		}
-		subParts.push(_('活跃判定 %d 秒').format(Math.round(activeCfg.activeWindowMs / 1000)));
+		setText(refs.mClientsSub, subParts.join(' · '));
+		var activeWindow = Math.round(activeCfg.activeWindowMs / 1000);
+		var activeDetail = _('最近 %d 秒内有流量的客户端计为活跃').format(activeWindow);
 		if (activeCfg.activeMinBps > 1)
-			subParts.push(_('≥ ') + fmt.formatRate(activeCfg.activeMinBps, prefs.unit));
-		refs.mClientsSub.textContent = subParts.join(' · ');
+			activeDetail += ' · ' + _('最低 %s').format(fmt.formatRate(activeCfg.activeMinBps, prefs.unit));
+		if (refs.mClientsWrap)
+			refs.mClientsWrap.title = activeDetail;
 	}
 
 	var latestSample = fmt.latestClientSampleMs(clientsAll);
+	var vendorPending = false;
+	var vendorUnavailable = false;
 	var filtered = clientsAll.filter(function(c) {
-		if (!fmt.matchesFilter(c, viewState.filter)) return false;
+		var vendor = viewState.vendorLookup ? viewState.vendorLookup(c.mac) : null;
+		if (vendor && vendor.kind === 'loading') vendorPending = true;
+		if (vendor && vendor.kind === 'unavailable') vendorUnavailable = true;
+		if (!fmt.matchesFilter(c, viewState.filter, vendor && [vendor.vendor, vendor.label].join(' '))) return false;
 		if (prefs.activeOnly && !fmt.isActiveClient(c, latestSample, activeCfg)) return false;
 		return true;
 	});
@@ -551,15 +691,15 @@ function refreshLive(viewState) {
 	var page = refreshPagination(viewState, refs, sorted);
 	refreshSortHeaders(refs, prefs);
 
-	var summaryParts = availability.samplePending ? [ _('正在同步') ] : [
-		_('%d 总').format(clientsAll.length),
-		_('%d 活跃').format(totals.active)
-	];
+	var summaryParts = [];
 	if (viewState.filter || prefs.activeOnly)
-		summaryParts.push(_('%d 显示').format(sorted.length));
-	if (page.total)
-		summaryParts.push(_('%d–%d 当前页').format(page.start, page.end));
-	refs.clientsHeaderSummary.textContent = summaryParts.join(' · ');
+		summaryParts.push(_('%d 个匹配').format(sorted.length));
+	if (viewState.filter && vendorPending)
+		summaryParts.push(_('厂商数据加载中'));
+	else if (viewState.filter && vendorUnavailable)
+		summaryParts.push(_('厂商数据不可用'));
+	setText(refs.clientsHeaderSummary, summaryParts.join(' · '));
+	if (refs.clearFilters) refs.clearFilters.hidden = !(viewState.filter || prefs.activeOnly);
 
 	if (!sorted.length) {
 		// Keep the table header visible in the empty state so sorting and
@@ -572,6 +712,12 @@ function refreshLive(viewState) {
 		var clientsRpc = viewState.rpc && viewState.rpc.clients;
 		if (availability.samplePending) {
 			refs.empty.textContent = _('正在同步实时采样…');
+		} else if (viewState.filter && vendorPending) {
+			refs.empty.setAttribute('data-state', 'loading');
+			refs.empty.textContent = _('正在加载厂商数据，搜索结果尚未完整。');
+		} else if (viewState.filter && vendorUnavailable) {
+			refs.empty.setAttribute('data-state', 'unavailable');
+			refs.empty.textContent = _('厂商数据不可用，无法完整匹配厂商名称。');
 		} else if (viewState.filter || prefs.activeOnly) {
 			refs.empty.textContent = _('没有匹配的客户端。');
 		} else if (availability.hardFailure || (clientsRpc && clientsRpc.ok === false && !clientsRpc.retained)) {
@@ -600,60 +746,40 @@ function refreshLive(viewState) {
 				displayName = c.mac || '-';
 			}
 
-			var controlCell = clientControl.cell(viewState, c);
-			controlCell.hidden = false;
+			var vendor = viewState.vendorLookup ? viewState.vendorLookup(c.mac) : null;
 
 			return E('tr', {
 				'class': idle ? 'idle' : '',
 				'data-client-key': String(fmt.identityOf(c))
 			}, [
 				E('td', { 'class': 'lanspeed-client-name' },
-					clientNameContent(c, displayName, ips)),
-				E('td', {
-					'class': 'mono lanspeed-client-mac',
-					'data-label': 'MAC'
-				}, fmt.textOrDash(c.mac)),
-				clientTrafficCell(tx, rx, prefs.unit),
-				clientTrafficTotalCell(c, showClientTotals),
-				E('td', {
-					'class': 'num lanspeed-client-value',
-					'data-label': 'TCP'
-				}, typeof c.tcp_conns === 'number' ? String(c.tcp_conns) : '-'),
-				E('td', {
-					'class': 'num lanspeed-client-value',
-					'data-label': 'UDP',
-					'title': (typeof c.udp_dns_conns === 'number' || typeof c.udp_other_conns === 'number')
-						? [
-							'DNS ' + (typeof c.udp_dns_conns === 'number' ? c.udp_dns_conns : '-'),
-							_('其它 ') + (typeof c.udp_other_conns === 'number' ? c.udp_other_conns : '-')
-						  ].join(' · ')
-						: ''
-				}, typeof c.udp_conns === 'number' ? String(c.udp_conns) : '-'),
-				controlCell
+					clientNameContent(c, displayName, ips, vendor)),
+				clientMacCell(c, vendor),
+				clientTrafficCell(rx, 'rx', prefs.unit),
+				clientTrafficCell(tx, 'tx', prefs.unit),
+				clientTrafficTotalCell(c, 'rx', showClientTotals),
+				clientTrafficTotalCell(c, 'tx', showClientTotals),
+				clientTcpCell(c),
+				clientUdpCell(c)
 			]);
 		}));
 	}
-	/* Rows may be created/reused after the initial layout sync. Reapply the
-	 * shared grid template so every freshly rendered data row follows its
-	 * header during and after a resize. */
-	if (refs.syncClientColumnWidths)
-		refs.syncClientColumnWidths();
 
 	var ifaces = fmt.asArray(viewState.interfaces && viewState.interfaces.interfaces);
 	var interfacesRpc = viewState.rpc && viewState.rpc.interfaces;
 	if (!ifaces.length) {
 		if (interfacesRpc && interfacesRpc.ok === false) {
-			refs.ifacesDetails.parentNode.style.display = '';
+			refs.ifacesBlock.style.display = '';
 			fmt.replaceChildren(refs.ifacesBody, []);
-			refs.ifacesSummary.textContent = interfacesRpc.retained ? _('上次结果为空') : _('接口数据不可用');
+			setText(refs.ifacesSummary, interfacesRpc.retained ? _('上次结果为空') : _('接口数据不可用'));
 			refs.ifacesHint.textContent = interfacesRpc.retained
 				? _('接口请求失败；上次成功结果中没有接口采样。')
 				: _('无法读取接口吞吐，请检查服务状态后重试。');
 		} else {
-			refs.ifacesDetails.parentNode.style.display = 'none';
+			refs.ifacesBlock.style.display = 'none';
 		}
 	} else {
-		refs.ifacesDetails.parentNode.style.display = '';
+		refs.ifacesBlock.style.display = '';
 		var clientSumByIf = {};
 		clientsAll.forEach(function(c) {
 			var k = c.interface || '-';
@@ -679,18 +805,18 @@ function refreshLive(viewState) {
 
 			return E('tr', {}, [
 				E('td', { 'data-label': _('接口') }, n),
-				E('td', { 'class': 'num', 'data-label': _('接口 ↑') }, fmt.formatRate(ifUp, prefs.unit)),
 				E('td', { 'class': 'num', 'data-label': _('接口 ↓') }, fmt.formatRate(ifDn, prefs.unit)),
-				E('td', { 'class': 'num', 'data-label': _('客户端 ↑') },
-					isLan ? fmt.formatRate(cs.tx, prefs.unit) : '-'),
+				E('td', { 'class': 'num', 'data-label': _('接口 ↑') }, fmt.formatRate(ifUp, prefs.unit)),
 				E('td', { 'class': 'num', 'data-label': _('客户端 ↓') },
-					isLan ? fmt.formatRate(cs.rx, prefs.unit) : '-')
+					isLan ? fmt.formatRate(cs.rx, prefs.unit) : '-'),
+				E('td', { 'class': 'num', 'data-label': _('客户端 ↑') },
+					isLan ? fmt.formatRate(cs.tx, prefs.unit) : '-')
 			]);
 		}));
 
 		refs.ifacesSummary.textContent = [
-			'↑ ' + fmt.formatRate(totalIfTx, prefs.unit),
-			'↓ ' + fmt.formatRate(totalIfRx, prefs.unit)
+			'↓ ' + fmt.formatRate(totalIfRx, prefs.unit),
+			'↑ ' + fmt.formatRate(totalIfTx, prefs.unit)
 		].join(' · ');
 
 		var covHint = status.coverage || {};
@@ -702,7 +828,7 @@ function refreshLive(viewState) {
 				? _('部分接口流量未能归属到客户端，常见原因是硬件卸载、交换芯片内转发或广播流量。')
 				: '';
 		} else {
-			refs.ifacesHint.textContent = '';
+			setText(refs.ifacesHint, '');
 		}
 		if (interfacesRpc && interfacesRpc.ok === false && interfacesRpc.retained) {
 			refs.ifacesHint.textContent = [
@@ -719,6 +845,9 @@ return baseclass.extend({
 	clientNameContent: clientNameContent,
 	clientTrafficCell: clientTrafficCell,
 	clientTrafficTotalCell: clientTrafficTotalCell,
+	clientMacCell: clientMacCell,
+	clientTcpCell: clientTcpCell,
+	clientUdpCell: clientUdpCell,
 	refreshSortHeaders: refreshSortHeaders,
 	captureClientViewport: captureClientViewport,
 	restoreClientViewport: restoreClientViewport,

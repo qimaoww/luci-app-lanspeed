@@ -6,6 +6,7 @@
 'require lanspeed.statusShell as statusShell';
 'require lanspeed.statusRefresh as statusRefresh';
 'require lanspeed.statusRateMeta as statusRateMeta';
+'require lanspeed.macVendor as macVendor';
 
 var SOURCE_KEYS = [ 'status', 'clients', 'interfaces', 'uci' ];
 var LIVE_SOURCE_KEYS = [ 'status', 'clients', 'interfaces' ];
@@ -663,10 +664,6 @@ function createController(viewState, options) {
 	function destroy() {
 		if (destroyed) return;
 		destroyed = true;
-		if (viewState.clientColumnResizeObserver &&
-			typeof viewState.clientColumnResizeObserver.disconnect === 'function')
-			viewState.clientColumnResizeObserver.disconnect();
-		viewState.clientColumnResizeObserver = null;
 		requestSeq++;
 		stopTimer();
 		clearErrorNoticeTimer();
@@ -748,38 +745,35 @@ return baseclass.extend({
 				hardFailure: normalized.hardFailure,
 				livePair: normalized.livePair,
 				filter: '',
+				vendorLookup: macVendor.lookup,
 			page: 1,
 			loading: false,
 				manualBusy: false,
 				prefs: fmt.loadPrefs(),
 				refs: null
 			};
-			viewState.refreshLive = function() {
-				return statusRefresh.refreshLive(viewState);
-			};
 			viewState.refreshBusy = function() {
 				return statusRefresh.refreshAvailability(viewState, viewState.refs);
 			};
-			var controller = createController(viewState);
+			createController(viewState);
+			/* The OUI database is optional. It loads in the background and
+			 * re-renders once; a failed download is retried by later refreshes
+			 * after the module backoff, and a destroyed page never repaints. */
+			var ensureVendors = typeof macVendor.watch === 'function'
+				? macVendor.watch(function() { return !viewState.isDestroyed(); },
+					function() { viewState.refreshLive(); })
+				: null;
+			viewState.refreshLive = function() {
+				if (ensureVendors) ensureVendors();
+				return statusRefresh.refreshLive(viewState);
+			};
+			if (!ensureVendors) macVendor.load().then(function() {
+				if (!viewState.isDestroyed()) viewState.refreshLive();
+			});
 			var built = statusShell.buildShell(viewState);
 			viewState.refs = built.refs;
 			if (viewState.attachRoot) viewState.attachRoot(built.root);
 			viewState.refreshLive();
-			/* LuCI appends the returned root after render() returns. Apply the
-			 * initial column canvas after attachment and once more after the first
-			 * layout pass; the first callback can otherwise capture the table's
-			 * intrinsic width before the card expands to the content width. */
-			var syncClientColumns = function() {
-				if (viewState.destroyed !== true && viewState.refs &&
-					typeof viewState.refs.syncClientColumnWidths === 'function')
-					viewState.refs.syncClientColumnWidths();
-			};
-			if (typeof requestAnimationFrame === 'function')
-				requestAnimationFrame(syncClientColumns);
-			if (typeof setTimeout === 'function') {
-				setTimeout(syncClientColumns, 50);
-				setTimeout(syncClientColumns, 150);
-			}
 			viewState.schedule();
 		return built.root;
 	},

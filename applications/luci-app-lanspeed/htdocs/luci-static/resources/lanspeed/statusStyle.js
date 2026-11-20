@@ -7,6 +7,8 @@
 'require lanspeed.statusStyleBootstrap as statusStyleBootstrap';
 'require lanspeed.statusStyleShadcn as statusStyleShadcn';
 'require lanspeed.statusStyleResponsive as statusStyleResponsive';
+'require lanspeed.pageLayout as pageLayout';
+'require lanspeed.statusStyleLayout as statusStyleLayout';
 
 /* Theme modules precede shared responsive rules so mobile fixes win the cascade. */
 var STATUS_LAYOUT_CSS = [
@@ -15,7 +17,9 @@ var STATUS_LAYOUT_CSS = [
 	statusStyleArgon.CSS,
 	statusStyleBootstrap.CSS,
 	statusStyleShadcn.CSS,
-	statusStyleResponsive.CSS
+	pageLayout.CSS,
+	statusStyleResponsive.CSS,
+	statusStyleLayout.CSS
 ].join('\n');
 
 var LAYOUT_CSS = [

@@ -47,6 +47,8 @@ function run(viewState, identityKey, task) {
 					client.control = response.control;
 			});
 		}
+		if (viewState.controlClient && viewState.controlClient.identity_key === identityKey && response.control)
+			viewState.controlClient.control = response.control;
 		viewState.refreshLive();
 		ui.hideModal();
 		return viewState.reload(true);
@@ -119,7 +121,14 @@ function openLimit(viewState, client) {
 		try {
 			var up = mbpsToBps(upload.value, control.max_rate_bps);
 			var down = mbpsToBps(download.value, control.max_rate_bps);
-			setRule(viewState, client, up, down, control.internet_disabled === true);
+			save.disabled = true;
+			save.setAttribute('aria-busy', 'true');
+			save.textContent = _('处理中…');
+			setRule(viewState, client, up, down, control.internet_disabled === true).finally(function() {
+				save.disabled = false;
+				save.setAttribute('aria-busy', 'false');
+				save.textContent = _('保存');
+			});
 		} catch (error) {
 			feedback.style.display = '';
 			feedback.textContent = error.message;
@@ -135,7 +144,7 @@ function openLimit(viewState, client) {
 				'class': 'lanspeed-control-client-meta', 'title': identity.details
 			}, identity.details) : ''
 		]),
-		E('p', {}, _('仅限制访问互联网的流量，路由器管理和 LAN/NAS 流量不受影响。正常整形不主动丢包。')),
+		E('p', {}, _('仅限制访问互联网的流量，路由器管理和 局域网及网络存储流量不受影响。正常整形不主动丢包。')),
 		E('div', { 'class': 'cbi-section-node lanspeed-control-form' }, [
 			E('label', {}, [ E('span', {}, _('上传 Mbps')), upload ]),
 			E('label', {}, [ E('span', {}, _('下载 Mbps')), download ])
@@ -179,7 +188,7 @@ function stateLabel(control) {
 	return _('已配置');
 }
 
-function cell(viewState, client) {
+function actions(viewState, client, className) {
 	var control = client.control || {};
 	var busy = !!(viewState.controlBusy && viewState.controlBusy[client.identity_key]);
 	var hasLimit = Number(control.upload_bps) > 0 || Number(control.download_bps) > 0;
@@ -210,13 +219,28 @@ function cell(viewState, client) {
 		if (event) event.preventDefault();
 		toggleBlock(viewState, client);
 	});
+	return E('div', { 'class': className || 'lanspeed-control-actions' }, [ limit, block ]);
+}
+
+function cell(viewState, client) {
 	return E('td', { 'class': 'lanspeed-client-control', 'data-label': _('控制') }, [
-		E('div', { 'class': 'lanspeed-control-actions' }, [ limit, block ])
+		actions(viewState, client)
 	]);
 }
 
+function summary(control) {
+	if (!control) return _('控制信息不可用');
+	if (control.shaping_supported !== true && control.blocking_supported !== true)
+		return _('当前平台不支持客户端控制');
+	if (!control.configured) return _('未配置限速');
+	return stateLabel(control) || _('已配置');
+}
+
 return baseclass.extend({
+	actions: actions,
 	cell: cell,
+	summary: summary,
+	stateLabel: stateLabel,
 	openLimit: openLimit,
 	toggleBlock: toggleBlock,
 	reasonText: reasonText,

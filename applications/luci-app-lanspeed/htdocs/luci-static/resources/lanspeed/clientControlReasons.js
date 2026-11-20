@@ -10,6 +10,6 @@ return baseclass.extend({
 	LABELS: LABELS,
 	text: function(reason) {
 		return LABELS[String(reason || '')] ||
-			(reason ? _('控制不可用：%s').format(reason) : '');
+			(reason ? _('控制不可用，请查看诊断信息。') : '');
 	}
 });
