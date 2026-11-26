@@ -1797,9 +1797,10 @@ impl ProductionRuntime {
                 .x86_coverage
                 .update(now_ms, &clients, &interfaces, coverage_fresh),
         };
+        let edge_live = self.config.access_edge_is_live();
         let sysdevices = sysdevices(&self.config)?;
         let mut capabilities = capabilities(&report.capabilities, &report);
-        capabilities.live_metrics = actual_live;
+        capabilities.live_metrics = actual_live || edge_live;
         capabilities.conntrack_fallback = false;
         // BPF remains an active slow-path observer on NSS even when conntrack
         // sync is the authoritative rate source.  Runtime capability must
@@ -1917,6 +1918,9 @@ impl ProductionRuntime {
                 warnings.push((*warning).into());
             }
         }
+        if edge_live {
+            warnings.retain(|warning| warning != "live_metrics_unavailable");
+        }
         retain_collector_warnings(&mut warnings, decision.rate);
         if capabilities.bpf_runtime_metrics {
             warnings.retain(|warning| {
@@ -1937,6 +1941,7 @@ impl ProductionRuntime {
                 .insert("nss_runtime_error".into(), json!(error));
         }
         if !actual_live
+            && !edge_live
             && !warnings
                 .iter()
                 .any(|warning| warning == "live_metrics_unavailable")

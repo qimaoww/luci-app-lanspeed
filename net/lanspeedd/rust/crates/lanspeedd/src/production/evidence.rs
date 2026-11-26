@@ -121,7 +121,12 @@ pub(super) fn apply_decision_evidence(
     config: &RuntimeConfig,
     _report: &ProbeReport,
 ) {
-    let effective = decision.rate.as_str();
+    let access_edge_live = config.access_edge_is_live();
+    let effective = if access_edge_live {
+        "access_edge"
+    } else {
+        decision.rate.as_str()
+    };
     evidence
         .details
         .insert("effective_collector".into(), json!(effective));
@@ -148,7 +153,17 @@ pub(super) fn apply_decision_evidence(
         );
         collector.insert("mode".into(), json!(decision.mode.as_str()));
         collector.insert("confidence".into(), json!(decision.confidence.as_str()));
-        collector.insert("warnings".into(), json!(decision.warnings));
+        let warnings = if access_edge_live {
+            decision
+                .warnings
+                .iter()
+                .filter(|warning| **warning != "live_metrics_unavailable")
+                .copied()
+                .collect::<Vec<_>>()
+        } else {
+            decision.warnings.clone()
+        };
+        collector.insert("warnings".into(), json!(warnings));
         collector.insert("effective_interval_ms".into(), json!(effective_interval_ms));
     }
     #[cfg(feature = "nss-platform")]

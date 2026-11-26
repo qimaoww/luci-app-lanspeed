@@ -870,7 +870,9 @@ pub fn assess(
     for warning in &decision.warnings {
         push_unique(&mut warnings, warning);
     }
-    let live_metrics = decision.rate != crate::policy::RateCollector::Unsupported;
+    let access_edge_live = config.access_edge_is_live();
+    let live_metrics = decision.rate != crate::policy::RateCollector::Unsupported
+        || access_edge_live;
     let capabilities = ProbeCapabilities {
         bpf: decision.rate == crate::policy::RateCollector::Bpf && decision.mode == Mode::Full,
         bpf_package: facts.bpf.package,

@@ -395,6 +395,17 @@ impl Default for RuntimeConfig {
 }
 
 impl RuntimeConfig {
+    #[cfg(feature = "nss-platform")]
+    pub(crate) const fn access_edge_is_live(&self) -> bool {
+        matches!(self.access_edge_mode, AccessEdgeMode::Active)
+            && matches!(self.rate_collector_mode, RateCollectorMode::Auto)
+    }
+
+    #[cfg(not(feature = "nss-platform"))]
+    pub(crate) const fn access_edge_is_live(&self) -> bool {
+        false
+    }
+
     pub fn enforce_platform_profile(&mut self) {
         if crate::platform::profile::COMPILED_PROFILE.uses_nss() {
             return;
