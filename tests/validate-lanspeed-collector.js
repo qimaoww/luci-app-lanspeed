@@ -583,10 +583,10 @@ assert(ebpfManifest.includes('default = ["x86-tc", "conntrack-kfunc"]') &&
   'x86 TC, NSS TC, and NSS ECM eBPF programs must have separate source features');
 assert(buildDriver.includes('LANSPEED_BPF_TARGET_ARCH') &&
   buildDriver.includes('command.env("AYA_BPF_TARGET_ARCH", target_arch.aya_name())') &&
-  buildDriver.includes('Self::Aarch64 => "nss-tc"') &&
-  buildDriver.includes('Self::X86_64 => "x86-tc"') &&
-  buildDriver.includes('"nss-ecm"') && buildDriver.includes('target_arch.builds_ecm()'),
-  'build driver must select platform-owned TC sources and compile ECM only for aarch64');
+  buildDriver.includes('self == Self::Aarch64 && nss_platform_requested()') &&
+  buildDriver.includes('if nss { "nss-tc" } else { "x86-tc" }') &&
+  buildDriver.includes('"nss-ecm"'),
+  'build driver must select NSS TC and ECM only when NSS is enabled on aarch64');
 assert(packageMakefile.includes('LANSPEED_BPF_TARGET_ARCH="$(ARCH)"') &&
   packageMakefile.includes('LANSPEED_NSS_ECM_BPF_ENABLED:=$(if $(LANSPEED_NSS_PLATFORM_ENABLED),$(filter aarch64,$(ARCH)),)') &&
   packageMakefile.includes('/usr/lib/bpf/lanspeed-ebpf-ecm.o'),

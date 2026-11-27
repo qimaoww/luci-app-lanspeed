@@ -73,7 +73,19 @@ fi
 # "could not create LLVM TargetMachine for triple"). Set
 # LANSPEED_RUST_LLVM_KEEP_ALL_BACKENDS=1 to leave llvm.targets untouched when
 # the toolchain must stay multi-arch capable.
-keep_all_backends=${LANSPEED_RUST_LLVM_KEEP_ALL_BACKENDS:-0}
+if ((llvm_targets_options > 1)); then
+	printf '%s\n' 'error: Rust configure contains duplicate llvm.targets options' >&2
+	exit 1
+fi
+if ((llvm_experimental_targets_options > 1)); then
+	printf '%s\n' 'error: Rust configure contains duplicate llvm.experimental-targets options' >&2
+	exit 1
+fi
+if [[ "${LANSPEED_RUST_LLVM_KEEP_ALL_BACKENDS:-0}" == 1 ]]; then
+	printf '%s\n' "# Rust bootstrap will build LLVM from source (all backends kept)" >&2
+	exec "$real_bash" "${args[@]}"
+fi
+
 llvm_arch_targets=()
 saw_rust_target=0
 
@@ -151,42 +163,24 @@ for llvm_arch_target in "${llvm_arch_targets[@]}"; do
 	llvm_target_value+="$llvm_arch_target"
 done
 
-if ((llvm_targets_options > 1)); then
-	printf '%s\n' 'error: Rust configure contains duplicate llvm.targets options' >&2
-	exit 1
-fi
-if ((llvm_experimental_targets_options > 1)); then
-	printf '%s\n' 'error: Rust configure contains duplicate llvm.experimental-targets options' >&2
-	exit 1
-fi
-
 policy_args=()
 for arg in "${args[@]}"; do
 	case "$arg" in
 		--set=llvm.targets=*)
-			if ((llvm_targets_options == 1)) && ((keep_all_backends == 0)); then
-				arg="--set=llvm.targets=${llvm_target_value}"
-			fi
+			arg="--set=llvm.targets=${llvm_target_value}"
 			;;
 		--set=llvm.experimental-targets=*)
-			if ((llvm_experimental_targets_options == 1)) && ((keep_all_backends == 0)); then
-				arg='--set=llvm.experimental-targets='
-			fi
+			arg='--set=llvm.experimental-targets='
 			;;
 	esac
 	policy_args+=("$arg")
 done
-if ((keep_all_backends == 0)); then
-	if ((llvm_targets_options == 0)); then
-		policy_args+=("--set=llvm.targets=${llvm_target_value}")
-	fi
-	if ((llvm_experimental_targets_options == 0)); then
-		policy_args+=('--set=llvm.experimental-targets=')
-	fi
-	printf '%s\n' "# Rust bootstrap will build LLVM from source (targets: $llvm_target_value)" >&2
-else
-	printf '%s\n' "# Rust bootstrap will build LLVM from source (all backends kept)" >&2
+if ((llvm_targets_options == 0)); then
+	policy_args+=("--set=llvm.targets=${llvm_target_value}")
 fi
-args=("${policy_args[@]}")
+if ((llvm_experimental_targets_options == 0)); then
+	policy_args+=('--set=llvm.experimental-targets=')
+fi
+printf '%s\n' "# Rust bootstrap will build LLVM from source (targets: $llvm_target_value)" >&2
 
-exec "$real_bash" "${args[@]}"
+exec "$real_bash" "${policy_args[@]}"

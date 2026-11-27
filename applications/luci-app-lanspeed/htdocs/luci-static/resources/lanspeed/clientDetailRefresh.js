@@ -4,7 +4,6 @@
 'require lanspeed.clientConnections as clientConnections';
 
 var CONNECTION_PAGE_SIZE = 100;
-var LAZY_DETAIL_THRESHOLD = 32;
 
 function effectiveRefreshMs(viewState) {
 	return typeof viewState.effectiveRefreshMs === 'function'
@@ -31,7 +30,18 @@ function refreshIntervalControl(viewState, refs) {
 		refs.intervalSel.setAttribute('data-refresh-policy', policy);
 	}
 	refs.intervalSel.value = String(effectiveRefreshMs(viewState));
-	refs.intervalSel.disabled = viewState.manualLoading === true;
+}
+
+function refreshLoadingControls(viewState, refs) {
+	var manualLoading = viewState.manualLoading === true;
+	refs.refresh.disabled = manualLoading;
+	refs.refresh.setAttribute('aria-busy', manualLoading ? 'true' : 'false');
+	if (refs.intervalSel)
+		refs.intervalSel.disabled = manualLoading;
+	if (refs.pager && viewState.loading === true) {
+		refs.pagePrev.disabled = true;
+		refs.pageNext.disabled = true;
+	}
 }
 
 function replaceRows(tbody, rows) {
@@ -467,7 +477,7 @@ function buildGroupRows(viewState, group) {
 		'data-label': _('连接详情')
 	}, detailList));
 	detailRow.hidden = !expanded;
-	if (group.connections.length <= LAZY_DETAIL_THRESHOLD || expanded)
+	if (expanded)
 		ensureDetails();
 
 	return [ groupRow, detailRow ];
@@ -485,9 +495,11 @@ function errorText(error, response) {
 	return detail ? prefix + '：' + detail : prefix;
 }
 
-function render(viewState) {
+function render(viewState, controlsOnly) {
 	var refs = viewState && viewState.refs;
 	if (!refs) return;
+	refreshLoadingControls(viewState, refs);
+	if (controlsOnly) return;
 	var viewport = captureViewport(refs);
 
 	var response = viewState.response || null;
@@ -540,17 +552,14 @@ function render(viewState) {
 		refs.connectionState.setAttribute('data-state', 'pending');
 	}
 
-	var allGroups = usable
-		? clientConnections.groupsForResponse(response, 'all', '', locationLookup) : [];
-	var present = Object.create(null);
-	allGroups.forEach(function(group) { present[group.remoteIp] = true; });
-	Object.keys(viewState.expanded || {}).forEach(function(remoteIp) {
-		if (!present[remoteIp]) delete viewState.expanded[remoteIp];
-	});
+	var targets = new Set();
 	var groups = usable
 		? clientConnections.groupsForResponse(
-			response, viewState.protocol, viewState.filter, locationLookup)
+			response, viewState.protocol, viewState.filter, locationLookup, targets)
 		: [];
+	Object.keys(viewState.expanded || {}).forEach(function(remoteIp) {
+		if (!targets.has(remoteIp)) delete viewState.expanded[remoteIp];
+	});
 	groups = clientConnections.sortGroups(groups, viewState.sortKey, viewState.sortDir);
 	var pageSize = Number(viewState.pageSize);
 	var interval = effectiveRefreshMs(viewState);
@@ -571,7 +580,7 @@ function render(viewState) {
 	}
 
 	refs.summaryTargets.textContent = usable
-		? (response.truncated ? _('至少 ') : '') + String(allGroups.length)
+		? (response.truncated ? _('至少 ') : '') + String(targets.size)
 		: '—';
 	refs.summaryConnections.textContent = usable
 		? String(Number(response.total_connections) || 0) : '—';
@@ -585,7 +594,8 @@ function render(viewState) {
 
 	var rows = [];
 	pageGroups.forEach(function(group) {
-		rows = rows.concat(buildGroupRows(viewState, group));
+		var groupRows = buildGroupRows(viewState, group);
+		rows.push(groupRows[0], groupRows[1]);
 	});
 	replaceRows(refs.tbody, rows);
 
@@ -618,9 +628,6 @@ function render(viewState) {
 	refreshSortHeaders(refs, viewState);
 	refs.filter.value = viewState.filter || '';
 	refreshIntervalControl(viewState, refs);
-	refs.refresh.disabled = viewState.manualLoading === true;
-	refs.refresh.setAttribute('aria-busy',
-		viewState.manualLoading === true ? 'true' : 'false');
 	if (refs.pause) {
 		refs.pause.textContent = viewState.prefs && viewState.prefs.paused
 			? _('恢复') : _('暂停');

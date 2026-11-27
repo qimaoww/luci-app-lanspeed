@@ -121,17 +121,19 @@ function locationLabel(remoteIp, lookup) {
 	return value === null || value === undefined ? '' : String(value);
 }
 
-function matchesSearch(conn, term, lookup) {
+function containsSearch(value, term) {
+	return value !== null && value !== undefined &&
+		String(value).toLowerCase().indexOf(term) !== -1;
+}
+
+function matchesEndpoint(conn, term) {
 	return [
 		conn && conn.remote_ip,
 		conn && conn.client_ip,
 		conn && conn.remote_port,
-		conn && conn.client_port,
-		locationLabel(conn && conn.remote_ip, lookup)
+		conn && conn.client_port
 	].some(function(value) {
-		if (value === null || value === undefined)
-			return false;
-		return String(value).toLowerCase().indexOf(term) !== -1;
+		return containsSearch(value, term);
 	});
 }
 
@@ -140,37 +142,41 @@ function connectionRate(value) {
 	return isFinite(rate) && rate > 0 ? rate : 0;
 }
 
-function groupsForResponse(response, protocol, search, locationLookup) {
+function groupsForResponse(response, protocol, search, locationLookup, targets) {
 	var wanted = protocol === null || protocol === undefined
 		? 'all'
 		: String(protocol).toLowerCase();
 	if (wanted !== 'tcp' && wanted !== 'udp')
 		wanted = 'all';
 
-	var filtered = fmt.asArray(response && response.connections).filter(function(conn) {
-		return wanted === 'all' ||
-			String(conn && conn.protocol || '').toLowerCase() === wanted;
-	});
 	var term = search === null || search === undefined
 		? ''
 		: String(search).trim().toLowerCase();
-	if (term) {
-		filtered = filtered.filter(function(conn) {
-			return matchesSearch(conn, term, locationLookup);
-		});
-	}
 
 	var groups = [];
 	var byRemoteIp = Object.create(null);
-	filtered.forEach(function(conn) {
+	var locations = Object.create(null);
+	function remoteLocation(remoteIp) {
+		if (locations[remoteIp] === undefined)
+			locations[remoteIp] = locationLabel(remoteIp, locationLookup);
+		return locations[remoteIp];
+	}
+	fmt.asArray(response && response.connections).forEach(function(conn) {
 		var remoteIp = conn && conn.remote_ip !== null && conn.remote_ip !== undefined
 			? String(conn.remote_ip)
 			: '';
+		if (targets)
+			targets.add(remoteIp);
+		if (wanted !== 'all' && String(conn && conn.protocol || '').toLowerCase() !== wanted)
+			return;
+		if (term && !matchesEndpoint(conn, term) &&
+		    !containsSearch(remoteLocation(remoteIp), term))
+			return;
 		var group = byRemoteIp[remoteIp];
 		if (!group) {
 			group = {
 				remoteIp: remoteIp,
-				locationLabel: locationLabel(remoteIp, locationLookup),
+				locationLabel: remoteLocation(remoteIp),
 				ports: [],
 				portLabel: '',
 				protocolLabel: '',

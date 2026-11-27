@@ -419,7 +419,7 @@ return baseclass.extend({
 				if (pending) {
 					if (requestedManually && !this.manualLoading) {
 						this.manualLoading = true;
-						clientDetailRefresh.render(this);
+						clientDetailRefresh.render(this, true);
 					}
 					return pending;
 				}
@@ -427,7 +427,7 @@ return baseclass.extend({
 				this.stopTimer();
 				this.loading = true;
 				this.manualLoading = requestedManually;
-				clientDetailRefresh.render(this);
+				clientDetailRefresh.render(this, true);
 				try {
 					request = Promise.all([
 						lsRpc.clientConnections(this.identityKey),

@@ -1,4 +1,4 @@
-use lanspeedd::config::RuntimeConfig;
+use lanspeedd::config::{AccessEdgeMode, RuntimeConfig};
 #[cfg(feature = "nss-platform")]
 use lanspeedd::probe::collector::NssStateProbe;
 use lanspeedd::probe::collector::{
@@ -85,6 +85,8 @@ fn number(value: &Value, path: &[&str], default: i64) -> i64 {
 
 fn observations(value: &Value) -> (RuntimeConfig, ProbeObservations) {
     let mut config = RuntimeConfig::default();
+    // These fixtures describe the TC probe independently of the default platform.
+    config.access_edge_mode = AccessEdgeMode::Off;
     config.enable_bpf = flag(value, &["config", "enable_bpf"]);
     config.enable_conntrack_fallback = flag(value, &["config", "enable_conntrack_fallback"]);
     config.max_clients = number(value, &["config", "max_clients"], 512) as usize;
@@ -568,6 +570,20 @@ fn every_legacy_probe_fixture_matches_the_production_rust_assessment() {
         );
         assert_eq!(report.evidence.bpf.object_present, report.facts.bpf.object);
     }
+}
+
+#[cfg(feature = "nss-platform")]
+#[test]
+fn active_access_edge_reports_live_metrics_when_tc_collection_is_unavailable() {
+    let fixture = fixture("lanspeed-probe-base.json");
+    let (mut config, observations) = observations(&fixture);
+    config.access_edge_mode = AccessEdgeMode::Active;
+    let report = assess(&config, observations, &ProbeRuntimeHealth::default());
+    assert!(report.capabilities.live_metrics);
+    assert!(!report.capabilities.bpf_runtime_metrics);
+    assert_eq!(report.evidence.collector.effective_rate_collector, "access_edge");
+    assert!(!report.warnings.contains(&"live_metrics_unavailable"));
+    assert!(!report.evidence.collector.warnings.contains(&"live_metrics_unavailable"));
 }
 
 #[test]

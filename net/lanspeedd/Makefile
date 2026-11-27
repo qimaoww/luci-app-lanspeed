@@ -15,8 +15,7 @@ LANSPEED_BPF_ENABLED:=$(filter 1,$(LANSPEED_BUILD_BPF))
 LANSPEED_NSS_PLATFORM ?= $(if $(CONFIG_LUCI_APP_LANSPEED_NSS),1,0)
 LANSPEED_NSS_PLATFORM_ENABLED:=$(filter 1,$(LANSPEED_NSS_PLATFORM))
 LANSPEED_NSS_ECM_BPF_ENABLED:=$(if $(LANSPEED_NSS_PLATFORM_ENABLED),$(filter aarch64,$(ARCH)),)
-LANSPEED_X86_CONTROL_DEPENDS:=+TARGET_x86:tc-full +TARGET_x86:ip +TARGET_x86:nftables +TARGET_x86:conntrack +TARGET_x86:kmod-ifb +TARGET_x86:kmod-sched-core +TARGET_x86:kmod-sched
-LANSPEED_AARCH64_CONTROL_DEPENDS:=+TARGET_qualcommax:tc-full +TARGET_qualcommax:ip +TARGET_qualcommax:nftables +TARGET_qualcommax:conntrack +TARGET_qualcommax:kmod-ifb +TARGET_qualcommax:kmod-sched-core
+LANSPEED_CONTROL_DEPENDS:=+tc-full +ip +nftables +conntrack +kmod-ifb +kmod-sched-core +!LUCI_APP_LANSPEED_NSS:kmod-sched
 LANSPEED_NSS_CONTROL_DEPENDS:=+LUCI_APP_LANSPEED_NSS:kmod-qca-nss-drv-igs +LUCI_APP_LANSPEED_NSS:kmod-lanspeed-nss-control
 PKG_CONFIG_DEPENDS:=CONFIG_LUCI_APP_LANSPEED_NSS
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)$(if $(LANSPEED_BPF_ENABLED),-bpf,)
@@ -46,7 +45,7 @@ define Package/lanspeedd
   CATEGORY:=Network
   TITLE:=LAN speed monitor daemon
   SOURCE:=lanspeedd
-  DEPENDS:=@(aarch64||x86_64) +libgcc +kmod-nf-conntrack-netlink +libsqlite3 $(LANSPEED_X86_CONTROL_DEPENDS) $(LANSPEED_AARCH64_CONTROL_DEPENDS) $(LANSPEED_NSS_CONTROL_DEPENDS)
+  DEPENDS:=@(aarch64||x86_64) +libgcc +kmod-nf-conntrack-netlink +libsqlite3 $(LANSPEED_CONTROL_DEPENDS) $(LANSPEED_NSS_CONTROL_DEPENDS)
 endef
 
 define Package/lanspeedd/description
@@ -84,7 +83,7 @@ endef
 define Package/lanspeedd-bpf/description
  Required Aya eBPF programs for luci-app-lanspeed Full mode support.
  The package installs architecture-matched kfunc and fallback TC-BPF objects.
- On aarch64 it additionally installs the isolated NSS ECM kprobe object.
+ With NSS enabled on aarch64 it also installs the isolated NSS ECM kprobe object.
 endef
 
 define Package/lanspeedd-bpf/postinst
@@ -123,7 +122,7 @@ define Build/Compile
 		cargo build -v --manifest-path Cargo.toml -p lanspeed-build --release --target $(RUSTC_HOST_ARCH) --locked --offline
 	+$(CARGO_PKG_VARS) \
 		LANSPEED_USERSPACE_TARGET="$(RUSTC_TARGET_ARCH)" \
-		LANSPEED_NSS_PLATFORM="$(LANSPEED_NSS_PLATFORM)" \
+		LANSPEED_NSS_PLATFORM="$(if $(LANSPEED_NSS_PLATFORM_ENABLED),1,0)" \
 		LANSPEED_VERSION="$(PKG_VERSION)" \
 		LANSPEED_RELEASE="$(PKG_RELEASE)" \
 		$(PKG_BUILD_DIR)/target/$(RUSTC_HOST_ARCH)/release/lanspeed-build build-userspace
@@ -132,6 +131,7 @@ ifneq ($(LANSPEED_BPF_ENABLED),)
 			MAKEFLAGS="$(PKG_JOBS)" \
 			CARGO_PROFILE_RELEASE_PANIC=abort \
 			BPF_LINKER="$(BPF_LINKER)" \
+			LANSPEED_NSS_PLATFORM="$(if $(LANSPEED_NSS_PLATFORM_ENABLED),1,0)" \
 			LANSPEED_BPF_TARGET_ARCH="$(ARCH)" \
 			$(PKG_BUILD_DIR)/target/$(RUSTC_HOST_ARCH)/release/lanspeed-build build-ebpf
 endif
@@ -177,12 +177,12 @@ define Package/lanspeedd-bpf/install
 	$(INSTALL_DIR) $(1)/usr/lib/bpf
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/target/bpfel-unknown-none/release/lanspeed-ebpf-kfunc $(1)/usr/lib/bpf/lanspeed-ebpf-kfunc.o
 	$(LN) lanspeed-ebpf-kfunc.o $(1)/usr/lib/bpf/lanspeed-ebpf-kfunc
-		$(INSTALL_DATA) $(PKG_BUILD_DIR)/target/bpfel-unknown-none/release/lanspeed-ebpf-fallback $(1)/usr/lib/bpf/lanspeed-ebpf-fallback.o
-		$(LN) lanspeed-ebpf-fallback.o $(1)/usr/lib/bpf/lanspeed-ebpf-fallback
-		if [ -n "$(LANSPEED_NSS_ECM_BPF_ENABLED)" ]; then \
-			$(INSTALL_DATA) $(PKG_BUILD_DIR)/target/bpfel-unknown-none/release/lanspeed-ebpf-ecm $(1)/usr/lib/bpf/lanspeed-ebpf-ecm.o; \
-			$(LN) lanspeed-ebpf-ecm.o $(1)/usr/lib/bpf/lanspeed-ebpf-ecm; \
-		fi
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/target/bpfel-unknown-none/release/lanspeed-ebpf-fallback $(1)/usr/lib/bpf/lanspeed-ebpf-fallback.o
+	$(LN) lanspeed-ebpf-fallback.o $(1)/usr/lib/bpf/lanspeed-ebpf-fallback
+	if [ -n "$(LANSPEED_NSS_ECM_BPF_ENABLED)" ]; then \
+		$(INSTALL_DATA) $(PKG_BUILD_DIR)/target/bpfel-unknown-none/release/lanspeed-ebpf-ecm $(1)/usr/lib/bpf/lanspeed-ebpf-ecm.o; \
+		$(LN) lanspeed-ebpf-ecm.o $(1)/usr/lib/bpf/lanspeed-ebpf-ecm; \
+	fi
 endef
 
 $(eval $(call BuildPackage,lanspeedd))

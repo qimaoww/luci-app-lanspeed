@@ -5,9 +5,12 @@ use crate::{
         ConnectionCountersSnapshot, ConnectionDetailsIndex, ConnectionDetailsSnapshot,
         ConnectionProtocol, ConnectionRateKey, FlowOwnership,
     },
-    identity::IdentityTable,
+    identity::{IdentityKey, IdentityTable},
 };
-use std::collections::BTreeMap;
+use std::{
+    collections::{btree_map::Entry, BTreeMap},
+    sync::Arc,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClientSample {
@@ -52,11 +55,16 @@ pub struct AggregateSnapshot {
 
 pub struct AggregateState<'a> {
     identities: &'a IdentityTable,
-    clients: BTreeMap<String, ClientSample>,
+    clients: BTreeMap<&'a IdentityKey, AggregatedClient>,
     connection_details: ConnectionDetailsIndex,
     stats: AggregateStats,
     now_ms: u64,
     max_clients: usize,
+}
+
+struct AggregatedClient {
+    sample: ClientSample,
+    rate_identity_key: Arc<str>,
 }
 
 impl<'a> AggregateState<'a> {
@@ -92,41 +100,45 @@ impl<'a> AggregateState<'a> {
             }
             FlowOwnership::Owned(owned) => owned,
         };
-        let key = owned.identity.key.to_string();
-        if !self.clients.contains_key(&key) && self.clients.len() >= self.max_clients {
-            self.stats.clients_dropped = self.stats.clients_dropped.saturating_add(1);
-            return;
-        }
+        let at_capacity = self.clients.len() >= self.max_clients;
+        let client = match self.clients.entry(&owned.identity.key) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(_) if at_capacity => {
+                self.stats.clients_dropped = self.stats.clients_dropped.saturating_add(1);
+                return;
+            }
+            Entry::Vacant(entry) => {
+                let identity_key = owned.identity.key.to_string();
+                entry.insert(AggregatedClient {
+                    rate_identity_key: Arc::from(identity_key.as_str()),
+                    sample: ClientSample {
+                        mac: owned.identity.key.mac.to_string(),
+                        identity_key,
+                        zone: owned.identity.key.zone.clone(),
+                        interface: owned.identity.interface.clone(),
+                        ips: owned.identity.ips.clone(),
+                        tx_bytes: 0,
+                        rx_bytes: 0,
+                        last_seen_ms: self.now_ms,
+                        tcp_conns: 0,
+                        udp_conns: 0,
+                        udp_dns_conns: 0,
+                        udp_other_conns: 0,
+                    },
+                })
+            }
+        };
         let qualification = classify_connection(flow);
         let (tx, rx) = if owned.source_side {
             (flow.orig_bytes, flow.reply_bytes)
         } else {
             (flow.reply_bytes, flow.orig_bytes)
         };
-        {
-            let sample = self
-                .clients
-                .entry(key.clone())
-                .or_insert_with(|| ClientSample {
-                    mac: owned.identity.key.mac.to_string(),
-                    identity_key: key.clone(),
-                    zone: owned.identity.key.zone.clone(),
-                    interface: owned.identity.interface.clone(),
-                    ips: owned.identity.ips.clone(),
-                    tx_bytes: 0,
-                    rx_bytes: 0,
-                    last_seen_ms: self.now_ms,
-                    tcp_conns: 0,
-                    udp_conns: 0,
-                    udp_dns_conns: 0,
-                    udp_other_conns: 0,
-                });
-            sample.tx_bytes = sample.tx_bytes.saturating_add(tx);
-            sample.rx_bytes = sample.rx_bytes.saturating_add(rx);
-            sample.last_seen_ms = self.now_ms;
-            if let Some((protocol, _)) = qualification {
-                add_connection_count(sample, flow, protocol);
-            }
+        let sample = &mut client.sample;
+        sample.tx_bytes = sample.tx_bytes.saturating_add(tx);
+        sample.rx_bytes = sample.rx_bytes.saturating_add(rx);
+        if let Some((protocol, _)) = qualification {
+            add_connection_count(sample, flow, protocol);
         }
         // Keep a per-flow baseline even when the flow cannot be rendered as a
         // connection detail (missing remote endpoint) or uses a protocol other
@@ -134,7 +146,7 @@ impl<'a> AggregateState<'a> {
         // making conntrack an aggregate client-rate owner.
         self.connection_details.record_flow_rate_counters(
             ConnectionRateKey::from_owned_flow(
-                &key,
+                Arc::clone(&client.rate_identity_key),
                 owned,
                 flow.protocol,
                 flow.conntrack_id,
@@ -158,8 +170,8 @@ impl<'a> AggregateState<'a> {
         }
         if let Some((protocol, state)) = qualification {
             match owned.detail(protocol, state) {
-                Some(detail) => self.connection_details.record(&key, detail),
-                None => self.connection_details.record_omitted(&key),
+                Some(detail) => self.connection_details.record(&sample.identity_key, detail),
+                None => self.connection_details.record_omitted(&sample.identity_key),
             }
         }
     }
@@ -168,7 +180,11 @@ impl<'a> AggregateState<'a> {
         let (connection_details, connection_counters) =
             self.connection_details.finish_with_counters();
         AggregateSnapshot {
-            clients: self.clients.into_values().collect(),
+            clients: self
+                .clients
+                .into_values()
+                .map(|client| client.sample)
+                .collect(),
             stats: self.stats,
             sample_ms: self.now_ms,
             connection_details,

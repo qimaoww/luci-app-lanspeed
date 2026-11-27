@@ -1,114 +1,89 @@
 # luci-app-lanspeed
 
+面向 ImmortalWrt / OpenWrt 的 LAN 客户端实时测速、连接查看与流量控制插件，由 Rust + Aya eBPF 守护进程（`lanspeedd`）与 LuCI 前端组成。当前版本：`1.2.1-r2`。
+
 > 本仓库所有代码及文档（包括本 README）均由 AI 生成。
-> 
-`luci-app-lanspeed` 为 ImmortalWrt / OpenWrt 提供 LAN 客户端实时速率、连接详情、运行诊断与配置页面。当前版本为 `1.2.1-r2`。
 
-x86_64 使用独立 TC-BPF 路径；Qualcomm aarch64 NSS 使用 Access Edge 提供客户端总速率，ECM/NSS 与 TC-BPF 只做路径分类。两套平台的测速和客户端控制代码独立编译，不交叉探测或回退。
+![实时状态（Aurora 主题）](docs/screenshots/lanspeed-overview-aurora-desktop.png)
 
-## 快速导航
+## 特性
 
-| 层级 | 页面 | 主要内容 |
-|---|---|---|
-| 使用 | [使用指南](docs/guide/usage.md) | [界面入口](docs/guide/usage.md#界面入口) · [客户端控制](docs/guide/usage.md#客户端控制) · [配置](docs/guide/usage.md#配置) · [ubus](docs/guide/usage.md#ubus-调试) |
-| 原理 | [平台与采集](docs/guide/platforms.md) | [平台边界](docs/guide/platforms.md#平台模块) · [x86](docs/guide/platforms.md#x86tc-bpf) · [NSS](docs/guide/platforms.md#qualcomm-nss) · [融合语义](docs/guide/platforms.md#access-edge-与分类语义) |
-| 运维 | [部署与排障](docs/guide/operations.md) | [依赖](docs/guide/operations.md#运行依赖) · [内核配置](docs/guide/operations.md#内核配置) · [告警](docs/guide/operations.md#可见性与告警) · [排障](docs/guide/operations.md#故障排查) |
-| 开发 | [构建与发布](docs/guide/development.md) | [源码编译](docs/guide/development.md#安装与编译) · [测试](docs/guide/development.md#测试) · [项目结构](docs/guide/development.md#项目结构) · [发布](docs/guide/development.md#发布) |
+- **实时速率与累计流量**：按客户端（MAC + 接口/VLAN）采集实时上下行速率与接入点，累计流量通过 SQLite 持久化。
+- **活跃连接查看**：通过 Conntrack Netlink（不可用时回退 procfs）按远端 IP 聚合 TCP/UDP 连接；`x86_64` 支持补全 Mihomo / OpenClash 与 dae / daed 的逻辑代理连接。
+- **每客户端限速与断网**：支持按客户端独立设置上下行限速及禁用上网；修改规则保持现有连接，仅管理自有 TC / IFB / nft 对象，不覆盖外部规则。
+- **运行诊断**：内置 RPC、eBPF、ECM、接口拓扑与外部 QoS 冲突自检，支持导出脱敏排障报告。
+- **多主题适配**：适配 Aurora、Argon、Bootstrap、shadcn 主题，支持桌面/移动端布局及亮暗模式。
 
-## 核心功能
+## 平台支持
 
-- 实时显示客户端上行、下行、连接数、主机名、地址和物理接入点。
-- 客户端详情显示该客户端的已发布上下行总速率；连接行由独立 Conntrack 窗口采样，不再展示无法可靠校准的流量分类。
-- 实时状态页支持独立上传/下载限速及禁用上网；修改限速时保留现有连接，失败只回滚 LAN Speed 专用对象。
-- NSS 总速率由 Access Edge 提供；独立 FastRate worker 按固定节拍采集 FastN/FastS，ECM/NSS 与 TC-BPF 分类值不与总速率相加。
-- NSS 可选互联网/路由视图只展示 FastN+FastS 观察到的路由流量，与客户端总速率 owner 和客户端控制分离。
-- CT-Netlink 连接采集失败时回退 CT-Procfs；连接计数不参与客户端总速率。
-- 速率、连接、reload 和慢探针在独立 worker 中执行，普通 RPC 只读取完整发布快照。
-- 诊断页检查 RPC、BPF、ECM、Access Edge、接口和版本契约，并给出机器可读原因。
-- Aurora、Argon、Bootstrap、shadcn 四主题支持桌面和移动端布局与亮暗模式。
+`x86_64` 与 Qualcomm `aarch64` NSS 采用独立编译路径与采集/控制实现，互不引用，也不做跨平台探测或回退。
 
-## 平台一览
-
-| 目标 | 客户端总速率 | 客户端控制 | NSS/ECM |
+| 目标平台 | 速率采集 | 客户端流量整形 | 说明 |
 |---|---|---|---|
-| `x86_64` | 原生 TC-BPF | HTB + FQ；上传使用自有 IFB | 不编译、不探测、不展示 |
-| Qualcomm `aarch64` | Access Edge，必要时使用严格同窗回退 | 每个客户端每个方向只有一个聚合执行器：下载在真实客户端出口使用 NSSHTB + NSSBFIFO，上传在真实客户端入口使用 NSS IGS 的 NSSHTB + NSSBFIFO；CPU/透明代理只被分类到同一队列 | ECM/NSS 与 TC-BPF 只做路径分类 |
-| 32 位 ARM、i386、MIPS | Unsupported | 不支持 | 不支持 |
+| `x86_64` | 原生 TC-BPF | HTB + FQ（上传经自有 IFB） | 不编译、不探测 NSS / ECM |
+| Qualcomm `aarch64` (NSS) | Access Edge 总量 + ECM / TC-BPF 路径分类 | 单方向聚合 NSSHTB + NSSBFIFO（上传经 NSS IGS） | `TARGET_qualcommax` 默认启用，可在 menuconfig 关闭 |
+| 32 位 ARM / i386 / MIPS | 不支持 | 不支持 | 仅支持 LP64 架构 |
 
-详细边界、采样窗口和融合公式见[平台与采集](docs/guide/platforms.md)。
+采样窗口、ByteDomain 语义与平台隔离边界见 [平台与采集](docs/guide/platforms.md)。
 
 ## 安装与编译
 
-在 ImmortalWrt / OpenWrt 源码根目录执行：
+### 预编译包
+
+GitHub Release 只提供 x86_64 的 APK 与整合归档，不发布 Qualcomm NSS 预编译包。NSS 流量整形依赖专属 `kmod-lanspeed-nss-control`，必须与设备内核 ABI、NSS 驱动及固件编译配置一致，建议使用目标固件的同版源码或 SDK 自行编译，切勿混用其他固件产出的 kmod。
+
+### 源码编译
+
+在 ImmortalWrt / OpenWrt 源码根目录添加 feed 并编译：
 
 ```sh
-# 在 feeds.conf 中添加 lanspeed feed
 echo "src-git lanspeed https://github.com/qimaoww/luci-app-lanspeed.git" >> feeds.conf
-
-# 更新并安装
 ./scripts/feeds update lanspeed
 ./scripts/feeds install -a -p lanspeed
 
-# 在 menuconfig 中选中 LuCI -> Applications -> luci-app-lanspeed
-# BPF 是必选依赖，会自动选择 Network -> lanspeedd-bpf 和 lanspeedd
-# 进入 luci-app-lanspeed 子菜单可开关 NSS 硬件加速支持（默认按目标平台启用）
+# 选择 LuCI -> Applications -> luci-app-lanspeed（自动选中 lanspeedd 与 lanspeedd-bpf）
 make menuconfig
 
-# 多线程编译
 make -j"$(nproc)" package/lanspeedd/compile
 make -j"$(nproc)" package/luci-app-lanspeed/compile
 ```
 
-源码树不是 SDK 时，`rust/host` 默认从 `ci-artifacts.rust-lang.org` 下载预编译 LLVM。该地址只保留有限时间的构建产物，一旦对应 Rust 版本的产物被清理，构建会以 404 失败。遇到这种情况，用仓库自带的 wrapper 让 Rust 改为本地构建 LLVM，并只保留实际需要的后端：
+- **NSS 编译开关**：`TARGET_qualcommax` 在 `luci-app-lanspeed` 子菜单下默认启用 `CONFIG_LUCI_APP_LANSPEED_NSS`；关闭后回退至通用 TC-BPF 与 HTB + FQ 路径。
+- **Rust Host LLVM 404 回退**：非 SDK 源码树编译 `rust/host` 若遇 `ci-artifacts.rust-lang.org` 预编译产物失效，可通过 `BASH="$PWD/feeds/lanspeed/scripts/rust-configure-wrapper.sh"` 改用本地裁剪构建。完整编译与 SDK 打包说明见 [构建与发布](docs/guide/development.md)。
 
-```sh
-make -j"$(nproc)" package/lanspeedd/compile \
-	BASH="$PWD/feeds/lanspeed/scripts/rust-configure-wrapper.sh"
-```
+## 包组成
 
-wrapper 把 `llvm.download-ci-llvm=true` 改写为 `false`，并按 `--build`/`--host`/`--target` 裁剪 `llvm.targets`。它必须通过 make 命令行传入（`BASH:=bash` 在 `rules.mk` 中定义，环境变量形式会被覆盖）。裁剪后的后端就是该工具链能生成代码的全部架构，需多架构交叉编译时设置 `LANSPEED_RUST_LLVM_KEEP_ALL_BACKENDS=1` 保留全部后端。首次本地构建 LLVM 明显慢于下载预编译产物。
+| 包名 | 职责 |
+|---|---|
+| `lanspeedd` | Rust 守护进程，负责采集调度、UCI / ubus 接口与 SQLite 累计统计 |
+| `lanspeedd-bpf` | 目标架构对应的 Aya TC-BPF 对象；启用 NSS 的 `aarch64` 构建额外包含 ECM kprobe 对象 |
+| `luci-app-lanspeed` | LuCI 实时状态、连接详情、运行诊断与配置页面 |
+| `kmod-lanspeed-nss-control` | Qualcomm NSS 专属内核模块（Generic Netlink / IGS / FastRate），须随目标固件编译 |
 
-`luci-app-lanspeed` 强制依赖 `lanspeedd-bpf`，`lanspeedd-bpf` 依赖 `lanspeedd`。同一个 `package/lanspeedd/compile` 目标根据 SDK 架构生成 TC 对象，并只在 aarch64 生成 ECM 对象。
+## 已知限制
 
-`luci-app-lanspeed` 在 menuconfig 中是一个子菜单，包含 `NSS hardware acceleration support` 开关（`CONFIG_LUCI_APP_LANSPEED_NSS`）。它默认在 Qualcomm NSS 目标（`TARGET_qualcommax`）上启用，其它设备保持关闭。关闭后：daemon 不再编译 Rust `nss-platform` feature，只保留 TC-BPF 路径；不再打包 NSS 专用的 ECM eBPF 对象、`kmod-lanspeed-nss-control` 与 `kmod-qca-nss-drv-igs`；不再安装 NSS 内核模块加载器、NSS 整形迁移脚本，也不安装独立的 NSS 配置页面及其菜单入口。
-
-### 预编译发布
-
-GitHub Release 只提供 x86_64 的三个 APK 和整合归档，不发布 Qualcomm NSS 预编译包。NSS 控制依赖专属 `kmod-lanspeed-nss-control`，该内核模块必须与设备的内核 ABI、NSS 驱动和固件编译配置一致，无法用一个通用 APK 覆盖不同固件；NSS 用户建议使用目标固件的同版源码或 SDK 自行编译，且不要混用其他固件生成的 kmod。
-
-完整 SDK 构建与发布说明见[构建与发布](docs/guide/development.md)。
+- **Hardware Flow Offload**：开启后会绕过 x86 CPU TC hook，conntrack 无法补齐客户端总速率。
+- **复杂拓扑覆盖**：WDS、Mesh、共享下联及未验证组播场景下覆盖率标记为 Partial；Wi-Fi 802.11 与以太网计数口径不一致时保留 `domain_mismatch`。
+- **外部规则共存**：不抢占或覆盖外部 qdisc、IFB 与 nft 对象；检测到归属冲突时拒绝下发并输出原因。
+- **透明代理归属**：NSS 下透明代理新建的 WAN socket 已丢失原始客户端身份，限速统一在客户端接入侧聚合执行，不在 WAN 侧反推归属。
 
 ## 界面预览
 
-截图由真实 Chromium 使用确定性合成数据渲染。客户端使用文档保留地址、虚构主机名与本地管理 MAC，不包含目标设备数据；PNG 元数据已移除。
-
-| 主题 | 实时状态 | 运行诊断 | LAN Speed 配置 |
+| 主题 | 实时状态 | 运行诊断 | 配置 |
 |---|---|---|---|
 | Aurora | [桌面](docs/screenshots/lanspeed-overview-aurora-desktop.png) / [移动](docs/screenshots/lanspeed-overview-aurora-mobile.png) | [桌面](docs/screenshots/lanspeed-diagnostics-aurora-desktop.png) | [桌面](docs/screenshots/lanspeed-config-aurora-desktop.png) |
 | Argon | [桌面](docs/screenshots/lanspeed-overview-argon-desktop.png) / [移动](docs/screenshots/lanspeed-overview-argon-mobile.png) | [桌面](docs/screenshots/lanspeed-diagnostics-argon-desktop.png) | [桌面](docs/screenshots/lanspeed-config-argon-desktop.png) |
 | Bootstrap | [桌面](docs/screenshots/lanspeed-overview-bootstrap-desktop.png) / [移动](docs/screenshots/lanspeed-overview-bootstrap-mobile.png) | [桌面](docs/screenshots/lanspeed-diagnostics-bootstrap-desktop.png) | [桌面](docs/screenshots/lanspeed-config-bootstrap-desktop.png) |
 
-## 重要限制
+*截图基于确定性合成数据（文档保留地址与本地管理 MAC）通过 Chromium 渲染，已清除 PNG 元数据。*
 
-- hardware flow offload 会绕过 x86 CPU TC hook，无法靠 conntrack 字节补齐客户端总速率。
-- Wi-Fi station 与以太网计数口径不兼容时保留 `domain_mismatch`，不生成虚假覆盖率。
-- WDS、Mesh、共享下联和未验证组播只声明 Partial，不伪装为完整覆盖。
-- x86 控制不会覆盖外部 qdisc、IFB 或 nft 对象；冲突时拒绝应用并显示原因。
-- NSS 控制先按真实 N/S 同窗证明客户端身份和实际 hook；同一客户端同一方向只建立一个聚合队列。路径或可信 Access Edge 未证明时不发布限速分类。透明代理新建的 WAN socket 丢失客户端身份，因此不会在 WAN 侧反推归属。
-- 正常整形不主动丢包，但有限队列不能承诺任意持续超速下绝对零丢包；`drops` 增长会报告队列溢出。
+## 文档
 
-## 包组成
-
-| 包 | 内容 |
-|---|---|
-| `lanspeedd` | Rust daemon、UCI、ubus、连接采集与平台调度 |
-| `lanspeedd-bpf` | 对应架构的 TC-BPF 对象；aarch64 包额外包含 ECM kprobe 对象 |
-| `luci-app-lanspeed` | 实时状态、运行诊断、配置和连接详情页面 |
-| `kmod-lanspeed-nss-control` | Qualcomm NSS 专属 Generic Netlink、IGS、FastRate 与队列控制内核模块；必须随目标固件自行编译 |
-
-安装依赖、内核选项及服务冲突处理见[部署与排障](docs/guide/operations.md)。
+- [使用指南](docs/guide/usage.md) — 界面功能、客户端限速控制、UCI 配置与 ubus 调试
+- [平台与采集](docs/guide/platforms.md) — x86 / NSS 平台架构、Access Edge 语义与控制链路
+- [部署与排障](docs/guide/operations.md) — 运行依赖、内核选项、可见性告警与故障排查
+- [构建与发布](docs/guide/development.md) — SDK 构建脚本、项目结构、测试套件与发布流程
 
 ## 许可证
 
-除目录或文件明确另有声明外，本仓库自有代码采用 [Apache License 2.0](LICENSE)。
-`net/lanspeedd/rust/vendor/` 中的第三方依赖保留各自随附的许可证；eBPF 对象中的 `GPL` 字符串是提供给 Linux 内核的程序许可证标记，相关源码仍按其文件和包元数据声明授权。
+除目录或文件另有声明外，本仓库自有代码基于 [Apache License 2.0](LICENSE) 发布。`net/lanspeedd/rust/vendor/` 中的第三方依赖保留各自随附的许可证；eBPF 对象中的 `GPL` 标记仅用于满足 Linux 内核验证器要求。
