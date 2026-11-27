@@ -731,8 +731,8 @@ try {
   assertMatch(pkgMakefile, /^RUST_PKG_LOCKED:=1$/m, 'Rust package build must keep Cargo.lock immutable');
   assertMatch(
     pkgMakefile,
-    /LANSPEED_X86_CONTROL_DEPENDS:=\+TARGET_x86:tc-full \+TARGET_x86:ip \+TARGET_x86:nftables \+TARGET_x86:conntrack \+TARGET_x86:kmod-ifb \+TARGET_x86:kmod-sched-core \+TARGET_x86:kmod-sched/,
-    'x86 client control must request the IFB and scheduler modules only behind the x86 architecture gate'
+    /LANSPEED_CONTROL_DEPENDS:=\+tc-full \+ip \+nftables \+conntrack \+kmod-ifb \+kmod-sched-core \+!LUCI_APP_LANSPEED_NSS:kmod-sched/,
+    'client control must install common dependencies and add the FQ scheduler for TC-only builds'
   );
   assertMatch(pkgMakefile, /^PKG_CONFIG_DEPENDS:=CONFIG_LUCI_APP_LANSPEED_NSS$/m,
     'daemon package must rebuild when the NSS support toggle changes');
@@ -740,13 +740,8 @@ try {
     'daemon NSS platform flag must follow the luci-app-lanspeed NSS toggle');
   assertMatch(pkgMakefile, /LANSPEED_NSS_PLATFORM_ENABLED:=\$\(filter 1,\$\(LANSPEED_NSS_PLATFORM\)\)/,
     'daemon must normalize the NSS platform flag before using it');
-  assertMatch(pkgMakefile, /LANSPEED_NSS_PLATFORM="\$\(LANSPEED_NSS_PLATFORM\)"/,
-    'daemon userspace build must receive the NSS platform flag');
-  assertMatch(
-    pkgMakefile,
-    /LANSPEED_AARCH64_CONTROL_DEPENDS:=\+TARGET_qualcommax:tc-full \+TARGET_qualcommax:ip \+TARGET_qualcommax:nftables \+TARGET_qualcommax:conntrack \+TARGET_qualcommax:kmod-ifb \+TARGET_qualcommax:kmod-sched-core/,
-    'aarch64 TC-BPF control must request its CPU-path modules only behind the qualcommax architecture gate'
-  );
+  assert((compileBody.match(/LANSPEED_NSS_PLATFORM="\$\(if \$\(LANSPEED_NSS_PLATFORM_ENABLED\),1,0\)"/g) || []).length === 2,
+    'userspace and eBPF builds must both receive the normalized NSS platform flag');
   assertMatch(
     pkgMakefile,
     /LANSPEED_NSS_CONTROL_DEPENDS:=\+LUCI_APP_LANSPEED_NSS:kmod-qca-nss-drv-igs \+LUCI_APP_LANSPEED_NSS:kmod-lanspeed-nss-control/,
@@ -888,7 +883,7 @@ try {
   assert(buildDriver.includes('"--locked"') && buildDriver.includes('"--offline"'), 'build driver must use locked offline Cargo');
 	assert(buildDriver.includes('BPF_TARGET_ARCH_ENV: &str = "LANSPEED_BPF_TARGET_ARCH"') &&
 		buildDriver.includes('command.env("AYA_BPF_TARGET_ARCH", target_arch.aya_name())') &&
-		buildDriver.includes('target_arch.builds_ecm()'),
+		buildDriver.includes('target_arch.uses_nss()'),
 		'build driver must separate x86 TC objects from the aarch64 ECM object ABI');
   assert(cargoConfig.includes('replace-with = "vendored-sources"'), 'Cargo must use vendored sources');
   assert(cargoConfig.includes('offline = true'), 'Cargo config must forbid network dependency resolution');
@@ -983,12 +978,8 @@ try {
     'x86 migration must remove the legacy dedicated-port option used by older releases');
   assertMatch(x86ProfileMigration, /nss_ecm_node\|nss_ecm_bpf[\s\S]*rate_collector_mode='bpf'/,
     'x86 migration must normalize retained forced NSS modes to BPF');
-  assertMatch(pkgMakefile, /LANSPEED_X86_CONTROL_DEPENDS:=\+TARGET_x86:tc-full \+TARGET_x86:ip \+TARGET_x86:nftables \+TARGET_x86:conntrack \+TARGET_x86:kmod-ifb \+TARGET_x86:kmod-sched-core \+TARGET_x86:kmod-sched/,
-    'client-control userspace tools and kernel queue modules must be requested only by the x86 package');
-  assertMatch(pkgMakefile, /LANSPEED_NSS_CONTROL_DEPENDS:=\+LUCI_APP_LANSPEED_NSS:kmod-qca-nss-drv-igs \+LUCI_APP_LANSPEED_NSS:kmod-lanspeed-nss-control/,
-    'NSS client control must package its NSS-only kernel dependencies only when NSS support is enabled');
-  assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+libgcc \+kmod-nf-conntrack-netlink \+libsqlite3 \$\(LANSPEED_X86_CONTROL_DEPENDS\) \$\(LANSPEED_AARCH64_CONTROL_DEPENDS\) \$\(LANSPEED_NSS_CONTROL_DEPENDS\)/,
-    'base daemon must retain collector dependencies and append isolated platform controls');
+  assertMatch(pkgMakefile, /DEPENDS:=@\(aarch64\|\|x86_64\) \+libgcc \+kmod-nf-conntrack-netlink \+libsqlite3 \$\(LANSPEED_CONTROL_DEPENDS\) \$\(LANSPEED_NSS_CONTROL_DEPENDS\)/,
+    'base daemon must retain collector, common control, and conditional NSS dependencies');
   assertNoMatch(pkgMakefile, /\+libubox|\+libubus|\+libuci|\+libblobmsg-json/,
     'pure Rust userspace must not retain versioned OpenWrt library dependencies');
   assertNoMatch(
@@ -1127,8 +1118,8 @@ try {
   assertMatch(luciMakefile, /^PKG_CONFIG_DEPENDS:=CONFIG_LUCI_APP_LANSPEED_NSS$/m,
     'LuCI package must rebuild when the NSS support toggle changes');
   assertMatch(luciMakefile,
-    /define Package\/luci-app-lanspeed\/config\n\tconfig LUCI_APP_LANSPEED_NSS\n\t\tbool "NSS hardware acceleration support"\n\t\tdefault y if TARGET_qualcommax/,
-    'LuCI package must declare an NSS support toggle that defaults on for Qualcomm NSS targets');
+    /define Package\/luci-app-lanspeed\/config\n\tconfig LUCI_APP_LANSPEED_NSS\n\t\tbool "NSS hardware acceleration support"\n\t\tdepends on TARGET_qualcommax\n\t\tdefault y/,
+    'LuCI package must expose the NSS toggle only on Qualcomm NSS targets and default it on there');
   assertMatch(luciMakefile,
     /\$\(if \$\(CONFIG_LUCI_APP_LANSPEED_NSS\),\$\(INSTALL_DATA\) \.\/root\/usr\/share\/luci\/menu\.d\/luci-app-lanspeed-nss\.json \$\(1\)\/usr\/share\/luci\/menu\.d\/luci-app-lanspeed-nss\.json,:\)/,
     'LuCI package must install the NSS menu entry only when NSS support is enabled');

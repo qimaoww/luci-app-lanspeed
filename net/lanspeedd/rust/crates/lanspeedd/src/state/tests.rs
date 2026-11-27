@@ -115,6 +115,37 @@ mod diagnostics_tests {
         assert!(store.generations().base_generation > base.base_generation);
     }
 
+    #[test]
+    fn fast_overlay_retries_on_fast_updates_but_discards_an_outdated_base() {
+        let store = SnapshotStore::new(Arc::new(ResponseSnapshot::unsupported("base")));
+        let base = store.generations().base_generation;
+        let attempts = std::cell::Cell::new(0);
+        let generations = store
+            .publish_fast(base, |snapshot| {
+                attempts.set(attempts.get() + 1);
+                if attempts.get() == 1 {
+                    store
+                        .publish_fast(base, |snapshot| {
+                            snapshot.reload.version = "interleaved".into();
+                        })
+                        .unwrap();
+                }
+                snapshot.clients.tcp_conns_total = Some(42);
+            })
+            .unwrap();
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(generations.fast_generation, 2);
+        assert_eq!(store.load().reload.version, "interleaved");
+        assert_eq!(store.load().clients.tcp_conns_total, Some(42));
+
+        let result = store.publish_fast(base, |snapshot| {
+            store.publish(Arc::new(ResponseSnapshot::unsupported("new base")));
+            snapshot.reload.version = "outdated".into();
+        });
+        assert!(result.is_none());
+        assert_eq!(store.load().reload.version, "new base");
+    }
+
     fn set_bpf_evidence(snapshot: &mut ResponseSnapshot, value: Value, live_metrics: bool) {
         snapshot
             .status

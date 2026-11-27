@@ -858,7 +858,7 @@ pub fn assess(
         conflicts.push(conflict_item("proxy_stack"));
     }
     let decision = crate::policy::select_collectors(config, &facts, runtime);
-    let evidence = build_evidence(
+    let mut evidence = build_evidence(
         config,
         &observations,
         &facts,
@@ -867,10 +867,17 @@ pub fn assess(
         runtime,
         &decision,
     );
-    for warning in &decision.warnings {
+    let access_edge_live = config.access_edge_is_live();
+    if access_edge_live {
+        evidence.collector.effective_rate_collector = "access_edge";
+        evidence
+            .collector
+            .warnings
+            .retain(|warning| *warning != "live_metrics_unavailable");
+    }
+    for warning in &evidence.collector.warnings {
         push_unique(&mut warnings, warning);
     }
-    let access_edge_live = config.access_edge_is_live();
     let live_metrics = decision.rate != crate::policy::RateCollector::Unsupported
         || access_edge_live;
     let capabilities = ProbeCapabilities {

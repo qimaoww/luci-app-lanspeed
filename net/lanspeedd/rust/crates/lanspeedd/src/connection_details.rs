@@ -152,7 +152,7 @@ pub type ConnectionDetailsSnapshot = Arc<BTreeMap<String, ClientConnectionSet>>;
 pub struct ConnectionRateKey {
     pub conntrack_id: Option<u32>,
     pub conntrack_zone: Option<u16>,
-    pub identity_key: String,
+    pub identity_key: Arc<str>,
     pub client_ip: IpAddr,
     pub client_port: u16,
     pub remote_ip: Option<IpAddr>,
@@ -162,11 +162,11 @@ pub struct ConnectionRateKey {
 }
 
 impl ConnectionRateKey {
-    pub fn new(identity_key: &str, detail: &ClientConnectionDetail) -> Self {
+    pub fn new(identity_key: impl Into<Arc<str>>, detail: &ClientConnectionDetail) -> Self {
         Self {
             conntrack_id: None,
             conntrack_zone: None,
-            identity_key: identity_key.to_owned(),
+            identity_key: identity_key.into(),
             client_ip: detail.client_ip,
             client_port: detail.client_port,
             remote_ip: Some(detail.remote_ip),
@@ -177,7 +177,7 @@ impl ConnectionRateKey {
     }
 
     pub fn from_owned_flow(
-        identity_key: &str,
+        identity_key: Arc<str>,
         flow: OwnedFlow<'_>,
         protocol: Protocol,
         conntrack_id: Option<u32>,
@@ -186,7 +186,7 @@ impl ConnectionRateKey {
         Self {
             conntrack_id,
             conntrack_zone,
-            identity_key: identity_key.to_owned(),
+            identity_key,
             client_ip: flow.endpoints.client_ip,
             client_port: flow.endpoints.client_port,
             remote_ip: flow.endpoints.remote_ip,
@@ -211,11 +211,16 @@ pub struct ConnectionCounters {
 
 pub type ConnectionCountersSnapshot = Arc<BTreeMap<ConnectionRateKey, ConnectionCounters>>;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ConnectionCounterPoint {
-    sample_ms: u64,
-    tx_bytes: u64,
-    rx_bytes: u64,
+fn fold_connection_counters(
+    counters: &ConnectionCountersSnapshot,
+) -> BTreeMap<ConnectionRateKey, ConnectionCounters> {
+    let mut folded = BTreeMap::<ConnectionRateKey, ConnectionCounters>::new();
+    for (key, counters) in counters.iter() {
+        let value = folded.entry(key.clone().without_generation()).or_default();
+        value.tx_bytes = value.tx_bytes.saturating_add(counters.tx_bytes);
+        value.rx_bytes = value.rx_bytes.saturating_add(counters.rx_bytes);
+    }
+    folded
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -261,7 +266,7 @@ struct DeferredConnectionRate {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ConnectionRateBook {
     last_sample_ms: Option<u64>,
-    previous: Arc<BTreeMap<ConnectionRateKey, ConnectionCounterPoint>>,
+    previous: ConnectionCountersSnapshot,
     last_deferred_sample_ms: Option<u64>,
     deferred: Arc<BTreeMap<ConnectionRateKey, DeferredConnectionRate>>,
 }
@@ -283,39 +288,25 @@ impl ConnectionRateBook {
 
         // Connection details intentionally do not expose kernel generation
         // metadata. Fold generations only for this presentation index; the
-        // authoritative client ledger below keeps the full CTA_ID/zone key.
-        let mut folded = BTreeMap::<ConnectionRateKey, ConnectionCounters>::new();
-        for (key, counters) in counters.iter() {
-            let value = folded.entry(key.clone().without_generation()).or_default();
-            value.tx_bytes = value.tx_bytes.saturating_add(counters.tx_bytes);
-            value.rx_bytes = value.rx_bytes.saturating_add(counters.rx_bytes);
-        }
-        let current = folded
-            .into_iter()
-            .map(|(key, counters)| {
-                (
-                    key,
-                    ConnectionCounterPoint {
-                        sample_ms,
-                        tx_bytes: counters.tx_bytes,
-                        rx_bytes: counters.rx_bytes,
-                    },
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
+        // authoritative client ledger keeps the full CTA_ID/zone key.
+        let current = fold_connection_counters(counters);
+        let delta_ms = self
+            .last_sample_ms
+            .and_then(|previous| sample_ms.checked_sub(previous));
 
         for (identity_key, set) in Arc::make_mut(details) {
+            let identity_key: Arc<str> = Arc::from(identity_key.as_str());
             for detail in &mut set.connections {
                 detail.tx_bps = 0;
                 detail.rx_bps = 0;
-                let key = ConnectionRateKey::new(identity_key, detail);
+                let Some(delta_ms) = delta_ms else {
+                    continue;
+                };
+                let key = ConnectionRateKey::new(Arc::clone(&identity_key), detail);
                 let Some(point) = current.get(&key) else {
                     continue;
                 };
                 let Some(previous) = self.previous.get(&key) else {
-                    continue;
-                };
-                let Some(delta_ms) = point.sample_ms.checked_sub(previous.sample_ms) else {
                     continue;
                 };
                 detail.tx_bps = rate_from_counters(point.tx_bytes, previous.tx_bytes, delta_ms);
@@ -346,13 +337,7 @@ impl ConnectionRateBook {
             return;
         }
 
-        let mut folded = BTreeMap::<ConnectionRateKey, ConnectionCounters>::new();
-        for (key, counters) in counters.iter() {
-            let value = folded.entry(key.clone().without_generation()).or_default();
-            value.tx_bytes = value.tx_bytes.saturating_add(counters.tx_bytes);
-            value.rx_bytes = value.rx_bytes.saturating_add(counters.rx_bytes);
-        }
-        let current = folded
+        let current = fold_connection_counters(counters)
             .into_iter()
             .map(|(key, counters)| {
                 let previous = self.deferred.get(&key);
@@ -375,10 +360,11 @@ impl ConnectionRateBook {
             .collect::<BTreeMap<_, _>>();
 
         for (identity_key, set) in Arc::make_mut(details) {
+            let identity_key: Arc<str> = Arc::from(identity_key.as_str());
             for detail in &mut set.connections {
                 detail.tx_bps = 0;
                 detail.rx_bps = 0;
-                let key = ConnectionRateKey::new(identity_key, detail);
+                let key = ConnectionRateKey::new(Arc::clone(&identity_key), detail);
                 let Some(rate) = current.get(&key) else {
                     continue;
                 };
@@ -506,7 +492,10 @@ impl ConnectionDetailsIndex {
         detail: ClientConnectionDetail,
         counters: Option<ConnectionCounters>,
     ) {
-        let set = self.sets.entry(identity_key.to_owned()).or_default();
+        let set = match self.sets.get_mut(identity_key) {
+            Some(set) => set,
+            None => self.sets.entry(identity_key.to_owned()).or_default(),
+        };
         set.total_connections = set.total_connections.saturating_add(1);
         if set.connections.len() < MAX_CLIENT_CONNECTION_DETAILS
             && self.stored_connections < MAX_STORED_CONNECTION_DETAILS
@@ -523,7 +512,10 @@ impl ConnectionDetailsIndex {
     }
 
     pub fn record_omitted(&mut self, identity_key: &str) {
-        let set = self.sets.entry(identity_key.to_owned()).or_default();
+        let set = match self.sets.get_mut(identity_key) {
+            Some(set) => set,
+            None => self.sets.entry(identity_key.to_owned()).or_default(),
+        };
         set.total_connections = set.total_connections.saturating_add(1);
         set.truncated = true;
     }
@@ -592,10 +584,21 @@ pub fn classify_flow_ownership<'a>(
 ) -> FlowOwnership<'a> {
     let orig_src = owner(identities, flow.orig_src);
     let orig_dst = owner(identities, flow.orig_dst);
-    let reply_src = owner(identities, flow.reply_src);
-    let reply_dst = owner(identities, flow.reply_dst);
-
-    if (orig_src.is_some() && orig_dst.is_some()) || (reply_src.is_some() && reply_dst.is_some()) {
+    if orig_src.is_some() && orig_dst.is_some() {
+        return FlowOwnership::BothLan;
+    }
+    // For untranslated endpoints the reply tuple already has an owner lookup.
+    let reply_src = if flow.reply_src == flow.orig_dst {
+        orig_dst
+    } else {
+        owner(identities, flow.reply_src)
+    };
+    let reply_dst = if flow.reply_dst == flow.orig_src {
+        orig_src
+    } else {
+        owner(identities, flow.reply_dst)
+    };
+    if reply_src.is_some() && reply_dst.is_some() {
         return FlowOwnership::BothLan;
     }
 
@@ -782,8 +785,7 @@ mod rate_book_tests {
             last_sample_ms: Some(1_000),
             previous: Arc::new(BTreeMap::from([(
                 key,
-                ConnectionCounterPoint {
-                    sample_ms: 1_000,
+                ConnectionCounters {
                     tx_bytes: 100,
                     rx_bytes: 200,
                 },

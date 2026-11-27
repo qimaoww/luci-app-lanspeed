@@ -73,7 +73,6 @@ const nssUnpublishEntry = nssKmodSource.match(
   /static int lanspeed_igs_unpublish_entry[\s\S]*?(?=\nstatic void lanspeed_igs_forget_edge)/)?.[0] || '';
 const nssCpuBlockProduction = nssCpuPathByModule['block.rs'].split('#[cfg(test)]')[0];
 const nssCpuProbeProduction = nssCpuPathByModule['probe.rs'].split('#[cfg(test)]')[0];
-const daemonMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
 const statusOverview = fs.readFileSync(path.join(root,
   'applications/luci-app-lanspeed/htdocs/luci-static/resources/lanspeed/statusOverview.js'), 'utf8');
 const statusRefresh = fs.readFileSync(path.join(root,
@@ -446,12 +445,8 @@ async function main() {
     nssTopologyProduction.includes('/sys/class/net/{device}/device') &&
     nssTopologyProduction.includes('/sys/class/net/{device}/phy80211') &&
     !nssTopologyProduction.includes('"wan"') &&
-    !nssTopologyProduction.includes('"br-lan"') &&
-    daemonMakefile.includes('LANSPEED_AARCH64_CONTROL_DEPENDS:=+TARGET_qualcommax:tc-full') &&
-    daemonMakefile.includes('TARGET_qualcommax:kmod-ifb') &&
-    daemonMakefile.includes('TARGET_qualcommax:kmod-sched-core') &&
-    daemonMakefile.includes('LANSPEED_X86_CONTROL_DEPENDS:=+TARGET_x86:tc-full +TARGET_x86:ip +TARGET_x86:nftables +TARGET_x86:conntrack +TARGET_x86:kmod-ifb +TARGET_x86:kmod-sched-core +TARGET_x86:kmod-sched'),
-    'NSS targets and hook devices must be dynamic while scheduler dependencies stay platform-scoped');
+    !nssTopologyProduction.includes('"br-lan"'),
+    'NSS targets and hook devices must be discovered from the current topology');
   const hotRefresh = production.match(/fn refresh_controls[\s\S]*?\n    fn reconcile_control_state\(/)?.[0] || '';
   assert(hotRefresh.includes('self.control.decorate_response(clients);') &&
     !hotRefresh.includes('self.refresh_controls(&mut snapshot.clients);'),

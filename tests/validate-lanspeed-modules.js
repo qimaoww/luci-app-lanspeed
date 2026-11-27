@@ -3591,6 +3591,9 @@ function assertClientDetailRefreshBehavior(src) {
 	})) {
 		fail('clientDetailRefresh.js group/detail rows must expose button semantics, aria-expanded, colspan=8 and real hidden collapse state');
 	}
+	if (findFakeElementsByClass(refs.tbody, 'lanspeed-connection-detail-item').length !== 0)
+		fail('clientDetailRefresh.js must defer connection DOM creation for collapsed groups');
+	groupRows.forEach(function(row) { row.listeners.click(); });
 	const detailCopy = detailRows.map(fakeElementText).join(' ');
 	if (!detailCopy.includes('出站') || !detailCopy.includes('UDP') || !detailCopy.includes('活跃') ||
 	    !detailCopy.includes('192.0.2.10:53000 → 198.51.100.53:53') ||
@@ -3621,6 +3624,18 @@ function assertClientDetailRefreshBehavior(src) {
 	})) {
 		fail('clientDetailRefresh.js must hide decorative rate arrows from assistive technology');
 	}
+	groupRows.forEach(function(row) { row.listeners.click(); });
+
+	const requestsBeforeLoading = locationRequests.length;
+	state.loading = true;
+	state.manualLoading = true;
+	refresh.render(state, true);
+	if (refs.tbody.children[0] !== groupRows[0] ||
+	    locationRequests.length !== requestsBeforeLoading ||
+	    !refs.refresh.disabled || refs.refresh.attrs['aria-busy'] !== 'true')
+		fail('clientDetailRefresh.js must update loading controls without rebuilding rows or requesting geolocation');
+	state.loading = false;
+	state.manualLoading = false;
 
 	let prevented = 0;
 	const focusedGroup = groupRows[1];
@@ -3665,6 +3680,7 @@ function assertClientDetailRefreshBehavior(src) {
 	state.filter = '54001';
 	refresh.render(state);
 	if (state.expanded['198.51.100.53'] !== true ||
+	    refs.summaryTargets.textContent !== '2' ||
 	    refs.protocolAll.attrs['aria-pressed'] !== 'false' ||
 	    refs.protocolTcp.attrs['aria-pressed'] !== 'true' ||
 	    !String(refs.protocolTcp.className).includes('active') ||

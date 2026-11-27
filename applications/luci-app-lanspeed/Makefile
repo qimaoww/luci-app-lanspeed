@@ -27,11 +27,11 @@ endef
 define Package/luci-app-lanspeed/config
 	config LUCI_APP_LANSPEED_NSS
 		bool "NSS hardware acceleration support"
-		default y if TARGET_qualcommax
+		depends on TARGET_qualcommax
+		default y
 		help
 		  Install the dedicated NSS configuration page and expose the NSS/ECM
-		  collection controls for Qualcomm NSS routers. Keep it disabled on
-		  devices without a QCA NSS offload engine.
+		  collection controls for Qualcomm NSS routers.
 endef
 
 define Package/luci-app-lanspeed/description

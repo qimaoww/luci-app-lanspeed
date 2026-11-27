@@ -119,6 +119,7 @@ bpf_linker_bin=$(resolve_executable "$bpf_linker_request") || \
 [[ $("$bpf_linker_bin" --version) == 'bpf-linker 0.11.1' ]] || \
 	fail "expected bpf-linker 0.11.1, found $("$bpf_linker_bin" --version)"
 export BPF_LINKER=$bpf_linker_bin
+export LANSPEED_NSS_PLATFORM=1
 export LANSPEED_BPF_TARGET_ARCH=aarch64
 
 run_cargo run \

@@ -14,16 +14,19 @@ use std::{
     time::Duration,
 };
 
-const STOP_POLL_INTERVAL: Duration = Duration::from_millis(20);
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QueueError {
     Full,
     Disconnected,
 }
 
+enum Work<T> {
+    Task(T),
+    Stop,
+}
+
 pub struct WorkerQueue<T> {
-    sender: SyncSender<T>,
+    sender: SyncSender<Work<T>>,
 }
 
 impl<T> Clone for WorkerQueue<T> {
@@ -40,10 +43,13 @@ impl<T> WorkerQueue<T> {
     }
 
     pub fn try_send_recover(&self, task: T) -> Result<(), (QueueError, T)> {
-        self.sender.try_send(task).map_err(|error| match error {
-            TrySendError::Full(task) => (QueueError::Full, task),
-            TrySendError::Disconnected(task) => (QueueError::Disconnected, task),
-        })
+        self.sender
+            .try_send(Work::Task(task))
+            .map_err(|error| match error {
+                TrySendError::Full(Work::Task(task)) => (QueueError::Full, task),
+                TrySendError::Disconnected(Work::Task(task)) => (QueueError::Disconnected, task),
+                _ => unreachable!("only tasks are sent through WorkerQueue"),
+            })
     }
 }
 
@@ -59,17 +65,17 @@ impl<T: Send + 'static> Worker<T> {
         capacity: usize,
         mut handler: impl FnMut(T) + Send + 'static,
     ) -> Result<Self, std::io::Error> {
-        Self::spawn_with_tick(name, capacity, STOP_POLL_INTERVAL, move |task| {
+        Self::spawn_inner(name, capacity, None, move |task| {
             if let Some(task) = task {
                 handler(task);
             }
         })
     }
 
-    fn spawn_with_tick(
+    fn spawn_inner(
         name: &'static str,
         capacity: usize,
-        tick_interval: Duration,
+        tick_interval: Option<Duration>,
         handler: impl FnMut(Option<T>) + Send + 'static,
     ) -> Result<Self, std::io::Error> {
         let (sender, receiver) = mpsc::sync_channel(capacity.max(1));
@@ -77,7 +83,7 @@ impl<T: Send + 'static> Worker<T> {
         let worker_stop = Arc::clone(&stop);
         let join = thread::Builder::new()
             .name(name.to_owned())
-            .spawn(move || run_worker_with_tick(receiver, worker_stop, tick_interval, handler))?;
+            .spawn(move || run_worker(receiver, worker_stop, tick_interval, handler))?;
         Ok(Self {
             queue: WorkerQueue { sender },
             stop,
@@ -89,10 +95,6 @@ impl<T: Send + 'static> Worker<T> {
         self.queue.clone()
     }
 
-    pub fn request_stop(&self) {
-        self.stop.store(true, Ordering::Release);
-    }
-
     pub fn join(mut self) -> thread::Result<()> {
         self.request_stop();
         self.join
@@ -102,9 +104,18 @@ impl<T: Send + 'static> Worker<T> {
     }
 }
 
+impl<T> Worker<T> {
+    pub fn request_stop(&self) {
+        if !self.stop.swap(true, Ordering::AcqRel) {
+            // Wake an idle receiver. A full channel already has work to wake it.
+            let _ = self.queue.sender.try_send(Work::Stop);
+        }
+    }
+}
+
 impl<T> Drop for Worker<T> {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        self.request_stop();
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -126,7 +137,7 @@ pub fn spawn_rate_worker_with_tick<T: Send + 'static>(
     tick_interval: Duration,
     handler: impl FnMut(Option<T>) + Send + 'static,
 ) -> Result<RateWorker<T>, std::io::Error> {
-    Worker::spawn_with_tick("lanspeed-rate", capacity, tick_interval, handler)
+    Worker::spawn_inner("lanspeed-rate", capacity, Some(tick_interval), handler)
 }
 
 pub fn spawn_runtime_worker<T: Send + 'static>(
@@ -136,17 +147,26 @@ pub fn spawn_runtime_worker<T: Send + 'static>(
     Worker::spawn("lanspeed-runtime", capacity, handler)
 }
 
-fn run_worker_with_tick<T>(
-    receiver: Receiver<T>,
+fn run_worker<T>(
+    receiver: Receiver<Work<T>>,
     stop: Arc<AtomicBool>,
-    tick_interval: Duration,
+    tick_interval: Option<Duration>,
     mut handler: impl FnMut(Option<T>),
 ) {
     while !stop.load(Ordering::Acquire) {
-        match receiver.recv_timeout(tick_interval) {
-            Ok(task) => handler(Some(task)),
+        let received = match tick_interval {
+            Some(interval) => receiver.recv_timeout(interval),
+            None => receiver
+                .recv()
+                .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+        };
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
+        match received {
+            Ok(Work::Task(task)) => handler(Some(task)),
             Err(mpsc::RecvTimeoutError::Timeout) => handler(None),
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Ok(Work::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 }
@@ -227,5 +247,24 @@ mod tests {
             .unwrap();
         receiver.recv_timeout(Duration::from_secs(1)).unwrap();
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn stop_wakes_a_ticking_worker_without_waiting_for_its_period() {
+        let (started, running) = mpsc::channel();
+        let worker = spawn_rate_worker_with_tick(1, Duration::from_secs(10), move |task| {
+            assert_eq!(task, Some(()));
+            started.send(()).unwrap();
+        })
+        .unwrap();
+        let queue = worker.queue();
+        queue.try_send(()).unwrap();
+        running.recv_timeout(Duration::from_secs(1)).unwrap();
+        let (joined, done) = mpsc::channel();
+        thread::spawn(move || joined.send(worker.join()).unwrap());
+        done.recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(queue.try_send(()), Err(QueueError::Disconnected));
     }
 }

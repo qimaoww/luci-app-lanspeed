@@ -168,8 +168,10 @@ grep -Fx -- '--set=llvm.experimental-targets=' "$WRAPPER_ARG_LOG" >/dev/null
 LANSPEED_RUST_LLVM_KEEP_ALL_BACKENDS=1 \
 LANSPEED_REAL_BASH="$TMP_SDK/bin/bash-recorder" LANSPEED_ARG_LOG="$WRAPPER_ARG_LOG" \
 	"$ROOT/scripts/rust-configure-wrapper.sh" ./configure \
-	--target=x86_64-unknown-linux-musl --set=llvm.download-ci-llvm=true
+	--target=x86_64-unknown-linux-musl,riscv64gc-unknown-linux-gnu \
+	--set=llvm.download-ci-llvm=true
 grep -Fx -- '--set=llvm.download-ci-llvm=false' "$WRAPPER_ARG_LOG" >/dev/null
+grep -Fx -- '--target=x86_64-unknown-linux-musl,riscv64gc-unknown-linux-gnu' "$WRAPPER_ARG_LOG" >/dev/null
 if grep -F -- '--set=llvm.targets' "$WRAPPER_ARG_LOG" >/dev/null; then
 	printf '%s\n' "Rust configure wrapper trimmed backends despite KEEP_ALL_BACKENDS" >&2
 	exit 1

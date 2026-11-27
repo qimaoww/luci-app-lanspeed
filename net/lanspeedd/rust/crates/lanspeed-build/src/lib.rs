@@ -52,23 +52,15 @@ impl BpfTargetArch {
         }
     }
 
-    const fn builds_ecm(self) -> bool {
-        matches!(self, Self::Aarch64)
-    }
-
-    const fn tc_feature(self) -> &'static str {
-        match self {
-            Self::Aarch64 => "nss-tc",
-            Self::X86_64 => "x86-tc",
-        }
+    fn uses_nss(self) -> bool {
+        self == Self::Aarch64 && nss_platform_requested()
     }
 
     fn userspace_features(self) -> &'static str {
-        match self {
-            Self::Aarch64 if nss_platform_requested() => {
-                "openwrt,nss-platform,traffic-persistence"
-            }
-            _ => "openwrt,traffic-persistence",
+        if self.uses_nss() {
+            "openwrt,nss-platform,traffic-persistence"
+        } else {
+            "openwrt,traffic-persistence"
         }
     }
 }
@@ -155,7 +147,9 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
             let target_arch = BpfTargetArch::parse(
                 &env::var_os(BPF_TARGET_ARCH_ENV).ok_or(BuildError::MissingBpfTargetArch)?,
             )?;
-            let kfunc_features = format!("{},conntrack-kfunc", target_arch.tc_feature());
+            let nss = target_arch.uses_nss();
+            let tc_feature = if nss { "nss-tc" } else { "x86-tc" };
+            let kfunc_features = format!("{tc_feature},conntrack-kfunc");
             let kfunc = build_ebpf_variant(
                 &cargo,
                 &workspace,
@@ -169,7 +163,7 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
                 &workspace,
                 &target_dir,
                 "fallback",
-                target_arch.tc_feature(),
+                tc_feature,
                 target_arch,
             )?;
             let output_dir = target_dir.join("bpfel-unknown-none/release");
@@ -178,7 +172,7 @@ pub fn build(target: BuildTarget) -> Result<(), BuildError> {
             fs::copy(&fallback, output_dir.join("lanspeed-ebpf-fallback"))?;
             fs::copy(&kfunc, output_dir.join("lanspeed-ebpf"))?;
             let ecm_output = output_dir.join("lanspeed-ebpf-ecm");
-            if target_arch.builds_ecm() {
+            if nss {
                 let ecm = build_ebpf_variant(
                     &cargo,
                     &workspace,
@@ -538,13 +532,11 @@ mod tests {
         for value in ["x86_64", "amd64", "x86_64-openwrt-linux-musl"] {
             let arch = BpfTargetArch::parse(OsStr::new(value)).unwrap();
             assert_eq!(arch, BpfTargetArch::X86_64);
-            assert!(!arch.builds_ecm());
             assert_eq!(arch.aya_name(), "x86_64");
         }
         for value in ["aarch64", "arm64", "aarch64-openwrt-linux-musl"] {
             let arch = BpfTargetArch::parse(OsStr::new(value)).unwrap();
             assert_eq!(arch, BpfTargetArch::Aarch64);
-            assert!(arch.builds_ecm());
             assert_eq!(arch.aya_name(), "aarch64");
         }
         assert!(BpfTargetArch::parse(OsStr::new("mips64")).is_err());

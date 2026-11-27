@@ -12,24 +12,6 @@ UNIT_EVIDENCE="$EVIDENCE_DIR/task-15-unit-fixtures.txt"
 LOG_DIR="$EVIDENCE_DIR/task-15-logs"
 RUN_ID=$(date -u '+%Y%m%dT%H%M%SZ')-$$
 IMMORTALWRT_ROOT=${IMMORTALWRT_ROOT:-}
-rust_cargo=${RUST_CARGO:-}
-
-if [ -z "$rust_cargo" ]; then
-	if [ -x "$IMMORTALWRT_ROOT/staging_dir/target-x86_64_musl/host/bin/cargo" ]; then
-		rust_cargo="$IMMORTALWRT_ROOT/staging_dir/target-x86_64_musl/host/bin/cargo"
-	else
-		rust_cargo=cargo
-	fi
-fi
-
-rust_cargo_path=$(command -v "$rust_cargo")
-rust_toolchain_bin=$(dirname "$rust_cargo_path")
-rustc_bin=${RUSTC:-$rust_toolchain_bin/rustc}
-
-if [ ! -x "$rustc_bin" ]; then
-	printf 'missing rustc paired with cargo: %s\n' "$rustc_bin" >&2
-	exit 1
-fi
 
 cd "$ROOT"
 
@@ -126,6 +108,28 @@ run_node_check() {
 	done
 }
 
+resolve_rust_toolchain() {
+	rust_cargo=${RUST_CARGO:-}
+	if [ -z "$rust_cargo" ]; then
+		if [ -n "$IMMORTALWRT_ROOT" ] &&
+			[ -x "$IMMORTALWRT_ROOT/staging_dir/target-x86_64_musl/host/bin/cargo" ]; then
+			rust_cargo="$IMMORTALWRT_ROOT/staging_dir/target-x86_64_musl/host/bin/cargo"
+		else
+			rust_cargo=cargo
+		fi
+	fi
+
+	if ! rust_cargo_path=$(command -v "$rust_cargo"); then
+		printf 'missing cargo: %s\n' "$rust_cargo" >&2
+		return 1
+	fi
+	rust_toolchain_bin=$(dirname "$rust_cargo_path")
+	if ! rustc_bin=$(command -v "${RUSTC:-$rust_toolchain_bin/rustc}"); then
+		printf 'missing rustc: %s\n' "${RUSTC:-$rust_toolchain_bin/rustc}" >&2
+		return 1
+	fi
+}
+
 resolve_bpf_linker() {
 	if [ -n "${BPF_LINKER:-}" ]; then
 		candidate=$(command -v "$BPF_LINKER" 2>/dev/null || true)
@@ -198,6 +202,7 @@ build_ebpf_objects() {
 		RUSTC="$rustc_bin" \
 		CARGO="$rust_cargo_path" \
 		BPF_LINKER="$bpf_linker_path" \
+		LANSPEED_NSS_PLATFORM=1 \
 		LANSPEED_BPF_TARGET_ARCH=aarch64 \
 		"$rust_cargo_path" run \
 		--manifest-path "$ROOT/net/lanspeedd/rust/Cargo.toml" \
@@ -205,6 +210,7 @@ build_ebpf_objects() {
 }
 
 run_unit() {
+	resolve_rust_toolchain || return $?
 	reset_unit_evidence
 	append_unit_evidence "BEGIN unit run_id=$RUN_ID"
 	append_unit_evidence "command=unit"

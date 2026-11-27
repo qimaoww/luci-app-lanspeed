@@ -6,12 +6,30 @@ use object::Endianness;
 
 #[test]
 fn merges_module_btf_with_vmlinux_type_and_string_bases() {
+    let base_strings = b"\0int\0";
+    let base = btf(&[1, (BtfKind::Int as u32) << 24, 4, 32], base_strings);
+    let function_name = base_strings.len() as u32;
+    // The prototype returns base type 1 and the function references that
+    // prototype (type 2) and the first string from the split section.
+    let prototype = [0, (BtfKind::FuncProto as u32) << 24, 1];
+    let function = [function_name, ((BtfKind::Func as u32) << 24) | 1, 2];
+    let split = btf(&[prototype, function].concat(), b"lanspeed_test_fn\0");
+    let merged = merge_split_btf(&base, &split).unwrap();
+    let btf = Btf::parse(&merged, Endianness::Little).unwrap();
+    assert_eq!(btf.id_by_type_name_kind("int", BtfKind::Int).unwrap(), 1);
+    assert_eq!(
+        btf.id_by_type_name_kind("lanspeed_test_fn", BtfKind::Func)
+            .unwrap(),
+        3
+    );
+}
+
+#[test]
+#[ignore = "requires vmlinux and split nf_conntrack BTF exported by the host kernel"]
+fn merges_host_conntrack_module_btf() {
     let base_bytes = fs::read("/sys/kernel/btf/vmlinux").unwrap();
     let module_bytes = fs::read("/sys/kernel/btf/nf_conntrack").unwrap();
     let base = Btf::parse(&base_bytes, Endianness::Little).unwrap();
-    assert!(base
-        .id_by_type_name_kind("bpf_skb_ct_lookup", BtfKind::Func)
-        .is_err());
 
     let merged = merge_split_btf(&base_bytes, &module_bytes).unwrap();
     let btf = Btf::parse(&merged, Endianness::Little).unwrap();
@@ -22,8 +40,10 @@ fn merges_module_btf_with_vmlinux_type_and_string_bases() {
         .id_by_type_name_kind("bpf_ct_release", BtfKind::Func)
         .unwrap();
     eprintln!("lookup={lookup} release={release}");
-    assert!(lookup > 0);
-    assert!(release > 0);
+    for (name, id) in [("bpf_skb_ct_lookup", lookup), ("bpf_ct_release", release)] {
+        assert!(base.id_by_type_name_kind(name, BtfKind::Func).is_err());
+        assert!(id > 0);
+    }
 }
 
 #[test]
@@ -44,6 +64,16 @@ fn malformed_btf_offsets_and_header_lengths_return_errors() {
             Err(KfuncPatchError::InvalidBtf(_))
         ));
     }
+}
+
+fn btf(types: &[u32], strings: &[u8]) -> Vec<u8> {
+    let type_len = (types.len() * 4) as u32;
+    let mut bytes = btf_header(24, 0, type_len, type_len, strings.len() as u32);
+    for word in types {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes.extend_from_slice(strings);
+    bytes
 }
 
 fn btf_header(

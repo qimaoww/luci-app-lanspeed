@@ -51,7 +51,7 @@ echo "src-git lanspeed https://github.com/qimaoww/luci-app-lanspeed.git" >> feed
 
 # 在 menuconfig 中选中 LuCI -> Applications -> luci-app-lanspeed
 # BPF 是必选依赖，会自动选择 Network -> lanspeedd-bpf 和 lanspeedd
-# 进入 luci-app-lanspeed 子菜单可开关 NSS 硬件加速支持（默认按目标平台启用）
+# Qualcomm NSS 目标可在 luci-app-lanspeed 子菜单关闭默认启用的 NSS 支持
 make menuconfig
 
 # 多线程编译
@@ -68,9 +68,9 @@ make -j"$(nproc)" package/lanspeedd/compile \
 
 wrapper 把 `llvm.download-ci-llvm=true` 改写为 `false`，并按 `--build`/`--host`/`--target` 裁剪 `llvm.targets`。它必须通过 make 命令行传入（`BASH:=bash` 在 `rules.mk` 中定义，环境变量形式会被覆盖）。裁剪后的后端就是该工具链能生成代码的全部架构，需多架构交叉编译时设置 `LANSPEED_RUST_LLVM_KEEP_ALL_BACKENDS=1` 保留全部后端。首次本地构建 LLVM 明显慢于下载预编译产物。
 
-`luci-app-lanspeed` 强制依赖 `lanspeedd-bpf`，`lanspeedd-bpf` 依赖 `lanspeedd`。同一个 `package/lanspeedd/compile` 目标根据 SDK 架构生成 TC 对象，并只在 aarch64 生成 ECM 对象。
+`luci-app-lanspeed` 强制依赖 `lanspeedd-bpf`，`lanspeedd-bpf` 依赖 `lanspeedd`。同一个 `package/lanspeedd/compile` 目标按 SDK 架构生成 TC 对象。启用 NSS 的 aarch64 构建使用 NSS 分类对象，并额外生成 ECM 对象。
 
-`luci-app-lanspeed` 在 menuconfig 中是一个子菜单，包含 `NSS hardware acceleration support` 开关（`CONFIG_LUCI_APP_LANSPEED_NSS`）。它默认在 Qualcomm NSS 目标（`TARGET_qualcommax`）上启用，其它设备保持关闭。关闭后：daemon 不再编译 Rust `nss-platform` feature，只保留 TC-BPF 路径；不再打包 NSS 专用的 ECM eBPF 对象、`kmod-lanspeed-nss-control` 与 `kmod-qca-nss-drv-igs`；不再安装 NSS 内核模块加载器、NSS 整形迁移脚本，也不安装独立的 NSS 配置页面及其菜单入口。
+Qualcomm NSS 目标（`TARGET_qualcommax`）的 `luci-app-lanspeed` 子菜单提供默认启用的 `NSS hardware acceleration support` 开关（`CONFIG_LUCI_APP_LANSPEED_NSS`）。关闭后，构建使用 TC-BPF 采集、HTB 和 FQ 客户端控制。启用时还会构建 Rust `nss-platform`、NSS 分类与 ECM eBPF 对象，并启用 NSS 内核模块、迁移脚本和专用配置页。
 
 ### 预编译发布
 
@@ -102,7 +102,7 @@ GitHub Release 只提供 x86_64 的三个 APK 和整合归档，不发布 Qualco
 | 包 | 内容 |
 |---|---|
 | `lanspeedd` | Rust daemon、UCI、ubus、连接采集与平台调度 |
-| `lanspeedd-bpf` | 对应架构的 TC-BPF 对象；aarch64 包额外包含 ECM kprobe 对象 |
+| `lanspeedd-bpf` | 对应架构的 TC-BPF 对象，启用 NSS 的 aarch64 包还包含 ECM kprobe 对象 |
 | `luci-app-lanspeed` | 实时状态、运行诊断、配置和连接详情页面 |
 | `kmod-lanspeed-nss-control` | Qualcomm NSS 专属 Generic Netlink、IGS、FastRate 与队列控制内核模块；必须随目标固件自行编译 |
 

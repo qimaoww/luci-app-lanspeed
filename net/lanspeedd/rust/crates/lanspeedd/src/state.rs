@@ -1618,29 +1618,18 @@ impl SnapshotStore {
     }
 
     fn publish_base_inner(&self, snapshot: Arc<ResponseSnapshot>) -> SnapshotGenerations {
-        match self.0.write() {
-            Ok(mut state) => {
-                state.generations.base_generation = state
-                    .generations
-                    .base_generation
-                    .saturating_add(1)
-                    .max(snapshot.diagnostic_generation());
-                state.generations.fast_generation = 0;
-                state.published = snapshot;
-                state.generations
-            }
-            Err(poisoned) => {
-                let mut state = poisoned.into_inner();
-                state.generations.base_generation = state
-                    .generations
-                    .base_generation
-                    .saturating_add(1)
-                    .max(snapshot.diagnostic_generation());
-                state.generations.fast_generation = 0;
-                state.published = snapshot;
-                state.generations
-            }
-        }
+        let mut state = self.0.write().unwrap_or_else(|error| error.into_inner());
+        state.generations.base_generation = state
+            .generations
+            .base_generation
+            .saturating_add(1)
+            .max(snapshot.diagnostic_generation());
+        state.generations.fast_generation = 0;
+        let generations = state.generations;
+        let previous = std::mem::replace(&mut state.published, snapshot);
+        drop(state);
+        drop(previous);
+        generations
     }
 
     pub fn generations(&self) -> SnapshotGenerations {
@@ -1684,27 +1673,33 @@ impl SnapshotStore {
     }
 
     /// Apply a bounded FastRate overlay only to the exact base generation from
-    /// which it was sampled. The closure runs while the immutable snapshot is
-    /// copied, then readers receive one new Arc atomically.
+    /// which it was sampled. Prepare outside the lock and retry if another
+    /// FastRate overlay wins. The closure must not perform external side effects.
     pub fn publish_fast(
         &self,
         base_generation: u64,
-        apply: impl FnOnce(&mut ResponseSnapshot),
+        apply: impl Fn(&mut ResponseSnapshot),
     ) -> Option<SnapshotGenerations> {
-        let lock = self.0.write();
-        let mut state = match lock {
-            Ok(state) => state,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        if state.generations.base_generation != base_generation {
-            return None;
+        loop {
+            let (previous, generations) = self.load_with_generations();
+            if generations.base_generation != base_generation {
+                return None;
+            }
+            let mut snapshot = previous.as_ref().clone();
+            apply(&mut snapshot);
+            let snapshot = Arc::new(snapshot);
+            let mut state = self.0.write().unwrap_or_else(|error| error.into_inner());
+            if state.generations.base_generation != base_generation {
+                return None;
+            }
+            if !Arc::ptr_eq(&state.published, &previous) {
+                continue;
+            }
+            state.generations.fast_generation =
+                state.generations.fast_generation.saturating_add(1);
+            state.published = snapshot;
+            return Some(state.generations);
         }
-        let mut snapshot = state.published.as_ref().clone();
-        apply(&mut snapshot);
-        state.generations.fast_generation =
-            state.generations.fast_generation.saturating_add(1).max(1);
-        state.published = Arc::new(snapshot);
-        Some(state.generations)
     }
 }
 

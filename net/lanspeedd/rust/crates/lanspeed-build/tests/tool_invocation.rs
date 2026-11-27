@@ -387,6 +387,7 @@ exit 0
     variables.set("CARGO_LOG", &cargo_log);
     variables.set("LANSPEED_BUILD_WORKSPACE", &workspace);
     variables.set("LANSPEED_BPF_TARGET_ARCH", "aarch64");
+    variables.set("LANSPEED_NSS_PLATFORM", "1");
     let target_root = workspace.join("matrix-target");
     variables.set("CARGO_TARGET_DIR", &target_root);
 
@@ -478,10 +479,27 @@ exit 0
         "ecm\n"
     );
 
-    variables.set("LANSPEED_BPF_TARGET_ARCH", "x86_64");
+    variables.set("LANSPEED_NSS_PLATFORM", "0");
     build(BuildTarget::Ebpf).unwrap();
     let all_invocations = parse_invocations(&fs::read_to_string(&cargo_log).unwrap());
-    let x86_invocations = &all_invocations[3..];
+    let aarch64_without_nss = &all_invocations[3..];
+    assert_eq!(aarch64_without_nss.len(), 2);
+    assert!(aarch64_without_nss
+        .iter()
+        .all(|call| call.aya_arch == "aarch64"));
+    assert!(has_pair(
+        &aarch64_without_nss[0].args,
+        "--features",
+        "x86-tc,conntrack-kfunc"
+    ));
+    assert!(has_pair(&aarch64_without_nss[1].args, "--features", "x86-tc"));
+    assert!(!output_dir.join("lanspeed-ebpf-ecm").exists());
+
+    variables.set("LANSPEED_BPF_TARGET_ARCH", "x86_64");
+    variables.set("LANSPEED_NSS_PLATFORM", "1");
+    build(BuildTarget::Ebpf).unwrap();
+    let all_invocations = parse_invocations(&fs::read_to_string(&cargo_log).unwrap());
+    let x86_invocations = &all_invocations[5..];
     assert_eq!(x86_invocations.len(), 2, "x86 must build TC objects only");
     assert!(x86_invocations
         .iter()
